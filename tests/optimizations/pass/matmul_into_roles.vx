@@ -1,0 +1,49 @@
+//===- matmul_into_roles.vx - Vx Compiler -----------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// `outkind=buffer`: a matmul that fills a buffer it was handed (#325).
+//
+// The dispatch decoder and both backends have implemented this case since the
+// roles were introduced, and never seen it. Every matmul expressible until now
+// allocated its result inside the kernel and published the descriptor through a
+// slot, so `outkind` was always `slot` and the other branch was dead code that
+// looked exercised because the decode tests construct it by hand.
+//
+// `matmul_into` is its first real producer. A plugin standing in for this
+// kernel fills the buffer named by `out` rather than allocating and publishing
+// one -- a different code path on the runtime side, and now reachable from
+// source.
+//
+// The roles still have to name which operand is which: `out` is the
+// destination, and for square operands nothing about the shapes could say so.
+//
+// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s
+// CHECK: vx.launch @vx_npu_kernel_0
+// CHECK: vx.kernel_kind = "matmul"
+// CHECK: vx.kernel_out_kind = "buffer"
+//
+// RUN: vxc %s --emit-llvm 2>&1 | FileCheck %s --check-prefix=PAYLOAD
+// PAYLOAD: \00kind=matmul\00roles=a:0,b:1,out:2\00outkind=buffer\00
+
+extern "C" {
+  fn vx_alloc_f32(n : i32) -> *mut f32;
+}
+
+fn gemm_into() -> i32 {
+  let pw : *mut f32 = unsafe { vx_alloc_f32(4) };
+  let px : *mut f32 = unsafe { vx_alloc_f32(2) };
+  let py : *mut f32 = unsafe { vx_alloc_f32(2) };
+
+  let w : Tensor<f32> = unsafe { tensor_view_2d(pw, 2, 2) };
+  let x : Tensor<f32> = unsafe { tensor_view_2d(px, 2, 1) };
+  let mut y : Tensor<f32> = unsafe { tensor_view_2d(py, 2, 1) };
+
+  spawn on(Topology::GPU[0]) {
+    matmul_into(&mut y, &w, &x);
+  }
+  return 0;
+}

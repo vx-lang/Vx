@@ -710,9 +710,32 @@ fn run_optimization_test(path: &Path) -> Result<(), String> {
     // using real FileCheck's other directives, or a `{{...}}` regex hole, would
     // contribute no checks and pass without testing anything -- which is
     // indistinguishable from passing for the right reason. Refuse it instead.
+    // Every prefix in play, not just CHECK: a file may pass --check-prefix=X and
+    // then write `X-SAME:`, which the CHECK-only guard below would wave through
+    // -- the directive contributes nothing and the file passes for no reason.
+    // That is exactly the failure this guard exists to stop, so it has to cover
+    // whatever prefixes the RUN lines actually name.
+    let mut prefixes = vec!["CHECK".to_string()];
+    for line in source.lines() {
+        let line = line.trim();
+        if !line.starts_with("// RUN:") {
+            continue;
+        }
+        for tok in line.split_whitespace() {
+            if let Some(p) = tok.strip_prefix("--check-prefix=") {
+                prefixes.push(p.to_string());
+            }
+        }
+    }
+
     if let Some(bad) = source.lines().map(str::trim).find(|line| {
-        (line.starts_with("// CHECK-") && !line.starts_with("// CHECK-NOT:"))
-            || (line.starts_with("// CHECK") && line.contains("{{"))
+        prefixes.iter().any(|p| {
+            let dash = format!("// {p}-");
+            let bare = format!("// {p}");
+            let not = format!("// {p}-NOT:");
+            (line.starts_with(&dash) && !line.starts_with(&not))
+                || (line.starts_with(&bare) && line.contains("{{"))
+        })
     }) {
         return Err(format!(
             "{:?} uses `{}`. This runner matches ordered substrings and supports only \

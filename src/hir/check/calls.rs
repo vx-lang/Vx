@@ -437,6 +437,7 @@ impl<'a> TypeChecker<'a> {
                 let is_builtin_ref = resolved_name == "print".into()
                     || resolved_name == "Verified".into()
                     || resolved_name == "tensor_view_2d".into()
+                    || resolved_name == "matmul_into".into()
                     || is_slice_reduction;
                 let arg_consume = if is_builtin_ref { false } else { consume };
 
@@ -1180,6 +1181,36 @@ impl<'a> TypeChecker<'a> {
                     .push(format!("Function '{}' expects 1 argument", resolved_name));
             }
             Some(Type::Struct("Option".into(), None))
+        } else if resolved_name == "matmul_into" {
+            // `dst = &a @ &b` rebinds dst to a fresh allocation, so a view over
+            // a caller's buffer is left untouched -- and a model's
+            // `matmul(xout, ...)` exists to fill exactly such a buffer. This
+            // writes in place instead, and allocates nothing.
+            if args.len() != 3 {
+                self.errors
+                    .push("Function 'matmul_into' expects (&mut dst, &a, &b)".to_string());
+            }
+            match arg_types.first() {
+                Some(Type::Borrow { is_mut: true, .. }) => {}
+                _ => {
+                    if !self.speculating {
+                        self.errors.push(
+                            "matmul_into writes its first argument, which must be a mutable borrow (&mut dst)"
+                                .to_string(),
+                        );
+                    }
+                }
+            }
+            for t in arg_types.iter().take(3) {
+                if Self::as_tensor_operand(t).is_none() && !self.speculating {
+                    self.errors.push(format!(
+                        "Function 'matmul_into' expects tensors, got {:?}",
+                        t
+                    ));
+                }
+            }
+            // `void` is spelled as a struct name in this type system.
+            Some(Type::Struct("void".into(), None))
         } else if resolved_name == "tensor_view_2d" {
             // A rank-2 tensor over memory it does not own, with no copy (#336).
             // The element type comes from the pointer, so the view cannot

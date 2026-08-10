@@ -1788,6 +1788,155 @@ fn slice_vec_len(ty_str: &str) -> Option<i64> {
     None
 }
 
+/// Emit `linalg.fill(0)` then `linalg.matmul` into an existing buffer.
+///
+/// The pair is what a GEMM with beta = 0 is, and it is the shape `kernelKindOf`
+/// recognises when deciding whether an outlined region can be handed to a
+/// vendor kernel (#325). `dst` is written in place, so no result is produced
+/// and nothing is allocated.
+fn emit_matmul_into<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    block: &melior::ir::BlockRef<'c, 'c>,
+    lhs_val: Value<'c, 'c>,
+    rhs_val: Value<'c, 'c>,
+    dst_val: Value<'c, 'c>,
+    el_ty_str: &str,
+) -> Result<(), LowerError> {
+    let el_ty = Type::parse(gen.context, el_ty_str)
+        .ok_or_else(|| LowerError::ParseType(el_ty_str.to_string()))?;
+    let is_float = el_ty_str.starts_with('f');
+
+    let zero_attr: melior::ir::Attribute = if is_float {
+        FloatAttribute::new(gen.context, el_ty, 0.0).into()
+    } else {
+        IntegerAttribute::new(el_ty, 0).into()
+    };
+    let zero_op = OperationBuilder::new("arith.constant", gen.loc())
+        .add_results(&[el_ty])
+        .add_attributes(&[(Identifier::new(gen.context, "value"), zero_attr)])
+        .build()?;
+    let zero_val: Value = block.append_operation(zero_op).result(0)?.into();
+
+    // linalg.fill: one block argument (the value), yielded straight out.
+    let region_fill = Region::new();
+    let block_fill = melior::ir::Block::new(&[(el_ty, gen.loc()), (el_ty, gen.loc())]);
+    let yield_fill = OperationBuilder::new("linalg.yield", gen.loc())
+        .add_operands(&[block_fill
+            .argument(0)
+            .map_err(|_| LowerError::from("Missing fill block argument".to_string()))?
+            .into()])
+        .build()?;
+    block_fill.append_operation(yield_fill);
+    region_fill.append_block(block_fill);
+
+    let fill_op = OperationBuilder::new("linalg.fill", gen.loc())
+        .add_operands(&[zero_val, dst_val])
+        .add_attributes(&[(
+            Identifier::new(gen.context, "operandSegmentSizes"),
+            DenseI32ArrayAttribute::new(gen.context, &[1, 1]).into(),
+        )])
+        .add_regions([region_fill])
+        .build()?;
+    block.append_operation(fill_op);
+
+    // linalg.matmul: acc = acc + lhs * rhs, per element.
+    let region_matmul = Region::new();
+    let block_matmul =
+        melior::ir::Block::new(&[(el_ty, gen.loc()), (el_ty, gen.loc()), (el_ty, gen.loc())]);
+    let arg = |i: usize| -> Result<Value<'c, 'c>, LowerError> {
+        Ok(block_matmul
+            .argument(i)
+            .map_err(|_| LowerError::from(format!("Missing matmul block argument {i}")))?
+            .into())
+    };
+    let (mul_name, add_name) = if is_float {
+        ("arith.mulf", "arith.addf")
+    } else {
+        ("arith.muli", "arith.addi")
+    };
+    let mul_op = OperationBuilder::new(mul_name, gen.loc())
+        .add_operands(&[arg(0)?, arg(1)?])
+        .add_results(&[el_ty])
+        .build()?;
+    let mul_val: Value = block_matmul.append_operation(mul_op).result(0)?.into();
+    let add_op = OperationBuilder::new(add_name, gen.loc())
+        .add_operands(&[arg(2)?, mul_val])
+        .add_results(&[el_ty])
+        .build()?;
+    let add_val: Value = block_matmul.append_operation(add_op).result(0)?.into();
+    let yield_matmul = OperationBuilder::new("linalg.yield", gen.loc())
+        .add_operands(&[add_val])
+        .build()?;
+    block_matmul.append_operation(yield_matmul);
+    region_matmul.append_block(block_matmul);
+
+    let matmul_op = OperationBuilder::new("linalg.matmul", gen.loc())
+        .add_operands(&[lhs_val, rhs_val, dst_val])
+        .add_attributes(&[(
+            Identifier::new(gen.context, "operandSegmentSizes"),
+            DenseI32ArrayAttribute::new(gen.context, &[2, 1]).into(),
+        )])
+        .add_regions([region_matmul])
+        .build()?;
+    block.append_operation(matmul_op);
+    Ok(())
+}
+
+/// Lower `matmul_into(&mut dst, &a, &b)`: a matmul that fills a buffer it was
+/// given rather than allocating one.
+///
+/// `dst = &a @ &b` cannot express this. The assignment rebinds `dst` to a fresh
+/// allocation, so a view over a caller's buffer is left untouched -- which is
+/// exactly what a model's `matmul(xout, x, w, ...)` needs to do. It also
+/// allocates a result per call, and a decoder does several matmuls per layer per
+/// token.
+///
+/// This is also the only producer of `outkind=buffer`, which the dispatch
+/// decoder and both backends have implemented and never seen.
+fn lower_matmul_into<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    args: &[Expr],
+    block: melior::ir::BlockRef<'c, 'c>,
+) -> Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError> {
+    if args.len() != 3 {
+        return Err(LowerError::from(
+            "matmul_into expects (dst, a, b)".to_string(),
+        ));
+    }
+
+    let (dst_val, mut dst_ty, block) = gen.generate_expr(&args[0], block)?;
+    let (lhs_val, mut lhs_ty, block) = gen.generate_expr(&args[1], block)?;
+    let (rhs_val, mut rhs_ty, block) = gen.generate_expr(&args[2], block)?;
+
+    // Each operand may be a borrow, which is the address of the slot holding
+    // the descriptor rather than the descriptor itself.
+    let dst_val = load_tensor_slot(gen, &block, dst_val, &mut dst_ty)?;
+    let lhs_val = load_tensor_slot(gen, &block, lhs_val, &mut lhs_ty)?;
+    let rhs_val = load_tensor_slot(gen, &block, rhs_val, &mut rhs_ty)?;
+
+    let dst_ty_str = dst_ty.to_string();
+    let el_ty_str = dst_ty_str
+        .rsplit('x')
+        .next()
+        .and_then(|s| s.strip_suffix('>'))
+        .ok_or_else(|| LowerError::from(format!("matmul_into: not a memref: {dst_ty_str}")))?
+        .to_string();
+
+    emit_matmul_into(gen, &block, lhs_val, rhs_val, dst_val, &el_ty_str)?;
+
+    // Writes in place, so there is no value to hand back. The unit stand-in
+    // matches what other void builtins return here.
+    let zero_op = OperationBuilder::new("arith.constant", gen.loc())
+        .add_results(&[gen.i32_ty])
+        .add_attributes(&[(
+            Identifier::new(gen.context, "value"),
+            IntegerAttribute::new(gen.i32_ty, 0).into(),
+        )])
+        .build()?;
+    let unit: Value = block.append_operation(zero_op).result(0)?.into();
+    Ok((unit, gen.i32_ty, block))
+}
+
 /// Lower `tensor_view_2d(ptr, rows, cols)` to a rank-2 memref descriptor built
 /// over `ptr`, with no allocation and no copy (#336).
 ///
@@ -2013,6 +2162,10 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
         // descriptor `{allocated, aligned, offset, sizes, strides}` directly:
         // `*mut f32` lowers to `!llvm.ptr`, and no memref op takes a bare
         // pointer as its source.
+        if name.as_ref() == "matmul_into" {
+            return lower_matmul_into(gen, args, block);
+        }
+
         if name.as_ref() == "tensor_view_2d" {
             return lower_tensor_view_2d(gen, args, type_args.as_deref(), block);
         }

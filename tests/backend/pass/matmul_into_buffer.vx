@@ -1,0 +1,68 @@
+//===- matmul_into_buffer.vx - Vx Compiler -----------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// A matmul that fills a buffer it was given, rather than allocating one.
+//
+// `dst = &a @ &b` cannot do this. The assignment rebinds `dst` to a fresh
+// allocation, so a view over a caller's buffer is left exactly as it was --
+// which is the whole job of a model's `matmul(xout, x, w, n, d)`. Writing in
+// place also allocates nothing, and a decoder does several matmuls per layer
+// per token.
+//
+// This is checked by reading the *pointer* afterwards rather than the tensor.
+// Reading the tensor would pass either way; only the underlying buffer
+// distinguishes a write in place from a rebinding.
+//
+// It is also the first producer of `outkind=buffer`. The dispatch decoder and
+// both backends have implemented that case since #325 and never once seen it,
+// because every matmul expressible until now allocated its result and published
+// it through a slot. The placed half below is what exercises it -- the
+// dispatcher reports `-> buffer` rather than `-> slot`.
+//
+// [[1,2],[3,4]] @ [1,1] = [3,7], twice: once unplaced, once on a named device.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: module
+// EXPECT: 3 7 3 7
+
+extern "C" {
+  fn vx_alloc_f32(n : i32) -> *mut f32;
+  fn vx_free_f32(p : *mut f32, n : i32) -> void;
+}
+
+fn main() -> i32 {
+  let pw : *mut f32 = unsafe { vx_alloc_f32(4) };
+  let px : *mut f32 = unsafe { vx_alloc_f32(2) };
+  let py : *mut f32 = unsafe { vx_alloc_f32(2) };
+  unsafe {
+    for i in 0..4 {
+      pw[i] = (i + 1) as f32;
+    }
+    for i in 0..2 {
+      px[i] = 1.0;
+      py[i] = -1.0;
+    }
+  }
+
+  let w : Tensor<f32> = unsafe { tensor_view_2d(pw, 2, 2) };
+  let x : Tensor<f32> = unsafe { tensor_view_2d(px, 2, 1) };
+  let mut y : Tensor<f32> = unsafe { tensor_view_2d(py, 2, 1) };
+
+  matmul_into(&mut y, &w, &x);
+  unsafe { print(py[0]); print!(" "); print(py[1]); print!(" "); }
+
+  // Clear the buffer and do it again on a device, so the second pair of numbers
+  // cannot be left over from the first.
+  unsafe { py[0] = -1.0; py[1] = -1.0; }
+  spawn on(Topology::GPU[0]) {
+    matmul_into(&mut y, &w, &x);
+  }
+  unsafe { print(py[0]); print!(" "); print(py[1]); }
+
+  unsafe { vx_free_f32(pw, 4); vx_free_f32(px, 2); vx_free_f32(py, 2); }
+  return 0;
+}
