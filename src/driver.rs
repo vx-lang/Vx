@@ -420,6 +420,18 @@ impl CompilerDriver {
                         "the machine this was compiled on (--host default)".to_string(),
                     ),
                 }],
+                // The compiling machine's own architecture, so `--host default`
+                // is a declaration like any other and the triple is derived the
+                // same way for it as for a host file (#342).
+                topologies: vec![crate::arch::TopologyDecl {
+                    name: crate::symbol::Symbol::from("Host"),
+                    descriptor: crate::arch::TopologyDescriptor {
+                        arch: Some(crate::symbol::Symbol::from(std::env::consts::ARCH)),
+                        default_space: crate::syntax::MemorySpace::CPUDRAM,
+                        visibility: vec![crate::syntax::MemorySpace::CPUDRAM],
+                        transfers: Vec::new(),
+                    },
+                }],
                 imports: Vec::new(),
                 macros: Vec::new(),
                 externs: Vec::new(),
@@ -428,7 +440,6 @@ impl CompilerDriver {
                 traits: Vec::new(),
                 impls: Vec::new(),
                 functions: Vec::new(),
-                topologies: Vec::new(),
             });
         }
 
@@ -751,6 +762,20 @@ impl CompilerDriver {
     ) -> Result<(), String> {
         codegen::register_vx_passes();
 
+        // The architecture the module's code is for, taken from the host's declaration.
+        //
+        // Identified by what it *is* rather than by which file it came from: the host is the
+        // topology whose memory is host memory. That holds for a `--host` file and for the
+        // `--host default` declaration synthesised from the compiling machine, so there is
+        // one rule and no special case.
+        let host_arch: Option<String> = module_syntaxes
+            .values()
+            .chain(std::iter::once(&monomorphized_ast))
+            .flat_map(|p| p.topologies.iter())
+            .find(|t| t.descriptor.default_space == crate::syntax::MemorySpace::CPUDRAM)
+            .and_then(|t| t.descriptor.arch.as_ref())
+            .map(|a| a.to_string());
+
         let registry = melior::dialect::DialectRegistry::new();
         melior::utility::register_all_dialects(&registry);
         melior::utility::register_all_passes();
@@ -854,17 +879,41 @@ impl CompilerDriver {
                 // MLIR. Asking for a concrete backend (`--target`) means you want real IR for
                 // it: set that target's triple / data layout as real module attributes (which
                 // `mlir-translate` propagates to the `.ll`) and translate to actual `.ll`.
-                // `--emit-llvm` prints the LLVM-dialect MLIR. It does not tag a triple or
-                // data layout: those describe the machine the code runs on, which `--host`
-                // names and `--machine` names for a device. A separate `--target` flag was a
-                // third opinion that could disagree with both, and did -- `--target nvptx64`
-                // stamped `nvptx64-nvidia-cuda` onto a module containing `main` and the host
-                // dispatch calls, which NVPTX has no notion of. Deriving the triple from the
-                // machine descriptions instead is #342.
+                // The module's triple and data layout come from the *host*: `main`, the
+                // dispatch calls and the outlined kernels' C interfaces are all code for the
+                // machine the program runs on. A device's `arch:` describes an offload
+                // target and belongs on a `gpu.module`, not here (#251).
                 //
-                // Translating on to real `.ll` went with it, having only ever been reachable
-                // by naming a target. It wants to be its own action rather than a side
-                // effect of that.
+                // There is no `--target` to disagree with this. The one there used to be
+                // tagged the whole module with whatever it was given -- `--target nvptx64`
+                // stamped `nvptx64-nvidia-cuda` onto a module containing `main`, which NVPTX
+                // has no notion of.
+                if self.options.action == Action::EmitLlvm {
+                    if let Some(arch) = host_arch.as_deref() {
+                        let Some((triple, datalayout)) = arch_triple_and_datalayout(arch) else {
+                            // An architecture with no LLVM target is refused rather than
+                            // defaulted to the native one. `applegpu` is the live example:
+                            // real hardware, no backend, reached through a vendor library --
+                            // so there is no honest triple, and inventing one would produce a
+                            // module that links and is wrong about the machine it names.
+                            return Err(format!(
+                                "no LLVM target for architecture '{arch}', declared by the host \
+                                 model. Vx emits no code for it -- if the machine is reached \
+                                 through a plugin rather than compiled for, it has no triple."
+                            ));
+                        };
+                        use melior::ir::operation::OperationMutLike;
+                        module.as_operation_mut().set_attribute(
+                            "llvm.target_triple",
+                            melior::ir::attribute::StringAttribute::new(&context, triple).into(),
+                        );
+                        module.as_operation_mut().set_attribute(
+                            "llvm.data_layout",
+                            melior::ir::attribute::StringAttribute::new(&context, datalayout)
+                                .into(),
+                        );
+                    }
+                }
                 println!("{}", module.as_operation());
             }
             Action::RunJit => {
@@ -1296,6 +1345,28 @@ pub fn translate_to_llvm_ir(
         ));
     }
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// The LLVM triple and data layout for a declared `arch:`.
+///
+/// Keyed on what a machine model declares rather than on a flag, so the module cannot be
+/// tagged with a target that disagrees with the machine it was admitted against (#342).
+///
+/// `None` for an architecture Vx does not emit code for. That is a real answer rather than a
+/// gap: `applegpu` names hardware reached through CoreML behind the plugin ABI, and a machine
+/// dispatched to rather than compiled for has no triple to give.
+fn arch_triple_and_datalayout(arch: &str) -> Option<(&'static str, &'static str)> {
+    match arch {
+        "x86_64" | "x86-64" | "x86" => Some((
+            "x86_64-unknown-linux-gnu",
+            "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128",
+        )),
+        "aarch64" | "arm64" => Some((
+            "aarch64-unknown-linux-gnu",
+            "e-m:e-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128",
+        )),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

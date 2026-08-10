@@ -1,0 +1,43 @@
+//===- host_derives_triple.vx - Vx Compiler ---------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// The module's target triple comes from the host's declared `arch:` (#342).
+//
+// There is no `--target`. The host is the machine the program runs on -- `main`,
+// the dispatch calls, the outlined kernels' C interfaces are all code for it --
+// so the host declaration is what a triple is derived from. A separate flag was
+// a third opinion that could disagree with the machine the program was admitted
+// against, and did: `--target nvptx64` stamped `nvptx64-nvidia-cuda` onto a
+// module containing `main`.
+//
+// A device's `arch:` is an *offload* target and deliberately does not appear
+// here. It belongs on a `gpu.module` when kernel emission lands (#251); putting
+// it on the module would say that `main` is device code.
+//
+// The program deliberately does not `transfer`: a host is required only when one
+// is staged through (E6014), and this file needs to compile *without* a host to
+// check the untargeted case below.
+//
+// The x86 host, named explicitly. This is also cross-compilation falling out of
+// the design rather than being added to it: the machine running the compiler is
+// not consulted, only the machine that was declared.
+// RUN: vxc %s --host fleet/host-x86-e5-2666v3.vx --emit-llvm 2>/dev/null | FileCheck %s --check-prefix=X86
+// Checked in emission order: MLIR prints an operation's attributes sorted, so
+// `data_layout` precedes `target_triple`.
+// X86: llvm.data_layout = "e-m:e-p270:32:32
+// X86: llvm.target_triple = "x86_64-unknown-linux-gnu"
+//
+// A program with no host declared is not targeted at all. Better than a default:
+// a triple nobody asked for is a claim about a machine nobody named.
+// RUN: vxc %s --emit-llvm 2>/dev/null | FileCheck %s --check-prefix=NOHOST
+// NOHOST-NOT: llvm.target_triple
+
+fn main() -> i32 {
+  let mut weights = Tensor<f32>([ 64, 64 ]);
+  weights[0][0] = 1.0;
+  return 0;
+}

@@ -88,21 +88,22 @@ if not os.path.exists(cell):
 with open(cell) as fh:
     rec = json.load(fh)
 
-# The capacity fields come from whichever diagnostic carried them. E6010 (the
-# summed working set) is the more informative when both fired, because it is the
-# one that accounts for every resident rather than the largest single tile.
-cap = None
-for d in rec.get("diagnostics", []):
-    c = d.get("capacity")
-    if c and (cap is None or d.get("code") == "E6010"):
-        cap = c
+# `resident_sets` rather than the capacity field on a diagnostic. Both directions
+# carry it -- an admitted cell has no diagnostic to hang numbers off, so reading
+# them from one made every acceptance a bare word and every refusal quantified.
+# It is also the better number: the working-set total across every resident,
+# where a diagnostic's figure may be one offending tile.
+sets = rec.get("resident_sets") or []
+row = max(sets, key=lambda r: r.get("total_bytes", 0)) if sets else None
 
 def gib(n):
     return "-" if n is None else f"{n / (1 << 30):.1f} GiB"
 
-if cap:
-    print(f"{name:<26} {rec['verdict']:<10} {gib(cap.get('required_bytes')):>16} "
-          f"{gib(cap.get('available_bytes')):>16} {gib(cap.get('margin_bytes')):>16}")
+if row:
+    total = row.get("total_bytes")
+    cap = row.get("capacity_bytes")
+    margin = None if (total is None or cap is None) else cap - total
+    print(f"{name:<26} {rec['verdict']:<10} {gib(total):>16} {gib(cap):>16} {gib(margin):>16}")
 else:
     print(f"{name:<26} {rec['verdict']:<10} {'':>16} {'':>16} {'':>16}")
 PY
