@@ -232,6 +232,78 @@ So: borrow the codec discipline and the registry pattern; do not borrow the iden
 model. Reusing `Gid` would import content-addressing into something that must be
 authority-minted, and the failure mode is silent aliasing between two machines' memory.
 
+### Where the region table lives
+
+**A shared, vendor-free header that backends include** — `runtime/vx_remote_region.h`,
+beside `vx_dispatch_plan.h` and `vx_host_call.h`. Not reimplemented per backend, and not
+a layer above the plugin ABI.
+
+This repository has answered the question twice and both answers agree.
+`vx_host_call.h` exists because the ABI-tag-to-libffi mapping had been copied into each
+backend under a keep-in-sync comment, "which is the arrangement that stops being true
+quietly: a tag added in one place and missed in another misreads an argument rather than
+failing to build". `vx_dispatch_plan.h` is "deliberately free of any vendor API so that
+the decision can be tested on a machine with no accelerator, which is where it will
+mostly be read and changed". Both apply here unchanged: interval lookup, guard gaps and
+generation counters are pure logic, and the cost of getting them wrong is a silent
+misresolution rather than a build failure.
+
+The session that produced this document supplied more evidence: adding a topology
+parameter to `vx_plugin_transfer_device_to_host` and adding `vx_plugin_transfer_peer`
+each meant editing three backends, and the one that was forgotten (`npu_dispatch.mm`)
+failed the build only because C++ checks signatures. A table whose *policy* diverged
+between backends would not have that protection.
+
+Shared is also the most flexible of the three arrangements, which is the reason to prefer
+it rather than merely the tidiest:
+
+- **Policy is one edit.** Guard-gap size, generation semantics, partition layout.
+- **It is a default, not a mandate.** A backend with a better native mechanism can
+  replace it — CUDA 11.2+ has `cuMemAddressReserve`, so a future CUDA backend could
+  reserve a real virtual address range and make the synthetic address a genuine one,
+  skipping interval lookup entirely. A shared default permits that; a layer above the ABI
+  forbids it for everyone.
+- **The host backends get a trivial implementation for free**, which keeps a
+  disaggregated program runnable on a machine with no GPU.
+
+Putting it above the ABI is the least flexible option and the one to avoid: it fixes the
+mechanism for every backend at once and creates a second source of truth about where a
+buffer lives, which is the thing `vx_plugin_*` exists to be.
+
+### Guard gaps, as an invariant rather than an accident
+
+**Regions are never adjacent in the synthetic space.** Interval lookup only catches an
+out-of-bounds `vx_advance_ptr` if there is somewhere for the out-of-bounds address to
+land, and if the allocator happens to pack regions end to end then an offset that runs
+past the end of `wq` resolves cleanly into `wk` — a valid handle for the wrong buffer,
+which is worse than a miss and produces plausible numbers.
+
+The simplest form that makes this structural rather than a property of the allocator:
+**one region per fixed-size slot**, so the address decomposes without a search.
+
+```
+ 63          48 47        32 31                             0
++--------------+------------+--------------------------------+
+| non-canonical|  slot index|   byte offset within the slot  |
+|   + partition|            |                                |
++--------------+------------+--------------------------------+
+```
+
+An offset in `[0, size)` is valid; one in `[size, 4 GiB)` lands in the gap and misses;
+one beyond 4 GiB changes the slot index and is caught by the generation and dtype
+recorded there. No two regions are adjacent because the slot boundary always separates
+them, and the gap costs nothing — address space is the resource being spent, and there
+are 2^32 slots per partition of it.
+
+The cost is a **4 GiB cap on a single region**, which is worth stating rather than
+discovering. Individual weight tensors are far below it — llama2's whole `wq` blob is
+2 MB, and a 70B-class per-tensor weight is under a gigabyte — but a program that placed
+one enormous contiguous buffer would hit it, and the escape is a wider slot in the codec
+rather than a special case at the call site.
+
+This is the guard-page argument and should be spelled the same way: the protection comes
+from the layout, not from remembering to check.
+
 ### What still has to be checked
 
 Pointer arithmetic that leaves a region — `vx_advance_ptr(w.wq, huge)` — must not silently
@@ -299,6 +371,7 @@ up front rather than discovering it as a porting cost.
 - **What happens to `outkind=slot` when the result is large?** The reply carries it back
   by value. For a projection that is 288 floats; for something that is not, this becomes
   the thing to fix, probably by leaving the result resident and returning a handle.
-- **Does the handle table belong in the plugin or the runtime?** In the plugin, on the
-  argument that `vx_plugin_*` is the whole seam and a second registry above it would be a
-  second source of truth about where a buffer lives.
+
+Two questions that were open here are now decided above: the region table is a shared
+vendor-free header rather than per-backend or above the ABI, and guard gaps are an
+invariant enforced by fixed-size slots rather than a property of the allocator.
