@@ -14,5 +14,6 @@ mod integration_test {
     mod mlir_diagnostic_test;
     mod module_api_test;
     mod registry_test;
+    mod remote_region_test;
     mod resolution_test;
 }
