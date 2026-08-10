@@ -395,19 +395,27 @@ fn softmax(x : *mut f32, size : i32) -> i32 {
   return 0;
 }
 
+// W[d,n] @ x[n,1] -> xout[d,1], which is every projection in a decoder.
+//
+// Written as tensors rather than as a loop nest so the outlined region is a
+// `linalg.matmul` the compiler can classify (#325) and a plugin can hand to
+// cuBLAS. The loop-nest form computed the same numbers and was ineligible: a
+// plugin saw an unrecognised kernel and ran it on the host, so a placed Llama
+// stayed on the CPU no matter which device it named.
+//
+// Three things had to exist for this to be writable. The weights are `*mut f32`
+// offsets into an mmap'd blob, so they become tensors through a view that
+// copies nothing (#336). They are read once per token, so `@` had to be able to
+// read an operand without consuming it (#335). And `xout` is the caller's
+// buffer, which an assignment would rebind rather than fill (#319 Track A), so
+// the result is written in place.
 fn matmul(xout : *mut f32, x : *mut f32, w : *mut f32, n : i32, d : i32)
 -> i32 {
-  spawn on(Topology::GPU) {
-    for i in 0..d {
-      let mut val : f32 = 0.0;
-      for j in 0..n {
-        let idx : i32 = i * n + j;
-        let w_val : f32 = w[idx];
-        let x_val : f32 = x[j];
-        val += w_val * x_val;
-      }
-      xout[i] = val;
-    }
+  let wt : Tensor<f32> = unsafe { tensor_view_2d(w, d, n) };
+  let xt : Tensor<f32> = unsafe { tensor_view_2d(x, n, 1) };
+  let mut yt : Tensor<f32> = unsafe { tensor_view_2d(xout, d, 1) };
+  spawn on(Topology::GPU[0]) {
+    matmul_into(&mut yt, &wt, &xt);
   }
   return 0;
 }
