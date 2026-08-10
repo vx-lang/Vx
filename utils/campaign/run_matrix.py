@@ -35,6 +35,13 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 ADMIT = REPO / "fleet" / "admit.vx"
 FLEET = REPO / "fleet"
+# The program stages every resident through host memory, so a host must be
+# declared (E6014). A named file rather than `--host default`: the frozen
+# artifact should record *which* host, not "the machine of the day". Verdicts
+# are host-independent by construction -- a host declares no capacity -- so
+# this choice cannot move a cell; E6014 exists to make that an explicit input
+# rather than an ambient default.
+HOST = FLEET / "host-x86-e5-2666v3.vx"
 
 SKUS = ["a100-40", "a100-80", "h100-sxm", "h200", "b200", "mi300x"]
 
@@ -109,7 +116,7 @@ def predict(cfg: Config, sku: str, vxc: Path, workdir: Path) -> dict:
 
     proc = subprocess.run(
         [
-            str(vxc), "--machine", str(FLEET / f"{sku}.vx"), str(src),
+            str(vxc), "--machine", str(FLEET / f"{sku}.vx"), "--host", str(HOST), str(src),
             "--action", "emit-mlir", "-o", "/dev/null",
             "--diagnostics-json", str(cell_json),
         ],

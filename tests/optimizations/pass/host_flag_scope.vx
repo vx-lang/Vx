@@ -1,0 +1,42 @@
+//===- host_flag_scope.vx - Vx Compiler -------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// The three cases where a host is *not* required (#341). The fourth -- staging
+// through host memory against a machine model with no host named -- is
+// tests/frontend/fail/host_not_declared.vx.
+//
+// The rule has to be narrow or it is noise. `--host` exists because no host is
+// assumed, not because every compilation is a fleet question.
+//
+// 1. A native build needs no host, and is not testable *here*: with no machine
+//    model there is no `Memory::HBM` to transfer into either, so this program
+//    fails for an unrelated reason. The property is real and is demonstrated by
+//    the rest of the suite, every file of which compiles with neither flag.
+//
+// 2. `--host default`: the machine compiling the program, declared rather than
+//    assumed. Synthesised rather than read from a file, because for a native
+//    host the statement *is* "this one".
+// RUN: vxc %s --machine fleet/a100-80.vx --host default --emit-mlir 2>&1 | FileCheck %s --check-prefix=DEFAULT
+// DEFAULT-NOT: E6014
+//
+// 3. A host file: a peer module the program never names, so the same text
+//    compiles against a different host by swapping it. It declares `CPU_DRAM`
+//    and nothing else -- passing a *machine* file here collides on `HBM` and
+//    `Topology Device` (E6012), which is the system saying that a file
+//    describing a device is describing a device.
+// RUN: vxc %s --machine fleet/a100-80.vx --host fleet/host-x86-e5-2666v3.vx --emit-mlir 2>&1 | FileCheck %s --check-prefix=FILE
+// FILE-NOT: E6014
+//
+// And the transfer still lowers to the plugin either way -- requiring a host
+// changed what the compiler insists on knowing, not what it emits.
+// FILE: vx.transfer
+
+fn main() -> i32 {
+  let mut weights = Tensor<f32>([ 64, 64 ]);
+  let weights_d = transfer(weights, Memory::HBM);
+  return 0;
+}

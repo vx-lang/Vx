@@ -1,0 +1,54 @@
+//===- host-x86-e5-2666v3.vx - x86 host model -------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// A *host*, for `--host`. Not a machine: it declares the memory a program
+// stages through on its way to an accelerator, and nothing else.
+//
+// The distinction is the whole point of the flag. `--machine` describes an
+// accelerator -- what compute is placed on and what device memory it has.
+// `--host` describes the machine that accelerator hangs off. Passing a machine
+// file to `--host` collides on the shared vocabulary, which is the system
+// telling the truth: a file declaring `HBM` and a `Topology Device` is
+// describing a device.
+//
+//   vxc prog.vx --machine fleet/a100-80.vx --host fleet/host-x86-e5-2666v3.vx
+//
+// The same host under a different accelerator is the same file; the same
+// accelerator on a different host likewise. That is what makes a fleet matrix a
+// matrix rather than a list of pairs.
+//
+// See fleet/xeon-e5-2666v3.vx for the same silicon described as a *machine* --
+// an x86 target that compute is placed on, rather than a host that data passes
+// through. Both are true of one box, and which one a file says is decided by
+// which question is being asked of it.
+//
+//===----------------------------------------------------------------------===//
+
+// **No capacity, deliberately.**
+//
+// Host memory is virtual. A tensor larger than physical RAM does not fail; it
+// pages, slowly. Declaring 60 GiB here and rejecting at 60 GiB would refuse
+// programs that run, which is a worse answer than declining to give one -- and
+// this whole directory exists to make refusals trustworthy. A device's HBM is a
+// wall; a host's DRAM is a working set.
+//
+// So a host file states that a host *exists* and how fast its memory is. What
+// the admission check gets from it is a declared endpoint for the staging seam,
+// not a budget.
+//
+// spec: `/proc/meminfo` MemTotal = 61768396 kB (58.9 GiB) on the build box,
+// recorded for reference rather than declared as a limit.
+//
+// UNVERIFIED bandwidth, derived rather than quoted: the E5-2600 v3 family has 4
+// DDR4 channels per socket at up to 2133 MT/s, so
+//   4 channels x 2133 MT/s x 8 B = 68.3 GB/s per socket, 136.5 GB/s for two.
+// That is the memory controllers' peak and not an achievable copy rate; a
+// memcpy moves two bytes of traffic per byte copied and cannot exceed half of
+// it even in principle. Nothing rests on the figure until measured.
+Memory CPU_DRAM {
+  bandwidth: 136 GB/s, managed: explicit
+}

@@ -98,6 +98,28 @@ pub struct DriverOptions {
     #[arg(long = "machine", value_name = "FILE")]
     pub machine: Option<PathBuf>,
 
+    /// The host the program runs on: a file declaring `Memory::CPU_DRAM`, or
+    /// `default` for the machine compiling it.
+    ///
+    /// No host is assumed. `--machine` describes an accelerator and says nothing
+    /// about the machine it hangs off, so a program that stages through host
+    /// memory was reasoning about a host nobody declared -- `Memory::CPU_DRAM`
+    /// appeared out of the built-ins with no properties at all, and the seam
+    /// into it was costed against a source that did not exist as a declaration.
+    ///
+    /// A host declares no `capacity`, deliberately. Host memory is virtual: a
+    /// tensor larger than physical RAM does not fail, it pages. A hard limit
+    /// would reject programs that run, which is worse than declining to answer,
+    /// so what a host file states is that it *exists* and how fast it is, not
+    /// how much of it there is.
+    ///
+    /// Not required for a program that never touches host memory: a kernel whose
+    /// tensors are already device-resident reasons about no host and needs
+    /// none. Not required without `--machine` either, which is an ordinary
+    /// native build rather than a fleet-level question.
+    #[arg(long = "host", value_name = "FILE|default")]
+    pub host: Option<String>,
+
     /// Write the compile's admission verdict as one JSON record: every diagnostic with its code
     /// and structured fields (capacity rejects carry space / required / available / margin), plus
     /// the staging routes and per-edge costs an *admitted* program resolved. The schema is
@@ -351,6 +373,19 @@ impl CompilerDriver {
                 ));
             }
         }
+        // The host model, on the same terms as the machine model: a peer module
+        // whose declarations the program never names. `default` describes the
+        // machine compiling the program instead of a file (see `native_host`).
+        if let Some(host) = &self.options.host {
+            if host != "default" {
+                if let Err(e) = loader.load_main(host) {
+                    return Err(format!(
+                        "Frontend failed to parse --host file '{}': {}",
+                        host, e
+                    ));
+                }
+            }
+        }
         if let Err(e) = loader.load_main(filename) {
             return Err(format!("Frontend failed to parse '{}': {}", filename, e));
         }
@@ -364,6 +399,43 @@ impl CompilerDriver {
         auto.sort_by(|a, b| a.0.cmp(&b.0));
         let auto_interfaces: Vec<Vec<u8>> = auto.into_iter().map(|(_, b)| b).collect();
         let mut program_arr = loader.into_programs();
+
+        // `--host default`: the machine compiling the program, declared rather
+        // than assumed. Synthesised instead of read from a file because there is
+        // no file to read -- the point is that the host is *stated*, and for a
+        // native build the statement is "this one".
+        //
+        // No capacity, for the reason the flag documents: host memory is virtual
+        // and a hard limit would reject programs that page rather than fail. It
+        // declares that a host exists and that its memory is `Memory::CPU_DRAM`,
+        // which is what a program staging through it needs there to be.
+        if self.options.host.as_deref() == Some("default") {
+            program_arr.push(crate::syntax::Program {
+                module_path: crate::symbol::Symbol::from("<native-host>"),
+                memories: vec![crate::syntax::MemoryDecl {
+                    name: crate::symbol::Symbol::from("CPU_DRAM"),
+                    parent: None,
+                    capacity: None,
+                    bandwidth: None,
+                    managed: crate::syntax::Management::Explicit,
+                    granule: None,
+                    scope: None,
+                    overcommit: false,
+                    doc_comment: Some(
+                        "the machine this was compiled on (--host default)".to_string(),
+                    ),
+                }],
+                imports: Vec::new(),
+                macros: Vec::new(),
+                externs: Vec::new(),
+                structs: Vec::new(),
+                enums: Vec::new(),
+                traits: Vec::new(),
+                impls: Vec::new(),
+                functions: Vec::new(),
+                topologies: Vec::new(),
+            });
+        }
 
         let mut global_macros = std::collections::HashMap::new();
         for m in &program_arr {

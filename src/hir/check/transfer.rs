@@ -813,6 +813,50 @@ impl<'a> TypeChecker<'a> {
                 return Type::Unknown; // Poison: no valid transfer, don't fake an f32 tensor
             }
 
+            // A seam with the host on one end is reasoning about a host, so
+            // there had better be one. `--machine` describes an accelerator and
+            // says nothing about the machine it hangs off, and `Memory::CPU_DRAM`
+            // otherwise arrives from the built-ins with no declaration at all --
+            // so this edge was being costed against a source nobody described.
+            //
+            // Only when a machine model is present: without one this is an
+            // ordinary native build, not a fleet-level question, and demanding
+            // a host file would be noise.
+            if !self.speculating {
+                let touches_host =
+                    source_mem == MemorySpace::CPUDRAM || target_mem == MemorySpace::CPUDRAM;
+                let host_declared = self
+                    .env
+                    .memories
+                    .values()
+                    .any(|m| m.name.as_ref() == "CPU_DRAM");
+                let machine_declared = self
+                    .env
+                    .memories
+                    .values()
+                    .any(|m| matches!(m.scope, Some(crate::syntax::Scope::Device)));
+                if touches_host && machine_declared && !host_declared {
+                    self.errors
+                        .error_with_code(
+                            crate::diagnostic::DiagnosticCode::E6014,
+                            format!(
+                                "this program stages through host memory, but no host was declared: \
+                                 the transfer {:?} -> {:?} has an end nothing describes",
+                                source_mem, target_mem
+                            ),
+                            None,
+                        )
+                        .notes
+                        .push(crate::diagnostic::Note {
+                            message: "pass --host <file> to name the host, or --host default for \
+                                      the machine compiling this. `--machine` describes the \
+                                      accelerator only."
+                                .into(),
+                            span: None,
+                        });
+                }
+            }
+
             let (_cost, path) = path_result.unwrap();
             if path.len() > 2 {
                 do_rewrite = Some(path);

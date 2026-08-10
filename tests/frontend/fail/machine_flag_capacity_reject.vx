@@ -18,9 +18,9 @@
 // RUN: sed 's/capacity: 1 MiB/capacity: 64 GiB/' %t.d/small.vx > %t.d/big.vx
 //
 // Rejected against the small SKU...
-// RUN: not vxc --machine %t.d/small.vx %s --action emit-mlir -o /dev/null 2>&1 | FileCheck %s
+// RUN: not vxc --host default --machine %t.d/small.vx %s --action emit-mlir -o /dev/null 2>&1 | FileCheck %s
 // ...and admitted against the large one, same program text.
-// RUN: vxc --machine %t.d/big.vx %s --action emit-mlir -o /dev/null
+// RUN: vxc --host default --machine %t.d/big.vx %s --action emit-mlir -o /dev/null
 
 fn main() -> i32 {
   let kv : Tensor<f32, [1024, 1024]> = Tensor<f32>([1024, 1024]);

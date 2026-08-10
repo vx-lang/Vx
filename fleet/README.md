@@ -5,6 +5,16 @@ memory hierarchy and its transfer topology, and nothing else: no functions, no p
 admission program is written once and admitted against each SKU by swapping the flag, which is the
 claim the MLSys fleet-admission paper rests on.
 
+## Machines and hosts
+
+The files here are **machine** models: accelerators, passed with `--machine`. A **host** — the
+machine an accelerator hangs off — is a different thing, passed with `--host`, and declares
+`Memory::CPU_DRAM` and nothing else (`host-x86-e5-2666v3.vx`). Neither is assumed, and a program
+staging through host memory against a machine model must name a host or be refused (`E6014`).
+
+A host declares no capacity: host memory is virtual, so a hard limit would reject programs that
+page rather than fail. See [`docs/lang/hosts_and_machines.md`](../docs/lang/hosts_and_machines.md).
+
 ## The shared vocabulary
 
 Every SKU declares the **same space names**, so one program text can reference them:

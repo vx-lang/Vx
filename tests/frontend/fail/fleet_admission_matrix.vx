@@ -18,17 +18,17 @@
 // is the working directory the integration harness runs shell tests from.
 //
 // Rejected on H100 (80 GB), with the capacity numbers in the JSON record:
-// RUN: not vxc --machine fleet/h100-sxm.vx fleet/admit.vx --action emit-mlir -o /dev/null --diagnostics-json 2>/dev/null | FileCheck --check-prefix=REJECT %s
+// RUN: not vxc --host default --machine fleet/h100-sxm.vx fleet/admit.vx --action emit-mlir -o /dev/null --diagnostics-json 2>/dev/null | FileCheck --check-prefix=REJECT %s
 //
 // Admitted on B200 (192 GB) -- same program text, only the machine file differs:
-// RUN: vxc --machine fleet/b200.vx fleet/admit.vx --action emit-mlir -o /dev/null --diagnostics-json 2>/dev/null | FileCheck --check-prefix=ADMIT %s
+// RUN: vxc --host default --machine fleet/b200.vx fleet/admit.vx --action emit-mlir -o /dev/null --diagnostics-json 2>/dev/null | FileCheck --check-prefix=ADMIT %s
 //
 // The resident-set modelling rule (#286) holds: all three residents are placed
 // in one function, so the working-set check sums them. An earlier draft split
 // them across helper functions and a 100 GiB working set on an 80 GiB card
 // compiled as *admitted* -- a false accept. This pins the tile count, which is
 // what proves the sum actually happened.
-// RUN: not vxc --machine fleet/a100-40.vx fleet/admit.vx --action emit-mlir -o /dev/null --diagnostics-json 2>/dev/null | FileCheck --check-prefix=SUMMED %s
+// RUN: not vxc --host default --machine fleet/a100-40.vx fleet/admit.vx --action emit-mlir -o /dev/null --diagnostics-json 2>/dev/null | FileCheck --check-prefix=SUMMED %s
 //
 // This fixture's own body is inert; the RUN lines above are the test. It lives
 // in `fail/` because that is the directory whose harness executes RUN lines.

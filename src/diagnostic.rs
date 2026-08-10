@@ -243,6 +243,15 @@ pub enum DiagnosticCode {
     /// to "what does this hop cost" is not a model: the compiler routed by the declared number and
     /// reported the derived one, and nothing detected the disagreement.
     E6013,
+    /// A program stages through host memory while a machine model is in force, and no host was
+    /// declared. `--machine` describes an accelerator and says nothing about the machine it hangs
+    /// off, so the host end of that seam was being reasoned about without anything describing it.
+    /// `--host <file>` names one; `--host default` names the machine compiling the program.
+    ///
+    /// A host declares no capacity -- host memory is virtual, and a hard limit would reject
+    /// programs that page rather than fail -- so this is about the host being *stated* rather than
+    /// assumed, not about a budget.
+    E6014,
 
     // --- Tensor/Math Errors (E7xxx) ---
     /// Matmul dimension mismatch

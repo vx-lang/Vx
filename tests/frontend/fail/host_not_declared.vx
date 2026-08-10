@@ -1,0 +1,36 @@
+//===- host_not_declared.vx - Vx Compiler ------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Staging through host memory against a machine model requires a host (#341).
+//
+// `--machine` describes an accelerator. It says nothing about the machine that
+// accelerator hangs off, and `Memory::CPU_DRAM` otherwise arrives from the
+// built-ins carrying no declaration at all -- so the host end of this seam was
+// being reasoned about, and costed, against something nobody described. No host
+// is assumed for any program.
+//
+// A host declares no capacity, deliberately: host memory is virtual, and a
+// tensor larger than physical RAM pages rather than failing. A hard limit would
+// reject programs that run. What a host file states is that it exists and how
+// fast it is, not how much of it there is.
+//
+// The rule is scoped to fleet-level compilation. Without `--machine` this is an
+// ordinary native build and needs no host, and a kernel whose tensors are
+// already device-resident reasons about no host whether or not a machine model
+// is in force -- both of those are checked in
+// tests/optimizations/pass/host_flag_scope.vx, since a test here has to fail.
+//
+// RUN: not vxc %s --machine fleet/a100-80.vx --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: E6014
+// CHECK-SAME: stages through host memory
+// CHECK: pass --host
+
+fn main() -> i32 {
+  let mut weights = Tensor<f32>([ 64, 64 ]);
+  let weights_d = transfer(weights, Memory::HBM);
+  return 0;
+}

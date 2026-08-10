@@ -31,7 +31,7 @@
 // The matmul reaching the device is the other half -- a transfer that moved
 // nothing useful would still emit the calls below.
 //
-// RUN: vxc %s --machine fleet/a100-80.vx --emit-llvm 2>&1 | FileCheck %s --check-prefix=DEVICE
+// RUN: vxc %s --host default --machine fleet/a100-80.vx --emit-llvm 2>&1 | FileCheck %s --check-prefix=DEVICE
 // DEVICE: kind=matmul
 // DEVICE: llvm.call @vx_plugin_alloc_and_transfer
 // DEVICE: llvm.call @vx_plugin_alloc_and_transfer
@@ -51,7 +51,7 @@
 // so a transfer carried `space` and a cost and no `scope` at all. Checked
 // before the lowering consumes it.
 //
-// RUN: vxc %s --machine fleet/a100-80.vx --emit-mlir 2>&1 | FileCheck %s --check-prefix=MODEL
+// RUN: vxc %s --host default --machine fleet/a100-80.vx --emit-mlir 2>&1 | FileCheck %s --check-prefix=MODEL
 // MODEL: capacity = 85899345920
 // MODEL: scope = "device"
 // MODEL: space = "HBM"
@@ -61,7 +61,7 @@
 // GiB rather than 80 GB, and its seam is a memcpy within one DRAM rather than a
 // PCIe crossing, so the capacity and the cost both change and nothing else does.
 //
-// RUN: vxc %s --machine fleet/xeon-e5-2666v3.vx --emit-mlir 2>&1 | FileCheck %s --check-prefix=HOST
+// RUN: vxc %s --host default --machine fleet/xeon-e5-2666v3.vx --emit-mlir 2>&1 | FileCheck %s --check-prefix=HOST
 // HOST: capacity = 64424509440
 // HOST: cost = 118
 // HOST: scope = "device"
