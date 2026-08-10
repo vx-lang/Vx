@@ -158,6 +158,48 @@ non-canonical top half is never returned by `malloc`, `cudaMalloc`, or `mmap`, s
 The offset arithmetic stays inside the region's span, so it does not disturb the tag: a
 region is at most a few GiB and the tag lives 48 bits up.
 
+### The struct, and where it goes
+
+The natural instinct is to make the handle a struct, so fields can be added later. That
+is right, and the thing to be careful about is *which* handle, because two different
+things are being given the name.
+
+**The value that crosses the ABI cannot become a struct.**
+`vx_plugin_alloc_and_transfer` returns `void *`, the program stores it in
+`TransformerWeights { wq : *mut f32 }`, and `vx_advance_ptr(w.wq, wq_off)` offsets it.
+And the extensibility argument defeats itself here: **a struct that must stay
+pointer-sized cannot grow, and a struct that can grow cannot be the ABI value.** A
+one-member wrapper is ABI-identical to the word and buys type safety in C++; the moment
+it gains a second member it no longer fits a pointer slot, `*mut f32` stops describing
+it, and `llama2.vx` needs editing in at least three places — which is the criterion this
+whole design is held to.
+
+**The plugin's record of that value should be a struct**, and that is where the future
+fields belong. The precedent is `vx_gemm_plan` in `runtime/vx_dispatch_plan.h`: a
+structure a plugin decodes *into*, which never travels and has grown freely.
+
+```c
+typedef struct {
+  uint64_t base;        /* synthetic address of the region's first byte */
+  uint64_t size;        /* bounds which offsets resolve here; guard gap follows */
+  uint32_t topology_id; /* identity is (topology_id, base), never base alone */
+  int32_t dtype;
+  void *remote;         /* the worker's own pointer; never leaves the plugin */
+  uint64_t generation;  /* bumped on free, so a stale handle is detectable */
+} vx_remote_region;
+```
+
+`generation` earns its place immediately rather than speculatively: it is what turns
+use-after-free from "resolves to whatever occupies that span now" into a detectable
+mismatch, which is the second of the four objections to raw pointers above.
+
+So the split is: **grow the record, not the word.** What the word itself needs beyond an
+address — a partition tag, and the non-canonical marker — is bit-fields, and those are
+governed by the `gid.rs` rule of a single codec that is the only reader and writer. That
+rule is not stylistic; word 2 of a `TypeId` acquired three meanings and two disagreeing
+flags before #193 forced it, and a word carrying an address beside a tag is the same
+shape of hazard.
+
 ### Is this a GID?
 
 The question a reader of this codebase will ask, and the answer is *structurally yes,
