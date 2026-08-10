@@ -15,7 +15,10 @@
 # pod gets build outputs, four runtime files and whichever programs are named.
 #
 # Usage:
-#   scripts/make_gpu_bundle.sh [-o out.tar.gz] program.vx [program.vx ...]
+#   scripts/make_gpu_bundle.sh [-o out.tar.gz] [--with <path>] program.vx ...
+#
+# Programs and `--with` paths keep their repository-relative location inside the
+# bundle, because imports resolve by path.
 #
 # Then, on the pod:
 #   tar -xzmf vx-gpu-bundle.tar.gz && cd vx-gpu-bundle
@@ -31,9 +34,12 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT="vx-gpu-bundle.tar.gz"
 PROGRAMS=()
 
+EXTRAS=()
+
 while [ $# -gt 0 ]; do
   case "$1" in
     -o) OUT="$2"; shift 2 ;;
+    --with) EXTRAS+=("$2"); shift 2 ;;
     *)  PROGRAMS+=("$1"); shift ;;
   esac
 done
@@ -79,8 +85,26 @@ cp "$REPO_ROOT/runtime/cuda_dispatch.cpp" \
 cp "$REPO_ROOT/include/vx_hardware_runtime.h" "$BUNDLE/include/"
 cp "$REPO_ROOT/scripts/setup_gpu_pod.sh" "$BUNDLE/"
 
+# Programs keep their repository-relative path, and the standard library comes
+# along. Module imports resolve against `stdlib/std`, `stdlib` and the working
+# directory (src/module_loader.rs), so `import tests::modules::llama_rt` only
+# finds its module if the layout is preserved -- flattening everything into one
+# directory compiles here and fails there.
+cp -R "$REPO_ROOT/stdlib" "$BUNDLE/stdlib"
+
 for prog in "${PROGRAMS[@]}"; do
-  cp "$prog" "$BUNDLE/"
+  rel="${prog#"$REPO_ROOT"/}"
+  mkdir -p "$BUNDLE/$(dirname "$rel")"
+  cp "$prog" "$BUNDLE/$rel"
+done
+
+# Anything else the run needs at its own path: imported modules, machine models,
+# model weights. Data rather than source -- a checkpoint is not code, and the
+# pod cannot run a model it does not have.
+for extra in "${EXTRAS[@]}"; do
+  rel="${extra#"$REPO_ROOT"/}"
+  mkdir -p "$BUNDLE/$(dirname "$rel")"
+  cp -R "$extra" "$BUNDLE/$rel"
 done
 
 # COPYFILE_DISABLE keeps macOS from writing ._* resource-fork members, which
