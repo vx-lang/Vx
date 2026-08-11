@@ -68,10 +68,19 @@ than a fault.
 Three message types. Deliberately few.
 
 ```
-TRANSFER   handle, dtype, rank, sizes[rank], strides[rank], bytes[]   -> ack
-DISPATCH   payload_blob, [arg_tag, arg_body]*                         -> results
-FREE       handle                                                     -> ack
+TRANSFER   dtype, rank, sizes[rank], nbytes, bytes[]   -> handle
+DISPATCH   payload_blob, [arg_tag, arg_body]*          -> status, [handle, shape]*
+FETCH      handle, nbytes                              -> bytes[]
+FREE       handle                                      -> ack
 ```
+
+**FETCH was missing from the first draft of this list**, and its absence
+survived both this document and the in-process round trip. In one process the
+"host" can read the worker's memory, so nothing needed it; across a socket
+nothing can, and a serving program must -- llama2 samples from the logits, so
+the last dispatch of every token produces a value the host has to see. It is
+the remote counterpart of `vx_plugin_transfer_device_to_host`, which had existed
+locally all along.
 
 `arg_body` is discriminated by `arg_tag`, which the ABI already defines:
 
@@ -440,9 +449,27 @@ built it before renting anything:
   `memref<memref<...>>` needing both halves built. Neither mistake produced a diagnostic;
   the dispatch simply refused.
 
-What is left of step 2 is transport rather than format: framing over a socket, a manifest
-mapping `toponame=DecodeWorker` to an endpoint, and shipping the artifact so the worker
-has the same outlined kernels.
+**Step 2 is done** (4ff2765a): `runtime/vx_transport.h`, and the same dispatch running
+across a socket between two processes -- `fork`, a `socketpair`, and a child that owns the
+worker's memory and never sees the parent's. The parent stages both operands, dispatches,
+takes the returned handle and uses it as an operand of a *second* dispatch, then fetches
+the bytes and checks the arithmetic.
+
+Building it refuted this document once more, and in the same way step 1 did: **FETCH was
+missing**, for the reason recorded under Wire format above.
+
+Its negative controls also corrected a claim rather than confirming one. Removing the
+short-*read* loop or the oversize drain collapses the run, so both are load-bearing.
+Removing the short-*write* loop changes nothing, because a blocking unix socket queues
+the whole body or blocks -- so the loop stays, being POSIX-legal and real on TCP, but the
+comment saying the test exercised it was false and now says so. Unproven code that claims
+to be proven is the same defect as a test that asserts nothing.
+
+What remains for step 3 is neither format nor framing: a manifest mapping
+`toponame=DecodeWorker` to an endpoint, and shipping the artifact so the worker has the
+same outlined kernels. That second one is the assumption the two-process test explicitly
+does *not* check -- parent and child are one binary there, so `vx_host_kernel_symbol`
+finds the kernel on both sides for free, and on two machines it will not.
 
 ## What this does not change
 
