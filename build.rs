@@ -277,6 +277,19 @@ fn main() {
         println!("cargo:rerun-if-changed=runtime/cuda_dispatch.cpp");
         println!("cargo:rerun-if-changed=runtime/vx_dispatch_plan.h");
         println!("cargo:rerun-if-changed=runtime/vx_host_call.h");
+        // The fleet headers. Every one of these is compiled into the dispatch
+        // library, and none of them was listed -- so editing vx_remote_client.h
+        // rebuilt nothing, the JIT linked the previous library, and the change
+        // appeared to have no effect. That is an hour spent debugging a binary
+        // that does not contain the fix, and there is no sign of it anywhere.
+        println!("cargo:rerun-if-changed=runtime/vx_remote_routing.h");
+        println!("cargo:rerun-if-changed=runtime/vx_remote_client.h");
+        println!("cargo:rerun-if-changed=runtime/vx_remote_region.h");
+        println!("cargo:rerun-if-changed=runtime/vx_manifest.h");
+        println!("cargo:rerun-if-changed=runtime/vx_transport.h");
+        println!("cargo:rerun-if-changed=runtime/vx_wire.h");
+        println!("cargo:rerun-if-changed=runtime/vx_agent.h");
+        println!("cargo:rerun-if-changed=runtime/vx_device_pool.h");
         println!("cargo:rerun-if-changed=include/vx_hardware_runtime.h");
 
         // Which backend answers the plugin ABI. CUDA wins where a toolkit is

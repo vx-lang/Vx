@@ -22,6 +22,16 @@
 #
 #   ./scripts/measure_wire_traffic.sh [-n iterations] [-o outdir]
 #
+# Measured with 8 dispatches over two 64x64 operands that never change:
+#
+#   without placement   8.00 messages/dispatch   384 KiB
+#   with placement      1.75                      48 KiB
+#
+# The second is the same program with `transfer(x, Memory::GPU_HBM)` before the
+# loop -- the operands cross once and stay. Reproduce it by adding the transfers
+# to the generated program; the difference is entirely TRANSFER and FREE, which
+# in the first case are re-sending bytes the worker already had.
+#
 # What to read: `messages per dispatch`. Bytes matter too, but a program that
 # re-sends an unchanged weight every iteration shows up in the *count* first,
 # and that is the thing residency is meant to remove.

@@ -15,6 +15,7 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/Dominance.h"
 #include "mlir/IR/BuiltinDialect.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/IRMapping.h"
@@ -1085,16 +1086,68 @@ struct TransferToPluginLowering : public OpRewritePattern<vx::TransferOp> {
                                       {llvmPtrType, llvmI32Type}, false);
       rewriter.create<LLVM::LLVMFuncOp>(loc, freeName, freeTy);
     }
+    // *Where* the free goes is the whole question, and the end of the defining
+    // block is the wrong answer whenever any control flow follows.
+    //
+    //   let a = transfer(a_h, Memory::GPU_HBM);
+    //   for step in 0..8 { spawn on(Topology::GPU) { ... a ... } }
+    //
+    // The loop opens a new block, so the transfer's block ends at the branch
+    // into it and the free was emitted there -- before a single iteration ran.
+    // Against a fleet worker that is visible and fatal: the trace is three
+    // TRANSFERs, three FREEs, and then a dispatch refused because "an argument
+    // named no live region". Locally it is neither, because freed host memory
+    // still reads, so every placed test passed while doing this.
+    //
+    // A transfer whose block dominates the function's exits is live until one
+    // of them, so the free belongs there. One that does not -- a transfer
+    // inside a loop -- keeps the old placement: its result is a different
+    // allocation each iteration, the SSA value does not reach the return, and
+    // the end of its own block is where that allocation's life actually ends.
     {
       OpBuilder::InsertionGuard guard(rewriter);
-      Block *block = op->getBlock();
-      if (!block->empty() && block->back().hasTrait<OpTrait::IsTerminator>())
-        rewriter.setInsertionPoint(&block->back());
-      else
-        rewriter.setInsertionPointToEnd(block);
-      rewriter.create<LLVM::CallOp>(
-          loc, TypeRange{}, SymbolRefAttr::get(rewriter.getContext(), freeName),
-          ValueRange{devicePtr, topoVal});
+      Block *defBlock = op->getBlock();
+      Operation *parentFn = op->getParentOfType<LLVM::LLVMFuncOp>();
+      if (!parentFn)
+        parentFn = op->getParentOfType<func::FuncOp>();
+
+      SmallVector<Block *> exits;
+      bool dominatesAllExits = parentFn != nullptr;
+      if (parentFn) {
+        DominanceInfo dom(parentFn);
+        for (Region &region : parentFn->getRegions()) {
+          for (Block &block : region) {
+            if (block.empty())
+              continue;
+            Operation &term = block.back();
+            if (!isa<func::ReturnOp, LLVM::ReturnOp>(term))
+              continue;
+            exits.push_back(&block);
+            if (!dom.dominates(defBlock, &block))
+              dominatesAllExits = false;
+          }
+        }
+      }
+
+      if (dominatesAllExits && !exits.empty()) {
+        for (Block *exit : exits) {
+          rewriter.setInsertionPoint(&exit->back());
+          rewriter.create<LLVM::CallOp>(
+              loc, TypeRange{},
+              SymbolRefAttr::get(rewriter.getContext(), freeName),
+              ValueRange{devicePtr, topoVal});
+        }
+      } else {
+        if (!defBlock->empty() &&
+            defBlock->back().hasTrait<OpTrait::IsTerminator>())
+          rewriter.setInsertionPoint(&defBlock->back());
+        else
+          rewriter.setInsertionPointToEnd(defBlock);
+        rewriter.create<LLVM::CallOp>(
+            loc, TypeRange{},
+            SymbolRefAttr::get(rewriter.getContext(), freeName),
+            ValueRange{devicePtr, topoVal});
+      }
     }
 
     rewriter.replaceOp(op, result);

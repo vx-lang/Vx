@@ -384,7 +384,16 @@ static inline int vx_remote_dispatch(int fd, const void *payload,
 
   /* An `outkind=buffer` result was written into a buffer that lives here, so
      the worker filled the copy it was staged and the original still holds what
-     it held before. Reading it back is the counterpart of staging it. */
+     it held before. Reading it back is the counterpart of staging it.
+
+     Only for a buffer *this call* staged. An output the program placed on the
+     worker itself -- `let mut c = transfer(c_h, Memory::GPU_HBM)` -- is already
+     a handle, and there is no host buffer behind it to fill: the descriptor's
+     data pointer *is* the handle. Fetching into it wrote the result over a
+     non-canonical address and killed the process on the first dispatch, so a
+     resident output could never survive one. Leaving it alone is also what
+     residency means -- the result stays where the program put it, and moving
+     it back every dispatch is the cost the placement existed to avoid. */
   {
     const char *outkind =
         vx_payload_field(payload, (size_t)payload_len, "outkind=");
@@ -392,8 +401,17 @@ static inline int vx_remote_dispatch(int fd, const void *payload,
       const char *roles =
           vx_payload_field(payload, (size_t)payload_len, "roles=");
       int ai = -1, bi = -1, oi = -1;
+      int staged_here = 0;
       if (roles && vx_parse_roles(roles, &ai, &bi, &oi) && oi >= 0 &&
           oi < num_args && args[oi].handle != 0) {
+        for (int64_t s = 0; s < num_staged; ++s) {
+          if (staged[s] == args[oi].handle) {
+            staged_here = 1;
+            break;
+          }
+        }
+      }
+      if (staged_here) {
         const void *desc = *(const void **)device_args[oi];
         if (VX_ABI_IS_SLOT(arg_tags[oi])) {
           desc = vx_memref_aligned(desc);

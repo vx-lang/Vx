@@ -179,7 +179,21 @@ int serve_dispatch(const vx_wire_dispatch *d, const vx_wire_arg *args,
   storage.descriptors_capacity = sizeof(descriptors);
 
   if (!vx_agent_rebuild_args(&g_table, args, d->num_args, &storage)) {
+    /* Which one, and which handle. vx_agent.h refuses without naming anything
+       on purpose -- it cannot substitute a plausible region -- and says the
+       caller will report it. This is that report, and until it existed the
+       message was "an argument named no live region" with no way to tell an
+       operand that was never sent from one that was freed too early. */
     log_line("[Vx worker] refused: an argument named no live region\n");
+    for (int64_t i = 0; i < d->num_args; ++i) {
+      vx_remote_ref ref;
+      if (args[i].handle != 0 &&
+          !vx_remote_resolve(&g_table, args[i].handle, &ref)) {
+        log_line("[Vx worker]   arg %lld: handle %llx is not one this worker "
+                 "minted or still holds\n",
+                 (long long)i, (unsigned long long)args[i].handle);
+      }
+    }
     return 0;
   }
 
@@ -381,6 +395,7 @@ int serve(int fd) {
         vx_plugin_free(ref.region->remote, (uint32_t)g_topology);
         vx_remote_table_free(&g_table, handle);
       }
+      log_line("[Vx worker] FREE handle %llx\n", (unsigned long long)handle);
       vx_transport_send(fd, VX_WIRE_FREE, nullptr, 0);
       break;
     }
