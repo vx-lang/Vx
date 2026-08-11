@@ -65,7 +65,8 @@ than a fault.
 
 ## Wire format
 
-Three message types. Deliberately few.
+Four message types. Deliberately few -- and it was three until building step 2
+showed that a result had no way home.
 
 ```
 TRANSFER   dtype, rank, sizes[rank], nbytes, bytes[]   -> handle
@@ -399,7 +400,7 @@ worker's name and the offending offset is almost certainly right, and matches wh
 
 ## The agent
 
-A process on the worker machine that owns its GPUs and speaks the three messages. It
+A process on the worker machine that owns its GPUs and speaks the four messages. It
 needs the same outlined kernels the caller has, which is the honest cost of this design:
 **the artifact ships, once, at setup.** That is already how a rented pod works
 (`make_gpu_bundle.sh`), so it is not a new class of problem — but it does mean a remote
@@ -417,7 +418,7 @@ stops.
 Each step is separately testable, and each one is useful even if the next never lands.
 
 1. **A loopback agent, no network.** The plugin talks to an in-process agent over the
-   same three messages, with handles in a table. This exercises marshalling, handle
+   same messages, with handles in a table. This exercises marshalling, handle
    lifetime and the slot round-trip on a laptop, and it is where the encoding gets
    debugged rather than on two rented pods.
 1. **Two processes on one machine**, over a unix socket. Adds framing, and the first real
