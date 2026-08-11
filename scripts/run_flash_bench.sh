@@ -31,7 +31,7 @@
 set -uo pipefail
 
 BUNDLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TEMPLATE="tests/backend/pass/flash_attention_bench.vx"
+TEMPLATE="scripts/templates/flash_attention_bench.vx"
 SQ=128
 HD=64
 TILE=64

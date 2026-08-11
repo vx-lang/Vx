@@ -253,29 +253,16 @@ fn flat_module_mlir(src: &str) -> Option<String> {
             checker.check_function(f);
         }
     }
-    let subspaces: Vec<vxc::codegen::flat::SubspaceInfo> = env
-        .memories
-        .values()
-        .map(|decl| {
-            let space = vxc::syntax::MemorySpace::from_name(decl.name.as_ref());
-            vxc::codegen::flat::SubspaceInfo {
-                dispatch_id: vxc::arch::memory_space_dispatch_id(&space) as u64,
-                name: space.name(),
-                within: decl.parent.as_ref().map(|p| p.name()),
-                granule: decl.granule.as_ref().map(|g| g.0),
-                capacity: decl.capacity.as_ref().map(|c| c.0),
-                scope: decl.scope.as_ref().map(|s| {
-                    match s {
-                        vxc::syntax::Scope::Device => "device",
-                        vxc::syntax::Scope::Sm => "sm",
-                        vxc::syntax::Scope::Cta => "cta",
-                        vxc::syntax::Scope::Thread => "thread",
-                    }
-                    .to_string()
-                }),
-            }
-        })
-        .collect();
+    // The same mapping the compiler uses, not a copy of it.
+    //
+    // This was a hand-rolled duplicate of `subspaces_from_env`, and a field
+    // added to one is a field silently missing from the other -- which is the
+    // exact failure that function's own doc comment warns about, since dropping
+    // an attribute on the flat path is invisible until a program behaves
+    // differently between the two codegens. A differential test least of all
+    // should be reimplementing the thing it differentiates.
+    let subspaces: Vec<vxc::codegen::flat::SubspaceInfo> =
+        vxc::codegen::flat::subspaces_from_env(&env);
     let mut lowered: Vec<LocalWorkerState> = Vec::new();
     for f in &mods[0].functions {
         let mut worker = LocalWorkerState::new(session.clone());
@@ -399,8 +386,7 @@ fn flat_runs_mutation_through_a_reference() {
 /// under 256 so it survives the process exit-code truncation.
 #[test]
 fn flat_runs_swap_through_mutable_references() {
-    let ref_src =
-        "fn swap(a : &mut i32, b : &mut i32) -> void { let t = *a; *a = *b; *b = t; }\n\
+    let ref_src = "fn swap(a : &mut i32, b : &mut i32) -> void { let t = *a; *a = *b; *b = t; }\n\
          fn main() -> i32 { let mut x = 10; let mut y = 20; swap(&mut x, &mut y); return x * 2 + y; }";
     let val_src = "fn main() -> i32 { let x = 20; let y = 10; return x * 2 + y; }";
     assert_eq!(ast_exit_code(val_src), 50, "value-semantics AST oracle");

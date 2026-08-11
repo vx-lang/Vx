@@ -782,7 +782,22 @@ impl CompilerDriver {
         let context = melior::Context::new();
         let emit_diagnostics = self.options.emit_backend_diagnostics;
         context.attach_diagnostic_handler(move |diagnostic| {
-            if emit_diagnostics {
+            // Errors always; anything quieter only when asked for.
+            //
+            // This dropped everything unless `--emit-backend-diagnostics` was
+            // passed, which is right for the notes and remarks a pass pipeline
+            // produces in bulk and wrong for the one thing a user has to see. A
+            // pass that rejects a program then reported only "MLIR passes
+            // failed: failed to run pass" -- the diagnostic saying *which*
+            // program and *why* was written, handed to this closure, and
+            // discarded. A backend error is a compile error and belongs on
+            // stderr on the same terms as any other.
+            if emit_diagnostics
+                || matches!(
+                    diagnostic.severity(),
+                    melior::diagnostic::DiagnosticSeverity::Error
+                )
+            {
                 eprintln!("{}", diagnostic);
             }
             true

@@ -1,0 +1,78 @@
+//===- placed_kernel_host_unreadable.vx - Vx Compiler ------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// A kernel the compiler cannot emit for the device it was placed on, reading
+// operands the host cannot read either. It has nowhere to run, and saying so is
+// a compile error rather than a fault at the far end of a rented machine.
+//
+// The runtime rule was that a kernel it cannot classify falls back to the host,
+// so failing to classify costs performance and never correctness. That holds
+// while the operands are host memory. `transfer(x, Memory::GPU_HBM)` ends it: the
+// fallback becomes a host read of memory declared `managed: explicit`, which is
+// the same access the checker already rejects when a program writes it out --
+// `q[0][0]` here, after the transfer, is refused today. This one is implicit,
+// created by the fallback rather than by the programmer, so nothing looked at
+// it.
+//
+// Unchecked it is not a diagnostic at all. On an A100 the outlined kernel
+// dereferences device memory and dies inside `vx_npu_kernel_0`, three frames
+// below anything naming a cause; on a machine with no device the transfer is a
+// no-op, the pointers stay host pointers, and it passes. That combination is
+// how a committed backend *pass* test faulted on every GPU it was written for
+// (#251, #348).
+//
+// The sibling `npu_deref_on_host.vx` covers the explicit form of this, where
+// the program does the dereference itself and the type system catches it. This
+// is the implicit form, which no type in the program mentions.
+//
+// A matmul is exempt because the runtime does have a device implementation for
+// it, and #251 -- general kernel emission -- is what makes this program legal
+// rather than what makes it fail differently.
+//
+// RUN: not vxc %s --action emit-llvm 2>&1 | FileCheck %s
+// CHECK: cannot emit a device kernel
+// CHECK: managed: explicit
+// CHECK: dereference device memory
+
+Memory CPU_DRAM {}
+// The same space tests/backend/pass/flash_attention_placed.vx declares, with
+// the one field it omits. Without `managed:` the default is `cached`, which
+// says the hardware moves data implicitly and a host read is therefore fine --
+// a claim that is false for the HBM of a discrete GPU, and precisely why that
+// test compiled and then faulted. fleet/node-2gpu-a100.vx gets it right.
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s,
+  managed: explicit
+}
+
+fn main() -> i32 {
+  let mut q_h = Tensor<f32>([ 4, 4 ]);
+  let mut o_h = Tensor<f32>([ 4, 4 ]);
+  for i in 0..4 {
+    for j in 0..4 {
+      q_h[i][j] = (i + j) as f32;
+      o_h[i][j] = 0.0;
+    }
+  }
+
+  let q = transfer(q_h, Memory::GPU_HBM);
+  let mut o = transfer(o_h, Memory::GPU_HBM);
+
+  // Not a matmul, so nothing routes it; and it loads, so the host fallback
+  // would read GPU_HBM. Both halves are needed -- a region that only yielded its
+  // capture would move no data and is left alone.
+  spawn on(Topology::GPU) {
+    for i in 0..4 {
+      for j in 0..4 {
+        o[i][j] = q[i][j] * 2.0;
+      }
+    }
+  }
+
+  print(o);
+  return 0;
+}

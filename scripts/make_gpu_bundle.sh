@@ -31,6 +31,7 @@
 #
 #   scripts/make_gpu_bundle.sh tests/backend/pass/llama2.vx \
 #     --with tests/modules/llama_rt.vx \
+#     --with scripts/templates \
 #     --with tests/backend/pass/stories15M.bin \
 #     --with tests/backend/pass/tokenizer.bin \
 #     --with tests/backend/pass/prompt.txt \

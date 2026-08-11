@@ -231,6 +231,29 @@ impl<'c> LowerToMelior<'c> for syntax::TransferExpr {
                     StringAttribute::new(gen.context, scope_str).into(),
                 )]);
             }
+
+            // Whether the host can reach this space without being told to move
+            // anything. `explicit` means it cannot: the bytes are somewhere only
+            // an explicit transfer reaches, which on a discrete GPU is device
+            // memory the CPU cannot load from at all.
+            //
+            // Every other field here is descriptive, and this one is not -- it
+            // decides whether a kernel that fails to route may fall back to the
+            // host. Without it in the IR, `vx.spawn` lowering could see that a
+            // region was placed on a device and that its kernel was
+            // unclassifiable, and still not know that running it here would
+            // dereference device memory. That combination segmentation-faults
+            // inside the outlined kernel on a real GPU (#251, #348), and the
+            // fact needed to reject it at compile time was being dropped one
+            // stage before the place that needed it.
+            let managed_str = match decl.managed {
+                syntax::Management::Explicit => "explicit",
+                syntax::Management::Cached => "cached",
+            };
+            transfer_builder = transfer_builder.add_attributes(&[(
+                Identifier::new(gen.context, "managed"),
+                StringAttribute::new(gen.context, managed_str).into(),
+            )]);
         }
 
         // SS2 — schedule the tile into the sub-space: a granule-rounded bump allocation. When the

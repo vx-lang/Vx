@@ -684,6 +684,12 @@ pub struct SubspaceInfo {
     pub granule: Option<u64>,
     pub capacity: Option<u64>,
     pub scope: Option<String>,
+    /// "explicit" or "cached". Decides whether the host may read this space, and
+    /// so whether a kernel that fails to route may fall back to the host at all
+    /// -- see `diagnoseUnrunnableSpawns` in src/dialect/VxLowering.cpp. Unlike
+    /// every other field here it is not descriptive: dropping it silently turns
+    /// a compile error into a segmentation fault on a GPU (#251, #348).
+    pub managed: Option<String>,
 }
 
 /// Runtime helpers the JIT links rather than the module defining: a body that calls one gets a
@@ -731,6 +737,13 @@ pub fn subspaces_from_env(env: &crate::hir::GlobalAstEnv) -> Vec<SubspaceInfo> {
                     }
                     .to_string()
                 }),
+                managed: Some(
+                    match decl.managed {
+                        crate::syntax::Management::Explicit => "explicit",
+                        crate::syntax::Management::Cached => "cached",
+                    }
+                    .to_string(),
+                ),
             }
         })
         .collect()
@@ -2173,6 +2186,9 @@ pub fn emit_function_mlir(
                     }
                     if let Some(s) = &desc.scope {
                         attrs += &format!(", scope = \"{s}\"");
+                    }
+                    if let Some(m) = &desc.managed {
+                        attrs += &format!(", managed = \"{m}\"");
                     }
                     // SS2 bump allocation: a statically-shaped tile into a granule'd space claims the
                     // next granule-rounded `offset`; `slots` is the granule count it occupies.

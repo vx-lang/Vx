@@ -37,7 +37,7 @@
 set -uo pipefail
 
 BUNDLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TEMPLATE="tests/backend/pass/gpu_gemm_bench.vx"
+TEMPLATE="scripts/templates/gpu_gemm_bench.vx"
 SIZES="256 512 1024 2048"
 ITERS_LO=20
 ITERS_HI=120

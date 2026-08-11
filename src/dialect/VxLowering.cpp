@@ -70,6 +70,71 @@ static bool isDeviceTransfer(vx::TransferOp op) {
   return false;
 }
 
+/// The `vx.transfer` that put `v` where it is, if one did.
+///
+/// Walks back through single-operand ops, because a capture usually reaches a
+/// spawn having been cast or reshaped since the transfer produced it. Bounded:
+/// a chain longer than this is one this cannot reason about anyway, and
+/// answering "no transfer" for it is the safe direction -- it declines to
+/// reject rather than rejecting something it has not understood.
+static vx::TransferOp definingTransfer(Value v) {
+  for (int hops = 0; v && hops < 8; ++hops) {
+    Operation *def = v.getDefiningOp();
+    if (!def)
+      return nullptr;
+    if (auto xfer = dyn_cast<vx::TransferOp>(def))
+      return xfer;
+    if (def->getNumOperands() != 1)
+      return nullptr;
+    v = def->getOperand(0);
+  }
+  return nullptr;
+}
+
+/// Whether a region would actually dereference its operands.
+///
+/// A `spawn` whose body only yields what it captured moves no data and reads
+/// nothing, so running it on the host is harmless however the operands are
+/// managed -- `tests/frontend/pass/rubin_disaggregated.vx` is exactly that: two
+/// placements and an explicit KV handoff between them, with no arithmetic in
+/// either region. Rejecting it would be rejecting a program that cannot fault.
+///
+/// So the question is not "is this placed on a device" but "would the host
+/// fallback load through a device pointer", and that is what a load or store
+/// in the body means. Walks nested regions, since the loads that matter are
+/// inside loops. A body that reaches memory only through a call is missed,
+/// which is the safe direction: this predicate exists to reject, and declining
+/// to reject something it has not understood is the error worth making.
+static bool regionTouchesMemory(Region &body) {
+  bool touches = false;
+  body.walk([&](Operation *op) {
+    StringRef name = op->getName().getStringRef();
+    if (name == "memref.load" || name == "memref.store" ||
+        name == "affine.load" || name == "affine.store" ||
+        name == "vector.load" || name == "vector.store" ||
+        name.starts_with("linalg.")) {
+      touches = true;
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+  return touches;
+}
+
+/// Whether the host can read what a transfer produced.
+///
+/// `managed: explicit` is the declaration saying movement in and out requires
+/// an explicit transfer -- which is how a machine model says the CPU cannot
+/// simply load from this space. `cached` says the hardware moves it implicitly,
+/// so a host read is fine. A space that declares neither makes no claim, and
+/// the answer is yes: this predicate exists to reject programs, and it should
+/// only do so on the strength of something the program actually said.
+static bool hostCanRead(vx::TransferOp op) {
+  if (auto managed = op->getAttrOfType<StringAttr>("managed"))
+    return managed.getValue() != "explicit";
+  return true;
+}
+
 static StringRef kernelKindOf(Region &body, Operation **payloadOut = nullptr) {
   if (payloadOut)
     *payloadOut = nullptr;
@@ -555,6 +620,77 @@ struct TransferOpLowering : public OpRewritePattern<TransferOp> {
   }
 };
 
+/// Reject a placed region the target cannot run and the host cannot either.
+///
+/// `kernelKindOf` deciding it cannot classify a region is not an error on its
+/// own: routing is an optimisation, and anything unrecognised falls back to the
+/// host. That reasoning holds exactly while the operands are host memory, and
+/// stops the moment one has been transferred into a space declared
+/// `managed: explicit` -- because the fallback then *is* a host read of memory
+/// the declaration says the host cannot read. It is the same access the checker
+/// already rejects when a program writes it out; `o[0][0]` after a transfer to
+/// GPU_HBM is refused today. The difference is that this one is implicit,
+/// created by the fallback rather than by the programmer, so nothing looked at
+/// it.
+///
+/// Unchecked it is not a diagnostic at all. On an A100 the outlined kernel
+/// dereferences device memory and the process dies inside vx_npu_kernel_0,
+/// three frames below anything naming a cause (#251, #348). On a machine with
+/// no device the transfer is a no-op, the pointers stay host pointers and it
+/// passes -- which is how tests/backend/pass/flash_attention_placed.vx sat in
+/// the passing set while faulting on every GPU it was written for.
+///
+/// Run before the conversion rather than inside the rewrite: a pattern that
+/// fails is retried, so the same message arrived several times and left behind
+/// a half-rewritten region that then produced a dominance error of its own.
+/// Deliberately not conditioned on the compiling machine having a GPU. The
+/// question is whether this *program* can execute as written, and one asking
+/// for a kernel the compiler cannot emit for the device it named cannot, on any
+/// machine. Answering it differently per build box is how the fault hid.
+static LogicalResult diagnoseUnrunnableSpawns(Operation *root) {
+  bool failed = false;
+  root->walk([&](vx::SpawnOp spawn) {
+    int32_t topology = spawn.getTopology();
+    if (topology == 0)
+      return;
+
+    Region &body = spawn.getBody();
+    if (body.empty())
+      return;
+    if (!kernelKindOf(body).empty())
+      return;
+    if (!regionTouchesMemory(body))
+      return;
+
+    SetVector<Value> captures;
+    getUsedValuesDefinedAbove(body, captures);
+    for (Value capture : captures) {
+      vx::TransferOp xfer = definingTransfer(capture);
+      if (!xfer || !isDeviceTransfer(xfer) || hostCanRead(xfer))
+        continue;
+
+      StringRef space = "a device memory space";
+      if (auto s = xfer->getAttrOfType<StringAttr>("space"))
+        space = s.getValue();
+
+      spawn.emitError()
+          << "this region is placed on topology " << topology
+          << ", but the compiler cannot emit a device kernel for it and its "
+             "operands are in '"
+          << space
+          << "', declared `managed: explicit` -- memory the host cannot read.\n"
+          << "  Falling back to the host would dereference device memory "
+             "there.\n"
+          << "  Either the computation must be one the target can run (a "
+             "matmul is routed today; general kernel emission is #251), or its "
+             "operands must stay in a space the host can read.";
+      failed = true;
+      break;
+    }
+  });
+  return success(!failed);
+}
+
 struct ConvertVxToStandardPass
     : public PassWrapper<ConvertVxToStandardPass, OperationPass<ModuleOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ConvertVxToStandardPass)
@@ -575,6 +711,14 @@ struct ConvertVxToStandardPass
 
   void runOnOperation() override {
     getOperation()->emitRemark("Lowering Vx to Standard dialects");
+
+    // Before anything is rewritten, so the diagnostic describes the program as
+    // written rather than a partially converted version of it.
+    if (::mlir::failed(diagnoseUnrunnableSpawns(getOperation()))) {
+      signalPassFailure();
+      return;
+    }
+
     RewritePatternSet patterns(&getContext());
     patterns.add<SpawnOpLowering, TransferOpLowering>(&getContext());
 
