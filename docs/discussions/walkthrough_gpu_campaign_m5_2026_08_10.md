@@ -221,24 +221,64 @@ fault on another. Three changes:
 Removing the ceiling properly means putting the generation in the handle so freed space
 can be recycled without resurrecting stale ones. That is not done.
 
-## What can and cannot be claimed
+## FlashAttention does not run on a GPU machine at all
 
-FlashAttention **does not run on the GPU**, and no number here says otherwise. The trace
-is unambiguous:
+Trying to time the flash forward produced something better than a number.
+
+The trace says what it has always said:
 
 ```
-[Vx CUDA] device 0 stage        x4   (Q/K/V/O to HBM)
+[Vx CUDA] device 0 stage        x4   (Q/K/V/O into HBM)
 [Vx CUDA] vx_npu_kernel_0 (kind=<unclassified>) not routed; running on the host
 ```
 
-Only `kind=matmul` routes to cuBLAS; a fused online-softmax loop nest is not classified as
-one, so the operands are transferred to the A100 and the kernel executes on the pod's
-Xeon. Timing that and calling it FlashAttention-on-A100 would be a Xeon number with a GPU
-label. This is #251 — kernel emission — and it remains the ceiling on everything here.
+Both lines are accurate, and I reported from them earlier that the kernel executes on the
+pod's Xeon. I had not checked the exit status. It does not execute on the Xeon; it does not
+execute:
+
+```
+Caught SIGSEGV: Segmentation Fault!
+Backtrace [ vx_sigsegv_handler, vx_npu_kernel_0, _mlir_ciface_vx_npu_kernel_0,
+            ffi_call, vx_plugin_dispatch_async, main ]
+```
+
+`tests/backend/pass/flash_attention_placed.vx` — a committed *pass* test — exits 1 with a
+segmentation fault on a machine with a GPU, and presumably has for as long as there has
+been a GPU to run it on.
+
+The cause is an invariant in `cuda_dispatch.cpp`'s own header:
+
+> A refusal to route therefore costs performance and never correctness, which is what makes
+> it safe for the decoder to be strict.
+
+True while operands are host memory. False once the program declares a memory hierarchy and
+moves into it. `transfer(x, Memory::GPU_HBM)` yields device pointers; a fused online-softmax
+loop is not a GEMM, so the dispatcher falls back to libffi; and the outlined loop nest
+dereferences device memory on the CPU at the first `q[i][d]`.
+
+CI never saw it because CI has no GPU. Without the plugin the transfer is a no-op, the
+pointers stay host pointers, and the test passes. **The test is wrong only on the hardware
+it was written for.**
+
+Stated generally: the memory model and the dispatch fallback contradict each other. A kernel
+the plugin does not recognise cannot be used on operands the program has placed — and today
+that is every kernel except a matmul.
+
+The fallback now inspects each memref argument, refuses when one is in device memory, and
+names the kernel, the argument and the address rather than faulting three frames down. The
+header claim is corrected in place. The real fix — copy the operands back, run, copy the
+results out — would restore it in full and let a placed non-matmul kernel execute slowly but
+correctly; that is not done.
+
+So there is no FlashAttention timing here, slow or otherwise. The harness is committed and
+ready: shape parameterised, correctness checked against a closed form rather than a golden
+value, and the trace consulted about where the kernel ran instead of assumed. It refuses to
+print timings for an execution it cannot identify, which is what turned a broken probe into
+one wasted run rather than a table of CPU numbers wearing a GPU label.
 
 The declared PCIe figure in `fleet/node-2gpu-a100.vx` is again pessimistic against the
-hardware rented: the pod reports NV12, twelve bonded NVLinks. Recorded, not edited to
-match, and the same open question as #349.
+hardware rented — the pod reports NV12, twelve bonded NVLinks. Recorded rather than edited
+to match; same open question as #349.
 
 ## Files
 
@@ -246,3 +286,6 @@ match, and the same open question as #349.
 - `scripts/run_gemm_bench.sh` — GEMM along three paths, agreement check on values
 - `tests/backend/pass/gpu_gemm_bench.vx` — the first matmul here sized to be measured
 - `tests/runtime/remote_region_test.cpp` — the allocation ceiling, on any machine
+- `scripts/gemm_anatomy.cu` — where a dispatched GEMM's time goes, layer by layer
+- `scripts/run_flash_bench.sh`, `tests/backend/pass/flash_attention_bench.vx` — ready for
+  the day a placed non-matmul kernel can execute
