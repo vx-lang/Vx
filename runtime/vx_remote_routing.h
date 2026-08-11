@@ -28,7 +28,9 @@
 
 #include "vx_remote_client.h"
 
+#include <mutex>
 #include <stdlib.h>
+#include <string.h>
 
 namespace {
 
@@ -78,13 +80,85 @@ inline uint8_t *vx_routing_scratch(size_t *len) {
   return buf;
 }
 
+/// Say, once per placement, that a manifest was loaded and does not mention it.
+///
+/// Not an error: a manifest may list one of two GPUs and mean "the other is
+/// local", which the GEMM benchmark's loopback manifest does deliberately. But
+/// it is also how a distributed run becomes a local one with nothing to notice
+/// -- the fleet demo named its workers `PrefillWorker` and `DecodeWorker` while
+/// the program dispatched to `GPU[0]` and `GPU[1]`, so every dispatch fell
+/// through to local. The run then reported two GPUs in use and identical output
+/// from both halves. Both were true. Neither meant what it appeared to.
+///
+/// So: one line, unconditionally -- not behind VX_DISPATCH_VERBOSE, because the
+/// runs that need it most are the ones nobody thought to instrument. Once per
+/// distinct placement, because a decode loop would otherwise print it per
+/// token.
+///
+/// `VX_FLEET_STRICT=1` makes it fatal, for a run whose whole purpose is that
+/// every placement is remote. A demo harness should set it.
+inline void vx_routing_note_unlisted(int32_t topology_id, const char *name) {
+  // The host is not a worker and is never in a manifest: `topology_dispatch_id`
+  // gives the CPU 0 by construction, so "topology 0 is absent" is a restatement
+  // of what placing something on the host means. Saying it would be noise on
+  // every run, and aborting on it under strict mode would reject the ordinary
+  // case of a program that places some regions on a device and leaves the rest
+  // where they are.
+  if (topology_id == 0) {
+    return;
+  }
+
+  static const bool strict = [] {
+    const char *v = getenv("VX_FLEET_STRICT");
+    return v && v[0] != '\0' && strcmp(v, "0") != 0;
+  }();
+
+  static int32_t seen[64];
+  static size_t seen_count = 0;
+  static std::mutex mu;
+
+  bool first = false;
+  {
+    std::lock_guard<std::mutex> guard(mu);
+    bool found = false;
+    for (size_t i = 0; i < seen_count; ++i) {
+      if (seen[i] == topology_id) {
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      first = true;
+      if (seen_count < sizeof(seen) / sizeof(seen[0])) {
+        seen[seen_count++] = topology_id;
+      }
+    }
+  }
+  if (!first) {
+    return;
+  }
+
+  fprintf(stderr,
+          "[Vx remote] topology %d%s%s%s is not in the manifest; it runs on "
+          "this machine\n",
+          (int)topology_id, name ? " (" : "", name ? name : "",
+          name ? ")" : "");
+  if (strict) {
+    fprintf(stderr,
+            "[Vx remote] FATAL: VX_FLEET_STRICT is set, and this run was "
+            "supposed to place every region on a worker.\n");
+    abort();
+  }
+}
+
 /// The worker a topology id names, or NULL for "local".
 inline const vx_manifest_entry *vx_routing_worker(int32_t topology_id) {
   const vx_manifest &m = vx_routing_manifest();
-  if (m.count == 0) {
-    return NULL;
+  const vx_manifest_entry *w = NULL;
+  if (vx_manifest_classify(&m, NULL, topology_id, &w) == VX_PLACED_UNLISTED) {
+    vx_routing_note_unlisted(topology_id, NULL);
   }
-  return vx_manifest_find_by_id(&m, topology_id);
+  return w;
 }
 
 /// The worker a dispatch names, preferring the name it carries.
@@ -96,17 +170,16 @@ inline const vx_manifest_entry *vx_routing_worker(int32_t topology_id) {
 inline const vx_manifest_entry *
 vx_routing_worker_for_payload(const void *payload, size_t size) {
   const vx_manifest &m = vx_routing_manifest();
-  if (m.count == 0) {
-    return NULL;
-  }
   const char *name = vx_payload_field(payload, size, "toponame=");
-  if (name) {
-    const vx_manifest_entry *w = vx_manifest_find(&m, name);
-    if (w) {
-      return w;
-    }
+  int32_t id = vx_payload_topology(payload, size);
+  const vx_manifest_entry *w = NULL;
+  if (vx_manifest_classify(&m, name, id, &w) == VX_PLACED_UNLISTED) {
+    // The name is worth carrying into the message: `topology 1113` is a hash
+    // and cannot be read back, so a mismatch between what the program placed
+    // and what the manifest named is only legible with the spelling.
+    vx_routing_note_unlisted(id, name);
   }
-  return vx_manifest_find_by_id(&m, vx_payload_topology(payload, size));
+  return w;
 }
 
 /// Connect, or abort. A placement that names a machine which cannot be reached

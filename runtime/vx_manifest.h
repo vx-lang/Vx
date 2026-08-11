@@ -207,6 +207,67 @@ vx_manifest_find_by_id(const vx_manifest *m, int32_t dispatch_id) {
   return NULL;
 }
 
+/// What resolving a placement against the fleet concluded.
+///
+/// Three outcomes, and the middle one is why this is an enum and not a
+/// pointer-or-NULL:
+///
+///   REMOTE    the manifest names this placement; it goes to a worker.
+///   LOCAL     there is no manifest, so the whole program runs here. This is
+///             the ordinary single-machine run and is not worth remarking on.
+///   UNLISTED  a manifest exists and does not mention this placement.
+///
+/// UNLISTED is legitimate. A manifest may list one of two GPUs and mean "the
+/// other is local", which is exactly what the GEMM benchmark's loopback
+/// manifest does. It is also how a distributed run becomes a local one with
+/// nothing to notice: the fleet demo named its workers `PrefillWorker` and
+/// `DecodeWorker` while the program dispatched to `GPU[0]` and `GPU[1]`, so
+/// every dispatch fell through to local -- and the run still reported two GPUs
+/// in use and identical output from both halves. Both were true. Neither meant
+/// what it appeared to.
+///
+/// So it cannot be an error, and it must not be silent. Giving it a name is
+/// what lets a caller say so once, and lets a harness demand it never happen.
+typedef enum {
+  VX_PLACED_REMOTE = 0,
+  VX_PLACED_LOCAL = 1,
+  VX_PLACED_UNLISTED = 2
+} vx_placement_kind;
+
+/// Classify a placement against the fleet: remote, local, or unlisted.
+///
+/// `name` is asked first and `dispatch_id` is the fallback, matching how a
+/// dispatch is resolved -- `toponame=` is the identity and `topo=` a hash of
+/// it, and the flat path emits a spawn carrying only the id.
+///
+/// The distinction this exists to draw is between an empty manifest, where
+/// everything being local is the point, and a populated one that simply does
+/// not mention this placement, where it is at best worth saying out loud.
+static inline vx_placement_kind
+vx_manifest_classify(const vx_manifest *m, const char *name,
+                     int32_t dispatch_id, const vx_manifest_entry **out) {
+  const vx_manifest_entry *w = NULL;
+  if (out) {
+    *out = NULL;
+  }
+  if (!m || m->count == 0) {
+    return VX_PLACED_LOCAL;
+  }
+  if (name) {
+    w = vx_manifest_find(m, name);
+  }
+  if (!w) {
+    w = vx_manifest_find_by_id(m, dispatch_id);
+  }
+  if (!w) {
+    return VX_PLACED_UNLISTED;
+  }
+  if (out) {
+    *out = w;
+  }
+  return VX_PLACED_REMOTE;
+}
+
 /// Parse one line. Returns 1 if it produced an entry, 0 if it was blank or a
 /// comment, and -1 if it was meant to be an entry and could not be read.
 ///

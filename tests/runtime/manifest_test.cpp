@@ -60,6 +60,47 @@ void test_absent_means_local() {
   check(vx_manifest_find(&m, NULL) == NULL, "a null name is local");
 }
 
+// The three outcomes of resolving a placement, and why the middle one has a
+// name. `vx_manifest_find` returning NULL cannot distinguish "no manifest, so
+// everything is local" from "a manifest exists and forgot this one" -- and the
+// second is how a distributed run becomes a local one in silence. The fleet
+// demo named its workers `PrefillWorker`/`DecodeWorker` while the program
+// dispatched to `GPU[0]`/`GPU[1]`; every dispatch fell through to local and the
+// run still reported two GPUs and identical output.
+void test_classify_separates_unlisted_from_local() {
+  vx_manifest empty;
+  vx_manifest_init(&empty);
+  const vx_manifest_entry *w = (const vx_manifest_entry *)1;
+  check(vx_manifest_classify(&empty, "GPU[0]", 500, &w) == VX_PLACED_LOCAL,
+        "an empty manifest is a single-machine run, not a mismatch");
+  check(w == NULL, "and yields no worker");
+
+  vx_manifest m;
+  vx_manifest_init(&m);
+  vx_manifest_add(&m, "DecodeWorker", "10.0.0.5", 9002);
+
+  check(vx_manifest_classify(&m, "GPU[0]", 500, &w) == VX_PLACED_UNLISTED,
+        "a populated manifest that does not name the placement is unlisted");
+  check(w == NULL, "and still yields no worker");
+
+  check(vx_manifest_classify(&m, "DecodeWorker", 0, &w) == VX_PLACED_REMOTE,
+        "a named placement resolves");
+  check(w != NULL && strcmp(w->host, "10.0.0.5") == 0,
+        "to the endpoint the manifest gave it");
+
+  // The name is the identity and the id is a hash of it, so the name wins and
+  // the id is only the fallback for a producer that sent no name.
+  const vx_manifest_entry *d = vx_manifest_find(&m, "DecodeWorker");
+  check(vx_manifest_classify(&m, NULL, d->dispatch_id, &w) == VX_PLACED_REMOTE,
+        "the id alone still resolves");
+  check(w == d, "to the same entry");
+
+  // A null manifest is local rather than a crash: a backend may ask before one
+  // has been loaded.
+  check(vx_manifest_classify(NULL, "GPU[0]", 500, &w) == VX_PLACED_LOCAL,
+        "no manifest at all is local");
+}
+
 void test_lookup_returns_the_endpoint() {
   vx_manifest m;
   vx_manifest_init(&m);
@@ -264,6 +305,7 @@ void test_load_from_file() {
 
 int main() {
   test_absent_means_local();
+  test_classify_separates_unlisted_from_local();
   test_lookup_returns_the_endpoint();
   test_parsing();
   test_malformed_lines_are_refused();
