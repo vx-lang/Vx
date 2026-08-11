@@ -28,8 +28,18 @@
 # length is set by the prompt rather than by the token count, the slope is
 # specifically the cost of one *decode* step -- the phase that moves.
 #
+# Which is why the counts start at 48. Prefill runs for as many steps as the
+# prompt is long -- 37, for tests/backend/pass/prompt.txt -- and decode begins
+# only after that. Below 37 the entire generation is prefill: decode's loop body
+# never executes, and `single` and `disagg` are not two placements of one
+# computation but one computation run twice. Sampled at 16 and 32 tokens the
+# disaggregated row would have come out free, because nothing had been
+# disaggregated. Above 37 every point contains decode and the relation is a
+# line -- checked at 48 and 64 tokens, where device 1 served 11 and 27 decode
+# steps against a predicted 48-37 and 64-37.
+#
 # Usage, from the bundle directory on the pod after ./setup_gpu_pod.sh:
-#   ./run_perf_matrix.sh [-n reps] [-t "16 32 64 128"] [-o outdir]
+#   ./run_perf_matrix.sh [-n reps] [-t "48 64 96 128"] [-o outdir]
 #
 #===----------------------------------------------------------------------===#
 
@@ -37,7 +47,7 @@ set -uo pipefail
 
 BUNDLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROGRAM="tests/backend/pass/llama2.vx"
-TOKEN_COUNTS="16 32 64 128"
+TOKEN_COUNTS="48 64 96 128"
 REPS=3
 OUTDIR="$BUNDLE_DIR/perf-evidence"
 
@@ -47,7 +57,7 @@ while [ $# -gt 0 ]; do
     -t|--tokens)  TOKEN_COUNTS="$2"; shift 2 ;;
     -o|--out)     OUTDIR="$2"; shift 2 ;;
     -p|--program) PROGRAM="$2"; shift 2 ;;
-    -h|--help)    sed -n '10,32p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help)    sed -n '10,41p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -71,6 +81,17 @@ fi
   echo
   nvidia-smi topo -m
 } > "$OUTDIR/hardware.txt" 2>&1
+# Prefill's length is a property of the prompt, so a token count below it
+# measures a run with no decode in it at all.
+PROMPT_STEPS=37
+for tk in $TOKEN_COUNTS; do
+  if [ "$tk" -le "$PROMPT_STEPS" ]; then
+    echo "error: $tk tokens is at or below the $PROMPT_STEPS-step prefill, so that" >&2
+    echo "       point has no decode in it and belongs to a different line." >&2
+    exit 2
+  fi
+done
+
 echo "==> GPU memory in use before starting:"
 nvidia-smi --query-gpu=index,memory.used --format=csv,noheader | sed 's/^/    /'
 
@@ -97,10 +118,24 @@ time_one() {  # config tokens rep extra_env...
   printf '    %-7s %4s tokens  rep %d  %8ss\n' "$config" "$tokens" "$rep" "$secs"
 }
 
+# An untimed run before each config's first timed one.
+#
+# The first run of a configuration pays for a cold page cache on a 60MB
+# checkpoint and a cold CUDA context, and it is not a smaller version of the
+# steady-state cost -- it is a different cost that happens once. Left in, it
+# landed on the smallest token count, which is the point with the most leverage
+# over a fit: the single-device row came out at -14 ms/token. A negative
+# per-token cost is not a slow measurement, it is an arithmetically impossible
+# one, and it says the sample was contaminated rather than noisy.
+warmup() {
+  env "$@" LLAMA_TOKENS_CONFIG="48;1" ./vxc "$PROGRAM" --run > /dev/null 2>&1
+}
+
 # --- 1. single, 2. disagg: no workers involved ------------------------------
 for config in single disagg; do
   d=0; [ "$config" = disagg ] && d=1
   echo "==> $config (VX_LLAMA_DISAGG=$d)"
+  warmup "VX_LLAMA_DISAGG=$d"
   for tokens in $TOKEN_COUNTS; do
     for rep in $(seq 1 "$REPS"); do
       time_one "$config" "$tokens" "$rep" "VX_LLAMA_DISAGG=$d"
@@ -140,6 +175,7 @@ for w in 19501 19502; do
 done
 
 if [ "$fleet_ok" = 1 ]; then
+  warmup "VX_LLAMA_DISAGG=1" "VX_FLEET_MANIFEST=$OUTDIR/loopback.manifest"
   for tokens in $TOKEN_COUNTS; do
     for rep in $(seq 1 "$REPS"); do
       time_one fleet "$tokens" "$rep" \
@@ -150,11 +186,19 @@ if [ "$fleet_ok" = 1 ]; then
   # The witness. Identical tokens cannot tell a distributed run from a local
   # one, because a local run produces identical tokens too -- only the far side
   # knows whether it did any work.
-  echo "  dispatches served, by worker:"
+  # `grep -c` exits 1 on zero matches, so `|| echo 0` appended a second line and
+  # the count became "0\n0" -- which `[ "$n" -eq 0 ]` then rejected as a
+  # non-integer instead of reporting the failure it was written to report. The
+  # test is on the exit status, and the count is whatever grep printed.
+  echo "  work served, by worker:"
   for w in 1 2; do
-    n=$(grep -c 'DISPATCH' "$OUTDIR/worker-$w.log" 2>/dev/null || echo 0)
-    printf '    worker %d: %s\n' "$w" "$n"
-    [ "$n" -eq 0 ] && echo "    FAILURE: worker $w served nothing; the fleet row ran locally" >&2
+    n=$(grep -c '^\[Vx worker\] DISPATCH' "$OUTDIR/worker-$w.log" 2>/dev/null)
+    [ -z "$n" ] && n=0
+    printf '    worker %d: %s dispatches\n' "$w" "$n"
+    if [ "$n" -eq 0 ]; then
+      echo "    FAILURE: worker $w served nothing; the fleet row ran locally" >&2
+      echo "             and its timings describe the single-machine path." >&2
+    fi
   done
 fi
 
@@ -164,15 +208,28 @@ wait "$W1" "$W2" 2>/dev/null
 
 # --- the numbers ------------------------------------------------------------
 #
-# Least squares over every rep rather than a difference between two token
-# counts: it uses all the data and does not let one slow run set the slope.
+# Least squares over the *fastest* run at each size, not over every rep.
+#
+# Using every rep sounds more principled and is not. These runs share a box with
+# whatever else the pod is doing, so the distribution has a floor and a long
+# right tail: interference can only add time. One 8.7s sample against a 3.9s
+# neighbour at the same size is not the measurement being noisy in both
+# directions, it is one run that got hit -- and averaging it in moves the
+# estimate away from the quantity of interest. It moved it far enough to make
+# the single-device slope negative in one run of this script and to make
+# disaggregation look 2.5x *faster* than not disaggregating in another. The
+# minimum is the run least perturbed by everything that is not the program.
 echo
 echo "=== Per-token cost (least-squares slope of seconds against tokens) ==="
 awk -F, 'NR>1 {
-           n[$1]++; sx[$1]+=$2; sy[$1]+=$4; sxx[$1]+=$2*$2; sxy[$1]+=$2*$4
-           if (!($1 SUBSEP $2 in best) || $4 < best[$1,$2]) best[$1,$2]=$4
+           if (!(($1 SUBSEP $2) in best) || $4 < best[$1,$2]) best[$1,$2] = $4
          }
          END {
+           for (k in best) {
+             split(k, kv, SUBSEP)
+             c = kv[1]; x = kv[2] + 0; y = best[k] + 0
+             n[c]++; sx[c]+=x; sy[c]+=y; sxx[c]+=x*x; sxy[c]+=x*y
+           }
            printf "  %-8s %12s %14s %10s\n", "config", "ms/token", "startup (s)", "points"
            split("single disagg fleet", order, " ")
            for (i=1; i<=3; i++) {

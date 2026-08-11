@@ -1,0 +1,90 @@
+//===- gpu_gemm_bench.vx - a GEMM big enough to time ------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+//
+// A square GEMM, repeated, at a size worth measuring (#348).
+//
+// Every other matmul program in this directory is a correctness test at 2x3 or
+// 3x3, where the answer can be checked by hand and the time is entirely
+// compiler. This one exists to be timed, so the shape is a parameter and so is
+// the repetition count: scripts/run_gemm_bench.sh substitutes both and divides
+// the difference between two iteration counts by the difference in iterations,
+// which removes compilation, JIT, the fill loop and process startup at once.
+//
+// __VX_BENCH_NOTE__
+//
+// The result goes into a buffer the caller owns -- `matmul_into`, not `c = a@b`
+// -- and that is load-bearing rather than stylistic. The two forms differ in
+// the payload's `outkind`: a caller's buffer is `outkind=buffer`, and a result
+// the kernel allocates is `outkind=slot`. Only the first can cross a worker
+// boundary today, because a slot result is published as a descriptor naming
+// memory in the worker's address space and no message brings it home. Written
+// with `c = a@b` this benchmark ran 560 dispatches on the far machine and
+// returned zero for every one of them -- the initialised value, reported as the
+// product, with a success status.
+//
+// What is timed is Vx's dispatch path, not cuBLAS. Operands are staged per
+// dispatch and the result staged back (#321), so each iteration carries
+// 3*N*N*4 bytes around one GEMM call. A GFLOP/s figure derived from it belongs
+// to the current design, and the distance between it and the device's peak is
+// the thing worth reading.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: module
+
+extern "C" {
+  fn vx_alloc_f32(n : i32) -> *mut f32;
+  fn vx_free_f32(p : *mut f32, n : i32) -> void;
+}
+
+fn main() -> i32 {
+  let n : i32 = __VX_BENCH_N__;
+  let total : i32 = __VX_BENCH_N__ * __VX_BENCH_N__;
+
+  let pa : *mut f32 = unsafe { vx_alloc_f32(total) };
+  let pb : *mut f32 = unsafe { vx_alloc_f32(total) };
+  let pc : *mut f32 = unsafe { vx_alloc_f32(total) };
+
+  // Filled with something that varies, so a backend cannot produce the right
+  // answer while ignoring an operand, and scaled so the accumulated sum stays
+  // in a range f32 represents comfortably at every size below.
+  unsafe {
+    for i in 0..__VX_BENCH_N__ {
+      for j in 0..__VX_BENCH_N__ {
+        pa[i * __VX_BENCH_N__ + j] = ((i + j) as f32) * 0.001;
+        pb[i * __VX_BENCH_N__ + j] = ((i * 3 + j) as f32) * 0.001;
+        pc[i * __VX_BENCH_N__ + j] = 0.0;
+      }
+    }
+  }
+
+  let a : Tensor<f32> =
+  unsafe { tensor_view_2d(pa, __VX_BENCH_N__, __VX_BENCH_N__) };
+  let b : Tensor<f32> =
+  unsafe { tensor_view_2d(pb, __VX_BENCH_N__, __VX_BENCH_N__) };
+  let mut c : Tensor<f32> =
+  unsafe { tensor_view_2d(pc, __VX_BENCH_N__, __VX_BENCH_N__) };
+
+  for _it in 0..__VX_BENCH_ITERS__ {
+    spawn on(Topology::GPU[__VX_BENCH_DEV__]) {
+      matmul_into(&mut c, &a, &b);
+    }
+  }
+
+  // Read the result, so nothing above is dead, and print the size with it so a
+  // truncated or absent run cannot be mistaken for a fast one.
+  unsafe { print(pc[0]); }
+  print!(" ");
+  print(n);
+
+  unsafe {
+    vx_free_f32(pa, total);
+    vx_free_f32(pb, total);
+    vx_free_f32(pc, total);
+  }
+  return 0;
+}
