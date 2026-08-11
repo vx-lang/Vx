@@ -290,6 +290,14 @@ int serve_dispatch(const vx_wire_dispatch *d, const vx_wire_arg *args,
 }
 
 int serve(int fd) {
+  /* Per connection, not per process. A worker that serves two runs in a row
+     reported the second as the sum of both -- 64 messages then "78", which is
+     64 + 14 and reads as a run that sent more than it did. */
+  for (int i = 0; i < 5; ++i) {
+    g_msg_count[i] = 0;
+    g_msg_bytes[i] = 0;
+  }
+
   for (;;) {
     uint32_t type = 0;
     uint64_t len = 0;
