@@ -61,13 +61,28 @@ int32_t g_topology = VX_TOPO_GPU_BASE;
 bool g_verbose = false;
 uint32_t g_worker_id = 1;
 
-vx_remote_region g_regions[4096];
+/* Sized for a generation rather than a demo. Every dispatch stages its
+   activations and frees them after, and `vx_remote_table_free` marks a region
+   dead without reusing its slot -- deliberately, so a stale handle resolves to
+   something dead rather than to whatever was allocated next. That makes the
+   table grow with the number of dispatches: llama2 at 64 tokens is about 5600
+   stagings, and 4096 entries ran out mid-generation.
+   Reusing a slot once no handle can name it is the real fix and needs a
+   generation check on resolve; 256K entries is 12 MB and buys a run long
+   enough not to need it yet. */
+vx_remote_region g_regions[262144];
 vx_remote_table g_table;
 
 /* Sized for llama2's largest staged blob rather than for a token: a projection
    weight arrives in one TRANSFER. */
 uint8_t g_body[64u << 20];
-uint8_t g_reply[64u << 10];
+/* A dispatch reply is a status and a few handles, but a FETCH reply is bulk:
+   llama2's KV handoff reads back n_layers x seq_len x kv_dim x 4 bytes in one
+   message, 442 KB at 64 tokens and far more at a real context length. Sized for
+   the dispatch case at 64 KiB, the worker refused every handoff it was asked
+   for -- correctly, since it will not invent bytes it cannot hold, but the
+   refusal read as "could not return the handoff" with nothing to say why. */
+uint8_t g_reply[64u << 20];
 
 void log_line(const char *fmt, ...) {
   if (!g_verbose) {
@@ -134,6 +149,41 @@ int serve_dispatch(const vx_wire_dispatch *d, const vx_wire_arg *args,
                            arg_tags, d->num_args, &plan)) {
     log_line("[Vx worker] refused: not a kernel this worker can route\n");
     return 0;
+  }
+
+  /* The topology id means two different things on the two sides of the wire,
+     and the worker is where they have to be told apart.
+   *
+   * To the host, `topo=501` names *which machine* -- the manifest resolves it
+   to
+   * this one. To a plugin it names *which local device*, and
+   * `vx_plugin_dispatch_async` reads it straight out of the payload and calls
+   * `select_device` with it. A worker whose machine has one GPU then aborts
+   with
+   * "launch targets GPU 1, but this machine has 1", which is correct behaviour
+   * answering the wrong question.
+   *
+   * So the payload's topology is rewritten, in place, to the device this worker
+   * was told to use. Digits are padded with leading zeros rather than the field
+   * being resized: the blob is NUL-separated and moving its tail would shift
+   * every entry after it, and `strtol` reads "0500" as 500. */
+  {
+    char *topo =
+        (char *)vx_payload_field(d->payload, (size_t)d->payload_len, "topo=");
+    if (topo) {
+      size_t width = strlen(topo);
+      char local[32];
+      snprintf(local, sizeof(local), "%d", g_topology);
+      size_t n = strlen(local);
+      if (n <= width) {
+        memset(topo, '0', width - n);
+        memcpy(topo + width - n, local, n);
+      } else {
+        log_line("[Vx worker] cannot retarget topo= (%s needs %zu > %zu)\n",
+                 local, n, width);
+        return 0;
+      }
+    }
   }
 
   vx_plugin_dispatch_async(d->payload, (size_t)d->payload_len, device_args,
