@@ -40,12 +40,18 @@
 #   `memref.alloc`, a device-side `malloc` call per launch for 64 bytes of
 #   scratch. The pass now puts entry-block scratch on the stack.
 #
-# What is left, and what the numbers below are for:
+#   `math` ops lowered to libdevice calls -- `__nv_expf`, and `__nv_sqrtf` and
+#   `__nv_fabsf` too, which have native PTX instructions. Linking
+#   libdevice.10.bc resolves and inlines them: `math.exp` becomes a single
+#   `ex2.approx.f32`, and the module has no externals at all. Set VX_LIBDEVICE
+#   or have a CUDA toolkit installed; the file is architecture-independent
+#   bitcode, so it does not have to come from this machine.
 #
-#   __nv_expf   `math.exp` reaches libdevice. The module will not load unless
-#               the pipeline links it, or `math.exp` becomes `ex2.approx.f32`
-#               (exp x = ex2 (x * log2 e)). This is the last external.
+# What is left:
+#
 #   the wrapper  nothing in the compiler emits `gpu.func` or runs this pipeline.
+#                The `vx.kernel` -> `gpu.func` step below is that gap, and is
+#                the only edit this script makes.
 #   the launch   `cuLaunchKernel`, and 28 `.param`s to marshal for 4 memrefs.
 #   parallelism  one thread runs all 32 queries. Deliberately not smuggled in
 #               here: this script answers "does our kernel reach PTX", and it
@@ -53,7 +59,7 @@
 #
 #   ./scripts/flash_kernel_to_ptx.sh [sm_80]
 #
-# Needs no GPU: `cubin-format=isa` stops at PTX text.
+# Needs no GPU: `format=isa` stops at PTX text, and libdevice is bitcode.
 #
 #===----------------------------------------------------------------------===#
 
@@ -120,10 +126,41 @@ PY
 
 mlir-opt "$OUT/kernel.mlir" -o /dev/null
 
+# libdevice, if this machine has it.
+#
+# Every `math` op lowers to a libdevice call under the NVVM conversion --
+# `__nv_expf`, and `__nv_sqrtf` and `__nv_fabsf` too, which have native PTX
+# instructions. Decomposing `exp` into `exp2` does not avoid it. Linking the
+# bitcode does, and it inlines: `math.exp` becomes one `ex2.approx.f32`.
+#
+# The composite `--gpu-lower-to-nvvm-pipeline` has no option for it, so linking
+# means running its steps separately with `nvvm-attach-target l=...`. Without the
+# file the kernel still compiles and the external is reported, because a run on a
+# machine with no CUDA toolkit should say what is missing rather than fail.
+if [ -z "${VX_LIBDEVICE:-}" ]; then
+  for c in "${CUDA_HOME:-/usr/local/cuda}" /usr/local/cuda-*; do
+    [ -f "$c/nvvm/libdevice/libdevice.10.bc" ] && {
+      VX_LIBDEVICE="$c/nvvm/libdevice/libdevice.10.bc"; break; }
+  done
+fi
+
 echo "==> lowering for $CHIP"
-mlir-opt "$OUT/kernel.mlir" \
-  --gpu-lower-to-nvvm-pipeline="cubin-chip=$CHIP cubin-features=+ptx76 cubin-format=isa" \
-  -o "$OUT/nvvm.mlir"
+if [ -n "${VX_LIBDEVICE:-}" ] && [ -f "$VX_LIBDEVICE" ]; then
+  echo "    linking $VX_LIBDEVICE"
+  mlir-opt "$OUT/kernel.mlir" \
+    --nvvm-attach-target="chip=$CHIP features=+ptx76 l=$VX_LIBDEVICE" \
+    --convert-gpu-to-nvvm --convert-arith-to-llvm --convert-math-to-llvm \
+    --gpu-to-llvm --reconcile-unrealized-casts \
+    --gpu-module-to-binary="format=isa" \
+    -o "$OUT/nvvm.mlir"
+  LINKED=1
+else
+  echo "    no libdevice (set VX_LIBDEVICE to link it); math stays external"
+  mlir-opt "$OUT/kernel.mlir" \
+    --gpu-lower-to-nvvm-pipeline="cubin-chip=$CHIP cubin-features=+ptx76 cubin-format=isa" \
+    -o "$OUT/nvvm.mlir"
+  LINKED=0
+fi
 
 python3 - "$OUT" <<'PY'
 import sys, pathlib
@@ -162,12 +199,19 @@ done
 # Externals are the gap list. A new one appearing is a new gap, and silence
 # about it is how a kernel that cannot load gets reported as working.
 echo "==> device-side externals"
+# `|| true`: no externals is the *good* outcome, and grep exits 1 on no match,
+# which under `set -e` killed the script exactly when it had succeeded.
 EXTERNS=$(grep -oE '^\.extern \.func .*\) [a-zA-Z_][a-zA-Z_0-9]*' "$PTX" \
-          | awk '{print $NF}' | sort -u)
+          | awk '{print $NF}' | sort -u || true)
 if [ -z "$EXTERNS" ]; then
-  echo "    none -- the kernel is self-contained"
+  echo "    none -- the module is self-contained and could be loaded as it is"
+  [ "$LINKED" = 1 ] && printf '    %-14s %s\n' ex2.approx "$(grep -c 'ex2.approx' "$PTX")"
 else
   echo "$EXTERNS" | sed 's/^/    /'
+  if [ "$LINKED" = 1 ]; then
+    echo "  FAILURE: libdevice was linked and these are still unresolved." >&2
+    exit 1
+  fi
   UNEXPECTED=$(echo "$EXTERNS" | grep -vxE '__nv_expf' || true)
   if [ -n "$UNEXPECTED" ]; then
     echo "  FAILURE: an external this script does not account for:" >&2
@@ -176,5 +220,5 @@ else
     echo "  header's gap list is now wrong and needs updating with it." >&2
     exit 1
   fi
-  echo "    (libdevice; see the header)"
+  echo "    (libdevice; link it and this list goes empty)"
 fi
