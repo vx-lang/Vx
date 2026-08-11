@@ -2622,20 +2622,62 @@ fn lowered_ty(ty: &Type, registry: &ImmutableGlobalRegistry) -> Option<LoweredTy
     }
 }
 
-/// Whether the (top-level) body contains control flow (`if`/`loop`/`for`) — the trigger for the
-/// memory model, so mutated or loop-carried locals survive across basic blocks. Nested control flow
-/// rides on its enclosing top-level construct, and the `lower_*` helpers recurse in memory mode.
+/// The statements inside a block-shaped expression (`unsafe { … }`, `comptime { … }`).
+///
+/// These are transparent to control flow: they introduce no block of their own and lower inline, so
+/// an `if` inside one is an `if` in the enclosing body as far as basic blocks are concerned. Any
+/// predicate deciding *how* to lower a body has to see through them, or it answers about a body it
+/// has only partly read.
+fn block_stmts_of(e: &Expr) -> Option<&[Statement]> {
+    match e {
+        Expr::UnsafeBlock(u) => Some(&u.stmts),
+        Expr::ComptimeBlock(c) => Some(&c.stmts),
+        _ => None,
+    }
+}
+
+/// Whether the body contains control flow (`if`/`loop`/`for`) — the trigger for the memory model, so
+/// mutated or loop-carried locals survive across basic blocks. Nested control flow *inside a
+/// control-flow construct* rides on its enclosing one, and the `lower_*` helpers recurse in memory
+/// mode; but a block-shaped expression is not such a construct, so this descends into it.
+///
+/// Missing that descent was a miscompile, not a decline. `unsafe { let mut s = 0; if c { s = 1; }
+/// print(s); }` scanned as a single `ExprStmt` holding neither an `if` nor a logical operator, so
+/// the body was taken for straight-line code and `s` stayed a pure-SSA binding. The assignment then
+/// rebound `s` to a value defined *inside* the taken branch, and the read after the join used it
+/// from a block that value does not dominate. tests/backend/pass/ffi_fs.vx is exactly this, and the
+/// whole of its `main` is inside one `unsafe` block -- as is most code that touches an extern.
+///
+/// It never reached a user: the MLIR verifier rejects the module, the flat emitter's parse returns
+/// None, and the driver falls back to the AST path, which lowers it correctly. But that is the
+/// backstop working, not the emitter being right -- the emitter claimed the body and produced
+/// invalid IR -- and the backstop does not exist cross-module: a `.vxlib` built from this HIR
+/// carries the broken body to a consumer with no AST to fall back to (#311 §7.1).
 fn body_has_control_flow(stmts: &[Statement]) -> bool {
     stmts.iter().any(|s| match s {
         Statement::Loop(_) | Statement::ForLoop(_) => true,
         Statement::ExprStmt(e) => {
-            matches!(e.expr, Expr::If(_) | Expr::Match(_)) || expr_has_logical(&e.expr)
+            matches!(e.expr, Expr::If(_) | Expr::Match(_))
+                || expr_has_logical(&e.expr)
+                || block_stmts_of(&e.expr).is_some_and(body_has_control_flow)
         }
         // A value-position `if` (`let v = if .. { .. } else { .. }`, #201) lowers to blocks + a result
         // slot, which needs the memory model too — as does a short-circuit `&&`/`||` (#239).
-        Statement::LetDecl(l) => matches!(l.expr, Expr::If(_)) || expr_has_logical(&l.expr),
-        Statement::Return(r) => matches!(r.expr, Expr::If(_)) || expr_has_logical(&r.expr),
-        Statement::Assign(a) => matches!(a.rhs, Expr::If(_)) || expr_has_logical(&a.rhs),
+        Statement::LetDecl(l) => {
+            matches!(l.expr, Expr::If(_))
+                || expr_has_logical(&l.expr)
+                || block_stmts_of(&l.expr).is_some_and(body_has_control_flow)
+        }
+        Statement::Return(r) => {
+            matches!(r.expr, Expr::If(_))
+                || expr_has_logical(&r.expr)
+                || block_stmts_of(&r.expr).is_some_and(body_has_control_flow)
+        }
+        Statement::Assign(a) => {
+            matches!(a.rhs, Expr::If(_))
+                || expr_has_logical(&a.rhs)
+                || block_stmts_of(&a.rhs).is_some_and(body_has_control_flow)
+        }
         _ => false,
     })
 }
@@ -2658,9 +2700,16 @@ fn expr_has_logical(e: &Expr) -> bool {
 /// Whether the (top-level) body constructs a struct into a local (`let x = S { .. }`) — the trigger
 /// for the memory model, since the constructed aggregate must live in an addressable slot.
 fn body_constructs_struct(stmts: &[Statement]) -> bool {
-    stmts
-        .iter()
-        .any(|s| matches!(s, Statement::LetDecl(l) if matches!(l.expr, Expr::StructInit(_))))
+    stmts.iter().any(|s| match s {
+        Statement::LetDecl(l) => {
+            matches!(l.expr, Expr::StructInit(_))
+                || block_stmts_of(&l.expr).is_some_and(body_constructs_struct)
+        }
+        // Same reason as `body_has_control_flow`: a block-shaped expression lowers inline, so a
+        // struct constructed inside one is constructed in this body.
+        Statement::ExprStmt(e) => block_stmts_of(&e.expr).is_some_and(body_constructs_struct),
+        _ => false,
+    })
 }
 
 /// Per-body local-usage facts driving slot allocation (#230/#275): which base locals must have their
@@ -2904,6 +2953,19 @@ impl BorrowScan {
                     self.expr(r);
                 }
             }
+            // A `spawn on(..) { .. }` body lowers *inline*, into the same basic blocks as the
+            // rest of the function (`lower_spawn`), so a local reassigned in there is reassigned
+            // here -- and needs a slot for exactly the same reason. Not descending was a
+            // miscompile: `spawn on(NPU[0]) { for i { let mut sum = 0.0; for k { sum += ..; } o[i] = sum; } }`
+            // left `sum` a register, the accumulation rebound it inside the inner loop, and the
+            // store after that loop read a value defined in a block it is not dominated by.
+            // tests/backend/pass/npu_fusion_overhead.vx is that program.
+            Expr::SpawnOn(sp) => {
+                self.block(&sp.stmts);
+                if let Some(r) = &sp.ret {
+                    self.expr(r);
+                }
+            }
             // A borrow inside an aggregate literal (`Holder { r : &x }`, a reference-typed field — #275
             // M4) escapes into the aggregate, so its base must materialize. Descend into the field/payload
             // values so the `&x` is seen (else `x` stays a register and the `&x` declines at lowering).
@@ -3032,6 +3094,13 @@ impl RefUseScan<'_> {
             Expr::ComptimeBlock(c) => {
                 self.block(&c.stmts);
                 if let Some(r) = &c.ret {
+                    self.expr(r);
+                }
+            }
+            // A spawn body lowers inline, so a ref used in it is used here — same reason as pass 1.
+            Expr::SpawnOn(sp) => {
+                self.block(&sp.stmts);
+                if let Some(r) = &sp.ret {
                     self.expr(r);
                 }
             }

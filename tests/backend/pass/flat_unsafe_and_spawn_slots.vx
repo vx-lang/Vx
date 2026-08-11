@@ -1,0 +1,82 @@
+//===- flat_unsafe_and_spawn_slots.vx - Vx Compiler --------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Two constructs the flat emitter claimed and then lowered to invalid MLIR,
+// each because a predicate deciding *how* to lower a body stopped at a block
+// it should have seen through.
+//
+// Neither reached a user. The MLIR verifier rejected the module, the emitter's
+// parse returned None, and the driver fell back to the AST path -- so the
+// programs ran correctly and the error went to a diagnostic handler that
+// discarded it. That is the backstop working rather than the emitter being
+// right, and the backstop is intra-module only: a `.vxlib` built from this HIR
+// carries the broken body to a consumer that has no AST to fall back to
+// (#311 §7.1).
+//
+// 1. A local mutated inside an `unsafe` block. `body_has_control_flow` read
+//    only top-level statements, and `unsafe { .. }` is one statement holding
+//    neither an `if` nor a logical operator -- so a body whose every branch
+//    lives inside it scanned as straight-line code, the memory model stayed
+//    off, and `flag` remained pure SSA. The assignment then rebound it to a
+//    value defined *inside* the taken branch, which the read after the join is
+//    not dominated by. Most code touching an extern is shaped like this;
+//    tests/backend/pass/ffi_fs.vx is exactly it.
+//
+// 2. A local accumulated inside a `spawn on(..)` body. A spawn lowers inline,
+//    into the same blocks as everything around it, but the local-usage walks
+//    that decide which locals need a slot had no `Expr::SpawnOn` arm and fell
+//    through to `_ => {}`. Nothing inside a spawn was ever scanned, so `sum`
+//    stayed a register, the `+=` rebound it in the inner loop, and the store
+//    after that loop read it from outside its dominance region.
+//    tests/backend/pass/npu_fusion_overhead.vx is that program.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: module
+// EXPECT: 2 6
+
+extern "C" {
+  fn vx_alloc_f32(n : i32) -> *mut f32;
+  fn vx_free_f32(p : *mut f32, n : i32) -> void;
+}
+
+fn main() -> i32 {
+  // 1. every branch inside one `unsafe` block.
+  unsafe {
+    let scratch : *mut f32 = vx_alloc_f32(1);
+    scratch[0] = 0.0;
+    let mut flag : i32 = 0;
+    if scratch[0] < 1.0 {
+      flag = 1;
+    }
+    if scratch[0] < 2.0 {
+      flag = 2;
+    }
+    print(flag);
+    print!(" ");
+    vx_free_f32(scratch, 1);
+  }
+
+  // 2. an accumulator declared and summed inside a placed region.
+  let mut o_host = Tensor<f32>([ 2, 2 ]);
+  for i in 0..2 {
+    for j in 0..2 {
+      o_host[i][j] = 0.0;
+    }
+  }
+  let mut o = transfer(o_host, Memory::NPU_HBM);
+  spawn on(Topology::NPU[0]) {
+    for i in 0..2 {
+      let mut sum : f32 = 0.0;
+      for k in 0..3 {
+        sum += 2.0;
+      }
+      o[i][0] = sum;
+    }
+  }
+  print(o[0][0] as i32);
+  return 0;
+}
