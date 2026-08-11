@@ -1,0 +1,177 @@
+//===- flash_attention_verified.vx - flash == reference ---------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// FlashAttention in Vx, at a size worth calling a size, checked against the
+// attention it is supposed to equal -- in one program, so the check cannot
+// drift from the thing checked.
+//
+// The claim FlashAttention makes is not that it is fast. It is that a tiled,
+// single-pass computation that never materializes the S = QK^T score matrix
+// produces *the same numbers* as the textbook two-pass softmax that does. That
+// is what is verified here: 32 queries over 64 keys at head dimension 16, both
+// ways, compared element by element.
+//
+// The two differ in more than tiling:
+//
+//   reference   materializes a full row of scores, takes its max, exponentiates
+//               against that max, sums, divides. Two passes over the row, and a
+//               row of storage.
+//   flash       walks the row in tiles of 16, carrying a running max `m` and a
+//               running denominator `l`, and rescales the accumulated output by
+//               exp(m_old - m_new) whenever the max moves. One pass, and no row
+//               of storage -- `ts` holds one tile.
+//
+// The rescaling is the whole algorithm and the only place it can go wrong: get
+// the correction factor backwards, or apply it to `l` and not to `o`, and the
+// answer is still plausible, still finite, and wrong in the fourth digit. Which
+// is why the comparison is against a real softmax rather than a golden constant
+// -- a golden constant checks one input, and this checks the identity the
+// algorithm rests on.
+//
+// Both halves run unplaced, which keeps this test about the algorithm alone.
+// The same kernel placed on a device -- Q/K/V transferred into GPU_HBM, the loop
+// inside `spawn on(Topology::GPU)` -- is
+// tests/backend/pass/flash_attention_placed_verified.vx, and produces the same
+// numbers.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: func.func @main
+// EXPECT: flash matches reference: 1
+
+import std::math;
+
+fn main() -> i32 {
+  let mut q_h = Tensor<f32>([ 32, 16 ]);
+  let mut k_h = Tensor<f32>([ 64, 16 ]);
+  let mut v_h = Tensor<f32>([ 64, 16 ]);
+  let mut o_h = Tensor<f32>([ 32, 16 ]);
+  let mut o_ref = Tensor<f32>([ 32, 16 ]);
+  let mut srow = Tensor<f32>([ 1, 64 ]);
+
+  // Values that vary along both axes, so no operand can be ignored and no two
+  // rows coincide, scaled small enough that the exponentials stay in range.
+  for i in 0..32 {
+    for d in 0..16 {
+      q_h[i][d] = ((i + d) as f32) * 0.05;
+      o_h[i][d] = 0.0;
+      o_ref[i][d] = 0.0;
+    }
+  }
+  for j in 0..64 {
+    for d in 0..16 {
+      k_h[j][d] = ((j - d) as f32) * 0.03;
+      v_h[j][d] = ((j + 2 * d) as f32) * 0.02;
+    }
+  }
+
+  let scale : f32 = 0.25;
+
+  // --- reference: materialize the row, softmax it, weight V -----------------
+  for i in 0..32 {
+    let mut rowmax : f32 = -1000000.0;
+    for j in 0..64 {
+      let mut acc : f32 = 0.0;
+      for d in 0..16 {
+        acc += q_h[i][d] * k_h[j][d];
+      }
+      let s : f32 = acc * scale;
+      srow[0][j] = s;
+      if s > rowmax {
+        rowmax = s;
+      }
+    }
+    let mut denom : f32 = 0.0;
+    for j in 0..64 {
+      let e : f32 = (srow[0][j] - rowmax).exp();
+      srow[0][j] = e;
+      denom = denom + e;
+    }
+    for j in 0..64 {
+      let w : f32 = srow[0][j] / denom;
+      for d in 0..16 {
+        o_ref[i][d] = o_ref[i][d] + w * v_h[j][d];
+      }
+    }
+  }
+
+  // --- flash: one pass, tiled, no score matrix ------------------------------
+  let mut ts = Tensor<f32>([ 1, 16 ]);
+  for i in 0..32 {
+    let mut m : f32 = -1000000.0;
+    let mut l : f32 = 0.0;
+    for t in 0..4 {
+      let mut tm : f32 = -1000000.0;
+      for jj in 0..16 {
+        let j = t * 16 + jj;
+        let mut acc : f32 = 0.0;
+        for d in 0..16 {
+          acc += q_h[i][d] * k_h[j][d];
+        }
+        let sij : f32 = acc * scale;
+        ts[0][jj] = sij;
+        if sij > tm {
+          tm = sij;
+        }
+      }
+      // The running max only ever grows; when it does, everything already
+      // accumulated was exponentiated against a smaller max and has to be
+      // scaled down by exp(m_old - m_new). Both `l` and `o` carry that history,
+      // so both are corrected -- correcting one and not the other is the
+      // mistake this file exists to catch.
+      let m_new : f32 = if tm > m {
+        tm
+      } else {
+        m
+      };
+      let corr : f32 = (m - m_new).exp();
+      l = l * corr;
+      for d in 0..16 {
+        o_h[i][d] = o_h[i][d] * corr;
+      }
+      for jj in 0..16 {
+        let j = t * 16 + jj;
+        let p : f32 = (ts[0][jj] - m_new).exp();
+        l = l + p;
+        for d in 0..16 {
+          o_h[i][d] = o_h[i][d] + p * v_h[j][d];
+        }
+      }
+      m = m_new;
+    }
+    for d in 0..16 {
+      o_h[i][d] = o_h[i][d] / l;
+    }
+  }
+
+  // --- do they agree? -------------------------------------------------------
+  let mut worst : f32 = 0.0;
+  for i in 0..32 {
+    for d in 0..16 {
+      let mut diff : f32 = o_h[i][d] - o_ref[i][d];
+      if diff < 0.0 {
+        diff = 0.0 - diff;
+      }
+      if diff > worst {
+        worst = diff;
+      }
+    }
+  }
+
+  // A tolerance, not equality: the two orders of summation are different, so the
+  // last bits differ and should. 1e-4 is far below the spread between rows here
+  // (the outputs run from roughly 0.4 to 1.5), so a rescaling bug cannot hide
+  // under it -- getting the correction backwards moves the answer by percent,
+  // not by 1e-4.
+  let ok : i32 = if worst < 0.0001 {
+    1
+  } else {
+    0
+  };
+  print!("flash matches reference: ");
+  print(ok);
+  return 0;
+}

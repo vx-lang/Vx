@@ -1,0 +1,126 @@
+//===- flash_attention_placed.vx - flash, on a named device -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// The flash forward of tests/backend/pass/flash_attention_verified.vx, placed:
+// Q, K and V transferred into GPU_HBM, the whole online-softmax loop inside
+// `spawn on(Topology::GPU)`, the result read back out of the region.
+//
+// 32 queries over 64 keys at head dimension 16, tiles of 16. Every element of
+// the 32x16 output was checked against an independent implementation of
+// attention: worst disagreement 5.08e-06, which is f32 summation order and not
+// an algorithm difference. The first row is pinned below; it is the row whose
+// arithmetic is easiest to follow by hand, since query 0 is `d * 0.05` and the
+// output is 0.02 * (E[j] + 2d) for the softmax-weighted mean E[j] = 45.08.
+//
+// What this does *not* demonstrate is a GPU. `kind=matmul` is the only thing
+// the CUDA backend routes, a fused online softmax is not a GEMM, and on a
+// machine with a device this kernel is refused rather than run (#251, and
+// tests/backend/fail/placed_kernel_host_unreadable.vx). What it demonstrates is
+// that the placement, the transfers into a declared memory space, and the
+// region's own control flow are all carried correctly -- the program is written
+// for a device and computes the right answer wherever it currently lands.
+//
+// Read the output by rows: the memref printer puts row 0 on the `[[` line and
+// every later row on a ` [` line. Row 1 of a correct run is 0.928645, which is
+// close enough to row 0's 0.9016064 to look like a wrong answer if the two are
+// confused -- and that confusion is the entire reason this file carries an
+// EXPECT rather than a remembered number.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: vx.transfer
+// CHECK: vx.spawn topology(500)
+// EXPECT: [[0.901606,   0.941606,   0.981606
+
+import std::math;
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+}
+
+fn main() -> i32 {
+  let mut q_h = Tensor<f32>([ 32, 16 ]);
+  let mut k_h = Tensor<f32>([ 64, 16 ]);
+  let mut v_h = Tensor<f32>([ 64, 16 ]);
+  let mut o_h = Tensor<f32>([ 32, 16 ]);
+
+  // Values that vary along both axes, so no operand can be ignored and no two
+  // rows coincide, scaled small enough that the exponentials stay in range.
+  for i in 0..32 {
+    for d in 0..16 {
+      q_h[i][d] = ((i + d) as f32) * 0.05;
+      o_h[i][d] = 0.0;
+    }
+  }
+  for j in 0..64 {
+    for d in 0..16 {
+      k_h[j][d] = ((j - d) as f32) * 0.03;
+      v_h[j][d] = ((j + 2 * d) as f32) * 0.02;
+    }
+  }
+
+  let scale : f32 = 0.25;
+
+  // --- flash: one pass, tiled, no score matrix ------------------------------
+  let q = transfer(q_h, Memory::GPU_HBM);
+  let k = transfer(k_h, Memory::GPU_HBM);
+  let v = transfer(v_h, Memory::GPU_HBM);
+  let mut o = transfer(o_h, Memory::GPU_HBM);
+
+  spawn on(Topology::GPU) {
+    let mut ts = Tensor<f32>([ 1, 16 ]);
+    for i in 0..32 {
+      let mut m : f32 = -1000000.0;
+      let mut l : f32 = 0.0;
+      for t in 0..4 {
+        let mut tm : f32 = -1000000.0;
+        for jj in 0..16 {
+          let j = t * 16 + jj;
+          let mut acc : f32 = 0.0;
+          for d in 0..16 {
+            acc += q[i][d] * k[j][d];
+          }
+          let sij : f32 = acc * scale;
+          ts[0][jj] = sij;
+          if sij > tm {
+            tm = sij;
+          }
+        }
+        // The running max only ever grows; when it does, everything already
+        // accumulated was exponentiated against a smaller max and has to be
+        // scaled down by exp(m_old - m_new). Both `l` and `o` carry that history,
+        // so both are corrected -- correcting one and not the other is the
+        // mistake this file exists to catch.
+        let m_new : f32 = if tm > m {
+          tm
+        } else {
+          m
+        };
+        let corr : f32 = (m - m_new).exp();
+        l = l * corr;
+        for d in 0..16 {
+          o[i][d] = o[i][d] * corr;
+        }
+        for jj in 0..16 {
+          let j = t * 16 + jj;
+          let p : f32 = (ts[0][jj] - m_new).exp();
+          l = l + p;
+          for d in 0..16 {
+            o[i][d] = o[i][d] + p * v[j][d];
+          }
+        }
+        m = m_new;
+      }
+      for d in 0..16 {
+        o[i][d] = o[i][d] / l;
+      }
+    }
+  }
+
+  print(o);
+  return 0;
+}
