@@ -78,7 +78,7 @@ if command -v ./vx-worker >/dev/null 2>&1 || [ -x ./vx-worker ]; then
   VX_DISPATCH_VERBOSE=1 setsid ./vx-worker --port 19501 --topology 500 --worker-id 1 \
     > "$OUTDIR/worker-1.log" 2>&1 < /dev/null &
   W1=$!
-  VX_DISPATCH_VERBOSE=1 setsid ./vx-worker --port 19502 --topology 500 --worker-id 2 \
+  VX_DISPATCH_VERBOSE=1 setsid ./vx-worker --port 19502 --topology 501 --worker-id 2 \
     > "$OUTDIR/worker-2.log" 2>&1 < /dev/null &
   W2=$!
   sleep 2
@@ -100,7 +100,15 @@ GPU[0]  127.0.0.1  19501
 GPU[1]  127.0.0.1  19502
 EOF
 
-  VX_FLEET_MANIFEST="$OUTDIR/local.manifest" \
+  # VX_LLAMA_DISAGG=1, or decode targets GPU[0] like prefill and the second
+  # worker serves nothing. The first run of this script reported 2752
+  # dispatches on worker 1 and none on worker 2, with the tokens identical --
+  # which was true, and described a run that used one worker twice.
+  #
+  # Run 1 stays at DISAGG=0 deliberately: it is the single-device oracle, and
+  # on a one-GPU machine naming GPU[1] locally would abort. That the two agree
+  # is the claim -- same tokens, different placement.
+  VX_LLAMA_DISAGG=1 VX_FLEET_MANIFEST="$OUTDIR/local.manifest" \
     ./vxc "$PROGRAM" --run > "$OUTDIR/raw-tcp.txt" 2> "$OUTDIR/trace-tcp.txt"
   strip_noise "$OUTDIR/raw-tcp.txt" > "$OUTDIR/tokens-tcp.txt"
 
@@ -108,7 +116,11 @@ EOF
   # a run that stayed local matches too, and matches perfectly. Only the far
   # side can say, so the worker's own log is the witness.
   for w in 1 2; do
-    n=$(grep -c 'DISPATCH' "$OUTDIR/worker-$w.log" 2>/dev/null || echo 0)
+    # `grep -c` exits 1 on zero matches, so `|| echo 0` appended a second line
+    # and the count became "0\n0" -- which the integer test then rejected as
+    # malformed rather than reporting the failure it was written to report.
+    n=$(grep -c '^\[Vx worker\] DISPATCH' "$OUTDIR/worker-$w.log" 2>/dev/null)
+    [ -z "$n" ] && n=0
     if [ "$n" -eq 0 ]; then
       echo "  FAILURE: worker $w served no dispatches. The run was local." >&2
       echo "           Check that the manifest names what the program spawns on" >&2
@@ -136,7 +148,7 @@ GPU[1]  ${DECODE%%:*}   ${DECODE##*:}
 EOF
   cat "$OUTDIR/fleet.manifest"
 
-  VX_FLEET_MANIFEST="$OUTDIR/fleet.manifest" \
+  VX_LLAMA_DISAGG=1 VX_FLEET_MANIFEST="$OUTDIR/fleet.manifest" \
     ./vxc "$PROGRAM" --run > "$OUTDIR/raw-fleet.txt" 2> "$OUTDIR/trace-fleet.txt"
   strip_noise "$OUTDIR/raw-fleet.txt" > "$OUTDIR/tokens-fleet.txt"
 fi

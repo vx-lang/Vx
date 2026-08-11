@@ -84,7 +84,7 @@ distinguish. Worth saying rather than picking the most plausible-sounding one.
 
 ## What was wrong with the instrument, again
 
-M4 found four ways a one-GPU run could report two. This session found five more, and it is
+M4 found four ways a one-GPU run could report two. This session found six more, and it is
 worth being blunt that every one of them was in the measuring apparatus rather than in the
 thing measured.
 
@@ -117,6 +117,12 @@ with 77064 device operations in the same file. I believed it for several minutes
 **`grep -c ... || echo 0`.** `grep -c` exits 1 on zero matches, so the count became
 `"0\n0"`, which the integer test then rejected as malformed instead of reporting the
 failure it existed to report.
+
+**A demo with a decorative second worker.** `run_fleet_demo.sh` never set
+`VX_LLAMA_DISAGG=1`, so decode targeted `GPU[0]` exactly as prefill did. It reported 2752
+dispatches on worker 1, none on worker 2, and identical tokens -- all true, and describing
+a run that used one worker twice. Fixed, it reports 1591 and 1161 across two processes
+over TCP, which are 37x43 and 27x43.
 
 **A fit contaminated by one slow run.** These runs share a box, so interference can only
 add time: the distribution has a floor and a long right tail. An 8.7 s sample beside a
