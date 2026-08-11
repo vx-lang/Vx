@@ -69,11 +69,23 @@ strip_noise "$OUTDIR/raw-local.txt" > "$OUTDIR/tokens-local.txt"
 # the difference is the network rather than the design.
 if command -v ./vx-worker >/dev/null 2>&1 || [ -x ./vx-worker ]; then
   echo "==> Run 2: both workers here, over TCP"
-  ./vx-worker --port 19501 --topology 500 --worker-id 1 > "$OUTDIR/worker-1.log" 2>&1 &
+  # setsid, so a worker outlives the shell that started it.
+  #
+  # Started with a plain `&` these die with their session, and on a rented pod
+  # an interactive SSH is exactly the session that goes away -- one dropped
+  # connection killed a worker mid-generation and failed the run, twice, for a
+  # reason that had nothing to do with what was being tested.
+  setsid ./vx-worker --port 19501 --topology 500 --worker-id 1 \
+    > "$OUTDIR/worker-1.log" 2>&1 < /dev/null &
   W1=$!
-  ./vx-worker --port 19502 --topology 500 --worker-id 2 > "$OUTDIR/worker-2.log" 2>&1 &
+  setsid ./vx-worker --port 19502 --topology 500 --worker-id 2 \
+    > "$OUTDIR/worker-2.log" 2>&1 < /dev/null &
   W2=$!
-  sleep 1
+  sleep 2
+  for w in 19501 19502; do
+    (exec 3<>/dev/tcp/127.0.0.1/$w) 2>/dev/null ||
+      { echo "  worker on $w did not come up; see $OUTDIR/worker-*.log" >&2; }
+  done
 
   cat > "$OUTDIR/local.manifest" <<EOF
 # Both workers on this machine. Same program, same binary as run 1.
@@ -85,7 +97,10 @@ EOF
     ./vxc "$PROGRAM" --run > "$OUTDIR/raw-tcp.txt" 2> "$OUTDIR/trace-tcp.txt"
   strip_noise "$OUTDIR/raw-tcp.txt" > "$OUTDIR/tokens-tcp.txt"
 
+  # pkill -x, not -f: the pattern `vx-worker` appears in this script's own
+  # command line, so -f matches the shell doing the killing.
   kill "$W1" "$W2" 2>/dev/null
+  pkill -x vx-worker 2>/dev/null
   wait "$W1" "$W2" 2>/dev/null
 fi
 
