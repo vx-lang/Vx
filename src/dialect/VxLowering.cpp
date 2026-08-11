@@ -341,45 +341,45 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
     int32_t topology = op.getTopology();
 
     if (topology == 0) {
+      Region &spawnBody = op.getBody();
+      if (spawnBody.empty()) {
+        rewriter.eraseOp(op);
+        return success();
+      }
+
       auto asyncExecuteOp =
           rewriter.create<async::ExecuteOp>(op.getLoc(),
                                             /*resultTypes=*/TypeRange{},
                                             /*dependencies=*/ValueRange{},
                                             /*operands=*/ValueRange{});
-
-      Region &spawnBody = op.getBody();
       Region &asyncBody = asyncExecuteOp.getRegion();
 
-      Block *asyncBlock;
-      if (asyncBody.empty()) {
-        asyncBlock = rewriter.createBlock(&asyncBody);
-        rewriter.create<async::YieldOp>(op.getLoc(), ValueRange{});
-      } else {
-        asyncBlock = &asyncBody.front();
-        if (asyncBlock->empty() || !isa<async::YieldOp>(asyncBlock->back())) {
-          OpBuilder::InsertionGuard guard(rewriter);
-          rewriter.setInsertionPointToEnd(asyncBlock);
-          rewriter.create<async::YieldOp>(op.getLoc(), ValueRange{});
-        }
+      // `vx.yield` terminates the spawn region and `async.yield` terminates
+      // this one. Rewritten before the blocks move and found by walking the
+      // region, because a region with control flow in it yields from its merge
+      // block rather than from the block it started in.
+      SmallVector<Value> yieldedValues;
+      SmallVector<vx::YieldOp> yields;
+      spawnBody.walk([&](vx::YieldOp y) { yields.push_back(y); });
+      for (vx::YieldOp y : yields) {
+        if (yields.front() == y)
+          llvm::append_range(yieldedValues, y.getOperands());
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPoint(y);
+        rewriter.create<async::YieldOp>(y.getLoc(), ValueRange{});
+        rewriter.eraseOp(y);
       }
 
-      SmallVector<Value> yieldedValues;
-      if (!spawnBody.empty()) {
-        Block &spawnBlock = spawnBody.front();
-        if (!spawnBlock.empty() && isa<vx::YieldOp>(spawnBlock.back())) {
-          auto yieldOp = cast<vx::YieldOp>(spawnBlock.back());
-          for (auto val : yieldOp.getOperands()) {
-            yieldedValues.push_back(val);
-          }
-          rewriter.eraseOp(yieldOp);
-        }
-        // Move operations from spawnBlock to asyncBlock
-        auto &asyncOps = asyncBlock->getOperations();
-        auto &spawnOps = spawnBlock.getOperations();
-        // Move before the yield (which is at the end of asyncBlock)
-        asyncOps.splice(std::prev(asyncOps.end()), spawnOps, spawnOps.begin(),
-                        spawnOps.end());
-      }
+      // Every block of the spawn region becomes a block of the async region,
+      // its entry block included. Moving only the first block's *operations* --
+      // which is what this did -- dropped every other block, and carried the
+      // branch to them into the middle of the async body. A region containing
+      // any `for` or `if` is more than one block, so
+      // `spawn on(Topology::CPU) { for ... }` failed to compile with
+      // "operation with block successors must terminate its parent block".
+      while (!asyncBody.empty())
+        rewriter.eraseBlock(&asyncBody.front());
+      rewriter.inlineRegionBefore(spawnBody, asyncBody, asyncBody.end());
 
       rewriter.replaceOp(op, yieldedValues);
       return success();
@@ -651,8 +651,26 @@ static LogicalResult diagnoseUnrunnableSpawns(Operation *root) {
   bool failed = false;
   root->walk([&](vx::SpawnOp spawn) {
     int32_t topology = spawn.getTopology();
-    if (topology == 0)
+
+    // A host region lowers to `async.execute`, whose body must be a single
+    // block -- and any `if`, `for` or `match` in the region makes it several.
+    // Said here, naming the construct, rather than left to surface three passes
+    // later as `'async.execute' op expects region #0 to have 0 or 1 blocks`,
+    // which describes an operation the program never mentions.
+    if (topology == 0) {
+      Region &body = spawn.getBody();
+      if (!body.empty() && !body.hasOneBlock()) {
+        spawn.emitError()
+            << "a region placed on the host cannot carry control flow: it "
+               "lowers to `async.execute`, whose body is a single block, and "
+               "an `if`, `for` or `match` here makes it several.\n"
+            << "  Either lift the control flow out of the region, or place the "
+               "region on a device topology, where it is outlined into a "
+               "kernel and keeps its blocks.";
+        failed = true;
+      }
       return;
+    }
 
     Region &body = spawn.getBody();
     if (body.empty())

@@ -357,11 +357,22 @@ impl<'c> LowerToMelior<'c> for ComptimeBlockExpr {
         gen: &mut MeliorGenerator<'c>,
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Self::Output {
+        // Same rule as everywhere else a block of statements is spliced inline:
+        // the block a statement hands back is the one the next statement goes
+        // in. Dropping it left `comptime { for ... }` appending past the loop's
+        // own branch, which the verifier rejects outright.
+        let mut cur = block;
         for stmt in &self.stmts {
-            gen.generate_statement(stmt, block)?;
+            match gen.generate_statement(stmt, cur)? {
+                Some(b) => cur = b,
+                None => {
+                    cur = super::dead_continuation(cur);
+                    break;
+                }
+            }
         }
         if let Some(ret_expr) = &self.ret {
-            gen.generate_expr(ret_expr, block)
+            gen.generate_expr(ret_expr, cur)
         } else {
             let none_ty = gen.none_ty;
             let dummy_val = OperationBuilder::new("arith.constant", gen.loc())
@@ -371,8 +382,8 @@ impl<'c> LowerToMelior<'c> for ComptimeBlockExpr {
                 )])
                 .add_results(&[Type::index(gen.context)])
                 .build()?;
-            let dummy_ref = block.append_operation(dummy_val);
-            Ok((dummy_ref.result(0)?.into(), none_ty, block))
+            let dummy_ref = cur.append_operation(dummy_val);
+            Ok((dummy_ref.result(0)?.into(), none_ty, cur))
         }
     }
 }
@@ -1426,7 +1437,10 @@ impl<'c> LowerToMelior<'c> for UnsafeBlockExpr {
             if let Some(b) = gen.generate_statement(stmt, current_block)? {
                 current_block = b;
             } else {
-                // Block was terminated (e.g., by break/continue/return)
+                // Block was terminated (e.g., by break/continue/return). The
+                // tail expression and the placeholder below still have to be
+                // emitted somewhere, and it cannot be after that terminator.
+                current_block = super::dead_continuation(current_block);
                 break;
             }
         }

@@ -125,6 +125,23 @@ impl MeliorOpInfo for LogicalOp {
     }
 }
 
+/// A block to keep appending to after a statement closed the current one.
+///
+/// `return`, `break` and `continue` terminate their block, and MLIR admits no
+/// operation after a terminator. Whatever follows them in the source is
+/// unreachable rather than illegal, so it gets a block of its own: the verifier
+/// checks dominance only for blocks reachable from the entry, and a block with
+/// no predecessors is not one. The alternative -- piling the rest of the
+/// function on after a `func.return` -- does not compile at all.
+pub(crate) fn dead_continuation<'c>(
+    block: melior::ir::BlockRef<'c, 'c>,
+) -> melior::ir::BlockRef<'c, 'c> {
+    block
+        .parent_region()
+        .expect("a block being lowered into always sits in a region")
+        .append_block(melior::ir::Block::new(&[]))
+}
+
 /// Runtime dispatch id for a topology. Thin delegate to the single source of truth in
 /// `arch`, which co-locates this with the memory-space mapping so the two cannot diverge.
 pub(crate) fn topology_to_i32(top: &syntax::Topology) -> i32 {

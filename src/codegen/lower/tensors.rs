@@ -20,6 +20,14 @@ impl<'c> LowerToMelior<'c> for syntax::SpawnOnExpr {
         let prev_in_spawn = gen.in_spawn;
         gen.in_spawn = true;
 
+        // Whether anything is waiting on a value from this region. A spawn in
+        // statement position is asked for `none`, and its tail expression is
+        // then the last thing the region does rather than something it returns
+        // -- which is what a trailing `if` is. Reading it as a result gave the
+        // region a `vx.yield` of the condition against a declared result type of
+        // `none`, a mismatch nothing looked at because the result went unused.
+        let wants_value = gen.expected_type != Some(gen.none_ty);
+
         // Transport host-proven `assert` facts into the device kernel as
         // `llvm.intr.assume` certificates before the body is lowered, so they dominate
         // the guard they let the device backend fold. Host targets get nothing (the
@@ -42,10 +50,22 @@ impl<'c> LowerToMelior<'c> for syntax::SpawnOnExpr {
         let mut result_types = vec![];
         let mut ret_val = None;
 
+        // The region's tail expression -- its value is the region's value. The
+        // block it hands back is where the terminator has to go: an `if` (or a
+        // `match`, or anything else that branches) leaves the insertion point in
+        // a fresh merge block, and appending `vx.yield` to the block we started
+        // in would put it after that block's `cf.cond_br`. That is invalid IR
+        // rather than a wrong answer, and it is why a spawn whose last statement
+        // is an `if` did not compile: the parser reads a trailing `if` as the
+        // tail expression whether or not a semicolon follows it, so
+        // `spawn on(...) { ...; if c { o[0][0] = 1.0; } }` came through here.
         if let Some(r) = &self.ret {
-            let (val, ty, _block) = gen.generate_expr(r, body_block)?;
-            result_types.push(ty);
-            ret_val = Some(val);
+            let (val, ty, tail_block) = gen.generate_expr(r, body_block)?;
+            body_block = tail_block;
+            if wants_value {
+                result_types.push(ty);
+                ret_val = Some(val);
+            }
         }
 
         let mut needs_yield = true;

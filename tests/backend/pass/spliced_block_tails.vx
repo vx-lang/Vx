@@ -1,0 +1,103 @@
+//===- spliced_block_tails.vx - blocks spliced inline keep their tail --*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Four constructs whose bodies the AST emitter splices into the enclosing block
+// rather than giving a region of their own. Each one used to fail to compile.
+//
+// Lowering a statement can move the insertion point -- a `for` opens three
+// blocks and lands in a fourth, an `if` lands in its merge block -- or close it
+// outright, which is what `return` does. That is why `generate_statement` hands
+// a block back. Four callers dropped it and kept appending to the block they
+// started in, which had by then acquired a terminator, so the next operation
+// landed after a `cf.cond_br` or a `func.return`. MLIR rejects that outright:
+//
+//   operation with block successors must terminate its parent block
+//   'func.return' op must be the last operation in the parent block
+//
+// So these are not wrong answers, they are programs that did not build. The
+// shapes are ordinary -- a `spawn` region ending in an `if` is how a device
+// kernel writes a conditional result, and it is what FlashAttention's verdict
+// write looks like -- and each is checked here for its value, not merely for
+// compiling, since threading the wrong block would also compile.
+//
+// A trailing `if` reaches the spawn's tail-expression slot whether or not a
+// semicolon follows it: the parser promotes the last semicolon-less expression
+// statement to the region's value, and `if` is an expression in Vx.
+//
+// The spawn below is placed on a device rather than the host because a host
+// region cannot carry control flow at all: it lowers to `async.execute`, whose
+// body must be a single block. `convert-vx-to-standard` says so now; before, the
+// pass moved the region's first block and dropped the rest.
+//
+// `Topology::Current == Topology::CPU` holds under the default configuration,
+// so each `if comptime` below keeps its `then` branch. That is the case that
+// matters: a pruned branch emits nothing and cannot leave a block behind.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: func.func @main
+// EXPECT: 3 3 4 5
+
+// A `spawn` region whose last statement is an `if`.
+fn tail_if_in_spawn() -> i32 {
+  let mut a = Tensor<f32>([ 1, 1 ]);
+  a[0][0] = 0.0;
+  let x : f32 = 2.0;
+  spawn on(Topology::GPU) {
+    a[0][0] = 1.0;
+    if x > 1.0 {
+      a[0][0] = 3.0;
+    }
+  }
+  return a[0][0] as i32;
+}
+
+// A loop inside the surviving branch of an `if comptime`.
+fn loop_in_comptime_branch() -> i32 {
+  let mut a = Tensor<f32>([ 1, 1 ]);
+  a[0][0] = 0.0;
+  if comptime
+  Topology::Current == Topology::CPU {
+    for i in 0..3 {
+      a[0][0] = a[0][0] + 1.0;
+    }
+  }
+  return a[0][0] as i32;
+}
+
+// The same, in a `comptime { }` block.
+fn loop_in_comptime_block() -> i32 {
+  let mut a = Tensor<f32>([ 1, 1 ]);
+  a[0][0] = 0.0;
+  comptime {
+    for i in 0..4 {
+      a[0][0] = a[0][0] + 1.0;
+    }
+  }
+  return a[0][0] as i32;
+}
+
+// A `return` inside the surviving branch. What follows it is unreachable rather
+// than illegal, so it needs a block of its own -- appending it after the
+// `func.return` is what MLIR refuses.
+fn return_in_comptime_branch() -> i32 {
+  if comptime
+  Topology::Current == Topology::CPU {
+    return 5;
+  }
+  return 9;
+}
+
+fn main() -> i32 {
+  print!(tail_if_in_spawn());
+  print!(" ");
+  print!(loop_in_comptime_branch());
+  print!(" ");
+  print!(loop_in_comptime_block());
+  print!(" ");
+  print(return_in_comptime_branch());
+  return 0;
+}

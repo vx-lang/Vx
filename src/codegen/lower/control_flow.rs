@@ -30,6 +30,16 @@ impl<'c> LowerToMelior<'c> for IfExpr {
                 else_block_opt.as_ref()
             };
 
+            // The surviving branch is spliced straight into the enclosing block,
+            // with no branch of its own -- which means every statement in it can
+            // move the insertion point, and the branch as a whole can close the
+            // block outright. A `for` opens three blocks and lands in a fourth;
+            // an `if` lands in its merge block; a `return` ends the block for
+            // good. Lowering the rest of the function into the block we started
+            // in appends past a terminator, so `if comptime <taken> { for ... }`
+            // did not compile at all.
+            let mut cur = block;
+            let mut terminated = false;
             if let Some(tb) = target_block {
                 for (i, stmt) in tb.iter().enumerate() {
                     let is_last = i == tb.len() - 1;
@@ -40,21 +50,30 @@ impl<'c> LowerToMelior<'c> for IfExpr {
                             ..
                         }) = stmt
                         {
-                            let (val, ty, _block) = gen.generate_expr(expr, block)?;
+                            let (val, ty, tail_block) = gen.generate_expr(expr, cur)?;
+                            cur = tail_block;
                             if !has_semi {
                                 last_val = Some((val, ty));
                             }
-                        } else {
-                            gen.generate_statement(stmt, block)?;
+                            continue;
                         }
-                    } else {
-                        gen.generate_statement(stmt, block)?;
+                    }
+                    match gen.generate_statement(stmt, cur)? {
+                        Some(b) => cur = b,
+                        None => {
+                            terminated = true;
+                            break;
+                        }
                     }
                 }
             }
 
+            if terminated {
+                cur = super::dead_continuation(cur);
+            }
+
             if let Some((val, ty)) = last_val {
-                return Ok((val, ty, block));
+                return Ok((val, ty, cur));
             }
 
             let ret_ty = gen.expected_type.unwrap_or(gen.f32_ty);
@@ -84,9 +103,9 @@ impl<'c> LowerToMelior<'c> for IfExpr {
                     .build()?
             };
             return Ok((
-                block.append_operation(dummy_op).result(0)?.into(),
+                cur.append_operation(dummy_op).result(0)?.into(),
                 ret_ty,
-                block,
+                cur,
             ));
         }
 
