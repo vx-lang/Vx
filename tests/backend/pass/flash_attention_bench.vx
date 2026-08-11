@@ -1,0 +1,129 @@
+//===- flash_attention_bench.vx - the flash forward, at a size -*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+//
+// tests/backend/pass/flash_attention_placed.vx with its shape as parameters,
+// so the fused flash forward can be timed rather than only checked (#348).
+// The kernel body is that file's, unchanged apart from the bounds.
+//
+// __VX_BENCH_NOTE__
+//
+// Read what this measures carefully, because the obvious reading is wrong.
+// `spawn on(Topology::GPU)` places the region, the four operands really are
+// transferred into GPU_HBM, and then the kernel runs **on the host**:
+//
+//   [Vx CUDA] device 0 stage      x4
+//   [Vx CUDA] vx_npu_kernel_0 (kind=<unclassified>) not routed; running on the host
+//
+// Only `kind=matmul` routes to cuBLAS. A fused online-softmax loop nest is not
+// a GEMM and is not classified as one, so the dispatcher falls back to libffi
+// and the arithmetic happens on the CPU -- of whichever machine, however many
+// A100s it has. Every number produced from this file is a CPU number. That is
+// #251, kernel emission, and it is the ceiling on the whole campaign.
+//
+// The loop nest is also compiled at -O0, which the JIT log states plainly, so
+// the figure is not even a good CPU number. Both facts are the point: this is
+// the measurement of what placing a kernel currently buys when the kernel is
+// not a matmul, which is nothing at all.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: vx.transfer
+// CHECK-SAME: cost =
+// CHECK: vx.spawn topology(500)
+
+import std::math;
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s
+}
+
+fn main() -> i32 {
+  let mut q_h = Tensor<f32>([ __VX_SQ__, __VX_HD__ ]);
+  let mut k_h = Tensor<f32>([ __VX_SK__, __VX_HD__ ]);
+  let mut v_h = Tensor<f32>([ __VX_SK__, __VX_HD__ ]);
+  let mut o_h = Tensor<f32>([ __VX_SQ__, __VX_HD__ ]);
+
+  // The same pattern the fixed-size version uses, extended: row j of K and V
+  // holds j, scaled down so the exponentials stay in range as the sequence
+  // grows. Values that vary per row are what stop a backend from being right
+  // while ignoring an operand.
+  for i in 0..__VX_SQ__ {
+    for d in 0..__VX_HD__ {
+      q_h[i][d] = (i as f32) * 0.01;
+      o_h[i][d] = 0.0;
+    }
+  }
+  for j in 0..__VX_SK__ {
+    for d in 0..__VX_HD__ {
+      k_h[j][d] = (j as f32) * 0.01;
+      v_h[j][d] = (j as f32) * 0.01;
+    }
+  }
+
+  // Capacity-checked against GPU_HBM and costed from its bandwidth.
+  let q = transfer(q_h, Memory::GPU_HBM);
+  let k = transfer(k_h, Memory::GPU_HBM);
+  let v = transfer(v_h, Memory::GPU_HBM);
+  let mut o = transfer(o_h, Memory::GPU_HBM);
+  let scale : f32 = 0.5;
+
+  spawn on(Topology::GPU) {
+    let mut ts = Tensor<f32>([ 1, __VX_TILE__ ]);
+    for i in 0..__VX_SQ__ {
+      let mut m : f32 = -1000000.0;
+      let mut l : f32 = 0.0;
+      for t in 0..__VX_NT__ {
+        let mut tm : f32 = -1000000.0;
+        for jj in 0..__VX_TILE__ {
+          let j = t * __VX_TILE__ + jj;
+          let mut acc : f32 = 0.0;
+          for d in 0..__VX_HD__ {
+            acc += q[i][d] * k[j][d];
+          }
+          let sij : f32 = acc * scale;
+          ts[0][jj] = sij;
+          if sij > tm {
+            tm = sij;
+          }
+        }
+        let m_new : f32 = if tm > m {
+          tm
+        } else {
+          m
+        };
+        let corr : f32 = (m - m_new).exp();
+        l = l * corr;
+        for d in 0..__VX_HD__ {
+          o[i][d] = o[i][d] * corr;
+        }
+        for jj in 0..__VX_TILE__ {
+          let j = t * __VX_TILE__ + jj;
+          let p : f32 = (ts[0][jj] - m_new).exp();
+          l = l + p;
+          for d in 0..__VX_HD__ {
+            o[i][d] = o[i][d] + p * v[j][d];
+          }
+        }
+        m = m_new;
+      }
+      for d in 0..__VX_HD__ {
+        o[i][d] = o[i][d] / l;
+      }
+    }
+  }
+
+  // The whole tensor, because indexing it here is a cross-topology read: `o`
+  // lives in GPU_HBM and the checker refuses `o[0][0]` from the CPU, which is
+  // the memory model doing its job. `print` of the tensor is the path that
+  // brings it back. At the sizes below the output is large, so the harness
+  // redirects it and reads only the first row -- whose value is a closed form:
+  // row 0 of Q is all zeros, so every score is zero, the softmax is uniform,
+  // and o[0][d] is the mean of column d of V, which is 0.01*(SK-1)/2.
+  print(o);
+  return 0;
+}
