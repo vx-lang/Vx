@@ -29,12 +29,23 @@ boundary, and they fail differently:
 
 1. **Values must travel.** A memref argument is a descriptor plus the buffer it points
    at. The descriptor is small and fixed; the buffer is the model.
+
 1. **Results must come back.** `outkind=buffer` means the caller's buffer is filled;
    `outkind=slot` means the kernel allocates and publishes a descriptor. Only the first
    has an obvious remote meaning, and the second is the interesting case.
-1. **The callee must exist there.** `vx_host_kernel_symbol(kernel_name)` does `dlsym` in
-   this process. A remote agent needs the same outlined kernel, which means it needs the
-   same compiled artifact.
+
+1. **The callee must exist there -- but only for the fallback.**
+   `vx_host_kernel_symbol(kernel_name)` does `dlsym` in this process, so a worker cannot
+   run an outlined kernel it was never sent. **This turned out not to bind on the path
+   that matters.** A dispatch the plugin *routes* never touches the outlined kernel:
+   `vx_gemm_plan_decode` succeeds, the GEMM goes to cuBLAS, and the symbol lookup is the
+   fallback for kernels it declines. Every projection in `llama2.vx` is a classified
+   matmul, so the demo needs no artifact shipping at all.
+
+   What a worker must do instead is *refuse* what it cannot route, and let the host run
+   it -- which is exactly what happens on one machine when a plugin declines a kernel.
+   Artifact shipping becomes necessary only when a worker should run unclassified
+   kernels too, which is a different feature.
 
 ## The decision that shapes everything: what does a remote worker hold?
 
@@ -466,11 +477,45 @@ the whole body or blocks -- so the loop stays, being POSIX-legal and real on TCP
 comment saying the test exercised it was false and now says so. Unproven code that claims
 to be proven is the same defect as a test that asserts nothing.
 
-What remains for step 3 is neither format nor framing: a manifest mapping
-`toponame=DecodeWorker` to an endpoint, and shipping the artifact so the worker has the
-same outlined kernels. That second one is the assumption the two-process test explicitly
-does *not* check -- parent and child are one binary there, so `vx_host_kernel_symbol`
-finds the kernel on both sides for free, and on two machines it will not.
+**Step 3's software is done** (5d1d72cd, b7d9b7c9, baff1b6f, 33723e18). An unmodified
+program dispatches to a separate worker process, decided entirely by whether a manifest
+names the topology:
+
+| | |
+|---|---|
+| no manifest | runs here |
+| manifest, live worker | staged, dispatched, served there |
+| manifest, unreachable worker | aborts naming the worker |
+
+The third row is deliberate. A silent fall back to local would produce correct numbers
+while the distribution under test did not happen, which is the same failure a skipped
+manifest line would cause.
+
+Building it refuted this document three more times, which is now the pattern rather than
+the exception:
+
+- **The artifact claim above** -- not needed for the routed path at all.
+- **The CPU backend could not route a matmul.** It decoded a plan only to log it and
+  always called the outlined kernel, so it and the CUDA backend disagreed about what is
+  routable. Invisible on one machine, fatal for a worker, which has no outlined kernel to
+  fall back to. It now runs a reference GEMM -- not to be fast, but so both backends
+  answer the same question, which is what makes a CPU worker possible and the whole path
+  testable with no GPU.
+- **Refusing a non-handle operand was wrong.** Only weights are resident; activations and
+  output buffers are host memory that changes every token, so refusing them would leave
+  only a program with no inputs and no outputs dispatchable. They are staged for the call,
+  which is what the local path already does per dispatch.
+- **A slot can hold a buffer.** `matmul_into(&mut y, ..)` on a local tensor reaches its
+  buffer through the indirection the tensor lives in, so `outkind=buffer` arrives with a
+  slot-tagged argument. The wire sent nothing for slots, so the worker decoded a 0x0
+  result and refused with nothing to say why.
+
+**Checked across architectures.** An arm64 macOS client drove an x86_64 Linux worker over
+a real network and got the right answer. Neither `fork` nor localhost exercises different
+alignment rules, a different compiler, or an MTU, so the fixed little-endian encoding was
+a claim in this document until it was not.
+
+What remains is a run: a manifest naming llama2's two workers, and two machines.
 
 ## What this does not change
 

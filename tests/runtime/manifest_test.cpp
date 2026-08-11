@@ -183,6 +183,28 @@ void test_dispatch_ids_match_the_compiler() {
   check(vx_manifest_dispatch_id("MyTPU") == 1502, "MyTPU -> 1502");
   check(vx_manifest_dispatch_id("AcmeCore") == 1836, "AcmeCore -> 1836");
 
+  // Built-in spellings, which are what a real program mostly places on and are
+  // *not* hashes of anything. llama2.vx uses GPU[0] and GPU[1]; a manifest that
+  // understood only declared names would resolve its dispatches by `toponame=`
+  // and then fail to route the allocations, which are given an id and never a
+  // name -- so the weights would stay here while the dispatches went elsewhere.
+  //
+  // Every one of these was cross-checked against `vxc --action emit-mlir`.
+  check(vx_manifest_dispatch_id("GPU[0]") == 500, "GPU[0] -> 500");
+  check(vx_manifest_dispatch_id("GPU[1]") == 501, "GPU[1] -> 501");
+  check(vx_manifest_dispatch_id("GPU[7]") == 507, "GPU[7] -> 507");
+  check(vx_manifest_dispatch_id("NPU[3]") == 103, "NPU[3] -> 103");
+  check(vx_manifest_dispatch_id("AccCore[2]") == 202, "AccCore[2] -> 202");
+  check(vx_manifest_dispatch_id("ANE") == 400, "ANE -> 400");
+  check(vx_manifest_dispatch_id("AMX") == 300, "AMX -> 300");
+  check(vx_manifest_dispatch_id("CPU") == 0, "CPU -> 0");
+  check(vx_manifest_dispatch_id("CpuNeon") == 700, "CpuNeon -> 700");
+  check(vx_manifest_dispatch_id("CpuAvx512") == 600, "CpuAvx512 -> 600");
+
+  // A declared name must not collide with a built-in band.
+  check(vx_manifest_dispatch_id("DecodeWorker") >= 1000,
+        "a declared name stays in the hashed band");
+
   // And the band: named topologies live in 1000..1999, which is what keeps them
   // clear of the built-in kinds below and of slices above.
   check(vx_manifest_dispatch_id("") >= 1000 &&

@@ -418,6 +418,11 @@ void *vx_plugin_alloc_and_transfer(size_t bytes, void *host_ptr,
 
 void *vx_plugin_transfer_peer(void *src_device_ptr, uint32_t src_topology_id,
                               uint32_t dst_topology_id, size_t bytes) {
+  void *routed = nullptr;
+  if (vx_routing_try_peer(src_device_ptr, src_topology_id, dst_topology_id,
+                          bytes, &routed)) {
+    return routed;
+  }
   // No device, or a buffer that never reached one: both topologies name the
   // same host memory, so the movement is a copy. Keeping this path means a
   // disaggregated program is still correct on a machine with no GPUs, which is

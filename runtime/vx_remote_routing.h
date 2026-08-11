@@ -164,6 +164,67 @@ inline int vx_routing_try_dispatch(const void *payload, size_t payload_size,
                             scratch_len);
 }
 
+/// Returns 1 and sets `*out` when either end of a peer transfer is remote.
+///
+/// A movement between two devices becomes, across machines, a read from one and
+/// a write to the other -- the same shape the CUDA backend already falls back
+/// to when no P2P path exists, which is why `cudaMemcpyPeer` is allowed to
+/// stage through the host. Worker to worker directly is the optimisation, and
+/// needs a message this protocol does not have.
+///
+/// Without this the local path is reached with a handle, `is_device_ptr` says
+/// it is not device memory, and it memcpys from a non-canonical address. That
+/// faults immediately rather than reading something -- which is the whole
+/// reason handles are minted non-canonical -- but it is still the wrong thing
+/// to do, and llama2.vx's `handoff_kv` is exactly where it happens.
+inline int vx_routing_try_peer(void *src, uint32_t src_topology_id,
+                               uint32_t dst_topology_id, size_t bytes,
+                               void **out) {
+  const vx_manifest_entry *sw = vx_routing_worker((int32_t)src_topology_id);
+  const vx_manifest_entry *dw = vx_routing_worker((int32_t)dst_topology_id);
+  if (!sw && !dw) {
+    return 0;
+  }
+
+  size_t scratch_len = 0;
+  uint8_t *scratch = vx_routing_scratch(&scratch_len);
+  /* The staging buffer carries a message, so the bytes have to fit beside its
+     header rather than exactly fill it. */
+  if (bytes + 4096 > scratch_len) {
+    fprintf(stderr, "[Vx remote] FATAL: a %zu-byte handoff exceeds staging\n",
+            bytes);
+    abort();
+  }
+
+  /* Read the source into host memory, wherever it is. */
+  if (sw && vx_remote_addr_is_handle((uint64_t)(uintptr_t)src)) {
+    if (!vx_remote_fetch(vx_routing_fd(sw), (uint64_t)(uintptr_t)src, scratch,
+                         (uint64_t)bytes)) {
+      fprintf(stderr, "[Vx remote] FATAL: %s could not return the handoff\n",
+              sw->name);
+      abort();
+    }
+  } else {
+    memcpy(scratch, src, bytes);
+  }
+
+  /* And write it wherever the destination is. */
+  if (dw) {
+    void *handle = nullptr;
+    if (!vx_routing_try_alloc(bytes, scratch, dst_topology_id, &handle)) {
+      return 0;
+    }
+    *out = handle;
+  } else {
+    void *dst = malloc(bytes);
+    if (dst) {
+      memcpy(dst, scratch, bytes);
+    }
+    *out = dst;
+  }
+  return 1;
+}
+
 /// Returns 1 when the read-back was served remotely.
 inline int vx_routing_try_fetch(void *device_ptr, void *host_ptr, size_t bytes,
                                 uint32_t topology_id) {

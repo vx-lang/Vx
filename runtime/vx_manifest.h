@@ -78,7 +78,47 @@ static inline uint32_t vx_manifest_fnv32(const char *s) {
   return hash;
 }
 
+/// The dispatch id the compiler gives a topology written this way.
+///
+/// Mirrors `topology_dispatch_id` over `display_name`'s spellings, not only the
+/// hashed band. A manifest that understood just declared names could not name
+/// the devices a program actually uses most: llama2.vx places on
+/// `Topology::GPU[0]` and `GPU[1]`, whose ids are 500 and 501 and are not
+/// hashes of anything. Naming them would have looked right, resolved a dispatch
+/// by its `toponame=`, and then failed to route the *allocation* -- which is
+/// given an id and never a name -- so the weights would have stayed on the host
+/// while the dispatches went elsewhere.
 static inline int32_t vx_manifest_dispatch_id(const char *name) {
+  int index = 0;
+
+  if (strcmp(name, "CPU") == 0 || strcmp(name, "Current") == 0) {
+    return 0;
+  }
+  if (strcmp(name, "AMX") == 0) {
+    return 300;
+  }
+  if (strcmp(name, "ANE") == 0) {
+    return 400;
+  }
+  if (strcmp(name, "CpuAvx512") == 0) {
+    return 600;
+  }
+  if (strcmp(name, "CpuNeon") == 0) {
+    return 700;
+  }
+  if (sscanf(name, "NPU[%d]", &index) == 1) {
+    return 100 + index;
+  }
+  if (sscanf(name, "AccCore[%d]", &index) == 1) {
+    return 200 + index;
+  }
+  if (sscanf(name, "GPU[%d]", &index) == 1) {
+    return 500 + index;
+  }
+  /* A name declared in a machine file, which is the hashed band. Slices
+     (2000..2999) are deliberately absent: a slice is an extent of a device
+     rather than a machine, and naming one in a manifest would be asking to send
+     a dispatch to half a GPU. */
   return 1000 + (int32_t)(vx_manifest_fnv32(name) % 1000u);
 }
 

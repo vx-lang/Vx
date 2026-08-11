@@ -308,6 +308,11 @@ int32_t vx_plugin_transfer_device_to_host(void *device_ptr, void *host_ptr,
 
 void *vx_plugin_transfer_peer(void *src_device_ptr, uint32_t src_topology_id,
                               uint32_t dst_topology_id, size_t bytes) {
+  void *routed = nullptr;
+  if (vx_routing_try_peer(src_device_ptr, src_topology_id, dst_topology_id,
+                          bytes, &routed)) {
+    return routed;
+  }
   // A host backend has one memory, so both topologies name it and the movement
   // between them is a copy. Answering rather than refusing is what lets a
   // disaggregated program be developed and tested on a laptop: the same source

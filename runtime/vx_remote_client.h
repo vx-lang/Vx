@@ -369,7 +369,10 @@ static inline int vx_remote_dispatch(int fd, const void *payload,
      would be -- see vx_agent_apply_result. */
   for (int64_t i = 0; i < num_args && count > 0; ++i) {
     vx_wire_result res;
-    if (!VX_ABI_IS_SLOT(arg_tags[i])) {
+    /* Only slots sent empty are publication targets -- see the worker. A slot
+       that carried a buffer keeps pointing at that buffer, and overwriting its
+       descriptor here would replace the caller's own tensor with a handle. */
+    if (!VX_ABI_IS_SLOT(arg_tags[i]) || args[i].handle != 0) {
       continue;
     }
     if (!vx_wire_get_result(&r, &res)) {

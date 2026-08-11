@@ -144,7 +144,13 @@ int serve_dispatch(const vx_wire_dispatch *d, const vx_wire_arg *args,
      rather than merely consulted. */
   *num_results = 0;
   for (int64_t i = 0; i < d->num_args; ++i) {
-    if (!VX_ABI_IS_SLOT(args[i].tag)) {
+    /* A slot that arrived *holding* a buffer is not a publication target: the
+       plugin filled what it already named, the way `outkind=buffer` means. Only
+       a slot that arrived empty is storage something was published into.
+       Reporting the first kind as a result made the host overwrite its own
+       descriptor with a handle, and the read-back that followed wrote into it.
+     */
+    if (!VX_ABI_IS_SLOT(args[i].tag) || args[i].handle != 0) {
       continue;
     }
     const void *outer = desc_ptrs[i];
