@@ -292,6 +292,7 @@ extern "C" int vx_dispatch_ane_affine(float *out, float *x, float alpha,
 #include "../include/vx_hardware_runtime.h"
 #include "vx_dispatch_plan.h"
 #include "vx_host_call.h"
+#include "vx_remote_routing.h"
 #include <cstdlib>
 
 extern "C" {
@@ -299,6 +300,15 @@ extern "C" {
 
 void *vx_plugin_alloc_and_transfer(size_t bytes, void *host_ptr,
                                    uint32_t topology_id) {
+  // Placement first, hardware second. Without this the whole fleet story is
+  // absent from this backend: a program run on Apple silicon with a manifest
+  // naming a worker allocated here instead, dispatched here, and said nothing.
+  // Not a wrong answer -- the right answer from the wrong machine, which is
+  // worse, because a run that never left the host still prints tokens.
+  void *remote = nullptr;
+  if (vx_routing_try_alloc(bytes, host_ptr, topology_id, &remote)) {
+    return remote;
+  }
   void *ptr = malloc(bytes);
   if (host_ptr) {
     memcpy(ptr, host_ptr, bytes);
@@ -319,6 +329,13 @@ extern "C" uint64_t vx_plugin_dispatch_async(const void *binary_payload,
                                              const int32_t *arg_tags,
                                              int64_t num_args) {
   const char *kernel_name = (const char *)binary_payload;
+
+  // Before anything local: does this placement name another machine?
+  if (vx_routing_try_dispatch(binary_payload, payload_size, device_args,
+                              arg_tags, num_args)) {
+    return 1;
+  }
+
   VX_NPU_LOG("[Vx Dispatcher] Intercepted kernel dispatch: %s with %lld args\n",
              kernel_name, (long long)num_args);
 
@@ -465,6 +482,9 @@ void vx_plugin_await_future(uint64_t future_id) {
 
 int32_t vx_plugin_transfer_device_to_host(void *device_ptr, void *host_ptr,
                                           size_t bytes, uint32_t topology_id) {
+  if (vx_routing_try_fetch(device_ptr, host_ptr, bytes, topology_id)) {
+    return 1;
+  }
   // The NPE shares the host's memory, so the topology names it and nothing
   // follows from that.
   (void)topology_id;
@@ -474,6 +494,11 @@ int32_t vx_plugin_transfer_device_to_host(void *device_ptr, void *host_ptr,
 
 void *vx_plugin_transfer_peer(void *src_device_ptr, uint32_t src_topology_id,
                               uint32_t dst_topology_id, size_t bytes) {
+  void *routed = nullptr;
+  if (vx_routing_try_peer(src_device_ptr, src_topology_id, dst_topology_id,
+                          bytes, &routed)) {
+    return routed;
+  }
   // One memory here too, so a movement between two topologies is a copy. A
   // disaggregated program therefore runs on this backend and produces the same
   // tokens, which is what gives a two-device run something to be checked
@@ -488,6 +513,9 @@ void *vx_plugin_transfer_peer(void *src_device_ptr, uint32_t src_topology_id,
 }
 
 void vx_plugin_free(void *device_ptr, uint32_t topology_id) {
+  if (vx_routing_try_free(device_ptr, topology_id)) {
+    return;
+  }
   free(device_ptr);
 }
 

@@ -86,6 +86,37 @@ vx_remote_table g_table;
 /* Sized for llama2's largest staged blob rather than for a token: a projection
    weight arrives in one TRANSFER. */
 uint8_t g_body[64u << 20];
+/* Wire traffic this worker has served, by message kind (1..4). Reported when
+   the host disconnects; see the counting site in the message loop. */
+uint64_t g_msg_count[5] = {0, 0, 0, 0, 0};
+uint64_t g_msg_bytes[5] = {0, 0, 0, 0, 0};
+
+/* One line per kind when the host goes away, so a harness can read the cost of
+   a run without parsing a log. Unconditional rather than behind --verbose: a
+   run whose traffic nobody measured is how "about six round trips" survived as
+   an estimate. Silent when nothing was served, so an idle worker stays quiet.
+ */
+void report_traffic() {
+  static const char *kNames[5] = {"", "TRANSFER", "DISPATCH", "FREE", "FETCH"};
+  uint64_t total = 0;
+  for (int i = 1; i <= 4; ++i) {
+    total += g_msg_count[i];
+  }
+  if (total == 0) {
+    return;
+  }
+  fprintf(stderr,
+          "[Vx worker] served %llu message(s):", (unsigned long long)total);
+  for (int i = 1; i <= 4; ++i) {
+    if (g_msg_count[i] != 0) {
+      fprintf(stderr, " %s=%llu (%llu B)", kNames[i],
+              (unsigned long long)g_msg_count[i],
+              (unsigned long long)g_msg_bytes[i]);
+    }
+  }
+  fprintf(stderr, "\n");
+}
+
 /* A dispatch reply is a status and a few handles, but a FETCH reply is bulk:
    llama2's KV handoff reads back n_layers x seq_len x kv_dim x 4 bytes in one
    message, 442 KB at 64 tokens and far more at a real context length. Sized for
@@ -252,6 +283,7 @@ int serve(int fd) {
 
     if (rc == VX_TRANSPORT_EOF) {
       log_line("[Vx worker] host disconnected\n");
+      report_traffic();
       return 0;
     }
     if (rc == VX_TRANSPORT_TOO_LARGE) {
@@ -263,11 +295,23 @@ int serve(int fd) {
     }
     if (rc != VX_TRANSPORT_OK) {
       fprintf(stderr, "[Vx worker] transport failure; dropping the host\n");
+      report_traffic();
       return 1;
     }
 
     vx_wire_reader r;
     vx_wire_reader_init(&r, g_body, (size_t)len);
+
+    // Exact per-kind accounting. Round trips are the fleet's unit of cost --
+    // each one is a full latency, and on a real network that dominates a small
+    // operand's bytes by orders of magnitude -- so how many a dispatch takes
+    // has to be measurable rather than inferred from which log lines happen to
+    // exist. TRANSFER and DISPATCH were logged; FETCH and FREE were not, which
+    // made "about six round trips per dispatch" an estimate nobody could check.
+    if (type >= 1 && type <= 4) {
+      g_msg_count[type] += 1;
+      g_msg_bytes[type] += (uint64_t)len;
+    }
 
     switch (type) {
     case VX_WIRE_TRANSFER: {
