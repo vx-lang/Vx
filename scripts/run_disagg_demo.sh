@@ -149,18 +149,34 @@ echo "=== 2. Did it use two GPUs? ==="
 # separately from NR, which would otherwise include the peer-transfer line and
 # report the switch one dispatch late.
 awk 'BEGIN{prev="none"; n=0}
-     /^\[Vx CUDA\] device /{
+     /^\[Vx CUDA\] device [0-9]+ dispatch$/{
        n++; d=$4;
        if (d != prev) { print "  device " d " from dispatch " n; prev=d }
      }' "$OUTDIR/trace-disagg.txt" | head -10
-echo "  dispatches per device:"
+echo "  dispatches per device (staging and frees excluded):"
 for run in single disagg; do
-  d0=$(grep -c '^\[Vx CUDA\] device 0' "$OUTDIR/trace-$run.txt")
-  d1=$(grep -c '^\[Vx CUDA\] device 1' "$OUTDIR/trace-$run.txt")
+  d0=$(grep -c '^\[Vx CUDA\] device 0 dispatch$' "$OUTDIR/trace-$run.txt")
+  d1=$(grep -c '^\[Vx CUDA\] device 1 dispatch$' "$OUTDIR/trace-$run.txt")
   printf '    %-8s device 0: %-8s device 1: %s\n' "$run" "$d0" "$d1"
 done
 echo "  (the single-device run must show device 1: 0 -- otherwise the second"
 echo "   run's two devices prove nothing about the placement)"
+
+# Decode has to have *run*. Prefill is as long as the prompt, so a token count
+# below it leaves nothing for decode to do: every iteration is prefill, decode's
+# loop body never executes, and the only marks on device 1 are the weight
+# replica's allocations. That run agrees on tokens because it is the
+# single-device computation performed twice, and it used to satisfy both checks
+# above -- thirteen allocation lines counted as "it used two GPUs".
+decode_dispatches=$(grep -c '^\[Vx CUDA\] device 1 dispatch$' "$OUTDIR/trace-disagg.txt")
+if [ "$decode_dispatches" -eq 0 ]; then
+  echo
+  echo "  FAILURE: nothing was dispatched to device 1." >&2
+  echo "           Prefill runs for as many steps as the prompt is long, so with" >&2
+  echo "           -t $TOKENS decode never executed and this run demonstrates" >&2
+  echo "           nothing about placement. Raise -t above the prompt length." >&2
+  exit 1
+fi
 
 echo
 echo "=== 3. Did the KV cache cross? ==="

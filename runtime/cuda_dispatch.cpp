@@ -109,7 +109,17 @@ bool cuda_available() {
 ///
 /// An absent or out-of-band id leaves the current device alone, which is what a
 /// producer predating the entry means and what a non-GPU topology means.
-bool select_device(int32_t topology_id) {
+/// `why` names what the device was selected *for*, and is not decoration.
+///
+/// This line used to be `[Vx CUDA] device 1` whoever asked, which made an
+/// allocation indistinguishable from a dispatch in the trace -- and the
+/// disaggregated demo's "did it use two GPUs?" check counts these lines. A
+/// short run puts every iteration in prefill, so decode never executes, and the
+/// only device-1 lines are the decode replica's weight allocations. The check
+/// saw thirteen of them, reported two devices, and the token comparison agreed
+/// because it was the same computation run twice on one GPU. Both halves of the
+/// evidence passed for a run that never disaggregated anything.
+bool select_device(int32_t topology_id, const char *why) {
   int index = vx_topology_device_index(topology_id, VX_TOPO_GPU_BASE);
   if (index < 0) {
     return true;
@@ -125,7 +135,7 @@ bool select_device(int32_t topology_id) {
 
   VX_CUDA_CHECK(cudaSetDevice(index));
   if (verbose()) {
-    fprintf(stderr, "[Vx CUDA] device %d\n", index);
+    fprintf(stderr, "[Vx CUDA] device %d %s\n", index, why);
   }
   return true;
 }
@@ -250,6 +260,28 @@ struct DeviceBuffer {
 DeviceBuffer stage(const void *host_data, int64_t rows, int64_t cols,
                    int64_t row_stride, size_t elem_bytes) {
   DeviceBuffer buf;
+
+  // An operand that lives on another machine cannot be staged from here.
+  //
+  // Falling back to the local path is safe exactly while every operand is
+  // local. Once a dispatch has been routed to a worker, its results live there,
+  // and a *later* dispatch that declines to route -- for any reason, including
+  // a wire failure -- reaches this function holding a handle. The address is
+  // minted non-canonical so the fault is immediate rather than silent, and it
+  // is: a SIGSEGV inside cudaMemcpy2D, three frames below anything that names
+  // the problem. This says it instead. It is still fatal, because there is no
+  // correct way to continue, but the message identifies which side the memory
+  // is on rather than leaving a backtrace through the driver.
+  if (vx_remote_addr_is_handle((uint64_t)(uintptr_t)host_data)) {
+    fprintf(stderr,
+            "[Vx CUDA] FATAL: operand %p is a remote handle (worker %u), so "
+            "this dispatch cannot run locally.\n"
+            "          A dispatch declined to route while its operands were "
+            "already on a worker (#348).\n",
+            host_data, vx_remote_addr_worker((uint64_t)(uintptr_t)host_data));
+    abort();
+  }
+
   if (is_device_ptr(host_data)) {
     buf.ptr = const_cast<void *>(host_data);
     buf.row_stride = row_stride;
@@ -405,7 +437,7 @@ void *vx_plugin_alloc_and_transfer(size_t bytes, void *host_ptr,
   // "staged onto GPU 1" landed on whichever device happened to be current --
   // accidentally right while there was one GPU, and wrong in the first
   // configuration where the answer mattered (#346).
-  select_device((int32_t)topology_id);
+  select_device((int32_t)topology_id, "stage");
 
   void *device_ptr = nullptr;
   VX_CUDA_CHECK(cudaMalloc(&device_ptr, bytes));
@@ -456,7 +488,7 @@ void *vx_plugin_transfer_peer(void *src_device_ptr, uint32_t src_topology_id,
   // through the host itself. One call is therefore correct on an NVLink pod and
   // on a PCIe-only one, which matters because a rented pod does not say which
   // it gave you.
-  select_device((int32_t)dst_topology_id);
+  select_device((int32_t)dst_topology_id, "peer");
   void *dst_ptr = nullptr;
   VX_CUDA_CHECK(cudaMalloc(&dst_ptr, bytes));
   VX_CUDA_CHECK(cudaMemcpyPeer(dst_ptr, dst, src_device_ptr, src, bytes));
@@ -481,7 +513,8 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
   if (vx_gemm_plan_decode(binary_payload, payload_size, device_args, arg_tags,
                           num_args, &plan)) {
     if (cuda_available()) {
-      select_device(vx_payload_topology(binary_payload, payload_size));
+      select_device(vx_payload_topology(binary_payload, payload_size),
+                    "dispatch");
     }
     if (run_gemm(plan)) {
       return 1;
@@ -564,7 +597,7 @@ int32_t vx_plugin_transfer_device_to_host(void *device_ptr, void *host_ptr,
     // this would mostly work without the parameter. It names the device anyway,
     // because the ABI is the contract a non-CUDA backend implements and nothing
     // guarantees that backend can infer anything from an address (#346).
-    select_device((int32_t)topology_id);
+    select_device((int32_t)topology_id, "fetch");
     VX_CUDA_CHECK(
         cudaMemcpy(host_ptr, device_ptr, bytes, cudaMemcpyDeviceToHost));
   } else {
@@ -581,7 +614,7 @@ void vx_plugin_free(void *device_ptr, uint32_t topology_id) {
     return;
   }
   if (is_device_ptr(device_ptr)) {
-    select_device((int32_t)topology_id);
+    select_device((int32_t)topology_id, "free");
     cudaFree(device_ptr);
   } else {
     free(device_ptr);
