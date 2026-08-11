@@ -49,6 +49,11 @@ typedef struct {
   char name[VX_MANIFEST_MAX_NAME];
   char host[VX_MANIFEST_MAX_HOST];
   int port;
+  /* The dispatch id the compiler derives from this name. Computed here so a
+     plugin can answer "is topology 1113 remote?" -- the entry points that
+     allocate and free are given an id and never a name, because only a
+     dispatch payload carries `toponame=`. */
+  int32_t dispatch_id;
 } vx_manifest_entry;
 
 typedef struct {
@@ -57,6 +62,25 @@ typedef struct {
 } vx_manifest;
 
 static inline void vx_manifest_init(vx_manifest *m) { m->count = 0; }
+
+/// The compiler's `fnv_dispatch_id`, mirrored byte for byte.
+///
+/// src/arch.rs is the original and this must agree with it exactly: it is what
+/// turns a name in this file into the number a dispatch, an allocation and a
+/// free all carry. A divergence would not fail to build, it would route to the
+/// wrong machine or to none.
+static inline uint32_t vx_manifest_fnv32(const char *s) {
+  uint32_t hash = 2166136261u;
+  for (; *s; ++s) {
+    hash ^= (uint32_t)(unsigned char)*s;
+    hash *= 16777619u;
+  }
+  return hash;
+}
+
+static inline int32_t vx_manifest_dispatch_id(const char *name) {
+  return 1000 + (int32_t)(vx_manifest_fnv32(name) % 1000u);
+}
 
 /// Add one worker. Returns 0 if the table is full, a field is too long, the
 /// port is out of range, or the name is already present.
@@ -83,6 +107,24 @@ static inline int vx_manifest_add(vx_manifest *m, const char *name,
       return 0;
     }
   }
+  /* Two names hashing to one id would make a dispatch for either resolve to
+     whichever was added first, silently. The band is only a thousand wide, so
+     this is a real possibility rather than a theoretical one, and it is
+     detectable exactly here -- refusing costs a rename and catching it later
+     costs a run on the wrong machine. */
+  {
+    int32_t id = vx_manifest_dispatch_id(name);
+    for (i = 0; i < m->count; ++i) {
+      if (m->workers[i].dispatch_id == id) {
+        fprintf(stderr,
+                "[Vx manifest] '%s' and '%s' both hash to dispatch id %d; "
+                "rename one\n",
+                m->workers[i].name, name, id);
+        return 0;
+      }
+    }
+    m->workers[m->count].dispatch_id = id;
+  }
   snprintf(m->workers[m->count].name, VX_MANIFEST_MAX_NAME, "%s", name);
   snprintf(m->workers[m->count].host, VX_MANIFEST_MAX_HOST, "%s", host);
   m->workers[m->count].port = port;
@@ -103,6 +145,22 @@ static inline const vx_manifest_entry *vx_manifest_find(const vx_manifest *m,
   }
   for (i = 0; i < m->count; ++i) {
     if (strcmp(m->workers[i].name, name) == 0) {
+      return &m->workers[i];
+    }
+  }
+  return NULL;
+}
+
+/// Look a worker up by the dispatch id a topology resolves to.
+///
+/// The counterpart of `vx_manifest_find` for the entry points that are handed
+/// an id rather than a name -- allocation, free, and a transfer between
+/// devices. Same rule: absent means local.
+static inline const vx_manifest_entry *
+vx_manifest_find_by_id(const vx_manifest *m, int32_t dispatch_id) {
+  size_t i;
+  for (i = 0; i < m->count; ++i) {
+    if (m->workers[i].dispatch_id == dispatch_id) {
       return &m->workers[i];
     }
   }

@@ -165,6 +165,38 @@ void test_bounds() {
         "and then refuses rather than overwriting");
 }
 
+// The C mirror of the compiler's fnv_dispatch_id must agree with it exactly.
+//
+// These constants are not arbitrary: they are what src/arch.rs computes for
+// these names, cross-checked against `vxc --action emit-mlir` output, and
+// PrefillWorker/DecodeWorker are the same pair
+// tests/optimizations/pass/topology_name_in_payload.vx pins on the compiler
+// side. A divergence between the two implementations does not fail to build --
+// it routes a dispatch to the wrong machine, or to none.
+void test_dispatch_ids_match_the_compiler() {
+  check(vx_manifest_dispatch_id("PrefillWorker") == 1113,
+        "PrefillWorker -> 1113");
+  check(vx_manifest_dispatch_id("DecodeWorker") == 1669,
+        "DecodeWorker -> 1669");
+  check(vx_manifest_dispatch_id("Node") == 1789, "Node -> 1789");
+  check(vx_manifest_dispatch_id("Device") == 1731, "Device -> 1731");
+  check(vx_manifest_dispatch_id("MyTPU") == 1502, "MyTPU -> 1502");
+  check(vx_manifest_dispatch_id("AcmeCore") == 1836, "AcmeCore -> 1836");
+
+  // And the band: named topologies live in 1000..1999, which is what keeps them
+  // clear of the built-in kinds below and of slices above.
+  check(vx_manifest_dispatch_id("") >= 1000 &&
+            vx_manifest_dispatch_id("") < 2000,
+        "even an empty name lands in the named band");
+
+  vx_manifest m;
+  vx_manifest_init(&m);
+  vx_manifest_add(&m, "DecodeWorker", "10.0.0.5", 9001);
+  check(vx_manifest_find_by_id(&m, 1669) != NULL, "lookup by id finds it");
+  check(vx_manifest_find_by_id(&m, 1113) == NULL,
+        "and an id nobody claimed is local");
+}
+
 void test_load_missing_file_is_not_an_error() {
   vx_manifest m;
   check(vx_manifest_load(&m, "/nonexistent/vx-manifest") == 0,
@@ -215,6 +247,7 @@ int main() {
   test_malformed_lines_are_refused();
   test_duplicates_are_refused();
   test_bounds();
+  test_dispatch_ids_match_the_compiler();
   test_load_missing_file_is_not_an_error();
   test_load_from_file();
 

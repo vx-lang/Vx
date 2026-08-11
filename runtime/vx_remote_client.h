@@ -34,6 +34,7 @@
 #ifndef VX_REMOTE_CLIENT_H
 #define VX_REMOTE_CLIENT_H
 
+#include "vx_agent.h"
 #include "vx_manifest.h"
 #include "vx_remote_region.h"
 #include "vx_transport.h"
@@ -191,6 +192,126 @@ static inline int vx_remote_fetch(int fd, uint64_t handle, void *dst,
      of that, a length that is not what was asked for means the two sides
      disagree about the buffer, which is worse than a refusal. */
   return rc == VX_TRANSPORT_OK && got == nbytes;
+}
+
+/// Turn a local argument list into wire arguments.
+///
+/// The inverse of vx_agent.h's rebuild, and the reason a memref's *handle* is
+/// simply the pointer inside its descriptor: a buffer staged onto a remote
+/// worker had its handle returned by `vx_plugin_alloc_and_transfer` and stored
+/// wherever the program keeps pointers, so by the time a dispatch names it, the
+/// descriptor already holds it. Nothing has to be looked up.
+///
+/// Returns 0 if an argument cannot be sent -- a memref whose data pointer is
+/// *not* a handle is one that lives on this machine, and shipping the address
+/// would have the worker read its own memory at that number.
+static inline int vx_remote_encode_args(void **device_args,
+                                        const int32_t *arg_tags,
+                                        int64_t num_args, vx_wire_arg *out) {
+  for (int64_t i = 0; i < num_args; ++i) {
+    int32_t tag = arg_tags[i];
+    int32_t kind = VX_ABI_KIND(tag);
+    memset(&out[i], 0, sizeof(out[i]));
+    out[i].tag = tag;
+
+    if (VX_ABI_IS_SLOT(tag)) {
+      continue; /* storage the worker fills; nothing to send */
+    }
+    if (kind != VX_ABI_KIND_MEMREF) {
+      size_t n = vx_dtype_bytes(kind);
+      if (n == 0 || n > sizeof(out[i].scalar)) {
+        return 0;
+      }
+      memcpy(out[i].scalar, device_args[i], n);
+      continue;
+    }
+
+    {
+      const void *desc = *(const void **)device_args[i];
+      int32_t rank = (int32_t)VX_ABI_RANK(tag);
+      const int64_t *sizes;
+      const int64_t *strides;
+      uint64_t handle;
+
+      if (!desc || rank < 0 || rank > VX_ABI_MAX_RANK) {
+        return 0;
+      }
+      handle = (uint64_t)(uintptr_t)vx_memref_data(desc, VX_ABI_ELEM(tag));
+      if (!vx_remote_addr_is_handle(handle)) {
+        fprintf(stderr,
+                "[Vx remote] argument %lld is local memory, not a handle; a "
+                "buffer must be staged onto the worker before a dispatch can "
+                "name it\n",
+                (long long)i);
+        return 0;
+      }
+      sizes = vx_memref_sizes(desc);
+      strides = vx_memref_strides(desc, rank);
+      out[i].handle = handle;
+      out[i].rank = rank;
+      for (int32_t d = 0; d < rank; ++d) {
+        out[i].sizes[d] = sizes[d];
+        out[i].strides[d] = strides[d];
+      }
+    }
+  }
+  return 1;
+}
+
+/// Send a dispatch and apply whatever it published back into the caller's
+/// slots. Returns 0 when the worker declined, which the caller must treat as
+/// "run it here" rather than as a failure.
+static inline int vx_remote_dispatch(int fd, const void *payload,
+                                     uint64_t payload_len, void **device_args,
+                                     const int32_t *arg_tags, int64_t num_args,
+                                     vx_wire_arg *args, uint8_t *scratch,
+                                     size_t scratch_len) {
+  vx_wire_writer w;
+  vx_wire_reader r;
+  uint8_t reply[4096];
+  uint32_t type = 0;
+  uint64_t reply_len = 0;
+  int32_t status = -1;
+  int64_t count = 0;
+
+  if (!vx_remote_encode_args(device_args, arg_tags, num_args, args)) {
+    return 0;
+  }
+
+  vx_wire_writer_init(&w, scratch, scratch_len);
+  vx_wire_put_dispatch(&w, payload, payload_len, args, num_args);
+  if (w.overflow) {
+    return 0;
+  }
+  if (vx_transport_send(fd, VX_WIRE_DISPATCH, scratch, w.len) !=
+      VX_TRANSPORT_OK) {
+    return 0;
+  }
+  if (vx_transport_recv(fd, &type, reply, sizeof(reply), &reply_len) !=
+      VX_TRANSPORT_OK) {
+    return 0;
+  }
+
+  vx_wire_reader_init(&r, reply, (size_t)reply_len);
+  if (!vx_wire_get_results_header(&r, &status, &count) || status != 0) {
+    return 0;
+  }
+
+  /* Results arrive in slot order, so they are applied in the same order the
+     slots appear. A descriptor written here holds a handle where a pointer
+     would be -- see vx_agent_apply_result. */
+  for (int64_t i = 0; i < num_args && count > 0; ++i) {
+    vx_wire_result res;
+    if (!VX_ABI_IS_SLOT(arg_tags[i])) {
+      continue;
+    }
+    if (!vx_wire_get_result(&r, &res)) {
+      return 0;
+    }
+    vx_agent_apply_result(*(void **)device_args[i], &res);
+    --count;
+  }
+  return 1;
 }
 
 /// Release a resident buffer, and wait for the acknowledgement.
