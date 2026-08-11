@@ -35,7 +35,9 @@ void check(bool ok, const char *what) {
   }
 }
 
-vx_remote_region storage[64];
+// Large enough for the ceiling test to reach the offset limit rather than this
+// one -- the point of that test is which of the two binds first.
+vx_remote_region storage[65536];
 
 vx_remote_table fresh() {
   vx_remote_table t;
@@ -217,6 +219,59 @@ void test_large_regions() {
   check(next >= base + big + big, "the gap after it scales with its size");
 }
 
+// How many allocations a worker gets in its life, and why the number matters.
+//
+// `alloc` is a bump allocator over a 47-bit space and never reuses what it
+// hands out -- deliberately, so a stale handle stays dead (see
+// test_use_after_free). Every region therefore costs at least
+// VX_REMOTE_MIN_GAP of address space forever, and the ceiling is
+// 128 TiB / VX_REMOTE_MIN_GAP.
+//
+// At the original 4 GiB that was 32768 allocations. A dispatch stages two
+// operands and llama2 issues 43 dispatches per token, so a worker managed
+// about 380 tokens before it could serve nothing more -- for the life of the
+// process, not per request. One died mid-generation on a two-A100 pod after
+// 16145 dispatches, having served three shorter runs correctly first, which is
+// what made it look like "128 tokens is too many".
+//
+// The failure was not a clean refusal either: TRANSFER returned handle 0, the
+// client could not encode its arguments, dispatch reported failure -- and a
+// failure there used to mean "not routed", so the host ran the work itself
+// holding operands that lived on the worker. Address-space exhaustion on one
+// machine arrived as a SIGSEGV on another.
+void test_allocation_ceiling() {
+  vx_remote_table t = fresh();
+  int obj = 0;
+  size_t n = 0;
+
+  // Size is irrelevant while it is under the floor: the gap dominates.
+  while (n < 200000 && vx_remote_table_alloc(&t, 1, 4096, 0, &obj) != 0) {
+    ++n;
+  }
+
+  const uint64_t space = UINT64_C(1) << VX_REMOTE_OFFSET_BITS;
+  const size_t predicted = (size_t)(space / VX_REMOTE_MIN_GAP);
+
+  check(predicted > 1000000,
+        "the floor leaves room for millions of allocations, not thousands");
+  // The run stops at whichever binds first; with 65536 slots that is the array.
+  check(n == 65536,
+        "and the slot array is what binds now, not the address space");
+}
+
+// Freeing does not give the space back, and must not appear to.
+void test_free_does_not_reclaim_space() {
+  vx_remote_table t = fresh();
+  int a = 0;
+
+  uint64_t h = vx_remote_table_alloc(&t, 1, 4096, 0, &a);
+  uint64_t after = t.next_offset[1];
+  check(vx_remote_table_free(&t, h), "it frees");
+  check(
+      t.next_offset[1] == after,
+      "and the offset does not rewind -- reuse would resurrect stale handles");
+}
+
 } // namespace
 
 int main() {
@@ -228,6 +283,8 @@ int main() {
   test_workers_do_not_alias();
   test_refusals();
   test_large_regions();
+  test_allocation_ceiling();
+  test_free_does_not_reclaim_space();
 
   if (failures) {
     fprintf(stderr, "%d check(s) failed\n", failures);

@@ -189,9 +189,31 @@ inline int vx_routing_try_dispatch(const void *payload, size_t payload_size,
   }
   size_t scratch_len = 0;
   uint8_t *scratch = vx_routing_scratch(&scratch_len);
-  return vx_remote_dispatch(vx_routing_fd(w), payload, (uint64_t)payload_size,
-                            device_args, arg_tags, num_args, args, scratch,
-                            scratch_len);
+  if (vx_remote_dispatch(vx_routing_fd(w), payload, (uint64_t)payload_size,
+                         device_args, arg_tags, num_args, args, scratch,
+                         scratch_len)) {
+    return 1;
+  }
+
+  /* Everything above this point declines *before* touching the wire, and
+     returning 0 there means "run it here", which is safe. Failing here does
+     not mean that. By now operands have been staged onto the worker and the
+     handles the caller holds name memory in another process, so the local path
+     cannot run this dispatch -- it would stage from a handle, and the fault
+     lands in cudaMemcpy2D with nothing in the backtrace to say why.
+
+     This is how a worker running out of address space presented itself: a
+     TRANSFER returned handle 0, encoding failed, dispatch reported failure,
+     the caller obligingly ran it locally, and the program died on the *other*
+     machine with a segmentation fault. Refusing to pretend is the difference
+     between a diagnosis and a mystery. */
+  fprintf(stderr,
+          "[Vx remote] FATAL: dispatch to %s (%s:%d) failed after its operands "
+          "were staged there.\n"
+          "            Running it locally is not possible -- the operands are "
+          "on the worker -- and continuing would fault (#348).\n",
+          w->name, w->host, w->port);
+  abort();
 }
 
 /// Returns 1 and sets `*out` when either end of a peer transfer is remote.

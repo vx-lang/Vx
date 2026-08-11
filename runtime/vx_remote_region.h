@@ -66,7 +66,31 @@
 
 /// The smallest gap left after a region. Regions are also never followed
 /// immediately by another regardless of size -- see `vx_remote_table_alloc`.
-#define VX_REMOTE_MIN_GAP (UINT64_C(4) << 30)
+///
+/// This was 4 GiB. Since the space is never reused -- deliberately, so that a
+/// stale handle stays dead -- that set a ceiling on how many allocations a
+/// worker could perform in its entire life:
+///
+///     128 TiB / 4 GiB = 32768
+///
+/// A dispatch stages two operands and llama2 issues 43 dispatches per token, so
+/// that is roughly 380 tokens. Not 380 per request: 380 for as long as the
+/// process runs. A worker on a two-A100 pod reached it after 16145 dispatches,
+/// having served three shorter runs correctly first, which is exactly why it
+/// read as "128 tokens is too many" rather than as a lifetime limit.
+///
+/// At 1 MiB the same arithmetic gives 134 million, and what binds instead is
+/// the regions that are genuinely large: llama2 stages about 121 MB of stride
+/// per token, so a worker manages on the order of a million tokens. Still
+/// finite. Removing it properly means putting the generation in the handle so
+/// freed space can be recycled without resurrecting anything.
+///
+/// Shrinking the floor does not weaken overrun detection, which is what the gap
+/// is for: the gap is `max(size, VX_REMOTE_MIN_GAP)`, so every region already
+/// gets a gap at least as large as itself. This floor governs only regions
+/// smaller than the floor, and an overrun from a small region big enough to
+/// clear 1 MiB is not the off-by-one being guarded against.
+#define VX_REMOTE_MIN_GAP (UINT64_C(1) << 20)
 
 /// Compose a synthetic address. `worker` is 1..255; 0 is reserved so that a
 /// zeroed word is never a valid handle.
