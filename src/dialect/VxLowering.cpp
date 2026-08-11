@@ -11,6 +11,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
@@ -331,6 +332,121 @@ static std::string matmulRolesOf(Operation *matmul, Region &body,
       .str();
 }
 
+// The `math` dialect op for a libm symbol, or empty for one that is not a
+// transcendental Vx routes through the stdlib.
+//
+// `math` is the portable spelling: it lowers to libm on the host (the pipeline
+// already runs `convert-math-to-libm`) and to device intrinsics under the NVVM
+// pipeline. A `func.call @expf` lowers to neither -- it is a host symbol, and a
+// kernel that calls it cannot be loaded.
+static StringRef mathOpForLibm(StringRef libm) {
+  return llvm::StringSwitch<StringRef>(libm)
+      .Cases("expf", "exp", "math.exp")
+      .Cases("logf", "log", "math.log")
+      .Cases("log2f", "log2", "math.log2")
+      .Cases("log10f", "log10", "math.log10")
+      .Cases("sqrtf", "sqrt", "math.sqrt")
+      .Cases("sinf", "sin", "math.sin")
+      .Cases("cosf", "cos", "math.cos")
+      .Cases("tanf", "tan", "math.tan")
+      .Cases("asinf", "asin", "math.asin")
+      .Cases("acosf", "acos", "math.acos")
+      .Cases("atanf", "atan", "math.atan")
+      .Cases("fabsf", "fabs", "math.absf")
+      .Default(StringRef());
+}
+
+// The libm symbol a call ultimately reaches, seeing through one layer of Vx
+// stdlib wrapper.
+//
+// `x.exp()` does not call `expf` directly. It calls `@f32$exp`, whose whole
+// body is `%0 = call @expf(%arg0); return %0` -- the `impl Math for f32` in
+// stdlib/std/math.vx. Recognising the wrapper by that shape rather than by its
+// generated name means monomorphization can spell it however it likes, and a
+// wrapper that grows a second statement stops being treated as an intrinsic
+// instead of being silently mistaken for one.
+static StringRef libmSymbolBehind(StringRef callee, ModuleOp module) {
+  auto fn = module.lookupSymbol<func::FuncOp>(callee);
+  if (!fn)
+    return callee;
+  if (fn.isExternal())
+    return callee;
+  Region &body = fn.getBody();
+  if (!body.hasOneBlock())
+    return StringRef();
+  Block &blk = body.front();
+  auto ops = blk.without_terminator();
+  if (!llvm::hasSingleElement(ops))
+    return StringRef();
+  auto inner = dyn_cast<func::CallOp>(&*ops.begin());
+  auto ret = dyn_cast<func::ReturnOp>(blk.getTerminator());
+  if (!inner || !ret)
+    return StringRef();
+  if (ret->getOperands() != inner->getResults())
+    return StringRef();
+  if (inner.getArgOperands() != ValueRange(blk.getArguments()))
+    return StringRef();
+  return inner.getCallee();
+}
+
+// Rewrite host libm calls in an outlined kernel to `math` ops.
+static void useDeviceMathIn(Region &kernel, ModuleOp module,
+                            PatternRewriter &rewriter) {
+  SmallVector<func::CallOp> calls;
+  kernel.walk([&](func::CallOp call) { calls.push_back(call); });
+  for (func::CallOp call : calls) {
+    StringRef libm = libmSymbolBehind(call.getCallee(), module);
+    if (libm.empty())
+      continue;
+    StringRef mathName = mathOpForLibm(libm);
+    if (mathName.empty())
+      continue;
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPoint(call);
+    OperationState state(call.getLoc(), mathName);
+    state.addOperands(call.getOperands());
+    state.addTypes(call.getResultTypes());
+    Operation *mathOp = rewriter.create(state);
+    rewriter.replaceOp(call, mathOp->getResults());
+  }
+}
+
+// Put a kernel's own scratch on the stack.
+//
+// A `Tensor` declared inside the region -- FlashAttention's `ts`, the one score
+// tile it keeps -- lowers to `memref.alloc`. That is a heap allocation, and in
+// a device kernel it becomes a call to device-side `malloc`: a heap the launch
+// has to be configured with, and a call on every invocation, for what is a
+// 64-byte scratch buffer. Nothing frees it either, so on the host path it leaks
+// once per dispatch.
+//
+// Only allocations in the entry block, with a static shape, and with no
+// `dealloc` of their own. An `alloca` inside a loop grows the stack every
+// iteration, which is a worse bug than the one being fixed; a dynamic extent is
+// not a stack slot on a device at all; and something that is explicitly freed
+// is not scratch whose lifetime this may shorten.
+static void useStackScratchIn(Region &kernel, PatternRewriter &rewriter) {
+  if (kernel.empty())
+    return;
+  SmallVector<memref::AllocOp> allocs;
+  for (Operation &op : kernel.front())
+    if (auto alloc = dyn_cast<memref::AllocOp>(&op))
+      allocs.push_back(alloc);
+
+  for (memref::AllocOp alloc : allocs) {
+    MemRefType ty = alloc.getType();
+    if (!ty.hasStaticShape() || !alloc.getDynamicSizes().empty())
+      continue;
+    if (llvm::any_of(alloc->getUsers(),
+                     [](Operation *u) { return isa<memref::DeallocOp>(u); }))
+      continue;
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPoint(alloc);
+    auto stack = rewriter.create<memref::AllocaOp>(alloc.getLoc(), ty);
+    rewriter.replaceOp(alloc, stack.getResult());
+  }
+}
+
 // Lower `vx.spawn` to `async.execute` for CPU topologies, or an outlined
 // kernel + `vx.launch` for NPU/AccCore topologies.
 struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
@@ -394,6 +510,38 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
 
     SetVector<Value> captures;
     getUsedValuesDefinedAbove(spawnBody, captures);
+
+    // A constant used inside the region is rematerialized in it rather than
+    // passed to it.
+    //
+    // Vx loop bounds are literals -- `for i in 0..32` -- and they are defined
+    // outside the region, so capturing them by value turns every trip count
+    // into a runtime argument. That costs twice. It widens the dispatch: the
+    // FlashAttention kernel took eight scalar arguments that are all constants,
+    // 8 of its 36 `.param`s. And it hides the shape from the backend, which is
+    // the expensive half -- with the bounds opaque, NVVM cannot unroll the
+    // 16-wide inner loops, and the same kernel goes from 306 instructions of
+    // straight-line arithmetic to 149 with 19 branches.
+    //
+    // Constant-like with no operands, so the clone is self-contained and
+    // sinking it cannot reorder anything observable.
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(&spawnBody.front());
+      for (Value cap : captures) {
+        Operation *def = cap.getDefiningOp();
+        if (!def || def->getNumOperands() != 0 ||
+            !def->hasTrait<OpTrait::ConstantLike>())
+          continue;
+        Operation *inRegion = rewriter.clone(*def);
+        rewriter.replaceUsesWithIf(
+            cap, inRegion->getResult(0), [&](OpOperand &use) {
+              return spawnBody.isAncestor(use.getOwner()->getParentRegion());
+            });
+      }
+      captures.clear();
+      getUsedValuesDefinedAbove(spawnBody, captures);
+    }
 
     // Create the outlined function at the module level
     auto module = op->getParentOfType<ModuleOp>();
@@ -480,6 +628,11 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
         return kernelRegion.isAncestor(use.getOwner()->getParentRegion());
       });
     }
+
+    // The kernel is dispatched, not called from here, so the host's libm is not
+    // reachable from inside it. `math` ops are, on either side.
+    useDeviceMathIn(kernelRegion, module, rewriter);
+    useStackScratchIn(kernelRegion, rewriter);
 
     // Replace vx.yield with vx.return
     SmallVector<vx::YieldOp> yieldsToErase;
@@ -724,7 +877,7 @@ struct ConvertVxToStandardPass
   void getDependentDialects(DialectRegistry &registry) const override {
     registry
         .insert<async::AsyncDialect, func::FuncDialect, memref::MemRefDialect,
-                arith::ArithDialect, gpu::GPUDialect>();
+                arith::ArithDialect, gpu::GPUDialect, math::MathDialect>();
   }
 
   void runOnOperation() override {

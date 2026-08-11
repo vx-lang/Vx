@@ -1,0 +1,74 @@
+//===- device_kernel_preparation.vx - Vx Compiler ----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// What outlining has to do to a region before the result is a kernel a device
+// could load. Each of these was found by driving the FlashAttention region to
+// PTX (scripts/flash_kernel_to_ptx.sh) and reading what the kernel still
+// depended on; each is invisible on the host, where the fallback resolves it.
+//
+//   `.exp()`     lowered to `func.call @expf`, host libm. A dispatched kernel
+//                cannot call it, and in PTX it is an unresolved external.
+//                `math.exp` lowers to libm on the host and to a device
+//                intrinsic on a GPU, so it is the portable spelling.
+//
+//   a constant   used inside the region was passed *into* it. Vx loop bounds
+//                are literals, so every trip count became a runtime argument:
+//                the FlashAttention kernel took eight scalar arguments that
+//                were all constants, 8 of its 36 `.param`s. The dispatch cost
+//                is the smaller half -- with the bounds opaque the backend
+//                cannot see the shape, and that kernel went from 306
+//                instructions of unrolled arithmetic to 149 with 19 branches.
+//
+// A third, `memref.alloc` for a region's own scratch, is not checked here and
+// cannot be: this directory forces `--legacy-codegen`, and on the AST path a
+// `Tensor` is `memref<?x?xf32>`. The rewrite deliberately declines a dynamic
+// extent, because a variable-length stack allocation is not something to hand a
+// device. The flat path -- the default, and what the FlashAttention test
+// compiles through -- gives static shapes and does get the stack slot; that is
+// asserted end to end by flash_kernel_to_ptx.sh, which fails if `malloc`
+// reappears among the kernel's externals.
+//
+// The pass pipeline is pinned to the vx lowering alone, since that is the pass
+// that prepares the kernel.
+//
+// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s
+
+// The launch carries the one buffer the region touches and nothing else. The
+// loop bounds, the exponent's operand and the scratch extents were all
+// constants, and none of them is an operand here.
+// CHECK: vx.launch @vx_npu_kernel_0(%alloca) {topology = 500 : i32, vx.topology_name = "GPU[0]"} : (memref<memref<?x?xf32>>) -> ()
+
+// CHECK: vx.kernel @vx_npu_kernel_0(500) : (memref<memref<?x?xf32>>) -> ()
+
+// The bounds are inside the kernel, so the shape is visible to the backend.
+// CHECK: arith.constant 4 : index
+
+// The transcendental is an op, not a call to the host's libm.
+// CHECK: math.exp
+// CHECK-NOT: call @f32$exp
+// CHECK: vx.return
+
+import std::math;
+
+fn kernel_prep() -> f32 {
+  let mut o = Tensor<f32>([ 4, 4 ]);
+  spawn on(Topology::GPU) {
+    let mut scratch = Tensor<f32>([ 1, 4 ]);
+    for i in 0..4 {
+      scratch[0][i] = (i as f32).exp();
+      for j in 0..4 {
+        o[i][j] = scratch[0][i];
+      }
+    }
+  }
+  return o[0][0];
+}
+
+fn main() -> i32 {
+  print(kernel_prep());
+  return 0;
+}
