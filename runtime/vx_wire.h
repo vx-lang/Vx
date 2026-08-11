@@ -225,13 +225,31 @@ typedef struct {
 /// view over a resident buffer has its own, and a strided sub-view (#344) will
 /// have its own strides.
 ///
-/// A slot sends no handle and no extents -- it is storage the worker will write
-/// a descriptor into, and what it will hold is already in the tag.
+/// A slot sends a handle of 0 when it is storage the worker will publish into,
+/// and a real handle when it already *holds* a buffer.
+///
+/// Both happen. `c = a @ b` gives a slot the kernel allocates through, and that
+/// is the case the slot bit was introduced for. But a local tensor also lives
+/// in a slot, so `matmul_into(&mut y, ..)` on one reaches its buffer through
+/// that indirection -- `outkind=buffer` with a slot-tagged argument, which
+/// vx_dispatch_plan.h already handles by following it. Sending nothing for a
+/// slot meant the worker rebuilt an empty one and decoded a result of shape
+/// 0x0, so the dispatch was refused with nothing to indicate why.
 static inline void vx_wire_put_arg(vx_wire_writer *w, const vx_wire_arg *a) {
   int32_t kind = VX_ABI_KIND(a->tag);
   vx_wire_put_i32(w, a->tag);
 
   if (VX_ABI_IS_SLOT(a->tag)) {
+    vx_wire_put_u64(w, a->handle);
+    if (a->handle != 0) {
+      vx_wire_put_i32(w, a->rank);
+      for (int32_t i = 0; i < a->rank; ++i) {
+        vx_wire_put_i64(w, a->sizes[i]);
+      }
+      for (int32_t i = 0; i < a->rank; ++i) {
+        vx_wire_put_i64(w, a->strides[i]);
+      }
+    }
     return;
   }
   if (kind != VX_ABI_KIND_MEMREF) {
@@ -266,6 +284,26 @@ static inline int vx_wire_get_arg(vx_wire_reader *r, vx_wire_arg *out) {
   kind = VX_ABI_KIND(out->tag);
 
   if (VX_ABI_IS_SLOT(out->tag)) {
+    if (!vx_wire_get_u64(r, &out->handle)) {
+      return 0;
+    }
+    if (out->handle == 0) {
+      return 1; /* storage to publish into */
+    }
+    if (!vx_wire_get_i32(r, &out->rank) || out->rank < 0 ||
+        out->rank > VX_ABI_MAX_RANK) {
+      return 0;
+    }
+    for (int32_t i = 0; i < out->rank; ++i) {
+      if (!vx_wire_get_i64(r, &out->sizes[i])) {
+        return 0;
+      }
+    }
+    for (int32_t i = 0; i < out->rank; ++i) {
+      if (!vx_wire_get_i64(r, &out->strides[i])) {
+        return 0;
+      }
+    }
     return 1;
   }
   if (kind != VX_ABI_KIND_MEMREF) {

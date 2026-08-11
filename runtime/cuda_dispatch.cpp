@@ -33,6 +33,7 @@
 
 #include "vx_dispatch_plan.h"
 #include "vx_host_call.h"
+#include "vx_remote_routing.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -384,6 +385,13 @@ extern "C" {
 
 void *vx_plugin_alloc_and_transfer(size_t bytes, void *host_ptr,
                                    uint32_t topology_id) {
+  /* Asked first, because a topology the manifest names is not this machine's
+     to allocate in however capable this one is. */
+  void *remote = nullptr;
+  if (vx_routing_try_alloc(bytes, host_ptr, topology_id, &remote)) {
+    return remote;
+  }
+
   if (!cuda_available()) {
     void *ptr = malloc(bytes);
     if (ptr && host_ptr) {
@@ -458,6 +466,11 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
                                   size_t payload_size, void **device_args,
                                   const int32_t *arg_tags, int64_t num_args) {
   const char *kernel_name = static_cast<const char *>(binary_payload);
+
+  if (vx_routing_try_dispatch(binary_payload, payload_size, device_args,
+                              arg_tags, num_args)) {
+    return 1;
+  }
 
   vx_gemm_plan plan;
   if (vx_gemm_plan_decode(binary_payload, payload_size, device_args, arg_tags,
@@ -538,6 +551,9 @@ void vx_plugin_await_future(uint64_t future_id) {
 
 int32_t vx_plugin_transfer_device_to_host(void *device_ptr, void *host_ptr,
                                           size_t bytes, uint32_t topology_id) {
+  if (vx_routing_try_fetch(device_ptr, host_ptr, bytes, topology_id)) {
+    return 1;
+  }
   if (is_device_ptr(device_ptr)) {
     // Unified addressing lets the driver infer the device from the pointer, so
     // this would mostly work without the parameter. It names the device anyway,
@@ -554,6 +570,9 @@ int32_t vx_plugin_transfer_device_to_host(void *device_ptr, void *host_ptr,
 
 void vx_plugin_free(void *device_ptr, uint32_t topology_id) {
   if (!device_ptr) {
+    return;
+  }
+  if (vx_routing_try_free(device_ptr, topology_id)) {
     return;
   }
   if (is_device_ptr(device_ptr)) {

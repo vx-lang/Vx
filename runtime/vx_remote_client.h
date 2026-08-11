@@ -35,6 +35,7 @@
 #define VX_REMOTE_CLIENT_H
 
 #include "vx_agent.h"
+#include "vx_dispatch_plan.h"
 #include "vx_manifest.h"
 #include "vx_remote_region.h"
 #include "vx_transport.h"
@@ -202,12 +203,31 @@ static inline int vx_remote_fetch(int fd, uint64_t handle, void *dst,
 /// wherever the program keeps pointers, so by the time a dispatch names it, the
 /// descriptor already holds it. Nothing has to be looked up.
 ///
-/// Returns 0 if an argument cannot be sent -- a memref whose data pointer is
-/// *not* a handle is one that lives on this machine, and shipping the address
-/// would have the worker read its own memory at that number.
-static inline int vx_remote_encode_args(void **device_args,
+/* Defined below; a dispatch releases what it staged for the call. */
+static inline int vx_remote_free(int fd, uint64_t handle);
+
+/// A memref whose pointer is not a handle names memory on *this* machine, so it
+/// is staged onto the worker for the duration of the call and released after.
+/// That is precisely what the local path does -- runtime/cuda_dispatch.cpp
+/// stages every non-resident operand per dispatch -- so this is the same data
+/// movement with framing around it, not a new cost.
+///
+/// It is what makes an ordinary program dispatchable at all. llama2.vx stages
+/// its *weights* once and keeps them resident, which is the whole reason a
+/// disaggregated decode is not a fax machine; but its activations and its
+/// output buffers are host memory that changes every token, and refusing those
+/// would mean only a program with no inputs and no outputs could be sent.
+///
+/// The obvious improvement is to carry small operands inline in the DISPATCH
+/// rather than as a TRANSFER and a FREE around it, which trades three round
+/// trips for a longer message. Left undone deliberately: it is an optimisation
+/// of something that works, and the wire does not have to change for it.
+static inline int vx_remote_encode_args(int fd, void **device_args,
                                         const int32_t *arg_tags,
-                                        int64_t num_args, vx_wire_arg *out) {
+                                        int64_t num_args, vx_wire_arg *out,
+                                        uint64_t *staged, int64_t *num_staged,
+                                        uint8_t *scratch, size_t scratch_len) {
+  *num_staged = 0;
   for (int64_t i = 0; i < num_args; ++i) {
     int32_t tag = arg_tags[i];
     int32_t kind = VX_ABI_KIND(tag);
@@ -215,7 +235,41 @@ static inline int vx_remote_encode_args(void **device_args,
     out[i].tag = tag;
 
     if (VX_ABI_IS_SLOT(tag)) {
-      continue; /* storage the worker fills; nothing to send */
+      /* Two kinds of slot, told apart by what it currently holds. Empty means
+         storage the worker will publish into. Non-empty means a local tensor's
+         buffer reached through the indirection it lives in, which has to travel
+         like any other operand or the worker decodes a result of shape 0x0. */
+      const void *outer = *(const void **)device_args[i];
+      const void *inner = outer ? vx_memref_aligned(outer) : NULL;
+      void *held = inner ? vx_memref_aligned(inner) : NULL;
+      if (!held) {
+        continue;
+      }
+      {
+        int32_t rank = (int32_t)VX_ABI_RANK(tag);
+        int32_t elem = (int32_t)VX_ABI_ELEM(tag);
+        const int64_t *sizes = vx_memref_sizes(inner);
+        const int64_t *strides = vx_memref_strides(inner, rank);
+        uint64_t handle = (uint64_t)(uintptr_t)vx_memref_data(inner, elem);
+        if (!vx_remote_addr_is_handle(handle)) {
+          uint64_t span =
+              rank > 0 ? (uint64_t)sizes[0] * (uint64_t)strides[0] : 1;
+          handle = vx_remote_transfer(fd, (const void *)(uintptr_t)handle,
+                                      span * (uint64_t)vx_dtype_bytes(elem),
+                                      elem, scratch, scratch_len);
+          if (handle == 0) {
+            return 0;
+          }
+          staged[(*num_staged)++] = handle;
+        }
+        out[i].handle = handle;
+        out[i].rank = rank;
+        for (int32_t d = 0; d < rank; ++d) {
+          out[i].sizes[d] = sizes[d];
+          out[i].strides[d] = strides[d];
+        }
+      }
+      continue;
     }
     if (kind != VX_ABI_KIND_MEMREF) {
       size_t n = vx_dtype_bytes(kind);
@@ -229,6 +283,7 @@ static inline int vx_remote_encode_args(void **device_args,
     {
       const void *desc = *(const void **)device_args[i];
       int32_t rank = (int32_t)VX_ABI_RANK(tag);
+      int32_t elem = (int32_t)VX_ABI_ELEM(tag);
       const int64_t *sizes;
       const int64_t *strides;
       uint64_t handle;
@@ -236,17 +291,25 @@ static inline int vx_remote_encode_args(void **device_args,
       if (!desc || rank < 0 || rank > VX_ABI_MAX_RANK) {
         return 0;
       }
-      handle = (uint64_t)(uintptr_t)vx_memref_data(desc, VX_ABI_ELEM(tag));
-      if (!vx_remote_addr_is_handle(handle)) {
-        fprintf(stderr,
-                "[Vx remote] argument %lld is local memory, not a handle; a "
-                "buffer must be staged onto the worker before a dispatch can "
-                "name it\n",
-                (long long)i);
-        return 0;
-      }
       sizes = vx_memref_sizes(desc);
       strides = vx_memref_strides(desc, rank);
+      handle = (uint64_t)(uintptr_t)vx_memref_data(desc, elem);
+
+      if (!vx_remote_addr_is_handle(handle)) {
+        /* Local memory. Stage the whole extent the descriptor spans, so a
+           strided view arrives with the rows it refers to rather than only the
+           elements it touches, and its strides still mean what they said. */
+        uint64_t span =
+            rank > 0 ? (uint64_t)sizes[0] * (uint64_t)strides[0] : 1;
+        uint64_t bytes = span * (uint64_t)vx_dtype_bytes(elem);
+        handle = vx_remote_transfer(fd, (const void *)(uintptr_t)handle, bytes,
+                                    elem, scratch, scratch_len);
+        if (handle == 0) {
+          return 0;
+        }
+        staged[(*num_staged)++] = handle;
+      }
+
       out[i].handle = handle;
       out[i].rank = rank;
       for (int32_t d = 0; d < rank; ++d) {
@@ -274,7 +337,11 @@ static inline int vx_remote_dispatch(int fd, const void *payload,
   int32_t status = -1;
   int64_t count = 0;
 
-  if (!vx_remote_encode_args(device_args, arg_tags, num_args, args)) {
+  uint64_t staged[64];
+  int64_t num_staged = 0;
+
+  if (!vx_remote_encode_args(fd, device_args, arg_tags, num_args, args, staged,
+                             &num_staged, scratch, scratch_len)) {
     return 0;
   }
 
@@ -310,6 +377,41 @@ static inline int vx_remote_dispatch(int fd, const void *payload,
     }
     vx_agent_apply_result(*(void **)device_args[i], &res);
     --count;
+  }
+
+  /* An `outkind=buffer` result was written into a buffer that lives here, so
+     the worker filled the copy it was staged and the original still holds what
+     it held before. Reading it back is the counterpart of staging it. */
+  {
+    const char *outkind =
+        vx_payload_field(payload, (size_t)payload_len, "outkind=");
+    if (outkind && strcmp(outkind, "buffer") == 0) {
+      const char *roles =
+          vx_payload_field(payload, (size_t)payload_len, "roles=");
+      int ai = -1, bi = -1, oi = -1;
+      if (roles && vx_parse_roles(roles, &ai, &bi, &oi) && oi >= 0 &&
+          oi < num_args && args[oi].handle != 0) {
+        const void *desc = *(const void **)device_args[oi];
+        if (VX_ABI_IS_SLOT(arg_tags[oi])) {
+          desc = vx_memref_aligned(desc);
+        }
+        int32_t elem = (int32_t)VX_ABI_ELEM(arg_tags[oi]);
+        int32_t rank = (int32_t)VX_ABI_RANK(arg_tags[oi]);
+        const int64_t *sizes = vx_memref_sizes(desc);
+        const int64_t *strides = vx_memref_strides(desc, rank);
+        uint64_t span =
+            rank > 0 ? (uint64_t)sizes[0] * (uint64_t)strides[0] : 1;
+        uint64_t bytes = span * (uint64_t)vx_dtype_bytes(elem);
+        if (!vx_remote_fetch(fd, args[oi].handle, vx_memref_data(desc, elem),
+                             bytes)) {
+          return 0;
+        }
+      }
+    }
+  }
+
+  for (int64_t i = 0; i < num_staged; ++i) {
+    vx_remote_free(fd, staged[i]);
   }
   return 1;
 }

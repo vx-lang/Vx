@@ -30,6 +30,7 @@
 
 #include "vx_dispatch_plan.h"
 #include "vx_host_call.h"
+#include "vx_remote_routing.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -166,7 +167,10 @@ extern "C" {
 /// thing in a program compiled for either.
 void *vx_plugin_alloc_and_transfer(size_t bytes, void *host_ptr,
                                    uint32_t topology_id) {
-  (void)topology_id;
+  void *remote = nullptr;
+  if (vx_routing_try_alloc(bytes, host_ptr, topology_id, &remote)) {
+    return remote;
+  }
   if (bytes == 0) {
     return nullptr;
   }
@@ -198,7 +202,9 @@ void *vx_plugin_alloc_and_transfer(size_t bytes, void *host_ptr,
 /// heap corruption under the CUDA backend, which is why the compiler emits this
 /// call rather than a `free`.
 void vx_plugin_free(void *device_ptr, uint32_t topology_id) {
-  (void)topology_id;
+  if (vx_routing_try_free(device_ptr, topology_id)) {
+    return;
+  }
   free(device_ptr);
 }
 
@@ -206,6 +212,11 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
                                   size_t payload_size, void **device_args,
                                   const int32_t *arg_tags, int64_t num_args) {
   const char *kernel_name = static_cast<const char *>(binary_payload);
+
+  if (vx_routing_try_dispatch(binary_payload, payload_size, device_args,
+                              arg_tags, num_args)) {
+    return 1;
+  }
 
   if (vx_verbose()) {
     const char *kind = vx_payload_field(binary_payload, payload_size, "kind=");
@@ -287,8 +298,10 @@ void vx_plugin_await_future(uint64_t future_id) {
 
 int32_t vx_plugin_transfer_device_to_host(void *device_ptr, void *host_ptr,
                                           size_t bytes, uint32_t topology_id) {
-  // One memory, so the topology names it and nothing follows from that.
-  (void)topology_id;
+  if (vx_routing_try_fetch(device_ptr, host_ptr, bytes, topology_id)) {
+    return 1;
+  }
+  // Otherwise one memory, so the topology names it and nothing follows.
   memcpy(host_ptr, device_ptr, bytes);
   return 1;
 }

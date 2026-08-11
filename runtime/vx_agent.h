@@ -119,6 +119,19 @@ static inline int vx_agent_rebuild_arg(const vx_remote_table *table,
     ((void **)outer_p)[0] = inner_p;
     ((void **)outer_p)[1] = inner_p;
 
+    /* A slot that already holds a buffer -- a local tensor's, reached through
+       the indirection it lives in -- arrives with a handle. The inner
+       descriptor then names that buffer rather than waiting to be published
+       into. */
+    if (arg->handle != 0) {
+      vx_remote_ref held;
+      if (!vx_remote_resolve(table, arg->handle, &held)) {
+        return 0;
+      }
+      vx_agent_write_desc(inner_p, (char *)held.region->remote + held.offset,
+                          arg->rank, arg->sizes, arg->strides);
+    }
+
     storage->desc_ptrs[index] = outer_p;
     storage->device_args[index] = &storage->desc_ptrs[index];
     *desc_cursor += inner + outer;

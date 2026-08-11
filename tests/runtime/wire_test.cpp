@@ -117,9 +117,17 @@ void test_memref_round_trip() {
   check(VX_ABI_ELEM(out.tag) == VX_DTYPE_F32, "element type survives");
 }
 
-// A slot carries neither handle nor extents: it is storage the worker writes a
-// descriptor into, and what it will hold is already in the tag.
-void test_slot_round_trip() {
+// Two kinds of slot, told apart by the handle they carry.
+//
+// An empty one is storage the worker publishes into -- what the slot bit was
+// introduced for. A non-empty one is a local tensor's buffer reached through
+// the indirection that tensor lives in, which is what `matmul_into(&mut y, ..)`
+// on a local `y` produces: `outkind=buffer` with a slot-tagged argument.
+//
+// Sending nothing for the second kind is what the first draft did, and the
+// worker then rebuilt an empty slot, decoded a result of shape 0x0, and refused
+// the dispatch with nothing to say why.
+void test_empty_slot_round_trip() {
   vx_wire_writer w = writer();
   vx_wire_reader r;
   vx_wire_arg a, out;
@@ -128,12 +136,39 @@ void test_slot_round_trip() {
   a.tag = VX_ABI_SLOT_TAG(VX_DTYPE_F32, 2);
   vx_wire_put_arg(&w, &a);
 
-  check(w.len == 4, "a slot is its tag and nothing else");
+  check(w.len == 4 + 8, "an empty slot is its tag and a zero handle");
 
   vx_wire_reader_init(&r, buf, w.len);
   check(vx_wire_get_arg(&r, &out), "slot decodes");
   check(VX_ABI_IS_SLOT(out.tag), "slot bit survives");
   check(VX_ABI_RANK(out.tag) == 2, "the rank it will hold survives");
+  check(out.handle == 0, "and it holds nothing");
+}
+
+void test_slot_holding_a_buffer_round_trip() {
+  vx_wire_writer w = writer();
+  vx_wire_reader r;
+  vx_wire_arg a, out;
+
+  memset(&a, 0, sizeof(a));
+  a.tag = VX_ABI_SLOT_TAG(VX_DTYPE_F32, 2);
+  a.handle = vx_remote_addr(1, 8192);
+  a.rank = 2;
+  a.sizes[0] = 2;
+  a.sizes[1] = 1;
+  a.strides[0] = 1;
+  a.strides[1] = 1;
+  vx_wire_put_arg(&w, &a);
+
+  check(w.len == 4 + 8 + 4 + 4 * 8,
+        "a slot that holds a buffer carries its extents too");
+
+  vx_wire_reader_init(&r, buf, w.len);
+  check(vx_wire_get_arg(&r, &out), "it decodes");
+  check(out.handle == a.handle, "the held buffer's handle survives");
+  check(out.rank == 2 && out.sizes[0] == 2 && out.sizes[1] == 1,
+        "and its shape");
+  check(out.strides[0] == 1 && out.strides[1] == 1, "and its strides");
 }
 
 void test_header_round_trip() {
@@ -380,7 +415,8 @@ void test_writer_overflow_is_sticky() {
 int main() {
   test_scalars_round_trip();
   test_memref_round_trip();
-  test_slot_round_trip();
+  test_empty_slot_round_trip();
+  test_slot_holding_a_buffer_round_trip();
   test_header_round_trip();
   test_transfer_round_trip();
   test_dispatch_round_trip();
