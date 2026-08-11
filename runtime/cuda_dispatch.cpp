@@ -20,8 +20,20 @@
 // and is tested without a GPU; this file is the part that needs one.
 //
 // Anything not recognised runs on the host through libffi, exactly as the
-// portable shim would. A refusal to route therefore costs performance and
-// never correctness, which is what makes it safe for the decoder to be strict.
+// portable shim would. A refusal to route therefore costs performance and never
+// correctness -- which is what makes it safe for the decoder to be strict, and
+// which holds only while the operands are host memory.
+//
+// `transfer(x, Memory::GPU_HBM)` is the construct that breaks it. After one,
+// the pointers are device pointers, and a kernel that is not routed is handed
+// them and dereferences them on the CPU. That is not a hypothetical:
+// tests/backend/pass/flash_attention_placed.vx transfers Q, K, V and O into
+// GPU_HBM and then runs a fused online-softmax loop, which is not a GEMM. It
+// passes in CI because CI has no GPU, where the transfer is a no-op and the
+// pointers stay host pointers. On an A100 it segmentation-faults inside the
+// outlined kernel. The fallback below now refuses such a call and says why;
+// copying the operands back, running, and copying them out is the fix that
+// would restore the claim in full.
 //
 // Scope: operands are staged to the device per dispatch and the result staged
 // back. Keeping tensors resident across dispatches is what `.to_device()` and
@@ -523,6 +535,56 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
     const char *kind = vx_payload_field(binary_payload, payload_size, "kind=");
     fprintf(stderr, "[Vx CUDA] %s (kind=%s) not routed; running on the host\n",
             kernel_name, kind ? kind : "<unclassified>");
+  }
+
+  // A kernel that is not routed runs here, on the host. That is safe exactly
+  // while its operands are host memory -- and `transfer(x, Memory::GPU_HBM)`
+  // is precisely the construct that makes them not be.
+  //
+  // The header of this file claims a refusal to route "costs performance and
+  // never correctness". That is true for a program whose tensors live in host
+  // memory and false for one that declares a memory hierarchy and moves into
+  // it. tests/backend/pass/flash_attention_placed.vx does the second: it
+  // transfers Q, K, V and O into GPU_HBM and then runs a fused online-softmax
+  // loop, which is not a GEMM and is not classified as one. On a machine
+  // without this plugin the transfer is a no-op, the pointers stay host
+  // pointers, and the test passes -- which is why it passes in CI. On a machine
+  // with a GPU the loop dereferences device memory and the process dies inside
+  // the outlined kernel, three frames below anything that names the reason.
+  //
+  // Copying the operands back, running, and copying them out again would make
+  // the fallback honest, and is the right fix. Until then this refuses in a way
+  // that says what happened, because a segmentation fault inside
+  // vx_npu_kernel_0 does not.
+  for (int64_t i = 0; i < num_args; ++i) {
+    if (VX_ABI_KIND(arg_tags[i]) != VX_ABI_KIND_MEMREF || !device_args[i]) {
+      continue;
+    }
+    const void *desc = *(const void **)device_args[i];
+    if (!desc) {
+      continue;
+    }
+    if (VX_ABI_IS_SLOT(arg_tags[i])) {
+      desc = (const void *)vx_memref_aligned(desc);
+      if (!desc) {
+        continue;
+      }
+    }
+    const void *data = vx_memref_data(desc, (int32_t)VX_ABI_ELEM(arg_tags[i]));
+    if (data && is_device_ptr(data)) {
+      fprintf(stderr,
+              "[Vx CUDA] FATAL: %s was not routed, so it would run on the "
+              "host,\n"
+              "          but argument %lld at %p is in device memory -- a "
+              "`transfer`\n"
+              "          into a device memory space put it there. The host "
+              "cannot read it.\n"
+              "          Either the kernel needs a device implementation "
+              "(#251), or its\n"
+              "          operands must stay in host memory.\n",
+              kernel_name, (long long)i, data);
+      abort();
+    }
   }
 
   void *kernel = vx_host_kernel_symbol(kernel_name);
