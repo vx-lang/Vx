@@ -75,10 +75,10 @@ if command -v ./vx-worker >/dev/null 2>&1 || [ -x ./vx-worker ]; then
   # an interactive SSH is exactly the session that goes away -- one dropped
   # connection killed a worker mid-generation and failed the run, twice, for a
   # reason that had nothing to do with what was being tested.
-  setsid ./vx-worker --port 19501 --topology 500 --worker-id 1 \
+  VX_DISPATCH_VERBOSE=1 setsid ./vx-worker --port 19501 --topology 500 --worker-id 1 \
     > "$OUTDIR/worker-1.log" 2>&1 < /dev/null &
   W1=$!
-  setsid ./vx-worker --port 19502 --topology 500 --worker-id 2 \
+  VX_DISPATCH_VERBOSE=1 setsid ./vx-worker --port 19502 --topology 500 --worker-id 2 \
     > "$OUTDIR/worker-2.log" 2>&1 < /dev/null &
   W2=$!
   sleep 2
@@ -87,15 +87,36 @@ if command -v ./vx-worker >/dev/null 2>&1 || [ -x ./vx-worker ]; then
       { echo "  worker on $w did not come up; see $OUTDIR/worker-*.log" >&2; }
   done
 
+  # GPU[0] and GPU[1], not PrefillWorker/DecodeWorker: these names have to be
+  # the ones the *program* dispatches to, and llama2.vx spawns on
+  # `Topology::GPU[D]`. A name absent from a manifest means local, by design --
+  # so a manifest of names the program never mentions is not an error, it is a
+  # fully local run. It would produce identical tokens and report success while
+  # proving nothing at all. The check at the end of run 2 is what makes that
+  # failure loud instead of silent.
   cat > "$OUTDIR/local.manifest" <<EOF
 # Both workers on this machine. Same program, same binary as run 1.
-PrefillWorker  127.0.0.1  19501
-DecodeWorker   127.0.0.1  19502
+GPU[0]  127.0.0.1  19501
+GPU[1]  127.0.0.1  19502
 EOF
 
   VX_FLEET_MANIFEST="$OUTDIR/local.manifest" \
     ./vxc "$PROGRAM" --run > "$OUTDIR/raw-tcp.txt" 2> "$OUTDIR/trace-tcp.txt"
   strip_noise "$OUTDIR/raw-tcp.txt" > "$OUTDIR/tokens-tcp.txt"
+
+  # Did any work actually reach a worker? Matching tokens cannot answer this:
+  # a run that stayed local matches too, and matches perfectly. Only the far
+  # side can say, so the worker's own log is the witness.
+  for w in 1 2; do
+    n=$(grep -c 'DISPATCH' "$OUTDIR/worker-$w.log" 2>/dev/null || echo 0)
+    if [ "$n" -eq 0 ]; then
+      echo "  FAILURE: worker $w served no dispatches. The run was local." >&2
+      echo "           Check that the manifest names what the program spawns on" >&2
+      echo "           -- an unlisted name is local, not an error." >&2
+    else
+      printf '  worker %d served %s dispatches\n' "$w" "$n"
+    fi
+  done
 
   # pkill -x, not -f: the pattern `vx-worker` appears in this script's own
   # command line, so -f matches the shell doing the killing.
@@ -110,8 +131,8 @@ if [ -n "$PREFILL" ] && [ -n "$DECODE" ]; then
   cat > "$OUTDIR/fleet.manifest" <<EOF
 # Two machines. The program is unchanged from runs 1 and 2; this file is the
 # only thing that says where its workers are.
-PrefillWorker  ${PREFILL%%:*}  ${PREFILL##*:}
-DecodeWorker   ${DECODE%%:*}   ${DECODE##*:}
+GPU[0]  ${PREFILL%%:*}  ${PREFILL##*:}
+GPU[1]  ${DECODE%%:*}   ${DECODE##*:}
 EOF
   cat "$OUTDIR/fleet.manifest"
 
