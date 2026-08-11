@@ -17,5 +17,6 @@ mod integration_test {
     mod registry_test;
     mod remote_region_test;
     mod resolution_test;
+    mod transport_test;
     mod wire_test;
 }

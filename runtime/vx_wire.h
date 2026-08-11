@@ -51,7 +51,8 @@
 enum {
   VX_WIRE_TRANSFER = 1, /* host -> worker: bytes; worker -> host: a handle */
   VX_WIRE_DISPATCH = 2, /* host -> worker: payload + args; back: slot results */
-  VX_WIRE_FREE = 3      /* host -> worker: a handle to release */
+  VX_WIRE_FREE = 3,     /* host -> worker: a handle to release */
+  VX_WIRE_FETCH = 4     /* host -> worker: a handle; back: its bytes */
 };
 
 /* --- cursors ------------------------------------------------------------- */
@@ -457,6 +458,27 @@ static inline int vx_wire_get_result(vx_wire_reader *r, vx_wire_result *out) {
     }
   }
   return 1;
+}
+
+/// FETCH: read a resident buffer back.
+///
+/// The remote counterpart of `vx_plugin_transfer_device_to_host`, and it was
+/// missing from the first three message types -- an omission that survived the
+/// design document and the in-process round trip, because in one process the
+/// "host" could simply read the worker's memory. Across a socket it cannot, and
+/// a serving program has to: llama2 samples from the logits, so the last
+/// dispatch of every token produces a value the host must actually see.
+///
+/// The reply is the bytes and nothing else; the frame already carries how many.
+static inline void vx_wire_put_fetch(vx_wire_writer *w, uint64_t handle,
+                                     uint64_t nbytes) {
+  vx_wire_put_u64(w, handle);
+  vx_wire_put_u64(w, nbytes);
+}
+
+static inline int vx_wire_get_fetch(vx_wire_reader *r, uint64_t *handle,
+                                    uint64_t *nbytes) {
+  return vx_wire_get_u64(r, handle) && vx_wire_get_u64(r, nbytes);
 }
 
 static inline void vx_wire_put_free(vx_wire_writer *w, uint64_t handle) {
