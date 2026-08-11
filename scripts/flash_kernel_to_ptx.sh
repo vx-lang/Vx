@@ -164,13 +164,23 @@ fi
 
 python3 - "$OUT" <<'PY'
 import sys, pathlib
+# The PTX sits inside a `gpu.binary` as one escaped MLIR string. Both ends
+# matter: taking from the opening quote to end-of-file leaves the closing quote
+# and the attribute's `>]` in the file, and ptxas rejects that -- "Parsing error
+# near '\"'" three lines past the last `}`, which reads like a compiler defect
+# and is not one.
+def unescape(s, i):
+    start = s.rfind('"', 0, i) + 1
+    end = s.find('"', start)
+    if end < 0:
+        sys.exit("unterminated PTX string in the gpu.binary")
+    return s[start:end].replace("\\0A", "\n").replace("\\09", "\t")
 out = pathlib.Path(sys.argv[1])
 s = (out / "nvvm.mlir").read_text()
 i = s.find(".visible .entry")
 if i < 0:
     sys.exit("no .visible .entry -- serialization produced no PTX")
-(out / "kernel.ptx").write_text(
-    s[max(0, s.rfind('"', 0, i)) + 1:].replace("\\0A", "\n").replace("\\09", "\t"))
+(out / "kernel.ptx").write_text(unescape(s, i))
 PY
 
 PTX="$OUT/kernel.ptx"
@@ -221,4 +231,31 @@ else
     exit 1
   fi
   echo "    (libdevice; link it and this list goes empty)"
+fi
+
+# If a CUDA toolkit is here, assemble it. `mlir-opt` emitting PTX text says the
+# pipeline ran; `ptxas` accepting it says the text is a program, and its report
+# is the first real measurement of the kernel -- registers, spills, and the
+# stack frame, which should be exactly the region's own scratch.
+#
+# This is also the check that caught the extractor above: the PTX lives inside
+# the `gpu.binary` as an escaped string, and reading from its opening quote to
+# end-of-file left the closing quote and the attribute's `>]` in the file.
+# ptxas said "Parsing error near '\"'" three lines past the last `}`, which
+# reads like a compiler defect and was a defect in this script.
+# The trailing `|| true` is not decoration: not finding ptxas is the ordinary
+# case on a machine with no toolkit, and without it `set -e` aborts the script
+# on the lookup itself.
+PTXAS="${VX_PTXAS:-$(command -v ptxas 2>/dev/null || ls /usr/local/cuda-*/bin/ptxas 2>/dev/null | head -1 || true)}"
+if [ -n "$PTXAS" ] && [ -x "$PTXAS" ]; then
+  echo "==> assembling with $PTXAS"
+  if "$PTXAS" -arch="$CHIP" -O3 -v "$PTX" -o "$OUT/kernel.cubin" 2>&1 \
+       | grep -E 'registers|stack frame|spill' | sed 's/^ptxas info[[:space:]]*:[[:space:]]*/    /;s/^[[:space:]]*/    /'; then
+    echo "    -> $OUT/kernel.cubin"
+  else
+    echo "  FAILURE: ptxas rejected the PTX" >&2
+    exit 1
+  fi
+else
+  echo "==> no ptxas here; set VX_PTXAS to assemble (needs a toolkit, not a GPU)"
 fi

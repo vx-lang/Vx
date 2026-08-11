@@ -90,12 +90,23 @@ mlir-opt "$OUT/kernel.mlir" \
 # here rather than read directly.
 python3 - "$OUT/lowered.mlir" "$OUT/kernel.ptx" <<'PY'
 import sys
+# The PTX sits inside a `gpu.binary` as one escaped MLIR string. Both ends
+# matter: taking from the opening quote to end-of-file leaves the closing quote
+# and the attribute's `>]` in the file, and ptxas rejects that -- "Parsing error
+# near '\"'" three lines past the last `}`, which reads like a compiler defect
+# and is not one.
+def unescape(s, i):
+    start = s.rfind('"', 0, i) + 1
+    end = s.find('"', start)
+    if end < 0:
+        sys.exit("unterminated PTX string in the gpu.binary")
+    return s[start:end].replace("\\0A", "\n").replace("\\09", "\t")
 src, dst = sys.argv[1], sys.argv[2]
 s = open(src).read()
 i = s.find(".visible .entry")
 if i < 0:
     sys.exit("no .visible .entry in the lowered module -- serialization produced no PTX")
-open(dst, "w").write(s[max(0, s.rfind('"', 0, i)) + 1:].replace("\\0A", "\n").replace("\\09", "\t"))
+open(dst, "w").write(unescape(s, i))
 PY
 
 echo "==> $OUT/kernel.ptx"
