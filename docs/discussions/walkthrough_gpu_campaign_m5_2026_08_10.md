@@ -38,12 +38,38 @@ the worker served exactly 1500 dispatches, which is (50+450) × 3 sizes.
 
 Two things fall out of this and neither is about the A100:
 
-**Vx's GEMM path reaches about 8% of the device.** An A100 does ~19.5 TFLOP/s of f32
-SGEMM; this is 1.6. The arithmetic says where the rest goes: at N=2048 a GEMM is 17.2
-GFLOP, which is 0.88 ms of compute, against 10.2 ms measured. The remaining 9.3 ms moves
-48 MiB, or 5.4 GB/s — which is the rate of a pageable `cudaMemcpy2D`, not of PCIe Gen4.
-Operands are staged per dispatch (#321) out of pageable memory. Residency is the large
-fix and pinned staging buffers are the cheap one.
+**Vx's GEMM path reaches about 8% of the device**, and the reason is not cuBLAS.
+`scripts/gemm_anatomy.cu` runs the same `cublasSgemm` under each layer of the dispatch
+path in turn, at N=2048:
+
+| layer | ms/GEMM | GFLOP/s | vs resident |
+|---|---|---|---|
+| resident — no copies, no allocations | 1.059 | 16223 | 1.00x |
+| + a device synchronise per GEMM | 0.991 | 17331 | 0.94x |
+| + pageable copies in and out | 5.473 | 3139 | 5.17x |
+| **+ three cudaMalloc/cudaFree — today's path** | **11.208** | **1533** | **10.58x** |
+| pinned host memory | 6.707 | 2562 | 6.33x |
+| pinned, with device buffers pooled | 3.122 | 5503 | 2.95x |
+
+The bottom of the real benchmark measured 1574 GFLOP/s against this model's 1533, which is
+what makes the decomposition trustworthy rather than merely plausible.
+
+Resident SGEMM reaches 16.2 TFLOP/s, or 83% of the A100's 19.5 FP32 peak — cuBLAS is doing
+its job, and the figure also confirms this is true FP32 rather than TF32, which would show
+50-90. The GEMM is 1.06 ms of an 11.2 ms dispatch, under a tenth of it. The rest:
+
+- **cudaMalloc/cudaFree, three of each per dispatch: ~5.7 ms, 51%.** Larger than all the
+  data movement put together. `cudaFree` synchronises the device, and 48 MB is allocated
+  and released every call.
+- **Pageable staging: ~4.5 ms, 40%.** Through the driver's bounce buffer rather than DMA
+  from pinned pages.
+- **The synchronise: free.** It was on the list of suspects and does not belong there; the
+  GEMM is long enough that a per-call synchronise costs nothing measurable.
+
+So each fix has a price attached: pinning the staging memory is 1.7x, pinning and pooling
+the device buffers is 3.6x and needs no compiler work at all, and residency (#321) is the
+remaining 10.6x. An earlier draft of this document attributed the whole overhead to copy
+bandwidth, reasoning from one subtraction. The allocator is the larger half.
 
 **The wire runs at about 1.6 GB/s on loopback.** N=2048 costs 30.3 ms more remotely for
 50.3 MB moved; N=1024 costs 8.8 ms more for 12.6 MB. Both land near 1.6 GB/s, which for
