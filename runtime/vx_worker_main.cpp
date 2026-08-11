@@ -58,7 +58,17 @@ namespace {
 /// Which of this machine's devices to place work on. A worker owns one, which
 /// is what makes it a worker rather than a scheduler.
 int32_t g_topology = VX_TOPO_GPU_BASE;
-bool g_verbose = false;
+/// Narration, from the flag or from the same variable the plugin reads.
+///
+/// These were separate, and the difference is invisible until it matters: a
+/// harness exporting VX_DISPATCH_VERBOSE got a log full of `[Vx CUDA]` lines
+/// from the plugin linked into this process and not one `[Vx worker]` line, so
+/// a check for the messages *served* found none and reported that the run had
+/// never left the host. It had; 77064 device operations were in the same file.
+bool g_verbose = [] {
+  const char *v = getenv("VX_DISPATCH_VERBOSE");
+  return v && v[0] != '\0' && strcmp(v, "0") != 0;
+}();
 uint32_t g_worker_id = 1;
 
 /* Sized for a generation rather than a demo. Every dispatch stages its

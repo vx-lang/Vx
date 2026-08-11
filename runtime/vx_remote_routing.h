@@ -153,6 +153,36 @@ inline int vx_routing_try_dispatch(const void *payload, size_t payload_size,
   if (!w) {
     return 0;
   }
+
+  /* A result the kernel *allocates* cannot be collected across the wire yet.
+     `outkind=buffer` names a buffer that exists here, so the worker fills the
+     copy it was staged and vx_remote_dispatch fetches it back. `outkind=slot`
+     means the plugin allocates the result on the far side and publishes a
+     descriptor for it, and that descriptor names memory in another process:
+     nothing in this protocol brings it home.
+
+     Declining is the point. Without it the dispatch is sent, the worker runs
+     it, and no result comes back -- leaving the caller's tensor holding
+     whatever it held before. A GEMM benchmark measured this as 560 dispatches
+     served and every answer zero, with a success status and no diagnostic: the
+     initialised value, returned as if it were the product. Running it here
+     instead costs the distribution and keeps the arithmetic, which is the
+     trade this backend makes everywhere else. */
+  {
+    const char *outkind = vx_payload_field(payload, payload_size, "outkind=");
+    if (!outkind || strcmp(outkind, "buffer") != 0) {
+      static int said = 0;
+      if (!said) {
+        said = 1;
+        fprintf(stderr,
+                "[Vx remote] %s results cannot cross a worker boundary; "
+                "running these dispatches locally instead (#348)\n",
+                outkind ? outkind : "unnamed");
+      }
+      return 0;
+    }
+  }
+
   static vx_wire_arg args[64];
   if (num_args > 64) {
     return 0;
