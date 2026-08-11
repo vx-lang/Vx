@@ -38,6 +38,16 @@
 #   # on the pod, after ./setup_gpu_pod.sh:
 #   ./run_disagg_demo.sh -t 64
 #
+# For a *fleet* run across two machines (#348), the same bundle goes to both.
+# On each worker machine:
+#
+#   ./vx-worker --port 9001 --topology 500 --worker-id 1   # the prefill box
+#   ./vx-worker --port 9001 --topology 500 --worker-id 2   # the decode box
+#
+# and on whichever machine drives them:
+#
+#   ./run_fleet_demo.sh --prefill <ip>:9001 --decode <ip>:9001
+#
 #===----------------------------------------------------------------------===#
 
 set -euo pipefail
@@ -91,9 +101,17 @@ if [ ! -f "$STD_CORE" ]; then
   exit 1
 fi
 cp "$STD_CORE" "$BUNDLE/target/release/"
-cp "$REPO_ROOT/runtime/cuda_dispatch.cpp" \
-   "$REPO_ROOT/runtime/vx_dispatch_plan.h" \
-   "$REPO_ROOT/runtime/vx_host_call.h" "$BUNDLE/runtime/"
+# Every runtime header, rather than the three cuda_dispatch.cpp used to need.
+# It now reaches the remote-routing stack -- manifest, wire, transport, region
+# table, agent, client -- and listing them individually is a list that goes
+# stale the first time one includes another.
+cp "$REPO_ROOT"/runtime/*.h "$BUNDLE/runtime/"
+cp "$REPO_ROOT/runtime/cuda_dispatch.cpp" "$BUNDLE/runtime/"
+
+# The worker a fleet run needs on the far machine. It holds no vendor code, so
+# building it against cuda_dispatch.cpp on the pod is what makes it a GPU
+# worker (#348).
+cp "$REPO_ROOT/runtime/vx_worker_main.cpp" "$BUNDLE/runtime/"
 cp "$REPO_ROOT/include/vx_hardware_runtime.h" "$BUNDLE/include/"
 cp "$REPO_ROOT/scripts/setup_gpu_pod.sh" "$BUNDLE/"
 
@@ -102,6 +120,7 @@ cp "$REPO_ROOT/scripts/setup_gpu_pod.sh" "$BUNDLE/"
 # run whose evidence-gathering was left behind on the build box is a run that
 # has to be paid for twice.
 cp "$REPO_ROOT/scripts/run_disagg_demo.sh" "$BUNDLE/"
+cp "$REPO_ROOT/scripts/run_fleet_demo.sh" "$BUNDLE/"
 
 # Programs keep their repository-relative path, and the standard library comes
 # along. Module imports resolve against `stdlib/std`, `stdlib` and the working

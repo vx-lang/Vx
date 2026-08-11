@@ -20,7 +20,12 @@
 #   vxc                      the compiler, built on the x86 build box. It links
 #                            LLVM statically, so it needs only libc, libstdc++,
 #                            libz and libzstd, all of which a pod image has.
-#   runtime/, include/       the four files runtime/cuda_dispatch.cpp needs.
+#   runtime/, include/       the sources the dispatch backend and the fleet
+#                            worker are built from here.
+#   vx-worker                built below: the process a *remote* machine runs to
+#                            serve dispatches (#348). It holds no vendor code,
+#                            so linking it against cuda_dispatch.cpp is what
+#                            makes it a GPU worker.
 #   *.vx                     the programs to run.
 #
 # The pod still needs LLVM's command-line tools, because JIT execution shells
@@ -82,6 +87,8 @@ report() {
   [ -x "$BUNDLE_DIR/vxc" ] && echo "present" || echo "absent"
   echo -n "vx_std_core:    "
   [ -f "$BUNDLE_DIR/target/release/libvx_std_core.so" ] && echo "present" || echo "absent"
+  echo -n "vx-worker:      "
+  [ -x "$BUNDLE_DIR/vx-worker" ] && echo "present" || echo "absent"
 }
 
 if [ "${1:-}" = "--check" ]; then
@@ -127,6 +134,18 @@ clang++ -shared -fPIC -O2 -Wall \
   -L"$CUDA_HOME/lib64" -Wl,-rpath,"$CUDA_HOME/lib64" \
   -lcudart -lcublas -lffi \
   -o "$BUNDLE_DIR/libvx_cuda_dispatch.so"
+
+# The worker process, for a fleet run (#348). Same sources as the dispatch
+# library above plus a main: what makes it a *GPU* worker is that it is linked
+# against cuda_dispatch.cpp, and nothing in the worker itself knows that.
+echo "==> Building the fleet worker"
+clang++ -O2 -Wall \
+  "$BUNDLE_DIR/runtime/vx_worker_main.cpp" \
+  "$BUNDLE_DIR/runtime/cuda_dispatch.cpp" \
+  -I"$CUDA_HOME/include" \
+  -L"$CUDA_HOME/lib64" -Wl,-rpath,"$CUDA_HOME/lib64" \
+  -lcudart -lcublas -lffi \
+  -o "$BUNDLE_DIR/vx-worker"
 
 # vxc links whatever dispatch library was built alongside it, which is a path in
 # the build box's OUT_DIR and does not exist here. Point it at the one just
