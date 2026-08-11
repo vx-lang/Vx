@@ -3,6 +3,7 @@ mod integration_test {
     mod basic_integration;
     mod borrow_test;
     mod compile_test;
+    mod device_pool_test;
     mod flat_codegen_differential;
     mod fuzz;
     mod gemm_plan_test;

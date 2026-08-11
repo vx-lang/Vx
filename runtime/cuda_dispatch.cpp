@@ -43,6 +43,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "vx_device_pool.h"
 #include "vx_dispatch_plan.h"
 #include "vx_host_call.h"
 #include "vx_remote_routing.h"
@@ -224,6 +225,38 @@ cudaDataType_t cuda_dtype(int32_t dtype) {
   }
 }
 
+/// Per-dispatch device allocations, cached between dispatches.
+///
+/// A dispatch stages its operands and frees them again, and a program runs the
+/// same shapes in a loop -- so the driver sees the same `cudaMalloc` and
+/// `cudaFree` over and over. On an A100 that was ~5.7 ms of an 11.2 ms 2048^2
+/// GEMM, 51%, against 1.06 ms for the cuBLAS call itself.
+///
+/// Only the staging buffers go through here, not `vx_plugin_transfer`: that one
+/// is a placement the program asked for and lives until it is freed, whereas
+/// these are scratch that exists for one dispatch. A remote worker stages its
+/// operands the same way, so this is a fleet-side cost too, not only a local
+/// one.
+///
+/// `VX_CUDA_POOL_MAX_MB=0` turns the cache off and restores the previous
+/// behaviour exactly, which is the first thing to try if a dispatch ever
+/// returns memory that looks like someone else's.
+static vx::DevicePool<void *(*)(size_t), void (*)(void *, size_t)> &
+device_pool() {
+  static auto raw_alloc = [](size_t bytes) -> void * {
+    void *p = nullptr;
+    if (cudaMalloc(&p, bytes) != cudaSuccess) {
+      cudaGetLastError();
+      return nullptr;
+    }
+    return p;
+  };
+  static auto raw_free = [](void *p, size_t) { cudaFree(p); };
+  static vx::DevicePool<void *(*)(size_t), void (*)(void *, size_t)> pool(
+      raw_alloc, raw_free, vx::vx_pool_capacity_bytes());
+  return pool;
+}
+
 /// A device-side operand, staged from host memory or borrowed in place.
 ///
 /// Movable and not copyable, deliberately: a copy would leave two objects each
@@ -234,34 +267,39 @@ struct DeviceBuffer {
   void *ptr = nullptr;
   int64_t row_stride = 0; // in elements
   bool owned = false;
+  size_t bytes = 0; // what to hand back to the pool; 0 when borrowed
 
   DeviceBuffer() = default;
   DeviceBuffer(const DeviceBuffer &) = delete;
   DeviceBuffer &operator=(const DeviceBuffer &) = delete;
 
   DeviceBuffer(DeviceBuffer &&other) noexcept
-      : ptr(other.ptr), row_stride(other.row_stride), owned(other.owned) {
+      : ptr(other.ptr), row_stride(other.row_stride), owned(other.owned),
+        bytes(other.bytes) {
     other.ptr = nullptr;
     other.owned = false;
+    other.bytes = 0;
   }
 
   DeviceBuffer &operator=(DeviceBuffer &&other) noexcept {
     if (this != &other) {
       if (owned && ptr) {
-        cudaFree(ptr);
+        device_pool().release(ptr, bytes);
       }
       ptr = other.ptr;
       row_stride = other.row_stride;
       owned = other.owned;
+      bytes = other.bytes;
       other.ptr = nullptr;
       other.owned = false;
+      other.bytes = 0;
     }
     return *this;
   }
 
   ~DeviceBuffer() {
     if (owned && ptr) {
-      cudaFree(ptr);
+      device_pool().release(ptr, bytes);
     }
   }
 };
@@ -302,7 +340,15 @@ DeviceBuffer stage(const void *host_data, int64_t rows, int64_t cols,
   }
 
   size_t width = (size_t)cols * elem_bytes;
-  VX_CUDA_CHECK(cudaMalloc(&buf.ptr, (size_t)rows * width));
+  buf.bytes = (size_t)rows * width;
+  buf.ptr = device_pool().acquire(buf.bytes);
+  if (!buf.ptr) {
+    fprintf(stderr,
+            "[Vx CUDA] FATAL: out of device memory staging %zu bytes "
+            "(%lld x %lld).\n",
+            buf.bytes, (long long)rows, (long long)cols);
+    abort();
+  }
   buf.owned = true;
   buf.row_stride = cols;
   VX_CUDA_CHECK(cudaMemcpy2D(buf.ptr, width, host_data,
