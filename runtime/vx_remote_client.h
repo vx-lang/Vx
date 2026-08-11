@@ -35,6 +35,7 @@
 #define VX_REMOTE_CLIENT_H
 
 #include "vx_manifest.h"
+#include "vx_remote_region.h"
 #include "vx_transport.h"
 #include "vx_wire.h"
 
@@ -192,12 +193,29 @@ static inline int vx_remote_fetch(int fd, uint64_t handle, void *dst,
   return rc == VX_TRANSPORT_OK && got == nbytes;
 }
 
+/// Release a resident buffer, and wait for the acknowledgement.
+///
+/// The wait is not politeness. Every message here is a request with a reply,
+/// and a client that skipped one would leave it in the stream for the *next*
+/// read to consume -- so the reply to a later FETCH would be the stale FREE
+/// ack, and that FETCH would report failure for a reason having nothing to do
+/// with the handle it asked about. Exactly that happened while this was being
+/// written: a test asserting an unknown handle is refused passed by reading a
+/// leftover acknowledgement.
 static inline int vx_remote_free(int fd, uint64_t handle) {
   uint8_t request[16];
+  uint8_t reply[16];
   vx_wire_writer w;
+  uint32_t type = 0;
+  uint64_t reply_len = 0;
+
   vx_wire_writer_init(&w, request, sizeof(request));
   vx_wire_put_free(&w, handle);
-  return vx_transport_send(fd, VX_WIRE_FREE, request, w.len) == VX_TRANSPORT_OK;
+  if (vx_transport_send(fd, VX_WIRE_FREE, request, w.len) != VX_TRANSPORT_OK) {
+    return 0;
+  }
+  return vx_transport_recv(fd, &type, reply, sizeof(reply), &reply_len) ==
+         VX_TRANSPORT_OK;
 }
 
 #endif /* VX_REMOTE_CLIENT_H */

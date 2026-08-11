@@ -55,6 +55,70 @@ inline bool vx_verbose() {
   return on;
 }
 
+/// C = A * B, row-major, for the element types this backend can carry.
+///
+/// The reference implementation, deliberately: it exists so a CPU backend gives
+/// the same *answer to the routing question* an accelerator one does, not so it
+/// goes faster. See the call site in vx_plugin_dispatch_async.
+template <typename T>
+inline void vx_host_gemm_typed(const vx_gemm_plan &plan, T *out,
+                               int64_t out_row_stride) {
+  const T *a = static_cast<const T *>(plan.a_data);
+  const T *b = static_cast<const T *>(plan.b_data);
+  for (int64_t i = 0; i < plan.m; ++i) {
+    for (int64_t j = 0; j < plan.n; ++j) {
+      T acc = static_cast<T>(0);
+      for (int64_t k = 0; k < plan.k; ++k) {
+        acc += a[i * plan.a_row_stride + k] * b[k * plan.b_row_stride + j];
+      }
+      out[i * out_row_stride + j] = acc;
+    }
+  }
+}
+
+/// Run a decoded plan. Returns false for anything it cannot carry, which sends
+/// the caller back to the outlined kernel -- a refusal costs performance and
+/// never correctness, exactly as it does in the CUDA backend.
+inline bool vx_host_run_gemm(const vx_gemm_plan &plan) {
+  size_t esz = vx_dtype_bytes(plan.dtype);
+  if (esz == 0 || (plan.dtype != VX_DTYPE_F32 && plan.dtype != VX_DTYPE_F64)) {
+    return false;
+  }
+
+  void *out = plan.out_data;
+  int64_t stride = plan.out_row_stride;
+
+  if (plan.out_kind == VX_GEMM_OUT_SLOT) {
+    /* Standing in for the kernel means doing what it would have: allocate the
+       result and publish a descriptor naming it. The allocation outlives this
+       call because the caller loads that descriptor out of the slot. */
+    out = malloc((size_t)plan.m * (size_t)plan.n * esz);
+    if (!out) {
+      return false;
+    }
+    stride = plan.n;
+  } else if (!out) {
+    return false;
+  }
+
+  if (plan.dtype == VX_DTYPE_F32) {
+    vx_host_gemm_typed<float>(plan, static_cast<float *>(out), stride);
+  } else {
+    vx_host_gemm_typed<double>(plan, static_cast<double *>(out), stride);
+  }
+
+  if (plan.out_kind == VX_GEMM_OUT_SLOT) {
+    vx_gemm_publish_slot(&plan, out);
+  }
+  if (vx_verbose()) {
+    fprintf(stderr, "[Vx " VX_BACKEND_NAME "] GEMM %lldx%lldx%lld %s -> %s\n",
+            (long long)plan.m, (long long)plan.n, (long long)plan.k,
+            vx_dtype_name(plan.dtype),
+            plan.out_kind == VX_GEMM_OUT_SLOT ? "slot" : "buffer");
+  }
+  return true;
+}
+
 /// Describe one argument, for VX_DISPATCH_VERBOSE. The tag says what each
 /// pointer is; for anything ranked the descriptor says how big it is.
 inline void vx_describe_arg(int64_t i, int32_t tag, void *arg) {
@@ -157,6 +221,31 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
             outkind ? outkind : "-");
     for (int64_t i = 0; i < num_args; ++i) {
       vx_describe_arg(i, arg_tags[i], device_args[i]);
+    }
+  }
+
+  /* A classified matmul runs here rather than through the outlined kernel, the
+     same way the CUDA backend hands one to cuBLAS.
+   *
+   * This is not an optimisation -- the loop nest computes the same numbers, and
+   * a reference GEMM is no faster. It is what makes this backend answer the
+   * same question the accelerator ones do. Without it the two disagree about
+   * whether a kernel is *routable*, and that difference is load-bearing in one
+   * place: a remote worker (runtime/vx_worker_main.cpp) has no outlined kernel
+   * to fall back to, because the artifact was never shipped to it. A CPU worker
+   * that could not route a matmul would abort on the first one, which is
+   * exactly what it did before this existed.
+   *
+   * So a CPU machine can serve dispatches, and a disaggregated program can be
+   * developed and tested without a GPU anywhere -- the property the rest of
+   this
+   * ABI already has. */
+  {
+    vx_gemm_plan plan;
+    if (vx_gemm_plan_decode(binary_payload, payload_size, device_args, arg_tags,
+                            num_args, &plan) &&
+        vx_host_run_gemm(plan)) {
+      return 1;
     }
   }
 
