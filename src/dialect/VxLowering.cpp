@@ -15,9 +15,9 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
-#include "mlir/IR/Dominance.h"
 #include "mlir/IR/BuiltinDialect.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Dominance.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/InitAllPasses.h"
@@ -721,6 +721,22 @@ struct TransferOpLowering : public OpRewritePattern<TransferOp> {
     if (isDeviceTransfer(op))
       return failure();
 
+    // Coming home. `transfer(x, Memory::CPU_DRAM)` where x is on a device is
+    // the way back, and it is not a host allocation and a `memref.copy`: the
+    // source is not host memory. Locally that copy reads a device pointer;
+    // across a fleet it reads a non-canonical handle, which is an address no
+    // process owns. Left to the LLVM stage below, which can get a raw pointer
+    // out of a memref and call the plugin's fetch.
+    //
+    // This is why the way home did nothing. The op was lowered here into an
+    // allocation and a copy, so no `vx.transfer` survived and nothing ever
+    // called `vx_plugin_transfer_device_to_host` -- an entry point that exists,
+    // is wired to the fleet routing, and had no caller in generated code.
+    if (vx::TransferOp srcXfer = definingTransfer(src)) {
+      if (isDeviceTransfer(srcXfer))
+        return failure();
+    }
+
     // Extract dynamic sizes from the source memref
     SmallVector<Value> dynamicSizes;
     for (int i = 0; i < srcType.getRank(); ++i) {
@@ -987,11 +1003,28 @@ struct TransferToPluginLowering : public OpRewritePattern<vx::TransferOp> {
 
   LogicalResult matchAndRewrite(vx::TransferOp op,
                                 PatternRewriter &rewriter) const override {
-    if (!isDeviceTransfer(op))
-      return failure();
-
     Location loc = op.getLoc();
     Value src = op.getOperand();
+
+    // Two directions, both of them this pattern's business because both need a
+    // raw pointer out of a memref.
+    //
+    //   out    `transfer(x, Memory::GPU_HBM)` -- allocate there, copy into it.
+    //   home   `transfer(d, Memory::CPU_DRAM)` where d is on a device --
+    //          allocate here, and fetch.
+    //
+    // The way home used to be handled by TransferOpLowering as an allocation
+    // and a `memref.copy`, which reads the source directly: a device pointer
+    // locally, and across a fleet a non-canonical handle naming memory in
+    // another process. So `vx_plugin_transfer_device_to_host` -- which exists
+    // and is wired to the fleet routing -- had no caller in generated code, and
+    // a program asking for its data back silently did not get it.
+    vx::TransferOp srcXfer = definingTransfer(src);
+    const bool goingOut = isDeviceTransfer(op);
+    const bool comingHome = !goingOut && srcXfer && isDeviceTransfer(srcXfer);
+    if (!goingOut && !comingHome)
+      return failure();
+
     auto srcType = dyn_cast<MemRefType>(src.getType());
     if (!srcType)
       return failure();
@@ -1040,11 +1073,50 @@ struct TransferToPluginLowering : public OpRewritePattern<vx::TransferOp> {
           llvmPtrType, {llvmI64Type, llvmPtrType, llvmI32Type}, false);
       rewriter.create<LLVM::LLVMFuncOp>(loc, allocName, fnTy);
     }
-    auto callOp = rewriter.create<LLVM::CallOp>(
-        loc, TypeRange{llvmPtrType},
-        SymbolRefAttr::get(rewriter.getContext(), allocName),
-        ValueRange{bytes, alignedPtr, topoVal});
-    Value devicePtr = callOp.getResult();
+    Value devicePtr;
+    if (comingHome) {
+      // Host memory first, with no copy -- there is nothing here to copy from.
+      // A null source is what tells the plugin to allocate and stop.
+      Value nullSrc = rewriter.create<LLVM::ZeroOp>(loc, llvmPtrType);
+      Value hostTopo = rewriter.create<LLVM::ConstantOp>(
+          loc, llvmI32Type, rewriter.getI32IntegerAttr(0));
+      devicePtr = rewriter
+                      .create<LLVM::CallOp>(
+                          loc, TypeRange{llvmPtrType},
+                          SymbolRefAttr::get(rewriter.getContext(), allocName),
+                          ValueRange{bytes, nullSrc, hostTopo})
+                      .getResult();
+
+      // Then the fetch, addressed to the topology the data is actually on --
+      // taken from the transfer that put it there, since this op only names
+      // where it is going.
+      int32_t srcTopology = 0;
+      if (auto a = srcXfer->getAttrOfType<IntegerAttr>("target_topology"))
+        srcTopology = static_cast<int32_t>(a.getInt());
+      Value srcTopoVal = rewriter.create<LLVM::ConstantOp>(
+          loc, llvmI32Type, rewriter.getI32IntegerAttr(srcTopology));
+
+      StringRef fetchName = "vx_plugin_transfer_device_to_host";
+      if (!module.lookupSymbol<LLVM::LLVMFuncOp>(fetchName)) {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(module.getBody());
+        auto fnTy = LLVM::LLVMFunctionType::get(
+            llvmI32Type, {llvmPtrType, llvmPtrType, llvmI64Type, llvmI32Type},
+            false);
+        rewriter.create<LLVM::LLVMFuncOp>(loc, fetchName, fnTy);
+      }
+      rewriter.create<LLVM::CallOp>(
+          loc, TypeRange{llvmI32Type},
+          SymbolRefAttr::get(rewriter.getContext(), fetchName),
+          ValueRange{alignedPtr, devicePtr, bytes, srcTopoVal});
+    } else {
+      devicePtr = rewriter
+                      .create<LLVM::CallOp>(
+                          loc, TypeRange{llvmPtrType},
+                          SymbolRefAttr::get(rewriter.getContext(), allocName),
+                          ValueRange{bytes, alignedPtr, topoVal})
+                      .getResult();
+    }
 
     // Rebuild a descriptor over the device pointer, keeping the source's shape.
     Value newDesc = rewriter.create<LLVM::UndefOp>(loc, convertedSrc);
