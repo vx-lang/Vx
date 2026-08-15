@@ -40,6 +40,11 @@ COMPOSITES = [
     ("HBM", "REG", "L2"),  # a load miss fills via L2
     ("SMEM", "HBM", "L2"),  # a store to global goes out through L2
     ("REG", "HBM", "L2"),
+    # Apple GPU (measure_m4.mm). Threadgroup memory is filled by an ordinary load followed by an
+    # ordinary threadgroup store -- family 9 has no asynchronous copy engine -- so both of these
+    # are instruction-sequenced routes and P1 predicts SUM.
+    ("L2", "SMEM", "REG"),
+    ("HBM", "SMEM", "REG"),
 ]
 
 ROW = re.compile(r"^(\w+)\s*->\s*(\w+)\s+MEASURED\s+([\d.]+)\s+([\d.]+)")
@@ -121,6 +126,13 @@ def identical_rate_groups(rates, column, minimum=3):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--probes", required=True, help="probes.txt from a powerset run")
+    ap.add_argument(
+        "--units",
+        default="cycles per byte, per SM|seconds per byte, device-wide",
+        help="labels for the two rate columns, '<per-unit>|<aggregate>'. The arithmetic is "
+        "unit-agnostic -- both columns are rates and only their reciprocals are compared -- but "
+        "the label must not claim B/cyc on a machine with no cycle counter (measure_m4.mm).",
+    )
     args = ap.parse_args()
 
     rates = parse(args.probes)
@@ -129,9 +141,10 @@ def main():
     print(f"probes : {args.probes}")
     print(f"edges  : {len(rates)} measured\n")
 
-    print("== per-SM (B/cyc), one block's view ==")
+    unit_a, _, unit_b = args.units.partition("|")
+    print(f"== per-unit column: {unit_a} ==")
     per_sm = score(rates, 0)
-    report(per_sm, "cycles per byte, per SM")
+    report(per_sm, unit_a)
 
     scorable = [r for r in per_sm if not r["unscorable"]]
     if scorable:
@@ -182,8 +195,8 @@ def main():
                     "  the campaign (see vx-review#22 for the first three)."
                 )
 
-    print("\n== aggregate (GB/s), device-wide ==")
-    report(score(rates, 1), "seconds per byte, device-wide")
+    print(f"\n== aggregate column: {unit_b} ==")
+    report(score(rates, 1), unit_b)
     return 0
 
 
