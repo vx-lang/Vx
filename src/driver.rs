@@ -412,6 +412,14 @@ impl CompilerDriver {
                     parent: None,
                     capacity: None,
                     bandwidth: None,
+                    // Neither is knowable for "the machine this was compiled
+                    // on", and both are absent for the same reason the capacity
+                    // is: an invented figure would be indistinguishable from a
+                    // declared one. Absent means a path through here is refused
+                    // rather than priced, which is the honest answer -- and no
+                    // bandwidth is declared either, so it was already refused.
+                    clock_hz: None,
+                    replicas: None,
                     managed: crate::syntax::Management::Explicit,
                     granule: None,
                     scope: None,

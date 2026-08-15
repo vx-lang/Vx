@@ -14,16 +14,21 @@
 //   * the model is internally inconsistent -- fatal, and cheap to find here;
 //   * the model diverges from hardware -- the study's actual subject, measured on real machines.
 //
-// Additivity is the sharpest example. "Path cost = sum of leg costs" is an *axiom*, not a
-// prediction: copy engines and TMA overlap staged legs, so real staged cost is expected to come in
-// UNDER the sum, and quantifying that residual is experiment M2. What must hold now is that the
-// model says what it means -- if the implementation is not even self-consistently additive, the M2
-// residual would be measuring a bug rather than an overlap.
+// Additivity is the sharpest example, and it is the one that changed. "Path cost = sum of leg
+// costs" was asserted here as an axiom. It is now false in the model on purpose: a containment hop
+// charges both endpoints (vx-review#22), so staging through a space counts that space twice while
+// a direct walk streams through it once. What survives is the inequality -- staging is never
+// cheaper than streaming -- and that is what Axiom 1 now asserts.
+//
+// The hardware moves the same way and further: a staged HBM->L2->SMEM measured 0.60x the sum of
+// its legs on an H100, because copy engines and TMA overlap the legs. That was M2's pre-registered
+// expectation. So the model and the hardware now agree on the SIGN of the gap and disagree on its
+// size, which is a residual to quantify rather than a bug to fix.
 //
 //===----------------------------------------------------------------------===//
 
 use vxc::hir::memory::{granule_round, MemoryHierarchy};
-use vxc::syntax::MemorySpace;
+use vxc::syntax::{MemorySpace, RatePer};
 
 /// A three-level hierarchy with distinct bandwidths at every level, so a wrong leg cannot hide
 /// behind an equal one, plus a granule to exercise the rounding axioms.
@@ -52,13 +57,21 @@ fn space(n: &str) -> MemorySpace {
     MemorySpace::from_name(n)
 }
 
-/// **Axiom 1: additivity.** The cost of a staged path is the sum of its legs.
+/// **Axiom 1 (revised): staging costs at least as much as streaming.**
 ///
-/// Stated over a chain where every hop is a time rate, so the legs are commensurable. This is the
-/// axiom M2 exists to violate on real hardware (overlap), so a failure *here* means the model does
-/// not agree with itself, which is a different and much worse thing.
+/// This was strict additivity — `cost(A->C) == cost(A->B) + cost(B->C)` — asserted as an axiom.
+/// It is now false, deliberately: since a containment hop charges both endpoints (vx-review#22),
+/// staging through B writes into B and then reads back out of it, so B is counted twice, while the
+/// direct walk streams through it once. The inequality is what survives.
+///
+/// The hardware agrees, and by a wide margin in the same direction. Measured on an H100, a staged
+/// `HBM->L2->SMEM` costs 0.60x the sum of its legs (vx-review#16, measurements/EDGES.md) because
+/// copy engines and TMA overlap the legs. M2 pre-registered exactly this, so the old axiom failing
+/// is a confirmed prediction rather than a surprise — but note the model and the hardware disagree
+/// on *how much*: the model now says staging is dearer by the doubled intermediates, and the
+/// hardware says it is dearer still than that, because streaming overlaps and staging does not.
 #[test]
-fn path_cost_is_the_sum_of_its_legs() {
+fn staging_through_a_space_costs_at_least_the_direct_walk() {
     let m = hierarchy(TIME_MACHINE);
     let h = MemoryHierarchy::build(m.memories.iter());
     for &bytes in &[4096u64, 65_536, 1 << 20, 64 << 20] {
@@ -73,10 +86,18 @@ fn path_cost_is_the_sum_of_its_legs() {
                     .value
             })
             .sum();
-        assert_eq!(
-            whole.value, legs,
-            "additivity fails at {bytes} bytes: DRAM->SMEM is {} but its legs sum to {legs}",
+        assert!(
+            whole.value <= legs,
+            "the direct walk must not cost more than staging through every level: \
+             DRAM->SMEM is {} but its legs sum to {legs} at {bytes} bytes",
             whole.value
+        );
+        // The gap is exactly the intermediates, counted twice by the staged form and once by the
+        // direct one. Assert it is real rather than a tie, so a regression to strict additivity
+        // would fail here.
+        assert!(
+            whole.value < legs,
+            "staging should cost strictly more than streaming at {bytes} bytes"
         );
     }
 }
@@ -217,50 +238,66 @@ fn large_transfers_still_have_a_cost() {
         assert!(c.value > 0, "{bytes} bytes cost zero");
     }
 
-    // A parent->child move is costed at the CHILD's bandwidth alone, because the nearest common
-    // ancestor -- here the parent itself -- is the shared reservoir and contributes no bandwidth
-    // term. So 64 GiB from DRAM into HBM is 64 GiB / 3 TB/s = 2.29e10 ps, NOT 64 GiB / 100 GB/s.
+    // A parent->child move charges BOTH: the data has to come out of DRAM as well as into HBM.
+    // So 64 GiB from DRAM into HBM is 64 GiB/100 GB/s + 64 GiB/3 TB/s.
     //
-    // Worth stating explicitly because it is easy to expect the other answer, and because it has a
-    // consequence the study should know: an enclosing space's declared `bandwidth:` never
-    // participates in a move into or out of the space it encloses. That is defensible as a model
-    // (you fill the inner space at the inner space's rate) but it is a modelling choice, not a
-    // physical law, and it is precisely why a host<->device link needs its bandwidth declared on
-    // the *edge* rather than inferred from the memories it connects.
+    // This test previously asserted the opposite -- the child's bandwidth alone -- and called the
+    // enclosing space's rate a modelling choice. Hardware settled it: pricing the destination alone
+    // scored -85.1% on the H100 `HBM->L2` seam, and charging both halves brought it to -31.7%
+    // (vx-review#15, measurements/EDGES.md). The enclosing space is on the critical path, and
+    // leaving it out was under-pricing by omission.
     let c = h
         .derived_transfer_cost(&space("DRAM"), &space("HBM"), 64 << 30)
         .unwrap();
-    // `div_ceil`, not truncating division: a partial unit of time is still spent, so the roofline
-    // rounds up. (The exact quotient here is …245.33, so the two differ by one and a truncating
-    // expectation would fail.)
-    let expected = ((64u128 << 30) * 1_000_000_000_000).div_ceil(3_000_000_000_000);
+    // `div_ceil` per hop, not truncating division: a partial unit of time is still spent, and the
+    // rounding is applied per term rather than to the sum.
+    let bytes: u128 = 64u128 << 30;
+    let expected = (bytes * 1_000_000_000_000).div_ceil(100_000_000_000)
+        + (bytes * 1_000_000_000_000).div_ceil(3_000_000_000_000);
     assert_eq!(
         c.value as u128, expected,
-        "64 GiB into HBM should be costed at HBM's 3 TB/s"
+        "DRAM->HBM should charge DRAM's 100 GB/s and HBM's 3 TB/s"
     );
 }
 
-/// The model refuses to add costs of different dimension.
+/// The model converts between rate dimensions only when the clock is declared.
 ///
 /// `MACHINE` mixes a `B/s` L2 with a `B/cyc` SMEM. Converting between them needs a clock the
 /// declarations do not carry, so the only correct answer is "not derivable" -- and it must not be
 /// a number, because a number here would silently add seconds to cycles. The fleet is exactly this
 /// shape, so this is the live case rather than a hypothetical.
 #[test]
-fn mixed_rate_units_are_refused_not_added() {
+fn mixed_rate_units_need_a_declared_clock() {
+    // MACHINE declares SMEM in B/cyc with no `clock:`, so the L2(B/s) + SMEM(B/cyc) path cannot be
+    // summed. Refusing beats inventing a frequency -- that is PREDICTIONS.md decision 5.
     let m = hierarchy(MACHINE);
     let h = MemoryHierarchy::build(m.memories.iter());
     assert_eq!(
-        h.derived_transfer_cost(&space("HBM"), &space("SMEM"), 16 * 1024),
+        h.derived_transfer_cost(&space("L2"), &space("SMEM"), 16 * 1024),
         None,
-        "a path mixing B/s and B/cyc must not produce a summed cost"
+        "a path mixing B/s and B/cyc with no declared clock must not produce a summed cost"
     );
-    // Each single-unit hop on its own is still derivable, so the `None` above is about the mixing
-    // and not about a missing declaration.
-    assert!(h
-        .derived_transfer_cost(&space("HBM"), &space("L2"), 16 * 1024)
-        .is_some());
-    assert!(h
+
+    // Declare the clock and the same path converts exactly, in picoseconds.
+    let clocked = hierarchy(
+        "
+Memory HBM { capacity: 40 GiB, bandwidth: 3 TB/s }
+Memory L2 { within: Memory::HBM, capacity: 50 MiB, bandwidth: 12 TB/s }
+Memory SMEM { within: Memory::L2, capacity: 228 KiB, bandwidth: 128 B/cyc, clock: 1.98 GHz, \
+granule: 1 KiB, scope: sm }
+fn main() -> i32 { return 0; }
+",
+    );
+    let hc = MemoryHierarchy::build(clocked.memories.iter());
+    let c = hc
         .derived_transfer_cost(&space("L2"), &space("SMEM"), 16 * 1024)
-        .is_some());
+        .expect("a declared clock makes the mixed path derivable");
+    assert_eq!(c.per, RatePer::Second, "a converted path is reported in ps");
+    // SMEM: 16384/128 = 128 cycles, converted at 1.98 GHz. L2: 16384 B at 12 TB/s.
+    // Spelled as arithmetic rather than a constant so the conversion is auditable, and rounded up
+    // per term the way the model does it — 128 cycles is 64646.46 ps, and a partial picosecond is
+    // still spent.
+    let smem_ps = (128u128 * 1_000_000_000_000).div_ceil(1_980_000_000);
+    let l2_ps = (16_384u128 * 1_000_000_000_000).div_ceil(12_000_000_000_000);
+    assert_eq!(c.value as u128, smem_ps + l2_ps);
 }

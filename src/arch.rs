@@ -904,6 +904,8 @@ mod tests {
             parent: None,
             capacity: None,
             bandwidth: None,
+            clock_hz: None,
+            replicas: None,
             managed: Default::default(),
             granule: None,
             scope,

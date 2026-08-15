@@ -28,7 +28,9 @@ Memory L2 {
 // spec: NVIDIA Ampere Architecture Whitepaper / CUDA C Programming Guide --
 // 164 KB configurable shared memory per SM.
 Memory SMEM {
-  within: Memory::L2, capacity: 164 KiB, bandwidth: 128 B/cyc, granule: 1 KiB, managed: explicit, scope: sm
+  // replicas: UNVERIFIED: A100 SM count, vendor figure
+  // clock: UNVERIFIED: A100 boost clock, vendor figure
+  within: Memory::L2, capacity: 164 KiB, bandwidth: 128 B/cyc, clock: 1.41 GHz, granule: 1 KiB, managed: explicit, scope: sm, replicas: 108
 }
 
 Topology Device {

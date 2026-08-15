@@ -29,7 +29,9 @@ Memory L2 {
 // 228 KB configurable shared memory per SM (up from 164 KB on A100). This is
 // the per-SM maximum, which is what a tile placement must fit.
 Memory SMEM {
-  within: Memory::L2, capacity: 228 KiB, bandwidth: 128 B/cyc, granule: 1 KiB, managed: explicit, scope: sm
+  // replicas: measured: probe_edges reported SMs=132 on two rented H100 SXM boxes
+  // clock: measured: nvidia-smi clocks.max.sm on two rented H100 SXM boxes, 2026-08-08
+  within: Memory::L2, capacity: 228 KiB, bandwidth: 128 B/cyc, clock: 1.98 GHz, granule: 1 KiB, managed: explicit, scope: sm, replicas: 132
 }
 
 // The staging path a placement crosses: host -> device memory -> on-chip.

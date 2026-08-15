@@ -52,7 +52,9 @@ Memory L2 {
 // match how every other fleet file describes on-chip scratchpad, so a program
 // that places a tile here is costed in the same units across SKUs.
 Memory SMEM {
-  within: Memory::L2, capacity: 32 KiB, bandwidth: 128 B/cyc, granule: 1 KiB, managed: explicit, scope: sm
+  // replicas: UNVERIFIED: Apple M4 GPU core count; placeholder like the bandwidth above
+  // clock: UNVERIFIED: Apple publishes no GPU clock; order-of-magnitude placeholder
+  within: Memory::L2, capacity: 32 KiB, bandwidth: 128 B/cyc, clock: 1.4 GHz, granule: 1 KiB, managed: explicit, scope: sm, replicas: 10
 }
 
 // The degenerate seam. On a discrete part this edge is PCIe or C2C and dominates

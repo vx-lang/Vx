@@ -37,7 +37,9 @@ Memory L2 {
 // fits every NVIDIA SKU can still be rejected here -- exactly the kind of
 // cross-vendor result the matrix should surface rather than hide.
 Memory SMEM {
-  within: Memory::L2, capacity: 64 KiB, bandwidth: 128 B/cyc, granule: 1 KiB, managed: explicit, scope: sm
+  // replicas: UNVERIFIED: MI300X compute units, vendor figure
+  // clock: UNVERIFIED: MI300X peak engine clock, vendor figure
+  within: Memory::L2, capacity: 64 KiB, bandwidth: 128 B/cyc, clock: 2.1 GHz, granule: 1 KiB, managed: explicit, scope: sm, replicas: 304
 }
 
 Topology Device {

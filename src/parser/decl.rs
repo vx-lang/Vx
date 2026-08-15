@@ -341,6 +341,8 @@ impl<'a> Parser<'a> {
         let mut parent: Option<MemorySpace> = None;
         let mut capacity: Option<crate::syntax::ByteSize> = None;
         let mut bandwidth: Option<crate::syntax::Bandwidth> = None;
+        let mut clock_hz: Option<u64> = None;
+        let mut replicas: Option<u64> = None;
         let mut managed = crate::syntax::Management::default();
         let mut granule: Option<crate::syntax::ByteSize> = None;
         let mut scope: Option<crate::syntax::Scope> = None;
@@ -390,6 +392,8 @@ impl<'a> Parser<'a> {
                 "capacity" => capacity = Some(self.parse_byte_size()?),
                 "granule" => granule = Some(self.parse_byte_size()?),
                 "bandwidth" => bandwidth = Some(self.parse_bandwidth()?),
+                "clock" => clock_hz = Some(self.parse_clock()?),
+                "replicas" => replicas = Some(self.parse_count()?),
                 "managed" => {
                     let kind = match &self.advance().kind {
                         TokenType::Identifier(s) => s.to_string(),
@@ -425,6 +429,8 @@ impl<'a> Parser<'a> {
             parent,
             capacity,
             bandwidth,
+            clock_hz,
+            replicas,
             managed,
             granule,
             scope,
@@ -458,6 +464,53 @@ impl<'a> Parser<'a> {
             bytes: self.scaled_bytes(&mantissa, unit)?,
             per,
         })
+    }
+
+    /// A clock literal like `1.98 GHz`, stored in hertz.
+    ///
+    /// Exists so a `B/cyc` bandwidth can be converted against a `B/s` one exactly. Every fleet
+    /// machine mixes the two -- L2 quoted in TB/s, SMEM in B/cyc -- and before this the mixed path
+    /// was simply not derivable, which is how the `L2->SMEM` seam went unpriced.
+    fn parse_clock(&mut self) -> ParseResult<'a, u64> {
+        let mantissa = self.parse_number_text("a clock frequency")?;
+        let unit_str = match &self.advance().kind {
+            TokenType::Identifier(s) => s.to_string(),
+            other => {
+                return Err(self.error(&format!(
+                    "Expected a frequency unit ({}) after `clock:`, got {:?}",
+                    crate::units::FreqUnit::ALL,
+                    other
+                )))
+            }
+        };
+        let unit = crate::units::FreqUnit::parse(&unit_str).ok_or_else(|| {
+            self.error(&format!(
+                "Unknown frequency unit '{}'; expected one of {}",
+                unit_str,
+                crate::units::FreqUnit::ALL
+            ))
+        })?;
+        crate::units::to_hertz(&mantissa, unit).map_err(|e| {
+            self.error(&format!(
+                "`clock: {} {}` is not a whole number of hertz ({:?})",
+                mantissa, unit_str, e
+            ))
+        })
+    }
+
+    /// A plain positive integer count, for `replicas:`.
+    fn parse_count(&mut self) -> ParseResult<'a, u64> {
+        let text = self.parse_number_text("a count")?;
+        let n: u64 = text.parse().map_err(|_| {
+            self.error(&format!(
+                "`replicas:` expects a whole number, got '{}'",
+                text
+            ))
+        })?;
+        if n == 0 {
+            return Err(self.error("`replicas:` must be positive"));
+        }
+        Ok(n)
     }
 
     /// The `/s` or `/cyc` of a rate.

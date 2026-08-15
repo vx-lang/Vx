@@ -75,7 +75,9 @@ Memory L2 {
 // spec: CUDA C Programming Guide, compute capability 10.0 -- 228 KB
 // configurable shared memory per SM.
 Memory SMEM {
-  within: Memory::L2, capacity: 228 KiB, bandwidth: 128 B/cyc, granule: 1 KiB, managed: explicit, scope: sm
+  // replicas: UNVERIFIED: B200 SM count, vendor figure
+  // clock: UNVERIFIED: B200 boost clock, vendor figure
+  within: Memory::L2, capacity: 228 KiB, bandwidth: 128 B/cyc, clock: 1.965 GHz, granule: 1 KiB, managed: explicit, scope: sm, replicas: 148
 }
 
 Topology Device {

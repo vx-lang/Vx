@@ -214,9 +214,14 @@ impl<'a> MemoryHierarchy<'a> {
     }
 
     /// The bandwidth-derived cost of moving `bytes` from `src` to `dst` along the containment
-    /// tree: the sum, over each space on the path *excluding* their nearest common ancestor, of
-    /// `ceil(bytes / bandwidth)`. This is the paper's roofline (`T = bytes / (B/cyc)`); e.g. a
-    /// tile read into SMEM at 128 B/cyc costs `bytes/128` cycles.
+    /// tree: the sum, over each space on the path, of `ceil(bytes / bandwidth)`. This is the
+    /// paper's roofline (`T = bytes / (B/cyc)`).
+    ///
+    /// A shared ancestor that is neither endpoint is excluded — it is a reservoir the transfer
+    /// passes through, not a rate it is charged. An ancestor that *is* an endpoint is included:
+    /// on a containment hop like `SMEM within L2` the parent is where the data physically comes
+    /// from, and its delivery rate is on the critical path. Charging only the child is what scored
+    /// `L2->SMEM` at -91.3% against an H100, and `HBM->L2` at -85.1% (vx-review#15).
     ///
     /// Returns `None` when the cost is not derivable: `src == dst`, no common ancestor, a path
     /// space lacks a `bandwidth`, or the path's bandwidths mix rate units (cycles vs seconds).
@@ -233,7 +238,8 @@ impl<'a> MemoryHierarchy<'a> {
         }
         let nca = self.nearest_common_ancestor(src, dst)?;
         // Spaces on the path, excluding the NCA: each endpoint and its ancestors up to (but not
-        // including) the NCA. The NCA is the shared reservoir and adds no bandwidth term.
+        // including) the NCA. For siblings the NCA is a shared reservoir the transfer passes
+        // through, and it adds no bandwidth term of its own.
         let mut path: Vec<MemorySpace> = Vec::new();
         for endpoint in [src, dst] {
             for s in std::iter::once(endpoint.clone()).chain(self.ancestors(endpoint)) {
@@ -243,23 +249,102 @@ impl<'a> MemoryHierarchy<'a> {
                 path.push(s);
             }
         }
-        let mut total: u64 = 0;
-        let mut unit: Option<RatePer> = None;
+        // ...but when the NCA *is* one of the endpoints -- a containment hop like `SMEM within L2`
+        // -- it is not a passive reservoir. It is where the data physically comes from or goes to,
+        // and its delivery rate is squarely on the critical path. Excluding it prices only the
+        // destination's side of the edge and charges the source nothing at all.
+        //
+        // Measured on an H100 (vx-review#15): `L2->SMEM` priced at SMEM's declared 128 B/cyc alone
+        // scored -91.3% against hardware. Charging both halves -- L2's measured read rate of
+        // 23.7 B/cyc per SM plus SMEM's measured write rate of 77.8 -- predicts 18.2 B/cyc against
+        // a measured 16.6, which is within 10%. The missing term was the whole error.
+        if &nca == src || &nca == dst {
+            path.push(nca.clone());
+        }
+        // Collect the terms first, because whether the path can be summed natively depends on all
+        // of them: a path is kept in cycles only if *every* space on it is cycle-denominated.
+        #[allow(clippy::type_complexity)]
+        let mut terms: Vec<(crate::syntax::Bandwidth, Option<u64>, Option<u64>)> =
+            Vec::with_capacity(path.len());
         for s in &path {
-            let bw = self.descriptor(s)?.bandwidth?;
+            let d = self.descriptor(s)?;
+            let bw = d.bandwidth?;
             if bw.bytes == 0 {
                 return None;
             }
-            match unit {
-                None => unit = Some(bw.per),
-                Some(u) if u == bw.per => {}
-                _ => return None, // mixed rate units cannot be summed
+            terms.push((bw, d.clock_hz, d.replicas));
+        }
+        if terms.is_empty() {
+            return None;
+        }
+
+        // Put every term in the same DENOMINATION before summing any of them.
+        //
+        // A `scope: sm` space quotes the rate of one instance; a device-scoped space quotes an
+        // aggregate over all of them. Adding those directly is a unit error that looks like
+        // arithmetic: on an H100 L2's declared 12 TB/s is 6060 B/cyc device-wide against SMEM's 128
+        // per SM, so the L2 term contributed nothing and `L2->SMEM` sat at -87% even after the
+        // containment fix. Dividing the aggregate by `replicas` puts both in per-instance terms,
+        // which is the right denomination here because a transfer into an sm-scoped space is
+        // performed by one SM.
+        //
+        // Only applied when a replicated space is actually on the path; a purely device-scoped
+        // walk keeps its aggregate figures untouched.
+        let replicas = terms
+            .iter()
+            .filter_map(|(_, _, r)| *r)
+            .max()
+            .filter(|r| *r > 1);
+        let terms: Vec<(Bandwidth, Option<u64>)> = terms
+            .into_iter()
+            .map(|(mut bw, clock, own)| {
+                if let Some(r) = replicas {
+                    // A space that declares its own count is already per-instance.
+                    if own.is_none() {
+                        bw.bytes = (bw.bytes / r).max(1);
+                    }
+                }
+                (bw, clock)
+            })
+            .collect();
+
+        let all_cycles = terms.iter().all(|(bw, _)| bw.per == RatePer::Cycle);
+        if all_cycles {
+            // Stay in cycles. A cycle count is clock-invariant, so converting it to wall time here
+            // would throw away the one property that survives an unpinned clock.
+            let mut total: u64 = 0;
+            for (bw, _) in &terms {
+                total = total.saturating_add(hop_cost(bytes, *bw)?);
             }
-            total = total.saturating_add(hop_cost(bytes, bw)?);
+            return Some(DerivedCost {
+                value: total,
+                per: RatePer::Cycle,
+            });
+        }
+
+        // Otherwise the path mixes `B/s` and `B/cyc` and everything is converted to picoseconds.
+        // A cycle-denominated space must declare the clock those cycles are counted in; without it
+        // the conversion would require inventing a frequency, which is exactly the silent
+        // translation PREDICTIONS.md decision 5 forbids. Refusing is the honest answer, and the
+        // fleet files declare `clock:` precisely so this path stays derivable.
+        let mut total_ps: u128 = 0;
+        for (bw, clock_hz) in &terms {
+            let ps = match bw.per {
+                RatePer::Second => hop_cost(bytes, *bw)? as u128,
+                RatePer::Cycle => {
+                    let hz = (*clock_hz)? as u128;
+                    if hz == 0 {
+                        return None;
+                    }
+                    let cycles = bytes.div_ceil(bw.bytes) as u128;
+                    cycles.checked_mul(PICOS_PER_SEC as u128)?.div_ceil(hz)
+                }
+            };
+            total_ps = total_ps.checked_add(ps)?;
         }
         Some(DerivedCost {
-            value: total,
-            per: unit?,
+            value: u64::try_from(total_ps).ok()?,
+            per: RatePer::Second,
         })
     }
 
@@ -358,6 +443,8 @@ mod tests {
             parent: parent.map(MemorySpace::from_name),
             capacity: capacity.map(ByteSize),
             bandwidth: None,
+            clock_hz: None,
+            replicas: None,
             managed: Management::default(),
             granule: None,
             scope: None,
@@ -608,8 +695,41 @@ mod tests {
     }
 
     #[test]
-    fn derived_cost_single_hop_roofline() {
-        // Leaf at 128 B/cyc within Root. A 16384-byte tile: 16384/128 = 128 cycles.
+    fn containment_hop_charges_both_endpoints() {
+        // Leaf (128 B/cyc) within Root (256 B/cyc). Root -> Leaf is a containment hop: the data
+        // has to come OUT of Root as well as INTO Leaf, so both terms count.
+        // 16384/256 + 16384/128 = 64 + 128 = 192 cycles.
+        //
+        // This previously charged the child alone (128 cycles), which is the defect that scored
+        // -91.3% against an H100 on the L2->SMEM seam (vx-review#15): the source's delivery rate
+        // was priced at zero.
+        let decls = vec![
+            mem_bw("Root", None, 256, RatePer::Cycle),
+            mem_bw("Leaf", Some("Root"), 128, RatePer::Cycle),
+        ];
+        let h = MemoryHierarchy::build(&decls);
+        assert_eq!(
+            h.derived_transfer_cost(&space("Root"), &space("Leaf"), 16384),
+            Some(DerivedCost {
+                value: 192,
+                per: RatePer::Cycle
+            })
+        );
+        // Symmetric: spilling out of Leaf costs the same two terms.
+        assert_eq!(
+            h.derived_transfer_cost(&space("Leaf"), &space("Root"), 16384),
+            Some(DerivedCost {
+                value: 192,
+                per: RatePer::Cycle
+            })
+        );
+    }
+
+    #[test]
+    fn containment_hop_needs_the_parents_bandwidth_too() {
+        // A parent with no declared bandwidth makes the hop NOT derivable, rather than silently
+        // pricing it at the child's rate alone. Under-pricing by omission is what produced the
+        // -91.3% seam; refusing to answer is the honest failure.
         let decls = vec![
             mem("Root", None, None),
             mem_bw("Leaf", Some("Root"), 128, RatePer::Cycle),
@@ -617,10 +737,31 @@ mod tests {
         let h = MemoryHierarchy::build(&decls);
         assert_eq!(
             h.derived_transfer_cost(&space("Root"), &space("Leaf"), 16384),
-            Some(DerivedCost {
-                value: 128,
-                per: RatePer::Cycle
-            })
+            None
+        );
+    }
+
+    #[test]
+    fn containment_hop_matches_the_h100_measurement() {
+        // The measured H100 case, in per-SM B/cyc (vx-review#15, measurements/EDGES.md):
+        // L2 delivers 23 B/cyc to one SM and SMEM absorbs 77, so a 16 KiB tile costs
+        // ceil(16384/23) + ceil(16384/77) = 713 + 213 = 926 cycles -> 17.7 B/cyc effective.
+        // Hardware measured 16.6 B/cyc on that seam. Pricing SMEM alone would have said
+        // 16384/128 = 128 cycles, i.e. 128 B/cyc -- off by 7.7x.
+        let decls = vec![
+            mem_bw("L2", None, 23, RatePer::Cycle),
+            mem_bw("SMEM", Some("L2"), 77, RatePer::Cycle),
+        ];
+        let h = MemoryHierarchy::build(&decls);
+        let cost = h
+            .derived_transfer_cost(&space("L2"), &space("SMEM"), 16384)
+            .expect("derivable");
+        assert_eq!(cost.per, RatePer::Cycle);
+        assert_eq!(cost.value, 926);
+        let effective = 16384.0 / cost.value as f64;
+        assert!(
+            (16.0..=19.0).contains(&effective),
+            "effective {effective} B/cyc should bracket the measured 16.6"
         );
     }
 

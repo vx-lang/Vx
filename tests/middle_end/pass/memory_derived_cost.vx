@@ -6,13 +6,23 @@
 //
 //===----------------------------------------------------------------------===//
 // The transfer cost is derived from declared bandwidth (the paper's roofline) and emitted
-// on the `vx.transfer` op. NPU_HBM is 128 B/cyc; a 64x64 f32 tile is 16384 bytes, so the
-// move costs 16384 / 128 = 128 cycles. Reachability still uses the built-in CPU_DRAM ->
-// NPU_HBM path (unaffected).
+// on the `vx.transfer` op.
+//
+// A containment hop charges BOTH endpoints: the tile has to come out of CPU_DRAM as well as
+// into NPU_HBM (vx-review#22). A 64x64 f32 tile is 16384 bytes, so at CPU_DRAM's 256 B/cyc and
+// NPU_HBM's 128 B/cyc the move costs 16384/256 + 16384/128 = 64 + 128 = 192 cycles. The two
+// rates differ so that dropping either term changes the answer.
+//
+// CPU_DRAM must therefore declare a bandwidth. Without one the hop is deliberately NOT
+// derivable, rather than being priced at the destination's rate alone -- under-pricing by
+// omission is what scored -85.1% against an H100. Reachability still uses the built-in
+// CPU_DRAM -> NPU_HBM path (unaffected).
 //
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 
-Memory CPU_DRAM {}
+Memory CPU_DRAM {
+  bandwidth: 256 B/cyc
+}
 Memory NPU_HBM {
   within: Memory::CPU_DRAM, bandwidth: 128 B/cyc
 }
@@ -24,4 +34,4 @@ fn main() -> i32 {
 }
 
 // CHECK: vx.transfer
-// CHECK: cost = 128
+// CHECK: cost = 192

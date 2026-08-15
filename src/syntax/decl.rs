@@ -210,10 +210,24 @@ pub struct MemoryDecl {
     pub parent: Option<MemorySpace>,
     pub capacity: Option<ByteSize>,
     pub bandwidth: Option<Bandwidth>,
+    /// `clock: 1.98 GHz` — the clock a `B/cyc` bandwidth on this space is denominated in, in Hz.
+    ///
+    /// Required to convert this space's rate against a `B/s` one. Without it a path that mixes
+    /// `B/cyc` and `B/s` is not derivable, because inventing a clock is exactly the silent
+    /// conversion PREDICTIONS.md decision 5 forbids.
+    pub clock_hz: Option<u64>,
     pub managed: Management,
     pub granule: Option<ByteSize>,
     /// The execution level this space is private to (`scope: sm` etc.); `None` = unscoped.
     pub scope: Option<Scope>,
+    /// `replicas: 132` — how many instances of this space the device contains.
+    ///
+    /// A scoped space's `bandwidth:` is the rate of ONE instance, while an enclosing device-scoped
+    /// space quotes an aggregate. Composing the two without this count silently adds a per-SM rate
+    /// to a device-wide one, which is how `L2->SMEM` stayed at -87% even after the containment fix:
+    /// L2's 12 TB/s is 6060 B/cyc device-wide against SMEM's 128 per SM, so the larger term simply
+    /// vanished.
+    pub replicas: Option<u64>,
     /// `overcommit`: opt out of the *cumulative* budget error — the working set placed here may
     /// exceed `capacity` (downgraded to a warning). The programmer asserts the tiles do not all
     /// coexist, so the conservative sum should not block them.

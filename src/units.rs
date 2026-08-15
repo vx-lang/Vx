@@ -113,6 +113,55 @@ pub enum UnitError {
 /// exact. `u128` because `PiB` (2^50) times a 15-digit mantissa overflows `u64` mid-computation
 /// while the answer still fits.
 pub fn to_bytes(mantissa: &str, unit: ByteUnit) -> Result<u64, UnitError> {
+    scale_exact(mantissa, unit.factor() as u128)
+}
+
+/// A clock frequency unit. Always decimal — nobody has ever meant 2^30 by "GHz".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FreqUnit {
+    Hz,
+    KHz,
+    MHz,
+    GHz,
+}
+
+impl FreqUnit {
+    fn factor(self) -> u128 {
+        match self {
+            FreqUnit::Hz => 1,
+            FreqUnit::KHz => 1_000,
+            FreqUnit::MHz => 1_000_000,
+            FreqUnit::GHz => 1_000_000_000,
+        }
+    }
+
+    /// Case-sensitive, like `ByteUnit::parse`. `mhz` is not `MHz`.
+    pub fn parse(s: &str) -> Option<FreqUnit> {
+        match s {
+            "Hz" => Some(FreqUnit::Hz),
+            "kHz" => Some(FreqUnit::KHz),
+            "MHz" => Some(FreqUnit::MHz),
+            "GHz" => Some(FreqUnit::GHz),
+            _ => None,
+        }
+    }
+
+    /// Every spelling this module accepts, for diagnostics.
+    pub const ALL: &'static str = "Hz/kHz/MHz/GHz";
+}
+
+/// Convert a decimal mantissa plus a frequency unit into hertz, **exactly**.
+///
+/// Same discipline as [`to_bytes`]: the mantissa arrives as source text so nothing is lost to
+/// binary floating point before it gets here. `1.98 GHz` is exactly 1_980_000_000 Hz, and a figure
+/// that is not a whole number of hertz is refused rather than rounded.
+pub fn to_hertz(mantissa: &str, unit: FreqUnit) -> Result<u64, UnitError> {
+    scale_exact(mantissa, unit.factor())
+}
+
+/// The shared exact-scaling core: `(digits * factor) / 10^places` in `u128`, exact division
+/// required.
+fn scale_exact(mantissa: &str, factor: u128) -> Result<u64, UnitError> {
     let (int_part, frac_part) = match mantissa.split_once('.') {
         Some((i, f)) => (i, f),
         None => (mantissa, ""),
@@ -133,9 +182,7 @@ pub fn to_bytes(mantissa: &str, unit: ByteUnit) -> Result<u64, UnitError> {
     let places = u32::try_from(frac_part.len()).map_err(|_| UnitError::Malformed)?;
     let scale = 10u128.checked_pow(places).ok_or(UnitError::Malformed)?;
 
-    let numerator = digits
-        .checked_mul(unit.factor() as u128)
-        .ok_or(UnitError::Overflow)?;
+    let numerator = digits.checked_mul(factor).ok_or(UnitError::Overflow)?;
     if numerator % scale != 0 {
         return Err(UnitError::NotWholeBytes);
     }
@@ -145,6 +192,28 @@ pub fn to_bytes(mantissa: &str, unit: ByteUnit) -> Result<u64, UnitError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Clock figures get the same exactness guarantee as byte figures, and for the same reason:
+    /// `1.98 GHz` is what converts a `B/cyc` bandwidth into wall time, so a rounding error here
+    /// would land directly in every cycle-denominated prediction.
+    #[test]
+    fn frequencies_convert_exactly_or_are_refused() {
+        assert_eq!(to_hertz("1.98", FreqUnit::GHz), Ok(1_980_000_000));
+        assert_eq!(to_hertz("1965", FreqUnit::MHz), Ok(1_965_000_000));
+        assert_eq!(to_hertz("2.1", FreqUnit::GHz), Ok(2_100_000_000));
+        assert_eq!(to_hertz("1", FreqUnit::Hz), Ok(1));
+        // Sub-hertz precision is not a whole number of hertz, so it is refused rather than rounded.
+        assert_eq!(
+            to_hertz("1.0000000001", FreqUnit::Hz),
+            Err(UnitError::NotWholeBytes)
+        );
+        assert_eq!(to_hertz("1e9", FreqUnit::Hz), Err(UnitError::Malformed));
+        // Case-sensitive, like byte units: `ghz` is not `GHz`.
+        assert_eq!(FreqUnit::parse("GHz"), Some(FreqUnit::GHz));
+        assert_eq!(FreqUnit::parse("kHz"), Some(FreqUnit::KHz));
+        assert_eq!(FreqUnit::parse("ghz"), None);
+        assert_eq!(FreqUnit::parse("KHz"), None);
+    }
 
     /// The bug this module was written for: the fleet's figures must convert to what their `spec:`
     /// citations mean, not to a binary reading of a decimal number.
