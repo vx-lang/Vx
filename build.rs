@@ -94,6 +94,30 @@ fn main() {
         panic!("llvm-config not found in PATH. Make sure LLVM 15+ is installed.");
     }
 
+    // The fleet headers, and the two the dispatch plan is built from. Every
+    // backend compiles these -- npu_dispatch.mm as much as cuda_dispatch.cpp --
+    // so they are listed here, above the platform split, rather than inside one
+    // arm of it.
+    //
+    // They were listed only in the `else`. On macOS that made editing
+    // vx_remote_client.h rebuild nothing: cargo reported "Finished" in a tenth
+    // of a second, the JIT linked the previous dispatch library, and the change
+    // appeared to have no effect. Which is an hour spent debugging a binary
+    // that does not contain the fix, with no sign of it anywhere -- and it
+    // happened twice, because the first fix was written into whichever branch
+    // was open at the time (#348).
+    println!("cargo:rerun-if-changed=runtime/vx_remote_routing.h");
+    println!("cargo:rerun-if-changed=runtime/vx_remote_client.h");
+    println!("cargo:rerun-if-changed=runtime/vx_remote_region.h");
+    println!("cargo:rerun-if-changed=runtime/vx_manifest.h");
+    println!("cargo:rerun-if-changed=runtime/vx_transport.h");
+    println!("cargo:rerun-if-changed=runtime/vx_wire.h");
+    println!("cargo:rerun-if-changed=runtime/vx_agent.h");
+    println!("cargo:rerun-if-changed=runtime/vx_device_pool.h");
+    println!("cargo:rerun-if-changed=runtime/vx_dispatch_plan.h");
+    println!("cargo:rerun-if-changed=runtime/vx_host_call.h");
+    println!("cargo:rerun-if-changed=include/vx_hardware_runtime.h");
+
     // Check if we're on macOS
     if cfg!(target_os = "macos") {
         println!("cargo:rerun-if-changed=runtime/npu_dispatch.mm");
@@ -275,22 +299,6 @@ fn main() {
         println!("cargo:rerun-if-changed=runtime/x86_dispatch.cpp");
         println!("cargo:rerun-if-changed=runtime/arm64_dispatch.cpp");
         println!("cargo:rerun-if-changed=runtime/cuda_dispatch.cpp");
-        println!("cargo:rerun-if-changed=runtime/vx_dispatch_plan.h");
-        println!("cargo:rerun-if-changed=runtime/vx_host_call.h");
-        // The fleet headers. Every one of these is compiled into the dispatch
-        // library, and none of them was listed -- so editing vx_remote_client.h
-        // rebuilt nothing, the JIT linked the previous library, and the change
-        // appeared to have no effect. That is an hour spent debugging a binary
-        // that does not contain the fix, and there is no sign of it anywhere.
-        println!("cargo:rerun-if-changed=runtime/vx_remote_routing.h");
-        println!("cargo:rerun-if-changed=runtime/vx_remote_client.h");
-        println!("cargo:rerun-if-changed=runtime/vx_remote_region.h");
-        println!("cargo:rerun-if-changed=runtime/vx_manifest.h");
-        println!("cargo:rerun-if-changed=runtime/vx_transport.h");
-        println!("cargo:rerun-if-changed=runtime/vx_wire.h");
-        println!("cargo:rerun-if-changed=runtime/vx_agent.h");
-        println!("cargo:rerun-if-changed=runtime/vx_device_pool.h");
-        println!("cargo:rerun-if-changed=include/vx_hardware_runtime.h");
 
         // Which backend answers the plugin ABI. CUDA wins where a toolkit is
         // installed, since it is the only one of these that can reach an

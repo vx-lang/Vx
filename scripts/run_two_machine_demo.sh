@@ -106,7 +106,7 @@ cleanup() {
 trap cleanup EXIT
 
 echo "==> shipping the runtime (an archive, not a checkout)"
-tar czf "$OUTDIR/rt.tgz" runtime include
+COPYFILE_DISABLE=1 tar czf "$OUTDIR/rt.tgz" runtime include
 scp "${SSH[@]:1}" "$OUTDIR/rt.tgz" "$REMOTE:/tmp/vx_fleet_rt.tgz" >/dev/null
 
 echo "==> building the worker there"

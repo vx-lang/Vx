@@ -59,6 +59,37 @@ fn compile(cxx: &str, sources: &[PathBuf], out: &PathBuf, extra: &[String]) {
     );
 }
 
+/// Run a command, killing it if it outlives `secs`.
+///
+/// A fleet program that cannot make progress does not fail, it waits: the
+/// connection pool's deadlock left the program blocked on a socket the worker
+/// would never accept, with nothing on either side to time out. `output()` would
+/// then hang the whole suite rather than failing one test, which is the
+/// difference between a red run and a run nobody can interpret.
+fn run_bounded(cmd: &mut Command, secs: u64) -> std::process::Output {
+    use std::process::Stdio;
+    let mut child = cmd
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to start the command");
+    let pid = child.id();
+    let finished = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let watching = finished.clone();
+    std::thread::spawn(move || {
+        for _ in 0..(secs * 10) {
+            if watching.load(std::sync::atomic::Ordering::Relaxed) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        let _ = Command::new("kill").arg("-9").arg(pid.to_string()).status();
+    });
+    let out = child.wait_with_output().expect("failed to collect output");
+    finished.store(true, std::sync::atomic::Ordering::Relaxed);
+    out
+}
+
 /// libffi is not in the default include path on macOS, and the CPU backend
 /// needs it for the kernels it does not route.
 fn ffi_flags() -> Vec<String> {
@@ -268,6 +299,170 @@ fn main() -> i32 {
         got,
         expected,
         "the worker's answer is not the local one:\n{}{}",
+        String::from_utf8_lossy(&remote.stdout),
+        String::from_utf8_lossy(&remote.stderr)
+    );
+}
+
+/// Data produced on one device, handed to a second, and read home -- the
+/// disaggregated shape, with each device a separate worker process.
+///
+/// Four separate defects sat on this path, and each one is why the next was
+/// invisible:
+///
+///   the handoff       `transfer(x, Memory::B)` where x is already on device A
+///                     lowered to `alloc_and_transfer`, whose source argument is
+///                     read as host memory. `vx_plugin_transfer_peer` exists in
+///                     every backend, is wired to the routing, and had no caller
+///                     in generated code (#347).
+///   the pool          keyed connections by worker *name*. One machine serving
+///                     two names -- a memory space and a topology, which is what
+///                     a device is -- opened two sockets to a worker that serves
+///                     one connection at a time, and the second blocked forever.
+///   the staging       the fetch from A and the transfer to B shared one buffer,
+///                     so the second built its header over the bytes the first
+///                     had just landed. Message counts stayed exactly right and
+///                     every byte of the result was zero.
+///   the build         the fleet headers were listed for cargo on one platform
+///                     only, so on the other a fix to them rebuilt nothing.
+///
+/// The third is why this test compares the answer rather than counting
+/// messages: the counts were correct while the data was gone.
+#[test]
+fn a_handoff_between_two_workers_moves_the_data() {
+    let root = repo_root();
+    let tmp = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
+    let cxx = std::env::var("CXX").unwrap_or_else(|_| "clang++".to_string());
+
+    let worker_bin = tmp.join("vx-worker-handoff");
+    compile(
+        &cxx,
+        &[
+            root.join("runtime/vx_worker_main.cpp"),
+            root.join("runtime/host_dispatch.cpp"),
+        ],
+        &worker_bin,
+        &ffi_flags(),
+    );
+
+    // Two declared memories and two topologies, because a device is both: data
+    // lands in a memory space and work is placed on a topology, and a manifest
+    // has to name each. `Memory::GPU_HBM` cannot express this -- it maps to
+    // topology 500 whatever the program meant -- so a second device's memory
+    // has to be declared to be named.
+    let prog = tmp.join("handoff.vx");
+    std::fs::write(
+        &prog,
+        r#"Memory CPU_DRAM {}
+Memory HBM_A {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+}
+Memory HBM_B {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+}
+Topology DevA { memory: Memory::HBM_A, visible: [ Memory::HBM_A ] }
+Topology DevB { memory: Memory::HBM_B, visible: [ Memory::HBM_B ] }
+
+fn main() -> i32 {
+  let mut a_h = Tensor<f32>([ 16, 16 ]);
+  let mut b_h = Tensor<f32>([ 16, 16 ]);
+  let mut c_h = Tensor<f32>([ 16, 16 ]);
+  for i in 0..16 {
+    for j in 0..16 {
+      a_h[i][j] = ((i + j) as f32) * 0.125;
+      b_h[i][j] = ((i - j) as f32) * 0.25;
+    }
+  }
+  let a = transfer(a_h, Memory::HBM_A);
+  let b = transfer(b_h, Memory::HBM_A);
+  let mut c = transfer(c_h, Memory::HBM_A);
+  spawn on(Topology::DevA) {
+    matmul_into(&mut c, &a, &b);
+  }
+  let c_b = transfer(c, Memory::HBM_B);
+  let home = transfer(c_b, Memory::CPU_DRAM);
+  print(home[0][0]);
+  return 0;
+}
+"#,
+    )
+    .expect("failed to write the program");
+
+    let vxc = env!("CARGO_BIN_EXE_vxc");
+    let local = Command::new(vxc)
+        .args([prog.to_str().unwrap(), "--run"])
+        .output()
+        .expect("failed to run the program locally");
+    assert!(
+        local.status.success(),
+        "the local run failed:\n{}",
+        String::from_utf8_lossy(&local.stderr)
+    );
+    let expected = String::from_utf8_lossy(&local.stdout)
+        .lines()
+        .last()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    assert!(!expected.is_empty(), "the local run printed nothing");
+
+    let port_a = 20000 + ((std::process::id() + 2) % 10000) as u16;
+    let port_b = 20000 + ((std::process::id() + 3) % 10000) as u16;
+    let manifest = tmp.join("handoff-manifest");
+    std::fs::write(
+        &manifest,
+        format!(
+            "HBM_A  127.0.0.1  {port_a}\n\
+             DevA   127.0.0.1  {port_a}\n\
+             HBM_B  127.0.0.1  {port_b}\n\
+             DevB   127.0.0.1  {port_b}\n"
+        ),
+    )
+    .expect("failed to write the manifest");
+
+    let mut workers = Vec::new();
+    for (port, id) in [(port_a, "1"), (port_b, "2")] {
+        workers.push(Worker(
+            Command::new(&worker_bin)
+                .args([
+                    "--port",
+                    &port.to_string(),
+                    "--topology",
+                    "0",
+                    "--worker-id",
+                    id,
+                ])
+                .spawn()
+                .expect("failed to start a worker"),
+        ));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(400));
+
+    let remote = run_bounded(
+        Command::new(vxc)
+            .args([prog.to_str().unwrap(), "--run"])
+            .env("VX_FLEET_MANIFEST", &manifest)
+            .env("VX_FLEET_STRICT", "1"),
+        90,
+    );
+    drop(workers);
+
+    assert!(
+        remote.status.success(),
+        "the handoff did not complete:\n{}{}",
+        String::from_utf8_lossy(&remote.stdout),
+        String::from_utf8_lossy(&remote.stderr)
+    );
+    let got = String::from_utf8_lossy(&remote.stdout)
+        .lines()
+        .last()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    assert_eq!(
+        got,
+        expected,
+        "the data did not survive the handoff:\n{}{}",
         String::from_utf8_lossy(&remote.stdout),
         String::from_utf8_lossy(&remote.stderr)
     );

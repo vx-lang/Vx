@@ -1087,6 +1087,23 @@ struct TransferToPluginLowering : public OpRewritePattern<vx::TransferOp> {
     const int32_t srcTopology = sourceTopologyOf(op);
     const bool goingOut = isDeviceTransfer(op);
     const bool comingHome = !goingOut && srcTopology != 0;
+    // And the third direction: device to device, which is neither of the above
+    // and was being lowered as though it were the first. `transfer(kv,
+    // Memory::HBM4)` where kv is already on another device became
+    // `vx_plugin_alloc_and_transfer(bytes, src, dst)`, whose second argument is
+    // read as host memory -- so the source's address was dereferenced here. On
+    // one machine that is a device pointer and the copy is merely wrong about
+    // which memory it names; across a fleet it is a handle, and the process
+    // faults inside the staging memcpy.
+    //
+    // `vx_plugin_transfer_peer` is the entry point for this. It exists in every
+    // backend and is wired to the routing, and had no caller in generated code
+    // -- the same shape of gap the way home had (#347, #348).
+    int32_t targetTopology = 0;
+    if (auto a = op->getAttrOfType<IntegerAttr>("target_topology"))
+      targetTopology = static_cast<int32_t>(a.getInt());
+    const bool peerHandoff =
+        goingOut && srcTopology != 0 && srcTopology != targetTopology;
     if (!goingOut && !comingHome)
       return failure();
 
@@ -1170,6 +1187,30 @@ struct TransferToPluginLowering : public OpRewritePattern<vx::TransferOp> {
           loc, TypeRange{llvmI32Type},
           SymbolRefAttr::get(rewriter.getContext(), fetchName),
           ValueRange{alignedPtr, devicePtr, bytes, srcTopoVal});
+    } else if (peerHandoff) {
+      // One call, because only the plugin knows whether the two devices can
+      // reach each other: a peer copy where they can, and a read followed by a
+      // write where they cannot. Staging it here would force the second on
+      // every backend and put the bytes through this process, which for two
+      // GPUs on one machine is the thing worth avoiding.
+      Value srcTopoVal = rewriter.create<LLVM::ConstantOp>(
+          loc, llvmI32Type, rewriter.getI32IntegerAttr(srcTopology));
+
+      StringRef peerName = "vx_plugin_transfer_peer";
+      if (!module.lookupSymbol<LLVM::LLVMFuncOp>(peerName)) {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(module.getBody());
+        auto fnTy = LLVM::LLVMFunctionType::get(
+            llvmPtrType, {llvmPtrType, llvmI32Type, llvmI32Type, llvmI64Type},
+            false);
+        rewriter.create<LLVM::LLVMFuncOp>(loc, peerName, fnTy);
+      }
+      devicePtr = rewriter
+                      .create<LLVM::CallOp>(
+                          loc, TypeRange{llvmPtrType},
+                          SymbolRefAttr::get(rewriter.getContext(), peerName),
+                          ValueRange{alignedPtr, srcTopoVal, topoVal, bytes})
+                      .getResult();
     } else {
       devicePtr = rewriter
                       .create<LLVM::CallOp>(

@@ -80,6 +80,27 @@ inline uint8_t *vx_routing_scratch(size_t *len) {
   return buf;
 }
 
+/// A second buffer, for the one operation that holds data across a message.
+///
+/// A peer handoff is a read from one worker and a write to another, so the
+/// bytes have to survive from the end of the first to the start of the second.
+/// Everything else here builds a message and sends it, and one buffer is
+/// enough for that.
+///
+/// Sharing the one buffer looked fine and moved zeros: the fetch landed the
+/// data in it, and the transfer that followed built its own header into the
+/// same address before reading the payload out of it. The message counts were
+/// exactly right -- fetch here, transfer there -- and every byte of the result
+/// was gone, which is the failure that a count cannot show and only comparing
+/// the answer does. Allocated on first use, so a program that never hands off
+/// between devices does not pay for it.
+inline uint8_t *vx_routing_transit(size_t *len) {
+  static const size_t kLen = 64u << 20;
+  static uint8_t *buf = (uint8_t *)malloc(kLen);
+  *len = buf ? kLen : 0;
+  return buf;
+}
+
 /// Say, once per placement, that a manifest was loaded and does not mention it.
 ///
 /// Not an error: a manifest may list one of two GPUs and mean "the other is
@@ -236,6 +257,13 @@ inline int vx_routing_try_alloc(size_t bytes, void *host_ptr,
   if (!w) {
     return 0;
   }
+  // Staging reads `host_ptr`, so a handle here is a device-to-device movement
+  // wearing the shape of a host-to-device one, and the read faults. The
+  // compiler emits `vx_plugin_transfer_peer` for that now; anything still
+  // arriving here is a gap, and saying so beats staging from an address this
+  // process does not own -- which did not even fault cleanly, it hung, because
+  // the fault landed inside the signal handler's own allocation.
+  vx_routing_refuse_handle("a staging transfer", host_ptr, topology_id);
   size_t scratch_len = 0;
   uint8_t *scratch = vx_routing_scratch(&scratch_len);
   uint64_t handle =
@@ -348,11 +376,11 @@ inline int vx_routing_try_peer(void *src, uint32_t src_topology_id,
     return 0;
   }
 
-  size_t scratch_len = 0;
-  uint8_t *scratch = vx_routing_scratch(&scratch_len);
-  /* The staging buffer carries a message, so the bytes have to fit beside its
-     header rather than exactly fill it. */
-  if (bytes + 4096 > scratch_len) {
+  /* Not `vx_routing_scratch`: the write below builds its message there, and
+     these bytes have to survive until it reads them. */
+  size_t transit_len = 0;
+  uint8_t *transit = vx_routing_transit(&transit_len);
+  if (bytes > transit_len) {
     fprintf(stderr, "[Vx remote] FATAL: a %zu-byte handoff exceeds staging\n",
             bytes);
     abort();
@@ -360,27 +388,27 @@ inline int vx_routing_try_peer(void *src, uint32_t src_topology_id,
 
   /* Read the source into host memory, wherever it is. */
   if (sw && vx_remote_addr_is_handle((uint64_t)(uintptr_t)src)) {
-    if (!vx_remote_fetch(vx_routing_fd(sw), (uint64_t)(uintptr_t)src, scratch,
+    if (!vx_remote_fetch(vx_routing_fd(sw), (uint64_t)(uintptr_t)src, transit,
                          (uint64_t)bytes)) {
       fprintf(stderr, "[Vx remote] FATAL: %s could not return the handoff\n",
               sw->name);
       abort();
     }
   } else {
-    memcpy(scratch, src, bytes);
+    memcpy(transit, src, bytes);
   }
 
   /* And write it wherever the destination is. */
   if (dw) {
     void *handle = nullptr;
-    if (!vx_routing_try_alloc(bytes, scratch, dst_topology_id, &handle)) {
+    if (!vx_routing_try_alloc(bytes, transit, dst_topology_id, &handle)) {
       return 0;
     }
     *out = handle;
   } else {
     void *dst = malloc(bytes);
     if (dst) {
-      memcpy(dst, scratch, bytes);
+      memcpy(dst, transit, bytes);
     }
     *out = dst;
   }

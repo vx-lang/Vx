@@ -51,7 +51,8 @@
 #include <unistd.h>
 
 typedef struct {
-  char name[VX_MANIFEST_MAX_NAME];
+  char host[VX_MANIFEST_MAX_HOST];
+  int port;
   int fd; /* -1 when not connected */
 } vx_remote_conn;
 
@@ -78,8 +79,16 @@ static inline int vx_remote_connect(vx_remote_pool *pool,
   int fd = -1;
   size_t i;
 
+  /* Keyed by where the worker is, not what it is called. One machine can serve
+     several names -- a program placing data in `Memory::HBM_A` and dispatching
+     to `Topology::DevA` names two things that are one process, and a two-GPU
+     pod is exactly that shape. Keyed by name, the second name opened a second
+     socket to a worker that accepts one connection at a time and serves it to
+     completion, so the second connect blocked forever and the program hung
+     after its last transfer with no error anywhere (#348). */
   for (i = 0; i < pool->count; ++i) {
-    if (strcmp(pool->conns[i].name, w->name) == 0) {
+    if (pool->conns[i].port == w->port &&
+        strcmp(pool->conns[i].host, w->host) == 0) {
       return pool->conns[i].fd;
     }
   }
@@ -124,7 +133,8 @@ static inline int vx_remote_connect(vx_remote_pool *pool,
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
   }
 
-  snprintf(pool->conns[pool->count].name, VX_MANIFEST_MAX_NAME, "%s", w->name);
+  snprintf(pool->conns[pool->count].host, VX_MANIFEST_MAX_HOST, "%s", w->host);
+  pool->conns[pool->count].port = w->port;
   pool->conns[pool->count].fd = fd;
   ++pool->count;
   return fd;
