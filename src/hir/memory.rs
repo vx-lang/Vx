@@ -429,8 +429,33 @@ impl<'a> MemoryHierarchy<'a> {
         //
         // Defaults to `sequenced`, which is what the algebra has always done -- so a machine file
         // that says nothing gets exactly its previous cost and the frozen cells do not move.
-        let streamed =
-            self.descriptor(dst).map(|d| d.crossing) == Some(crate::syntax::Crossing::Streamed);
+        // A register round-trip always adds, whatever `crossing:` says (vx-review#26).
+        //
+        // A space passed THROUGH on the way, rather than one of the endpoints, is a staging point:
+        // the data is loaded into it and then stored back out. When that space is the register file
+        // those are two instructions, and the second needs the value the first produced, so there
+        // is no mechanism by which they could overlap. Measured on three routes across two vendors
+        // -- H100 `L1->REG->SMEM`, M4 `L2->REG->SMEM` and `HBM->REG->SMEM` -- and all three fit
+        // addition.
+        //
+        // ENDPOINTS ARE DIFFERENT, and the data says so. A route that *ends* at a register is a
+        // load, which the hardware does stream: on an H100 `HBM->REG` measures 18.8 B/cyc, close to
+        // the 17.7 of its slowest leg and nowhere near the 10.1 that adding the legs predicts. So
+        // the test is "strictly between the endpoints", not "anywhere on the path".
+        //
+        // Position in `path` cannot be used for that test: `route_spaces` emits the source chain,
+        // then the destination chain, then possibly the common ancestor, so the vector is not in
+        // traversal order. Identity against the two endpoints is order-independent and is what a
+        // staging point actually means.
+        //
+        // Registers are identified by `scope: thread` rather than by name. A register file is
+        // private to one thread, which is exactly what that scope already declares, so this needs
+        // no new syntax and cannot disagree with the scope rules.
+        let through_registers = path.iter().any(|s| {
+            s != src && s != dst && self.descriptor(s).and_then(|d| d.scope) == Some(Scope::Thread)
+        });
+        let streamed = !through_registers
+            && self.descriptor(dst).map(|d| d.crossing) == Some(crate::syntax::Crossing::Streamed);
         let combine = |acc: u64, term: u64| -> u64 {
             if streamed {
                 acc.max(term)
@@ -1018,6 +1043,91 @@ mod tests {
                 value: 128,
                 per: RatePer::Cycle
             })
+        );
+    }
+
+    /// A space with `scope: thread` -- the register file.
+    fn reg(name: &str, parent: Option<&str>, bw_bytes: u64) -> MemoryDecl {
+        let mut d = mem_bw(name, parent, bw_bytes, RatePer::Cycle);
+        d.scope = Some(Scope::Thread);
+        d
+    }
+
+    #[test]
+    fn a_register_in_the_middle_forces_addition() {
+        // HBM (256) > REG (512) > SMEM (128), and SMEM declares `streamed`. The walk HBM -> SMEM
+        // passes THROUGH the register file, which means a load followed by a store: two
+        // instructions, the second waiting on the first, so they cannot overlap.
+        //
+        // Without the rule this would price as max(64, 32, 128) = 128. With it, 64 + 32 + 128 = 224.
+        let mut decls = vec![
+            mem_bw("HBM", None, 256, RatePer::Cycle),
+            reg("REG", Some("HBM"), 512),
+            mem_bw("SMEM", Some("REG"), 128, RatePer::Cycle),
+        ];
+        decls[2].crossing = crate::syntax::Crossing::Streamed;
+        let h = MemoryHierarchy::build(&decls);
+        assert_eq!(
+            h.derived_transfer_cost(&space("HBM"), &space("SMEM"), 16384),
+            Some(DerivedCost {
+                value: 224,
+                per: RatePer::Cycle
+            }),
+            "a register staging point must defeat `crossing: streamed`"
+        );
+    }
+
+    #[test]
+    fn a_register_at_an_endpoint_does_not_force_addition() {
+        // The other half of the rule, and the data says it matters. A route that ENDS at a register
+        // is a load, which the hardware streams: on an H100 `HBM->REG` measures 18.8 B/cyc, close
+        // to its slowest leg's 17.7 and nowhere near the 10.1 that adding the legs predicts.
+        //
+        // Same hierarchy, but the walk stops at REG. REG is the destination, not a staging point,
+        // so `crossing: streamed` on it still applies: max(64, 32) = 64, not 96.
+        let mut decls = vec![
+            mem_bw("HBM", None, 256, RatePer::Cycle),
+            reg("REG", Some("HBM"), 512),
+        ];
+        decls[1].crossing = crate::syntax::Crossing::Streamed;
+        let h = MemoryHierarchy::build(&decls);
+        assert_eq!(
+            h.derived_transfer_cost(&space("HBM"), &space("REG"), 16384),
+            Some(DerivedCost {
+                value: 64,
+                per: RatePer::Cycle
+            }),
+            "a register as the destination is a load, not a staging point"
+        );
+    }
+
+    #[test]
+    fn the_register_rule_does_not_disturb_a_walk_without_registers() {
+        // The guard must be inert where it does not apply, or it would silently undo `crossing:`
+        // everywhere. Same three-level shape, but the middle space is an ordinary device-scoped
+        // cache rather than a register file, so `streamed` still wins.
+        let mut decls = three_level();
+        decls[2].crossing = crate::syntax::Crossing::Streamed;
+        let h = MemoryHierarchy::build(&decls);
+        assert_eq!(
+            h.derived_transfer_cost(&space("HBM"), &space("SMEM"), 16384),
+            Some(DerivedCost {
+                value: 128,
+                per: RatePer::Cycle
+            })
+        );
+    }
+
+    #[test]
+    fn no_fleet_style_hierarchy_declares_a_thread_scoped_space() {
+        // Why the rule is currently unreachable through any machine file we ship, and therefore
+        // why it changes no prediction: nothing declares `scope: thread`. This is a guard landing
+        // before the declarations that will need it -- the same order `crossing:` itself took.
+        let decls = three_level();
+        assert!(
+            decls.iter().all(|d| d.scope != Some(Scope::Thread)),
+            "if a fleet-style hierarchy grows a thread-scoped space, the register rule starts \
+             firing and the frozen cells must be re-checked"
         );
     }
 

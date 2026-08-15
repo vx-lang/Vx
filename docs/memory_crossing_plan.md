@@ -134,11 +134,15 @@ overlap, because the second instruction needs the value the first produced. So:
 
 This is a structural property, not a fitted parameter, and it explains all four rows.
 
-**Proposed implementation, to be confirmed before Phase 2.** The language already has the vocabulary
-to say "this space is registers": `scope: thread`, since a register file is private to one thread.
-So `derived_transfer_cost` can check whether any space on the path has `scope: thread` and force
-addition if so. That needs no new syntax and no new declaration, and it is checkable against the
-existing scope rules.
+**Implemented** (see §3.3). The language already had the vocabulary to say "this space is
+registers": `scope: thread`, since a register file is private to one thread. `derived_transfer_cost`
+checks for one on the path and forces addition. No new syntax, no new declaration.
+
+One refinement the data forced: the test is **strictly between the endpoints**, not "anywhere on the
+path". A route that *ends* at a register is a load, and the hardware does stream that — on an H100
+`HBM->REG` measures 18.8 B/cyc, close to its slowest leg's 17.7 and nowhere near the 10.1 that
+adding the legs would predict. Only a register the data is loaded into and then stored back out of
+is a staging point.
 
 The general version — a `crossing:` per hop, with a walk that streams one step and sequences the
 next — is in §6 as an open question. The register rule is the smallest version the current data
@@ -204,18 +208,35 @@ ______________________________________________________________________
 - `src/hir/memory.rs`: `derived_transfer_cost` reads the destination space's `crossing` and then
   combines its per-step terms with either `+` (sequenced) or `max` (streamed). Both the
   cycle-denominated path and the picosecond path go through the same rule.
-- **This is the destination-only rule that §2 shows is not sufficient.** It is correct for every
-  route any machine file can currently express, because none declares a register-class space. The
-  register rule has to land before Phase 2, not after.
+- **The destination-only rule alone is not sufficient** — see §2 — so it is now guarded by §3.3.
 
-### 3.3 Diagnostics
+### 3.3 The register rule (DONE, this commit)
+
+`derived_transfer_cost` now checks whether any space **strictly between the endpoints** declares
+`scope: thread`. If one does, the terms are added regardless of what `crossing:` says.
+
+Two details that are not arbitrary:
+
+- **Endpoints are excluded**, because a route ending at a register is a load, which streams. The
+  H100 numbers above are the evidence.
+- **Membership, not position.** `route_spaces` emits the source chain, then the destination chain,
+  then possibly the common ancestor, so the vector is not in traversal order and "the middle one"
+  is not a well-defined index. Testing identity against the two endpoints is order-independent and
+  is what a staging point actually means.
+
+It changes nothing today: no fleet file declares `scope: thread`, so the guard never fires, and
+regenerating the 240 frozen cells against the run from just before it gives **0 moved**. A test
+asserts that no fleet-style hierarchy declares a thread-scoped space, so if one ever does, the
+frozen cells get re-checked rather than silently moving.
+
+### 3.4 Diagnostics
 
 - `src/hir/env.rs`: added `composition` to `StagingRoute`.
 - `src/hir/check/transfer.rs`: fills it in, but only for containment routes — a declared host link
   has one step and composes nothing.
 - `src/diagnostics_json.rs`: serialises it as `"sum"` / `"bottleneck"` / `null`.
 
-### 3.4 The default is `sequenced`, and this is the important part
+### 3.5 The default is `sequenced`, and this is the important part
 
 `sequenced` is exactly what the compiler did before this change. So a machine file that says nothing
 about `crossing:` gets exactly its old answer.
@@ -231,7 +252,7 @@ predictions that moved  :   0
 Getting the new behaviour requires editing a machine file on purpose, so the change appears in a
 diff instead of quietly moving every number at once.
 
-### 3.5 One honest caveat about the saved predictions
+### 3.6 One honest caveat about the saved predictions
 
 The JSON record gained a field, so it is no longer *byte-identical* to the saved files, even though
 every value is the same. The check for this is stronger than a plain diff: after removing the new
@@ -241,10 +262,16 @@ Zero values moved; the record grew a column.
 Anyone re-verifying the frozen predictions needs to know this, because the verification is a byte
 comparison.
 
-### 3.6 Tests
+### 3.7 Tests
 
 In `src/hir/memory.rs`:
 
+- `a_register_in_the_middle_forces_addition` — a staging register defeats `crossing: streamed`.
+- `a_register_at_an_endpoint_does_not_force_addition` — a load still streams.
+- `the_register_rule_does_not_disturb_a_walk_without_registers` — the guard is inert where it does
+  not apply, which is what stops it silently undoing `crossing:` everywhere.
+- `no_fleet_style_hierarchy_declares_a_thread_scoped_space` — records *why* the rule moves nothing
+  today, and fails loudly if that stops being true.
 - `sequenced_is_the_default_and_sums` — the default is unchanged behaviour.
 - `streamed_takes_the_slowest_leg_alone` — 128 cycles, not 160.
 - `crossing_is_read_from_the_destination_not_the_source` — a walk *out of* a streamed space still
@@ -254,7 +281,7 @@ In `src/hir/memory.rs`:
 In `src/diagnostics_json.rs`: `accept_record_carries_route_and_edge_costs` now also asserts the
 `composition` field is present.
 
-Full suite: 455 library tests, 197 integration tests. `vx-format` leaves `crossing:` unchanged.
+Full suite: 459 library tests, 197 integration tests. `vx-format` leaves `crossing:` unchanged.
 
 ______________________________________________________________________
 
@@ -275,8 +302,9 @@ after seeing the measurements.
 
 ### Steps
 
-0. **Settle the register rule from §2 first.** Declaring `streamed` on H100 SMEM before registers
-   are handled bakes in the flaw rather than fixing it. This is a prerequisite, not a nice-to-have.
+0. ~~**Settle the register rule from §2 first.**~~ **Done** — see §3.3. Declaring `streamed` on
+   H100 SMEM is now safe from the flaw the review found: even once registers are declared, a walk
+   that stages through them adds regardless of the attribute.
 1. Decide whether to re-take the freeze or to record a dated exception. This is a human decision,
    not a code change. Tracked at
    [vx-review#27](https://github.com/hiraditya/vx-review/issues/27).
