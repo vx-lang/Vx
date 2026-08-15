@@ -75,9 +75,15 @@ Memory L2 {
 // spec: CUDA C Programming Guide, compute capability 10.0 -- 228 KB
 // configurable shared memory per SM.
 Memory SMEM {
+  // crossing: PREDICTION, derived from the ISA and NOT measured on this part (2026-08-13,
+  // vx-review#26/#27). `cp.async` exists from sm_80, so a threadgroup fill here is a hardware
+  // copy engine rather than a load followed by a store, and a walk into SMEM should be priced by
+  // its slowest leg instead of by the sum. Selected from H100 and M4 measurements; this part has
+  // never been measured. If a run of measure_device.cu on it shows the sum fitting better, this
+  // declaration is wrong and that is the result.
   // replicas: UNVERIFIED: B200 SM count, vendor figure
   // clock: UNVERIFIED: B200 boost clock, vendor figure
-  within: Memory::L2, capacity: 228 KiB, bandwidth: 128 B/cyc, clock: 1.965 GHz, granule: 1 KiB, managed: explicit, scope: sm, replicas: 148
+  within: Memory::L2, capacity: 228 KiB, bandwidth: 128 B/cyc, clock: 1.965 GHz, granule: 1 KiB, managed: explicit, scope: sm, replicas: 148, crossing: streamed
 }
 
 Topology Device {
