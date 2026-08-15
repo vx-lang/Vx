@@ -177,5 +177,9 @@ Known roundings and judgment calls:
   they play the same role in a placement decision, despite differing in architecture.
 - Interconnect bandwidths are quoted **unidirectional** where vendors publish a bidirectional
   aggregate; halved figures are marked in the comment.
-- Transfer costs (the `: N` on an edge) are relative latencies for path selection, not measured
-  numbers. The bandwidth-derived roofline (`bandwidth:`) is what carries physical meaning.
+- Transfer costs (the unitless `: N` on an edge) are relative latencies, not measured numbers. They
+  no longer decide routing on their own: route selection minimises **predicted cost** — the
+  per-byte time from `bandwidth:` or from a link's own `: N GB/s` — and falls back to `: N` only
+  between spaces whose cost nothing can derive (vx-review#19). A route the model can price always
+  beats one it cannot, so an edge with only a `: N` is a gap to close rather than a tuning knob.
+  The bandwidth-derived roofline (`bandwidth:`) is what carries physical meaning.

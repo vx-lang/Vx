@@ -286,6 +286,11 @@ impl<'a> GlobalAstEnv<'a> {
             let decls: Vec<crate::arch::TopologyDecl> =
                 env.topologies.values().map(|&d| d.clone()).collect();
             g.seed_from_topologies(&decls);
+            // Routing minimises predicted cost (vx-review#19), and a containment hop's cost lives
+            // in the memory declarations rather than the topology's. Without this the on-die edges
+            // -- which is every hop inside a device on every fleet SKU -- stay unpriced and the
+            // router treats them as the last resort they are not.
+            g.resolve_derived_route_costs(env.memories.values().copied());
             g
         };
         env

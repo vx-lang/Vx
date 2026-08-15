@@ -32,6 +32,25 @@ pub struct TransferCostGraph {
     /// here.
     edge_rates: HashMap<(MemorySpace, MemorySpace), syntax::Bandwidth>,
 
+    /// Per-byte time, in attoseconds, for every edge whose cost the model can actually predict.
+    ///
+    /// This is what route selection minimises (vx-review#19). An edge absent from this map has no
+    /// predictable cost -- a `Fixed` weight, or a containment hop denominated in cycles that
+    /// nothing can compare against a link's seconds -- and routing falls back to preferring routes
+    /// that avoid it, then to hop count, rather than inventing a number for it.
+    ///
+    /// Attoseconds because the spread is large: 12 TB/s is 83,333 as/B and 63 GB/s is 15,873,015,
+    /// so picoseconds would round the fast on-die hops to zero and make them free.
+    route_cost: HashMap<(MemorySpace, MemorySpace), u64>,
+
+    /// `Derived` edges awaiting `resolve_derived_route_costs`.
+    ///
+    /// Their cost is the containment roofline between their endpoints, which lives in
+    /// `MemoryHierarchy` and is not reachable from here -- the graph is built from topology
+    /// declarations and the hierarchy from memory declarations. Recorded at seed time and priced
+    /// once the caller supplies the memories.
+    derived_edges: Vec<(MemorySpace, MemorySpace)>,
+
     /// The unitless `transfer A -> B : 300` figures, kept apart from the routing weights.
     ///
     /// Since edges may now decline to declare a cost, the weight the router uses is not always a
@@ -97,6 +116,9 @@ pub struct TransferEdge {
 /// The rule was not free: every fleet file declared `transfer HBM -> L2 : 40` *and* gave `L2` a
 /// bandwidth, so both costs existed for that edge, and the compiler routed by one and reported the
 /// other. Nothing detected it.
+/// Attoseconds per second. The denomination route selection works in -- see `route_cost`.
+const ATTOS_PER_SEC: u128 = 1_000_000_000_000_000_000;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EdgeCost {
     /// `transfer A -> B` — the edge asserts reachability only. Its cost is the containment-derived
@@ -114,16 +136,34 @@ pub enum EdgeCost {
 }
 
 impl EdgeCost {
-    /// The weight this edge contributes to route *selection*.
+    /// The unitless weight this edge contributes, kept for reporting and as a routing tie-break.
     ///
-    /// Deliberately not the predicted cost. Route choice happens before a byte count is known, so a
-    /// size-dependent cost cannot decide it; `Derived` and `Rate` edges therefore weigh 1 and the
-    /// route is chosen by hop count among them. That the model's route choice is size-independent
-    /// while the real fastest route is not is a known limit, pre-registered as experiment M5.
+    /// No longer the primary routing key. It used to be, on the reasoning that "route choice
+    /// happens before a byte count is known, so a size-dependent cost cannot decide it" -- which
+    /// M5 (vx-review#19) showed to be a false premise. Every edge costs `bytes / bandwidth`, a
+    /// line through the origin, so the ratio between two routes does not depend on bytes and the
+    /// cheapest route can be chosen once, for all sizes, from the per-byte rate alone. Minimising
+    /// hops instead picked a route 3.57x slower than one the same graph already contained.
     pub fn routing_weight(self) -> u32 {
         match self {
             EdgeCost::Derived | EdgeCost::Rate(_) => 1,
             EdgeCost::Fixed(c) => c,
+        }
+    }
+
+    /// This edge's own cost per byte in attoseconds, when the edge declares a link rate.
+    ///
+    /// `None` for `Derived` (the containment tree prices it -- see `resolve_derived_route_costs`),
+    /// for `Fixed` (a relative latency is not a time), and for a link declared in `B/cyc`, which
+    /// cannot be compared against a link declared in `B/s` without a clock the edge does not
+    /// carry. All three mean "not predictable here", which routing treats as a last resort rather
+    /// than as free.
+    pub fn per_byte_attos(self) -> Option<u64> {
+        match self {
+            EdgeCost::Rate(bw) if bw.per == crate::syntax::RatePer::Second && bw.bytes > 0 => {
+                u64::try_from(ATTOS_PER_SEC / bw.bytes as u128).ok()
+            }
+            _ => None,
         }
     }
 
@@ -479,6 +519,8 @@ impl Default for TransferCostGraph {
             transfer_edges: HashMap::new(),
             cost_matrix: HashMap::new(),
             edge_rates: HashMap::new(),
+            route_cost: HashMap::new(),
+            derived_edges: Vec::new(),
             edge_declared: HashMap::new(),
             descriptors: builtin_descriptors(),
         };
@@ -536,7 +578,58 @@ impl TransferCostGraph {
             if let Some(c) = e.cost.declared() {
                 self.edge_declared.insert((e.from.clone(), e.to.clone()), c);
             }
+            // The routing key. A declared link rate prices itself; a `Derived` edge is deferred to
+            // `resolve_derived_route_costs`, which needs the memory declarations; a `Fixed` weight
+            // prices nothing and is deliberately left absent rather than mapped to zero.
+            //
+            // `min` on collision, matching `add_transfer_edge`'s accumulate-and-take-the-cheapest:
+            // several descriptors can contribute the same edge, and taking the last would make the
+            // result depend on descriptor order.
+            if let Some(attos) = e.cost.per_byte_attos() {
+                let key = (e.from.clone(), e.to.clone());
+                let best = self.route_cost.get(&key).map_or(attos, |&c| c.min(attos));
+                self.route_cost.insert(key, best);
+            } else if matches!(e.cost, EdgeCost::Derived) {
+                self.derived_edges.push((e.from.clone(), e.to.clone()));
+            }
         }
+    }
+
+    /// Price the `Derived` edges from the containment tree, then rebuild the shortest-path matrix.
+    ///
+    /// Separate from seeding because the two halves of a machine file land in different places: the
+    /// graph is built from `Topology { transfer ... }` and the roofline from `Memory { bandwidth:
+    /// ... }`. Until this runs, a containment hop is routable but unpriced, and routing will avoid
+    /// it in favour of anything that declares a rate -- which is wrong on every fleet SKU, where
+    /// the on-die hops are containment edges. Callers that build a graph from a machine file must
+    /// call this; `TypeChecker`'s environment does.
+    ///
+    /// The probe is 1 GiB rather than one byte: `hop_cost` rounds each hop up to a whole unit, so a
+    /// one-byte probe would report every edge at the same 1-unit floor and rank them all equal.
+    pub fn resolve_derived_route_costs<'a, I>(&mut self, memories: I)
+    where
+        I: IntoIterator<Item = &'a crate::syntax::MemoryDecl>,
+    {
+        const PROBE_BYTES: u64 = 1 << 30;
+        let hierarchy = crate::hir::memory::MemoryHierarchy::build(memories);
+        let edges = std::mem::take(&mut self.derived_edges);
+        for (from, to) in &edges {
+            // Only a seconds-denominated roofline can share a scale with a link rate. A cycle
+            // count would need a clock to convert, and a machine file may decline to declare one;
+            // leaving it unpriced keeps such an edge routable but never preferred on a false
+            // comparison.
+            if let Some(d) = hierarchy.derived_transfer_cost(from, to, PROBE_BYTES) {
+                if d.per == crate::syntax::RatePer::Second {
+                    // `hop_cost` yields picoseconds; 1 ps = 10^6 as.
+                    let attos = (d.value as u128 * 1_000_000) / PROBE_BYTES as u128;
+                    if let Ok(a) = u64::try_from(attos) {
+                        self.route_cost.insert((from.clone(), to.clone()), a);
+                    }
+                }
+            }
+        }
+        self.derived_edges = edges;
+        self.precompute_costs();
     }
 
     /// Add the transfer edges declared by every registered topology (built-in + user-defined)
@@ -716,15 +809,56 @@ impl TransferCostGraph {
 
         use std::collections::BinaryHeap;
 
+        /// The routing key, compared lexicographically by field order.
+        ///
+        /// 1. `unpriced` — whether the route contains *any* hop the model cannot price. A flag,
+        ///    saturating at 1, deliberately not a count: a route the model can price beats one it
+        ///    cannot, but among routes it cannot price the number of unpriced hops must not decide
+        ///    anything, because then this degenerates into hop count and throws away the declared
+        ///    weights that are the only ordering such edges have. (Counting here made the built-in
+        ///    graph prefer a direct edge of weight 10 over a three-hop chain of weight 3.)
+        ///
+        ///    This is a statement about what the compiler can claim, not about the hardware: an
+        ///    unpriced hop might well be faster, and preferring the predictable route is what makes
+        ///    a reported cost mean something. An unpriced edge is a gap in a machine file to be
+        ///    closed, not a route to gamble on.
+        /// 2. `attos` — attoseconds per byte, summed. The real objective (vx-review#19). Per byte
+        ///    rather than for a concrete transfer because every edge costs `bytes / bandwidth`, so
+        ///    the cheapest route is the same at every size and can be chosen once, without a byte
+        ///    count. That is what makes routing by cost compatible with a precomputed all-pairs
+        ///    matrix.
+        /// 3. `weight` — the declared unitless figures, as the tie-break. Preserves the previous
+        ///    behaviour exactly among routes the model cannot price, which is where a relative
+        ///    latency is the only thing anyone wrote down.
+        ///
+        /// All three add componentwise and none can decrease along a path, so Dijkstra is still
+        /// correct over the lexicographic order.
+        #[derive(Eq, PartialEq, PartialOrd, Ord, Clone, Copy, Default)]
+        struct Key {
+            unpriced: u32,
+            attos: u64,
+            weight: u32,
+        }
+
+        impl Key {
+            fn plus(self, unpriced: bool, attos: u64, weight: u32) -> Self {
+                Key {
+                    unpriced: (self.unpriced | unpriced as u32).min(1),
+                    attos: self.attos.saturating_add(attos),
+                    weight: self.weight.saturating_add(weight),
+                }
+            }
+        }
+
         #[derive(Eq, PartialEq)]
         struct State {
-            cost: u32,
+            key: Key,
             mem: MemorySpace,
         }
 
         impl Ord for State {
             fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-                other.cost.cmp(&self.cost) // Reverse for min-heap
+                other.key.cmp(&self.key) // Reverse for min-heap
             }
         }
 
@@ -735,16 +869,16 @@ impl TransferCostGraph {
         }
 
         let mut heap = BinaryHeap::new();
-        let mut dists = HashMap::new();
+        let mut dists: HashMap<MemorySpace, Key> = HashMap::new();
         let mut predecessors: HashMap<MemorySpace, MemorySpace> = HashMap::new();
 
         heap.push(State {
-            cost: 0,
+            key: Key::default(),
             mem: source.clone(),
         });
-        dists.insert(source.clone(), 0);
+        dists.insert(source.clone(), Key::default());
 
-        while let Some(State { cost, mem }) = heap.pop() {
+        while let Some(State { key, mem }) = heap.pop() {
             if mem == *target {
                 let mut path = Vec::new();
                 let mut curr = mem.clone();
@@ -754,25 +888,30 @@ impl TransferCostGraph {
                 }
                 path.push(source.clone());
                 path.reverse();
-                return Some((cost, path));
+                // The declared-weight sum, not the routing key. Every existing consumer -- the
+                // cost matrix, the `total_cost` field of the diagnostics record -- reads this as
+                // "the unitless figures along the chosen path", and changing which path is chosen
+                // must not silently change what the number means.
+                return Some((key.weight, path));
             }
 
             if let Some(current_dist) = dists.get(&mem) {
-                if cost > *current_dist {
+                if key > *current_dist {
                     continue;
                 }
             }
 
             if let Some(neighbors) = self.transfer_edges.get(&mem) {
-                for (next, edge_cost) in neighbors {
-                    let next_cost = cost + edge_cost;
-                    let is_better = dists.get(next).is_none_or(|&c| next_cost < c);
+                for (next, edge_weight) in neighbors {
+                    let priced = self.route_cost.get(&(mem.clone(), next.clone())).copied();
+                    let next_key = key.plus(priced.is_none(), priced.unwrap_or(0), *edge_weight);
+                    let is_better = dists.get(next).is_none_or(|&c| next_key < c);
 
                     if is_better {
-                        dists.insert(next.clone(), next_cost);
+                        dists.insert(next.clone(), next_key);
                         predecessors.insert(next.clone(), mem.clone());
                         heap.push(State {
-                            cost: next_cost,
+                            key: next_key,
                             mem: next.clone(),
                         });
                     }
@@ -1235,6 +1374,109 @@ mod tests {
     /// A custom memory space named `name`.
     fn cs(name: &str) -> MemorySpace {
         MemorySpace::Custom(crate::symbol::Symbol::from(name))
+    }
+
+    /// A `TopologyDescriptor` carrying one edge, for the routing tests below.
+    fn rate_edge(from: MemorySpace, to: MemorySpace, gb_per_s: u64) -> TransferEdge {
+        TransferEdge {
+            from,
+            to,
+            cost: EdgeCost::Rate(syntax::Bandwidth {
+                bytes: gb_per_s * 1_000_000_000,
+                per: syntax::RatePer::Second,
+            }),
+            sync: true,
+        }
+    }
+
+    #[test]
+    fn routing_takes_the_faster_route_not_the_shorter_one() {
+        // M5 (vx-review#19). The shape of a partially-meshed box: A reaches C directly over a slow
+        // link, or in two hops over fast ones. Hop count picks the slow direct edge; cost picks the
+        // relay, which is 3.57x faster end to end.
+        let desc = TopologyDescriptor {
+            default_space: cs("A"),
+            visibility: vec![cs("A"), cs("B"), cs("C")],
+            transfers: vec![
+                rate_edge(cs("A"), cs("C"), 63),  // SYS: one hop, slow
+                rate_edge(cs("A"), cs("B"), 450), // NVLink relay: two hops, fast
+                rate_edge(cs("B"), cs("C"), 450),
+            ],
+            arch: None,
+        };
+        let mut g = TransferCostGraph::default();
+        g.apply_descriptor_edges(&desc);
+        g.precompute_costs();
+        let (_, path) = g.transfer_path(&cs("A"), &cs("C")).unwrap();
+        assert_eq!(
+            path,
+            vec![cs("A"), cs("B"), cs("C")],
+            "route selection must minimise predicted cost, not hop count"
+        );
+    }
+
+    #[test]
+    fn routing_prefers_a_route_it_can_price() {
+        // A priced two-hop route against an unpriced direct edge whose declared weight (1) is as
+        // low as it gets. The priced route wins: an unpriced edge is a gap in the machine file,
+        // and a cost the compiler reports has to be a cost it actually computed.
+        let desc = TopologyDescriptor {
+            default_space: cs("A"),
+            visibility: vec![cs("A"), cs("B"), cs("C")],
+            transfers: vec![
+                TransferEdge {
+                    from: cs("A"),
+                    to: cs("C"),
+                    cost: EdgeCost::Fixed(1),
+                    sync: true,
+                },
+                rate_edge(cs("A"), cs("B"), 1),
+                rate_edge(cs("B"), cs("C"), 1),
+            ],
+            arch: None,
+        };
+        let mut g = TransferCostGraph::default();
+        g.apply_descriptor_edges(&desc);
+        g.precompute_costs();
+        let (_, path) = g.transfer_path(&cs("A"), &cs("C")).unwrap();
+        assert_eq!(path, vec![cs("A"), cs("B"), cs("C")]);
+    }
+
+    #[test]
+    fn unpriced_routes_still_order_by_declared_weight() {
+        // The guard on the `unpriced` component being a flag rather than a count. When nothing on
+        // either route can be priced, the declared weights are the only ordering there is, and a
+        // count would silently replace them with hop count -- picking the direct edge of weight 10
+        // over a three-hop chain of weight 3.
+        let mut g = TransferCostGraph::default();
+        g.add_transfer_edge(cs("P"), cs("S"), 10);
+        g.add_transfer_edge(cs("P"), cs("Q"), 1);
+        g.add_transfer_edge(cs("Q"), cs("R"), 1);
+        g.add_transfer_edge(cs("R"), cs("S"), 1);
+        let (cost, path) = g.transfer_path(&cs("P"), &cs("S")).unwrap();
+        assert_eq!(cost, 3);
+        assert_eq!(path, vec![cs("P"), cs("Q"), cs("R"), cs("S")]);
+    }
+
+    #[test]
+    fn reported_cost_stays_the_declared_weight_sum() {
+        // Route selection changed; what `transfer_path` *reports* did not. The diagnostics record
+        // quotes this as the unitless figures along the chosen path, so it must not quietly become
+        // a time.
+        let desc = TopologyDescriptor {
+            default_space: cs("A"),
+            visibility: vec![cs("A"), cs("B"), cs("C")],
+            transfers: vec![
+                rate_edge(cs("A"), cs("B"), 450),
+                rate_edge(cs("B"), cs("C"), 450),
+            ],
+            arch: None,
+        };
+        let mut g = TransferCostGraph::default();
+        g.apply_descriptor_edges(&desc);
+        g.precompute_costs();
+        let (cost, _) = g.transfer_path(&cs("A"), &cs("C")).unwrap();
+        assert_eq!(cost, 2, "two `Rate` edges weigh 1 each");
     }
 
     #[test]
