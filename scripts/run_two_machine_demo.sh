@@ -39,21 +39,28 @@
 # actually prints:
 #
 #                    messages   operands   wall
-#   matmul local            -        -     0.349 s
-#   matmul unplaced        64   384 KiB    3.080 s
-#   matmul placed          15    48 KiB    not yet measured on a real link
-#   kv local                -        -     0.281 s
-#   kv unplaced            64   35.9 KiB   2.518 s
-#   kv resident            50    7.1 KiB   1.967 s
+#   matmul local            -        -     0.30 s
+#   matmul unplaced        64   384 KiB    2.9 - 7.6 s
+#   matmul placed          15    48 KiB    0.83 - 0.93 s
+#   kv local                -        -     0.29 s
+#   kv unplaced            64   35.9 KiB   2.3 - 2.5 s
+#   kv resident            50    7.1 KiB   1.88 - 1.99 s
+#
+# Ranges over three runs, not one draw. Every row but `matmul unplaced` repeats
+# to within ten percent; that one moved between 2.9 and 7.6 seconds, and it is
+# the only row whose cost is bytes rather than round trips -- 384 KiB against
+# the next largest 36 KiB. Which is the shape of the argument: a program paying
+# per round trip is paying something predictable, and a program re-sending an
+# unchanged operand is at the mercy of the link.
 #
 # The placed row is operands *and* result on the worker, with the answer read
-# home once at the end: 15 messages against 64. It could not be run at all until
-# recently -- a `transfer` home was lowered to a copy from the source address,
-# which on a fleet is a handle naming memory in the worker's process, so the
-# program died on a signal instead of printing (#321). Its counts here are from
-# a loopback worker on one machine; the wall-clock column is left blank rather
-# than guessed, because latency is the whole point of that column and loopback
-# has none.
+# home once at the end: 15 messages against 64, and 3.4x less wall clock. It
+# could not be run at all until recently -- a `transfer` home was lowered to a
+# copy from the source address, which on a fleet is a handle naming memory in
+# the worker's process, so the program died on a signal instead of printing
+# (#321). It is also the row that makes the others trustworthy: a resident
+# result nothing reads is a message count with no answer attached, and this one
+# is checked against the local run like every other.
 #
 # The bytes column is TRANSFER only -- the operands, which is what placement
 # removes. It is not the total on the wire: the worker counts what it receives,
@@ -254,6 +261,12 @@ run_one() { # label program remote?
 }
 
 echo
+# The first compile of the session pays for a cold page cache and the dynamic
+# loader, and the first row was collecting it: 5.407 s for the local matmul
+# against 0.298 s for the same run a minute later, which read as the local case
+# being the slow one. Throw one away first so every row below is warm.
+"$VXC" "$OUTDIR/matmul_unplaced.vx" --run >/dev/null 2>&1 || true
+
 echo "=== answers, and how long they took ==="
 run_one matmul-local     "$OUTDIR/matmul_unplaced.vx" no
 run_one matmul-unplaced  "$OUTDIR/matmul_unplaced.vx" yes
