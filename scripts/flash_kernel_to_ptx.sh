@@ -18,8 +18,10 @@
 # up here on the next run -- which is the point, and why it reads the lowered
 # module rather than `--action emit-mlir`.
 #
-# The only edit it makes is structural: `vx.kernel` becomes `gpu.func`, because
-# nothing in the compiler does that yet. That step *is* the remaining work.
+# It makes no edits. The compiler emits the `gpu.module` now (#251); this lifts
+# it out and drives it, so what is measured here is what the compiler produced.
+# That was the remaining work as of this script's first version, and the header
+# said so; it is done.
 #
 # What this has settled so far:
 #
@@ -49,9 +51,11 @@
 #
 # What is left:
 #
-#   the wrapper  nothing in the compiler emits `gpu.func` or runs this pipeline.
-#                The `vx.kernel` -> `gpu.func` step below is that gap, and is
-#                the only edit this script makes.
+#   the wrapper  the compiler emits `gpu.func` but does not run this pipeline,
+#                so no cubin comes out of a normal compile and there is nothing
+#                to ship. Extracting it is the next step.
+#   the shipping  a fifth wire message. A worker cannot be sent a kernel today,
+#                which is why a non-matmul region is refused rather than run.
 #   the launch   `cuLaunchKernel`, and 28 `.param`s to marshal for 4 memrefs.
 #   parallelism  one thread runs all 32 queries. Deliberately not smuggled in
 #               here: this script answers "does our kernel reach PTX", and it
@@ -88,15 +92,23 @@ grep -q 'vx.kernel' "$OUT/lowered.mlir" || {
   exit 1
 }
 
-echo "==> vx.kernel -> gpu.func"
+echo "==> taking the compiler's gpu.func"
+# This used to build the `gpu.func` here, from the `vx.kernel` above it, with a
+# text transform -- and the header of this file said that step *was* the
+# remaining work. The compiler emits it now (#251), so this only lifts it out.
+# Which makes the script an actual test of what the compiler produces rather
+# than of what this script could produce from it: if the emission regresses,
+# there is no `gpu.module` to find and this stops.
 python3 - "$OUT" <<'PY'
 import re, sys, pathlib
 out = pathlib.Path(sys.argv[1])
 lines = (out / "lowered.mlir").read_text().splitlines()
 
-start = next((i for i, l in enumerate(lines) if l.lstrip().startswith("vx.kernel")), None)
+start = next((i for i, l in enumerate(lines)
+              if l.lstrip().startswith("gpu.module")), None)
 if start is None:
-    sys.exit("no vx.kernel")
+    sys.exit("no gpu.module -- the compiler did not emit a device kernel "
+             "(convert-vx-to-standard, materializeGpuKernels)")
 depth, end = 0, None
 for i in range(start, len(lines)):
     depth += lines[i].count("{") - lines[i].count("}")
@@ -104,24 +116,21 @@ for i in range(start, len(lines)):
         end = i
         break
 if end is None:
-    sys.exit("unterminated vx.kernel region")
+    sys.exit("unterminated gpu.module")
 
-name = re.search(r'vx\.kernel\s+@([\w$.]+)', lines[start]).group(1)
-# The captures are already the entry block's arguments, so the signature is a
-# transcription rather than an analysis.
-sig_line = lines[start + 1].strip()
-m = re.match(r'\^bb0\((.*)\):$', sig_line)
-if not m:
-    sys.exit(f"expected an entry block signature, got: {sig_line}")
-sig = m.group(1)
-body = "\n".join(lines[start + 2:end])
-body = re.sub(r'\bvx\.return\b', 'gpu.return', body)
-
+# Dedented, so it parses as a top-level op rather than needing its enclosing
+# builtin.module and the host code inside it -- which mlir-opt cannot parse,
+# the vx dialect not being registered there.
+block = lines[start:end + 1]
+pad = len(block[0]) - len(block[0].lstrip())
 (out / "kernel.mlir").write_text(
-    "gpu.module @vx_kernels {\n"
-    f"  gpu.func @{name}({sig}) kernel {{\n{body}\n  }}\n}}\n")
-nargs = len([a for a in sig.split(",") if a.strip()])
-print(f"    @{name}: {nargs} arguments, {end - start - 2} lines")
+    "\n".join(l[pad:] if l.startswith(" " * pad) else l for l in block) + "\n")
+
+names = re.findall(r'gpu\.func\s+@([\w$.]+)\((.*?)\)', "\n".join(block))
+for name, sig in names:
+    nargs = len([a for a in sig.split(",") if a.strip()])
+    print(f"    @{name}: {nargs} arguments")
+print(f"    {end - start + 1} lines of device module")
 PY
 
 mlir-opt "$OUT/kernel.mlir" -o /dev/null
