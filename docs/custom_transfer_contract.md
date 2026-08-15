@@ -174,15 +174,72 @@ ______________________________________________________________________
 
 ______________________________________________________________________
 
+## The lowering is Vx code, so almost none of it is opaque
+
+An earlier draft of this document worried that letting a machine file carry real code puts
+arbitrary code inside the trust boundary, and that C1 and C6 stop being mechanically checkable as a
+result. **That is wrong**, and getting it wrong pointed at a worse design.
+
+A lowering is written as `impl transfer Memory::A -> Memory::B { ... }` in **Vx**. Our own front
+end parses it, type-checks it and lowers it. There is no foreign object code and no plugin
+boundary — it is more Vx, subject to every check Vx already performs. So:
+
+- **C1 (placement)** — we emitted the operations, so we can read their memory space.
+- **C6 (space visibility)** — we have the AST; walking the spaces the body touches is a traversal.
+- **C9 (no side effects)** — every write in the body is visible to us.
+- **C3 (sync)** — whether the body contains a barrier or a completion wait is a syntactic fact,
+  and it is exactly the input `seam.rs` already wants.
+- **C4 (aliasing)** — whether the body returns a view of the source or a fresh allocation is
+  something the checker can see rather than something the author asserts.
+
+The trust boundary is not the file. It is the **primitive set** a lowering needs and ordinary code
+does not: raw address arithmetic, barriers, and whatever asynchronous-copy intrinsic a part
+exposes. `transfer` cannot be implemented in terms of `transfer`, so the bottom of the stack has to
+be primitive.
+
+That is the Rust model, and Vx already has the pieces. `in_unsafe_block` tracking exists,
+`requires`/`ensures` exist as syntax, and `SmtProver` discharges them against z3. A lowering is
+safe code over a small unsafe primitive set, with the obligations in this document attached as
+`requires`/`ensures` clauses on the primitives. Nothing new is needed except naming the primitives.
+
+## Which means cost should be derived, not declared
+
+This is the larger consequence, and it supersedes C10 rather than merely satisfying it.
+
+If the lowering is code we compile, we can **count what it moves**. Tile shapes are static, so loop
+bounds are static, so the number of loads and stores against each space is a compile-time quantity.
+That is *traffic*, exactly, with no declaration involved.
+
+The split then falls out cleanly:
+
+- **Traffic** — derived from the lowering. Exact, mechanical, no way to drift from the code.
+- **Time** — modelled from traffic plus the machine's declared bandwidths, α, and composition.
+  This is where the uncertainty lives, and where the calibration campaign belongs.
+
+An edge no longer needs a declared cost at all; it needs declared *bandwidths on its endpoints*,
+which is a property of the machine and always was.
+
+Two things this buys that a declared edge cost cannot:
+
+1. **C10 becomes structural.** The cost cannot describe something other than the emitted code,
+   because it is computed from the emitted code.
+2. **It sees plan-level waste.** The shipped flash-attention kernel re-reads K and V from global
+   memory on *every* query iteration. No edge cost can express that — the per-hop rate is identical
+   either way — but a traffic count reads it straight off the loop structure. That is precisely the
+   class of inefficiency the whole exercise is aimed at, and a declared-cost model is blind to it.
+
+The limit is honest and narrow: derived traffic needs static bounds. A data-dependent loop needs
+either a bound or a declaration, and a lowering that has one should say so.
+
 ## Open questions
 
-- **Where do lowerings come from?** A registry the compiler ships is safe and inexpressive; a
-  machine file carrying real code is expressive and puts arbitrary code inside the trust boundary.
-  A middle option — a small combinator language for movement (tile, stage, barrier, wait) — would
-  keep C1/C6 mechanically checkable, which they are not if the file supplies opaque code.
+- **Which primitives?** The unsafe set a lowering may use — raw addressing, barriers, async-copy
+  intrinsics — needs naming, and each needs its `requires`/`ensures`. This is the whole remaining
+  design surface, and it is much smaller than "how do we sandbox arbitrary code".
 - **Who runs the conformance suite, and when?** Ideally the compiler refuses a lowering that has
   never passed one. That needs the suite to be part of the topology's declaration, not a separate
   process someone remembers to run.
-- **Can a lowering be checked without the hardware?** C1 and C6 yes. C2 and C8 need the part.
-  So a topology for hardware nobody has rented yet has an unverified lowering, and that should be
-  visible in the same way an unverified `spec:` figure is.
+- **Can a lowering be checked without the hardware?** C1, C3, C4, C6 and C9 yes — they are
+  properties of the code. C2 and C8 need the part. So a topology for hardware nobody has rented
+  has a lowering whose *value preservation* is unverified, and that should be as visible as an
+  unverified `spec:` figure.
