@@ -1,0 +1,66 @@
+//===- m5_partial_nvlink.vx - a box where two GPUs are not directly linked *- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// M5 (vx-review#19): a topology in which the shortest route and the fastest
+// route are different routes, so the graph's choice can be scored.
+//
+//   python3 utils/memalg/route_choice.py --machine utils/memalg/m5_partial_nvlink.vx \
+//       --from HBM --to PEER_HBM
+//
+// NOT A FLEET SKU. fleet/*.vx describe parts that can be rented; this describes
+// a shape, and it lives here rather than in fleet/ so that nothing can rent it
+// by accident or cite its figures as a machine's.
+//
+// The shape is real. `nvidia-smi topo -m` on a partially-meshed box reports NV#
+// between some GPU pairs and SYS between others: the pair that shares no NVLink
+// reaches each other across the host bridge, while both hold a direct NVLink to
+// a third GPU. On such a box the two-hop relay through GPU2 beats the one-hop
+// crawl across SYS, and by a lot.
+//
+// Every fleet file with more than one device declares the peer edge directly and
+// has exactly one route, so none of them can express this question -- which is
+// why M5 needed a file of its own rather than a flag.
+//
+// The figures are the same ones fleet/node-2gpu-h100.vx already cites, used here
+// to make the two paths differ rather than to describe any particular pod:
+//   spec: PCIe Gen5 x16 = 63 GB/s per direction (32 GT/s x 16 lanes, 128b/130b)
+//   spec: NVIDIA H100 Datasheet -- NVLink 4 at 900 GB/s bidirectional, modelled
+//         as 450 GB/s unidirectional (see fleet/README.md on halving)
+
+// spec: NVIDIA H100 product page, SXM column -- 80GB at 3.35TB/s.
+Memory HBM {
+  capacity: 80 GiB, bandwidth: 3.35 TB/s, managed: explicit, scope: device
+}
+
+// GPU1. Same silicon; what matters is that it is a different space, and that
+// this file gives it no NVLink to HBM.
+Memory PEER_HBM {
+  capacity: 80 GiB, bandwidth: 3.35 TB/s, managed: explicit, scope: device
+}
+
+// GPU2, the relay. It holds NVLink to both of the others, so it is the middle of
+// the fast route and takes no part in the slow one.
+Memory RELAY_HBM {
+  capacity: 80 GiB, bandwidth: 3.35 TB/s, managed: explicit, scope: device
+}
+
+Topology Node {
+  // spec: NVIDIA Hopper GH100; LLVM's NVPTX target.
+  arch: nvptx64,
+  memory: Memory::HBM,
+  visible: [Memory::HBM, Memory::PEER_HBM, Memory::RELAY_HBM],
+
+  transfer Memory::CPU_DRAM -> Memory::HBM : 63 GB/s,
+
+  // The SYS hop: one edge, and the slow one. This is the route the graph picks.
+  transfer Memory::HBM -> Memory::PEER_HBM : 63 GB/s,
+
+  // The NVLink relay: two edges, and 3.57x faster end to end. This is the route
+  // the graph does not pick.
+  transfer Memory::HBM -> Memory::RELAY_HBM : 450 GB/s,
+  transfer Memory::RELAY_HBM -> Memory::PEER_HBM : 450 GB/s
+}
