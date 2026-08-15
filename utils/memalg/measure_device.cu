@@ -7,6 +7,11 @@
 //   HBM -> L2         ps   containment   L2-resident streaming read (L2's own bandwidth)
 //   L2 -> SMEM        cyc  containment   in-kernel clock64() around a shared-memory load
 //
+// It also emits `device/*` rows, which are not seams: they are the machine file's own declared
+// numbers -- capacity, clock, SM count, allocation granule -- read back off the hardware, so that
+// `spec:` lines can become `measured:` ones (vx-review#18). Those rows carry no distribution and
+// join against no prediction.
+//
 // The last one is measured in CYCLES on purpose. `L2->SMEM` is declared `B/cyc` on every fleet
 // SKU, so its prediction is a cycle count; converting it to nanoseconds needs a clock figure the
 // machine files do not carry. Protocol decision 5 in PREDICTIONS.md forbids comparing it against
@@ -24,11 +29,14 @@
 // Run:    ./measure_device > measured.csv
 //
 // Compiles clean under nvcc 13.2 and 12.8 for sm_80/90/90a/100/120, and has been RUN against an
-// H100 80GB HBM3 (2026-08-08) -- with the exception of `seam 2b: HBM -> L2, the actual fill`,
-// which is NEITHER COMPILE-VERIFIED NOR RUN. It was written after the H100 was released and no
-// toolkit was reachable; compile it before quoting anything from it. Two instrument defects that run exposed, both of which produced
-// confident wrong numbers rather than errors, are fixed here and described at their sites:
-// kernel-launch overhead swamping the on-die seams, and grid-stride re-reading serving out of L1.
+// H100 80GB HBM3 (2026-08-08) -- with two exceptions, both written after that box was released
+// and with no toolkit reachable, so both are NEITHER COMPILE-VERIFIED NOR RUN:
+//   * `seam 2b: HBM -> L2, the actual fill`
+//   * the `M4: the declared numbers themselves` block
+// Compile before quoting anything from either. Two instrument defects that run exposed, both of
+// which produced confident wrong numbers rather than errors, are fixed here and described at
+// their sites: kernel-launch overhead swamping the on-die seams, and grid-stride re-reading
+// serving out of L1.
 #include <cstdio>
 #include <cstdlib>
 #include <algorithm>
@@ -54,6 +62,15 @@
 static const size_t SIZES[] = {4096ul,      16384ul,     65536ul,     262144ul,    1048576ul,
                                4194304ul,   16777216ul,  67108864ul,  268435456ul, 1073741824ul};
 static const int N_SIZES = sizeof(SIZES) / sizeof(SIZES[0]);
+
+// One declared-number row (vx-review#18). These are facts, not distributions: `median` carries the
+// value, `unit` says what it is, q1/q3/rate are empty and reps is 1. compare_m1.py joins on
+// (seam, bytes, note) and no frozen cell carries a `device/` seam name, so these are inert to the
+// M1 error table -- they exist to be read by whoever annotates the machine files.
+static void fact_row(const char *seam, size_t bytes, const char *unit, double value,
+                     const char *note) {
+  printf("%s,%zu,%s,%.3f,,,,1,%s\n", seam, bytes, unit, value, note);
+}
 
 static double median_of(std::vector<double> &v, double *q1, double *q3) {
   std::sort(v.begin(), v.end());
@@ -139,6 +156,122 @@ int main() {
   fprintf(stderr, "  SM count             : %d\n", p.multiProcessorCount);
 
   printf("seam,bytes,unit,median,q1,q3,derived_rate_GBps,reps,note\n");
+
+  // ---- M4: the declared numbers themselves (vx-review#18) -------------------------------------
+  // Every figure in fleet/*.vx came from a vendor document. These rows are the same figures read
+  // off the hardware, so each machine-file line can be marked `measured:` against a log reference
+  // instead of `spec:`. They go to the CSV rather than only to stderr because "update the machine
+  // files" is then a mechanical join; a human transcribing from a log is exactly the step where a
+  // number quietly becomes the number that fits.
+  //
+  // NOT COMPILE-VERIFIED AND NOT RUN, like seam 2b -- written with no reachable toolkit. Compile
+  // before quoting anything from it.
+  //
+  // Two things these rows are NOT:
+  //   * they are not the vendor's marketing capacity. `totalGlobalMem` is already net of the ECC
+  //     reservation and is reported in bytes, so an "80 GB" part reports ~79.6 GiB and the gap is
+  //     units plus ECC, not a defect. The defect to look for is a gap that survives both.
+  //   * they do not settle a +-4% bandwidth dispute by themselves. See `HBM_peak_from_clock`.
+  size_t free_b = 0, total_b = 0;
+  CK(cudaMemGetInfo(&free_b, &total_b));
+  fact_row("device/HBM_total", 0, "B", (double)p.totalGlobalMem,
+           "cudaDeviceProp::totalGlobalMem -- the HBM `capacity:` figure, net of ECC");
+  fact_row("device/HBM_free", 0, "B", (double)free_b,
+           "cudaMemGetInfo free with a context up and nothing allocated");
+  fact_row("device/L2_capacity", 0, "B", (double)p.l2CacheSize,
+           "cudaDeviceProp::l2CacheSize -- the L2 `capacity:` figure");
+  // Both SMEM figures, because the machine files declare one number and the hardware has two: an
+  // H100 reports 228 KiB per SM but caps a single block's opt-in at 227 KiB, the last KiB being
+  // driver-reserved. `capacity:` is checked against a tile placement, which is a block, so if
+  // these disagree the machine files are declaring the wrong one.
+  fact_row("device/SMEM_per_SM", 0, "B", (double)p.sharedMemPerMultiprocessor,
+           "cudaDeviceProp::sharedMemPerMultiprocessor");
+  fact_row("device/SMEM_per_block_optin", 0, "B", (double)p.sharedMemPerBlockOptin,
+           "cudaDeviceProp::sharedMemPerBlockOptin -- what a tile placement can actually get");
+  fact_row("device/SM_count", 0, "count", (double)p.multiProcessorCount,
+           "cudaDeviceProp::multiProcessorCount -- the SMEM `replicas:` figure");
+  fact_row("device/SM_clock", 0, "Hz", sm_clock_khz * 1000.0,
+           "cudaDevAttrClockRate -- the `clock:` figure; max, not current");
+  fact_row("device/mem_bus_width", 0, "bit", (double)p.memoryBusWidth,
+           "cudaDeviceProp::memoryBusWidth");
+
+  // The B200 dispute (7.7 vs 8.0 TB/s across two vendor documents) is settled by the part's own
+  // reported clock and bus width, not by an achieved-bandwidth number: a streaming read lands at
+  // 80-90% of peak, and 85% of 7.7 TB/s is indistinguishable from 82% of 8.0. So this row is the
+  // theoretical peak the hardware itself implies, and `HBM->L2_fill` is what it delivers -- the
+  // two answer different questions and the dispute is about the first.
+  //
+  // Believe it only if the clock is non-zero: some driver/part combinations report 0 here, and a
+  // 0 would otherwise publish a confident peak of 0.0 GB/s. Blackwell is also a multi-die package,
+  // so check that the reported bus width is the whole part and not one die before quoting it.
+  if (mem_clock_khz <= 0) {
+    fprintf(stderr,
+            "  WARNING: the driver reports memory clock %d kHz; device/HBM_peak_from_clock is not\n"
+            "           usable on this box and the B200 dispute cannot be settled from it.\n",
+            mem_clock_khz);
+  }
+  fact_row("device/HBM_peak_from_clock", 0, "GB/s",
+           2.0 * mem_clock_khz * (p.memoryBusWidth / 8) / 1.0e6,
+           "2 x cudaDevAttrMemoryClockRate x busWidth/8; 0 means the driver did not report it");
+
+  // Usable vs quoted, the way a placement finds out. The frozen predictions record capacity
+  // *rejections* as predictions, so where this boundary really sits is itself a scored quantity:
+  // a placement the model refuses at 80 GiB that the hardware accepts -- or the reverse -- is a
+  // miss that no error percentage would ever show.
+  //
+  // Binary search on cudaMalloc rather than trusting `free`, because free memory counts pages the
+  // allocator cannot hand back as one contiguous block, and a tile placement needs one block.
+  // cudaErrorMemoryAllocation is recoverable and not sticky, so the failed probes are cleared and
+  // the run continues.
+  {
+    size_t lo = 0, hi = free_b + (1ull << 30);  // above `free`: it is a lower bound, not a ceiling
+    const size_t resolution = 1ull << 20;
+    while (lo + resolution < hi) {
+      size_t mid = lo + (hi - lo) / 2;
+      void *probe = nullptr;
+      if (cudaMalloc(&probe, mid) == cudaSuccess) {
+        CK(cudaFree(probe));
+        lo = mid;
+      } else {
+        cudaGetLastError();
+        hi = mid;
+      }
+    }
+    fact_row("device/HBM_largest_single_alloc", 0, "B", (double)lo,
+             "binary search on cudaMalloc at 1 MiB resolution -- what one tile can actually get");
+  }
+
+  // Real allocation block size. Every fleet file declares `granule: 1 KiB` on SMEM and none
+  // declares one for HBM at all, so this is a number the model does not carry and a capacity
+  // prediction is wrong by exactly this much per allocation.
+  //
+  // The signal is the free-memory delta, not pointer spacing: the allocator may return blocks
+  // that are not adjacent, but it cannot hide what it took from the device. A warm-up allocation
+  // comes first because the very first cudaMalloc in a process grows the allocator's heap, and
+  // measuring that growth would report a granule of several MiB on every part.
+  {
+    void *warm = nullptr;
+    CK(cudaMalloc(&warm, 1));
+    CK(cudaFree(warm));
+    static const size_t REQ[] = {1ul, 256ul, 1024ul, 4096ul, 65536ul, 1048576ul, 2097152ul};
+    for (size_t i = 0; i < sizeof(REQ) / sizeof(REQ[0]); ++i) {
+      size_t f0 = 0, f1 = 0, t = 0;
+      CK(cudaMemGetInfo(&f0, &t));
+      void *q = nullptr;
+      if (cudaMalloc(&q, REQ[i]) != cudaSuccess) {
+        cudaGetLastError();
+        continue;
+      }
+      CK(cudaMemGetInfo(&f1, &t));
+      CK(cudaFree(q));
+      // Signed on purpose: another process on a shared box can free memory underneath this and
+      // make the delta negative. Reporting the negative is honest; silently taking an unsigned
+      // difference would publish 18 exabytes as an allocation granule.
+      double consumed = (double)f0 - (double)f1;
+      fact_row("device/alloc_block", REQ[i], "B", consumed,
+               "cudaMemGetInfo delta across one cudaMalloc of `bytes`");
+    }
+  }
 
   // ---- seam 1: CPU_DRAM -> HBM ----------------------------------------------------------------
   // Pinned AND pageable. Pinned is the fair comparison against a declared link rate; pageable is

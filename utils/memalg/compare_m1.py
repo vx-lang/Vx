@@ -41,12 +41,23 @@ def load_predictions(pred_dir, sku):
 
 
 def load_measurements(path):
-    """{(seam, bytes, note): median} — note distinguishes pinned from pageable."""
+    """({(seam, bytes, note): median}, [fact rows]) — note distinguishes pinned from pageable.
+
+    `device/*` rows are not seams. They are the machine file's own declared numbers read back off
+    the hardware (vx-review#18) and they join against no prediction, so they are split out here
+    rather than left to fall into the "no frozen prediction" list: there are ~15 of them, that
+    list prints at most 8, and they would push out the one thing it exists to show -- a real seam
+    that was measured and never predicted.
+    """
     out = {}
+    facts = []
     with open(path) as f:
         for row in csv.DictReader(f):
             if not row.get("median"):
                 continue  # a skipped cell (capacity), carried through as absent
+            if row["seam"].startswith("device/"):
+                facts.append(row)
+                continue
             out[(row["seam"], int(row["bytes"]), row.get("note", ""))] = {
                 "median": float(row["median"]),
                 "q1": float(row["q1"]) if row.get("q1") else None,
@@ -54,7 +65,7 @@ def load_measurements(path):
                 "unit": row["unit"],
                 "rate": float(row["derived_rate_GBps"]) if row.get("derived_rate_GBps") else None,
             }
-    return out
+    return out, facts
 
 
 def main():
@@ -66,7 +77,7 @@ def main():
     args = ap.parse_args()
 
     pred = load_predictions(args.predictions, args.sku)
-    meas = load_measurements(args.measured)
+    meas, facts = load_measurements(args.measured)
 
     rows = []
     unmatched_pred, unmatched_meas = [], []
@@ -163,6 +174,17 @@ def main():
             "evidence that the instrument resolves transfer time. Check measured.log for SKIP "
             "lines before citing anything."
         )
+
+    # M4 (vx-review#18): the declared numbers, read off the hardware. Nothing is scored here --
+    # the frozen cells carry costs, not capacities, so there is no predicted side to subtract.
+    # This is the table someone reads while turning a `spec:` line into a `measured:` one, and it
+    # is printed rather than summarised because the transcription is the fragile step.
+    if facts:
+        print(f"\ndeclared numbers, read off the hardware ({len(facts)}):")
+        for r in facts:
+            name = r["seam"].split("/", 1)[1]
+            size = f" @ {r['bytes']}B" if r["bytes"] and int(r["bytes"]) else ""
+            print(f"  {name + size:<34}{float(r['median']):>20,.0f} {r['unit']:<6} {r['note']}")
 
     if unmatched_pred:
         print(f"\n{len(unmatched_pred)} frozen cell(s) had no measurement:")
