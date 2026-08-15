@@ -19,21 +19,30 @@
 // numbers rather than an error. runtime/vx_dispatch_plan.h does the decoding
 // and is tested without a GPU; this file is the part that needs one.
 //
-// Anything not recognised runs on the host through libffi, exactly as the
-// portable shim would. A refusal to route therefore costs performance and never
-// correctness -- which is what makes it safe for the decoder to be strict, and
-// which holds only while the operands are host memory.
+// A region that is *not* a recognised GEMM now runs on the device too, from a
+// kernel of its own: the compiler compiles every self-contained device region
+// to PTX and carries the image in the dispatch payload (#251), and
+// `run_device_image` below loads and launches it. cuBLAS still wins the matmul
+// -- it is measured faster than anything emitted here (#321) -- so that route
+// is tried first and this one is what used to be a refusal.
 //
-// `transfer(x, Memory::GPU_HBM)` is the construct that breaks it. After one,
-// the pointers are device pointers, and a kernel that is not routed is handed
-// them and dereferences them on the CPU. That is not a hypothetical:
-// tests/backend/pass/flash_attention_placed.vx transfers Q, K, V and O into
-// GPU_HBM and then runs a fused online-softmax loop, which is not a GEMM. It
-// passes in CI because CI has no GPU, where the transfer is a no-op and the
-// pointers stay host pointers. On an A100 it segmentation-faults inside the
-// outlined kernel. The fallback below now refuses such a call and says why;
-// copying the operands back, running, and copying them out is the fix that
-// would restore the claim in full.
+// That refusal was not a performance outcome, which is what makes this a
+// correctness fix rather than an optimisation. The old claim was that failing
+// to route "costs performance and never correctness", and it held only while
+// the operands were host memory. `transfer(x, Memory::GPU_HBM)` is the
+// construct that ends that: after one, the pointers are device pointers, and an
+// unrouted kernel is handed them and dereferences them on the CPU.
+// tests/backend/pass/flash_attention_placed.vx is exactly that shape, and it
+// passes in CI because CI has no GPU -- the transfer is a no-op and the
+// pointers stay host pointers. On an A100 it segmentation-faulted inside the
+// outlined kernel.
+//
+// What remains unroutable is a region whose result is a slot the kernel
+// allocates through: there is no descriptor on this side to launch against.
+// That is refused, still with a diagnostic, and is the open half of #251.
+//
+// Anything with no device image at all still runs on the host through libffi,
+// exactly as the portable shim would.
 //
 // Scope: operands are staged to the device per dispatch and the result staged
 // back. Keeping tensors resident across dispatches is what `.to_device()` and
@@ -46,14 +55,21 @@
 #include "vx_device_pool.h"
 #include "vx_dispatch_plan.h"
 #include "vx_host_call.h"
+#include "vx_kernel_launch.h"
 #include "vx_remote_routing.h"
 
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 #include <unordered_map>
 
 #include <cublas_v2.h>
+// The driver API, for loading a module the compiler emitted. The runtime API
+// has no equivalent before CUDA 12's `cudaLibraryLoadData`, and mixing the two
+// is ordinary: driver calls act on the current context, which the runtime
+// creates lazily -- `run_device_image` forces it with the usual `cudaFree(0)`.
+#include <cuda.h>
 #include <cuda_runtime.h>
 
 namespace {
@@ -558,6 +574,140 @@ void *vx_plugin_transfer_peer(void *src_device_ptr, uint32_t src_topology_id,
   return dst_ptr;
 }
 
+/// Run the kernel the payload carries, on this device.
+///
+/// The compiler compiles every self-contained device region to PTX and puts it
+/// in the dispatch payload (#251), so a region no vendor library can stand in
+/// for is no longer a region this backend has to refuse. `kind=matmul` still
+/// goes to cuBLAS -- it is measured faster than anything emitted here, and this
+/// is only reached once that route has declined.
+///
+/// Returns false when there is no image or it cannot be used, which leaves the
+/// caller's existing refusal in place rather than replacing one diagnostic with
+/// a worse one.
+bool run_device_image(const void *payload, size_t payload_size,
+                      void **device_args, const int32_t *arg_tags,
+                      int64_t num_args) {
+  const char *image = vx_payload_field(payload, payload_size, "image=");
+  const char *kernel_name = static_cast<const char *>(payload);
+  if (!image || !*image || !cuda_available()) {
+    return false;
+  }
+
+  /* A module belongs to a context, and this process may serve more than one
+     device, so a loaded function is only reusable on the device it was loaded
+     for. Keyed by both, because keying by name alone hands GPU 1 a function
+     belonging to GPU 0's context -- which fails at launch rather than
+     silently, but fails a long way from the cause. */
+  static std::unordered_map<std::string, CUfunction> loaded;
+
+  int device = 0;
+  cudaGetDevice(&device);
+  const std::string key =
+      std::string(kernel_name) + "@" + std::to_string(device);
+
+  CUfunction fn = nullptr;
+  auto found = loaded.find(key);
+  if (found != loaded.end()) {
+    fn = found->second;
+  } else {
+    /* The driver API needs a current context. The runtime API creates the
+       primary one lazily, and this is the idiom that forces it: without it
+       cuModuleLoadData returns CUDA_ERROR_INVALID_CONTEXT on a dispatch that
+       happens to be the first CUDA call of the process. */
+    cudaFree(nullptr);
+
+    CUmodule mod = nullptr;
+    /* PTX, so the driver JITs it here -- once per process per device, which is
+       why this is cached rather than done per dispatch. The cost buys an image
+       that needs no `ptxas` anywhere and stays loadable on a newer device. */
+    CUresult rc = cuModuleLoadData(&mod, image);
+    if (rc != CUDA_SUCCESS) {
+      const char *name = nullptr;
+      cuGetErrorName(rc, &name);
+      fprintf(stderr,
+              "[Vx CUDA] FATAL: the device image for %s did not load: %s.\n"
+              "          It was compiled for %s. An unresolved `__nv_` symbol "
+              "means libdevice\n"
+              "          was not linked when the program was compiled -- set "
+              "VX_LIBDEVICE.\n",
+              kernel_name, name ? name : "?",
+              vx_payload_field(payload, payload_size, "chip=")
+                  ? vx_payload_field(payload, payload_size, "chip=")
+                  : "sm_80");
+      abort();
+    }
+    rc = cuModuleGetFunction(&fn, mod, kernel_name);
+    if (rc != CUDA_SUCCESS) {
+      fprintf(stderr,
+              "[Vx CUDA] FATAL: the device image loaded but has no entry "
+              "named %s.\n",
+              kernel_name);
+      abort();
+    }
+    loaded.emplace(key, fn);
+  }
+
+  vx_launch_params params;
+  if (!vx_launch_build_params(device_args, arg_tags, num_args, &params)) {
+    /* Not fatal: a slot output is the one argument shape that cannot be
+       marshalled, and that is a known gap rather than a broken program. The
+       caller's refusal says so. */
+    if (verbose()) {
+      fprintf(stderr,
+              "[Vx CUDA] %s has an argument this path cannot marshal (a "
+              "publication slot); not launching\n",
+              kernel_name);
+    }
+    return false;
+  }
+
+  /* The signature is right here in the image, so there is no reason to launch
+     on faith. `cuLaunchKernel` cannot check a parameter array against the
+     kernel it launches: too few, and the kernel reads parameters that were
+     never written, which is a wrong answer rather than an error. */
+  const int declared = vx_launch_entry_param_count(image, kernel_name);
+  if (declared != params.count) {
+    fprintf(stderr,
+            "[Vx CUDA] FATAL: %s declares %d parameters and its arguments "
+            "produced %d.\n"
+            "          Launching would read past what was supplied. The "
+            "compiler's idea of\n"
+            "          this kernel's signature and the runtime's have "
+            "diverged (#251).\n",
+            kernel_name, declared, params.count);
+    abort();
+  }
+
+  /* One thread. Nothing in the region indexes by thread -- the outliner
+     produces a serial loop nest -- so a wider launch would run the whole
+     computation once per thread over the same output and race. Making these
+     kernels parallel is separate work; launching them wide without doing it
+     would be a race dressed as a speedup. */
+  CUresult rc =
+      cuLaunchKernel(fn, 1, 1, 1, 1, 1, 1, 0, nullptr, params.params, nullptr);
+  if (rc != CUDA_SUCCESS) {
+    const char *name = nullptr;
+    cuGetErrorName(rc, &name);
+    fprintf(stderr, "[Vx CUDA] FATAL: launching %s failed: %s\n", kernel_name,
+            name ? name : "?");
+    abort();
+  }
+  const cudaError_t sync = cudaDeviceSynchronize();
+  if (sync != cudaSuccess) {
+    fprintf(stderr, "[Vx CUDA] FATAL: %s faulted on the device: %s\n",
+            kernel_name, cudaGetErrorString(sync));
+    abort();
+  }
+
+  if (verbose()) {
+    fprintf(stderr,
+            "[Vx CUDA] %s ran on GPU %d from its own image (%d params)\n",
+            kernel_name, device, params.count);
+  }
+  return true;
+}
+
 uint64_t vx_plugin_dispatch_async(const void *binary_payload,
                                   size_t payload_size, void **device_args,
                                   const int32_t *arg_tags, int64_t num_args) {
@@ -576,6 +726,17 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
                     "dispatch");
     }
     if (run_gemm(plan)) {
+      return 1;
+    }
+  } else if (vx_payload_field(binary_payload, payload_size, "image=")) {
+    /* Not a matmul, but the compiler emitted a kernel for it. This is the case
+       the header of this file said had to run on the host and could not. */
+    if (cuda_available()) {
+      select_device(vx_payload_topology(binary_payload, payload_size),
+                    "dispatch");
+    }
+    if (run_device_image(binary_payload, payload_size, device_args, arg_tags,
+                         num_args)) {
       return 1;
     }
   } else if (verbose()) {

@@ -308,7 +308,30 @@ inline int vx_routing_try_dispatch(const void *payload, size_t payload_size,
      trade this backend makes everywhere else. */
   {
     const char *outkind = vx_payload_field(payload, payload_size, "outkind=");
-    if (!outkind || strcmp(outkind, "buffer") != 0) {
+
+    /* `outkind=` is only written for a classified matmul, so testing it alone
+       declined every region the compiler now emits a kernel for. What the test
+       is actually asking is "does anything here have to come home as a
+       descriptor the far side minted", and that is answerable from the
+       arguments: a publication slot is one that arrived empty for the kernel
+       to allocate through. A dispatch with no slot at all writes only into
+       buffers that already exist, which is the same situation `outkind=buffer`
+       describes, and its results cross back the way any operand does.
+       Requiring the image too keeps this narrow: without one the worker has
+       nothing to run and the old refusal is still the right answer. */
+    int has_slot = 0;
+    for (int64_t i = 0; i < num_args; ++i) {
+      if (VX_ABI_IS_SLOT(arg_tags[i])) {
+        has_slot = 1;
+        break;
+      }
+    }
+    const int carries_kernel =
+        vx_payload_field(payload, payload_size, "image=") != NULL;
+    const int results_can_cross = (outkind && strcmp(outkind, "buffer") == 0) ||
+                                  (carries_kernel && !has_slot);
+
+    if (!results_can_cross) {
       /* "Run it here instead" was safe when every operand was staged by the
          dispatch that used it: declining meant the bytes had never left, so
          the host still had them. Residency ended that. An operand placed by an

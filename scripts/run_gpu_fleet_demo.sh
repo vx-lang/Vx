@@ -141,7 +141,12 @@ if [ "$BACKEND" = cuda ]; then
     g++ -std=c++17 -O2 -Wall runtime/vx_worker_main.cpp runtime/cuda_dispatch.cpp \
       -Iinclude -Iruntime -I"$CUDA_HOME/include" \
       -L"$CUDA_HOME/lib64" -Wl,-rpath,"$CUDA_HOME/lib64" \
-      -lcudart -lcublas -lffi -o vx-worker'
+      -L"$CUDA_HOME/lib64/stubs" \
+      -lcudart -lcublas -lcuda -lffi -o vx-worker'
+      # -lcuda is the driver API, for loading a device image the compiler
+      # emitted (#251). From the stubs, resolved at run time against the real
+      # driver -- so the stub directory is on -L and deliberately not on the
+      # rpath, where it would shadow the driver with do-nothing entry points.
 else
   BUILD='
     g++ -std=c++17 -O2 -Wall runtime/vx_worker_main.cpp runtime/host_dispatch.cpp \

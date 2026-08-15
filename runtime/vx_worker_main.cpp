@@ -264,10 +264,26 @@ int serve_dispatch(const vx_wire_dispatch *d, const vx_wire_arg *args,
 
   /* Asked before dispatching, because the plugin's own answer to "I cannot
      route this" is to look for the outlined kernel, which is not on this
-     machine. Deciding here keeps that abort from ever being reached. */
-  if (!vx_gemm_plan_decode(d->payload, (size_t)d->payload_len, device_args,
-                           arg_tags, d->num_args, &plan)) {
-    log_line("[Vx worker] refused: not a kernel this worker can route\n");
+     machine. Deciding here keeps that abort from ever being reached.
+   *
+   * Two ways to be routable now. A classified matmul decodes to a plan and
+   * goes to a vendor GEMM. Anything else is routable if the payload carries
+   * the kernel: the compiler compiles every self-contained device region to
+   * PTX and puts the image in the blob (#251), so the plugin can load and
+   * launch it here rather than hunting for a host symbol that only exists in
+   * the program that sent this.
+   *
+   * Zeroed rather than left indeterminate, because the fields below are read
+   * on the timing and slot-result paths and only the GEMM route fills them. */
+  memset(&plan, 0, sizeof(plan));
+  const bool routed_as_gemm =
+      vx_gemm_plan_decode(d->payload, (size_t)d->payload_len, device_args,
+                          arg_tags, d->num_args, &plan);
+  const bool carries_kernel =
+      vx_payload_field(d->payload, (size_t)d->payload_len, "image=") != nullptr;
+  if (!routed_as_gemm && !carries_kernel) {
+    log_line("[Vx worker] refused: not a kernel this worker can route, and no "
+             "device image came with it\n");
     return 0;
   }
 
@@ -320,7 +336,13 @@ int serve_dispatch(const vx_wire_dispatch *d, const vx_wire_arg *args,
   vx_plugin_dispatch_async(d->payload, (size_t)d->payload_len, device_args,
                            arg_tags, d->num_args);
   const double elapsed = now_seconds() - t0;
-  note_dispatch_time(&plan, elapsed);
+  /* Only a GEMM has an (m,n,k) to accumulate against, and only a GEMM has a
+     FLOP count that means anything. Timing an emitted kernel under the same
+     heading would report GFLOP/s for a fused softmax computed from a plan that
+     was never decoded. */
+  if (routed_as_gemm) {
+    note_dispatch_time(&plan, elapsed);
+  }
 
   /* A slot result was allocated by the plugin and is unknown to the region
      table until now. Its size is the plan's, which is why the plan was decoded
@@ -361,9 +383,14 @@ int serve_dispatch(const vx_wire_dispatch *d, const vx_wire_arg *args,
     ++(*num_results);
   }
 
-  log_line("[Vx worker] DISPATCH %lldx%lldx%lld -> %lld result(s)\n",
-           (long long)plan.m, (long long)plan.n, (long long)plan.k,
-           (long long)*num_results);
+  if (routed_as_gemm) {
+    log_line("[Vx worker] DISPATCH %lldx%lldx%lld -> %lld result(s)\n",
+             (long long)plan.m, (long long)plan.n, (long long)plan.k,
+             (long long)*num_results);
+  } else {
+    log_line("[Vx worker] DISPATCH %s from its own image -> %lld result(s)\n",
+             (const char *)d->payload, (long long)*num_results);
+  }
   return 1;
 }
 

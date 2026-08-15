@@ -346,7 +346,14 @@ fn main() {
             clang_shared_cmd.arg(format!("-I{}/include", root.display()));
             clang_shared_cmd.arg(format!("-L{}", libdir.display()));
             clang_shared_cmd.arg(format!("-Wl,-rpath,{}", libdir.display()));
-            clang_shared_cmd.args(["-lcudart", "-lcublas"]);
+            // `-lcuda` is the driver API, for loading a device image the
+            // compiler emitted (#251). It is linked from the toolkit's stubs
+            // and resolved at run time against the real driver -- which is why
+            // the stub directory is on -L and deliberately not on the rpath: an
+            // rpath to it would find the stub first, and the stub's entry
+            // points do nothing.
+            clang_shared_cmd.arg(format!("-L{}/stubs", libdir.display()));
+            clang_shared_cmd.args(["-lcudart", "-lcublas", "-lcuda"]);
         }
 
         let status = clang_shared_cmd

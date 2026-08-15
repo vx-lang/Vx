@@ -1,0 +1,150 @@
+//===- flash_attention_disaggregated.vx - the kernel runs elsewhere -*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// tests/backend/pass/flash_attention_placed_verified.vx, with the result read
+// home -- which is what lets it run against a worker on another machine.
+//
+// That file's header said what it did *not* demonstrate: "a GPU. `kind=matmul`
+// is the only thing the CUDA backend routes, a fused online softmax is not a
+// GEMM, and on a machine with a device this kernel is refused rather than run
+// (#251)." That is no longer true, and this file is where it stopped being
+// true.
+//
+// The compiler compiles the region to sm_80 PTX and carries the image in the
+// dispatch payload. A worker that cannot recognise the kernel loads it with
+// `cuModuleLoadData` and launches it. Run from a laptop against an A100 80GB
+// over an SSH tunnel:
+//
+//   [Vx worker] TRANSFER 2048 bytes -> handle 1000000503000     (Q)
+//   [Vx worker] TRANSFER 4096 bytes -> handle 1000000603800     (K)
+//   [Vx worker] TRANSFER 4096 bytes -> handle 1000000704800     (V)
+//   [Vx worker] TRANSFER 2048 bytes -> handle 1000000805800     (O)
+//   [Vx worker] DISPATCH vx_npu_kernel_0 from its own image
+//   [Vx worker] served 10 message(s): TRANSFER=4 (12384 B)
+//               DISPATCH=1 (11312 B) FREE=4 (32 B) FETCH=1 (16 B)
+//
+// The 11312-byte DISPATCH is the kernel travelling with the call. 510 of the
+// 512 output elements came back identical to the same program run entirely on
+// the host; two differ by 1.0e-5, which is the device's `ex2.approx.ftz.f32`
+// against the host's `expf` and is smaller than the 5.08e-06 the file this
+// derives from already records against an independent implementation.
+//
+// Locally -- which is how it runs in CI, with no manifest and no worker -- the
+// transfers are no-ops, the region runs on the host, and the answer is the
+// same. There is nothing in the program that says where any of it happens.
+//
+// To run it disaggregated, name the device in a fleet manifest:
+//
+//   GPU[0]   127.0.0.1  25717
+//   GPU_HBM  127.0.0.1  25717
+//
+// and compile with VX_LIBDEVICE set, or `__nv_expf` is left unresolved and the
+// worker's `cuModuleLoadData` refuses the image.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: vx.transfer
+// CHECK: vx.spawn topology(500)
+// EXPECT: [[0.901606,   0.941606,   0.981606
+
+import std::math;
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+}
+
+fn main() -> i32 {
+  let mut q_h = Tensor<f32>([ 32, 16 ]);
+  let mut k_h = Tensor<f32>([ 64, 16 ]);
+  let mut v_h = Tensor<f32>([ 64, 16 ]);
+  let mut o_h = Tensor<f32>([ 32, 16 ]);
+
+  // Values that vary along both axes, so no operand can be ignored and no two
+  // rows coincide, scaled small enough that the exponentials stay in range.
+  for i in 0..32 {
+    for d in 0..16 {
+      q_h[i][d] = ((i + d) as f32) * 0.05;
+      o_h[i][d] = 0.0;
+    }
+  }
+  for j in 0..64 {
+    for d in 0..16 {
+      k_h[j][d] = ((j - d) as f32) * 0.03;
+      v_h[j][d] = ((j + 2 * d) as f32) * 0.02;
+    }
+  }
+
+  let scale : f32 = 0.25;
+
+  // --- flash: one pass, tiled, no score matrix ------------------------------
+  let q = transfer(q_h, Memory::GPU_HBM);
+  let k = transfer(k_h, Memory::GPU_HBM);
+  let v = transfer(v_h, Memory::GPU_HBM);
+  let mut o = transfer(o_h, Memory::GPU_HBM);
+
+  spawn on(Topology::GPU) {
+    let mut ts = Tensor<f32>([ 1, 16 ]);
+    for i in 0..32 {
+      let mut m : f32 = -1000000.0;
+      let mut l : f32 = 0.0;
+      for t in 0..4 {
+        let mut tm : f32 = -1000000.0;
+        for jj in 0..16 {
+          let j = t * 16 + jj;
+          let mut acc : f32 = 0.0;
+          for d in 0..16 {
+            acc += q[i][d] * k[j][d];
+          }
+          let sij : f32 = acc * scale;
+          ts[0][jj] = sij;
+          if sij > tm {
+            tm = sij;
+          }
+        }
+        // The running max only ever grows; when it does, everything already
+        // accumulated was exponentiated against a smaller max and has to be
+        // scaled down by exp(m_old - m_new). Both `l` and `o` carry that history,
+        // so both are corrected -- correcting one and not the other is the
+        // mistake this file exists to catch.
+        let m_new : f32 = if tm > m {
+          tm
+        } else {
+          m
+        };
+        let corr : f32 = (m - m_new).exp();
+        l = l * corr;
+        for d in 0..16 {
+          o[i][d] = o[i][d] * corr;
+        }
+        for jj in 0..16 {
+          let j = t * 16 + jj;
+          let p : f32 = (ts[0][jj] - m_new).exp();
+          l = l + p;
+          for d in 0..16 {
+            o[i][d] = o[i][d] + p * v[j][d];
+          }
+        }
+        m = m_new;
+      }
+      for d in 0..16 {
+        o[i][d] = o[i][d] / l;
+      }
+    }
+  }
+
+  // Read the result home before printing it.
+  //
+  // `o` is on the device. On a machine with no plugin that is host memory and
+  // printing it works by accident; against a real worker it is a handle naming
+  // memory in another process, and the printer walks off a non-canonical
+  // address. The transfer is what makes the program mean the same thing in
+  // both places -- it is a FETCH when there is a worker and nothing when there
+  // is not (#348).
+  let o_home = transfer(o, Memory::CPU_DRAM);
+  print(o_home);
+  return 0;
+}
