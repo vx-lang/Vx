@@ -2,7 +2,9 @@
 
 This plan covers `crossing:`, a new field on a `Memory` declaration, and `composition`, a new field
 in the `--diagnostics-json` record. Together they fix a case where the compiler's predicted transfer
-cost was wrong by about 67%.
+cost was wrong by about 67% (measured against real hardware, on the three-step
+`HBM->L2->SMEM` route on an H100 — see §1 for where that number comes from, and §2 for
+why the smaller worked example gives a different figure).
 
 Phase 1 is **done** (commit `3cc0c88f`). Phases 2 and 3 are not started, and Phase 2 needs a
 decision from a human because it changes numbers we have promised not to change quietly.
@@ -49,7 +51,8 @@ speed of the slowest person. Adding up each person's time would give a wildly wr
 ### What the hardware actually does
 
 We measured both, on two different machines. `utils/memalg/compose.py` scores the two rules against
-real numbers:
+real numbers. The "error" column is each rule's predicted cost compared against the **measured**
+cost — not one rule compared against the other:
 
 | machine | route | how the hardware moves it | rule that fits | error |
 | ------- | ----- | ------------------------- | -------------- | ----- |
@@ -93,14 +96,53 @@ Memory SMEM {
 - `crossing: sequenced` — the hardware uses instructions, one after another. **Add** the steps.
 - `crossing: streamed` — the hardware has a copy engine that pipelines. **Take the slowest step.**
 
-### Why it goes on the destination space
+### Where the attribute is read from — and a flaw found in review
 
-What matters is how data gets **in**. An H100's SMEM can be filled by `cp.async`. An Apple GPU's
-threadgroup memory cannot, because no such engine exists there, so it is always load-then-store.
-This is a fact about the receiving end.
+Phase 1 reads `crossing:` from the **destination** space, on the reasoning that what matters is how
+data gets *in*: an H100's SMEM can be filled by `cp.async`, an Apple GPU's threadgroup memory cannot
+because no such engine exists there. A test pins that down —
+`crossing_is_read_from_the_destination_not_the_source` checks that marking SMEM as `streamed` does
+not change the price of a walk that merely *starts* at SMEM.
 
-A test pins this down: `crossing_is_read_from_the_destination_not_the_source` checks that marking
-SMEM as `streamed` does **not** change the price of a walk that merely *starts* at SMEM.
+**That reasoning is not sufficient, and the table in §1 is its own counterexample.** Look at the
+first two rows: `HBM->L2->SMEM` streams, `L1->REG->SMEM` sequences — and **both end at SMEM**. One
+attribute read from the final destination and applied to the whole walk cannot give two different
+answers for two routes that share a destination.
+
+Nothing is broken today, because no machine file declares `REG` or `L1`, so the compiler never
+prices the second route. But it is a trap waiting for Phase 2: M1's vertical calibration
+(SMEM→registers) needs those spaces declared, and at that point marking H100 SMEM as `streamed`
+would flip the load/store route to "slower step" and make it wrong by about 50%.
+
+### The fix: a register round-trip always adds
+
+The evidence already contains the rule. Look at what separates the four measured routes: **whether
+the walk passes through registers.**
+
+| route | through REG? | rule that fits |
+| ----- | ------------ | -------------- |
+| `HBM->L2->SMEM` (H100) | no | slower step |
+| `L1->REG->SMEM` (H100) | yes | add |
+| `L2->REG->SMEM` (M4) | yes | add |
+| `HBM->REG->SMEM` (M4) | yes | add |
+
+A register round-trip *is* a load followed by a store. There is no mechanism by which it could
+overlap, because the second instruction needs the value the first produced. So:
+
+> **If a route passes through a register-class space, its steps add — always, whatever any
+> `crossing:` says. `crossing: streamed` only decides routes that bypass registers.**
+
+This is a structural property, not a fitted parameter, and it explains all four rows.
+
+**Proposed implementation, to be confirmed before Phase 2.** The language already has the vocabulary
+to say "this space is registers": `scope: thread`, since a register file is private to one thread.
+So `derived_transfer_cost` can check whether any space on the path has `scope: thread` and force
+addition if so. That needs no new syntax and no new declaration, and it is checkable against the
+existing scope rules.
+
+The general version — a `crossing:` per hop, with a walk that streams one step and sequences the
+next — is in §6 as an open question. The register rule is the smallest version the current data
+supports, and it should not be widened past the evidence.
 
 ### `composition` — an output, written by the compiler
 
@@ -135,6 +177,17 @@ it from a hardware claim.
 
 The `streamed` answer is just L2's term, because L2 is the slower of the two.
 
+**Do not check the headline against this example.** The two are different measurements of different
+things, and they give different numbers on purpose:
+
+- **35.9%** is what this table shows: `sequenced` against `streamed`, two *predictions* for the same
+  two-step route, one model against another.
+- **67%** is the figure in the summary: `sequenced` against what the **hardware actually did**, on
+  the three-step `HBM->L2->SMEM` route, which has an extra term this example does not.
+
+A reader who divides 15,671,711 by 11,534,337, gets 1.36, and concludes the headline is inflated has
+compared a model-versus-model ratio with a model-versus-hardware error.
+
 ______________________________________________________________________
 
 ## 3. Phase 1 — the mechanism (DONE, commit `3cc0c88f`)
@@ -151,6 +204,9 @@ ______________________________________________________________________
 - `src/hir/memory.rs`: `derived_transfer_cost` reads the destination space's `crossing` and then
   combines its per-step terms with either `+` (sequenced) or `max` (streamed). Both the
   cycle-denominated path and the picosecond path go through the same rule.
+- **This is the destination-only rule that §2 shows is not sufficient.** It is correct for every
+  route any machine file can currently express, because none declares a register-class space. The
+  register rule has to land before Phase 2, not after.
 
 ### 3.3 Diagnostics
 
@@ -219,19 +275,40 @@ after seeing the measurements.
 
 ### Steps
 
+0. **Settle the register rule from §2 first.** Declaring `streamed` on H100 SMEM before registers
+   are handled bakes in the flaw rather than fixing it. This is a prerequisite, not a nice-to-have.
 1. Decide whether to re-take the freeze or to record a dated exception. This is a human decision,
-   not a code change.
+   not a code change. Tracked at
+   [vx-review#27](https://github.com/hiraditya/vx-review/issues/27).
 2. Edit each machine file, adding a `spec:` comment naming the evidence for the choice, the same way
-   every other figure in those files carries its source.
-3. Regenerate the saved predictions and record exactly which cells moved and by how much.
-4. Write the dated note the freeze protocol requires, explaining that the change came from a
-   measurement rather than from fitting.
+   every other figure in those files carries its source. The comment must say whether the choice was
+   **measured** on that part or **derived from the ISA** — they are different kinds of claim and only
+   one of them is evidence.
+3. Regenerate the saved predictions and record exactly which cells moved and by how much. Keep the
+   before/after table.
+4. Write the dated note the freeze protocol requires — and see the honesty note below about what it
+   has to admit.
+
+### What the dated note has to admit
+
+Re-running `compare_m1.py` on the H100 to check that `streamed` improves the residual is **scoring
+against the data that selected the rule**. It is training data. It is worth doing as a sanity check,
+but it is not evidence, and the note should say so in plain words rather than presenting a smaller
+residual as a result.
+
+The genuinely pre-registered move is the other files. Nobody has measured an A100, H200 or B200 in
+this campaign, so `crossing: streamed` on those parts is a **prediction derived from the ISA**
+(`cp.async` exists from sm_80). Written down and dated now, it is scored when those parts are
+eventually measured — a real prediction with a real way to be wrong. That converts what would
+otherwise be a freeze exception into a new pre-registration.
 
 ### Verification
 
-- Re-run `utils/memalg/compare_m1.py` against the H100 measurements. The `L2->SMEM` residual should
-  improve; if it gets worse, the `streamed` claim for that part is wrong and should be reverted.
-- The Apple numbers should not move at all, because that file stays `sequenced`.
+- Re-run `utils/memalg/compare_m1.py` against the H100 measurements, understanding it as a sanity
+  check on training data, not as a result. If the `L2->SMEM` residual gets *worse*, something is
+  wrong with the mechanism itself, because the rule was chosen from this exact data.
+- The Apple numbers should not move at all, because that file stays `sequenced`. This is the real
+  check in this phase: an unchanged file whose predictions move means the edit leaked.
 
 ______________________________________________________________________
 
@@ -258,15 +335,50 @@ mode the whole measurement campaign is set up to avoid.
 Unblocking it needs either a second copy-engine route on the H100, or a powerset run on another
 NVIDIA part.
 
+### A middle path worth recording
+
+There is something useful short of a transferable constant. M1 sweeps sizes from 4 KiB to 1 GiB, so
+on the *one* copy-engine route we have, `bytes/bw + fill` can be fitted **per route** and then
+checked on sizes held out of the fit. That does not give a `fill` that transfers to another edge,
+but it does give a **bound on how large fill can be** — and a bound is a real result where a fitted
+constant would not be.
+
+It also interacts with α (see below): both are fixed per-transfer costs, and a fit that does not
+separate them will silently roll the edge's startup latency into the route's fill term.
+
 ______________________________________________________________________
 
-## 6. Open questions
+## 6. Hardening, and open questions
 
+### Hardening worth doing alongside Phase 2
+
+- **Refuse `crossing:` where it cannot mean anything.** A space that is never the destination of a
+  containment hop can carry the attribute today and it will silently do nothing. Rejecting it is the
+  same "refuse what you do not understand" rule as E6012 and E6014.
+- **Make the composite guard permanent.** `compose.py` already refuses to score a route whose
+  measured cost beats its own slowest leg, because a composite cannot outrun a link it crosses. That
+  check belongs in `compare_m1.py` too — it is what catches a mislabelled seam, and it found the
+  `HBM->L2` defect in vx-review#22 without being told to look.
+
+### Open questions
+
+- **α is missing, and it is the neighbour of `fill`.** The cost model has no fixed per-transfer term
+  at all: every edge is `bytes/bandwidth`, a line through the origin. Phase 3's `fill` and a
+  per-edge α are the same shape of quantity, and adding either without the other will absorb one
+  into the other. Tracked at
+  [vx-review#28](https://github.com/hiraditya/vx-review/issues/28).
 - **AMD.** `fleet/mi300x.vx` describes a part nobody has measured. AMD GPUs have `buffer_load_dword
   lds`, which is a copy-engine-like path, so `streamed` may well be correct there — but nothing in
   this campaign has tested it.
-- **Is the destination always the right place to ask?** It is right for every case measured so far.
-  A machine where the *source* gates the transfer would break this, and none has turned up yet.
-- **Mixed routes.** A three-space walk currently gets one rule for the whole thing, taken from the
-  final destination. If a real machine streams one step and sequences the next, the model cannot say
-  so. No such machine has appeared, so this is recorded rather than fixed.
+- **Mixed routes.** A walk currently gets one rule for the whole thing. The register rule in §2 is
+  the first crack in that: it says one *kind* of hop always adds regardless. A machine that streams
+  one step and sequences the next, with neither being a register hop, would need a per-hop
+  `crossing:` and a composition rule over mixed hops. No such machine has appeared, so this stays
+  recorded rather than built.
+- **Is the destination the right place to ask at all?** With the register rule doing the
+  discriminating, `crossing:` carries less weight than Phase 1 assumed. If registers were declared
+  as spaces, the two machines would have genuinely different *routes* — Apple's threadgroup memory
+  reachable only via a register hop, the H100's reachable directly — and "through REG ⇒ add" would
+  fall out of the topology with no attribute at all. `crossing:` would still be needed for the
+  remaining question (do the non-register hops overlap), but the design is worth revisiting once
+  registers are declared.
