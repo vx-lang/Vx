@@ -116,6 +116,29 @@ fn a_placed_kernel_is_compiled_to_ptx_and_carried_in_the_payload() {
          -- a worker would load the module and then ask for a function that is \
          not in it"
     );
+
+    // The signature the kernel declares, counted the way vx_kernel_launch.h
+    // counts it: within the parentheses, so `ld.param` uses and externs' return
+    // slots are not mistaken for parameters.
+    //
+    // 28 is four rank-2 memrefs at seven parameters each -- two pointers, an
+    // offset, two sizes, two strides. The other half of that equality is
+    // asserted in tests/runtime/kernel_launch_test.cpp, which builds a
+    // parameter list for this exact signature and gets 28 from the argument
+    // side. A launch is only safe while the two agree, and they are computed
+    // from different things: this one from the compiler's PTX, that one from
+    // the ABI tags.
+    let signature = ir
+        .split(".visible .entry ")
+        .nth(1)
+        .and_then(|rest| rest.split(')').next())
+        .expect("no entry signature in the device image");
+    assert_eq!(
+        signature.matches(".param").count(),
+        28,
+        "the kernel's signature changed; tests/runtime/kernel_launch_test.cpp \
+         builds 28 parameters for four rank-2 memrefs and the two must agree"
+    );
 }
 
 /// A classified matmul carries no image, and still says it is a matmul.

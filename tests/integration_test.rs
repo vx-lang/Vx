@@ -9,6 +9,7 @@ mod integration_test {
     mod fuzz;
     mod gemm_plan_test;
     mod graph_workload_test;
+    mod kernel_launch_test;
     mod lint_test;
     mod loopback_test;
     mod manifest_test;
