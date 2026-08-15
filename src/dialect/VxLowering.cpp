@@ -5,11 +5,13 @@
 #include "mlir/CAPI/Pass.h"
 #include "mlir/Conversion/LLVMCommon/Pattern.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
+#include "mlir/Conversion/Passes.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
+#include "mlir/Dialect/GPU/Transforms/Passes.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -22,9 +24,14 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/InitAllPasses.h"
 #include "mlir/Pass/Pass.h"
+#include "mlir/Pass/PassManager.h"
+#include "mlir/Target/LLVM/NVVM/Target.h"
+#include "mlir/Target/LLVMIR/Dialect/All.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Transforms/RegionUtils.h"
+#include "llvm/ADT/StringMap.h"
+#include "llvm/Support/FileSystem.h"
 
 #include <atomic>
 
@@ -944,6 +951,18 @@ static LogicalResult diagnoseUnrunnableSpawns(Operation *root) {
   return success(!failed);
 }
 
+/// Dialects the NVPTX pipeline in this file can lower to a device.
+///
+/// An allow-list, not a list of known-bad ops, and deliberately so: a kernel
+/// body that grows something new should stop getting a device twin until
+/// someone has decided what that op means on a GPU. The other direction fails
+/// late and quietly -- an image that compiles but cannot load, blamed at the
+/// far end on whatever the worker says last.
+static bool isDeviceLowerableDialect(StringRef ns) {
+  return ns == "arith" || ns == "cf" || ns == "gpu" || ns == "math" ||
+         ns == "memref" || ns == "scf";
+}
+
 struct ConvertVxToStandardPass
     : public PassWrapper<ConvertVxToStandardPass, OperationPass<ModuleOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ConvertVxToStandardPass)
@@ -979,9 +998,10 @@ struct ConvertVxToStandardPass
   ///
   /// Both survive. The `vx.kernel` still carries the host path, so a program
   /// that runs on this machine is unaffected and the classified-matmul route is
-  /// untouched. The `gpu.func` is what a device backend compiles, and until
-  /// something consumes it that is dead weight in the module and nothing else
-  /// -- which is why this can land before the shipping and launching do.
+  /// untouched. The `gpu.func` is what a device backend compiles: `vx-to-llvm`
+  /// compiles it to PTX and puts the result in the dispatch payload, then drops
+  /// it. So it is not dead weight any more, but it is still not on the critical
+  /// path of a program that runs at home.
   ///
   /// Only device topologies. A region placed on the host has no business
   /// growing a GPU twin.
@@ -994,17 +1014,43 @@ struct ConvertVxToStandardPass
       // giving them an NVVM twin would be claiming something untrue.
       if (topo < 500 || topo >= 600)
         return;
-      // Self-contained only. A `gpu.module` is its own symbol table, so a body
-      // that calls a host helper -- `flash_attention_v4.vx` calls `exp_poly` --
+      // Only a body the device pipeline can actually compile.
+      //
+      // Two things get excluded, for two different reasons, and both are
+      // reasons the region is not ready rather than reasons this transcription
+      // is hard.
+      //
+      // `func`, because a `gpu.module` is its own symbol table: a body that
+      // calls a host helper -- `flash_attention_v4.vx` calls `exp_poly` --
       // clones into a kernel whose callee is not visible from it, and the
-      // verifier rejects the module before anything downstream sees it. The
-      // region is genuinely not ready to be a device kernel: making it one
-      // means bringing the callee along or inlining it, which is the rest of
-      // #251 rather than a detail of this transcription. Skipping leaves such a
-      // program exactly as it was.
-      bool callsOut = false;
-      k.getBody().walk([&](func::CallOp) { callsOut = true; });
-      if (!callsOut)
+      // verifier rejects the module before anything downstream sees it. Making
+      // it a kernel means bringing the callee along or inlining it.
+      //
+      // `linalg`, because a `linalg.matmul` has not been lowered for anything
+      // yet. It survives to here on purpose: it is the classified-matmul route
+      // (`kernelKindOf` above), and the plugin turns it into a cuBLAS call. A
+      // device twin of it would have to be tiled and mapped to threads first,
+      // which is the parallelism work #251 set aside -- and it would lose:
+      // cuBLAS runs this at 14389 GFLOP/s on an A100 and the dispatch path
+      // already reaches 13888 of that (#321). The kernel worth shipping is the
+      // one no library has, which is exactly the one with no `linalg` left in
+      // it.
+      //
+      // Skipping leaves such a program exactly as it was. Nothing downstream
+      // requires a twin; a launch without an image simply carries no `image=`
+      // field, as every launch did before this.
+      bool deviceReady = true;
+      k.getBody().walk([&](Operation *op) {
+        // Rewritten to `gpu.return` below, so it is not a foreign dialect here.
+        if (isa<vx::ReturnOp>(op))
+          return WalkResult::advance();
+        Dialect *dialect = op->getDialect();
+        if (dialect && isDeviceLowerableDialect(dialect->getNamespace()))
+          return WalkResult::advance();
+        deviceReady = false;
+        return WalkResult::interrupt();
+      });
+      if (deviceReady)
         kernels.push_back(k);
     });
     if (kernels.empty())
@@ -1445,9 +1491,14 @@ struct TransferToPluginLowering : public OpRewritePattern<vx::TransferOp> {
 
 struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
   const LLVMTypeConverter &typeConverter;
+  /// Kernel name -> device image, for the kernels that have one. Owned by the
+  /// pass; empty for a host launch, and empty everywhere until #251.
+  const llvm::StringMap<std::string> *deviceImages;
 
-  LaunchOpLowering(const LLVMTypeConverter &typeConverter, MLIRContext *context)
-      : OpRewritePattern<vx::LaunchOp>(context), typeConverter(typeConverter) {}
+  LaunchOpLowering(const LLVMTypeConverter &typeConverter, MLIRContext *context,
+                   const llvm::StringMap<std::string> *deviceImages)
+      : OpRewritePattern<vx::LaunchOp>(context), typeConverter(typeConverter),
+        deviceImages(deviceImages) {}
 
   LogicalResult matchAndRewrite(vx::LaunchOp op,
                                 PatternRewriter &rewriter) const override {
@@ -1506,6 +1557,37 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
       payload += "toponame=";
       payload += nameAttr.getValue().str();
       payload.push_back('\0');
+    }
+
+    // The kernel itself, last.
+    //
+    // A dispatch names a kernel; a plugin that does not recognise the name has
+    // nothing to run, which is why a region that is not a classified matmul is
+    // refused rather than executed. This is the kernel, as PTX, so that a
+    // plugin which cannot recognise it can still load and launch it (#251).
+    //
+    // In the payload because that is the one channel that already reaches every
+    // plugin. The alternative -- another argument on vx_plugin_dispatch_async
+    // -- changes the ABI in five backends for a field four of them ignore, and
+    // changes it again the first time something else needs carrying.
+    //
+    // The blob's encoding survives it: PTX is text with no NUL, so it is one
+    // entry like any other and vx_payload_field walks past it unchanged.
+    // deviceImageOf checks that, rather than trusting it.
+    //
+    // Last, because a reader dumping a payload should meet the small fields
+    // first, and because this is the only entry measured in kilobytes.
+    //
+    // It costs a dispatch nothing: the blob is a constant global, one per
+    // kernel, so a launch passes a pointer and a length however large the image
+    // is. It costs the object file one copy of the PTX in .rodata.
+    if (deviceImages) {
+      auto image = deviceImages->find(callee);
+      if (image != deviceImages->end()) {
+        payload += "image=";
+        payload += image->second;
+        payload.push_back('\0');
+      }
     }
 
     std::string globalName = (callee + "_str").str();
@@ -1697,6 +1779,167 @@ struct ReturnOpLowering : public OpRewritePattern<vx::ReturnOp> {
   }
 };
 
+//===----------------------------------------------------------------------===//
+// Device images
+//===----------------------------------------------------------------------===//
+
+/// The GPU generation to compile a device kernel for.
+///
+/// The machine model does not carry one. `fleet/a100-40.vx` says `arch:
+/// nvptx64` -- the target, not the part -- and until now nothing needed the
+/// difference, because a GEMM routed to cuBLAS is compiled by whoever built
+/// cuBLAS. A kernel of our own does need it: `sm_80` code will not load on an
+/// `sm_70` device.
+///
+/// The topology id cannot supply it. It is a band plus a device ordinal
+/// (`topology_dispatch_id` in src/arch.rs), so `500` means "the first GPU" and
+/// says nothing about which GPU. So the default is the part this work is being
+/// measured on and the override is an environment variable -- which is honest
+/// about what it is, a stand-in for a `capability:` field on the Topology
+/// declaration that the machine files should eventually carry.
+static std::string deviceChip() {
+  if (const char *chip = ::getenv("VX_GPU_CHIP"))
+    if (*chip)
+      return chip;
+  return "sm_80";
+}
+
+/// libdevice.10.bc, if this machine has it.
+///
+/// Every `math` op lowers to a libdevice call under the NVVM conversion --
+/// `__nv_expf` for `.exp()`, and `__nv_sqrtf` and `__nv_fabsf` too, which have
+/// native PTX instructions. Linking the bitcode resolves and inlines them:
+/// `math.exp` becomes a single `ex2.approx.f32` and the module is left with no
+/// externals at all, which is what makes it loadable.
+///
+/// The file is architecture-independent bitcode, so it need not come from the
+/// machine that will run the kernel; copying it to a laptop is enough, which is
+/// the case that matters here because the host program compiles where the
+/// developer is and runs where the GPU is.
+///
+/// Absent, the kernel is still compiled and still emitted, carrying an
+/// unresolved `__nv_expf` that a loader will name. Refusing to emit would
+/// suppress the one diagnostic worth having.
+static std::string deviceLibdevice() {
+  if (const char *path = ::getenv("VX_LIBDEVICE"))
+    if (*path)
+      return path;
+  SmallVector<std::string, 2> candidates;
+  if (const char *home = ::getenv("CUDA_HOME"))
+    if (*home)
+      candidates.push_back(std::string(home) +
+                           "/nvvm/libdevice/libdevice.10.bc");
+  candidates.push_back("/usr/local/cuda/nvvm/libdevice/libdevice.10.bc");
+  for (const std::string &candidate : candidates)
+    if (llvm::sys::fs::exists(candidate))
+      return candidate;
+  return {};
+}
+
+/// Compile a `gpu.module` to a device image, as PTX text.
+///
+/// This is the pipeline scripts/flash_kernel_to_ptx.sh established, moved into
+/// the compiler. That script drove `convert-vx-to-standard`'s own kernel to
+/// sm_80 by hand and reported what was left; running the same passes here is
+/// what turns "this kernel can reach PTX" into "every compile produces one".
+/// The script still exists and still runs the pipeline externally, so the two
+/// transcriptions can be compared -- which is how the first one was checked.
+///
+/// PTX rather than a cubin, for two reasons. The driver JITs PTX inside
+/// `cuModuleLoadData`, so a worker needs no `ptxas` and the compile host needs
+/// no CUDA toolkit; and PTX stays loadable on a device newer than the one it
+/// was compiled for, which a cubin is not. It costs a JIT on first load, once
+/// per worker per kernel, against a dispatch path whose overhead is already
+/// tens of microseconds.
+///
+/// Serialized from a copy in a module of its own, for two reasons of its own.
+/// `gpu-to-llvm` and `convert-arith-to-llvm` are not scoped to device code: run
+/// against the real module they would rewrite the host program that this pass
+/// is itself in the middle of converting. And a failure in here cannot then
+/// leave the host module half-lowered -- the copy is what gets damaged.
+///
+/// Returns the empty string on failure, with `error` naming the stage.
+static std::string deviceImageOf(gpu::GPUModuleOp gpuModule,
+                                 std::string &error) {
+  MLIRContext *context = gpuModule.getContext();
+
+  // `#nvvm.target` cannot serialize itself until the external model is
+  // attached, and translating the kernel to LLVM IR needs the NVVM and GPU
+  // dialects' translation interfaces. melior's `register_all_dialects` supplies
+  // neither -- in this MLIR neither `registerAllDialects` nor
+  // `registerAllExtensions` mentions NVVM -- so this is where they arrive.
+  // Appending is idempotent and reaches dialects that are already loaded.
+  DialectRegistry registry;
+  registerAllToLLVMIRTranslations(registry);
+  NVVM::registerNVVMTargetInterfaceExternalModels(registry);
+  context->appendDialectRegistry(registry);
+
+  OwningOpRef<ModuleOp> device = ModuleOp::create(gpuModule.getLoc());
+  device->getBody()->push_back(gpuModule->clone());
+
+  PassManager pm(context, ModuleOp::getOperationName());
+
+  GpuNVVMAttachTargetOptions attach;
+  attach.chip = deviceChip();
+  // The PTX ISA version, not the device. 7.6 is what CUDA 11.6 and later
+  // accept, and it is what the script has been assembling with.
+  attach.features = "+ptx76";
+  std::string libdevice = deviceLibdevice();
+  if (!libdevice.empty())
+    attach.linkLibs.push_back(libdevice);
+  pm.addPass(createGpuNVVMAttachTarget(attach));
+
+  pm.nest<gpu::GPUModuleOp>().addPass(createConvertGpuOpsToNVVMOps());
+  pm.addPass(createArithToLLVMConversionPass());
+  pm.addPass(createConvertMathToLLVMPass());
+  pm.addPass(createGpuToLLVMConversionPass());
+  pm.addPass(createReconcileUnrealizedCastsPass());
+
+  GpuModuleToBinaryPassOptions binary;
+  // "isa" stops at PTX text. "fatbin" and "cubin" would both invoke `ptxas`,
+  // which is a toolkit the compile host is not required to have.
+  binary.compilationTarget = "isa";
+  pm.addPass(createGpuModuleToBinaryPass(binary));
+
+  if (failed(pm.run(*device))) {
+    error = "the NVPTX pipeline failed";
+    return {};
+  }
+
+  // `gpu-module-to-binary` replaces the module with a `gpu.binary` holding one
+  // object per target. One target was attached, so one object is expected; more
+  // than one would mean the attach pass grew a second and the caller's
+  // one-image-per-module assumption needs revisiting rather than papering over.
+  std::string image;
+  unsigned objects = 0;
+  device->walk([&](gpu::BinaryOp bin) {
+    for (Attribute attr : bin.getObjects()) {
+      auto object = dyn_cast<gpu::ObjectAttr>(attr);
+      if (!object)
+        continue;
+      ++objects;
+      image = object.getObject().getValue().str();
+    }
+  });
+
+  if (objects == 0) {
+    error = "the pipeline ran but produced no device object";
+    return {};
+  }
+  if (objects > 1) {
+    error = "the pipeline produced " + std::to_string(objects) +
+            " device objects for one target";
+    return {};
+  }
+  // A NUL would truncate the payload entry this ends up in, and PTX is text, so
+  // one cannot appear unless the serializer stopped producing assembly.
+  if (image.find('\0') != std::string::npos) {
+    error = "the device image is not text (it contains a NUL)";
+    return {};
+  }
+  return image;
+}
+
 struct ConvertVxToLLVMPass
     : public PassWrapper<ConvertVxToLLVMPass, OperationPass<ModuleOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ConvertVxToLLVMPass)
@@ -1712,25 +1955,47 @@ struct ConvertVxToLLVMPass
   }
 
   void runOnOperation() override {
-    // The device twin does not come to the host party.
+    // The device twin does not come to the host party -- it leaves its image at
+    // the door.
     //
     // `convert-vx-to-standard` gives every GPU kernel a `gpu.func` beside its
-    // `vx.kernel`, for a device backend to compile. Nothing consumes it yet --
-    // shipping it to a worker and launching it there is the rest of #251 -- and
-    // an unconsumed `gpu.module` reaching this pass is not inert: there is no
-    // conversion for it, so the whole module fails to lower and every program
-    // with a GPU placement stops compiling. Which is what happened: seven
+    // `vx.kernel`, for a device backend to compile. An unconsumed `gpu.module`
+    // reaching this pass is not inert: there is no conversion for it, so the
+    // whole module fails to lower and every program with a GPU placement stops
+    // compiling. Which is what happened when the emission first landed: seven
     // backend tests, llama2 among them, on a change that was supposed to add
     // something unused.
     //
-    // Dropped here rather than not emitted at all, so the kernel exists in the
-    // IR between the two passes -- `--pass-pipeline=builtin.module(convert-vx-
-    // to-standard)` shows it, and that is what the NVPTX pipeline reads. When
-    // there is something to ship, the binary gets extracted at this point and
-    // the drop stays.
+    // So it is compiled here and then dropped. Compiled here because this is
+    // the last point at which it exists -- and dropped rather than never
+    // emitted, so the kernel is still visible in the IR between the two passes
+    // (`--pass-pipeline=builtin.module(convert-vx-to-standard)` shows it, which
+    // is what scripts/flash_kernel_to_ptx.sh reads).
     SmallVector<gpu::GPUModuleOp> deviceModules;
     getOperation().walk(
         [&](gpu::GPUModuleOp m) { deviceModules.push_back(m); });
+
+    llvm::StringMap<std::string> deviceImages;
+    for (gpu::GPUModuleOp m : deviceModules) {
+      std::string error;
+      std::string image = deviceImageOf(m, error);
+      // Fatal rather than "emit nothing and carry on". Carrying on produces a
+      // program that compiles, dispatches, and is then refused at the far end
+      // for a reason that has nothing to do with the refusal -- the kernel is
+      // missing, and the message says the region is unroutable. The compile is
+      // the place where the cause is still legible.
+      if (image.empty()) {
+        m.emitError("cannot compile this device kernel: ") << error;
+        signalPassFailure();
+        return;
+      }
+      // One image per module, and every kernel in it is an entry point: a
+      // loader takes the module and then asks for a function by name. So each
+      // `gpu.func` maps to the same image, and the kernel name -- already the
+      // payload blob's first field -- is what selects the entry.
+      m.walk([&](gpu::GPUFuncOp f) { deviceImages[f.getName()] = image; });
+    }
+
     for (gpu::GPUModuleOp m : deviceModules)
       m.erase();
 
@@ -1754,7 +2019,7 @@ struct ConvertVxToLLVMPass
 
     LLVMTypeConverter typeConverter(&getContext());
     RewritePatternSet patterns(&getContext());
-    patterns.add<LaunchOpLowering>(typeConverter, &getContext());
+    patterns.add<LaunchOpLowering>(typeConverter, &getContext(), &deviceImages);
     patterns.add<TransferToPluginLowering>(typeConverter, &getContext());
     patterns.add<KernelOpLowering>(&getContext());
     patterns.add<ReturnOpLowering>(&getContext());

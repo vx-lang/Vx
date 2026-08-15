@@ -23,6 +23,13 @@
 # That was the remaining work as of this script's first version, and the header
 # said so; it is done.
 #
+# The compiler now runs this pipeline itself, too, and carries the PTX in the
+# dispatch payload -- so this script is no longer the only way to get one. It is
+# still worth keeping, and worth running: it is an independent transcription of
+# the same passes, and the two agreeing byte for byte is what says the in-tree
+# one is right. They did, at 11253 bytes. tests/integration_test/
+# device_image_test.rs is the CI-runnable half (it needs no mlir-opt).
+#
 # What this has settled so far:
 #
 #   The region is raw CFG (`cf.br`/`cf.cond_br`) with every induction variable
@@ -51,12 +58,14 @@
 #
 # What is left:
 #
-#   the wrapper  the compiler emits `gpu.func` but does not run this pipeline,
-#                so no cubin comes out of a normal compile and there is nothing
-#                to ship. Extracting it is the next step.
 #   the shipping  a fifth wire message. A worker cannot be sent a kernel today,
 #                which is why a non-matmul region is refused rather than run.
 #   the launch   `cuLaunchKernel`, and 28 `.param`s to marshal for 4 memrefs.
+#   the result   this program's output is a buffer the caller passed in, which
+#                crosses back the way any operand does. A region that returns a
+#                slot instead has its result named by a descriptor minted on the
+#                far side, naming memory there -- that one is a design question,
+#                not a mechanism.
 #   parallelism  one thread runs all 32 queries. Deliberately not smuggled in
 #               here: this script answers "does our kernel reach PTX", and it
 #               does.
