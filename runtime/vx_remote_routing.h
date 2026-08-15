@@ -309,6 +309,57 @@ inline int vx_routing_try_dispatch(const void *payload, size_t payload_size,
   {
     const char *outkind = vx_payload_field(payload, payload_size, "outkind=");
     if (!outkind || strcmp(outkind, "buffer") != 0) {
+      /* "Run it here instead" was safe when every operand was staged by the
+         dispatch that used it: declining meant the bytes had never left, so
+         the host still had them. Residency ended that. An operand placed by an
+         earlier `transfer` is a handle -- memory in the worker's process --
+         and a region that runs here reads it directly from generated code,
+         where no plugin entry point and none of the guards in this file are
+         involved. tests/backend/pass/flash_attention_placed.vx is exactly
+         that: four operands crossed, the fused region declined, the fallback
+         ran at home, and the program died on a signal (#251, #348).
+
+         So the fallback is only offered when there is something here to fall
+         back to. */
+      /* Through the descriptor, not at it. `device_args[i]` points at a memref
+         struct (a slot points at a pointer to one), and the address the
+         operand actually names is the aligned field inside -- which is where a
+         handle lives. Testing the argument pointer itself finds nothing: it is
+         a stack address in this process every time, which is why the first
+         version of this guard was silent while the program still faulted. */
+      int resident = -1;
+      for (int64_t i = 0; i < num_args; ++i) {
+        int32_t tag = arg_tags[i];
+        const void *held = NULL;
+        if (!device_args[i]) {
+          continue;
+        }
+        if (VX_ABI_IS_SLOT(tag)) {
+          const void *outer = *(const void **)device_args[i];
+          const void *inner = outer ? vx_memref_aligned(outer) : NULL;
+          held = inner ? vx_memref_aligned(inner) : NULL;
+        } else if (VX_ABI_KIND(tag) == VX_ABI_KIND_MEMREF) {
+          const void *desc = *(const void **)device_args[i];
+          held = desc ? vx_memref_aligned(desc) : NULL;
+        }
+        if (held && vx_remote_addr_is_handle((uint64_t)(uintptr_t)held)) {
+          resident = (int)i;
+          break;
+        }
+      }
+      if (resident >= 0) {
+        fprintf(stderr,
+                "[Vx remote] FATAL: this region cannot run on %s -- its "
+                "results are %s, and only `outkind=buffer` crosses today.\n"
+                "            It cannot run here either: operand %d is on %s, "
+                "placed by an earlier transfer, and reading it here would "
+                "fault.\n"
+                "            Either the region must be one the worker can run "
+                "(a matmul is routed today; general kernel emission is #251), "
+                "or its operands must not be placed (#348).\n",
+                w->name, outkind ? outkind : "unnamed", resident, w->name);
+        abort();
+      }
       static int said = 0;
       if (!said) {
         said = 1;
