@@ -1,5 +1,14 @@
 # Memory Crossing Implementation Plan: how a multi-hop transfer is priced
 
+> **Read [`memory_algebra.md`](memory_algebra.md) first** for what the memory algebra is for and
+> where this fits. In particular §5 (capability / choice / cost) explains why the `crossing:`
+> declarations this plan's Phase 2 proposed were pre-registered, measured on an A100, and
+> **falsified** — the mechanism below stays, the fleet declarations do not.
+>
+> The route-kind law in §1 is also weaker than it looks: the single route that fit "slowest leg"
+> has a leg that later turned out to be measuring the wrong thing, and no probe anywhere exercised
+> a copy engine. Treat the two-regime claim as open.
+
 This plan covers `crossing:`, a new field on a `Memory` declaration, and `composition`, a new field
 in the `--diagnostics-json` record. Together they fix a case where the compiler's predicted transfer
 cost was wrong by about 67% (measured against real hardware, on the three-step
