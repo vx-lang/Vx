@@ -140,6 +140,34 @@ kernel void global_to_tg(device const float4* src   [[buffer(0)]],
   }
   if (acc.x == 1e30f) sink[0] = acc.x;
 }
+
+// K concurrent sequential streams over disjoint regions of one buffer. Threadgroup g serves
+// stream (g % k), so all k streams are co-resident BY CONSTRUCTION -- they are threadgroups of a
+// single dispatch, and the GPU cannot serialise them the way it serialises command buffers.
+//
+// Total bytes touched is independent of k: the same buffer is fully read either way, and only the
+// number of simultaneously-open access streams changes. So a drop in aggregate rate as k rises is
+// contention and nothing else.
+kernel void k_streams(device const float4* src   [[buffer(0)]],
+                      constant uint&       n4    [[buffer(1)]],
+                      constant uint&       iters [[buffer(2)]],
+                      constant uint&       kstr  [[buffer(3)]],
+                      device float*        sink  [[buffer(4)]],
+                      uint tgid [[threadgroup_position_in_grid]],
+                      uint ntg  [[threadgroups_per_grid]],
+                      uint tid  [[thread_position_in_threadgroup]],
+                      uint tsz  [[threads_per_threadgroup]]) {
+  uint stream = tgid % kstr;
+  uint per    = n4 / kstr;
+  uint base   = stream * per;
+  uint peers  = (ntg - stream + kstr - 1) / kstr;   // threadgroups sharing this stream
+  uint rank   = tgid / kstr;
+  float4 acc = float4(0.0f);
+  for (uint it = 0; it < iters; ++it)
+    for (uint i = rank * tsz + tid; i < per; i += peers * tsz)
+      acc += src[base + i];
+  if (acc.x == 1e30f) sink[0] = acc.x;
+}
 )MSL";
 
 // ---- harness ---------------------------------------------------------------------------------
@@ -218,10 +246,12 @@ int main() {
                                            error:&err];
     id<MTLComputePipelineState> ps_reg_tg =
         [dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@"reg_to_tg"] error:&err];
+    id<MTLComputePipelineState> ps_kstr =
+        [dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@"k_streams"] error:&err];
     id<MTLComputePipelineState> ps_g_tg =
         [dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@"global_to_tg"]
                                            error:&err];
-    if (!ps_stream || !ps_reg_tg || !ps_g_tg) {
+    if (!ps_stream || !ps_reg_tg || !ps_g_tg || !ps_kstr) {
       fprintf(stderr, "pipeline creation failed: %s\n", [[err localizedDescription] UTF8String]);
       return 1;
     }
@@ -451,6 +481,195 @@ int main() {
           } else {
             seams.push_back({"HBM -> REG", gbps, 0});
           }
+        }
+      }
+    }
+
+    // ---- P6: the host seam, which on this part is not a transfer -----------------------------
+    // `CPU_DRAM -> HBM` is declared at 120 GB/s. hasUnifiedMemory is true, so a shared buffer the
+    // CPU wrote is readable by a kernel with no copy and no API call. Three timings settle what
+    // the model is charging for:
+    //
+    //   cpu_written  a kernel reading a buffer the CPU just touched
+    //   gpu_resident the same kernel on a buffer only the GPU has used
+    //   blit         an explicit copy, which is what a naive port of the discrete path would do
+    //
+    // If the first two agree, the transfer costs nothing and the model is wrong by the whole
+    // quantity rather than by a percentage.
+    fprintf(stderr, "\n== host seam (P6): is CPU_DRAM -> HBM a transfer at all? ==\n");
+    {
+      const size_t bytes = dram_bytes;
+      uint32_t n4 = (uint32_t)(bytes / 16);
+      uint32_t iters = iters_for(bytes);
+      id<MTLBuffer> a = [dev newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+      id<MTLBuffer> b = [dev newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+      if (a && b) {
+        auto read_rate = [&](id<MTLBuffer> buf) {
+          Timing t = time_dispatch(
+              queue,
+              ^(id<MTLComputeCommandEncoder> enc) {
+                [enc setComputePipelineState:ps_stream];
+                [enc setBuffer:buf offset:0 atIndex:0];
+                [enc setBytes:&n4 length:4 atIndex:1];
+                [enc setBytes:&iters length:4 atIndex:2];
+                [enc setBuffer:sink offset:0 atIndex:3];
+              },
+              MTLSizeMake(TG_COUNT, 1, 1), MTLSizeMake(TG_THREADS, 1, 1));
+          return t;
+        };
+        // GPU-resident: warmed by the sweep above and never touched by the CPU since.
+        Timing t_gpu = read_rate(b);
+        // CPU-written: the host dirties every byte immediately before the kernel reads it.
+        memset(a.contents, 3, bytes);
+        Timing t_cpu = read_rate(a);
+        const double g_gpu = (double)bytes * iters / t_gpu.median / 1.0e9;
+        const double g_cpu = (double)bytes * iters / t_cpu.median / 1.0e9;
+        seam_row("CPU_DRAM->HBM", bytes, t_cpu, REPS, "kernel reads a buffer the CPU just wrote");
+        seam_row("HBM->REG", bytes, t_gpu, REPS, "control: same kernel, GPU-resident buffer");
+        fprintf(stderr, "  CPU-written buffer   : %7.1f GB/s\n", g_cpu);
+        fprintf(stderr, "  GPU-resident control : %7.1f GB/s\n", g_gpu);
+        fprintf(stderr, "  ratio                : %7.3f  (1.0 => the transfer costs nothing)\n",
+                g_cpu / g_gpu);
+
+        // The blit, for comparison: a real copy, and what the declared 120 GB/s pretends happens.
+        std::vector<double> blits;
+        for (int r = 0; r < REPS + 1; ++r) {
+          @autoreleasepool {
+            id<MTLCommandBuffer> cb = [queue commandBuffer];
+            id<MTLBlitCommandEncoder> bl = [cb blitCommandEncoder];
+            [bl copyFromBuffer:a sourceOffset:0 toBuffer:b destinationOffset:0 size:bytes];
+            [bl endEncoding];
+            [cb commit];
+            [cb waitUntilCompleted];
+            if (r == 0) continue;
+            blits.push_back(cb.GPUEndTime - cb.GPUStartTime);
+          }
+        }
+        Timing tb{};
+        tb.median = median_of(blits, &tb.q1, &tb.q3);
+        const double g_blit = (double)bytes / tb.median / 1.0e9;
+        seam_row("CPU_DRAM->HBM", bytes, tb, REPS, "blit: the copy a discrete port would make");
+        fprintf(stderr, "  explicit blit        : %7.1f GB/s  (%.2fx the declared 120)\n", g_blit,
+                g_blit / DECLARED_PEAK_GBPS);
+      }
+    }
+
+    // ---- P5: contention, which the model has no term for -------------------------------------
+    // K independent streaming reads, each on its own buffer and its own command queue, all
+    // committed before any is waited on. The model predicts each gets the whole edge.
+    //
+    // Per-flow times are kept, not just the aggregate, because fair sharing and serialisation
+    // produce the SAME aggregate and differ only in when each flow finishes. A placement needs the
+    // slowest flow -- "when does my tensor arrive" -- and an averaged number cannot answer it.
+    fprintf(stderr, "\n== contention (P5): K concurrent DRAM readers ==\n");
+    fprintf(stderr, "   K   aggregate GB/s   per-flow GB/s    slowest/fastest\n");
+    {
+      const size_t bytes = 128ull * 1024 * 1024;  // K of these must fit; 8 x 128 MiB = 1 GiB
+      uint32_t n4 = (uint32_t)(bytes / 16);
+      uint32_t iters = 2;
+      for (int K : {1, 2, 3, 4, 6, 8}) {
+        std::vector<id<MTLBuffer>> bufs;
+        std::vector<id<MTLCommandQueue>> queues;
+        for (int k = 0; k < K; ++k) {
+          id<MTLBuffer> buf = [dev newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+          if (!buf) break;
+          memset(buf.contents, 1, bytes);
+          bufs.push_back(buf);
+          queues.push_back([dev newCommandQueue]);
+        }
+        if ((int)bufs.size() != K) {
+          fprintf(stderr, "  SKIP K=%d: allocation refused\n", K);
+          continue;
+        }
+        std::vector<double> agg_samples, spread_samples, perflow_samples;
+        for (int r = 0; r < REPS + 1; ++r) {
+          @autoreleasepool {
+            std::vector<id<MTLCommandBuffer>> cbs;
+            for (int k = 0; k < K; ++k) {
+              id<MTLCommandBuffer> cb = [queues[k] commandBuffer];
+              id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
+              [enc setComputePipelineState:ps_stream];
+              [enc setBuffer:bufs[k] offset:0 atIndex:0];
+              [enc setBytes:&n4 length:4 atIndex:1];
+              [enc setBytes:&iters length:4 atIndex:2];
+              [enc setBuffer:sink offset:0 atIndex:3];
+              [enc dispatchThreadgroups:MTLSizeMake(TG_COUNT, 1, 1)
+                  threadsPerThreadgroup:MTLSizeMake(TG_THREADS, 1, 1)];
+              [enc endEncoding];
+              [cb commit];  // every flow is in flight before any is waited on
+              cbs.push_back(cb);
+            }
+            for (id<MTLCommandBuffer> cb : cbs) [cb waitUntilCompleted];
+            if (r == 0) continue;
+            double lo = 1e30, hi = -1e30, fastest = 1e30, slowest = 0;
+            for (id<MTLCommandBuffer> cb : cbs) {
+              lo = std::min(lo, cb.GPUStartTime);
+              hi = std::max(hi, cb.GPUEndTime);
+              const double own = cb.GPUEndTime - cb.GPUStartTime;
+              fastest = std::min(fastest, own);
+              slowest = std::max(slowest, own);
+            }
+            agg_samples.push_back(hi - lo);
+            perflow_samples.push_back(slowest);
+            spread_samples.push_back(fastest > 0 ? slowest / fastest : 1.0);
+          }
+        }
+        Timing ta{}, tf{}, ts{};
+        ta.median = median_of(agg_samples, &ta.q1, &ta.q3);
+        tf.median = median_of(perflow_samples, &tf.q1, &tf.q3);
+        ts.median = median_of(spread_samples, &ts.q1, &ts.q3);
+        const double moved = (double)bytes * iters * K;
+        const double agg = moved / ta.median / 1.0e9;
+        const double per = (double)bytes * iters / tf.median / 1.0e9;
+        fprintf(stderr, "  %2d   %13.1f   %13.1f    %14.2fx\n", K, agg, per, ts.median);
+        char note[160];
+        snprintf(note, sizeof note, "%d concurrent flows; slowest/fastest %.2f", K, ts.median);
+        printf("contention/HBM->REG,%zu,ps,%.1f,%.1f,%.1f,%.2f,%d,%s\n", bytes,
+               ta.median * 1.0e12, ta.q1 * 1.0e12, ta.q3 * 1.0e12, agg, REPS, note);
+        snprintf(note, sizeof note, "%d concurrent flows, slowest flow's own rate", K);
+        printf("contention/per_flow,%zu,ps,%.1f,%.1f,%.1f,%.2f,%d,%s\n", bytes,
+               tf.median * 1.0e12, tf.q1 * 1.0e12, tf.q3 * 1.0e12, per, REPS, note);
+      }
+    }
+
+    // ---- P5b: co-resident streams, which is the sharing law the first variant could not see --
+    // The command-buffer variant above found no sharing because the GPU never overlapped the
+    // flows: one dispatch of 64 threadgroups already fills ten cores, so K command buffers ran
+    // back to back and each got the whole edge while it ran. That is a real fact about the
+    // scheduler, and it is NOT the sharing law -- it measured concurrency, not contention.
+    //
+    // Here the K streams are threadgroups of a SINGLE dispatch over disjoint regions of one
+    // buffer, so they are co-resident by construction. Total bytes read is identical for every K;
+    // only the number of simultaneously-open streams changes. Any drop is contention.
+    fprintf(stderr, "\n== contention (P5b): K co-resident streams, same total bytes ==\n");
+    fprintf(stderr, "   K   aggregate GB/s   vs K=1\n");
+    {
+      const size_t bytes = 512ull * 1024 * 1024;
+      id<MTLBuffer> buf = [dev newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+      if (buf) {
+        memset(buf.contents, 1, bytes);
+        uint32_t n4 = (uint32_t)(bytes / 16);
+        uint32_t iters = 1;
+        double base_rate = 0.0;
+        for (uint32_t K : {1u, 2u, 4u, 8u, 16u, 32u, 64u}) {
+          Timing t = time_dispatch(
+              queue,
+              ^(id<MTLComputeCommandEncoder> enc) {
+                [enc setComputePipelineState:ps_kstr];
+                [enc setBuffer:buf offset:0 atIndex:0];
+                [enc setBytes:&n4 length:4 atIndex:1];
+                [enc setBytes:&iters length:4 atIndex:2];
+                [enc setBytes:&K length:4 atIndex:3];
+                [enc setBuffer:sink offset:0 atIndex:4];
+              },
+              MTLSizeMake(TG_COUNT, 1, 1), MTLSizeMake(TG_THREADS, 1, 1));
+          const double gbps = (double)bytes * iters / t.median / 1.0e9;
+          if (K == 1) base_rate = gbps;
+          fprintf(stderr, "  %2u   %13.1f   %6.3f\n", K, gbps, gbps / base_rate);
+          char note[128];
+          snprintf(note, sizeof note, "%u co-resident streams, one dispatch", K);
+          printf("contention/co_resident,%zu,ps,%.1f,%.1f,%.1f,%.2f,%d,%s\n", bytes,
+                 t.median * 1.0e12, t.q1 * 1.0e12, t.q3 * 1.0e12, gbps, REPS, note);
         }
       }
     }
