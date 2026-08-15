@@ -149,6 +149,11 @@ with something nobody has invented yet lowers it to that. Vx does not need to ha
 There is precedent: the plugin ABI (`vx_plugin_dispatch_async`, with CoreML and MPS backends) is
 already an extension point for **compute**. This is the analogue for **movement**.
 
+The correctness contract a lowering must satisfy is written up separately in
+[`custom_transfer_contract.md`](custom_transfer_contract.md) — ten constraints, four of them
+mechanically checkable, one discharged by the seam verifier that already exists, and the rest
+declarations the compiler then relies on. Performance is deliberately not constrained.
+
 Open questions, and they are real:
 
 - **How is the lowering named?** A strategy chosen from a registry the compiler ships, or something
