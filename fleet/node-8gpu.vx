@@ -75,8 +75,32 @@ Topology Node {
   transfer Memory::CPU_DRAM -> Memory::HBM : 63 GB/s,
   transfer Memory::HBM -> Memory::L2,
   transfer Memory::L2 -> Memory::SMEM,
-  transfer Memory::HBM -> Memory::PEER_HBM : 60,
-  transfer Memory::PEER_HBM -> Memory::HBM : 60,
-  transfer Memory::HBM -> Memory::NIC_RAM : 200,
-  transfer Memory::NIC_RAM -> Memory::Remote_HBM : 2400
+  // The three inter-device edges. Each carries the bandwidth of the physical link it
+  // represents -- the same figures the `spec:` block above already cites, moved out of
+  // prose and into the declaration so the compiler can actually price them.
+  //
+  // They used to carry unitless weights (60, 200, 2400). Those are relative latencies for
+  // route selection and are NOT times, so nothing derived a cost from them: every one of
+  // these edges reported `derived_cost: null`. The compiler would route a KV cache from
+  // GPU0 to GPU7, or out through the NIC to another machine, and predict nothing about how
+  // long it took -- which left M7 (vx-review#21) with no predicted column to measure
+  // against. An unpriced edge cannot be validated by any amount of machine time.
+  //
+  // Worth recording: the old weights did not even encode the right ORDER. 450/63/50 GB/s
+  // implies per-byte costs in the ratio 1 : 7.1 : 9, while the weights said 1 : 3.3 : 40.
+  //
+  // spec: NVIDIA H100 Datasheet -- NVLink 4 at 900 GB/s bidirectional per GPU, modelled as
+  // 450 GB/s unidirectional (see fleet/README.md on halving). UNVERIFIED on any rented
+  // pod: `nvidia-smi topo -m` reporting NV18 between a pair confirms full NVLink, and
+  // anything less means this figure is optimistic in the direction a bound must not be.
+  transfer Memory::HBM -> Memory::PEER_HBM : 450 GB/s,
+  transfer Memory::PEER_HBM -> Memory::HBM : 450 GB/s,
+  // spec: PCIe Gen5 x16 = 63 GB/s per direction. The GPU reaches the NIC across the same
+  // root complex it reaches the host across, so this is the host-seam link rate again, not
+  // the fabric's. UNVERIFIED, and it shares the Grace/C2C uncertainty noted above.
+  transfer Memory::HBM -> Memory::NIC_RAM : 63 GB/s,
+  // spec: NVIDIA ConnectX-7 / InfiniBand NDR -- 400 Gb/s = 50 GB/s per port. This is the
+  // between-machine edge M7 exists to measure, and it is deliberately the *port* rate
+  // rather than any aggregate: a placement crossing it is one flow on one port.
+  transfer Memory::NIC_RAM -> Memory::Remote_HBM : 50 GB/s
 }

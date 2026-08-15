@@ -798,6 +798,38 @@ impl TransferCostGraph {
         })
     }
 
+    /// The cheapest route from `source` to `target`, and the declared-weight sum along it.
+    ///
+    /// Route selection minimises PREDICTED COST, not hop count (vx-review#19). The old objective
+    /// was hop count, which is unrelated to time: on a partially-meshed box it took a one-hop SYS
+    /// crawl over a two-hop NVLink relay the same graph already contained, 3.57x slower.
+    ///
+    /// Two passes, because the graph mixes two incomparable currencies. An edge that declares a
+    /// bandwidth has a per-byte time; an edge that declares only a unitless `: N` has a relative
+    /// latency that is not a time and cannot be added to one.
+    ///
+    ///   1. **Priced edges only, minimising attoseconds per byte.** If the target is reachable
+    ///      this way, that answer wins: it is a route the model can actually predict, and a cost
+    ///      the compiler reports should be one it computed.
+    ///   2. **All edges, minimising the declared weights.** The pre-existing behaviour, used only
+    ///      when no fully-priced route exists.
+    ///
+    /// Two passes rather than one lexicographic key, and that is not a style choice. A single key
+    /// of (any-unpriced-hop, attoseconds, weight) is what this function had first, and it is
+    /// wrong: an unpriced hop contributes zero attoseconds, so a route made *entirely* of unpriced
+    /// hops scores 0 on that component and beats a route that has one unpriced hop plus a real
+    /// priced one. It rewards a route for being unpriceable. `fleet_routes_exist_iff_reachable_
+    /// and_are_cost_minimal` caught exactly that on `node-8gpu.vx` once its inter-device edges
+    /// were given bandwidths.
+    ///
+    /// Counting unpriced hops instead of flagging them is also wrong, in the other direction: when
+    /// every edge is unpriced the count degenerates into hop count and discards the declared
+    /// weights, which are then the only information there is.
+    ///
+    /// Per-byte rather than for a concrete transfer, so the result is size-independent and a
+    /// precomputed all-pairs matrix stays valid: every edge costs `bytes/bandwidth`, a line
+    /// through the origin, so the ratio between two routes does not depend on bytes. Adding a
+    /// fixed per-transfer term would break that (vx-review#28).
     pub fn transfer_path(
         &self,
         source: &MemorySpace,
@@ -806,48 +838,33 @@ impl TransferCostGraph {
         if source == target {
             return Some((0, vec![source.clone()]));
         }
+        self.search(source, target, true)
+            .or_else(|| self.search(source, target, false))
+    }
 
+    /// One Dijkstra pass. `priced_only` restricts the search to edges that declare a per-byte cost
+    /// and minimises that cost; otherwise every edge is admissible and the declared weights are
+    /// minimised.
+    ///
+    /// Returns the declared-weight sum along the chosen route either way. Every existing consumer
+    /// -- the cost matrix, the `total_cost` field of the diagnostics record -- reads that as "the
+    /// unitless figures along this route", and changing which route is chosen must not quietly
+    /// change what the number means.
+    fn search(
+        &self,
+        source: &MemorySpace,
+        target: &MemorySpace,
+        priced_only: bool,
+    ) -> Option<(u32, Vec<MemorySpace>)> {
         use std::collections::BinaryHeap;
 
-        /// The routing key, compared lexicographically by field order.
-        ///
-        /// 1. `unpriced` — whether the route contains *any* hop the model cannot price. A flag,
-        ///    saturating at 1, deliberately not a count: a route the model can price beats one it
-        ///    cannot, but among routes it cannot price the number of unpriced hops must not decide
-        ///    anything, because then this degenerates into hop count and throws away the declared
-        ///    weights that are the only ordering such edges have. (Counting here made the built-in
-        ///    graph prefer a direct edge of weight 10 over a three-hop chain of weight 3.)
-        ///
-        ///    This is a statement about what the compiler can claim, not about the hardware: an
-        ///    unpriced hop might well be faster, and preferring the predictable route is what makes
-        ///    a reported cost mean something. An unpriced edge is a gap in a machine file to be
-        ///    closed, not a route to gamble on.
-        /// 2. `attos` — attoseconds per byte, summed. The real objective (vx-review#19). Per byte
-        ///    rather than for a concrete transfer because every edge costs `bytes / bandwidth`, so
-        ///    the cheapest route is the same at every size and can be chosen once, without a byte
-        ///    count. That is what makes routing by cost compatible with a precomputed all-pairs
-        ///    matrix.
-        /// 3. `weight` — the declared unitless figures, as the tie-break. Preserves the previous
-        ///    behaviour exactly among routes the model cannot price, which is where a relative
-        ///    latency is the only thing anyone wrote down.
-        ///
-        /// All three add componentwise and none can decrease along a path, so Dijkstra is still
-        /// correct over the lexicographic order.
         #[derive(Eq, PartialEq, PartialOrd, Ord, Clone, Copy, Default)]
         struct Key {
-            unpriced: u32,
-            attos: u64,
+            /// Attoseconds per byte on a priced pass; zero and unused otherwise.
+            cost: u64,
+            /// Declared weights, the objective on the unpriced pass and a tie-break on the priced
+            /// one.
             weight: u32,
-        }
-
-        impl Key {
-            fn plus(self, unpriced: bool, attos: u64, weight: u32) -> Self {
-                Key {
-                    unpriced: (self.unpriced | unpriced as u32).min(1),
-                    attos: self.attos.saturating_add(attos),
-                    weight: self.weight.saturating_add(weight),
-                }
-            }
         }
 
         #[derive(Eq, PartialEq)]
@@ -888,10 +905,6 @@ impl TransferCostGraph {
                 }
                 path.push(source.clone());
                 path.reverse();
-                // The declared-weight sum, not the routing key. Every existing consumer -- the
-                // cost matrix, the `total_cost` field of the diagnostics record -- reads this as
-                // "the unitless figures along the chosen path", and changing which path is chosen
-                // must not silently change what the number means.
                 return Some((key.weight, path));
             }
 
@@ -904,7 +917,17 @@ impl TransferCostGraph {
             if let Some(neighbors) = self.transfer_edges.get(&mem) {
                 for (next, edge_weight) in neighbors {
                     let priced = self.route_cost.get(&(mem.clone(), next.clone())).copied();
-                    let next_key = key.plus(priced.is_none(), priced.unwrap_or(0), *edge_weight);
+                    if priced_only && priced.is_none() {
+                        continue;
+                    }
+                    let next_key = Key {
+                        cost: key.cost.saturating_add(if priced_only {
+                            priced.unwrap_or(0)
+                        } else {
+                            0
+                        }),
+                        weight: key.weight.saturating_add(*edge_weight),
+                    };
                     let is_better = dists.get(next).is_none_or(|&c| next_key < c);
 
                     if is_better {

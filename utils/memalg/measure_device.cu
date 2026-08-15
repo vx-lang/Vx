@@ -37,10 +37,11 @@
 // against a stub cuda_runtime.h. That catches typos, printf formats and type errors -- the things
 // that would otherwise eat the first hour of a rented session. It does NOT check device code, and
 // it cannot check `cudaDeviceProp` field names, because the stub declares those from our own
-// belief. Run both blocks on real hardware before quoting anything from them. Two instrument defects that run exposed, both of
-// which produced confident wrong numbers rather than errors, are fixed here and described at
-// their sites: kernel-launch overhead swamping the on-die seams, and grid-stride re-reading
-// serving out of L1.
+// belief. Run both blocks on real hardware before quoting anything from them.
+//
+// Two instrument defects that the H100 run exposed, both of which produced confident wrong numbers
+// rather than errors, are fixed here and described at their sites: kernel-launch overhead swamping
+// the on-die seams, and grid-stride re-reading serving out of L1.
 #include <cstdio>
 #include <cstdlib>
 #include <algorithm>
