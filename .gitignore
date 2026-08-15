@@ -30,3 +30,9 @@ utils/memalg/measure_device
 # they are scored against, copied there deliberately -- not swept into a Vx commit by `git add -A`.
 # Ignoring them also keeps run_m1.sh's own `dirty=` provenance count from counting its own output.
 utils/memalg/results/
+
+# Python bytecode from utils/memalg's harvester and comparison scripts. Three of
+# these were tracked, which meant a `git add -A` after running the instrument
+# committed a compiled copy of the analysis alongside it.
+__pycache__/
+*.pyc
