@@ -65,8 +65,29 @@ def harvest(vxc, machine, dim, target, workdir):
     with open(src, "w") as f:
         f.write(probe_source(dim, target))
     js = os.path.join(workdir, f"probe_{dim}_{target}.json")
+    # `--host default` because every probe stages from host memory into the device
+    # space it is measuring, and a machine file describes the device only. Vx grew
+    # a diagnostic for that after the freeze was taken (E6014, "this program stages
+    # through host memory, but no host was declared"), so without the flag every
+    # cell now harvests as an error with no cost -- 240 of 240, reported as
+    # capacity rejections, which reads like a model result and is a missing flag.
+    #
+    # It restores the freeze rather than changing it: `h100-sxm__HBM__1048576B`
+    # regenerates byte-identical to the frozen cell (16644064 ps, link_rate).
     proc = subprocess.run(
-        [vxc, "--machine", machine, src, "--diagnostics-json", js, "--emit-mlir", "-o", os.devnull],
+        [
+            vxc,
+            "--machine",
+            machine,
+            "--host",
+            "default",
+            src,
+            "--diagnostics-json",
+            js,
+            "--emit-mlir",
+            "-o",
+            os.devnull,
+        ],
         capture_output=True,
         text=True,
     )
