@@ -34,6 +34,55 @@ pub struct DerivedCost {
     pub per: RatePer,
 }
 
+/// One transfer, as an element of a set that is in flight together (vx-review#17).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Flow {
+    pub src: MemorySpace,
+    pub dst: MemorySpace,
+    pub bytes: u64,
+}
+
+/// A space on a flow's route that another flow in the same set also traverses.
+///
+/// `flows` counts every flow through the space including this one, so it is always >= 2. It is the
+/// "number of users" a `bandwidth / users` model would divide by -- recorded, not applied: whether
+/// that is the right law is what M3 measures, and the issue notes it may be a cliff rather than a
+/// smooth falloff.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Sharing {
+    pub space: MemorySpace,
+    pub flows: usize,
+}
+
+/// What the model can say about one flow, given the others it is in flight with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FlowCost {
+    /// The roofline cost, priced as though this flow had the hardware to itself.
+    ///
+    /// Still the isolated figure even when `sharing` is non-empty. That gap is deliberate and is
+    /// the point of the type: the model has no contention term, so the honest thing is to report
+    /// the cost it can compute alongside the sharing it cannot yet price, rather than to quietly
+    /// report the isolated number as though it were the answer.
+    pub cost: Option<DerivedCost>,
+    /// The spaces this flow is charged for, in the order `route_spaces` yields them.
+    pub route: Vec<MemorySpace>,
+    /// Spaces on `route` that at least one other flow in the set also traverses.
+    pub sharing: Vec<Sharing>,
+}
+
+impl FlowCost {
+    /// Whether any space on this flow's route carries another flow.
+    pub fn is_contended(&self) -> bool {
+        !self.sharing.is_empty()
+    }
+
+    /// The most-shared space on this route and its user count -- the bottleneck a contention law
+    /// would price first. `None` when the flow is exclusive.
+    pub fn worst_sharing(&self) -> Option<&Sharing> {
+        self.sharing.iter().max_by_key(|s| s.flows)
+    }
+}
+
 /// Picoseconds per second — the scale factor that gives a `B/s` roofline usable integer resolution.
 const PICOS_PER_SEC: u64 = 1_000_000_000_000;
 
@@ -213,6 +262,95 @@ impl<'a> MemoryHierarchy<'a> {
             .find(|anc| a_chain.contains(anc))
     }
 
+    /// The spaces a `src -> dst` move is charged for: each endpoint and its ancestors up to (but
+    /// not including) the nearest common ancestor.
+    ///
+    /// For siblings the NCA is a reservoir the transfer passes through, not a rate it is charged,
+    /// so it contributes no bandwidth term. But when the NCA *is* one of the endpoints -- a
+    /// containment hop like `SMEM within L2` -- it is not passive: it is where the data physically
+    /// comes from or goes to, and its delivery rate is squarely on the critical path. Excluding it
+    /// prices only the destination's side of the edge and charges the source nothing.
+    ///
+    /// Measured on an H100 (vx-review#15): `L2->SMEM` priced at SMEM's declared 128 B/cyc alone
+    /// scored -91.3% against hardware. Charging both halves -- L2's measured read rate of
+    /// 23.7 B/cyc per SM plus SMEM's measured write rate of 77.8 -- predicts 18.2 B/cyc against a
+    /// measured 16.6, which is within 10%. The missing term was the whole error.
+    ///
+    /// Split out from `derived_transfer_cost` because the route is also what says which flows
+    /// contend: two transfers collide exactly where their routes share a space (vx-review#17).
+    pub fn route_spaces(&self, src: &MemorySpace, dst: &MemorySpace) -> Option<Vec<MemorySpace>> {
+        if src == dst {
+            return None;
+        }
+        let nca = self.nearest_common_ancestor(src, dst)?;
+        let mut path: Vec<MemorySpace> = Vec::new();
+        for endpoint in [src, dst] {
+            for s in std::iter::once(endpoint.clone()).chain(self.ancestors(endpoint)) {
+                if s == nca {
+                    break;
+                }
+                path.push(s);
+            }
+        }
+        if &nca == src || &nca == dst {
+            path.push(nca.clone());
+        }
+        Some(path)
+    }
+
+    /// Price a set of transfers that are in flight **together**.
+    ///
+    /// The reason this exists rather than a loop over `derived_transfer_cost`: contention is a
+    /// property of a *schedule*, not of a transfer. `derived_transfer_cost(src, dst, bytes)` has
+    /// nowhere to put "and seven other transfers are crossing the same link", so no amount of
+    /// improving it could ever express sharing. The set has to be the input.
+    ///
+    /// What this does **not** do is model contention. `FlowCost::cost` is still the isolated
+    /// roofline even for a flow that `FlowCost::sharing` reports as contended, because the model
+    /// has no sharing law and M3 (vx-review#17) has not been run. Inventing one before it is
+    /// measured is precisely what the freeze exists to prevent. The value here is that the gap is
+    /// now *visible and typed* -- a caller can see "this flow shares HBM with three others and was
+    /// priced as though it were alone" -- instead of being invisible in a signature that could not
+    /// have said otherwise.
+    pub fn derived_transfer_costs(&self, flows: &[Flow]) -> Vec<FlowCost> {
+        let routes: Vec<Option<Vec<MemorySpace>>> = flows
+            .iter()
+            .map(|f| self.route_spaces(&f.src, &f.dst))
+            .collect();
+
+        // How many flows traverse each space. Counted over the whole set first, because a flow's
+        // own contention depends on every other flow and not on the ones before it.
+        let mut users: HashMap<&MemorySpace, usize> = HashMap::new();
+        for route in routes.iter().flatten() {
+            for s in route {
+                *users.entry(s).or_insert(0) += 1;
+            }
+        }
+
+        flows
+            .iter()
+            .zip(routes.iter())
+            .map(|(f, route)| {
+                let route = route.clone().unwrap_or_default();
+                let sharing = route
+                    .iter()
+                    .filter_map(|s| {
+                        let n = *users.get(s).unwrap_or(&0);
+                        (n > 1).then(|| Sharing {
+                            space: s.clone(),
+                            flows: n,
+                        })
+                    })
+                    .collect();
+                FlowCost {
+                    cost: self.derived_transfer_cost(&f.src, &f.dst, f.bytes),
+                    route,
+                    sharing,
+                }
+            })
+            .collect()
+    }
+
     /// The bandwidth-derived cost of moving `bytes` from `src` to `dst` along the containment
     /// tree: the sum, over each space on the path, of `ceil(bytes / bandwidth)`. This is the
     /// paper's roofline (`T = bytes / (B/cyc)`).
@@ -233,34 +371,7 @@ impl<'a> MemoryHierarchy<'a> {
         dst: &MemorySpace,
         bytes: u64,
     ) -> Option<DerivedCost> {
-        if src == dst {
-            return None;
-        }
-        let nca = self.nearest_common_ancestor(src, dst)?;
-        // Spaces on the path, excluding the NCA: each endpoint and its ancestors up to (but not
-        // including) the NCA. For siblings the NCA is a shared reservoir the transfer passes
-        // through, and it adds no bandwidth term of its own.
-        let mut path: Vec<MemorySpace> = Vec::new();
-        for endpoint in [src, dst] {
-            for s in std::iter::once(endpoint.clone()).chain(self.ancestors(endpoint)) {
-                if s == nca {
-                    break;
-                }
-                path.push(s);
-            }
-        }
-        // ...but when the NCA *is* one of the endpoints -- a containment hop like `SMEM within L2`
-        // -- it is not a passive reservoir. It is where the data physically comes from or goes to,
-        // and its delivery rate is squarely on the critical path. Excluding it prices only the
-        // destination's side of the edge and charges the source nothing at all.
-        //
-        // Measured on an H100 (vx-review#15): `L2->SMEM` priced at SMEM's declared 128 B/cyc alone
-        // scored -91.3% against hardware. Charging both halves -- L2's measured read rate of
-        // 23.7 B/cyc per SM plus SMEM's measured write rate of 77.8 -- predicts 18.2 B/cyc against
-        // a measured 16.6, which is within 10%. The missing term was the whole error.
-        if &nca == src || &nca == dst {
-            path.push(nca.clone());
-        }
+        let path = self.route_spaces(src, dst)?;
         // Collect the terms first, because whether the path can be summed natively depends on all
         // of them: a path is kept in cycles only if *every* space on it is cycle-denominated.
         #[allow(clippy::type_complexity)]
@@ -692,6 +803,112 @@ mod tests {
             per,
         });
         d
+    }
+
+    fn flow(src: &str, dst: &str, bytes: u64) -> Flow {
+        Flow {
+            src: space(src),
+            dst: space(dst),
+            bytes,
+        }
+    }
+
+    /// A three-level hierarchy: SMEM within L2 within HBM, all with bandwidths.
+    fn three_level() -> Vec<MemoryDecl> {
+        vec![
+            mem_bw("HBM", None, 256, RatePer::Cycle),
+            mem_bw("L2", Some("HBM"), 512, RatePer::Cycle),
+            mem_bw("SMEM", Some("L2"), 128, RatePer::Cycle),
+        ]
+    }
+
+    #[test]
+    fn one_flow_costs_what_it_always_did() {
+        // The set-taking entry point must not change any answer while it carries no contention
+        // law. A single flow is the old question asked the new way.
+        let decls = three_level();
+        let h = MemoryHierarchy::build(&decls);
+        let out = h.derived_transfer_costs(&[flow("L2", "SMEM", 16384)]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(
+            out[0].cost,
+            h.derived_transfer_cost(&space("L2"), &space("SMEM"), 16384)
+        );
+        assert!(!out[0].is_contended(), "a lone flow shares nothing");
+    }
+
+    #[test]
+    fn concurrent_flows_report_the_spaces_they_share() {
+        // Two flows out of the same L2 into SMEM. They collide on both spaces, and the count
+        // includes the flow itself, so each reports 2 users.
+        let decls = three_level();
+        let h = MemoryHierarchy::build(&decls);
+        let out = h.derived_transfer_costs(&[flow("L2", "SMEM", 16384), flow("L2", "SMEM", 16384)]);
+        for fc in &out {
+            assert!(fc.is_contended());
+            assert_eq!(fc.worst_sharing().map(|s| s.flows), Some(2));
+            let mut spaces: Vec<String> = fc
+                .sharing
+                .iter()
+                .map(|s| format!("{:?}", s.space))
+                .collect();
+            spaces.sort();
+            assert_eq!(spaces.len(), 2, "both L2 and SMEM are shared");
+        }
+    }
+
+    #[test]
+    fn disjoint_flows_are_not_contended() {
+        // HBM->L2 and L2->SMEM both touch L2, so they DO contend; HBM->L2 against a flow that
+        // never leaves the SMEM subtree would not. Uses the asymmetry to check the counter is
+        // per-space rather than per-set.
+        let decls = three_level();
+        let h = MemoryHierarchy::build(&decls);
+        let out = h.derived_transfer_costs(&[flow("HBM", "L2", 4096), flow("L2", "SMEM", 4096)]);
+        assert!(out[0].is_contended());
+        assert!(out[1].is_contended());
+        // L2 is on both routes; HBM is only on the first, SMEM only on the second.
+        assert_eq!(out[0].sharing.len(), 1);
+        assert_eq!(out[1].sharing.len(), 1);
+        assert_eq!(out[0].sharing[0].space, space("L2"));
+        assert_eq!(out[1].sharing[0].space, space("L2"));
+    }
+
+    #[test]
+    fn contended_flows_are_still_priced_as_exclusive() {
+        // The deliberate gap, pinned so it cannot be closed by accident. Until M3 measures a
+        // sharing law (vx-review#17), a contended flow costs exactly what a lone one costs -- and
+        // the type says so out loud rather than the signature hiding the question.
+        let decls = three_level();
+        let h = MemoryHierarchy::build(&decls);
+        let alone = h.derived_transfer_costs(&[flow("L2", "SMEM", 16384)]);
+        let crowded = h.derived_transfer_costs(&[
+            flow("L2", "SMEM", 16384),
+            flow("L2", "SMEM", 16384),
+            flow("L2", "SMEM", 16384),
+            flow("L2", "SMEM", 16384),
+        ]);
+        assert_eq!(crowded[0].worst_sharing().map(|s| s.flows), Some(4));
+        assert_eq!(
+            crowded[0].cost, alone[0].cost,
+            "no contention term exists yet; four-way sharing must not silently invent one"
+        );
+    }
+
+    #[test]
+    fn an_underivable_flow_still_reports_its_neighbours() {
+        // `src == dst` has no route and no cost. It must not poison the set: the other flow's
+        // sharing is computed over the routes that do exist.
+        let decls = three_level();
+        let h = MemoryHierarchy::build(&decls);
+        let out = h.derived_transfer_costs(&[flow("L2", "L2", 4096), flow("L2", "SMEM", 4096)]);
+        assert_eq!(out[0].cost, None);
+        assert!(out[0].route.is_empty());
+        assert!(
+            !out[1].is_contended(),
+            "a routeless flow contends with nothing"
+        );
+        assert!(out[1].cost.is_some());
     }
 
     #[test]
