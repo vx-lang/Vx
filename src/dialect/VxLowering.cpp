@@ -962,6 +962,115 @@ struct ConvertVxToStandardPass
                 arith::ArithDialect, gpu::GPUDialect, math::MathDialect>();
   }
 
+  /// Give every device kernel a `gpu.func` beside its `vx.kernel`.
+  ///
+  /// `vx.kernel` is what the outliner produces and what the plugin ABI
+  /// dispatches: a function the host can call, by symbol, in this process. It
+  /// is not something a GPU can be handed. The upstream path to a cubin --
+  /// `nvvm-attach-target`, `convert-gpu-to-nvvm`, `gpu-module-to-binary` --
+  /// starts at `gpu.func` inside a `gpu.module`, and nothing emitted one.
+  ///
+  /// scripts/flash_kernel_to_ptx.sh has been doing this edit with a text
+  /// transform for as long as #251 has been open, and its header says so: "the
+  /// only edit it makes is structural ... that step *is* the remaining work".
+  /// It is structural because the outliner already did the hard part. The
+  /// captures are the entry block's arguments, so the signature is a
+  /// transcription; the body is a clone; `vx.return` becomes `gpu.return`.
+  ///
+  /// Both survive. The `vx.kernel` still carries the host path, so a program
+  /// that runs on this machine is unaffected and the classified-matmul route is
+  /// untouched. The `gpu.func` is what a device backend compiles, and until
+  /// something consumes it that is dead weight in the module and nothing else
+  /// -- which is why this can land before the shipping and launching do.
+  ///
+  /// Only device topologies. A region placed on the host has no business
+  /// growing a GPU twin.
+  void materializeGpuKernels(ModuleOp module) {
+    SmallVector<vx::KernelOp> kernels;
+    module.walk([&](vx::KernelOp k) {
+      const int32_t topo = static_cast<int32_t>(k.getTopology());
+      // The GPU band from `topology_dispatch_id`. NPU and AccCore outline the
+      // same way but reach their devices through a different backend, and
+      // giving them an NVVM twin would be claiming something untrue.
+      if (topo < 500 || topo >= 600)
+        return;
+      // Self-contained only. A `gpu.module` is its own symbol table, so a body
+      // that calls a host helper -- `flash_attention_v4.vx` calls `exp_poly` --
+      // clones into a kernel whose callee is not visible from it, and the
+      // verifier rejects the module before anything downstream sees it. The
+      // region is genuinely not ready to be a device kernel: making it one
+      // means bringing the callee along or inlining it, which is the rest of
+      // #251 rather than a detail of this transcription. Skipping leaves such a
+      // program exactly as it was.
+      bool callsOut = false;
+      k.getBody().walk([&](func::CallOp) { callsOut = true; });
+      if (!callsOut)
+        kernels.push_back(k);
+    });
+    if (kernels.empty())
+      return;
+
+    OpBuilder builder(module.getBodyRegion());
+    builder.setInsertionPointToEnd(module.getBody());
+    auto gpuModule =
+        builder.create<gpu::GPUModuleOp>(module.getLoc(), "vx_kernels");
+
+    for (vx::KernelOp kernel : kernels) {
+      Region &body = kernel.getBody();
+      if (body.empty())
+        continue;
+
+      OpBuilder inner(gpuModule.getBody(), gpuModule.getBody()->end());
+      auto funcType = FunctionType::get(
+          &getContext(), body.front().getArgumentTypes(), /*results=*/{});
+      auto gpuFunc = inner.create<gpu::GPUFuncOp>(
+          kernel.getLoc(), kernel.getSymName(), funcType);
+      gpuFunc->setAttr(gpu::GPUDialect::getKernelFuncAttrName(),
+                       inner.getUnitAttr());
+
+      // The whole region, not its entry block. What the outliner produces is
+      // raw CFG -- `cf.br` and `cf.cond_br` over a dozen blocks, every
+      // induction variable in an `alloca` -- so copying only the first block
+      // leaves every branch pointing at a block that was never cloned, and the
+      // verifier says "reference to block defined in another region".
+      //
+      // `GPUFuncOp` builds its own entry block from the signature, so the clone
+      // lands after it and the two are then stitched: the cloned entry's
+      // arguments are replaced by the real ones and its operations move up.
+      // An entry block cannot be a branch target, so nothing is left pointing
+      // at the husk that gets erased.
+      IRMapping map;
+      Region &target = gpuFunc.getBody();
+      Block &gpuEntry = target.front();
+      body.cloneInto(&target, map);
+
+      Block *clonedEntry = &*std::next(target.begin());
+      for (auto [from, to] :
+           llvm::zip(clonedEntry->getArguments(), gpuEntry.getArguments()))
+        from.replaceAllUsesWith(to);
+      gpuEntry.getOperations().splice(gpuEntry.end(),
+                                      clonedEntry->getOperations());
+      clonedEntry->erase();
+
+      // `vx.return` is not a terminator a GPU module may contain.
+      SmallVector<vx::ReturnOp> returns;
+      gpuFunc.walk([&](vx::ReturnOp r) { returns.push_back(r); });
+      for (vx::ReturnOp r : returns) {
+        OpBuilder at(r);
+        at.create<gpu::ReturnOp>(r.getLoc());
+        r.erase();
+      }
+
+      // A region whose last statement fell through carried no terminator.
+      for (Block &b : target) {
+        if (b.empty() || !b.back().hasTrait<OpTrait::IsTerminator>()) {
+          OpBuilder end(&b, b.end());
+          end.create<gpu::ReturnOp>(kernel.getLoc());
+        }
+      }
+    }
+  }
+
   void runOnOperation() override {
     getOperation()->emitRemark("Lowering Vx to Standard dialects");
 
@@ -978,7 +1087,12 @@ struct ConvertVxToStandardPass
     if (failed(applyPatternsAndFoldGreedily(getOperation(),
                                             std::move(patterns)))) {
       signalPassFailure();
+      return;
     }
+
+    // After the outlining, because that is what produces the kernels this
+    // reads.
+    materializeGpuKernels(getOperation());
   }
 };
 
@@ -1598,6 +1712,28 @@ struct ConvertVxToLLVMPass
   }
 
   void runOnOperation() override {
+    // The device twin does not come to the host party.
+    //
+    // `convert-vx-to-standard` gives every GPU kernel a `gpu.func` beside its
+    // `vx.kernel`, for a device backend to compile. Nothing consumes it yet --
+    // shipping it to a worker and launching it there is the rest of #251 -- and
+    // an unconsumed `gpu.module` reaching this pass is not inert: there is no
+    // conversion for it, so the whole module fails to lower and every program
+    // with a GPU placement stops compiling. Which is what happened: seven
+    // backend tests, llama2 among them, on a change that was supposed to add
+    // something unused.
+    //
+    // Dropped here rather than not emitted at all, so the kernel exists in the
+    // IR between the two passes -- `--pass-pipeline=builtin.module(convert-vx-
+    // to-standard)` shows it, and that is what the NVPTX pipeline reads. When
+    // there is something to ship, the binary gets extracted at this point and
+    // the drop stays.
+    SmallVector<gpu::GPUModuleOp> deviceModules;
+    getOperation().walk(
+        [&](gpu::GPUModuleOp m) { deviceModules.push_back(m); });
+    for (gpu::GPUModuleOp m : deviceModules)
+      m.erase();
+
     ConversionTarget target(getContext());
     target.addLegalDialect<LLVM::LLVMDialect>();
     target.addLegalDialect<vx::VxDialect>();
