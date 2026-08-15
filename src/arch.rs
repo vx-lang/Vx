@@ -1049,6 +1049,7 @@ mod tests {
             granule: None,
             scope,
             overcommit: false,
+            crossing: crate::syntax::Crossing::default(),
             doc_comment: None,
         }
     }

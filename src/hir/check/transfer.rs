@@ -882,6 +882,21 @@ impl<'a> TypeChecker<'a> {
                         cost_source,
                         derived_cost,
                         derived_unit,
+                        // Only a containment route composes anything -- a link rate is one leg.
+                        // Read from the destination, which is where the fill mechanism lives.
+                        composition: (cost_source
+                            == Some(crate::hir::env::CostSource::Containment))
+                        .then(|| {
+                            self.env
+                                .memories
+                                .values()
+                                .find(|d| {
+                                    crate::syntax::MemorySpace::from_name(d.name.as_ref())
+                                        == target_mem
+                                })
+                                .map(|d| d.crossing)
+                                .unwrap_or_default()
+                        }),
                     });
                 }
                 // Record the bandwidth-derived roofline cost when the hierarchy provides one;

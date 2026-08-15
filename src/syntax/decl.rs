@@ -180,6 +180,36 @@ pub enum Management {
     Cached,
 }
 
+/// How data physically crosses into a space from its parent, which decides how a multi-hop walk
+/// composes (vx-review#26).
+///
+/// Measured on two architectures, and the law tracks this property rather than the machine:
+///
+///   H100  HBM->L2->SMEM   streamed (cp.async)     bottleneck fits  -13.9%
+///   H100  L1->REG->SMEM   sequenced               sum fits          -9.3%
+///   M4    L2->REG->SMEM   sequenced               sum fits         +13.2%
+///   M4    HBM->REG->SMEM  sequenced               sum fits          +2.7%
+///
+/// `within:` says one space contains another; it does not say whether crossing that boundary is a
+/// hardware path or a pair of instructions. Without this distinction any single global law is
+/// wrong on half the routes -- summing overstates a streamed route by ~67%, and taking the
+/// bottleneck understates a sequenced one by ~49%. Same mistake, opposite directions.
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
+pub enum Crossing {
+    /// A load into a register followed by a store back out. The instructions genuinely happen one
+    /// after the other, so the legs genuinely add.
+    ///
+    /// The default, deliberately: it is what the algebra has always done, so introducing this
+    /// property changes no prediction anywhere and the frozen cells stay byte-identical. Declaring
+    /// `streamed` is then an explicit, dated machine-file edit with a localized effect, rather than
+    /// a silent model change that moves 240 cells at once.
+    #[default]
+    Sequenced,
+    /// A hardware engine fills the destination without passing through registers (Hopper's
+    /// `cp.async`, a DMA). Nothing stages, so the narrowest leg alone sets the rate.
+    Streamed,
+}
+
 /// The execution level at which a memory space is private / replicated. Ordered broadest to
 /// narrowest — locality *narrows* going down a `within:` hierarchy (a per-SM space sits inside
 /// a per-device space, never the reverse). Lets `capacity` be read as a per-scope budget:
@@ -232,6 +262,10 @@ pub struct MemoryDecl {
     /// exceed `capacity` (downgraded to a warning). The programmer asserts the tiles do not all
     /// coexist, so the conservative sum should not block them.
     pub overcommit: bool,
+    /// `crossing: streamed` -- how data enters this space from its parent, which decides whether a
+    /// walk through it sums its legs or takes the slowest (vx-review#26). Defaults to `sequenced`,
+    /// which is the pre-existing behaviour.
+    pub crossing: Crossing,
     pub doc_comment: Option<String>,
 }
 

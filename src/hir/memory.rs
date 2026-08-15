@@ -419,13 +419,33 @@ impl<'a> MemoryHierarchy<'a> {
             })
             .collect();
 
+        // How the legs combine, from the DESTINATION's declaration (vx-review#26).
+        //
+        // The destination decides because it is the destination's fill mechanism that determines
+        // whether the walk is one hardware transaction or a chain of instructions. `crossing:
+        // streamed` means a hardware engine fills it without staging through registers, so nothing
+        // is written and read back and the narrowest leg alone sets the rate; `sequenced` means a
+        // load followed by a store, which really do happen one after the other.
+        //
+        // Defaults to `sequenced`, which is what the algebra has always done -- so a machine file
+        // that says nothing gets exactly its previous cost and the frozen cells do not move.
+        let streamed =
+            self.descriptor(dst).map(|d| d.crossing) == Some(crate::syntax::Crossing::Streamed);
+        let combine = |acc: u64, term: u64| -> u64 {
+            if streamed {
+                acc.max(term)
+            } else {
+                acc.saturating_add(term)
+            }
+        };
+
         let all_cycles = terms.iter().all(|(bw, _)| bw.per == RatePer::Cycle);
         if all_cycles {
             // Stay in cycles. A cycle count is clock-invariant, so converting it to wall time here
             // would throw away the one property that survives an unpinned clock.
             let mut total: u64 = 0;
             for (bw, _) in &terms {
-                total = total.saturating_add(hop_cost(bytes, *bw)?);
+                total = combine(total, hop_cost(bytes, *bw)?);
             }
             return Some(DerivedCost {
                 value: total,
@@ -451,7 +471,11 @@ impl<'a> MemoryHierarchy<'a> {
                     cycles.checked_mul(PICOS_PER_SEC as u128)?.div_ceil(hz)
                 }
             };
-            total_ps = total_ps.checked_add(ps)?;
+            total_ps = if streamed {
+                total_ps.max(ps)
+            } else {
+                total_ps.checked_add(ps)?
+            };
         }
         Some(DerivedCost {
             value: u64::try_from(total_ps).ok()?,
@@ -560,6 +584,7 @@ mod tests {
             granule: None,
             scope: None,
             overcommit: false,
+            crossing: crate::syntax::Crossing::default(),
             doc_comment: None,
         }
     }
@@ -909,6 +934,91 @@ mod tests {
             "a routeless flow contends with nothing"
         );
         assert!(out[1].cost.is_some());
+    }
+
+    /// `three_level()` with `crossing: streamed` declared on SMEM.
+    fn three_level_streamed() -> Vec<MemoryDecl> {
+        let mut v = three_level();
+        v[2].crossing = crate::syntax::Crossing::Streamed;
+        v
+    }
+
+    #[test]
+    fn sequenced_is_the_default_and_sums() {
+        // The default must be the pre-existing behaviour, or introducing `crossing:` would move
+        // every frozen cell at once instead of letting a machine file opt in.
+        let decls = three_level();
+        assert_eq!(decls[2].crossing, crate::syntax::Crossing::Sequenced);
+        let h = MemoryHierarchy::build(&decls);
+        // L2 (512 B/cyc) -> SMEM (128 B/cyc), 16384 B: 32 + 128 = 160 cycles.
+        assert_eq!(
+            h.derived_transfer_cost(&space("L2"), &space("SMEM"), 16384),
+            Some(DerivedCost {
+                value: 160,
+                per: RatePer::Cycle
+            })
+        );
+    }
+
+    #[test]
+    fn streamed_takes_the_slowest_leg_alone() {
+        // Nothing stages, so the narrowest leg sets the rate: max(32, 128) = 128, not 160.
+        let decls = three_level_streamed();
+        let h = MemoryHierarchy::build(&decls);
+        assert_eq!(
+            h.derived_transfer_cost(&space("L2"), &space("SMEM"), 16384),
+            Some(DerivedCost {
+                value: 128,
+                per: RatePer::Cycle
+            })
+        );
+    }
+
+    #[test]
+    fn crossing_is_read_from_the_destination_not_the_source() {
+        // It is the DESTINATION's fill mechanism that decides whether the walk is one hardware
+        // transaction or a chain of instructions, so a streamed SMEM must not make a walk that
+        // merely *starts* at SMEM behave differently.
+        let decls = three_level_streamed();
+        let h = MemoryHierarchy::build(&decls);
+        // SMEM -> L2: destination L2 is sequenced, so this still sums.
+        assert_eq!(
+            h.derived_transfer_cost(&space("SMEM"), &space("L2"), 16384),
+            Some(DerivedCost {
+                value: 160,
+                per: RatePer::Cycle
+            })
+        );
+    }
+
+    #[test]
+    fn streamed_applies_across_a_multi_hop_walk() {
+        // HBM (256) -> SMEM (128) through L2 (512): terms 64, 32, 128.
+        // sequenced sums to 224; streamed takes 128.
+        let seq = three_level();
+        let str_ = three_level_streamed();
+        assert_eq!(
+            MemoryHierarchy::build(&seq).derived_transfer_cost(
+                &space("HBM"),
+                &space("SMEM"),
+                16384
+            ),
+            Some(DerivedCost {
+                value: 224,
+                per: RatePer::Cycle
+            })
+        );
+        assert_eq!(
+            MemoryHierarchy::build(&str_).derived_transfer_cost(
+                &space("HBM"),
+                &space("SMEM"),
+                16384
+            ),
+            Some(DerivedCost {
+                value: 128,
+                per: RatePer::Cycle
+            })
+        );
     }
 
     #[test]

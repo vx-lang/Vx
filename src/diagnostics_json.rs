@@ -54,7 +54,8 @@ use crate::hir::env::{ResidentSet, StagingRoute};
 ///       "bytes": 16384,                 // what moved; null for a dynamic shape
 ///       "derived_cost": 128,            // bandwidth roofline, null when not computable
 ///       "derived_unit": "cyc",          // "cyc" | "ps"; null iff derived_cost is null
-///       "cost_source": "containment"    // "link_rate" | "containment"; null iff no cost
+///       "cost_source": "containment",   // "link_rate" | "containment"; null iff no cost
+///       "composition": "sum"            // "sum" | "bottleneck"; null for a link-rate hop
 ///     }
 ///   ],
 ///   "resident_sets": [                  // working set per space, emitted even when admitted
@@ -183,16 +184,26 @@ fn route_json(r: &StagingRoute) -> String {
         Some(s) => format!("\"{}\"", s.as_str()),
         None => "null".to_string(),
     };
+    // Which composition law priced the walk. Named by what it DOES, not by the declaration that
+    // selected it: a consumer re-scoring a harvested prediction needs "these legs were summed",
+    // and `sequenced`/`streamed` is a statement about the hardware rather than the arithmetic.
+    let composition = match r.composition {
+        Some(crate::syntax::Crossing::Sequenced) => "\"sum\"",
+        Some(crate::syntax::Crossing::Streamed) => "\"bottleneck\"",
+        None => "null",
+    };
     format!(
         "{{\"path\": [{}], \"edges\": [{}], \"total_cost\": {}, \"bytes\": {}, \
-         \"derived_cost\": {}, \"derived_unit\": {}, \"cost_source\": {}}}",
+         \"derived_cost\": {}, \"derived_unit\": {}, \"cost_source\": {}, \
+         \"composition\": {}}}",
         path,
         edges,
         r.total_cost,
         opt_num(r.bytes),
         opt_num(r.derived_cost),
         unit,
-        source
+        source,
+        composition
     )
 }
 
@@ -357,8 +368,12 @@ mod tests {
             cost_source: Some(crate::hir::env::CostSource::Containment),
             derived_cost: Some(128),
             derived_unit: Some(crate::syntax::RatePer::Cycle),
+            composition: Some(crate::syntax::Crossing::Sequenced),
         };
         let out = render(&DiagnosticsVec::default(), &[route], &[], "prog.vx", None);
+        // A containment route must say which law priced it: the two differ by ~2x on a multi-hop
+        // walk, so a harvested prediction that omits it cannot be re-scored (vx-review#26).
+        assert!(out.contains("\"composition\": \"sum\""), "{out}");
         assert!(out.contains("\"verdict\": \"admitted\""), "{out}");
         assert!(out.contains("\"error_count\": 0"), "{out}");
         assert!(

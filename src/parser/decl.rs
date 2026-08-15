@@ -347,6 +347,7 @@ impl<'a> Parser<'a> {
         let mut granule: Option<crate::syntax::ByteSize> = None;
         let mut scope: Option<crate::syntax::Scope> = None;
         let mut overcommit = false;
+        let mut crossing = crate::syntax::Crossing::default();
 
         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
             let field = match &self.advance().kind {
@@ -394,6 +395,27 @@ impl<'a> Parser<'a> {
                 "bandwidth" => bandwidth = Some(self.parse_bandwidth()?),
                 "clock" => clock_hz = Some(self.parse_clock()?),
                 "replicas" => replicas = Some(self.parse_count()?),
+                "crossing" => {
+                    let kind = match &self.advance().kind {
+                        TokenType::Identifier(s) => s.to_string(),
+                        other => {
+                            return Err(self.error(&format!(
+                                "Expected 'streamed' or 'sequenced' for `crossing:`, got {:?}",
+                                other
+                            )))
+                        }
+                    };
+                    crossing = match kind.as_str() {
+                        "streamed" => crate::syntax::Crossing::Streamed,
+                        "sequenced" => crate::syntax::Crossing::Sequenced,
+                        other => {
+                            return Err(self.error(&format!(
+                                "`crossing:` expects 'streamed' or 'sequenced', got '{}'",
+                                other
+                            )))
+                        }
+                    };
+                }
                 "managed" => {
                     let kind = match &self.advance().kind {
                         TokenType::Identifier(s) => s.to_string(),
@@ -435,6 +457,7 @@ impl<'a> Parser<'a> {
             granule,
             scope,
             overcommit,
+            crossing,
             doc_comment: None,
         })
     }

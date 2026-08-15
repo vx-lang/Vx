@@ -424,6 +424,7 @@ impl CompilerDriver {
                     granule: None,
                     scope: None,
                     overcommit: false,
+                    crossing: crate::syntax::Crossing::default(),
                     doc_comment: Some(
                         "the machine this was compiled on (--host default)".to_string(),
                     ),
