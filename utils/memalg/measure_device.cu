@@ -24,7 +24,9 @@
 // Run:    ./measure_device > measured.csv
 //
 // Compiles clean under nvcc 13.2 and 12.8 for sm_80/90/90a/100/120, and has been RUN against an
-// H100 80GB HBM3 (2026-08-08). Two instrument defects that run exposed, both of which produced
+// H100 80GB HBM3 (2026-08-08) -- with the exception of `seam 2b: HBM -> L2, the actual fill`,
+// which is NEITHER COMPILE-VERIFIED NOR RUN. It was written after the H100 was released and no
+// toolkit was reachable; compile it before quoting anything from it. Two instrument defects that run exposed, both of which produced
 // confident wrong numbers rather than errors, are fixed here and described at their sites:
 // kernel-launch overhead swamping the on-die seams, and grid-stride re-reading serving out of L1.
 #include <cstdio>
@@ -282,6 +284,109 @@ int main() {
       fprintf(stderr, "  HBM->L2 %zu B: grid=%d iters=%d\n", bytes, grid, iters);
       printf("HBM->L2,%zu,ps,%.0f,%.0f,%.0f,%.2f,%d,%s\n", bytes, med, q1, q3,
              med > 0 ? (double)bytes / (med / 1000.0) : 0.0, REPS, note);
+      fflush(stdout);
+
+      CK(cudaEventDestroy(a));
+      CK(cudaEventDestroy(b));
+      CK(cudaFree(d));
+      CK(cudaFree(sink));
+    }
+  }
+
+  // ---- seam 2b: HBM -> L2, the actual fill -----------------------------------------------------
+  // The cell above is an L2-resident read. Its own note says so (`l2_read_l1_bypassed`) and its
+  // warm-up exists precisely to make it one -- but it is emitted under the seam name `HBM->L2`,
+  // and that name is what the frozen predictions and every downstream table join on.
+  //
+  // It cannot be an HBM->L2 transfer, and the measurement says so without any modelling: it
+  // reported 7579 GB/s on a part whose HBM is declared at 3350 GB/s. Nothing that leaves HBM can
+  // exceed HBM's bandwidth. The two were never distinguishable while the model also priced this
+  // seam at L2's rate alone; charging the source side (Vx 1f8591d9) is what made them disagree,
+  // and this is the measurement that disagreement asked for. It is the third defect of this shape
+  // in this file -- like the other two, it returned a confident number rather than an error.
+  //
+  // Cold by construction rather than by flushing. Timing a single cold pass would put the launch
+  // floor back into every cell, which is defect #1 in this file's header. Instead the tile is laid
+  // end to end until the working set is several times L2, and one pass over the whole span is
+  // timed: every tile-sized stretch is then read from HBM because the span cannot be resident.
+  // Cost for one tile is the span's cost divided by how many tiles it holds.
+  //
+  // Residual: the tail of a pass is still in L2 when the next begins, so up to `L2/span` of the
+  // traffic can hit. At OVERSUB=8 that bounds it at 12.5%, and it biases the measured rate UP,
+  // i.e. toward the old wrong answer -- so it cannot manufacture agreement with the HBM figure.
+  {
+    const size_t l2 = (size_t)p.l2CacheSize;
+    const size_t OVERSUB = 8;
+    const size_t target_span = l2 * OVERSUB;
+    size_t free_b = 0, total_b = 0;
+    CK(cudaMemGetInfo(&free_b, &total_b));
+
+    for (int i = 0; i < N_SIZES; ++i) {
+      size_t bytes = SIZES[i];
+      if (bytes % sizeof(float4)) continue;
+
+      // How many tiles it takes to overflow L2, and the span they occupy.
+      size_t tiles = (target_span + bytes - 1) / bytes;
+      if (tiles < 2) tiles = 2;
+      size_t span = tiles * bytes;
+      // Leave the device room to breathe; a span that does not fit is not measured rather than
+      // silently shrunk to something L2-resident, which is the failure this cell exists to fix.
+      if (span > free_b / 2) {
+        printf("HBM->L2_fill,%zu,ps,,,,,%d,span_exceeds_free_memory_not_measured\n", bytes, REPS);
+        continue;
+      }
+
+      float4 *d = nullptr;
+      float *sink = nullptr;
+      if (cudaMalloc(&d, span) != cudaSuccess) {
+        printf("HBM->L2_fill,%zu,ps,,,,,%d,alloc_failed\n", bytes, REPS);
+        continue;
+      }
+      CK(cudaMalloc(&sink, sizeof(float)));
+      CK(cudaMemset(d, 1, span));
+      size_t n4 = span / sizeof(float4);
+
+      int block = 256;
+      size_t want_blocks = (n4 + block - 1) / block;
+      int max_blocks = p.multiProcessorCount * 32;
+      int grid = (int)(want_blocks < (size_t)max_blocks ? want_blocks : (size_t)max_blocks);
+      if (grid < 1) grid = 1;
+
+      cudaEvent_t a, b;
+      CK(cudaEventCreate(&a));
+      CK(cudaEventCreate(&b));
+      l2_stream<<<grid, block>>>(d, n4, sink, 1);
+      CK(cudaDeviceSynchronize());
+
+      int iters = 1;
+      for (;;) {
+        CK(cudaEventRecord(a));
+        l2_stream<<<grid, block>>>(d, n4, sink, iters);
+        CK(cudaEventRecord(b));
+        CK(cudaEventSynchronize(b));
+        float ms = 0.f;
+        CK(cudaEventElapsedTime(&ms, a, b));
+        if (ms >= 5.0f || iters >= (1 << 22)) break;
+        int grow = (int)(6.0f / (ms > 0.01f ? ms : 0.01f)) + 1;
+        iters = iters * (grow > 2 ? grow : 2);
+      }
+
+      std::vector<double> s;
+      for (int r = 0; r < REPS; ++r) {
+        CK(cudaEventRecord(a));
+        l2_stream<<<grid, block>>>(d, n4, sink, iters);
+        CK(cudaEventRecord(b));
+        CK(cudaEventSynchronize(b));
+        float ms = 0.f;
+        CK(cudaEventElapsedTime(&ms, a, b));
+        // ps for ONE tile: the batch covers `iters` passes over `tiles` tiles.
+        s.push_back((double)ms * 1e9 / ((double)iters * (double)tiles));
+      }
+      double q1, q3, med = median_of(s, &q1, &q3);
+      fprintf(stderr, "  HBM->L2_fill %zu B: span=%zu MiB tiles=%zu grid=%d iters=%d\n", bytes,
+              span >> 20, tiles, grid, iters);
+      printf("HBM->L2_fill,%zu,ps,%.0f,%.0f,%.0f,%.2f,%d,%s\n", bytes, med, q1, q3,
+             med > 0 ? (double)bytes / (med / 1000.0) : 0.0, REPS, "hbm_read_l2_oversubscribed");
       fflush(stdout);
 
       CK(cudaEventDestroy(a));
