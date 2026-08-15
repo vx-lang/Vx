@@ -20,17 +20,36 @@ ______________________________________________________________________
 For `let y = transfer(x, Memory::B)` where `x : Pinned(T, A)`, a lowering emits code that moves
 `x`'s bytes from `A` to `B` and yields `y : Pinned(T, B)`.
 
-A sketch of how a topology might declare one — not settled syntax, but the fields the contract
-needs to name:
+A sketch — the syntax is not settled, but the shape is. `raw::*` is the primitive set defined
+later in this document:
 
 ```
-transfer Memory::L2 -> Memory::SMEM : 128 B/cyc {
-  lowering: cooperative_copy,   // which lowering; from a registry the compiler ships
-  effect:   copy,               // `copy` or `alias`            -- C4
-  sync:     barrier,            // `barrier`, `async_wait`, `none` -- C3
-  overhead: 0 B,                // extra destination space used  -- C5
+impl transfer Memory::L2 -> Memory::SMEM {
+  fn move(src: &Tile<f32>, dst: &mut Tile<f32>) {
+    let n = raw::extent(src);
+    let mut i = raw::lane();
+    loop {
+      if i >= n { break; }
+      raw::store(dst, i, raw::load(src, i));
+      i = i + raw::lanes();
+    }
+    raw::barrier();
+  }
 }
 ```
+
+The signature carries one contract from the call site: the compiler allocated `dst` with `src`'s
+shape, so `raw::extent(src) == raw::extent(dst)` is a fact the prover may assume. That is what
+makes the `store`'s bound provable from a loop guard that only mentions `n = extent(src)`.
+
+An earlier draft had the topology *declare* its lowering's properties (`effect: copy`,
+`sync: barrier`, `overhead: 0 B`). Those fields are gone, and their absence is the point: the body
+is Vx code we compile, so every one of them is **read off the body** rather than asserted beside
+it. `effect` is `copy` because the body fills a distinct `dst` rather than returning a view of
+`src` (C4); `sync` is `barrier` because the body ends in one (C3); `overhead` is zero because the
+body allocates nothing (C5). A declaration can drift from the code it describes; a derivation cannot. Only C7's runtime
+failure conditions still need declaring, because "the driver refused the allocation" is not
+visible in any AST.
 
 ______________________________________________________________________
 
@@ -62,15 +81,16 @@ the completion wait; it does not assume the consumer will.
 
 **Discharged by the seam verifier.** `src/hir/seam.rs` already models exactly this: a transfer is
 `Sync` when the lowering carries a release/acquire or a DMA completion wait, and
-`Relaxed { published }` otherwise, and z3 is asked whether a stale read is reachable. A custom
-lowering declares which it is, and the existing obligation does the rest.
+`Relaxed { published }` otherwise, and z3 is asked whether a stale read is reachable. Whether a
+lowering is `Sync` or `Relaxed` is read off its body — a trailing barrier or completion wait is a
+syntactic fact — and the existing obligation does the rest.
 
 > **This is not hypothetical.** The SMEM lowering added in `dee50a69` emits an allocation and a
 > copy into shared memory with **no `gpu.barrier`**. It is not a live bug only because kernels are
 > currently single-threaded; the moment a kernel has more than one thread, a reader can observe a
 > half-filled tile. The first lowering we wrote violated C3 on its first day.
 
-### C4 — Aliasing must be declared.
+### C4 — An alias is not a copy, and the checker sees which is which.
 
 A lowering may return a *view* of the source rather than a copy. On unified memory that is the
 whole point: the M4's host "transfer" costs nothing measurable (106.0 GB/s against a 106.3 GB/s
@@ -79,10 +99,15 @@ control, ratio 0.997) because there is no copy — the GPU reads the buffer the 
 But then `x` and `y` are the same memory, and a write through one is visible through the other.
 The borrow checker treats them as distinct values.
 
-**Declared, then relied on.** A lowering is `effect: copy` or `effect: alias`. `alias` tells the
-checker the two values share storage, so the aliasing rules apply across the transfer. A lowering
-that aliases while declaring `copy` breaks the borrow checker's assumptions silently, which is the
-worst failure mode in this list.
+**Derived, then relied on.** Whether the body returns a view of the source or fills a distinct
+destination is read off the body, and the borrow checker consumes that fact — the aliasing rules
+then apply across the transfer. The derivation removes what would otherwise be the worst failure
+mode in this list: a lowering that aliases while claiming to copy cannot be written, because
+nothing is claimed — the checker reads the code.
+
+The two shapes are different signatures. A copy fills a `dst` the call site allocated; an alias
+returns a view of `src` and allocates nothing. The settled syntax must keep the two forms
+distinct, because a copy-shaped body has no way to express an alias.
 
 ### C5 — Capacity honesty. Do not use more of B than was admitted.
 
@@ -90,8 +115,9 @@ Admission (E6010) checked the granule-rounded working set against `B`'s declared
 lowering that needs scratch — a staging buffer, double-buffering for a pipelined copy — consumes
 capacity nobody accounted for, and E6010 is then proving something false.
 
-**Declared, then checked.** `overhead:` is added to the resident set at admission time. A lowering
-with undeclared overhead is a lowering that can overflow a space the compiler just certified.
+**Derived, then checked.** Scratch the body allocates is visible in the body, and the compiler
+adds it to the resident set at admission time. Undeclarable rather than undeclared: a lowering
+cannot hide an allocation from the front end that compiles it.
 
 ### C6 — Only touch spaces the executing topology can see.
 
@@ -125,9 +151,9 @@ intermittently, which is worse than failing it always.
 ### C9 — No effect outside `y`.
 
 The lowering does not modify `x`, and does not touch program-visible state other than the
-destination. Scratch is fine if it is declared under C5 and not observable afterwards.
+destination. Scratch is fine — it is accounted under C5 — provided it is not observable afterwards.
 
-Exception: when `effect: alias`, `x` and `y` are the same storage by construction, and C4 governs.
+Exception: when the lowering is an alias (C4), `x` and `y` are the same storage by construction.
 
 ### C10 — The declared cost describes the emitted code.
 
@@ -142,25 +168,32 @@ held-out A100 to notice. One declaration cannot drift from itself.
 The calibration campaign is the backstop. A lowering whose cost is a fiction shows up as a residual
 that does not close.
 
+**Superseded below.** When the lowering is Vx code — the design this document settles on — no edge
+cost is declared at all: traffic is derived from the body, and only the time model remains a claim.
+See "Which means cost should be derived, not declared". C10 stays in the list as the property the
+derivation *guarantees*, not as something an author still upholds by hand.
+
 ______________________________________________________________________
 
 ## How each one is enforced
 
 | | constraint | how |
 | --- | --- | --- |
-| C1 | placement | compiler checks the emitted memory space |
+| C1 | placement | read off the body — the emitted operations carry their memory space |
 | C2 | value preservation | conformance test, varying along every axis |
-| C3 | visibility | **seam verifier** (`src/hir/seam.rs`), already built |
-| C4 | aliasing | declared; borrow checker consumes it |
-| C5 | capacity overhead | declared; admission adds it |
-| C6 | space visibility | compiler walks emitted ops against `visible:` |
-| C7 | failure modes | declared |
-| C8 | determinism | conformance test across launch geometries |
-| C9 | no side effects | conformance test |
-| C10 | cost honesty | one declaration, plus the calibration |
+| C3 | visibility | **seam verifier** (`src/hir/seam.rs`), fed the body's sync facts |
+| C4 | aliasing | read off the body — a view is visibly a view; the borrow checker consumes it |
+| C5 | capacity overhead | read off the body — allocations are in the AST; admission adds them |
+| C6 | space visibility | read off the body — spaces touched, walked against `visible:` |
+| C7 | failure modes | **declared** — the one thing no AST can show |
+| C8 | determinism | by construction from the primitives' guarantees; the conformance run validates those guarantees on the part |
+| C9 | no side effects | read off the body — every write is visible |
+| C10 | cost honesty | superseded — traffic is derived from the body; the time model is what calibration scores |
 
-Four are mechanical, one reuses a verifier that exists, four are declarations the compiler then
-relies on, and the rest are a conformance suite. Nothing here needs new proof machinery.
+Five are read off the body (C1, C4, C5, C6, C9), one reuses a verifier that exists (C3), one
+remains a declaration (C7), and two need the hardware (C2 and C8 — the conformance suite). C10
+dissolves: a cost computed from the code cannot disagree with the code. Nothing here needs new
+proof machinery.
 
 ______________________________________________________________________
 
@@ -191,6 +224,7 @@ boundary — it is more Vx, subject to every check Vx already performs. So:
   and it is exactly the input `seam.rs` already wants.
 - **C4 (aliasing)** — whether the body returns a view of the source or a fresh allocation is
   something the checker can see rather than something the author asserts.
+- **C5 (overhead)** — scratch the body allocates is in the AST, so admission can account for it.
 
 The trust boundary is not the file. It is the **primitive set** a lowering needs and ordinary code
 does not: raw address arithmetic, barriers, and whatever asynchronous-copy intrinsic a part
@@ -231,15 +265,100 @@ Two things this buys that a declared edge cost cannot:
 The limit is honest and narrow: derived traffic needs static bounds. A data-dependent loop needs
 either a bound or a declaration, and a lowering that has one should say so.
 
+## The primitive set
+
+`transfer` cannot be implemented in terms of `transfer`, so a lowering needs a floor to stand on.
+This names the floor: the operations an `impl transfer` body may use that ordinary Vx code may
+not, each with the obligation the compiler discharges at the call site (`requires`) and the
+guarantee downstream proofs rely on (`ensures`). Both are existing Vx syntax, and the prover that
+discharges them against z3 exists (`src/hir/prover.rs`). What is new is only this vocabulary.
+
+**The design decision that matters: indexed, not addressed.** Every primitive takes a typed tile
+and an element index. None takes an address, and no primitive produces one. Address arithmetic is
+exactly what would make C1 and C6 unprovable — a pointer can point anywhere, so the compiler could
+no longer read which space an access touches or whether it stays in bounds. Indexed access on a
+typed tile keeps both facts checkable at every call site, and a copy loop needs nothing more.
+
+### The eight primitives
+
+| primitive | `requires` | `ensures` |
+| --- | --- | --- |
+| `raw::extent(t)` | — | the element count of `t`; pure |
+| `raw::lane()` | — | result `< raw::lanes()`; the same value on every call within one activation |
+| `raw::lanes()` | — | result `>= 1`; the same value on every lane |
+| `raw::load(t, i)` | `i < raw::extent(t)`; `t`'s space readable by the executing topology | the value at index `i`; writes nothing |
+| `raw::store(t, i, v)` | `i < raw::extent(t)`; `t`'s space writable by the executing topology; `t` held by `&mut` | afterwards `t[i] == v`, and no other element changed |
+| `raw::barrier()` | reached by every lane — a barrier under divergent control flow is rejected outright | every store issued before it, by any lane, is visible to every load after it |
+| `raw::async_copy(dst, src, i)` | both index bounds; both space obligations; **the machine file declares a copy engine** | the copy is *initiated*; `dst[i]` is unspecified until a matching `raw::async_wait` |
+| `raw::async_wait()` | — | every `async_copy` this lane initiated has completed (cross-lane visibility still needs `raw::barrier`) |
+
+`lane`/`lanes` returning the same value everywhere they are asked is what makes a lowering
+deterministic by construction — *given* the primitives honour their `ensures` on the part, which
+is exactly what the C8 conformance run validates. The work split is a pure function of lane
+identity, not of who arrived first.
+
+The async pair is two primitives on purpose. "`dst[i]` is unspecified until the wait" is a fact z3
+can use: a lowering that issues copies and forgets the wait is rejected by the same seam
+obligation (`src/hir/seam.rs`) that catches a missing barrier — the transfer function is
+`Relaxed { published }`, a stale read is reachable, REJECT. The failure mode is proven away, not
+tested away.
+
+### How each obligation is discharged
+
+- **Bounds** (`i < extent`): the prover. Tile shapes are static, so loop bounds are static and the
+  comparison is arithmetic over known quantities. Where it cannot be proven, the call is rejected —
+  unless the author wraps it in `unsafe`, which records the asserted obligation and is surfaced
+  the way an unverified `spec:` figure is.
+- **Spaces** (readable/writable by the executing topology): a table lookup against `visible:` and
+  `scope:`. Mechanical; no prover involved. This is C1 and C6.
+- **Exclusivity** (`t` held by `&mut`): the borrow checker, unchanged — a lowering body is
+  ordinary Vx to it.
+- **Capability** (`async_copy` needs a copy engine): a lookup in the machine file — see the next
+  section.
+- **Barrier uniformity**: a control-flow check, and conservative — a barrier some lanes can skip
+  deadlocks on every real part, so it is rejected rather than warned about.
+- **Async discipline**: the seam verifier, as above. This is C3.
+
+### Capability gates the primitives
+
+`raw::async_copy` is legal only in a lowering for a part whose machine file declares the copy
+engine. Capability stays in the machine file, choice stays in the lowering, and using a primitive
+the part does not have is a compile error rather than a runtime surprise. This is the
+capability/choice split of `memory_algebra.md` §5 **enforced** rather than merely documented — the
+mistake that produced the falsified `crossing: streamed` prediction becomes unwritable.
+
+### What each primitive contributes to derived traffic
+
+| primitive | traffic |
+| --- | --- |
+| `load` | `sizeof(T)` read against `src`'s space |
+| `store` | `sizeof(T)` written against `dst`'s space |
+| `async_copy` | one chunk read from `src`'s space, written into `dst`'s space |
+| everything else | none |
+
+With static bounds the counts are exact at compile time — this is where "cost is derived, not
+declared" cashes out.
+
+### Deliberately absent
+
+- **Addresses, pointer arithmetic, space casts.** Their absence is what keeps C1 and C6 provable.
+- **Type reinterpretation.** A transfer is a move, not a conversion (C2).
+- **Atomics.** A copy does not need them, and every primitive added grows what `seam.rs` must
+  model. They can earn a place with a use case; they do not get one in advance.
+- **Unbounded loops.** A loop whose bound the prover cannot see needs a declared bound, or the
+  lowering is rejected — the same restriction that keeps derived traffic computable.
+
+______________________________________________________________________
+
 ## Open questions
 
-- **Which primitives?** The unsafe set a lowering may use — raw addressing, barriers, async-copy
-  intrinsics — needs naming, and each needs its `requires`/`ensures`. This is the whole remaining
-  design surface, and it is much smaller than "how do we sandbox arbitrary code".
+- **Inside the primitive set:** the async chunk granularity (sm_80's `cp.async` moves 4, 8 or 16
+  bytes per lane, and that constraint belongs in the machine file next to the capability it
+  refines), and whether atomics ever earn a place.
 - **Who runs the conformance suite, and when?** Ideally the compiler refuses a lowering that has
   never passed one. That needs the suite to be part of the topology's declaration, not a separate
   process someone remembers to run.
-- **Can a lowering be checked without the hardware?** C1, C3, C4, C6 and C9 yes — they are
+- **Can a lowering be checked without the hardware?** C1, C3, C4, C5, C6 and C9 yes — they are
   properties of the code. C2 and C8 need the part. So a topology for hardware nobody has rented
   has a lowering whose *value preservation* is unverified, and that should be as visible as an
   unverified `spec:` figure.

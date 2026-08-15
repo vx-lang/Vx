@@ -136,11 +136,14 @@ ______________________________________________________________________
 
 ## 6. Where a topology says how a movement happens
 
-The extension point that makes this future-proof: **a topology declares not only which edges exist
-and what they cost, but how a movement across them is performed — that is, what code is emitted.**
+The extension point that makes this future-proof: **a topology declares which edges exist, the
+bandwidths at their endpoints, and how a movement across them is performed — that is, what code is
+emitted.**
 
-The same declaration then determines the mechanism *and* its cost, so the two cannot drift. That is
-precisely the failure §5 describes, closed by construction rather than by discipline.
+Traffic — and hence cost — is then *derived* from that code, so mechanism and cost cannot drift.
+That is precisely the failure §5 describes, closed by construction rather than by discipline. (An
+edge stops needing a declared cost at all; the bandwidths are properties of the machine, which is
+what a machine file was always for.)
 
 It also means hardware we have never seen is a new topology file rather than a compiler change. A
 part with a copy engine lowers a fill one way; a part without lowers it to load-then-store; a part
@@ -150,20 +153,26 @@ There is precedent: the plugin ABI (`vx_plugin_dispatch_async`, with CoreML and 
 already an extension point for **compute**. This is the analogue for **movement**.
 
 The correctness contract a lowering must satisfy is written up separately in
-[`custom_transfer_contract.md`](custom_transfer_contract.md) — ten constraints, four of them
-mechanically checkable, one discharged by the seam verifier that already exists, and the rest
-declarations the compiler then relies on. Performance is deliberately not constrained.
+[`custom_transfer_contract.md`](custom_transfer_contract.md) — ten constraints: five read off the
+lowering body (it is Vx code our own front end compiles), one discharged by the seam verifier that
+already exists, one remaining declaration (runtime failure modes), a conformance suite for the
+two properties only the hardware can witness, and one that dissolves (cost honesty: traffic is
+derived from the body, so the cost cannot disagree with the code). Performance is deliberately not
+constrained.
 
-Open questions, and they are real:
+Three questions were open here; the contract document settles them in design (none is implemented
+yet):
 
-- **How is the lowering named?** A strategy chosen from a registry the compiler ships, or something
-  the machine file supplies? A registry is safer and less expressive; anything more requires the
-  file to carry code, which is a much larger commitment.
-- **What happens to the safety properties?** Rows 1–3 of §2 are only as sound as the emitted
-  movement. An extension point that can emit anything can emit something that violates the
-  placement guarantees the type system just proved.
-- **Capability still has to be declarable separately**, because the compiler must be able to refuse
-  a plan the machine cannot perform — before choosing a lowering for it.
+- **How is the lowering named?** The file carries Vx code — `impl transfer Memory::A -> Memory::B`
+  — compiled and checked by our own front end like any other Vx. The trust boundary is the small
+  primitive set the body may use (`raw::load/store/barrier/...`), not the file.
+- **What happens to the safety properties?** They survive because the body cannot be opaque: it is
+  composed of indexed primitives whose bounds and space obligations the compiler discharges, so an
+  `impl transfer` cannot emit a movement that violates the placement guarantees the type system
+  proved. This holds by the contract's construction, not by trusting authors.
+- **Capability is declarable separately, and it gates the primitives.** `raw::async_copy` is a
+  compile error in a lowering for a part whose machine file declares no copy engine — the
+  capability/choice split of §5, enforced.
 
 ______________________________________________________________________
 
