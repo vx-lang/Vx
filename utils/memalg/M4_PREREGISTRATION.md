@@ -84,3 +84,51 @@ the first found on the CPU side.
 Every buffer in `measure_m4.mm` must exceed the largest cache it could be served from by a margin,
 and the instrument must report the ratio against declared peak so that a figure above 1.0× is
 visible in the output rather than needing to be noticed.
+
+---
+
+# Addendum, dated 2026-08-12, Vx `a6ab362c`
+
+P1, P3 and P4 have now been measured (see `results/m4-*`). P2 was only half done. These two are
+for experiments not yet written, and are recorded before the code exists for the same reason as
+above.
+
+## P5 — contention: the aggregate is already saturated, so sharing is a straight division
+
+M3 (vx-review#17) is the most expensive item on the fleet list and has no predicted column: the
+model has no contention term, so it says each of K concurrent transfers gets the whole edge. This
+machine can measure the sharing law for nothing.
+
+A single streaming read already reaches 104 GB/s against a 120 GB/s declared peak — 87%, which is
+about as close to saturated as a real workload gets. So:
+
+**Predicted: the aggregate across K concurrent flows stays roughly constant at ~104 GB/s, and each
+flow's own rate falls as ~1/K. The falloff is smooth, not a cliff**, because DRAM bandwidth is a
+continuously shared resource rather than an allocated one.
+
+The falsifier, and it is a real possibility: **if the aggregate RISES with K**, then one flow was
+not saturating after all and there is headroom. That would mean `bandwidth / users` is the wrong
+patch at small K — the model would need a saturation term (min(K × per-flow-max, edge-max)) rather
+than a division, which is a different shape of fix.
+
+Secondary, and the thing a `bandwidth / users` model cannot produce at all: **the spread between
+the fastest and slowest of the K flows.** If the GPU shares fairly, all K finish at about the same
+time and the spread is small. If it serialises them, flow 1 finishes at T and flow K at K×T, and
+the spread is the whole range. Both give the same aggregate, so the aggregate alone cannot tell
+them apart — and a placement decision needs to know which, because "when does my tensor arrive" is
+answered by the slowest flow, not the average.
+
+## P6 — the host seam is free, and the model charges 120 GB/s for it
+
+`CPU_DRAM -> HBM` is declared at 120 GB/s, but `hasUnifiedMemory` is true: a `MTLStorageModeShared`
+buffer the CPU wrote is readable by a kernel with no copy and no API call at all.
+
+**Predicted: a kernel reading a buffer the CPU just wrote runs at the same rate as one reading a
+buffer the GPU already had — the "transfer" costs no measurable time.** The model's prediction for
+that seam is therefore not wrong by a percentage; it is wrong by the entire quantity.
+
+Measured against a `MTLBlitCommandEncoder` copy, which is what a naive port of the discrete path
+would do. **Predicted: the blit is real work and runs at a rate well under 120 GB/s**, because a
+copy both reads and writes and so moves two bytes of traffic per byte copied — the same argument
+`m4-uma.vx` already makes about `memcpy`. If the blit comes out at or above 120 GB/s it was served
+from cache and the buffer was too small, which is the defect this instrument exists not to repeat.
