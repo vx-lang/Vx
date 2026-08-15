@@ -252,6 +252,11 @@ pub enum DiagnosticCode {
     /// programs that page rather than fail -- so this is about the host being *stated* rather than
     /// assumed, not about a budget.
     E6014,
+    /// A structurally invalid transfer lowering (`impl transfer A -> B { ... }`): the same edge
+    /// implemented twice in one compilation (which one is in force would be load order), or a
+    /// lowering with no functions (an empty body cannot move anything, and accepting it would
+    /// make `impl transfer` an inert annotation rather than code).
+    E6015,
 
     // --- Tensor/Math Errors (E7xxx) ---
     /// Matmul dimension mismatch

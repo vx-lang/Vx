@@ -1,0 +1,14 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// Two lowerings for one edge: which is in force would be module load order, the same
+// ambiguity E6012 refuses for declarations (Vx#352).
+// CHECK: E6015
+// CHECK: the edge L2 -> SMEM has 2 transfer lowerings
+impl transfer Memory::L2 -> Memory::SMEM {
+  fn move_a(n: i32) -> i32 { return n; }
+}
+impl transfer Memory::L2 -> Memory::SMEM {
+  fn move_b(n: i32) -> i32 { return n; }
+}
+fn main() -> i32 {
+  return 0;
+}

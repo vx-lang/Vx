@@ -432,6 +432,7 @@ impl CompilerDriver {
                 // The compiling machine's own architecture, so `--host default`
                 // is a declaration like any other and the triple is derived the
                 // same way for it as for a host file (#342).
+                transfer_impls: Vec::new(),
                 topologies: vec![crate::arch::TopologyDecl {
                     name: crate::symbol::Symbol::from("Host"),
                     descriptor: crate::arch::TopologyDescriptor {
@@ -632,6 +633,8 @@ impl CompilerDriver {
         // A name declared by two inputs (e.g. a `--machine` file and the program) is ambiguous:
         // report it before any check that reads the collapsed declaration tables (#281).
         checker.check_declaration_conflicts();
+        // Structural validity of transfer lowerings (duplicate edge, empty body) -- E6015.
+        checker.check_transfer_impls();
         // Reject/flag incoherent user-defined topology declarations before checking bodies.
         //
         // Read from the env, not from `ast.topologies`: the latter is the entry program alone, so

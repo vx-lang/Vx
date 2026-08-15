@@ -60,6 +60,7 @@ fn test_ak_module_add_function() -> Result<(), String> {
         functions: vec![],
         topologies: vec![],
         memories: vec![],
+        transfer_impls: Vec::new(),
     };
 
     // The 'pub' keyword is automatically stripped by our From<&str> implementation

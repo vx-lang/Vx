@@ -1,0 +1,10 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// An empty lowering cannot move anything; accepting it would make `impl transfer` an
+// inert annotation rather than code (Vx#352).
+// CHECK: E6015
+// CHECK: declares no functions
+impl transfer Memory::L2 -> Memory::SMEM {
+}
+fn main() -> i32 {
+  return 0;
+}

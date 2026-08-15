@@ -810,6 +810,18 @@ impl<'a> Parser<'a> {
 
         let generics = self.parse_generic_params()?;
 
+        // `impl<T> transfer ...` reaches here (the dispatch only looks one token past `impl`,
+        // so a generic list hides the keyword). Without this check, `parse_type` consumes
+        // `transfer` as if it could start a type and the error lands on the NEXT token --
+        // pointing at `Memory`, which looks exactly like a type identifier, while the actual
+        // offender is never named.
+        if self.check(&TokenType::Transfer) {
+            return Err(self.error(
+                "'impl transfer' does not take generic parameters; a transfer lowering is \
+                 declared per edge (`impl transfer Memory::A -> Memory::B { ... }`)",
+            ));
+        }
+
         // Either `impl Trait for Type` or `impl Type`
         let mut trait_name = None;
         let target_type;
@@ -952,6 +964,7 @@ impl<'a> Parser<'a> {
         let mut impls = Vec::new();
         let mut functions = Vec::new();
         let mut macros = Vec::new();
+        let mut transfer_impls = Vec::new();
         while !self.check(&TokenType::Eof) {
             let mut doc_comment: Option<String> = None;
             while let TokenType::DocComment(c) = &self.peek().kind {
@@ -974,7 +987,20 @@ impl<'a> Parser<'a> {
             } else if self.check(&TokenType::Trait) {
                 traits.push(self.parse_trait_decl()?);
             } else if self.check(&TokenType::Impl) {
-                impls.push(self.parse_impl_block()?);
+                // `impl transfer Memory::A -> Memory::B { ... }` is a transfer lowering, not a
+                // trait impl. One token of lookahead separates them. `transfer` cannot appear in
+                // TYPE position (`parse_named_type` rejects it), so no trait impl is captured by
+                // this branch -- but the keyword IS accepted as an ordinary identifier elsewhere
+                // (`expect_identifier` allows `fn transfer(...)`), and a generic `impl<T>` hides
+                // the keyword from this one-token look; `parse_impl_block` carries the directed
+                // error for that case.
+                if matches!(self.peek_n(1).kind, TokenType::Transfer) {
+                    let mut t = self.parse_transfer_impl()?;
+                    t.doc_comment = doc_comment;
+                    transfer_impls.push(t);
+                } else {
+                    impls.push(self.parse_impl_block()?);
+                }
             } else if self.check(&TokenType::Struct) {
                 let mut s = self.parse_struct_decl()?;
                 s.doc_comment = doc_comment;
@@ -1019,6 +1045,62 @@ impl<'a> Parser<'a> {
             functions,
             topologies,
             memories,
+            transfer_impls,
+        })
+    }
+
+    /// `impl transfer Memory::<From> -> Memory::<To> { fn ... }` — a transfer lowering
+    /// (docs/custom_transfer_contract.md). The header mirrors the topology's edge clause so the
+    /// two forms read as statements about the same edge; the body is ordinary `fn` items, parsed
+    /// by `parse_function` like an impl block's methods.
+    ///
+    /// The design intends every existing front-end check to apply to these bodies; TODAY only
+    /// macro expansion and the structural checks (E6015) visit them, and a body is not yet
+    /// type-checked. Said plainly because the gap is real: a broken body currently parses clean,
+    /// and wiring the checker through `Program::transfer_impls` is the next step, not an
+    /// assumption to build on.
+    pub(crate) fn parse_transfer_impl(&mut self) -> ParseResult<'a, TransferImplDecl> {
+        self.consume(&TokenType::Impl, "Expected 'impl'")?;
+        self.consume(&TokenType::Transfer, "Expected 'transfer' after 'impl'")?;
+        let from = self.parse_memory_space()?;
+        self.consume(&TokenType::Arrow, "Expected '->' in 'impl transfer'")?;
+        let to = self.parse_memory_space()?;
+        self.consume(
+            &TokenType::LeftBrace,
+            "Expected '{' after 'impl transfer' header",
+        )?;
+        let mut methods = Vec::new();
+        while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
+            let mut doc_comment: Option<String> = None;
+            while let TokenType::DocComment(c) = &self.peek().kind {
+                let text = c.to_string();
+                if let Some(existing) = &mut doc_comment {
+                    existing.push('\n');
+                    existing.push_str(&text);
+                } else {
+                    doc_comment = Some(text);
+                }
+                self.advance();
+            }
+            if !self.check(&TokenType::Fn) {
+                return Err(self.error(&format!(
+                    "Expected 'fn' inside 'impl transfer' (a lowering is functions only), got {:?}",
+                    self.peek().kind
+                )));
+            }
+            let mut method = self.parse_function()?;
+            method.doc_comment = doc_comment;
+            methods.push(method);
+        }
+        self.consume(
+            &TokenType::RightBrace,
+            "Expected '}' to close 'impl transfer'",
+        )?;
+        Ok(TransferImplDecl {
+            from,
+            to,
+            methods,
+            doc_comment: None,
         })
     }
 }
@@ -1037,6 +1119,132 @@ mod tests {
         let program = parser.parse().unwrap();
         assert_eq!(program.functions.len(), 1);
         assert_eq!(program.functions[0].name.as_ref(), "main");
+    }
+
+    #[test]
+    fn transfer_impl_parses_and_is_carried() {
+        // The wrapper from docs/custom_transfer_contract.md: `impl transfer A -> B { fn ... }`.
+        // The body is ordinary Vx -- that is the design's whole point -- so an ordinary function
+        // must parse inside it unchanged.
+        let input = r#"
+/// Fills a distinct destination, so this is the copy shape.
+impl transfer Memory::L2 -> Memory::SMEM {
+    /// One cooperative copy loop.
+    fn move_tile(n: i32) -> i32 {
+        let mut i = 0;
+        loop {
+            if i >= n { break; }
+            i = i + 1;
+        }
+        return i;
+    }
+}
+"#;
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize();
+        let mut parser = Parser::new(&tokens, input);
+        let program = parser.parse().unwrap();
+        assert_eq!(program.transfer_impls.len(), 1);
+        let t = &program.transfer_impls[0];
+        assert_eq!(t.from, crate::syntax::MemorySpace::from_name("L2"));
+        assert_eq!(t.to, crate::syntax::MemorySpace::from_name("SMEM"));
+        assert_eq!(t.methods.len(), 1);
+        assert_eq!(t.methods[0].name.as_ref(), "move_tile");
+        // Doc comments attach at both levels, mirroring impl blocks.
+        assert!(t.doc_comment.as_deref().unwrap().contains("copy shape"));
+        assert!(t.methods[0]
+            .doc_comment
+            .as_deref()
+            .unwrap()
+            .contains("cooperative copy"));
+        // And it did NOT leak into the trait-impl list.
+        assert!(program.impls.is_empty());
+    }
+
+    #[test]
+    fn transfer_impl_does_not_shadow_trait_impls() {
+        // The dispatch is one token of lookahead on a keyword; a plain impl block right next to a
+        // transfer impl must still land in `impls`. This is the regression the lookahead could
+        // cause and must not.
+        let input = r#"
+struct Pair { a: i32 }
+impl Pair {
+    fn get(x: i32) -> i32 { return x; }
+}
+impl transfer Memory::GPU_HBM -> Memory::L2 {
+    fn stage() -> i32 { return 0; }
+}
+"#;
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize();
+        let mut parser = Parser::new(&tokens, input);
+        let program = parser.parse().unwrap();
+        assert_eq!(program.impls.len(), 1);
+        assert_eq!(program.transfer_impls.len(), 1);
+        assert_eq!(program.impls[0].methods[0].name.as_ref(), "get");
+    }
+
+    #[rstest]
+    // No arrow: the header must name an edge, not a space.
+    #[case("impl transfer Memory::L2 { fn f() -> i32 { return 0; } }")]
+    // A lowering is functions only; a stray declaration inside is an error, not skipped.
+    #[case("impl transfer Memory::A -> Memory::B { let x = 1; }")]
+    // The header takes memory spaces, not bare identifiers.
+    #[case("impl transfer L2 -> SMEM { fn f() -> i32 { return 0; } }")]
+    // Unclosed body reaches Eof rather than looping forever.
+    #[case("impl transfer Memory::A -> Memory::B { fn f() -> i32 { return 0; }")]
+    fn transfer_impl_rejects_malformed_headers(#[case] input: &str) {
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize();
+        let mut parser = Parser::new(&tokens, input);
+        assert!(parser.parse().is_err(), "should reject: {input}");
+    }
+
+    #[test]
+    fn transfer_impl_bodies_are_macro_expanded() {
+        // Macro expansion walks functions and impl methods; a lowering body must expand too, or
+        // a MacroCall node survives for every downstream pass to trip on (Vx#352 review finding).
+        let input = r#"
+macro_rules! one { () => { 1 } }
+impl transfer Memory::L2 -> Memory::SMEM {
+    fn move_tile() -> i32 { return one!(); }
+}
+"#;
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize();
+        let mut parser = Parser::new(&tokens, input);
+        let mut program = parser.parse().unwrap();
+        // Mirror the driver: collect rules into the name-keyed map the expander takes.
+        let mut rules = std::collections::HashMap::new();
+        for mac in &program.macros {
+            rules.insert(mac.name.clone(), mac.rules.clone());
+        }
+        let expander = crate::syntax::MacroExpander::new(&rules);
+        expander.expand_module(&mut program).unwrap();
+        let body = format!("{:?}", program.transfer_impls[0].methods[0].body);
+        assert!(
+            !body.contains("MacroCall"),
+            "macro call survived expansion inside a transfer lowering: {body}"
+        );
+    }
+
+    #[test]
+    fn transfer_impl_signature_clone_strips_bodies() {
+        // `clone_signature` exists so the parallel pipeline can share a light Program; a lowering
+        // body is as heavy as any function body and must be stripped with them.
+        let input = r#"
+impl transfer Memory::L2 -> Memory::SMEM {
+    fn move_tile(n: i32) -> i32 { return n; }
+}
+"#;
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize();
+        let mut parser = Parser::new(&tokens, input);
+        let program = parser.parse().unwrap();
+        let sig = program.clone_signature();
+        assert_eq!(sig.transfer_impls.len(), 1);
+        assert!(sig.transfer_impls[0].methods[0].body.is_empty());
+        assert!(!program.transfer_impls[0].methods[0].body.is_empty());
     }
 
     #[test]

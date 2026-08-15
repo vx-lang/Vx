@@ -69,6 +69,14 @@ impl<'a> MacroExpander<'a> {
                 self.expand_function(func)?;
             }
         }
+        // Transfer lowerings carry ordinary function bodies, so a macro call inside one must
+        // expand like a macro call anywhere else -- skipping them would leave a MacroCall node
+        // behind for every downstream pass to trip on (Vx#352 review finding).
+        for t in &mut module.transfer_impls {
+            for func in &mut t.methods {
+                self.expand_function(func)?;
+            }
+        }
         Ok(())
     }
 

@@ -282,6 +282,49 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Structural checks on transfer lowerings (`impl transfer A -> B { ... }`), E6015. Two ways
+    /// a lowering can be malformed before its body is even looked at: the same edge implemented
+    /// twice (which one is in force would be module load order -- the same ambiguity E6012 exists
+    /// to refuse), and an empty lowering (nothing to emit, so `impl transfer` would become an
+    /// inert annotation). Body checking is separate and not yet wired; this is the part that must
+    /// hold regardless of what the bodies say.
+    pub fn check_transfer_impls(&mut self) {
+        let mut seen: std::collections::HashMap<
+            (crate::syntax::MemorySpace, crate::syntax::MemorySpace),
+            usize,
+        > = std::collections::HashMap::new();
+        for t in &self.env.transfer_impls {
+            if t.methods.is_empty() {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E6015,
+                    format!(
+                        "`impl transfer {} -> {}` declares no functions; an empty lowering cannot \
+                         move anything -- give it a body or remove it",
+                        t.from.name(),
+                        t.to.name()
+                    ),
+                    None,
+                );
+            }
+            *seen.entry((t.from.clone(), t.to.clone())).or_insert(0) += 1;
+        }
+        for ((from, to), n) in seen {
+            if n > 1 {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E6015,
+                    format!(
+                        "the edge {} -> {} has {} transfer lowerings; which one is in force would \
+                         be load order, so exactly one is allowed",
+                        from.name(),
+                        to.name(),
+                        n
+                    ),
+                    None,
+                );
+            }
+        }
+    }
+
     pub fn check_memory_coherence(&mut self) {
         use crate::hir::memory::{MemoryCoherenceIssue, MemoryHierarchy};
         let issues = MemoryHierarchy::build(self.env.memories.values().copied()).coherence_issues();

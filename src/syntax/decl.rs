@@ -269,6 +269,31 @@ pub struct MemoryDecl {
     pub doc_comment: Option<String>,
 }
 
+/// `impl transfer Memory::<From> -> Memory::<To> { fn ... }` — a transfer lowering: the code a
+/// movement across this edge emits, written in Vx and compiled by our own front end
+/// (docs/custom_transfer_contract.md).
+///
+/// Distinct from the two existing `transfer` forms on purpose. The topology clause
+/// (`transfer Memory::A -> Memory::B : cost`) declares that an edge EXISTS and what it costs; the
+/// expression (`transfer(x, Memory::B)`) asks for a movement. This declares HOW the movement is
+/// performed — and its `relaxed|sync` grade, its aliasing and its overhead are eventually read off
+/// the body rather than declared, which is what supersedes the edge clause's declared marker.
+#[derive(Debug, PartialEq, Clone)]
+pub struct TransferImplDecl {
+    /// The edge this lowering implements, `from -> to`. Matched against the topology's declared
+    /// edges by sema (not yet wired); a lowering for an edge no topology declares is meaningless.
+    pub from: MemorySpace,
+    pub to: MemorySpace,
+    /// The lowering's functions, `fn move(...)` by convention. Parsed as ordinary Vx functions —
+    /// the design's point being that every front-end check CAN apply to them. Today macro
+    /// expansion and the structural checks (E6015) visit these bodies; full type-checking is
+    /// not yet wired, so do not read this field as verified code. Which shapes are legal (copy
+    /// fills a `dst`; an alias returns a view) is sema's question, not the parser's, so the
+    /// parser accepts any `fn` items here.
+    pub methods: Vec<Function>,
+    pub doc_comment: Option<String>,
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub struct Program {
     pub module_path: Symbol,
@@ -289,6 +314,10 @@ pub struct Program {
     /// topologies, the full descriptors live here on the AST (not a global registry); sema
     /// indexes them via `GlobalAstEnv` and codegen reads them from the `Program`.
     pub memories: Vec<MemoryDecl>,
+    /// Transfer lowerings declared in this program (`impl transfer A -> B { ... }`). Parsed and
+    /// carried; nothing consumes them yet — the checks in docs/custom_transfer_contract.md land
+    /// against this field.
+    pub transfer_impls: Vec<TransferImplDecl>,
 }
 
 pub type VxModule = Program;
@@ -316,6 +345,18 @@ impl Program {
                 .collect(),
             topologies: self.topologies.clone(),
             memories: self.memories.clone(),
+            // Bodies stripped like `functions`/`impls`: the signature clone exists so the parallel
+            // pipeline can share a light Program, and a lowering body is as heavy as any other.
+            transfer_impls: self
+                .transfer_impls
+                .iter()
+                .map(|t| TransferImplDecl {
+                    from: t.from.clone(),
+                    to: t.to.clone(),
+                    methods: t.methods.iter().map(|f| f.clone_signature(false)).collect(),
+                    doc_comment: t.doc_comment.clone(),
+                })
+                .collect(),
         }
     }
 }
