@@ -30,10 +30,14 @@
 //
 // Compiles clean under nvcc 13.2 and 12.8 for sm_80/90/90a/100/120, and has been RUN against an
 // H100 80GB HBM3 (2026-08-08) -- with two exceptions, both written after that box was released
-// and with no toolkit reachable, so both are NEITHER COMPILE-VERIFIED NOR RUN:
+// and with no toolkit reachable, so NEITHER HAS BEEN RUN:
 //   * `seam 2b: HBM -> L2, the actual fill`
 //   * the `M4: the declared numbers themselves` block
-// Compile before quoting anything from either. Two instrument defects that run exposed, both of
+// Their HOST code is checked by `utils/memalg/check_host_compile.sh`, which compiles each block
+// against a stub cuda_runtime.h. That catches typos, printf formats and type errors -- the things
+// that would otherwise eat the first hour of a rented session. It does NOT check device code, and
+// it cannot check `cudaDeviceProp` field names, because the stub declares those from our own
+// belief. Run both blocks on real hardware before quoting anything from them. Two instrument defects that run exposed, both of
 // which produced confident wrong numbers rather than errors, are fixed here and described at
 // their sites: kernel-launch overhead swamping the on-die seams, and grid-stride re-reading
 // serving out of L1.
