@@ -766,6 +766,32 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
   }
 };
 
+/// Re-type the users of a value that has just moved into a different memory space.
+///
+/// Only `memref.reinterpret_cast` needs this: it is the one op in the chain whose RESULT type
+/// restates the memory space, so leaving it alone makes it a cast between spaces and the verifier
+/// rejects it with "different memory spaces specified for source type ... and result memref type".
+/// `memref.load` and `memref.store` accept any space and need no change.
+///
+/// The casts come from the flat code generator, which emits a row view for `t[i][d]` before
+/// anything knows the tile will live in shared memory -- so the space cannot be filled in there and
+/// has to be threaded through here. Recursive because a view of a view is a chain (#352).
+static void propagateMemorySpace(Value v, Attribute space) {
+  SmallVector<Operation *> users(v.getUsers().begin(), v.getUsers().end());
+  for (Operation *user : users) {
+    auto view = dyn_cast<memref::ReinterpretCastOp>(user);
+    if (!view)
+      continue;
+    auto old = llvm::cast<MemRefType>(view.getResult().getType());
+    if (old.getMemorySpace() == space)
+      continue;
+    auto retyped = MemRefType::get(old.getShape(), old.getElementType(),
+                                   old.getLayout(), space);
+    view.getResult().setType(retyped);
+    propagateMemorySpace(view.getResult(), space);
+  }
+}
+
 struct TransferOpLowering : public OpRewritePattern<TransferOp> {
   using OpRewritePattern<TransferOp>::OpRewritePattern;
 
@@ -787,6 +813,43 @@ struct TransferOpLowering : public OpRewritePattern<TransferOp> {
     auto targetType = cast<MemRefType>(op.getResult().getType());
     LLVM_DEBUG(llvm::errs() << "[VxLowering] TransferOp lowering from "
                             << srcType << " to " << targetType << "\n");
+
+    // A placement into an SM-scoped space is shared memory, and it is the one
+    // device transfer this stage CAN express. Everything needed is already on the
+    // op -- `scope = "sm"`, plus the space name, granule and slot offset the
+    // checker computed -- so it becomes a workgroup-space allocation and a copy
+    // into it, right here, in dialects the device pipeline accepts.
+    //
+    // Doing it here rather than later is what makes the kernel compilable at all.
+    // `isDeviceLowerableDialect` allows arith/cf/gpu/math/memref/scf; a surviving
+    // `vx.transfer` is none of those, so a kernel containing one is classified
+    // not-device-ready and dropped from GPU compilation entirely -- silently, and
+    // the whole region falls back. That is why a tile placed in SMEM produced no
+    // `.shared` in the emitted PTX and no `image=` in the payload: the placement
+    // disqualified the very kernel that was supposed to use it (#352).
+    if (auto scope = op->getAttrOfType<StringAttr>("scope")) {
+      if (scope.getValue() == "sm") {
+        // Integer address space 3, not `#gpu.address_space<workgroup>`. The two mean the same
+        // thing to NVVM, but the symbolic attribute needs a memory-space conversion registered on
+        // the type converter, and the device pipeline here does not install one -- it fails with
+        // "conversion of memref memory space #gpu.address_space<workgroup> to integer address
+        // space failed". 3 is what NVPTX calls shared, and it converts with no extra plumbing.
+        Attribute workgroup = rewriter.getI64IntegerAttr(3);
+        auto sharedType =
+            MemRefType::get(targetType.getShape(), targetType.getElementType(),
+                            targetType.getLayout(), workgroup);
+        // `memref.alloca`, not `alloc`: shared memory is scratch for the
+        // lifetime of the kernel, not something anyone frees, and
+        // convert-gpu-to-nvvm turns a workgroup-space alloca into a `.shared`
+        // global rather than a call into a device allocator.
+        Value shared =
+            rewriter.create<memref::AllocaOp>(op.getLoc(), sharedType);
+        rewriter.create<memref::CopyOp>(op.getLoc(), src, shared);
+        rewriter.replaceOp(op, shared);
+        propagateMemorySpace(shared, workgroup);
+        return success();
+      }
+    }
 
     // A transfer into a device space is not a host allocation and a copy. It
     // is the plugin's allocate-and-transfer, so leave the op alone here and let
