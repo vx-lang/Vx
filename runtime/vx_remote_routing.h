@@ -192,6 +192,43 @@ inline int vx_routing_fd(const vx_manifest_entry *w) {
   return fd;
 }
 
+/// Stop, rather than let a local path dereference an address on another
+/// machine.
+///
+/// Each `try` above answers "not mine" for an ordinary pointer, and the backend
+/// then does the local thing: a memcpy, a free. That is correct until the
+/// pointer is a handle, and then the local thing is a read from a non-canonical
+/// address -- SIGSEGV, no output, and a backtrace naming the signal handler.
+///
+/// Which is a bad way to learn it, because the two ends of the diagnosis are
+/// far apart. A handle reaching a local path means routing declined for data
+/// that is genuinely somewhere else: a manifest that does not list the topology
+/// the data is on, or an operation addressed to the wrong one. None of that is
+/// legible from the fault, and the fault is what a fleet run actually produced
+/// -- the read-back this guard was written alongside cost a round trip to a
+/// rented machine and came back as an empty stdout and exit -1 (#321, #348).
+///
+/// So: say which operation, which address, and which worker minted it. The
+/// worker is in the handle -- bits 55:48 -- which is the one part of this that
+/// needs no bookkeeping to recover.
+inline void vx_routing_refuse_handle(const char *what, const void *p,
+                                     uint32_t topology_id) {
+  uint64_t addr = (uint64_t)(uintptr_t)p;
+  if (!vx_remote_addr_is_handle(addr)) {
+    return;
+  }
+  fprintf(stderr,
+          "[Vx remote] FATAL: %s was given 0x%llx, which is a handle for "
+          "memory on worker %u, and routing declined it.\n"
+          "            Topology %d names no worker in the manifest, or the "
+          "operation was addressed to a topology the data is not on.\n"
+          "            Doing this locally would dereference an address no "
+          "process owns (#348).\n",
+          what, (unsigned long long)addr, vx_remote_addr_worker(addr),
+          (int)topology_id);
+  abort();
+}
+
 /// Returns 1 and sets `*out` when the allocation belongs to a remote worker.
 inline int vx_routing_try_alloc(size_t bytes, void *host_ptr,
                                 uint32_t topology_id, void **out) {

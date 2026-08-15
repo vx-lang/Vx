@@ -185,6 +185,18 @@ impl<'c> LowerToMelior<'c> for syntax::TransferExpr {
 
         let top_attr = IntegerAttribute::new(gen.i32_ty, target_topology_id as i64).into();
 
+        // Where the data is *now*, which is a different question from where it is going and one
+        // only this stage can answer cheaply. A placed tensor's type is `Pinned(_, topology)`, so
+        // the checker has already decided this; the backend would otherwise have to re-derive it
+        // by walking use-def edges back to the transfer that did the placing, and that walk ends
+        // at the first variable the value was bound to -- every `let` is an `alloca` and a store,
+        // and the read is a load whose operand is the slot. The way home was compiled into a
+        // `memcpy` from device memory for exactly that reason (#321, #348).
+        let source_topology_id = match gen.infer_ast_type(&self.expr) {
+            Some(syntax::Type::Pinned(_, top)) => crate::arch::topology_dispatch_id(&top),
+            _ => 0,
+        };
+
         let mut target_ty = src_ty;
         let src_ty_str = src_ty.to_string();
         if src_ty_str.starts_with("memref<") && src_ty_str.ends_with(">") {
@@ -200,6 +212,12 @@ impl<'c> LowerToMelior<'c> for syntax::TransferExpr {
         let mut transfer_builder = OperationBuilder::new("vx.transfer", location)
             .add_operands(&[src_val])
             .add_attributes(&[(Identifier::new(gen.context, "target_topology"), top_attr)]);
+
+        if source_topology_id != 0 {
+            let src_attr = IntegerAttribute::new(gen.i32_ty, source_topology_id as i64).into();
+            transfer_builder = transfer_builder
+                .add_attributes(&[(Identifier::new(gen.context, "source_topology"), src_attr)]);
+        }
 
         // The bandwidth-derived roofline cost (set by sema when the memory hierarchy declares
         // bandwidths). Emitting it makes the paper's data-movement cost visible in the IR.

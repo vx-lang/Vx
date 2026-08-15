@@ -205,6 +205,7 @@ void vx_plugin_free(void *device_ptr, uint32_t topology_id) {
   if (vx_routing_try_free(device_ptr, topology_id)) {
     return;
   }
+  vx_routing_refuse_handle("a free", device_ptr, topology_id);
   free(device_ptr);
 }
 
@@ -301,6 +302,7 @@ int32_t vx_plugin_transfer_device_to_host(void *device_ptr, void *host_ptr,
   if (vx_routing_try_fetch(device_ptr, host_ptr, bytes, topology_id)) {
     return 1;
   }
+  vx_routing_refuse_handle("a read-back", device_ptr, topology_id);
   // Otherwise one memory, so the topology names it and nothing follows.
   memcpy(host_ptr, device_ptr, bytes);
   return 1;
@@ -319,6 +321,7 @@ void *vx_plugin_transfer_peer(void *src_device_ptr, uint32_t src_topology_id,
   // that moves a KV cache between two GPUs runs here, and produces the same
   // tokens, which is how the two-device run gets an oracle to be checked
   // against (#347).
+  vx_routing_refuse_handle("a peer handoff", src_device_ptr, src_topology_id);
   (void)src_topology_id;
   (void)dst_topology_id;
   void *dst = malloc(bytes);

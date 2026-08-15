@@ -72,13 +72,49 @@ static bool isDeviceTransfer(vx::TransferOp op) {
   return false;
 }
 
+/// What a variable's slot holds, when one store settles it.
+///
+/// A `let` binding is an `alloca` of a memref with a store into it, and every
+/// mention of the variable afterwards is a load. So `let d = transfer(x, HBM)`
+/// puts the device memref in a slot, and the later `transfer(d, CPU_DRAM)`
+/// receives a *load*, not the transfer's result.
+///
+/// Walking back from that load through its single operand lands on the alloca,
+/// which no transfer produced -- so provenance is lost at the first variable a
+/// value is stored in, and the caller concludes the data came from nowhere.
+/// Every binding in a Vx program has this shape, which is why the way home was
+/// still compiled into a memcpy after being wired to the fetch: the wiring was
+/// only ever reached by a transfer applied directly to another transfer.
+///
+/// One store, because that is what a binding that is never reassigned has, and
+/// because two stores are two answers -- returning either would be a guess
+/// about which one ran. Null for anything else, which leaves the caller exactly
+/// where it was.
+static Value slotContents(Value slot) {
+  if (!slot.getDefiningOp<memref::AllocaOp>())
+    return nullptr;
+  Value stored = nullptr;
+  for (Operation *user : slot.getUsers()) {
+    auto store = dyn_cast<memref::StoreOp>(user);
+    if (!store)
+      continue;
+    if (!store.getIndices().empty() || store.getMemRef() != slot)
+      return nullptr;
+    if (stored)
+      return nullptr;
+    stored = store.getValueToStore();
+  }
+  return stored;
+}
+
 /// The `vx.transfer` that put `v` where it is, if one did.
 ///
 /// Walks back through single-operand ops, because a capture usually reaches a
-/// spawn having been cast or reshaped since the transfer produced it. Bounded:
-/// a chain longer than this is one this cannot reason about anyway, and
-/// answering "no transfer" for it is the safe direction -- it declines to
-/// reject rather than rejecting something it has not understood.
+/// spawn having been cast or reshaped since the transfer produced it, and
+/// through the slot of any variable it was bound to on the way. Bounded: a
+/// chain longer than this is one this cannot reason about anyway, and answering
+/// "no transfer" for it is the safe direction -- it declines to reject rather
+/// than rejecting something it has not understood.
 static vx::TransferOp definingTransfer(Value v) {
   for (int hops = 0; v && hops < 8; ++hops) {
     Operation *def = v.getDefiningOp();
@@ -86,11 +122,42 @@ static vx::TransferOp definingTransfer(Value v) {
       return nullptr;
     if (auto xfer = dyn_cast<vx::TransferOp>(def))
       return xfer;
+    if (auto load = dyn_cast<memref::LoadOp>(def)) {
+      if (!load.getIndices().empty())
+        return nullptr;
+      v = slotContents(load.getMemRef());
+      continue;
+    }
     if (def->getNumOperands() != 1)
       return nullptr;
     v = def->getOperand(0);
   }
   return nullptr;
+}
+
+/// The topology a transfer's source is on, or 0 for "here".
+///
+/// Two ways of knowing, asked in order of how much they know.
+///
+/// `source_topology` is the checker's answer, stamped on the op by the AST
+/// emitter: a placed tensor's type is `Pinned(_, topology)`, so the placement
+/// is decided long before this file sees anything, and no analysis is involved.
+///
+/// The walk is the fallback for producers that do not stamp it. It is weaker in
+/// a way that mattered: it can only follow SSA edges, and a value bound to a
+/// variable reaches its use through a slot -- so it answers "nowhere" for every
+/// program that names its data, which is every program. `slotContents` closes
+/// the common case of that, and the attribute closes the rest.
+static int32_t sourceTopologyOf(vx::TransferOp op) {
+  if (auto a = op->getAttrOfType<IntegerAttr>("source_topology"))
+    return static_cast<int32_t>(a.getInt());
+  if (vx::TransferOp srcXfer = definingTransfer(op.getOperand())) {
+    if (isDeviceTransfer(srcXfer)) {
+      if (auto a = srcXfer->getAttrOfType<IntegerAttr>("target_topology"))
+        return static_cast<int32_t>(a.getInt());
+    }
+  }
+  return 0;
 }
 
 /// Whether a region would actually dereference its operands.
@@ -732,10 +799,8 @@ struct TransferOpLowering : public OpRewritePattern<TransferOp> {
     // allocation and a copy, so no `vx.transfer` survived and nothing ever
     // called `vx_plugin_transfer_device_to_host` -- an entry point that exists,
     // is wired to the fleet routing, and had no caller in generated code.
-    if (vx::TransferOp srcXfer = definingTransfer(src)) {
-      if (isDeviceTransfer(srcXfer))
-        return failure();
-    }
+    if (sourceTopologyOf(op) != 0)
+      return failure();
 
     // Extract dynamic sizes from the source memref
     SmallVector<Value> dynamicSizes;
@@ -1019,9 +1084,9 @@ struct TransferToPluginLowering : public OpRewritePattern<vx::TransferOp> {
     // another process. So `vx_plugin_transfer_device_to_host` -- which exists
     // and is wired to the fleet routing -- had no caller in generated code, and
     // a program asking for its data back silently did not get it.
-    vx::TransferOp srcXfer = definingTransfer(src);
+    const int32_t srcTopology = sourceTopologyOf(op);
     const bool goingOut = isDeviceTransfer(op);
-    const bool comingHome = !goingOut && srcXfer && isDeviceTransfer(srcXfer);
+    const bool comingHome = !goingOut && srcTopology != 0;
     if (!goingOut && !comingHome)
       return failure();
 
@@ -1088,11 +1153,7 @@ struct TransferToPluginLowering : public OpRewritePattern<vx::TransferOp> {
                       .getResult();
 
       // Then the fetch, addressed to the topology the data is actually on --
-      // taken from the transfer that put it there, since this op only names
-      // where it is going.
-      int32_t srcTopology = 0;
-      if (auto a = srcXfer->getAttrOfType<IntegerAttr>("target_topology"))
-        srcTopology = static_cast<int32_t>(a.getInt());
+      // this op names only where it is going.
       Value srcTopoVal = rewriter.create<LLVM::ConstantOp>(
           loc, llvmI32Type, rewriter.getI32IntegerAttr(srcTopology));
 

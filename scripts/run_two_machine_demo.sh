@@ -38,18 +38,28 @@
 # Measured on a laptop against us-west-2, and these are the rows this script
 # actually prints:
 #
-#                    messages   bytes      wall
+#                    messages   operands   wall
 #   matmul local            -        -     0.349 s
 #   matmul unplaced        64   384 KiB    3.080 s
+#   matmul placed          15    48 KiB    not yet measured on a real link
 #   kv local                -        -     0.281 s
 #   kv unplaced            64   35.9 KiB   2.518 s
 #   kv resident            50    7.1 KiB   1.967 s
 #
-# A fully placed matmul -- operands *and* result on the worker -- is 14 messages
-# and 48 KiB, a 4.6x reduction, but it is not run here: with the result resident
-# there is no way to read it home, so there would be nothing to compare against
-# the local answer. That gap is the next piece of work, and until it is closed a
-# fully placed program cannot be checked, only counted.
+# The placed row is operands *and* result on the worker, with the answer read
+# home once at the end: 15 messages against 64. It could not be run at all until
+# recently -- a `transfer` home was lowered to a copy from the source address,
+# which on a fleet is a handle naming memory in the worker's process, so the
+# program died on a signal instead of printing (#321). Its counts here are from
+# a loopback worker on one machine; the wall-clock column is left blank rather
+# than guessed, because latency is the whole point of that column and loopback
+# has none.
+#
+# The bytes column is TRANSFER only -- the operands, which is what placement
+# removes. It is not the total on the wire: the worker counts what it receives,
+# so a FETCH appears as its 16-byte request and the 16 KiB of result it sends
+# back does not appear at all. Read the message count first; it is the one that
+# is a round trip each.
 #
 #===----------------------------------------------------------------------===#
 
@@ -145,6 +155,41 @@ fn main() -> i32 {
 }
 EOF
 
+  # The same matmul with everything placed: operands and result cross once, the
+  # dispatches name handles, and the answer is read home at the end. Same
+  # arithmetic as the program above, so the two answers have to agree -- which
+  # is the point of running it, since a resident result that is never read is a
+  # count with nothing checking it.
+  cat > "$OUTDIR/matmul_placed.vx" <<'EOF'
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+}
+
+fn main() -> i32 {
+  let mut a_h = Tensor<f32>([ 64, 64 ]);
+  let mut b_h = Tensor<f32>([ 64, 64 ]);
+  let mut c_h = Tensor<f32>([ 64, 64 ]);
+  for i in 0..64 {
+    for j in 0..64 {
+      a_h[i][j] = ((i + j) as f32) * 0.01;
+      b_h[i][j] = ((i - j) as f32) * 0.02;
+    }
+  }
+  let a = transfer(a_h, Memory::GPU_HBM);
+  let b = transfer(b_h, Memory::GPU_HBM);
+  let mut c = transfer(c_h, Memory::GPU_HBM);
+  for step in 0..8 {
+    spawn on(Topology::GPU) {
+      matmul_into(&mut c, &a, &b);
+    }
+  }
+  let home = transfer(c, Memory::CPU_DRAM);
+  print(home[0][0]);
+  return 0;
+}
+EOF
+
   cat > "$OUTDIR/kv_resident.vx" <<'EOF'
 // Attention at decode: the KV cache lives on the worker, the query travels.
 Memory CPU_DRAM {}
@@ -212,6 +257,7 @@ echo
 echo "=== answers, and how long they took ==="
 run_one matmul-local     "$OUTDIR/matmul_unplaced.vx" no
 run_one matmul-unplaced  "$OUTDIR/matmul_unplaced.vx" yes
+run_one matmul-placed    "$OUTDIR/matmul_placed.vx"   yes
 run_one kv-local         "$OUTDIR/kv_unplaced.vx"     no
 run_one kv-unplaced      "$OUTDIR/kv_unplaced.vx"     yes
 run_one kv-resident      "$OUTDIR/kv_resident.vx"     yes
@@ -220,7 +266,8 @@ echo
 echo "=== did the other architecture agree? ==="
 # The worker is x86-64 and the host arm64. Same program, same numbers, or the
 # wire format does not survive the crossing and every timing above is noise.
-for pair in "matmul-local matmul-unplaced" "kv-local kv-unplaced" "kv-local kv-resident"; do
+for pair in "matmul-local matmul-unplaced" "matmul-local matmul-placed" \
+            "kv-local kv-unplaced" "kv-local kv-resident"; do
   set -- $pair
   a=$(cat "$OUTDIR/answer-$1.txt"); b=$(cat "$OUTDIR/answer-$2.txt")
   if [ "$a" = "$b" ] && [ -n "$a" ]; then

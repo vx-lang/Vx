@@ -518,6 +518,7 @@ void *vx_plugin_transfer_peer(void *src_device_ptr, uint32_t src_topology_id,
   // disaggregated program is still correct on a machine with no GPUs, which is
   // the property the rest of this ABI already has.
   if (!cuda_available() || !is_device_ptr(src_device_ptr)) {
+    vx_routing_refuse_handle("a peer handoff", src_device_ptr, src_topology_id);
     void *dst = malloc(bytes);
     if (dst && src_device_ptr) {
       memcpy(dst, src_device_ptr, bytes);
@@ -700,6 +701,9 @@ int32_t vx_plugin_transfer_device_to_host(void *device_ptr, void *host_ptr,
   if (vx_routing_try_fetch(device_ptr, host_ptr, bytes, topology_id)) {
     return 1;
   }
+  // Before `is_device_ptr`, which answers "no" for a handle -- the driver has
+  // never seen that address -- and would send this to the memcpy below.
+  vx_routing_refuse_handle("a read-back", device_ptr, topology_id);
   if (is_device_ptr(device_ptr)) {
     // Unified addressing lets the driver infer the device from the pointer, so
     // this would mostly work without the parameter. It names the device anyway,
@@ -721,6 +725,7 @@ void vx_plugin_free(void *device_ptr, uint32_t topology_id) {
   if (vx_routing_try_free(device_ptr, topology_id)) {
     return;
   }
+  vx_routing_refuse_handle("a free", device_ptr, topology_id);
   if (is_device_ptr(device_ptr)) {
     select_device((int32_t)topology_id, "free");
     cudaFree(device_ptr);
