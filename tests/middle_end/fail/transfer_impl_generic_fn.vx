@@ -1,0 +1,13 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// A generic fn in a lowering is never instantiated (lowering fns are not callable), so its
+// body would escape type-checking forever -- reopening the gap #353 A1 closed. Refused.
+// CHECK: E6015
+// CHECK: could never be instantiated
+impl transfer Memory::L2 -> Memory::SMEM {
+  fn stage<T>(x: T) -> T {
+    return x;
+  }
+}
+fn main() -> i32 {
+  return 0;
+}

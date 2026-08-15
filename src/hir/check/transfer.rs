@@ -294,6 +294,28 @@ impl<'a> TypeChecker<'a> {
             usize,
         > = std::collections::HashMap::new();
         for t in &self.env.transfer_impls {
+            // A generic fn inside a lowering can never be checked: generic bodies are checked at
+            // instantiation, and a lowering fn is not callable, so it is never instantiated -- its
+            // body would escape the checker forever. That silently reopens, for generics only, the
+            // exact parses-clean-while-broken gap #353 A1 closes, so it is refused outright: a
+            // lowering is instantiated per EDGE, not per type, and a type parameter has no meaning
+            // there.
+            for f in &t.methods {
+                if !f.generics.is_empty() {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E6015,
+                        format!(
+                            "`impl transfer {} -> {}`: fn '{}' is generic; a lowering is \
+                             instantiated per edge, not per type, so this body could never be \
+                             instantiated -- and an uninstantiated body is never type-checked",
+                            t.from.name(),
+                            t.to.name(),
+                            f.name
+                        ),
+                        None,
+                    );
+                }
+            }
             if t.methods.is_empty() {
                 self.errors.error_with_code(
                     crate::diagnostic::DiagnosticCode::E6015,

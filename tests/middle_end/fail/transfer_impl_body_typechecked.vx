@@ -1,0 +1,15 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// A lowering body is ordinary Vx and is checked like one (#353 A1). This exact body errors
+// at top level; before A1 it parsed clean inside a lowering -- the review on 0c791d17
+// reproduced that gap, and this test pins the closure.
+// CHECK: E3002
+// CHECK: Type mismatch on return
+impl transfer Memory::L2 -> Memory::SMEM {
+  fn bad(n: i32) -> i32 {
+    let s = "hello";
+    return s;
+  }
+}
+fn main() -> i32 {
+  return 0;
+}

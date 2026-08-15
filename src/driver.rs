@@ -658,6 +658,15 @@ impl CompilerDriver {
                 checker.check_function(f);
             }
         }
+        // Transfer lowerings carry ordinary function bodies (#353 A1): check them exactly like
+        // impl methods. Before this, a body that errors with E3002 at top level parsed clean
+        // inside a lowering -- the review on 0c791d17 reproduced it -- and a lowering whose body
+        // is wrong is a lowering that will move bytes wrongly on the day it is emitted.
+        for t in &mut ast.transfer_impls {
+            for f in &mut t.methods {
+                checker.check_function(f);
+            }
+        }
 
         // #203: codegen emits the imported modules' (non-generic) functions too, but above only the
         // entry module's bodies were checked — so any method or generic those bodies reach *only

@@ -284,12 +284,12 @@ pub struct TransferImplDecl {
     /// edges by sema (not yet wired); a lowering for an edge no topology declares is meaningless.
     pub from: MemorySpace,
     pub to: MemorySpace,
-    /// The lowering's functions, `fn move(...)` by convention. Parsed as ordinary Vx functions —
-    /// the design's point being that every front-end check CAN apply to them. Today macro
-    /// expansion and the structural checks (E6015) visit these bodies; full type-checking is
-    /// not yet wired, so do not read this field as verified code. Which shapes are legal (copy
-    /// fills a `dst`; an alias returns a view) is sema's question, not the parser's, so the
-    /// parser accepts any `fn` items here.
+    /// The lowering's functions, `fn move(...)` by convention. Parsed as ordinary Vx functions,
+    /// and treated as such downstream: macro-expanded, structurally checked (E6015), and
+    /// type-checked like impl methods (#353 A1). Not yet emitted as code, and the `raw::`
+    /// primitive obligations are not yet enforced. Which shapes are legal (copy fills a `dst`;
+    /// an alias returns a view) is sema's question, not the parser's, so the parser accepts any
+    /// `fn` items here.
     pub methods: Vec<Function>,
     pub doc_comment: Option<String>,
 }

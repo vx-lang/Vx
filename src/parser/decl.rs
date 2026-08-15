@@ -1054,11 +1054,10 @@ impl<'a> Parser<'a> {
     /// two forms read as statements about the same edge; the body is ordinary `fn` items, parsed
     /// by `parse_function` like an impl block's methods.
     ///
-    /// The design intends every existing front-end check to apply to these bodies; TODAY only
-    /// macro expansion and the structural checks (E6015) visit them, and a body is not yet
-    /// type-checked. Said plainly because the gap is real: a broken body currently parses clean,
-    /// and wiring the checker through `Program::transfer_impls` is the next step, not an
-    /// assumption to build on.
+    /// The bodies are macro-expanded, structurally checked (E6015), and type-checked like impl
+    /// methods (#353 A1) -- a body that errors at top level errors identically inside a lowering.
+    /// Not yet visited: the `raw::` primitive obligations (A2) and lowering to code (A3), which
+    /// is where the contract's C1/C6 checks land.
     pub(crate) fn parse_transfer_impl(&mut self) -> ParseResult<'a, TransferImplDecl> {
         self.consume(&TokenType::Impl, "Expected 'impl'")?;
         self.consume(&TokenType::Transfer, "Expected 'transfer' after 'impl'")?;

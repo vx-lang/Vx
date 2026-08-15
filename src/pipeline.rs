@@ -1139,6 +1139,16 @@ fn type_check_phase(
                     .map(|f| check_one_function(f, module_idx, global_session, global_env))
                     .collect();
                 results.extend(impl_results);
+                // Transfer lowerings, same walk (#353 A1). Third traversal rather than folded
+                // into the impls one so the order stays module -> functions -> impls -> lowerings
+                // in both branches.
+                let lowering_results: Vec<FunctionCheck> = module
+                    .transfer_impls
+                    .iter_mut()
+                    .flat_map(|t| t.methods.iter_mut())
+                    .map(|f| check_one_function(f, module_idx, global_session, global_env))
+                    .collect();
+                results.extend(lowering_results);
                 results
             })
             .collect()
@@ -1162,6 +1172,16 @@ fn type_check_phase(
                     })
                     .collect();
                 results.extend(impl_results);
+                let lowering_results: Vec<FunctionCheck> = module
+                    .transfer_impls
+                    .par_iter_mut()
+                    .flat_map(|t| {
+                        t.methods
+                            .par_iter_mut()
+                            .map(|f| check_one_function(f, module_idx, global_session, global_env))
+                    })
+                    .collect();
+                results.extend(lowering_results);
                 results
             })
             .collect()
@@ -2243,6 +2263,44 @@ mod gid_stream_tests {
             vec![Opcode::Load, Opcode::Load, Opcode::Add, Opcode::Ret],
             "scalar body lowered through the parallel phase"
         );
+    }
+
+    /// Transfer-lowering bodies flow through BOTH schedules of `type_check_phase` (#353 A1).
+    /// The driver path has a FileCheck test asserting the E3002 itself; this is the only coverage
+    /// the pipeline branches have, because no vxc flag reaches them. The phase fails fast on a
+    /// semantic error rather than returning diagnostics, so the assertion is Err-vs-Ok -- with a
+    /// control (same module, lowering removed) so the failure is attributable to the lowering
+    /// body and nothing else.
+    #[test]
+    fn type_check_phase_checks_transfer_lowering_bodies() {
+        let broken_lowering = r#"
+impl transfer Memory::L2 -> Memory::SMEM {
+    fn bad(n: i32) -> i32 { let s = "hello"; return s; }
+}
+fn main() -> i32 { return 0; }
+"#;
+        let control = "fn main() -> i32 { return 0; }";
+        for sched in [Schedule::Sequential, Schedule::Parallel] {
+            for (src, should_pass) in [(control, true), (broken_lowering, false)] {
+                let mut modules = vec![parse_only("m", src)];
+                name_resolution_phase(&mut modules, Schedule::Parallel);
+                let registry = build_frozen_registry(&modules).expect("registry");
+                let session = Arc::new(GlobalSession::with_registry(1, registry));
+                let env_mods: Vec<VxModule> = modules.iter().map(|m| m.clone_signature()).collect();
+                let env = GlobalAstEnv::build(&env_mods);
+                let result = type_check_phase(&mut modules, &session, &env, sched);
+                let outcome = match &result {
+                    Ok(_) => "Ok".to_string(),
+                    Err(e) => format!("{e:?}"),
+                };
+                assert_eq!(
+                    result.is_ok(),
+                    should_pass,
+                    "under {sched:?}: a type-broken lowering body must fail the phase and the \
+                     control must pass; got {outcome}"
+                );
+            }
+        }
     }
 
     /// A tensor-typed signature contributes the tensor's GID (element + shape) to the flat type
