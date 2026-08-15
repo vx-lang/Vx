@@ -51,6 +51,7 @@
 #include <netinet/tcp.h>
 #include <signal.h>
 #include <sys/socket.h>
+#include <time.h>
 #include <unistd.h>
 
 namespace {
@@ -90,6 +91,70 @@ uint8_t g_body[64u << 20];
    the host disconnects; see the counting site in the message loop. */
 uint64_t g_msg_count[5] = {0, 0, 0, 0, 0};
 uint64_t g_msg_bytes[5] = {0, 0, 0, 0, 0};
+
+/* How long the device spent, which is a different question from how long the
+   program took and the only one this side of the network can answer.
+   Accumulated per (m,n,k) so a run that changes shape does not average across
+   shapes. */
+struct dispatch_timing {
+  int64_t m, n, k;
+  uint64_t count;
+  double best;  /* seconds */
+  double total; /* seconds */
+};
+dispatch_timing g_timing[8];
+size_t g_timing_count = 0;
+
+double now_seconds() {
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
+}
+
+void note_dispatch_time(const vx_gemm_plan *plan, double secs) {
+  for (size_t i = 0; i < g_timing_count; ++i) {
+    if (g_timing[i].m == plan->m && g_timing[i].n == plan->n &&
+        g_timing[i].k == plan->k) {
+      ++g_timing[i].count;
+      g_timing[i].total += secs;
+      if (secs < g_timing[i].best) {
+        g_timing[i].best = secs;
+      }
+      return;
+    }
+  }
+  if (g_timing_count == sizeof(g_timing) / sizeof(g_timing[0])) {
+    return;
+  }
+  g_timing[g_timing_count].m = plan->m;
+  g_timing[g_timing_count].n = plan->n;
+  g_timing[g_timing_count].k = plan->k;
+  g_timing[g_timing_count].count = 1;
+  g_timing[g_timing_count].best = secs;
+  g_timing[g_timing_count].total = secs;
+  ++g_timing_count;
+}
+
+/* Best and mean, because the two say different things and quoting one is how a
+   GEMM number becomes wrong. The first dispatch of a process builds the CUDA
+   context and the cuBLAS handle and takes milliseconds that have nothing to do
+   with the arithmetic; it lands in the mean and not in the best. A run whose
+   best and mean are far apart is a run that was still warming up. */
+void report_timing() {
+  for (size_t i = 0; i < g_timing_count; ++i) {
+    const dispatch_timing *t = &g_timing[i];
+    /* 2mnk: one multiply and one add per element of the product. */
+    const double flops = 2.0 * (double)t->m * (double)t->n * (double)t->k;
+    const double mean = t->total / (double)t->count;
+    fprintf(stderr,
+            "[Vx worker] gemm %lldx%lldx%lld  x%llu  best %.3f ms (%.1f "
+            "GFLOP/s)  mean %.3f ms (%.1f GFLOP/s)\n",
+            (long long)t->m, (long long)t->n, (long long)t->k,
+            (unsigned long long)t->count, t->best * 1e3, flops / t->best / 1e9,
+            mean * 1e3, flops / mean / 1e9);
+  }
+  g_timing_count = 0;
+}
 
 /* One line per kind when the host goes away, so a harness can read the cost of
    a run without parsing a log. Unconditional rather than behind --verbose: a
@@ -241,8 +306,21 @@ int serve_dispatch(const vx_wire_dispatch *d, const vx_wire_arg *args,
     }
   }
 
+  /* Timed here because nowhere else can. A dispatch driven from another
+     machine spends its wall clock on the link -- 172 ms of round trip against
+     tens of microseconds of A100 -- so the host's clock measures the network
+     and says nothing about the device. This one is on the far side of the
+     network, immediately around the call, and `vx_plugin_dispatch_async`
+     synchronises before returning, so what it brackets is the GEMM (#321).
+     Still not a kernel timer: it includes the plugin's own argument handling
+     and, on the first call of a process, the CUDA context and the cuBLAS
+     handle -- which is why the summary reports the best of the run and not the
+     mean. */
+  const double t0 = now_seconds();
   vx_plugin_dispatch_async(d->payload, (size_t)d->payload_len, device_args,
                            arg_tags, d->num_args);
+  const double elapsed = now_seconds() - t0;
+  note_dispatch_time(&plan, elapsed);
 
   /* A slot result was allocated by the plugin and is unknown to the region
      table until now. Its size is the plan's, which is why the plan was decoded
@@ -306,6 +384,7 @@ int serve(int fd) {
     if (rc == VX_TRANSPORT_EOF) {
       log_line("[Vx worker] host disconnected\n");
       report_traffic();
+      report_timing();
       return 0;
     }
     if (rc == VX_TRANSPORT_TOO_LARGE) {
@@ -318,6 +397,7 @@ int serve(int fd) {
     if (rc != VX_TRANSPORT_OK) {
       fprintf(stderr, "[Vx worker] transport failure; dropping the host\n");
       report_traffic();
+      report_timing();
       return 1;
     }
 

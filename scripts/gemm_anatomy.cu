@@ -6,10 +6,34 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Vx's GEMM path reaches about 8% of an A100's SGEMM peak, and "we just call
+// Vx's GEMM path reached about 8% of an A100's SGEMM peak, and "we just call
 // cuBLAS" is true, so the gap is in what surrounds the call rather than in the
 // call. This attributes it, by running the *same* cublasSgemm under layers
 // added one at a time (#348, #321).
+//
+// That 8% was the `+malloc` row: operands staged in and out and three
+// cudaMalloc/cudaFree pairs, per dispatch. Residency removed all of it. With
+// the operands placed once and left there, a dispatch driven from a laptop and
+// timed on the worker now runs at (#321):
+//
+//   N       this file, resident   this file, +sync   a Vx dispatch
+//   512          7895 GFLOP/s        6101 GFLOP/s      2918 GFLOP/s
+//   1024        13506               12632             10425
+//   2048        14510               14389             13888
+//
+// So 8% became 71% of the A100's 19.5 TFLOP/s fp32 peak, and 96.5% of what
+// this file measures a synchronised cuBLAS call doing on the same device.
+//
+// What is left is not a fraction, it is a constant: 36 to 48 microseconds per
+// dispatch across a 64x range of GEMM sizes -- payload parse, handle
+// resolution, descriptor rebuild, and the synchronise. It is 3.6% of a 2048
+// GEMM and larger than the whole of a 512 one, which is why the small sizes
+// look bad and why the number to quote is the microseconds rather than the
+// percentage.
+//
+// `+sync` rather than `resident` is the honest comparison for that subtraction:
+// a dispatch has to know the result is ready before it can reply, so the
+// synchronise is the path's, not overhead added by measurement.
 //
 //   resident    operands already on the device, nothing copied or allocated
 //   +sync       a full device synchronise per GEMM
