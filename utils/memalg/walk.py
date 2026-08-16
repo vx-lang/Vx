@@ -75,6 +75,32 @@ def walk_source(br, bc, d):
     return "\n".join(lines) + "\n"
 
 
+def load_measured(path):
+    """The instrument's walk rows, keyed (hop, bytes), plus the measured SM clock.
+
+    The `walk/L2->SMEM` rows are in CYCLES (the instrument's native unit for that seam) while the
+    prediction is picoseconds. The conversion uses `device/SM_clock` FROM THE SAME CSV -- a
+    measured number travelling with the measurement, never an assumed one, which is what protocol
+    decision 5 requires. No clock row, no conversion: the hop reports unscored.
+    """
+    import csv
+
+    rows = {}
+    clock_hz = None
+    with open(path) as f:
+        for row in csv.DictReader(f):
+            if row["seam"] == "device/SM_clock" and row["median"]:
+                clock_hz = float(row["median"])
+            if not row["seam"].startswith("walk/") or not row["median"]:
+                continue
+            hop = row["seam"][len("walk/") :]
+            rows[(hop, int(row["bytes"]))] = {
+                "median": float(row["median"]),
+                "unit": row["unit"],
+            }
+    return {"rows": rows, "clock_hz": clock_hz}
+
+
 def predict(vxc, machine, br, bc, d, workdir):
     src = os.path.join(workdir, f"walk_{br}_{bc}_{d}.vx")
     with open(src, "w") as f:
@@ -97,15 +123,7 @@ def main():
     ap.add_argument("--measured", help="measure_device CSV; fills in the measured column")
     args = ap.parse_args()
 
-    if args.measured:
-        # Deliberately not implemented as a silent no-op. M1's join is per-seam at frozen sizes;
-        # a walk's hops are at attention-tile sizes that are not in that sweep, so there is no row
-        # to join against yet and pretending otherwise would print an error table full of zeros.
-        sys.exit(
-            "--measured is not wired up yet: measure_device sweeps the frozen log-spaced sizes "
-            "and a walk's hops land at attention-tile sizes that are not among them. The "
-            "instrument needs a walk mode that times these exact byte counts first (vx-review#20)."
-        )
+    measured = load_measured(args.measured) if args.measured else None
 
     workdir = tempfile.mkdtemp(prefix="m6-")
     print(f"machine : {args.machine}")
@@ -143,6 +161,32 @@ def main():
         total = sum(c for c in cols if c is not None)
         cells = "".join(f"{c:>13,}" if c is not None else f"{'-':>13}" for c in cols)
         print(f"{name:<20}{setb:>9,}{cells}{total:>14,}  {verdict}")
+
+        # The measured column, when a CSV was supplied: per hop, joined on exact bytes, with the
+        # signed error the campaign always reports. The instrument measures the WORKING SET per
+        # hop (all three tiles arrive together), so the join is on `setb`.
+        if measured is not None:
+            hop_map = [
+                ("CPU_DRAM->HBM", "CPU_DRAM->HBM", "ps"),
+                ("HBM->L2", "HBM->L2_fill", "ps"),
+                ("L2->SMEM", "L2->SMEM", "cyc"),
+            ]
+            parts = []
+            for (pred_hop, meas_hop, unit), pred_ps in zip(hop_map, cols):
+                m = measured["rows"].get((meas_hop, setb))
+                if pred_ps is None or m is None:
+                    parts.append(f"{meas_hop}: unmeasured")
+                    continue
+                if unit == "cyc":
+                    if not measured["clock_hz"]:
+                        parts.append(f"{meas_hop}: no device/SM_clock row, unscored")
+                        continue
+                    meas_ps = m["median"] / measured["clock_hz"] * 1e12
+                else:
+                    meas_ps = m["median"]
+                err = (pred_ps - meas_ps) / meas_ps * 100.0
+                parts.append(f"{meas_hop}: {err:+.1f}%")
+            print(f"{'':<20}{'measured:':>9} " + "   ".join(parts))
         if verdict == "rejected":
             rejected.append((name, setb, rec))
         if total and all(c is not None for c in cols):

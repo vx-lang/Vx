@@ -58,6 +58,10 @@ def load_measurements(path):
             if row["seam"].startswith("device/"):
                 facts.append(row)
                 continue
+            # walk/* rows are the M6 measured column (utils/memalg/walk.py --measured joins them);
+            # they have no frozen per-seam cell and would otherwise crowd the unmatched list.
+            if row["seam"].startswith("walk/"):
+                continue
             out[(row["seam"], int(row["bytes"]), row.get("note", ""))] = {
                 "median": float(row["median"]),
                 "q1": float(row["q1"]) if row.get("q1") else None,

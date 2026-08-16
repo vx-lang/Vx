@@ -57,6 +57,12 @@ cudaError_t cudaEventElapsedTime(float *, cudaEvent_t, cudaEvent_t);
 cudaError_t cudaHostAlloc(void **, size_t, unsigned);
 cudaError_t cudaFreeHost(void *);
 cudaError_t cudaMemcpy(void *, const void *, size_t, int);
+typedef int cudaMemcpyKind;
+static const int cudaMemcpyHostToDevice = 1, cudaMemcpyDeviceToHost = 2;
+static const unsigned cudaHostAllocDefault = 0;
+typedef int cudaFuncAttribute;
+static const int cudaFuncAttributeMaxDynamicSharedMemorySize = 8;
+template <class F> cudaError_t cudaFuncSetAttribute(F, int, int);
 const char *cudaGetErrorString(cudaError_t);
 EOF
 
@@ -84,6 +90,7 @@ preamble = "\n".join([
 blocks = {
     "m4_facts": between(r"---- M4: the declared numbers", r"---- seam 1: CPU_DRAM"),
     "seam2b":   between(r"---- seam 2b: HBM -> L2, the actual fill", r"---- seam 3: L2 -> SMEM"),
+    "m6_walk":  between(r"---- M6 walk: the same three hops", r"^  return 0;"),
 }
 
 for name, body in blocks.items():
@@ -94,6 +101,7 @@ for name, body in blocks.items():
         f'#include "{work}/cuda_stub.h"',
         "#define REPS 11",
         "static void l2_stream(const float4*, size_t, float*, int);",
+        "static void l2_to_smem_cycles(const float4*, size_t, unsigned long long*);",
         preamble,
         "int main() {",
         "  int dev = 0; CK(cudaSetDevice(dev));",

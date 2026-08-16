@@ -68,6 +68,13 @@ static const size_t SIZES[] = {4096ul,      16384ul,     65536ul,     262144ul, 
                                4194304ul,   16777216ul,  67108864ul,  268435456ul, 1073741824ul};
 static const int N_SIZES = sizeof(SIZES) / sizeof(SIZES[0]);
 
+// The M6 walk's working-set sizes: FlashAttention-2 blocks, (Br*d + 2*Bc*d) * 4 bytes for
+// (Br, Bc, d) over {64,128} x {64,128} (vx-review#20, utils/memalg/walk.py WALKS). Hard-coded for
+// the same reason as SIZES: these join against walk.py's table, and a computed sweep could
+// silently desynchronise the join.
+static const size_t WALK_BYTES[] = {49152ul, 65536ul, 98304ul, 131072ul, 196608ul};
+static const int N_WALK = sizeof(WALK_BYTES) / sizeof(WALK_BYTES[0]);
+
 // One declared-number row (vx-review#18). These are facts, not distributions: `median` carries the
 // value, `unit` says what it is, q1/q3/rate are empty and reps is 1. compare_m1.py joins on
 // (seam, bytes, note) and no frozen cell carries a `device/` seam name, so these are inert to the
@@ -571,6 +578,137 @@ int main() {
 
       CK(cudaFree(d));
       CK(cudaFree(out));
+    }
+  }
+
+
+  // ---- M6 walk: the same three hops at the attention working-set sizes (vx-review#20) ---------
+  // walk.py prices CPU_DRAM -> HBM -> L2 -> SMEM per hop for FlashAttention-2 working sets; these
+  // rows are the measured column at exactly those byte counts, so the join is on bytes with no
+  // interpolation. Seam names carry a `walk/` prefix: compare_m1.py sets them aside (they join
+  // against walk.py, not against the frozen per-seam cells).
+  //
+  //   walk/CPU_DRAM->HBM  ps   pinned H2D at the working-set size
+  //   walk/HBM->L2_fill   ps   oversubscribed cold fill, the seam-2b construction
+  //   walk/L2->SMEM       cyc  one block, clock64() -- converted by walk.py using the MEASURED
+  //                            device/SM_clock row from this same CSV, never an assumed clock
+  //
+  // A working set over sharedMemPerBlockOptin emits a skip row: that is the measured counterpart
+  // of the E6010 rejection the predicted column reports for the same configuration.
+  {
+    const size_t l2 = (size_t)p.l2CacheSize;
+    for (int i = 0; i < N_WALK; ++i) {
+      const size_t bytes = WALK_BYTES[i];
+
+      // hop 1: pinned H2D
+      {
+        char *h = nullptr;
+        void *d = nullptr;
+        if (cudaHostAlloc((void **)&h, bytes, cudaHostAllocDefault) == cudaSuccess) {
+          if (cudaMalloc(&d, bytes) == cudaSuccess) {
+            memset(h, 1, bytes);
+            cudaEvent_t e0, e1;
+            CK(cudaEventCreate(&e0));
+            CK(cudaEventCreate(&e1));
+            CK(cudaMemcpy(d, h, bytes, cudaMemcpyHostToDevice));  // warm-up
+            std::vector<double> t;
+            for (int r = 0; r < REPS; ++r) {
+              CK(cudaEventRecord(e0));
+              CK(cudaMemcpy(d, h, bytes, cudaMemcpyHostToDevice));
+              CK(cudaEventRecord(e1));
+              CK(cudaEventSynchronize(e1));
+              float ms = 0;
+              CK(cudaEventElapsedTime(&ms, e0, e1));
+              t.push_back((double)ms * 1e9);  // ps
+            }
+            double q1, q3, med = median_of(t, &q1, &q3);
+            printf("walk/CPU_DRAM->HBM,%zu,ps,%.1f,%.1f,%.1f,%.2f,%d,pinned\n", bytes, med, q1,
+                   q3, bytes / med * 1e12 / 1e9, REPS);
+            cudaEventDestroy(e0);
+            cudaEventDestroy(e1);
+            cudaFree(d);
+          }
+          cudaFreeHost(h);
+        }
+      }
+
+      // hop 2: the cold fill, seam-2b construction (span >> L2 so every tile-sized stretch reads
+      // from HBM; cost per tile is the span's cost over its tile count)
+      {
+        const size_t tiles0 = (8 * l2 + bytes - 1) / bytes;
+        const size_t tiles = tiles0 < 2 ? 2 : tiles0;
+        const size_t span = tiles * bytes;
+        size_t free_b = 0, total_b = 0;
+        CK(cudaMemGetInfo(&free_b, &total_b));
+        if (span > free_b / 2) {
+          printf("walk/HBM->L2_fill,%zu,ps,,,,,%d,span_exceeds_free_memory_not_measured\n", bytes,
+                 REPS);
+        } else {
+          float4 *d = nullptr;
+          float *sink = nullptr;
+          if (cudaMalloc(&d, span) == cudaSuccess) {
+            CK(cudaMalloc(&sink, sizeof(float)));
+            CK(cudaMemset(d, 1, span));
+            const size_t n4 = span / sizeof(float4);
+            const int grid = 3456, block = 256;
+            cudaEvent_t e0, e1;
+            CK(cudaEventCreate(&e0));
+            CK(cudaEventCreate(&e1));
+            l2_stream<<<grid, block>>>(d, n4, sink, 1);  // warm-up
+            CK(cudaDeviceSynchronize());
+            std::vector<double> t;
+            for (int r = 0; r < REPS; ++r) {
+              CK(cudaEventRecord(e0));
+              l2_stream<<<grid, block>>>(d, n4, sink, 1);
+              CK(cudaEventRecord(e1));
+              CK(cudaEventSynchronize(e1));
+              float ms = 0;
+              CK(cudaEventElapsedTime(&ms, e0, e1));
+              t.push_back((double)ms * 1e9 / (double)tiles);  // ps per tile
+            }
+            double q1, q3, med = median_of(t, &q1, &q3);
+            printf("walk/HBM->L2_fill,%zu,ps,%.1f,%.1f,%.1f,%.2f,%d,oversub_x%zu\n", bytes, med,
+                   q1, q3, bytes / med * 1e12 / 1e9, REPS, tiles);
+            cudaEventDestroy(e0);
+            cudaEventDestroy(e1);
+            cudaFree(sink);
+            cudaFree(d);
+          }
+        }
+      }
+
+      // hop 3: L2 -> SMEM in cycles, one block; capacity skip mirrors E6010
+      {
+        if (bytes > p.sharedMemPerBlockOptin) {
+          printf("walk/L2->SMEM,%zu,cyc,,,,,%d,exceeds_smem_capacity_not_measured\n", bytes,
+                 REPS);
+        } else {
+          float4 *d = nullptr;
+          unsigned long long *out = nullptr;
+          if (cudaMalloc(&d, bytes) == cudaSuccess) {
+            CK(cudaMalloc(&out, 2 * sizeof(unsigned long long)));
+            CK(cudaMemset(d, 1, bytes));
+            const size_t n4 = bytes / sizeof(float4);
+            CK(cudaFuncSetAttribute(l2_to_smem_cycles,
+                                    cudaFuncAttributeMaxDynamicSharedMemorySize, (int)bytes));
+            l2_to_smem_cycles<<<1, 256, bytes>>>(d, n4, out);  // warm-up
+            CK(cudaDeviceSynchronize());
+            std::vector<double> t;
+            for (int r = 0; r < REPS; ++r) {
+              l2_to_smem_cycles<<<1, 256, bytes>>>(d, n4, out);
+              CK(cudaDeviceSynchronize());
+              unsigned long long cyc = 0;
+              CK(cudaMemcpy(&cyc, out, sizeof(cyc), cudaMemcpyDeviceToHost));
+              t.push_back((double)cyc);
+            }
+            double q1, q3, med = median_of(t, &q1, &q3);
+            printf("walk/L2->SMEM,%zu,cyc,%.1f,%.1f,%.1f,,%d,one_block\n", bytes, med, q1, q3,
+                   REPS);
+            cudaFree(out);
+            cudaFree(d);
+          }
+        }
+      }
     }
   }
 

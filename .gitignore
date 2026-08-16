@@ -36,3 +36,5 @@ utils/memalg/results/
 # committed a compiled copy of the analysis alongside it.
 __pycache__/
 *.pyc
+utils/memalg/session-prep/
+utils/memalg/session-*.tgz
