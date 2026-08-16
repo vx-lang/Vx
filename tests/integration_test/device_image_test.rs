@@ -191,12 +191,16 @@ fn a_custom_topology_with_a_declared_arch_gets_a_device_image() {
     );
 }
 
-/// The AST-fallback path stamps the declared arch too. Without this, the same source lost
-/// its device image whenever flat codegen declined and the AST path took over -- silently,
-/// which is how a "works on my machine" divergence between two codegen paths is born
-/// (Vx#352 review finding).
+/// The AST-fallback path stamps the declared arch too -- and its device image is REFUSED,
+/// which is the correct outcome, established on hardware. The AST path types the SMEM tile
+/// as a dynamic memref; a dynamic shared tile cannot become a `.shared` global, and the
+/// image this path used to produce carried shared-typed instructions against LOCAL storage
+/// -- measured on an A100 as CUDA_ERROR_ILLEGAL_ADDRESS. Refusing materialization keeps the
+/// program on the host path, which computes the right answer. If this test ever sees an
+/// image here, the dynamic-tile question got solved (#353 A3) and the assertion should
+/// flip to demand `.shared .align` storage in it.
 #[test]
-fn the_ast_codegen_path_stamps_the_declared_arch_too() {
+fn the_ast_codegen_path_refuses_a_dynamic_shared_tile() {
     let path = corpus("custom_topology_device_image.vx");
     let out = Command::new(env!("CARGO_BIN_EXE_vxc"))
         .arg(&path)
@@ -211,8 +215,8 @@ fn the_ast_codegen_path_stamps_the_declared_arch_too() {
     );
     let ir = String::from_utf8_lossy(&out.stdout);
     assert!(
-        ir.contains("image="),
-        "the AST path must produce the device image for a declared-arch topology"
+        !ir.contains("image="),
+        "a dynamic shared tile must be refused, not shipped as a faulting image"
     );
 }
 

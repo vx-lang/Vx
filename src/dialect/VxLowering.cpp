@@ -1147,6 +1147,21 @@ struct ConvertVxToStandardPass
         // Rewritten to `gpu.return` below, so it is not a foreign dialect here.
         if (isa<vx::ReturnOp>(op))
           return WalkResult::advance();
+        // A DYNAMIC shared-memory tile cannot become a `.shared` global (those
+        // need a static shape), and leaving the alloca as-is ships a kernel
+        // that faults: measured on an A100 as ILLEGAL_ADDRESS, because the
+        // stack slot the alloca lowers to is then accessed through
+        // shared-typed pointers. Refusing materialization keeps the program on
+        // the host path, which computes the right answer.
+        if (auto alloca = dyn_cast<memref::AllocaOp>(op)) {
+          auto t = dyn_cast<MemRefType>(alloca.getType());
+          auto space =
+              t ? dyn_cast_or_null<IntegerAttr>(t.getMemorySpace()) : nullptr;
+          if (space && space.getInt() == 3 && !t.hasStaticShape()) {
+            deviceReady = false;
+            return WalkResult::interrupt();
+          }
+        }
         Dialect *dialect = op->getDialect();
         if (dialect && isDeviceLowerableDialect(dialect->getNamespace()))
           return WalkResult::advance();
@@ -1200,6 +1215,50 @@ struct ConvertVxToStandardPass
       gpuEntry.getOperations().splice(gpuEntry.end(),
                                       clonedEntry->getOperations());
       clonedEntry->erase();
+
+      // Shared-memory STORAGE. A space-3 `memref.alloca` is correct on the
+      // host path (it lowers to a stack slot and the host runs the region
+      // correctly -- verified by the corpus tests), but in the device clone
+      // that same lowering is a fault: the PTX gets `ld.shared`/`st.shared`
+      // against `cvta.shared` of the LOCAL depot, with no `.shared` storage
+      // declared anywhere. Measured on an A100: CUDA_ERROR_ILLEGAL_ADDRESS.
+      // The instructions were shared-typed; the storage never was. (The
+      // `.shared`-substring check on the PTX passed on the instructions alone,
+      // which is the mislabelled-artifact failure one layer deeper.)
+      //
+      // So in the device clone the storage must BE shared: each static
+      // space-3 alloca becomes a module-level `memref.global` in space 3 --
+      // NVPTX renders exactly that as a `.shared` declaration -- and the
+      // types line up with the alloca's uses with no casts. Dynamic ones were
+      // refused above.
+      {
+        SmallVector<memref::AllocaOp> smemAllocas;
+        gpuFunc.walk([&](memref::AllocaOp a) {
+          auto t = dyn_cast<MemRefType>(a.getType());
+          auto space =
+              t ? dyn_cast_or_null<IntegerAttr>(t.getMemorySpace()) : nullptr;
+          if (space && space.getInt() == 3 && t.hasStaticShape())
+            smemAllocas.push_back(a);
+        });
+        int smemIdx = 0;
+        for (memref::AllocaOp a : smemAllocas) {
+          std::string gname = (kernel.getSymName() + "_smem_" +
+                               std::to_string(smemIdx++))
+                                  .str();
+          OpBuilder atModule(gpuModule.getBody(), gpuModule.getBody()->begin());
+          atModule.create<memref::GlobalOp>(
+              a.getLoc(), gname,
+              /*sym_visibility=*/atModule.getStringAttr("private"),
+              /*type=*/cast<MemRefType>(a.getType()),
+              /*initial_value=*/Attribute(), /*constant=*/false,
+              /*alignment=*/IntegerAttr());
+          OpBuilder at(a);
+          auto gg =
+              at.create<memref::GetGlobalOp>(a.getLoc(), a.getType(), gname);
+          a.replaceAllUsesWith(gg.getResult());
+          a.erase();
+        }
+      }
 
       // `vx.return` is not a terminator a GPU module may contain.
       SmallVector<vx::ReturnOp> returns;

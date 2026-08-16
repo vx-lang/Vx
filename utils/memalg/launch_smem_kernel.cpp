@@ -113,14 +113,24 @@ int main(int argc, char **argv) {
 
   const std::string ptx = read_file(ptx_path);
 
-  // The image must actually contain shared memory, or this harness is
-  // verifying the wrong artifact -- the exact mislabelled-cell failure the
-  // measurement campaign kept finding, applied to a binary.
-  if (ptx.find(".shared") == std::string::npos) {
+  // The image must contain shared STORAGE -- a `.shared .align` declaration --
+  // not merely shared-typed instructions. The distinction is measured, not
+  // theoretical: the first shipped kernel had ld.shared/st.shared against the
+  // LOCAL depot (no storage declared anywhere), faulted with ILLEGAL_ADDRESS
+  // on an A100, and a `.shared`-substring check waved it through. Pass
+  // --global to run the global-only twin for the traffic comparison, where the
+  // absence of shared storage is the point.
+  const bool expect_shared = !(argc > 3 && strcmp(argv[3], "--global") == 0);
+  const bool has_storage = ptx.find(".shared .align") != std::string::npos;
+  if (expect_shared && !has_storage) {
     fprintf(stderr,
-            "FATAL: %s contains no .shared -- this is not the shared-memory "
-            "kernel this harness exists to verify\n",
+            "FATAL: %s declares no .shared STORAGE -- shared-typed "
+            "instructions without shared storage fault on the device\n",
             ptx_path);
+    return 1;
+  }
+  if (!expect_shared && has_storage) {
+    fprintf(stderr, "FATAL: the --global twin declares shared storage\n");
     return 1;
   }
 
@@ -177,8 +187,8 @@ int main(int argc, char **argv) {
   int32_t tags[2] = {VX_ABI_MEMREF_TAG(VX_DTYPE_F32, 2),
                      VX_ABI_MEMREF_TAG(VX_DTYPE_F32, 2)};
 
-  VxLaunchParams params;
-  if (!vx_launch_build_params(&params, device_args, tags, 2)) {
+  vx_launch_params params;
+  if (!vx_launch_build_params(device_args, tags, 2, &params)) {
     fprintf(stderr, "FATAL: vx_launch_build_params refused the arguments\n");
     return 1;
   }

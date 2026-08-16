@@ -24,13 +24,13 @@ int main(){
     void *a=nullptr,*b=nullptr;
     CK(cudaSetDevice(0)); CK(cudaMalloc(&a,bytes)); CK(cudaMemset(a,1,bytes));
     CK(cudaSetDevice(1)); CK(cudaMalloc(&b,bytes));
-    cudaEvent_t s,e; CK(cudaSetDevice(0)); CK(cudaEventCreate(&s)); CK(cudaEventCreate(&e));
+    cudaEvent_t ev0, ev1; CK(cudaSetDevice(0)); CK(cudaEventCreate(&ev0)); CK(cudaEventCreate(&ev1));
     std::vector<double> v;
     for(int r=0;r<12;r++){
-      CK(cudaEventRecord(s));
+      CK(cudaEventRecord(ev0));
       CK(cudaMemcpyPeer(b,1,a,0,bytes));
-      CK(cudaEventRecord(e)); CK(cudaEventSynchronize(e));
-      float ms=0; CK(cudaEventElapsedTime(&ms,s,e));
+      CK(cudaEventRecord(ev1)); CK(cudaEventSynchronize(ev1));
+      float ms=0; CK(cudaEventElapsedTime(&ms,ev0,ev1));
       if(r) v.push_back((double)ms*1e9); // ps
     }
     std::sort(v.begin(),v.end());
@@ -38,7 +38,7 @@ int main(){
     printf("HBM->PEER_HBM,%zu,ps,%.1f,%.1f,%.1f,%.2f,11,cudaMemcpyPeer over PHB\n",
            bytes, med, q1, q3, bytes/med*1e12/1e9);
     cudaFree(a); CK(cudaSetDevice(1)); cudaFree(b);
-    cudaEventDestroy(s); cudaEventDestroy(e);
+    cudaEventDestroy(ev0); cudaEventDestroy(ev1);
   }
   return 0;
 }

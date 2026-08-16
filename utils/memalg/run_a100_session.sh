@@ -37,8 +37,15 @@ work = sys.argv[1]
 s = open(f"{work}/smem.ll").read()
 m = re.search(r'image=(.*?)\\00"?\)', s, re.S)
 assert m, "no image= in the emitted LLVM -- did the arch gate regress?"
-ptx = m.group(1).encode().decode("unicode_escape")
-assert ".shared" in ptx, "image carries no .shared -- wrong artifact"
+# LLVM string escapes are two-digit HEX (\\0A = newline), not C escapes -- unicode_escape
+# read \\0A as NUL + 'A' and corrupted every line break; the .shared assertion passed
+# because that substring carries no escapes. Found when the pod's entry lookup failed.
+ptx = re.sub(r"\\([0-9A-Fa-f]{2})", lambda g: chr(int(g.group(1), 16)), m.group(1))
+assert "\x00" not in ptx, "NUL inside decoded PTX -- extraction wrong"
+# The storage DECLARATION, not the substring: a kernel can carry ld.shared/st.shared
+# instructions against local storage (measured: ILLEGAL_ADDRESS on an A100) and the
+# substring check waves it through -- the mislabelled-artifact failure, one layer deeper.
+assert re.search(r"\.shared \.align", ptx), "no .shared STORAGE declared -- wrong artifact"
 open(f"{work}/smem_kernel.ptx", "w").write(ptx)
 print(f"  smem_kernel.ptx: {len(ptx)} bytes, .shared x{ptx.count('.shared')}")
 PY
@@ -56,7 +63,11 @@ work = sys.argv[1]
 s = open(f"{work}/twin.ll").read()
 m = re.search(r'image=(.*?)\\00"?\)', s, re.S)
 assert m, "the global twin lost its image"
-ptx = m.group(1).encode().decode("unicode_escape")
+# LLVM string escapes are two-digit HEX (\\0A = newline), not C escapes -- unicode_escape
+# read \\0A as NUL + 'A' and corrupted every line break; the .shared assertion passed
+# because that substring carries no escapes. Found when the pod's entry lookup failed.
+ptx = re.sub(r"\\([0-9A-Fa-f]{2})", lambda g: chr(int(g.group(1), 16)), m.group(1))
+assert "\x00" not in ptx, "NUL inside decoded PTX -- extraction wrong"
 assert ".shared" not in ptx, "the twin still uses shared memory -- the sed drifted"
 open(f"{work}/global_kernel.ptx", "w").write(ptx)
 print(f"  global_kernel.ptx: {len(ptx)} bytes, no .shared")
@@ -64,15 +75,66 @@ PY
 
     # -- sources the pod compiles itself (host-checked here, nvcc there) --
     bash utils/memalg/check_host_compile.sh
+    # The peer probe is plain CUDA runtime API; a syntax pass with a stub costs nothing and the
+    # first session lost the probe to a macro-shadowing bug nothing had compiled. The empty
+    # cuda_runtime.h on the include path shadows the real include; the stub supplies the decls.
+    local stubdir
+    stubdir=$(mktemp -d)
+    : > "$stubdir/cuda_runtime.h"
+    clang++ -fsyntax-only -std=c++17 -x c++ -I "$stubdir" \
+        -include utils/memalg/.peer_stub.h utils/memalg/probe_peer.cu
+    # The launch harness too -- its first shipping failed on a struct-name typo a syntax pass
+    # would have caught. cuda.h gets the same empty-shadow treatment; a minimal driver-API stub
+    # supplies the decls.
+    cat > "$stubdir/cuda.h" <<'CUDASTUB'
+#pragma once
+#include <cstddef>
+#include <cstdint>
+typedef int CUresult; typedef int CUdevice; typedef unsigned long long CUdeviceptr;
+struct CUctx_st; typedef CUctx_st *CUcontext;
+struct CUmod_st; typedef CUmod_st *CUmodule;
+struct CUfunc_st; typedef CUfunc_st *CUfunction;
+static const int CUDA_SUCCESS = 0;
+enum CUdevice_attribute { CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR = 75,
+                          CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR = 76 };
+CUresult cuInit(unsigned); CUresult cuDeviceGet(CUdevice *, int);
+CUresult cuCtxCreate(CUcontext *, unsigned, CUdevice);
+CUresult cuDeviceGetName(char *, int, CUdevice);
+CUresult cuDeviceGetAttribute(int *, CUdevice_attribute, CUdevice);
+CUresult cuModuleLoadData(CUmodule *, const void *);
+CUresult cuModuleGetFunction(CUfunction *, CUmodule, const char *);
+CUresult cuMemAlloc(CUdeviceptr *, size_t);
+CUresult cuMemcpyHtoD(CUdeviceptr, const void *, size_t);
+CUresult cuMemcpyDtoH(void *, CUdeviceptr, size_t);
+CUresult cuLaunchKernel(CUfunction, unsigned, unsigned, unsigned, unsigned, unsigned,
+                        unsigned, unsigned, void *, void **, void **);
+CUresult cuCtxSynchronize(void);
+CUresult cuGetErrorName(CUresult, const char **);
+CUresult cuGetErrorString(CUresult, const char **);
+CUDASTUB
+    clang++ -fsyntax-only -std=c++17 -I "$stubdir" utils/memalg/launch_smem_kernel.cpp
+    rm -rf "$stubdir"
+    echo "  probe_peer.cu and launch_smem_kernel.cpp syntax-check against the stubs" 
     cp utils/memalg/measure_device.cu "$WORK/"
     cp utils/memalg/probe_peer.cu "$WORK/"
     cp utils/memalg/launch_smem_kernel.cpp "$WORK/"
     cp runtime/vx_kernel_launch.h "$WORK/"
-    # launch_smem_kernel includes ../../runtime/vx_kernel_launch.h; flatten for the pod.
-    sed -i '' 's|#include "../../runtime/vx_kernel_launch.h"|#include "vx_kernel_launch.h"|' \
-        "$WORK/launch_smem_kernel.cpp" 2>/dev/null || \
-    sed -i 's|#include "../../runtime/vx_kernel_launch.h"|#include "vx_kernel_launch.h"|' \
-        "$WORK/launch_smem_kernel.cpp"
+    cp include/vx_hardware_runtime.h "$WORK/"
+    # Flatten the include paths for the pod's flat directory -- vx_kernel_launch.h itself pulls
+    # ../include/vx_hardware_runtime.h, which is what broke the first session's build.
+    python3 - "$WORK" <<'FLAT'
+import sys
+work = sys.argv[1]
+for fname, old, new in [
+    ("launch_smem_kernel.cpp", '#include "../../runtime/vx_kernel_launch.h"', '#include "vx_kernel_launch.h"'),
+    ("vx_kernel_launch.h", '#include "../include/vx_hardware_runtime.h"', '#include "vx_hardware_runtime.h"'),
+]:
+    path = f"{work}/{fname}"
+    s = open(path).read()
+    assert old in s, f"include flatten missed in {fname}"
+    open(path, "w").write(s.replace(old, new, 1))
+print("  includes flattened")
+FLAT
 
     # -- the pod-side runner --
     cat > "$WORK/on_pod.sh" <<'POD'
@@ -111,7 +173,7 @@ if command -v ncu >/dev/null 2>&1; then
     ncu --metrics dram__bytes.sum,l1tex__data_pipe_lsu_wavefronts_mem_shared.sum \
         --csv ./launch_smem smem_kernel.ptx vx_npu_kernel_0 > out/traffic_smem.csv 2>&1 || true
     ncu --metrics dram__bytes.sum,l1tex__data_pipe_lsu_wavefronts_mem_shared.sum \
-        --csv ./launch_smem global_kernel.ptx vx_npu_kernel_0 > out/traffic_global.csv 2>&1 || true
+        --csv ./launch_smem global_kernel.ptx vx_npu_kernel_0 --global > out/traffic_global.csv 2>&1 || true
 else
     echo "ncu not present; traffic counts skipped" > out/traffic_skipped.txt
 fi
