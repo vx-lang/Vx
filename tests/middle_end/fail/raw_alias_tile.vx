@@ -1,0 +1,17 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// The primitives touch only the tiles the transfer was given. A local alias
+// would carry the same tensor under a different name -- invisible to the
+// name-keyed async walk, which is exactly how an in-flight read slipped
+// through in review.
+// CHECK: E6017
+// CHECK: not a parameter of this lowering
+impl transfer Memory::L2 -> Memory::SMEM {
+  fn move_tile(src: &Tensor<f32, [4]>, dst: &mut Tensor<f32, [4]>) -> i32 {
+    let alias = src;
+    let v = raw::load(alias, 0);
+    return 0;
+  }
+}
+fn main() -> i32 {
+  return 0;
+}

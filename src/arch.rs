@@ -100,12 +100,19 @@ pub enum Reachability {
 /// consistency grade. `sync` = a synchronizing transfer (release/acquire) that preserves a
 /// boundary contract; `!sync` = a relaxed escape hatch whose visibility the seam engine
 /// cannot guarantee (see coherence checking in `hir`).
+///
+/// `copy_engine` declares that a hardware engine (a DMA, Ampere's `cp.async`) can drive this
+/// hop without passing through registers. It is a *capability*, not a choice: declaring it
+/// makes `raw::async_copy` legal in an `impl transfer` lowering for this edge (Vx#353 A2),
+/// and nothing more. Distinct from `crossing:` on the memory space, which answers how legs
+/// *compose in cost*, not whether an engine exists.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransferEdge {
     pub from: MemorySpace,
     pub to: MemorySpace,
     pub cost: EdgeCost,
     pub sync: bool,
+    pub copy_engine: bool,
 }
 
 /// Where a declared edge's cost comes from. **Exactly one source per edge** — an edge that both
@@ -1410,6 +1417,7 @@ mod tests {
                 per: syntax::RatePer::Second,
             }),
             sync: true,
+            copy_engine: false,
         }
     }
 
@@ -1453,6 +1461,7 @@ mod tests {
                     to: cs("C"),
                     cost: EdgeCost::Fixed(1),
                     sync: true,
+                    copy_engine: false,
                 },
                 rate_edge(cs("A"), cs("B"), 1),
                 rate_edge(cs("B"), cs("C"), 1),
@@ -1821,6 +1830,7 @@ mod tests {
                 to: MemorySpace::LocalSRAM,
                 cost: crate::arch::EdgeCost::Fixed(7),
                 sync: true,
+                copy_engine: false,
             }],
         };
         graph.apply_descriptor_edges(&desc);
@@ -1850,6 +1860,7 @@ mod tests {
                 to: acme.clone(),
                 cost: crate::arch::EdgeCost::Fixed(25),
                 sync: true,
+                copy_engine: false,
             }],
         };
         graph.apply_descriptor_edges(&desc);

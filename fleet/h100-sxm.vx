@@ -54,5 +54,7 @@ Topology Device {
   visible: [Memory::HBM, Memory::L2, Memory::SMEM],
   transfer Memory::CPU_DRAM -> Memory::HBM : 63 GB/s,
   transfer Memory::HBM -> Memory::L2,
-  transfer Memory::L2 -> Memory::SMEM
+  // spec: Hopper keeps Ampere's cp.async and adds the TMA (PTX ISA 8.3 section 9.7.8.25);
+  // one `copy_engine` flag covers both -- the algebra models capability, not which engine.
+  transfer Memory::L2 -> Memory::SMEM copy_engine
 }

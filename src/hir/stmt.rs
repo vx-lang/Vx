@@ -188,15 +188,24 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
+        // Shadowing: this binding hides any earlier one with the same name, so earlier
+        // facts about the name are now about a dead binding and must not participate in
+        // proofs (a stale `i == 1` beside a new `i == 9` proves anything). Neutralized
+        // for mutable bindings too -- they record no new fact, but they still shadow.
+        self.neutralize_facts_mentioning(name.as_ref());
         if !*_is_mut {
             let id_expr = Expr::Identifier(IdentifierExpr {
                 name: name.clone(),
                 span: Span::default(),
             });
+            // `raw::extent(t)` folds to its literal element count first: the prover cannot
+            // lower a function call, so `let n = raw::extent(src)` would otherwise record
+            // an unlowerable fact and every bound written against `n` would be unprovable
+            // (Vx#353 A2).
             let eq_expr = Expr::RelationalOp(RelationalOpExpr {
                 lhs: Box::new(id_expr),
                 op: RelationalOp::Eq,
-                rhs: Box::new(expr.clone()),
+                rhs: Box::new(self.fold_raw_extent(expr)),
                 span: Span::default(),
             });
             self.constraints.push(eq_expr);
@@ -273,6 +282,47 @@ impl<'a> TypeChecker<'a> {
 
         // Prove invariants hold on entry, then assume them inside the loop
         let prev_constraints_len = self.constraints.len();
+
+        // A range loop constrains its induction variable: `for i in a..b` gives
+        // `a <= i && i < b` for the body. Recorded as prover facts so bounds obligations
+        // over `i` (the `raw::` primitives, Vx#353 A2) and `Verified<T>` assertions can
+        // close without a hand-written invariant. Skipped when the body reassigns the
+        // variable: the checker does not version mutated symbols, so a stale fact would
+        // prove false things. The facts sit above `prev_constraints_len`, so the
+        // truncation below drops them at loop exit with the invariants.
+        // The induction variable shadows any outer binding of the same name; earlier
+        // facts about that name are about the dead binding now (see
+        // neutralize_facts_mentioning -- a stale outer `i < 2` under an inner
+        // `for i in 0..8` forged an out-of-bounds proof in review).
+        self.neutralize_facts_mentioning(iter);
+        if let Expr::Range(r) = &**iterable {
+            if !crate::hir::check::raw::body_reassigns(body, iter) {
+                let iter_expr = Expr::Identifier(syntax::expr::IdentifierExpr {
+                    name: iter.clone().into(),
+                    span: Span::default(),
+                });
+                let lo = self.fold_raw_extent(&r.start);
+                let hi = self.fold_raw_extent(&r.end);
+                // Only facts the prover can lower are recorded; an unlowerable bound
+                // (a call) would make every later proof in the function warn.
+                if crate::hir::check::raw::prover_expressible(&lo) {
+                    self.constraints.push(Expr::RelationalOp(RelationalOpExpr {
+                        lhs: Box::new(iter_expr.clone()),
+                        op: RelationalOp::Ge,
+                        rhs: Box::new(lo),
+                        span: Span::default(),
+                    }));
+                }
+                if crate::hir::check::raw::prover_expressible(&hi) {
+                    self.constraints.push(Expr::RelationalOp(RelationalOpExpr {
+                        lhs: Box::new(iter_expr),
+                        op: RelationalOp::Lt,
+                        rhs: Box::new(hi),
+                        span: Span::default(),
+                    }));
+                }
+            }
+        }
         for inv in invariants.iter() {
             if !self.prove_expr(inv) {
                 self.errors

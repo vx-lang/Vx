@@ -1,0 +1,21 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// REQUIRES: z3
+// The inner loop shadows `i`. Before shadow-aware fact handling the stale
+// outer fact `i < 2` sat beside the inner `i < 8` and "proved" the bounds
+// while the inner i reached 7 -- a forged out-of-bounds proof (A2 review).
+// CHECK: E6018
+// CHECK: stays inside
+impl transfer Memory::L2 -> Memory::SMEM {
+  fn move_tile(src: &Tensor<f32, [2]>, dst: &mut Tensor<f32, [2]>) -> i32 {
+    for i in 0..2 {
+      for i in 0..8 {
+        raw::store(dst, i, raw::load(src, i));
+      }
+    }
+    raw::barrier();
+    return 0;
+  }
+}
+fn main() -> i32 {
+  return 0;
+}

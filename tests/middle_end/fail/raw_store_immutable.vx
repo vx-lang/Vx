@@ -1,0 +1,15 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// The store side of the contract: the destination tile must be held by &mut.
+// Exclusivity itself is the borrow checker's job; this is the declared shape.
+// CHECK: E6017
+// CHECK: must be held by `&mut`
+impl transfer Memory::L2 -> Memory::SMEM {
+  fn move_tile(src: &Tensor<f32, [4]>, dst: &Tensor<f32, [4]>) -> i32 {
+    raw::store(dst, 0, 1.0);
+    raw::barrier();
+    return 0;
+  }
+}
+fn main() -> i32 {
+  return 0;
+}

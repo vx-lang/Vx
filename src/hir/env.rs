@@ -401,6 +401,17 @@ pub struct TypeChecker<'a> {
     /// transfer that does not carry a synchronizing release/DMA-completion. Consumed and
     /// reset by `check_transfer_expr`. See `crate::hir::seam`.
     pub(crate) pending_transfer_relaxed: bool,
+    /// The edge of the `impl transfer` lowering whose body is being checked, when one is.
+    /// `Some((from, to))` is what makes the eight `raw::` primitives resolve (Vx#353 A2)
+    /// and gives their space and capability obligations an edge to check against. `None`
+    /// everywhere else -- which is the floor property: outside a lowering, `raw::` names
+    /// do not exist. Set by the driver and pipeline around lowering-body checks.
+    pub transfer_lowering_edge: Option<(MemorySpace, MemorySpace)>,
+    /// The current lowering method's parameter names: the only tiles `raw::` may touch.
+    /// A local alias would escape the async-discipline walk (it is name-keyed), so the
+    /// primitives are limited to the names the walk can see. Only read while
+    /// `transfer_lowering_edge` is `Some`.
+    pub(crate) transfer_lowering_params: std::collections::HashSet<crate::symbol::Symbol>,
     /// Number of per-seam obligations discharged (eval metric M1).
     pub seam_checks: usize,
     /// Every staging route this compilation resolved, in source order: the hops a `transfer`
@@ -495,6 +506,8 @@ impl<'a> TypeChecker<'a> {
             used_vars: std::collections::HashSet::new(),
             declared_vars: Vec::new(),
             pending_transfer_relaxed: false,
+            transfer_lowering_edge: None,
+            transfer_lowering_params: std::collections::HashSet::new(),
             seam_checks: 0,
             staging_routes: Vec::new(),
             resident_sets: Vec::new(),
@@ -1097,6 +1110,11 @@ impl<'a> TypeChecker<'a> {
         for (name, ty) in &func.params {
             self.insert(name.to_string(), ty.clone());
             self.borrow.current_params.insert(name.clone(), ty.clone());
+        }
+        // Inside a transfer lowering, the raw:: primitives may only touch tiles the
+        // transfer was given -- record the parameter names they are allowed to name.
+        if self.transfer_lowering_edge.is_some() {
+            self.transfer_lowering_params = func.params.iter().map(|(n, _)| n.clone()).collect();
         }
 
         // Add preconditions (requires) to our constraints

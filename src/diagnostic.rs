@@ -264,6 +264,35 @@ pub enum DiagnosticCode {
     /// declaration is in force would be hash-iteration order -- observed as the same program
     /// getting a device image on some runs and not others.
     E6016,
+    /// A misuse of the `raw::` transfer-lowering primitives (Vx#353 A2): a `raw::` call
+    /// outside an `impl transfer` body, an unknown primitive name, a tile argument that
+    /// is not a bare parameter name (the primitives are indexed, not addressed), a store
+    /// into a tile not held by `&mut`, or a wrongly typed index/value.
+    E6017,
+    /// A `raw::` bounds obligation (`0 <= index < extent`) that could not be proven.
+    /// Prove it with a loop bound or invariant the SMT prover can see, or assert it in
+    /// an `unsafe` block -- which records the obligation as asserted-not-proven, the
+    /// same standing an unverified `spec:` figure has.
+    E6018,
+    /// `raw::barrier()` anywhere but a top-level statement of the lowering body. The
+    /// barrier's contract requires every lane to reach it; under a conditional or a
+    /// loop that cannot be guaranteed syntactically, so it is rejected outright
+    /// (conservative by design -- restructure the body so the barrier is unconditional).
+    E6019,
+    /// `raw::async_copy` in a lowering for an edge no declared topology equips with a
+    /// copy engine. The capability lives in the machine file (`transfer A -> B
+    /// copy_engine`); using an absent primitive is a compile error, not a fallback.
+    E6020,
+    /// A violation of the async/synchronization discipline in a lowering body: a
+    /// destination read while an `async_copy` into it is still outstanding, a body that
+    /// ends with copies no `async_wait` covers, or a lowering for a synchronizing edge
+    /// whose body does not end with `raw::barrier()` (the seam obligation of
+    /// `hir/seam.rs`: a relaxed publication makes a stale read reachable).
+    E6021,
+    /// An `impl transfer` lowering whose edge endpoints are not visible to a topology
+    /// that declares the edge -- the lowering would execute on a part that cannot
+    /// address the spaces it moves bytes between (contract constraint C6).
+    E6022,
 
     // --- Tensor/Math Errors (E7xxx) ---
     /// Matmul dimension mismatch

@@ -1,0 +1,21 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// The topology declares the edge but cannot see one of its endpoints: the
+// lowering would run on a part that cannot address the space it fills (C6).
+// CHECK: E6022
+// CHECK: cannot see
+Topology Dev {
+  memory: Memory::L2,
+  visible: [Memory::L2],
+  transfer Memory::CPU_DRAM -> Memory::L2 : 10 GB/s,
+  transfer Memory::L2 -> Memory::SMEM
+}
+impl transfer Memory::L2 -> Memory::SMEM {
+  fn move_tile(src: &Tensor<f32, [4]>, dst: &mut Tensor<f32, [4]>) -> i32 {
+    raw::store(dst, 0, 1.0);
+    raw::barrier();
+    return 0;
+  }
+}
+fn main() -> i32 {
+  return 0;
+}

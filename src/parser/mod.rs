@@ -339,6 +339,31 @@ mod tests {
                 to: crate::syntax::MemorySpace::LocalSRAM,
                 cost: crate::arch::EdgeCost::Fixed(7),
                 sync: true,
+                copy_engine: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn test_parse_transfer_edge_markers_compose() {
+        // The trailing markers compose in any order: `relaxed copy_engine` declares a
+        // relaxed edge with a hardware copy engine (Vx#353 A2). Each is independent --
+        // the consistency grade answers visibility, the engine answers capability.
+        let input = "Topology EdgeTPU { memory: Memory::Local_SRAM \
+                     transfer Memory::GPU_HBM -> Memory::Local_SRAM relaxed copy_engine }";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize();
+        let mut parser = Parser::new(&tokens, input);
+        let decl = parser.parse_topology_decl().unwrap();
+
+        assert_eq!(
+            decl.descriptor.transfers,
+            vec![crate::arch::TransferEdge {
+                from: crate::syntax::MemorySpace::GpuHbm,
+                to: crate::syntax::MemorySpace::LocalSRAM,
+                cost: crate::arch::EdgeCost::Derived,
+                sync: false,
+                copy_engine: true,
             }]
         );
     }

@@ -1,0 +1,9 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// The floor property: the raw:: primitives exist only inside `impl transfer`
+// bodies. Anywhere else the name is reserved and refused, not "undefined".
+// CHECK: E6017
+// CHECK: only legal inside
+fn main() -> i32 {
+  let n = raw::lanes();
+  return 0;
+}

@@ -289,7 +289,7 @@ typed tile keeps both facts checkable at every call site, and a copy loop needs 
 | `raw::load(t, i)` | `i < raw::extent(t)`; `t`'s space readable by the executing topology | the value at index `i`; writes nothing |
 | `raw::store(t, i, v)` | `i < raw::extent(t)`; `t`'s space writable by the executing topology; `t` held by `&mut` | afterwards `t[i] == v`, and no other element changed |
 | `raw::barrier()` | reached by every lane — a barrier under divergent control flow is rejected outright | every store issued before it, by any lane, is visible to every load after it |
-| `raw::async_copy(dst, src, i)` | both index bounds; both space obligations; **the machine file declares a copy engine** | the copy is *initiated*; `dst[i]` is unspecified until a matching `raw::async_wait` |
+| `raw::async_copy(dst, src, i)` | both index bounds; both space obligations; **the machine file declares a copy engine** | the copy is *initiated*; `dst[i]` is unspecified until a matching `raw::async_wait`, and `src` must not be written until then (the engine is still reading it) |
 | `raw::async_wait()` | — | every `async_copy` this lane initiated has completed (cross-lane visibility still needs `raw::barrier`) |
 
 `lane`/`lanes` returning the same value everywhere they are asked is what makes a lowering
@@ -318,6 +318,79 @@ tested away.
 - **Barrier uniformity**: a control-flow check, and conservative — a barrier some lanes can skip
   deadlocks on every real part, so it is rejected rather than warned about.
 - **Async discipline**: the seam verifier, as above. This is C3.
+
+### What A2 landed (2026-08-16, Vx#353)
+
+The slice above is implemented in `src/hir/check/raw.rs`. The decisions the sketch left open
+were settled as follows:
+
+- **Indices and extents are `i64`.** `raw::extent`/`lane`/`lanes` return `i64`, so
+  `for i in 0..raw::extent(t)` binds an `i64` induction variable; a bare literal index
+  (`raw::load(t, 0)`) types `i32` by default (#240) and both are accepted — the prover does not
+  care, and demanding a cast would prove nothing.
+- **Bounds run through `prove_expr`**, the same refutation loop `Verified<T>` uses. Two facts
+  make the common shapes close without hand-written invariants: a range loop now records
+  `a <= i && i < b` for its induction variable (dropped if the body reassigns it), and
+  `raw::extent(t)` folds to its literal element count inside recorded facts and obligations —
+  the prover cannot lower a function call, so the fold is what connects `let n = raw::extent(src)`
+  to a bound written against `n`. The obligation is `0 <= i < extent`, both ends. Note the
+  prover fails **open** when z3 is missing (`src/hir/prover.rs`): the obligation is a proof on a
+  complete toolchain and a recorded assumption otherwise.
+- **The conservative barrier rule is positional**: `raw::barrier()` is legal only as a top-level
+  statement of the body (E6019). A barrier in a uniform-trip-count loop is real hardware practice
+  and could be admitted later by a lane-taint analysis; until someone needs it, top-level-only is
+  the rule that cannot admit a divergent barrier.
+- **The copy engine is a transfer-edge marker**: `transfer Memory::L2 -> Memory::SMEM
+  copy_engine` in the machine file (the same trailing-marker position as `relaxed`/`sync`).
+  A capability is a property of a link, and the edge is the link. `fleet/a100-80.vx`,
+  `fleet/h100-sxm.vx` and `fleet/node-8gpu.vx` declare it on their SMEM hops (`cp.async`).
+- **Async discipline is a forward walk that models every exit** (E6021): branches join by union,
+  a `return` snapshots its in-flight state for the end-of-body leak check, and a `break` or
+  `continue` feeds the enclosing loop's joins — a lane-guarded early return carrying an unwaited
+  copy was the review's first counterexample, and exits are where such bugs live. Reading or
+  writing a destination with an outstanding copy is refused, as is writing the *source* of one
+  (the engine is still reading it), as is any path out of the body with outstanding copies.
+  Copies may stay outstanding *across* loop iterations — one copy per iteration and a
+  single wait after the loop is exactly the commit-group pattern the engine exists for; loop
+  bodies are walked twice so a read at the top of iteration N+1 still meets the copy issued at
+  the bottom of iteration N. A body
+  that publishes (stores or async-copies) on a synchronizing edge must end with
+  `raw::barrier()` — the syntactic form of the seam obligation: without it the transfer is
+  `Relaxed { published }` and the stale read of `hir/seam.rs` is reachable.
+- **Space visibility** (E6022) checks both edge endpoints against every declaring topology's
+  `visible:` list. The finer `scope:`-based writability question (can a device-scoped engine
+  write an sm-scoped space?) is noted, not yet modelled.
+- **Primitives cannot appear inside closures** (E6017), refused at typing — the one place that
+  reliably sees closure bodies, since they are lifted out before the whole-body scan runs. A
+  generic instantiated *from* a lowering body is ordinary code and the namespace does not
+  resolve inside it either.
+- **A publishing lowering on a synchronizing edge has one exit**, at the bottom, past the
+  barrier (E6021): an early `return` would leave a path that publishes unsynchronized, and if
+  only some lanes take it, the rest wait at a barrier the exited lanes never reach. The final
+  `return`'s own expression must not publish — it runs after the barrier.
+- **Tiles are the lowering's parameters, nothing else** (E6017). A local alias (`let d2 = dst`)
+  carries the same tensor under a different name, and a different name is invisible to the
+  name-keyed async walk — the review read an in-flight destination through exactly that alias.
+- **Prover facts are shadow-aware**: rebinding a name (a shadowing `let`, a loop induction
+  variable) neutralizes every recorded fact about it. Before that, a stale outer `i < 2` next
+  to an inner `i < 8` forged an out-of-bounds "proof". Range facts with bounds the prover
+  cannot lower (a call) are not recorded at all, so they cannot poison later proofs with
+  warnings. Wrapping the body in a top-level `unsafe { }` block is transparent to the
+  barrier-position and trailing-grade rules — unsafe is the documented bounds escape, not
+  control flow.
+- **`raw::` is a reserved call namespace everywhere**, so a user struct named `raw` cannot
+  supply static methods; the diagnostic says so directly instead of "undefined method".
+- **Imported modules' lowerings are checked like the main module's**, with diagnostics kept:
+  a library's ordinary functions were validated when the library compiled, but a lowering's
+  edge, capability, and space obligations resolve against the *importing* compilation's
+  machine file, which the library never saw. `E6022` exempts `CPU_DRAM` endpoints — the host
+  side of a host link is reachable by construction and no shipped fleet file lists it as
+  `visible:`.
+- Still open for A3+: the settled signature convention for lowering methods (today any
+  tensor-typed parameter borrow works, checked at each call site), emission of the body,
+  derived traffic counts, the C7 failure-mode declaration syntax, and running the whole-body
+  pass on the parallel-pipeline schedule (today it runs on the driver path that `vxc` uses;
+  the pipeline schedule type-checks bodies but skips the whole-body pass).
 
 ### Capability gates the primitives
 

@@ -230,28 +230,35 @@ impl<'a> Parser<'a> {
                 } else {
                     crate::arch::EdgeCost::Derived
                 };
-                // Optional trailing `relaxed` / `sync` consistency marker.
-                let marker = if let TokenType::Identifier(s) = &self.peek().kind {
-                    Some(s.to_string())
-                } else {
-                    None
-                };
-                let sync = match marker.as_deref() {
-                    Some("relaxed") => {
-                        self.advance();
-                        false
+                // Optional trailing markers, in any order: a `relaxed` / `sync` consistency
+                // grade (default synchronizing), and `copy_engine` -- the declaration that a
+                // hardware engine (a DMA, Ampere's cp.async) can drive this hop. `copy_engine`
+                // is what makes `raw::async_copy` legal in a lowering for this edge (Vx#353 A2).
+                let mut sync = true;
+                let mut copy_engine = false;
+                while let TokenType::Identifier(s) = &self.peek().kind {
+                    match *s {
+                        "relaxed" => {
+                            self.advance();
+                            sync = false;
+                        }
+                        "sync" => {
+                            self.advance();
+                            sync = true;
+                        }
+                        "copy_engine" => {
+                            self.advance();
+                            copy_engine = true;
+                        }
+                        _ => break,
                     }
-                    Some("sync") => {
-                        self.advance();
-                        true
-                    }
-                    _ => true,
-                };
+                }
                 transfers.push(crate::arch::TransferEdge {
                     from,
                     to,
                     cost,
                     sync,
+                    copy_engine,
                 });
                 self.match_token(&TokenType::Comma);
                 continue;

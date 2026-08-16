@@ -74,7 +74,9 @@ Topology Node {
   // The on-die hops below declare no cost -- their `bandwidth:` figures derive it (E6013).
   transfer Memory::CPU_DRAM -> Memory::HBM : 63 GB/s,
   transfer Memory::HBM -> Memory::L2,
-  transfer Memory::L2 -> Memory::SMEM,
+  // spec: Ampere cp.async (PTX ISA 8.3 section 9.7.8.24) -- same engine the SKU file
+  // fleet/a100-80.vx declares; node files repeat the SKU hierarchy verbatim (#224).
+  transfer Memory::L2 -> Memory::SMEM copy_engine,
   // The three inter-device edges. Each carries the bandwidth of the physical link it
   // represents -- the same figures the `spec:` block above already cites, moved out of
   // prose and into the declaration so the compiler can actually price them.

@@ -1,0 +1,16 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// Capability, not choice: no declared topology edge carries `copy_engine`,
+// so raw::async_copy has no hardware to run on and is refused.
+// CHECK: E6020
+// CHECK: copy_engine
+impl transfer Memory::L2 -> Memory::SMEM {
+  fn move_tile(src: &Tensor<f32, [4]>, dst: &mut Tensor<f32, [4]>) -> i32 {
+    raw::async_copy(dst, src, 0);
+    raw::async_wait();
+    raw::barrier();
+    return 0;
+  }
+}
+fn main() -> i32 {
+  return 0;
+}

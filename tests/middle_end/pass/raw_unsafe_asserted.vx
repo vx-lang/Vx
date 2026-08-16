@@ -1,0 +1,16 @@
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// The unsafe escape: raw::lane() as an index is unprovable, so outside
+// `unsafe` it is E6018. Inside, the obligation is recorded as asserted -- and
+// the barrier inside the top-level unsafe block still counts as top-level,
+// because wrapping the body in unsafe is the documented escape, not control
+// flow.
+// CHECK: main
+impl transfer Memory::L2 -> Memory::SMEM {
+  fn move_tile(src: &Tensor<f32, [4]>, dst: &mut Tensor<f32, [4]>) -> i32 {
+    unsafe { raw::store(dst, raw::lane(), 0.5); raw::barrier(); }
+    return 0;
+  }
+}
+fn main() -> i32 {
+  return 0;
+}

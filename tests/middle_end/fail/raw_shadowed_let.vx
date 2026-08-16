@@ -1,0 +1,19 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// REQUIRES: z3
+// A shadowing let: with both `i == 1` and `i == 9` recorded, the fact set is
+// unsatisfiable and every obligation becomes vacuously "provable". The stale
+// fact is neutralized at the rebinding instead (A2 review).
+// CHECK: E6018
+// CHECK: stays inside
+impl transfer Memory::L2 -> Memory::SMEM {
+  fn move_tile(src: &Tensor<f32, [4]>, dst: &mut Tensor<f32, [4]>) -> i32 {
+    let i = 1;
+    let i = 9;
+    raw::store(dst, i, 1.0);
+    raw::barrier();
+    return 0;
+  }
+}
+fn main() -> i32 {
+  return 0;
+}

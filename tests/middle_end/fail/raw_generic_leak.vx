@@ -1,0 +1,17 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// A generic instantiated FROM a lowering body is ordinary code: the raw::
+// namespace must not resolve inside it. Before the edge was cleared around
+// instantiation it leaked in and the accepted program crashed codegen.
+// CHECK: E6017
+// CHECK: only legal inside
+fn helper<T>(x: T) -> i64 {
+  return raw::lanes();
+}
+impl transfer Memory::L2 -> Memory::SMEM {
+  fn move_tile(src: &Tensor<f32, [4]>, dst: &mut Tensor<f32, [4]>) -> i64 {
+    return helper(1);
+  }
+}
+fn main() -> i32 {
+  return 0;
+}

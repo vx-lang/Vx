@@ -1,0 +1,17 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// raw::barrier() under a loop: every lane must reach a barrier, and inside
+// control flow that cannot be guaranteed syntactically. Rejected outright.
+// CHECK: E6019
+// CHECK: reachable by every lane
+impl transfer Memory::L2 -> Memory::SMEM {
+  fn move_tile(src: &Tensor<f32, [4]>, dst: &mut Tensor<f32, [4]>) -> i32 {
+    for i in 0..raw::extent(src) {
+      raw::store(dst, i, raw::load(src, i));
+      raw::barrier();
+    }
+    return 0;
+  }
+}
+fn main() -> i32 {
+  return 0;
+}

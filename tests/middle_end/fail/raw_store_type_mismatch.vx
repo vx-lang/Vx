@@ -1,0 +1,15 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// #240 identical-only assignability: an f32 tile takes exactly f32 values,
+// no widening. The literal 1 types i32 by default.
+// CHECK: E6017
+// CHECK: writes a
+impl transfer Memory::L2 -> Memory::SMEM {
+  fn move_tile(src: &Tensor<f32, [4]>, dst: &mut Tensor<f32, [4]>) -> i32 {
+    raw::store(dst, 0, 1);
+    raw::barrier();
+    return 0;
+  }
+}
+fn main() -> i32 {
+  return 0;
+}

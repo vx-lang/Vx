@@ -662,10 +662,38 @@ impl CompilerDriver {
         // impl methods. Before this, a body that errors with E3002 at top level parsed clean
         // inside a lowering -- the review on 0c791d17 reproduced it -- and a lowering whose body
         // is wrong is a lowering that will move bytes wrongly on the day it is emitted.
+        // The edge is set around each lowering's bodies so the eight `raw::` primitives
+        // resolve inside them and nowhere else (Vx#353 A2).
         for t in &mut ast.transfer_impls {
+            checker.transfer_lowering_edge = Some((t.from.clone(), t.to.clone()));
             for f in &mut t.methods {
                 checker.check_function(f);
             }
+            checker.transfer_lowering_edge = None;
+        }
+        // The per-body contract obligations that need the whole body, not one call site:
+        // barrier placement, async-copy discipline, the trailing synchronization grade,
+        // and the edge's space visibility (Vx#353 A2).
+        checker.check_transfer_impl_bodies(&ast.transfer_impls);
+
+        // Imported modules' lowerings get the same treatment, and their diagnostics are
+        // KEPT -- unlike the #203 pass below, which drops what it finds. The difference
+        // is what the checks are against: a library's ordinary functions were validated
+        // when the library was compiled on its own, but a lowering's edge, capability,
+        // and space obligations resolve against THIS compilation's machine file, which
+        // the library never saw. Reviewed and reproduced: an imported lowering that
+        // fails every A2 check compiled clean before this loop.
+        for p in other_asts.values_mut() {
+            for t in &mut p.transfer_impls {
+                checker.transfer_lowering_edge = Some((t.from.clone(), t.to.clone()));
+                for f in &mut t.methods {
+                    checker.check_function(f);
+                }
+                checker.transfer_lowering_edge = None;
+            }
+        }
+        for p in other_asts.values() {
+            checker.check_transfer_impl_bodies(&p.transfer_impls);
         }
 
         // #203: codegen emits the imported modules' (non-generic) functions too, but above only the

@@ -456,6 +456,7 @@ impl<'a> TypeChecker<'a> {
                     args,
                     &arg_types,
                     &explicit_generic_args,
+                    span.clone(),
                 ) {
                     return intrinsic_ty;
                 }
@@ -910,7 +911,9 @@ impl<'a> TypeChecker<'a> {
                     .iter()
                     .any(|(f, _)| f.name == inst_name)
             {
+                let saved_edge = self.transfer_lowering_edge.take();
                 self.check_function(&mut inst_func);
+                self.transfer_lowering_edge = saved_edge;
                 self.monomorphized_functions.push((inst_func, 0));
             }
 
@@ -1064,7 +1067,11 @@ impl<'a> TypeChecker<'a> {
                 // cleanup against the caller's records with the callee's liveness — wrongly
                 // releasing the caller's live reborrow before the next statement is checked (#268).
                 let saved_borrows = self.borrow.take();
+                // An instantiated generic is ordinary code even when the call site sits in
+                // a transfer lowering; the raw:: primitives must not resolve inside it.
+                let saved_edge = self.transfer_lowering_edge.take();
                 self.check_function(&mut inst_func);
+                self.transfer_lowering_edge = saved_edge;
                 self.borrow.restore(saved_borrows);
                 self.monomorphized_functions.push((inst_func, origin_hash));
             }
@@ -1080,7 +1087,15 @@ impl<'a> TypeChecker<'a> {
         args: &[Expr],
         arg_types: &[Type],
         explicit_generic_args: &[Type],
+        call_span: crate::syntax::Span,
     ) -> Option<Type> {
+        // The `raw::` prefix is reserved for the transfer-lowering primitives (Vx#353 A2).
+        // Intercepted before every other lookup so the namespace cannot be shadowed by user
+        // code, and so a use outside an `impl transfer` body gets a targeted error instead
+        // of "Undefined static method".
+        if let Some(prim) = resolved_name.strip_prefix("raw::") {
+            return Some(self.check_raw_primitive(prim, args, arg_types, call_span));
+        }
         if resolved_name == "Verified" {
             if args.len() != 1 {
                 self.errors.push(format!(
@@ -1420,7 +1435,9 @@ impl<'a> TypeChecker<'a> {
         {
             // Type check the instantiated method
             let mut func_to_check = method_func.clone();
+            let saved_edge = self.transfer_lowering_edge.take();
             self.check_function(&mut func_to_check);
+            self.transfer_lowering_edge = saved_edge;
             self.monomorphized_functions.push((func_to_check, 0)); // 0 will fall back to caller_module_idx
         }
 

@@ -1,0 +1,23 @@
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// The engine-backed form: the machine file declares the copy engine on the
+// edge, the copies are waited, and the barrier publishes across lanes.
+// CHECK: main
+Topology Dev {
+  memory: Memory::L2,
+  visible: [Memory::L2, Memory::SMEM],
+  transfer Memory::CPU_DRAM -> Memory::L2 : 10 GB/s,
+  transfer Memory::L2 -> Memory::SMEM copy_engine
+}
+impl transfer Memory::L2 -> Memory::SMEM {
+  fn move_tile(src: &Tensor<f32, [4]>, dst: &mut Tensor<f32, [4]>) -> i32 {
+    for i in 0..raw::extent(src) {
+      raw::async_copy(dst, src, i);
+    }
+    raw::async_wait();
+    raw::barrier();
+    return 0;
+  }
+}
+fn main() -> i32 {
+  return 0;
+}

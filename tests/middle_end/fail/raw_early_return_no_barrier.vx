@@ -1,0 +1,20 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// A publishing lowering on a synchronizing edge has one exit, past the
+// barrier. The early path here publishes and leaves with no barrier -- and
+// lane 0 skips a barrier the other lanes wait at. Passed before the
+// exit-aware grade check (A2 review).
+// CHECK: E6021
+// CHECK: early `return`
+impl transfer Memory::L2 -> Memory::SMEM {
+  fn move_tile(src: &Tensor<f32, [4]>, dst: &mut Tensor<f32, [4]>) -> i32 {
+    raw::store(dst, 0, 1.0);
+    if raw::lane() == 0 {
+      return 0;
+    }
+    raw::barrier();
+    return 0;
+  }
+}
+fn main() -> i32 {
+  return 0;
+}

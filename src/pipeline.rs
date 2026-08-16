@@ -1091,9 +1091,13 @@ fn check_one_function(
     module_idx: usize,
     global_session: &std::sync::Arc<GlobalSession>,
     global_env: &GlobalAstEnv,
+    lowering_edge: Option<(syntax::MemorySpace, syntax::MemorySpace)>,
 ) -> FunctionCheck {
     let mut worker = LocalWorkerState::new(global_session.clone());
     let mut checker = TypeChecker::new(global_env, &mut worker);
+    // Inside an `impl transfer` body the eight `raw::` primitives resolve; everywhere
+    // else the edge is `None` and they do not (Vx#353 A2).
+    checker.transfer_lowering_edge = lowering_edge;
     checker.check_function(func);
 
     let errors = checker.errors;
@@ -1137,13 +1141,13 @@ fn type_check_phase(
                 let mut results: Vec<FunctionCheck> = module
                     .functions
                     .iter_mut()
-                    .map(|f| check_one_function(f, module_idx, global_session, global_env))
+                    .map(|f| check_one_function(f, module_idx, global_session, global_env, None))
                     .collect();
                 let impl_results: Vec<FunctionCheck> = module
                     .impls
                     .iter_mut()
                     .flat_map(|i| i.methods.iter_mut())
-                    .map(|f| check_one_function(f, module_idx, global_session, global_env))
+                    .map(|f| check_one_function(f, module_idx, global_session, global_env, None))
                     .collect();
                 results.extend(impl_results);
                 // Transfer lowerings, same walk (#353 A1). Third traversal rather than folded
@@ -1152,8 +1156,18 @@ fn type_check_phase(
                 let lowering_results: Vec<FunctionCheck> = module
                     .transfer_impls
                     .iter_mut()
-                    .flat_map(|t| t.methods.iter_mut())
-                    .map(|f| check_one_function(f, module_idx, global_session, global_env))
+                    .flat_map(|t| {
+                        let edge = (t.from.clone(), t.to.clone());
+                        t.methods.iter_mut().map(move |f| {
+                            check_one_function(
+                                f,
+                                module_idx,
+                                global_session,
+                                global_env,
+                                Some(edge.clone()),
+                            )
+                        })
+                    })
                     .collect();
                 results.extend(lowering_results);
                 results
@@ -1167,15 +1181,15 @@ fn type_check_phase(
                 let mut results: Vec<FunctionCheck> = module
                     .functions
                     .par_iter_mut()
-                    .map(|f| check_one_function(f, module_idx, global_session, global_env))
+                    .map(|f| check_one_function(f, module_idx, global_session, global_env, None))
                     .collect();
                 let impl_results: Vec<FunctionCheck> = module
                     .impls
                     .par_iter_mut()
                     .flat_map(|i| {
-                        i.methods
-                            .par_iter_mut()
-                            .map(|f| check_one_function(f, module_idx, global_session, global_env))
+                        i.methods.par_iter_mut().map(|f| {
+                            check_one_function(f, module_idx, global_session, global_env, None)
+                        })
                     })
                     .collect();
                 results.extend(impl_results);
@@ -1183,9 +1197,16 @@ fn type_check_phase(
                     .transfer_impls
                     .par_iter_mut()
                     .flat_map(|t| {
-                        t.methods
-                            .par_iter_mut()
-                            .map(|f| check_one_function(f, module_idx, global_session, global_env))
+                        let edge = (t.from.clone(), t.to.clone());
+                        t.methods.par_iter_mut().map(move |f| {
+                            check_one_function(
+                                f,
+                                module_idx,
+                                global_session,
+                                global_env,
+                                Some(edge.clone()),
+                            )
+                        })
                     })
                     .collect();
                 results.extend(lowering_results);
