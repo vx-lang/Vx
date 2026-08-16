@@ -663,6 +663,13 @@ impl<'r> Lowerer<'r> {
             // the same element + shape, so the destination is sized to hold the source ("enough
             // storage on the receiving side").
             Expr::Transfer(t) => {
+                // A transfer sema matched to a user `impl transfer` lowering (#353 A3)
+                // declines: the body is inlined at the site by the AST path, and the
+                // flat emitter has no raw:: opcodes yet. Decline keeps the AST path
+                // the oracle, exactly as for every other unsupported construct.
+                if t.lowering.is_some() {
+                    return None;
+                }
                 let src = self.lower_expr(&t.expr)?;
                 let LoweredTy::Tensor { elem, shape } = &src.ty else {
                     return None; // only tensors transfer

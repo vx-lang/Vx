@@ -1033,6 +1033,161 @@ impl<'a> TypeChecker<'a> {
                 // otherwise leave it unset (the fixed reachability cost stays internal, so
                 // bandwidth-less transfers emit no `cost` attribute — unchanged output).
                 t.cost = derived_cost;
+                // #353 A3: when this edge has a user lowering this stage can emit, record
+                // it on the site -- codegen inlines the body in place of the builtin copy;
+                // the builtin (with its barrier) stays the fallback for everything else.
+                // Emittable means: exactly one method whose first two parameters are the
+                // (src, dst) tiles. Only single hops match -- each hop of a staged route
+                // re-enters this check and matches independently. The body's own
+                // obligations (E6015/E6019/E6021/E6022) were already discharged.
+                if path.len() == 2 {
+                    if let Some(li) = self
+                        .env
+                        .transfer_impls
+                        .iter()
+                        .find(|li| li.from == source_mem && li.to == target_mem)
+                    {
+                        // EXACTLY two parameters, both tiles. A third parameter has
+                        // nothing to bind to at the site: it would resolve against
+                        // whatever the caller happens to have under that name and let
+                        // the lowering write into a buffer it never named (constraint
+                        // C9), or fail to resolve at all. Reproduced both ways before
+                        // this said `==`.
+                        let shaped = |ty: &Type| -> Option<Vec<u64>> {
+                            let (_, dims, _) = Self::as_tensor_operand(ty)?;
+                            let mut out = Vec::new();
+                            for d in dims {
+                                let crate::syntax::Expr::Number(n) = d else {
+                                    return None;
+                                };
+                                out.push(n.value.as_ref().parse::<u64>().ok()?);
+                            }
+                            Some(out)
+                        };
+                        // The destination must be SM-scoped. That is the one edge kind
+                        // emission handles: the site becomes a shared-memory allocation
+                        // the body fills in place. On any other edge the builtin still
+                        // runs -- the plugin's device copy, or the host alloc+copy --
+                        // and the body would run *beside* it: the same bytes moved
+                        // twice, and on a real GPU a host store through a device
+                        // pointer. Reproduced on three edges before this gate existed.
+                        let dst_is_sm = self
+                            .env
+                            .memories
+                            .values()
+                            .find(|d| {
+                                crate::syntax::MemorySpace::from_name(d.name.as_ref()) == target_mem
+                            })
+                            .and_then(|d| d.scope)
+                            == Some(crate::syntax::Scope::Sm);
+                        // The destination is the one the body writes, so it is the one
+                        // declared `&mut`. Positional binding alone let a lowering
+                        // written `fn move_tile(dst, src)` read the empty tile and
+                        // clobber the source, silently.
+                        let ordered = li.methods.len() == 1
+                            && li.methods[0].params.len() == 2
+                            && !matches!(
+                                li.methods[0].params[0].1,
+                                Type::Borrow { is_mut: true, .. }
+                            )
+                            && matches!(
+                                li.methods[0].params[1].1,
+                                Type::Borrow { is_mut: true, .. }
+                            );
+                        let emittable = li.methods.len() == 1
+                            && li.methods[0].params.len() == 2
+                            && li.methods[0]
+                                .params
+                                .iter()
+                                .all(|(_, ty)| shaped(ty).is_some())
+                            && ordered
+                            && dst_is_sm;
+                        if !emittable && !self.speculating {
+                            self.errors.push_warning(format!(
+                                "impl transfer {} -> {} exists but is not emitted here: \
+                                 a lowering needs exactly one method taking exactly two \
+                                 statically-shaped tiles -- the source, then the \
+                                 destination held by `&mut` -- and a destination space \
+                                 declared `scope: sm`{}. The builtin copy is used instead",
+                                source_mem.name(),
+                                target_mem.name(),
+                                if dst_is_sm {
+                                    ""
+                                } else {
+                                    " (this one is not sm-scoped)"
+                                }
+                            ));
+                        } else if emittable {
+                            // The declared tile shape must be the shape actually being
+                            // transferred. A lowering is chosen per EDGE, so nothing
+                            // else ties the two together -- and the primitives read
+                            // their extents from the declaration. Declaring a smaller
+                            // tile than the site's copies part of it and reads the rest
+                            // back uninitialised; declaring a larger one stores past
+                            // the end. Both were reproduced, the second as a SIGSEGV.
+                            let site_dims = Self::as_tensor_operand(&inner_ty)
+                                .map(|(_, dims, _)| dims.clone())
+                                .map(|dims| {
+                                    dims.iter()
+                                        .map(|d| match d {
+                                            crate::syntax::Expr::Number(n) => {
+                                                n.value.as_ref().parse::<u64>().ok()
+                                            }
+                                            _ => None,
+                                        })
+                                        .collect::<Option<Vec<u64>>>()
+                                });
+                            let declared = shaped(&li.methods[0].params[0].1);
+                            // Element types too: edge selection does not look at them,
+                            // and a mismatch reaches MLIR as a bare verifier failure
+                            // ("result type matches element type of 'memref'") on a
+                            // program the checker accepted.
+                            let site_elem =
+                                Self::as_tensor_operand(&inner_ty).map(|(e, _, _)| e.clone());
+                            let decl_elem = Self::as_tensor_operand(&li.methods[0].params[0].1)
+                                .map(|(e, _, _)| e.clone());
+                            if let (Some(se), Some(de)) = (&site_elem, &decl_elem) {
+                                if se != de {
+                                    self.errors.error_with_code(
+                                        crate::diagnostic::DiagnosticCode::E6023,
+                                        format!(
+                                            "impl transfer {} -> {} declares {:?} tiles \
+                                             but this transfer moves a {:?} tile; a \
+                                             lowering is chosen by edge, so its declared \
+                                             element type must be the one it is given",
+                                            source_mem.name(),
+                                            target_mem.name(),
+                                            de,
+                                            se
+                                        ),
+                                        Some(crate::diagnostic::SourceSpan::from_ast_span(&t.span)),
+                                    );
+                                }
+                            }
+                            match (site_dims, declared) {
+                                (Some(Some(site)), Some(decl)) if site != decl => {
+                                    self.errors.error_with_code(
+                                        crate::diagnostic::DiagnosticCode::E6023,
+                                        format!(
+                                            "impl transfer {} -> {} declares {:?} tiles \
+                                             but this transfer moves a {:?} tile; a \
+                                             lowering is chosen by edge, so its declared \
+                                             shape must be the shape it is given",
+                                            source_mem.name(),
+                                            target_mem.name(),
+                                            decl,
+                                            site
+                                        ),
+                                        Some(crate::diagnostic::SourceSpan::from_ast_span(&t.span)),
+                                    );
+                                }
+                                _ => {
+                                    t.lowering = Some((source_mem.clone(), target_mem.clone()));
+                                }
+                            }
+                        }
+                    }
+                }
                 // Single hop (`path == [source_mem, target_mem]`): discharge the
                 // per-seam local-completeness / soundness obligation. Multi-hop paths
                 // are rewritten into a chain of single-hop transfers below, each of
@@ -1085,6 +1240,7 @@ impl<'a> TypeChecker<'a> {
                     expr: Box::new(current_expr),
                     space: intermediate_space,
                     cost: None,
+                    lowering: None,
                     span: t.span,
                 });
             }
@@ -1092,6 +1248,7 @@ impl<'a> TypeChecker<'a> {
                 expr: Box::new(current_expr),
                 space: target_mem.clone(),
                 cost: None,
+                lowering: None,
                 span: t.span,
             });
             // Recursively re-evaluate to ensure intermediate types and costs are resolved properly!

@@ -1,0 +1,41 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// A lowering is chosen by EDGE, so nothing but this check relates its declared
+// tile shape to the shape actually being moved -- and the raw:: primitives read
+// their extents from the declaration. Declaring a smaller tile copies part of it
+// and reads the rest back uninitialised; declaring a larger one stores past the
+// end, observed as a SIGSEGV before this refusal existed (Vx#353 A3 review).
+// CHECK: E6023
+// CHECK: declared shape must be the shape it is given
+Memory CPU_DRAM {}
+Memory L2 {
+  within: Memory::CPU_DRAM, capacity: 40 MiB, bandwidth: 3 TB/s, managed: cached
+}
+Memory SMEM {
+  within: Memory::L2, capacity: 228 KiB, bandwidth: 128 B/cyc,
+  granule: 1 KiB, managed: explicit, scope: sm
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::L2,
+  visible: [Memory::L2, Memory::SMEM],
+  transfer Memory::CPU_DRAM -> Memory::L2 : 10 GB/s,
+  transfer Memory::L2 -> Memory::SMEM
+}
+impl transfer Memory::L2 -> Memory::SMEM {
+  fn move_tile(src: &Tensor<f32, [2, 2]>, dst: &mut Tensor<f32, [2, 2]>) -> i32 {
+    for i in 0..raw::extent(src) {
+      raw::store(dst, i, raw::load(src, i));
+    }
+    raw::barrier();
+    return 0;
+  }
+}
+fn main() -> i32 {
+  let mut a = Tensor<f32>([ 4, 4 ]);
+  a[0][0] = 1.0;
+  let ad = transfer(a, Memory::L2);
+  spawn on(Topology::Dev) {
+    let tile = transfer(ad, Memory::SMEM);
+  }
+  return 0;
+}

@@ -1,0 +1,45 @@
+// A lowering the emission path cannot use, and the two reasons it says so
+// (Vx#353 A3). Both were silent data corruption before review found them:
+//
+//   * `move_tile(dst, src)` -- parameters in the other order. Binding is
+//     positional, so the body read the empty destination and wrote over the
+//     source; the destination is the one held by `&mut`, so the order is
+//     checkable and now checked.
+//   * a destination that is not `scope: sm`. Emission handles that one edge:
+//     the site becomes the shared allocation the body fills. On any other edge
+//     the builtin still moves the bytes, so an inlined body would move them a
+//     second time -- and on a real GPU it would be a host store through a
+//     device pointer.
+//
+// Both fall back to the builtin copy, which is why this is a warning and the
+// program still computes the right answer.
+// WARN: is not emitted here
+// WARN: not sm-scoped
+
+Memory CPU_DRAM {}
+Memory L2 {
+  within: Memory::CPU_DRAM, capacity: 40 MiB, bandwidth: 3 TB/s, managed: cached
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::L2,
+  visible: [Memory::L2],
+  transfer Memory::CPU_DRAM -> Memory::L2 : 10 GB/s
+}
+
+impl transfer Memory::CPU_DRAM -> Memory::L2 {
+  fn move_tile(dst: &mut Tensor<f32, [2, 2]>, src: &Tensor<f32, [2, 2]>) -> i32 {
+    for i in 0..raw::extent(src) {
+      raw::store(dst, i, raw::load(src, i));
+    }
+    raw::barrier();
+    return 0;
+  }
+}
+
+fn main() -> i32 {
+  let mut a = Tensor<f32>([ 2, 2 ]);
+  a[0][0] = 1.0;
+  let staged = transfer(a, Memory::L2);
+  return 0;
+}

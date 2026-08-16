@@ -637,6 +637,7 @@ impl<'a> Parser<'a> {
                     expr: Box::new(inner),
                     space: mem,
                     cost: None,
+                    lowering: None,
                     span: Span::default(),
                 })
             }

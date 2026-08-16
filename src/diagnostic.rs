@@ -293,6 +293,12 @@ pub enum DiagnosticCode {
     /// that declares the edge -- the lowering would execute on a part that cannot
     /// address the spaces it moves bytes between (contract constraint C6).
     E6022,
+    /// An `impl transfer` lowering whose declared tile shape is not the shape the
+    /// transfer at hand actually moves. A lowering is selected by edge, so nothing else
+    /// relates the two, and the `raw::` primitives take their extents from the
+    /// declaration: a smaller declaration copies part of the tile and leaves the rest
+    /// uninitialised, a larger one stores past the end (observed as a SIGSEGV).
+    E6023,
 
     // --- Tensor/Math Errors (E7xxx) ---
     /// Matmul dimension mismatch

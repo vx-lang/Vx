@@ -1,0 +1,81 @@
+//===- user_lowering_name_collisions.vx - a spliced body keeps to itself -*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// An `impl transfer` body is INLINED at the transfer site (Vx#353 A3), and the
+// generator's name maps are flat -- no scoping. So every name the body uses is a
+// chance to corrupt the caller. This fixture makes all three collide at once:
+//
+//   * the body's local `n` shadows a live `n` at the site;
+//   * the body's loop variable `i` shadows the site's enclosing loop variable;
+//   * the body's `let mut` name is one the site also binds with `let mut`.
+//
+// Each was a real defect found by review: respectively a silently wrong answer,
+// an out-of-bounds store past the destination, and a compile failure from a
+// stale alloca flag. The splice now snapshots and restores the whole
+// environment, so the body is invisible to the caller except through `dst`.
+//
+// The site's `n` is 3, so a leaked `n` (the body's extent, 4) would print 8s;
+// a clobbered `i` would print zeros or fault.
+//
+// EXPECT: [[0,   1.5],
+// EXPECT: [1.5,   3]]
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+}
+Memory SMEM {
+  within: Memory::GPU_HBM, capacity: 228 KiB, bandwidth: 128 B/cyc,
+  granule: 1 KiB, managed: explicit, scope: sm
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::GPU_HBM,
+  visible: [Memory::GPU_HBM, Memory::SMEM],
+  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s,
+  transfer Memory::GPU_HBM -> Memory::SMEM
+}
+
+impl transfer Memory::GPU_HBM -> Memory::SMEM {
+  fn move_tile(src: &Tensor<f32, [2, 2]>, dst: &mut Tensor<f32, [2, 2]>) -> i32 {
+    let n = raw::extent(src);
+    let mut acc = 0;
+    for i in 0..n {
+      raw::store(dst, i, raw::load(src, i));
+      acc = acc + 1;
+    }
+    raw::barrier();
+    return 0;
+  }
+}
+
+fn main() -> i32 {
+  let mut a = Tensor<f32>([ 2, 2 ]);
+  let mut o = Tensor<f32>([ 2, 2 ]);
+  for i in 0..2 {
+    for d in 0..2 {
+      a[i][d] = ((i + d) as f32) * 0.5;
+      o[i][d] = 0.0;
+    }
+  }
+  let ad = transfer(a, Memory::GPU_HBM);
+  let mut od = transfer(o, Memory::GPU_HBM);
+  spawn on(Topology::Dev) {
+    let n = 3;
+    let mut acc = 0;
+    for i in 0..2 {
+      let tile = transfer(ad, Memory::SMEM);
+      for d in 0..2 {
+        od[i][d] = tile[i][d] * (n as f32);
+        acc = acc + 1;
+      }
+    }
+  }
+  let home = transfer(od, Memory::CPU_DRAM);
+  print(home);
+  return 0;
+}

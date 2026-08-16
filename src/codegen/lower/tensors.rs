@@ -214,6 +214,7 @@ impl<'c> LowerToMelior<'c> for syntax::TransferExpr {
             _ => 0,
         };
 
+        use melior::ir::operation::OperationLike;
         let mut target_ty = src_ty;
         let src_ty_str = src_ty.to_string();
         if src_ty_str.starts_with("memref<") && src_ty_str.ends_with(">") {
@@ -224,6 +225,74 @@ impl<'c> LowerToMelior<'c> for syntax::TransferExpr {
             };
             let target_ty_str = format!("memref<{}>", inner_str);
             target_ty = Type::parse(gen.context, &target_ty_str).unwrap_or(src_ty);
+        }
+        // The result is the placed TILE, and the tile's shape is a static fact of the
+        // AST type even though this path's memrefs are dynamically shaped (`?x?`). A
+        // static result type is what makes the SMEM alloca static downstream, and a
+        // static space-3 alloca is what the device clone can promote to real `.shared`
+        // storage -- the dynamic one is refused outright (#353 A3; the A100
+        // ILLEGAL_ADDRESS fault is why the refusal exists). Shapes that stay genuinely
+        // dynamic keep the dynamic type and keep the refusal.
+        //
+        // The SOURCE is cast to match. Making the result static alone types the
+        // lowering's own `memref.copy` with a dynamic source and a static destination,
+        // which is not a copy MLIR accepts -- `cpu_vector_transfer.vx` stopped lowering
+        // on exactly that, a host transfer of a locally allocated `Tensor<f32>([4])`.
+        let mut static_target: Option<Type<'c>> = None;
+        if let Some(ty) = gen.infer_ast_type(&self.expr) {
+            let inner = match ty {
+                syntax::Type::Pinned(b, _) | syntax::Type::Ref(b, _) => *b,
+                other => other,
+            };
+            if let syntax::Type::Tensor(e, dims, _) = inner {
+                let static_dims: Vec<u64> = dims
+                    .iter()
+                    .filter_map(|d| match d {
+                        syntax::Expr::Number(n) => n.value.as_ref().parse().ok(),
+                        _ => None,
+                    })
+                    .collect();
+                if static_dims.len() == dims.len() && !dims.is_empty() {
+                    let elem = match e {
+                        ElementType::F16 => Some("f16"),
+                        ElementType::F32 => Some("f32"),
+                        ElementType::F64 => Some("f64"),
+                        ElementType::BF16 => Some("bf16"),
+                        ElementType::I8 | ElementType::U8 => Some("i8"),
+                        ElementType::I16 | ElementType::U16 => Some("i16"),
+                        ElementType::I32 | ElementType::U32 => Some("i32"),
+                        ElementType::I64 | ElementType::U64 => Some("i64"),
+                        _ => None,
+                    };
+                    if let Some(elem) = elem {
+                        let shape = static_dims
+                            .iter()
+                            .map(|d| d.to_string())
+                            .collect::<Vec<_>>()
+                            .join("x");
+                        if let Some(t) =
+                            Type::parse(gen.context, &format!("memref<{shape}x{elem}>"))
+                        {
+                            target_ty = t;
+                            static_target = Some(t);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Reconcile the operand with the static result: `memref.cast` is exactly the
+        // dynamic-to-static reconciliation, and the AST type is the authority for the
+        // shape it asserts.
+        let mut src_val = src_val;
+        if let Some(t) = static_target {
+            if src_ty != t {
+                let cast = OperationBuilder::new("memref.cast", location)
+                    .add_operands(&[src_val])
+                    .add_results(&[t])
+                    .build()?;
+                src_val = block.append_operation(cast).result(0)?.into();
+            }
         }
 
         let mut transfer_builder = OperationBuilder::new("vx.transfer", location)
@@ -334,14 +403,79 @@ impl<'c> LowerToMelior<'c> for syntax::TransferExpr {
             }
         }
 
+        // #353 A3: a site sema matched to a user lowering keeps the builtin's
+        // allocation half -- the alloca, the offsets, the space propagation all hang
+        // off the vx.transfer op -- and skips its copy and barrier: `user_lowered`
+        // is the C++ side's signal. The body is then inlined right here with its
+        // (src, dst) parameters bound to the source value and the placed tile.
+        // Inlined, not called: a func.call inside the kernel region silently costs
+        // the kernel its device twin (`isDeviceLowerableDialect` excludes func).
+        let user_lowering = self
+            .lowering
+            .as_ref()
+            .and_then(|(f, t)| gen.transfer_impls.get(&(f.name(), t.name())).cloned());
+        if user_lowering.is_some() {
+            transfer_builder = transfer_builder.add_attributes(&[(
+                Identifier::new(gen.context, "user_lowered"),
+                melior::ir::attribute::Attribute::unit(gen.context),
+            )]);
+        }
+
         let transfer_op = transfer_builder
             .add_results(&[target_ty])
             .build()
             .expect("Failed to build vx.transfer operation");
 
-        use melior::ir::operation::OperationLike;
-        let result_val = transfer_op.result(0)?.into();
+        let result_val: Value<'c, 'c> = transfer_op.result(0)?.into();
         block.append_operation(transfer_op);
+
+        let mut block = block;
+        if let Some(body_fn) = user_lowering {
+            // The body is another function's code pasted into this one's scope, and the
+            // generator's name maps are FLAT -- no scoping, no shadowing, no unwind.
+            // Snapshot all three and restore them wholesale rather than hand-saving the
+            // two parameter names: a `let` in the body must not outlive it, the body's
+            // loop variable must not clobber the site's, and `allocs` must not go on
+            // claiming a name is behind an alloca after that name means something else
+            // again. Every one of those was reproduced before this snapshot existed --
+            // a silently wrong answer, an out-of-bounds store, and an ICE respectively.
+            let saved_env = gen.env.clone();
+            let saved_ast_env = gen.ast_env.clone();
+            let saved_allocs = gen.allocs.clone();
+            let saved_returned = gen.has_returned;
+
+            let src_sym = body_fn.params[0].0.clone();
+            let dst_sym = body_fn.params[1].0.clone();
+            gen.env.insert(src_sym.clone(), (src_val, src_ty));
+            gen.env.insert(dst_sym.clone(), (result_val, target_ty));
+            gen.ast_env
+                .insert(src_sym.clone(), body_fn.params[0].1.clone());
+            gen.ast_env
+                .insert(dst_sym.clone(), body_fn.params[1].1.clone());
+            // The tiles are values here, not alloca slots. A stale `allocs` entry from
+            // a same-named binding at the site makes every read of the tile dereference
+            // it.
+            gen.allocs.remove(src_sym.as_ref());
+            gen.allocs.remove(dst_sym.as_ref());
+
+            for stmt in &body_fn.body {
+                // The trailing `return` exists because every Vx function returns; an
+                // inlined lowering returns nothing (the placed tile is the transfer's
+                // own result). A return anywhere else would return from the CALLER --
+                // refused in the checker, not here (E6021).
+                if matches!(stmt, syntax::Statement::Return(_)) {
+                    continue;
+                }
+                if let Some(next) = gen.generate_statement(stmt, block)? {
+                    block = next;
+                }
+            }
+
+            gen.env = saved_env;
+            gen.ast_env = saved_ast_env;
+            gen.allocs = saved_allocs;
+            gen.has_returned = saved_returned;
+        }
 
         Ok((result_val, target_ty, block))
     }

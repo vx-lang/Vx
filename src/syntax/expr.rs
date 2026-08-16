@@ -134,6 +134,11 @@ pub struct TransferExpr {
     /// The bandwidth-derived roofline cost, filled in by sema. Cycles for a `B/cyc` hop,
     /// picoseconds for a `B/s` one — `u64` because picoseconds overflow `u32` at 4.3 ms.
     pub cost: Option<u64>,
+    /// The `impl transfer` edge sema matched for this site, when one exists and is
+    /// emittable (#353 A3): codegen inlines that lowering's body in place of the
+    /// builtin copy. Recorded as the (from, to) edge -- the lowering itself is
+    /// looked up again at emission, where the bodies live.
+    pub lowering: Option<(MemorySpace, MemorySpace)>,
     pub span: Span,
 }
 
@@ -153,6 +158,7 @@ impl TransferExpr {
             expr,
             space,
             cost: None,
+            lowering: None,
             span,
         }
     }
@@ -819,6 +825,7 @@ impl Expr {
                 expr: Box::new(e.expr.substitute(mapping)),
                 space: e.space.clone(),
                 cost: e.cost,
+                lowering: e.lowering.clone(),
                 span: e.span,
             }),
             // Type substitution does not touch topologies; topology substitution is done

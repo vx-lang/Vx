@@ -182,25 +182,74 @@ fn a_custom_topology_with_a_declared_arch_gets_a_device_image() {
         image.contains("ld.shared"),
         "the body must READ the tile from shared memory, not re-read global:\n{image}"
     );
-    // What the image must NOT contain yet, pinned so the day either appears the change is
-    // deliberate: no barrier (the C3 gap, scheduled with #353 A3) and no cp.async (nothing
-    // emits it -- the fact that falsified `crossing: streamed`, vx-review#27).
+    // The C3 barrier, closed in #353 A3: the builtin copy publishes the tile to every
+    // lane before any lane reads it. Exactly one -- the count is what separates the
+    // builtin from a user lowering (see the user-lowering test below, which pins two).
+    assert_eq!(
+        image.matches("bar.sync").count(),
+        1,
+        "the builtin SMEM copy must end in exactly one barrier:\n{image}"
+    );
+    // What the image must NOT contain yet, pinned so the day it appears the change is
+    // deliberate: no cp.async (nothing emits it -- the fact that falsified
+    // `crossing: streamed`, vx-review#27; raw::async_copy lowers synchronously until
+    // the nvgpu route exists).
     assert!(
         !image.contains("cp.async"),
         "nothing emits cp.async today; if this appears, vx-review#26 wants re-scoring"
     );
 }
 
-/// The AST-fallback path stamps the declared arch too -- and its device image is REFUSED,
-/// which is the correct outcome, established on hardware. The AST path types the SMEM tile
-/// as a dynamic memref; a dynamic shared tile cannot become a `.shared` global, and the
-/// image this path used to produce carried shared-typed instructions against LOCAL storage
-/// -- measured on an A100 as CUDA_ERROR_ILLEGAL_ADDRESS. Refusing materialization keeps the
-/// program on the host path, which computes the right answer. If this test ever sees an
-/// image here, the dynamic-tile question got solved (#353 A3) and the assertion should
-/// flip to demand `.shared .align` storage in it.
+/// A user-supplied `impl transfer` fills the SMEM tile, and the emitted image proves it
+/// ran: TWO `bar.sync` where the builtin has one (Vx#353 A3).
+///
+/// The discriminator is structural on purpose. A transfer is a move, not a conversion
+/// (contract C2), so a faithful user lowering computes exactly what the builtin computes
+/// -- the answer cannot distinguish them. The fixture's body says `raw::barrier()` twice,
+/// both top-level, and the count survives to PTX.
 #[test]
-fn the_ast_codegen_path_refuses_a_dynamic_shared_tile() {
+fn a_user_supplied_lowering_is_emitted_instead_of_the_builtin_copy() {
+    let ir = emit_llvm("custom_topology_user_lowering.vx");
+    assert!(
+        ir.contains("image="),
+        "a user-lowered transfer must still produce a device image"
+    );
+    let image = extract_image(&ir);
+    // The storage half is unchanged: the site keeps the builtin's allocation, and the
+    // static-shape promotion to a real `.shared` global is what made the A100 stop
+    // faulting (2b9d4190). A user lowering must not cost that.
+    assert!(
+        image.contains(".shared .align"),
+        "the user-lowered tile must still get real shared STORAGE, not just \
+         shared-typed instructions:\n{image}"
+    );
+    assert!(
+        image.contains("ld.shared"),
+        "the body must read the tile from shared memory:\n{image}"
+    );
+    assert_eq!(
+        image.matches("bar.sync").count(),
+        2,
+        "the user lowering's two raw::barrier() calls must both reach the image -- \
+         one barrier means the builtin copy ran instead:\n{image}"
+    );
+}
+
+/// The AST-fallback path now gets a real device image for a statically shaped tile --
+/// the flip its predecessor pre-authorized, earned in #353 A3.
+///
+/// It used to be refused, and the refusal was right at the time: this path typed the SMEM
+/// tile as a dynamic memref (`?x?`), a dynamic shared tile cannot become a `.shared`
+/// global, and the image it produced carried shared-typed instructions against LOCAL
+/// storage -- measured on an A100 as CUDA_ERROR_ILLEGAL_ADDRESS. A3 fixed the cause
+/// rather than the symptom: when the source tensor's dims are literals, the transfer's
+/// result type is now static here too, so the alloca is static and promotes to real
+/// `.shared` storage exactly as on the flat path.
+///
+/// A tile whose shape stays genuinely dynamic is still refused, and still keeps the
+/// program on the host path, which computes the right answer.
+#[test]
+fn the_ast_codegen_path_materialises_a_static_shared_tile() {
     let path = corpus("custom_topology_device_image.vx");
     let out = Command::new(env!("CARGO_BIN_EXE_vxc"))
         .arg(&path)
@@ -215,8 +264,15 @@ fn the_ast_codegen_path_refuses_a_dynamic_shared_tile() {
     );
     let ir = String::from_utf8_lossy(&out.stdout);
     assert!(
-        !ir.contains("image="),
-        "a dynamic shared tile must be refused, not shipped as a faulting image"
+        ir.contains("image="),
+        "a statically shaped SMEM tile must now materialise on the AST path too"
+    );
+    let image = extract_image(&ir);
+    // The storage declaration, not the substring: shared-typed instructions over local
+    // storage is what faulted on the A100, and a `.shared`-substring check waved it through.
+    assert!(
+        image.contains(".shared .align"),
+        "the AST path's image must declare real shared STORAGE:\n{image}"
     );
 }
 

@@ -3,8 +3,13 @@
 // barrier. The early path here publishes and leaves with no barrier -- and
 // lane 0 skips a barrier the other lanes wait at. Passed before the
 // exit-aware grade check (A2 review).
+//
+// The rule that refuses it stopped being about publishing or edge grade in A3:
+// once the body is INLINED at the transfer site, any non-final return returns
+// from the function containing the transfer, whatever the edge says. See
+// raw_lowering_early_return.vx for the relaxed-edge case that proved it.
 // CHECK: E6021
-// CHECK: early `return`
+// CHECK: return` before the end of a lowering
 impl transfer Memory::L2 -> Memory::SMEM {
   fn move_tile(src: &Tensor<f32, [4]>, dst: &mut Tensor<f32, [4]>) -> i32 {
     raw::store(dst, 0, 1.0);

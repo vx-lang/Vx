@@ -850,3 +850,289 @@ mod tests {
         assert_eq!(topology_to_i32(&Topology::NPU(ident_expr)), 100);
     }
 }
+
+/// The eight `raw::` transfer-lowering primitives (#353 A3), emitted in place.
+///
+/// These are reachable only from an `impl transfer` body inlined at a transfer
+/// site -- the checker refuses `raw::` anywhere else (E6017) and discharges the
+/// bounds, barrier-shape, and async obligations before codegen ever runs. The
+/// lowering here is deliberately direct: loads and stores against the tile
+/// memrefs, `gpu.barrier` for the fence, thread identity for the work split --
+/// never a `func.call`, which would silently cost the enclosing kernel its
+/// device twin (`isDeviceLowerableDialect` excludes func).
+///
+/// Tiles are FLAT-indexed at the surface (`raw::load(t, i)` with
+/// `i < raw::extent(t)`) while the memrefs are rank-N, so a linear index is
+/// delinearized here with the tile's static dims (row-major div/mod chain).
+/// Static dims are a checked fact: the A2 prover obligations only close for
+/// statically shaped tiles, and the device path refuses dynamic shared tiles.
+///
+/// `raw::async_copy` lowers to its synchronous fallback (an element load+store)
+/// and `raw::async_wait` to nothing: the copy-engine capability is declared and
+/// gated (E6020), but the engine itself is not driven until the nvgpu route
+/// lands -- the fallback preserves the contract's semantics exactly, one
+/// element per call, ordered before the wait.
+pub(crate) fn lower_raw_primitive<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+    prim: &str,
+    args: &[Expr],
+) -> Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError> {
+    let index_ty = Type::index(gen.context);
+    let i64_ty = gen.i64_ty;
+
+    // The tile's static dims, read off the AST type the checker validated.
+    let tile_dims = |gen: &MeliorGenerator<'c>, e: &Expr| -> Result<Vec<u64>, LowerError> {
+        let ty = gen
+            .infer_ast_type(e)
+            .ok_or_else(|| LowerError::from("raw:: tile has no inferable type".to_string()))?;
+        let mut inner = &ty;
+        loop {
+            match inner {
+                syntax::Type::Tensor(_, dims, _) => {
+                    let mut out = Vec::new();
+                    for d in dims {
+                        let syntax::Expr::Number(n) = d else {
+                            return Err(LowerError::from(
+                                "raw:: tile has a non-static dim; the device path \
+                                 refuses dynamic shared tiles (#353 A3)"
+                                    .to_string(),
+                            ));
+                        };
+                        out.push(n.value.as_ref().parse::<u64>().map_err(|_| {
+                            LowerError::from("raw:: tile dim is not an integer".to_string())
+                        })?);
+                    }
+                    return Ok(out);
+                }
+                syntax::Type::Borrow { inner: b, .. }
+                | syntax::Type::Pointer(b, _, _)
+                | syntax::Type::Pinned(b, _)
+                | syntax::Type::Ref(b, _) => inner = b,
+                _ => {
+                    return Err(LowerError::from(
+                        "raw:: tile argument is not tensor-typed".to_string(),
+                    ))
+                }
+            }
+        }
+    };
+    let elem_mlir = |gen: &MeliorGenerator<'c>, e: &Expr| -> Result<Type<'c>, LowerError> {
+        let ty = gen
+            .infer_ast_type(e)
+            .ok_or_else(|| LowerError::from("raw:: tile has no inferable type".to_string()))?;
+        let mut inner = &ty;
+        loop {
+            match inner {
+                syntax::Type::Tensor(el, _, _) => {
+                    let s = match el {
+                        ElementType::F16 => "f16",
+                        ElementType::F32 => "f32",
+                        ElementType::F64 => "f64",
+                        ElementType::BF16 => "bf16",
+                        ElementType::I8 | ElementType::U8 => "i8",
+                        ElementType::I16 | ElementType::U16 => "i16",
+                        ElementType::I32 | ElementType::U32 => "i32",
+                        ElementType::I64 | ElementType::U64 => "i64",
+                        other => {
+                            return Err(LowerError::from(format!(
+                                "raw:: has no lowering for {other:?} tiles"
+                            )))
+                        }
+                    };
+                    return Ok(Type::parse(gen.context, s).unwrap());
+                }
+                syntax::Type::Borrow { inner: b, .. }
+                | syntax::Type::Pointer(b, _, _)
+                | syntax::Type::Pinned(b, _)
+                | syntax::Type::Ref(b, _) => inner = b,
+                _ => {
+                    return Err(LowerError::from(
+                        "raw:: tile argument is not tensor-typed".to_string(),
+                    ))
+                }
+            }
+        }
+    };
+    // A zero-result primitive still returns a value to the expression walk: the
+    // same index-0 dummy the block-expression lowering uses.
+    let unit = |gen: &MeliorGenerator<'c>,
+                b: melior::ir::BlockRef<'c, 'c>|
+     -> Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError> {
+        let dummy = OperationBuilder::new("arith.constant", gen.loc())
+            .add_attributes(&[(
+                Identifier::new(gen.context, "value"),
+                IntegerAttribute::new(Type::index(gen.context), 0).into(),
+            )])
+            .add_results(&[Type::index(gen.context)])
+            .build()?;
+        let r = b.append_operation(dummy);
+        Ok((r.result(0)?.into(), gen.none_ty, b))
+    };
+    let const_index = |gen: &MeliorGenerator<'c>,
+                       b: melior::ir::BlockRef<'c, 'c>,
+                       v: u64|
+     -> Result<Value<'c, 'c>, LowerError> {
+        let op = OperationBuilder::new("arith.constant", gen.loc())
+            .add_attributes(&[(
+                Identifier::new(gen.context, "value"),
+                IntegerAttribute::new(index_ty, v as i64).into(),
+            )])
+            .add_results(&[index_ty])
+            .build()?;
+        Ok(b.append_operation(op).result(0)?.into())
+    };
+    // Flat i64 index -> per-dim index values, row-major: idx_k = (i / stride_k) % d_k.
+    let delinearize = |gen: &mut MeliorGenerator<'c>,
+                       b: melior::ir::BlockRef<'c, 'c>,
+                       lin_in: Value<'c, 'c>,
+                       lin_ty: Type<'c>,
+                       dims: &[u64]|
+     -> Result<Vec<Value<'c, 'c>>, LowerError> {
+        // The index expression arrives as i64 from raw::extent/lane arithmetic,
+        // but a for-loop induction variable is already `index` on this path --
+        // an index->index cast is invalid IR, so cast only when needed.
+        let lin: Value = if lin_ty == index_ty {
+            lin_in
+        } else {
+            let cast = OperationBuilder::new("arith.index_cast", gen.loc())
+                .add_operands(&[lin_in])
+                .add_results(&[index_ty])
+                .build()?;
+            b.append_operation(cast).result(0)?.into()
+        };
+        if dims.len() <= 1 {
+            return Ok(vec![lin]);
+        }
+        let mut out = Vec::new();
+        let mut stride: u64 = dims.iter().product();
+        for (k, d) in dims.iter().enumerate() {
+            stride /= d;
+            let sv = const_index(gen, b, stride)?;
+            let div = OperationBuilder::new("arith.divui", gen.loc())
+                .add_operands(&[lin, sv])
+                .add_results(&[index_ty])
+                .build()?;
+            let q: Value = b.append_operation(div).result(0)?.into();
+            let idx = if k == 0 {
+                // The leading digit needs no mod: the checked bound i < extent
+                // already caps it below dims[0].
+                q
+            } else {
+                let dv = const_index(gen, b, *d)?;
+                let rem = OperationBuilder::new("arith.remui", gen.loc())
+                    .add_operands(&[q, dv])
+                    .add_results(&[index_ty])
+                    .build()?;
+                b.append_operation(rem).result(0)?.into()
+            };
+            out.push(idx);
+        }
+        Ok(out)
+    };
+
+    match prim {
+        "extent" => {
+            let dims = tile_dims(gen, &args[0])?;
+            let n: u64 = dims.iter().product();
+            let op = OperationBuilder::new("arith.constant", gen.loc())
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "value"),
+                    IntegerAttribute::new(i64_ty, n as i64).into(),
+                )])
+                .add_results(&[i64_ty])
+                .build()?;
+            let r = block.append_operation(op);
+            Ok((r.result(0)?.into(), i64_ty, block))
+        }
+        "lane" | "lanes" => {
+            // Thread identity, not a constant: correct under any launch geometry,
+            // and the 1x1x1 launches of today read 0 and 1 (#251). The host clone
+            // of the kernel body gets the same ops; the vx-to-llvm stage folds
+            // them to 0/1 there, because the CPU fallback runs one thread.
+            let (op_name, _) = if prim == "lane" {
+                ("gpu.thread_id", 0)
+            } else {
+                ("gpu.block_dim", 1)
+            };
+            let dim_attr = melior::ir::Attribute::parse(gen.context, "#gpu<dim x>")
+                .ok_or_else(|| LowerError::from("cannot parse #gpu<dim x>".to_string()))?;
+            let op = OperationBuilder::new(op_name, gen.loc())
+                .add_attributes(&[(Identifier::new(gen.context, "dimension"), dim_attr)])
+                .add_results(&[index_ty])
+                .build()?;
+            let idx: Value = block.append_operation(op).result(0)?.into();
+            let cast = OperationBuilder::new("arith.index_cast", gen.loc())
+                .add_operands(&[idx])
+                .add_results(&[i64_ty])
+                .build()?;
+            let r = block.append_operation(cast);
+            Ok((r.result(0)?.into(), i64_ty, block))
+        }
+        "load" => {
+            let (tile, _tty, block) = gen.generate_expr(&args[0], block)?;
+            let (lin, lin_ty, block) = gen.generate_expr(&args[1], block)?;
+            let dims = tile_dims(gen, &args[0])?;
+            let idx = delinearize(gen, block, lin, lin_ty, &dims)?;
+            let elem = elem_mlir(gen, &args[0])?;
+            let mut operands = vec![tile];
+            operands.extend(idx);
+            let op = OperationBuilder::new("memref.load", gen.loc())
+                .add_operands(&operands)
+                .add_results(&[elem])
+                .build()?;
+            let r = block.append_operation(op);
+            Ok((r.result(0)?.into(), elem, block))
+        }
+        "store" => {
+            let (tile, _tty, block) = gen.generate_expr(&args[0], block)?;
+            let (lin, lin_ty, block) = gen.generate_expr(&args[1], block)?;
+            let (val, _vty, block) = gen.generate_expr(&args[2], block)?;
+            let dims = tile_dims(gen, &args[0])?;
+            let idx = delinearize(gen, block, lin, lin_ty, &dims)?;
+            let mut operands = vec![val, tile];
+            operands.extend(idx);
+            let op = OperationBuilder::new("memref.store", gen.loc())
+                .add_operands(&operands)
+                .build()?;
+            block.append_operation(op);
+            unit(gen, block)
+        }
+        "barrier" => {
+            let op = OperationBuilder::new("gpu.barrier", gen.loc()).build()?;
+            block.append_operation(op);
+            unit(gen, block)
+        }
+        "async_copy" => {
+            // Synchronous fallback: dst[i] = src[i]. The capability is declared
+            // (E6020 checked it); the engine is not driven yet -- when the nvgpu
+            // route lands this becomes nvgpu.device_async_copy.
+            let (dst, _dty, block) = gen.generate_expr(&args[0], block)?;
+            let (src, _sty, block) = gen.generate_expr(&args[1], block)?;
+            let (lin, lin_ty, block) = gen.generate_expr(&args[2], block)?;
+            let sdims = tile_dims(gen, &args[1])?;
+            let ddims = tile_dims(gen, &args[0])?;
+            let elem = elem_mlir(gen, &args[1])?;
+            let sidx = delinearize(gen, block, lin, lin_ty, &sdims)?;
+            let mut load_ops = vec![src];
+            load_ops.extend(sidx);
+            let load = OperationBuilder::new("memref.load", gen.loc())
+                .add_operands(&load_ops)
+                .add_results(&[elem])
+                .build()?;
+            let v: Value = block.append_operation(load).result(0)?.into();
+            let didx = delinearize(gen, block, lin, lin_ty, &ddims)?;
+            let mut store_ops = vec![v, dst];
+            store_ops.extend(didx);
+            let store = OperationBuilder::new("memref.store", gen.loc())
+                .add_operands(&store_ops)
+                .build()?;
+            block.append_operation(store);
+            unit(gen, block)
+        }
+        "async_wait" => unit(gen, block),
+        other => Err(LowerError::from(format!(
+            "raw::{other} has no lowering; the checker should have refused it"
+        ))),
+    }
+}

@@ -1,0 +1,35 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// The body is inlined at the transfer site, so a `return` anywhere but the
+// bottom returns from whatever function performs the transfer. On a `relaxed`
+// edge -- where no trailing barrier is demanded -- this escaped every check and
+// made `main` return 7 without running the rest of the program (Vx#353 A3
+// review). The rule is now unconditional: a lowering returns once, at the end.
+// CHECK: E6021
+// CHECK: return` before the end of a lowering
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::GPU_HBM,
+  visible: [Memory::GPU_HBM],
+  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s relaxed
+}
+impl transfer Memory::CPU_DRAM -> Memory::GPU_HBM {
+  fn move_tile(src: &Tensor<f32, [2, 2]>, dst: &mut Tensor<f32, [2, 2]>) -> i32 {
+    for q in 0..raw::extent(src) {
+      raw::store(dst, q, raw::load(src, q));
+      if q == 0 {
+        return 7;
+      }
+    }
+    return 0;
+  }
+}
+fn main() -> i32 {
+  let mut a = Tensor<f32>([ 2, 2 ]);
+  a[0][0] = 1.0;
+  let ad = transfer(a, Memory::GPU_HBM);
+  return 0;
+}

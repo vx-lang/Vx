@@ -630,19 +630,25 @@ impl<'a> TypeChecker<'a> {
                     Some(s @ Statement::Return(_)) => Some(*s as *const Statement),
                     _ => None,
                 };
-                if edge_requires_sync && scan.publishes {
-                    for (ptr, span) in &scan.returns {
-                        if Some(*ptr) != final_return {
-                            self.errors.error_with_code(
-                                DiagnosticCode::E6021,
-                                "early `return` in a lowering that writes the \
-                                 destination: every path must pass the trailing \
-                                 `raw::barrier()`, so the body can only return once, at \
-                                 the bottom"
-                                    .to_string(),
-                                Some(SourceSpan::from_ast_span(span)),
-                            );
-                        }
+                // Unconditional, for every lowering on every edge grade: the body is
+                // INLINED at the transfer site, so a `return` anywhere but the bottom
+                // returns from the function that contains the transfer. Reproduced
+                // before this dropped its edge-grade guard: a lowering on a `relaxed`
+                // edge returned 7 out of `main`, skipping the rest of the program, and
+                // the same shape inside a kernel produced invalid IR. On a
+                // synchronizing edge the rule is also what keeps every path past the
+                // trailing barrier.
+                for (ptr, span) in &scan.returns {
+                    if Some(*ptr) != final_return {
+                        self.errors.error_with_code(
+                            DiagnosticCode::E6021,
+                            "`return` before the end of a lowering: the body is inlined \
+                             at the transfer site, so this would return from whatever \
+                             function performs the transfer. A lowering returns once, \
+                             at the bottom"
+                                .to_string(),
+                            Some(SourceSpan::from_ast_span(span)),
+                        );
                     }
                 }
 

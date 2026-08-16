@@ -1,0 +1,81 @@
+//===- custom_topology_user_lowering.vx - a user impl transfer is emitted -*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// The same program as custom_topology_device_image.vx, with ONE difference: the
+// machine model ships an `impl transfer Memory::GPU_HBM -> Memory::SMEM`, so the
+// tile placed in SMEM is filled by USER Vx code instead of the builtin copy
+// (Vx#353 A3). The lowering is value-preserving (C2: a transfer moves, it does
+// not convert), so the computed answer is identical -- what changes is the shape
+// of the emitted code, and that shape is the witness:
+//
+//   * the body is INLINED at the site (CHECK: user_lowered, gpu.barrier below);
+//   * the body says raw::barrier() twice, both top-level, the second one
+//     trailing -- so the device image shows exactly TWO bar.sync where the
+//     builtin (post-A3) shows one. device_image_test.rs counts them.
+//
+// The host fallback runs the same inlined body single-threaded (barriers erased,
+// lane 0, lanes 1), which is what computes EXPECT here on machines with no GPU.
+//
+// CHECK: user_lowered
+// CHECK: gpu.barrier
+// EXPECT: [[0,   1],
+// EXPECT: [1,   2]]
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+}
+Memory SMEM {
+  within: Memory::GPU_HBM, capacity: 228 KiB, bandwidth: 128 B/cyc,
+  granule: 1 KiB, managed: explicit, scope: sm
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::GPU_HBM,
+  visible: [Memory::GPU_HBM, Memory::SMEM],
+  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s,
+  transfer Memory::GPU_HBM -> Memory::SMEM
+}
+
+impl transfer Memory::GPU_HBM -> Memory::SMEM {
+  fn move_tile(src: &Tensor<f32, [2, 2]>, dst: &mut Tensor<f32, [2, 2]>) -> i32 {
+    for i in 0..raw::extent(src) {
+      raw::store(dst, i, raw::load(src, i));
+    }
+    // Two top-level barriers on purpose: the second is the trailing
+    // synchronization the contract demands; the first exists so the emitted
+    // image is structurally distinguishable from the builtin's single-barrier
+    // copy. bar.sync x2 in the PTX = this body ran, not the builtin.
+    raw::barrier();
+    raw::barrier();
+    return 0;
+  }
+}
+
+fn main() -> i32 {
+  let mut a = Tensor<f32>([ 2, 2 ]);
+  let mut o = Tensor<f32>([ 2, 2 ]);
+  for i in 0..2 {
+    for d in 0..2 {
+      a[i][d] = ((i + d) as f32) * 0.5;
+      o[i][d] = 0.0;
+    }
+  }
+  let ad = transfer(a, Memory::GPU_HBM);
+  let mut od = transfer(o, Memory::GPU_HBM);
+  spawn on(Topology::Dev) {
+    let tile = transfer(ad, Memory::SMEM);
+    for i in 0..2 {
+      for d in 0..2 {
+        od[i][d] = tile[i][d] * 2.0;
+      }
+    }
+  }
+  let home = transfer(od, Memory::CPU_DRAM);
+  print(home);
+  return 0;
+}

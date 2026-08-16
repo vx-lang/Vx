@@ -2156,6 +2156,14 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
         if name.as_ref() == "Verified" {
             return gen.generate_expr(&args[0], block);
         }
+        // The eight raw:: transfer-lowering primitives (#353 A3). They reach codegen
+        // only inside an inlined `impl transfer` body -- the checker refuses them
+        // anywhere else (E6017) -- and they lower to loads/stores/gpu ops directly in
+        // place, never to calls: a func.call inside a kernel region silently costs the
+        // kernel its device twin (`isDeviceLowerableDialect` excludes func).
+        if let Some(prim) = name.as_ref().strip_prefix("raw::") {
+            return lower_raw_primitive(gen, block, prim, args);
+        }
         // Slice reductions (S2): dot/sum/max/min over rank-1 f32 slices lower to
         // `vector.load` + (`arith.mulf` for dot) + `vector.reduction`, which the pipeline's
         // convert-vector-to-llvm turns into real SIMD (`@llvm.vector.reduce.*`). See

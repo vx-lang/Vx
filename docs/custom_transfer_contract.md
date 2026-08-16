@@ -85,10 +85,13 @@ the completion wait; it does not assume the consumer will.
 lowering is `Sync` or `Relaxed` is read off its body — a trailing barrier or completion wait is a
 syntactic fact — and the existing obligation does the rest.
 
-> **This is not hypothetical.** The SMEM lowering added in `dee50a69` emits an allocation and a
-> copy into shared memory with **no `gpu.barrier`**. It is not a live bug only because kernels are
+> **This was not hypothetical.** The SMEM lowering added in `dee50a69` emitted an allocation and a
+> copy into shared memory with **no `gpu.barrier`**. It was not a live bug only because kernels are
 > currently single-threaded; the moment a kernel has more than one thread, a reader can observe a
-> half-filled tile. The first lowering we wrote violated C3 on its first day.
+> half-filled tile. The first lowering we wrote violated C3 on its first day — and it stayed
+> violated for the two stages it took to build the machinery that could say so. Closed in A3
+> (see below); the barrier is now pinned by a `bar.sync` count in `device_image_test.rs`, because
+> a fix nothing asserts is a fix waiting to be deleted.
 
 ### C4 — An alias is not a copy, and the checker sees which is which.
 
@@ -386,11 +389,95 @@ were settled as follows:
   machine file, which the library never saw. `E6022` exempts `CPU_DRAM` endpoints — the host
   side of a host link is reachable by construction and no shipped fleet file lists it as
   `visible:`.
-- Still open for A3+: the settled signature convention for lowering methods (today any
-  tensor-typed parameter borrow works, checked at each call site), emission of the body,
-  derived traffic counts, the C7 failure-mode declaration syntax, and running the whole-body
-  pass on the parallel-pipeline schedule (today it runs on the driver path that `vxc` uses;
-  the pipeline schedule type-checks bodies but skips the whole-body pass).
+- Still open after A2: emission of the body (A3, below), derived traffic counts, the C7
+  failure-mode declaration syntax, and running the whole-body pass on the parallel-pipeline
+  schedule (today it runs on the driver path that `vxc` uses; the pipeline schedule
+  type-checks bodies but skips the whole-body pass).
+
+### What A3 landed (2026-08-16, Vx#353)
+
+A user-supplied lowering now moves the bytes. The witness is structural: the corpus fixture
+`tests/backend/pass/custom_topology_user_lowering.vx` says `raw::barrier()` twice, and its
+device image carries **two `bar.sync`** where the builtin's carries one. A transfer is a
+move, not a conversion (C2), so the computed answer cannot tell the two apart — only the
+shape of the emitted code can.
+
+- **The builtin's missing barrier is closed.** `TransferOpLowering`'s shared-memory branch
+  now emits `gpu.barrier` after its copy. That was the C3 gap named in this document: a copy
+  into shared memory that no lane waits on. It was latent only because kernels launch one
+  thread today.
+- **Inlined, never called.** The lowering body is spliced into the transfer site with its
+  `(src, dst)` parameters bound to the source value and the placed tile. A `func.call` inside
+  a kernel region would compile fine on the host and silently cost the kernel its device twin
+  — the device-readiness walk allows `arith/cf/gpu/math/memref/scf` and excludes `func`, so a
+  call means no PTX, no image, and a fallback nobody asked for.
+- **The site keeps its allocation half.** The `vx.transfer` op still carries the space,
+  granule, slot offset, and capacity descriptors, and still becomes the shared-space alloca
+  that gets promoted to real `.shared` storage. A `user_lowered` attribute tells the C++ side
+  to skip only the copy and the barrier. The part that took hardware debugging to get right
+  is untouched by design.
+- **Primitive lowerings**: `load`/`store` become `memref.load`/`memref.store`, with the
+  contract's flat element index delinearized row-major against the tile's static dims;
+  `extent` becomes the constant element count; `barrier` becomes `gpu.barrier`; `lane` and
+  `lanes` become `gpu.thread_id`/`gpu.block_dim` rather than the constants 0 and 1 — correct
+  under any launch geometry, and today's one-thread launches read exactly 0 and 1 anyway.
+  `async_copy` lowers to a synchronous element copy and `async_wait` to nothing: the
+  capability is declared and gated (E6020), but no engine is driven until the `nvgpu` route
+  exists. The fallback preserves the contract's semantics; it does not preserve its
+  performance, which is the honest state to be in.
+- **The host runs the same body.** The CPU fallback compiles the same kernel region, where
+  the thread id is 0, the block holds one thread, and a barrier over one thread orders
+  nothing — so the host stage folds those three ops to exactly that after the device image
+  has been taken. That is what lets a machine with no GPU still execute the fixture and check
+  the answer.
+- **Static shapes, on both paths.** The AST path used to type a placed tile as `?x?`, and a
+  dynamic shared tile cannot become a `.shared` global — the image it produced carried
+  shared-typed instructions against local storage and faulted on an A100. The transfer's
+  result type is now static whenever the source tensor's dims are literals, so that path
+  materialises real storage too. Genuinely dynamic tiles are still refused.
+- **The flat path declines** a transfer with a user lowering and hands the module to the AST
+  path, which stays the oracle — the same arrangement every other unsupported construct uses.
+- **What the splice cost, and what paid for it.** Inlining someone else's body into a
+  function's scope is where this stage's real defects lived, not in the primitives. The
+  generator's name maps are flat — no scoping — so the first version leaked a body-local
+  `let` into the caller (silently wrong answer), let the body's loop variable clobber the
+  site's (out-of-bounds store), and left a stale alloca flag behind (an ICE). It also bound
+  only the first two parameters, so a third resolved against whatever the caller had under
+  that name and wrote into a buffer the lowering never named. The splice now snapshots and
+  restores the whole environment, and a lowering must take exactly two statically-shaped
+  tile parameters. Every one of those was found by adversarial review with a running
+  compiler, not by reading the code.
+- **Declared shape must be the shape moved** (E6023). A lowering is selected by edge, so
+  nothing else ties its `&Tensor<f32, [2,2]>` to the tile at the site, and the primitives
+  read their extents from the declaration. A too-small declaration copied part of the tile
+  and read the rest back uninitialised — disclosing stack contents; a too-large one stored
+  past the end and segfaulted. Refused now, with the honest message that the two shapes must
+  agree. Making a lowering generic over shape is future work; it wants the shape to be a
+  parameter, which is the same unsettled signature question.
+- **A `return` before the end is refused on every edge** (E6021), not only on publishing
+  bodies over synchronizing edges as A2 had it. The body is inlined: a non-final return
+  returns from whatever function performs the transfer. On a `relaxed` edge this escaped
+  every check and made `main` return 7 without running the rest of the program.
+
+#### Known limitation: a barrier is only as uniform as its site
+
+`E6019` refuses a `raw::barrier()` under control flow *in the lowering body*, because a
+barrier some lanes skip deadlocks. The splice then pastes that body wherever the transfer
+is — so a `transfer(x, Memory::SMEM)` inside an `if` puts the barrier under the site's
+condition, and the positional rule cannot see it. The builtin lowering has exactly the same
+exposure now that it emits a barrier.
+
+This is latent for the same reason the original C3 gap was: kernels launch one thread today
+(#251). It becomes real the moment they do not, and the fix wants uniformity analysis —
+knowing whether a branch condition is the same for every lane — which is worth building
+alongside the parallelism it protects, not before. Recorded here rather than left for
+someone to rediscover, which is what the C3 gap earned by being written down.
+
+- Still open after A3: uniformity analysis for the barrier-at-the-site case above, the
+  `nvgpu` route for real asynchronous copies, derived traffic counts in `--diagnostics-json`
+  (A4), the C7 failure-mode declaration syntax, a settled signature convention for lowering
+  methods (today: exactly one method taking exactly two statically-shaped tiles), `raw::`
+  opcodes on the flat path, and the parallel-pipeline schedule parity noted above.
 
 ### Capability gates the primitives
 

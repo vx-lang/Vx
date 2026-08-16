@@ -653,11 +653,12 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
         "vx_npu_kernel_" + std::to_string(kernelIdx.fetch_add(1));
     auto kernelOp = rewriter.create<vx::KernelOp>(op.getLoc(), funcName,
                                                   funcType, topology);
-    // The declared arch travels from the machine file, via the spawn, onto the outlined kernel --
-    // a discardable attribute, so no dialect change. It is what lets `materializeGpuKernels` gate
-    // device compilation on the DECLARATION instead of the dispatch-id band, which a custom
-    // topology arithmetically cannot enter (custom ids are 1000 + fnv %% 1000; the band is
-    // [500, 600)) (Vx#352).
+    // The declared arch travels from the machine file, via the spawn, onto the
+    // outlined kernel -- a discardable attribute, so no dialect change. It is
+    // what lets `materializeGpuKernels` gate device compilation on the
+    // DECLARATION instead of the dispatch-id band, which a custom topology
+    // arithmetically cannot enter (custom ids are 1000 + fnv %% 1000; the band
+    // is [500, 600)) (Vx#352).
     if (auto arch = op->getAttrOfType<StringAttr>("arch"))
       kernelOp->setAttr("arch", arch);
 
@@ -773,16 +774,19 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
   }
 };
 
-/// Re-type the users of a value that has just moved into a different memory space.
+/// Re-type the users of a value that has just moved into a different memory
+/// space.
 ///
-/// Only `memref.reinterpret_cast` needs this: it is the one op in the chain whose RESULT type
-/// restates the memory space, so leaving it alone makes it a cast between spaces and the verifier
-/// rejects it with "different memory spaces specified for source type ... and result memref type".
-/// `memref.load` and `memref.store` accept any space and need no change.
+/// Only `memref.reinterpret_cast` needs this: it is the one op in the chain
+/// whose RESULT type restates the memory space, so leaving it alone makes it a
+/// cast between spaces and the verifier rejects it with "different memory
+/// spaces specified for source type ... and result memref type". `memref.load`
+/// and `memref.store` accept any space and need no change.
 ///
-/// The casts come from the flat code generator, which emits a row view for `t[i][d]` before
-/// anything knows the tile will live in shared memory -- so the space cannot be filled in there and
-/// has to be threaded through here. Recursive because a view of a view is a chain (#352).
+/// The casts come from the flat code generator, which emits a row view for
+/// `t[i][d]` before anything knows the tile will live in shared memory -- so
+/// the space cannot be filled in there and has to be threaded through here.
+/// Recursive because a view of a view is a chain (#352).
 static void propagateMemorySpace(Value v, Attribute space) {
   SmallVector<Operation *> users(v.getUsers().begin(), v.getUsers().end());
   for (Operation *user : users) {
@@ -822,25 +826,29 @@ struct TransferOpLowering : public OpRewritePattern<TransferOp> {
                             << srcType << " to " << targetType << "\n");
 
     // A placement into an SM-scoped space is shared memory, and it is the one
-    // device transfer this stage CAN express. Everything needed is already on the
-    // op -- `scope = "sm"`, plus the space name, granule and slot offset the
-    // checker computed -- so it becomes a workgroup-space allocation and a copy
-    // into it, right here, in dialects the device pipeline accepts.
+    // device transfer this stage CAN express. Everything needed is already on
+    // the op -- `scope = "sm"`, plus the space name, granule and slot offset
+    // the checker computed -- so it becomes a workgroup-space allocation and a
+    // copy into it, right here, in dialects the device pipeline accepts.
     //
-    // Doing it here rather than later is what makes the kernel compilable at all.
-    // `isDeviceLowerableDialect` allows arith/cf/gpu/math/memref/scf; a surviving
-    // `vx.transfer` is none of those, so a kernel containing one is classified
-    // not-device-ready and dropped from GPU compilation entirely -- silently, and
-    // the whole region falls back. That is why a tile placed in SMEM produced no
-    // `.shared` in the emitted PTX and no `image=` in the payload: the placement
-    // disqualified the very kernel that was supposed to use it (#352).
+    // Doing it here rather than later is what makes the kernel compilable at
+    // all. `isDeviceLowerableDialect` allows arith/cf/gpu/math/memref/scf; a
+    // surviving `vx.transfer` is none of those, so a kernel containing one is
+    // classified not-device-ready and dropped from GPU compilation entirely --
+    // silently, and the whole region falls back. That is why a tile placed in
+    // SMEM produced no
+    // `.shared` in the emitted PTX and no `image=` in the payload: the
+    // placement disqualified the very kernel that was supposed to use it
+    // (#352).
     if (auto scope = op->getAttrOfType<StringAttr>("scope")) {
       if (scope.getValue() == "sm") {
-        // Integer address space 3, not `#gpu.address_space<workgroup>`. The two mean the same
-        // thing to NVVM, but the symbolic attribute needs a memory-space conversion registered on
-        // the type converter, and the device pipeline here does not install one -- it fails with
-        // "conversion of memref memory space #gpu.address_space<workgroup> to integer address
-        // space failed". 3 is what NVPTX calls shared, and it converts with no extra plumbing.
+        // Integer address space 3, not `#gpu.address_space<workgroup>`. The two
+        // mean the same thing to NVVM, but the symbolic attribute needs a
+        // memory-space conversion registered on the type converter, and the
+        // device pipeline here does not install one -- it fails with
+        // "conversion of memref memory space #gpu.address_space<workgroup> to
+        // integer address space failed". 3 is what NVPTX calls shared, and it
+        // converts with no extra plumbing.
         Attribute workgroup = rewriter.getI64IntegerAttr(3);
         auto sharedType =
             MemRefType::get(targetType.getShape(), targetType.getElementType(),
@@ -867,9 +875,22 @@ struct TransferOpLowering : public OpRewritePattern<TransferOp> {
         // lifetime of the kernel, not something anyone frees, and
         // convert-gpu-to-nvvm turns a workgroup-space alloca into a `.shared`
         // global rather than a call into a device allocator.
-        Value shared = rewriter.create<memref::AllocaOp>(op.getLoc(), sharedType,
-                                                         sharedDynSizes);
-        rewriter.create<memref::CopyOp>(op.getLoc(), src, shared);
+        Value shared = rewriter.create<memref::AllocaOp>(
+            op.getLoc(), sharedType, sharedDynSizes);
+        // A site whose transfer carries a user lowering (#353 A3) keeps this
+        // allocation half -- the alloca, the offsets, the space propagation --
+        // and skips the copy: the user's inlined body does the filling, and its
+        // own trailing raw::barrier() is the synchronization (checked, E6021).
+        if (!op->hasAttr("user_lowered")) {
+          rewriter.create<memref::CopyOp>(op.getLoc(), src, shared);
+          // The C3 barrier (#353 A3). Every lane must see the filled tile
+          // before any lane reads it; without this the transfer is relaxed and
+          // a stale read is reachable -- latent while kernels launch 1x1x1,
+          // measured obligation all the same. The host clone of this body gets
+          // the same op; the vx-to-llvm stage erases it there (one host thread
+          // orders nothing), and the device pipeline lowers it to bar.sync.
+          rewriter.create<gpu::BarrierOp>(op.getLoc());
+        }
         rewriter.replaceOp(op, shared);
         propagateMemorySpace(shared, workgroup);
         return success();
@@ -1097,17 +1118,19 @@ struct ConvertVxToStandardPass
     SmallVector<vx::KernelOp> kernels;
     module.walk([&](vx::KernelOp k) {
       const int32_t topo = static_cast<int32_t>(k.getTopology());
-      // Eligibility: the DECLARED arch when the kernel carries one, the dispatch-id band when it
-      // does not. A machine file that says `arch: nvptx64` has answered "what code do we emit for
-      // this topology" -- that is the field's documented meaning -- and this is the place that
-      // needed the answer; before the attribute existed the gate was the band alone, which a
-      // custom topology can never enter (custom ids own 1000..1999 by construction), so no
-      // declaration could produce a device image (Vx#352).
+      // Eligibility: the DECLARED arch when the kernel carries one, the
+      // dispatch-id band when it does not. A machine file that says `arch:
+      // nvptx64` has answered "what code do we emit for this topology" -- that
+      // is the field's documented meaning -- and this is the place that needed
+      // the answer; before the attribute existed the gate was the band alone,
+      // which a custom topology can never enter (custom ids own 1000..1999 by
+      // construction), so no declaration could produce a device image (Vx#352).
       //
-      // The band stays as the fallback for kernels with no arch attribute: built-in topologies
-      // (whose descriptors declare no arch) and the AST-codegen path (which does not stamp).
-      // A declared arch we have no device pipeline for -- `applegpu` reaches its device through
-      // the plugin ABI, not NVVM -- is excluded here exactly like NPU/AccCore below.
+      // The band stays as the fallback for kernels with no arch attribute:
+      // built-in topologies (whose descriptors declare no arch) and the
+      // AST-codegen path (which does not stamp). A declared arch we have no
+      // device pipeline for -- `applegpu` reaches its device through the plugin
+      // ABI, not NVVM -- is excluded here exactly like NPU/AccCore below.
       if (auto arch = k->getAttrOfType<StringAttr>("arch")) {
         if (arch.getValue() != "nvptx64")
           return;
@@ -1242,9 +1265,9 @@ struct ConvertVxToStandardPass
         });
         int smemIdx = 0;
         for (memref::AllocaOp a : smemAllocas) {
-          std::string gname = (kernel.getSymName() + "_smem_" +
-                               std::to_string(smemIdx++))
-                                  .str();
+          std::string gname =
+              (kernel.getSymName() + "_smem_" + std::to_string(smemIdx++))
+                  .str();
           OpBuilder atModule(gpuModule.getBody(), gpuModule.getBody()->begin());
           atModule.create<memref::GlobalOp>(
               a.getLoc(), gname,
@@ -2160,6 +2183,39 @@ struct ConvertVxToLLVMPass
 
     for (gpu::GPUModuleOp m : deviceModules)
       m.erase();
+
+    // What remains after the device twin leaves is HOST code -- including the
+    // host clone of every kernel body, which KernelOpLowering below inlines
+    // into an ordinary func.func that the CPU fallback runs on ONE thread. The
+    // gpu ops a kernel body can carry (the builtin SMEM barrier, a user
+    // lowering's raw::barrier()/lane()/lanes(), #353 A3) mean this on one
+    // thread: the thread id is 0, the block has one thread, and a barrier over
+    // one thread orders nothing. Lower them to exactly that here -- the host
+    // ConversionTarget below has no gpu story, and the device twin already
+    // took its own copy of the body.
+    //
+    // Scoped to `vx.kernel` bodies, NOT the whole module. A `gpu` op elsewhere
+    // is one the user wrote (an `mlir!` block lowers to an ordinary function),
+    // and folding that would be this compiler quietly rewriting hand-written
+    // code: before this was scoped, `mlir!{ gpu.block_dim x }` stopped failing
+    // to translate and started silently returning 1. A gpu op the compiler did
+    // not put there still reaches LLVM translation and still fails loudly,
+    // which is the right outcome for something nothing here knows how to lower.
+    getOperation().walk([&](vx::KernelOp kernel) {
+      kernel.walk([&](gpu::ThreadIdOp t) {
+        OpBuilder b(t);
+        Value zero = b.create<arith::ConstantOp>(t.getLoc(), b.getIndexAttr(0));
+        t.getResult().replaceAllUsesWith(zero);
+        t.erase();
+      });
+      kernel.walk([&](gpu::BlockDimOp d) {
+        OpBuilder b(d);
+        Value one = b.create<arith::ConstantOp>(d.getLoc(), b.getIndexAttr(1));
+        d.getResult().replaceAllUsesWith(one);
+        d.erase();
+      });
+      kernel.walk([](gpu::BarrierOp bar) { bar.erase(); });
+    });
 
     ConversionTarget target(getContext());
     target.addLegalDialect<LLVM::LLVMDialect>();
