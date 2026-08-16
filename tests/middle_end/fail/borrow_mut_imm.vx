@@ -1,9 +1,14 @@
 // RUN: not vxc %s 2>&1 | FileCheck %s
+// A mutable borrow held LIVE across an immutable one (the `w = y` use keeps it
+// alive; without a later use, NLL releases the dead borrow and this is legal
+// -- pinned by tests/middle_end/pass/borrow_loan_dead_before_mut.vx). Repaired
+// from a pre-NLL fossil: the old body's borrow died immediately, and the test
+// only failed because `main` returned Tensor (the #210 i32 rule).
 // CHECK: Cannot access 'x' because it is mutably borrowed.
-fn main() -> Tensor<f32> {
+fn main() -> i32 {
   let mut x : Tensor<f32> = Tensor<f32>();
   let y = &mut x;
-  let z = &x; // Error: cannot borrow as immutable because it is already
-  // borrowed as mutable
-  return 0.0;
+  let z = &x; // Error: x is still mutably borrowed (y lives until `w = y`)
+  let w = y;
+  return 0;
 }

@@ -241,6 +241,27 @@ fn run_middle_end_test(path: &Path) -> Result<(), String> {
     for f in &mut program.functions {
         checker.check_function(f);
     }
+    // Transfer lowerings, exactly as the driver checks them (#353 A1/A2): bodies with the
+    // edge set so `raw::` resolves, then the structural pass (E6015) and the whole-body
+    // pass (E6019/E6021/E6022). Without this the harness never emits a lowering
+    // diagnostic and every lowering fail test passes vacuously -- the A2 review proved
+    // it by planting a fully legal program with a bogus CHECK line, and it passed.
+    for t in &mut program.transfer_impls {
+        checker.transfer_lowering_edge = Some((t.from.clone(), t.to.clone()));
+        for f in &mut t.methods {
+            checker.check_function(f);
+        }
+        checker.transfer_lowering_edge = None;
+    }
+    checker.check_transfer_impls();
+    checker.check_transfer_impl_bodies(&program.transfer_impls);
+    // Topology coherence, exactly as the driver runs it (E6005/E6013/E6016): read the
+    // declarations from the env so machine-file topologies are covered too. Without
+    // this, the E6016 fail tests passed vacuously -- their diagnostic never existed.
+    let all_topologies: Vec<vxc::arch::TopologyDecl> =
+        env.topologies.values().map(|t| (*t).clone()).collect();
+    checker.check_topology_coherence(&all_topologies);
+    checker.check_memory_coherence();
     if checker
         .errors
         .iter()
@@ -930,13 +951,51 @@ fn test_middle_end_fail() -> Result<(), String> {
     run_directory_tests(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/middle_end/fail"),
         |path| {
-            if run_middle_end_test(path).is_ok() {
-                return Err(format!(
+            // A fail test must fail AND fail for the declared reason: every `// CHECK:`
+            // line must appear, in order, in the error text. "Any error passes" let a
+            // test keep passing while the diagnostic it pinned was deleted -- the A2
+            // review planted a legal program with `// CHECK: E9999` and it passed.
+            let source = fs::read_to_string(path).expect("Failed to read test file");
+            // `// REQUIRES: z3`: the pinned diagnostic needs the prover, and the prover
+            // fails OPEN without z3 (the program compiles). Skip rather than fail on a
+            // machine without it, the same policy test_frontend_fail applies.
+            if source.contains("// REQUIRES: z3") {
+                let has_z3 = std::process::Command::new("z3")
+                    .arg("--version")
+                    .output()
+                    .is_ok();
+                if !has_z3 {
+                    return Ok(());
+                }
+            }
+            let check_lines: Vec<String> = source
+                .lines()
+                .filter(|l| l.trim().starts_with("// CHECK:"))
+                .map(|l| l.split_once("CHECK:").unwrap().1.trim().to_string())
+                .collect();
+            match run_middle_end_test(path) {
+                Ok(()) => Err(format!(
                     "Expected {} to fail, but it succeeded!",
                     path.display()
-                ));
+                )),
+                Err(e) => {
+                    let mut current_idx = 0;
+                    for check in &check_lines {
+                        if let Some(pos) = e[current_idx..].find(check.as_str()) {
+                            current_idx += pos + check.len();
+                        } else {
+                            return Err(format!(
+                                "{} failed, but not for the declared reason: `{}` is not \
+                                 in the error output.\nError:\n{}",
+                                path.display(),
+                                check,
+                                e
+                            ));
+                        }
+                    }
+                    Ok(())
+                }
             }
-            Ok(())
         },
     )
 }

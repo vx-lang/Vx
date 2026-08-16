@@ -1,5 +1,5 @@
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// CHECK: Error[E4003]
+// CHECK: E4003
 // Soundness (#243, E2): a genuine multi-source return — `choose` returns from `a` on one path and
 // `b` on the other, so its summary is FromParams({a, b}). The result may alias EITHER source;
 // mutating `x` (bound to `a`) while `r` is live must be rejected. Narrowing must union over paths,

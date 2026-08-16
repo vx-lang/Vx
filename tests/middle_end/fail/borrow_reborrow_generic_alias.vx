@@ -1,5 +1,5 @@
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// CHECK: Error[E4003]
+// CHECK: E4003
 // Soundness (#268): bc9 routed through a *generic* callee. `pass<T>` reborrows `*m` and the result
 // aliases it; mutating through `m` via `insert(m, 42)` while that reborrow is live (returned) is a
 // shared-XOR-mutable violation. `resolve_callee_ref_signature` now resolves the generic's declared

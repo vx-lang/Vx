@@ -1,5 +1,5 @@
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// CHECK: Error[E4003]
+// CHECK: E4003
 // Soundness (#268): bc9 through a *function-pointer* callee. Which function `f` holds is unknown,
 // but its signature `fn(&Map) -> &i32` is not — the result reborrows `*m`, so mutating `m` via
 // `insert(m, 42)` while that reborrow is live must be rejected. `resolve_callee_ref_signature` now

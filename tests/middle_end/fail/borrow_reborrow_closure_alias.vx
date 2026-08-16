@@ -1,5 +1,5 @@
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// CHECK: Error[E4003]
+// CHECK: E4003
 // Soundness (#266, #269): bc9 through a closure callee. `f(m)` reborrows `*m`; mutating through `m`
 // via `insert(m, 42)` while that reborrow is live is a shared-XOR-mutable violation. Now caught by
 // the *aliasing* rule (E4003) — `resolve_callee_ref_signature` resolves the closure's `Closure_N_call`
