@@ -653,6 +653,13 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
         "vx_npu_kernel_" + std::to_string(kernelIdx.fetch_add(1));
     auto kernelOp = rewriter.create<vx::KernelOp>(op.getLoc(), funcName,
                                                   funcType, topology);
+    // The declared arch travels from the machine file, via the spawn, onto the outlined kernel --
+    // a discardable attribute, so no dialect change. It is what lets `materializeGpuKernels` gate
+    // device compilation on the DECLARATION instead of the dispatch-id band, which a custom
+    // topology arithmetically cannot enter (custom ids are 1000 + fnv %% 1000; the band is
+    // [500, 600)) (Vx#352).
+    if (auto arch = op->getAttrOfType<StringAttr>("arch"))
+      kernelOp->setAttr("arch", arch);
 
     // Name what the region computes, so a plugin can route it to a vendor
     // kernel instead of inferring the operation from buffer shapes (#325).
@@ -838,12 +845,30 @@ struct TransferOpLowering : public OpRewritePattern<TransferOp> {
         auto sharedType =
             MemRefType::get(targetType.getShape(), targetType.getElementType(),
                             targetType.getLayout(), workgroup);
+        // The AST codegen path types this transfer as a dynamic memref (`?x?`),
+        // so the alloca needs the sizes as SSA values, read off the source --
+        // the flat path's shapes are static and contribute none. Measured, not
+        // assumed: with the sizes supplied, the AST path's kernel compiles to
+        // the same `.shared` PTX as the flat path's (the dims fold to constants
+        // by the time NVVM sees them). A tile whose shape stays GENUINELY
+        // dynamic at device compilation is untested territory, owned by #353 A3
+        // alongside the barrier -- if it fails there, it fails in
+        // `deviceImageOf` with a diagnostic, not silently.
+        SmallVector<Value> sharedDynSizes;
+        for (int i = 0; i < sharedType.getRank(); ++i) {
+          if (sharedType.isDynamicDim(i)) {
+            auto idx = rewriter.create<arith::ConstantOp>(
+                op.getLoc(), rewriter.getIndexAttr(i));
+            sharedDynSizes.push_back(
+                rewriter.create<memref::DimOp>(op.getLoc(), src, idx));
+          }
+        }
         // `memref.alloca`, not `alloc`: shared memory is scratch for the
         // lifetime of the kernel, not something anyone frees, and
         // convert-gpu-to-nvvm turns a workgroup-space alloca into a `.shared`
         // global rather than a call into a device allocator.
-        Value shared =
-            rewriter.create<memref::AllocaOp>(op.getLoc(), sharedType);
+        Value shared = rewriter.create<memref::AllocaOp>(op.getLoc(), sharedType,
+                                                         sharedDynSizes);
         rewriter.create<memref::CopyOp>(op.getLoc(), src, shared);
         rewriter.replaceOp(op, shared);
         propagateMemorySpace(shared, workgroup);
@@ -1072,11 +1097,26 @@ struct ConvertVxToStandardPass
     SmallVector<vx::KernelOp> kernels;
     module.walk([&](vx::KernelOp k) {
       const int32_t topo = static_cast<int32_t>(k.getTopology());
-      // The GPU band from `topology_dispatch_id`. NPU and AccCore outline the
-      // same way but reach their devices through a different backend, and
-      // giving them an NVVM twin would be claiming something untrue.
-      if (topo < 500 || topo >= 600)
+      // Eligibility: the DECLARED arch when the kernel carries one, the dispatch-id band when it
+      // does not. A machine file that says `arch: nvptx64` has answered "what code do we emit for
+      // this topology" -- that is the field's documented meaning -- and this is the place that
+      // needed the answer; before the attribute existed the gate was the band alone, which a
+      // custom topology can never enter (custom ids own 1000..1999 by construction), so no
+      // declaration could produce a device image (Vx#352).
+      //
+      // The band stays as the fallback for kernels with no arch attribute: built-in topologies
+      // (whose descriptors declare no arch) and the AST-codegen path (which does not stamp).
+      // A declared arch we have no device pipeline for -- `applegpu` reaches its device through
+      // the plugin ABI, not NVVM -- is excluded here exactly like NPU/AccCore below.
+      if (auto arch = k->getAttrOfType<StringAttr>("arch")) {
+        if (arch.getValue() != "nvptx64")
+          return;
+      } else if (topo < 500 || topo >= 600) {
+        // The GPU band from `topology_dispatch_id`. NPU and AccCore outline the
+        // same way but reach their devices through a different backend, and
+        // giving them an NVVM twin would be claiming something untrue.
         return;
+      }
       // Only a body the device pipeline can actually compile.
       //
       // Two things get excluded, for two different reasons, and both are

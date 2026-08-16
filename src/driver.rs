@@ -1058,6 +1058,7 @@ impl CompilerDriver {
         // `space`/`within`/`granule`/`capacity`/`scope` + bump-allocated `offset`/`slots` attrs the AST
         // path emits (otherwise dropped on the default path — B1).
         let subspaces: Vec<crate::codegen::flat::SubspaceInfo>;
+        let topo_archs: Vec<(i64, String)>;
         {
             let env_mods = mods.clone();
             let env = GlobalAstEnv::build(&env_mods);
@@ -1069,6 +1070,7 @@ impl CompilerDriver {
                 }
             }
             subspaces = crate::codegen::flat::subspaces_from_env(&env);
+            topo_archs = crate::codegen::flat::topo_archs_from_env(&env);
         }
 
         // Index every non-generic function by name (the main-module version wins any collision).
@@ -1207,6 +1209,7 @@ impl CompilerDriver {
             &agg_layouts,
             &alias_tables,
             &subspaces,
+            &topo_archs,
             crate::pipeline::Schedule::Parallel,
         ) {
             Some(t) => t,

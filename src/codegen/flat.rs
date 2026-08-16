@@ -670,6 +670,13 @@ pub struct EmitCtx {
     /// carries no memory decls, so this is threaded in from the per-compilation env. Empty for a program
     /// with no declared sub-spaces (P0-1).
     pub subspaces: HashMap<u64, SubspaceInfo>,
+    /// Declared topology arch by dispatch id (`Topology Dev { arch: nvptx64, ... }` ->
+    /// `1916 -> "nvptx64"`), so a `vx.spawn` can carry the arch its machine file declared and the
+    /// device pipeline can gate on the DECLARATION rather than on the dispatch-id band -- which a
+    /// custom topology can never enter (custom ids are 1000 + fnv % 1000 by construction, and the
+    /// GPU band is [500, 600)). Built-in topologies are not in this map and keep riding the band
+    /// (Vx#352, Vx#353 Track B).
+    pub topo_archs: HashMap<i64, String>,
 }
 
 /// The declared properties of a memory sub-space the flat emitter re-attaches to a `vx.transfer`,
@@ -717,6 +724,29 @@ const RUNTIME_HELPERS: [(&str, &str); 10] = [
 /// `Opcode::Transfer` should carry are silently dropped on the flat path. Shared by `vxc`'s
 /// `build_flat_module` and the parallel pipeline's codegen phase, so the two cannot disagree about
 /// what a `vx.transfer` is annotated with (P0-1, #311).
+/// The declared-arch table for `EmitCtx::topo_archs`, from the per-compilation env: one entry per
+/// user-declared topology that states an `arch:`. A topology that declines to declare one gets no
+/// entry, no `arch` attribute, and therefore no device compilation -- refusing to guess is the
+/// same policy `fleet/m4-uma.vx` documents for its own arch field.
+pub fn topo_archs_from_env(env: &crate::hir::GlobalAstEnv) -> Vec<(i64, String)> {
+    let mut out: Vec<(i64, String)> = env
+        .topologies
+        .values()
+        .filter_map(|decl| {
+            let arch = decl.descriptor.arch.as_ref()?;
+            let id = crate::arch::topology_dispatch_id(&crate::syntax::Topology::Custom(
+                decl.name.clone(),
+            ));
+            Some((id as i64, arch.as_ref().to_string()))
+        })
+        .collect();
+    // Sorted, because `env.topologies` is a HashMap and iteration order would otherwise decide
+    // which entry wins an id collision -- the coin-flip E6016 refuses upstream, kept impossible
+    // here too so the emitted MLIR is byte-reproducible (the freeze protocol depends on that).
+    out.sort();
+    out
+}
+
 pub fn subspaces_from_env(env: &crate::hir::GlobalAstEnv) -> Vec<SubspaceInfo> {
     env.memories
         .values()
@@ -771,6 +801,7 @@ impl EmitCtx {
                 .collect(),
             func_sigs: HashMap::new(),
             subspaces: HashMap::new(),
+            topo_archs: HashMap::new(),
         }
     }
 
@@ -852,12 +883,16 @@ pub fn emit_module_mlir(
     agg_layouts: &[(TypeId, Vec<u64>, Vec<String>)],
     alias_tables: &[&[(usize, usize, Vec<usize>)]],
     subspaces: &[SubspaceInfo],
+    topo_archs: &[(i64, String)],
     sched: crate::pipeline::Schedule,
 ) -> Option<String> {
     let setup = std::time::Instant::now();
     let mut ctx = EmitCtx::from_registry(registry, sched);
     for s in subspaces {
         ctx.subspaces.insert(s.dispatch_id, s.clone());
+    }
+    for (id, arch) in topo_archs {
+        ctx.topo_archs.insert(*id, arch.clone());
     }
     for (gid, elem, shape) in tensor_types {
         ctx.tensors
@@ -2261,7 +2296,16 @@ pub fn emit_function_mlir(
                 if !terminated {
                     body += "  \"vx.yield\"() : () -> ()\n";
                 }
-                body += &format!("  }}) {{topology = {topo} : i32}} : () -> ()\n");
+                // A topology that declared an `arch:` sends it along, so the device pipeline can
+                // gate on the declaration instead of the dispatch-id band (Vx#352). Discardable
+                // attribute on the generic form -- no dialect change involved.
+                if let Some(arch) = ctx.topo_archs.get(&topo) {
+                    body += &format!(
+                        "  }}) {{arch = \"{arch}\", topology = {topo} : i32}} : () -> ()\n"
+                    );
+                } else {
+                    body += &format!("  }}) {{topology = {topo} : i32}} : () -> ()\n");
+                }
                 terminated = false;
             }
             // Print a string literal (no result): take the address of the module-level global emitted
@@ -2487,6 +2531,7 @@ mod tests {
             &string_tables,
             &agg_layouts,
             &alias_tables,
+            &[],
             &[],
             crate::pipeline::Schedule::Parallel,
         )

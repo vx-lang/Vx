@@ -97,6 +97,9 @@ struct Frontend {
     /// outlive them and cannot travel in this struct. Codegen wants exactly one thing from it, so
     /// the answer travels instead of the env.
     subspaces: Vec<crate::codegen::flat::SubspaceInfo>,
+    /// Same travel pattern as `subspaces`: the declared-arch table for `vx.spawn` stamping
+    /// (Vx#352), extracted from the env because the env cannot leave the frontend.
+    topo_archs: Vec<(i64, String)>,
     checks: Vec<FunctionCheck>,
     /// Per-check patched type streams, index-aligned with `checks`.
     type_streams: Vec<(usize, Vec<crate::gid::TypeId>)>,
@@ -173,6 +176,7 @@ fn run_frontend(file_paths: &[String], sched: Schedule) -> Result<Frontend, Pipe
         modules,
         session,
         subspaces: crate::codegen::flat::subspaces_from_env(&env),
+        topo_archs: crate::codegen::flat::topo_archs_from_env(&env),
         checks,
         type_streams,
         merged_arenas: (merged_slow, merged_gen, merged_off),
@@ -275,6 +279,7 @@ pub fn compile_pipeline_mlir_with(
         modules,
         session,
         subspaces,
+        topo_archs,
         mut checks,
         type_streams,
         merged_arenas,
@@ -285,6 +290,7 @@ pub fn compile_pipeline_mlir_with(
             &mut checks,
             &type_streams,
             &subspaces,
+            &topo_archs,
             &session,
             sched,
         )
@@ -321,6 +327,7 @@ pub fn compile_pipeline_mlir_with(
         }
         drop(merged_arenas);
         drop(subspaces);
+        drop(topo_archs);
         drop(session);
     });
     Ok(text)
@@ -1461,6 +1468,7 @@ fn codegen_mlir_phase(
     check_results: &mut [FunctionCheck],
     all_type_streams: &[(usize, Vec<crate::gid::TypeId>)],
     subspaces: &[crate::codegen::flat::SubspaceInfo],
+    topo_archs: &[(i64, String)],
     global_session: &std::sync::Arc<GlobalSession>,
     sched: Schedule,
 ) -> Option<String> {
@@ -1577,6 +1585,7 @@ fn codegen_mlir_phase(
         &agg_layouts,
         &alias_tables,
         subspaces,
+        topo_archs,
         sched,
     )?;
     chatter!(

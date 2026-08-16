@@ -142,6 +142,93 @@ fn a_placed_kernel_is_compiled_to_ptx_and_carried_in_the_payload() {
 }
 
 /// A classified matmul carries no image, and still says it is a matmul.
+/// The PTX out of the payload global: `image=` up to the terminating NUL, unescaped.
+fn extract_image(ir: &str) -> String {
+    let start = ir.find("image=").expect("payload carries image=") + "image=".len();
+    let rest = &ir[start..];
+    let end = rest.find("\\00").unwrap_or(rest.len());
+    rest[..end]
+        .replace("\\0A", "\n")
+        .replace("\\09", "\t")
+        .replace("\\22", "\"")
+}
+
+/// A USER-DECLARED topology whose machine file says `arch: nvptx64` gets a device image,
+/// carried in the payload like the built-in GPU's -- and the tile its body places in
+/// `Memory::SMEM` materialises as real shared memory in the PTX (Vx#352, #353).
+///
+/// Before the declared arch travelled onto the outlined kernel, this was impossible by
+/// arithmetic, not by omission: eligibility was the dispatch-id band [500, 600), and a custom
+/// topology's id is 1000 + fnv(name) % 1000 -- no name can land in the band.
+#[test]
+fn a_custom_topology_with_a_declared_arch_gets_a_device_image() {
+    let ir = emit_llvm("custom_topology_device_image.vx");
+    assert!(
+        ir.contains("image="),
+        "a custom nvptx64 topology must produce a device image"
+    );
+    let image = extract_image(&ir);
+    assert!(
+        image.contains(".target sm_80"),
+        "the image is real PTX for the default chip:\n{image}"
+    );
+    // The SMEM placement is not an annotation: the tile lives in `.shared` and is read
+    // from there. This is #352's first done-when item, observable.
+    assert!(
+        image.contains(".shared"),
+        "a tile placed in Memory::SMEM must materialise as shared memory:\n{image}"
+    );
+    assert!(
+        image.contains("ld.shared"),
+        "the body must READ the tile from shared memory, not re-read global:\n{image}"
+    );
+    // What the image must NOT contain yet, pinned so the day either appears the change is
+    // deliberate: no barrier (the C3 gap, scheduled with #353 A3) and no cp.async (nothing
+    // emits it -- the fact that falsified `crossing: streamed`, vx-review#27).
+    assert!(
+        !image.contains("cp.async"),
+        "nothing emits cp.async today; if this appears, vx-review#26 wants re-scoring"
+    );
+}
+
+/// The AST-fallback path stamps the declared arch too. Without this, the same source lost
+/// its device image whenever flat codegen declined and the AST path took over -- silently,
+/// which is how a "works on my machine" divergence between two codegen paths is born
+/// (Vx#352 review finding).
+#[test]
+fn the_ast_codegen_path_stamps_the_declared_arch_too() {
+    let path = corpus("custom_topology_device_image.vx");
+    let out = Command::new(env!("CARGO_BIN_EXE_vxc"))
+        .arg(&path)
+        .arg("--legacy-codegen")
+        .arg("--emit-llvm")
+        .output()
+        .unwrap_or_else(|e| panic!("could not run vxc: {e}"));
+    assert!(
+        out.status.success(),
+        "legacy path failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let ir = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        ir.contains("image="),
+        "the AST path must produce the device image for a declared-arch topology"
+    );
+}
+
+/// The same program whose topology declares NO arch produces no image: the compiler refuses
+/// to guess what code to emit for a machine that did not say. The band fallback covers the
+/// built-in GPU; a silent guess here would be the same category error the band was --
+/// deciding device compilation on something other than the declaration.
+#[test]
+fn a_custom_topology_without_an_arch_stays_on_the_host() {
+    let ir = emit_llvm("custom_topology_no_arch.vx");
+    assert!(
+        !ir.contains("image="),
+        "no declared arch, no device image -- refusing to guess"
+    );
+}
+
 #[test]
 fn a_matmul_is_left_to_the_vendor_library() {
     let ir = emit_llvm("gpu_matmul_roles.vx");

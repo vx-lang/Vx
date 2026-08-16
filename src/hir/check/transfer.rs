@@ -158,6 +158,71 @@ impl<'a> TypeChecker<'a> {
     /// a published payload and handed to `seam::check_seam_buffers`; a `Reject` (the buffer
     /// can be read stale) means the edge does not preserve visibility.
     pub fn check_topology_coherence(&mut self, declared: &[crate::arch::TopologyDecl]) {
+        // Identity checks first (E6016): a topology whose declaration cannot take effect fails
+        // here, before any coherence rule reads the declaration as though it were in force.
+        //
+        // Shadowing: the parser resolves built-in names unconditionally (`Topology::GPU` is the
+        // built-in GPU whatever the program declares), so a declaration under such a name
+        // registers as Custom("GPU") and is unreachable from every use site. Found by review on
+        // Vx#352: `Topology GPU { arch: applegpu }` still produced an NVPTX image via the band,
+        // the machine file's word silently discarded.
+        const BUILTIN_TOPOLOGY_NAMES: &[&str] = &[
+            "CPU",
+            "Current",
+            "NPU",
+            "AccCore",
+            "AMX",
+            "ANE",
+            "GPU",
+            "CpuAvx512",
+            "CPU_AVX512",
+            "CpuNeon",
+            "CPU_Neon",
+        ];
+        for decl in declared {
+            if BUILTIN_TOPOLOGY_NAMES.contains(&decl.name.as_ref()) {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E6016,
+                    format!(
+                        "topology '{}' shadows the built-in topology of the same name; every \
+                         `Topology::{}` resolves to the built-in, so this declaration (including \
+                         its `arch:`) would be silently ignored -- rename it",
+                        decl.name, decl.name
+                    ),
+                    None,
+                );
+            }
+        }
+        // Dispatch-id collision: custom ids are 1000 + fnv(name) % 1000, so two names can share
+        // one id (Dev27/Dev38 both hash to 1223). Everything keyed by the id -- spawn dispatch,
+        // seam identity, and now the declared-arch table -- then depends on hash-iteration order
+        // for which declaration wins; measured as the same program getting a device image on some
+        // runs and not others. Refused, because a coin-flip identity is not an identity.
+        {
+            let mut by_id: std::collections::HashMap<i32, &crate::symbol::Symbol> =
+                std::collections::HashMap::new();
+            let mut sorted: Vec<&crate::arch::TopologyDecl> = declared.iter().collect();
+            sorted.sort_by(|a, b| a.name.as_ref().cmp(b.name.as_ref()));
+            for decl in sorted {
+                let id = crate::arch::topology_dispatch_id(&crate::syntax::Topology::Custom(
+                    decl.name.clone(),
+                ));
+                if let Some(prev) = by_id.insert(id, &decl.name) {
+                    if prev != &decl.name {
+                        self.errors.error_with_code(
+                            crate::diagnostic::DiagnosticCode::E6016,
+                            format!(
+                                "topologies '{}' and '{}' collide on dispatch id {} (custom ids \
+                                 are 1000 + fnv(name) % 1000); which declaration is in force \
+                                 would be hash order -- rename one",
+                                prev, decl.name, id
+                            ),
+                            None,
+                        );
+                    }
+                }
+            }
+        }
         for decl in declared {
             let name = &decl.name;
             for issue in

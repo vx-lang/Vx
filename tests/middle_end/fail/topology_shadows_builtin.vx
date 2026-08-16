@@ -1,0 +1,20 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// Declaring a topology named after a built-in is refused: the parser resolves
+// `Topology::GPU` to the built-in unconditionally, so the declaration -- including its
+// `arch:` -- would be silently ignored at every use site (Vx#352 review finding: a file
+// declaring `arch: applegpu` under this name still produced an NVPTX image via the band).
+// CHECK: E6016
+// CHECK: shadows the built-in topology
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+}
+Topology GPU {
+  arch: applegpu,
+  memory: Memory::GPU_HBM,
+  visible: [Memory::GPU_HBM],
+  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s
+}
+fn main() -> i32 {
+  return 0;
+}

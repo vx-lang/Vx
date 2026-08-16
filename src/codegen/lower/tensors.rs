@@ -112,6 +112,23 @@ impl<'c> LowerToMelior<'c> for syntax::SpawnOnExpr {
             ])
             .add_regions([region]);
 
+        // The declared arch travels on the spawn here exactly as on the flat path (Vx#352):
+        // without it, the same source lost its device image whenever flat codegen declined and
+        // this path took over -- silently, since the eligibility gate saw no attribute and a
+        // custom topology's id cannot enter the band fallback. Custom topologies only: built-ins
+        // declare no arch and ride the band, same asymmetry as the flat emitter.
+        if let syntax::Topology::Custom(name) = &self.top {
+            if let Some(desc) = gen.topologies.get(name) {
+                if let Some(arch) = &desc.arch {
+                    let arch_attr =
+                        melior::ir::attribute::StringAttribute::new(gen.context, arch.as_ref())
+                            .into();
+                    spawn_builder = spawn_builder
+                        .add_attributes(&[(Identifier::new(gen.context, "arch"), arch_attr)]);
+                }
+            }
+        }
+
         // Topology → plugin selection: if a hardware plugin claims this topology, record its
         // identity on the op so the emitted IR reflects which backend owns the region (a
         // later lowering / the runtime dispatcher can route on it). This is the point where

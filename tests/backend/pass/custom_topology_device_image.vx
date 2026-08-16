@@ -1,0 +1,67 @@
+//===- custom_topology_device_image.vx - declared arch gets a device image -*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// A USER-DECLARED topology whose machine model says `arch: nvptx64` gets its
+// kernel compiled to a device image, exactly like the built-in GPU (Vx#352).
+//
+// It could not, before the arch travelled: device eligibility was gated on the
+// dispatch-id band [500, 600), and a custom topology's id is 1000 + fnv(name)
+// % 1000 by construction -- no possible name could ever produce an image. The
+// machine file's `arch:` field is the documented answer to "what code do we
+// emit for this topology", and this test pins that the one place needing the
+// answer now consults it.
+//
+// The tile placed in Memory::SMEM materialises as real shared memory in the
+// image (`.shared` in the PTX) -- device_image_test.rs asserts the image's
+// content; this file pins the source-level behaviour: the spawn carries the
+// declared arch, and the program computes the same answer locally, where the
+// region runs on the host and the transfers are no-ops.
+//
+// CHECK: vx.spawn topology(1916)
+// CHECK: arch = "nvptx64"
+// EXPECT: [[0,   1],
+// EXPECT: [1,   2]]
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+}
+Memory SMEM {
+  within: Memory::GPU_HBM, capacity: 228 KiB, bandwidth: 128 B/cyc,
+  granule: 1 KiB, managed: explicit, scope: sm
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::GPU_HBM,
+  visible: [Memory::GPU_HBM, Memory::SMEM],
+  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s,
+  transfer Memory::GPU_HBM -> Memory::SMEM
+}
+
+fn main() -> i32 {
+  let mut a = Tensor<f32>([ 2, 2 ]);
+  let mut o = Tensor<f32>([ 2, 2 ]);
+  for i in 0..2 {
+    for d in 0..2 {
+      a[i][d] = ((i + d) as f32) * 0.5;
+      o[i][d] = 0.0;
+    }
+  }
+  let ad = transfer(a, Memory::GPU_HBM);
+  let mut od = transfer(o, Memory::GPU_HBM);
+  spawn on(Topology::Dev) {
+    let tile = transfer(ad, Memory::SMEM);
+    for i in 0..2 {
+      for d in 0..2 {
+        od[i][d] = tile[i][d] * 2.0;
+      }
+    }
+  }
+  let home = transfer(od, Memory::CPU_DRAM);
+  print(home);
+  return 0;
+}

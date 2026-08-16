@@ -68,7 +68,7 @@ fn compile(cxx: &str, sources: &[PathBuf], out: &PathBuf, extra: &[String]) {
 /// difference between a red run and a run nobody can interpret.
 fn run_bounded(cmd: &mut Command, secs: u64) -> std::process::Output {
     use std::process::Stdio;
-    let mut child = cmd
+    let child = cmd
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
