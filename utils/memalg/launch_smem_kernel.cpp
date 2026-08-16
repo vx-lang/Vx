@@ -1,4 +1,5 @@
-//===- launch_smem_kernel.cpp - Run the first shared-memory kernel -*- C++ -*-===//
+//===- launch_smem_kernel.cpp - Run the first shared-memory kernel -*- C++
+//-*-===//
 //
 // Part of the Vx Project, under the BSD 3-Clause License.
 // See LICENSE for license information.
@@ -48,6 +49,8 @@
 
 #include <cuda.h>
 
+#include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -176,13 +179,20 @@ int main(int argc, char **argv) {
   must(cuMemcpyHtoD(da, a.data(), a.size() * 4), "H2D a");
   must(cuMemcpyHtoD(dobuf, o.data(), o.size() * 4), "H2D o");
 
-  // Capture order is order of first use in the region: the SMEM transfer reads
-  // `ad` first, then the loop writes `od`. A swap here fails loudly rather
-  // than plausibly -- the expected output is nonzero and o was zeroed, so
-  // reading o and writing a yields all zeros, not a wrong-but-nonzero grid.
+  // Capture order is order of first use in the region, and the two fixtures
+  // DISAGREE: the SMEM kernel's transfer reads `ad` first, so it captures
+  // (a, o); deleting that transfer line to derive the twin makes the loop
+  // statement the first use and the twin captures (o, a) -- its PTX stores to
+  // param_1 and loads from param_8. This is not a guess: shipping both in
+  // (a, o) order made the twin double the zeroed output into the input and
+  // return all zeros on an A100, exactly the loud failure predicted here --
+  // the expected output is nonzero and o was zeroed, so a swap yields zeros,
+  // not a wrong-but-nonzero grid.
   Desc2D dad = describe(da, R, C);
   Desc2D dod = describe(dobuf, R, C);
   void *descs[2] = {&dad, &dod};
+  if (!expect_shared)
+    std::swap(descs[0], descs[1]);
   void *device_args[2] = {&descs[0], &descs[1]};
   int32_t tags[2] = {VX_ABI_MEMREF_TAG(VX_DTYPE_F32, 2),
                      VX_ABI_MEMREF_TAG(VX_DTYPE_F32, 2)};
@@ -200,8 +210,7 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  must(cuLaunchKernel(fn, 1, 1, 1, 1, 1, 1, 0, nullptr, params.params,
-                      nullptr),
+  must(cuLaunchKernel(fn, 1, 1, 1, 1, 1, 1, 0, nullptr, params.params, nullptr),
        "cuLaunchKernel");
   must(cuCtxSynchronize(), "cuCtxSynchronize");
 
@@ -228,5 +237,34 @@ int main(int argc, char **argv) {
   printf("OK: %d elements exact; the shared-memory kernel computes what the "
          "host computes\n",
          R * C);
+
+  // The alpha falsifier (vx-review#28): cudaMemcpy H2D and cudaMemcpyPeer both
+  // showed a ~9.78us fixed cost per transfer on two different pods. If that
+  // constant is per-DRIVER, a kernel-launch-based transfer shares it; if it is
+  // per-MECHANISM, this number differs. The kernel moves 32 bytes total, so a
+  // launch+sync round trip is as close to pure fixed cost as this fixture can
+  // get. Wall clock, not CUDA events: alpha as the HOST pays it, same
+  // vantage point as the memcpy measurements it is compared against.
+  // Pod caveat: containerized machines add scheduling noise, so quartiles are
+  // printed alongside the median and the number is indicative, not decisive.
+  const int WARM = 100, REPS = 2000;
+  for (int i = 0; i < WARM; ++i)
+    must(cuLaunchKernel(fn, 1, 1, 1, 1, 1, 1, 0, nullptr, params.params,
+                        nullptr),
+         "warmup launch");
+  must(cuCtxSynchronize(), "warmup sync");
+  std::vector<double> us(REPS);
+  for (int i = 0; i < REPS; ++i) {
+    const auto t0 = std::chrono::steady_clock::now();
+    must(cuLaunchKernel(fn, 1, 1, 1, 1, 1, 1, 0, nullptr, params.params,
+                        nullptr),
+         "timed launch");
+    must(cuCtxSynchronize(), "timed sync");
+    const auto t1 = std::chrono::steady_clock::now();
+    us[i] = std::chrono::duration<double, std::micro>(t1 - t0).count();
+  }
+  std::sort(us.begin(), us.end());
+  printf("launch_alpha_us,median,%.3f,q1,%.3f,q3,%.3f,reps,%d\n", us[REPS / 2],
+         us[REPS / 4], us[3 * REPS / 4], REPS);
   return 0;
 }
