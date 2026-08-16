@@ -1050,10 +1050,10 @@ pub(crate) fn lower_raw_primitive<'c>(
             // and the 1x1x1 launches of today read 0 and 1 (#251). The host clone
             // of the kernel body gets the same ops; the vx-to-llvm stage folds
             // them to 0/1 there, because the CPU fallback runs one thread.
-            let (op_name, _) = if prim == "lane" {
-                ("gpu.thread_id", 0)
+            let op_name = if prim == "lane" {
+                "gpu.thread_id"
             } else {
-                ("gpu.block_dim", 1)
+                "gpu.block_dim"
             };
             let dim_attr = melior::ir::Attribute::parse(gen.context, "#gpu<dim x>")
                 .ok_or_else(|| LowerError::from("cannot parse #gpu<dim x>".to_string()))?;
