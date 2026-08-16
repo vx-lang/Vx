@@ -437,6 +437,13 @@ shape of the emitted code can.
   materialises real storage too. Genuinely dynamic tiles are still refused.
 - **The flat path declines** a transfer with a user lowering and hands the module to the AST
   path, which stays the oracle — the same arrangement every other unsupported construct uses.
+- **Emission is sm-scoped destinations only, for now.** That is the one edge kind where the
+  site becomes an allocation the body fills in place. On every other edge the builtin still
+  moves the bytes — the plugin's device copy, or the host alloc-and-copy — so an inlined
+  body would run *beside* it: the same bytes moved twice, and on a real GPU a host store
+  through a device pointer (reproduced on three edge kinds in review). A lowering declared
+  for a non-sm edge warns and falls back to the builtin. Widening this means teaching the
+  other lowering branches to stand aside the way the sm branch does, edge kind by edge kind.
 - **What the splice cost, and what paid for it.** Inlining someone else's body into a
   function's scope is where this stage's real defects lived, not in the primitives. The
   generator's name maps are flat — no scoping — so the first version leaked a body-local
