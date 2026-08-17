@@ -55,7 +55,14 @@ use crate::hir::env::{ResidentSet, StagingRoute};
 ///       "derived_cost": 128,            // bandwidth roofline, null when not computable
 ///       "derived_unit": "cyc",          // "cyc" | "ps"; null iff derived_cost is null
 ///       "cost_source": "containment",   // "link_rate" | "containment"; null iff no cost
-///       "composition": "sum"            // "sum" | "bottleneck"; null for a link-rate hop
+///       "composition": "sum",           // "sum" | "bottleneck"; null for a link-rate hop
+///       "traffic": [                    // bytes DERIVED from code; null when uncountable
+///         {"space": "GPU_HBM", "read_bytes": 16, "written_bytes": 0},
+///         {"space": "SMEM",    "read_bytes": 0,  "written_bytes": 16}
+///       ],
+///       "traffic_source": "builtin_copy", // "builtin_copy" | "lowering_body"
+///       "traffic_exact": true,          // false = a branch forced a per-space upper bound
+///       "traffic_absent_reason": null   // non-null iff traffic is null; says why
 ///     }
 ///   ],
 ///   "resident_sets": [                  // working set per space, emitted even when admitted
@@ -70,6 +77,12 @@ use crate::hir::env::{ResidentSet, StagingRoute};
 ///   ]
 /// }
 /// ```
+///
+/// The `traffic_*` keys were added for #353 A4 and are **additive** in the same sense. They
+/// carry bytes, never time: traffic is what the code moves, and what that costs is the time
+/// model's separate (and calibrated) claim. `traffic` is null rather than zero when a movement
+/// cannot be counted statically, because a harvested zero is indistinguishable from a
+/// measurement of nothing.
 ///
 /// `resident_sets` was added after the initial release of this schema. It is **additive** — a
 /// consumer reading only the original keys is unaffected — so the version is deliberately not
@@ -192,10 +205,37 @@ fn route_json(r: &StagingRoute) -> String {
         Some(crate::syntax::Crossing::Streamed) => "\"bottleneck\"",
         None => "null",
     };
+    // Derived traffic (#353 A4). Present or explicitly absent-with-a-reason; never a
+    // silent zero, which a consumer could not tell from a real count of nothing.
+    let (traffic, traffic_source, traffic_exact) = match &r.traffic {
+        Some(t) => (
+            format!(
+                "[{}]",
+                t.per_space
+                    .iter()
+                    .map(|st| format!(
+                        "{{\"space\": \"{}\", \"read_bytes\": {}, \"written_bytes\": {}}}",
+                        esc(&st.space.name()),
+                        st.read_bytes,
+                        st.written_bytes
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            format!("\"{}\"", t.source.as_str()),
+            if t.exact { "true" } else { "false" }.to_string(),
+        ),
+        None => ("null".to_string(), "null".to_string(), "null".to_string()),
+    };
+    let traffic_absent_reason = match &r.traffic_absent_reason {
+        Some(why) => format!("\"{}\"", esc(why)),
+        None => "null".to_string(),
+    };
     format!(
         "{{\"path\": [{}], \"edges\": [{}], \"total_cost\": {}, \"bytes\": {}, \
          \"derived_cost\": {}, \"derived_unit\": {}, \"cost_source\": {}, \
-         \"composition\": {}}}",
+         \"composition\": {}, \"traffic\": {}, \"traffic_source\": {}, \
+         \"traffic_exact\": {}, \"traffic_absent_reason\": {}}}",
         path,
         edges,
         r.total_cost,
@@ -203,7 +243,11 @@ fn route_json(r: &StagingRoute) -> String {
         opt_num(r.derived_cost),
         unit,
         source,
-        composition
+        composition,
+        traffic,
+        traffic_source,
+        traffic_exact,
+        traffic_absent_reason
     )
 }
 
@@ -369,8 +413,40 @@ mod tests {
             derived_cost: Some(128),
             derived_unit: Some(crate::syntax::RatePer::Cycle),
             composition: Some(crate::syntax::Crossing::Sequenced),
+            traffic: Some(crate::hir::env::Traffic {
+                per_space: vec![
+                    crate::hir::env::SpaceTraffic {
+                        space: MemorySpace::CPUDRAM,
+                        read_bytes: 16384,
+                        written_bytes: 0,
+                    },
+                    crate::hir::env::SpaceTraffic {
+                        space: MemorySpace::Custom("SMEM".into()),
+                        read_bytes: 0,
+                        written_bytes: 16384,
+                    },
+                ],
+                source: crate::hir::env::TrafficSource::BuiltinCopy,
+                exact: true,
+            }),
+            traffic_absent_reason: None,
         };
         let out = render(&DiagnosticsVec::default(), &[route], &[], "prog.vx", None);
+        // Traffic is bytes, per space, with the side it moved them on (#353 A4).
+        assert!(
+            out.contains("{\"space\": \"CPU_DRAM\", \"read_bytes\": 16384, \"written_bytes\": 0}"),
+            "{out}"
+        );
+        assert!(
+            out.contains("{\"space\": \"SMEM\", \"read_bytes\": 0, \"written_bytes\": 16384}"),
+            "{out}"
+        );
+        assert!(
+            out.contains("\"traffic_source\": \"builtin_copy\""),
+            "{out}"
+        );
+        assert!(out.contains("\"traffic_exact\": true"), "{out}");
+        assert!(out.contains("\"traffic_absent_reason\": null"), "{out}");
         // A containment route must say which law priced it: the two differ by ~2x on a multi-hop
         // walk, so a harvested prediction that omits it cannot be re-scored (vx-review#26).
         assert!(out.contains("\"composition\": \"sum\""), "{out}");

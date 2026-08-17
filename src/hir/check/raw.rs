@@ -1505,3 +1505,431 @@ pub(crate) fn body_reassigns(body: &[Statement], name: &str) -> bool {
     }
     walk(body, name)
 }
+
+/// Bytes read and written per space, while a lowering body is being counted.
+#[derive(Default, Clone, PartialEq, Eq)]
+struct TrafficAcc {
+    from_read: u64,
+    from_written: u64,
+    to_read: u64,
+    to_written: u64,
+}
+
+/// An overflow is reported the way every other uncountable body is: as an absence with a
+/// reason. Saturating instead published `u64::MAX` as an exact byte count -- a wrong number
+/// where the entire discipline is that a published number can be trusted. The trip-count
+/// multiply already refused honestly while the accumulation clamped, and the two sat one hop
+/// apart in the same expression.
+fn overflowed() -> String {
+    "the byte count overflows a 64-bit counter".to_string()
+}
+
+impl TrafficAcc {
+    fn add_read(&mut self, to_dst: bool, bytes: u64) -> Result<(), String> {
+        let slot = if to_dst {
+            &mut self.to_read
+        } else {
+            &mut self.from_read
+        };
+        *slot = slot.checked_add(bytes).ok_or_else(overflowed)?;
+        Ok(())
+    }
+
+    fn add_written(&mut self, to_dst: bool, bytes: u64) -> Result<(), String> {
+        let slot = if to_dst {
+            &mut self.to_written
+        } else {
+            &mut self.from_written
+        };
+        *slot = slot.checked_add(bytes).ok_or_else(overflowed)?;
+        Ok(())
+    }
+
+    /// The per-space maximum of two branch outcomes. A branch is counted as the worst
+    /// arm, not the sum: one execution takes one arm, so the sum would overstate what
+    /// the hardware does. The caller marks the result inexact.
+    fn max_with(&self, other: &TrafficAcc) -> TrafficAcc {
+        TrafficAcc {
+            from_read: self.from_read.max(other.from_read),
+            from_written: self.from_written.max(other.from_written),
+            to_read: self.to_read.max(other.to_read),
+            to_written: self.to_written.max(other.to_written),
+        }
+    }
+}
+
+impl<'a> TypeChecker<'a> {
+    /// Count the bytes a user `impl transfer` body moves, per space (#353 A4).
+    ///
+    /// This is where "cost is derived, not declared" cashes out: the figures come from the
+    /// body's own `raw::` calls multiplied by its static loop bounds, so a lowering that
+    /// reads the source twice reports twice the traffic without anyone declaring anything.
+    /// The counts carry no time and no bandwidth -- what they cost is the time model's
+    /// separate, calibrated claim.
+    ///
+    /// `Err(reason)` rather than a guess whenever the body steps outside what can be
+    /// counted exactly: a loop whose trip count is not static, an unbounded `loop`, a
+    /// `break`/`continue` that makes trip counts a fiction. The reason travels into the
+    /// record, because "uncountable" and "zero" must not look alike to a consumer.
+    pub(crate) fn derive_lowering_traffic(
+        &self,
+        body: &[Statement],
+        elem_bytes: u64,
+        params: &[(crate::symbol::Symbol, Type)],
+        from: &MemorySpace,
+        to: &MemorySpace,
+    ) -> Result<crate::hir::env::Traffic, String> {
+        // `raw::extent(t)` is the natural loop bound in a lowering, and it must resolve
+        // HERE, at the transfer site, where the lowering's parameters are not in scope --
+        // the checker's own fold looks them up by name and finds nothing. The declared
+        // parameter types carry the shape, so the extents come from there.
+        let extent_of = |ty: &Type| -> Option<u64> {
+            let (_, dims, _) = Self::as_tensor_operand(ty)?;
+            let mut n: u64 = 1;
+            for d in dims {
+                let Expr::Number(lit) = d else { return None };
+                n = n.checked_mul(lit.value.as_ref().parse::<u64>().ok()?)?;
+            }
+            Some(n)
+        };
+        let src_name = &params[0].0;
+        let dst_name = &params[1].0;
+        let exts = (
+            extent_of(&params[0].1).ok_or_else(|| {
+                "the lowering's source tile has no statically known extent".to_string()
+            })?,
+            extent_of(&params[1].1).ok_or_else(|| {
+                "the lowering's destination tile has no statically known extent".to_string()
+            })?,
+        );
+        let mut acc = TrafficAcc::default();
+        let mut exact = true;
+        self.traffic_stmts(
+            body, 1, &mut acc, &mut exact, elem_bytes, src_name, dst_name, exts,
+        )?;
+        Ok(crate::hir::env::Traffic {
+            per_space: vec![
+                crate::hir::env::SpaceTraffic {
+                    space: from.clone(),
+                    read_bytes: acc.from_read,
+                    written_bytes: acc.from_written,
+                },
+                crate::hir::env::SpaceTraffic {
+                    space: to.clone(),
+                    read_bytes: acc.to_read,
+                    written_bytes: acc.to_written,
+                },
+            ],
+            source: crate::hir::env::TrafficSource::LoweringBody,
+            exact,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn traffic_stmts(
+        &self,
+        stmts: &[Statement],
+        mult: u64,
+        acc: &mut TrafficAcc,
+        exact: &mut bool,
+        elem: u64,
+        src: &crate::symbol::Symbol,
+        dst: &crate::symbol::Symbol,
+        exts: (u64, u64),
+    ) -> Result<(), String> {
+        for s in stmts {
+            match s {
+                Statement::LetDecl(l) => {
+                    self.traffic_expr(&l.expr, mult, acc, exact, elem, src, dst, exts)?
+                }
+                Statement::Return(r) => {
+                    self.traffic_expr(&r.expr, mult, acc, exact, elem, src, dst, exts)?
+                }
+                Statement::ExprStmt(e) => {
+                    self.traffic_expr(&e.expr, mult, acc, exact, elem, src, dst, exts)?
+                }
+                Statement::Assign(a) => {
+                    self.traffic_expr(&a.rhs, mult, acc, exact, elem, src, dst, exts)?;
+                    self.traffic_expr(&a.lhs, mult, acc, exact, elem, src, dst, exts)?;
+                }
+                Statement::CompoundAssign(c) => {
+                    self.traffic_expr(&c.rhs, mult, acc, exact, elem, src, dst, exts)?;
+                    self.traffic_expr(&c.lhs, mult, acc, exact, elem, src, dst, exts)?;
+                }
+                Statement::Assert(a) => {
+                    self.traffic_expr(&a.expr, mult, acc, exact, elem, src, dst, exts)?
+                }
+                Statement::ForLoop(fl) => {
+                    let trips = self
+                        .static_trip_count(&fl.iterable, src, dst, exts)
+                        .ok_or_else(|| {
+                            "a loop bound is not statically known, so the number of times its \
+                         body runs cannot be counted"
+                                .to_string()
+                        })?;
+                    let next = mult.checked_mul(trips).ok_or_else(|| {
+                        "the loop nest's trip count overflows a 64-bit counter".to_string()
+                    })?;
+                    self.traffic_stmts(&fl.body, next, acc, exact, elem, src, dst, exts)?;
+                }
+                Statement::Loop(_) => {
+                    return Err("an unbounded `loop` runs an unknown number of times".to_string())
+                }
+                Statement::Break(_) | Statement::Continue(_) => {
+                    return Err(
+                        "`break`/`continue` makes the loop's trip count a fiction".to_string()
+                    )
+                }
+                Statement::MacroCall(_) | Statement::Error(_) => {}
+            }
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn traffic_expr(
+        &self,
+        e: &Expr,
+        mult: u64,
+        acc: &mut TrafficAcc,
+        exact: &mut bool,
+        elem: u64,
+        src: &crate::symbol::Symbol,
+        dst: &crate::symbol::Symbol,
+        exts: (u64, u64),
+    ) -> Result<(), String> {
+        match e {
+            Expr::FunctionCall(fc) => {
+                // Arguments first: `raw::store(dst, i, raw::load(src, i))` is a write and a
+                // read, and the read is nested in the write's arguments.
+                for a in &fc.args {
+                    self.traffic_expr(a, mult, acc, exact, elem, src, dst, exts)?;
+                }
+                let tile = |i: usize| -> Option<&crate::symbol::Symbol> {
+                    match fc.args.get(i) {
+                        Some(Expr::Identifier(id)) => Some(&id.name),
+                        _ => None,
+                    }
+                };
+                let bytes = elem.checked_mul(mult).ok_or_else(overflowed)?;
+                // Which side of the edge a tile name denotes: `false` = source space,
+                // `true` = destination.
+                let side = |t: Option<&crate::symbol::Symbol>| -> Option<bool> {
+                    match t {
+                        Some(t) if t == src => Some(false),
+                        Some(t) if t == dst => Some(true),
+                        _ => None,
+                    }
+                };
+                match fc.name.as_ref() {
+                    "raw::load" => match side(tile(0)) {
+                        Some(to_dst) => acc.add_read(to_dst, bytes)?,
+                        None => {
+                            return Err("a `raw::load` names a tile that is not this \
+                                         lowering's source or destination"
+                                .to_string())
+                        }
+                    },
+                    "raw::store" => match side(tile(0)) {
+                        Some(to_dst) => acc.add_written(to_dst, bytes)?,
+                        None => {
+                            return Err("a `raw::store` names a tile that is not this \
+                                         lowering's source or destination"
+                                .to_string())
+                        }
+                    },
+                    // One chunk out of the source and into the destination. The chunk is
+                    // one element while the copy engine is unimplemented and `async_copy`
+                    // lowers to a load and a store; when the real engine lands, its chunk
+                    // size joins the machine file beside `copy_engine` and multiplies here.
+                    "raw::async_copy" => {
+                        match side(tile(1)) {
+                            Some(to_dst) => acc.add_read(to_dst, bytes)?,
+                            None => {
+                                return Err("a `raw::async_copy` reads a tile that is not \
+                                            this lowering's source or destination"
+                                    .to_string())
+                            }
+                        }
+                        match side(tile(0)) {
+                            Some(to_dst) => acc.add_written(to_dst, bytes)?,
+                            None => {
+                                return Err("a `raw::async_copy` writes a tile that is not \
+                                            this lowering's source or destination"
+                                    .to_string())
+                            }
+                        }
+                    }
+                    // extent/lane/lanes/barrier/async_wait move nothing, and an ordinary
+                    // call cannot appear here -- the primitives are the whole vocabulary a
+                    // lowering body has for touching memory.
+                    _ => {}
+                }
+                Ok(())
+            }
+            Expr::If(ifx) => {
+                self.traffic_expr(&ifx.cond, mult, acc, exact, elem, src, dst, exts)?;
+                // `if comptime` decides at compile time, so only one arm exists in the
+                // emitted code and the traffic is exactly known. Weighing it as a runtime
+                // branch reported the maximum of two arms -- twice the truth on a body
+                // whose answer is not in doubt -- and flagged inexact a figure the
+                // compiler had already resolved.
+                if ifx.is_comptime {
+                    if let Some(crate::hir::env::Value::Bool(taken)) =
+                        self.eval_expr(&ifx.cond, &std::collections::HashMap::new())
+                    {
+                        let block = if taken {
+                            Some(&ifx.then_block)
+                        } else {
+                            ifx.else_block.as_ref()
+                        };
+                        if let Some(b) = block {
+                            self.traffic_stmts(b, mult, acc, exact, elem, src, dst, exts)?;
+                        }
+                        return Ok(());
+                    }
+                }
+                let mut then_acc = acc.clone();
+                self.traffic_stmts(
+                    &ifx.then_block,
+                    mult,
+                    &mut then_acc,
+                    exact,
+                    elem,
+                    src,
+                    dst,
+                    exts,
+                )?;
+                let mut else_acc = acc.clone();
+                if let Some(eb) = &ifx.else_block {
+                    self.traffic_stmts(eb, mult, &mut else_acc, exact, elem, src, dst, exts)?;
+                }
+                if then_acc != else_acc {
+                    *exact = false;
+                }
+                *acc = then_acc.max_with(&else_acc);
+                Ok(())
+            }
+            Expr::Match(m) => {
+                self.traffic_expr(&m.expr, mult, acc, exact, elem, src, dst, exts)?;
+                let entry = acc.clone();
+                let mut outcomes: Vec<TrafficAcc> = Vec::new();
+                for arm in &m.arms {
+                    let mut arm_acc = entry.clone();
+                    self.traffic_stmts(&arm.body, mult, &mut arm_acc, exact, elem, src, dst, exts)?;
+                    outcomes.push(arm_acc);
+                }
+                // Inexact only when the arms DISAGREE, matching `if`. Flagging on "some arm
+                // moved something" made a match whose arms move identical bytes report
+                // inexact while the same program written as an `if` reported exact -- a
+                // difference in the record with no difference in the code.
+                if outcomes.windows(2).any(|w| w[0] != w[1]) {
+                    *exact = false;
+                }
+                let mut worst = entry;
+                for o in &outcomes {
+                    worst = worst.max_with(o);
+                }
+                *acc = worst;
+                Ok(())
+            }
+            // `unsafe` is the documented bounds escape, not control flow: transparent here.
+            Expr::UnsafeBlock(u) => {
+                self.traffic_stmts(&u.stmts, mult, acc, exact, elem, src, dst, exts)?;
+                if let Some(r) = &u.ret {
+                    self.traffic_expr(r, mult, acc, exact, elem, src, dst, exts)?;
+                }
+                Ok(())
+            }
+            Expr::ComptimeBlock(c) => {
+                self.traffic_stmts(&c.stmts, mult, acc, exact, elem, src, dst, exts)?;
+                if let Some(r) = &c.ret {
+                    self.traffic_expr(r, mult, acc, exact, elem, src, dst, exts)?;
+                }
+                Ok(())
+            }
+            Expr::BinaryOp(b) => {
+                self.traffic_expr(&b.lhs, mult, acc, exact, elem, src, dst, exts)?;
+                self.traffic_expr(&b.rhs, mult, acc, exact, elem, src, dst, exts)
+            }
+            Expr::RelationalOp(r) => {
+                self.traffic_expr(&r.lhs, mult, acc, exact, elem, src, dst, exts)?;
+                self.traffic_expr(&r.rhs, mult, acc, exact, elem, src, dst, exts)
+            }
+            Expr::LogicalOp(l) => {
+                self.traffic_expr(&l.lhs, mult, acc, exact, elem, src, dst, exts)?;
+                self.traffic_expr(&l.rhs, mult, acc, exact, elem, src, dst, exts)
+            }
+            Expr::UnaryOp(u) => self.traffic_expr(&u.expr, mult, acc, exact, elem, src, dst, exts),
+            Expr::Borrow(b) => self.traffic_expr(&b.expr, mult, acc, exact, elem, src, dst, exts),
+            Expr::Dereference(d) => {
+                self.traffic_expr(&d.expr, mult, acc, exact, elem, src, dst, exts)
+            }
+            Expr::AsCast(c) => self.traffic_expr(&c.expr, mult, acc, exact, elem, src, dst, exts),
+            Expr::Range(r) => {
+                self.traffic_expr(&r.start, mult, acc, exact, elem, src, dst, exts)?;
+                self.traffic_expr(&r.end, mult, acc, exact, elem, src, dst, exts)
+            }
+            Expr::IndexAccess(ix) => {
+                self.traffic_expr(&ix.base, mult, acc, exact, elem, src, dst, exts)?;
+                self.traffic_expr(&ix.index, mult, acc, exact, elem, src, dst, exts)
+            }
+            Expr::MemberAccess(m) => {
+                self.traffic_expr(&m.base, mult, acc, exact, elem, src, dst, exts)
+            }
+            Expr::Identifier(_) | Expr::Number(_) | Expr::StringLiteral(_) => Ok(()),
+            // Anything else is refused rather than assumed empty -- but only when it could
+            // hide a movement. A subtree with no `raw::` call in it moves nothing by
+            // construction, because the primitives are the only way a body touches memory.
+            other => {
+                let mut scan = RawScan::default();
+                scan_expr(other, false, &mut scan);
+                if scan.calls.is_empty() {
+                    Ok(())
+                } else {
+                    Err(
+                        "a `raw::` call appears somewhere this counter does not know how \
+                         to weigh"
+                            .to_string(),
+                    )
+                }
+            }
+        }
+    }
+
+    /// Trip count of `for _ in a..b` when both bounds are static after the `raw::extent`
+    /// fold; `None` otherwise. An empty or reversed range runs zero times.
+    fn static_trip_count(
+        &self,
+        iterable: &Expr,
+        src: &crate::symbol::Symbol,
+        dst: &crate::symbol::Symbol,
+        exts: (u64, u64),
+    ) -> Option<u64> {
+        let Expr::Range(r) = iterable else {
+            return None;
+        };
+        let lit = |e: &Expr| -> Option<i64> {
+            // `raw::extent(src)` / `raw::extent(dst)` first, from the declaration; then
+            // the checker's ordinary fold for anything else in scope.
+            if let Expr::FunctionCall(fc) = e {
+                if fc.name.as_ref() == "raw::extent" && fc.args.len() == 1 {
+                    if let Expr::Identifier(id) = &fc.args[0] {
+                        if &id.name == src {
+                            return Some(exts.0 as i64);
+                        }
+                        if &id.name == dst {
+                            return Some(exts.1 as i64);
+                        }
+                    }
+                }
+            }
+            match self.fold_raw_extent(e) {
+                Expr::Number(n) => n.value.as_ref().parse::<i64>().ok(),
+                _ => None,
+            }
+        };
+        let (a, b) = (lit(&r.start)?, lit(&r.end)?);
+        Some(if b > a { (b - a) as u64 } else { 0 })
+    }
+}

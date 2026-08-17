@@ -1,0 +1,85 @@
+//===- user_lowering_waste.vx - derived traffic sees a wasteful plan -*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// The payoff witness for derived traffic (Vx#353 A4): a lowering that computes
+// the RIGHT ANSWER while moving twice the bytes it needs to.
+//
+// Every declared figure about this edge is identical to the faithful copy in
+// custom_topology_user_lowering.vx -- same spaces, same bandwidths, same tile,
+// same result. No edge cost can tell the two apart, because the waste is not in
+// the edge; it is in the plan. A traffic count reads it straight off the body:
+// `read_bytes` for GPU_HBM is 32 against a 16-byte tile, an amplification factor
+// of 2. That is the first thing in this compiler that sees a plan being wasteful
+// rather than being told a link is slow.
+//
+// The EXPECT values are unchanged from the faithful version on purpose: if they
+// ever differ, the lowering stopped being value-preserving and the fixture is
+// measuring the wrong thing (C2).
+//
+// CHECK: user_lowered
+// EXPECT: [[0,   1],
+// EXPECT: [1,   2]]
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+}
+Memory SMEM {
+  within: Memory::GPU_HBM, capacity: 228 KiB, bandwidth: 128 B/cyc,
+  granule: 1 KiB, managed: explicit, scope: sm
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::GPU_HBM,
+  visible: [Memory::GPU_HBM, Memory::SMEM],
+  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s,
+  transfer Memory::GPU_HBM -> Memory::SMEM
+}
+
+impl transfer Memory::GPU_HBM -> Memory::SMEM {
+  fn move_tile(src: &Tensor<f32, [2, 2]>, dst: &mut Tensor<f32, [2, 2]>) -> i32 {
+    for i in 0..raw::extent(src) {
+      // Reads the source TWICE and averages. Exact in IEEE for any value
+      // (x + x is exact, and halving a power-of-two multiple is exact), so the
+      // computed answer is bit-identical to the faithful copy above -- C2 holds,
+      // a transfer still moves rather than converts. What changes is the traffic:
+      // read_bytes doubles, and nothing declared anything.
+      raw::store(dst, i, (raw::load(src, i) + raw::load(src, i)) * 0.5);
+    }
+    // Two top-level barriers on purpose: the second is the trailing
+    // synchronization the contract demands; the first exists so the emitted
+    // image is structurally distinguishable from the builtin's single-barrier
+    // copy. bar.sync x2 in the PTX = this body ran, not the builtin.
+    raw::barrier();
+    raw::barrier();
+    return 0;
+  }
+}
+
+fn main() -> i32 {
+  let mut a = Tensor<f32>([ 2, 2 ]);
+  let mut o = Tensor<f32>([ 2, 2 ]);
+  for i in 0..2 {
+    for d in 0..2 {
+      a[i][d] = ((i + d) as f32) * 0.5;
+      o[i][d] = 0.0;
+    }
+  }
+  let ad = transfer(a, Memory::GPU_HBM);
+  let mut od = transfer(o, Memory::GPU_HBM);
+  spawn on(Topology::Dev) {
+    let tile = transfer(ad, Memory::SMEM);
+    for i in 0..2 {
+      for d in 0..2 {
+        od[i][d] = tile[i][d] * 2.0;
+      }
+    }
+  }
+  let home = transfer(od, Memory::CPU_DRAM);
+  print(home);
+  return 0;
+}

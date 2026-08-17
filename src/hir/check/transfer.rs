@@ -995,44 +995,6 @@ impl<'a> TypeChecker<'a> {
                 // single-hop routes are recorded: a multi-hop route is rewritten into a chain of
                 // single-hop transfers that each re-enter here, so recording it too would count
                 // the same movement twice.
-                if !self.speculating {
-                    // The figure the machine file *declared* for this edge, not the weight the
-                    // router happened to use. Since an edge may now decline to declare a cost
-                    // (leaving it to the endpoints' bandwidths), its routing weight is 1 — and
-                    // reporting that 1 here would put a number nobody wrote into the record a
-                    // measurement campaign harvests.
-                    let edge = self
-                        .transfer_cost_graph
-                        .declared_edge_cost(&source_mem, &target_mem);
-                    self.staging_routes.push(crate::hir::env::StagingRoute {
-                        path: path.clone(),
-                        edge_costs: vec![edge],
-                        total_cost: _cost,
-                        bytes: moved_bytes,
-                        cost_source,
-                        derived_cost,
-                        derived_unit,
-                        // Only a containment route composes anything -- a link rate is one leg.
-                        // Read from the destination, which is where the fill mechanism lives.
-                        composition: (cost_source
-                            == Some(crate::hir::env::CostSource::Containment))
-                        .then(|| {
-                            self.env
-                                .memories
-                                .values()
-                                .find(|d| {
-                                    crate::syntax::MemorySpace::from_name(d.name.as_ref())
-                                        == target_mem
-                                })
-                                .map(|d| d.crossing)
-                                .unwrap_or_default()
-                        }),
-                    });
-                }
-                // Record the bandwidth-derived roofline cost when the hierarchy provides one;
-                // otherwise leave it unset (the fixed reachability cost stays internal, so
-                // bandwidth-less transfers emit no `cost` attribute — unchanged output).
-                t.cost = derived_cost;
                 // #353 A3: when this edge has a user lowering this stage can emit, record
                 // it on the site -- codegen inlines the body in place of the builtin copy;
                 // the builtin (with its barrier) stays the fallback for everything else.
@@ -1137,7 +1099,29 @@ impl<'a> TypeChecker<'a> {
                                         })
                                         .collect::<Option<Vec<u64>>>()
                                 });
-                            let declared = shaped(&li.methods[0].params[0].1);
+                            // BOTH tiles, not just the source. The destination's declared
+                            // shape is what `raw::extent(dst)` folds to and what the
+                            // primitives delinearize against, so a lowering declaring an
+                            // [8,8] destination for a [2,2] site emitted 64 stores into a
+                            // 4-element buffer -- admitted, with `written_bytes: 256`
+                            // published beside `bytes: 16`.
+                            let declared = shaped(&li.methods[0].params[0].1)
+                                .filter(|d| Some(d) == shaped(&li.methods[0].params[1].1).as_ref());
+                            if shaped(&li.methods[0].params[0].1)
+                                != shaped(&li.methods[0].params[1].1)
+                            {
+                                self.errors.error_with_code(
+                                    crate::diagnostic::DiagnosticCode::E6023,
+                                    format!(
+                                        "impl transfer {} -> {} declares a {:?} source and                                          a {:?} destination; a transfer moves a tile, so                                          both sides are the same shape",
+                                        source_mem.name(),
+                                        target_mem.name(),
+                                        shaped(&li.methods[0].params[0].1),
+                                        shaped(&li.methods[0].params[1].1)
+                                    ),
+                                    Some(crate::diagnostic::SourceSpan::from_ast_span(&t.span)),
+                                );
+                            }
                             // Element types too: edge selection does not look at them,
                             // and a mismatch reaches MLIR as a bare verifier failure
                             // ("result type matches element type of 'memref'") on a
@@ -1187,6 +1171,132 @@ impl<'a> TypeChecker<'a> {
                             }
                         }
                     }
+                }
+                // Record the bandwidth-derived roofline cost when the hierarchy provides one;
+                // otherwise leave it unset (the fixed reachability cost stays internal, so
+                // bandwidth-less transfers emit no `cost` attribute — unchanged output).
+                t.cost = derived_cost;
+                if !self.speculating {
+                    // The figure the machine file *declared* for this edge, not the weight the
+                    // router happened to use. Since an edge may now decline to declare a cost
+                    // (leaving it to the endpoints' bandwidths), its routing weight is 1 — and
+                    // reporting that 1 here would put a number nobody wrote into the record a
+                    // measurement campaign harvests.
+                    let edge = self
+                        .transfer_cost_graph
+                        .declared_edge_cost(&source_mem, &target_mem);
+                    // Derived traffic (#353 A4). The builtin copy reads the whole tile
+                    // from the source space and writes it into the target: one pass, no
+                    // amplification, exact by construction. A hop whose body a user
+                    // supplied is counted from that body instead (T2), and a hop whose
+                    // size is not statically known is not counted at all -- an
+                    // uncountable movement is reported as uncountable, never as zero.
+                    let (traffic, traffic_absent_reason) = match (moved_bytes, &t.lowering) {
+                        (Some(b), None) => (
+                            Some(crate::hir::env::Traffic {
+                                per_space: vec![
+                                    crate::hir::env::SpaceTraffic {
+                                        space: source_mem.clone(),
+                                        read_bytes: b,
+                                        written_bytes: 0,
+                                    },
+                                    crate::hir::env::SpaceTraffic {
+                                        space: target_mem.clone(),
+                                        read_bytes: 0,
+                                        written_bytes: b,
+                                    },
+                                ],
+                                source: crate::hir::env::TrafficSource::BuiltinCopy,
+                                exact: true,
+                            }),
+                            None,
+                        ),
+                        (None, _) => (
+                            None,
+                            Some("the transferred tile has no statically known size".to_string()),
+                        ),
+                        // A user lowering's traffic is counted from the body that will
+                        // actually run, not from the tile size the builtin would have
+                        // moved: that difference is the whole point -- a body that reads
+                        // the source twice reports twice the reads, with nobody declaring
+                        // anything (#353 A4).
+                        (Some(_), Some(_)) => {
+                            let li = self
+                                .env
+                                .transfer_impls
+                                .iter()
+                                .find(|li| li.from == source_mem && li.to == target_mem);
+                            match li {
+                                Some(li) => {
+                                    // Sub-byte elements are refused, not rounded. Rounding
+                                    // i4 up to a byte made a FAITHFUL copy of a 2x2 i4
+                                    // tile report 4 bytes against a 2-byte tile -- a ratio
+                                    // of 2.0, numerically identical to the amplification
+                                    // factor that is this stage's evidence that a plan is
+                                    // wasteful. A figure indistinguishable from the thing
+                                    // it exists to detect is worse than no figure.
+                                    let elem_bytes = Self::as_tensor_operand(&inner_ty)
+                                        .and_then(|(e, _, _)| crate::hir::memory::element_bits(e))
+                                        .filter(|bits| bits % 8 == 0)
+                                        .map(|bits| bits / 8);
+                                    match elem_bytes {
+                                        None => (
+                                            None,
+                                            Some(
+                                                "the tile's element type is not a whole \
+                                                 number of bytes, so its movement cannot \
+                                                 be counted in bytes"
+                                                    .to_string(),
+                                            ),
+                                        ),
+                                        Some(elem_bytes) => {
+                                            let m = &li.methods[0];
+                                            match self.derive_lowering_traffic(
+                                                &m.body,
+                                                elem_bytes,
+                                                &m.params,
+                                                &source_mem,
+                                                &target_mem,
+                                            ) {
+                                                Ok(t) => (Some(t), None),
+                                                Err(why) => (None, Some(why)),
+                                            }
+                                        }
+                                    }
+                                }
+                                None => (
+                                    None,
+                                    Some("the matched lowering could not be found".to_string()),
+                                ),
+                            }
+                        }
+                    };
+                    self.staging_routes.push(crate::hir::env::StagingRoute {
+                        path: path.clone(),
+                        traffic,
+                        traffic_absent_reason,
+                        edge_costs: vec![edge],
+                        total_cost: _cost,
+                        bytes: moved_bytes,
+                        cost_source,
+                        derived_cost,
+                        derived_unit,
+                        // Only a containment route composes anything -- a link rate is one leg.
+                        // Read from the destination, which is where the fill mechanism lives.
+                        composition: (cost_source
+                            == Some(crate::hir::env::CostSource::Containment))
+                        .then(|| {
+                            self.env
+                                .memories
+                                .values()
+                                .find(|d| {
+                                    crate::syntax::MemorySpace::from_name(d.name.as_ref())
+                                        == target_mem
+                                })
+                                .map(|d| d.crossing)
+                                .unwrap_or_default()
+                        }),
+                    });
                 }
                 // Single hop (`path == [source_mem, target_mem]`): discharge the
                 // per-seam local-completeness / soundness obligation. Multi-hop paths

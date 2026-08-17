@@ -92,6 +92,68 @@ pub struct StagingRoute {
     /// two laws differ by ~2x on a multi-hop walk and a harvested prediction that does not say
     /// which one applied cannot be re-scored later -- the same reason `derived_unit` is carried.
     pub composition: Option<crate::syntax::Crossing>,
+    /// Bytes moved per space, derived from code (#353 A4). `None` when the movement cannot be
+    /// counted statically, in which case `traffic_absent_reason` says why -- a guess here would
+    /// be indistinguishable from a measurement in the record a campaign harvests, which is the
+    /// same reason `derived_cost` is `None` rather than 0 when no bandwidth is declared.
+    pub traffic: Option<Traffic>,
+    /// Why `traffic` is `None`. `None` when traffic is present.
+    pub traffic_absent_reason: Option<String>,
+}
+
+/// Bytes read and written against ONE memory space by a single transfer hop (#353 A4).
+///
+/// Read and written are kept apart because they are different facts about the hardware: a
+/// space's read bandwidth and its write bandwidth are separate figures, and a plan that
+/// re-reads the same tile is wasteful in a way a combined total cannot show.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpaceTraffic {
+    pub space: crate::syntax::MemorySpace,
+    pub read_bytes: u64,
+    pub written_bytes: u64,
+}
+
+/// What the traffic figures were derived FROM. The distinction matters to a consumer for the
+/// same reason `CostSource` does: a count read off a body is evidence about the code, while a
+/// count asserted of the builtin copy is evidence about this compiler's own lowering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrafficSource {
+    /// The builtin copy: one read of the whole tile, one write of it.
+    BuiltinCopy,
+    /// Counted from a user `impl transfer` body's `raw::` calls and static loop bounds.
+    LoweringBody,
+    /// Counted from the indexed reads and writes of a `spawn` region's static loop nest.
+    ///
+    /// Reserved for A4's spawn-region slice and NOT yet produced by anything -- the
+    /// `--diagnostics-json` schema deliberately does not advertise it until it can occur,
+    /// because a documented value a consumer can never observe is a promise, not a schema.
+    #[allow(dead_code)]
+    SpawnRegion,
+}
+
+impl TrafficSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TrafficSource::BuiltinCopy => "builtin_copy",
+            TrafficSource::LoweringBody => "lowering_body",
+            TrafficSource::SpawnRegion => "spawn_region",
+        }
+    }
+}
+
+/// The data movement one transfer hop performs, per space.
+///
+/// This is the *derived* half of "cost is derived, not declared" (#353 A4): bytes counted
+/// from code, carrying no bandwidth, no time, and no opinion about how long they take. The
+/// time model consumes these; it does not produce them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Traffic {
+    pub per_space: Vec<SpaceTraffic>,
+    pub source: TrafficSource,
+    /// `false` when a branch forced a per-space maximum rather than a sum — the figures are
+    /// then an upper bound on one execution, not the count of one. Anything less certain than
+    /// a bound is not reported at all; see `StagingRoute::traffic_absent_reason`.
+    pub exact: bool,
 }
 
 /// Where a hop's predicted cost came from. Exactly one applies per edge (E6013).

@@ -1,0 +1,83 @@
+//===- user_lowering_uncountable.vx - traffic that must not be guessed -*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// The honesty witness for derived traffic (Vx#353 A4).
+//
+// This lowering is perfectly good code -- it is the cooperative copy the
+// contract document itself sketches -- but the number of times its loop runs
+// depends on how many lanes the launch has, which is not a compile-time fact.
+// So the record carries `traffic: null` and a reason, NOT a plausible number.
+//
+// That distinction is the whole discipline: a harvested zero, or a count that
+// silently assumed one lane, is indistinguishable from a measurement. An
+// explicit absence is not. The same rule already governs `derived_cost`, which
+// is null rather than 0 when no bandwidth is declared.
+//
+// CHECK: user_lowered
+// CHECK: gpu.barrier
+// EXPECT: [[0,   1],
+// EXPECT: [1,   2]]
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+}
+Memory SMEM {
+  within: Memory::GPU_HBM, capacity: 228 KiB, bandwidth: 128 B/cyc,
+  granule: 1 KiB, managed: explicit, scope: sm
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::GPU_HBM,
+  visible: [Memory::GPU_HBM, Memory::SMEM],
+  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s,
+  transfer Memory::GPU_HBM -> Memory::SMEM
+}
+
+impl transfer Memory::GPU_HBM -> Memory::SMEM {
+  fn move_tile(src: &Tensor<f32, [2, 2]>, dst: &mut Tensor<f32, [2, 2]>) -> i32 {
+    // The lane-strided shape from the contract doc: each lane copies every
+    // `lanes()`-th element. Correct, and the natural way to write a cooperative
+    // copy -- but its trip count is a runtime fact, not a static one, so the
+    // traffic counter cannot weigh it. It says so rather than guessing.
+    let n = raw::extent(src);
+    let mut i = raw::lane();
+    loop {
+      if i >= n {
+        break;
+      }
+      unsafe { raw::store(dst, i, raw::load(src, i)); }
+      i = i + raw::lanes();
+    }
+    raw::barrier();
+    return 0;
+  }
+}
+
+fn main() -> i32 {
+  let mut a = Tensor<f32>([ 2, 2 ]);
+  let mut o = Tensor<f32>([ 2, 2 ]);
+  for i in 0..2 {
+    for d in 0..2 {
+      a[i][d] = ((i + d) as f32) * 0.5;
+      o[i][d] = 0.0;
+    }
+  }
+  let ad = transfer(a, Memory::GPU_HBM);
+  let mut od = transfer(o, Memory::GPU_HBM);
+  spawn on(Topology::Dev) {
+    let tile = transfer(ad, Memory::SMEM);
+    for i in 0..2 {
+      for d in 0..2 {
+        od[i][d] = tile[i][d] * 2.0;
+      }
+    }
+  }
+  let home = transfer(od, Memory::CPU_DRAM);
+  print(home);
+  return 0;
+}

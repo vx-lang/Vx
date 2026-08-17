@@ -345,15 +345,21 @@ impl Program {
                 .collect(),
             topologies: self.topologies.clone(),
             memories: self.memories.clone(),
-            // Bodies stripped like `functions`/`impls`: the signature clone exists so the parallel
-            // pipeline can share a light Program, and a lowering body is as heavy as any other.
+            // Lowering bodies are KEPT, unlike `functions`/`impls`. They used to be stripped
+            // for the same reason as everything else -- the signature clone exists so the
+            // parallel pipeline can share a light Program -- but a lowering's body is now a
+            // fact the checker reads at every transfer site: it is what the traffic count is
+            // derived FROM (#353 A4). Stripped, the count came back as zero bytes with no
+            // indication anything was missing, which is the failure a derived figure must
+            // never have. They are copy loops, a few statements each; the weight argument
+            // does not survive contact with needing them.
             transfer_impls: self
                 .transfer_impls
                 .iter()
                 .map(|t| TransferImplDecl {
                     from: t.from.clone(),
                     to: t.to.clone(),
-                    methods: t.methods.iter().map(|f| f.clone_signature(false)).collect(),
+                    methods: t.methods.iter().map(|f| f.clone_signature(true)).collect(),
                     doc_comment: t.doc_comment.clone(),
                 })
                 .collect(),

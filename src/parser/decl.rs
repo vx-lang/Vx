@@ -1235,13 +1235,22 @@ impl transfer Memory::L2 -> Memory::SMEM {
     }
 
     #[test]
-    fn transfer_impl_signature_clone_strips_bodies() {
-        // `clone_signature` exists so the parallel pipeline can share a light Program; a lowering
-        // body is as heavy as any function body and must be stripped with them.
+    fn transfer_impl_signature_clone_keeps_bodies() {
+        // The reverse of what this test pinned until #353 A4, and the reversal is the
+        // point. `clone_signature` strips function bodies so the parallel pipeline can
+        // share a light Program, and a lowering body used to go with them -- but a
+        // lowering's body is now a fact the checker reads at every transfer site: it is
+        // what the derived traffic count is counted FROM.
+        //
+        // Stripped, the count came back as a confident zero with nothing to indicate a
+        // body had gone missing. A derived figure that silently reports nothing when its
+        // input vanished is worse than no figure, so the weight argument loses: these are
+        // copy loops, a few statements each.
         let input = r#"
 impl transfer Memory::L2 -> Memory::SMEM {
     fn move_tile(n: i32) -> i32 { return n; }
 }
+fn ordinary(n: i32) -> i32 { return n; }
 "#;
         let mut lexer = Lexer::new(input);
         let tokens = lexer.tokenize();
@@ -1249,8 +1258,21 @@ impl transfer Memory::L2 -> Memory::SMEM {
         let program = parser.parse().unwrap();
         let sig = program.clone_signature();
         assert_eq!(sig.transfer_impls.len(), 1);
-        assert!(sig.transfer_impls[0].methods[0].body.is_empty());
-        assert!(!program.transfer_impls[0].methods[0].body.is_empty());
+        assert!(
+            !sig.transfer_impls[0].methods[0].body.is_empty(),
+            "a lowering body must survive the signature clone -- the traffic counter reads it"
+        );
+        // The exemption is scoped to lowerings: an ordinary function beside it is still
+        // stripped, so the light-Program property the clone exists for is intact.
+        let ordinary = sig
+            .functions
+            .iter()
+            .find(|f| f.name.as_ref() == "ordinary")
+            .expect("the ordinary function survives as a signature");
+        assert!(
+            ordinary.body.is_empty(),
+            "ordinary function bodies are still stripped"
+        );
     }
 
     #[test]

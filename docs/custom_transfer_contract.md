@@ -506,6 +506,31 @@ mistake that produced the falsified `crossing: streamed` prediction becomes unwr
 With static bounds the counts are exact at compile time — this is where "cost is derived, not
 declared" cashes out.
 
+**Implemented in A4** (2026-08-16). Each `raw::` call contributes the table's bytes multiplied by
+the product of its enclosing static `for`-range trip counts; `raw::extent(t)` resolves from the
+declared tile shape, since at a transfer site the lowering's own parameters are not in scope. A
+branch contributes the per-space **maximum** of its arms, not their sum — one execution takes one
+arm — and the route is then marked `traffic_exact: false`. Anything the counter cannot weigh
+exactly (an unbounded `loop`, a `break`, a non-literal bound) produces **no traffic at all**, with
+a reason recorded beside it.
+
+That last rule is the load-bearing one. A count that quietly assumed one lane, or reported zero
+for a body it did not understand, would be indistinguishable in a harvested record from a
+measurement — the same reason `derived_cost` is null rather than 0 when nothing declares a
+bandwidth. The cooperative lane-strided copy sketched above is exactly such a body: correct code
+whose trip count is a launch-time fact, so its traffic is honestly absent.
+
+The counts carry bytes and nothing else — no bandwidth, no time, no opinion about how long they
+take. What they cost is the time model's separate and calibrated claim; traffic is the input it
+consumes, not a prediction it produces. They reach a consumer through `--diagnostics-json`, per
+route, split read from written per space (a space's read and write bandwidths are different
+figures, and a plan that re-reads a tile is wasteful in a way a combined total cannot show).
+
+The first thing this makes visible is *plan-level* waste. A lowering that reads its source twice
+and averages — value-preserving, so C2 holds and the answer is bit-identical — reports twice the
+reads against an unchanged tile size. No declared edge cost can distinguish that program from the
+faithful copy, because the waste is not in the edge.
+
 ### Deliberately absent
 
 - **Addresses, pointer arithmetic, space casts.** Their absence is what keeps C1 and C6 provable.
