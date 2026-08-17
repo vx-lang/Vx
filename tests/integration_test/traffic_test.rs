@@ -469,3 +469,383 @@ fn a_machine_without_a_lowering_gets_the_builtin_not_a_peers_body() {
         "the builtin reads the tile once:\n{route}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Spawn-region traffic (#353 A4 T4): what a KERNEL moves, as opposed to what it
+// cost to stage the tile it moves. The two are different questions and only one
+// of them is reachable from an edge cost.
+// ---------------------------------------------------------------------------
+
+/// The `spawn_regions` record for `func`, sliced out by brace matching.
+///
+/// Hand-rolled for the same reason `smem_route` is: the record nests arrays of
+/// objects, so the first `}` after the key ends a per-buffer entry, not the
+/// region. A guessed terminator is how that helper failed the first time.
+fn spawn_region(rec: &str, func: &str) -> String {
+    let key = format!("\"function\": \"{func}\"");
+    let start = rec
+        .find(&key)
+        .unwrap_or_else(|| panic!("no spawn region for {func} in:\n{rec}"));
+    let head = rec[..start].rfind('{').expect("region start");
+    let bytes = rec.as_bytes();
+    let mut depth = 0usize;
+    let mut tail = head;
+    for (i, b) in bytes.iter().enumerate().skip(head) {
+        match b {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    tail = i + 1;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    assert!(tail > head, "unterminated region object in:\n{rec}");
+    rec[head..tail].to_string()
+}
+
+/// THE READOUT. FlashAttention's kernel re-reads K and V on every query
+/// iteration, and this is that fact as a number nobody declared.
+///
+/// `flash_attention_placed.vx` stages Q[2,4], K[4,4], V[4,4], O[2,4] into
+/// GPU_HBM and runs the online-softmax loop in one `spawn`. The arithmetic,
+/// worked out by hand BEFORE this counter existed and confirmed by three
+/// independent recomputations:
+///
+///   q[i][d]  in the dot loop      i2 * t2 * jj2 * d4 = 32 reads  = 128 B
+///   k[j][d]  in the dot loop      i2 * t2 * jj2 * d4 = 32 reads  = 128 B
+///   v[j][d]  in the accumulate    i2 * t2 * jj2 * d4 = 32 reads  = 128 B
+///   o[i][d]  rescale  (r+w)       i2 * t2 * d4       = 16 each
+///   o[i][d]  accumulate (r+w)     i2 * t2 * jj2 * d4 = 32 each
+///   o[i][d]  final divide (r+w)   i2 * d4            =  8 each
+///   -> o = 56 reads + 56 writes = 224 B + 224 B
+///   aggregate GPU_HBM: 608 B read, 224 B written
+///
+/// The amplification is the point. K's footprint is 4*4*4 = 64 B and the kernel
+/// reads 128 B of it: every key is fetched once per query. Q is worse -- 32 B
+/// staged, 128 B read, a factor of 4. No declared edge cost can say any of this,
+/// because each tensor crossed CPU_DRAM -> GPU_HBM exactly once; the re-reading
+/// is a property of the loop nest, which lives entirely on the far side of the
+/// transfer.
+#[test]
+fn the_flash_kernel_reports_its_k_and_v_re_reads() {
+    let region = spawn_region(&record("flash_attention_placed.vx"), "main");
+    assert!(
+        region.contains("\"traffic_source\": \"spawn_region\""),
+        "counted from the region's own accesses:\n{region}"
+    );
+    // K is staged once (64 B) and read twice over (128 B): re-read per query.
+    assert!(
+        region.contains(
+            "{\"buffer\": \"k\", \"space\": \"GPU_HBM\", \"read_bytes\": 128, \
+             \"written_bytes\": 0}"
+        ),
+        "K's reads are queries(2) x keys(4) x d(4) x 4 B = 128:\n{region}"
+    );
+    // V is read on the same schedule as K.
+    assert!(
+        region.contains(
+            "{\"buffer\": \"v\", \"space\": \"GPU_HBM\", \"read_bytes\": 128, \
+             \"written_bytes\": 0}"
+        ),
+        "V is re-read exactly as K is:\n{region}"
+    );
+    // Q: 32 B staged, 128 B read -- the largest amplification in the kernel.
+    assert!(
+        region.contains(
+            "{\"buffer\": \"q\", \"space\": \"GPU_HBM\", \"read_bytes\": 128, \
+             \"written_bytes\": 0}"
+        ),
+        "Q's row is re-read for every key block:\n{region}"
+    );
+    // O is the only tensor written, and it is read back as often as written --
+    // the online-softmax rescale is a read-modify-write.
+    assert!(
+        region.contains(
+            "{\"buffer\": \"o\", \"space\": \"GPU_HBM\", \"read_bytes\": 224, \
+             \"written_bytes\": 224}"
+        ),
+        "O is rescaled and accumulated in place: 56 reads and 56 writes:\n{region}"
+    );
+    assert!(
+        region.contains("{\"space\": \"GPU_HBM\", \"read_bytes\": 608, \"written_bytes\": 224}"),
+        "aggregate over the four buffers:\n{region}"
+    );
+    assert!(
+        region.contains("\"traffic_exact\": true"),
+        "every loop bound is a literal and no branch touches a placed tensor:\n{region}"
+    );
+}
+
+/// Calibration, the same shape T1 used and for the same reason: a count that
+/// cannot be checked against an independently-known answer is not evidence.
+///
+/// One placed 2x2 f32 tile, read once per element under a literal nest and
+/// written once. 4 elements x 4 B = 16 B each way, which is also exactly the
+/// tile's footprint because nothing here is re-read. If this ever disagrees the
+/// counter is simply wrong and every other figure it produces is worthless.
+fn one_pass_kernel(body: &str) -> String {
+    format!(
+        "Memory CPU_DRAM {{}}
+Memory GPU_HBM {{
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+}}
+Topology Dev {{
+  arch: nvptx64,
+  memory: Memory::GPU_HBM,
+  visible: [Memory::GPU_HBM],
+  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s
+}}
+fn main() -> i32 {{
+  let mut a = Tensor<f32>([ 2, 2 ]);
+  let mut o = Tensor<f32>([ 2, 2 ]);
+  for i in 0..2 {{
+    for d in 0..2 {{
+      a[i][d] = 1.0;
+      o[i][d] = 0.0;
+    }}
+  }}
+  let ad = transfer(a, Memory::GPU_HBM);
+  let mut od = transfer(o, Memory::GPU_HBM);
+  spawn on(Topology::Dev) {{
+{body}
+  }}
+  return 0;
+}}
+"
+    )
+}
+
+#[test]
+fn a_single_pass_kernel_reports_exactly_the_tile_it_touches() {
+    let src = one_pass_kernel(
+        "    for i in 0..2 {
+      for d in 0..2 {
+        od[i][d] = ad[i][d];
+      }
+    }",
+    );
+    let region = spawn_region(&record_source("region_calib", &src), "main");
+    assert!(
+        region.contains(
+            "{\"buffer\": \"ad\", \"space\": \"GPU_HBM\", \"read_bytes\": 16, \
+             \"written_bytes\": 0}"
+        ),
+        "4 elements x 4 B, read once each:\n{region}"
+    );
+    assert!(
+        region.contains(
+            "{\"buffer\": \"od\", \"space\": \"GPU_HBM\", \"read_bytes\": 0, \
+             \"written_bytes\": 16}"
+        ),
+        "the destination is written, NOT read: an assignment's lhs is a store, and \
+         booking it as a load would invent a read the program never performs:\n{region}"
+    );
+}
+
+/// `+=` reads its destination as well as writing it. Written as a separate test
+/// because `Statement::Assign` and `Statement::CompoundAssign` are distinct AST
+/// nodes: a walker that handles only the first, or that treats both as
+/// write-only, silently undercounts every accumulation in every kernel -- and a
+/// silent undercount is indistinguishable from an efficient program.
+#[test]
+fn a_compound_assignment_counts_the_read_it_performs() {
+    let src = one_pass_kernel(
+        "    for i in 0..2 {
+      for d in 0..2 {
+        od[i][d] += ad[i][d];
+      }
+    }",
+    );
+    let region = spawn_region(&record_source("region_compound", &src), "main");
+    assert!(
+        region.contains(
+            "{\"buffer\": \"od\", \"space\": \"GPU_HBM\", \"read_bytes\": 16, \
+             \"written_bytes\": 16}"
+        ),
+        "`+=` is a read-modify-write, so the destination shows both:\n{region}"
+    );
+}
+
+/// Re-reading is what the stage exists to detect, and it must show up as a
+/// number larger than the footprint. Same tile, same result shape, one extra
+/// pass over the source.
+#[test]
+fn a_kernel_that_re_reads_reports_more_than_the_tile_holds() {
+    let src = one_pass_kernel(
+        "    for pass in 0..3 {
+      for i in 0..2 {
+        for d in 0..2 {
+          od[i][d] = ad[i][d];
+        }
+      }
+    }",
+    );
+    let region = spawn_region(&record_source("region_reread", &src), "main");
+    assert!(
+        region.contains(
+            "{\"buffer\": \"ad\", \"space\": \"GPU_HBM\", \"read_bytes\": 48, \
+             \"written_bytes\": 0}"
+        ),
+        "three passes over a 16 B tile is 48 B of reads -- 3x the footprint, and \
+         the tile crossed the edge exactly once:\n{region}"
+    );
+}
+
+/// Scratch declared inside the kernel is not traffic against the device memory
+/// anyone staged. `ts` is an ordinary `Tensor`, never transferred; the placement
+/// rule keys on the TYPE carrying a placement, not on the ambient topology --
+/// which inside `spawn on(Topology::Dev)` would have reported GPU_HBM for it and
+/// inflated the figure with kernel-local storage.
+#[test]
+fn kernel_local_scratch_is_not_counted_as_device_traffic() {
+    let src = one_pass_kernel(
+        "    let mut ts = Tensor<f32>([ 2, 2 ]);
+    for i in 0..2 {
+      for d in 0..2 {
+        ts[i][d] = ad[i][d];
+        od[i][d] = ts[i][d];
+      }
+    }",
+    );
+    let region = spawn_region(&record_source("region_scratch", &src), "main");
+    assert!(
+        !region.contains("\"buffer\": \"ts\""),
+        "an unplaced scratch tile contributes nothing:\n{region}"
+    );
+    assert!(
+        region.contains(
+            "{\"buffer\": \"ad\", \"space\": \"GPU_HBM\", \"read_bytes\": 16, \
+             \"written_bytes\": 0}"
+        ) && region.contains(
+            "{\"buffer\": \"od\", \"space\": \"GPU_HBM\", \"read_bytes\": 0, \
+             \"written_bytes\": 16}"
+        ),
+        "the placed tensors are still counted normally:\n{region}"
+    );
+}
+
+/// The honesty rule, three ways. A region the counter cannot weigh exactly is
+/// reported as absent WITH A REASON -- never as zero, and never partially. A
+/// consumer that cannot tell "uncountable" from "moved nothing" would read a
+/// walker limitation as a measurement of an efficient kernel.
+#[test]
+fn an_uncountable_region_reports_absence_with_a_reason() {
+    // A dynamic loop bound: the number of times the body runs is not known here.
+    let dynamic = one_pass_kernel(
+        "    let n = ad[0][0] as i32;
+    for i in 0..n {
+      od[0][0] = ad[0][0];
+    }",
+    );
+    let region = spawn_region(&record_source("region_dynamic", &dynamic), "main");
+    assert!(
+        region.contains("\"traffic\": null") && region.contains("\"by_buffer\": []"),
+        "a dynamic bound makes the whole region uncountable, not partly counted:\n{region}"
+    );
+    assert!(
+        region.contains("not statically known"),
+        "and it says why:\n{region}"
+    );
+
+    // A call that receives a placed tensor: the callee's own accesses are not
+    // walked, so counting only what is visible here would undercount. `print`
+    // is the smallest such call that needs no signature of its own.
+    //
+    // This guard was found DISABLED (`let hit = false && ...`) while the suite
+    // was green, because the case it protects was not covered by a compiling
+    // program -- the first attempt passed a placed tensor to a user function,
+    // which Vx currently rejects on a topology-index type mismatch unrelated to
+    // traffic. A safety check with no test that compiles is a check that can be
+    // switched off without anything going red.
+    let opaque = "\
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s
+}
+fn main() -> i32 {
+  let mut a = Tensor<f32>([ 2, 2 ]);
+  for i in 0..2 {
+    for d in 0..2 {
+      a[i][d] = 1.0;
+    }
+  }
+  let ad = transfer(a, Memory::GPU_HBM);
+  spawn on(Topology::GPU) {
+    print(ad);
+  }
+  return 0;
+}
+";
+    let region = spawn_region(&record_source("region_opaque", opaque), "main");
+    assert!(
+        region.contains("\"traffic\": null") && region.contains("placed tensor to a call"),
+        "a placed tensor crossing a call boundary is refused, not silently ignored:\n{region}"
+    );
+}
+
+/// An overflowing count is an absence, not a saturated number. The A4 review
+/// established the rule after saturation published `u64::MAX` as an EXACT byte
+/// count; the nest here is instant to count and must never be run.
+#[test]
+fn a_region_count_that_overflows_is_reported_as_absent() {
+    let src = one_pass_kernel(
+        "    for a1 in 0..4000000000 {
+      for a2 in 0..4000000000 {
+        for a3 in 0..4000000000 {
+          od[0][0] = ad[0][0];
+        }
+      }
+    }",
+    );
+    let region = spawn_region(&record_source("region_overflow", &src), "main");
+    assert!(
+        region.contains("\"traffic\": null"),
+        "an overflowed count must not be published as a number:\n{region}"
+    );
+    assert!(
+        region.contains("overflow"),
+        "and the reason names the overflow:\n{region}"
+    );
+}
+
+/// One region, two spaces. `custom_topology_user_lowering.vx` stages a tile from
+/// GPU_HBM into SMEM inside the kernel and writes its result back out, so the
+/// same `spawn` touches both spaces and they must not be pooled.
+///
+/// This is what makes the record answer a locality question. The SMEM reads are
+/// reads of a tile that was staged precisely so they would be cheap; the GPU_HBM
+/// writes are not. Summed into one figure the distinction disappears, and the
+/// distinction is the reason anyone stages a tile at all.
+///
+/// It also pins body-local placement: `tile` is bound INSIDE the region by
+/// `let tile = transfer(ad, Memory::SMEM)`, so its space comes from that
+/// initializer rather than from the enclosing scope, and its element size comes
+/// from the value transferred -- a transfer moves bytes, it does not convert
+/// them.
+#[test]
+fn a_region_keeps_its_two_spaces_apart() {
+    let region = spawn_region(&record("custom_topology_user_lowering.vx"), "main");
+    assert!(
+        region.contains(
+            "{\"buffer\": \"tile\", \"space\": \"SMEM\", \"read_bytes\": 16, \
+             \"written_bytes\": 0}"
+        ),
+        "the staged tile is read from SMEM, not from the space it came from:\n{region}"
+    );
+    assert!(
+        region.contains(
+            "{\"buffer\": \"od\", \"space\": \"GPU_HBM\", \"read_bytes\": 0, \
+             \"written_bytes\": 16}"
+        ),
+        "the result is written to device memory:\n{region}"
+    );
+    assert!(
+        region.contains("{\"space\": \"GPU_HBM\", \"read_bytes\": 0, \"written_bytes\": 16}")
+            && region.contains("{\"space\": \"SMEM\", \"read_bytes\": 16, \"written_bytes\": 0}"),
+        "and the per-space aggregate keeps them apart:\n{region}"
+    );
+}

@@ -101,6 +101,41 @@ pub struct StagingRoute {
     pub traffic_absent_reason: Option<String>,
 }
 
+/// Bytes read and written against one placed buffer by a `spawn` region (#353 A4 T4).
+///
+/// Per BUFFER, not just per space, because the amplification this stage exists to show is a
+/// fact about a particular tensor: in an attention kernel K and V are re-read on every query
+/// iteration while Q is read once per query. Summed into their shared space those three
+/// become one number that hides which of them is the problem.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BufferTraffic {
+    pub buffer: String,
+    pub space: crate::syntax::MemorySpace,
+    pub read_bytes: u64,
+    pub written_bytes: u64,
+}
+
+/// What one `spawn on(...)` region moves, counted from its indexed accesses and the static
+/// trip counts of the loops around them (#353 A4 T4).
+///
+/// The transfer-hop counts say what it costs to GET a tile to a space. This says what the
+/// kernel then does with it, which is where re-reading lives: a tile staged once and read
+/// sixteen times is sixteen reads, and no declared edge cost can say so because the movement
+/// across the edge happened exactly once.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpawnRegionTraffic {
+    /// The function the `spawn` appears in.
+    pub function: String,
+    /// The topology the region runs on, as its display name.
+    pub topology: String,
+    /// Aggregate per space, or `None` when the region could not be counted exactly.
+    pub traffic: Option<Traffic>,
+    /// Per placed buffer, sorted by name. Empty when `traffic` is `None`.
+    pub by_buffer: Vec<BufferTraffic>,
+    /// Why `traffic` is `None`; `None` when traffic is present. Never both absent.
+    pub traffic_absent_reason: Option<String>,
+}
+
 /// Bytes read and written against ONE memory space by a single transfer hop (#353 A4).
 ///
 /// Read and written are kept apart because they are different facts about the hardware: a
@@ -122,12 +157,10 @@ pub enum TrafficSource {
     BuiltinCopy,
     /// Counted from a user `impl transfer` body's `raw::` calls and static loop bounds.
     LoweringBody,
-    /// Counted from the indexed reads and writes of a `spawn` region's static loop nest.
-    ///
-    /// Reserved for A4's spawn-region slice and NOT yet produced by anything -- the
-    /// `--diagnostics-json` schema deliberately does not advertise it until it can occur,
-    /// because a documented value a consumer can never observe is a promise, not a schema.
-    #[allow(dead_code)]
+    /// Counted from the indexed reads and writes of a `spawn` region's static loop nest
+    /// (#353 A4 T4). Appears on `spawn_regions` records, never on a transfer route: a route
+    /// is one hop across one edge, while this is what a kernel does once the tile has
+    /// arrived.
     SpawnRegion,
 }
 
@@ -449,6 +482,10 @@ pub struct TypeChecker<'a> {
     pub(crate) next_id: u32,
     pub eval_env: Vec<HashMap<crate::symbol::Symbol, Value>>,
     pub current_return_type: Option<Type>,
+    /// Name of the function being checked, so a record produced deep inside a body can say
+    /// where it came from (a program may have several `spawn` regions in different
+    /// functions). Saved and restored around `check_function` like `current_return_type`.
+    pub(crate) current_function: String,
     #[allow(dead_code)]
     pub(crate) closure_depths: Vec<usize>,
     #[allow(dead_code)]
@@ -490,6 +527,9 @@ pub struct TypeChecker<'a> {
     /// Per-function, per-space working sets — the resident sets an admitted program implies.
     /// See [`ResidentSet`]; reported by `--diagnostics-json` (#285).
     pub resident_sets: Vec<ResidentSet>,
+    /// What each `spawn` region moves, counted from its own code (#353 A4 T4). One entry per
+    /// `spawn on(...)` site, in source order. See [`SpawnRegionTraffic`].
+    pub spawn_regions: Vec<SpawnRegionTraffic>,
     /// Total marginal solving time across all seams, excluding the one-time solver
     /// startup below (eval metric M1: per-seam proof cost).
     pub seam_check_time: std::time::Duration,
@@ -567,6 +607,7 @@ impl<'a> TypeChecker<'a> {
             next_id: 1,
             eval_env: vec![HashMap::new()],
             current_return_type: None,
+            current_function: String::new(),
             closure_depths: Vec::new(),
             closure_captures_stack: Vec::new(),
             generated_structs: Vec::new(),
@@ -579,6 +620,7 @@ impl<'a> TypeChecker<'a> {
             seam_checks: 0,
             staging_routes: Vec::new(),
             resident_sets: Vec::new(),
+            spawn_regions: Vec::new(),
             seam_check_time: std::time::Duration::ZERO,
             solver_init_time: std::time::Duration::ZERO,
             seam_solver: None,
@@ -1160,6 +1202,7 @@ impl<'a> TypeChecker<'a> {
 
         let prev_constraints = self.constraints.clone();
         let prev_ret_ty = self.current_return_type.clone();
+        let prev_fn = std::mem::replace(&mut self.current_function, func.name.as_ref().to_string());
         self.current_return_type = Some(func.return_type.clone());
         self.push_scope();
 
@@ -1269,6 +1312,7 @@ impl<'a> TypeChecker<'a> {
 
         self.pop_scope();
         self.current_return_type = prev_ret_ty;
+        self.current_function = prev_fn;
         self.constraints = prev_constraints;
         self.active_topology = prev_top;
         self.active_memory = prev_mem;

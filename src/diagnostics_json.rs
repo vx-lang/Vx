@@ -13,7 +13,7 @@
 //===----------------------------------------------------------------------===//
 
 use crate::diagnostic::{Diagnostic, DiagnosticFacts, DiagnosticLevel, DiagnosticsVec};
-use crate::hir::env::{ResidentSet, StagingRoute};
+use crate::hir::env::{ResidentSet, SpawnRegionTraffic, StagingRoute};
 
 /// The schema version embedded in every record. **Bump on any incompatible change** — a consumer
 /// pins this, and the rental campaign (#289) will be reading artifacts produced over a period of
@@ -74,6 +74,21 @@ use crate::hir::env::{ResidentSet, StagingRoute};
 ///       "tiles": 3,
 ///       "overcommit": false
 ///     }
+///   ],
+///   "spawn_regions": [                  // what each kernel MOVES, counted from its own code
+///     {
+///       "function": "main",
+///       "topology": "GPU[0]",
+///       "traffic": [                    // per space; null when the region is uncountable
+///         {"space": "GPU_HBM", "read_bytes": 608, "written_bytes": 224}
+///       ],
+///       "traffic_source": "spawn_region",
+///       "traffic_exact": true,
+///       "by_buffer": [                  // per placed tensor, sorted by name; [] when absent
+///         {"buffer": "k", "space": "GPU_HBM", "read_bytes": 128, "written_bytes": 0}
+///       ],
+///       "traffic_absent_reason": null   // non-null iff traffic is null; says why
+///     }
 ///   ]
 /// }
 /// ```
@@ -83,6 +98,28 @@ use crate::hir::env::{ResidentSet, StagingRoute};
 /// model's separate (and calibrated) claim. `traffic` is null rather than zero when a movement
 /// cannot be counted statically, because a harvested zero is indistinguishable from a
 /// measurement of nothing.
+///
+/// `spawn_regions` was added for #353 A4 T4 and is **additive** likewise. It answers the
+/// question the `routes` traffic cannot: a route says what it cost to GET a tile to a space,
+/// while a region says what the kernel then does with it. Those differ by the loop nest, which
+/// is where re-reading lives — an attention kernel re-reads K on every query iteration, so K's
+/// reads exceed its footprint by a factor no edge cost can express, because the movement
+/// across the edge happened exactly once. `traffic_source` is `"spawn_region"` here and never
+/// on a route; conversely `"builtin_copy"`/`"lowering_body"` appear only on routes.
+///
+/// Three limits a consumer must know.
+///
+/// 1. Only PLACED tensors are counted (values carrying a `Pinned`/`Ref` type, which is what a
+///    `transfer` produces): a scratch tile declared inside the kernel is not device traffic
+///    anyone staged, and counting it would inflate the figure with kernel-local storage.
+/// 2. The count is TOUCHES, not distinct elements — re-reading one element a thousand times is
+///    a thousand reads, which is the whole point.
+/// 3. It is PER LAUNCH, not per program run. One entry describes one `spawn` site, and says
+///    what one execution of that region moves. A `spawn` inside a host loop still gets one
+///    entry with one launch's bytes, because the host loop's own trip count is a property of
+///    the caller and is not always static. A consumer totalling a program's device traffic
+///    must multiply by how often each site runs; summing the entries as they stand
+///    undercounts exactly by that factor.
 ///
 /// `resident_sets` was added after the initial release of this schema. It is **additive** — a
 /// consumer reading only the original keys is unaffected — so the version is deliberately not
@@ -213,12 +250,7 @@ fn route_json(r: &StagingRoute) -> String {
                 "[{}]",
                 t.per_space
                     .iter()
-                    .map(|st| format!(
-                        "{{\"space\": \"{}\", \"read_bytes\": {}, \"written_bytes\": {}}}",
-                        esc(&st.space.name()),
-                        st.read_bytes,
-                        st.written_bytes
-                    ))
+                    .map(space_traffic_json)
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
@@ -251,6 +283,17 @@ fn route_json(r: &StagingRoute) -> String {
     )
 }
 
+/// One space's read/written pair. Shared by the transfer-route records and the spawn-region
+/// records so a consumer parses one shape, not two that happen to look alike today.
+fn space_traffic_json(st: &crate::hir::env::SpaceTraffic) -> String {
+    format!(
+        "{{\"space\": \"{}\", \"read_bytes\": {}, \"written_bytes\": {}}}",
+        esc(&st.space.name()),
+        st.read_bytes,
+        st.written_bytes
+    )
+}
+
 fn resident_set_json(r: &ResidentSet) -> String {
     // Utilization is derived here rather than stored so it cannot disagree with its operands.
     // Rounded to 4 dp: enough to distinguish campaign cells, short enough to read.
@@ -271,6 +314,61 @@ fn resident_set_json(r: &ResidentSet) -> String {
     )
 }
 
+/// One `spawn` region's derived traffic (#353 A4 T4).
+///
+/// `by_buffer` is carried beside the per-space aggregate because the amplification this
+/// record exists to show is a fact about a particular tensor: summed into their shared space,
+/// a re-read K and a read-once Q become one number that hides which of them is the problem.
+/// Both are omitted (and `traffic_absent_reason` is non-null) when the region could not be
+/// counted -- an uncountable kernel must not be readable as an efficient one.
+fn spawn_region_json(s: &SpawnRegionTraffic) -> String {
+    let (per_space, source, exact) = match &s.traffic {
+        Some(t) => (
+            format!(
+                "[{}]",
+                t.per_space
+                    .iter()
+                    .map(space_traffic_json)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            format!("\"{}\"", t.source.as_str()),
+            t.exact.to_string(),
+        ),
+        None => ("null".to_string(), "null".to_string(), "null".to_string()),
+    };
+    let by_buffer = s
+        .by_buffer
+        .iter()
+        .map(|b| {
+            format!(
+                "{{\"buffer\": \"{}\", \"space\": \"{}\", \"read_bytes\": {}, \
+                 \"written_bytes\": {}}}",
+                esc(&b.buffer),
+                esc(&b.space.name()),
+                b.read_bytes,
+                b.written_bytes
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let reason = match &s.traffic_absent_reason {
+        Some(r) => format!("\"{}\"", esc(r)),
+        None => "null".to_string(),
+    };
+    format!(
+        "{{\"function\": \"{}\", \"topology\": \"{}\", \"traffic\": {}, \"traffic_source\": {}, \
+         \"traffic_exact\": {}, \"by_buffer\": [{}], \"traffic_absent_reason\": {}}}",
+        esc(&s.function),
+        esc(&s.topology),
+        per_space,
+        source,
+        exact,
+        by_buffer,
+        reason
+    )
+}
+
 /// Render one compile's admission verdict. `file` is the program compiled and `machine` the
 /// `--machine` model it was admitted against, so a harvested record identifies its own
 /// (config, SKU) cell without the caller having to correlate it back to the invocation.
@@ -278,6 +376,7 @@ pub fn render(
     diagnostics: &DiagnosticsVec,
     routes: &[StagingRoute],
     residents: &[ResidentSet],
+    spawn_regions: &[SpawnRegionTraffic],
     file: &str,
     machine: Option<&str>,
 ) -> String {
@@ -306,10 +405,16 @@ pub fn render(
         .map(resident_set_json)
         .collect::<Vec<_>>()
         .join(",\n    ");
+    let spawn_json = spawn_regions
+        .iter()
+        .map(spawn_region_json)
+        .collect::<Vec<_>>()
+        .join(",\n    ");
     format!(
         "{{\n  \"schema\": \"{}\",\n  \"file\": \"{}\",\n  \"machine\": {},\n  \"verdict\": \
          \"{}\",\n  \"error_count\": {},\n  \"warning_count\": {},\n  \"diagnostics\": \
-         [{}{}{}],\n  \"routes\": [{}{}{}],\n  \"resident_sets\": [{}{}{}]\n}}",
+         [{}{}{}],\n  \"routes\": [{}{}{}],\n  \"resident_sets\": [{}{}{}],\n  \
+         \"spawn_regions\": [{}{}{}]\n}}",
         SCHEMA_VERSION,
         esc(file),
         opt_str(machine),
@@ -333,6 +438,9 @@ pub fn render(
         } else {
             "\n  "
         },
+        if spawn_json.is_empty() { "" } else { "\n    " },
+        spawn_json,
+        if spawn_json.is_empty() { "" } else { "\n  " },
     )
 }
 
@@ -362,7 +470,7 @@ mod tests {
             available_bytes: 1048576,
             tiles: None,
         });
-        let out = render(&diags, &[], &[], "prog.vx", Some("fleet/h100.vx"));
+        let out = render(&diags, &[], &[], &[], "prog.vx", Some("fleet/h100.vx"));
         assert!(out.contains("\"schema\": \"vx-diagnostics-v1\""), "{out}");
         assert!(out.contains("\"verdict\": \"rejected\""), "{out}");
         assert!(out.contains("\"code\": \"E6009\""), "{out}");
@@ -387,7 +495,7 @@ mod tests {
             available_bytes: 256,
             tiles: Some(3),
         });
-        let out = render(&diags, &[], &[], "prog.vx", None);
+        let out = render(&diags, &[], &[], &[], "prog.vx", None);
         assert!(out.contains("\"verdict\": \"admitted\""), "{out}");
         assert!(out.contains("\"warning_count\": 1"), "{out}");
         assert!(out.contains("\"code\": \"W1028\""), "{out}");
@@ -431,7 +539,14 @@ mod tests {
             }),
             traffic_absent_reason: None,
         };
-        let out = render(&DiagnosticsVec::default(), &[route], &[], "prog.vx", None);
+        let out = render(
+            &DiagnosticsVec::default(),
+            &[route],
+            &[],
+            &[],
+            "prog.vx",
+            None,
+        );
         // Traffic is bytes, per space, with the side it moved them on (#353 A4).
         assert!(
             out.contains("{\"space\": \"CPU_DRAM\", \"read_bytes\": 16384, \"written_bytes\": 0}"),
@@ -471,7 +586,7 @@ mod tests {
     /// The empty case still parses as an object with both arrays present.
     #[test]
     fn clean_compile_renders_empty_arrays() {
-        let out = render(&DiagnosticsVec::default(), &[], &[], "prog.vx", None);
+        let out = render(&DiagnosticsVec::default(), &[], &[], &[], "prog.vx", None);
         assert!(out.contains("\"diagnostics\": []"), "{out}");
         assert!(out.contains("\"routes\": []"), "{out}");
         assert!(out.contains("\"verdict\": \"admitted\""), "{out}");

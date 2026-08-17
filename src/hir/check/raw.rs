@@ -1544,7 +1544,7 @@ struct TrafficAcc {
 /// where the entire discipline is that a published number can be trusted. The trip-count
 /// multiply already refused honestly while the accumulation clamped, and the two sat one hop
 /// apart in the same expression.
-fn overflowed() -> String {
+pub(crate) fn overflowed() -> String {
     "the byte count overflows a 64-bit counter".to_string()
 }
 

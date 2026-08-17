@@ -739,6 +739,7 @@ impl CompilerDriver {
                 &checker.errors,
                 &checker.staging_routes,
                 &checker.resident_sets,
+                &checker.spawn_regions,
                 filename,
                 self.options
                     .machine

@@ -1731,12 +1731,41 @@ impl<'a> TypeChecker<'a> {
 
                 self.push_scope();
 
+                // The placed values this region can see, captured BEFORE its body is checked
+                // (#353 A4 T4). Checking mutates the scopes it reads -- a call that consumes a
+                // placed tensor moves it out -- so a live lookup afterwards finds nothing and
+                // the region silently reports no traffic. Probed and reproduced.
+                let placed_outer = self.placed_names_snapshot();
+
                 self.check_expr_block(stmts, consume);
 
                 let mut ret_ty = Type::Tensor(ElementType::F32, vec![], None); // default void-like type
                 let has_ret = ret.is_some();
                 if let Some(r) = ret {
                     ret_ty = self.check_expr_type_flag(r, consume);
+                }
+
+                // What this region moves, counted from its own accesses (#353 A4 T4). Here,
+                // BEFORE the scope pops, because the body's free names -- the placed tensors
+                // it was given -- resolve through the enclosing function's live scopes.
+                //
+                // Not while speculating: a probe re-checks the same node, and a second record
+                // for one `spawn` would double it in the published set.
+                if !self.speculating {
+                    let (traffic, by_buffer, reason) =
+                        match self.derive_spawn_traffic(stmts, ret.as_deref(), &placed_outer) {
+                            Ok((t, b)) => (Some(t), b, None),
+                            Err(why) => (None, Vec::new(), Some(why)),
+                        };
+                    let function = self.current_function.clone();
+                    self.spawn_regions
+                        .push(crate::hir::env::SpawnRegionTraffic {
+                            function,
+                            topology: self.active_topology.display_name(),
+                            traffic,
+                            by_buffer,
+                            traffic_absent_reason: reason,
+                        });
                 }
 
                 self.pop_scope();
