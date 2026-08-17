@@ -1091,7 +1091,7 @@ fn check_one_function(
     module_idx: usize,
     global_session: &std::sync::Arc<GlobalSession>,
     global_env: &GlobalAstEnv,
-    lowering_edge: Option<(syntax::MemorySpace, syntax::MemorySpace)>,
+    lowering_edge: Option<(syntax::MemorySpace, syntax::MemorySpace, String)>,
 ) -> FunctionCheck {
     let mut worker = LocalWorkerState::new(global_session.clone());
     let mut checker = TypeChecker::new(global_env, &mut worker);
@@ -1157,7 +1157,11 @@ fn type_check_phase(
                     .transfer_impls
                     .iter_mut()
                     .flat_map(|t| {
-                        let edge = (t.from.clone(), t.to.clone());
+                        let edge = (
+                            t.from.clone(),
+                            t.to.clone(),
+                            t.topology.display_name().to_string(),
+                        );
                         t.methods.iter_mut().map(move |f| {
                             check_one_function(
                                 f,
@@ -1197,7 +1201,11 @@ fn type_check_phase(
                     .transfer_impls
                     .par_iter_mut()
                     .flat_map(|t| {
-                        let edge = (t.from.clone(), t.to.clone());
+                        let edge = (
+                            t.from.clone(),
+                            t.to.clone(),
+                            t.topology.display_name().to_string(),
+                        );
                         t.methods.par_iter_mut().map(move |f| {
                             check_one_function(
                                 f,

@@ -1,0 +1,45 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// The copy engine is a capability of ONE machine's edge, not of the edge name.
+// Ampere declares `copy_engine` on its L2 -> SMEM; Hopper declares the same
+// edge without it. A lowering FOR HOPPER that uses raw::async_copy is asking
+// for hardware Hopper never declared, and the fact that Ampere has it is not
+// an answer -- the whole point of the `for Topology::X` clause is that the two
+// machines' declarations do not pool (Vx#353).
+//
+// Before the gate was scoped to the lowering's own machine, this program
+// compiled clean: the engine lookup scanned every declared topology for a
+// like-named edge with the capability, so any machine's declaration armed
+// every machine's lowerings.
+// CHECK: E6020
+// CHECK: Topology::Hopper does not declare one
+Memory CPU_DRAM {}
+Memory L2 {
+  within: Memory::CPU_DRAM, capacity: 40 MiB, bandwidth: 7 TB/s, managed: cached
+}
+Memory SMEM {
+  within: Memory::L2, capacity: 164 KiB, bandwidth: 128 B/cyc,
+  granule: 1 KiB, managed: explicit, scope: sm
+}
+Topology Ampere {
+  memory: Memory::L2,
+  visible: [Memory::L2, Memory::SMEM],
+  transfer Memory::CPU_DRAM -> Memory::L2 : 10 GB/s,
+  transfer Memory::L2 -> Memory::SMEM copy_engine
+}
+Topology Hopper {
+  memory: Memory::L2,
+  visible: [Memory::L2, Memory::SMEM],
+  transfer Memory::CPU_DRAM -> Memory::L2 : 10 GB/s,
+  transfer Memory::L2 -> Memory::SMEM
+}
+impl Transfer<Memory::L2, Memory::SMEM> for Topology::Hopper {
+  fn move_tile(src: &Tensor<f32, [4]>, dst: &mut Tensor<f32, [4]>) -> i32 {
+    raw::async_copy(dst, src, 0);
+    raw::async_wait();
+    raw::barrier();
+    return 0;
+  }
+}
+fn main() -> i32 {
+  return 0;
+}

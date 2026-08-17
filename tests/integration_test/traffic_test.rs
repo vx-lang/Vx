@@ -427,3 +427,45 @@ fn the_active_topology_picks_among_lowerings_for_one_edge() {
         "both machines write the same tile:\nthrifty {thrifty}\nwasteful {wasteful}"
     );
 }
+
+/// A machine that declares an edge but supplies NO lowering for it gets the
+/// builtin copy -- never a peer machine's body.
+///
+/// HasImpl and NoImpl declare the same edge; only HasImpl implements it, with
+/// a body that reads the source twice. The transfer runs inside
+/// `spawn on(Topology::NoImpl)`. NoImpl chose not to supply a lowering, so the
+/// builtin must move its tile: one read, `builtin_copy`.
+///
+/// The review found the opposite (Vx#353): the single-candidate fallback --
+/// which exists so a host-driven transfer can find the one machine that owns a
+/// device edge -- also fired when the site WAS on a machine, handing NoImpl
+/// the only lowering in scope. HasImpl's body may use instructions NoImpl
+/// never declared (that is what `copy_engine` gates), so borrowing it is not a
+/// default, it is a miscompile. The fallback is now conditional on the active
+/// topology not declaring the edge itself.
+fn declined_machine() -> String {
+    let two = two_machines("Thrifty");
+    // Same program as the selection test, with the spawn moved onto a machine
+    // that declares the edge and implements nothing: drop Thrifty's impl and
+    // retarget the spawn at Thrifty, keeping Wasteful's double-read lowering
+    // as the only candidate in scope.
+    let start = two
+        .find("impl Transfer<Memory::GPU_HBM, Memory::SMEM> for Topology::Thrifty")
+        .expect("thrifty impl present");
+    let end = two[start..].find("\n}\n").expect("impl ends") + start + 3;
+    format!("{}{}", &two[..start], &two[end..])
+}
+
+#[test]
+fn a_machine_without_a_lowering_gets_the_builtin_not_a_peers_body() {
+    let route = smem_route(&record_source("declined", &declined_machine()));
+    assert!(
+        route.contains("\"traffic_source\": \"builtin_copy\""),
+        "Thrifty supplied no lowering, so the builtin must move its tile -- \
+         Wasteful's body belongs to Wasteful:\n{route}"
+    );
+    assert!(
+        route.contains("{\"space\": \"GPU_HBM\", \"read_bytes\": 16, \"written_bytes\": 0}"),
+        "the builtin reads the tile once:\n{route}"
+    );
+}

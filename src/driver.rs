@@ -665,7 +665,11 @@ impl CompilerDriver {
         // The edge is set around each lowering's bodies so the eight `raw::` primitives
         // resolve inside them and nowhere else (Vx#353 A2).
         for t in &mut ast.transfer_impls {
-            checker.transfer_lowering_edge = Some((t.from.clone(), t.to.clone()));
+            checker.transfer_lowering_edge = Some((
+                t.from.clone(),
+                t.to.clone(),
+                t.topology.display_name().to_string(),
+            ));
             for f in &mut t.methods {
                 checker.check_function(f);
             }
@@ -685,7 +689,11 @@ impl CompilerDriver {
         // fails every A2 check compiled clean before this loop.
         for p in other_asts.values_mut() {
             for t in &mut p.transfer_impls {
-                checker.transfer_lowering_edge = Some((t.from.clone(), t.to.clone()));
+                checker.transfer_lowering_edge = Some((
+                    t.from.clone(),
+                    t.to.clone(),
+                    t.topology.display_name().to_string(),
+                ));
                 for f in &mut t.methods {
                     checker.check_function(f);
                 }

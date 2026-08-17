@@ -247,7 +247,11 @@ fn run_middle_end_test(path: &Path) -> Result<(), String> {
     // diagnostic and every lowering fail test passes vacuously -- the A2 review proved
     // it by planting a fully legal program with a bogus CHECK line, and it passed.
     for t in &mut program.transfer_impls {
-        checker.transfer_lowering_edge = Some((t.from.clone(), t.to.clone()));
+        checker.transfer_lowering_edge = Some((
+            t.from.clone(),
+            t.to.clone(),
+            t.topology.display_name().to_string(),
+        ));
         for f in &mut t.methods {
             checker.check_function(f);
         }

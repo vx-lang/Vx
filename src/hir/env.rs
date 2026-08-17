@@ -463,12 +463,18 @@ pub struct TypeChecker<'a> {
     /// transfer that does not carry a synchronizing release/DMA-completion. Consumed and
     /// reset by `check_transfer_expr`. See `crate::hir::seam`.
     pub(crate) pending_transfer_relaxed: bool,
-    /// The edge of the `impl transfer` lowering whose body is being checked, when one is.
-    /// `Some((from, to))` is what makes the eight `raw::` primitives resolve (Vx#353 A2)
-    /// and gives their space and capability obligations an edge to check against. `None`
-    /// everywhere else -- which is the floor property: outside a lowering, `raw::` names
-    /// do not exist. Set by the driver and pipeline around lowering-body checks.
-    pub transfer_lowering_edge: Option<(MemorySpace, MemorySpace)>,
+    /// The edge and machine of the `impl Transfer` lowering whose body is being checked, when
+    /// one is. `Some((from, to, machine))` is what makes the eight `raw::` primitives resolve
+    /// (Vx#353 A2) and gives their space and capability obligations an edge to check against.
+    /// `None` everywhere else -- which is the floor property: outside a lowering, `raw::`
+    /// names do not exist. Set by the driver and pipeline around lowering-body checks.
+    ///
+    /// The machine (the lowering's `for Topology::X`, as its display name) is here because a
+    /// capability check that knows only the edge pair cannot tell WHOSE edge: `raw::async_copy`
+    /// asked "does any topology's L2 -> SMEM carry copy_engine", so one machine declaring the
+    /// engine armed every machine's lowerings for the like-named edge. The gate needs to ask
+    /// the machine the body is for.
+    pub transfer_lowering_edge: Option<(MemorySpace, MemorySpace, String)>,
     /// The current lowering method's parameter names: the only tiles `raw::` may touch.
     /// A local alias would escape the async-discipline walk (it is name-keyed), so the
     /// primitives are limited to the names the walk can see. Only read while

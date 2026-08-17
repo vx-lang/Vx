@@ -108,8 +108,8 @@ impl<'a> TypeChecker<'a> {
             return unit();
         }
 
-        // The floor property: outside an `impl transfer` body the names do not resolve.
-        let Some((from, to)) = self.transfer_lowering_edge.clone() else {
+        // The floor property: outside an `impl Transfer` body the names do not resolve.
+        let Some((from, to, machine)) = self.transfer_lowering_edge.clone() else {
             self.errors.error_with_code(
                 DiagnosticCode::E6017,
                 format!(
@@ -192,19 +192,25 @@ impl<'a> TypeChecker<'a> {
                     return unit();
                 }
                 self.raw_index_arg(prim, &arg_types[2], &call_span);
-                // Capability, not choice: the machine file must declare the engine. A lowering
-                // for an edge no declared topology carries has no engine either -- absence of
-                // the declaration IS absence of the capability.
-                if !self.edge_has_copy_engine(&from, &to) {
+                // Capability, not choice: THIS lowering's machine must declare the engine on
+                // its own edge. Another machine declaring `copy_engine` on a like-named edge
+                // is another machine's hardware -- the lookup used to scan every declared
+                // topology, so one machine's declaration armed every machine's lowerings for
+                // that edge pair (found by review, Vx#353). Absence of the declaration IS
+                // absence of the capability.
+                if !self.edge_has_copy_engine(&from, &to, &machine) {
                     self.errors.error_with_code(
                         DiagnosticCode::E6020,
                         format!(
-                            "`raw::async_copy` needs a copy engine on {} -> {}, and no declared \
-                             topology edge carries `copy_engine`. Declare it in the machine file \
-                             (`transfer Memory::{} -> Memory::{} copy_engine`) if the hardware \
-                             has one",
+                            "`raw::async_copy` needs a copy engine on {} -> {}, and \
+                             Topology::{} does not declare one there. Add `copy_engine` to \
+                             {}'s own edge (`transfer Memory::{} -> Memory::{} copy_engine`) \
+                             if its hardware has the engine -- another machine declaring it \
+                             on a like-named edge is not this machine's capability",
                             from.name(),
                             to.name(),
+                            machine,
+                            machine,
                             from.name(),
                             to.name()
                         ),
@@ -468,18 +474,29 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    /// Does any declared topology edge `from -> to` carry a copy engine?
+    /// Does `machine`'s own declaration of the edge `from -> to` carry a copy engine?
+    ///
+    /// Scoped to one topology on purpose. The unscoped form ("does ANY declared topology's
+    /// edge carry it") let a lowering for Hopper use `raw::async_copy` because Ampere
+    /// declared `copy_engine` on its own like-named edge -- one machine's capability arming
+    /// another machine's code, which is the conflation the `for Topology::X` clause exists
+    /// to remove.
     pub(crate) fn edge_has_copy_engine(
         &self,
         from: &crate::syntax::MemorySpace,
         to: &crate::syntax::MemorySpace,
+        machine: &str,
     ) -> bool {
-        self.env.topologies.values().any(|t| {
-            t.descriptor
-                .transfers
-                .iter()
-                .any(|e| &e.from == from && &e.to == to && e.copy_engine)
-        })
+        self.env
+            .topologies
+            .values()
+            .filter(|t| t.name.as_ref() == machine)
+            .any(|t| {
+                t.descriptor
+                    .transfers
+                    .iter()
+                    .any(|e| &e.from == from && &e.to == to && e.copy_engine)
+            })
     }
 
     /// The whole-body half of the A2 obligations, run once after every lowering body has

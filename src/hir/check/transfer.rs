@@ -1126,12 +1126,21 @@ impl<'a> TypeChecker<'a> {
                     // Which machine's lowering runs here. Candidates are the lowerings for this
                     // edge; the topology in force at the site picks among them.
                     //
-                    // The active topology is preferred but cannot be required, because a host
-                    // edge is moved from the host: `transfer(a, Memory::GPU_HBM)` in `main` runs
-                    // with the CPU active while implementing an edge that belongs to the device.
-                    // So an unambiguous single candidate is taken as well, and only a genuine
-                    // ambiguity -- several machines implementing this edge, none of them the one
-                    // we are on -- is refused.
+                    // If the active topology declares this edge itself, its own declarations are
+                    // the whole answer: its lowering if it wrote one, the builtin if it did not.
+                    // A machine that declined to implement its edge did not delegate the choice
+                    // to whoever else implemented a like-named edge -- a peer's body may lean on
+                    // capabilities (a copy engine) the active machine never declared, so
+                    // borrowing it is not a default, it is a different machine's code. The
+                    // review reproduced exactly that: one machine's double-read body silently
+                    // counted (and would have been inlined) for a spawn on the machine next to
+                    // it (Vx#353).
+                    //
+                    // The fallback below exists for sites on NO machine that owns this edge --
+                    // a host edge is moved from the host, so `transfer(a, Memory::GPU_HBM)` in
+                    // `main` runs with the CPU active while implementing an edge that belongs
+                    // to the device. There a single candidate is unambiguous and is taken; only
+                    // several candidates with nothing to pick among them is refused.
                     let candidates: Vec<&crate::syntax::TransferImplDecl> = self
                         .env
                         .transfer_impls
@@ -1140,16 +1149,28 @@ impl<'a> TypeChecker<'a> {
                         .copied()
                         .collect();
                     let active = self.active_topology.display_name();
+                    let active_declares_edge = self
+                        .env
+                        .topologies
+                        .values()
+                        .find(|d| d.name.as_ref() == active)
+                        .map(|d| {
+                            d.descriptor
+                                .transfers
+                                .iter()
+                                .any(|e| e.from == source_mem && e.to == target_mem)
+                        })
+                        .unwrap_or(false);
                     let chosen = candidates
                         .iter()
                         .find(|li| li.topology.display_name() == active)
-                        .or(if candidates.len() == 1 {
+                        .or(if !active_declares_edge && candidates.len() == 1 {
                             candidates.first()
                         } else {
                             None
                         })
                         .copied();
-                    if chosen.is_none() && candidates.len() > 1 {
+                    if chosen.is_none() && !active_declares_edge && candidates.len() > 1 {
                         let names: Vec<String> = candidates
                             .iter()
                             .map(|li| li.topology.display_name().to_string())
