@@ -149,6 +149,15 @@ fn contains_index(e: &Expr) -> bool {
 ///
 /// Same `Debug`-based reasoning as `contains_index`, and the same error direction: it can only
 /// over-refuse. A name is matched as a quoted token so that `a` does not match `abc`.
+///
+/// NOT covered by a test, and that is recorded rather than hidden. Verified by hand -- an array
+/// literal `[ad]` and a struct initializer holding a placed field both refuse here -- but
+/// neither program compiles today: the first crashes codegen, and the second hits the same
+/// type-equality defect that stops any `Pinned<_, Topology::GPU[0]>` ANNOTATION from matching
+/// what `transfer` produces (the topology index carries `ty: Some(I32)` written down and
+/// `ty: None` inferred). Both are pre-existing and unrelated to traffic. The second is also
+/// why the call-opacity guard below had no compiling test, which is how that guard came to be
+/// disabled without the suite noticing. See tests/integration_test/traffic_test.rs.
 fn mentions_any(e: &Expr, names: impl Iterator<Item = String>) -> bool {
     let rendered = format!("{e:?}");
     names

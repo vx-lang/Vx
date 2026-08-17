@@ -849,3 +849,127 @@ fn a_region_keeps_its_two_spaces_apart() {
         "and the per-space aggregate keeps them apart:\n{region}"
     );
 }
+
+/// Every refusal path gets a test, because a guard with no test is a guard that
+/// can be switched off without anything going red.
+///
+/// That is not hypothetical. The call-opacity guard in this counter was found
+/// disabled -- `let hit = false && (...)` -- while this suite was green, because
+/// the only test covering it used a program that did not compile. These cases
+/// exist so the same thing cannot happen quietly to the others: each one names a
+/// distinct reason string, so a disabled guard changes the record and fails here.
+fn region_body(body: &str) -> String {
+    format!(
+        "Memory CPU_DRAM {{}}
+Memory GPU_HBM {{
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s
+}}
+fn main() -> i32 {{
+  let mut a = Tensor<f32>([ 2, 2 ]);
+  for i in 0..2 {{
+    for d in 0..2 {{
+      a[i][d] = 1.0;
+    }}
+  }}
+  let ad = transfer(a, Memory::GPU_HBM);
+  spawn on(Topology::GPU) {{
+{body}
+  }}
+  return 0;
+}}
+"
+    )
+}
+
+#[test]
+fn an_unbounded_loop_in_a_region_is_refused() {
+    let src = region_body(
+        "    let mut n = 0;
+    loop {
+      n = n + 1;
+      let z = ad[0][0];
+      if n > 2 { break; }
+    }",
+    );
+    let region = spawn_region(&record_source("region_loop", &src), "main");
+    assert!(
+        region.contains("\"traffic\": null") && region.contains("unbounded `loop`"),
+        "a loop with no static trip count cannot be weighed:\n{region}"
+    );
+}
+
+#[test]
+fn a_break_in_a_region_is_refused() {
+    let src = region_body(
+        "    for i in 0..2 {
+      let z = ad[i][0];
+      break;
+    }",
+    );
+    let region = spawn_region(&record_source("region_break", &src), "main");
+    assert!(
+        region.contains("\"traffic\": null") && region.contains("trip counts a fiction"),
+        "`break` means the loop's declared trip count is not what runs:\n{region}"
+    );
+}
+
+#[test]
+fn an_unrecognised_construct_that_indexes_is_refused() {
+    let src = region_body("    let arr = [ ad[0][0] ];");
+    let region = spawn_region(&record_source("region_catchall_idx", &src), "main");
+    assert!(
+        region.contains("\"traffic\": null") && region.contains("indexes something"),
+        "an array literal is not walked, and this one holds a read:\n{region}"
+    );
+}
+
+// NOT COVERED, deliberately and visibly: the half of the catch-all that
+// `contains_index` alone does not reach -- a construct that hands a placed
+// tensor somewhere opaque WITHOUT indexing it. The guard exists and was
+// verified by hand (an array literal `[ad]` and a struct initializer holding a
+// placed field both produce `traffic: null` with "mentions a placed tensor"),
+// but neither can be a test here, because neither program COMPILES today:
+//
+//   * `let arr = [ ad ];`      crashes codegen with an internal error
+//                              (Option::unwrap on None, src/codegen/lower/expr.rs).
+//   * `let h = S { t: ad };`   is rejected because a `Pinned<_, Topology::GPU[0]>`
+//     `fn f(t: Pinned<...>)`   ANNOTATION never unifies with the type `transfer`
+//                              produces: the topology index carries `ty: Some(I32)`
+//                              when written down and `ty: None` when inferred.
+//
+// Both are pre-existing compiler defects unrelated to traffic, and the second
+// one is why the call-opacity guard also had no compiling test -- which is how
+// that guard came to be disabled without this suite noticing. Recorded here
+// rather than left silent: an uncovered guard that nobody has written down is
+// the exact shape of the last one.
+
+/// Sub-byte elements are refused rather than rounded up, in the REGION counter
+/// as well as the lowering one. Rounding i4 to a byte made a faithful copy
+/// report the 2.0 ratio that is this stage's evidence of waste; the same
+/// argument applies to a kernel's reads.
+#[test]
+fn a_sub_byte_placed_tensor_in_a_region_is_refused() {
+    let src = "Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s
+}
+fn main() -> i32 {
+  let mut a = Tensor<i4>([ 2, 2 ]);
+  for i in 0..2 {
+    for d in 0..2 {
+      a[i][d] = 1;
+    }
+  }
+  let ad = transfer(a, Memory::GPU_HBM);
+  spawn on(Topology::GPU) {
+    let z = ad[0][0];
+  }
+  return 0;
+}
+";
+    let region = spawn_region(&record_source("region_subbyte", src), "main");
+    assert!(
+        region.contains("\"traffic\": null") && region.contains("sub-byte elements"),
+        "a packed element width this counter does not model is refused, not rounded:\n{region}"
+    );
+}
