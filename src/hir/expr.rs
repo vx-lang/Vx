@@ -137,7 +137,7 @@ impl<'a> TypeChecker<'a> {
                 false, // const
             ),
             Expr::Transfer(..) => self.check_transfer_expr(expr, consume),
-            // `Transfer<A, B>` is a comptime boolean.
+            // `Reachable<A, B>` is a comptime boolean.
             Expr::TransferPredicate(..) => Type::Scalar(ElementType::Bool),
             Expr::ComptimeBlock(..) => self.check_comptimeblock_expr(expr, consume),
             Expr::SpawnOn(..) => self.check_spawnon_expr(expr, consume),

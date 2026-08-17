@@ -131,9 +131,9 @@ fn run_on<D: Topology>(x: Pinned<i32, Topology::D>) -> i32 {
 }
 ```
 
-**`where Transfer<A, B>` constraints.** When a polymorphic function moves data between two
+**`where Reachable<A, B>` constraints.** When a polymorphic function moves data between two
 topology variables it must state that a transfer between them is possible. The
-`where Transfer<S, D>` clause is discharged at each call site against the transfer cost graph
+`where Reachable<S, D>` clause is discharged at each call site against the transfer cost graph
 — instantiating `S`/`D` with a pair that has no path is a compile error. Multiple constraints
 are comma-separated.
 
@@ -141,24 +141,24 @@ are comma-separated.
 fn move_between<S: Topology, D: Topology>(
     src: Pinned<i32, Topology::S>,
     dst: Pinned<i32, Topology::D>,
-) -> i32 where Transfer<S, D> {
+) -> i32 where Reachable<S, D> {
     let staged = transfer(src, Memory::CPU_DRAM);
     return 0;
 }
 
 fn pipeline<A: Topology, B: Topology, C: Topology>( /* ... */ )
-    -> i32 where Transfer<A, B>, Transfer<B, C> { /* ... */ }
+    -> i32 where Reachable<A, B>, Reachable<B, C> { /* ... */ }
 ```
 
-**`Transfer<A, B>` as a comptime predicate.** The same relation is also a compile-time
-boolean: `Transfer<A, B>` evaluates to whether a transfer path exists, where each argument is
+**`Reachable<A, B>` as a comptime predicate.** The same relation is also a compile-time
+boolean: `Reachable<A, B>` evaluates to whether a transfer path exists, where each argument is
 a concrete topology (`Topology::CPU`) or a topology variable (`D`). Inside `if comptime`, a
 statically-false predicate prunes its branch entirely, so an otherwise-invalid body never has
 to type-check.
 
 ```rust
 fn dispatch<D: Topology>(x: Pinned<i32, Topology::D>) -> i32 {
-    if comptime Transfer<Topology::CPU, D> {
+    if comptime Reachable<Topology::CPU, D> {
         let reachable = 1;   // only compiled when CPU -> D is reachable
     }
     return 0;

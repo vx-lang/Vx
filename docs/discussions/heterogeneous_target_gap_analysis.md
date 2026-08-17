@@ -159,7 +159,7 @@ Bounded dynamism is ~90% of real serving need and is entirely tractable. Data-de
 
 ### 6.4 The leverage: the solver is already there
 
-Bound propagation over shape arithmetic is QF_LIA — strictly easier than the QF_BV staleness obligations [`hir::seam::Solver`](../lang/seam_obligations.md) already discharges at ~1.8 ms marginal per seam. `where` already exists as a keyword and already carries constraints (`where Transfer<A, B>`, [`src/parser/decl.rs:118`](../../src/parser/decl.rs#L118)), so the grammar extends rather than expands.
+Bound propagation over shape arithmetic is QF_LIA — strictly easier than the QF_BV staleness obligations [`hir::seam::Solver`](../lang/seam_obligations.md) already discharges at ~1.8 ms marginal per seam. `where` already exists as a keyword and already carries constraints (`where Reachable<A, B>`, [`src/parser/decl.rs:118`](../../src/parser/decl.rs#L118)), so the grammar extends rather than expands.
 
 Two of the three largest open questions in this document — async safety (§7.1) and bounded shapes (P1-1) — collapse onto the same infrastructure.
 
@@ -471,7 +471,7 @@ Error[E6009] at 3:11: transferred tensor needs up to 2097152 bytes (bound: n <= 
 
 **Discharge.** Reuse [`hir::seam::Solver`](../lang/seam_obligations.md). Bound propagation is QF_LIA — cheaper than the QF_BV obligations already running at ~1.8 ms marginal. Start with a syntactic fast path (literal ≤ literal, parameter with a declared bound) and fall back to z3 only when that fails, mirroring how seam checking is off by default behind `--verify-seams`.
 
-**Where it lands.** `src/parser/decl.rs` (extend the `where` arm at line 118 beyond `Transfer<A, B>`), `src/parser/types.rs` (`<=N` in a dim position), `src/syntax/types.rs` (dim becomes `Dim::{ Exact(Expr), Bounded(Expr) }`), `src/hir/memory.rs` (`tensor_bytes`), `src/hir/expr.rs` (bound environment + call-site discharge).
+**Where it lands.** `src/parser/decl.rs` (extend the `where` arm at line 118 beyond `Reachable<A, B>`), `src/parser/types.rs` (`<=N` in a dim position), `src/syntax/types.rs` (dim becomes `Dim::{ Exact(Expr), Bounded(Expr) }`), `src/hir/memory.rs` (`tensor_bytes`), `src/hir/expr.rs` (bound environment + call-site discharge).
 
 ______________________________________________________________________
 
@@ -1019,7 +1019,7 @@ Error[E6009]: transferred tensor needs 268435456 bytes but memory space 'VMEM' h
 | `Scope` = Device/Sm/Cta/Thread | [`src/syntax/decl.rs:188`](../../src/syntax/decl.rs#L188) |
 | `Management` = Explicit/Cached | [`src/syntax/decl.rs:175`](../../src/syntax/decl.rs#L175) |
 | `Topology` decl parser (`memory:`/`visible:`/`transfer` edges) | [`src/parser/decl.rs:196`](../../src/parser/decl.rs#L196) |
-| `where` clause already exists (`Transfer<A, B>`) | [`src/parser/decl.rs:118`](../../src/parser/decl.rs#L118) |
+| `where` clause already exists (`Reachable<A, B>`) | [`src/parser/decl.rs:118`](../../src/parser/decl.rs#L118) |
 | `Type::Tensor` — no layout slot | [`src/syntax/types.rs:149`](../../src/syntax/types.rs#L149) |
 | `Type::is_linear()` — linearity machinery for tokens | [`src/syntax/types.rs:184`](../../src/syntax/types.rs#L184) |
 | `ElementType` — no FP8/FP6/FP4 | [`src/syntax/types.rs:126`](../../src/syntax/types.rs#L126) |

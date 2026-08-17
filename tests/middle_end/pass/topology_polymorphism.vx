@@ -13,11 +13,11 @@
 //
 //   identity_on   -- signature-level `<D: Topology>` monomorphization
 //   run_on        -- body-level substitution (`spawn on(Topology::D)` in the body)
-//   move_between  -- `where Transfer<S, D>` + a real `transfer` in the body
-//   pipeline      -- multiple constraints `where Transfer<A,B>, Transfer<B,C>`
+//   move_between  -- `where Reachable<S, D>` + a real `transfer` in the body
+//   pipeline      -- multiple constraints `where Reachable<A,B>, Reachable<B,C>`
 //   stage         -- return-type-driven inference of D (from the `let` annotation)
-//   dispatch      -- `Transfer<A, B>` as a comptime predicate over a topology variable
-//   prune_demo    -- a statically-false comptime `Transfer` prunes its (invalid) branch
+//   dispatch      -- `Reachable<A, B>` as a comptime predicate over a topology variable
+//   prune_demo    -- a statically-false comptime `Reachable` prunes its (invalid) branch
 
 // A host-backed novel memory that is unreachable, for the false comptime predicate.
 Topology Island {
@@ -35,24 +35,24 @@ fn run_on<D: Topology>(x: Pinned<i32, Topology::D>) -> i32 {
   return 0;
 }
 
-fn move_between<S: Topology, D: Topology>(src: Pinned<i32, Topology::S>, dst: Pinned<i32, Topology::D>) -> i32 where Transfer<S, D> {
+fn move_between<S: Topology, D: Topology>(src: Pinned<i32, Topology::S>, dst: Pinned<i32, Topology::D>) -> i32 where Reachable<S, D> {
   let staged = transfer(src, Memory::CPU_DRAM);
   return 0;
 }
 
-fn pipeline<A: Topology, B: Topology, C: Topology>(a: Pinned<i32, Topology::A>, b: Pinned<i32, Topology::B>, c: Pinned<i32, Topology::C>) -> i32 where Transfer<A, B>, Transfer<B, C> {
+fn pipeline<A: Topology, B: Topology, C: Topology>(a: Pinned<i32, Topology::A>, b: Pinned<i32, Topology::B>, c: Pinned<i32, Topology::C>) -> i32 where Reachable<A, B>, Reachable<B, C> {
   let staged = transfer(a, Memory::CPU_DRAM);
   return 0;
 }
 
-fn stage<S: Topology, D: Topology>(x: Pinned<i32, Topology::S>) -> Pinned<i32, Topology::D> where Transfer<S, D> {
+fn stage<S: Topology, D: Topology>(x: Pinned<i32, Topology::S>) -> Pinned<i32, Topology::D> where Reachable<S, D> {
   spawn on(Topology::D) {
     0
   }
 }
 
 fn dispatch<D: Topology>(x: Pinned<i32, Topology::D>) -> i32 {
-  if comptime Transfer<Topology::CPU, D> {
+  if comptime Reachable<Topology::CPU, D> {
     let reachable = 1;
   }
   return 0;
@@ -60,7 +60,7 @@ fn dispatch<D: Topology>(x: Pinned<i32, Topology::D>) -> i32 {
 
 fn prune_demo() -> i32 {
   // GPU -> Island has no path, so this branch (with an undefined call) is pruned.
-  if comptime Transfer<Topology::GPU, Topology::Island> {
+  if comptime Reachable<Topology::GPU, Topology::Island> {
     let bad = undefined_pruned_away();
   }
   return 0;

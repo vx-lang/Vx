@@ -1123,7 +1123,7 @@ impl<'c> MeliorGenerator<'c> {
                 "`vec![...]` is not supported at this codegen position".to_string(),
             )),
             Expr::TransferPredicate(_) => Err(LowerError::from(
-                "`Transfer<A, B>` is a comptime predicate; it may only appear as an \
+                "`Reachable<A, B>` is a comptime predicate; it may only appear as an \
                  `if comptime` condition"
                     .to_string(),
             )),

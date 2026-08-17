@@ -123,8 +123,8 @@ fn invalid_cross_access() -> i32 {
 `Pinned<T, Topology>` can be abstracted over the topology: a function generic with a
 `D: Topology` bound takes and returns `Pinned<T, Topology::D>`, and the compiler monomorphizes
 it per concrete target at each call site. Moving a value between two topology variables
-requires a `where Transfer<S, D>` constraint (discharged against the transfer cost graph), and
-the same relation is available as a compile-time `Transfer<A, B>` predicate for `if comptime`
+requires a `where Reachable<S, D>` constraint (discharged against the transfer cost graph), and
+the same relation is available as a compile-time `Reachable<A, B>` predicate for `if comptime`
 branch pruning. See [syntax.md §3.2](./syntax.md#32-topology-polymorphic-functions) for the
 surface syntax and [`hardware_monad.md`](./hardware_monad.md) for the categorical model.
 

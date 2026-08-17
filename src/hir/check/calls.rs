@@ -1030,7 +1030,7 @@ impl<'a> TypeChecker<'a> {
             let topo_mapping = std::mem::take(&mut self.pending_topo_bindings);
             self.pending_topo_vars.clear();
 
-            // Discharge `where Transfer<A, B>` now that the topology variables are bound:
+            // Discharge `where Reachable<A, B>` now that the topology variables are bound:
             // a transfer path from A's memory to B's must exist in the cost graph.
             for (a, b) in &generic_func.where_transfers {
                 if let (Some(ta), Some(tb)) = (topo_mapping.get(a), topo_mapping.get(b)) {
@@ -1039,7 +1039,7 @@ impl<'a> TypeChecker<'a> {
                     if self.transfer_cost_graph.transfer_path(&ma, &mb).is_none() {
                         if !self.speculating {
                             self.errors.push(format!(
-                                "unsatisfied `where Transfer<{}, {}>` in call to '{}': no transfer \
+                                "unsatisfied `where Reachable<{}, {}>` in call to '{}': no transfer \
                                  path from {:?} to {:?}",
                                 a, b, name, ta, tb
                             ));

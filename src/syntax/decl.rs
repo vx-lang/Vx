@@ -37,7 +37,7 @@ pub struct Function {
     pub return_type: Type,
     pub requires: Vec<Expr>,
     pub ensures: Vec<Expr>,
-    /// `where Transfer<S, D>` constraints: pairs of topology names (generic topology
+    /// `where Reachable<S, D>` constraints: pairs of topology names (generic topology
     /// variables or concrete topologies) that must have a transfer path in the cost
     /// graph. Discharged at each generic call once the variables are bound.
     pub where_transfers: Vec<(Symbol, Symbol)>,

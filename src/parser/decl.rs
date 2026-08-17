@@ -115,25 +115,38 @@ impl<'a> Parser<'a> {
             ensures.push(self.parse_expr()?);
         }
 
-        // `where Transfer<A, B> [, Transfer<C, D>]*` -- topology transfer constraints.
+        // `where Reachable<A, B> [, Reachable<C, D>]*` -- topology transfer constraints.
+        //
+        // The name says what the constraint actually tests: a transfer PATH exists from A to
+        // B in the cost graph. It does not name any particular lowering, and its arguments are
+        // topologies, not memory spaces. It was called `Transfer<A, B>` until Vx#353, which is
+        // the name the edge lowering now uses (`impl Transfer<Memory::A, Memory::B> for
+        // Topology::X`) with a different kind of argument -- so the two had to part.
         let mut where_transfers: Vec<(crate::symbol::Symbol, crate::symbol::Symbol)> = Vec::new();
         if self.match_token(&TokenType::Where) {
             loop {
-                // `Transfer` (capitalized) is an identifier, not the lowercase `transfer`
-                // keyword used for the transfer intrinsic.
-                let cname =
-                    self.expect_identifier("Expected a `Transfer<A, B>` constraint after 'where'")?;
-                if cname != "Transfer" {
+                let cname = self
+                    .expect_identifier("Expected a `Reachable<A, B>` constraint after 'where'")?;
+                if cname != "Reachable" {
+                    // `Transfer` gets its own message: it was the old spelling of exactly this
+                    // constraint, so a program carrying it is out of date rather than wrong.
+                    if cname == "Transfer" {
+                        return Err(self.error(
+                            "`where Transfer<A, B>` is now `where Reachable<A, B>`; the name \
+                             `Transfer` belongs to the edge lowering (`impl Transfer<Memory::A, \
+                             Memory::B> for Topology::X`), whose arguments are memory spaces",
+                        ));
+                    }
                     return Err(self.error(&format!(
-                        "Unsupported where-constraint '{}' (only `Transfer<A, B>` is supported)",
+                        "Unsupported where-constraint '{}' (only `Reachable<A, B>` is supported)",
                         cname
                     )));
                 }
-                self.consume(&TokenType::LeftAngle, "Expected '<' after Transfer")?;
-                let a = self.expect_identifier("Expected a topology name in Transfer<A, B>")?;
-                self.consume(&TokenType::Comma, "Expected ',' in Transfer<A, B>")?;
-                let b = self.expect_identifier("Expected a topology name in Transfer<A, B>")?;
-                self.consume(&TokenType::RightAngle, "Expected '>' after Transfer<A, B>")?;
+                self.consume(&TokenType::LeftAngle, "Expected '<' after Reachable")?;
+                let a = self.expect_identifier("Expected a topology name in Reachable<A, B>")?;
+                self.consume(&TokenType::Comma, "Expected ',' in Reachable<A, B>")?;
+                let b = self.expect_identifier("Expected a topology name in Reachable<A, B>")?;
+                self.consume(&TokenType::RightAngle, "Expected '>' after Reachable<A, B>")?;
                 where_transfers.push((a.into(), b.into()));
                 if !self.match_token(&TokenType::Comma) {
                     break;

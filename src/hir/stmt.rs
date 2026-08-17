@@ -577,7 +577,7 @@ impl<'a> TypeChecker<'a> {
                     None
                 }
             }
-            // `Transfer<A, B>`: true iff a transfer path exists in the cost graph. Topology
+            // `Reachable<A, B>`: true iff a transfer path exists in the cost graph. Topology
             // variables have already been substituted during monomorphization.
             Expr::TransferPredicate(e) => {
                 let mfrom = self.transfer_cost_graph.default_memory_for(&e.from);

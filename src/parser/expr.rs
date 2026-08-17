@@ -321,13 +321,15 @@ impl<'a> Parser<'a> {
             }));
         }
 
-        // `Transfer<A, B>` as a value: a comptime transferability predicate.
-        if call_name == "Transfer" && self.check(&TokenType::LeftAngle) {
+        // `Reachable<A, B>` as a value: a comptime transferability predicate. Same constraint
+        // as the `where` clause of the same name, usable in `if comptime`. Spelled
+        // `Transfer<A, B>` until Vx#353; see the `where` parser for why it moved.
+        if call_name == "Reachable" && self.check(&TokenType::LeftAngle) {
             self.advance(); // consume '<'
             let from = self.parse_topology_operand()?;
-            self.consume(&TokenType::Comma, "Expected ',' in Transfer<A, B>")?;
+            self.consume(&TokenType::Comma, "Expected ',' in Reachable<A, B>")?;
             let to = self.parse_topology_operand()?;
-            self.consume(&TokenType::RightAngle, "Expected '>' after Transfer<A, B>")?;
+            self.consume(&TokenType::RightAngle, "Expected '>' after Reachable<A, B>")?;
             return Ok(Expr::TransferPredicate(TransferPredicateExpr {
                 from,
                 to,

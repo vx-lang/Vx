@@ -142,10 +142,14 @@ pub struct TransferExpr {
     pub span: Span,
 }
 
-/// `Transfer<A, B>` used as a value: a compile-time boolean, true iff a transfer path exists
+/// `Reachable<A, B>` used as a value: a compile-time boolean, true iff a transfer path exists
 /// from `from` to `to` in the cost graph. Evaluated at comptime (e.g. inside
-/// `comptime { if Transfer<A, B> { … } }`); topology variables are substituted during
+/// `comptime { if Reachable<A, B> { … } }`); topology variables are substituted during
 /// monomorphization first.
+///
+/// Its arguments are TOPOLOGIES, and it names no particular lowering -- which is why it is no
+/// longer spelled `Transfer<A, B>`. That name now belongs to the edge lowering
+/// (`impl Transfer<Memory::A, Memory::B> for Topology::X`), whose arguments are memory spaces.
 #[derive(Debug, PartialEq, Clone)]
 pub struct TransferPredicateExpr {
     pub from: Topology,

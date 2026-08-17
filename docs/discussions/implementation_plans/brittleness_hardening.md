@@ -10,7 +10,7 @@
 
 `src/codegen/generator.rs:840` is `_ => todo!("{:?}", expr)`. Five `Expr` variants fall
 through and **panic at codegen** instead of erroring: `Range`, `VecMacro`, `MemorySpace`,
-`MacroCall`, `TransferPredicate` (a non-`comptime` use of `Transfer<A,B>`). A program with
+`MacroCall`, `TransferPredicate` (a non-`comptime` use of `Reachable<A,B>`). A program with
 a bare range or `vec![]` in an unexpected position crashes the compiler.
 
 **Fix:** replace the catch-all with explicit arms that return a `LowerError` naming the

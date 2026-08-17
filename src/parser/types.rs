@@ -85,13 +85,13 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Parse a topology in an operand position (a `Transfer<A, B>` argument): either a
+    /// Parse a topology in an operand position (a `Reachable<A, B>` argument): either a
     /// `Topology::X` reference or a bare identifier naming a topology variable.
     pub(crate) fn parse_topology_operand(&mut self) -> ParseResult<'a, Topology> {
         if self.check(&TokenType::Topology) {
             self.parse_topology()
         } else {
-            let n = self.expect_identifier("Expected a topology name in Transfer<A, B>")?;
+            let n = self.expect_identifier("Expected a topology name in Reachable<A, B>")?;
             Ok(Topology::Custom(n.into()))
         }
     }
