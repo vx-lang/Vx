@@ -47,6 +47,6 @@ Topology Device {
   transfer Memory::HBM -> Memory::L2,
   // spec: Ampere's cp.async copies global memory into shared memory without passing through
   // registers (PTX ISA 8.3 section 9.7.8.24). Declaring the engine is what makes
-  // `raw::async_copy` legal in an `impl transfer` lowering for this hop (Vx#353 A2).
+  // `raw::async_copy` legal in an `impl Transfer` lowering for this hop (Vx#353 A2).
   transfer Memory::L2 -> Memory::SMEM copy_engine
 }

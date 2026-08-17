@@ -4,7 +4,13 @@
 // the whole-body scan never sees closure bodies (they are lifted out first).
 // CHECK: E6017
 // CHECK: inside a closure
-impl transfer Memory::L2 -> Memory::SMEM {
+Topology Dev {
+  memory: Memory::L2,
+  visible: [Memory::L2, Memory::SMEM],
+  transfer Memory::CPU_DRAM -> Memory::L2 : 10 GB/s,
+  transfer Memory::L2 -> Memory::SMEM
+}
+impl Transfer<Memory::L2, Memory::SMEM> for Topology::Dev {
   fn move_tile(src: &Tensor<f32, [4]>, dst: &mut Tensor<f32, [4]>) -> i64 {
     let f = | x : i64 | x + raw::lanes();
     return f(1);

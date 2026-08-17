@@ -9,7 +9,7 @@ Topology Dev {
   transfer Memory::CPU_DRAM -> Memory::L2 : 10 GB/s,
   transfer Memory::L2 -> Memory::SMEM
 }
-impl transfer Memory::CPU_DRAM -> Memory::L2 {
+impl Transfer<Memory::CPU_DRAM, Memory::L2> for Topology::Dev {
   fn move_tile(src: &Tensor<f32, [4]>, dst: &mut Tensor<f32, [4]>) -> i32 {
     for i in 0..raw::extent(src) {
       raw::store(dst, i, raw::load(src, i));

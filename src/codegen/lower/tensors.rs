@@ -410,10 +410,11 @@ impl<'c> LowerToMelior<'c> for syntax::TransferExpr {
         // (src, dst) parameters bound to the source value and the placed tile.
         // Inlined, not called: a func.call inside the kernel region silently costs
         // the kernel its device twin (`isDeviceLowerableDialect` excludes func).
-        let user_lowering = self
-            .lowering
-            .as_ref()
-            .and_then(|(f, t)| gen.transfer_impls.get(&(f.name(), t.name())).cloned());
+        let user_lowering = self.lowering.as_ref().and_then(|(f, t, topo)| {
+            gen.transfer_impls
+                .get(&(f.name(), t.name(), topo.clone()))
+                .cloned()
+        });
         if user_lowering.is_some() {
             transfer_builder = transfer_builder.add_attributes(&[(
                 Identifier::new(gen.context, "user_lowered"),

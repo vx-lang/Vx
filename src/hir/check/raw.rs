@@ -499,6 +499,11 @@ impl<'a> TypeChecker<'a> {
     ///     `Relaxed {{ published }}` and `hir/seam.rs`'s stale read is reachable.
     pub fn check_transfer_impl_bodies(&mut self, impls: &[crate::syntax::TransferImplDecl]) {
         for t in impls {
+            // The topology this lowering is FOR, and its declaration of this edge. Before the
+            // `for` clause existed this had to search every declared topology for one that
+            // declared the edge, and then hold every one of them to the visibility rule --
+            // including machines the lowering was never written for. Now it names its machine,
+            // so the check applies to that machine.
             let declaring: Vec<(
                 &crate::symbol::Symbol,
                 &Vec<crate::syntax::MemorySpace>,
@@ -507,6 +512,7 @@ impl<'a> TypeChecker<'a> {
                 .env
                 .topologies
                 .values()
+                .filter(|topo| topo.name.as_ref() == t.topology.display_name())
                 .flat_map(|topo| {
                     topo.descriptor
                         .transfers

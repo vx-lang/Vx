@@ -163,12 +163,13 @@ constrained.
 Three questions were open here; the contract document settles them in design (none is implemented
 yet):
 
-- **How is the lowering named?** The file carries Vx code — `impl transfer Memory::A -> Memory::B`
+- **How is the lowering named?** The file carries Vx code — `impl Transfer<Memory::A, Memory::B>
+  for Topology::X`
   — compiled and checked by our own front end like any other Vx. The trust boundary is the small
   primitive set the body may use (`raw::load/store/barrier/...`), not the file.
 - **What happens to the safety properties?** They survive because the body cannot be opaque: it is
   composed of indexed primitives whose bounds and space obligations the compiler discharges, so an
-  `impl transfer` cannot emit a movement that violates the placement guarantees the type system
+  `impl Transfer` cannot emit a movement that violates the placement guarantees the type system
   proved. This holds by the contract's construction, not by trusting authors.
 - **Capability is declarable separately, and it gates the primitives.** `raw::async_copy` is a
   compile error in a lowering for a part whose machine file declares no copy engine — the

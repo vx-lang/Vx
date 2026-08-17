@@ -1,13 +1,30 @@
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// Two lowerings for one edge: which is in force would be module load order, the same
-// ambiguity E6012 refuses for declarations (Vx#352).
+// Two lowerings for one edge ON ONE MACHINE: which is in force would be module load
+// order, the same ambiguity E6012 refuses for declarations (Vx#352).
+//
+// What makes this the narrow case it should be: the edge alone is no longer the key.
+// Two topologies implementing Memory::L2 -> Memory::SMEM is the normal case now (an
+// Ampere part fills shared memory with cp.async, a Hopper part with TMA), and the pass
+// test transfer_impl_two_machines.vx holds that. Only a repeat for the SAME machine is
+// ambiguous, because only then is there nothing to tell the two apart.
 // CHECK: E6015
-// CHECK: the edge L2 -> SMEM has 2 transfer lowerings
-impl transfer Memory::L2 -> Memory::SMEM {
-  fn move_a(n: i32) -> i32 { return n; }
+// CHECK: Topology::Dev has 2 lowerings for the edge L2 -> SMEM
+Topology Dev {
+  memory: Memory::L2,
+  visible: [Memory::L2, Memory::SMEM],
+  transfer Memory::CPU_DRAM -> Memory::L2 : 10 GB/s,
+  transfer Memory::L2 -> Memory::SMEM,
+  transfer Memory::L2 -> Memory::SMEM
 }
-impl transfer Memory::L2 -> Memory::SMEM {
-  fn move_b(n: i32) -> i32 { return n; }
+impl Transfer<Memory::L2, Memory::SMEM> for Topology::Dev {
+  fn move_a(n: i32) -> i32 {
+    return n;
+  }
+}
+impl Transfer<Memory::L2, Memory::SMEM> for Topology::Dev {
+  fn move_b(n: i32) -> i32 {
+    return n;
+  }
 }
 fn main() -> i32 {
   return 0;

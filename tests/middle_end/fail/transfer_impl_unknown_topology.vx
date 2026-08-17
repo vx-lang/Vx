@@ -1,20 +1,21 @@
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// raw::barrier() under a loop: every lane must reach a barrier, and inside
-// control flow that cannot be guaranteed syntactically. Rejected outright.
-// CHECK: E6019
-// CHECK: reachable by every lane
+// A lowering for a machine this compilation has never heard of. It is code that
+// nothing can run, and before the `for` clause it could not even be asked: a
+// lowering named no machine, so there was nothing to check it against (Vx#353).
+// CHECK: E6015
+// CHECK: no topology named 'Ampere' is declared
 Topology Dev {
   memory: Memory::L2,
   visible: [Memory::L2, Memory::SMEM],
   transfer Memory::CPU_DRAM -> Memory::L2 : 10 GB/s,
   transfer Memory::L2 -> Memory::SMEM
 }
-impl Transfer<Memory::L2, Memory::SMEM> for Topology::Dev {
+impl Transfer<Memory::L2, Memory::SMEM> for Topology::Ampere {
   fn move_tile(src: &Tensor<f32, [4]>, dst: &mut Tensor<f32, [4]>) -> i32 {
     for i in 0..raw::extent(src) {
       raw::store(dst, i, raw::load(src, i));
-      raw::barrier();
     }
+    raw::barrier();
     return 0;
   }
 }

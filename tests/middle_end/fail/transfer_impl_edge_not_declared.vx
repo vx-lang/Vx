@@ -1,0 +1,27 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// A lowering for an edge its own machine does not have. `Topology Dev` moves
+// CPU_DRAM -> L2 and nothing else, so there is no L2 -> SMEM movement for this
+// body to implement.
+//
+// The AST used to carry this obligation as a comment -- the edge "matched against
+// the topology's declared edges by sema (not yet wired)". It could not be wired,
+// because a lowering did not say which topology to look at. Now it does (Vx#353).
+// CHECK: E6015
+// CHECK: does not declare the edge L2 -> SMEM
+Topology Dev {
+  memory: Memory::L2,
+  visible: [Memory::L2, Memory::SMEM],
+  transfer Memory::CPU_DRAM -> Memory::L2 : 10 GB/s
+}
+impl Transfer<Memory::L2, Memory::SMEM> for Topology::Dev {
+  fn move_tile(src: &Tensor<f32, [4]>, dst: &mut Tensor<f32, [4]>) -> i32 {
+    for i in 0..raw::extent(src) {
+      raw::store(dst, i, raw::load(src, i));
+    }
+    raw::barrier();
+    return 0;
+  }
+}
+fn main() -> i32 {
+  return 0;
+}

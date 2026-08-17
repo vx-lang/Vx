@@ -237,12 +237,30 @@ seeds into.
    its memory model is supplied via `register_topology` (plugin API). *Not yet:* a
    source-level `topology { … }` declaration (below), and the `Transfer<From,To>` /
    `Topology` traits.
-1. **[SUBSTANTIALLY LANDED, as data]** **`Transfer` + `Topology` "traits".** The
+1. **[LANDED]** **`Transfer` + `Topology` "traits".** The
    object (`TopologyDescriptor`) and the morphism (`TransferEdge { from, to, cost, sync }`) exist as data with a language surface (`Topology <Name> { memory / visible / transfer ... }`); the cost graph *is* their closure (`seed_from_topology_registry`
    - Dijkstra); the consistency grade (`sync`/`relaxed`) is discharged via the seam
-     engine in coherence checking. *Not done:* exposing these as first-class Vx `trait`s
-     you `impl` per user type (`impl Transfer<A,B> for ...`) — largely redundant with the
-     declaration surface, so deprioritized.
+     engine in coherence checking.
+
+   **The trait surface landed too (Vx#353), reversing the note this entry used to carry.**
+   It read: *"Not done: exposing these as first-class Vx `trait`s you `impl` per user type
+   (`impl Transfer<A,B> for ...`) — largely redundant with the declaration surface, so
+   deprioritized."*
+
+   That was correct while a lowering was pure data — `cost`, `consistency`, a declared
+   `sync` grade. A trait surface really would have added nothing over `transfer A -> B : cost`.
+   The judgment expired when lowerings gained real **code bodies** over the `raw::` primitives.
+   A body is not redundant with a declaration; it is the thing the declaration was standing in
+   for, and it needs to be attached to the machine whose instructions it uses. The surface is
+   now `impl Transfer<Memory::A, Memory::B> for Topology::X { fn ... }`, and the two obligations
+   that the missing topology made uncheckable — the machine exists, and it declares the edge —
+   are checked (E6015).
+
+   One consequence for the vocabulary above: `Reachable<S, D>`, defined in this document as
+   *"an impl `Transfer<S, D>` exists"*, is now the literal spelling of the `where`-constraint
+   and the comptime predicate. It was called `Transfer<A, B>` until the lowering claimed that
+   name. The arguments differ in kind — `Reachable` takes topologies, `Transfer` takes memory
+   spaces — which is why they could not share one.
 1. **[LANDED]** **User declarations + coherence check.** `Topology <Name> { … }`
    registers descriptors in-language; admitted iff coherence obligations discharge
    (E6005 / W1026 / W1027, the last via `hir::seam`). Typo-safety: W1025 for an

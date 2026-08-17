@@ -5,7 +5,13 @@
 // because wrapping the body in unsafe is the documented escape, not control
 // flow.
 // CHECK: main
-impl transfer Memory::L2 -> Memory::SMEM {
+Topology Dev {
+  memory: Memory::L2,
+  visible: [Memory::L2, Memory::SMEM],
+  transfer Memory::CPU_DRAM -> Memory::L2 : 10 GB/s,
+  transfer Memory::L2 -> Memory::SMEM
+}
+impl Transfer<Memory::L2, Memory::SMEM> for Topology::Dev {
   fn move_tile(src: &Tensor<f32, [4]>, dst: &mut Tensor<f32, [4]>) -> i32 {
     unsafe { raw::store(dst, raw::lane(), 0.5); raw::barrier(); }
     return 0;

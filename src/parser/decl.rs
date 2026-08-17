@@ -830,15 +830,20 @@ impl<'a> Parser<'a> {
 
         let generics = self.parse_generic_params()?;
 
-        // `impl<T> transfer ...` reaches here (the dispatch only looks one token past `impl`,
-        // so a generic list hides the keyword). Without this check, `parse_type` consumes
-        // `transfer` as if it could start a type and the error lands on the NEXT token --
-        // pointing at `Memory`, which looks exactly like a type identifier, while the actual
-        // offender is never named.
-        if self.check(&TokenType::Transfer) {
+        // `impl<T> Transfer ...` reaches here (the dispatch only looks one token past `impl`, so
+        // a generic list hides the trait name). Without this check, `parse_type` consumes
+        // `Transfer` as an ordinary trait name and the error lands somewhere in the header,
+        // while the actual offender is never named.
+        //
+        // A lowering is instantiated per EDGE, not per type, so a type parameter has nothing to
+        // bind to -- the same reason a generic `fn` inside a lowering body is refused (E6015).
+        let generic_transfer = self.check(&TokenType::Transfer)
+            || matches!(&self.peek().kind, TokenType::Identifier(s) if &**s == "Transfer");
+        if !generics.is_empty() && generic_transfer {
             return Err(self.error(
-                "'impl transfer' does not take generic parameters; a transfer lowering is \
-                 declared per edge (`impl transfer Memory::A -> Memory::B { ... }`)",
+                "'impl Transfer' does not take generic parameters; a transfer lowering is \
+                 declared per edge, for one machine \
+                 (`impl Transfer<Memory::A, Memory::B> for Topology::X { ... }`)",
             ));
         }
 
@@ -1007,14 +1012,18 @@ impl<'a> Parser<'a> {
             } else if self.check(&TokenType::Trait) {
                 traits.push(self.parse_trait_decl()?);
             } else if self.check(&TokenType::Impl) {
-                // `impl transfer Memory::A -> Memory::B { ... }` is a transfer lowering, not a
-                // trait impl. One token of lookahead separates them. `transfer` cannot appear in
-                // TYPE position (`parse_named_type` rejects it), so no trait impl is captured by
-                // this branch -- but the keyword IS accepted as an ordinary identifier elsewhere
-                // (`expect_identifier` allows `fn transfer(...)`), and a generic `impl<T>` hides
-                // the keyword from this one-token look; `parse_impl_block` carries the directed
-                // error for that case.
-                if matches!(self.peek_n(1).kind, TokenType::Transfer) {
+                // `impl Transfer<Memory::A, Memory::B> for Topology::X { ... }` is a transfer
+                // lowering, not an ordinary trait impl. The trait name `Transfer` is reserved for
+                // it, so one token of lookahead separates the two: any `impl Transfer...` is a
+                // lowering, and `parse_transfer_impl` reports what is wrong with the rest of the
+                // header. Reserving the name is what makes this a one-token decision -- before
+                // Vx#353 the deciding difference between a lowering and a trait impl was the
+                // capital letter in `Transfer` versus the `transfer` keyword.
+                let is_transfer_impl = matches!(
+                    &self.peek_n(1).kind,
+                    TokenType::Identifier(s) if &**s == "Transfer"
+                ) || matches!(self.peek_n(1).kind, TokenType::Transfer);
+                if is_transfer_impl {
                     let mut t = self.parse_transfer_impl()?;
                     t.doc_comment = doc_comment;
                     transfer_impls.push(t);
@@ -1069,24 +1078,67 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// `impl transfer Memory::<From> -> Memory::<To> { fn ... }` — a transfer lowering
-    /// (docs/custom_transfer_contract.md). The header mirrors the topology's edge clause so the
-    /// two forms read as statements about the same edge; the body is ordinary `fn` items, parsed
-    /// by `parse_function` like an impl block's methods.
+    /// `impl Transfer<Memory::A, Memory::B> for Topology::X { fn ... }` — a transfer lowering
+    /// (docs/custom_transfer_contract.md). The body is ordinary `fn` items, parsed by
+    /// `parse_function` like an impl block's methods.
     ///
     /// The bodies are macro-expanded, structurally checked (E6015), and type-checked like impl
-    /// methods (#353 A1) -- a body that errors at top level errors identically inside a lowering.
-    /// Not yet visited: the `raw::` primitive obligations (A2) and lowering to code (A3), which
-    /// is where the contract's C1/C6 checks land.
+    /// methods -- a body that errors at top level errors identically inside a lowering. The
+    /// `raw::` primitive obligations and the emitted code are the rest of the contract.
+    ///
+    /// The `for Topology::X` clause is required, because a lowering is code for one machine's
+    /// edge. Two parts can declare the same edge and move it with different instructions
+    /// (`cp.async` on Ampere, TMA on Hopper), and before Vx#353 only one of them could say so.
     pub(crate) fn parse_transfer_impl(&mut self) -> ParseResult<'a, TransferImplDecl> {
         self.consume(&TokenType::Impl, "Expected 'impl'")?;
-        self.consume(&TokenType::Transfer, "Expected 'transfer' after 'impl'")?;
+        // The old spelling, `impl transfer Memory::A -> Memory::B`, used the lowercase keyword.
+        // It has no place to name a topology, which is the whole reason for the change, so it
+        // gets a message pointing at the new form rather than a generic parse error.
+        if self.check(&TokenType::Transfer) {
+            return Err(self.error(
+                "`impl transfer Memory::A -> Memory::B` is now \
+                 `impl Transfer<Memory::A, Memory::B> for Topology::X`; a lowering is code for \
+                 one machine's edge, so it has to name the machine",
+            ));
+        }
+        let trait_name = self.expect_identifier("Expected 'Transfer' after 'impl'")?;
+        if trait_name != "Transfer" {
+            return Err(self.error(&format!(
+                "Expected 'Transfer' after 'impl', got '{}'",
+                trait_name
+            )));
+        }
+        // `impl Transfer for SomeType` was the implicit-movement opt-in until Vx#353. It is
+        // spelled `Relocatable` now, and it is a different question: whether a value may move
+        // implicitly, not how bytes cross an edge.
+        if self.check(&TokenType::For) {
+            return Err(self.error(
+                "`Transfer` names an edge lowering and takes two memory spaces \
+                 (`impl Transfer<Memory::A, Memory::B> for Topology::X`). For a type that may \
+                 move implicitly across a topology boundary, the trait is `Relocatable`",
+            ));
+        }
+        self.consume(
+            &TokenType::LeftAngle,
+            "Expected '<' after 'Transfer' (`impl Transfer<Memory::A, Memory::B> for \
+             Topology::X`)",
+        )?;
         let from = self.parse_memory_space()?;
-        self.consume(&TokenType::Arrow, "Expected '->' in 'impl transfer'")?;
+        self.consume(&TokenType::Comma, "Expected ',' in 'impl Transfer<A, B>'")?;
         let to = self.parse_memory_space()?;
         self.consume(
+            &TokenType::RightAngle,
+            "Expected '>' after 'impl Transfer<A, B>'",
+        )?;
+        self.consume(
+            &TokenType::For,
+            "Expected 'for Topology::X' after 'impl Transfer<A, B>': a lowering is code for one \
+             machine's edge, so it has to name the machine",
+        )?;
+        let topology = self.parse_topology()?;
+        self.consume(
             &TokenType::LeftBrace,
-            "Expected '{' after 'impl transfer' header",
+            "Expected '{' after 'impl Transfer' header",
         )?;
         let mut methods = Vec::new();
         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
@@ -1103,7 +1155,7 @@ impl<'a> Parser<'a> {
             }
             if !self.check(&TokenType::Fn) {
                 return Err(self.error(&format!(
-                    "Expected 'fn' inside 'impl transfer' (a lowering is functions only), got {:?}",
+                    "Expected 'fn' inside 'impl Transfer' (a lowering is functions only), got {:?}",
                     self.peek().kind
                 )));
             }
@@ -1113,11 +1165,12 @@ impl<'a> Parser<'a> {
         }
         self.consume(
             &TokenType::RightBrace,
-            "Expected '}' to close 'impl transfer'",
+            "Expected '}' to close 'impl Transfer'",
         )?;
         Ok(TransferImplDecl {
             from,
             to,
+            topology,
             methods,
             doc_comment: None,
         })
@@ -1142,12 +1195,13 @@ mod tests {
 
     #[test]
     fn transfer_impl_parses_and_is_carried() {
-        // The wrapper from docs/custom_transfer_contract.md: `impl transfer A -> B { fn ... }`.
-        // The body is ordinary Vx -- that is the design's whole point -- so an ordinary function
-        // must parse inside it unchanged.
+        // The wrapper from docs/custom_transfer_contract.md:
+        // `impl Transfer<Memory::A, Memory::B> for Topology::X { fn ... }`. The body is ordinary
+        // Vx -- that is the design's whole point -- so an ordinary function must parse inside it
+        // unchanged.
         let input = r#"
 /// Fills a distinct destination, so this is the copy shape.
-impl transfer Memory::L2 -> Memory::SMEM {
+impl Transfer<Memory::L2, Memory::SMEM> for Topology::Dev {
     /// One cooperative copy loop.
     fn move_tile(n: i32) -> i32 {
         let mut i = 0;
@@ -1167,6 +1221,9 @@ impl transfer Memory::L2 -> Memory::SMEM {
         let t = &program.transfer_impls[0];
         assert_eq!(t.from, crate::syntax::MemorySpace::from_name("L2"));
         assert_eq!(t.to, crate::syntax::MemorySpace::from_name("SMEM"));
+        // The machine the lowering is for, which is the half the header used to have no
+        // room for. Without it the edge pair was the whole key, across the compilation.
+        assert_eq!(t.topology.display_name(), "Dev");
         assert_eq!(t.methods.len(), 1);
         assert_eq!(t.methods[0].name.as_ref(), "move_tile");
         // Doc comments attach at both levels, mirroring impl blocks.
@@ -1190,7 +1247,7 @@ struct Pair { a: i32 }
 impl Pair {
     fn get(x: i32) -> i32 { return x; }
 }
-impl transfer Memory::GPU_HBM -> Memory::L2 {
+impl Transfer<Memory::GPU_HBM, Memory::L2> for Topology::Dev {
     fn stage() -> i32 { return 0; }
 }
 "#;
@@ -1204,14 +1261,21 @@ impl transfer Memory::GPU_HBM -> Memory::L2 {
     }
 
     #[rstest]
-    // No arrow: the header must name an edge, not a space.
-    #[case("impl transfer Memory::L2 { fn f() -> i32 { return 0; } }")]
-    // A lowering is functions only; a stray declaration inside is an error, not skipped.
-    #[case("impl transfer Memory::A -> Memory::B { let x = 1; }")]
+    // One space, not an edge: the header names the movement, so it needs both ends.
+    #[case("impl Transfer<Memory::L2> for Topology::Dev { fn f() -> i32 { return 0; } }")]
+    // No `for` clause. A lowering is code for one machine's edge, so the machine is required
+    // -- this is the case the whole change exists to make impossible to leave out.
+    #[case("impl Transfer<Memory::A, Memory::B> { fn f() -> i32 { return 0; } }")]
+    // A topology name, not a bare identifier, after `for`.
+    #[case("impl Transfer<Memory::A, Memory::B> for Dev { fn f() -> i32 { return 0; } }")]
     // The header takes memory spaces, not bare identifiers.
-    #[case("impl transfer L2 -> SMEM { fn f() -> i32 { return 0; } }")]
+    #[case("impl Transfer<L2, SMEM> for Topology::Dev { fn f() -> i32 { return 0; } }")]
+    // A lowering is functions only; a stray declaration inside is an error, not skipped.
+    #[case("impl Transfer<Memory::A, Memory::B> for Topology::Dev { let x = 1; }")]
     // Unclosed body reaches Eof rather than looping forever.
-    #[case("impl transfer Memory::A -> Memory::B { fn f() -> i32 { return 0; }")]
+    #[case("impl Transfer<Memory::A, Memory::B> for Topology::Dev { fn f() -> i32 { return 0; }")]
+    // The old spelling is refused rather than silently reinterpreted.
+    #[case("impl transfer Memory::A -> Memory::B { fn f() -> i32 { return 0; } }")]
     fn transfer_impl_rejects_malformed_headers(#[case] input: &str) {
         let mut lexer = Lexer::new(input);
         let tokens = lexer.tokenize();
@@ -1225,7 +1289,7 @@ impl transfer Memory::GPU_HBM -> Memory::L2 {
         // a MacroCall node survives for every downstream pass to trip on (Vx#352 review finding).
         let input = r#"
 macro_rules! one { () => { 1 } }
-impl transfer Memory::L2 -> Memory::SMEM {
+impl Transfer<Memory::L2, Memory::SMEM> for Topology::Dev {
     fn move_tile() -> i32 { return one!(); }
 }
 "#;
@@ -1260,7 +1324,7 @@ impl transfer Memory::L2 -> Memory::SMEM {
         // input vanished is worse than no figure, so the weight argument loses: these are
         // copy loops, a few statements each.
         let input = r#"
-impl transfer Memory::L2 -> Memory::SMEM {
+impl Transfer<Memory::L2, Memory::SMEM> for Topology::Dev {
     fn move_tile(n: i32) -> i32 { return n; }
 }
 fn ordinary(n: i32) -> i32 { return n; }

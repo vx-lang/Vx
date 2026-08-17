@@ -1,0 +1,65 @@
+//===- transfer_impl_two_machines.vx - one edge, two machines ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// The reason `impl Transfer` carries a `for Topology::X` clause (Vx#353).
+//
+// Two parts declare the same edge, Memory::L2 -> Memory::SMEM, and fill shared
+// memory differently: Ampere has cp.async and copies without passing through
+// registers, Hopper drives it from a different engine again. Same edge name,
+// same tile, different instructions.
+//
+// Before the `for` clause a lowering was keyed on the edge pair alone, across
+// the whole compilation, so this program was a hard error -- "the edge L2 ->
+// SMEM has 2 transfer lowerings". The edge clause always lived inside a
+// `Topology { ... }` block; only the `impl` had escaped its machine. Now both
+// lowerings stand, and each names the part it is code for.
+//
+// The `for` clause is required, so this file is also the check that a lowering
+// naming a real machine that really declares the edge is accepted.
+// CHECK: main
+
+Topology Ampere {
+  memory: Memory::L2,
+  visible: [Memory::L2, Memory::SMEM],
+  transfer Memory::CPU_DRAM -> Memory::L2 : 10 GB/s,
+  transfer Memory::L2 -> Memory::SMEM copy_engine
+}
+
+Topology Hopper {
+  memory: Memory::L2,
+  visible: [Memory::L2, Memory::SMEM],
+  transfer Memory::CPU_DRAM -> Memory::L2 : 20 GB/s,
+  transfer Memory::L2 -> Memory::SMEM copy_engine
+}
+
+// Ampere: one asynchronous copy of the whole tile, waited on before the barrier.
+impl Transfer<Memory::L2, Memory::SMEM> for Topology::Ampere {
+  fn move_tile(src: &Tensor<f32, [4]>, dst: &mut Tensor<f32, [4]>) -> i32 {
+    raw::async_copy(dst, src, 0);
+    raw::async_wait();
+    raw::barrier();
+    return 0;
+  }
+}
+
+// Hopper: the same movement written as a lane-strided element loop. A different
+// body for the same edge, which is the whole point -- and it is a different
+// number of reads, which the traffic count will report without either machine
+// declaring a cost.
+impl Transfer<Memory::L2, Memory::SMEM> for Topology::Hopper {
+  fn move_tile(src: &Tensor<f32, [4]>, dst: &mut Tensor<f32, [4]>) -> i32 {
+    for i in 0..raw::extent(src) {
+      raw::store(dst, i, raw::load(src, i));
+    }
+    raw::barrier();
+    return 0;
+  }
+}
+
+fn main() -> i32 {
+  return 0;
+}

@@ -347,15 +347,81 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    /// Structural checks on transfer lowerings (`impl transfer A -> B { ... }`), E6015. Two ways
-    /// a lowering can be malformed before its body is even looked at: the same edge implemented
-    /// twice (which one is in force would be module load order -- the same ambiguity E6012 exists
-    /// to refuse), and an empty lowering (nothing to emit, so `impl transfer` would become an
-    /// inert annotation). Body checking is separate and not yet wired; this is the part that must
-    /// hold regardless of what the bodies say.
+    /// Structural checks on transfer lowerings
+    /// (`impl Transfer<Memory::A, Memory::B> for Topology::X { ... }`), E6015. Ways a lowering
+    /// can be malformed before its body is even looked at:
+    ///
+    ///   * the same edge implemented twice FOR THE SAME TOPOLOGY (which one is in force would be
+    ///     module load order -- the same ambiguity E6012 exists to refuse). Two topologies
+    ///     implementing the same edge is now the normal case, not an error;
+    ///   * an empty lowering (nothing to emit, so the `impl` would be an inert annotation);
+    ///   * a `for Topology::X` naming a topology this compilation has never heard of;
+    ///   * a topology that exists but does not declare the edge being implemented.
+    ///
+    /// The last two are new with the topology key. Before it, a lowering named no machine, so
+    /// there was nothing to check it against -- `TransferImplDecl` carried a comment saying the
+    /// edge should be matched against a topology's declared edges "(not yet wired)", and it
+    /// could not be wired, because the declaration did not say which topology to look at.
     pub fn check_transfer_impls(&mut self) {
+        // Read the topology facts first. Emitting a diagnostic needs `&mut self`, and the
+        // descriptor lookup borrows `self`, so the two cannot be interleaved.
+        let topo_facts: Vec<(bool, bool)> = self
+            .env
+            .transfer_impls
+            .iter()
+            .map(
+                |t| match self.transfer_cost_graph.descriptor(&t.topology.kind()) {
+                    Some(desc) => (
+                        true,
+                        desc.transfers
+                            .iter()
+                            .any(|e| e.from == t.from && e.to == t.to),
+                    ),
+                    None => (false, false),
+                },
+            )
+            .collect();
+        for (i, t) in self.env.transfer_impls.clone().iter().enumerate() {
+            let (topology_declared, edge_declared) = topo_facts[i];
+            if !topology_declared {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E6015,
+                    format!(
+                        "`impl Transfer<Memory::{}, Memory::{}> for Topology::{}`: no topology \
+                         named '{}' is declared in this compilation, so this lowering is code \
+                         for a machine that does not exist here",
+                        t.from.name(),
+                        t.to.name(),
+                        t.topology.display_name(),
+                        t.topology.display_name()
+                    ),
+                    None,
+                );
+            } else if !edge_declared {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E6015,
+                    format!(
+                        "`impl Transfer<Memory::{}, Memory::{}> for Topology::{}`: topology '{}' \
+                         does not declare the edge {} -> {}, so there is no movement for this \
+                         lowering to implement -- declare the edge in the `Topology` block or \
+                         implement an edge it has",
+                        t.from.name(),
+                        t.to.name(),
+                        t.topology.display_name(),
+                        t.topology.display_name(),
+                        t.from.name(),
+                        t.to.name()
+                    ),
+                    None,
+                );
+            }
+        }
         let mut seen: std::collections::HashMap<
-            (crate::syntax::MemorySpace, crate::syntax::MemorySpace),
+            (
+                crate::syntax::MemorySpace,
+                crate::syntax::MemorySpace,
+                String,
+            ),
             usize,
         > = std::collections::HashMap::new();
         for t in &self.env.transfer_impls {
@@ -370,11 +436,13 @@ impl<'a> TypeChecker<'a> {
                     self.errors.error_with_code(
                         crate::diagnostic::DiagnosticCode::E6015,
                         format!(
-                            "`impl transfer {} -> {}`: fn '{}' is generic; a lowering is \
-                             instantiated per edge, not per type, so this body could never be \
-                             instantiated -- and an uninstantiated body is never type-checked",
+                            "`impl Transfer<Memory::{}, Memory::{}> for Topology::{}`: fn '{}' is \
+                             generic; a lowering is instantiated per edge, not per type, so this \
+                             body could never be instantiated -- and an uninstantiated body is \
+                             never type-checked",
                             t.from.name(),
                             t.to.name(),
+                            t.topology.display_name(),
                             f.name
                         ),
                         None,
@@ -385,26 +453,37 @@ impl<'a> TypeChecker<'a> {
                 self.errors.error_with_code(
                     crate::diagnostic::DiagnosticCode::E6015,
                     format!(
-                        "`impl transfer {} -> {}` declares no functions; an empty lowering cannot \
-                         move anything -- give it a body or remove it",
+                        "`impl Transfer<Memory::{}, Memory::{}> for Topology::{}` declares no \
+                         functions; an empty lowering cannot move anything -- give it a body or \
+                         remove it",
                         t.from.name(),
-                        t.to.name()
+                        t.to.name(),
+                        t.topology.display_name()
                     ),
                     None,
                 );
             }
-            *seen.entry((t.from.clone(), t.to.clone())).or_insert(0) += 1;
+            *seen
+                .entry((
+                    t.from.clone(),
+                    t.to.clone(),
+                    t.topology.display_name().to_string(),
+                ))
+                .or_insert(0) += 1;
         }
-        for ((from, to), n) in seen {
+        for ((from, to, topo), n) in seen {
             if n > 1 {
                 self.errors.error_with_code(
                     crate::diagnostic::DiagnosticCode::E6015,
                     format!(
-                        "the edge {} -> {} has {} transfer lowerings; which one is in force would \
-                         be load order, so exactly one is allowed",
+                        "Topology::{} has {} lowerings for the edge {} -> {}; which one is in \
+                         force would be load order, so exactly one per machine is allowed. Two \
+                         DIFFERENT topologies implementing this edge is fine -- that is what the \
+                         `for` clause is for",
+                        topo,
+                        n,
                         from.name(),
-                        to.name(),
-                        n
+                        to.name()
                     ),
                     None,
                 );
@@ -1003,12 +1082,54 @@ impl<'a> TypeChecker<'a> {
                 // re-enters this check and matches independently. The body's own
                 // obligations (E6015/E6019/E6021/E6022) were already discharged.
                 if path.len() == 2 {
-                    if let Some(li) = self
+                    // Which machine's lowering runs here. Candidates are the lowerings for this
+                    // edge; the topology in force at the site picks among them.
+                    //
+                    // The active topology is preferred but cannot be required, because a host
+                    // edge is moved from the host: `transfer(a, Memory::GPU_HBM)` in `main` runs
+                    // with the CPU active while implementing an edge that belongs to the device.
+                    // So an unambiguous single candidate is taken as well, and only a genuine
+                    // ambiguity -- several machines implementing this edge, none of them the one
+                    // we are on -- is refused.
+                    let candidates: Vec<&crate::syntax::TransferImplDecl> = self
                         .env
                         .transfer_impls
                         .iter()
-                        .find(|li| li.from == source_mem && li.to == target_mem)
-                    {
+                        .filter(|li| li.from == source_mem && li.to == target_mem)
+                        .copied()
+                        .collect();
+                    let active = self.active_topology.display_name();
+                    let chosen = candidates
+                        .iter()
+                        .find(|li| li.topology.display_name() == active)
+                        .or(if candidates.len() == 1 {
+                            candidates.first()
+                        } else {
+                            None
+                        })
+                        .copied();
+                    if chosen.is_none() && candidates.len() > 1 {
+                        let names: Vec<String> = candidates
+                            .iter()
+                            .map(|li| li.topology.display_name().to_string())
+                            .collect();
+                        self.errors.error_with_code(
+                            crate::diagnostic::DiagnosticCode::E6015,
+                            format!(
+                                "the edge {} -> {} is implemented by {} ({}), and none of them is \
+                                 the topology in force here ({}); which lowering should run is \
+                                 ambiguous -- perform this transfer inside a `spawn on` for the \
+                                 machine that owns it",
+                                source_mem.name(),
+                                target_mem.name(),
+                                names.len(),
+                                names.join(", "),
+                                active
+                            ),
+                            None,
+                        );
+                    }
+                    if let Some(li) = chosen {
                         // EXACTLY two parameters, both tiles. A third parameter has
                         // nothing to bind to at the site: it would resolve against
                         // whatever the caller happens to have under that name and let
@@ -1166,7 +1287,11 @@ impl<'a> TypeChecker<'a> {
                                     );
                                 }
                                 _ => {
-                                    t.lowering = Some((source_mem.clone(), target_mem.clone()));
+                                    t.lowering = Some((
+                                        source_mem.clone(),
+                                        target_mem.clone(),
+                                        li.topology.display_name().to_string(),
+                                    ));
                                 }
                             }
                         }
@@ -1220,12 +1345,15 @@ impl<'a> TypeChecker<'a> {
                         // moved: that difference is the whole point -- a body that reads
                         // the source twice reports twice the reads, with nobody declaring
                         // anything (#353 A4).
-                        (Some(_), Some(_)) => {
-                            let li = self
-                                .env
-                                .transfer_impls
-                                .iter()
-                                .find(|li| li.from == source_mem && li.to == target_mem);
+                        (Some(_), Some((_, _, topo))) => {
+                            // Look up the lowering sema CHOSE, topology included. Matching on
+                            // the edge alone would count the body of whichever machine's
+                            // lowering happened to be first in the list.
+                            let li = self.env.transfer_impls.iter().find(|li| {
+                                li.from == source_mem
+                                    && li.to == target_mem
+                                    && li.topology.display_name() == *topo
+                            });
                             match li {
                                 Some(li) => {
                                     // Sub-byte elements are refused, not rounded. Rounding

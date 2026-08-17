@@ -16,7 +16,7 @@ Topology Dev {
   visible: [Memory::GPU_HBM],
   transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s relaxed
 }
-impl transfer Memory::CPU_DRAM -> Memory::GPU_HBM {
+impl Transfer<Memory::CPU_DRAM, Memory::GPU_HBM> for Topology::Dev {
   fn move_tile(src: &Tensor<f32, [2, 2]>, dst: &mut Tensor<f32, [2, 2]>) -> i32 {
     for q in 0..raw::extent(src) {
       raw::store(dst, q, raw::load(src, q));

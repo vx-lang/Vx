@@ -40,7 +40,7 @@ Topology Dev {
   transfer Memory::GPU_HBM -> Memory::SMEM
 }
 
-impl transfer Memory::GPU_HBM -> Memory::SMEM {
+impl Transfer<Memory::GPU_HBM, Memory::SMEM> for Topology::Dev {
   fn move_tile(src: &Tensor<f32, [2, 2]>, dst: &mut Tensor<f32, [2, 2]>) -> i32 {
     for i in 0..raw::extent(src) {
       // Reads the source TWICE and averages. Exact in IEEE for any value

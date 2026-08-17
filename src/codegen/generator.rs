@@ -31,10 +31,15 @@ pub struct MeliorGenerator<'c> {
     /// Declared memory spaces, keyed by space, so a `transfer` can emit the sub-space descriptor
     /// (granule/capacity/scope/parent) as IR metadata for later passes (see subspace_scheduling.md).
     pub(crate) memories: HashMap<syntax::MemorySpace, syntax::MemoryDecl>,
-    /// Transfer lowerings by edge (`impl transfer From -> To`), the single method's
-    /// body each (#353 A3). Sema records the matched edge on the `TransferExpr`;
-    /// the body is inlined at the site in place of the builtin copy.
-    pub(crate) transfer_impls: HashMap<(String, String), syntax::Function>,
+    /// Transfer lowerings by (from, to, topology) -- `impl Transfer<Memory::From,
+    /// Memory::To> for Topology::X` -- the single method's body each. Sema records the
+    /// key it chose on the `TransferExpr`; the body is inlined at the site in place of
+    /// the builtin copy.
+    ///
+    /// The topology is in the key because the edge alone does not identify a lowering:
+    /// an Ampere part and a Hopper part both declare `Memory::L2 -> Memory::SMEM` and
+    /// move it with different instructions.
+    pub(crate) transfer_impls: HashMap<(String, String, String), syntax::Function>,
     /// Declared topologies by name, so a `Pinned`/tensor value on a declared topology resolves the
     /// memory that topology actually names (`Topology SmemDev { memory: Memory::SMEM }`) when
     /// picking its address space, instead of guessing a like-named space (#258).
@@ -647,8 +652,14 @@ impl<'c> MeliorGenerator<'c> {
         }
         for li in &program.transfer_impls {
             if li.methods.len() == 1 {
-                self.transfer_impls
-                    .insert((li.from.name(), li.to.name()), li.methods[0].clone());
+                self.transfer_impls.insert(
+                    (
+                        li.from.name(),
+                        li.to.name(),
+                        li.topology.display_name().to_string(),
+                    ),
+                    li.methods[0].clone(),
+                );
             }
         }
         for module in modules.values() {
@@ -678,8 +689,14 @@ impl<'c> MeliorGenerator<'c> {
             }
             for li in &module.transfer_impls {
                 if li.methods.len() == 1 {
-                    self.transfer_impls
-                        .insert((li.from.name(), li.to.name()), li.methods[0].clone());
+                    self.transfer_impls.insert(
+                        (
+                            li.from.name(),
+                            li.to.name(),
+                            li.topology.display_name().to_string(),
+                        ),
+                        li.methods[0].clone(),
+                    );
                 }
             }
         }

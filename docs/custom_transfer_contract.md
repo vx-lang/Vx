@@ -20,11 +20,10 @@ ______________________________________________________________________
 For `let y = transfer(x, Memory::B)` where `x : Pinned(T, A)`, a lowering emits code that moves
 `x`'s bytes from `A` to `B` and yields `y : Pinned(T, B)`.
 
-A sketch — the syntax is not settled, but the shape is. `raw::*` is the primitive set defined
-later in this document:
+`raw::*` is the primitive set defined later in this document:
 
 ```
-impl transfer Memory::L2 -> Memory::SMEM {
+impl Transfer<Memory::L2, Memory::SMEM> for Topology::Ampere {
   fn move(src: &Tile<f32>, dst: &mut Tile<f32>) {
     let n = raw::extent(src);
     let mut i = raw::lane();
@@ -41,6 +40,32 @@ impl transfer Memory::L2 -> Memory::SMEM {
 The signature carries one contract from the call site: the compiler allocated `dst` with `src`'s
 shape, so `raw::extent(src) == raw::extent(dst)` is a fact the prover may assume. That is what
 makes the `store`'s bound provable from a loop guard that only mentions `n = extent(src)`.
+
+### Why the `for Topology::X` clause is required
+
+This document's first sentence says a *topology* supplies the code for one of *its* edges. The
+syntax did not say so for a while: a lowering named an edge and nothing else, and was keyed on
+that pair across the whole compilation. So the shape the fleet directory exists to describe was
+unbuildable. An Ampere part fills shared memory with `cp.async` and a Hopper part drives the same
+`Memory::L2 -> Memory::SMEM` edge differently; both machine files declare that edge for
+themselves, but only one of them could implement it, and writing the second was a hard error.
+
+The edge clause always lived inside a `Topology { ... }` block. Only the `impl` had escaped its
+machine, and naming the machine puts it back. Two obligations become checkable as a result, both
+of which had to be skipped while a lowering named no machine:
+
+- the topology it names is one this compilation actually declares;
+- that topology declares the edge being implemented, so there is a movement to implement.
+
+The second was carried on the AST as a comment for as long as the clause was missing — the edge
+should be "matched against the topology's declared edges by sema (not yet wired)". It could not
+be wired. The declaration did not say which topology to look at.
+
+Selection at a transfer site prefers the topology in force there. It cannot *require* it, because
+a host edge is driven from the host: `transfer(a, Memory::GPU_HBM)` in `main` runs with the CPU
+active while implementing an edge that belongs to the device. So a single unambiguous candidate is
+taken as well, and only a real ambiguity — several machines implementing this edge, none of them
+the one we are on — is refused.
 
 An earlier draft had the topology *declare* its lowering's properties (`effect: copy`,
 `sync: barrier`, `overhead: 0 B`). Those fields are gone, and their absence is the point: the body
@@ -216,7 +241,8 @@ An earlier draft of this document worried that letting a machine file carry real
 arbitrary code inside the trust boundary, and that C1 and C6 stop being mechanically checkable as a
 result. **That is wrong**, and getting it wrong pointed at a worse design.
 
-A lowering is written as `impl transfer Memory::A -> Memory::B { ... }` in **Vx**. Our own front
+A lowering is written as `impl Transfer<Memory::A, Memory::B> for Topology::X { ... }` in
+**Vx**. Our own front
 end parses it, type-checks it and lowers it. There is no foreign object code and no plugin
 boundary — it is more Vx, subject to every check Vx already performs. So:
 
@@ -271,7 +297,7 @@ either a bound or a declaration, and a lowering that has one should say so.
 ## The primitive set
 
 `transfer` cannot be implemented in terms of `transfer`, so a lowering needs a floor to stand on.
-This names the floor: the operations an `impl transfer` body may use that ordinary Vx code may
+This names the floor: the operations an `impl Transfer` body may use that ordinary Vx code may
 not, each with the obligation the compiler discharges at the call site (`requires`) and the
 guarantee downstream proofs rely on (`ensures`). Both are existing Vx syntax, and the prover that
 discharges them against z3 exists (`src/hir/prover.rs`). What is new is only this vocabulary.

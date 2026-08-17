@@ -269,8 +269,8 @@ pub struct MemoryDecl {
     pub doc_comment: Option<String>,
 }
 
-/// `impl transfer Memory::<From> -> Memory::<To> { fn ... }` — a transfer lowering: the code a
-/// movement across this edge emits, written in Vx and compiled by our own front end
+/// `impl Transfer<Memory::A, Memory::B> for Topology::X { fn ... }` — a transfer lowering: the
+/// code a movement across this edge emits, written in Vx and compiled by our own front end
 /// (docs/custom_transfer_contract.md).
 ///
 /// Distinct from the two existing `transfer` forms on purpose. The topology clause
@@ -278,12 +278,21 @@ pub struct MemoryDecl {
 /// expression (`transfer(x, Memory::B)`) asks for a movement. This declares HOW the movement is
 /// performed — and its `relaxed|sync` grade, its aliasing and its overhead are eventually read off
 /// the body rather than declared, which is what supersedes the edge clause's declared marker.
+///
+/// The `for Topology::X` clause is required. Without it a lowering was keyed on the edge pair
+/// alone, across the whole compilation — so an A100 and an H100 could not both implement
+/// `Memory::L2 -> Memory::SMEM` even though `cp.async` and TMA are different instructions and
+/// each machine file declares that edge for itself. The edge clause always lived inside a
+/// `Topology { ... }` block; only the `impl` had escaped its machine.
 #[derive(Debug, PartialEq, Clone)]
 pub struct TransferImplDecl {
-    /// The edge this lowering implements, `from -> to`. Matched against the topology's declared
-    /// edges by sema (not yet wired); a lowering for an edge no topology declares is meaningless.
+    /// The edge this lowering implements, `from -> to`. Checked against the declared edges of
+    /// `topology`: a lowering for an edge that topology does not declare is meaningless.
     pub from: MemorySpace,
     pub to: MemorySpace,
+    /// The machine this lowering is for. A lowering is code for one part's edge, so it names
+    /// that part; two topologies may implement the same edge differently.
+    pub topology: crate::syntax::Topology,
     /// The lowering's functions, `fn move(...)` by convention. Parsed as ordinary Vx functions,
     /// and treated as such downstream: macro-expanded, structurally checked (E6015), and
     /// type-checked like impl methods (#353 A1). Not yet emitted as code, and the `raw::`
@@ -359,6 +368,7 @@ impl Program {
                 .map(|t| TransferImplDecl {
                     from: t.from.clone(),
                     to: t.to.clone(),
+                    topology: t.topology.clone(),
                     methods: t.methods.iter().map(|f| f.clone_signature(true)).collect(),
                     doc_comment: t.doc_comment.clone(),
                 })

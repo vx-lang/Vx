@@ -2304,7 +2304,7 @@ mod gid_stream_tests {
     #[test]
     fn type_check_phase_checks_transfer_lowering_bodies() {
         let broken_lowering = r#"
-impl transfer Memory::L2 -> Memory::SMEM {
+impl Transfer<Memory::L2, Memory::SMEM> for Topology::Dev {
     fn bad(n: i32) -> i32 { let s = "hello"; return s; }
 }
 fn main() -> i32 { return 0; }

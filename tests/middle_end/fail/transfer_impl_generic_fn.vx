@@ -3,7 +3,13 @@
 // body would escape type-checking forever -- reopening the gap #353 A1 closed. Refused.
 // CHECK: E6015
 // CHECK: could never be instantiated
-impl transfer Memory::L2 -> Memory::SMEM {
+Topology Dev {
+  memory: Memory::L2,
+  visible: [Memory::L2, Memory::SMEM],
+  transfer Memory::CPU_DRAM -> Memory::L2 : 10 GB/s,
+  transfer Memory::L2 -> Memory::SMEM
+}
+impl Transfer<Memory::L2, Memory::SMEM> for Topology::Dev {
   fn stage<T>(x: T) -> T {
     return x;
   }

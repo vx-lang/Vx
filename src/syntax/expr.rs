@@ -134,11 +134,15 @@ pub struct TransferExpr {
     /// The bandwidth-derived roofline cost, filled in by sema. Cycles for a `B/cyc` hop,
     /// picoseconds for a `B/s` one — `u64` because picoseconds overflow `u32` at 4.3 ms.
     pub cost: Option<u64>,
-    /// The `impl transfer` edge sema matched for this site, when one exists and is
-    /// emittable (#353 A3): codegen inlines that lowering's body in place of the
-    /// builtin copy. Recorded as the (from, to) edge -- the lowering itself is
-    /// looked up again at emission, where the bodies live.
-    pub lowering: Option<(MemorySpace, MemorySpace)>,
+    /// The `impl Transfer` lowering sema matched for this site, when one exists and is
+    /// emittable: codegen inlines that lowering's body in place of the builtin copy.
+    /// Recorded as the (from, to, topology) key -- the lowering itself is looked up again
+    /// at emission, where the bodies live.
+    ///
+    /// The topology is part of the key because the edge alone no longer identifies a
+    /// lowering: two machines may implement `Memory::L2 -> Memory::SMEM` differently, and
+    /// the one that runs here is the one sema picked, not whichever the lookup finds first.
+    pub lowering: Option<(MemorySpace, MemorySpace, String)>,
     pub span: Span,
 }
 
