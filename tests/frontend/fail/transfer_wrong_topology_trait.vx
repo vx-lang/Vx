@@ -1,8 +1,8 @@
 //===- transfer_wrong_topology_trait.vx - Vx Compiler --------------------*- Vx -*-===//
 // RUN: not vxc %s --action print-ast 2>&1 | FileCheck %s
 
-trait Transfer {
-  fn transfer(self: CustomHostData) -> CustomHostData;
+trait Relocatable {
+  fn relocate(self: CustomHostData) -> CustomHostData;
 }
 
 struct CustomHostData {
@@ -10,8 +10,8 @@ struct CustomHostData {
   host_tensor: Pinned<Tensor<f32>, Topology::CPU>,
 }
 
-impl Transfer for CustomHostData {
-  fn transfer(self: CustomHostData) -> CustomHostData {
+impl Relocatable for CustomHostData {
+  fn relocate(self: CustomHostData) -> CustomHostData {
     let new_tensor = transfer(self.host_tensor, Memory::CPU_DRAM);
     return CustomHostData {
       id: self.id,

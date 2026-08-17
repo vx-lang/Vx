@@ -139,7 +139,7 @@ impl<'a> TypeChecker<'a> {
                             if !is_pinned_on_host && !self.speculating && !self.allow_cross_topology
                             {
                                 let mut implements_transfer = false;
-                                if let Some(impl_blocks) = self.env.impls.get("Transfer") {
+                                if let Some(impl_blocks) = self.env.impls.get("Relocatable") {
                                     for ib in impl_blocks {
                                         if self.unify_types(
                                             &ib.target_type,
@@ -154,12 +154,20 @@ impl<'a> TypeChecker<'a> {
 
                                 if implements_transfer {
                                     // The type opted into implicit movement (it `impl`s
-                                    // `Transfer`), so we insert the `.transfer()` call for the
+                                    // `Relocatable`), so we insert the `.relocate()` call for the
                                     // programmer. Surface it: a real data movement happens
                                     // silently at this use site, and the opt-in lives far away at
                                     // the type definition. Report the cost so it isn't a hidden
                                     // performance surprise (explicit-seam policy, "implicit but
-                                    // visible"). Write `{name}.transfer()` explicitly to silence.
+                                    // visible"). Write `{name}.relocate()` explicitly to silence.
+                                    //
+                                    // This trait says a value MAY move implicitly. It does not say
+                                    // how bytes move across a hardware edge -- that is
+                                    // `impl Transfer<Memory::A, Memory::B> for Topology::X`, which
+                                    // is a different question with a different key and a real
+                                    // contract behind it (docs/custom_transfer_contract.md). Both
+                                    // were spelled `Transfer` until Vx#353; the two names differed
+                                    // only by a capital letter, and this one is the unchecked one.
                                     let cost_note = match self.transfer_cost_graph.reachable(
                                         &self.active_topology,
                                         &top,
@@ -174,7 +182,7 @@ impl<'a> TypeChecker<'a> {
                                         crate::diagnostic::DiagnosticCode::W1024,
                                         format!(
                                             "implicit transfer of '{}' to {:?} inserted here via its \
-                                             `Transfer` impl{}; write `{}.transfer()` explicitly to silence",
+                                             `Relocatable` impl{}; write `{}.relocate()` explicitly to silence",
                                             name, self.active_topology, cost_note, name
                                         ),
                                         Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
@@ -183,7 +191,7 @@ impl<'a> TypeChecker<'a> {
                                     let _active_mem = self
                                         .transfer_cost_graph
                                         .default_memory_for(&self.active_topology);
-                                    let method_name = crate::symbol::Symbol::from("transfer");
+                                    let method_name = crate::symbol::Symbol::from("relocate");
                                     let method_call =
                                         Expr::MethodCall(crate::syntax::expr::MethodCallExpr {
                                             base: Box::new(expr.clone()),

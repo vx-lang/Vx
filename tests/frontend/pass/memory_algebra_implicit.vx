@@ -1,8 +1,8 @@
 //===- memory_algebra_implicit.vx - Vx Compiler --------------------------*- Vx -*-===//
 // RUN: vxc %s --action print-ast 2>&1 | FileCheck %s
 
-trait Transfer {
-  fn transfer(self: CustomHostData) -> CustomHostData;
+trait Relocatable {
+  fn relocate(self: CustomHostData) -> CustomHostData;
 }
 
 struct CustomHostData {
@@ -10,8 +10,8 @@ struct CustomHostData {
   host_tensor: Tensor<f32>,
 }
 
-impl Transfer for CustomHostData {
-  fn transfer(self: CustomHostData) -> CustomHostData {
+impl Relocatable for CustomHostData {
+  fn relocate(self: CustomHostData) -> CustomHostData {
     let new_tensor = transfer(self.host_tensor, Memory::NPU_HBM);
     // Cast to avoid type mismatch
     return self;
@@ -31,4 +31,4 @@ fn main() -> i32 {
 }
 
 // CHECK: Function: main
-// CHECK: name: "CustomHostData$transfer"
+// CHECK: name: "CustomHostData$relocate"

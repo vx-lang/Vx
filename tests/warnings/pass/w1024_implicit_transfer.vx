@@ -1,6 +1,10 @@
-// W1024: a value whose type `impl`s `Transfer` is accessed across a topology
-// boundary, so the compiler implicitly inserts `.transfer()` -- a real data
+// W1024: a value whose type `impl`s `Relocatable` is accessed across a topology
+// boundary, so the compiler implicitly inserts `.relocate()` -- a real data
 // movement surfaced at the use site with its cost.
+//
+// `Relocatable` says this value MAY move implicitly. It is not the same thing as
+// `impl Transfer<Memory::A, Memory::B> for Topology::X`, which says HOW bytes cross
+// a hardware edge. Both were spelled `Transfer` before Vx#353.
 // WARN: W1024
 // WARN: implicit transfer of 'm_host'
 
@@ -8,8 +12,8 @@ struct MyModel {
   weights: Tensor<f32>,
 }
 
-impl Transfer for MyModel {
-  fn transfer(self: MyModel) -> MyModel {
+impl Relocatable for MyModel {
+  fn relocate(self: MyModel) -> MyModel {
     return self;
   }
 }

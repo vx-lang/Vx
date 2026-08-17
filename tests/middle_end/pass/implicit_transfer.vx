@@ -11,8 +11,8 @@ struct MyModel {
   weights: Tensor<f32>,
 }
 
-impl Transfer for MyModel {
-  fn transfer(self: MyModel) -> MyModel {
+impl Relocatable for MyModel {
+  fn relocate(self: MyModel) -> MyModel {
     return self;
   }
 }

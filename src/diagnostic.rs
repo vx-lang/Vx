@@ -80,9 +80,14 @@ pub enum DiagnosticCode {
     W1022,
     /// Spawn on Topology::Current (no-op)
     W1023,
-    /// Implicit cross-topology transfer inserted via a `Transfer` impl (a real data
+    /// Implicit cross-topology transfer inserted via a `Relocatable` impl (a real data
     /// movement happens silently at the use site; write the transfer explicitly to
     /// silence). See docs/discussions/brainstorming/hardware_monad_topology.md.
+    ///
+    /// `Relocatable` answers "may this value move implicitly?" and is keyed on a user
+    /// type. That is a different question from "what code moves bytes across this
+    /// hardware edge?", which is `impl Transfer<Memory::A, Memory::B> for Topology::X`.
+    /// Both were called `Transfer` before Vx#353.
     W1024,
     /// Use of a user-defined topology with no registered descriptor (not declared via
     /// `Topology <Name> { ... }` and not registered by a plugin). Often a typo of a
