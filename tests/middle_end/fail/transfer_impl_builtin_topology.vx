@@ -1,0 +1,29 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// A lowering for a BUILT-IN topology. It is refused, and the reason is specific:
+// built-in descriptors carry no transfer edges of their own (their edges live in
+// the cost graph), so there is nothing on `Topology::NPU[0]` for a body to
+// implement, and no way for a program to add one.
+//
+// This gets its own message rather than falling into "topology does not declare
+// the edge", because that message ends with "declare the edge in the `Topology`
+// block" -- advice a built-in cannot take. The rule is that a lowering is for a
+// machine written down in source, which is also the design's intent: a new part
+// is a new topology file (Vx#353).
+//
+// Consulting the cost graph for built-in edges instead would be worse: the graph
+// is flat and merged across every topology, so any machine could then claim any
+// edge another machine declared.
+// CHECK: E6015
+// CHECK: is a built-in topology
+impl Transfer<Memory::CPU_DRAM, Memory::NPU_HBM> for Topology::NPU[0] {
+  fn move_tile(src: &Tensor<f32, [4]>, dst: &mut Tensor<f32, [4]>) -> i32 {
+    for i in 0..raw::extent(src) {
+      raw::store(dst, i, raw::load(src, i));
+    }
+    raw::barrier();
+    return 0;
+  }
+}
+fn main() -> i32 {
+  return 0;
+}

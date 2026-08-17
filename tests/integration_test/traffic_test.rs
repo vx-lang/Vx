@@ -317,3 +317,113 @@ fn a_comptime_branch_is_counted_as_the_arm_that_survives() {
         "a branch the compiler already resolved is exactly known:\n{route}"
     );
 }
+
+/// Two machines declare the same edge and move it differently. Which lowering
+/// runs is decided by the topology in force at the site -- and the reported
+/// traffic is what says which one ran, because the counter reads the body that
+/// was chosen.
+///
+/// This program was a hard error until the `for Topology::X` clause existed
+/// (Vx#353): a lowering was keyed on the edge pair alone, so the second
+/// `Memory::GPU_HBM -> Memory::SMEM` implementation in a compilation was
+/// refused no matter which part it was written for. That is the shape the
+/// fleet directory is built to describe -- Ampere fills shared memory with
+/// cp.async, Hopper with a different engine -- so it had to become writable.
+///
+/// The two bodies compute a bit-identical answer (x + x halved is exact in
+/// IEEE for any value), so nothing but the byte count distinguishes them. A
+/// selection bug that took the first candidate rather than the active
+/// topology's would report 32 where this asserts 16.
+fn two_machines(active: &str) -> String {
+    let spaces = "\
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+}
+Memory SMEM {
+  within: Memory::GPU_HBM, capacity: 228 KiB, bandwidth: 128 B/cyc,
+  granule: 1 KiB, managed: explicit, scope: sm
+}
+Topology Thrifty {
+  arch: nvptx64,
+  memory: Memory::GPU_HBM,
+  visible: [Memory::GPU_HBM, Memory::SMEM],
+  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s,
+  transfer Memory::GPU_HBM -> Memory::SMEM
+}
+Topology Wasteful {
+  arch: nvptx64,
+  memory: Memory::GPU_HBM,
+  visible: [Memory::GPU_HBM, Memory::SMEM],
+  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s,
+  transfer Memory::GPU_HBM -> Memory::SMEM
+}
+impl Transfer<Memory::GPU_HBM, Memory::SMEM> for Topology::Thrifty {
+  fn move_tile(src: &Tensor<f32, [2, 2]>, dst: &mut Tensor<f32, [2, 2]>) -> i32 {
+    for i in 0..raw::extent(src) {
+      raw::store(dst, i, raw::load(src, i));
+    }
+    raw::barrier();
+    return 0;
+  }
+}
+impl Transfer<Memory::GPU_HBM, Memory::SMEM> for Topology::Wasteful {
+  fn move_tile(src: &Tensor<f32, [2, 2]>, dst: &mut Tensor<f32, [2, 2]>) -> i32 {
+    for i in 0..raw::extent(src) {
+      raw::store(dst, i, (raw::load(src, i) + raw::load(src, i)) * 0.5);
+    }
+    raw::barrier();
+    return 0;
+  }
+}
+";
+    format!(
+        "{spaces}
+fn main() -> i32 {{
+  let mut a = Tensor<f32>([ 2, 2 ]);
+  let mut o = Tensor<f32>([ 2, 2 ]);
+  for i in 0..2 {{
+    for d in 0..2 {{
+      a[i][d] = ((i + d) as f32) * 0.5;
+      o[i][d] = 0.0;
+    }}
+  }}
+  let ad = transfer(a, Memory::GPU_HBM);
+  let mut od = transfer(o, Memory::GPU_HBM);
+  spawn on(Topology::{active}) {{
+    let tile = transfer(ad, Memory::SMEM);
+    for i in 0..2 {{
+      for d in 0..2 {{
+        od[i][d] = tile[i][d] * 2.0;
+      }}
+    }}
+  }}
+  let home = transfer(od, Memory::CPU_DRAM);
+  return 0;
+}}
+"
+    )
+}
+
+#[test]
+fn the_active_topology_picks_among_lowerings_for_one_edge() {
+    let thrifty = smem_route(&record_source("sel_thrifty", &two_machines("Thrifty")));
+    assert!(
+        thrifty.contains("{\"space\": \"GPU_HBM\", \"read_bytes\": 16, \"written_bytes\": 0}"),
+        "on Thrifty the single-read body must be the one counted:\n{thrifty}"
+    );
+
+    let wasteful = smem_route(&record_source("sel_wasteful", &two_machines("Wasteful")));
+    assert!(
+        wasteful.contains("{\"space\": \"GPU_HBM\", \"read_bytes\": 32, \"written_bytes\": 0}"),
+        "on Wasteful the double-read body must be the one counted:\n{wasteful}"
+    );
+
+    // Same tile, same edge, same declared bandwidths, same answer. Only the
+    // machine differs, and only the count reports it.
+    assert!(
+        thrifty.contains("{\"space\": \"SMEM\", \"read_bytes\": 0, \"written_bytes\": 16}")
+            && wasteful.contains("{\"space\": \"SMEM\", \"read_bytes\": 0, \"written_bytes\": 16}"),
+        "both machines write the same tile:\nthrifty {thrifty}\nwasteful {wasteful}"
+    );
+}

@@ -15,6 +15,20 @@
 
 use super::super::*;
 
+/// How much standing the topology a transfer lowering names has in this compilation. The three
+/// cases need different diagnostics, because only one of them is fixable by editing an edge
+/// list: a built-in topology has no edge list to edit (`builtin_descriptors` gives every
+/// built-in `transfers: Vec::new()`, because their edges live in the cost graph instead).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TopologyStanding {
+    /// Declared in source by a `Topology <Name> { ... }` block, so it has its own edge list.
+    Declared,
+    /// A built-in topology. It exists, but declares no edges of its own.
+    BuiltIn,
+    /// This compilation has never heard of it.
+    Unknown,
+}
+
 impl<'a> TypeChecker<'a> {
     /// Best-effort label for the buffer crossing a seam, taken from the transferred
     /// operand (an identifier, a borrow of one, or the base of a chained transfer).
@@ -365,53 +379,80 @@ impl<'a> TypeChecker<'a> {
     pub fn check_transfer_impls(&mut self) {
         // Read the topology facts first. Emitting a diagnostic needs `&mut self`, and the
         // descriptor lookup borrows `self`, so the two cannot be interleaved.
-        let topo_facts: Vec<(bool, bool)> = self
+        let topo_facts: Vec<(TopologyStanding, bool)> = self
             .env
             .transfer_impls
             .iter()
-            .map(
-                |t| match self.transfer_cost_graph.descriptor(&t.topology.kind()) {
-                    Some(desc) => (
-                        true,
-                        desc.transfers
+            .map(|t| {
+                // Source-declared topologies only. A BUILT-IN topology carries
+                // `transfers: Vec::new()` -- its edges live in `TransferCostGraph::default()`
+                // rather than on its descriptor -- so there is nothing on it to implement, and
+                // no way for a program to add one. Consulting the cost graph instead is not the
+                // fix: the graph is flat and merged across every topology, so any machine could
+                // then claim any edge another machine declared, which is exactly the conflation
+                // the topology key removes.
+                let declared = self
+                    .env
+                    .topologies
+                    .values()
+                    .find(|d| d.name.as_ref() == t.topology.display_name());
+                match declared {
+                    Some(d) => (
+                        TopologyStanding::Declared,
+                        d.descriptor
+                            .transfers
                             .iter()
                             .any(|e| e.from == t.from && e.to == t.to),
                     ),
-                    None => (false, false),
-                },
-            )
+                    None if self
+                        .transfer_cost_graph
+                        .descriptor(&t.topology.kind())
+                        .is_some() =>
+                    {
+                        (TopologyStanding::BuiltIn, false)
+                    }
+                    None => (TopologyStanding::Unknown, false),
+                }
+            })
             .collect();
         for (i, t) in self.env.transfer_impls.clone().iter().enumerate() {
-            let (topology_declared, edge_declared) = topo_facts[i];
-            if !topology_declared {
+            let (standing, edge_declared) = topo_facts[i];
+            let header = format!(
+                "`impl Transfer<Memory::{}, Memory::{}> for Topology::{}`",
+                t.from.name(),
+                t.to.name(),
+                t.topology.display_name()
+            );
+            let message = match standing {
+                TopologyStanding::Unknown => Some(format!(
+                    "{header}: no topology named '{}' is declared in this compilation, so this \
+                     lowering is code for a machine that does not exist here",
+                    t.topology.display_name()
+                )),
+                TopologyStanding::BuiltIn => Some(format!(
+                    "{header}: '{}' is a built-in topology, and built-in topologies declare no \
+                     edges of their own -- there is nothing here for a lowering to implement. \
+                     Write the machine as a `Topology {} {{ ... transfer {} -> {} }}` \
+                     declaration and implement that",
+                    t.topology.display_name(),
+                    t.topology.display_name(),
+                    t.from.name(),
+                    t.to.name()
+                )),
+                TopologyStanding::Declared if !edge_declared => Some(format!(
+                    "{header}: topology '{}' does not declare the edge {} -> {}, so there is no \
+                     movement for this lowering to implement -- declare the edge in the \
+                     `Topology` block or implement an edge it has",
+                    t.topology.display_name(),
+                    t.from.name(),
+                    t.to.name()
+                )),
+                TopologyStanding::Declared => None,
+            };
+            if let Some(message) = message {
                 self.errors.error_with_code(
                     crate::diagnostic::DiagnosticCode::E6015,
-                    format!(
-                        "`impl Transfer<Memory::{}, Memory::{}> for Topology::{}`: no topology \
-                         named '{}' is declared in this compilation, so this lowering is code \
-                         for a machine that does not exist here",
-                        t.from.name(),
-                        t.to.name(),
-                        t.topology.display_name(),
-                        t.topology.display_name()
-                    ),
-                    None,
-                );
-            } else if !edge_declared {
-                self.errors.error_with_code(
-                    crate::diagnostic::DiagnosticCode::E6015,
-                    format!(
-                        "`impl Transfer<Memory::{}, Memory::{}> for Topology::{}`: topology '{}' \
-                         does not declare the edge {} -> {}, so there is no movement for this \
-                         lowering to implement -- declare the edge in the `Topology` block or \
-                         implement an edge it has",
-                        t.from.name(),
-                        t.to.name(),
-                        t.topology.display_name(),
-                        t.topology.display_name(),
-                        t.from.name(),
-                        t.to.name()
-                    ),
+                    message,
                     None,
                 );
             }

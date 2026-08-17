@@ -539,10 +539,11 @@ impl<'a> TypeChecker<'a> {
 
             if uses_raw && declaring.is_empty() {
                 self.errors.push_warning(format!(
-                    "impl transfer {} -> {} matches no declared topology edge; the lowering \
-                     is carried but nothing can execute it",
+                    "`impl Transfer<Memory::{}, Memory::{}> for Topology::{}` matches no declared \
+                     topology edge; the lowering is carried but nothing can execute it",
                     t.from.name(),
-                    t.to.name()
+                    t.to.name(),
+                    t.topology.display_name()
                 ));
             }
             if uses_raw {

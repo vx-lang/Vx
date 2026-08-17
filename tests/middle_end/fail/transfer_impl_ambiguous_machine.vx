@@ -1,0 +1,55 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// Two machines implement the host edge, and the transfer sits on the host, so
+// neither is the topology in force. Selection prefers the active topology and
+// falls back to a single unambiguous candidate; with two candidates and no
+// active match there is nothing left to decide it, so it is refused rather than
+// resolved by declaration order (Vx#353).
+//
+// The fallback exists because a host edge really is driven from the host: with
+// only ONE machine declaring it, `transfer(a, Memory::GPU_HBM)` in `main` must
+// still find that machine's lowering. This is the case where the fallback runs
+// out, not a case where it is wrong.
+// CHECK: E6015
+// CHECK: none of them is the topology in force here
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+}
+Topology A {
+  memory: Memory::GPU_HBM,
+  visible: [Memory::GPU_HBM],
+  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s
+}
+Topology B {
+  memory: Memory::GPU_HBM,
+  visible: [Memory::GPU_HBM],
+  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s
+}
+impl Transfer<Memory::CPU_DRAM, Memory::GPU_HBM> for Topology::A {
+  fn move_tile(src: &Tensor<f32, [2, 2]>, dst: &mut Tensor<f32, [2, 2]>) -> i32 {
+    for i in 0..raw::extent(src) {
+      raw::store(dst, i, raw::load(src, i));
+    }
+    raw::barrier();
+    return 0;
+  }
+}
+impl Transfer<Memory::CPU_DRAM, Memory::GPU_HBM> for Topology::B {
+  fn move_tile(src: &Tensor<f32, [2, 2]>, dst: &mut Tensor<f32, [2, 2]>) -> i32 {
+    for i in 0..raw::extent(src) {
+      raw::store(dst, i, raw::load(src, i));
+    }
+    raw::barrier();
+    return 0;
+  }
+}
+fn main() -> i32 {
+  let mut a = Tensor<f32>([ 2, 2 ]);
+  for i in 0..2 {
+    for d in 0..2 {
+      a[i][d] = 1.0;
+    }
+  }
+  let ad = transfer(a, Memory::GPU_HBM);
+  return 0;
+}
