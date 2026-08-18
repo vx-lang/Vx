@@ -923,25 +923,151 @@ fn an_unrecognised_construct_that_indexes_is_refused() {
     );
 }
 
-// NOT COVERED, deliberately and visibly: the half of the catch-all that
-// `contains_index` alone does not reach -- a construct that hands a placed
-// tensor somewhere opaque WITHOUT indexing it. The guard exists and was
-// verified by hand (an array literal `[ad]` and a struct initializer holding a
-// placed field both produce `traffic: null` with "mentions a placed tensor"),
-// but neither can be a test here, because neither program COMPILES today:
-//
-//   * `let arr = [ ad ];`      crashes codegen with an internal error
-//                              (Option::unwrap on None, src/codegen/lower/expr.rs). Vx#354
-//   * `let h = S { t: ad };`   is rejected because a `Pinned<_, Topology::GPU[0]>`
-//     `fn f(t: Pinned<...>)`   ANNOTATION never unifies with the type `transfer`
-//                              produces: the topology index carries `ty: Some(I32)`
-//                              when written down and `ty: None` when inferred. Vx#355
-//
-// Both are pre-existing compiler defects unrelated to traffic, and the second
-// one is why the call-opacity guard also had no compiling test -- which is how
-// that guard came to be disabled without this suite noticing. Recorded here
-// rather than left silent: an uncovered guard that nobody has written down is
-// the exact shape of the last one.
+/// The opaque-handoff guard (`mentions_any`): a construct the walker does not
+/// recognise that hands a placed tensor somewhere WITHOUT indexing it. This test
+/// was impossible to write until this campaign's own fixes -- the array-literal
+/// form crashed codegen (#354) and the struct form needed a Pinned annotation to
+/// unify (#355). Both fixed; the "uncoverable" note this replaces is retired.
+///
+/// The guard family's history is the reason for the test: its call-opacity
+/// sibling shipped disabled (`let hit = false && ...`) with a green suite,
+/// because its only test did not compile.
+#[test]
+fn an_unrecognised_construct_that_hands_off_a_placed_tensor_is_refused() {
+    let src = "\
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s
+}
+struct Holder {
+  t: Pinned<Tensor<f32, [2, 2]>, Topology::GPU[0]>,
+}
+fn main() -> i32 {
+  let mut a = Tensor<f32>([ 2, 2 ]);
+  a[0][0] = 1.0;
+  let ad = transfer(a, Memory::GPU_HBM);
+  spawn on(Topology::GPU) {
+    let h = Holder { t: ad };
+  }
+  return 0;
+}
+";
+    let region = spawn_region(&record_source("region_handoff", src), "main");
+    assert!(
+        region.contains("\"traffic\": null") && region.contains("mentions a placed tensor"),
+        "a struct initializer swallowing a placed tensor is a handoff the counter \
+         cannot follow:\n{region}"
+    );
+}
+
+/// The codegen review found three ways a placed tensor slipped past the call
+/// guard or the binding resolver and produced `traffic: [], exact: true` -- an
+/// exact-zero claim while the kernel read device memory. Each gets its own test,
+/// asserting the corrected verdict.
+///
+/// A dereferenced reference is still the tensor: `peek(*r)` where `r = &ad`.
+#[test]
+fn a_placed_tensor_passed_through_a_dereference_is_refused() {
+    let src = "\
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s
+}
+fn peek(t: Pinned<Tensor<f32, [2, 2]>, Topology::GPU[0]>) -> i32 {
+  return 0;
+}
+fn main() -> i32 {
+  let mut a = Tensor<f32>([ 2, 2 ]);
+  a[0][0] = 1.0;
+  let ad = transfer(a, Memory::GPU_HBM);
+  spawn on(Topology::GPU) {
+    let r = &ad;
+    let z = peek(*r);
+  }
+  return 0;
+}
+";
+    let region = spawn_region(&record_source("region_deref_arg", src), "main");
+    assert!(
+        region.contains("\"traffic\": null") && region.contains("placed tensor to a call"),
+        "*r IS ad; unwrapping the reference must not launder the handoff:\n{region}"
+    );
+}
+
+/// A placed STRUCT FIELD passed to a call: `h` is not placed, `h.t` is. The
+/// classifier resolves the member chain through the struct environment, so a
+/// scalar field (`f(cfg.max)`) stays legal while a placed one refuses.
+#[test]
+fn a_placed_struct_field_passed_to_a_call_is_refused() {
+    let src = "\
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s
+}
+struct Holder {
+  t: Pinned<Tensor<f32, [2, 2]>, Topology::GPU[0]>,
+}
+fn peek(t: Pinned<Tensor<f32, [2, 2]>, Topology::GPU[0]>) -> i32 {
+  return 0;
+}
+fn main() -> i32 {
+  let mut a = Tensor<f32>([ 2, 2 ]);
+  a[0][0] = 1.0;
+  let ad = transfer(a, Memory::GPU_HBM);
+  let h = Holder { t: ad };
+  spawn on(Topology::GPU) {
+    let z = peek(h.t);
+  }
+  return 0;
+}
+";
+    let region = spawn_region(&record_source("region_member_arg", src), "main");
+    assert!(
+        region.contains("\"traffic\": null") && region.contains("placed tensor to a call"),
+        "the field is placed even though the struct is not:\n{region}"
+    );
+}
+
+/// A binding initialized by a CALL that returns a placed tensor. The initializer
+/// form is opaque to the resolver, but at the region's top level the checker has
+/// already typed the binding and its scope is still live -- so this COUNTS,
+/// which is strictly better than refusing: 4 elements x 4 B read once each.
+#[test]
+fn a_call_returned_placed_binding_is_counted_from_its_checked_type() {
+    let src = "\
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s
+}
+fn pick() -> Pinned<Tensor<f32, [2, 2]>, Topology::GPU[0]> {
+  let mut a = Tensor<f32>([ 2, 2 ]);
+  a[0][0] = 1.0;
+  let ad = transfer(a, Memory::GPU_HBM);
+  return ad;
+}
+fn main() -> i32 {
+  let mut s : f32 = 0.0;
+  spawn on(Topology::GPU) {
+    let t = pick();
+    for i in 0..2 {
+      for d in 0..2 {
+        s = s + t[i][d];
+      }
+    }
+  }
+  return 0;
+}
+";
+    let region = spawn_region(&record_source("region_callret", src), "main");
+    assert!(
+        region.contains(
+            "{\"buffer\": \"t\", \"space\": \"GPU_HBM\", \"read_bytes\": 16, \
+             \"written_bytes\": 0}"
+        ),
+        "the binding's checked type says GPU_HBM, and the loop reads it once per \
+         element -- before the fix this region published traffic: [] exact:true:\n{region}"
+    );
+}
 
 /// Sub-byte elements are refused rather than rounded up, in the REGION counter
 /// as well as the lowering one. Rounding i4 to a byte made a faithful copy

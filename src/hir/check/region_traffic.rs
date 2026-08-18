@@ -150,14 +150,9 @@ fn contains_index(e: &Expr) -> bool {
 /// Same `Debug`-based reasoning as `contains_index`, and the same error direction: it can only
 /// over-refuse. A name is matched as a quoted token so that `a` does not match `abc`.
 ///
-/// NOT covered by a test, and that is recorded rather than hidden. Verified by hand -- an array
-/// literal `[ad]` and a struct initializer holding a placed field both refuse here -- but
-/// neither program compiles today: the first crashes codegen (Vx#354), and the second hits the same
-/// type-equality defect that stops any `Pinned<_, Topology::GPU[0]>` ANNOTATION from matching
-/// what `transfer` produces (the topology index carries `ty: Some(I32)` written down and
-/// `ty: None` inferred, Vx#355). Both are pre-existing and unrelated to traffic. The second is also
-/// why the call-opacity guard below had no compiling test, which is how that guard came to be
-/// disabled without the suite noticing. See tests/integration_test/traffic_test.rs.
+/// Covered since the campaign's own #354/#355 fixes unblocked the programs that reach it
+/// (`an_unrecognised_construct_that_hands_off_a_placed_tensor_is_refused`); an earlier note
+/// here recorded it as uncoverable, which was true only until those landed.
 fn mentions_any(e: &Expr, names: impl Iterator<Item = String>) -> bool {
     let rendered = format!("{e:?}");
     names
@@ -350,7 +345,7 @@ impl<'a> TypeChecker<'a> {
         let mut acc = RegionAcc::default();
         let mut exact = true;
         let mut binds = Bindings::new();
-        self.region_stmts(stmts, 1, &mut acc, &mut exact, outer, &mut binds)?;
+        self.region_stmts(stmts, 1, &mut acc, &mut exact, outer, &mut binds, true)?;
         if let Some(r) = ret {
             self.region_expr(r, 1, &mut acc, &mut exact, outer, &mut binds)?;
         }
@@ -404,6 +399,7 @@ impl<'a> TypeChecker<'a> {
         exact: &mut bool,
         outer: &PlacedMap,
         binds: &mut Bindings,
+        top_level: bool,
     ) -> Result<(), String> {
         for s in stmts {
             match s {
@@ -413,7 +409,63 @@ impl<'a> TypeChecker<'a> {
                     // attributed to the right space -- and so a scratch tile declared in the
                     // body is remembered as unplaced rather than resolved against an outer
                     // name that happens to match.
-                    let placed = self.region_binding_placed(&l.expr, outer, binds);
+                    //
+                    // An initializer the resolver does not recognise (a call, an if-, a
+                    // match-expression) can still RETURN a placed tensor, and calling that
+                    // "unplaced" published exact-zero traffic for every read through the
+                    // binding (found by the codegen review). At the region's top level the
+                    // checker has already typed the binding and its scope is still live, so
+                    // its answer is authoritative. In a nested block that scope is gone by
+                    // walk time and a name lookup could hit an OUTER same-name binding, so
+                    // the honest verdict is Err -- uncountable, with a reason -- not a guess
+                    // in either direction.
+                    let placed = self
+                        .region_binding_placed(&l.expr, outer, binds)
+                        .or_else(|| {
+                            if !Self::init_can_carry_placement(&l.expr) {
+                                return None;
+                            }
+                            // A type annotation settles it wherever the binding lives: an
+                            // annotated-unplaced `let m_new : f32 = if ...` is provably not a
+                            // tensor, nested or not, and an annotated-placed one carries its
+                            // space on its face. Without this, every scalar if-expression
+                            // binding inside a loop was refused -- which took the flash
+                            // fixture's count from exact to absent, the wrong direction of
+                            // honest.
+                            if let Some(ann) = &l.ty_ann {
+                                return match self.placed_space(ann) {
+                                    Some(space) => Some(match self.region_elem_bytes(ann) {
+                                        Ok(elem) => Ok((space, elem)),
+                                        Err(why) => Err(why),
+                                    }),
+                                    None => None,
+                                };
+                            }
+                            if top_level {
+                                match self.lookup(l.name.as_ref()) {
+                                    Some((ty, _)) => match self.placed_space(ty) {
+                                        Some(space) => {
+                                            let ty = ty.clone();
+                                            Some(match self.region_elem_bytes(&ty) {
+                                                Ok(elem) => Ok((space, elem)),
+                                                Err(why) => Err(why),
+                                            })
+                                        }
+                                        None => None,
+                                    },
+                                    None => {
+                                        Some(Err("a region binding's type could not be resolved"
+                                            .to_string()))
+                                    }
+                                }
+                            } else {
+                                Some(Err(
+                                    "a nested region binding is initialized by an expression \
+                                     this counter cannot resolve"
+                                        .to_string(),
+                                ))
+                            }
+                        });
                     binds.insert(l.name.as_ref().to_string(), placed);
                 }
                 Statement::Return(r) => {
@@ -463,7 +515,7 @@ impl<'a> TypeChecker<'a> {
                     // must not leak out of the loop.
                     let mut inner = binds.clone();
                     inner.insert(fl.iter.clone(), None);
-                    self.region_stmts(&fl.body, next, acc, exact, outer, &mut inner)?;
+                    self.region_stmts(&fl.body, next, acc, exact, outer, &mut inner, false)?;
                 }
                 Statement::Loop(_) => {
                     return Err(
@@ -491,6 +543,22 @@ impl<'a> TypeChecker<'a> {
             }
         }
         Ok(())
+    }
+
+    /// Can this initializer form RETURN a placed tensor that `region_binding_placed` does not
+    /// see? Calls and branch expressions can; literals and arithmetic over scalars cannot
+    /// (a placed tensor inside them is caught by the walk of the expression itself).
+    fn init_can_carry_placement(init: &Expr) -> bool {
+        matches!(
+            init,
+            Expr::FunctionCall(_)
+                | Expr::MethodCall(_)
+                | Expr::IndirectCall(_)
+                | Expr::If(_)
+                | Expr::Match(_)
+                | Expr::SpawnOn(_)
+                | Expr::MemberAccess(_)
+        )
     }
 
     /// What a `let` initializer places its name in, or `None` for unplaced. Only the forms
@@ -640,7 +708,7 @@ impl<'a> TypeChecker<'a> {
                         };
                         if let Some(b) = block {
                             let mut inner = binds.clone();
-                            self.region_stmts(b, mult, acc, exact, outer, &mut inner)?;
+                            self.region_stmts(b, mult, acc, exact, outer, &mut inner, false)?;
                         }
                         return Ok(());
                     }
@@ -654,11 +722,20 @@ impl<'a> TypeChecker<'a> {
                     exact,
                     outer,
                     &mut then_binds,
+                    false,
                 )?;
                 let mut else_acc = acc.clone();
                 if let Some(eb) = &ifx.else_block {
                     let mut else_binds = binds.clone();
-                    self.region_stmts(eb, mult, &mut else_acc, exact, outer, &mut else_binds)?;
+                    self.region_stmts(
+                        eb,
+                        mult,
+                        &mut else_acc,
+                        exact,
+                        outer,
+                        &mut else_binds,
+                        false,
+                    )?;
                 }
                 // Inexact only when the arms DISAGREE: a branch whose arms move identical
                 // bytes has one answer, and flagging it would differ from the same program
@@ -676,7 +753,15 @@ impl<'a> TypeChecker<'a> {
                 for arm in &m.arms {
                     let mut arm_acc = entry.clone();
                     let mut arm_binds = binds.clone();
-                    self.region_stmts(&arm.body, mult, &mut arm_acc, exact, outer, &mut arm_binds)?;
+                    self.region_stmts(
+                        &arm.body,
+                        mult,
+                        &mut arm_acc,
+                        exact,
+                        outer,
+                        &mut arm_binds,
+                        false,
+                    )?;
                     outcomes.push(arm_acc);
                 }
                 if outcomes.windows(2).any(|w| w[0] != w[1]) {
@@ -691,7 +776,7 @@ impl<'a> TypeChecker<'a> {
             }
             Expr::UnsafeBlock(u) => {
                 let mut inner = binds.clone();
-                self.region_stmts(&u.stmts, mult, acc, exact, outer, &mut inner)?;
+                self.region_stmts(&u.stmts, mult, acc, exact, outer, &mut inner, false)?;
                 if let Some(r) = &u.ret {
                     self.region_expr(r, mult, acc, exact, outer, &mut inner)?;
                 }
@@ -699,7 +784,7 @@ impl<'a> TypeChecker<'a> {
             }
             Expr::ComptimeBlock(c) => {
                 let mut inner = binds.clone();
-                self.region_stmts(&c.stmts, mult, acc, exact, outer, &mut inner)?;
+                self.region_stmts(&c.stmts, mult, acc, exact, outer, &mut inner, false)?;
                 if let Some(r) = &c.ret {
                     self.region_expr(r, mult, acc, exact, outer, &mut inner)?;
                 }
@@ -780,29 +865,136 @@ impl<'a> TypeChecker<'a> {
         outer: &PlacedMap,
         binds: &Bindings,
     ) -> Result<(), String> {
-        let placed = |e: &Expr| -> bool {
+        // Three-valued per argument: definitely placed (refuse, naming the tensor),
+        // definitely not (fine), or unresolvable (refuse too, with its own reason -- an
+        // argument this walk cannot classify could be a placed tensor, and "could be" is
+        // enough, because the failure being prevented is a silent exact-zero).
+        //
+        // The peel loop covers every wrapper an argument can put around a name:
+        // `f(ad)`, `f(ad[0])`, `f(&ad)`, and -- found by the codegen review publishing
+        // exact-zero traffic -- `f(*r)` where `r = &ad`, and `f(h.t)` where the FIELD is
+        // placed even though `h` is not. Members resolve through the struct environment;
+        // a chain that resolves to a scalar or unplaced tensor is legitimately fine
+        // (`f(cfg.max)` must not be refused as "a placed tensor").
+        enum Arg {
+            Placed,
+            NotPlaced,
+            Unresolvable,
+        }
+        let classify = |e: &Expr| -> Arg {
             let mut cur = e;
             loop {
                 match cur {
                     Expr::IndexAccess(ix) => cur = &ix.base,
                     Expr::Borrow(b) => cur = &b.expr,
+                    Expr::Dereference(d) => cur = &d.expr,
                     _ => break,
                 }
             }
-            let Expr::Identifier(id) = cur else {
-                return false;
-            };
-            self.region_placed(id.name.as_ref(), outer, binds).is_some()
+            match cur {
+                Expr::Identifier(id) => match self.region_placed(id.name.as_ref(), outer, binds) {
+                    // `Err` is a binding whose placement is known-uncountable (sub-byte,
+                    // opaque initializer): not classifiable, so not passable.
+                    Some(_) => Arg::Placed,
+                    None => Arg::NotPlaced,
+                },
+                Expr::MemberAccess(_) => match self.member_field_type(cur, outer, binds) {
+                    Some(ty) => {
+                        if self.placed_space(&ty).is_some() {
+                            Arg::Placed
+                        } else {
+                            Arg::NotPlaced
+                        }
+                    }
+                    None => Arg::Unresolvable,
+                },
+                // Literals and arithmetic cannot be a placed tensor unless they CONTAIN a
+                // mention of one, which the general mentions_any guard below covers.
+                _ => Arg::NotPlaced,
+            }
         };
-        let _unused = |e: &Expr| placed(e);
-        let hit = args.iter().any(&placed) || receiver.map(&placed).unwrap_or(false);
-        if hit {
+        let mut unresolvable = false;
+        for a in args.iter().chain(receiver) {
+            match classify(a) {
+                Arg::Placed => {
+                    return Err(
+                        "the region passes a placed tensor to a call, and the callee's own \
+                         accesses are not counted here"
+                            .to_string(),
+                    )
+                }
+                Arg::Unresolvable => unresolvable = true,
+                Arg::NotPlaced => {}
+            }
+        }
+        if unresolvable {
+            // Distinct reason on purpose: this is "cannot tell", not "saw a tensor".
             return Err(
-                "the region passes a placed tensor to a call, and the callee's own accesses \
-                 are not counted here"
+                "the region passes an argument this counter cannot classify to a call; if it \
+                 is a placed tensor, the callee's accesses would go uncounted"
                     .to_string(),
             );
         }
+        // Backstop for argument shapes the classifier does not walk (nested calls, struct
+        // inits, casts...): any mention of a placed name inside an argument subtree is a
+        // handoff this counter cannot follow.
+        let placed_names: Vec<String> = outer
+            .keys()
+            .cloned()
+            .chain(
+                binds
+                    .iter()
+                    .filter(|(_, v)| v.is_some())
+                    .map(|(k, _)| k.clone()),
+            )
+            .collect();
+        for a in args.iter().chain(receiver) {
+            if matches!(
+                a,
+                Expr::Identifier(_) | Expr::IndexAccess(_) | Expr::Borrow(_)
+            ) {
+                continue; // already classified precisely above
+            }
+            if mentions_any(a, placed_names.iter().cloned()) {
+                return Err(
+                    "the region mentions a placed tensor inside a call argument this counter \
+                     does not know how to weigh"
+                        .to_string(),
+                );
+            }
+        }
         Ok(())
+    }
+
+    /// The type of a (possibly nested) struct-field access rooted at an identifier, resolved
+    /// through the checker's live scopes and the struct environment. `None` when any link of
+    /// the chain cannot be resolved -- the caller must treat that as "could be anything",
+    /// never as "not placed".
+    fn member_field_type(&self, e: &Expr, outer: &PlacedMap, binds: &Bindings) -> Option<Type> {
+        match e {
+            Expr::MemberAccess(m) => {
+                let base_ty = self.member_field_type(&m.base, outer, binds)?;
+                let struct_name = match &base_ty {
+                    Type::Struct(name, _) => name.clone(),
+                    _ => return None,
+                };
+                let decl = self.env.structs.get(&struct_name)?;
+                decl.fields
+                    .iter()
+                    .find(|(fname, _)| fname == &m.member)
+                    .map(|(_, ty)| ty.clone())
+            }
+            Expr::Identifier(id) => {
+                // A body-local rebinding shadows; its placement verdict is authoritative but
+                // carries no full type, so resolution stops (=> conservative None upstream)
+                // unless the name resolves through the live scopes.
+                if binds.contains_key(id.name.as_ref()) {
+                    return None;
+                }
+                let _ = outer; // placement of the ROOT is not the question; its type is
+                self.lookup(id.name.as_ref()).map(|(t, _)| t.clone())
+            }
+            _ => None,
+        }
     }
 }

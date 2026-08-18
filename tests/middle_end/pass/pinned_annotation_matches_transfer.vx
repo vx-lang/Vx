@@ -11,15 +11,17 @@
 //
 // The consequence was that a placed tensor could not be handed to a function or
 // stored in a struct field AT ALL -- every one was stuck in the scope that
-// produced it. Both shapes are exercised here.
+// produced it.
+//
+// The struct-field half of this pin lives in pinned_annotation_struct_field.vx:
+// it type-checks identically but cannot yet survive LLVM lowering (Vx#356), and
+// keeping it here made this fixture green in the harness while the shipped
+// binary failed on it -- the vacuous-test disease this campaign keeps finding.
+// This half lowers clean end to end (verified with --action emit-mlir).
 // CHECK: main
 Memory CPU_DRAM {}
 Memory GPU_HBM {
   within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s
-}
-
-struct Holder {
-  t: Pinned<Tensor<f32, [2, 2]>, Topology::GPU[0]>,
 }
 
 fn takes(t: Pinned<Tensor<f32, [2, 2]>, Topology::GPU[0]>) -> i32 {
@@ -31,11 +33,5 @@ fn main() -> i32 {
   a[0][0] = 1.0;
   let ad = transfer(a, Memory::GPU_HBM);
   let r = takes(ad);
-  let mut b = Tensor<f32>([ 2, 2 ]);
-  b[0][0] = 2.0;
-  let bd = transfer(b, Memory::GPU_HBM);
-  let h = Holder {
-    t: bd
-  };
   return 0;
 }

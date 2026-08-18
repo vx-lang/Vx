@@ -1,0 +1,28 @@
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// The struct-field half of the Vx#355 pin: a field annotated
+// `Pinned<Tensor<f32, [2, 2]>, Topology::GPU[0]>` accepts what `transfer`
+// produces. Split from pinned_annotation_matches_transfer.vx because this half
+// stops at the vx dialect: full LLVM lowering fails on `llvm.insertvalue` with a
+// memref operand (Vx#356) -- a pre-existing struct-lowering gap that Vx#355's
+// unification fix made reachable. This harness checks exactly as far as the
+// type-level claim goes, and the header says so, so the fixture cannot read as
+// proof of more than it proves.
+// CHECK: main
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s
+}
+
+struct Holder {
+  t: Pinned<Tensor<f32, [2, 2]>, Topology::GPU[0]>,
+}
+
+fn main() -> i32 {
+  let mut b = Tensor<f32>([ 2, 2 ]);
+  b[0][0] = 2.0;
+  let bd = transfer(b, Memory::GPU_HBM);
+  let h = Holder {
+    t: bd
+  };
+  return 0;
+}
