@@ -1,0 +1,41 @@
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// A written `Pinned<_, Topology::GPU[0]>` must accept what `transfer` produces
+// (Vx#355). It did not: topology equality was derived over the index
+// EXPRESSION, and the two sides build that literal differently -- `Topology::gpu()`
+// and arch.rs pass `ty: None`, while `check_transfer_expr` and a checked source
+// annotation carry `ty: Some(I32)`. Same device, unequal AST, so:
+//
+//   Type mismatch in argument 1 for function 'takes'.
+//     Expected ... GPU(Number(... ty: Some(I32) ...))
+//     got      ... GPU(Number(... ty: None      ...))
+//
+// The consequence was that a placed tensor could not be handed to a function or
+// stored in a struct field AT ALL -- every one was stuck in the scope that
+// produced it. Both shapes are exercised here.
+// CHECK: main
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s
+}
+
+struct Holder {
+  t: Pinned<Tensor<f32, [2, 2]>, Topology::GPU[0]>,
+}
+
+fn takes(t: Pinned<Tensor<f32, [2, 2]>, Topology::GPU[0]>) -> i32 {
+  return 0;
+}
+
+fn main() -> i32 {
+  let mut a = Tensor<f32>([ 2, 2 ]);
+  a[0][0] = 1.0;
+  let ad = transfer(a, Memory::GPU_HBM);
+  let r = takes(ad);
+  let mut b = Tensor<f32>([ 2, 2 ]);
+  b[0][0] = 2.0;
+  let bd = transfer(b, Memory::GPU_HBM);
+  let h = Holder {
+    t: bd
+  };
+  return 0;
+}

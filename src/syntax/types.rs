@@ -23,8 +23,60 @@ pub struct Span {
     pub length: usize,
 }
 
+/// Do two topology indices denote the same device?
+///
+/// By VALUE, not by AST node. `PartialEq` on `Topology` used to be derived, so two spellings of
+/// device 0 were unequal whenever their index literals differed in any field -- and they do,
+/// routinely: `Topology::gpu()` below and `arch.rs` build the literal with `ty: None`, while
+/// `check_transfer_expr` writes `ty: Some(I32)` inline, and a written-down `Topology::GPU[0]`
+/// picks up `Some(I32)` when the checker infers its literal's type.
+///
+/// The visible cost was that a declared `Pinned<_, Topology::GPU[0]>` never matched what
+/// `transfer` produces, so a placed tensor could not be passed to a function or stored in a
+/// struct field at all (Vx#355). Annotating the one constructor would have fixed that program
+/// and left the class open, since the two conventions are still spread across the tree.
+///
+/// This is also what `docs/discussions/brainstorming/hardware_monad_topology.md` asks for:
+/// "topology identity = (registered-kind, index-term), with index equality decided by the
+/// const-evaluator". Literals are decided here; anything else falls back to structural
+/// equality, which is what the derive did for every case.
+fn topology_index_eq(a: &Expr, b: &Expr) -> bool {
+    if let (Expr::Number(x), Expr::Number(y)) = (a, b) {
+        return match (
+            x.value.as_ref().parse::<i128>(),
+            y.value.as_ref().parse::<i128>(),
+        ) {
+            (Ok(xi), Ok(yi)) => xi == yi,
+            // Not integers after all: compare how they were spelled rather than guessing.
+            _ => x.value == y.value,
+        };
+    }
+    a == b
+}
+
+impl PartialEq for Topology {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Topology::CPU, Topology::CPU)
+            | (Topology::AMX, Topology::AMX)
+            | (Topology::ANE, Topology::ANE)
+            | (Topology::CpuAvx512, Topology::CpuAvx512)
+            | (Topology::CpuNeon, Topology::CpuNeon)
+            | (Topology::Current, Topology::Current) => true,
+            (Topology::NPU(a), Topology::NPU(b))
+            | (Topology::AccCore(a), Topology::AccCore(b))
+            | (Topology::GPU(a), Topology::GPU(b)) => topology_index_eq(a, b),
+            (Topology::Custom(a), Topology::Custom(b)) => a == b,
+            (Topology::Slice(ba, sa, ea), Topology::Slice(bb, sb, eb)) => {
+                ba == bb && topology_index_eq(sa, sb) && topology_index_eq(ea, eb)
+            }
+            _ => false,
+        }
+    }
+}
+
 #[allow(non_camel_case_types)]
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, Clone)]
 pub enum Topology {
     CPU,
     NPU(Box<Expr>),
@@ -848,5 +900,58 @@ mod tests {
     fn test_mangle_pinned_type() {
         let ty = Type::Pinned(Box::new(Type::Scalar(ElementType::I32)), Topology::ANE);
         assert_eq!(ty.mangle(), "Pinned$i32");
+    }
+
+    /// Two spellings of device 0 are the same device, however their index literal was built
+    /// (Vx#355). This is the unit-level lock on the defect: `Topology::gpu()` builds the index
+    /// with `ty: None`, while `check_transfer_expr` and a checked source annotation produce
+    /// `ty: Some(I32)`, and the derived `PartialEq` called those two different devices.
+    ///
+    /// The visible consequence was that a written `Pinned<_, Topology::GPU[0]>` never matched
+    /// what `transfer` produces, so a placed tensor could not be passed to a function or held
+    /// in a struct field at all.
+    fn indexed(annotated: bool, value: &str) -> Topology {
+        Topology::GPU(Box::new(Expr::Number(NumberExpr::new(
+            value.to_string(),
+            if annotated {
+                Some(ElementType::I32)
+            } else {
+                None
+            },
+            Span::default(),
+        ))))
+    }
+
+    #[test]
+    fn topology_index_identity_ignores_how_the_literal_was_built() {
+        // The exact pair the bug turned on: same device, different literal annotation.
+        assert_eq!(indexed(true, "0"), indexed(false, "0"));
+        assert_eq!(indexed(false, "0"), Topology::gpu(0));
+        // A span difference must not split a device either -- same reasoning, and the derive
+        // compared spans too.
+        let mut spanned = NumberExpr::new("0".to_string(), Some(ElementType::I32), Span::default());
+        spanned.span = Span {
+            line: 7,
+            column: 3,
+            length: 1,
+        };
+        assert_eq!(
+            Topology::GPU(Box::new(Expr::Number(spanned))),
+            Topology::gpu(0)
+        );
+
+        // Different devices stay different: the fix must not collapse the index, which is the
+        // whole reason the index exists ("prefill here, decode there").
+        assert_ne!(indexed(true, "0"), indexed(true, "1"));
+        assert_ne!(Topology::gpu(0), Topology::gpu(1));
+        // And a different KIND with the same index is still a different topology.
+        assert_ne!(
+            Topology::gpu(0),
+            Topology::NPU(Box::new(Expr::Number(NumberExpr::new(
+                "0".to_string(),
+                None,
+                Span::default(),
+            ))))
+        );
     }
 }
