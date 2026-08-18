@@ -1,0 +1,11 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// An empty array literal has no element type to report. The checker used to
+// hand back the historical `f32` default and codegen panicked with "Empty
+// arrays not supported yet" -- an internal error where a diagnostic belongs
+// (Vx#354).
+// CHECK: E3018
+// CHECK: no element type
+fn main() -> i32 {
+  let arr = [];
+  return 0;
+}

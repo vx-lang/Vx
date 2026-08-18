@@ -1,0 +1,18 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// The same refusal for a PLACED tensor, and the message names the placement so
+// the reader can see which value it means. This is the shape that found the bug
+// (Vx#354): it was the smallest program reaching a spawn-region traffic guard,
+// and it could not be used as a test because it crashed the compiler.
+// CHECK: E3018
+// CHECK: placed on Topology::GPU
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s
+}
+fn main() -> i32 {
+  let mut a = Tensor<f32>([ 2, 2 ]);
+  a[0][0] = 1.0;
+  let ad = transfer(a, Memory::GPU_HBM);
+  let arr = [ ad ];
+  return 0;
+}

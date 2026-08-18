@@ -193,6 +193,14 @@ pub enum DiagnosticCode {
     E3016,
     /// Closure argument count or type mismatch
     E3017,
+    /// An array literal whose elements are not scalars, or which is empty.
+    ///
+    /// An array literal lowers to `tensor.from_elements`, whose element type must be a scalar,
+    /// so `[a, b]` for tensors -- placed or not -- has nothing to lower to, and an empty
+    /// literal has no element type to give it. Both used to be accepted by the checker (the
+    /// element type silently stayed at its `f32` default) and then crash codegen with an
+    /// internal error rather than a diagnostic. See Vx#354.
+    E3018,
 
     // --- Borrow/Ownership Errors (E4xxx) ---
     /// Use of moved or consumed linear variable

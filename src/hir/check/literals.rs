@@ -230,19 +230,94 @@ impl<'a> TypeChecker<'a> {
         matches!(inner, Type::Tensor(ElementType::F32, _, _))
     }
 
+    /// A short human name for a type, for diagnostics that only need to say what KIND of thing
+    /// the programmer wrote. The `{:?}` rendering used elsewhere prints the whole AST of every
+    /// dimension expression, which buries the one word the reader needs.
+    pub(crate) fn short_type_name(t: &Type) -> String {
+        match t {
+            Type::Scalar(e) => format!("a scalar {e:?}"),
+            Type::Tensor(e, _, _) => format!("a tensor of {e:?}"),
+            Type::Pinned(inner, top) => format!(
+                "{} placed on Topology::{}",
+                Self::short_type_name(inner),
+                top.display_name()
+            ),
+            Type::Ref(inner, mem) => {
+                format!("{} in Memory::{}", Self::short_type_name(inner), mem.name())
+            }
+            Type::Struct(name, _) => format!("a struct {name}"),
+            other => format!("{other:?}"),
+        }
+    }
+
     pub(crate) fn check_array_expr(&mut self, expr: &mut Expr) -> Type {
         match expr {
-            Expr::Array(ArrayExpr { elements, span: _ }) => {
+            Expr::Array(ArrayExpr { elements, span }) => {
                 // The array's element type is its first element's — an integer array literal
                 // (`[10, 20, 30]`) is `Tensor<i32>`, not `Tensor<f32>` (#240). Later elements are
-                // checked expecting that type, so untyped literals adopt it. An empty literal keeps
-                // the historical `f32` default.
+                // checked expecting that type, so untyped literals adopt it.
+                let span = *span;
+                // An array literal lowers to `tensor.from_elements`, so its elements have to be
+                // scalars. A non-scalar first element used to leave `elem_ty` at its `f32`
+                // default and report `Tensor<f32>` for something that is nothing of the sort,
+                // and codegen then died building `tensor<Nx tensor<...>>` — an internal error on
+                // a two-line program, where the checker had the type in its hand all along
+                // (Vx#354). Empty has no element type to report at all.
+                if elements.is_empty() {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E3018,
+                        "an empty array literal has no element type; annotate the binding or \
+                         give it at least one element"
+                            .to_string(),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
+                    );
+                    return Type::Tensor(ElementType::F32, vec![], None);
+                }
+                // A NESTED literal is how a multi-dimensional initializer is written
+                // (`Tensor<f32>([[1.0, 2.0], [3.0, 4.0]])`), and those rows are consumed as a
+                // shape by `initializer_shape` rather than lowered through
+                // `tensor.from_elements`. So the restriction is on non-scalar VALUES -- a
+                // tensor variable -- not on nested literals, which stay legal.
+                let nested = matches!(elements.first(), Some(Expr::Array(_)));
                 let mut elem_ty = ElementType::F32;
                 for (i, el) in elements.iter_mut().enumerate() {
                     if i == 0 {
-                        if let Type::Scalar(e) = self.check_expr_type(el) {
-                            elem_ty = e;
+                        let first = self.check_expr_type(el);
+                        match (first, nested) {
+                            (Type::Scalar(e), false) => elem_ty = e,
+                            // A nested row reports `Tensor<e>`; the initializer's element type
+                            // is that inner `e`, which is also more accurate than the `f32`
+                            // default this arm used to fall through to.
+                            (Type::Tensor(e, _, _), true) => elem_ty = e,
+                            (other, _) => {
+                                self.errors.error_with_code(
+                                    crate::diagnostic::DiagnosticCode::E3018,
+                                    format!(
+                                        "an array literal's elements must be scalars, but this \
+                                         one holds {}; an array of tensors has no lowering \
+                                         (`tensor.from_elements` takes scalar elements)",
+                                        Self::short_type_name(&other)
+                                    ),
+                                    Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
+                                );
+                                return Type::Tensor(ElementType::F32, vec![], None);
+                            }
                         }
+                    } else if nested {
+                        // Every row of a nested initializer must itself be a literal row: a
+                        // mixed `[[1.0], x]` has no shape, and letting it through would put the
+                        // ragged case back on codegen.
+                        if !matches!(el, Expr::Array(_)) {
+                            self.errors.error_with_code(
+                                crate::diagnostic::DiagnosticCode::E3018,
+                                "a nested array literal's rows must all be literals; this one \
+                                 mixes a row with something else"
+                                    .to_string(),
+                                Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
+                            );
+                            return Type::Tensor(ElementType::F32, vec![], None);
+                        }
+                        self.check_expr_type(el);
                     } else {
                         self.check_expr_expecting(el, Some(Type::Scalar(elem_ty.clone())), true);
                     }

@@ -2943,8 +2943,15 @@ impl<'c> LowerToMelior<'c> for ArrayExpr {
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Self::Output {
         let ArrayExpr { elements, span: _ } = self;
+        // These three used to be a `panic!` and two `unwrap`s, so an array literal the checker
+        // let through killed the compiler instead of reporting anything (Vx#354). E3018 now
+        // rejects both shapes with a span before codegen runs; this is the second line of
+        // defence, because an internal error is the one outcome that tells the programmer
+        // nothing at all.
         if elements.is_empty() {
-            panic!("Empty arrays not supported yet");
+            return Err(LowerError::from(
+                "an empty array literal has no element type to lower".to_string(),
+            ));
         }
         let mut vals = Vec::new();
         let mut el_ty = None;
@@ -2957,11 +2964,21 @@ impl<'c> LowerToMelior<'c> for ArrayExpr {
                 el_ty = Some(t);
             }
         }
-        let el_ty = el_ty.unwrap();
+        let el_ty = el_ty.ok_or_else(|| {
+            LowerError::from("an array literal produced no element type".to_string())
+        })?;
         let num_elements = elements.len();
 
-        let tensor_ty =
-            Type::parse(gen.context, &format!("tensor<{}x{}>", num_elements, el_ty)).unwrap();
+        // `tensor.from_elements` takes SCALAR elements, so a non-scalar element type produces a
+        // string like `tensor<2x tensor<...>>` that MLIR will not parse. Report which type did
+        // it rather than unwrapping the `None`.
+        let tensor_ty = Type::parse(gen.context, &format!("tensor<{}x{}>", num_elements, el_ty))
+            .ok_or_else(|| {
+                LowerError::from(format!(
+                    "an array literal's elements must be scalars; `{el_ty}` cannot be the \
+                     element type of a tensor"
+                ))
+            })?;
 
         let op = OperationBuilder::new("tensor.from_elements", gen.loc())
             .add_operands(&vals)
