@@ -54,6 +54,46 @@ fn topology_index_eq(a: &Expr, b: &Expr) -> bool {
     a == b
 }
 
+/// Two topologies are equal when they name the SAME DEVICE.
+///
+/// Hand-written rather than derived, and that is a semantic choice, not a style one. The
+/// derive compared the index EXPRESSION as an AST node, so device 0 was not device 0 whenever
+/// the two literals had been built differently — which happens constantly, because the tree
+/// contains both conventions (`ty: None` from `Topology::gpu()` and `arch.rs`, `ty: Some(I32)`
+/// from `check_transfer_expr` and from any annotation the checker has inferred). Spans counted
+/// too, so the same device written in two places was two devices (Vx#355).
+///
+/// GUARANTEES
+///
+/// - It is a full equivalence relation: reflexive, symmetric, transitive. Reflexivity is the
+///   one that needs a test rather than an argument — see below.
+/// - Same kind, same index value ⇒ equal, however each side's literal was spelled or
+///   annotated. `gpu(0)` from a constructor equals `Topology::GPU[0]` read from source.
+/// - Different kind ⇒ not equal, even at the same index. `GPU[0] != NPU[0]`.
+/// - Different index value ⇒ not equal. The index is what makes two devices nameable at all
+///   ("prefill here, decode there"), so collapsing it would be worse than the bug this fixes.
+///
+/// REQUIRES
+///
+/// - **Any `Hash` on `Topology` must agree with this.** Hashing the index AST would put two
+///   equal topologies in different buckets, which is a broken `HashMap`, not a slow one.
+///   `Topology` deliberately has no `Hash`; the hashable identity is [`TopologyKind`], and
+///   note that kind DROPS the index, so a kind-keyed map conflates every device of a kind.
+/// - **A new variant needs an arm here.** The match is on a PAIR, which Rust cannot
+///   exhaustiveness-check, so a forgotten variant silently compares unequal to itself. The
+///   `_` arm asserts against exactly that and `every_topology_variant_is_equal_to_itself`
+///   fires it.
+/// - **`Eq` is not implemented.** The relation would justify it, but the non-literal fallback
+///   defers to `Expr`'s derived `PartialEq`, so the claim would only be as good as that.
+///
+/// DOES NOT GUARANTEE
+///
+/// - A non-literal index is still compared structurally, so `GPU[i]` and `GPU[j]` are unequal
+///   even when `i == j` at runtime. Deciding those needs the const-evaluator, which is what
+///   `docs/discussions/brainstorming/hardware_monad_topology.md` means by "index equality
+///   decided by the const-evaluator / prover". Literals are the part that is decided today.
+/// - Two literals that are not both parseable integers fall back to comparing how they were
+///   spelled, rather than guessing what they denote.
 impl PartialEq for Topology {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
@@ -70,7 +110,21 @@ impl PartialEq for Topology {
             (Topology::Slice(ba, sa, ea), Topology::Slice(bb, sb, eb)) => {
                 ba == bb && topology_index_eq(sa, sb) && topology_index_eq(ea, eb)
             }
-            _ => false,
+            // Different variants are different topologies. The assert is what a hand-written
+            // `PartialEq` costs: the derive covered every variant automatically, and a match on
+            // a PAIR cannot be exhaustiveness-checked without writing all N^2 cross arms. So a
+            // variant added above and forgotten here would land in this arm against ITSELF and
+            // report not-equal -- a topology that is not itself, silently, which would take a
+            // very confusing bug report to find. Same discriminant reaching here is always a
+            // missing arm, never a real answer.
+            _ => {
+                debug_assert!(
+                    std::mem::discriminant(self) != std::mem::discriminant(other),
+                    "Topology::eq has no arm for this variant, so it compares unequal to itself; \
+                     add it above"
+                );
+                false
+            }
         }
     }
 }
@@ -953,5 +1007,49 @@ mod tests {
                 Span::default(),
             ))))
         );
+    }
+
+    /// Every variant is equal to itself. Trivially true of a derived `PartialEq`, and NOT
+    /// trivially true of a hand-written one: the impl matches on a PAIR of topologies, which
+    /// Rust cannot exhaustiveness-check, so a variant added to the enum and forgotten in the
+    /// impl falls into the `_` arm against itself and reports not-equal.
+    ///
+    /// The impl carries a `debug_assert!` for exactly that, and this test is what fires it.
+    /// Listing the variants by hand is the point -- add one to `Topology` and this fails until
+    /// it is listed here too, which is the reminder to go and add its arm.
+    #[test]
+    fn every_topology_variant_is_equal_to_itself() {
+        let idx = || {
+            Box::new(Expr::Number(NumberExpr::new(
+                "3".to_string(),
+                None,
+                Span::default(),
+            )))
+        };
+        let all = [
+            Topology::CPU,
+            Topology::NPU(idx()),
+            Topology::AccCore(idx()),
+            Topology::AMX,
+            Topology::ANE,
+            Topology::GPU(idx()),
+            Topology::CpuAvx512,
+            Topology::CpuNeon,
+            Topology::Slice(Box::new(Topology::CPU), idx(), idx()),
+            Topology::Custom("Dev".into()),
+            Topology::Current,
+        ];
+        for t in &all {
+            assert_eq!(t, t, "a topology must be equal to itself: {t:?}");
+        }
+        // And distinct variants stay distinct, so the reflexivity above is not coming from an
+        // arm that says yes to everything.
+        for (i, a) in all.iter().enumerate() {
+            for (j, b) in all.iter().enumerate() {
+                if i != j {
+                    assert_ne!(a, b, "distinct topologies compared equal: {a:?} vs {b:?}");
+                }
+            }
+        }
     }
 }

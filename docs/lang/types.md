@@ -128,6 +128,29 @@ the same relation is available as a compile-time `Reachable<A, B>` predicate for
 branch pruning. See [syntax.md §3.2](./syntax.md#32-topology-polymorphic-functions) for the
 surface syntax and [`hardware_monad.md`](./hardware_monad.md) for the categorical model.
 
+### 3.5 When Two Topologies Are the Same Topology
+
+Two topologies are the same when they name the **same device**: same kind, same index *value*.
+`Topology::GPU[0]` written in a type annotation is the same topology as the one a
+`transfer(x, Memory::GPU_HBM)` produces, and `Topology::GPU[0]` written in two different files
+is one device, not two.
+
+That sounds obvious enough not to state, which is why it is stated. Topology identity used to
+be structural over the index *expression* — so device 0 was not device 0 whenever the two
+literals happened to be built differently, and they routinely were (an inferred literal carries
+an element type, a constructed one does not; a written literal carries a source span). The
+visible symptom was that no annotation would accept a transferred tensor, so a placed value
+could not be passed to a function or stored in a struct field at all (#355).
+
+The index is still what separates devices: `Topology::GPU[0]` and `Topology::GPU[1]` are
+different topologies, and so are `Topology::GPU[0]` and `Topology::NPU[0]`. Naming a particular
+device is the whole reason the index exists — it is what lets a program say *prefill here,
+decode there*.
+
+One limit worth knowing: an index that is not a literal is compared as written, so
+`Topology::GPU[i]` and `Topology::GPU[j]` are treated as different devices even when `i` and
+`j` hold the same value at run time. Deciding those needs the const-evaluator.
+
 ## 4. The Hardware State Monad
 
 > [!WARNING]
