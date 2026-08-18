@@ -20,7 +20,13 @@ name, a dedup key, an emitted id — must be four things at once:
    (`pipeline_emits_byte_identical_mlir_across_thread_counts`,
    `compile_pipeline_gid_stream_is_deterministic`).
 4. **Totally ordered.** Anything emitted from a keyed collection needs a stable order
-   (the `BTreeMap` discipline `region_traffic.rs` already follows).
+   (the `BTreeMap` discipline `region_traffic.rs` already follows). To be explicit,
+   because it read otherwise on review: this is a NON-SEMANTIC sort key, nothing more.
+   It does not order memories or topologies by size, speed, or hierarchy — the
+   intra-topology hierarchy is the `within:` containment tree, cross-topology
+   relationships are the transfer GRAPH (edges, not an order), and neither needs or
+   gets a cross-topology ordering. This bullet exists only so that emission order
+   cannot depend on thread scheduling.
 
 An AST fragment fails 1 and 2. A variable name fails 2. A kind without its index fails
 canonicality's inverse — it maps two devices to one key.
@@ -186,6 +192,14 @@ byte-identical-MLIR corpus so schedule-dependence of identity can never return
 silently.
 
 ## The symbolic tier: const-compared without const-evaluated
+
+**Status: PARKED design note.** None of this is scheduled work. The minimal core that
+fixes everything actually reproduced is three small changes — the mangle carries the
+const index, the dispatch fallback becomes a diagnostic and consults the const
+evaluator (so `let i = 1` places on device 1), and tests pin both — which is phases 1–2
+above. The tiers below exist so that when multi-device work (#331/#345/#348) needs
+symbolic indices, the design questions are already answered and red-teamed, not so
+that anyone builds them now.
 
 *(Added after review: what happens to `GPU[i]` vs `GPU[i]`, and `GPU[i]` vs `GPU[j]`
 under `i == j` — the indices no const-evaluator can fold, whose COMPARISON is still
