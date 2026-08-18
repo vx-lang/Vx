@@ -931,11 +931,11 @@ fn an_unrecognised_construct_that_indexes_is_refused() {
 // but neither can be a test here, because neither program COMPILES today:
 //
 //   * `let arr = [ ad ];`      crashes codegen with an internal error
-//                              (Option::unwrap on None, src/codegen/lower/expr.rs).
+//                              (Option::unwrap on None, src/codegen/lower/expr.rs). Vx#354
 //   * `let h = S { t: ad };`   is rejected because a `Pinned<_, Topology::GPU[0]>`
 //     `fn f(t: Pinned<...>)`   ANNOTATION never unifies with the type `transfer`
 //                              produces: the topology index carries `ty: Some(I32)`
-//                              when written down and `ty: None` when inferred.
+//                              when written down and `ty: None` when inferred. Vx#355
 //
 // Both are pre-existing compiler defects unrelated to traffic, and the second
 // one is why the call-opacity guard also had no compiling test -- which is how
