@@ -703,7 +703,7 @@ pub struct SubspaceInfo {
 /// `func.func private` declaration prepended. Order is load-bearing — the emit records which of
 /// these a function called as a bitmask over this array's indices, so inserting in the middle
 /// renumbers existing entries.
-const RUNTIME_HELPERS: [(&str, &str); 10] = [
+const RUNTIME_HELPERS: [(&str, &str); 11] = [
     ("printMemrefF32", "(memref<*xf32>)"),
     ("printMemrefF64", "(memref<*xf64>)"),
     ("printMemrefI32", "(memref<*xi32>)"),
@@ -714,6 +714,9 @@ const RUNTIME_HELPERS: [(&str, &str); 10] = [
     ("print_i64", "(i64) -> i32"),
     ("print_str", "(!llvm.ptr) -> i32"),
     ("vx_init_signals", "()"),
+    // Terminate the process. libc's; `llvm.unreachable` follows the call so the block has a
+    // terminator and the verifier knows nothing after it runs.
+    ("abort", "()"),
 ];
 
 /// Recover the declared memory sub-spaces from a compilation's env, in the shape
@@ -1014,7 +1017,6 @@ pub fn emit_module_mlir(
                 &ctx,
                 &mut calls,
                 str_bases[fi],
-                string_tables.get(fi).copied().unwrap_or(&[]),
                 alias_tables.get(fi).copied().unwrap_or(&[]),
                 &mut distinct_ctr,
             )?;
@@ -1298,10 +1300,6 @@ pub fn emit_function_mlir(
     ctx: &EmitCtx,
     calls: &mut Vec<(String, Vec<String>, String)>,
     str_base: usize,
-    // This function's string side table, indexed by an instruction's `imm`. `PrintStr` and
-    // `StringConst` reach their bytes through a module-level global; `Assert` needs the text
-    // itself, because `cf.assert` carries its message as an inline attribute.
-    strings: &[String],
     alias_stores: &[(usize, usize, Vec<usize>)],
     distinct_ctr: &mut u32,
 ) -> Option<String> {
@@ -2316,19 +2314,12 @@ pub fn emit_function_mlir(
             // Print a string literal (no result): take the address of the module-level global emitted
             // for this string (`@".str.<n>"`, `n = str_base + imm`) and call the `@print_str` runtime
             // helper. `emit_module_mlir` emits the global's bytes and the helper's `private` decl.
-            // `cf.assert` -- the same op the AST path emits, so a false assertion aborts
-            // identically whichever path claimed the function. The message is inline (not a
-            // global), so it comes from the string side table rather than an `@".str.N"`
-            // reference. `convert-cf-to-llvm` in the host pipeline turns this into a branch
-            // onto `puts` + `abort` and declares both symbols (Vx#361).
-            Opcode::Assert => {
-                let cond = names.get(ins.operand1.0 as usize)?.clone();
-                let msg = strings
-                    .get(ins.imm as usize)
-                    .map(|s| s.as_str())
-                    .unwrap_or("assertion failed");
-                let escaped = msg.replace('\\', "\\\\").replace('"', "\\\"");
-                body += &format!("  cf.assert {cond}, \"{escaped}\"\n");
+            // Terminate. The `llvm.unreachable` is what makes this a block terminator: without
+            // it the block would fall through into whatever follows, and MLIR would reject the
+            // function for having no terminator on that path.
+            Opcode::Abort => {
+                body += "  func.call @abort() : () -> ()\n";
+                body += "  llvm.unreachable\n";
             }
             Opcode::PrintStr => {
                 let n = str_base + ins.imm as usize;
@@ -2462,7 +2453,6 @@ mod tests {
             &EmitCtx::default(),
             &mut Vec::new(),
             0,
-            &w.local_string_table,
             &w.local_place_alias_stores,
             &mut 1,
         )

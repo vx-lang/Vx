@@ -143,12 +143,16 @@ pub enum Opcode {
     /// aggregate slot so a chained access (`outer.inner.a`) or a method receiver (`self.iter.next()`)
     /// addresses through it. The nested-aggregate analogue of `FieldLoad` that stops at the pointer. (#242)
     FieldAddr = 37,
-    /// `assert(cond, msg)`: trap unless `operand1` (a bool) holds. `imm` indexes this function's
-    /// string side table for the message, exactly as `PrintStr` does. Codegen emits `cf.assert`,
-    /// which `convert-cf-to-llvm` turns into a branch onto `puts` + `abort` (Vx#361).
+    /// Terminate the program: `abort()`. Emits a call to libc `abort` followed by
+    /// `llvm.unreachable`, so it is a block TERMINATOR -- nothing after it in a block executes,
+    /// and the verifier knows it.
     ///
-    /// An effect, not a value: it produces no register.
-    Assert = 38,
+    /// A primitive rather than an assert-shaped special case, because terminating is a
+    /// capability a program should have on its own: `assert` is then one use of it (branch,
+    /// then abort), not a construct the backend has to know about. Calling it is SAFE -- ending
+    /// a process violates no memory-safety property, the same reason `std::process::abort` is
+    /// safe in Rust.
+    Abort = 38,
 }
 
 impl Opcode {
@@ -196,7 +200,7 @@ impl Opcode {
             35 => FuncConst,
             36 => CallIndirect,
             37 => FieldAddr,
-            38 => Assert,
+            38 => Abort,
             _ => return None,
         })
     }

@@ -1178,6 +1178,16 @@ impl<'a> TypeChecker<'a> {
                 ));
             }
             Some(Type::Scalar(ElementType::F32))
+        } else if resolved_name == "abort" {
+            // Terminating the program is SAFE: it ends the process rather than violating any
+            // memory-safety property (the reason `std::process::abort` needs no `unsafe` in
+            // Rust). So it is a builtin here, not an `extern` -- routing it through an FFI
+            // declaration would drag in E5001 for a construct that earns none of it.
+            if !args.is_empty() {
+                self.errors
+                    .push("Function 'abort' expects no arguments".to_string());
+            }
+            Some(Type::Scalar(ElementType::I32))
         } else if resolved_name == "print" {
             if args.len() != 1 {
                 self.errors

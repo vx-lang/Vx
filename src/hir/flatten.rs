@@ -376,7 +376,10 @@ impl<'r> Lowerer<'r> {
     fn block_terminated(&self) -> bool {
         matches!(
             self.code.last().map(|i| i.opcode),
-            Some(Opcode::Ret | Opcode::Br | Opcode::CondBr)
+            // `Abort` ends the block too: it emits `llvm.unreachable`, which MLIR requires to
+            // be the last op in its block. Omitting it here let an `if { abort(); }` append a
+            // branch to the merge block AFTER the unreachable, which the verifier rejects.
+            Some(Opcode::Ret | Opcode::Br | Opcode::CondBr | Opcode::Abort)
         )
     }
 
@@ -2399,23 +2402,30 @@ impl<'r> Lowerer<'r> {
                     self.assign_local(&name, combined)
                 }
             }
-            // `assert(cond, msg)` emits a real runtime check (Vx#361). Both paths emit it, so
-            // the two backends still agree at runtime -- which is what the previous comment here
-            // cared about when the answer was "neither emits anything".
+            // `assert(cond, msg)` is a CONDITIONAL ABORT, and is lowered as exactly that:
+            // branch on the condition, and on the failing edge print the message and
+            // terminate. No assert-shaped opcode -- the pieces are `CondBr`, `PrintStr` and
+            // `Abort`, each of which the language wants for its own sake (Vx#361).
             //
-            // Declining instead would also have kept them in agreement, by handing every
-            // assert-bearing function to the AST oracle. It was rejected because asserts are
-            // everywhere -- `Option::unwrap` in the stdlib has one, so every `std::vec` and
-            // `std::iter` user would fall off the default path for a construct that costs one op.
+            // The AST path spells the same thing as one `cf.assert`, which
+            // `convert-cf-to-llvm` expands into this identical branch-print-abort shape. The
+            // two paths therefore agree on behaviour while differing in how much of the
+            // expansion they write by hand.
             Statement::Assert(a) => {
                 let cond = self.lower_expr(&a.expr)?;
-                let imm = self.strings.len() as u64;
-                self.strings.push(
-                    a.msg
-                        .clone()
-                        .unwrap_or_else(|| "assertion failed".to_string()),
+                let fail_b = self.new_block();
+                let cont_b = self.new_block();
+                // Condition HOLDS -> continue; fails -> the abort block.
+                self.emit_effect(
+                    Opcode::CondBr,
+                    cond.reg,
+                    Register(0),
+                    pack_targets(cont_b, fail_b),
                 );
-                self.emit_effect(Opcode::Assert, cond.reg, Register(0), imm);
+                self.emit_effect(Opcode::BlockStart, Register(0), Register(0), fail_b as u64);
+                self.emit_print_str(a.msg.as_deref().unwrap_or("assertion failed"));
+                self.emit_effect(Opcode::Abort, Register(0), Register(0), 0);
+                self.emit_effect(Opcode::BlockStart, Register(0), Register(0), cont_b as u64);
                 Some(())
             }
             Statement::ExprStmt(e) => match &e.expr {
@@ -2438,6 +2448,12 @@ impl<'r> Lowerer<'r> {
                 // `print(x)` is a statement-level effect (no result): lower its one argument and emit
                 // a `Print`, whose `type_idx` carries the argument's type (scalar or tensor) so codegen
                 // routes to the right `print_*`/`printMemref*` runtime helper.
+                // `abort()` -- the language's own termination primitive. Safe to call: ending
+                // the process violates no memory-safety property.
+                Expr::FunctionCall(fc) if fc.name.as_ref() == "abort" && fc.args.is_empty() => {
+                    self.emit_effect(Opcode::Abort, Register(0), Register(0), 0);
+                    Some(())
+                }
                 Expr::FunctionCall(fc) if fc.name.as_ref() == "print" && fc.args.len() == 1 => {
                     let v = self.lower_expr(&fc.args[0])?;
                     self.emit_print(v);

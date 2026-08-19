@@ -6,7 +6,17 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// `assert(cond)` / `assert(cond, "msg")` emits a real runtime check (Vx#361).
+// `assert(cond)` / `assert(cond, "msg")` emits a real runtime check (Vx#361),
+// built on `abort()` -- the language's own termination primitive.
+//
+// `assert` is a CONDITIONAL ABORT and is lowered as exactly that: the flat path
+// emits the pieces (a branch, the message, `Opcode::Abort`), and the AST path
+// emits one `cf.assert`, which `convert-cf-to-llvm` expands into the identical
+// branch-print-abort shape. Same behaviour, different amount written by hand.
+//
+// `abort()` is callable directly and is SAFE: ending a process violates no
+// memory-safety property, which is why `std::process::abort` needs no `unsafe`
+// in Rust either.
 //
 // A condition the checker can fold is still decided at compile time -- E8002 on a
 // false one -- and a folded-true condition costs a check the optimiser removes.
@@ -61,16 +71,15 @@ fn write_probe(stem: &str, source: &str) -> std::path::PathBuf {
 
 /// The check reaches the IR, and it is the condition the programmer wrote.
 ///
-/// `checked` compiles to the comparison, the assert, and the multiply:
+/// The two paths spell it differently, and that is by design: `assert` is a
+/// CONDITIONAL ABORT, so the flat path lowers it as the pieces -- a branch, the
+/// message, and `Opcode::Abort` -- while the AST path emits one `cf.assert`,
+/// which `convert-cf-to-llvm` expands into that same branch-print-abort shape.
+/// So this asserts the SHAPE, not one spelling: the condition is tested, and the
+/// failing edge reaches `abort`.
 ///
-///   func.func @checked(%arg0: i32) -> i32 {
-///     %c5_i32 = arith.constant 5 : i32
-///     %0 = arith.cmpi slt, %arg0, %c5_i32 : i32
-///     cf.assert %0, "assertion failed"
-///     ...
-///
-/// This test asserted the OPPOSITE until Vx#361 -- that no such op existed --
-/// and was written to go red on exactly this change.
+/// It asserted the opposite until Vx#361 -- that no check existed at all -- and
+/// was written to go red on exactly this change.
 #[test]
 fn a_runtime_assert_emits_a_check() {
     let probe = write_probe("assert_emits_check", FALSE_AT_RUNTIME);
@@ -83,12 +92,13 @@ fn a_runtime_assert_emits_a_check() {
     let ir_text =
         String::from_utf8_lossy(&ir.stdout).to_string() + &String::from_utf8_lossy(&ir.stderr);
     assert!(
-        ir_text.contains("cf.assert"),
-        "the assertion must survive into the IR as a check:\n{ir_text}"
+        ir_text.contains("arith.cmpi slt"),
+        "the condition the programmer wrote must be tested, not a stand-in:\n{ir_text}"
     );
     assert!(
-        ir_text.contains("arith.cmpi slt"),
-        "and it must test the condition the programmer wrote, not a stand-in:\n{ir_text}"
+        ir_text.contains("cf.assert") || ir_text.contains("@abort"),
+        "and the failing edge must reach abort -- as one `cf.assert` (AST path) or as \
+         an explicit branch onto `@abort` (flat path):\n{ir_text}"
     );
 }
 
@@ -117,4 +127,54 @@ fn a_false_runtime_assert_aborts() {
         !run.status.success(),
         "a violated assertion must fail the process, not be silence"
     );
+}
+
+/// `abort()` is callable on its own, and it is SAFE.
+///
+/// The primitive is the point: a program should be able to terminate itself, and
+/// `assert` is then one use of it rather than a construct the backend has to know
+/// about specially. Safety follows the same reasoning Rust uses for
+/// `std::process::abort` -- ending a process violates no memory-safety property --
+/// so this compiles with no `unsafe` block. (Reaching it through an `extern`
+/// declaration instead WOULD require one, but that is the FFI boundary's rule,
+/// not termination's.)
+#[test]
+fn abort_is_callable_and_needs_no_unsafe() {
+    let src = r#"
+fn main() -> i32 {
+  let mut t = Tensor<i32>([ 1 ]);
+  t[0] = 3;
+  if t[0] > 1 {
+    abort();
+  }
+  print(999);
+  return 0;
+}
+"#;
+    let probe = write_probe("abort_builtin", src);
+
+    // Both backends: terminates, and never reaches the print.
+    for flags in [vec![], vec!["--legacy-codegen"]] {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_vxc"));
+        cmd.arg(&probe);
+        for f in &flags {
+            cmd.arg(f);
+        }
+        let run = cmd.output().expect("run vxc");
+        let out = String::from_utf8_lossy(&run.stdout).to_string();
+        let err = String::from_utf8_lossy(&run.stderr).to_string();
+        let path = if flags.is_empty() { "flat" } else { "AST" };
+        assert!(
+            !out.contains("999"),
+            "{path}: abort() must not fall through to the print:\n{out}{err}"
+        );
+        assert!(
+            !run.status.success(),
+            "{path}: abort() must fail the process:\n{out}{err}"
+        );
+        assert!(
+            !err.contains("unsafe") && !err.contains("E5001"),
+            "{path}: terminating is safe -- no unsafe block should be demanded:\n{err}"
+        );
+    }
 }

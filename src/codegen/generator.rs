@@ -741,6 +741,28 @@ impl<'c> MeliorGenerator<'c> {
             self.module.body().append_operation(decl);
         }
 
+        // Declare `abort` -- the language's termination primitive (Vx#361). libc's, so the
+        // declaration is all that is needed; the JIT and the linker both resolve it.
+        let abort_ty = melior::ir::r#type::FunctionType::new(self.context, &[], &[]);
+        let abort_decl = melior::ir::operation::OperationBuilder::new("func.func", self.loc())
+            .add_attributes(&[
+                (
+                    melior::ir::Identifier::new(self.context, "sym_name"),
+                    melior::ir::attribute::StringAttribute::new(self.context, "abort").into(),
+                ),
+                (
+                    melior::ir::Identifier::new(self.context, "function_type"),
+                    melior::ir::attribute::TypeAttribute::new(abort_ty.into()).into(),
+                ),
+                (
+                    melior::ir::Identifier::new(self.context, "sym_visibility"),
+                    melior::ir::attribute::StringAttribute::new(self.context, "private").into(),
+                ),
+            ])
+            .add_regions([melior::ir::Region::new()])
+            .build()?;
+        self.module.body().append_operation(abort_decl);
+
         // Declare vx_init_signals
         let sig_init_ty = melior::ir::r#type::FunctionType::new(self.context, &[], &[]);
         let sig_init_decl = melior::ir::operation::OperationBuilder::new("func.func", self.loc())
@@ -1151,6 +1173,39 @@ impl<'c> MeliorGenerator<'c> {
             Expr::StructInit(e) => LowerToMelior::lower(e, self, block),
             Expr::MemberAccess(e) => LowerToMelior::lower(e, self, block),
             Expr::IndexAccess(e) => LowerToMelior::lower(e, self, block),
+            // `abort()` -- terminate. Handled here rather than in the general call lowering
+            // because it has no Vx-level definition to resolve: it is a primitive, like
+            // `print`. Safe to call; ending a process breaks no memory-safety property.
+            Expr::FunctionCall(e) if e.name.as_ref() == "abort" && e.args.is_empty() => {
+                let call = melior::ir::operation::OperationBuilder::new("func.call", self.loc())
+                    .add_attributes(&[(
+                        melior::ir::Identifier::new(self.context, "callee"),
+                        melior::ir::attribute::FlatSymbolRefAttribute::new(self.context, "abort")
+                            .into(),
+                    )])
+                    .add_results(&[])
+                    .build()?;
+                block.append_operation(call);
+                // No `llvm.unreachable` here, unlike the flat path. `abort()` is lowered as an
+                // EXPRESSION on this path, so the enclosing `if` appends its branch to the merge
+                // block afterwards -- and `llvm.unreachable` must be the last op in its block, so
+                // emitting it makes the function unverifiable. The call alone is correct: `abort`
+                // does not return, so the code after it never runs. What is lost is the explicit
+                // marker (an optimiser hint), not the behaviour.
+                let zero =
+                    melior::ir::operation::OperationBuilder::new("arith.constant", self.loc())
+                        .add_attributes(&[(
+                            melior::ir::Identifier::new(self.context, "value"),
+                            melior::ir::attribute::IntegerAttribute::new(self.i32_ty, 0).into(),
+                        )])
+                        .add_results(&[self.i32_ty])
+                        .build()?;
+                Ok((
+                    block.append_operation(zero).result(0)?.into(),
+                    self.i32_ty,
+                    block,
+                ))
+            }
             Expr::FunctionCall(e) => LowerToMelior::lower(e, self, block),
             Expr::MethodCall(e) => LowerToMelior::lower(e, self, block),
             Expr::SpawnOn(e) => LowerToMelior::lower(e, self, block),
