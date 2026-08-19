@@ -5,7 +5,9 @@ never seen the memory algebra before, and it is honest about the parts that turn
 because most of what we know came from being wrong in a measurable way.
 
 Tracking: [vx-review#23](https://github.com/hiraditya/vx-review/issues/23) (the calibration),
-[Vx#352](https://github.com/hiraditya/Vx/issues/352) (making placement real in emitted code).
+[Vx#352](https://github.com/hiraditya/Vx/issues/352) (making placement real in emitted code),
+[Vx#353](https://github.com/hiraditya/Vx/issues/353) (the transfer-lowering extension point and
+derived traffic).
 
 ______________________________________________________________________
 
@@ -86,8 +88,11 @@ Edges are physical links. Nodes carry capacity; edges carry bandwidth. This is `
 exists today.
 
 **The program graph.** Nodes are compute steps. Edges are data, weighted in bytes: this tensor,
-produced here, consumed there. The compiler has this implicitly and **does not yet emit it as an
-object**, which is the main thing standing between us and an optimiser.
+produced here, consumed there. The compiler now emits the **weights** — `--diagnostics-json`
+carries derived traffic per transfer route and per `spawn` region, split read from written per
+space and broken down per buffer (§6). It does **not yet emit the graph as an object**: the
+records say how many bytes each site moves, not which site's bytes another site consumes. That
+missing structure is the main thing standing between us and an optimiser.
 
 A **placement** maps program-graph data onto machine-graph nodes. The algebra prices the movement a
 placement induces; an optimiser would choose the placement. Different jobs — and the second
@@ -160,8 +165,8 @@ two properties only the hardware can witness, and one that dissolves (cost hones
 derived from the body, so the cost cannot disagree with the code). Performance is deliberately not
 constrained.
 
-Three questions were open here; the contract document settles them in design (none is implemented
-yet):
+Three questions were open here. The contract document settles them in design, and they are now
+**built** (Vx#353, stages A1–A4):
 
 - **How is the lowering named?** The file carries Vx code — `impl Transfer<Memory::A, Memory::B>
   for Topology::X`
@@ -174,6 +179,41 @@ yet):
 - **Capability is declarable separately, and it gates the primitives.** `raw::async_copy` is a
   compile error in a lowering for a part whose machine file declares no copy engine — the
   capability/choice split of §5, enforced.
+
+### What is built
+
+- **A1–A2**: the `impl Transfer<A, B> for Topology::X` declaration, and the `raw::` primitive
+  floor with its obligations discharged against z3 (`src/hir/check/raw.rs`).
+- **A3**: a user lowering *moves the bytes*. The witness is structural rather than numeric — a
+  transfer is a move, not a conversion, so the computed answer cannot tell two lowerings apart.
+  The corpus fixture says `raw::barrier()` twice and its device image carries **two `bar.sync`**
+  where the builtin's carries one. Emission is sm-scoped destinations only for now; every other
+  edge falls back to the builtin, which now carries the barrier it was missing.
+- **A4**: traffic *derived* from code, per space, reaching a consumer through
+  `--diagnostics-json` — both per transfer route and per `spawn` region, the latter broken down
+  per buffer. This is where this section's central claim — cost derived, not declared — stops
+  being a plan.
+
+### One word for three questions, now split
+
+`Transfer` used to name the reachability predicate *and* the implicit-movement trait, while the
+edge lowering went by the lowercase keyword `transfer` and was keyed on the edge alone. That last
+part is why the fleet directory this whole design exists for was unbuildable: an Ampere part and a
+Hopper part both declare `Memory::L2 -> Memory::SMEM`, and only one of them could implement it.
+The names are now split by question:
+
+| spelling | question | keyed on |
+| --- | --- | --- |
+| `where Reachable<S, D>` | *may* these two topologies exchange data at all? | a pair of topologies |
+| `impl Relocatable for T` | may a value of this type move implicitly across a boundary? | a user type |
+| `impl Transfer<Memory::A, Memory::B> for Topology::X` | *how* does this machine move bytes across this edge? | (from, to, **machine**) |
+
+The machine in that third key is load-bearing in both directions. Without it a lowering could not
+name the part it was written for; with it, two obligations become checkable that had to be skipped
+before — that the named topology exists in this compilation, and that it declares the edge being
+implemented. It also stops one machine borrowing another's body, and one machine's declared copy
+engine arming every machine's lowerings. Both of those were live and are described in the contract
+document.
 
 ______________________________________________________________________
 
@@ -238,6 +278,28 @@ This is a result, not an embarrassment. Measuring the machine honestly is harder
 and a large share of what looked like model error was instrument error. Any model calibrated
 without that check is calibrated against noise.
 
+### The same check, pointed at the compiler
+
+Once traffic is *derived* rather than declared (§6), the compiler becomes an instrument, and it
+inherits the failure mode. A review of everything A1–A4 emitted found three ways a placed tensor
+could slip past the region counter — a dereference, a placed field of an unplaced struct, a
+call-returned binding — and each published `traffic: [], exact: true`. **An exact zero over a
+kernel that demonstrably reads device memory is a number that cannot be true**, and it is worse
+than a missing one: absent says so, while zero is indistinguishable in a harvested record from a
+measurement of nothing.
+
+The rule that falls out is the one the machine-file provenance classes of §8 already encode, now
+applied to derived figures: anything the counter cannot weigh exactly produces **no traffic at
+all, with a reason recorded beside it**. Never a guess, and never a zero standing in for one.
+
+The same review found three miscompiles on the emission side, all reachable from `vxc` on programs
+the checker accepted with zero diagnostics. Details are in
+[`custom_transfer_contract.md`](custom_transfer_contract.md); the backlog it left open is
+[Vx#358](https://github.com/hiraditya/Vx/issues/358). The reason it found what the test suite did
+not is that it ran against a different bar: not *does this pass*, but **is there a test that goes
+red if this behaviour is disabled**. Several guards had none, and one had been hard-disabled in the
+working tree while the suite stayed green.
+
 ______________________________________________________________________
 
 ## 8. Provenance: three classes, not two
@@ -278,19 +340,41 @@ ______________________________________________________________________
 
 ## 10. What is open
 
-Roughly in dependency order:
+Two items this document listed as open have landed, both of them load-bearing:
 
-1. **Emit the program graph** — the byte-weighted DAG of what moves, as an object. Without it, a
-   plan cannot be named, priced or compared, and "optimisation" stays hand-waving. This is now the
-   load-bearing item.
-2. **Make SMEM placement real** (Vx#352). Today a tile placed in SMEM is checked and priced but
-   never becomes code — the emitted kernel has no shared memory at all. Half the algebra prices
-   transfers that do not happen.
+- **SMEM placement is real.** A tile placed in SMEM used to be checked and priced but never became
+  code, so half the algebra priced transfers that did not happen. An sm-scoped placement now
+  lowers to genuine `.shared` storage, pinned by a `bar.sync` count in the device image rather
+  than by a comment. Vx#352 stays open for the rest of its scope — the four things blocking
+  `cp.async`.
+- **The transfer-lowering extension point exists** (§6, Vx#353 A1–A4) — declaration, primitive
+  floor, emission, and derived traffic.
+
+Roughly in dependency order, what is left:
+
+1. **Emit the program graph** — the byte-weighted DAG of what moves, as an object. This is the
+   remaining load-bearing item, and it is now *half* done: A4 publishes the weights — per route
+   and per `spawn` region, per space, per buffer — but as flat records, not as a graph. The
+   missing half is the edges: which region produced the bytes another consumes. Without them a
+   plan still cannot be named, priced or compared, and "optimisation" stays hand-waving.
 3. **Add α** (vx-review#28), and rework route selection for size-dependent choice.
-4. **Settle the composition law** once a copy engine is actually exercised.
+4. **Settle the composition law** once a copy engine is actually exercised. Nothing in the tree
+   drives one yet: `raw::async_copy` is declared and gated but lowers to a synchronous element
+   copy, so the capability half of §5 is enforced while the choice half remains unexercised.
 5. **A contention term**, if the queue result holds on more than one part.
-6. **The transfer-lowering extension point** (§6), which is what makes 4 and 5 answerable per
-   machine rather than globally.
+6. **Widen lowering emission past sm-scoped destinations**, edge kind by edge kind. Until then the
+   extension point is real on exactly one edge shape.
+7. **Settle topology identity before the parallel pipeline needs it.** Making topology equality
+   compare index *values* rather than AST nodes (Vx#355) fixed the symptom and exposed the shape
+   of the problem: five consumers in the compiler derive "which topology is this" independently,
+   with different fidelity each time, and an identity that crosses a worker boundary has to be
+   canonical, context-free, schedule-deterministic and totally ordered all at once. Written up in
+   [`discussions/brainstorming/topology_identity_parallel_compilation.md`](discussions/brainstorming/topology_identity_parallel_compilation.md).
+   The symbolic tier — `GPU[i]` compared against `GPU[j]` where `i == j` only at run time — is
+   parked deliberately; it is a real gap and not the one blocking anything.
+8. **Close the coverage backlog** ([Vx#358](https://github.com/hiraditya/Vx/issues/358)). Several
+   shipped guards have no test that goes red when the guard is disabled, which is the condition
+   under which one of them was found already disabled.
 
 An optimiser over the program graph (min-cut for two devices, DP for a chain) is future work. It
 consumes a truthful graph; it does not belong in the work that establishes truthfulness.

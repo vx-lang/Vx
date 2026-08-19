@@ -65,7 +65,22 @@ Selection at a transfer site prefers the topology in force there. It cannot *req
 a host edge is driven from the host: `transfer(a, Memory::GPU_HBM)` in `main` runs with the CPU
 active while implementing an edge that belongs to the device. So a single unambiguous candidate is
 taken as well, and only a real ambiguity — several machines implementing this edge, none of them
-the one we are on — is refused.
+the one we are on — is refused (E6015).
+
+**But that fallback is conditional, and getting the condition wrong pooled the fleet's lowerings.**
+It fires only when the active topology does not itself declare the edge. If it does declare it,
+its own declarations are the whole answer: its lowering if it wrote one, the builtin if it did
+not. A machine that declared an edge and supplied no lowering has *chosen* the builtin; it has not
+delegated the choice to whichever peer implemented a like-named edge, whose body may lean on
+capabilities — a copy engine — the active machine never declared. Before the condition existed,
+a transfer inside `spawn on(Topology::NoImpl)` ran `HasImpl`'s body. The same condition guards the
+ambiguity error, which previously fired at a machine that had merely declined to implement an edge
+two other machines implement. That machine gets the builtin, not an error.
+
+The capability gate had the same hole one layer down: `edge_has_copy_engine` scanned *every*
+declared topology for a like-named edge, so one machine's `copy_engine` armed `raw::async_copy`
+in every machine's lowerings — E6020's exact job, inverted by the pooling the `for` clause exists
+to remove. The gate now carries the machine, and its message names whose declaration is missing.
 
 An earlier draft had the topology *declare* its lowering's properties (`effect: copy`,
 `sync: barrier`, `overhead: 0 B`). Those fields are gone, and their absence is the point: the body
@@ -556,6 +571,108 @@ The first thing this makes visible is *plan-level* waste. A lowering that reads 
 and averages — value-preserving, so C2 holds and the answer is bit-identical — reports twice the
 reads against an unchanged tile size. No declared edge cost can distinguish that program from the
 faithful copy, because the waste is not in the edge.
+
+### What the kernel then does with the tile (A4 T4)
+
+The route counts answer *what it cost to get this tile into this space*. They stop at the edge.
+The question after it — what the kernel does with the tile once it is there — is where the
+re-reading lives, and no edge cost can reach it, because the movement across the edge happened
+exactly **once**.
+
+So a second counter walks each `spawn` region and publishes a `spawn_regions` record per site,
+with a per-buffer breakdown. On the shipped flash-attention fixture
+(`tests/backend/pass/flash_attention_placed.vx`, staging Q[2,4], K[4,4], V[4,4], O[2,4]):
+
+```
+GPU_HBM   read 608 B   written 224 B   exact
+k read 128    q read 128    v read 128    o read 224 / written 224
+```
+
+K's footprint is 64 B and the kernel reads 128 B of it — every key fetched once per query. Q is
+worse: 32 B staged, 128 B read, a factor of four. Nobody declared any of it; it is the loop nest,
+counted. That is the class of inefficiency the whole exercise aims at.
+
+Four rules the counter follows, each of which is a way it could otherwise publish a plausible
+wrong number:
+
+- **Touches, not footprint.** An access counts once per execution of its statement, times the
+  static trip counts of the enclosing loops. Indices are never analysed. Reading one element a
+  thousand times *is* a thousand reads.
+- **Placed tensors only** — values whose type carries a placement, which is what `transfer`
+  produces. Deliberately not the ambient-space fallback: inside `spawn on(Topology::GPU)` that
+  reports `GPU_HBM` for a kernel-local scratch `Tensor<f32>`, and counting scratch as device
+  traffic is exactly the plausible-but-wrong figure this must not publish.
+- **Per launch.** One record per spawn *site*, holding one execution's bytes. A spawn inside a
+  host loop is not multiplied by that loop, because the host trip count belongs to the caller and
+  is not always static. The schema says so out loud, because a consumer totalling a program by
+  summing records undercounts by exactly that factor.
+- **Absent, never zero.** Anything the walker cannot weigh exactly yields no traffic at all with
+  a reason recorded beside it — the same rule the route counter follows, for the same reason.
+
+### What the codegen review changed (Vx#358)
+
+A review of everything the campaign emitted, run against one bar — *is there a test that goes red
+if this behaviour is disabled* — found that the counter's honest-absence rule had three holes and
+that emission had three miscompiles. All six were campaign-introduced, all reachable from `vxc` on
+programs the checker accepted with zero diagnostics, and none was caught by the suite.
+
+**Three ways a placed tensor slipped past the counter.** Each published `traffic: [], exact: true`
+— an *exact-zero* claim — while the kernel read device memory. Exact zero is the worst possible
+guess, because it is indistinguishable from a measurement of nothing.
+
+- `peek(*r)` where `r = &ad`: the call-opacity classifier peeled indexing and borrows but not
+  dereference, so unwrapping a reference laundered the handoff.
+- `peek(h.t)` where the *field* is placed and the struct is not: only bare identifiers resolved.
+  Member chains now resolve through the struct environment to the field's declared type. The
+  classifier is three-valued — placed, not placed, **unresolvable** — and unresolvable refuses
+  with its own reason, because "cannot tell" must not read as "saw nothing".
+- `let t = pick();` returning a placed tensor: an initializer the resolver did not recognise was
+  recorded as unplaced, so every read through the binding vanished.
+
+**Three miscompiles in emission**, two of which were one escape. The whole-body contract — the
+trailing barrier (C3), the early-return refusal, the async discipline — is skipped for a body
+containing no `raw::` call, on the stated grounds that such bodies predate the primitives and are
+*carried* rather than emitted. But the emittability test never asked, so a raw-free body took both
+halves of the bargain: exempt from the checks **and** spliced into the kernel. It produced a
+synchronizing sm transfer with no barrier from either source — the exact C3 gap A3 claims to close,
+reopened through the ordinary-indexing loophole — and let a nested `return` splice `vx.return` into
+the middle of a kernel region, returning the *lowering's* value on a data-dependent path its author
+never wrote. Emittability now requires a body written against the primitives; a raw-free lowering
+falls back to the builtin copy, which carries its own barrier, and the existing not-emitted warning
+says so.
+
+The third: E6023's shape gate compared the site's tile to the lowering's declared one, but only
+when the site's dims parsed. An unknown site shape fell through and recorded the lowering anyway,
+so emission spliced declared extents against a runtime `?x?` buffer — a [2,2] lowering on a 3×3
+tile copies 4 of 9 elements and scatters them to the wrong slots. Declined rather than refused (the
+builtin moves a dynamic tile correctly), but the decline is now **stated**: a silent decline is the
+same disease in a smaller dose, and whoever wrote the lowering deserves to hear it went unused.
+
+The lesson generalises past this document. §7 of [`memory_algebra.md`](memory_algebra.md) records
+that the instruments were wrong more often than the model, and that every instrument defect was
+caught by the same check — *a number that cannot physically be true*. An exact-zero traffic claim
+over a kernel that demonstrably reads device memory is that same check, pointed at the compiler.
+
+### Open after A4
+
+- **Uniformity analysis** for the barrier-at-the-site case recorded under A3 above — the one
+  known-latent C3 hole.
+- **The `nvgpu` route**, so `raw::async_copy` drives a real engine instead of lowering to a
+  synchronous element copy. Until then the capability is declared and gated but never exercised,
+  so no emission-side test can go red on it.
+- **The C7 failure-mode declaration syntax** — still the one constraint with nothing behind it.
+- **A settled signature convention** for lowering methods. Today: exactly one method taking
+  exactly two statically-shaped tiles. Making a lowering generic over shape wants the shape to be
+  a parameter, which is the same unsettled question.
+- **Widening emission past sm-scoped destinations**, edge kind by edge kind.
+- **`raw::` opcodes on the flat path.** The flat path declines a transfer with a user lowering and
+  hands the module to the AST path, which stays the oracle.
+- **Parallel-pipeline parity**: the whole-body pass runs on the driver path `vxc` uses; the
+  pipeline schedule type-checks bodies but skips it.
+- **The coverage backlog** the review left open (Vx#358): emission-side per-machine lowering
+  selection has no red-capable test, the `(src, &mut dst)` order gate is pinned only at a non-sm
+  destination, E6023's element-type arm is untested, and `run_backend_test` skips lowering-body
+  checks. A guard nothing can turn red is a guard on trust.
 
 ### Deliberately absent
 

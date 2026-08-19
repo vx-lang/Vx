@@ -7,7 +7,7 @@ This document provides a complete, formal description of the syntax and grammati
 A Vx program consists of a sequence of module-level declarations.
 
 ```ebnf
-program ::= ( import_decl | macro_def | extern_block | trait_decl | impl_block | struct_decl | enum_decl | topology_decl | memory_decl | function_decl )*
+program ::= ( import_decl | macro_def | extern_block | trait_decl | impl_block | transfer_impl_decl | struct_decl | enum_decl | topology_decl | memory_decl | function_decl )*
 
 import_decl ::= "import" identifier ( "::" identifier )* ";"
 
@@ -28,14 +28,25 @@ trait_method ::= "fn" identifier "(" param_list? ")" "->" type ";"
 
 impl_block ::= "impl" generic_params? ( type "for" )? type "{" function_decl* "}"
 
+// A custom lowering for one machine's memory edge: the code that moves the bytes from A to B
+// on that machine. It is not an ordinary `impl_block` -- it is stored separately on the AST,
+// keyed by (from, to, topology) -- and `for Topology::X` is required, because an Ampere part
+// and a Hopper part drive the same `L2 -> SMEM` edge differently and both must be writable.
+// The bodies may call the `raw::` primitives that ordinary code may not; the correctness
+// contract they owe is in `docs/custom_transfer_contract.md`.
+transfer_impl_decl ::= "impl" "Transfer" "<" memory_space "," memory_space ">" "for" topology "{" function_decl* "}"
+
 struct_decl ::= "struct" identifier generic_params? "{" ( identifier ":" type ","? )* "}"
 
 enum_decl ::= "enum" identifier generic_params? "{" ( identifier ( "(" type ( "," type )* ")" )? ","? )* "}"
 
 function_decl ::= "fn" identifier generic_params? "(" param_list? ")" ( "on" topology )? "->" type where_clause? ( "requires" expr )* ( "ensures" expr )* "{" statement* "}"
 
-where_clause ::= "where" transfer_constraint ( "," transfer_constraint )*
-transfer_constraint ::= "Transfer" "<" identifier "," identifier ">"
+// `Reachable<A, B>` asks whether a transfer path exists between two topologies. It was
+// spelled `Transfer<A, B>` until Vx#353; the old name now names an edge lowering instead
+// (see `transfer_impl_decl`), so the two questions no longer share a word.
+where_clause ::= "where" reachable_constraint ( "," reachable_constraint )*
+reachable_constraint ::= "Reachable" "<" identifier "," identifier ">"
 
 generic_params ::= "<" ( generic_param ","? )* ">"
 generic_param ::= "const" identifier ":" type | identifier ( ":" ( "Topology" | identifier ) )?
@@ -44,12 +55,20 @@ param_list ::= ( identifier ":" type ","? )*
 
 // A user-defined topology, registered at parse time. `memory:` is required; an omitted
 // `visible:` defaults to just the topology's own memory. `transfer` clauses contribute
-// morphisms (with a cost and a `relaxed`/`sync` consistency marker) to the cost graph.
+// morphisms to the cost graph. The cost is optional: omitting it declares that the edge
+// exists and leaves the price to the endpoints' declared bandwidths, which is the normal
+// case for a hop between nested spaces. The trailing markers compose in any order --
+// `relaxed`/`sync` is the consistency grade (default `sync`), and `copy_engine` declares
+// that a hardware engine (a DMA, Ampere's `cp.async`) can drive this hop, which is what
+// makes `raw::async_copy` legal in a lowering for it.
 topology_decl ::= "Topology" identifier "{" ( topology_field ","? )* "}"
 topology_field ::=
     | "memory" ":" memory_space
     | "visible" ":" "[" ( memory_space ","? )* "]"
-    | "transfer" memory_space "->" memory_space ":" number ( "relaxed" | "sync" )?
+    | "arch" ":" identifier
+    | "transfer" memory_space "->" memory_space ( ":" edge_cost )? transfer_marker*
+transfer_marker ::= "relaxed" | "sync" | "copy_engine"
+edge_cost ::= number | rate_literal        // a unitless relative cost, or a link bandwidth
 
 // A first-class memory space (all fields optional except the name). Unlike a topology, the
 // descriptor is stored on the AST, not a global registry. `within:` forms the hierarchy tree.
@@ -121,7 +140,7 @@ primary_expr ::=
     | "match" expr "{" ( pattern "=>" ( "{" statement* "}" | statement ) ","? )* "}"
     | "spawn" "on" "(" topology ")" "{" statement* "}"   // routes its body to a topology; yields Pinned<T, topology>
     | "transfer" "(" expr "," memory_space ")"
-    | "Transfer" "<" topology "," topology ">"            // comptime transferability predicate (a bool)
+    | "Reachable" "<" topology "," topology ">"           // comptime transferability predicate (a bool)
     | "[" ( expr ","? )* "]"
     | "Memory" "::" identifier
     | "Topology" "::" identifier
@@ -132,6 +151,10 @@ primary_expr ::=
     | "(" expr ")"
     | identifier "!" token_tree block_tree?
     | "sizeof" "<" type ">" "(" ")"
+    // `raw::` is a reserved call namespace: `raw::load`, `raw::store`, `raw::barrier`,
+    // `raw::extent`, `raw::lane`, `raw::lanes`, `raw::async_copy`, `raw::async_wait`. They
+    // parse like any other namespaced call, and the checker refuses them anywhere but a
+    // `transfer_impl_decl` body -- so a user struct named `raw` cannot supply static methods.
     | identifier ( "<" generic_args ">" )? ( "::" identifier ( "<" generic_args ">" )? )* "(" ( expr ","? )* ")"
     | identifier ( "<" generic_args ">" )? "{" ( identifier ":" expr ","? )* "}"
     | identifier "::" identifier ( "(" ( expr ","? )* ")" )?

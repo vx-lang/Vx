@@ -210,6 +210,63 @@ fn network_transfer_example(host_input: Ref<Tensor, Memory::CPU_DRAM>) {
 }
 ```
 
+### 5.2 Three questions that used to share the name `Transfer`
+
+Data movement asks three different questions. Until Vx#353, `Transfer` answered two of them —
+the reachability predicate and the implicit-movement trait — while the third went by the
+lowercase keyword `transfer`, which read like the same thing and was not. They are now spelled
+apart, and `Transfer` means only the third:
+
+| spelling | question | keyed on |
+| --- | --- | --- |
+| `where Reachable<S, D>` | *may* these two topologies exchange data at all? | a pair of topologies |
+| `impl Relocatable for T` | may a value of this type move implicitly across a boundary? | a user type |
+| `impl Transfer<Memory::A, Memory::B> for Topology::X` | *how* does this machine move bytes across this edge? | (from space, to space, machine) |
+
+**`Relocatable`** is an opt-in, not a capability. Implementing it says a value of that type is
+allowed to be moved for you when it is touched from another topology; the compiler then inserts
+the movement and warns (W1024) that it did, because a silent cross-topology copy is exactly the
+cost this language exists to make visible. Write `.relocate()` explicitly to silence it.
+
+```rust
+trait Relocatable {
+    fn relocate(self: MyModel) -> MyModel;
+}
+
+impl Relocatable for MyModel {
+    fn relocate(self: MyModel) -> MyModel { /* ... */ }
+}
+```
+
+**`impl Transfer<A, B> for Topology::X`** supplies the *code* for one machine's edge. The `for`
+clause is required and is not decoration: an Ampere part fills shared memory with `cp.async`
+and a Hopper part drives the same `Memory::L2 -> Memory::SMEM` edge differently, so a lowering
+that named only the edge could not express the fleet directory it was written for.
+
+```rust
+impl Transfer<Memory::GPU_HBM, Memory::SMEM> for Topology::Dev {
+    fn move_tile(src: &Tensor<f32, [2, 2]>, dst: &mut Tensor<f32, [2, 2]>) -> i32 {
+        for i in 0..raw::extent(src) {
+            raw::store(dst, i, raw::load(src, i));
+        }
+        raw::barrier();   // the trailing synchronization the contract demands
+        return 0;
+    }
+}
+```
+
+Exactly one method, taking exactly two statically-shaped tile parameters in `(src, &mut dst)`
+order, whose declared shape must equal the shape at the transfer site. Those restrictions are
+current limits rather than the settled design; making a lowering generic over shape is future
+work.
+
+The body is ordinary Vx over a small primitive set (`raw::load`, `raw::store`, `raw::barrier`,
+`raw::extent`, `raw::lane`, `raw::lanes`, `raw::async_copy`, `raw::async_wait`) that ordinary
+code may not use. Every primitive takes a typed tile and an element index, never an address —
+that is what keeps "which space did this touch" and "was it in bounds" checkable. What such a
+body must guarantee, and what the compiler reads off it rather than trusting, is
+[`custom_transfer_contract.md`](../custom_transfer_contract.md).
+
 ## 6. Control Flow
 
 Standard Rust-like control flow is supported: `if`, `else`, `match`, `for`, `loop`, `break`, `continue`.
