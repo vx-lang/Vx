@@ -603,7 +603,15 @@ impl<'a> TypeChecker<'a> {
                 Some(elem.map(|e| (t.space.clone(), e)))
             }
             Expr::Identifier(id) => self.region_placed(id.name.as_ref(), outer, binds),
+            // `let q = &mut ad[i][d]` binds a reference INTO a placed buffer. Recognising
+            // it keeps the binding from reading as unplaced scratch; the write through it
+            // is refused above, because following the reference is what this walk cannot do.
             Expr::Borrow(b) => self.region_binding_placed(&b.expr, outer, binds),
+            Expr::IndexAccess(_) => match self.indexed_buffer(init, outer, binds) {
+                Ok(Some((_, space, elem))) => Some(Ok((space, elem))),
+                Ok(None) => None,
+                Err(why) => Some(Err(why)),
+            },
             _ => None,
         }
     }
@@ -639,6 +647,18 @@ impl<'a> TypeChecker<'a> {
         outer: &PlacedMap,
         binds: &Bindings,
     ) -> Result<(), String> {
+        // A write THROUGH a dereference reaches whatever the reference points at, and this
+        // walk cannot follow a reference to its referent. `let q = &mut ad[i][d]; *q = 3.0;`
+        // wrote 16 bytes of device memory while the record said `written_bytes: 0,
+        // exact: true` -- and booked the address computation's reads, so it was wrong in
+        // both directions at once. Refuse: an unfollowable write is uncountable, and this
+        // counter's rule is absent-with-a-reason over a confident zero.
+        if matches!(lhs, Expr::Dereference(_)) {
+            return Err(
+                "the region writes through a dereference, and this counter cannot follow a                  reference to the buffer it points at"
+                    .to_string(),
+            );
+        }
         if !matches!(lhs, Expr::IndexAccess(_)) {
             return Ok(());
         }

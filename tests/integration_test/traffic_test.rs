@@ -1099,3 +1099,39 @@ fn main() -> i32 {
         "a packed element width this counter does not model is refused, not rounded:\n{region}"
     );
 }
+
+/// A write THROUGH a dereference is uncountable, not zero.
+///
+/// `let q = &mut ad[i][d]; *q = 3.0;` writes device memory that this walk cannot
+/// attribute -- following a reference to its referent is exactly what it does not
+/// do. Before the fix the region published `written_bytes: 0, exact: true` while
+/// booking the address computation's reads: wrong in both directions at once, and
+/// the silent-exact-zero class the module header forbids.
+#[test]
+fn a_write_through_a_dereference_is_refused() {
+    let src = "\
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s
+}
+fn main() -> i32 {
+  let mut a = Tensor<f32>([ 2, 2 ]);
+  a[0][0] = 1.0;
+  let mut ad = transfer(a, Memory::GPU_HBM);
+  spawn on(Topology::GPU) {
+    for i in 0..2 {
+      for d in 0..2 {
+        let q = &mut ad[i][d];
+        *q = 3.0;
+      }
+    }
+  }
+  return 0;
+}
+";
+    let region = spawn_region(&record_source("region_deref_write", src), "main");
+    assert!(
+        region.contains("\"traffic\": null") && region.contains("through a dereference"),
+        "an unfollowable write is uncountable, never a confident zero:\n{region}"
+    );
+}
