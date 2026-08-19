@@ -1,0 +1,49 @@
+// A statically-shaped lowering is not emitted for a tile whose shape is not
+// statically known (Vx#358).
+//
+// E6023 refuses a lowering whose declared shape differs from the site's, but it
+// could only compare when the site's dims parsed; an unknown site shape fell
+// through and the lowering was emitted anyway. Emission splices the DECLARED
+// extents and strides against a runtime-shaped buffer, so a [2,2] lowering on a
+// 3x3 tile copies 4 of 9 elements and scatters them to (i/2)*3 + i%2 instead of
+// i -- wrong slots, five elements left uninitialised. That is the mismatch class
+// E6023 exists to prevent.
+//
+// Declining is a warning, not an error: the builtin copy moves a dynamically
+// shaped tile correctly, so the program is fine -- but the programmer wrote a
+// lowering and deserves to hear it went unused.
+// WARN: no statically known shape
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+}
+Memory SMEM {
+  within: Memory::GPU_HBM, capacity: 228 KiB, bandwidth: 128 B/cyc,
+  granule: 1 KiB, managed: explicit, scope: sm
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::GPU_HBM,
+  visible: [Memory::GPU_HBM, Memory::SMEM],
+  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s,
+  transfer Memory::GPU_HBM -> Memory::SMEM
+}
+impl Transfer<Memory::GPU_HBM, Memory::SMEM> for Topology::Dev {
+  fn move_tile(src: &Tensor<f32, [2, 2]>, dst: &mut Tensor<f32, [2, 2]>) -> i32 {
+    for i in 0..raw::extent(src) {
+      raw::store(dst, i, raw::load(src, i));
+    }
+    raw::barrier();
+    return 0;
+  }
+}
+fn main() -> i32 {
+  let n = 3;
+  let mut a = Tensor<f32>([ n, n ]);
+  let ad = transfer(a, Memory::GPU_HBM);
+  spawn on(Topology::Dev) {
+    let tile = transfer(ad, Memory::SMEM);
+    let z = tile[0][0];
+  }
+  return 0;
+}

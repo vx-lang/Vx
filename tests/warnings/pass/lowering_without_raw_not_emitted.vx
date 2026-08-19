@@ -1,0 +1,62 @@
+// A lowering body that never says `raw::` is CARRIED, not emitted (Vx#358).
+//
+// The whole-body contract -- the trailing barrier (C3), the early-return refusal,
+// the async discipline -- is skipped for such a body, because these predate the
+// primitives. Emitting one anyway took both halves of that bargain: the site was
+// marked `user_lowered`, so the lowering skipped the builtin copy AND its C3
+// barrier on the stated grounds that the body's own trailing `raw::barrier()`
+// supplies it (VxLowering.cpp) -- while the check that guarantees that barrier
+// never ran. The emitted synchronizing transfer had no barrier from either
+// source.
+//
+// The body below fills the tile correctly with ordinary indexing, so this is not
+// a broken program: it is a lowering the compiler declines to emit, falling back
+// to the builtin copy, which carries its own barrier.
+// WARN: not emitted here
+// WARN: raw
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+}
+Memory SMEM {
+  within: Memory::GPU_HBM, capacity: 228 KiB, bandwidth: 128 B/cyc,
+  granule: 1 KiB, managed: explicit, scope: sm
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::GPU_HBM,
+  visible: [Memory::GPU_HBM, Memory::SMEM],
+  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s,
+  transfer Memory::GPU_HBM -> Memory::SMEM
+}
+impl Transfer<Memory::GPU_HBM, Memory::SMEM> for Topology::Dev {
+  fn move_tile(src: &Tensor<f32, [2, 2]>, dst: &mut Tensor<f32, [2, 2]>) -> i32 {
+    for i in 0..2 {
+      for d in 0..2 {
+        dst[i][d] = src[i][d];
+      }
+    }
+    return 0;
+  }
+}
+fn main() -> i32 {
+  let mut a = Tensor<f32>([ 2, 2 ]);
+  let mut o = Tensor<f32>([ 2, 2 ]);
+  for i in 0..2 {
+    for d in 0..2 {
+      a[i][d] = 1.0;
+      o[i][d] = 0.0;
+    }
+  }
+  let ad = transfer(a, Memory::GPU_HBM);
+  let mut od = transfer(o, Memory::GPU_HBM);
+  spawn on(Topology::Dev) {
+    let tile = transfer(ad, Memory::SMEM);
+    for i in 0..2 {
+      for d in 0..2 {
+        od[i][d] = tile[i][d];
+      }
+    }
+  }
+  return 0;
+}

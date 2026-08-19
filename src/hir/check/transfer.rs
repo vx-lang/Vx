@@ -1239,6 +1239,25 @@ impl<'a> TypeChecker<'a> {
                                 li.methods[0].params[1].1,
                                 Type::Borrow { is_mut: true, .. }
                             );
+                        // The body must be written against the `raw::` primitives. The
+                        // whole-body contract -- the trailing barrier (C3), the early-return
+                        // refusal, the async discipline -- is SKIPPED for a body with no
+                        // `raw::` call ("A1-era body", raw.rs), because such bodies predate
+                        // the primitives and are carried, not emitted. Emitting one anyway
+                        // took both halves of that bargain: the site is marked
+                        // `user_lowered`, so VxLowering skips the builtin copy AND its C3
+                        // barrier on the stated grounds that "its own trailing
+                        // raw::barrier() is the synchronization (checked, E6021)" -- while
+                        // E6021 never ran. Probed: a body filling `dst[i][d] = src[i][d]`
+                        // emitted a synchronizing sm transfer with no barrier from either
+                        // source, and a nested `return 7` in such a body spliced
+                        // `vx.return` into the middle of the kernel region.
+                        //
+                        // Carried-but-not-emitted is the A1-era contract; this restores it.
+                        let uses_raw = li
+                            .methods
+                            .iter()
+                            .any(|f| crate::hir::check::raw::body_uses_raw(&f.body));
                         let emittable = li.methods.len() == 1
                             && li.methods[0].params.len() == 2
                             && li.methods[0]
@@ -1246,13 +1265,15 @@ impl<'a> TypeChecker<'a> {
                                 .iter()
                                 .all(|(_, ty)| shaped(ty).is_some())
                             && ordered
+                            && uses_raw
                             && dst_is_sm;
                         if !emittable && !self.speculating {
                             self.errors.push_warning(format!(
                                 "impl transfer {} -> {} exists but is not emitted here: \
                                  a lowering needs exactly one method taking exactly two \
                                  statically-shaped tiles -- the source, then the \
-                                 destination held by `&mut` -- and a destination space \
+                                 destination held by `&mut` -- a body written against the \
+                                 `raw::` primitives, and a destination space \
                                  declared `scope: sm`{}. The builtin copy is used instead",
                                 source_mem.name(),
                                 target_mem.name(),
@@ -1347,6 +1368,32 @@ impl<'a> TypeChecker<'a> {
                                         ),
                                         Some(crate::diagnostic::SourceSpan::from_ast_span(&t.span)),
                                     );
+                                }
+                                // The site's tile has no statically known shape, so nothing
+                                // relates it to the lowering's declared one. Emission would
+                                // splice the DECLARED extents and strides against a runtime
+                                // ?x? buffer: a [2,2] lowering on a 3x3 tile copies 4 of 9
+                                // elements and scatters them to (i/2)*3 + i%2 instead of i.
+                                // E6023 exists to prevent exactly that mismatch; falling
+                                // through here let the unknown-shape case past it.
+                                //
+                                // Refusing the LOWERING, not the program: the builtin copy
+                                // moves a dynamically shaped tile correctly, so declining to
+                                // emit is a silent, correct fallback rather than an error.
+                                (Some(None), Some(decl)) => {
+                                    if !self.speculating {
+                                        self.errors.push_warning(format!(
+                                            "impl transfer {} -> {} declares {:?} tiles but \
+                                             this transfer's tile has no statically known \
+                                             shape, so nothing relates the two; the builtin \
+                                             copy is used instead. Emitting the body would \
+                                             splice the declared extents and strides against \
+                                             a runtime-shaped buffer",
+                                            source_mem.name(),
+                                            target_mem.name(),
+                                            decl
+                                        ));
+                                    }
                                 }
                                 _ => {
                                     t.lowering = Some((

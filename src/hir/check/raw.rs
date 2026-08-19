@@ -1087,6 +1087,19 @@ struct WalkCx {
     continue_heads: Vec<Vec<std::collections::HashMap<crate::symbol::Symbol, crate::syntax::Span>>>,
 }
 
+/// Is this lowering body written against the `raw::` primitives?
+///
+/// The whole-body contract in `check_transfer_impl_bodies` -- the trailing barrier (C3), the
+/// early-return refusal, the async discipline -- is skipped for a body with no `raw::` call,
+/// because such bodies predate the primitives and are CARRIED rather than emitted. So a body
+/// that answers `false` here must never be emitted: doing so takes the skip and the emission
+/// both, and the emitted transfer ends up with no barrier from either source.
+pub(crate) fn body_uses_raw(body: &[Statement]) -> bool {
+    let mut scan = RawScan::default();
+    scan_stmts(body, false, &mut scan);
+    !scan.calls.is_empty()
+}
+
 /// What one deep scan of a body collects.
 #[derive(Default)]
 struct RawScan {
