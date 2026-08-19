@@ -143,15 +143,21 @@ pub enum Opcode {
     /// aggregate slot so a chained access (`outer.inner.a`) or a method receiver (`self.iter.next()`)
     /// addresses through it. The nested-aggregate analogue of `FieldLoad` that stops at the pointer. (#242)
     FieldAddr = 37,
-    /// Terminate the program: `abort()`. Emits a call to libc `abort` followed by
-    /// `llvm.unreachable`, so it is a block TERMINATOR -- nothing after it in a block executes,
-    /// and the verifier knows it.
+    /// CONDITIONAL abort: terminate unless `operand1` (a bool) holds. `imm` indexes this
+    /// function's string side table for the message, exactly as `PrintStr` does.
     ///
-    /// A primitive rather than an assert-shaped special case, because terminating is a
-    /// capability a program should have on its own: `assert` is then one use of it (branch,
-    /// then abort), not a construct the backend has to know about. Calling it is SAFE -- ending
-    /// a process violates no memory-safety property, the same reason `std::process::abort` is
-    /// safe in Rust.
+    /// Terminating is the primitive and everything else is a use of it: `assert(c, m)` is this
+    /// with the programmer's condition, and `abort()` is this with a constant `false`. Calling
+    /// it is SAFE -- ending a process violates no memory-safety property, the same reason
+    /// `std::process::abort` is safe in Rust.
+    ///
+    /// Emitted as `cf.assert`, which is target-portable in a way a hand-written branch onto
+    /// libc `abort` is not: on the host `convert-cf-to-llvm` expands it to `puts` + `abort` +
+    /// `unreachable`, and INSIDE A KERNEL `convert-gpu-to-nvvm` expands it to `__assertfail`
+    /// with the message, file, line and a `noreturn` attribute. Both passes are already in the
+    /// pipelines. An earlier draft desugared this by hand into `print_str` + `abort` calls,
+    /// which are `func` ops -- not device-lowerable, so a kernel containing one was dropped
+    /// from GPU compilation entirely (Vx#362).
     Abort = 38,
 }
 

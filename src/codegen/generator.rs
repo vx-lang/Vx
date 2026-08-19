@@ -741,28 +741,6 @@ impl<'c> MeliorGenerator<'c> {
             self.module.body().append_operation(decl);
         }
 
-        // Declare `abort` -- the language's termination primitive (Vx#361). libc's, so the
-        // declaration is all that is needed; the JIT and the linker both resolve it.
-        let abort_ty = melior::ir::r#type::FunctionType::new(self.context, &[], &[]);
-        let abort_decl = melior::ir::operation::OperationBuilder::new("func.func", self.loc())
-            .add_attributes(&[
-                (
-                    melior::ir::Identifier::new(self.context, "sym_name"),
-                    melior::ir::attribute::StringAttribute::new(self.context, "abort").into(),
-                ),
-                (
-                    melior::ir::Identifier::new(self.context, "function_type"),
-                    melior::ir::attribute::TypeAttribute::new(abort_ty.into()).into(),
-                ),
-                (
-                    melior::ir::Identifier::new(self.context, "sym_visibility"),
-                    melior::ir::attribute::StringAttribute::new(self.context, "private").into(),
-                ),
-            ])
-            .add_regions([melior::ir::Region::new()])
-            .build()?;
-        self.module.body().append_operation(abort_decl);
-
         // Declare vx_init_signals
         let sig_init_ty = melior::ir::r#type::FunctionType::new(self.context, &[], &[]);
         let sig_init_decl = melior::ir::operation::OperationBuilder::new("func.func", self.loc())
@@ -1081,28 +1059,25 @@ impl<'c> MeliorGenerator<'c> {
 
     /// Emit the runtime check for `assert(cond)` / `assert(cond, "msg")` (Vx#361).
     ///
-    /// `cf.assert` rather than a hand-rolled branch: the host pipeline already runs
-    /// `convert-cf-to-llvm` (see `codegen/mod.rs`), which lowers it to a conditional branch
-    /// onto a call to `abort` and declares that symbol -- so the check costs one op here and
-    /// nothing in pipeline surgery. A condition the checker already folded to `true` is
-    /// dropped rather than emitted: an assertion whose truth is settled at compile time has
-    /// nothing to test at run time, and E8002 has already rejected the false ones.
+    /// `cf.assert` rather than a hand-rolled branch, because MLIR lowers it for whichever
+    /// target the code reaches and both passes are already in the pipelines: on the host
+    /// `convert-cf-to-llvm` expands it to a branch onto `puts` + `abort` + `unreachable`, and
+    /// INSIDE A KERNEL `convert-gpu-to-nvvm` expands it to `__assertfail` with the message,
+    /// file, line and a `noreturn` attribute. `cf` is in `isDeviceLowerableDialect`, so the op
+    /// also passes the kernel's device-ready gate.
     ///
-    /// NOT EMITTED INSIDE A DEVICE KERNEL, deliberately. `cf` is device-lowerable
-    /// (`isDeviceLowerableDialect`), so a `cf.assert` would pass the kernel's dialect gate and
-    /// then lower to a call to the host's `abort` in PTX -- an unresolved symbol that costs
-    /// the kernel its device image, turning an assertion into a silent loss of the whole
-    /// kernel. Device-side trapping needs `__assertfail`/`llvm.trap`, which is its own change;
-    /// until then a kernel assert keeps its old meaning (a compile-time fact only) and
-    /// Vx#361 tracks the gap.
+    /// That portability is why there is no kernel guard here. An earlier version skipped
+    /// emission under `in_spawn`, reasoning that the op would lower to a call to the HOST's
+    /// `abort` in PTX -- which was the host pipeline's behaviour applied to device code, and
+    /// wrong. A kernel assertion is a real assertion (Vx#362).
+    ///
+    /// A condition the checker already folded to `true` is dropped rather than emitted: there
+    /// is nothing to test at run time, and E8002 has already rejected the false ones.
     fn emit_runtime_assert(
         &mut self,
         s: &syntax::AssertStmt,
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Result<Option<melior::ir::BlockRef<'c, 'c>>, LowerError> {
-        if self.in_spawn {
-            return Ok(Some(block));
-        }
         // A literal `assert(true)` is not worth a branch. Anything less obvious is left to
         // the optimiser, which sees the same constant the checker did; a statically-FALSE
         // condition never reaches codegen at all (E8002 rejects it).
@@ -1173,25 +1148,41 @@ impl<'c> MeliorGenerator<'c> {
             Expr::StructInit(e) => LowerToMelior::lower(e, self, block),
             Expr::MemberAccess(e) => LowerToMelior::lower(e, self, block),
             Expr::IndexAccess(e) => LowerToMelior::lower(e, self, block),
-            // `abort()` -- terminate. Handled here rather than in the general call lowering
-            // because it has no Vx-level definition to resolve: it is a primitive, like
-            // `print`. Safe to call; ending a process breaks no memory-safety property.
+            // `abort()` -- terminate unconditionally, expressed as a conditional abort whose
+            // condition is `false`. One form serves both `abort` and `assert`, and it inherits
+            // the same target portability: `abort` + `unreachable` on the host, `__assertfail`
+            // inside a kernel. Handled here rather than in the general call lowering because it
+            // has no Vx-level definition to resolve -- it is a primitive, like `print`. Safe to
+            // call; ending a process breaks no memory-safety property.
             Expr::FunctionCall(e) if e.name.as_ref() == "abort" && e.args.is_empty() => {
-                let call = melior::ir::operation::OperationBuilder::new("func.call", self.loc())
-                    .add_attributes(&[(
-                        melior::ir::Identifier::new(self.context, "callee"),
-                        melior::ir::attribute::FlatSymbolRefAttribute::new(self.context, "abort")
+                let never =
+                    melior::ir::operation::OperationBuilder::new("arith.constant", self.loc())
+                        .add_attributes(&[(
+                            melior::ir::Identifier::new(self.context, "value"),
+                            melior::ir::attribute::IntegerAttribute::new(
+                                melior::ir::r#type::IntegerType::new(self.context, 1).into(),
+                                0,
+                            )
                             .into(),
-                    )])
-                    .add_results(&[])
-                    .build()?;
-                block.append_operation(call);
-                // No `llvm.unreachable` here, unlike the flat path. `abort()` is lowered as an
-                // EXPRESSION on this path, so the enclosing `if` appends its branch to the merge
-                // block afterwards -- and `llvm.unreachable` must be the last op in its block, so
-                // emitting it makes the function unverifiable. The call alone is correct: `abort`
-                // does not return, so the code after it never runs. What is lost is the explicit
-                // marker (an optimiser hint), not the behaviour.
+                        )])
+                        .add_results(
+                            &[melior::ir::r#type::IntegerType::new(self.context, 1).into()],
+                        )
+                        .build()?;
+                let never_v = block.append_operation(never).result(0)?.into();
+                let assert_op =
+                    melior::ir::operation::OperationBuilder::new("cf.assert", self.loc())
+                        .add_operands(&[never_v])
+                        .add_attributes(&[(
+                            melior::ir::Identifier::new(self.context, "msg"),
+                            melior::ir::attribute::StringAttribute::new(
+                                self.context,
+                                "abort() called",
+                            )
+                            .into(),
+                        )])
+                        .build()?;
+                block.append_operation(assert_op);
                 let zero =
                     melior::ir::operation::OperationBuilder::new("arith.constant", self.loc())
                         .add_attributes(&[(

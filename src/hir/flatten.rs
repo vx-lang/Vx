@@ -233,10 +233,6 @@ struct Lowerer<'r> {
     /// String side table: the bytes for each `PrintStr` emitted, in emission order. A `PrintStr`'s
     /// `imm` indexes here; codegen emits an `llvm.mlir.global` per entry. Committed onto the worker.
     strings: Vec<String>,
-    /// How many `spawn` regions enclose the statement being lowered. Non-zero means the code
-    /// is destined for a device kernel, where a host call is not merely wrong but fatal to the
-    /// whole region (see `Statement::Assert`).
-    spawn_depth: u32,
     /// The concrete AST type of each in-scope name (params + `let` locals) — the flat-path analogue of
     /// the AST codegen's identifier→type env. It is the only source of a *pointer's pointee element
     /// type*, which the frozen `layouts` erase (a pointer field is `Opaque`): recovering `self.data`'s
@@ -297,7 +293,6 @@ impl<'r> Lowerer<'r> {
             loop_stack: Vec::new(),
             tensor_types: Vec::new(),
             strings: Vec::new(),
-            spawn_depth: 0,
             ast_types: HashMap::new(),
             agg_layouts: Vec::new(),
             ret_ty: None,
@@ -381,10 +376,7 @@ impl<'r> Lowerer<'r> {
     fn block_terminated(&self) -> bool {
         matches!(
             self.code.last().map(|i| i.opcode),
-            // `Abort` ends the block too: it emits `llvm.unreachable`, which MLIR requires to
-            // be the last op in its block. Omitting it here let an `if { abort(); }` append a
-            // branch to the merge block AFTER the unreachable, which the verifier rejects.
-            Some(Opcode::Ret | Opcode::Br | Opcode::CondBr | Opcode::Abort)
+            Some(Opcode::Ret | Opcode::Br | Opcode::CondBr)
         )
     }
 
@@ -1698,13 +1690,9 @@ impl<'r> Lowerer<'r> {
         }
         let top_id = crate::arch::topology_dispatch_id(&s.top);
         self.emit_effect(Opcode::Spawn, Register(0), Register(0), top_id as u64);
-        // Inside a kernel region, so that `assert` knows not to emit host calls here -- see
-        // `Statement::Assert`. Mirrors the AST path's `gen.in_spawn`.
-        self.spawn_depth += 1;
         for stmt in &s.stmts {
             self.lower_stmt(stmt)?;
         }
-        self.spawn_depth -= 1;
         self.emit_effect(Opcode::SpawnEnd, Register(0), Register(0), 0);
         Some(())
     }
@@ -2411,46 +2399,24 @@ impl<'r> Lowerer<'r> {
                     self.assign_local(&name, combined)
                 }
             }
-            // `assert(cond, msg)` is a CONDITIONAL ABORT, and is lowered as exactly that:
-            // branch on the condition, and on the failing edge print the message and
-            // terminate. No assert-shaped opcode -- the pieces are `CondBr`, `PrintStr` and
-            // `Abort`, each of which the language wants for its own sake (Vx#361).
+            // `assert(cond, msg)` IS a conditional abort, so it is one `Abort` carrying the
+            // condition and the message -- not a hand-written branch onto a call.
             //
-            // The AST path spells the same thing as one `cf.assert`, which
-            // `convert-cf-to-llvm` expands into this identical branch-print-abort shape. The
-            // two paths therefore agree on behaviour while differing in how much of the
-            // expansion they write by hand.
+            // The distinction is not cosmetic: `Abort` emits `cf.assert`, which MLIR lowers
+            // for whichever target the code lands on -- `puts` + `abort` on the host,
+            // `__assertfail` inside a kernel. The hand-desugared form emitted `func` calls,
+            // which are not device-lowerable, so a kernel containing an assert was silently
+            // dropped from GPU compilation and the assert had to be skipped there to avoid it
+            // (Vx#362). Emitting the portable op instead means kernels get real assertions.
             Statement::Assert(a) => {
-                // NOT INSIDE A KERNEL. The desugaring calls `print_str` and `abort`, both
-                // `func` ops -- and `func` is not in `isDeviceLowerableDialect`, so a kernel
-                // containing one is classified not-device-ready and dropped from GPU
-                // compilation ENTIRELY, silently. An assertion that deletes the kernel it
-                // guards is worse than one that does nothing, so a kernel assert keeps its
-                // compile-time-only meaning here exactly as it does on the AST path
-                // (`gen.in_spawn`). Device-side trapping needs `__assertfail`; Vx#362.
-                //
-                // The AST path was written with this guard and the flat path was not, which
-                // is how the two came to disagree: probed, the flat path put `func.call
-                // @abort` and `func.call @print_str` inside the spawn region while the AST
-                // path emitted nothing. No fixture in the tree has an assert inside a spawn,
-                // so nothing would have caught it.
-                if self.spawn_depth > 0 {
-                    return Some(());
-                }
                 let cond = self.lower_expr(&a.expr)?;
-                let fail_b = self.new_block();
-                let cont_b = self.new_block();
-                // Condition HOLDS -> continue; fails -> the abort block.
-                self.emit_effect(
-                    Opcode::CondBr,
-                    cond.reg,
-                    Register(0),
-                    pack_targets(cont_b, fail_b),
+                let imm = self.strings.len() as u64;
+                self.strings.push(
+                    a.msg
+                        .clone()
+                        .unwrap_or_else(|| "assertion failed".to_string()),
                 );
-                self.emit_effect(Opcode::BlockStart, Register(0), Register(0), fail_b as u64);
-                self.emit_print_str(a.msg.as_deref().unwrap_or("assertion failed"));
-                self.emit_effect(Opcode::Abort, Register(0), Register(0), 0);
-                self.emit_effect(Opcode::BlockStart, Register(0), Register(0), cont_b as u64);
+                self.emit_effect(Opcode::Abort, cond.reg, Register(0), imm);
                 Some(())
             }
             Statement::ExprStmt(e) => match &e.expr {
@@ -2473,10 +2439,24 @@ impl<'r> Lowerer<'r> {
                 // `print(x)` is a statement-level effect (no result): lower its one argument and emit
                 // a `Print`, whose `type_idx` carries the argument's type (scalar or tensor) so codegen
                 // routes to the right `print_*`/`printMemref*` runtime helper.
-                // `abort()` -- the language's own termination primitive. Safe to call: ending
-                // the process violates no memory-safety property.
+                // `abort()` -- terminate unconditionally, expressed as a conditional abort
+                // whose condition is `false`. One form serves both, and it inherits the same
+                // target portability: on the host it becomes `abort()`, inside a kernel
+                // `__assertfail`. Safe to call; ending a process violates no memory-safety
+                // property.
                 Expr::FunctionCall(fc) if fc.name.as_ref() == "abort" && fc.args.is_empty() => {
-                    self.emit_effect(Opcode::Abort, Register(0), Register(0), 0);
+                    let never = self
+                        .emit_value(
+                            Opcode::Const,
+                            Register(0),
+                            Register(0),
+                            ElementType::Bool,
+                            0,
+                        )
+                        .reg;
+                    let imm = self.strings.len() as u64;
+                    self.strings.push("abort() called".to_string());
+                    self.emit_effect(Opcode::Abort, never, Register(0), imm);
                     Some(())
                 }
                 Expr::FunctionCall(fc) if fc.name.as_ref() == "print" && fc.args.len() == 1 => {

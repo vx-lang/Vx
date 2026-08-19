@@ -179,23 +179,24 @@ fn main() -> i32 {
     }
 }
 
-/// An assert inside a `spawn` body emits NOTHING, on both paths.
+/// An assert inside a `spawn` body is a REAL assert, on both paths.
 ///
-/// Not a nicety. The desugaring calls `print_str` and `abort`, which are `func`
-/// ops -- and `func` is not in `isDeviceLowerableDialect`, so a kernel containing
-/// one is classified not-device-ready and dropped from GPU compilation entirely,
-/// silently. An assertion that deletes the kernel it guards is far worse than one
-/// that does nothing, so inside a kernel `assert` keeps its compile-time-only
-/// meaning until device-side trapping exists (Vx#362).
+/// It must reach device code as `cf.assert` and must NOT reach it as a host
+/// call. The distinction is the whole point: `cf` is device-lowerable, and
+/// `convert-gpu-to-nvvm` (already in the device pipeline) expands `cf.assert`
+/// into `__assertfail` with the message, file, line and `noreturn`. A
+/// hand-desugared `print_str` + `abort` pair is `func` ops, which are NOT
+/// device-lowerable -- a kernel containing one is classified not-device-ready
+/// and dropped from GPU compilation entirely, silently.
 ///
-/// This test exists because the two paths DID disagree: the AST path was written
-/// with the guard and the flat path was not, so the flat path put `func.call
-/// @abort` and `func.call @print_str` straight into the spawn region. No fixture
-/// in the tree has an assert inside a `spawn`, so nothing caught it -- the same
-/// coverable-but-uncovered shape that let a disabled guard ship earlier in this
-/// campaign.
+/// This test has been three things in three commits, which is the record worth
+/// keeping. First it asserted asserts emit nothing (true then). Then it asserted
+/// they emit nothing IN KERNELS, after a hand-desugared lowering made kernel
+/// asserts unsafe -- correct for that lowering, but the guard was reasoning from
+/// the HOST pipeline's behaviour applied to device code. Now it asserts what the
+/// portable op actually delivers (Vx#362).
 #[test]
-fn an_assert_inside_a_kernel_emits_no_host_calls() {
+fn an_assert_inside_a_kernel_is_a_real_assert() {
     let src = r#"
 Memory CPU_DRAM {}
 Memory GPU_HBM {
@@ -224,10 +225,15 @@ fn main() -> i32 {
         let ir = String::from_utf8_lossy(&out.stdout).to_string()
             + &String::from_utf8_lossy(&out.stderr);
         let path = if flags.is_empty() { "flat" } else { "AST" };
-        for op in ["func.call @abort", "func.call @print_str", "cf.assert"] {
+        assert!(
+            ir.contains("cf.assert"),
+            "{path}: a kernel assertion must survive as the device-lowerable op:\n{ir}"
+        );
+        for host_only in ["func.call @abort", "func.call @print_str"] {
             assert!(
-                !ir.contains(op),
-                "{path}: `{op}` inside a kernel region costs the kernel its device image:\n{ir}"
+                !ir.contains(host_only),
+                "{path}: `{host_only}` is a `func` op -- not device-lowerable, so a kernel \
+                 holding one is dropped from GPU compilation entirely:\n{ir}"
             );
         }
     }
