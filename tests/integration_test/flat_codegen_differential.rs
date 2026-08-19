@@ -734,9 +734,13 @@ fn flat_matches_ast_if_expression() {
 }
 
 #[test]
-fn flat_matches_ast_assert_is_a_noop() {
-    // `assert(cond, msg)` emits no runtime check in *either* path (the AST codegen treats it as a
-    // compile-time seam fact), so a program with asserts JIT-matches — both ignore them.
+fn flat_matches_ast_assert_is_checked() {
+    // `assert(cond, msg)` emits a real runtime check in BOTH paths (Vx#361): the flat path a
+    // `cf.assert` from `Opcode::Assert`, the AST path the same op from `emit_runtime_assert`.
+    // A satisfied assertion must therefore change nothing about the result, on either path.
+    //
+    // Named for what it now tests. Until Vx#361 this was `..._assert_is_a_noop` and asserted
+    // the opposite -- correctly, at the time, when neither path emitted anything.
     assert_parity(
         "fn main() -> i32 { let x = 5; assert(x == 5, \"ok\"); assert(x > 0, \"pos\"); return x; }",
         5,
@@ -905,9 +909,10 @@ fn flat_matches_ast_sizeof_value() {
 
 #[test]
 fn flat_matches_ast_comptime_block() {
-    // A `comptime { .. }` block lowers transparently — its `sizeof` folds to a constant and its
-    // `assert` is a runtime no-op, so at runtime it has no observable effect and `main` returns 0
-    // (#228). Matches the AST codegen, which lowers the block the same way.
+    // A `comptime { .. }` block lowers transparently — its `sizeof` folds to a constant, and its
+    // `assert` now emits a runtime check whose condition the checker already decided, so it
+    // holds and the block still has no observable effect: `main` returns 0 (#228). Matches the
+    // AST codegen, which lowers the block the same way.
     assert_parity(
         "fn main() -> i32 { comptime { let s: i64 = sizeof<f64>(); assert(s == 8); } return 0; }",
         0,

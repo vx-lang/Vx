@@ -1057,6 +1057,55 @@ impl<'c> MeliorGenerator<'c> {
         Ok(func_op)
     }
 
+    /// Emit the runtime check for `assert(cond)` / `assert(cond, "msg")` (Vx#361).
+    ///
+    /// `cf.assert` rather than a hand-rolled branch: the host pipeline already runs
+    /// `convert-cf-to-llvm` (see `codegen/mod.rs`), which lowers it to a conditional branch
+    /// onto a call to `abort` and declares that symbol -- so the check costs one op here and
+    /// nothing in pipeline surgery. A condition the checker already folded to `true` is
+    /// dropped rather than emitted: an assertion whose truth is settled at compile time has
+    /// nothing to test at run time, and E8002 has already rejected the false ones.
+    ///
+    /// NOT EMITTED INSIDE A DEVICE KERNEL, deliberately. `cf` is device-lowerable
+    /// (`isDeviceLowerableDialect`), so a `cf.assert` would pass the kernel's dialect gate and
+    /// then lower to a call to the host's `abort` in PTX -- an unresolved symbol that costs
+    /// the kernel its device image, turning an assertion into a silent loss of the whole
+    /// kernel. Device-side trapping needs `__assertfail`/`llvm.trap`, which is its own change;
+    /// until then a kernel assert keeps its old meaning (a compile-time fact only) and
+    /// Vx#361 tracks the gap.
+    fn emit_runtime_assert(
+        &mut self,
+        s: &syntax::AssertStmt,
+        block: melior::ir::BlockRef<'c, 'c>,
+    ) -> Result<Option<melior::ir::BlockRef<'c, 'c>>, LowerError> {
+        if self.in_spawn {
+            return Ok(Some(block));
+        }
+        // A literal `assert(true)` is not worth a branch. Anything less obvious is left to
+        // the optimiser, which sees the same constant the checker did; a statically-FALSE
+        // condition never reaches codegen at all (E8002 rejects it).
+        if matches!(
+            &*s.expr,
+            syntax::Expr::Identifier(id) if id.name.as_ref() == "true"
+        ) {
+            return Ok(Some(block));
+        }
+        let (cond, _ty, block) = self.generate_expr(&s.expr, block)?;
+        let msg = s
+            .msg
+            .clone()
+            .unwrap_or_else(|| "assertion failed".to_string());
+        let op = melior::ir::operation::OperationBuilder::new("cf.assert", self.loc())
+            .add_operands(&[cond])
+            .add_attributes(&[(
+                melior::ir::Identifier::new(self.context, "msg"),
+                melior::ir::attribute::StringAttribute::new(self.context, &msg).into(),
+            )])
+            .build()?;
+        block.append_operation(op);
+        Ok(Some(block))
+    }
+
     pub(crate) fn generate_statement(
         &mut self,
         stmt: &Statement,
@@ -1071,14 +1120,13 @@ impl<'c> MeliorGenerator<'c> {
             Statement::ExprStmt(s) => LowerToMelior::lower(s, self, block),
             Statement::ForLoop(s) => LowerToMelior::lower(s, self, block),
             Statement::Assert(s) => {
-                // TODO: Lower to `scf.if` with panic/abort for runtime checks.
-                // The condition is a fact the host proves; record it so it can be
+                // The condition is also a fact the host proves; record it so it can be
                 // transported across a device `spawn` seam as an `llvm.intr.assume`
                 // certificate (see `crate::codegen::lower::seam_cert`).
                 if self.emit_seam_certs {
                     self.assert_facts.push((*s.expr).clone());
                 }
-                Ok(Some(block))
+                self.emit_runtime_assert(s, block)
             }
             Statement::Loop(s) => LowerToMelior::lower(s, self, block),
             Statement::Break(s) => LowerToMelior::lower(s, self, block),

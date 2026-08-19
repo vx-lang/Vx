@@ -6,34 +6,26 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// `assert(cond)` is a COMPILE-TIME fact in Vx, and nothing else. When the
-// condition folds, the checker decides it (E8002 on a false one). When it does
-// not fold -- the ordinary case, a condition over runtime values -- **no code is
-// emitted at all**. Both backends say so in as many words:
+// `assert(cond)` / `assert(cond, "msg")` emits a real runtime check (Vx#361).
 //
-//   src/codegen/generator.rs, Statement::Assert:
-//     // TODO: Lower to `scf.if` with panic/abort for runtime checks.
+// A condition the checker can fold is still decided at compile time -- E8002 on a
+// false one -- and a folded-true condition costs a check the optimiser removes.
+// A condition over runtime values now lowers to `cf.assert`, which the host
+// pipeline's `convert-cf-to-llvm` turns into a branch onto `puts` + `abort`.
+// Both backends emit it: the AST path in `generator.rs::emit_runtime_assert`,
+// the flat path via `Opcode::Assert`. They must agree, because either may claim
+// a given function.
 //
-//   src/hir/flatten.rs, Statement::Assert:
-//     // the AST codegen emits no runtime check for it. Match that exactly:
-//     // lower it to nothing, so flat and AST agree at runtime.
+// Before this, `assert` lowered to nothing in both paths, so a false assertion
+// over runtime values was not a failure but silence. These tests were written
+// while that was true -- one pinning the silence, one (ignored) demanding the
+// trap -- and both are now inverted, which was their purpose.
 //
-// So a false assertion over runtime values is not a failure; it is silence. That
-// is a defensible state for a fact used by the seam certificates, and an
-// indefensible one the moment anything TRUSTS an assert -- which is exactly what
-// the proposed topology-identity work would do (a merged device identity resting
-// on `assert(i == j)` becomes a wrong-device miscompile if the assert is false at
-// run time, with nothing to catch it). Filed as Vx#361.
-//
-// Two tests below, deliberately of opposite kinds:
-//
-//   * `a_false_runtime_assert_does_not_stop_the_program` PINS TODAY'S BEHAVIOUR
-//     and passes. It exists so the day someone implements the trap, it goes red
-//     and forces a deliberate decision rather than a silent semantic change.
-//
-//   * `a_false_runtime_assert_should_abort` states what the language OUGHT to do
-//     and FAILS today. It is `#[ignore]`d so CI stays green; run it with
-//     `cargo test --test integration_test -- --ignored assert` to see the gap.
+// NOT EMITTED INSIDE A DEVICE KERNEL. `cf` is device-lowerable, so a `cf.assert`
+// in a kernel would pass the dialect gate and then lower to a call to the host's
+// `abort` in PTX: an unresolved symbol that costs the kernel its device image,
+// turning an assertion into the silent loss of the whole kernel. Device-side
+// trapping needs `__assertfail`, tracked on Vx#361.
 //
 //===----------------------------------------------------------------------===//
 
@@ -67,25 +59,21 @@ fn write_probe(stem: &str, source: &str) -> std::path::PathBuf {
     path
 }
 
-/// PINS TODAY'S BEHAVIOUR: `assert(1000 < 5)` neither stops the program nor
-/// leaves any trace in the emitted IR.
+/// The check reaches the IR, and it is the condition the programmer wrote.
 ///
-/// The emitted function is the whole evidence -- the assertion is not weakened
-/// or hoisted, it is absent:
+/// `checked` compiles to the comparison, the assert, and the multiply:
 ///
 ///   func.func @checked(%arg0: i32) -> i32 {
-///     %c10_i32 = arith.constant 10 : i32
-///     %0 = arith.muli %arg0, %c10_i32 : i32
-///     return %0 : i32
-///   }
+///     %c5_i32 = arith.constant 5 : i32
+///     %0 = arith.cmpi slt, %arg0, %c5_i32 : i32
+///     cf.assert %0, "assertion failed"
+///     ...
 ///
-/// When runtime checks land, this test breaks. That is its job: the change is a
-/// semantic one and should not be able to happen quietly.
+/// This test asserted the OPPOSITE until Vx#361 -- that no such op existed --
+/// and was written to go red on exactly this change.
 #[test]
-fn a_false_runtime_assert_does_not_stop_the_program() {
-    let probe = write_probe("assert_false_runtime", FALSE_AT_RUNTIME);
-
-    // 1. The IR carries no check of any kind.
+fn a_runtime_assert_emits_a_check() {
+    let probe = write_probe("assert_emits_check", FALSE_AT_RUNTIME);
     let ir = Command::new(env!("CARGO_BIN_EXE_vxc"))
         .arg(&probe)
         .arg("--action")
@@ -94,50 +82,25 @@ fn a_false_runtime_assert_does_not_stop_the_program() {
         .expect("run vxc");
     let ir_text =
         String::from_utf8_lossy(&ir.stdout).to_string() + &String::from_utf8_lossy(&ir.stderr);
-    for op in ["llvm.trap", "cf.assert", "llvm.intr.assume"] {
-        assert!(
-            !ir_text.contains(op),
-            "`assert` is not code-generated today, so no `{op}` should appear. \
-             If this fires, runtime checks have landed and this test (plus the \
-             ignored one beside it) needs updating:\n{ir_text}"
-        );
-    }
     assert!(
-        ir_text.contains("func.func @checked"),
-        "the probe must actually have compiled:\n{ir_text}"
-    );
-
-    // 2. And the program runs to completion, printing the value the assertion
-    //    was supposed to forbid.
-    let run = Command::new(env!("CARGO_BIN_EXE_vxc"))
-        .arg(&probe)
-        .output()
-        .expect("run vxc");
-    let out = String::from_utf8_lossy(&run.stdout).to_string();
-    assert!(
-        out.contains("10000"),
-        "checked(1000) returns 10000 -- the false assertion changed nothing:\n{out}"
+        ir_text.contains("cf.assert"),
+        "the assertion must survive into the IR as a check:\n{ir_text}"
     );
     assert!(
-        run.status.success(),
-        "and the process exits cleanly despite the violated assertion"
+        ir_text.contains("arith.cmpi slt"),
+        "and it must test the condition the programmer wrote, not a stand-in:\n{ir_text}"
     );
 }
 
-/// STATES THE DESIRED BEHAVIOUR, AND FAILS TODAY.
+/// A false assertion stops the program.
 ///
-/// A false assertion should stop the program. It does not: `assert` lowers to
-/// nothing in both backends, so this is a demonstration of the gap rather than a
-/// regression guard. Ignored so it does not break CI; run it deliberately:
-///
-///   cargo test --test integration_test -- --ignored assert
-///
-/// Delete the `#[ignore]` when runtime checks land -- that is the moment this
-/// stops being a wish and starts being a test.
+/// This was the `#[ignore]`d wish; it is now a test. `checked(1000)` violates
+/// `assert(n < 5)`, so the process must fail instead of printing 10000. The
+/// probe's condition cannot be folded -- `n` is a parameter and its argument
+/// arrives through a tensor element -- so this exercises the runtime check and
+/// not E8002.
 #[test]
-#[ignore = "assert emits no runtime check (see module comment); run with --ignored \
-            to see the gap"]
-fn a_false_runtime_assert_should_abort() {
+fn a_false_runtime_assert_aborts() {
     let probe = write_probe("assert_should_abort", FALSE_AT_RUNTIME);
     let run = Command::new(env!("CARGO_BIN_EXE_vxc"))
         .arg(&probe)

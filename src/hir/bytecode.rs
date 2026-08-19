@@ -143,6 +143,12 @@ pub enum Opcode {
     /// aggregate slot so a chained access (`outer.inner.a`) or a method receiver (`self.iter.next()`)
     /// addresses through it. The nested-aggregate analogue of `FieldLoad` that stops at the pointer. (#242)
     FieldAddr = 37,
+    /// `assert(cond, msg)`: trap unless `operand1` (a bool) holds. `imm` indexes this function's
+    /// string side table for the message, exactly as `PrintStr` does. Codegen emits `cf.assert`,
+    /// which `convert-cf-to-llvm` turns into a branch onto `puts` + `abort` (Vx#361).
+    ///
+    /// An effect, not a value: it produces no register.
+    Assert = 38,
 }
 
 impl Opcode {
@@ -190,6 +196,7 @@ impl Opcode {
             35 => FuncConst,
             36 => CallIndirect,
             37 => FieldAddr,
+            38 => Assert,
             _ => return None,
         })
     }

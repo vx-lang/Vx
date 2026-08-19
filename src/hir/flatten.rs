@@ -2399,10 +2399,25 @@ impl<'r> Lowerer<'r> {
                     self.assign_local(&name, combined)
                 }
             }
-            // `assert(cond, msg)` is a *compile-time* fact (used for seam certificates); the AST codegen
-            // emits no runtime check for it (`generator.rs`, `Statement::Assert`). Match that exactly:
-            // lower it to nothing, so flat and AST agree at runtime.
-            Statement::Assert(_) => Some(()),
+            // `assert(cond, msg)` emits a real runtime check (Vx#361). Both paths emit it, so
+            // the two backends still agree at runtime -- which is what the previous comment here
+            // cared about when the answer was "neither emits anything".
+            //
+            // Declining instead would also have kept them in agreement, by handing every
+            // assert-bearing function to the AST oracle. It was rejected because asserts are
+            // everywhere -- `Option::unwrap` in the stdlib has one, so every `std::vec` and
+            // `std::iter` user would fall off the default path for a construct that costs one op.
+            Statement::Assert(a) => {
+                let cond = self.lower_expr(&a.expr)?;
+                let imm = self.strings.len() as u64;
+                self.strings.push(
+                    a.msg
+                        .clone()
+                        .unwrap_or_else(|| "assertion failed".to_string()),
+                );
+                self.emit_effect(Opcode::Assert, cond.reg, Register(0), imm);
+                Some(())
+            }
             Statement::ExprStmt(e) => match &e.expr {
                 Expr::If(iff) => self.lower_if(iff),
                 Expr::Match(m) => self.lower_match(m),
