@@ -178,3 +178,57 @@ fn main() -> i32 {
         );
     }
 }
+
+/// An assert inside a `spawn` body emits NOTHING, on both paths.
+///
+/// Not a nicety. The desugaring calls `print_str` and `abort`, which are `func`
+/// ops -- and `func` is not in `isDeviceLowerableDialect`, so a kernel containing
+/// one is classified not-device-ready and dropped from GPU compilation entirely,
+/// silently. An assertion that deletes the kernel it guards is far worse than one
+/// that does nothing, so inside a kernel `assert` keeps its compile-time-only
+/// meaning until device-side trapping exists (Vx#362).
+///
+/// This test exists because the two paths DID disagree: the AST path was written
+/// with the guard and the flat path was not, so the flat path put `func.call
+/// @abort` and `func.call @print_str` straight into the spawn region. No fixture
+/// in the tree has an assert inside a `spawn`, so nothing caught it -- the same
+/// coverable-but-uncovered shape that let a disabled guard ship earlier in this
+/// campaign.
+#[test]
+fn an_assert_inside_a_kernel_emits_no_host_calls() {
+    let src = r#"
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s
+}
+fn main() -> i32 {
+  let mut a = Tensor<f32>([ 2, 2 ]);
+  a[0][0] = 1.0;
+  let mut ad = transfer(a, Memory::GPU_HBM);
+  spawn on(Topology::GPU) {
+    let n = 3;
+    assert(n < 5, "kernel assert");
+    ad[0][0] = 2.0;
+  }
+  return 0;
+}
+"#;
+    let probe = write_probe("kernel_assert", src);
+    for flags in [vec![], vec!["--legacy-codegen"]] {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_vxc"));
+        cmd.arg(&probe).arg("--action").arg("emit-mlir");
+        for f in &flags {
+            cmd.arg(f);
+        }
+        let out = cmd.output().expect("run vxc");
+        let ir = String::from_utf8_lossy(&out.stdout).to_string()
+            + &String::from_utf8_lossy(&out.stderr);
+        let path = if flags.is_empty() { "flat" } else { "AST" };
+        for op in ["func.call @abort", "func.call @print_str", "cf.assert"] {
+            assert!(
+                !ir.contains(op),
+                "{path}: `{op}` inside a kernel region costs the kernel its device image:\n{ir}"
+            );
+        }
+    }
+}

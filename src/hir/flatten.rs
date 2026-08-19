@@ -233,6 +233,10 @@ struct Lowerer<'r> {
     /// String side table: the bytes for each `PrintStr` emitted, in emission order. A `PrintStr`'s
     /// `imm` indexes here; codegen emits an `llvm.mlir.global` per entry. Committed onto the worker.
     strings: Vec<String>,
+    /// How many `spawn` regions enclose the statement being lowered. Non-zero means the code
+    /// is destined for a device kernel, where a host call is not merely wrong but fatal to the
+    /// whole region (see `Statement::Assert`).
+    spawn_depth: u32,
     /// The concrete AST type of each in-scope name (params + `let` locals) — the flat-path analogue of
     /// the AST codegen's identifier→type env. It is the only source of a *pointer's pointee element
     /// type*, which the frozen `layouts` erase (a pointer field is `Opaque`): recovering `self.data`'s
@@ -293,6 +297,7 @@ impl<'r> Lowerer<'r> {
             loop_stack: Vec::new(),
             tensor_types: Vec::new(),
             strings: Vec::new(),
+            spawn_depth: 0,
             ast_types: HashMap::new(),
             agg_layouts: Vec::new(),
             ret_ty: None,
@@ -1693,9 +1698,13 @@ impl<'r> Lowerer<'r> {
         }
         let top_id = crate::arch::topology_dispatch_id(&s.top);
         self.emit_effect(Opcode::Spawn, Register(0), Register(0), top_id as u64);
+        // Inside a kernel region, so that `assert` knows not to emit host calls here -- see
+        // `Statement::Assert`. Mirrors the AST path's `gen.in_spawn`.
+        self.spawn_depth += 1;
         for stmt in &s.stmts {
             self.lower_stmt(stmt)?;
         }
+        self.spawn_depth -= 1;
         self.emit_effect(Opcode::SpawnEnd, Register(0), Register(0), 0);
         Some(())
     }
@@ -2412,6 +2421,22 @@ impl<'r> Lowerer<'r> {
             // two paths therefore agree on behaviour while differing in how much of the
             // expansion they write by hand.
             Statement::Assert(a) => {
+                // NOT INSIDE A KERNEL. The desugaring calls `print_str` and `abort`, both
+                // `func` ops -- and `func` is not in `isDeviceLowerableDialect`, so a kernel
+                // containing one is classified not-device-ready and dropped from GPU
+                // compilation ENTIRELY, silently. An assertion that deletes the kernel it
+                // guards is worse than one that does nothing, so a kernel assert keeps its
+                // compile-time-only meaning here exactly as it does on the AST path
+                // (`gen.in_spawn`). Device-side trapping needs `__assertfail`; Vx#362.
+                //
+                // The AST path was written with this guard and the flat path was not, which
+                // is how the two came to disagree: probed, the flat path put `func.call
+                // @abort` and `func.call @print_str` inside the spawn region while the AST
+                // path emitted nothing. No fixture in the tree has an assert inside a spawn,
+                // so nothing would have caught it.
+                if self.spawn_depth > 0 {
+                    return Some(());
+                }
                 let cond = self.lower_expr(&a.expr)?;
                 let fail_b = self.new_block();
                 let cont_b = self.new_block();
