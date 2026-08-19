@@ -1,5 +1,6 @@
 mod integration_test {
     mod architecture_test;
+    mod assert_codegen_test;
     mod basic_integration;
     mod borrow_test;
     mod compile_test;
