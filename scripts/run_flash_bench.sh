@@ -104,15 +104,27 @@ refused=$(grep -c 'not routed; running on the host' "$OUTDIR/probe.txt")
 nodevice=$(grep -c '^\[Vx CUDA\] no CUDA device' "$OUTDIR/probe.txt")
 gemms=$(grep -c '^\[Vx CUDA\] GEMM ' "$OUTDIR/probe.txt")
 stages=$(grep -c '^\[Vx CUDA\] device . stage' "$OUTDIR/probe.txt")
+# The trace's newest sentence: the kernel was not refused and not reclassified
+# as a GEMM -- the compiler emitted a device image for it and the runtime
+# launched that (#251). This is the outcome the header of this script said did
+# not exist yet, so before it existed the verdict below correctly refused to
+# name it.
+images=$(grep -c 'ran on GPU . from its own image' "$OUTDIR/probe.txt")
 
 echo "=== Where does this kernel run? ==="
 echo "  operands staged to the device: $stages"
 echo "  GEMM dispatches:               $gemms"
 echo "  kernels refused and run on the host: $refused"
+echo "  kernels run from their own device image: $images"
 if [ "$nodevice" -gt 0 ] && [ "$gemms" -eq 0 ]; then
   echo "  => there is no device on this machine. Every number below is a CPU number,"
   echo "     and it is a CPU baseline rather than evidence about a GPU."
   WHERE=host-nodevice
+elif [ "$images" -gt 0 ]; then
+  echo "  => the compiler's own kernel ran on the device (#251). The numbers below are"
+  echo "     GPU numbers -- of a deliberate 1x1x1 launch, so they price the emission"
+  echo "     path working, not the device's parallelism."
+  WHERE=gpu-image
 elif [ "$refused" -gt 0 ] && [ "$gemms" -eq 0 ]; then
   echo "  => a device is present and the kernel was refused. Every number below is a CPU number."
   WHERE=host
@@ -197,6 +209,8 @@ awk -F, -v sq="$SQ" -v hd="$HD" -v where="$WHERE" '
     printf "\n  A resident cuBLAS SGEMM on this device reaches 16223 GFLOP/s.\n"
     if (where == "host")
       printf "  This kernel is not on the device at all, which is the gap #251 closes.\n"
+    if (where == "gpu-image")
+      printf "  This kernel IS on the device, one thread of it. The distance to the\n  cuBLAS figure is now parallelism, not placement.\n"
   }' "$CSV"
 
 echo

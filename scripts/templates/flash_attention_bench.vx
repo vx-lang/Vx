@@ -12,23 +12,21 @@
 //
 // __VX_BENCH_NOTE__
 //
-// Read what this measures carefully, because the obvious reading is wrong.
-// `spawn on(Topology::GPU)` places the region, the four operands really are
-// transferred into GPU_HBM, and then the kernel runs **on the host**:
+// Read what this measures carefully; what it is depends on the machine, and
+// the harness prints a verdict rather than leaving the reader to assume.
+// `spawn on(Topology::GPU)` places the region and the four operands really
+// are transferred into GPU_HBM. Then, on a box with a device, the #251
+// emission path launches the compiler's own kernel image:
 //
 //   [Vx CUDA] device 0 stage      x4
-//   [Vx CUDA] vx_npu_kernel_0 (kind=<unclassified>) not routed; running on the host
+//   [Vx CUDA] vx_npu_kernel_0 ran on GPU 0 from its own image (28 params)
 //
-// Only `kind=matmul` routes to cuBLAS. A fused online-softmax loop nest is not
-// a GEMM and is not classified as one, so the dispatcher falls back to libffi
-// and the arithmetic happens on the CPU -- of whichever machine, however many
-// A100s it has. Every number produced from this file is a CPU number. That is
-// #251, kernel emission, and it is the ceiling on the whole campaign.
-//
-// The loop nest is also compiled at -O0, which the JIT log states plainly, so
-// the figure is not even a good CPU number. Both facts are the point: this is
-// the measurement of what placing a kernel currently buys when the kernel is
-// not a matmul, which is nothing at all.
+// -- as one thread, because the outliner emits a serial loop nest and a wide
+// launch of it would race. So a GPU number from this file prices the emission
+// path working, not the device's parallelism; the distance to cuBLAS is now
+// parallelism, not placement. On a box with no device the same file is the
+// CPU baseline (host JIT at -O0, which the log states plainly), and the two
+// are directly comparable because the kernel body is identical.
 //
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // CHECK: vx.transfer
@@ -117,13 +115,19 @@ fn main() -> i32 {
     }
   }
 
-  // The whole tensor, because indexing it here is a cross-topology read: `o`
-  // lives in GPU_HBM and the checker refuses `o[0][0]` from the CPU, which is
-  // the memory model doing its job. `print` of the tensor is the path that
-  // brings it back. At the sizes below the output is large, so the harness
-  // redirects it and reads only the first row -- whose value is a closed form:
-  // row 0 of Q is all zeros, so every score is zero, the softmax is uniform,
-  // and o[0][d] is the mean of column d of V, which is 0.01*(SK-1)/2.
-  print(o);
+  // Bring the result home before looking at it. `o` lives in GPU_HBM: the
+  // checker refuses `o[0][0]` from the CPU, which is the memory model doing
+  // its job, and `print(o)` is no better -- it walks the same device pointer
+  // on the host and faults the first time a device is actually present
+  // (Vx#377). The declared transfer is the path that brings it back: it
+  // lowers to the plugin's read-back, and the movement is priced by the
+  // algebra instead of hidden inside printing.
+  //
+  // The harness redirects the print and reads only the first row -- whose
+  // value is a closed form: row 0 of Q is all zeros, so every score is zero,
+  // the softmax is uniform, and o[0][d] is the mean of column d of V, which
+  // is 0.01*(SK-1)/2.
+  let o_home = transfer(o, Memory::CPU_DRAM);
+  print(o_home);
   return 0;
 }
