@@ -718,6 +718,18 @@ bool run_device_image(const void *payload, size_t payload_size,
   const bool time_kernel = getenv("VX_TIME_KERNEL") != nullptr;
   cudaEvent_t t0 = nullptr, t1 = nullptr;
   if (time_kernel) {
+    /* The occupancy the DRIVER computed for this function as it will actually
+       launch -- not what ptxas said offline. The 108-vs-109-block cliff on the
+       A100 said one block per SM; this is the number that says whether that is
+       the driver's decision or contention, without a profiler (rented pods
+       refuse the performance counters: ERR_NVGPUCTRPERM). */
+    int resident = 0;
+    if (cuOccupancyMaxActiveBlocksPerMultiprocessor(&resident, fn, (int)block,
+                                                    0) == CUDA_SUCCESS) {
+      fprintf(stderr,
+              "[Vx CUDA] %s occupancy: %d block(s) of %u threads per SM\n",
+              kernel_name, resident, block);
+    }
     cudaEventCreate(&t0);
     cudaEventCreate(&t1);
     cudaEventRecord(t0);
