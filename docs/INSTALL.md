@@ -237,5 +237,23 @@ unusual, set `LLVM_VERSION` or write `config.local` by hand from `config.templat
 **Four seam/verification suites fail with missing diagnostics**
 `z3` is not installed or not on `PATH`. `libz3-dev` alone is not enough — the *binary* is executed.
 
-**Tests fail only on Linux, around ANE**
-Expected. Those paths need CoreML and are macOS-only.
+**Two `remote_client_test` cases fail on Linux**
+
+`a_placed_tensor_can_be_read_home_from_a_worker` and `a_handoff_between_two_workers_moves_the_data`
+both fail with *"the local run printed nothing"*. Everything else passes: 473 lib tests and 229 of
+231 integration tests.
+
+This is a real defect, not a platform gap. `src/jit.rs` concatenates the child process's stderr
+onto its stdout when `--run` succeeds, so a runtime diagnostic lands in the middle of the program's
+output. On a box with the CUDA toolkit but no GPU, the dispatch backend writes
+
+```
+[Vx CUDA] no CUDA device (no CUDA-capable device is detected); kernels will run on the host
+```
+
+to stderr, which then trails the program's real output with a newline. The tests take the last line
+of stdout and get an empty string.
+
+It shows up only on Linux because that is where the CUDA backend is built and finds no device. A
+Linux box with no CUDA toolkit, or one with a working GPU, passes. Tracked as a bug against the JIT
+output handling — the streams should stay separate.
