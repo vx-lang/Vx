@@ -1,0 +1,165 @@
+//===- flash_decode_bench.vx - one token's attention, at a size -*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+//
+// The decode half of the attention story (#251). Prefill is
+// flash_attention_bench.vx: many queries, arithmetic-shaped, parallel over
+// queries. Decode is one query per head against the whole KV cache, so there
+// is no query loop to parallelize and the kernel is a read of H*SK*HD*4*2
+// bytes that must come from memory. The number that matters is GB/s against
+// the device's HBM, not GFLOP/s against its ALUs.
+//
+// __VX_BENCH_NOTE__
+//
+// Parallelism, since one query offers none: flash-decoding's split-K, written
+// as two placed regions.
+//
+//   region 1  for hc in 0..H*C -- each (head, chunk) walks its SK/C keys with
+//             the one-pass online softmax and writes an UNNORMALIZED partial:
+//             pml[hc] = [m, l] (chunk max score, sum of exponentials against
+//             it) and po[hc][d] = sum_j p_j * V[j][d], as whole-row slice
+//             updates. Rows are owned by hc, so the disjointness rule admits
+//             the loop and the device pipeline grid-strides it (Vx#251) --
+//             H*C threads, reading K and V once each, as vectors (Vx#378 R1).
+//   region 2  for h in 0..H -- rescale the C partials of head h onto a common
+//             max and normalize: the same algebra the online softmax applies
+//             per tile, applied once per chunk. Rows of `o` are owned by h.
+//
+// The split changes where parallelism comes from and nothing else: C=1 is
+// vanilla single-thread-per-head decode, and any C must print the same
+// numbers. The harness checks that, not this file.
+//
+// Q is all zeros, so every score is zero, the softmax is uniform, and
+// o[h][d] is the mean of column d of head h's V -- 0.01*(SK-1)/2 for the
+// fill below, independent of H, C and d. A split that dropped a chunk, or
+// combined two with the wrong rescale, moves the mean.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: vx.transfer
+// CHECK-SAME: cost =
+// CHECK: vx.spawn topology(500)
+
+import std::math;
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s
+}
+
+fn main() -> i32 {
+  // One query row per head; K and V hold H heads' caches stacked: head h's
+  // position j is row h*SK + j. Partials are one row per (head, chunk), split
+  // into an [m, l] pair and an HD-wide accumulator so the accumulator can be
+  // written as a whole row -- slice writes are the vector-load path (Vx#378).
+  let mut q_h = Tensor<f32>([ __VX_H__, __VX_HD__ ]);
+  let mut k_h = Tensor<f32>([ __VX_HSK__, __VX_HD__ ]);
+  let mut v_h = Tensor<f32>([ __VX_HSK__, __VX_HD__ ]);
+  let mut pml_h = Tensor<f32>([ __VX_HC__, 2 ]);
+  let mut po_h = Tensor<f32>([ __VX_HC__, __VX_HD__ ]);
+  let mut o_h = Tensor<f32>([ __VX_H__, __VX_HD__ ]);
+
+  for h in 0..__VX_H__ {
+    for d in 0..__VX_HD__ {
+      q_h[h][d] = 0.0;
+      o_h[h][d] = 0.0;
+    }
+  }
+  // The partial accumulators must start at zero: region 1's online rescale
+  // multiplies the running row, so whatever is here is folded into the
+  // result. Tensor allocation does not promise zeros -- `o_h` above is
+  // cleared for the same reason.
+  for r in 0..__VX_HC__ {
+    pml_h[r][0] = 0.0;
+    pml_h[r][1] = 0.0;
+    for d in 0..__VX_HD__ {
+      po_h[r][d] = 0.0;
+    }
+  }
+  // Position j carries j, scaled to keep the exponentials in range at any SK
+  // -- the same fill the prefill bench uses, so the closed form matches.
+  for r in 0..__VX_HSK__ {
+    for d in 0..__VX_HD__ {
+      k_h[r][d] = 0.01;
+      v_h[r][d] = 0.0;
+    }
+  }
+  for h in 0..__VX_H__ {
+    for j in 0..__VX_SK__ {
+      for d in 0..__VX_HD__ {
+        v_h[h * __VX_SK__ + j][d] = (j as f32) * 0.01;
+      }
+    }
+  }
+
+  let q = transfer(q_h, Memory::GPU_HBM);
+  let k = transfer(k_h, Memory::GPU_HBM);
+  let v = transfer(v_h, Memory::GPU_HBM);
+  let mut pml = transfer(pml_h, Memory::GPU_HBM);
+  let mut po = transfer(po_h, Memory::GPU_HBM);
+  let mut o = transfer(o_h, Memory::GPU_HBM);
+  let scale : f32 = 0.5;
+
+  // Region 1: each (head, chunk) reduces its slice of the cache to one
+  // unnormalized partial, with the same one-pass online softmax the prefill
+  // kernel runs -- each K row is read once, as vectors. The accumulator row
+  // starts zeroed (host-side fill above), so the first rescale multiplies
+  // zero and no explicit clear is needed.
+  spawn on(Topology::GPU) {
+    for hc in 0..__VX_HC__ {
+      let h : i32 = hc / __VX_C__;
+      let c : i32 = hc - h * __VX_C__;
+      let base : i32 = h * __VX_SK__ + c * __VX_CHUNK__;
+
+      let mut m : f32 = -1000000.0;
+      let mut l : f32 = 0.0;
+      for jj in 0..__VX_CHUNK__ {
+        let s : f32 = dot(q[h], k[base + jj]) * scale;
+        let m_new : f32 = if s > m {
+          s
+        } else {
+          m
+        };
+        let corr : f32 = (m - m_new).exp();
+        let p : f32 = (s - m_new).exp();
+        l = l * corr + p;
+        po[hc] = po[hc] * corr;
+        po[hc] = po[hc] + v[base + jj] * p;
+        m = m_new;
+      }
+      pml[hc][0] = m;
+      pml[hc][1] = l;
+    }
+  }
+
+  // Region 2: rescale each head's C partials onto the head's true max and
+  // normalize. C is small, so this is C row-reads per head -- the cost lives
+  // in region 1, where the cache is.
+  spawn on(Topology::GPU) {
+    for h in 0..__VX_H__ {
+      let mut m : f32 = -1000000.0;
+      for c in 0..__VX_C__ {
+        let pm : f32 = pml[h * __VX_C__ + c][0];
+        if pm > m {
+          m = pm;
+        }
+      }
+      let mut l : f32 = 0.0;
+      for c in 0..__VX_C__ {
+        let corr : f32 = (pml[h * __VX_C__ + c][0] - m).exp();
+        l = l + pml[h * __VX_C__ + c][1] * corr;
+        o[h] = o[h] + po[h * __VX_C__ + c] * corr;
+      }
+      let inv : f32 = 1.0 / l;
+      o[h] = o[h] * inv;
+    }
+  }
+
+  // Home before looking -- the declared edge, priced by the algebra (Vx#377).
+  let o_home = transfer(o, Memory::CPU_DRAM);
+  print(o_home);
+  return 0;
+}

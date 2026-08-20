@@ -3832,8 +3832,14 @@ impl ParallelScan {
             // runs, so calls are the shape scalar math arrives in. Only the known-pure intrinsics
             // pass; any other call could write through an argument and rejects the region. A
             // `Borrow` shows up when such an intrinsic takes `&self` — harmless only immutably.
+            //
+            // The builtin slice reductions (`dot`/`sum`/`max`/`min` over rank-1 slices, the
+            // `Reduce` opcode) are pure by the same standard: they read their slices and yield a
+            // scalar. They are also the vector-load path (Vx#378 R1), so a stridable kernel that
+            // uses them is exactly the intended shape.
             Expr::FunctionCall(fc) => {
-                parallel_pure_call(&fc.name) && fc.args.iter().all(|a| self.expr(a))
+                (parallel_pure_call(&fc.name) || matches!(&*fc.name, "dot" | "sum" | "max" | "min"))
+                    && fc.args.iter().all(|a| self.expr(a))
             }
             Expr::Borrow(b) => !b.is_mut && self.expr(&b.expr),
             // Belt for the pre-rewrite spelling, should this walk ever run on an unchecked AST: a

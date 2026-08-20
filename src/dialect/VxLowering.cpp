@@ -1078,8 +1078,13 @@ static LogicalResult diagnoseUnrunnableSpawns(Operation *root) {
 /// late and quietly -- an image that compiles but cannot load, blamed at the
 /// far end on whatever the worker says last.
 static bool isDeviceLowerableDialect(StringRef ns) {
+  // `vector` entered the list with Vx#378 R1: the flat path's slice ops
+  // (`dot(q[i], k[j])`, `o[i] = o[i] + v[j] * p`) emit vector.load /
+  // vector.reduction / elementwise vector arith, and `convert-vector-to-llvm`
+  // in deviceImageOf turns those into LLVM vectors that NVPTX renders as wide
+  // (v4) loads -- the fix for the measured per-SM load-issue bound.
   return ns == "arith" || ns == "cf" || ns == "gpu" || ns == "math" ||
-         ns == "memref" || ns == "scf";
+         ns == "memref" || ns == "scf" || ns == "vector";
 }
 
 struct ConvertVxToStandardPass
@@ -2179,6 +2184,12 @@ static std::string deviceImageOf(gpu::GPUModuleOp gpuModule,
   pm.nest<gpu::GPUModuleOp>().addPass(createConvertGpuOpsToNVVMOps());
   pm.addPass(createArithToLLVMConversionPass());
   pm.addPass(createConvertMathToLLVMPass());
+  // Slice ops from the flat path (`dot`, row axpy) arrive as `vector.*`;
+  // lowered to LLVM vectors, NVPTX renders their loads as v4 (128-bit) --
+  // the whole point of admitting the dialect (Vx#378 R1). Mirrored in
+  // scripts/flash_kernel_to_ptx.sh, which must stay an independent
+  // transcription of this same pipeline.
+  pm.addPass(createConvertVectorToLLVMPass());
   pm.addPass(createGpuToLLVMConversionPass());
   pm.addPass(createReconcileUnrealizedCastsPass());
 

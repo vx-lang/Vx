@@ -70,48 +70,33 @@ fn main() -> i32 {
   let mut o = transfer(o_h, Memory::GPU_HBM);
   let scale : f32 = 0.5;
 
+  // The body is the pure online softmax, one key at a time, written in slices.
+  // The elementwise `d` loops of the previous version are gone: `dot` is the
+  // Reduce opcode and the row updates are vector arithmetic, which the device
+  // pipeline lowers to wide (v4) loads -- the fix for the measured per-SM
+  // load-issue bound (Vx#378 R1). The score tile and its scratch went with
+  // them; tiles return when SMEM staging does (R2), as a measured step of
+  // their own.
   spawn on(Topology::GPU) {
-    let mut ts = Tensor<f32>([ 1, __VX_TILE__ ]);
     for i in 0..__VX_SQ__ {
       let mut m : f32 = -1000000.0;
       let mut l : f32 = 0.0;
-      for t in 0..__VX_NT__ {
-        let mut tm : f32 = -1000000.0;
-        for jj in 0..__VX_TILE__ {
-          let j = t * __VX_TILE__ + jj;
-          let mut acc : f32 = 0.0;
-          for d in 0..__VX_HD__ {
-            acc += q[i][d] * k[j][d];
-          }
-          let sij : f32 = acc * scale;
-          ts[0][jj] = sij;
-          if sij > tm {
-            tm = sij;
-          }
-        }
-        let m_new : f32 = if tm > m {
-          tm
+      for j in 0..__VX_SK__ {
+        let s : f32 = dot(q[i], k[j]) * scale;
+        let m_new : f32 = if s > m {
+          s
         } else {
           m
         };
         let corr : f32 = (m - m_new).exp();
-        l = l * corr;
-        for d in 0..__VX_HD__ {
-          o[i][d] = o[i][d] * corr;
-        }
-        for jj in 0..__VX_TILE__ {
-          let j = t * __VX_TILE__ + jj;
-          let p : f32 = (ts[0][jj] - m_new).exp();
-          l = l + p;
-          for d in 0..__VX_HD__ {
-            o[i][d] = o[i][d] + p * v[j][d];
-          }
-        }
+        let p : f32 = (s - m_new).exp();
+        l = l * corr + p;
+        o[i] = o[i] * corr;
+        o[i] = o[i] + v[j] * p;
         m = m_new;
       }
-      for d in 0..__VX_HD__ {
-        o[i][d] = o[i][d] / l;
-      }
+      let inv : f32 = 1.0 / l;
+      o[i] = o[i] * inv;
     }
   }
 

@@ -1221,6 +1221,44 @@ fn memref_lead_dim(memty: &str) -> Option<i64> {
 }
 
 /// Coerce a slice-elementwise operand register to a `vector<Nxf32>` value (matching the AST's
+/// ` {alignment = 16 : i64}` when a whole-row vector access is provably 16-byte aligned, else
+/// nothing. Without it the memref lowering stamps the element's alignment (4 for f32), NVPTX
+/// cannot fuse the access, and a `vector.load` of a row arrives on the device as N scalar
+/// `ld.global.b32` -- measured as the per-SM issue bound the vector path exists to fix (Vx#378 R1;
+/// with the attribute the same row is four-element `v4` transactions).
+///
+/// The claim is sound for whole rows: every slice this emitter loads or stores is row `i` of an
+/// allocation, at byte offset `i * rowbytes`. The base is 16-byte aligned everywhere rows come
+/// from (`malloc` guarantees 16 on the host paths, `cudaMalloc` 256 on the device), so the row is
+/// 16-byte aligned exactly when `rowbytes` is a multiple of 16 -- which is what this checks, from
+/// the vector type's own width and element.
+fn vector_align_attr(vecty: &str) -> &'static str {
+    let Some(inner) = vecty
+        .strip_prefix("vector<")
+        .and_then(|s| s.strip_suffix('>'))
+    else {
+        return "";
+    };
+    let mut parts = inner.splitn(2, 'x');
+    let (Some(n), Some(et)) = (parts.next(), parts.next()) else {
+        return "";
+    };
+    let Ok(n) = n.parse::<u64>() else {
+        return "";
+    };
+    let esize = match et {
+        "f32" | "i32" => 4,
+        "f64" | "i64" => 8,
+        "f16" | "bf16" => 2,
+        _ => return "",
+    };
+    if n * esize % 16 == 0 {
+        " {alignment = 16 : i64}"
+    } else {
+        ""
+    }
+}
+
 /// `to_vector`): an already-vector operand passes through, a rank-1 memref is `vector.load`ed, and a
 /// scalar is `vector.broadcast`ed to the slice width. Emits into `body`; returns the vector SSA name.
 /// `tag` disambiguates the emitted SSA names.
@@ -1243,9 +1281,10 @@ fn coerce_vector(
     if let Some(m) = mem_of.get(op_reg as usize)?.clone() {
         let c0 = format!("%vc{tag}");
         let v = format!("%vl{tag}");
+        let al = vector_align_attr(vecty);
         body.push_str(&format!("  {c0} = arith.constant 0 : index\n"));
         body.push_str(&format!(
-            "  {v} = vector.load {name}[{c0}] : {m}, {vecty}\n"
+            "  {v} = vector.load {name}[{c0}]{al} : {m}, {vecty}\n"
         ));
         return Some(v);
     }
@@ -2147,14 +2186,15 @@ pub fn emit_function_mlir(
                 let vecty = format!("vector<{d}x{et}>");
                 let c0 = format!("%rc{idx}");
                 body += &format!("  {c0} = arith.constant 0 : index\n");
+                let al = vector_align_attr(&vecty);
                 let v0 = format!("%vl{idx}");
-                body += &format!("  {v0} = vector.load {s0}[{c0}] : {m0}, {vecty}\n");
+                body += &format!("  {v0} = vector.load {s0}[{c0}]{al} : {m0}, {vecty}\n");
                 let (reduce_in, kind) = match ins.imm {
                     0 => {
                         let s1 = names.get(ins.operand2.0 as usize)?.clone();
                         let m1 = mem_of.get(ins.operand2.0 as usize)?.clone()?;
                         let v1 = format!("%vr{idx}");
-                        body += &format!("  {v1} = vector.load {s1}[{c0}] : {m1}, {vecty}\n");
+                        body += &format!("  {v1} = vector.load {s1}[{c0}]{al} : {m1}, {vecty}\n");
                         let prod = format!("%vp{idx}");
                         body += &format!("  {prod} = arith.mulf {v0}, {v1} : {vecty}\n");
                         (prod, "add")
@@ -2207,8 +2247,10 @@ pub fn emit_function_mlir(
                     let vecname = names.get(ins.operand2.0 as usize)?.clone();
                     let vecty = vec_of.get(ins.operand2.0 as usize)?.clone()?;
                     let c0 = format!("%sc{idx}");
+                    let al = vector_align_attr(&vecty);
                     body += &format!("  {c0} = arith.constant 0 : index\n");
-                    body += &format!("  vector.store {vecname}, {dst}[{c0}] : {rowty}, {vecty}\n");
+                    body +=
+                        &format!("  vector.store {vecname}, {dst}[{c0}]{al} : {rowty}, {vecty}\n");
                 } else {
                     return None;
                 }

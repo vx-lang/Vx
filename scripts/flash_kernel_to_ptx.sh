@@ -168,6 +168,7 @@ if [ -n "${VX_LIBDEVICE:-}" ] && [ -f "$VX_LIBDEVICE" ]; then
   mlir-opt "$OUT/kernel.mlir" \
     --nvvm-attach-target="chip=$CHIP features=+ptx76 l=$VX_LIBDEVICE" \
     --convert-gpu-to-nvvm --convert-arith-to-llvm --convert-math-to-llvm \
+    --convert-vector-to-llvm \
     --gpu-to-llvm --reconcile-unrealized-casts \
     --gpu-module-to-binary="format=isa" \
     -o "$OUT/nvvm.mlir"
