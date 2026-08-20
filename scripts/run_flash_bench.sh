@@ -86,7 +86,22 @@ emit() {  # sk -> path
 # should report which, rather than the reader assuming.
 probe=$(emit "$(echo "$KS" | awk '{print $1}')")
 VX_DISPATCH_VERBOSE=1 ./vxc "$probe" --run > "$OUTDIR/probe.txt" 2>&1
+# Whether the probe RAN is a different question from what it printed, and the counts below cannot
+# tell them apart: a program that failed to compile produces exactly the same silent trace as one
+# that ran and narrated nothing. That cost real time -- a bundle without `stdlib/` reachable dies
+# with "Could not resolve import 'std::math'", and the script reported it as "the trace is not
+# saying what happened", which sent the search toward CUDA instead of the import path.
+if ! grep -qE '^\[JIT\] Executing native binary' "$OUTDIR/probe.txt"; then
+  echo "error: the probe never ran. First lines of $OUTDIR/probe.txt:" >&2
+  head -5 "$OUTDIR/probe.txt" >&2
+  exit 1
+fi
 refused=$(grep -c 'not routed; running on the host' "$OUTDIR/probe.txt")
+# A machine with no device at all answers the question just as clearly, and with a different
+# message: the runtime says so once, up front, instead of refusing a kernel per dispatch. Without
+# this the script cannot establish a CPU baseline anywhere except on a GPU box, which is the one
+# place a CPU baseline is not what you went there for.
+nodevice=$(grep -c '^\[Vx CUDA\] no CUDA device' "$OUTDIR/probe.txt")
 gemms=$(grep -c '^\[Vx CUDA\] GEMM ' "$OUTDIR/probe.txt")
 stages=$(grep -c '^\[Vx CUDA\] device . stage' "$OUTDIR/probe.txt")
 
@@ -94,8 +109,12 @@ echo "=== Where does this kernel run? ==="
 echo "  operands staged to the device: $stages"
 echo "  GEMM dispatches:               $gemms"
 echo "  kernels refused and run on the host: $refused"
-if [ "$refused" -gt 0 ] && [ "$gemms" -eq 0 ]; then
-  echo "  => the arithmetic is on the CPU. Every number below is a CPU number."
+if [ "$nodevice" -gt 0 ] && [ "$gemms" -eq 0 ]; then
+  echo "  => there is no device on this machine. Every number below is a CPU number,"
+  echo "     and it is a CPU baseline rather than evidence about a GPU."
+  WHERE=host-nodevice
+elif [ "$refused" -gt 0 ] && [ "$gemms" -eq 0 ]; then
+  echo "  => a device is present and the kernel was refused. Every number below is a CPU number."
   WHERE=host
 elif [ "$gemms" -gt 0 ]; then
   echo "  => something routed to cuBLAS; read the trace before believing the rest"
