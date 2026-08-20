@@ -23,6 +23,7 @@ mod integration_test {
     mod remote_client_test;
     mod remote_region_test;
     mod resolution_test;
+    mod solver_policy_test;
     mod traffic_test;
     mod transport_test;
     mod wire_test;

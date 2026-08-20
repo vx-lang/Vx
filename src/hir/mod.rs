@@ -25,6 +25,7 @@ pub mod places;
 pub mod provenance;
 pub mod prover;
 pub mod seam;
+pub mod solver;
 pub mod stmt;
 
 pub use bytecode::*;

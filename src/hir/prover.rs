@@ -53,8 +53,13 @@ impl SmtProver {
         {
             Ok(c) => c,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                println!("Warning: z3 solver not found in PATH. Skipping formal verification.");
-                return Ok(false); // Return UNSAT so the proof trivially succeeds and compilation can continue
+                // Used to return Ok(false) -- UNSAT -- so the proof "trivially succeeded" and
+                // compilation continued. That made a missing solver indistinguishable from a
+                // discharged obligation (Vx#374). Now it is reported, unless the user has asked
+                // for unverified compilation, in which case the obligation is still not claimed
+                // as proved -- the caller sees the error and reports it as undischarged.
+                crate::hir::solver::require()?;
+                return Err(crate::hir::solver::missing_message(&e.to_string()));
             }
             Err(e) => return Err(format!("Failed to spawn z3: {}", e)),
         };

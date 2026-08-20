@@ -113,6 +113,11 @@ pub enum DiagnosticCode {
     /// therefore targets the same device. Vx models one representative device per declared kind
     /// (#284), so a fleet program should index with constants or const generics.
     W1030,
+    /// A proof obligation could not be discharged because no SMT solver was available, so the
+    /// property is **unverified** rather than proved. Distinct from W1027, which means the solver
+    /// ran and found a violation. Emitted only under `VX_ALLOW_UNVERIFIED`; without it a missing
+    /// solver is an error, because silence used to be indistinguishable from success (Vx#374).
+    W1031,
 
     // --- Parser Errors (E1xxx) ---
     /// Unexpected token
@@ -312,6 +317,11 @@ pub enum DiagnosticCode {
     /// declaration: a smaller declaration copies part of the tile and leaves the rest
     /// uninitialised, a larger one stores past the end (observed as a SIGSEGV).
     E6023,
+    /// A proof obligation could not be discharged because no SMT solver was available. Fails the
+    /// compilation by default: an undischarged obligation is not a proved one, and treating the
+    /// two alike is what let a missing z3 certify every seam in silence (Vx#374). Set
+    /// `VX_ALLOW_UNVERIFIED=1` to downgrade this to W1031 and compile anyway.
+    E6024,
 
     // --- Tensor/Math Errors (E7xxx) ---
     /// Matmul dimension mismatch

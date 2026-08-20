@@ -320,18 +320,43 @@ impl<'a> TypeChecker<'a> {
                     self.seam_solver = Some(crate::hir::seam::Solver::new());
                 }
                 let solver = self.seam_solver.as_mut().unwrap();
-                if let Ok(Verdict::Reject { .. }) =
-                    solver.check_seam_buffers(&reached, &transfer, &["payload".to_string()])
-                {
-                    self.errors.warn(
-                        crate::diagnostic::DiagnosticCode::W1027,
-                        format!(
-                            "topology '{name}': declared relaxed transfer {:?} -> {:?} does not \
-                             preserve visibility; a consumer may read stale data",
+                // `if let Ok(Reject)` used to be the whole of this: an Err -- including "no
+                // solver available" -- fell through the pattern and the edge was silently
+                // treated as if it had been proved coherent (Vx#374). An obligation that could
+                // not be discharged is reported as such.
+                match solver.check_seam_buffers(&reached, &transfer, &["payload".to_string()]) {
+                    Ok(Verdict::Reject { .. }) => {
+                        self.errors.warn(
+                            crate::diagnostic::DiagnosticCode::W1027,
+                            format!(
+                                "topology '{name}': declared relaxed transfer {:?} -> {:?} does \
+                                 not preserve visibility; a consumer may read stale data",
+                                edge.from, edge.to
+                            ),
+                            None,
+                        );
+                    }
+                    Ok(Verdict::Accept) => {}
+                    Err(e) => {
+                        // An obligation that could not be discharged fails the build, unless the
+                        // user has explicitly accepted unverified compilation -- in which case it
+                        // is still said out loud, every time. The two must not look alike.
+                        let msg = format!(
+                            "topology '{name}': the visibility of relaxed transfer {:?} -> {:?} \
+                             was NOT verified: {e}",
                             edge.from, edge.to
-                        ),
-                        None,
-                    );
+                        );
+                        if crate::hir::solver::unverified_allowed() {
+                            self.errors
+                                .warn(crate::diagnostic::DiagnosticCode::W1031, msg, None);
+                        } else {
+                            self.errors.error_with_code(
+                                crate::diagnostic::DiagnosticCode::E6024,
+                                msg,
+                                None,
+                            );
+                        }
+                    }
                 }
             }
         }

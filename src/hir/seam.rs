@@ -224,8 +224,10 @@ fn run_z3(script: &str) -> Result<(bool, String), String> {
     {
         Ok(c) => c,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            // No solver: fail open so compilation can proceed (as in prover.rs).
-            return Ok((false, "z3 not found".into()));
+            // Was: fail open, returning "not violable" -- which is the verdict that means the
+            // seam is safe. A missing solver therefore certified every seam (Vx#374).
+            crate::hir::solver::require()?;
+            return Err(crate::hir::solver::missing_message(&e.to_string()));
         }
         Err(e) => return Err(format!("Failed to spawn z3: {e}")),
     };
@@ -317,8 +319,9 @@ struct Pipe {
 const SENTINEL: &str = "<<SEAM-DONE>>";
 
 impl Solver {
-    /// Spawn the persistent solver and install the one-time preamble. Never fails:
-    /// if z3 cannot be started, the solver is unavailable and fails open.
+    /// Spawn the persistent solver and install the one-time preamble. Never fails here:
+    /// if z3 cannot be started the solver is unavailable, and `query` reports each obligation
+    /// as undischarged rather than certifying it (Vx#374).
     pub fn new() -> Self {
         Solver {
             pipe: Self::start().ok(),
@@ -346,12 +349,20 @@ impl Solver {
     }
 
     /// Run one obligation body (state + goal) inside a fresh assertion scope. Returns
-    /// `(violable, model)`; an unavailable solver returns `(false, _)` (fail open).
+    /// `(violable, model)`; an unavailable solver is an error, not a verdict (Vx#374).
     fn query(&mut self, body: &str) -> Result<(bool, String), String> {
         use std::io::{BufRead, Write};
         let pipe = match &mut self.pipe {
             Some(p) => p,
-            None => return Ok((false, "z3 unavailable".into())),
+            None => {
+                // `(false, _)` here means "not violable", i.e. the seam is safe -- so an
+                // unavailable solver used to certify every obligation it was handed (Vx#374).
+                // The caller's Err arm reports an undischarged obligation instead.
+                crate::hir::solver::require()?;
+                return Err(crate::hir::solver::missing_message(
+                    "the persistent solver could not be started",
+                ));
+            }
         };
         let script = format!("(push 1)\n{body}(pop 1)\n(echo \"{SENTINEL}\")\n");
         pipe.stdin
