@@ -786,71 +786,6 @@ pub(crate) fn lower_print_call<'c>(
     ))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use syntax::{Expr, NumberExpr, Span, Topology};
-
-    fn make_num_expr(val: &str) -> Box<Expr> {
-        Box::new(Expr::Number(NumberExpr::new(
-            val.to_string(),
-            None,
-            Span::default(),
-        )))
-    }
-
-    #[test]
-    fn test_topology_to_i32_all_variants() {
-        assert_eq!(topology_to_i32(&Topology::CPU), 0);
-        assert_eq!(topology_to_i32(&Topology::NPU(make_num_expr("0"))), 100);
-        assert_eq!(topology_to_i32(&Topology::NPU(make_num_expr("3"))), 103);
-        assert_eq!(topology_to_i32(&Topology::AccCore(make_num_expr("0"))), 200);
-        assert_eq!(topology_to_i32(&Topology::AccCore(make_num_expr("5"))), 205);
-        assert_eq!(topology_to_i32(&Topology::AMX), 300);
-        assert_eq!(topology_to_i32(&Topology::ANE), 400);
-        assert_eq!(topology_to_i32(&Topology::gpu(0)), 500);
-        assert_eq!(topology_to_i32(&Topology::CpuAvx512), 600);
-        assert_eq!(topology_to_i32(&Topology::CpuNeon), 700);
-        assert_eq!(topology_to_i32(&Topology::Current), 0);
-    }
-
-    #[test]
-    fn test_topology_to_i32_slice() {
-        // B4 (#253): a slice's id derives from (base, start, end) in the dedicated 2000..2999
-        // band — stable across calls, distinct for a different extent or base, no longer the
-        // single constant every slice used to collapse onto.
-        let slice = |base: &str, start: &str, end: &str| {
-            Topology::Slice(
-                Box::new(Topology::NPU(make_num_expr(base))),
-                make_num_expr(start),
-                make_num_expr(end),
-            )
-        };
-        let nvl144 = topology_to_i32(&slice("0", "0", "144"));
-        let nvl72 = topology_to_i32(&slice("0", "0", "72"));
-        let other_base = topology_to_i32(&slice("1", "0", "144"));
-        assert!((2000..3000).contains(&nvl144), "banded: {nvl144}");
-        assert!((2000..3000).contains(&nvl72), "banded: {nvl72}");
-        assert_ne!(nvl144, nvl72, "distinct extents get distinct ids");
-        assert_ne!(nvl144, other_base, "distinct bases get distinct ids");
-        assert_eq!(
-            nvl144,
-            topology_to_i32(&slice("0", "0", "144")),
-            "stable across calls"
-        );
-    }
-
-    #[test]
-    fn test_topology_to_i32_npu_non_numeric_falls_back() {
-        // NPU with a non-numeric expr should fall back to 100
-        let ident_expr = Box::new(Expr::Identifier(syntax::IdentifierExpr {
-            name: "i".into(),
-            span: Span::default(),
-        }));
-        assert_eq!(topology_to_i32(&Topology::NPU(ident_expr)), 100);
-    }
-}
-
 /// The eight `raw::` transfer-lowering primitives (#353 A3), emitted in place.
 ///
 /// These are reachable only from an `impl transfer` body inlined at a transfer
@@ -1134,5 +1069,70 @@ pub(crate) fn lower_raw_primitive<'c>(
         other => Err(LowerError::from(format!(
             "raw::{other} has no lowering; the checker should have refused it"
         ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use syntax::{Expr, NumberExpr, Span, Topology};
+
+    fn make_num_expr(val: &str) -> Box<Expr> {
+        Box::new(Expr::Number(NumberExpr::new(
+            val.to_string(),
+            None,
+            Span::default(),
+        )))
+    }
+
+    #[test]
+    fn test_topology_to_i32_all_variants() {
+        assert_eq!(topology_to_i32(&Topology::CPU), 0);
+        assert_eq!(topology_to_i32(&Topology::NPU(make_num_expr("0"))), 100);
+        assert_eq!(topology_to_i32(&Topology::NPU(make_num_expr("3"))), 103);
+        assert_eq!(topology_to_i32(&Topology::AccCore(make_num_expr("0"))), 200);
+        assert_eq!(topology_to_i32(&Topology::AccCore(make_num_expr("5"))), 205);
+        assert_eq!(topology_to_i32(&Topology::AMX), 300);
+        assert_eq!(topology_to_i32(&Topology::ANE), 400);
+        assert_eq!(topology_to_i32(&Topology::gpu(0)), 500);
+        assert_eq!(topology_to_i32(&Topology::CpuAvx512), 600);
+        assert_eq!(topology_to_i32(&Topology::CpuNeon), 700);
+        assert_eq!(topology_to_i32(&Topology::Current), 0);
+    }
+
+    #[test]
+    fn test_topology_to_i32_slice() {
+        // B4 (#253): a slice's id derives from (base, start, end) in the dedicated 2000..2999
+        // band — stable across calls, distinct for a different extent or base, no longer the
+        // single constant every slice used to collapse onto.
+        let slice = |base: &str, start: &str, end: &str| {
+            Topology::Slice(
+                Box::new(Topology::NPU(make_num_expr(base))),
+                make_num_expr(start),
+                make_num_expr(end),
+            )
+        };
+        let nvl144 = topology_to_i32(&slice("0", "0", "144"));
+        let nvl72 = topology_to_i32(&slice("0", "0", "72"));
+        let other_base = topology_to_i32(&slice("1", "0", "144"));
+        assert!((2000..3000).contains(&nvl144), "banded: {nvl144}");
+        assert!((2000..3000).contains(&nvl72), "banded: {nvl72}");
+        assert_ne!(nvl144, nvl72, "distinct extents get distinct ids");
+        assert_ne!(nvl144, other_base, "distinct bases get distinct ids");
+        assert_eq!(
+            nvl144,
+            topology_to_i32(&slice("0", "0", "144")),
+            "stable across calls"
+        );
+    }
+
+    #[test]
+    fn test_topology_to_i32_npu_non_numeric_falls_back() {
+        // NPU with a non-numeric expr should fall back to 100
+        let ident_expr = Box::new(Expr::Identifier(syntax::IdentifierExpr {
+            name: "i".into(),
+            span: Span::default(),
+        }));
+        assert_eq!(topology_to_i32(&Topology::NPU(ident_expr)), 100);
     }
 }

@@ -456,7 +456,7 @@ impl<'a> TypeChecker<'a> {
                     args,
                     &arg_types,
                     &explicit_generic_args,
-                    span.clone(),
+                    *span,
                 ) {
                     return intrinsic_ty;
                 }

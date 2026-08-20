@@ -391,6 +391,12 @@ impl<'a> TypeChecker<'a> {
         ))
     }
 
+    // Eight parameters, one over the lint's threshold. This is a recursive walker threading four
+    // pieces of mutable state (`acc`, `exact`, `binds`, and the `mult`/`top_level` position) down
+    // an AST, and the alternative -- bundling them into a context struct -- is a refactor of the
+    // traversal rather than a fix for a lint. Left as-is deliberately; see Vx#361, which is where
+    // this became visible.
+    #[allow(clippy::too_many_arguments)]
     fn region_stmts(
         &self,
         stmts: &[Statement],
@@ -433,13 +439,12 @@ impl<'a> TypeChecker<'a> {
                             // fixture's count from exact to absent, the wrong direction of
                             // honest.
                             if let Some(ann) = &l.ty_ann {
-                                return match self.placed_space(ann) {
-                                    Some(space) => Some(match self.region_elem_bytes(ann) {
+                                return self.placed_space(ann).map(|space| {
+                                    match self.region_elem_bytes(ann) {
                                         Ok(elem) => Ok((space, elem)),
                                         Err(why) => Err(why),
-                                    }),
-                                    None => None,
-                                };
+                                    }
+                                });
                             }
                             if top_level {
                                 match self.lookup(l.name.as_ref()) {

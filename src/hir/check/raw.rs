@@ -994,10 +994,10 @@ impl<'a> TypeChecker<'a> {
         match name {
             "raw::async_copy" => {
                 if let Some(dst) = tile_name(0) {
-                    st.outstanding.insert(dst, fc.span.clone());
+                    st.outstanding.insert(dst, fc.span);
                 }
                 if let Some(src) = tile_name(1) {
-                    st.outstanding_src.insert(src, fc.span.clone());
+                    st.outstanding_src.insert(src, fc.span);
                 }
             }
             "raw::async_wait" => {
@@ -1140,7 +1140,7 @@ fn scan_stmts(stmts: &[Statement], in_closure: bool, out: &mut RawScan) {
         match s {
             Statement::LetDecl(l) => scan_expr(&l.expr, in_closure, out),
             Statement::Return(r) => {
-                out.returns.push((s as *const Statement, r.span.clone()));
+                out.returns.push((s as *const Statement, r.span));
                 scan_expr(&r.expr, in_closure, out);
             }
             Statement::ExprStmt(e) => scan_expr(&e.expr, in_closure, out),
@@ -1180,10 +1180,9 @@ fn scan_expr(e: &Expr, in_closure: bool, out: &mut RawScan) {
         Expr::FunctionCall(fc) => {
             let name = fc.name.as_ref();
             if let Some(prim) = name.strip_prefix("raw::") {
-                out.calls
-                    .push((fc.name.clone(), fc.span.clone(), in_closure));
+                out.calls.push((fc.name.clone(), fc.span, in_closure));
                 if prim == "barrier" {
-                    out.barriers.push((e as *const Expr, fc.span.clone()));
+                    out.barriers.push((e as *const Expr, fc.span));
                 }
                 if prim == "store" || prim == "async_copy" {
                     out.publishes = true;
@@ -1419,18 +1418,18 @@ fn top_level_view(body: &[Statement]) -> Vec<&Statement> {
 /// A statement's source span, for anchoring whole-body diagnostics.
 fn stmt_span(s: &Statement) -> crate::syntax::Span {
     match s {
-        Statement::LetDecl(x) => x.span.clone(),
-        Statement::Return(x) => x.span.clone(),
-        Statement::ExprStmt(x) => x.span.clone(),
-        Statement::ForLoop(x) => x.span.clone(),
-        Statement::Assign(x) => x.span.clone(),
-        Statement::CompoundAssign(x) => x.span.clone(),
-        Statement::Assert(x) => x.span.clone(),
-        Statement::Loop(x) => x.span.clone(),
-        Statement::Break(x) => x.span.clone(),
-        Statement::Continue(x) => x.span.clone(),
-        Statement::MacroCall(x) => x.span.clone(),
-        Statement::Error(sp) => sp.clone(),
+        Statement::LetDecl(x) => x.span,
+        Statement::Return(x) => x.span,
+        Statement::ExprStmt(x) => x.span,
+        Statement::ForLoop(x) => x.span,
+        Statement::Assign(x) => x.span,
+        Statement::CompoundAssign(x) => x.span,
+        Statement::Assert(x) => x.span,
+        Statement::Loop(x) => x.span,
+        Statement::Break(x) => x.span,
+        Statement::Continue(x) => x.span,
+        Statement::MacroCall(x) => x.span,
+        Statement::Error(sp) => *sp,
     }
 }
 
