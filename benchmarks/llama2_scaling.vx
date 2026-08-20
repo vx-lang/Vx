@@ -167,7 +167,7 @@ n_kv_heads : i32, head_size : i32, kv_dim : i32, l : i32) -> i32 {
           score += qv * kv;
         }
 
-        let head_size_f : f32 = 32.0; // Assuming 256/8=32
+        let head_size_f : f32 = head_size as f32;
         let factor : f32 = 1.0 / head_size_f.sqrt();
         score = score * factor;
 
@@ -227,10 +227,8 @@ w : &TransformerWeights) -> *mut f32 {
       let rms_w_off : i32 = l * dim;
       let rms_w : *mut f32 = vx_advance_ptr(w.rms_att_weight, rms_w_off);
 
-      // Note: Vx doesn't have 'as f32' yet natively for casting integers.
-      // We assume dim=256 for Stories15M.
-      let dim_f : f32 = 256.0;
-      let hidden_dim_f : f32 = 512.0;
+      let dim_f : f32 = dim as f32;
+      let hidden_dim_f : f32 = hidden_dim as f32;
 
       let status1 : i32 = rmsnorm(s.xb, x, rms_w, dim, dim_f);
 
@@ -326,7 +324,7 @@ w : &TransformerWeights) -> *mut f32 {
       }
     }
 
-    let dim_f : f32 = 256.0;
+    let dim_f : f32 = dim as f32;
     let status10 : i32 = rmsnorm(x, x, w.rms_final_weight, dim, dim_f);
     let status11 : i32 = matmul(s.logits, x, w.wcls, p.dim, p.vocab_size);
   };
@@ -428,13 +426,13 @@ fn main() -> i32 {
     let config_ptr : *mut i32 =
     vx_load_config("tests/backend/pass/stories15M.bin");
 
-    let dim_f : f32 = config_ptr[0];
-    let hidden_dim_f : f32 = config_ptr[1];
-    let n_layers_f : f32 = config_ptr[2];
-    let n_heads_f : f32 = config_ptr[3];
-    let n_kv_heads_f : f32 = config_ptr[4];
-    let vocab_size_f : f32 = config_ptr[5];
-    let seq_len_f : f32 = config_ptr[6];
+    let dim_f : f32 = config_ptr[0] as f32;
+    let hidden_dim_f : f32 = config_ptr[1] as f32;
+    let n_layers_f : f32 = config_ptr[2] as f32;
+    let n_heads_f : f32 = config_ptr[3] as f32;
+    let n_kv_heads_f : f32 = config_ptr[4] as f32;
+    let vocab_size_f : f32 = config_ptr[5] as f32;
+    let seq_len_f : f32 = config_ptr[6] as f32;
 
     let llama_config : *mut i32 = vx_get_llama_config();
     let max_tokens : i32 = llama_config[0];
