@@ -17,7 +17,9 @@
 //
 //===----------------------------------------------------------------------===//
 use crate::gid::TypeId;
-use crate::hir::bytecode::{HirInstruction, Opcode, Register, TypeIdx};
+use crate::hir::bytecode::{
+    HirInstruction, Opcode, Register, TypeIdx, IMM_PARALLEL_INIT, IMM_PARALLEL_STEP,
+};
 use crate::layout::FieldTy;
 use crate::registry::ImmutableGlobalRegistry;
 use crate::session::LocalWorkerState;
@@ -274,6 +276,10 @@ struct Lowerer<'r> {
     /// path)`. The `FieldStore` the write lowers to reads this to tag itself as a place-write for
     /// alias-scope metadata; a direct `p.x = v` leaves it `None` and its store is untagged. (#275, §5.4)
     pending_place_write: Option<(Symbol, Vec<Symbol>)>,
+    /// Armed by `lower_spawn` for exactly the one statement `parallel_outer_for` named: the next
+    /// `lower_for` takes it and tags its induction-variable init and latch increment
+    /// (`IMM_PARALLEL_INIT`/`IMM_PARALLEL_STEP`) so the device clone can grid-stride the loop (#251).
+    stride_next_for: bool,
     /// Place-write field stores collected during lowering, as `(stream position, borrowed root, field
     /// path)`. Post-lowering these reduce to a numeric group/sibling table (`reduce_place_alias`) so
     /// codegen can attach `alias_scopes`/`noalias_scopes` — carrying the borrow checker's disjointness
@@ -302,6 +308,7 @@ impl<'r> Lowerer<'r> {
             place_bindings: HashSet::new(),
             pending_place_write: None,
             place_field_stores: Vec::new(),
+            stride_next_for: false,
         }
     }
 
@@ -1495,6 +1502,8 @@ impl<'r> Lowerer<'r> {
     /// (once-evaluated) bound live in slots so they cross blocks; `continue` targets the increment
     /// latch (so it doesn't skip the step), `break` the exit.
     fn lower_for(&mut self, f: &crate::syntax::ForLoopStmt) -> Option<()> {
+        // Taken (not read) so the tag cannot leak into the nested loops this body lowers.
+        let stride = std::mem::take(&mut self.stride_next_for);
         let Expr::Range(range) = &*f.iterable else {
             // A non-range iterable is an iterator (`for x in v.iter()`): the sugar over
             // `loop { match it.next() { Some(x) => body, None => break } }`. (#242)
@@ -1509,7 +1518,8 @@ impl<'r> Lowerer<'r> {
         };
         // Induction variable `i` and the loop bound both need to survive across blocks -> slots.
         let i_slot = self.emit_alloca(LoweredTy::Scalar(elem.clone()));
-        self.emit_effect(Opcode::Store, i_slot.reg, start.reg, 0);
+        let init_imm = if stride { IMM_PARALLEL_INIT } else { 0 };
+        self.emit_effect(Opcode::Store, i_slot.reg, start.reg, init_imm);
         let end_slot = self.emit_alloca(LoweredTy::Scalar(elem.clone()));
         self.emit_effect(Opcode::Store, end_slot.reg, end.reg, 0);
         self.scope.insert(
@@ -1559,7 +1569,8 @@ impl<'r> Lowerer<'r> {
         self.emit_effect(Opcode::BlockStart, Register(0), Register(0), latch as u64);
         let i2 = self.emit_value(Opcode::SlotLoad, i_slot.reg, Register(0), elem.clone(), 0);
         let one = self.emit_value(Opcode::Const, Register(0), Register(0), elem.clone(), 1);
-        let inc = self.emit_value(Opcode::Add, i2.reg, one.reg, elem, 0);
+        let step_imm = if stride { IMM_PARALLEL_STEP } else { 0 };
+        let inc = self.emit_value(Opcode::Add, i2.reg, one.reg, elem, step_imm);
         self.emit_effect(Opcode::Store, i_slot.reg, inc.reg, 0);
         self.emit_effect(Opcode::Br, Register(0), Register(0), header as u64);
 
@@ -1684,16 +1695,29 @@ impl<'r> Lowerer<'r> {
     /// nested MLIR region, so the region's blocks are self-contained (#226). A *value-producing* spawn
     /// (a yielded result) still declines: it needs `vx.yield` with a result plus threading the spawn's
     /// result value, which the statement-form device corpus doesn't use.
+    ///
+    /// The region's outermost loop is additionally offered to `parallel_outer_for`: when its
+    /// iterations are provably disjoint, the loop is tagged for the device pipeline to grid-stride
+    /// (#251). Whether the offer is declined or accepted, the lowered body is identical apart from
+    /// two inert `imm` bits and the `SpawnEnd`'s trip count — the host path never changes.
     fn lower_spawn(&mut self, s: &crate::syntax::SpawnOnExpr) -> Option<()> {
         if s.ret.is_some() {
             return None;
         }
         let top_id = crate::arch::topology_dispatch_id(&s.top);
         self.emit_effect(Opcode::Spawn, Register(0), Register(0), top_id as u64);
-        for stmt in &s.stmts {
+        // When the region's outermost loop provably has disjoint iterations, tag the loop for the
+        // device pipeline to grid-stride and carry the trip count out on the `SpawnEnd` (#251).
+        // `stride_next_for` is armed only for the one statement the analysis named, so a nested or
+        // subsequent loop can never inherit the tag.
+        let par = parallel_outer_for(&s.stmts);
+        for (i, stmt) in s.stmts.iter().enumerate() {
+            self.stride_next_for = matches!(par, Some((idx, _)) if idx == i);
             self.lower_stmt(stmt)?;
         }
-        self.emit_effect(Opcode::SpawnEnd, Register(0), Register(0), 0);
+        self.stride_next_for = false;
+        let trip = par.map(|(_, t)| t).unwrap_or(0);
+        self.emit_effect(Opcode::SpawnEnd, Register(0), Register(0), trip);
         Some(())
     }
 
@@ -3551,6 +3575,298 @@ pub fn verify_hir_stream(worker: &LocalWorkerState) {
     }
 }
 
+/// Is the outermost `for` of this spawn region safe to grid-stride — run its iterations on
+/// concurrent device threads instead of one (#251)?
+///
+/// Splitting a loop across threads is only sound when no iteration can observe another. The proof
+/// obligation is entirely about **writes to captured memory** — everything a thread declares
+/// itself is thread-private on a GPU by construction (an entry-block alloca is in the thread's own
+/// local depot, so even the region's pre-loop scratch declarations replicate harmlessly). So the
+/// rule this walker enforces, conservatively and syntactically, is:
+///
+/// - the region is `[zero or more local declarations] for iv in lo..hi { body }` and nothing else,
+///   with literal integer bounds (the trip count sizes the launch);
+/// - every write in the body lands either in a name declared inside the region, or in a captured
+///   tensor indexed **first by `iv`** — each iteration then owns row `iv` and no other;
+/// - nothing in the body can write through a side door: no free calls, no prints, no transfers, no
+///   nested spawns, no method calls rooted at a captured name (a `&mut self` method on captured
+///   state is a write this walker cannot see);
+/// - no `break` of the outer loop (a serial `break` stops every later iteration; a strided one
+///   only stops the current thread's — different programs), and no shadowing that could make one
+///   name mean "captured" at one point and "local" at another (a name referenced before a later
+///   `let` of the same name rejects the region).
+///
+/// Returns the index of the `for` statement and the trip count, or `None` — and `None` costs
+/// nothing: the region lowers exactly as it always did and runs serially.
+///
+/// The declared/used-captured distinction is tracked in program order, so the walker is immune to
+/// shadowing tricks without needing scopes: a declaration is only accepted while its name has
+/// never been read as captured.
+fn parallel_outer_for(stmts: &[Statement]) -> Option<(usize, u64)> {
+    use crate::syntax::stmt::Statement as S;
+
+    let mut for_idx: Option<usize> = None;
+    for (i, s) in stmts.iter().enumerate() {
+        if matches!(s, S::ForLoop(_)) {
+            if for_idx.is_some() {
+                return None; // two top-level loops: neither owns the region
+            }
+            for_idx = Some(i);
+        }
+    }
+    let idx = for_idx?;
+    if idx + 1 != stmts.len() {
+        return None; // statements after the loop would run per-thread, after each thread's stripe
+    }
+    let S::ForLoop(f) = &stmts[idx] else {
+        return None;
+    };
+    let Expr::Range(r) = &*f.iterable else {
+        return None;
+    };
+    let lo = parallel_int_literal(&r.start)?;
+    let hi = parallel_int_literal(&r.end)?;
+    if hi <= lo {
+        return None;
+    }
+
+    let mut scan = ParallelScan {
+        iv: f.iter.clone(),
+        declared: HashSet::new(),
+        used_captured: HashSet::new(),
+    };
+    for s in &stmts[..idx] {
+        let S::LetDecl(d) = s else {
+            return None;
+        };
+        // A pre-loop declaration replicates per thread, so its initializer may read anything but
+        // must not be able to write: `Tensor<..>(..)` scratch is the intended shape, and a plain
+        // expression passes through the same no-side-door walk as body reads.
+        let init_ok = match &d.expr {
+            Expr::FunctionCall(fc)
+                if &*fc.name == "Tensor" && fc.args.iter().all(|a| scan.expr(a)) =>
+            {
+                true
+            }
+            e => scan.expr(e),
+        };
+        if !init_ok || !scan.declare(&d.name) {
+            return None;
+        }
+    }
+    if !scan.declare(&f.iter) {
+        return None;
+    }
+    if scan.stmts(&f.body, 0) {
+        Some((idx, (hi - lo) as u64))
+    } else {
+        None
+    }
+}
+
+/// A non-negative integer literal, for `parallel_outer_for`'s bounds.
+fn parallel_int_literal(e: &Expr) -> Option<i64> {
+    let Expr::Number(n) = e else {
+        return None;
+    };
+    n.value.parse::<i64>().ok()
+}
+
+/// Scalar math the walk may trust. By the time `parallel_outer_for` runs, the checker has
+/// rewritten every method call into a mangled free call — `(x).exp()` arrives as
+/// `f32$exp(x)` — so a syntactic walk meets no `MethodCall`, only calls whose names carry the
+/// receiver type. These are the stdlib's value-receiver scalar intrinsics: value in, value out,
+/// nothing written anywhere, which is exactly what the disjointness proof needs from a call.
+/// Anything not on this list rejects the region — a name here is a purity claim.
+fn parallel_pure_call(name: &str) -> bool {
+    let Some((ty, method)) = name.split_once('$') else {
+        return false;
+    };
+    matches!(ty, "f32" | "f64" | "i32" | "i64")
+        && matches!(
+            method,
+            "exp"
+                | "exp2"
+                | "sqrt"
+                | "abs"
+                | "ln"
+                | "log2"
+                | "log10"
+                | "sin"
+                | "cos"
+                | "tan"
+                | "tanh"
+                | "floor"
+                | "ceil"
+                | "round"
+                | "min"
+                | "max"
+                | "pow"
+                | "powi"
+                | "recip"
+        )
+}
+
+/// The write-disjointness walk behind `parallel_outer_for`. `declared` and `used_captured` grow in
+/// program order; every `false` means "reject the region", never an error.
+struct ParallelScan {
+    iv: String,
+    declared: HashSet<String>,
+    used_captured: HashSet<String>,
+}
+
+impl ParallelScan {
+    /// Record a read of `name`. Reads of captured state are always fine — but they pin the name as
+    /// captured, so a later `let` of the same name rejects the region (see `declare`).
+    fn note(&mut self, name: &str) {
+        if !self.declared.contains(name) {
+            self.used_captured.insert(name.to_string());
+        }
+    }
+
+    /// A `let` (or loop IV) introduces a local — unless the name was already read as captured, or
+    /// shadows the outer IV, either of which would let one spelling mean two memories.
+    fn declare(&mut self, name: &str) -> bool {
+        if self.used_captured.contains(name) {
+            return false;
+        }
+        if !self.declared.is_empty() && name == self.iv && self.declared.contains(name) {
+            return false;
+        }
+        self.declared.insert(name.to_string());
+        true
+    }
+
+    fn stmts(&mut self, stmts: &[Statement], depth: u32) -> bool {
+        stmts.iter().all(|s| self.stmt(s, depth))
+    }
+
+    fn stmt(&mut self, s: &Statement, depth: u32) -> bool {
+        use crate::syntax::stmt::Statement as S;
+        match s {
+            S::LetDecl(d) => self.expr(&d.expr) && self.declare(&d.name),
+            S::Assign(a) => self.target(&a.lhs) && self.expr(&a.rhs),
+            // `x op= e` both reads and writes x; `target` covers the write, `expr` the read.
+            S::CompoundAssign(a) => self.target(&a.lhs) && self.expr(&a.lhs) && self.expr(&a.rhs),
+            S::ForLoop(inner) => {
+                let Expr::Range(r) = &*inner.iterable else {
+                    return false;
+                };
+                if *inner.iter == *self.iv {
+                    return false; // shadowing the strided IV would defeat the first-index rule
+                }
+                self.expr(&r.start)
+                    && self.expr(&r.end)
+                    && self.declare(&inner.iter)
+                    && self.stmts(&inner.body, depth + 1)
+            }
+            S::Loop(l) => self.stmts(&l.body, depth + 1),
+            // A `break` of the outer loop stops every later iteration when serial but only the
+            // current thread's stripe when strided — two different programs.
+            S::Break(_) => depth > 0,
+            S::Continue(_) => true,
+            S::ExprStmt(e) => self.expr(&e.expr),
+            // Return, assert, macro calls, parse errors: none of these have stridable semantics.
+            S::Return(_) | S::Assert(_) | S::MacroCall(_) | S::Error(_) => false,
+        }
+    }
+
+    /// The left of an assignment: where does the write land?
+    fn target(&mut self, lhs: &Expr) -> bool {
+        match lhs {
+            // A bare name: fine only if it is region-local. A captured scalar written by every
+            // thread is the definition of a race.
+            Expr::Identifier(id) => self.declared.contains(&*id.name),
+            // An index chain `a[e0][e1]..`: peel to the base. A local base is thread-private
+            // regardless of indices; a captured base must be indexed first by the IV, giving each
+            // iteration its own row.
+            Expr::IndexAccess(_) => {
+                let mut indices = Vec::new();
+                let mut cur = lhs;
+                while let Expr::IndexAccess(ix) = cur {
+                    indices.push(&*ix.index);
+                    cur = &ix.base;
+                }
+                let Expr::Identifier(id) = cur else {
+                    return false;
+                };
+                // `indices` is outermost-last: `a[i][d]` pushed d then i.
+                let first = match indices.last() {
+                    Some(e) => *e,
+                    None => return false,
+                };
+                if !indices.iter().all(|e| self.expr(e)) {
+                    return false;
+                }
+                if self.declared.contains(&*id.name) {
+                    return true;
+                }
+                self.note(&id.name);
+                matches!(first, Expr::Identifier(fid) if *fid.name == *self.iv)
+            }
+            _ => false,
+        }
+    }
+
+    /// A read-position expression: allowed unless it could hide a write (a call, a print, a
+    /// transfer) or is a construct this walk has no sound story for.
+    fn expr(&mut self, e: &Expr) -> bool {
+        match e {
+            Expr::Identifier(id) => {
+                self.note(&id.name);
+                true
+            }
+            Expr::Number(_) | Expr::StringLiteral(_) | Expr::SizeOf(_) | Expr::EnumVariant(_) => {
+                true
+            }
+            Expr::BinaryOp(b) => self.expr(&b.lhs) && self.expr(&b.rhs),
+            Expr::RelationalOp(b) => self.expr(&b.lhs) && self.expr(&b.rhs),
+            Expr::LogicalOp(b) => self.expr(&b.lhs) && self.expr(&b.rhs),
+            Expr::UnaryOp(u) => self.expr(&u.expr),
+            Expr::AsCast(c) => self.expr(&c.expr),
+            Expr::IndexAccess(ix) => self.expr(&ix.base) && self.expr(&ix.index),
+            Expr::MemberAccess(m) => self.expr(&m.base),
+            Expr::Array(a) => a.elements.iter().all(|el| self.expr(el)),
+            Expr::Range(r) => self.expr(&r.start) && self.expr(&r.end),
+            // The checker has already rewritten `.exp()` into `f32$exp(x)` by the time this walk
+            // runs, so calls are the shape scalar math arrives in. Only the known-pure intrinsics
+            // pass; any other call could write through an argument and rejects the region. A
+            // `Borrow` shows up when such an intrinsic takes `&self` — harmless only immutably.
+            Expr::FunctionCall(fc) => {
+                parallel_pure_call(&fc.name) && fc.args.iter().all(|a| self.expr(a))
+            }
+            Expr::Borrow(b) => !b.is_mut && self.expr(&b.expr),
+            // Belt for the pre-rewrite spelling, should this walk ever run on an unchecked AST: a
+            // method rooted at a captured name is refused (`&mut self` mutation is a write this
+            // walk cannot see); on a local or a computed scalar it is thread-private either way.
+            Expr::MethodCall(mc) => {
+                let mut root = &*mc.base;
+                while let Expr::IndexAccess(ix) = root {
+                    root = &ix.base;
+                }
+                if let Expr::Identifier(id) = root {
+                    if !self.declared.contains(&*id.name) {
+                        return false;
+                    }
+                }
+                self.expr(&mc.base) && mc.args.iter().all(|a| self.expr(a))
+            }
+            Expr::If(i) => {
+                // If-expression blocks execute at the enclosing loop depth; a `break` inside them
+                // still targets that loop, which `stmt` scores against depth 0 correctly because
+                // an if-block introduces no loop.
+                self.expr(&i.cond)
+                    && self.stmts(&i.then_block, 1)
+                    && i.else_block.as_ref().is_none_or(|b| self.stmts(b, 1))
+            }
+            // Everything else — calls, prints, transfers, spawns, closures, borrows, raw pointers,
+            // inline MLIR, autodiff, matches, struct construction — is either a possible write or
+            // a construct with no sound striding story. Reject; the loop stays serial.
+            _ => false,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4564,6 +4880,119 @@ mod tests {
         let mut w = worker();
         assert!(!lower_function_to_hir(&f, &mut w));
         assert!(w.local_hir_stream.is_empty());
+    }
+
+    #[test]
+    fn a_flash_shaped_spawn_region_is_grid_stridable() {
+        // The bench template's shape in miniature: thread-private scratch before the loop, scalar
+        // accumulators inside it, an if-expression, and every captured write leading with the
+        // induction variable. (No `.exp()` here — the harness loads no stdlib, so a method call
+        // cannot resolve at all; the `f32$exp` whitelist is exercised by the real template, which
+        // fails to tag if it regresses.) `parallel_outer_for` must accept: the trip count rides
+        // the SpawnEnd, and exactly one Store and one Add carry the stride tags.
+        let (did, w) = lower_with_registry(
+            "fn main() -> i32 {\n\
+               let mut q = Tensor<f32>([4, 8]);\n\
+               let mut o = Tensor<f32>([4, 8]);\n\
+               let scale : f32 = 0.5;\n\
+               spawn on (Topology::GPU) {\n\
+                 let mut ts = Tensor<f32>([1, 8]);\n\
+                 for i in 0..4 {\n\
+                   let mut m : f32 = 0.0;\n\
+                   for d in 0..8 {\n\
+                     ts[0][d] = q[i][d] * scale;\n\
+                     let t : f32 = if ts[0][d] > m { ts[0][d] } else { m };\n\
+                     m = t;\n\
+                   }\n\
+                   for d in 0..8 {\n\
+                     o[i][d] = m;\n\
+                   }\n\
+                 }\n\
+               };\n\
+               return 0;\n\
+             }",
+            "main",
+        );
+        assert!(did, "the region lowers on the flat path");
+        let end = w
+            .local_hir_stream
+            .iter()
+            .find(|i| i.opcode == Opcode::SpawnEnd)
+            .expect("a SpawnEnd");
+        assert_eq!(end.imm, 4, "the proved trip count rides the SpawnEnd");
+        let inits = w
+            .local_hir_stream
+            .iter()
+            .filter(|i| i.opcode == Opcode::Store && i.imm == IMM_PARALLEL_INIT)
+            .count();
+        let steps = w
+            .local_hir_stream
+            .iter()
+            .filter(|i| i.opcode == Opcode::Add && i.imm == IMM_PARALLEL_STEP)
+            .count();
+        assert_eq!((inits, steps), (1, 1), "exactly the outer loop is tagged");
+    }
+
+    #[test]
+    fn a_captured_scalar_write_keeps_the_region_serial() {
+        // `acc` lives outside the spawn, so every strided thread would race on it: the analysis
+        // must reject, and rejection must be invisible — the region lowers exactly as before, with
+        // a zero trip count and no tags.
+        let (did, w) = lower_with_registry(
+            "fn main() -> i32 {\n\
+               let mut o = Tensor<f32>([4, 8]);\n\
+               let mut acc : f32 = 0.0;\n\
+               spawn on (Topology::GPU) {\n\
+                 for i in 0..4 {\n\
+                   for d in 0..8 {\n\
+                     acc = acc + o[i][d];\n\
+                   }\n\
+                 }\n\
+               };\n\
+               return 0;\n\
+             }",
+            "main",
+        );
+        assert!(did, "the rejected region still lowers");
+        let end = w
+            .local_hir_stream
+            .iter()
+            .find(|i| i.opcode == Opcode::SpawnEnd)
+            .expect("a SpawnEnd");
+        assert_eq!(end.imm, 0, "no trip count for a racy region");
+        assert!(
+            !w.local_hir_stream
+                .iter()
+                .any(|i| i.opcode == Opcode::Store && i.imm == IMM_PARALLEL_INIT),
+            "no stride tags either"
+        );
+    }
+
+    #[test]
+    fn a_captured_write_not_led_by_the_iv_keeps_the_region_serial() {
+        // `o[0][d]` writes the same row from every iteration — the first-index rule is the whole
+        // proof, so this must reject.
+        let (did, w) = lower_with_registry(
+            "fn main() -> i32 {\n\
+               let mut o = Tensor<f32>([4, 8]);\n\
+               spawn on (Topology::GPU) {\n\
+                 for i in 0..4 {\n\
+                   for d in 0..8 {\n\
+                     o[0][d] = 1.0;\n\
+                   }\n\
+                 }\n\
+               };\n\
+               return 0;\n\
+             }",
+            "main",
+        );
+        assert!(did);
+        let end = w
+            .local_hir_stream
+            .iter()
+            .find(|i| i.opcode == Opcode::SpawnEnd)
+            .expect("a SpawnEnd");
+        assert_eq!(end.imm, 0, "a fixed-row write is not disjoint");
     }
 
     #[test]

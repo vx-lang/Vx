@@ -121,9 +121,13 @@ if [ "$nodevice" -gt 0 ] && [ "$gemms" -eq 0 ]; then
   echo "     and it is a CPU baseline rather than evidence about a GPU."
   WHERE=host-nodevice
 elif [ "$images" -gt 0 ]; then
-  echo "  => the compiler's own kernel ran on the device (#251). The numbers below are"
-  echo "     GPU numbers -- of a deliberate 1x1x1 launch, so they price the emission"
-  echo "     path working, not the device's parallelism."
+  # The launch shape is in the trace -- "(28 params, 1x128 threads)" -- and it is the
+  # difference between pricing the emission path and pricing the device, so report it
+  # rather than assuming either.
+  shape=$(grep -oE '[0-9]+x[0-9]+ threads' "$OUTDIR/probe.txt" | head -1)
+  echo "  => the compiler's own kernel ran on the device (#251), as ${shape:-an unreported shape}."
+  echo "     A 1x1 launch prices the emission path; a wider one is the frontend's"
+  echo "     disjointness proof cashed in as blocks x threads (grid-striding)."
   WHERE=gpu-image
 elif [ "$refused" -gt 0 ] && [ "$gemms" -eq 0 ]; then
   echo "  => a device is present and the kernel was refused. Every number below is a CPU number."
@@ -210,7 +214,7 @@ awk -F, -v sq="$SQ" -v hd="$HD" -v where="$WHERE" '
     if (where == "host")
       printf "  This kernel is not on the device at all, which is the gap #251 closes.\n"
     if (where == "gpu-image")
-      printf "  This kernel IS on the device, one thread of it. The distance to the\n  cuBLAS figure is now parallelism, not placement.\n"
+      printf "  This kernel IS on the device. What remains of the distance to cuBLAS\n  is how much of the device the launch occupies, not placement.\n"
   }' "$CSV"
 
 echo

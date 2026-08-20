@@ -21,7 +21,14 @@ pub enum Opcode {
     Nop = 0,
     Const = 1,
     Load = 2,
+    /// `imm` is normally 0. `IMM_PARALLEL_INIT` marks the one store `lower_for` emits to
+    /// initialize the induction variable of a loop `parallel_outer_for` proved disjoint — codegen
+    /// renders it with a `vx.parallel_init` attribute so the device clone can offset it by the
+    /// global thread id (#251). Inert everywhere else.
     Store = 3,
+    /// `imm` is normally 0. `IMM_PARALLEL_STEP` marks the latch increment of the same loop —
+    /// rendered with `vx.parallel_step` so the device clone can widen the step to the grid stride
+    /// (#251). Inert everywhere else.
     Add = 4,
     Sub = 5,
     Mul = 6,
@@ -61,6 +68,10 @@ pub enum Opcode {
     /// spawned kernel body.
     Spawn = 20,
     /// Closes the `vx.spawn` region opened by the nearest preceding `Spawn` (maps to `vx.yield`).
+    /// `imm` is the trip count of the region's outermost loop when `parallel_outer_for` proved its
+    /// iterations disjoint (0 otherwise) — codegen stamps it on the `vx.spawn` op as
+    /// `vx_parallel_trip`, and the device pipeline grid-strides the loop and sizes the launch from
+    /// it. The host path ignores it entirely (#251).
     SpawnEnd = 21,
     /// Load a struct field: `operand1` is the aggregate's slot handle (from `Alloca`), `imm` the
     /// field's byte offset (from the registry layout), and `type_idx` the field's type. The result
@@ -251,3 +262,10 @@ impl HirInstruction {
         }
     }
 }
+
+/// `imm` tag on the induction-variable init `Store` of a grid-stridable loop (see `Store`'s doc).
+/// A distinct constant per site, even though both are 1 today, so a reader grepping either name
+/// finds the emitting and the consuming side rather than a bare literal.
+pub const IMM_PARALLEL_INIT: u64 = 1;
+/// `imm` tag on the latch `Add` of the same loop (see `Add`'s doc).
+pub const IMM_PARALLEL_STEP: u64 = 1;

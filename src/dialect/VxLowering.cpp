@@ -662,6 +662,12 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
     if (auto arch = op->getAttrOfType<StringAttr>("arch"))
       kernelOp->setAttr("arch", arch);
 
+    // The trip count `parallel_outer_for` proved for the region's outermost
+    // loop, when it proved one. Carried to the kernel so the device clone can
+    // grid-stride the loop and the payload can size the launch (#251).
+    if (auto trip = op->getAttrOfType<IntegerAttr>("vx_parallel_trip"))
+      kernelOp->setAttr("vx_parallel_trip", trip);
+
     // Name what the region computes, so a plugin can route it to a vendor
     // kernel instead of inferring the operation from buffer shapes (#325).
     // Shape conformance alone cannot do it: for square operands every operand
@@ -758,6 +764,10 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
                           rewriter.getStringAttr(outKind));
       }
     }
+    // The trip count too, for the same reason: the launch's payload is how the
+    // runtime learns how wide the strided kernel's work is (#251).
+    if (auto trip = op->getAttrOfType<IntegerAttr>("vx_parallel_trip"))
+      launchOp->setAttr("vx_parallel_trip", trip);
 
     // The topology's declared name, forwarded from the spawn. Optional by
     // design: the flat path emits `vx.spawn` from an instruction stream that
@@ -1283,6 +1293,86 @@ struct ConvertVxToStandardPass
         }
       }
 
+      // Grid-stride the loop the frontend proved disjoint (#251).
+      //
+      // The region reaches here as raw CFG -- recovering "the outer loop" from
+      // branches and allocas would be analysis this pass should not be doing.
+      // It does not have to: `parallel_outer_for` (hir/flatten.rs) did the
+      // proof where the loop was still a loop, and `lower_for` marked the two
+      // instructions that define the iteration space -- the induction
+      // variable's init store (`vx.parallel_init`) and its latch increment
+      // (`vx.parallel_step`). Here those tags are two ops in the clone, and
+      // the whole transform is: offset the init by the global thread id,
+      // widen the step to the grid stride.
+      //
+      //   iv = lb            ->  iv = lb + (blockIdx.x * blockDim.x + tid.x)
+      //   iv = iv + 1        ->  iv = iv + 1 * (gridDim.x * blockDim.x)
+      //
+      // Each thread then walks lb+gtid, lb+gtid+stride, ... -- a disjoint
+      // cover of the iteration space for ANY launch configuration. A 1x1x1
+      // launch has gtid 0 and stride 1: exactly the serial loop, which is why
+      // scripts/launch_emitted_kernel.cpp and every existing test stay
+      // correct without knowing this happened.
+      //
+      // Only the device clone changes. The `vx.kernel` body the host runs
+      // still carries the tags as inert attributes and no thread indexing.
+      //
+      // Anything unexpected -- no tags, several of each (nested spawns do not
+      // exist, so this would be a frontend bug), an index-typed IV -- leaves
+      // the clone serial rather than half-strided: correctness does not
+      // depend on this transform firing.
+      if (kernel->getAttrOfType<IntegerAttr>("vx_parallel_trip")) {
+        SmallVector<Operation *> inits, steps;
+        gpuFunc.walk([&](Operation *op) {
+          if (op->hasAttr("vx.parallel_init"))
+            inits.push_back(op);
+          if (op->hasAttr("vx.parallel_step"))
+            steps.push_back(op);
+        });
+        Type ivTy = inits.size() == 1 && steps.size() == 1
+                        ? inits.front()->getOperand(0).getType()
+                        : Type();
+        if (ivTy && ivTy.isIntOrIndex() && !isa<IndexType>(ivTy)) {
+          Operation *init = inits.front();
+          Operation *step = steps.front();
+
+          auto linearId = [&](OpBuilder &b, Location loc, bool grid) -> Value {
+            Type idx = b.getIndexType();
+            Value bdim =
+                b.create<gpu::BlockDimOp>(loc, idx, gpu::Dimension::x);
+            Value lhs =
+                grid ? b.create<gpu::GridDimOp>(loc, idx, gpu::Dimension::x)
+                           .getResult()
+                     : b.create<gpu::BlockIdOp>(loc, idx, gpu::Dimension::x)
+                           .getResult();
+            Value lin = b.create<arith::MulIOp>(loc, lhs, bdim);
+            if (!grid) {
+              Value tid =
+                  b.create<gpu::ThreadIdOp>(loc, idx, gpu::Dimension::x);
+              lin = b.create<arith::AddIOp>(loc, lin, tid);
+            }
+            return b.create<arith::IndexCastOp>(loc, ivTy, lin);
+          };
+
+          {
+            OpBuilder b(init);
+            Location loc = init->getLoc();
+            Value gtid = linearId(b, loc, /*grid=*/false);
+            Value offset =
+                b.create<arith::AddIOp>(loc, init->getOperand(0), gtid);
+            init->setOperand(0, offset);
+          }
+          {
+            OpBuilder b(step);
+            Location loc = step->getLoc();
+            Value stride = linearId(b, loc, /*grid=*/true);
+            Value wide =
+                b.create<arith::MulIOp>(loc, step->getOperand(1), stride);
+            step->setOperand(1, wide);
+          }
+        }
+      }
+
       // `vx.return` is not a terminator a GPU module may contain.
       SmallVector<vx::ReturnOp> returns;
       gpuFunc.walk([&](vx::ReturnOp r) { returns.push_back(r); });
@@ -1741,6 +1831,18 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
     if (auto nameAttr = op->getAttrOfType<StringAttr>("vx.topology_name")) {
       payload += "toponame=";
       payload += nameAttr.getValue().str();
+      payload.push_back('\0');
+    }
+
+    // How many iterations the kernel's grid-strided loop covers, when the
+    // frontend proved it stridable (#251). The runtime sizes the launch from
+    // this; absent, the kernel is serial and gets the 1x1x1 launch it needs.
+    // Grid-striding makes any configuration correct, so this is a sizing
+    // hint with a correctness floor, not a contract the runtime must honour
+    // exactly.
+    if (auto trip = op->getAttrOfType<IntegerAttr>("vx_parallel_trip")) {
+      payload += "launch=";
+      payload += std::to_string(trip.getInt());
       payload.push_back('\0');
     }
 

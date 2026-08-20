@@ -689,13 +689,29 @@ bool run_device_image(const void *payload, size_t payload_size,
     abort();
   }
 
-  /* One thread. Nothing in the region indexes by thread -- the outliner
-     produces a serial loop nest -- so a wider launch would run the whole
-     computation once per thread over the same output and race. Making these
-     kernels parallel is separate work; launching them wide without doing it
-     would be a race dressed as a speedup. */
-  CUresult rc =
-      cuLaunchKernel(fn, 1, 1, 1, 1, 1, 1, 0, nullptr, params.params, nullptr);
+  /* One thread by default. Nothing in a serial region indexes by thread --
+     the outliner produces a serial loop nest -- so a wider launch would run
+     the whole computation once per thread over the same output and race.
+
+     `launch=` changes that: it is the trip count of a loop the frontend
+     proved disjoint and the device pipeline grid-strided (#251). A strided
+     kernel is correct under ANY configuration -- each thread walks
+     gtid, gtid+stride, ... -- so the field is a sizing hint with a
+     correctness floor. One iteration per thread up to a block of 128, then
+     enough blocks to cover the rest; the grid stride absorbs any remainder
+     and any cap. */
+  unsigned grid = 1, block = 1;
+  if (const char *launch =
+          vx_payload_field(payload, payload_size, "launch=")) {
+    long trip = strtol(launch, nullptr, 10);
+    if (trip > 1) {
+      block = trip < 128 ? (unsigned)trip : 128u;
+      unsigned long need = ((unsigned long)trip + block - 1) / block;
+      grid = need > 4096 ? 4096u : (unsigned)need;
+    }
+  }
+  CUresult rc = cuLaunchKernel(fn, grid, 1, 1, block, 1, 1, 0, nullptr,
+                               params.params, nullptr);
   if (rc != CUDA_SUCCESS) {
     const char *name = nullptr;
     cuGetErrorName(rc, &name);
@@ -712,8 +728,9 @@ bool run_device_image(const void *payload, size_t payload_size,
 
   if (verbose()) {
     fprintf(stderr,
-            "[Vx CUDA] %s ran on GPU %d from its own image (%d params)\n",
-            kernel_name, device, params.count);
+            "[Vx CUDA] %s ran on GPU %d from its own image "
+            "(%d params, %ux%u threads)\n",
+            kernel_name, device, params.count, grid, block);
   }
   return true;
 }

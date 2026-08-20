@@ -1499,7 +1499,17 @@ pub fn emit_function_mlir(
                     let a = names.get(ins.operand1.0 as usize)?;
                     let b = names.get(ins.operand2.0 as usize)?;
                     let n = format!("%v{idx}");
-                    body += &format!("  {n} = {op} {a}, {b} : {mt}\n");
+                    // The latch increment of a grid-stridable loop -- the marker the device clone
+                    // widens to the grid stride (#251, `IMM_PARALLEL_STEP`). Only an `Add` can
+                    // carry it: `lower_for` is the sole tagger.
+                    let attr = if ins.opcode == Opcode::Add
+                        && ins.imm == crate::hir::bytecode::IMM_PARALLEL_STEP
+                    {
+                        " {vx.parallel_step}"
+                    } else {
+                        ""
+                    };
+                    body += &format!("  {n} = {op} {a}, {b}{attr} : {mt}\n");
                     names[idx] = n;
                     etypes[idx] = Some(e);
                 } else {
@@ -1671,6 +1681,14 @@ pub fn emit_function_mlir(
             Opcode::Store => {
                 let slot = names.get(ins.operand1.0 as usize)?.clone();
                 let val = names.get(ins.operand2.0 as usize)?.clone();
+                // The induction-variable init of a grid-stridable loop carries its tag into the
+                // MLIR text as a discardable attribute -- inert on the host path, the marker the
+                // device clone offsets by thread id (#251, `IMM_PARALLEL_INIT`).
+                let attr = if ins.imm == crate::hir::bytecode::IMM_PARALLEL_INIT {
+                    " {vx.parallel_init}"
+                } else {
+                    ""
+                };
                 if let Some(&Some(agg_gid)) = agg_of.get(ins.operand1.0 as usize) {
                     let agg = ctx.aggs.get(&agg_gid)?;
                     body += &format!(
@@ -1683,11 +1701,11 @@ pub fn emit_function_mlir(
                 } else if let Some(e) = sslot_of.get(ins.operand1.0 as usize).cloned().flatten() {
                     // An address-taken scalar slot (an `llvm.alloca` of the element): `llvm.store`. (#230)
                     let mt = mlir_scalar(&e)?;
-                    body += &format!("  llvm.store {val}, {slot} : {mt}, !llvm.ptr\n");
+                    body += &format!("  llvm.store {val}, {slot}{attr} : {mt}, !llvm.ptr\n");
                 } else {
                     let e = elem_at(&etypes, ins.operand1.0)?;
                     let mt = mlir_scalar(&e)?;
-                    body += &format!("  memref.store {val}, {slot}[] : memref<{mt}>\n");
+                    body += &format!("  memref.store {val}, {slot}[]{attr} : memref<{mt}>\n");
                 }
             }
             // Load a value back from a slot; the result type is the slot's element (this
@@ -2304,12 +2322,21 @@ pub fn emit_function_mlir(
                 // A topology that declared an `arch:` sends it along, so the device pipeline can
                 // gate on the declaration instead of the dispatch-id band (Vx#352). Discardable
                 // attribute on the generic form -- no dialect change involved.
+                //
+                // A nonzero `imm` is the trip count `parallel_outer_for` proved for the region's
+                // outermost loop: `vx_parallel_trip` rides the same attribute dict, telling the
+                // device pipeline the loop is safe to grid-stride and how wide the work is (#251).
+                let trip = if ins.imm > 0 {
+                    format!(", vx_parallel_trip = {} : i64", ins.imm)
+                } else {
+                    String::new()
+                };
                 if let Some(arch) = ctx.topo_archs.get(&topo) {
                     body += &format!(
-                        "  }}) {{arch = \"{arch}\", topology = {topo} : i32}} : () -> ()\n"
+                        "  }}) {{arch = \"{arch}\", topology = {topo} : i32{trip}}} : () -> ()\n"
                     );
                 } else {
-                    body += &format!("  }}) {{topology = {topo} : i32}} : () -> ()\n");
+                    body += &format!("  }}) {{topology = {topo} : i32{trip}}} : () -> ()\n");
                 }
                 terminated = false;
             }
