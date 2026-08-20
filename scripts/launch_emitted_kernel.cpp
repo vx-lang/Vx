@@ -151,7 +151,15 @@ int main(int argc, char **argv) {
   CUdevice dev;
   must(cuDeviceGet(&dev, 0), "cuDeviceGet");
   CUcontext ctx;
+  // CUDA 13 remapped cuCtxCreate to _v4, which takes a CUctxCreateParams* the older three-argument
+  // form does not pass -- so this file stopped compiling against a current toolkit, and with it the
+  // launcher fc6b4115 used for the A100 run. Same shape as the cudaDeviceProp::clockRate removal
+  // that broke utils/memalg/measure_device.cu. Guarded rather than pinned, so it builds on both.
+#if defined(CUDA_VERSION) && CUDA_VERSION >= 13000
+  must(cuCtxCreate(&ctx, nullptr, 0, dev), "cuCtxCreate");
+#else
   must(cuCtxCreate(&ctx, 0, dev), "cuCtxCreate");
+#endif
 
   char name[256] = {0};
   cuDeviceGetName(name, sizeof(name), dev);
