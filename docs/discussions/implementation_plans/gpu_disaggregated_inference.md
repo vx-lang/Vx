@@ -308,23 +308,54 @@ than as *no data*.
 
 ## Build & deployment discipline
 
-Source does not ship to rented machines. The execution path is already AOT (`src/jit.rs`
-runs mlir-translate → opt → llc → clang and executes a native binary), and admission is
-compile-time, so a pod never needs the compiler, the repo, or any `.vx` source.
+Source does not ship to rented machines **when the pod is running a workload**. The
+execution path is already AOT (`src/jit.rs` runs mlir-translate → opt → llc → clang and
+executes a native binary), and admission is compile-time, so a pod running a demo,
+a benchmark or a fleet leg never needs the compiler, the repo, or any `.vx` source.
+
+There is one deliberate exception, added after it was crossed without being noticed
+(2026-08-20, #251): **a pod being used to develop the compiler itself**. Grid-striding
+the emitted kernel meant changing kernel emission and regenerating PTX after each change,
+which is a compiler build per iteration. The artifact-only loop prices that at a 230 MB
+`vxc` over the internet each time; the source tree is 2.2 MB and a rented 256-core pod
+builds it in 85 seconds, so the disciplined flow is ~50x the wall clock of the
+undisciplined one for exactly the work that most needs a tight loop.
+
+The exception is bounded, and the boundary is what keeps it from swallowing the rule:
+
+- It covers **compiler development**, not running workloads. A pod that is benchmarking,
+  serving, or acting as a fleet leg still gets an artifact, for the reason the rest of
+  this section gives.
+
+- **Still never `git clone`, and never any credential.** The tarball is built locally
+  from `git ls-files` and streamed over `ssh`; no `.git`, no remotes, no keys. This is
+  the constraint that actually protects something — the rented machine cannot reach the
+  repository whatever happens to it.
+
+- **The pod is still disposable.** Nothing is authored there: changes are made locally,
+  shipped, and committed locally. What the pod holds is a copy, and terminating it loses
+  nothing (verified on teardown, 2026-08-20).
+
+- `scripts/bootstrap_dev_pod.sh` is this loop, so it is one reviewed command rather than
+  fifteen remembered steps.
 
 - **Build on the EC2 x86 box** (trusted): vxc, the demo binaries, `cuda_dispatch.so`
   (link against CUDA toolkit stubs — no GPU needed to build), the `--diagnostics-json`
   admission verdicts. Match the pod's OS/glibc (Ubuntu LTS) and keep the CUDA toolkit at
   or below the pod's driver version.
+
 - **Ship an artifact, not a checkout**: one tarball via `scp` — demo binary, runtime
   `.so`s, model assets, run scripts, admission JSONs. Never `git clone` on a pod; no
   `.git`, no credentials, no source. If a stray source file is ever genuinely needed,
   it goes in the archive deliberately, not via the repo.
+
 - **Iteration loop**: fix on EC2, rebuild, re-scp the tarball. The pod only ever runs
   and reports.
+
 - **Teardown**: nuke the working directory when done and terminate the pod; results are
   pulled back (scp) before teardown, following the `utils/memalg/` results-directory
   convention.
+
 - Bonus: the EC2 x86 box doubles as the **x86 leg of the M5 relay** — the machine that
   builds the artifact is also a participant, admitted against its own machine file.
 
