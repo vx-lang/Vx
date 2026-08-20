@@ -498,7 +498,17 @@ void *vx_plugin_alloc_and_transfer(size_t bytes, void *host_ptr,
     return remote;
   }
 
-  if (!cuda_available()) {
+  // A topology that names no device is host memory. The way home lowers to
+  // exactly this call -- null source, topology 0 -- and its contract is
+  // "allocate host memory and stop" (src/dialect/VxLowering.cpp). This path
+  // used to fall through to `cudaMalloc` whenever a device existed, so the
+  // "host" side of a fetch was device memory, the fetch quietly became a
+  // device-to-device copy (unified addressing obliges), and the program
+  // faulted the first time it looked at a result it had transferred back.
+  // Invisible on a device-less box, which is the only place the way home had
+  // run before Vx#377.
+  if (!cuda_available() ||
+      vx_topology_device_index((int32_t)topology_id, VX_TOPO_GPU_BASE) < 0) {
     void *ptr = malloc(bytes);
     if (ptr && host_ptr) {
       memcpy(ptr, host_ptr, bytes);
