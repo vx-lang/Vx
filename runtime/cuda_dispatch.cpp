@@ -710,6 +710,18 @@ bool run_device_image(const void *payload, size_t payload_size,
       grid = need > 4096 ? 4096u : (unsigned)need;
     }
   }
+  /* Device-side timing, on request. Wall clock cannot see this kernel any
+     more: at 128 blocks the flash sweep's whole device time is ~50 ms under
+     ~300 ms of rented-pod host jitter, and one outlier fit a NEGATIVE
+     per-K slope. CUDA events are stamped by the device, so they are immune
+     to everything the host does between enqueue and sync. */
+  const bool time_kernel = getenv("VX_TIME_KERNEL") != nullptr;
+  cudaEvent_t t0 = nullptr, t1 = nullptr;
+  if (time_kernel) {
+    cudaEventCreate(&t0);
+    cudaEventCreate(&t1);
+    cudaEventRecord(t0);
+  }
   CUresult rc = cuLaunchKernel(fn, grid, 1, 1, block, 1, 1, 0, nullptr,
                                params.params, nullptr);
   if (rc != CUDA_SUCCESS) {
@@ -724,6 +736,19 @@ bool run_device_image(const void *payload, size_t payload_size,
     fprintf(stderr, "[Vx CUDA] FATAL: %s faulted on the device: %s\n",
             kernel_name, cudaGetErrorString(sync));
     abort();
+  }
+
+  if (time_kernel) {
+    cudaEventRecord(t1);
+    cudaEventSynchronize(t1);
+    float ms = 0.0f;
+    cudaEventElapsedTime(&ms, t0, t1);
+    /* Always printed when asked for, independent of verbose(): asking to time
+       the kernel IS asking for this line, and a harness greps for it. */
+    fprintf(stderr, "[Vx CUDA] %s device time %.3f ms (%ux%u threads)\n",
+            kernel_name, ms, grid, block);
+    cudaEventDestroy(t0);
+    cudaEventDestroy(t1);
   }
 
   if (verbose()) {
