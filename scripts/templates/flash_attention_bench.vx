@@ -70,15 +70,22 @@ fn main() -> i32 {
   let mut o = transfer(o_h, Memory::GPU_HBM);
   let scale : f32 = 0.5;
 
-  // The body is the pure online softmax, one key at a time, written in slices.
-  // The elementwise `d` loops of the previous version are gone: `dot` is the
-  // Reduce opcode and the row updates are vector arithmetic, which the device
-  // pipeline lowers to wide (v4) loads -- the fix for the measured per-SM
-  // load-issue bound (Vx#378 R1). The score tile and its scratch went with
-  // them; tiles return when SMEM staging does (R2), as a measured step of
-  // their own.
+  // The body is the pure online softmax, one key at a time, written in slices
+  // (Vx#378 R1: `dot` is the Reduce opcode, the row updates vector arith,
+  // both reaching the device as v4 accesses).
+  //
+  // The accumulator lives in `acc`, a thread-private row, not in `o` (R2a).
+  // The R1 numbers said the o-row round trip was the traffic: rescale and
+  // axpy each read and wrote the row in GLOBAL memory once per key -- 64
+  // v4 transactions per key against K's 16 and V's 16. Accumulating in the
+  // thread's own row keeps that in the local depot (L1-cached), and `o[i]`
+  // is written once per query, at the end, already normalized. The zero at
+  // the top of each query is `q[i] * 0.0` because an alloca's initial
+  // contents are garbage that `* 0.0` would keep as NaN.
   spawn on(Topology::GPU) {
+    let mut acc = Tensor<f32>([ 1, __VX_HD__ ]);
     for i in 0..__VX_SQ__ {
+      acc[0] = q[i] * 0.0;
       let mut m : f32 = -1000000.0;
       let mut l : f32 = 0.0;
       for j in 0..__VX_SK__ {
@@ -91,12 +98,12 @@ fn main() -> i32 {
         let corr : f32 = (m - m_new).exp();
         let p : f32 = (s - m_new).exp();
         l = l * corr + p;
-        o[i] = o[i] * corr;
-        o[i] = o[i] + v[j] * p;
+        acc[0] = acc[0] * corr;
+        acc[0] = acc[0] + v[j] * p;
         m = m_new;
       }
       let inv : f32 = 1.0 / l;
-      o[i] = o[i] * inv;
+      o[i] = acc[0] * inv;
     }
   }
 

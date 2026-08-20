@@ -25,9 +25,11 @@
 //             updates. Rows are owned by hc, so the disjointness rule admits
 //             the loop and the device pipeline grid-strides it (Vx#251) --
 //             H*C threads, reading K and V once each, as vectors (Vx#378 R1).
-//   region 2  for h in 0..H -- rescale the C partials of head h onto a common
-//             max and normalize: the same algebra the online softmax applies
-//             per tile, applied once per chunk. Rows of `o` are owned by h.
+//   region 2  for x in 0..H*HD -- rescale the C partials of pair (h, d) onto
+//             head h's true max and normalize: the same algebra the online
+//             softmax applies per tile, applied once per chunk. Each x owns
+//             one output element (`o[x][0]`), so the combine scales with the
+//             split instead of bounding it (Vx#378 R4).
 //
 // The split changes where parallelism comes from and nothing else: C=1 is
 // vanilla single-thread-per-head decode, and any C must print the same
@@ -60,13 +62,19 @@ fn main() -> i32 {
   let mut v_h = Tensor<f32>([ __VX_HSK__, __VX_HD__ ]);
   let mut pml_h = Tensor<f32>([ __VX_HC__, 2 ]);
   let mut po_h = Tensor<f32>([ __VX_HC__, __VX_HD__ ]);
-  let mut o_h = Tensor<f32>([ __VX_H__, __VX_HD__ ]);
+  // Flat [H*HD][1] rather than [H][HD]: the combine parallelizes over
+  // (head, dim) pairs, and the disjointness rule wants each thread's write
+  // led by its own induction variable -- which `o[x][0]` is and `o[h][d]`
+  // is not.
+  let mut o_h = Tensor<f32>([ __VX_HHD__, 1 ]);
 
   for h in 0..__VX_H__ {
     for d in 0..__VX_HD__ {
       q_h[h][d] = 0.0;
-      o_h[h][d] = 0.0;
     }
+  }
+  for x in 0..__VX_HHD__ {
+    o_h[x][0] = 0.0;
   }
   // The partial accumulators must start at zero: region 1's online rescale
   // multiplies the running row, so whatever is here is folded into the
@@ -109,11 +117,17 @@ fn main() -> i32 {
   // starts zeroed (host-side fill above), so the first rescale multiplies
   // zero and no explicit clear is needed.
   spawn on(Topology::GPU) {
+    let mut acc = Tensor<f32>([ 1, __VX_HD__ ]);
     for hc in 0..__VX_HC__ {
       let h : i32 = hc / __VX_C__;
       let c : i32 = hc - h * __VX_C__;
       let base : i32 = h * __VX_SK__ + c * __VX_CHUNK__;
 
+      // Accumulate in the thread's own row (R2a, same reasoning as the
+      // prefill bench): the online rescale round-tripped po[hc] through
+      // global memory once per key; here it stays in the local depot and
+      // the partial row is written once, at the end.
+      acc[0] = q[h] * 0.0;
       let mut m : f32 = -1000000.0;
       let mut l : f32 = 0.0;
       for jj in 0..__VX_CHUNK__ {
@@ -126,20 +140,26 @@ fn main() -> i32 {
         let corr : f32 = (m - m_new).exp();
         let p : f32 = (s - m_new).exp();
         l = l * corr + p;
-        po[hc] = po[hc] * corr;
-        po[hc] = po[hc] + v[base + jj] * p;
+        acc[0] = acc[0] * corr;
+        acc[0] = acc[0] + v[base + jj] * p;
         m = m_new;
       }
+      po[hc] = acc[0] * 1.0;
       pml[hc][0] = m;
       pml[hc][1] = l;
     }
   }
 
   // Region 2: rescale each head's C partials onto the head's true max and
-  // normalize. C is small, so this is C row-reads per head -- the cost lives
-  // in region 1, where the cache is.
+  // normalize -- parallel over (head, dim) pairs (Vx#378 R4). The serial
+  // 8-thread combine grew linearly with C and overtook region 1 (0.30 ms at
+  // C=128, 2.34 ms at C=1024, against region 1's 0.148 ms); H*HD threads
+  // recompute the head's max and normalizer redundantly per dim, which is
+  // C scalar reads against a combine that no longer bounds the split.
   spawn on(Topology::GPU) {
-    for h in 0..__VX_H__ {
+    for x in 0..__VX_HHD__ {
+      let h : i32 = x / __VX_HD__;
+      let d : i32 = x - h * __VX_HD__;
       let mut m : f32 = -1000000.0;
       for c in 0..__VX_C__ {
         let pm : f32 = pml[h * __VX_C__ + c][0];
@@ -148,13 +168,13 @@ fn main() -> i32 {
         }
       }
       let mut l : f32 = 0.0;
+      let mut s : f32 = 0.0;
       for c in 0..__VX_C__ {
         let corr : f32 = (pml[h * __VX_C__ + c][0] - m).exp();
         l = l + pml[h * __VX_C__ + c][1] * corr;
-        o[h] = o[h] + po[h * __VX_C__ + c] * corr;
+        s = s + po[h * __VX_C__ + c][d] * corr;
       }
-      let inv : f32 = 1.0 / l;
-      o[h] = o[h] * inv;
+      o[x][0] = s / l;
     }
   }
 
