@@ -715,6 +715,35 @@ impl<'r> Lowerer<'r> {
                         0,
                     ));
                 }
+                // `matmul_into(&mut dst, &a, &b)`: an in-place matmul over rank-2 tensors. One
+                // effect op carries all three (dst rides the imm — see `Opcode::MatmulInto`).
+                // The checker typed the call void; the Const is for the value position nothing
+                // should read. Any shape surprise declines the program to the AST path, which
+                // has always lowered this call.
+                if fc.name.as_ref() == "matmul_into" {
+                    if fc.args.len() != 3 {
+                        return None;
+                    }
+                    let mut regs = [Register(0); 3];
+                    for (n, arg) in fc.args.iter().enumerate() {
+                        let v = self.lower_expr(arg)?;
+                        let LoweredTy::Tensor { shape, .. } = &v.ty else {
+                            return None;
+                        };
+                        if shape.len() != 2 {
+                            return None;
+                        }
+                        regs[n] = v.reg;
+                    }
+                    self.emit_effect(Opcode::MatmulInto, regs[1], regs[2], regs[0].0 as u64);
+                    return Some(self.emit_value(
+                        Opcode::Const,
+                        Register(0),
+                        Register(0),
+                        ElementType::I32,
+                        0,
+                    ));
+                }
                 let kind = match fc.name.as_ref() {
                     "dot" => 0u64,
                     "sum" => 1,
@@ -5791,6 +5820,40 @@ mod tests {
             "no two-level bit: imm={:#x}",
             end.imm
         );
+    }
+
+    #[test]
+    fn a_matmul_region_lowers_flat_and_stays_serial() {
+        // `matmul_into` in a spawn must lower on the FLAT path (one MatmulInto op, dst in the
+        // imm) and must NOT be strided -- the region is classified and routed, not launched
+        // wide. The regression this pins: the call used to evict the whole program to the AST
+        // path, taking every OTHER region's parallel proof with it -- an unfused-attention
+        // program lost its softmax kernel's grid-stride to the mere presence of a GEMM.
+        let (did, w) = lower_with_registry(
+            "fn main() -> i32 {\n\
+               let mut a = Tensor<f32>([4, 3]);\n\
+               let mut b = Tensor<f32>([3, 5]);\n\
+               let mut c = Tensor<f32>([4, 5]);\n\
+               spawn on (Topology::GPU) {\n\
+                 matmul_into(&mut c, &a, &b);\n\
+               };\n\
+               return 0;\n\
+             }",
+            "main",
+        );
+        assert!(did, "the matmul region lowers on the flat path");
+        let mm = w
+            .local_hir_stream
+            .iter()
+            .find(|i| i.opcode == Opcode::MatmulInto)
+            .expect("a MatmulInto op");
+        assert_ne!(mm.imm, 0, "the destination register rides the imm");
+        let end = w
+            .local_hir_stream
+            .iter()
+            .find(|i| i.opcode == Opcode::SpawnEnd)
+            .expect("a SpawnEnd");
+        assert_eq!(end.imm, 0, "routed, not strided: imm={:#x}", end.imm);
     }
 
     #[test]

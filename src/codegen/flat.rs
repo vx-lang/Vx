@@ -2241,6 +2241,28 @@ pub fn emit_function_mlir(
                 names[idx] = n;
                 etypes[idx] = Some(e);
             }
+            // `matmul_into(&mut dst, &a, &b)` (no result): `linalg.fill` + `linalg.matmul` on the
+            // three whole-tensor memrefs, the same pair the AST path builds -- and the exact shape
+            // `kernelKindOf` classifies, so a spawn whose whole job is this op still routes to
+            // cuBLAS. The destination register rides the imm (see `Opcode::MatmulInto`).
+            Opcode::MatmulInto => {
+                let a = names.get(ins.operand1.0 as usize)?.clone();
+                let ma = mem_of.get(ins.operand1.0 as usize)?.clone()?;
+                let b = names.get(ins.operand2.0 as usize)?.clone();
+                let mb = mem_of.get(ins.operand2.0 as usize)?.clone()?;
+                let dst = names.get(ins.imm as usize)?.clone();
+                let md = mem_of.get(ins.imm as usize)?.clone()?;
+                // "memref<8x16xf32>" -> "f32": the element is the segment after the last 'x',
+                // shorn of the closing '>'. Floats only -- an int matmul declines the program to
+                // the AST path rather than improvising linalg's integer semantics here.
+                let et = md.rsplit('x').next()?.trim_end_matches('>').to_string();
+                if et != "f32" && et != "f64" {
+                    return None;
+                }
+                body += &format!("  %mz{idx} = arith.constant 0.0 : {et}\n");
+                body += &format!("  linalg.fill ins(%mz{idx} : {et}) outs({dst} : {md})\n");
+                body += &format!("  linalg.matmul ins({a}, {b} : {ma}, {mb}) outs({dst} : {md})\n");
+            }
             // Store into a tensor place (no result). A scalar-element place (an `imm = 1`
             // `TensorIndex`) → `memref.store`; a row/sub-view place (an `imm = 0` `TensorIndex`, a row
             // memref in `mem_of`) takes an elementwise vector value → `vector.store`.

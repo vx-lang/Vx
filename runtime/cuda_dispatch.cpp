@@ -200,6 +200,19 @@ cublasHandle_t cublas_handle() {
 
   cublasHandle_t h = nullptr;
   VX_CUBLAS_CHECK(cublasCreate(&h));
+  /* TF32, opt-in (VX_TF32=1): f32 GEMMs keep f32 storage and f32 accumulation
+     but the tensor-core mma truncates input mantissas to 10 bits -- roughly
+     8x the FP32 CUDA-core rate at ~3 decimal digits of input precision. An
+     environment variable and not a default, because it changes the numbers of
+     every routed f32 GEMM in the process, and a numbers change should be a
+     decision the user made, not one a library upgrade made for them. */
+  const char *tf32 = getenv("VX_TF32");
+  if (tf32 && *tf32 && *tf32 != '0') {
+    VX_CUBLAS_CHECK(cublasSetMathMode(h, CUBLAS_TF32_TENSOR_OP_MATH));
+    fprintf(stderr,
+            "[Vx CUDA] cuBLAS math mode: TF32 tensor ops (VX_TF32, device %d)\n",
+            device);
+  }
   handles.emplace(device, h);
   return h;
 }
@@ -453,7 +466,28 @@ bool run_gemm(const vx_gemm_plan &plan) {
     c.row_stride = plan.n;
   }
 
+  /* The same instrument the emitted kernels carry (VX_TIME_KERNEL): a routed
+     GEMM is part of the same measured program, and a bench that mixes routed
+     and emitted regions needs both on one clock -- device events, because the
+     wall includes staging and the JIT. */
+  const bool time_kernel = getenv("VX_TIME_KERNEL") != nullptr;
+  cudaEvent_t t0 = nullptr, t1 = nullptr;
+  if (time_kernel) {
+    cudaEventCreate(&t0);
+    cudaEventCreate(&t1);
+    cudaEventRecord(t0);
+  }
   gemm_on_device(plan.dtype, plan.m, plan.n, plan.k, a, b, c.ptr, c.row_stride);
+  if (time_kernel) {
+    cudaEventRecord(t1);
+    cudaEventSynchronize(t1);
+    float ms = 0.0f;
+    cudaEventElapsedTime(&ms, t0, t1);
+    fprintf(stderr, "[Vx CUDA] GEMM device time %.3f ms (%lldx%lldx%lld)\n", ms,
+            (long long)plan.m, (long long)plan.n, (long long)plan.k);
+    cudaEventDestroy(t0);
+    cudaEventDestroy(t1);
+  }
   VX_CUDA_CHECK(cudaDeviceSynchronize());
 
   if (out_is_device) {

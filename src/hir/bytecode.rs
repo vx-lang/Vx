@@ -179,6 +179,14 @@ pub enum Opcode {
     /// around it never reads. Codegen carries it as a `vx.barrier`-tagged op so the device
     /// rewrite can find it after cloning (no operands, no result).
     Barrier = 39,
+    /// `matmul_into(&mut dst, &a, &b)`: fill `dst` with zero and accumulate `a @ b` into it, in
+    /// place. `operand1` = a, `operand2` = b, and — the one opcode that does this — `imm` is the
+    /// DESTINATION register, because an effect instruction has only two operand fields and the
+    /// destination is a third. Codegen emits `linalg.fill` + `linalg.matmul`, the same pair the
+    /// AST path builds, which is exactly the shape `kernelKindOf` classifies for cuBLAS routing:
+    /// this op exists so a matmul region no longer evicts the whole program from the flat path
+    /// (and with it every other region's parallel proof).
+    MatmulInto = 40,
 }
 
 impl Opcode {
@@ -228,6 +236,7 @@ impl Opcode {
             37 => FieldAddr,
             38 => Abort,
             39 => Barrier,
+            40 => MatmulInto,
             _ => return None,
         })
     }
