@@ -1,0 +1,144 @@
+//===- flash_unfused_bench.vx - attention as two routed GEMMs ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+//
+// Attention UNFUSED: S = Q K^T through the matmul routing (cuBLAS), a softmax
+// pass as the compiler's own kernel, P V through the routing again, and a
+// row-normalize epilogue. This is the baseline the FlashAttention literature
+// defines fusion AGAINST -- and on this compiler it is also the one path that
+// reaches the A100's tensor cores today (VX_TF32=1 puts the two GEMMs on
+// them). The fused kernels' remaining advantage is memory: this materializes
+// an SQ x SK score matrix in HBM and walks it three more times.
+//
+// __VX_BENCH_NOTE__
+//
+//   region 0   matmul_into(&mut wc, &wa, &wb)  8x8 warmup: the FIRST GEMM in
+//              a process pays cuBLAS's lazy module load -- 77 ms measured on
+//              the A100 pod against 0.18 ms for the same GEMM warm. A bench
+//              warms the library it measures, and says so.
+//   region A   matmul_into(&mut s, &q, &kT)    routed: kind=matmul -> cuBLAS
+//   region B   per-row softmax, own kernel     s <- exp(scale*s - max), row
+//              (one thread per row)            sums kept as 1/l in lrow
+//   region C   matmul_into(&mut o, &s, &v)     routed again
+//   region D   o[i] *= lrow[i]                 the deferred normalization
+//
+// K is HOSTED transposed (kT, [HD][SK]) so region A is a plain row-major
+// matmul -- the classifier routes a region whose whole job is the one op,
+// and a transpose in the region would make it not be that.
+//
+// The normalization rides AFTER the PV GEMM (fold 1/l into o's rows) instead
+// of as a second walk over the 67 MB score matrix: P's rows enter the GEMM
+// unnormalized, and o's 2 MB pay the division.
+//
+// Same closed form as every bench in this family: Q is zero, so S is zero
+// EXACTLY (even under TF32 -- zeros truncate to zeros), P is uniform, and
+// o[i][d] is the mean of column d of V = 0.01*(SK-1)/2. Under VX_TF32=1 the
+// PV product rounds V's mantissas to 10 bits, so the printed value may move
+// in the fourth decimal; with it unset the match is exact.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: vx.transfer
+// CHECK-SAME: cost =
+// CHECK: vx.spawn topology(1
+//
+//===----------------------------------------------------------------------===//
+
+import std::math;
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::GPU_HBM,
+  visible: [Memory::GPU_HBM],
+  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s
+}
+
+fn main() -> i32 {
+  let mut q_h = Tensor<f32>([ __VX_SQ__, __VX_HD__ ]);
+  let mut kt_h = Tensor<f32>([ __VX_HD__, __VX_SK__ ]);
+  let mut v_h = Tensor<f32>([ __VX_SK__, __VX_HD__ ]);
+  let mut o_h = Tensor<f32>([ __VX_SQ__, __VX_HD__ ]);
+  let mut s_h = Tensor<f32>([ __VX_SQ__, __VX_SK__ ]);
+  let mut l_h = Tensor<f32>([ __VX_SQ__, 1 ]);
+  let mut wa_h = Tensor<f32>([ 8, 8 ]);
+  let mut wb_h = Tensor<f32>([ 8, 8 ]);
+  let mut wc_h = Tensor<f32>([ 8, 8 ]);
+
+  for i in 0..__VX_SQ__ {
+    for d in 0..__VX_HD__ {
+      q_h[i][d] = 0.0;
+      o_h[i][d] = 0.0;
+    }
+  }
+  for d in 0..__VX_HD__ {
+    for j in 0..__VX_SK__ {
+      kt_h[d][j] = 0.01;
+    }
+  }
+  for j in 0..__VX_SK__ {
+    for d in 0..__VX_HD__ {
+      v_h[j][d] = (j as f32) * 0.01;
+    }
+  }
+  for i in 0..8 {
+    for j in 0..8 {
+      wa_h[i][j] = 1.0;
+      wb_h[i][j] = 1.0;
+      wc_h[i][j] = 0.0;
+    }
+  }
+
+  let q = transfer(q_h, Memory::GPU_HBM);
+  let kt = transfer(kt_h, Memory::GPU_HBM);
+  let v = transfer(v_h, Memory::GPU_HBM);
+  let mut o = transfer(o_h, Memory::GPU_HBM);
+  let mut s = transfer(s_h, Memory::GPU_HBM);
+  let mut lrow = transfer(l_h, Memory::GPU_HBM);
+  let wa = transfer(wa_h, Memory::GPU_HBM);
+  let wb = transfer(wb_h, Memory::GPU_HBM);
+  let mut wc = transfer(wc_h, Memory::GPU_HBM);
+  let scale : f32 = 0.5;
+
+  spawn on(Topology::Dev) {
+    matmul_into(&mut wc, &wa, &wb);
+  }
+
+  spawn on(Topology::Dev) {
+    matmul_into(&mut s, &q, &kt);
+  }
+
+  spawn on(Topology::Dev) {
+    for i in 0..__VX_SQ__ {
+      let mx : f32 = max(s[i]) * scale;
+      let mut l : f32 = 0.0;
+      for j in 0..__VX_SK__ {
+        let p : f32 = (s[i][j] * scale - mx).exp();
+        s[i][j] = p;
+        l = l + p;
+      }
+      lrow[i][0] = 1.0 / l;
+    }
+  }
+
+  spawn on(Topology::Dev) {
+    matmul_into(&mut o, &s, &v);
+  }
+
+  spawn on(Topology::Dev) {
+    for i in 0..__VX_SQ__ {
+      let inv : f32 = lrow[i][0];
+      o[i] = o[i] * inv;
+    }
+  }
+
+  let o_home = transfer(o, Memory::CPU_DRAM);
+  print(o_home);
+  return 0;
+}
