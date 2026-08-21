@@ -29,8 +29,11 @@
 //     writeback thread loop   o[bq*TQ + qi] -- the affine row the pair owns
 //     barrier()
 //
-// SMEM budget at TQ=64, TILE=16, HD=64 (f32): qs 16K + accs 16K + kt/vt 8K
-// + ms/ls 0.5K = 40.5 KiB -- inside the 48 KiB static-.shared ceiling.
+// SMEM budget at TQ=128, TILE=16, HD=64 (f32): accs 32K + kt/vt 8K + ms/ls
+// 1K = 41 KiB -- inside the 48 KiB static-.shared ceiling. Q rows are read
+// from global on purpose: the flat kernel measured L2's broadcast of them at
+// full speed, and the 16K a q-tile would cost buys a full-width block
+// instead.
 //
 // Same closed form as every bench in this family: Q is zero, so o[i][d] is
 // the mean of column d of V = 0.01*(SK-1)/2, and a tile staged at the wrong
@@ -87,7 +90,6 @@ fn main() -> i32 {
   let scale : f32 = 0.5;
 
   spawn on(Topology::Dev) {
-    let mut qs = Tensor<f32>([ __VX_TQ__, __VX_HD__ ]).with_memory(Memory::SMEM);
     let mut accs = Tensor<f32>([ __VX_TQ__, __VX_HD__ ]).with_memory(Memory::SMEM);
     let mut kt = Tensor<f32>([ __VX_TILE__, __VX_HD__ ]).with_memory(Memory::SMEM);
     let mut vt = Tensor<f32>([ __VX_TILE__, __VX_HD__ ]).with_memory(Memory::SMEM);
@@ -96,7 +98,6 @@ fn main() -> i32 {
 
     for bq in 0..__VX_NB__ {
       for qi in 0..__VX_TQ__ {
-        qs[qi] = q[bq * __VX_TQ__ + qi] * 1.0;
         accs[qi] = q[bq * __VX_TQ__ + qi] * 0.0;
         ms[qi][0] = -1000000.0;
         ls[qi][0] = 0.0;
@@ -112,7 +113,7 @@ fn main() -> i32 {
           let mut m : f32 = ms[qi][0];
           let mut l : f32 = ls[qi][0];
           for jj in 0..__VX_TILE__ {
-            let s : f32 = dot(qs[qi], kt[jj]) * scale;
+            let s : f32 = dot(q[bq * __VX_TQ__ + qi], kt[jj]) * scale;
             let m_new : f32 = if s > m {
               s
             } else {
