@@ -71,7 +71,10 @@ pub enum Opcode {
     /// `imm` is the trip count of the region's outermost loop when `parallel_outer_for` proved its
     /// iterations disjoint (0 otherwise) — codegen stamps it on the `vx.spawn` op as
     /// `vx_parallel_trip`, and the device pipeline grid-strides the loop and sizes the launch from
-    /// it. The host path ignores it entirely (#251).
+    /// it. The host path ignores it entirely (#251). Under `SPAWN_TWO_LEVEL` (bit 62, Vx#379) the
+    /// low bits are a BLOCK count and bits 32..47 the thread width; `SPAWN_COOP` (bit 61, stage C)
+    /// additionally marks the thread loop as cooperative — barriers inside it, no serial
+    /// schedule, so the host refuses the region instead of running it.
     SpawnEnd = 21,
     /// Load a struct field: `operand1` is the aggregate's slot handle (from `Alloca`), `imm` the
     /// field's byte offset (from the registry layout), and `type_idx` the field's type. The result

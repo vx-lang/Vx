@@ -3693,15 +3693,7 @@ fn parallel_outer_for(stmts: &[Statement]) -> Option<(usize, u64)> {
         return None;
     }
 
-    let mut scan = ParallelScan {
-        iv: f.iter.clone(),
-        declared: HashSet::new(),
-        used_captured: HashSet::new(),
-        affine: None,
-        smem: HashSet::new(),
-        smem_written: HashSet::new(),
-        smem_nonown_read: HashSet::new(),
-    };
+    let mut scan = ParallelScan::fresh(f.iter.clone());
     for s in &stmts[..idx] {
         let S::LetDecl(d) = s else {
             return None;
@@ -3735,6 +3727,13 @@ fn parallel_outer_for(stmts: &[Statement]) -> Option<(usize, u64)> {
 /// the two-level mapping" (Vx#379). The low 32 bits stay the trip.
 pub const SPAWN_TWO_LEVEL: u64 = 1 << 62;
 
+/// The `SpawnEnd` imm bit that says "the two-level region contains a COOPERATIVE thread loop"
+/// (Vx#379 stage C) -- barriers INSIDE the thread loop. Such a kernel has NO serial schedule:
+/// the 1x1 degeneracy that keeps every other proved region host-correct runs one thread's
+/// whole walk before the next thread stages its rows, which is a different program. The
+/// runtime must refuse to run it on the host rather than compute confidently wrong numbers.
+pub const SPAWN_COOP: u64 = 1 << 61;
+
 /// What `parallel_two_level` proved: which loop is block-mapped and which are thread-mapped,
 /// addressed by AST node identity (stable for the duration of lowering).
 pub(crate) struct TwoLevelPlan {
@@ -3755,8 +3754,13 @@ pub(crate) struct TwoLevelPlan {
 ///
 /// where `<items>` is a sequence of: local declarations (each thread makes its own copy --
 /// block-scope statements execute redundantly per thread, which is only sound because nothing at
-/// block scope may write captured memory), `barrier()` calls, THREAD loops, and sequential loops
-/// whose bodies are again `<items>` (a tile loop around cooperative phases).
+/// block scope may write captured memory), `barrier()` calls, THREAD loops, sequential loops
+/// whose bodies are again `<items>` (a tile loop around cooperative phases), and -- stage C --
+/// COOPERATIVE thread loops: a thread loop with the barriers INSIDE it, so one thread's whole
+/// walk (private accumulator, own-row fill, barrier, consume, barrier) is a single body and the
+/// accumulator never leaves registers. A cooperative loop's trip must equal the launch width
+/// exactly (each thread runs it once) and its barriers must sit in uniform positions; see
+/// `coop_item`.
 ///
 /// A THREAD loop is a literal-bound `for t in 0..K` whose body passes the single-level write
 /// walk with one extension: a captured write's first index may be the loop's own IV, or the
@@ -3800,15 +3804,7 @@ fn parallel_two_level(stmts: &[Statement]) -> Option<(u64, TwoLevelPlan)> {
 
     // A region with no thread loop or no barrier is not a cooperative kernel; let the flat
     // grid-stride path have it (it maps the same work with less machinery).
-    let mut scan = ParallelScan {
-        iv: f.iter.clone(),
-        declared: HashSet::new(),
-        used_captured: HashSet::new(),
-        affine: None,
-        smem: HashSet::new(),
-        smem_written: HashSet::new(),
-        smem_nonown_read: HashSet::new(),
-    };
+    let mut scan = ParallelScan::fresh(f.iter.clone());
     for s in &stmts[..idx] {
         let S::LetDecl(d) = s else {
             return None;
@@ -3827,16 +3823,35 @@ fn parallel_two_level(stmts: &[Statement]) -> Option<(u64, TwoLevelPlan)> {
         threads: Vec::new(),
         saw_thread_loop: false,
         max_thread_trip: 0,
+        coop_trips: Vec::new(),
     };
-    if !walker.items(&f.body) {
+    // Twice: the block loop grid-strides, so this body's END wraps to its BEGINNING in the same
+    // block -- one thread's next-bq fill against another's lagging consume. The ledgers
+    // surviving pass one are exactly that seam, and only a second pass walks a write into them.
+    if !walker.items(&f.body) || !walker.items(&f.body) {
         return None;
     }
     if !walker.saw_thread_loop {
         return None;
     }
     let threads = walker.max_thread_trip.clamp(1, 1024) as u64;
+    // A cooperative loop's barriers live INSIDE it, so every thread of the block must enter it:
+    // its trip must BE the block shape, exactly. A wider sibling loop would leave threads
+    // outside the bar, and the kernel hangs.
+    if walker.coop_trips.iter().any(|t| *t as u64 != threads) {
+        return None;
+    }
+    // The walks above ran twice (sequences twice per pass), so the plan vector carries
+    // duplicates; membership is all `lower_for` asks of it.
+    walker.threads.sort_unstable();
+    walker.threads.dedup();
+    let coop = if walker.coop_trips.is_empty() {
+        0
+    } else {
+        SPAWN_COOP
+    };
     Some((
-        (hi - lo) as u64 | (threads << 32),
+        (hi - lo) as u64 | (threads << 32) | coop,
         TwoLevelPlan {
             // The address of the ForLoopStmt itself, because that is what `lower_for` is
             // handed -- the enum wrapper's address would never match.
@@ -3856,6 +3871,10 @@ struct TwoLevelWalk {
     /// The widest thread-loop trip: the block shape the launch should use, so a TQ=64 kernel
     /// gets 64 threads instead of 64 working and 64 idling (Vx#379).
     max_thread_trip: i64,
+    /// Trips of the COOPERATIVE thread loops accepted (Vx#379 stage C). Each must equal the
+    /// final launch width -- checked at plan end, because a wider sibling loop scanned later
+    /// could widen the block after this loop was accepted.
+    coop_trips: Vec<i64>,
 }
 
 impl TwoLevelWalk {
@@ -3891,7 +3910,16 @@ impl TwoLevelWalk {
                             && !self.scan.smem.contains(&*id.name))
                         && self.scan.expr(&a.rhs)
                 }
-                S::ExprStmt(_) => is_barrier(s),
+                S::ExprStmt(_) => {
+                    let b = is_barrier(s);
+                    if b {
+                        // The bar retires the dirt: everything written before it is visible
+                        // to everyone after it, and every read before it has completed.
+                        self.scan.smem_written.clear();
+                        self.scan.smem_nonown_read.clear();
+                    }
+                    b
+                }
                 S::ForLoop(inner) => {
                     let ok = self.for_item(inner, s);
                     if ok && !self.scan.smem_written.is_empty() {
@@ -3923,52 +3951,31 @@ impl TwoLevelWalk {
             return false;
         }
         // Decide the loop's role by whether its subtree synchronizes: a barrier anywhere
-        // below makes this a SEQUENTIAL phase container (the FA-2 tile loop); no barrier
-        // anywhere makes it a THREAD-loop candidate. Merely containing a `for` must NOT
-        // make a loop sequential -- a thread loop legitimately nests serial walks (the
-        // key loop inside a consume phase), and classifying it sequential sent its inner
-        // serial loop to the thread rule, which rejected the whole region.
-        fn contains_barrier(stmts: &[Statement]) -> bool {
-            use crate::syntax::stmt::Statement as S;
-            stmts.iter().any(|s| match s {
-                S::ExprStmt(e) => {
-                    matches!(&e.expr, Expr::FunctionCall(fc) if &*fc.name == "barrier")
-                }
-                S::ForLoop(f) => contains_barrier(&f.body),
-                S::Loop(l) => contains_barrier(&l.body),
-                _ => false,
-            })
-        }
+        // below makes this a sequence container or a COOPERATIVE thread loop, tried in that
+        // order of specificity reversed -- coop first, because it is the shape worth having
+        // (the accumulator stays in registers). No barrier anywhere makes it a plain
+        // THREAD-loop candidate. Merely containing a `for` must NOT make a loop sequential
+        // -- a thread loop legitimately nests serial walks (the key loop inside a consume
+        // phase), and classifying it sequential sent its inner serial loop to the thread
+        // rule, which rejected the whole region.
         let is_sequence = contains_barrier(&inner.body);
         if is_sequence {
-            let ok = self.items(&inner.body);
-            // The sequence enforced its own discipline -- a trailing shared write inside it
-            // demanded a trailing barrier (items returns false otherwise) -- so its ledgers
-            // must not leak out and demand a second barrier from the statement after the loop.
-            self.scan.smem_written.clear();
-            self.scan.smem_nonown_read.clear();
-            return ok;
+            if self.coop_item(inner, node, hi - lo) {
+                return true;
+            }
+            // Twice for the same reason the block body walks twice: a sequence's end wraps
+            // to its own beginning on the next iteration, and a dangling nonown read meeting
+            // the next pass's fill is visible only to a second walk.
+            return self.items(&inner.body) && self.items(&inner.body);
         }
         let saved_iv = std::mem::replace(&mut self.scan.iv, inner.iter.to_string());
         let saved_affine = self.scan.affine.take();
         self.scan.affine = Some((self.block_iv.clone(), hi - lo));
-        self.scan.smem_written.clear();
-        self.scan.smem_nonown_read.clear();
-        let mut ok = self.scan.stmts(&inner.body, 0);
-        // A shared tensor both written and read-at-a-neighbour's-row inside ONE thread
-        // loop is a race no barrier can order -- the FA-2 phases put the two on opposite
-        // sides of one. Written-here plus own-row reads (an accumulator), or reads of a
-        // DIFFERENT shared tensor a previous phase filled (a tile), both stay legal.
-        if ok
-            && self
-                .scan
-                .smem_written
-                .intersection(&self.scan.smem_nonown_read)
-                .next()
-                .is_some()
-        {
-            ok = false;
-        }
+        // The ledgers deliberately survive from the previous item -- no clear here: they are
+        // "dirt since the last barrier", and a thread loop's writes meeting a neighbour's
+        // un-barriered reads from the PREVIOUS loop are the same race as within one loop. The
+        // access-time seam checks in `target` and `expr` enforce both directions.
+        let ok = self.scan.stmts(&inner.body, 0);
         self.scan.iv = saved_iv;
         self.scan.affine = saved_affine;
         if ok {
@@ -3982,6 +3989,77 @@ impl TwoLevelWalk {
         }
         ok
     }
+
+    /// A COOPERATIVE thread loop (Vx#379 stage C): `for qi in 0..K` with the barriers INSIDE
+    /// it. The loop itself is thread-mapped, so one thread's whole walk -- private
+    /// accumulator, own-row tile fill, barrier, consume, barrier -- is a single loop body,
+    /// and the accumulator lives in registers instead of a shared tensor with per-tile
+    /// spills. Soundness needs one fact the plain thread rule does not: every thread must
+    /// meet every barrier the same number of times. `parallel_two_level` pins the launch to
+    /// `threads == trip` (each thread runs the body exactly once), and the scan keeps
+    /// barriers out of divergent positions -- conditionals, variable-bound loops, loops a
+    /// `break` could leave early.
+    fn coop_item(
+        &mut self,
+        inner: &crate::syntax::ForLoopStmt,
+        node: &Statement,
+        trip: i64,
+    ) -> bool {
+        if trip > 1024 {
+            // The launcher clamps blocks at 1024 threads; a wider coop loop would stride,
+            // and a strided loop's barrier counts diverge.
+            return false;
+        }
+        // The sequence interpretation this falls back to must start from the state it would
+        // have seen had this attempt never run; the scan mutates in place, so snapshot.
+        let saved_declared = self.scan.declared.clone();
+        let saved_captured = self.scan.used_captured.clone();
+        let saved_written = self.scan.smem_written.clone();
+        let saved_read = self.scan.smem_nonown_read.clone();
+        let saved_iv = std::mem::replace(&mut self.scan.iv, inner.iter.to_string());
+        let saved_affine = self.scan.affine.take();
+        self.scan.affine = Some((self.block_iv.clone(), trip));
+        self.scan.coop = true;
+        self.scan.barrier_ok = true;
+        // Twice: the block loop grid-strides, so this body's end wraps to its own beginning
+        // (next bq, same block) -- pass two walks that seam.
+        let ok = self.scan.stmts(&inner.body, 0) && self.scan.stmts(&inner.body, 0);
+        self.scan.coop = false;
+        self.scan.barrier_ok = false;
+        self.scan.iv = saved_iv;
+        self.scan.affine = saved_affine;
+        if !ok {
+            self.scan.declared = saved_declared;
+            self.scan.used_captured = saved_captured;
+            self.scan.smem_written = saved_written;
+            self.scan.smem_nonown_read = saved_read;
+            return false;
+        }
+        self.saw_thread_loop = true;
+        self.max_thread_trip = self.max_thread_trip.max(trip);
+        self.coop_trips.push(trip);
+        let addr = match node {
+            Statement::ForLoop(fl) => fl as *const crate::syntax::ForLoopStmt as usize,
+            _ => return false,
+        };
+        self.threads.push(addr);
+        true
+    }
+}
+
+/// Does a barrier statement appear anywhere below? This decides a loop's role in the
+/// two-level walk (synchronizing loops are sequences or cooperative loops; barrier-free ones
+/// are thread candidates) and which loops the coop scan must hold to uniform trips.
+fn contains_barrier(stmts: &[Statement]) -> bool {
+    use crate::syntax::stmt::Statement as S;
+    stmts.iter().any(|s| match s {
+        S::ExprStmt(e) => {
+            matches!(&e.expr, Expr::FunctionCall(fc) if &*fc.name == "barrier")
+        }
+        S::ForLoop(f) => contains_barrier(&f.body),
+        S::Loop(l) => contains_barrier(&l.body),
+        _ => false,
+    })
 }
 
 /// A non-negative integer literal, for `parallel_outer_for`'s bounds.
@@ -4048,9 +4126,34 @@ struct ParallelScan {
     /// barrier as the next statement.
     smem_written: HashSet<String>,
     smem_nonown_read: HashSet<String>,
+    /// Set while scanning a COOPERATIVE thread loop (Vx#379 stage C): admits `barrier()` as a
+    /// statement (under the divergence guards below) and arms the seam checks.
+    coop: bool,
+    /// Whether a barrier statement is currently in a uniform position: false inside an
+    /// if-expression's blocks, where threads may disagree about arriving at all.
+    barrier_ok: bool,
+    /// One frame per loop the scan is inside: does that loop contain a barrier? A `break` or
+    /// `continue` whose innermost loop synchronizes would let one thread leave while the
+    /// others wait at the bar forever.
+    loop_barrier_stack: Vec<bool>,
 }
 
 impl ParallelScan {
+    fn fresh(iv: String) -> Self {
+        ParallelScan {
+            iv,
+            declared: HashSet::new(),
+            used_captured: HashSet::new(),
+            affine: None,
+            smem: HashSet::new(),
+            smem_written: HashSet::new(),
+            smem_nonown_read: HashSet::new(),
+            coop: false,
+            barrier_ok: false,
+            loop_barrier_stack: Vec::new(),
+        }
+    }
+
     /// A `let` in a two-level region (prologue or block scope). Three shapes pass: a plain
     /// expression that cannot write (the ordinary rule), thread-private `Tensor` scratch, and --
     /// new with Vx#379 stage B -- a `.with_memory` tile over a fresh `Tensor`, which declares
@@ -4124,17 +4227,65 @@ impl ParallelScan {
                 if *inner.iter == *self.iv {
                     return false; // shadowing the strided IV would defeat the first-index rule
                 }
-                self.expr(&r.start)
-                    && self.expr(&r.end)
-                    && self.declare(&inner.iter)
-                    && self.stmts(&inner.body, depth + 1)
+                if !(self.expr(&r.start) && self.expr(&r.end) && self.declare(&inner.iter)) {
+                    return false;
+                }
+                let synchronizes = self.coop && contains_barrier(&inner.body);
+                // A barrier's arrival count must not depend on the thread: a loop holding one
+                // needs literal bounds, or its trip -- and with it how many times each thread
+                // meets the bar -- could vary per thread and hang the block.
+                if synchronizes
+                    && (parallel_int_literal(&r.start).is_none()
+                        || parallel_int_literal(&r.end).is_none())
+                {
+                    return false;
+                }
+                self.loop_barrier_stack.push(synchronizes);
+                // A synchronizing loop wraps: its end meets its own beginning on the next
+                // iteration, and the ledgers a mid-body barrier cleared hide that seam from a
+                // single pass -- so walk the body twice.
+                let ok = self.stmts(&inner.body, depth + 1)
+                    && (!synchronizes || self.stmts(&inner.body, depth + 1));
+                self.loop_barrier_stack.pop();
+                ok
             }
-            S::Loop(l) => self.stmts(&l.body, depth + 1),
+            S::Loop(l) => {
+                // An infinite loop's trip is break-decided, i.e. potentially per-thread:
+                // there is no uniform position for a barrier in one.
+                if self.coop && contains_barrier(&l.body) {
+                    return false;
+                }
+                self.loop_barrier_stack.push(false);
+                let ok = self.stmts(&l.body, depth + 1);
+                self.loop_barrier_stack.pop();
+                ok
+            }
+            // Leaving or short-circuiting a synchronizing loop early desynchronizes its
+            // barriers: one thread stops arriving while the rest wait.
+            S::Break(_) | S::Continue(_) if *self.loop_barrier_stack.last().unwrap_or(&false) => {
+                false
+            }
             // A `break` of the outer loop stops every later iteration when serial but only the
             // current thread's stripe when strided — two different programs.
             S::Break(_) => depth > 0,
             S::Continue(_) => true,
-            S::ExprStmt(e) => self.expr(&e.expr),
+            S::ExprStmt(e) => {
+                if self.coop {
+                    if let Expr::FunctionCall(fc) = &e.expr {
+                        if &*fc.name == "barrier" && fc.args.is_empty() {
+                            // A statement-position barrier: legal only where every thread
+                            // arrives, and it retires the dirt on both ledgers.
+                            if !self.barrier_ok {
+                                return false;
+                            }
+                            self.smem_written.clear();
+                            self.smem_nonown_read.clear();
+                            return true;
+                        }
+                    }
+                }
+                self.expr(&e.expr)
+            }
             // Return, assert, macro calls, parse errors: none of these have stridable semantics.
             S::Return(_) | S::Assert(_) | S::MacroCall(_) | S::Error(_) => false,
         }
@@ -4176,9 +4327,15 @@ impl ParallelScan {
                     }
                     // Block-shared (Vx#379 stage B): writable only from a thread loop
                     // (`affine` is Some exactly there), one row per iteration, the row being
-                    // the loop's own IV. The ledger feeds the barrier-after-write rule and
-                    // the same-loop read/write race check in `TwoLevelWalk::for_item`.
+                    // the loop's own IV. The ledger feeds the barrier-after-write rule at the
+                    // items level and the seam checks here.
                     if self.affine.is_none() {
+                        return false;
+                    }
+                    // The write-after-read seam: rows a neighbour read since the last barrier
+                    // (the next tile's fill racing this tile's consume). Only a barrier
+                    // between the two orders them.
+                    if self.smem_nonown_read.contains(&*id.name) {
                         return false;
                     }
                     self.smem_written.insert(id.name.to_string());
@@ -4254,6 +4411,12 @@ impl ParallelScan {
                                 Some(Expr::Identifier(fid)) if *fid.name == *self.iv
                             );
                             if !own {
+                                // The read-after-write seam: a neighbour's row of a tensor
+                                // written since the last barrier -- the fill may not be
+                                // visible yet. Legal only across a barrier.
+                                if self.smem_written.contains(&*id.name) {
+                                    return false;
+                                }
                                 self.smem_nonown_read.insert(id.name.to_string());
                             }
                         }
@@ -4296,10 +4459,15 @@ impl ParallelScan {
             Expr::If(i) => {
                 // If-expression blocks execute at the enclosing loop depth; a `break` inside them
                 // still targets that loop, which `stmt` scores against depth 0 correctly because
-                // an if-block introduces no loop.
-                self.expr(&i.cond)
+                // an if-block introduces no loop. Threads may disagree about entering a branch,
+                // so no barrier position inside one is uniform.
+                let saved = self.barrier_ok;
+                self.barrier_ok = false;
+                let ok = self.expr(&i.cond)
                     && self.stmts(&i.then_block, 1)
-                    && i.else_block.as_ref().is_none_or(|b| self.stmts(b, 1))
+                    && i.else_block.as_ref().is_none_or(|b| self.stmts(b, 1));
+                self.barrier_ok = saved;
+                ok
             }
             // Everything else — calls, prints, transfers, spawns, closures, borrows, raw pointers,
             // inline MLIR, autodiff, matches, struct construction — is either a possible write or
@@ -5416,7 +5584,12 @@ mod tests {
             .iter()
             .find(|i| i.opcode == Opcode::SpawnEnd)
             .expect("a SpawnEnd");
-        assert_ne!(end.imm & SPAWN_TWO_LEVEL, 0, "two-level fired: imm={:#x}", end.imm);
+        assert_ne!(
+            end.imm & SPAWN_TWO_LEVEL,
+            0,
+            "two-level fired: imm={:#x}",
+            end.imm
+        );
     }
 
     #[test]
@@ -5477,6 +5650,186 @@ mod tests {
                 .count(),
             1,
             "the barrier lowered"
+        );
+    }
+
+    #[test]
+    fn a_register_accumulator_coop_region_gets_the_plan() {
+        // Vx#379 stage C in miniature: ONE thread loop with the barriers inside it, a serial
+        // tile loop between them, a thread-private accumulator, an own-row shared fill and a
+        // nonown consume on the far side of a barrier. The two-level bit must fire with the
+        // coop loop's trip as the launch width -- this is the FA-2 register-accumulator form,
+        // and its silent fallback is invisible except as a severalfold slowdown.
+        let (did, w) = lower_with_registry(
+            "fn main() -> i32 {\n\
+               let mut q = Tensor<f32>([8, 4]);\n\
+               let mut k = Tensor<f32>([6, 4]);\n\
+               let mut o = Tensor<f32>([8, 4]);\n\
+               spawn on (Topology::GPU) {\n\
+                 let mut kt = Tensor<f32>([2, 4]).with_memory(Memory::SMEM);\n\
+                 let mut acc = Tensor<f32>([1, 4]);\n\
+                 for bq in 0..4 {\n\
+                   for qi in 0..2 {\n\
+                     acc[0] = q[bq * 2 + qi] * 0.0;\n\
+                     for t in 0..3 {\n\
+                       kt[qi] = k[t * 2 + qi] * 1.0;\n\
+                       barrier();\n\
+                       for jj in 0..2 {\n\
+                         acc[0] = acc[0] + kt[jj] * 1.0;\n\
+                       }\n\
+                       barrier();\n\
+                     }\n\
+                     o[bq * 2 + qi] = acc[0] * 1.0;\n\
+                   }\n\
+                 }\n\
+               };\n\
+               return 0;\n\
+             }",
+            "main",
+        );
+        assert!(did, "lowers");
+        let end = w
+            .local_hir_stream
+            .iter()
+            .find(|i| i.opcode == Opcode::SpawnEnd)
+            .expect("a SpawnEnd");
+        assert_ne!(
+            end.imm & SPAWN_TWO_LEVEL,
+            0,
+            "two-level fired: imm={:#x}",
+            end.imm
+        );
+        assert_eq!(end.imm & 0xffff_ffff, 4, "block trip rides the SpawnEnd");
+        assert_eq!(
+            (end.imm >> 32) & 0xffff,
+            2,
+            "the coop trip is the launch width"
+        );
+    }
+
+    #[test]
+    fn a_coop_region_missing_the_tail_barrier_stays_serial() {
+        // The same shape minus the barrier AFTER the consume. One pass sees nothing wrong --
+        // fill, barrier, consume is a legal order -- the wrap is the bug: the next tile's
+        // fill overwrites rows a lagging thread is still reading. The walk's second pass
+        // meets that fill with the consume's read ledger still dirty and refuses.
+        let (did, w) = lower_with_registry(
+            "fn main() -> i32 {\n\
+               let mut q = Tensor<f32>([8, 4]);\n\
+               let mut k = Tensor<f32>([6, 4]);\n\
+               let mut o = Tensor<f32>([8, 4]);\n\
+               spawn on (Topology::GPU) {\n\
+                 let mut kt = Tensor<f32>([2, 4]).with_memory(Memory::SMEM);\n\
+                 let mut acc = Tensor<f32>([1, 4]);\n\
+                 for bq in 0..4 {\n\
+                   for qi in 0..2 {\n\
+                     acc[0] = q[bq * 2 + qi] * 0.0;\n\
+                     for t in 0..3 {\n\
+                       kt[qi] = k[t * 2 + qi] * 1.0;\n\
+                       barrier();\n\
+                       for jj in 0..2 {\n\
+                         acc[0] = acc[0] + kt[jj] * 1.0;\n\
+                       }\n\
+                     }\n\
+                     o[bq * 2 + qi] = acc[0] * 1.0;\n\
+                   }\n\
+                 }\n\
+               };\n\
+               return 0;\n\
+             }",
+            "main",
+        );
+        assert!(did, "still lowers -- serially");
+        let end = w
+            .local_hir_stream
+            .iter()
+            .find(|i| i.opcode == Opcode::SpawnEnd)
+            .expect("a SpawnEnd");
+        assert_eq!(
+            end.imm & SPAWN_TWO_LEVEL,
+            0,
+            "no two-level bit: imm={:#x}",
+            end.imm
+        );
+    }
+
+    #[test]
+    fn a_barrier_under_a_variable_bound_stays_serial() {
+        // The tile loop's bound is a local, not a literal. Nothing here varies per thread,
+        // but the walk cannot know that: a per-thread trip means per-thread barrier counts,
+        // which is a hang. Literal bounds are the price of a barrier inside a loop.
+        let (did, w) = lower_with_registry(
+            "fn main() -> i32 {\n\
+               let mut k = Tensor<f32>([6, 4]);\n\
+               let mut o = Tensor<f32>([8, 4]);\n\
+               spawn on (Topology::GPU) {\n\
+                 let mut kt = Tensor<f32>([2, 4]).with_memory(Memory::SMEM);\n\
+                 for bq in 0..4 {\n\
+                   for qi in 0..2 {\n\
+                     let n : i64 = 3;\n\
+                     for t in 0..n {\n\
+                       kt[qi] = k[t * 2 + qi] * 1.0;\n\
+                       barrier();\n\
+                     }\n\
+                     o[bq * 2 + qi] = kt[qi] * 1.0;\n\
+                   }\n\
+                 }\n\
+               };\n\
+               return 0;\n\
+             }",
+            "main",
+        );
+        assert!(did, "still lowers -- serially");
+        let end = w
+            .local_hir_stream
+            .iter()
+            .find(|i| i.opcode == Opcode::SpawnEnd)
+            .expect("a SpawnEnd");
+        assert_eq!(
+            end.imm & SPAWN_TWO_LEVEL,
+            0,
+            "no two-level bit: imm={:#x}",
+            end.imm
+        );
+    }
+
+    #[test]
+    fn a_break_inside_a_synchronizing_loop_stays_serial() {
+        // A `break` whose innermost loop contains a barrier lets one thread leave while the
+        // rest wait at the bar. The guard is the innermost frame, so a break in a nested
+        // barrier-free walk stays legal -- this one is directly in the tile loop.
+        let (did, w) = lower_with_registry(
+            "fn main() -> i32 {\n\
+               let mut k = Tensor<f32>([6, 4]);\n\
+               let mut o = Tensor<f32>([8, 4]);\n\
+               spawn on (Topology::GPU) {\n\
+                 let mut kt = Tensor<f32>([2, 4]).with_memory(Memory::SMEM);\n\
+                 for bq in 0..4 {\n\
+                   for qi in 0..2 {\n\
+                     for t in 0..3 {\n\
+                       kt[qi] = k[t * 2 + qi] * 1.0;\n\
+                       barrier();\n\
+                       break;\n\
+                     }\n\
+                     o[bq * 2 + qi] = kt[qi] * 1.0;\n\
+                   }\n\
+                 }\n\
+               };\n\
+               return 0;\n\
+             }",
+            "main",
+        );
+        assert!(did, "still lowers -- serially");
+        let end = w
+            .local_hir_stream
+            .iter()
+            .find(|i| i.opcode == Opcode::SpawnEnd)
+            .expect("a SpawnEnd");
+        assert_eq!(
+            end.imm & SPAWN_TWO_LEVEL,
+            0,
+            "no two-level bit: imm={:#x}",
+            end.imm
         );
     }
 

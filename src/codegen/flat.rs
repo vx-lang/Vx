@@ -2185,10 +2185,13 @@ pub fn emit_function_mlir(
                     // A sub-view of shared storage stays in its space: dropping the `, 3` here
                     // would make the row a generic pointer and the PTX would address `.shared`
                     // data with global loads.
-                    let space_sfx = if base_memty.ends_with(", 3>") { ", 3" } else { "" };
-                    let result_ty = format!(
-                        "memref<{dimx}{et}, strided<[{strides_s}], offset: ?>{space_sfx}>"
-                    );
+                    let space_sfx = if base_memty.ends_with(", 3>") {
+                        ", 3"
+                    } else {
+                        ""
+                    };
+                    let result_ty =
+                        format!("memref<{dimx}{et}, strided<[{strides_s}], offset: ?>{space_sfx}>");
                     let n = format!("%v{idx}");
                     body += &format!(
                         "  {n} = memref.reinterpret_cast {base} to offset: [{off}], sizes: [{sizes_s}], strides: [{strides_s}] : {base_memty} to {result_ty}\n"
@@ -2398,6 +2401,10 @@ pub fn emit_function_mlir(
                 // The `SPAWN_TWO_LEVEL` bit (Vx#379) marks the trip as a BLOCK count instead, and
                 // `vx_parallel_two_level` rides along so the launch is sized as blocks x threads.
                 let two_level = ins.imm & crate::hir::flatten::SPAWN_TWO_LEVEL != 0;
+                // The `SPAWN_COOP` bit (Vx#379 stage C): the barriers are INSIDE the thread
+                // loop, so the region has no serial schedule and the host must refuse it --
+                // `vx_parallel_coop` travels to the launch payload for exactly that refusal.
+                let coop = ins.imm & crate::hir::flatten::SPAWN_COOP != 0;
                 let trip_count = ins.imm & 0xffff_ffff;
                 // Bits 32..47: the widest thread-loop trip, i.e. the block shape the launch
                 // should use (Vx#379). Zero (a pre-two-level stream) falls back to 128.
@@ -2407,8 +2414,9 @@ pub fn emit_function_mlir(
                         ", vx_parallel_trip = {trip_count} : i64{}",
                         if two_level {
                             format!(
-                                ", vx_parallel_two_level, vx_parallel_threads = {} : i64",
-                                if threads > 0 { threads } else { 128 }
+                                ", vx_parallel_two_level, vx_parallel_threads = {} : i64{}",
+                                if threads > 0 { threads } else { 128 },
+                                if coop { ", vx_parallel_coop" } else { "" }
                             )
                         } else {
                             String::new()

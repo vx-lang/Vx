@@ -873,6 +873,7 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
     }
   }
 
+  vx_host_refuse_coop(binary_payload, payload_size, kernel_name, "CUDA");
   void *kernel = vx_host_kernel_symbol(kernel_name);
   if (!kernel) {
     fprintf(stderr, "[Vx CUDA] FATAL: outlined kernel %s not found\n",

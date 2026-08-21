@@ -447,6 +447,7 @@ extern "C" uint64_t vx_plugin_dispatch_async(const void *binary_payload,
   // and the program cannot tell that from an answer. The other two backends
   // abort here; this one returned 1 for the first case -- "skipping execution"
   // reported as success -- and 0 for the second, which no caller checks.
+  vx_host_refuse_coop(binary_payload, payload_size, kernel_name, "Dispatcher");
   void *kernel = vx_host_kernel_symbol(kernel_name);
   if (!kernel) {
     fprintf(stderr, "[Vx Dispatcher] FATAL: outlined kernel %s not found\n",

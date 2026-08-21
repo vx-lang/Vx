@@ -25,6 +25,7 @@
 #include "../include/vx_hardware_runtime.h"
 
 #include <stdio.h>
+#include <stdlib.h> /* vx_host_refuse_coop: abort */
 #include <vector>
 
 #include <dlfcn.h>
@@ -60,6 +61,32 @@ static inline ffi_type *vx_abi_ffi_type(int32_t tag) {
   default:
     return &ffi_type_pointer; /* memref descriptor / fallback */
   }
+}
+
+/// Refuse the host schedule of a cooperative kernel, loudly.
+///
+/// A payload carrying `coop=` names a kernel whose barriers are INSIDE its
+/// thread loop (Vx#379 stage C). Such a kernel has no serial schedule: running
+/// the loop nest in program order walks one thread's whole body -- every tile,
+/// every barrier -- before the next thread ever stages its rows, and the
+/// consume phases read rows nobody filled. That is not slow, it is wrong, and
+/// it is wrong silently: the numbers come out plausible. So every backend calls
+/// this before running an outlined kernel on the host, and a cooperative kernel
+/// dies with its reason instead of lying.
+static inline void vx_host_refuse_coop(const void *payload,
+                                       size_t payload_size,
+                                       const char *kernel_name,
+                                       const char *backend) {
+  if (!vx_payload_field(payload, payload_size, "coop=")) {
+    return;
+  }
+  fprintf(stderr,
+          "[Vx %s] FATAL: %s is a cooperative kernel -- its barriers are\n"
+          "        inside the thread loop, so no serial order of that loop\n"
+          "        computes it. It needs a device; the host has no schedule\n"
+          "        for it.\n",
+          backend, kernel_name);
+  abort();
 }
 
 /// Resolve an outlined kernel's C-interface entry point. Returns NULL when the

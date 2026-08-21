@@ -775,6 +775,11 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
       launchOp->setAttr("vx_parallel_two_level", rewriter.getUnitAttr());
     if (auto th = op->getAttrOfType<IntegerAttr>("vx_parallel_threads"))
       launchOp->setAttr("vx_parallel_threads", th);
+    // Cooperative (Vx#379 stage C): barriers inside the thread loop. Rides to
+    // the payload so every backend can refuse the host schedule, which for
+    // this shape computes wrong numbers rather than slow ones.
+    if (op->hasAttr("vx_parallel_coop"))
+      launchOp->setAttr("vx_parallel_coop", rewriter.getUnitAttr());
 
     // The topology's declared name, forwarded from the spawn. Optional by
     // design: the flat path emits `vx.spawn` from an instruction stream that
@@ -1947,6 +1952,15 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
         payload += ",";
         payload += std::to_string(th);
       }
+      payload.push_back('\0');
+    }
+
+    // Cooperative kernel (Vx#379 stage C): its barriers are inside the thread
+    // loop, so no serial order of that loop computes it -- the entry is what a
+    // backend checks before falling back to the host, where this kernel would
+    // produce confidently wrong numbers instead of slow right ones.
+    if (op->hasAttr("vx_parallel_coop")) {
+      payload += "coop=1";
       payload.push_back('\0');
     }
 
