@@ -1,8 +1,9 @@
-# The repo root ignores *.mlir (generated IR). two_dots.mlir is not generated --
-# it is this example's hand-written SOURCE, and without it compare.sh has
-# nothing to compile.
+# The repo root ignores *.mlir (generated IR). The .mlir files HERE are not
+# generated -- they are this example's hand-written sources, and without them
+# compare.sh and the bench flow have nothing to compile.
 !two_dots.mlir
+!bench.mlir
 
-# These ARE generated, by compare.sh.
+# These ARE generated.
 *.ptx
 nvvm.mlir

@@ -26,10 +26,14 @@ python3 - "$HERE/both.ptx" "$HERE" <<'PY'
 import sys, re, os
 txt = open(sys.argv[1]).read(); out = sys.argv[2]
 parts = re.split(r'(?=\.visible \.entry )', txt)
-for p in parts:
+# Everything before the first entry: .version/.target/.address_size. Each split
+# file needs it or ptxas refuses with "Missing .version directive" -- and the
+# README tells people to run ptxas on these files.
+preamble = parts[0]
+for p in parts[1:]:
     m = re.match(r'\.visible \.entry (\w+)', p)
     if m:
-        open(os.path.join(out, m.group(1) + '.ptx'), 'w').write(p)
+        open(os.path.join(out, m.group(1) + '.ptx'), 'w').write(preamble + p)
         print("wrote", m.group(1) + ".ptx")
 PY
 
