@@ -1783,11 +1783,24 @@ impl<'r> Lowerer<'r> {
         }
         let top_id = crate::arch::topology_dispatch_id(&s.top);
         self.emit_effect(Opcode::Spawn, Register(0), Register(0), top_id as u64);
-        // Two proofs are offered, most specific first. `parallel_two_level` (Vx#379) accepts a
-        // block loop whose captured writes all happen in thread-mapped inner loops; its plan
-        // addresses the loops by AST identity, so nothing else can inherit a tag. Failing that,
-        // `parallel_outer_for` (#251) grid-strides a flat loop as before. Failing both, the
-        // region lowers serially -- rejection is always free.
+        // Two proofs are offered, FLAT FIRST. The flat grid-stride (#251) is the measured
+        // record shape -- one thread per iteration, slice bodies vectorized -- so a region it
+        // covers must keep it: since the block-row write rule (Vx#379 R3) landed, a plain
+        // elementwise nest can ALSO pass the two-level walk, and trying that first would
+        // silently trade the proven launch for an unmeasured one. `parallel_two_level` gets
+        // what flat cannot express at all: barriers, shared tiles, affine and block-row
+        // ownership. Failing both, the region lowers serially -- rejection is always free.
+        let par = parallel_outer_for(&s.stmts);
+        if par.is_some() {
+            for (i, stmt) in s.stmts.iter().enumerate() {
+                self.stride_next_for = matches!(par, Some((idx, _)) if idx == i);
+                self.lower_stmt(stmt)?;
+            }
+            self.stride_next_for = false;
+            let trip = par.map(|(_, t)| t).unwrap_or(0);
+            self.emit_effect(Opcode::SpawnEnd, Register(0), Register(0), trip);
+            return Some(());
+        }
         if let Some((btrip, plan)) = parallel_two_level(&s.stmts) {
             self.stride_plan = Some(plan);
             for stmt in &s.stmts {
@@ -1802,14 +1815,10 @@ impl<'r> Lowerer<'r> {
             );
             return Some(());
         }
-        let par = parallel_outer_for(&s.stmts);
-        for (i, stmt) in s.stmts.iter().enumerate() {
-            self.stride_next_for = matches!(par, Some((idx, _)) if idx == i);
+        for stmt in &s.stmts {
             self.lower_stmt(stmt)?;
         }
-        self.stride_next_for = false;
-        let trip = par.map(|(_, t)| t).unwrap_or(0);
-        self.emit_effect(Opcode::SpawnEnd, Register(0), Register(0), trip);
+        self.emit_effect(Opcode::SpawnEnd, Register(0), Register(0), 0);
         Some(())
     }
 
@@ -4373,9 +4382,57 @@ impl ParallelScan {
                 self.note(&id.name);
                 matches!(first, Expr::Identifier(fid) if *fid.name == *self.iv)
                     || self.affine_first(first)
+                    || self.block_row_write(&indices)
             }
             _ => false,
         }
+    }
+
+    /// The third captured-write ownership form (Vx#379 R3): the BLOCK owns the row and the
+    /// THREADS partition its columns by residue -- `s[bq][t + x * K]` with `bq` the block IV,
+    /// `t` this thread loop's IV, and `K` exactly its trip. Distinct threads write distinct
+    /// residues mod K; distinct blocks write distinct rows; and `x` may be ANY declared local
+    /// (a serial loop IV, typically), because whatever it evaluates to, the residue -- the
+    /// ownership class -- is still `t`. This is the shape a block-per-row reduction sweep
+    /// writes: a coalesced softmax's exp pass, thread `t` touching columns t, t+K, t+2K...
+    fn block_row_write(&self, indices: &[&Expr]) -> bool {
+        let Some((bq, k)) = &self.affine else {
+            return false;
+        };
+        // Exactly [second, first]: rank-2, row then column, nothing deeper.
+        if indices.len() != 2 {
+            return false;
+        }
+        let first = indices[1];
+        let second = indices[0];
+        if !matches!(first, Expr::Identifier(fid) if *fid.name == **bq) {
+            return false;
+        }
+        let is_iv = |x: &Expr| matches!(x, Expr::Identifier(id) if *id.name == *self.iv);
+        if is_iv(second) {
+            return true; // bare `t`: one column per thread
+        }
+        let Expr::BinaryOp(b) = second else {
+            return false;
+        };
+        if !matches!(b.op, BinaryOp::Add) {
+            return false;
+        }
+        let is_scaled_local = |x: &Expr| -> bool {
+            let Expr::BinaryOp(m) = x else {
+                return false;
+            };
+            if !matches!(m.op, BinaryOp::Mul) {
+                return false;
+            }
+            let stride_of = |e: &Expr| parallel_int_literal(e) == Some(*k);
+            let local_of = |e: &Expr| {
+                matches!(e, Expr::Identifier(id)
+                    if *id.name != *self.iv && *id.name != **bq && self.declared.contains(&*id.name))
+            };
+            (local_of(&m.lhs) && stride_of(&m.rhs)) || (stride_of(&m.lhs) && local_of(&m.rhs))
+        };
+        (is_iv(&b.lhs) && is_scaled_local(&b.rhs)) || (is_scaled_local(&b.lhs) && is_iv(&b.rhs))
     }
 
     /// The two-level widening of the first-index rule (Vx#379): `block_iv * K + iv` in either
@@ -5802,6 +5859,142 @@ mod tests {
                      }\n\
                      o[bq * 2 + qi] = kt[qi] * 1.0;\n\
                    }\n\
+                 }\n\
+               };\n\
+               return 0;\n\
+             }",
+            "main",
+        );
+        assert!(did, "still lowers -- serially");
+        let end = w
+            .local_hir_stream
+            .iter()
+            .find(|i| i.opcode == Opcode::SpawnEnd)
+            .expect("a SpawnEnd");
+        assert_eq!(
+            end.imm & SPAWN_TWO_LEVEL,
+            0,
+            "no two-level bit: imm={:#x}",
+            end.imm
+        );
+    }
+
+    #[test]
+    fn a_block_row_column_strided_write_gets_the_plan() {
+        // Vx#379 R3's last piece in miniature: the BLOCK owns row `i`, the threads partition
+        // its columns by residue (`t + jj*K`, K == the thread trip), with an SMEM partial and
+        // a barrier between sweep and consume -- the block-per-row reduction shape a coalesced
+        // softmax is made of. The 1-trip `z` loop is the reduce step: one thread, own-column
+        // write at `lrow[i][z]`.
+        let (did, w) = lower_with_registry(
+            "fn main() -> i32 {\n\
+               let mut s = Tensor<f32>([4, 4]);\n\
+               let mut lrow = Tensor<f32>([4, 1]);\n\
+               spawn on (Topology::GPU) {\n\
+                 let mut pm = Tensor<f32>([2, 1]).with_memory(Memory::SMEM);\n\
+                 for i in 0..4 {\n\
+                   for t in 0..2 {\n\
+                     let mut m : f32 = -1000000.0;\n\
+                     for jj in 0..2 {\n\
+                       let x : f32 = s[i][t + jj * 2];\n\
+                       let m2 : f32 = if x > m {\n\
+                         x\n\
+                       } else {\n\
+                         m\n\
+                       };\n\
+                       m = m2;\n\
+                     }\n\
+                     pm[t][0] = m;\n\
+                   }\n\
+                   barrier();\n\
+                   for t in 0..2 {\n\
+                     let mx : f32 = pm[0][0];\n\
+                     for jj in 0..2 {\n\
+                       s[i][t + jj * 2] = s[i][t + jj * 2] - mx;\n\
+                     }\n\
+                   }\n\
+                   for z in 0..1 {\n\
+                     lrow[i][z] = 1.0;\n\
+                   }\n\
+                   barrier();\n\
+                 }\n\
+               };\n\
+               return 0;\n\
+             }",
+            "main",
+        );
+        assert!(did, "lowers");
+        let end = w
+            .local_hir_stream
+            .iter()
+            .find(|i| i.opcode == Opcode::SpawnEnd)
+            .expect("a SpawnEnd");
+        assert_ne!(
+            end.imm & SPAWN_TWO_LEVEL,
+            0,
+            "two-level fired: imm={:#x}",
+            end.imm
+        );
+        assert_eq!(end.imm & 0xffff_ffff, 4, "block trip rides the SpawnEnd");
+        assert_eq!((end.imm >> 32) & 0xffff, 2, "threads = the sweep width");
+        assert_eq!(
+            end.imm & SPAWN_COOP,
+            0,
+            "stage B shape: host-safe, no coop bit"
+        );
+    }
+
+    #[test]
+    fn a_column_stride_not_the_trip_stays_serial() {
+        // Same shape, but the column stride is 3 against a thread trip of 2: residues collide
+        // (t=0,jj=2 lands on column 6; t=... the partition is simply not mod-K) and the region
+        // must fall back to serial rather than race.
+        let (did, w) = lower_with_registry(
+            "fn main() -> i32 {\n\
+               let mut s = Tensor<f32>([4, 8]);\n\
+               spawn on (Topology::GPU) {\n\
+                 for i in 0..4 {\n\
+                   for t in 0..2 {\n\
+                     for jj in 0..2 {\n\
+                       s[i][t + jj * 3] = 1.0;\n\
+                     }\n\
+                   }\n\
+                   barrier();\n\
+                 }\n\
+               };\n\
+               return 0;\n\
+             }",
+            "main",
+        );
+        assert!(did, "still lowers -- serially");
+        let end = w
+            .local_hir_stream
+            .iter()
+            .find(|i| i.opcode == Opcode::SpawnEnd)
+            .expect("a SpawnEnd");
+        assert_eq!(
+            end.imm & SPAWN_TWO_LEVEL,
+            0,
+            "no two-level bit: imm={:#x}",
+            end.imm
+        );
+    }
+
+    #[test]
+    fn a_column_write_without_the_thread_iv_stays_serial() {
+        // `s[i][jj * 2]`: the residue class is constant, so every thread writes the same
+        // columns. No ownership, no plan.
+        let (did, w) = lower_with_registry(
+            "fn main() -> i32 {\n\
+               let mut s = Tensor<f32>([4, 4]);\n\
+               spawn on (Topology::GPU) {\n\
+                 for i in 0..4 {\n\
+                   for t in 0..2 {\n\
+                     for jj in 0..2 {\n\
+                       s[i][jj * 2] = 1.0;\n\
+                     }\n\
+                   }\n\
+                   barrier();\n\
                  }\n\
                };\n\
                return 0;\n\

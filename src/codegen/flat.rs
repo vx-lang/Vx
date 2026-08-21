@@ -2118,7 +2118,14 @@ pub fn emit_function_mlir(
                         == Some("sm");
                 if sm {
                     let smty = format!("{}, 3>", memty.strip_suffix('>')?);
-                    body += &format!("  {n} = memref.alloca() : {smty}\n");
+                    // alignment 16, explicitly. The alloca becomes a `.shared` global under
+                    // convert-gpu-to-nvvm, and the DRIVER packs those globals by their declared
+                    // alignment -- an unannotated 4-byte-aligned f32 array landed at offset
+                    // 0x204, and LLVM's loop vectorizer (which assumes natural vector alignment
+                    // when it widens a serial walk over the tile) issued a 16-byte
+                    // `ld.shared.v4` into it: "misaligned address", device-fatal, found by
+                    // compute-sanitizer on the block-per-row softmax (Vx#379 R3).
+                    body += &format!("  {n} = memref.alloca() {{alignment = 16 : i64}} : {smty}\n");
                     names[idx] = n;
                     mem_of[idx] = Some(smty);
                 } else {

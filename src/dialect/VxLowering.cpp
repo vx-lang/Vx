@@ -896,9 +896,14 @@ struct TransferOpLowering : public OpRewritePattern<TransferOp> {
         // `memref.alloca`, not `alloc`: shared memory is scratch for the
         // lifetime of the kernel, not something anyone frees, and
         // convert-gpu-to-nvvm turns a workgroup-space alloca into a `.shared`
-        // global rather than a call into a device allocator.
+        // global rather than a call into a device allocator. Alignment 16,
+        // explicitly, for the same reason the flat path stamps it: the driver
+        // packs `.shared` globals by declared alignment, and LLVM's loop
+        // vectorizer widens serial tile walks into 16-byte accesses that fault
+        // on a 4-aligned placement (Vx#379 R3, found by compute-sanitizer).
         Value shared = rewriter.create<memref::AllocaOp>(
-            op.getLoc(), sharedType, sharedDynSizes);
+            op.getLoc(), sharedType, sharedDynSizes,
+            rewriter.getI64IntegerAttr(16));
         // A site whose transfer carries a user lowering (#353 A3) keeps this
         // allocation half -- the alloca, the offsets, the space propagation --
         // and skips the copy: the user's inlined body does the filling, and its
@@ -1299,12 +1304,24 @@ struct ConvertVxToStandardPass
               (kernel.getSymName() + "_smem_" + std::to_string(smemIdx++))
                   .str();
           OpBuilder atModule(gpuModule.getBody(), gpuModule.getBody()->begin());
+          // The global's alignment is the alloca's, and 16 when the alloca
+          // did not say. It MUST not be left empty: an unaligned `.shared`
+          // declaration lets the driver pack the arrays at element
+          // granularity, and LLVM's loop vectorizer -- which widens a serial
+          // walk over a tile into 16-byte accesses -- then faults with
+          // "misaligned address" at an offset like 0x204. Found by
+          // compute-sanitizer on the block-per-row softmax (Vx#379 R3): the
+          // instructions assumed an alignment the storage never declared.
+          IntegerAttr galign =
+              a.getAlignment() ? atModule.getI64IntegerAttr(
+                                     (int64_t)a.getAlignment().value())
+                               : atModule.getI64IntegerAttr(16);
           atModule.create<memref::GlobalOp>(
               a.getLoc(), gname,
               /*sym_visibility=*/atModule.getStringAttr("private"),
               /*type=*/cast<MemRefType>(a.getType()),
               /*initial_value=*/Attribute(), /*constant=*/false,
-              /*alignment=*/IntegerAttr());
+              /*alignment=*/galign);
           OpBuilder at(a);
           auto gg =
               at.create<memref::GetGlobalOp>(a.getLoc(), a.getType(), gname);
