@@ -25,8 +25,11 @@ I propose we implement **Phase 1: GPU (MPS)** first, as it is highly generic and
 ### 3. Objective-C++ Runtime (`npu_dispatch.mm`)
 
 - Implement `extern "C" int vx_dispatch_gpu(float* xout, float* x, float* w, int n, int d)`.
+
 - Acquire the GPU using `MTLCreateSystemDefaultDevice()`.
+
 - Create a command queue and command buffer.
+
 - ~~Wrap the raw CPU pointers `xout`, `x`, and `w` into `MTLBuffer` objects using `newBufferWithBytesNoCopy` to leverage Apple Silicon's Unified Memory Architecture (zero-copy transfers).~~
   **Not what shipped.** `runtime/npu_dispatch.mm` uses `newBufferWithBytes:` with
   `MTLResourceStorageModeShared` — which *copies*. The reason is in the code comment: mmap'd weight
@@ -43,8 +46,11 @@ I propose we implement **Phase 1: GPU (MPS)** first, as it is highly generic and
   Recovering it needs the tensor allocator to hand out page-aligned, page-multiple buffers. Worth
   doing when dispatch volume justifies it; recorded here so the copy stays a decision rather than an
   accident.
+
 - Wrap the `MTLBuffer` objects into `MPSMatrix` descriptors.
+
 - Encode an `MPSMatrixMultiplication` kernel into the command buffer.
+
 - Execute and synchronously wait `[commandBuffer waitUntilCompleted]`.
 
 ### 4. Verification & Commit

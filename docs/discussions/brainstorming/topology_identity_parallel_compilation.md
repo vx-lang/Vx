@@ -13,13 +13,13 @@ name, a dedup key, an emitted id — must be four things at once:
 1. **Canonical.** One representation per semantic device, independent of which worker,
    which phase, or which construction path minted it. Two spellings of device 0 must be
    the *same key*, not merely `==`.
-2. **Context-free.** Meaningful without a scope or an eval environment. A worker that
+1. **Context-free.** Meaningful without a scope or an eval environment. A worker that
    receives the key cannot ask the binder that produced it what it meant.
-3. **Deterministic across schedules.** The same program at any thread count produces the
+1. **Deterministic across schedules.** The same program at any thread count produces the
    same identity, byte for byte. The tree already tests this
    (`pipeline_emits_byte_identical_mlir_across_thread_counts`,
    `compile_pipeline_gid_stream_is_deterministic`).
-4. **Totally ordered.** Anything emitted from a keyed collection needs a stable order
+1. **Totally ordered.** Anything emitted from a keyed collection needs a stable order
    (the `BTreeMap` discipline `region_traffic.rs` already follows). To be explicit,
    because it read otherwise on review: this is a NON-SEMANTIC sort key, nothing more.
    It does not order memories or topologies by size, speed, or hierarchy — the
@@ -177,11 +177,11 @@ remove, and does nothing for determinism of emitted names.
    two symbols and two distinct spawn ids — H1 is a reproduced wrong-device miscompile
    and should not wait for the full design. Existing `$GPU` symbol names in test
    expectations churn; that churn is the fix working.
-2. **`DeviceId` minted in sema**, dispatch id derived from it (fixes #345's silent
+1. **`DeviceId` minted in sema**, dispatch id derived from it (fixes #345's silent
    fallback), descriptor/plugin migration where per-device data appears.
-3. **`Var(BinderId)`** for topology parameters — retires name-based cross-scope
+1. **`Var(BinderId)`** for topology parameters — retires name-based cross-scope
    equality, the H2 unsoundness.
-4. **Prover tier** when the multi-device campaign (#331/#345/#348) actually needs
+1. **Prover tier** when the multi-device campaign (#331/#345/#348) actually needs
    dependent-index equality, not before.
 
 Guardrails to carry forward: `Topology` stays `Hash`-less and `Eq`-less on purpose
@@ -258,8 +258,7 @@ IndexTerm ::= Const(i64)      -- folded by the const-evaluator (which must consu
 values: two mentions of one immutable binding denote one device by the meaning of
 "binding". Three conditions make it sound, each earned by an attack:
 
-- *Immutable* means never reassigned AND never mutably borrowed (attack A) — a `let
-  mut` index gets no `Var` at all. Cheap and sound; SSA versioning is the general fix
+- *Immutable* means never reassigned AND never mutably borrowed (attack A) — a `let mut` index gets no `Var` at all. Cheap and sound; SSA versioning is the general fix
   if it ever pinches.
 - *Within the binder's region* (attack B, the rank-1 unsoundness): a loop induction
   binder is a fresh region per iteration, so a `Pinned<_, GPU[Var(i)]>` escaping the
@@ -321,8 +320,7 @@ scheduling-visible state and breaks byte-identical-across-thread-counts the mome
 artifact renders an id. The tree already owns the right shape:
 `DefPath::Anonymous { parent_hash, structural_hash }` (hash.rs) identifies closures "by
 structural layout or position within a specific parent item, rather than file line
-number". `BinderId = (owner function/instantiation GID, ordinal of the binding site in
-a canonical pre-order walk)` — deterministic at any thread count, totally ordered, and
+number". `BinderId = (owner function/instantiation GID, ordinal of the binding site in a canonical pre-order walk)` — deterministic at any thread count, totally ordered, and
 the embedded owner makes cross-function fact leakage a debug-assertable bug rather
 than a silent one (identity fact tables live and die inside one `check_function`, like
 `memory_placements` already does).

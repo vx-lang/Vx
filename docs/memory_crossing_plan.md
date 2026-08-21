@@ -34,7 +34,7 @@ HBM  ──step 1──>  L2  ──step 2──>  SMEM
 How long does the whole trip take? There are only two sensible answers:
 
 1. **Add** the two step times together.
-2. Take the **slower** of the two steps and ignore the other.
+1. Take the **slower** of the two steps and ignore the other.
 
 They differ by roughly 2x, so picking the wrong one is not a rounding error. Until this change the
 compiler always added.
@@ -317,13 +317,13 @@ after seeing the measurements.
 1. Decide whether to re-take the freeze or to record a dated exception. This is a human decision,
    not a code change. Tracked at
    [vx-review#27](https://github.com/hiraditya/vx-review/issues/27).
-2. Edit each machine file, adding a `spec:` comment naming the evidence for the choice, the same way
+1. Edit each machine file, adding a `spec:` comment naming the evidence for the choice, the same way
    every other figure in those files carries its source. The comment must say whether the choice was
    **measured** on that part or **derived from the ISA** — they are different kinds of claim and only
    one of them is evidence.
-3. Regenerate the saved predictions and record exactly which cells moved and by how much. Keep the
+1. Regenerate the saved predictions and record exactly which cells moved and by how much. Keep the
    before/after table.
-4. Write the dated note the freeze protocol requires — and see the honesty note below about what it
+1. Write the dated note the freeze protocol requires — and see the honesty note below about what it
    has to admit.
 
 ### What the dated note has to admit
@@ -404,8 +404,7 @@ ______________________________________________________________________
   per-edge α are the same shape of quantity, and adding either without the other will absorb one
   into the other. Tracked at
   [vx-review#28](https://github.com/hiraditya/vx-review/issues/28).
-- **AMD.** `fleet/mi300x.vx` describes a part nobody has measured. AMD GPUs have `buffer_load_dword
-  lds`, which is a copy-engine-like path, so `streamed` may well be correct there — but nothing in
+- **AMD.** `fleet/mi300x.vx` describes a part nobody has measured. AMD GPUs have `buffer_load_dword lds`, which is a copy-engine-like path, so `streamed` may well be correct there — but nothing in
   this campaign has tested it.
 - **Mixed routes.** A walk currently gets one rule for the whole thing. The register rule in §2 is
   the first crack in that: it says one *kind* of hop always adds regardless. A machine that streams

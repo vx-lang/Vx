@@ -66,8 +66,7 @@ proven* illegal — emits a runtime `Kokkos::abort`. It cannot do better, becaus
 runs" is not part of a C++ function's type. A library can only type what a template parameter can
 carry.
 
-Vx is a language, so it can carry it. `Pinned(T, Space)` puts placement in the type and `spawn
-on(Topology::X)` makes the execution site static. The error below is the SYCL bug, refused at
+Vx is a language, so it can carry it. `Pinned(T, Space)` puts placement in the type and `spawn on(Topology::X)` makes the execution site static. The error below is the SYCL bug, refused at
 compile time:
 
 ```
@@ -122,8 +121,8 @@ For any movement there are three separate facts:
 
 1. **Capability** — what the machine *can* do. `cp.async` exists from sm_80. A property of the
    hardware. Belongs in the machine file.
-2. **Choice** — what this particular movement *does*. A property of the plan.
-3. **Cost** — follows from both.
+1. **Choice** — what this particular movement *does*. A property of the plan.
+1. **Cost** — follows from both.
 
 We collapsed 1 and 2. `crossing: streamed` was declared on a `Memory` space, which made "this
 transfer uses the copy engine" into a claim about the silicon. It was pre-registered on four
@@ -168,8 +167,7 @@ constrained.
 Three questions were open here. The contract document settles them in design, and they are now
 **built** (Vx#353, stages A1–A4):
 
-- **How is the lowering named?** The file carries Vx code — `impl Transfer<Memory::A, Memory::B>
-  for Topology::X`
+- **How is the lowering named?** The file carries Vx code — `impl Transfer<Memory::A, Memory::B> for Topology::X`
   — compiled and checked by our own front end like any other Vx. The trust boundary is the small
   primitive set the body may use (`raw::load/store/barrier/...`), not the file.
 - **What happens to the safety properties?** They survive because the body cannot be opaque: it is
@@ -357,14 +355,14 @@ Roughly in dependency order, what is left:
    and per `spawn` region, per space, per buffer — but as flat records, not as a graph. The
    missing half is the edges: which region produced the bytes another consumes. Without them a
    plan still cannot be named, priced or compared, and "optimisation" stays hand-waving.
-3. **Add α** (vx-review#28), and rework route selection for size-dependent choice.
-4. **Settle the composition law** once a copy engine is actually exercised. Nothing in the tree
+1. **Add α** (vx-review#28), and rework route selection for size-dependent choice.
+1. **Settle the composition law** once a copy engine is actually exercised. Nothing in the tree
    drives one yet: `raw::async_copy` is declared and gated but lowers to a synchronous element
    copy, so the capability half of §5 is enforced while the choice half remains unexercised.
-5. **A contention term**, if the queue result holds on more than one part.
-6. **Widen lowering emission past sm-scoped destinations**, edge kind by edge kind. Until then the
+1. **A contention term**, if the queue result holds on more than one part.
+1. **Widen lowering emission past sm-scoped destinations**, edge kind by edge kind. Until then the
    extension point is real on exactly one edge shape.
-7. **Settle topology identity before the parallel pipeline needs it.** Making topology equality
+1. **Settle topology identity before the parallel pipeline needs it.** Making topology equality
    compare index *values* rather than AST nodes (Vx#355) fixed the symptom and exposed the shape
    of the problem: five consumers in the compiler derive "which topology is this" independently,
    with different fidelity each time, and an identity that crosses a worker boundary has to be
@@ -372,7 +370,7 @@ Roughly in dependency order, what is left:
    [`discussions/brainstorming/topology_identity_parallel_compilation.md`](discussions/brainstorming/topology_identity_parallel_compilation.md).
    The symbolic tier — `GPU[i]` compared against `GPU[j]` where `i == j` only at run time — is
    parked deliberately; it is a real gap and not the one blocking anything.
-8. **Close the coverage backlog** ([Vx#358](https://github.com/hiraditya/Vx/issues/358)). Several
+1. **Close the coverage backlog** ([Vx#358](https://github.com/hiraditya/Vx/issues/358)). Several
    shipped guards have no test that goes red when the guard is disabled, which is the condition
    under which one of them was found already disabled.
 

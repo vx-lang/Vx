@@ -301,7 +301,7 @@ Two things this buys that a declared edge cost cannot:
 
 1. **C10 becomes structural.** The cost cannot describe something other than the emitted code,
    because it is computed from the emitted code.
-2. **It sees plan-level waste.** The shipped flash-attention kernel re-reads K and V from global
+1. **It sees plan-level waste.** The shipped flash-attention kernel re-reads K and V from global
    memory on *every* query iteration. No edge cost can express that — the per-hop rate is identical
    either way — but a traffic count reads it straight off the loop structure. That is precisely the
    class of inefficiency the whole exercise is aimed at, and a declared-cost model is blind to it.
@@ -384,8 +384,7 @@ were settled as follows:
   statement of the body (E6019). A barrier in a uniform-trip-count loop is real hardware practice
   and could be admitted later by a lane-taint analysis; until someone needs it, top-level-only is
   the rule that cannot admit a divergent barrier.
-- **The copy engine is a transfer-edge marker**: `transfer Memory::L2 -> Memory::SMEM
-  copy_engine` in the machine file (the same trailing-marker position as `relaxed`/`sync`).
+- **The copy engine is a transfer-edge marker**: `transfer Memory::L2 -> Memory::SMEM copy_engine` in the machine file (the same trailing-marker position as `relaxed`/`sync`).
   A capability is a property of a link, and the edge is the link. `fleet/a100-80.vx`,
   `fleet/h100-sxm.vx` and `fleet/node-8gpu.vx` declare it on their SMEM hops (`cp.async`).
 - **Async discipline is a forward walk that models every exit** (E6021): branches join by union,

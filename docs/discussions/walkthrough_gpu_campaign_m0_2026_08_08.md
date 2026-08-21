@@ -36,14 +36,14 @@ In order of discovery, on a rented-then-provisioned x86 Linux box:
    libffi. It is deliberately the file the CUDA plugin *specializes* rather than
    a throwaway: M1 starts from working C++ instead of Objective-C++.
 
-2. **`jit.rs` hardcoded a Homebrew `llvm-config` path.** Resolves through PATH
+1. **`jit.rs` hardcoded a Homebrew `llvm-config` path.** Resolves through PATH
    now, which is what `build.rs` already did.
 
-3. **`-rdynamic`.** The dispatcher finds outlined kernels with
+1. **`-rdynamic`.** The dispatcher finds outlined kernels with
    `dlsym(RTLD_DEFAULT, ...)`. Mach-O exports those symbols; ELF does not unless
    asked. Without it the lookup failed at run time, after a clean build and link.
 
-4. **The `@malloc_N` bug**, which is the interesting one. An unused `extern`
+1. **The `@malloc_N` bug**, which is the interesting one. An unused `extern`
    declaration lands as `func.func private @malloc`. `finalize-memref-to-llvm`
    needs a malloc for `memref.alloc`, cannot reuse that one because it looks for
    an `llvm.func`, creates its own, and the symbol table uniques the name. One
@@ -69,15 +69,15 @@ repeated to the token limit. Four defects, each independently fatal:
    correctly-written `softmax()` helper sits in the same file, never called from
    the attention path.
 
-2. **RoPE used the global index** rather than the index within the head, so the
+1. **RoPE used the global index** rather than the index within the head, so the
    frequency ladder — which should restart every head — ran off the end for every
    head past the first. `examples/llama.vx` and `llama2_v2.vx` compute the
    modulo correctly; this file did not.
 
-3. **Attention scale hardcoded** to `1/sqrt(32)` with the comment `256/8 = 32`.
+1. **Attention scale hardcoded** to `1/sqrt(32)` with the comment `256/8 = 32`.
    stories15M is dim=288, n_heads=6, so head_size is 48.
 
-4. **RMSNorm divided by a hardcoded 256.0** against an actual dim of 288, in both
+1. **RMSNorm divided by a hardcoded 256.0** against an actual dim of 288, in both
    the per-layer and final calls. Its comment claimed Vx had no `as f32` cast; it
    has had one since #240, and `main()` was already using it a few lines away.
 

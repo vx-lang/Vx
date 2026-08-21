@@ -227,18 +227,22 @@ seeds into.
 1. **[LANDED]** **Registry behind the enum.** `TopologyDescriptor` +
    `topology_descriptor()` / `register_topology()` in `arch.rs`, seeded from
    `builtin_descriptors()`.
+
 1. **[LANDED]** **Route hardcoded logic through it.** `default_memory_for` and
    `is_type_accessible` read the registry; the NPU/AccCore/GPU special-cases and the
    `visibility_edges` field are gone. (`topology_to_i32` still matches, plus a hashed
    id for `Custom`.)
+
 1. **[LANDED, identity only]** **Open identity.** `Topology::Custom(Symbol)` +
    `TopologyKind::Custom(Symbol)`; the parser resolves any non-built-in
    `Topology::<Name>` to `Custom`. A user topology now flows parse→typecheck→MLIR;
    its memory model is supplied via `register_topology` (plugin API). *Not yet:* a
    source-level `topology { … }` declaration (below), and the `Transfer<From,To>` /
    `Topology` traits.
+
 1. **[LANDED]** **`Transfer` + `Topology` "traits".** The
    object (`TopologyDescriptor`) and the morphism (`TransferEdge { from, to, cost, sync }`) exist as data with a language surface (`Topology <Name> { memory / visible / transfer ... }`); the cost graph *is* their closure (`seed_from_topology_registry`
+
    - Dijkstra); the consistency grade (`sync`/`relaxed`) is discharged via the seam
      engine in coherence checking.
 
@@ -261,12 +265,14 @@ seeds into.
    and the comptime predicate. It was called `Transfer<A, B>` until the lowering claimed that
    name. The arguments differ in kind — `Reachable` takes topologies, `Transfer` takes memory
    spaces — which is why they could not share one.
+
 1. **[LANDED]** **User declarations + coherence check.** `Topology <Name> { … }`
    registers descriptors in-language; admitted iff coherence obligations discharge
    (E6005 / W1026 / W1027, the last via `hir::seam`). Typo-safety: W1025 for an
    undeclared/unregistered custom topology. Coherence is scoped per-program (no
    cross-file leakage). *Still open:* a full "unknown-unless-declared" hard error
    (kept a warning so plugin-registered topologies still work).
+
 1. **[MONOMORPHIC CORE LANDED]** **Topology polymorphism.** `<D: Topology>` parses
    (the `Topology` keyword is accepted as a bound); a `Pinned<_, D>` parameter deduces
    `D` from the argument's concrete topology (`pending_topo_vars` + a `Pinned` arm in
