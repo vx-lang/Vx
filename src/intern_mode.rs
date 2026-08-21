@@ -26,11 +26,21 @@
 // The compiler bans process-global atomics for the same reason it bans locks: a compilation must
 // be isolated, and a static a worker can write is shared mutable state either way. CI enforces it.
 //
-// Everything here is EVAL-ONLY measurement scaffolding -- which interning mode a benchmark run
-// selected, whether phase logging is on, and where the wall time went. None of it is read by the
-// compiler to decide what to emit, so none of it can make one compilation's output depend on
-// another's. The exempt lines are marked individually with `vx-lint: allow-atomic` rather than
-// the file being excluded, so a new one has to justify itself in the diff (Vx#381).
+// QUIET and PHASE_NANOS are EVAL-ONLY measurement scaffolding -- whether phase logging is on, and
+// where the wall time went. Nothing reads them to decide what to emit, so neither can make one
+// compilation's output depend on another's.
+//
+// MODE IS NOT, and an earlier version of this note claimed it was. It is set from `vxc`'s own
+// `--intern-mode` flag in driver.rs, not only from the benchmarks, and `mint_deferred_generic`
+// reads it from inside the parallel type-check to choose how a generic GID is minted. The two
+// strategies are built to converge on the same GIDs, so it changes the path and not the result --
+// but that is a property being relied on, not an absence of influence, and a process global read
+// by every worker is what 2.7 exists to forbid. Its home is the frozen `GlobalSession`, and
+// `mint_generic_in_mode` already takes the strategy as a parameter for exactly that reason; only
+// the wrapper still reaches for the global. Tracked on Vx#381.
+//
+// The exempt lines are marked individually with `vx-lint: allow-atomic` rather than the file being
+// excluded, so a new one has to justify itself in the diff.
 
 use crate::gid::TypeId;
 use std::collections::HashMap;
