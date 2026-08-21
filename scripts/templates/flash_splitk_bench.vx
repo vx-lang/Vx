@@ -1,0 +1,174 @@
+//===- flash_splitk_bench.vx - split-K flash attention prefill --*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+//
+// The prefill answer to the occupancy wall (Vx#378/#379): every one-thread-
+// per-query kernel at SQ=8192 puts ~76 threads on each of the A100's 108 SMs,
+// so flat, stage-B and stage-C alike are latency-bound at ~2 warps per SM and
+// the barrier-free one wins. The lever is parallelism itself: split the KEY
+// walk C ways, exactly the combine-tree pattern flash_decode_bench.vx proved,
+// applied to prefill.
+//
+// __VX_BENCH_NOTE__
+//
+// Region 1 -- one thread per (chunk, query) pair, C*SQ of them: chunk c owns
+// the strided key subset {c, c+C, c+2C, ...}, so the online softmax over it is
+// an ordinary online softmax over fewer keys. The pair writes its running
+// numerator to po[xc] and its (max, sum) to pml[xc] -- rows only this thread
+// owns. Layout is chunk-major (xc = c*SQ + i), so a block's 128 adjacent
+// threads share a chunk and walk the same key rows near-lockstep, keeping the
+// L1/L2 behaviour the flat kernel measured.
+//
+// Inside the thread, the chunk walk runs as TWO independent online-softmax
+// chains over the chunk's halves, merged in registers at the end. The chain's
+// serial dependence (acc = acc*corr + v*p per key) is what bound the one-chain
+// version: two chains took 1.497 ms to 1.087 on the A100. Two is also the
+// cliff: FOUR chains spill (4x64 accumulator floats) and run 3x SLOWER than
+// two -- measured, not conjectured. Do not widen this without re-measuring.
+//
+// Region 2 -- one thread per query: C partials fold under the global max
+// (numerators rescaled by exp(m_c - M), sums likewise), one division at the
+// end. C reads against a serial walk of SK/C keys in region 1: the combine is
+// noise next to the pass it parallelizes.
+//
+// No modulo in the surface language, so `i = xc - (xc / SQ) * SQ`.
+// __VX_CH2__ must be __VX_CH__ / 2: each chain walks half the chunk.
+//
+// Same closed form as every bench in this family: Q is zero, so o[i][d] is
+// the mean of column d of V = 0.01*(SK-1)/2. A chunk assigned the wrong keys,
+// a partial combined without its rescale, or a doubled row all move it.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: vx.transfer
+// CHECK-SAME: cost =
+// CHECK: vx.spawn topology(1
+//
+//===----------------------------------------------------------------------===//
+
+import std::math;
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::GPU_HBM,
+  visible: [Memory::GPU_HBM],
+  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s
+}
+
+fn main() -> i32 {
+  let mut q_h = Tensor<f32>([ __VX_SQ__, __VX_HD__ ]);
+  let mut k_h = Tensor<f32>([ __VX_SK__, __VX_HD__ ]);
+  let mut v_h = Tensor<f32>([ __VX_SK__, __VX_HD__ ]);
+  let mut o_h = Tensor<f32>([ __VX_SQ__, __VX_HD__ ]);
+  let mut po_h = Tensor<f32>([ __VX_XC__, __VX_HD__ ]);
+  let mut pml_h = Tensor<f32>([ __VX_XC__, 2 ]);
+
+  for i in 0..__VX_SQ__ {
+    for d in 0..__VX_HD__ {
+      q_h[i][d] = 0.0;
+      o_h[i][d] = 0.0;
+    }
+  }
+  for j in 0..__VX_SK__ {
+    for d in 0..__VX_HD__ {
+      k_h[j][d] = 0.01;
+      v_h[j][d] = (j as f32) * 0.01;
+    }
+  }
+
+  let q = transfer(q_h, Memory::GPU_HBM);
+  let k = transfer(k_h, Memory::GPU_HBM);
+  let v = transfer(v_h, Memory::GPU_HBM);
+  let mut o = transfer(o_h, Memory::GPU_HBM);
+  let mut po = transfer(po_h, Memory::GPU_HBM);
+  let mut pml = transfer(pml_h, Memory::GPU_HBM);
+  let scale : f32 = 0.5;
+
+  spawn on(Topology::Dev) {
+    let mut acc0 = Tensor<f32>([ 1, __VX_HD__ ]);
+    let mut acc1 = Tensor<f32>([ 1, __VX_HD__ ]);
+    for xc in 0..__VX_XC__ {
+      acc0[0] = q[xc - (xc / __VX_SQ__) * __VX_SQ__] * 0.0;
+      acc1[0] = q[xc - (xc / __VX_SQ__) * __VX_SQ__] * 0.0;
+      let mut m0 : f32 = -1000000.0;
+      let mut l0 : f32 = 0.0;
+      let mut m1 : f32 = -1000000.0;
+      let mut l1 : f32 = 0.0;
+      for jj in 0..__VX_CH2__ {
+        let s0 : f32 = dot(q[xc - (xc / __VX_SQ__) * __VX_SQ__],
+                           k[(xc / __VX_SQ__) + jj * __VX_C__]) * scale;
+        let mn0 : f32 = if s0 > m0 {
+          s0
+        } else {
+          m0
+        };
+        let corr0 : f32 = (m0 - mn0).exp();
+        let p0 : f32 = (s0 - mn0).exp();
+        l0 = l0 * corr0 + p0;
+        acc0[0] = acc0[0] * corr0;
+        acc0[0] = acc0[0] + v[(xc / __VX_SQ__) + jj * __VX_C__] * p0;
+        m0 = mn0;
+        let s1 : f32 = dot(q[xc - (xc / __VX_SQ__) * __VX_SQ__],
+                           k[(xc / __VX_SQ__) + (jj + __VX_CH2__) * __VX_C__]) * scale;
+        let mn1 : f32 = if s1 > m1 {
+          s1
+        } else {
+          m1
+        };
+        let corr1 : f32 = (m1 - mn1).exp();
+        let p1 : f32 = (s1 - mn1).exp();
+        l1 = l1 * corr1 + p1;
+        acc1[0] = acc1[0] * corr1;
+        acc1[0] = acc1[0] + v[(xc / __VX_SQ__) + (jj + __VX_CH2__) * __VX_C__] * p1;
+        m1 = mn1;
+      }
+      let mm : f32 = if m0 > m1 {
+        m0
+      } else {
+        m1
+      };
+      let w0 : f32 = (m0 - mm).exp();
+      let w1 : f32 = (m1 - mm).exp();
+      acc0[0] = acc0[0] * w0;
+      acc0[0] = acc0[0] + acc1[0] * w1;
+      po[xc] = acc0[0] * 1.0;
+      pml[xc][0] = mm;
+      pml[xc][1] = l0 * w0 + l1 * w1;
+    }
+  }
+
+  spawn on(Topology::Dev) {
+    let mut acc2 = Tensor<f32>([ 1, __VX_HD__ ]);
+    for i in 0..__VX_SQ__ {
+      let mut mx : f32 = -1000000.0;
+      for c in 0..__VX_C__ {
+        let m2 : f32 = if pml[c * __VX_SQ__ + i][0] > mx {
+          pml[c * __VX_SQ__ + i][0]
+        } else {
+          mx
+        };
+        mx = m2;
+      }
+      let mut ll : f32 = 0.0;
+      acc2[0] = po[i] * 0.0;
+      for c in 0..__VX_C__ {
+        let w : f32 = (pml[c * __VX_SQ__ + i][0] - mx).exp();
+        ll = ll + pml[c * __VX_SQ__ + i][1] * w;
+        acc2[0] = acc2[0] + po[c * __VX_SQ__ + i] * w;
+      }
+      let inv : f32 = 1.0 / ll;
+      o[i] = acc2[0] * inv;
+    }
+  }
+
+  let o_home = transfer(o, Memory::CPU_DRAM);
+  print(o_home);
+  return 0;
+}
