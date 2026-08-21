@@ -1,0 +1,96 @@
+//===- flash_routed_bench.vx - one call, the vendor lane --------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+//
+// The campaign's attention bench as ONE LINE of Vx (Vx#378): the compiler
+// classifies the region `kind=attention`, the runtime dlopens libvx_flash.so
+// (scripts/fa_shim/) and calls FlashAttention-2. Everything every other bench
+// in this family builds by hand -- tiles, softmax chains, register plans --
+// is here delegated to the vendor kernel, which is the demo's point: the
+// language names the computation, the compiler routes it.
+//
+// A100, SQ=8192 SK=2048 HD=64 f16, VX_FLASH_LIB=.../libvx_flash.so:
+//
+//   region 1 (cold)   4.17 ms    dlopen + FA-2 module load, once per process
+//   regions 2-4       0.066-0.067 ms  = ~65 TF/s
+//
+//   the ladder this closes (same shape, same closed form):
+//     own fused FP32 (255-reg wall)    1.125 ms    3.82 TF/s
+//     unfused TF32 (routed GEMMs)      0.486 ms    8.84 TF/s
+//     unfused f16  (routed GemmEx)     0.374 ms   11.5  TF/s
+//     flash_attention_into (this)      0.066 ms   ~65   TF/s
+//   fa_driver standalone is 0.062 ms; the 4 us are the dispatch's plan
+//   decode + staging checks. torch SDPA on this pod: 0.063 ms. Matched.
+//
+// Without the library the SAME BINARY still answers -- the serial fallback
+// nest runs from its own device image -- which is the correctness contract
+// `kind=matmul` set: a refusal costs performance, never correctness.
+//
+// Closed form: q,k uniform -> softmax exactly uniform -> o[i][d] =
+// mean_j v[j][d] = 0.01*(2048-1)/2 = 10.235; V rounds to f16 on the way in,
+// so 10.234375 prints (the value torch SDPA and fa_driver print).
+//
+// One warmup region pays the loads; the three after it are the measurement
+// (VX_TIME_KERNEL prints each).
+//
+//===----------------------------------------------------------------------===//
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::GPU_HBM,
+  visible: [Memory::GPU_HBM],
+  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s
+}
+
+fn main() -> i32 {
+  let mut q_h = Tensor<f16>([ 8192, 64 ]);
+  let mut k_h = Tensor<f16>([ 2048, 64 ]);
+  let mut v_h = Tensor<f16>([ 2048, 64 ]);
+  let mut o_h = Tensor<f16>([ 8192, 64 ]);
+
+  for i in 0..8192 {
+    for d in 0..64 {
+      q_h[i][d] = 0.01;
+      o_h[i][d] = 0.0;
+    }
+  }
+  for j in 0..2048 {
+    for d in 0..64 {
+      k_h[j][d] = 0.01;
+      v_h[j][d] = ((j as f32) * 0.01) as f16;
+    }
+  }
+
+  let q = transfer(q_h, Memory::GPU_HBM);
+  let k = transfer(k_h, Memory::GPU_HBM);
+  let v = transfer(v_h, Memory::GPU_HBM);
+  let mut o = transfer(o_h, Memory::GPU_HBM);
+
+  spawn on(Topology::Dev) {
+    flash_attention_into(&mut o, &q, &k, &v, 0.125);
+  }
+  spawn on(Topology::Dev) {
+    flash_attention_into(&mut o, &q, &k, &v, 0.125);
+  }
+  spawn on(Topology::Dev) {
+    flash_attention_into(&mut o, &q, &k, &v, 0.125);
+  }
+  spawn on(Topology::Dev) {
+    flash_attention_into(&mut o, &q, &k, &v, 0.125);
+  }
+
+  let o_home = transfer(o, Memory::CPU_DRAM);
+  let chk : f32 = o_home[0][0] as f32;
+  let chk2 : f32 = o_home[8191][63] as f32;
+  print(chk);
+  print(chk2);
+  return 0;
+}

@@ -2317,6 +2317,134 @@ pub fn emit_function_mlir(
                 body += &format!("  linalg.fill ins(%mz{idx} : {et}) outs({dst} : {md})\n");
                 body += &format!("  linalg.matmul ins({a}, {b} : {ma}, {mb}) outs({dst} : {md})\n");
             }
+            // `flash_attention_into(&mut o, &q, &k, &v, scale)` (no result): a serial
+            // `o = softmax(q @ k^T * scale) @ v` nest, preceded by a `vx.attention_note` naming
+            // which memref plays which role. The nest is the correctness contract — a runtime
+            // that cannot (or will not) route runs it as written; the note is what
+            // `kernelKindOf` classifies as `kind=attention` so a runtime that CAN route hands
+            // the region to a fused vendor kernel instead. o, v and scale ride the imm (see
+            // `Opcode::FlashAttnInto`). f16 storage with f32 arithmetic throughout, the same
+            // split the widening contracts (Vx#320) give every half slice.
+            Opcode::FlashAttnInto => {
+                let o_reg = (ins.imm & 0xffff) as usize;
+                let v_reg = ((ins.imm >> 16) & 0xffff) as usize;
+                let s_reg = ((ins.imm >> 32) & 0xffff) as usize;
+                let q = names.get(ins.operand1.0 as usize)?.clone();
+                let mq = mem_of.get(ins.operand1.0 as usize)?.clone()?;
+                let k = names.get(ins.operand2.0 as usize)?.clone();
+                let mk = mem_of.get(ins.operand2.0 as usize)?.clone()?;
+                let o = names.get(o_reg)?.clone();
+                let mo = mem_of.get(o_reg)?.clone()?;
+                let v = names.get(v_reg)?.clone();
+                let mv = mem_of.get(v_reg)?.clone()?;
+                let sc = names.get(s_reg)?.clone();
+                if !matches!(elem_at(&etypes, s_reg as u32), Some(ElementType::F32)) {
+                    return None;
+                }
+                // "memref<AxBxf16>" -> (A, B, "f16"); anything shaped differently (a strided
+                // layout, a surprise rank) declines rather than guesses.
+                let dims = |m: &str| -> Option<(i64, i64, String)> {
+                    let inner = m.strip_prefix("memref<")?.strip_suffix('>')?;
+                    let mut it = inner.split('x');
+                    let a = it.next()?.parse::<i64>().ok()?;
+                    let b = it.next()?.parse::<i64>().ok()?;
+                    let e = it.next()?.to_string();
+                    if it.next().is_some() {
+                        return None;
+                    }
+                    Some((a, b, e))
+                };
+                let (sq, hd, eo) = dims(&mo)?;
+                let (sq2, hd2, eq) = dims(&mq)?;
+                let (sk, hd3, ek) = dims(&mk)?;
+                let (sk2, hd4, ev) = dims(&mv)?;
+                if [&eo, &eq, &ek, &ev].iter().any(|e| e.as_str() != "f16") {
+                    return None;
+                }
+                if sq != sq2 || sk != sk2 || hd != hd2 || hd != hd3 || hd != hd4 {
+                    return None;
+                }
+                body += &format!(
+                    "  \"vx.attention_note\"({o}, {q}, {k}, {v}, {sc}) : ({mo}, {mq}, {mk}, {mv}, f32) -> ()\n"
+                );
+                body += &format!("  %fasb{idx} = memref.alloca() : memref<{sk}xf32>\n");
+                body += &format!("  %fac0{idx} = arith.constant 0 : index\n");
+                body += &format!("  %fac1{idx} = arith.constant 1 : index\n");
+                body += &format!("  %facq{idx} = arith.constant {sq} : index\n");
+                body += &format!("  %fack{idx} = arith.constant {sk} : index\n");
+                body += &format!("  %facd{idx} = arith.constant {hd} : index\n");
+                body += &format!("  %faz{idx} = arith.constant 0.000000e+00 : f32\n");
+                // -inf: the identity of max over scores that may all be negative.
+                body += &format!("  %fan{idx} = arith.constant 0xFF800000 : f32\n");
+                body +=
+                    &format!("  scf.for %fai{idx} = %fac0{idx} to %facq{idx} step %fac1{idx} {{\n");
+                // Pass 1: this row's scores into the scratch buffer, tracking their max.
+                body += &format!(
+                    "    %fam{idx} = scf.for %faj{idx} = %fac0{idx} to %fack{idx} step %fac1{idx} iter_args(%famx{idx} = %fan{idx}) -> (f32) {{\n"
+                );
+                body += &format!(
+                    "      %fad{idx} = scf.for %fae{idx} = %fac0{idx} to %facd{idx} step %fac1{idx} iter_args(%faa{idx} = %faz{idx}) -> (f32) {{\n"
+                );
+                body +=
+                    &format!("        %faqh{idx} = memref.load {q}[%fai{idx}, %fae{idx}] : {mq}\n");
+                body += &format!("        %faqf{idx} = arith.extf %faqh{idx} : f16 to f32\n");
+                body +=
+                    &format!("        %fakh{idx} = memref.load {k}[%faj{idx}, %fae{idx}] : {mk}\n");
+                body += &format!("        %fakf{idx} = arith.extf %fakh{idx} : f16 to f32\n");
+                body += &format!("        %fap{idx} = arith.mulf %faqf{idx}, %fakf{idx} : f32\n");
+                body += &format!("        %fapa{idx} = arith.addf %faa{idx}, %fap{idx} : f32\n");
+                body += &format!("        scf.yield %fapa{idx} : f32\n");
+                body += "      }\n";
+                body += &format!("      %fas{idx} = arith.mulf %fad{idx}, {sc} : f32\n");
+                body += &format!(
+                    "      memref.store %fas{idx}, %fasb{idx}[%faj{idx}] : memref<{sk}xf32>\n"
+                );
+                body += &format!("      %fam2{idx} = arith.maximumf %famx{idx}, %fas{idx} : f32\n");
+                body += &format!("      scf.yield %fam2{idx} : f32\n");
+                body += "    }\n";
+                // Pass 2: exponentiate shifted scores in place, summing them.
+                body += &format!(
+                    "    %fal{idx} = scf.for %fajj{idx} = %fac0{idx} to %fack{idx} step %fac1{idx} iter_args(%fall{idx} = %faz{idx}) -> (f32) {{\n"
+                );
+                body += &format!(
+                    "      %fasl{idx} = memref.load %fasb{idx}[%fajj{idx}] : memref<{sk}xf32>\n"
+                );
+                body += &format!("      %fash{idx} = arith.subf %fasl{idx}, %fam{idx} : f32\n");
+                // `math.exp`, not a `func.call` into the stdlib: math is the portable spelling
+                // (libm on the host pipeline, the NVVM intrinsic on device), and a func.call to
+                // a host symbol inside a kernel cannot be loaded (see useDeviceMathIn).
+                body += &format!("      %faex{idx} = math.exp %fash{idx} : f32\n");
+                body += &format!(
+                    "      memref.store %faex{idx}, %fasb{idx}[%fajj{idx}] : memref<{sk}xf32>\n"
+                );
+                body += &format!("      %fal2{idx} = arith.addf %fall{idx}, %faex{idx} : f32\n");
+                body += &format!("      scf.yield %fal2{idx} : f32\n");
+                body += "    }\n";
+                // Pass 3: o[i][d] = sum_j p[j] * v[j][d] / l, narrowed once on store.
+                body += &format!(
+                    "    scf.for %fadd{idx} = %fac0{idx} to %facd{idx} step %fac1{idx} {{\n"
+                );
+                body += &format!(
+                    "      %faoc{idx} = scf.for %fajk{idx} = %fac0{idx} to %fack{idx} step %fac1{idx} iter_args(%faoa{idx} = %faz{idx}) -> (f32) {{\n"
+                );
+                body += &format!(
+                    "        %fapl{idx} = memref.load %fasb{idx}[%fajk{idx}] : memref<{sk}xf32>\n"
+                );
+                body += &format!(
+                    "        %favh{idx} = memref.load {v}[%fajk{idx}, %fadd{idx}] : {mv}\n"
+                );
+                body += &format!("        %favf{idx} = arith.extf %favh{idx} : f16 to f32\n");
+                body += &format!("        %fapv{idx} = arith.mulf %fapl{idx}, %favf{idx} : f32\n");
+                body += &format!("        %fao2{idx} = arith.addf %faoa{idx}, %fapv{idx} : f32\n");
+                body += &format!("        scf.yield %fao2{idx} : f32\n");
+                body += "      }\n";
+                body += &format!("      %faon{idx} = arith.divf %faoc{idx}, %fal{idx} : f32\n");
+                body += &format!("      %faoh{idx} = arith.truncf %faon{idx} : f32 to f16\n");
+                body +=
+                    &format!("      memref.store %faoh{idx}, {o}[%fai{idx}, %fadd{idx}] : {mo}\n");
+                body += "    }\n";
+                body += "  }\n";
+            }
             // Store into a tensor place (no result). A scalar-element place (an `imm = 1`
             // `TensorIndex`) → `memref.store`; a row/sub-view place (an `imm = 0` `TensorIndex`, a row
             // memref in `mem_of`) takes an elementwise vector value → `vector.store`.

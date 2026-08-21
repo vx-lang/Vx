@@ -2685,6 +2685,15 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                     name, func_ty
                 );
             }
+        } else if name.as_ref() == "flash_attention_into" {
+            // Deliberately flat-only (Vx#378): the flat path emits the serial nest plus the
+            // `vx.attention_note` the classifier reads, and no AST twin exists. Name the
+            // situation rather than reporting a missing function for a call the checker
+            // accepted.
+            panic!(
+                "flash_attention_into has no legacy (AST) lowering; it requires the flat \
+                 codegen path (Vx#378)"
+            );
         } else {
             panic!("Function {} not found", name);
         }

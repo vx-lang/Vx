@@ -438,6 +438,7 @@ impl<'a> TypeChecker<'a> {
                     || resolved_name == "Verified".into()
                     || resolved_name == "tensor_view_2d".into()
                     || resolved_name == "matmul_into".into()
+                    || resolved_name == "flash_attention_into".into()
                     || is_slice_reduction;
                 let arg_consume = if is_builtin_ref { false } else { consume };
 
@@ -1235,6 +1236,57 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             // `void` is spelled as a struct name in this type system.
+            Some(Type::Struct("void".into(), None))
+        } else if resolved_name == "flash_attention_into" {
+            // `o = softmax(q @ k^T * scale) @ v`, written in place (Vx#378).
+            // The one-call spelling is what lets the compiler classify the
+            // region as attention and route it to a fused vendor kernel; the
+            // same math written as matmuls and loops is correct but routes as
+            // its pieces. f16 is a contract, not a limitation: the routed
+            // kernel computes in f32 and rounds once on store, which is also
+            // exactly what the widening contracts (Vx#320) say half storage
+            // means here.
+            if args.len() != 5 {
+                self.errors.push(
+                    "Function 'flash_attention_into' expects (&mut o, &q, &k, &v, scale)"
+                        .to_string(),
+                );
+            }
+            match arg_types.first() {
+                Some(Type::Borrow { is_mut: true, .. }) => {}
+                _ => {
+                    if !self.speculating {
+                        self.errors.push(
+                            "flash_attention_into writes its first argument, which must be a mutable borrow (&mut o)"
+                                .to_string(),
+                        );
+                    }
+                }
+            }
+            for t in arg_types.iter().take(4) {
+                match Self::as_tensor_operand(t) {
+                    Some((ElementType::F16, dims, _)) if dims.len() == 2 => {}
+                    _ => {
+                        if !self.speculating {
+                            self.errors.push(format!(
+                                "flash_attention_into expects rank-2 f16 tensors (o, q, k, v), got {:?}",
+                                t
+                            ));
+                        }
+                    }
+                }
+            }
+            match arg_types.get(4) {
+                None | Some(Type::Scalar(ElementType::F32)) => {}
+                Some(t) => {
+                    if !self.speculating {
+                        self.errors.push(format!(
+                            "flash_attention_into expects an f32 scale, got {:?}",
+                            t
+                        ));
+                    }
+                }
+            }
             Some(Type::Struct("void".into(), None))
         } else if resolved_name == "tensor_view_2d" {
             // A rank-2 tensor over memory it does not own, with no copy (#336).

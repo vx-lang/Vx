@@ -877,7 +877,14 @@ fn run_optimization_test(path: &Path) -> Result<(), String> {
             // shapes). Flat codegen is now the default (#201), so force the legacy AST path here; the
             // flat path's emission is validated separately by the flat-vs-AST differential harness.
             // Harmless for `-x mlir` RUN lines (no Vx codegen runs).
-            args.push("--legacy-codegen".to_string());
+            //
+            // `// REQUIRES: flat-codegen` opts a file out: some constructs exist ONLY on the flat
+            // path (`flash_attention_into`, whose note-and-nest emission is what
+            // kernel_kind_attention.vx pins), and forcing legacy there tests a lowering that
+            // deliberately does not exist.
+            if !source.contains("// REQUIRES: flat-codegen") {
+                args.push("--legacy-codegen".to_string());
+            }
             env!("CARGO_BIN_EXE_vxc")
         } else if exec_name == "vx-opt" {
             env!("CARGO_BIN_EXE_vx-opt")

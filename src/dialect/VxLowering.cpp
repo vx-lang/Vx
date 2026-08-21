@@ -216,6 +216,7 @@ static StringRef kernelKindOf(Region &body, Operation **payloadOut = nullptr) {
     *payloadOut = nullptr;
   Operation *matmul = nullptr;
   Operation *fill = nullptr;
+  Operation *attn = nullptr;
   unsigned otherPayload = 0;
 
   // Only the region's own operations, not a deep walk: a linalg op carries its
@@ -240,8 +241,25 @@ static StringRef kernelKindOf(Region &body, Operation **payloadOut = nullptr) {
         fill = op;
         continue;
       }
+      if (name == "vx.attention_note" && !attn) {
+        attn = op;
+        continue;
+      }
       ++otherPayload;
     }
+  }
+
+  // A noted attention region (Vx#378): the note names the roles and everything
+  // else is the serial fallback -- `scf` loops and their scaffolding, which the
+  // skip list above already ignores. The strictness mirrors the matmul arm's: a
+  // region carrying anything this cannot account for (a second note included)
+  // classifies as nothing rather than as a guess.
+  if (attn) {
+    if (matmul || fill || otherPayload > 0)
+      return StringRef();
+    if (payloadOut)
+      *payloadOut = attn;
+    return "attention";
   }
 
   if (!matmul || otherPayload > 0)
@@ -407,6 +425,65 @@ static std::string matmulRolesOf(Operation *matmul, Region &body,
       .str();
 }
 
+// Describe which launch operand plays which role in a noted attention region
+// (Vx#378), as `q:<i>,k:<j>,v:<l>,out:<m>`, and the scale through `scaleField`:
+// `arg:<n>` when the scale is a captured scalar the plugin must read at
+// dispatch, `val:<f>` when the region baked it in as a constant. Two spellings
+// because both happen -- a literal in the source rematerializes inside the
+// region and captures nothing, a computed scale arrives as a capture -- and
+// refusing either would silently unclassify half the programs.
+//
+// Returns "" unless every role and the scale resolve, for the same reason
+// matmulRolesOf does: a partial mapping invites a plugin to fill in the rest by
+// convention, which is the guessing this replaces.
+static std::string attentionRolesOf(Operation *note,
+                                    const SetVector<Value> &captures,
+                                    std::string &scaleField) {
+  scaleField.clear();
+  if (!note || note->getNumOperands() != 5)
+    return std::string();
+
+  auto indexOf = [&](Value v) -> int {
+    for (auto en : llvm::enumerate(captures)) {
+      if (en.value() == v)
+        return static_cast<int>(en.index());
+    }
+    return -1;
+  };
+
+  // The note's operand order is the op's declaration order: out, q, k, v,
+  // scale. On the flat path every tensor is captured as the buffer itself, so
+  // plain capture lookup is the whole resolution.
+  int outIdx = indexOf(note->getOperand(0));
+  int qIdx = indexOf(note->getOperand(1));
+  int kIdx = indexOf(note->getOperand(2));
+  int vIdx = indexOf(note->getOperand(3));
+  if (outIdx < 0 || qIdx < 0 || kIdx < 0 || vIdx < 0)
+    return std::string();
+
+  Value scale = note->getOperand(4);
+  int scaleIdx = indexOf(scale);
+  if (scaleIdx >= 0) {
+    scaleField = ("arg:" + Twine(scaleIdx)).str();
+  } else if (Operation *def = scale.getDefiningOp()) {
+    if (def->getName().getStringRef() == "arith.constant") {
+      if (auto attr = def->getAttrOfType<FloatAttr>("value")) {
+        // %.9g is enough digits that an f32 value round-trips exactly through
+        // the decimal spelling and the plugin's strtof.
+        char buf[32];
+        snprintf(buf, sizeof(buf), "val:%.9g", attr.getValueAsDouble());
+        scaleField = buf;
+      }
+    }
+  }
+  if (scaleField.empty())
+    return std::string();
+
+  return ("q:" + Twine(qIdx) + ",k:" + Twine(kIdx) + ",v:" + Twine(vIdx) +
+          ",out:" + Twine(outIdx))
+      .str();
+}
+
 // The `math` dialect op for a libm symbol, or empty for one that is not a
 // transcendental Vx routes through the stdlib.
 //
@@ -536,6 +613,17 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
       if (spawnBody.empty()) {
         rewriter.eraseOp(op);
         return success();
+      }
+
+      // A CPU spawn may carry an attention note too -- the region is the
+      // computation either way, and classification is a device-launch concern.
+      // Nothing downstream of async.execute understands a vx op, so it goes
+      // here.
+      {
+        SmallVector<vx::AttentionNoteOp> notes;
+        spawnBody.walk([&](vx::AttentionNoteOp n) { notes.push_back(n); });
+        for (vx::AttentionNoteOp n : notes)
+          rewriter.eraseOp(n);
       }
 
       auto asyncExecuteOp =
@@ -689,15 +777,26 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
     Operation *payloadOp = nullptr;
     StringRef kernelKind = kernelKindOf(spawnBody, &payloadOp);
     StringRef outKind;
-    std::string kernelRoles =
-        matmulRolesOf(payloadOp, spawnBody, captures, outKind);
+    std::string scaleField;
+    std::string kernelRoles;
+    if (kernelKind == "attention") {
+      kernelRoles = attentionRolesOf(payloadOp, captures, scaleField);
+    } else {
+      kernelRoles = matmulRolesOf(payloadOp, spawnBody, captures, outKind);
+    }
     if (!kernelKind.empty()) {
       kernelOp->setAttr("vx.kernel_kind", rewriter.getStringAttr(kernelKind));
       if (!kernelRoles.empty()) {
         kernelOp->setAttr("vx.kernel_roles",
                           rewriter.getStringAttr(kernelRoles));
-        kernelOp->setAttr("vx.kernel_out_kind",
-                          rewriter.getStringAttr(outKind));
+        // An attention region writes its output in place and carries no out
+        // kind; an empty attribute would read as a claim, so none is set.
+        if (!outKind.empty())
+          kernelOp->setAttr("vx.kernel_out_kind",
+                            rewriter.getStringAttr(outKind));
+        if (!scaleField.empty())
+          kernelOp->setAttr("vx.kernel_scale",
+                            rewriter.getStringAttr(scaleField));
       }
     }
 
@@ -719,6 +818,16 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
       rewriter.replaceUsesWithIf(capVal, arg, [&](OpOperand &use) {
         return kernelRegion.isAncestor(use.getOwner()->getParentRegion());
       });
+    }
+
+    // The note has served: classification read it before the clone, and the
+    // roles ride as attributes now. What remains in the kernel must all lower
+    // to device (or host-fallback) code, which a vx marker op does not.
+    {
+      SmallVector<vx::AttentionNoteOp> notes;
+      kernelRegion.walk([&](vx::AttentionNoteOp n) { notes.push_back(n); });
+      for (vx::AttentionNoteOp n : notes)
+        rewriter.eraseOp(n);
     }
 
     // The kernel is dispatched, not called from here, so the host's libm is not
@@ -763,8 +872,12 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
       if (!kernelRoles.empty()) {
         launchOp->setAttr("vx.kernel_roles",
                           rewriter.getStringAttr(kernelRoles));
-        launchOp->setAttr("vx.kernel_out_kind",
-                          rewriter.getStringAttr(outKind));
+        if (!outKind.empty())
+          launchOp->setAttr("vx.kernel_out_kind",
+                            rewriter.getStringAttr(outKind));
+        if (!scaleField.empty())
+          launchOp->setAttr("vx.kernel_scale",
+                            rewriter.getStringAttr(scaleField));
       }
     }
     // The trip count too, for the same reason: the launch's payload is how the
@@ -1924,6 +2037,11 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
       payload += outAttr.getValue().str();
       payload.push_back('\0');
     }
+    if (auto scaleAttr = op->getAttrOfType<StringAttr>("vx.kernel_scale")) {
+      payload += "scale=";
+      payload += scaleAttr.getValue().str();
+      payload.push_back('\0');
+    }
 
     // The device this launch targets. Without it every dispatch reaches a
     // plugin identically and a program cannot say "prefill here, decode there"
@@ -2325,6 +2443,11 @@ static std::string deviceImageOf(gpu::GPUModuleOp gpuModule,
     attach.linkLibs.push_back(libdevice);
   pm.addPass(createGpuNVVMAttachTarget(attach));
 
+  // Structured loops arrive with Vx#378's attention fallback nest -- the first
+  // kernel body emitted as `scf.for` rather than raw CFG. The NVVM conversion
+  // has no patterns for scf, so they lower to `cf` first or survive as
+  // unlowerable ops that fail the whole compile.
+  pm.nest<gpu::GPUModuleOp>().addPass(createSCFToControlFlowPass());
   pm.nest<gpu::GPUModuleOp>().addPass(createConvertGpuOpsToNVVMOps());
   pm.addPass(createArithToLLVMConversionPass());
   pm.addPass(createConvertMathToLLVMPass());

@@ -1,0 +1,74 @@
+//===- flash_attention_routed.vx - Vx Compiler ------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// `flash_attention_into(&mut o, &q, &k, &v, scale)`: one call, classified
+// `kind = "attention"` and routed to a vendor flash kernel where one exists
+// (Vx#378). This program is the CORRECTNESS half of that contract: the region
+// carries a serial fallback nest, and every execution path prints the same
+// number --
+//
+//   - no accelerator: the host runs the outlined nest (what CI executes,
+//     driven by tests/integration_test/flash_routed_test.rs);
+//   - an accelerator but no libvx_flash.so: the nest's own device image runs
+//     (it is scf/arith/math/memref, so unlike a linalg matmul it HAS one);
+//   - the routed path: FlashAttention-2 through the dlopen'd shim
+//     (scripts/fa_shim/, VX_FLASH_LIB).
+//
+// All three were run against this closed form on an A100; all three printed
+// 0.07501221 (the routed lane at 0.066 ms for the 8192x2048x64 bench shape).
+//
+// The value: q and k are uniform, so every score is equal, softmax is exactly
+// uniform (exp(0) = 1 on every libm), and o[i][d] is the plain mean of V's
+// column d = 0.01 * (16-1)/2 = 0.075. V's values round to f16 on the way in,
+// which lands the mean at 0.0750122 -- deterministic, not approximate.
+//
+//===----------------------------------------------------------------------===//
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::GPU_HBM,
+  visible: [Memory::GPU_HBM],
+  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s
+}
+
+fn main() -> i32 {
+  let mut q_h = Tensor<f16>([ 8, 64 ]);
+  let mut k_h = Tensor<f16>([ 16, 64 ]);
+  let mut v_h = Tensor<f16>([ 16, 64 ]);
+  let mut o_h = Tensor<f16>([ 8, 64 ]);
+
+  for i in 0..8 {
+    for d in 0..64 {
+      q_h[i][d] = 0.01;
+      o_h[i][d] = 0.0;
+    }
+  }
+  for j in 0..16 {
+    for d in 0..64 {
+      k_h[j][d] = 0.01;
+      v_h[j][d] = ((j as f32) * 0.01) as f16;
+    }
+  }
+
+  let q = transfer(q_h, Memory::GPU_HBM);
+  let k = transfer(k_h, Memory::GPU_HBM);
+  let v = transfer(v_h, Memory::GPU_HBM);
+  let mut o = transfer(o_h, Memory::GPU_HBM);
+
+  spawn on(Topology::Dev) {
+    flash_attention_into(&mut o, &q, &k, &v, 0.125);
+  }
+
+  let o_home = transfer(o, Memory::CPU_DRAM);
+  let chk : f32 = o_home[0][0] as f32;
+  print(chk);
+  return 0;
+}

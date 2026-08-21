@@ -758,6 +758,58 @@ impl<'r> Lowerer<'r> {
                         0,
                     ));
                 }
+                // `flash_attention_into(&mut o, &q, &k, &v, scale)`: fused attention written in
+                // place. One effect op carries all five (o, v and scale ride the imm — see
+                // `Opcode::FlashAttnInto`). The checker pinned the types (rank-2 f16, f32 scale)
+                // and typed the call void; the shape agreement is re-checked here on RESOLVED
+                // dims because the fallback nest indexes all four tensors and an inconsistent
+                // set would read out of bounds. Unlike `matmul_into` there is no AST lowering
+                // to decline to, so a `None` here surfaces as a loud compile failure, never a
+                // wrong kernel.
+                if fc.name.as_ref() == "flash_attention_into" {
+                    if fc.args.len() != 5 {
+                        return None;
+                    }
+                    let mut regs = [Register(0); 4];
+                    let mut shapes: Vec<Vec<String>> = Vec::with_capacity(4);
+                    for (n, arg) in fc.args.iter().take(4).enumerate() {
+                        let v = self.lower_expr(arg)?;
+                        let LoweredTy::Tensor { elem, shape } = &v.ty else {
+                            return None;
+                        };
+                        if *elem != ElementType::F16 || shape.len() != 2 {
+                            return None;
+                        }
+                        shapes.push(shape.clone());
+                        regs[n] = v.reg;
+                    }
+                    // o and q share [SQ, HD]; k and v share [SK, HD]; one HD everywhere.
+                    if shapes[0] != shapes[1]
+                        || shapes[2] != shapes[3]
+                        || shapes[1][1] != shapes[2][1]
+                    {
+                        return None;
+                    }
+                    let scale = self.lower_expr(&fc.args[4])?;
+                    if !matches!(scale.ty, LoweredTy::Scalar(ElementType::F32)) {
+                        return None;
+                    }
+                    self.emit_effect(
+                        Opcode::FlashAttnInto,
+                        regs[1],
+                        regs[2],
+                        (regs[0].0 as u64)
+                            | ((regs[3].0 as u64) << 16)
+                            | ((scale.reg.0 as u64) << 32),
+                    );
+                    return Some(self.emit_value(
+                        Opcode::Const,
+                        Register(0),
+                        Register(0),
+                        ElementType::I32,
+                        0,
+                    ));
+                }
                 let kind = match fc.name.as_ref() {
                     "dot" => 0u64,
                     "sum" => 1,
@@ -6096,6 +6148,75 @@ mod tests {
             .find(|i| i.opcode == Opcode::SpawnEnd)
             .expect("a SpawnEnd");
         assert_eq!(end.imm, 0, "routed, not strided: imm={:#x}", end.imm);
+    }
+
+    #[test]
+    fn a_flash_attention_region_lowers_flat_and_packs_the_imm() {
+        // `flash_attention_into` in a spawn lowers to one FlashAttnInto op whose imm packs
+        // the three registers the two operand fields cannot carry: o | v<<16 | scale<<32.
+        // The region stays serial for the same reason a matmul region does -- it is
+        // classified and routed, not launched wide.
+        let (did, w) = lower_with_registry(
+            "fn main() -> i32 {\n\
+               let mut q = Tensor<f16>([8, 64]);\n\
+               let mut k = Tensor<f16>([16, 64]);\n\
+               let mut v = Tensor<f16>([16, 64]);\n\
+               let mut o = Tensor<f16>([8, 64]);\n\
+               spawn on (Topology::GPU) {\n\
+                 flash_attention_into(&mut o, &q, &k, &v, 0.125);\n\
+               };\n\
+               return 0;\n\
+             }",
+            "main",
+        );
+        assert!(did, "the attention region lowers on the flat path");
+        let fa = w
+            .local_hir_stream
+            .iter()
+            .find(|i| i.opcode == Opcode::FlashAttnInto)
+            .expect("a FlashAttnInto op");
+        let o_reg = fa.imm & 0xffff;
+        let v_reg = (fa.imm >> 16) & 0xffff;
+        let s_reg = (fa.imm >> 32) & 0xffff;
+        assert_ne!(o_reg, 0, "the output register rides the imm's low half");
+        assert_ne!(v_reg, 0, "the V register rides bits 16..32");
+        assert_ne!(s_reg, 0, "the scale register rides bits 32..48");
+        assert_ne!(
+            fa.operand1.0, fa.operand2.0,
+            "q and k are distinct operands"
+        );
+        let end = w
+            .local_hir_stream
+            .iter()
+            .find(|i| i.opcode == Opcode::SpawnEnd)
+            .expect("a SpawnEnd");
+        assert_eq!(end.imm, 0, "routed, not strided: imm={:#x}", end.imm);
+    }
+
+    #[test]
+    fn a_mismatched_attention_shape_declines() {
+        // k rows != v rows would make the fallback nest read out of bounds; the flatten arm
+        // re-checks resolved dims and refuses to emit the op.
+        let (did, w) = lower_with_registry(
+            "fn main() -> i32 {\n\
+               let mut q = Tensor<f16>([8, 64]);\n\
+               let mut k = Tensor<f16>([16, 64]);\n\
+               let mut v = Tensor<f16>([12, 64]);\n\
+               let mut o = Tensor<f16>([8, 64]);\n\
+               spawn on (Topology::GPU) {\n\
+                 flash_attention_into(&mut o, &q, &k, &v, 0.125);\n\
+               };\n\
+               return 0;\n\
+             }",
+            "main",
+        );
+        assert!(
+            !did || !w
+                .local_hir_stream
+                .iter()
+                .any(|i| i.opcode == Opcode::FlashAttnInto),
+            "an inconsistent shape set must not become a FlashAttnInto op"
+        );
     }
 
     #[test]

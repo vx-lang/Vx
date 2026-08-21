@@ -504,6 +504,225 @@ void test_refusals() {
   }
 }
 
+//===----------------------------------------------------------------------===//
+// Attention plan decode (Vx#378): kind=attention, four rank-2 f16 memrefs
+// named by q/k/v/out roles, the scale spelled `arg:<n>` or `val:<f>`.
+//===----------------------------------------------------------------------===//
+
+/// Four contiguous f16 operands the way `flash_attention_into` captures them
+/// on the flat path: buffers directly, plus the captured f32 scale.
+struct AttentionCase {
+  std::vector<uint16_t> q_data, k_data, v_data, o_data;
+  Desc2D q_desc, k_desc, v_desc, o_desc;
+  float scale = 0.125f;
+
+  void *q_ptr, *k_ptr, *v_ptr, *o_ptr;
+
+  std::vector<void *> args;
+  std::vector<int32_t> tags;
+
+  AttentionCase(int64_t sq, int64_t sk, int64_t hd)
+      : q_data((size_t)(sq * hd), 0), k_data((size_t)(sk * hd), 0),
+        v_data((size_t)(sk * hd), 0), o_data((size_t)(sq * hd), 0) {
+    q_desc = make_2d(q_data.data(), sq, hd, hd);
+    k_desc = make_2d(k_data.data(), sk, hd, hd);
+    v_desc = make_2d(v_data.data(), sk, hd, hd);
+    o_desc = make_2d(o_data.data(), sq, hd, hd);
+
+    q_ptr = &q_desc;
+    k_ptr = &k_desc;
+    v_ptr = &v_desc;
+    o_ptr = &o_desc;
+
+    args = {&o_ptr, &q_ptr, &k_ptr, &v_ptr, &scale};
+    tags = {VX_ABI_MEMREF_TAG(VX_DTYPE_F16, 2),
+            VX_ABI_MEMREF_TAG(VX_DTYPE_F16, 2),
+            VX_ABI_MEMREF_TAG(VX_DTYPE_F16, 2),
+            VX_ABI_MEMREF_TAG(VX_DTYPE_F16, 2), VX_ABI_KIND_F32};
+  }
+};
+
+std::string payload_attention(const char *roles, const char *scale) {
+  std::string p("vx_npu_kernel_0");
+  p.push_back('\0');
+  p += "kind=attention";
+  p.push_back('\0');
+  if (roles) {
+    p += "roles=";
+    p += roles;
+    p.push_back('\0');
+  }
+  if (scale) {
+    p += "scale=";
+    p += scale;
+    p.push_back('\0');
+  }
+  return p;
+}
+
+void test_parse_attention_roles() {
+  int q = -1, k = -1, v = -1, o = -1;
+
+  check(vx_parse_attention_roles("q:1,k:2,v:3,out:0", &q, &k, &v, &o) &&
+            q == 1 && k == 2 && v == 3 && o == 0,
+        "attention roles in the order the compiler emits them");
+
+  q = k = v = o = -1;
+  check(vx_parse_attention_roles("out:5,v:4,k:1,q:0", &q, &k, &v, &o) &&
+            q == 0 && k == 1 && v == 4 && o == 5,
+        "attention roles in any order");
+
+  check(!vx_parse_attention_roles("q:1,k:2,v:3", &q, &k, &v, &o),
+        "a missing attention role is a refusal");
+  check(!vx_parse_attention_roles("q:1,k:2,v:3,out:0,a:4", &q, &k, &v, &o),
+        "an unknown attention role");
+  check(!vx_parse_attention_roles("q:1,q:2,v:3,out:0", &q, &k, &v, &o),
+        "an attention role named twice");
+  check(!vx_parse_attention_roles("q:1,k:2,v:3,out:-1", &q, &k, &v, &o),
+        "a negative attention index");
+  check(!vx_parse_attention_roles("", &q, &k, &v, &o), "empty attention roles");
+  check(!vx_parse_attention_roles(nullptr, &q, &k, &v, &o),
+        "absent attention roles");
+}
+
+void test_attention_decode() {
+  vx_attention_plan plan;
+
+  {
+    AttentionCase c(8, 16, 64);
+    std::string p = payload_attention("q:1,k:2,v:3,out:0", "val:0.125");
+    check(vx_attention_plan_decode(p.data(), p.size(), c.args.data(),
+                                   c.tags.data(), (int64_t)c.args.size(),
+                                   &plan),
+          "a noted attention region decodes");
+    check(plan.sq == 8 && plan.sk == 16 && plan.hd == 64,
+          "the dimensions come from the descriptors");
+    check(plan.dtype == VX_DTYPE_F16, "the element type is f16");
+    check(plan.q_data == c.q_data.data() && plan.k_data == c.k_data.data() &&
+              plan.v_data == c.v_data.data() && plan.o_data == c.o_data.data(),
+          "each role resolves to its own buffer");
+    check(plan.scale == 0.125f, "a val: scale is the constant the region baked in");
+  }
+
+  {
+    AttentionCase c(8, 16, 64);
+    c.scale = 0.0883883f;
+    std::string p = payload_attention("q:1,k:2,v:3,out:0", "arg:4");
+    check(vx_attention_plan_decode(p.data(), p.size(), c.args.data(),
+                                   c.tags.data(), (int64_t)c.args.size(),
+                                   &plan) &&
+              plan.scale == 0.0883883f,
+          "an arg: scale reads the captured scalar at dispatch");
+  }
+}
+
+void test_attention_refusals() {
+  vx_attention_plan plan;
+
+  {
+    AttentionCase c(8, 16, 64);
+    std::string p = payload_attention("q:1,k:2,v:3,out:0", nullptr);
+    check(!vx_attention_plan_decode(p.data(), p.size(), c.args.data(),
+                                    c.tags.data(), (int64_t)c.args.size(),
+                                    &plan),
+          "attention without its scale is a different function");
+  }
+
+  {
+    AttentionCase c(8, 16, 64);
+    std::string p = payload_attention("q:1,k:2,v:3,out:0", "0.125");
+    check(!vx_attention_plan_decode(p.data(), p.size(), c.args.data(),
+                                    c.tags.data(), (int64_t)c.args.size(),
+                                    &plan),
+          "a scale in neither spelling is a refusal, not a guess");
+  }
+
+  {
+    AttentionCase c(8, 16, 64);
+    std::string p = payload_attention("q:1,k:2,v:3,out:0", "arg:9");
+    check(!vx_attention_plan_decode(p.data(), p.size(), c.args.data(),
+                                    c.tags.data(), (int64_t)c.args.size(),
+                                    &plan),
+          "a scale index past the argument list");
+  }
+
+  {
+    AttentionCase c(8, 16, 64);
+    std::string p = payload_attention("q:1,k:2,v:3,out:0", "arg:0");
+    check(!vx_attention_plan_decode(p.data(), p.size(), c.args.data(),
+                                    c.tags.data(), (int64_t)c.args.size(),
+                                    &plan),
+          "a scale naming a memref is not an f32 scalar");
+  }
+
+  {
+    AttentionCase c(8, 16, 64);
+    std::string p = payload_attention("q:1,k:2,v:1,out:0", "val:0.125");
+    check(!vx_attention_plan_decode(p.data(), p.size(), c.args.data(),
+                                    c.tags.data(), (int64_t)c.args.size(),
+                                    &plan),
+          "two roles naming one operand");
+  }
+
+  {
+    // f32 operands: correct math, but not the entry point that ships. The
+    // refusal sends the region to its own kernel rather than to a wrong call.
+    AttentionCase c(8, 16, 64);
+    for (int i = 0; i < 4; ++i)
+      c.tags[i] = VX_ABI_MEMREF_TAG(VX_DTYPE_F32, 2);
+    std::string p = payload_attention("q:1,k:2,v:3,out:0", "val:0.125");
+    check(!vx_attention_plan_decode(p.data(), p.size(), c.args.data(),
+                                    c.tags.data(), (int64_t)c.args.size(),
+                                    &plan),
+          "only f16 attention has a vendor kernel today");
+  }
+
+  {
+    // A padded row: the vendor entry point computes its own strides from the
+    // dimensions, so padding would be read as data, silently.
+    AttentionCase c(8, 16, 64);
+    c.q_desc.strides[0] = 80;
+    std::string p = payload_attention("q:1,k:2,v:3,out:0", "val:0.125");
+    check(!vx_attention_plan_decode(p.data(), p.size(), c.args.data(),
+                                    c.tags.data(), (int64_t)c.args.size(),
+                                    &plan),
+          "a padded operand is not contiguous");
+  }
+
+  {
+    // K and V must walk the same sequence; the descriptors say they do not.
+    AttentionCase c(8, 16, 64);
+    c.v_desc.sizes[0] = 12;
+    std::string p = payload_attention("q:1,k:2,v:3,out:0", "val:0.125");
+    check(!vx_attention_plan_decode(p.data(), p.size(), c.args.data(),
+                                    c.tags.data(), (int64_t)c.args.size(),
+                                    &plan),
+          "k and v of different lengths");
+  }
+
+  {
+    AttentionCase c(8, 16, 64);
+    c.o_desc.sizes[0] = 4;
+    std::string p = payload_attention("q:1,k:2,v:3,out:0", "val:0.125");
+    check(!vx_attention_plan_decode(p.data(), p.size(), c.args.data(),
+                                    c.tags.data(), (int64_t)c.args.size(),
+                                    &plan),
+          "an output not shaped like the query");
+  }
+
+  {
+    // A GEMM payload must not decode as attention, nor the reverse: the kinds
+    // partition the routes.
+    AttentionCase c(8, 16, 64);
+    std::string p =
+        payload_of("vx_npu_kernel_0", "matmul", "a:0,b:2,out:5", "slot");
+    check(!vx_attention_plan_decode(p.data(), p.size(), c.args.data(),
+                                    c.tags.data(), (int64_t)c.args.size(),
+                                    &plan),
+          "kind=matmul is not an attention");
+  }
+}
+
 } // namespace
 
 int main() {
@@ -515,6 +734,9 @@ int main() {
   test_roles_beat_order();
   test_buffer_decode();
   test_refusals();
+  test_parse_attention_roles();
+  test_attention_decode();
+  test_attention_refusals();
 
   if (failures) {
     fprintf(stderr, "%d check(s) failed\n", failures);

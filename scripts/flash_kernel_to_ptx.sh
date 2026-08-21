@@ -165,8 +165,12 @@ fi
 echo "==> lowering for $CHIP"
 if [ -n "${VX_LIBDEVICE:-}" ] && [ -f "$VX_LIBDEVICE" ]; then
   echo "    linking $VX_LIBDEVICE"
+  # --convert-scf-to-cf first: the attention fallback nest (Vx#378) is the one
+  # kernel body emitted as structured loops rather than raw CFG, and the NVVM
+  # conversion has no scf patterns. Mirrors deviceImageOf in VxLowering.cpp.
   mlir-opt "$OUT/kernel.mlir" \
     --nvvm-attach-target="chip=$CHIP features=+ptx76 l=$VX_LIBDEVICE" \
+    --convert-scf-to-cf \
     --convert-gpu-to-nvvm --convert-arith-to-llvm --convert-math-to-llvm \
     --convert-vector-to-llvm \
     --gpu-to-llvm --reconcile-unrealized-casts \

@@ -1,0 +1,87 @@
+//===- kernel_kind_attention.vx - Vx Compiler -------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// An outlined region whose payload is `flash_attention_into` is labelled
+// `kind = "attention"`, so a plugin can route it to a fused vendor kernel
+// (Vx#378) instead of running the serial fallback nest the region carries.
+// The mechanics mirror kernel_kind_matmul.vx exactly -- label on both ops,
+// roles resolving the operand ambiguity -- with two differences this file
+// pins:
+//
+// The roles come from a `vx.attention_note` marker the flat path emits
+// alongside the nest, because loops do not name their operands the way a
+// `linalg.matmul`'s ins/outs do. The note must be GONE from the outlined
+// kernel: it is a vx op, and anything left in the body has to lower to
+// device code. CHECK-NOT holds that line.
+//
+// The scale rides its own attribute in one of two spellings -- `val:<f>`
+// for a constant the region baked in (this file's case), `arg:<n>` for a
+// captured scalar. Attention without its scale is a different function, so
+// a missing scale unclassifies the region rather than defaulting.
+//
+// tests/runtime/gemm_plan_test.cpp decodes the payload built from these
+// attributes and checks it describes the attention the program wrote.
+//
+// REQUIRES: flat-codegen -- the note-and-nest emission this pins exists only
+// on the flat path; there is deliberately no AST lowering for the call.
+// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s
+// CHECK: vx.launch @vx_npu_kernel_0
+// CHECK: vx.kernel_kind = "attention"
+// CHECK: vx.kernel_roles = "q:1,k:2,v:3,out:0"
+// CHECK: vx.kernel_scale = "val:0.125"
+// CHECK: vx.kernel @vx_npu_kernel_0
+// CHECK: vx.kernel_kind = "attention"
+// CHECK: vx.kernel_roles = "q:1,k:2,v:3,out:0"
+// CHECK: vx.kernel_scale = "val:0.125"
+// CHECK-NOT: vx.attention_note
+//
+//===----------------------------------------------------------------------===//
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::GPU_HBM,
+  visible: [Memory::GPU_HBM],
+  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s
+}
+
+fn main() -> i32 {
+  let mut q_h = Tensor<f16>([ 8, 64 ]);
+  let mut k_h = Tensor<f16>([ 16, 64 ]);
+  let mut v_h = Tensor<f16>([ 16, 64 ]);
+  let mut o_h = Tensor<f16>([ 8, 64 ]);
+
+  for i in 0..8 {
+    for d in 0..64 {
+      q_h[i][d] = 0.01;
+      o_h[i][d] = 0.0;
+    }
+  }
+  for j in 0..16 {
+    for d in 0..64 {
+      k_h[j][d] = 0.01;
+      v_h[j][d] = ((j as f32) * 0.01) as f16;
+    }
+  }
+
+  let q = transfer(q_h, Memory::GPU_HBM);
+  let k = transfer(k_h, Memory::GPU_HBM);
+  let v = transfer(v_h, Memory::GPU_HBM);
+  let mut o = transfer(o_h, Memory::GPU_HBM);
+
+  spawn on(Topology::Dev) {
+    flash_attention_into(&mut o, &q, &k, &v, 0.125);
+  }
+
+  let o_home = transfer(o, Memory::CPU_DRAM);
+  let chk : f32 = o_home[0][0] as f32;
+  print(chk);
+  return 0;
+}

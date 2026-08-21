@@ -304,6 +304,242 @@ static inline void vx_gemm_publish_slot(const vx_gemm_plan *plan, void *data) {
   vx_memref_write_desc(plan->out_desc, data, 2, sizes);
 }
 
+/// A fused attention the compiler recognised (Vx#378):
+/// `out = softmax(q @ k^T * scale) @ v` over rank-2 row-major contiguous
+/// operands -- q and out `[sq, hd]`, k and v `[sk, hd]`. The output is always
+/// filled in place; there is no slot variant, because the source form
+/// (`flash_attention_into(&mut o, ...)`) writes a buffer the caller owns.
+typedef struct {
+  int32_t dtype; /* VX_DTYPE_*, identical for all four operands */
+  int64_t sq, sk, hd;
+  const void *q_data;
+  const void *k_data;
+  const void *v_data;
+  void *o_data;
+  float scale;
+} vx_attention_plan;
+
+/// Parse `q:<i>,k:<j>,v:<l>,out:<m>`. Same contract as vx_parse_roles: exactly
+/// that shape or refusal -- filling in a missing role by convention is the
+/// guessing this exists to replace.
+static inline int vx_parse_attention_roles(const char *roles, int *q, int *k,
+                                           int *v, int *out) {
+  const char *p = roles;
+  int seen = 0;
+
+  if (!roles || !q || !k || !v || !out) {
+    return 0;
+  }
+
+  while (*p) {
+    int *target = NULL;
+    int bit;
+    long value;
+    char *end;
+
+    if (p[0] == 'q' && p[1] == ':') {
+      target = q;
+      bit = 1;
+      p += 2;
+    } else if (p[0] == 'k' && p[1] == ':') {
+      target = k;
+      bit = 2;
+      p += 2;
+    } else if (p[0] == 'v' && p[1] == ':') {
+      target = v;
+      bit = 4;
+      p += 2;
+    } else if (p[0] == 'o' && p[1] == 'u' && p[2] == 't' && p[3] == ':') {
+      target = out;
+      bit = 8;
+      p += 4;
+    } else {
+      return 0;
+    }
+
+    if (seen & bit) {
+      return 0;
+    }
+
+    value = strtol(p, &end, 10);
+    if (end == p || value < 0) {
+      return 0;
+    }
+    *target = (int)value;
+    seen |= bit;
+
+    p = end;
+    if (*p == ',') {
+      ++p;
+      if (*p == '\0') {
+        return 0;
+      }
+    } else if (*p != '\0') {
+      return 0;
+    }
+  }
+
+  return seen == 15;
+}
+
+/// True when an attention in this element type has a vendor kernel to route
+/// to. f16 only today: the shipped entry point is
+/// `vx_flash_fwd_f16_hd64`, and pretending bf16 or f32 would reach it is the
+/// guess this header avoids.
+static inline int vx_attention_dtype_supported(int32_t dtype) {
+  return dtype == VX_DTYPE_F16;
+}
+
+/// Decode a dispatch into an attention plan. Returns 1 when the plan is safe
+/// to hand to a vendor kernel, 0 when the caller should run the outlined
+/// kernel instead -- which computes the same values serially, so a refusal
+/// costs performance and never correctness.
+static inline int vx_attention_plan_decode(const void *payload,
+                                           size_t payload_size,
+                                           void **device_args,
+                                           const int32_t *arg_tags,
+                                           int64_t num_args,
+                                           vx_attention_plan *plan) {
+  const char *kind;
+  const char *roles;
+  const char *scale;
+  int qi = -1, ki = -1, vi = -1, oi = -1;
+  int32_t q_tag, k_tag, v_tag, o_tag;
+  const void *q_desc;
+  const void *k_desc;
+  const void *v_desc;
+  const void *o_desc;
+  const int64_t *q_sizes;
+  const int64_t *k_sizes;
+  const int64_t *v_sizes;
+  const int64_t *o_sizes;
+  int32_t dtype;
+  int i;
+
+  if (!plan || !device_args || !arg_tags) {
+    return 0;
+  }
+
+  kind = vx_payload_field(payload, payload_size, "kind=");
+  if (!kind || strcmp(kind, "attention") != 0) {
+    return 0;
+  }
+
+  roles = vx_payload_field(payload, payload_size, "roles=");
+  if (!vx_parse_attention_roles(roles, &qi, &ki, &vi, &oi)) {
+    return 0;
+  }
+  if (qi >= num_args || ki >= num_args || vi >= num_args || oi >= num_args) {
+    return 0;
+  }
+  if (qi == ki || qi == vi || qi == oi || ki == vi || ki == oi || vi == oi) {
+    return 0;
+  }
+
+  /* The scale is a fact the compiler stated, in one of two spellings: `arg:<n>`
+     names a captured f32 scalar to read at dispatch, `val:<f>` carries the
+     constant the region baked in. No default -- attention without its scale is
+     a different function. */
+  scale = vx_payload_field(payload, payload_size, "scale=");
+  if (!scale) {
+    return 0;
+  }
+  if (strncmp(scale, "arg:", 4) == 0) {
+    char *end;
+    long n = strtol(scale + 4, &end, 10);
+    if (end == scale + 4 || *end != '\0' || n < 0 || n >= num_args) {
+      return 0;
+    }
+    if (VX_ABI_KIND(arg_tags[n]) != VX_ABI_KIND_F32 || !device_args[n]) {
+      return 0;
+    }
+    plan->scale = *(const float *)device_args[n];
+  } else if (strncmp(scale, "val:", 4) == 0) {
+    char *end;
+    plan->scale = strtof(scale + 4, &end);
+    if (end == scale + 4 || *end != '\0') {
+      return 0;
+    }
+  } else {
+    return 0;
+  }
+
+  q_tag = arg_tags[qi];
+  k_tag = arg_tags[ki];
+  v_tag = arg_tags[vi];
+  o_tag = arg_tags[oi];
+
+  {
+    const int32_t tags[4] = {q_tag, k_tag, v_tag, o_tag};
+    for (i = 0; i < 4; ++i) {
+      if (VX_ABI_KIND(tags[i]) != VX_ABI_KIND_MEMREF ||
+          VX_ABI_RANK(tags[i]) != 2) {
+        return 0;
+      }
+    }
+  }
+
+  dtype = VX_ABI_ELEM(q_tag);
+  if (!vx_attention_dtype_supported(dtype) || VX_ABI_ELEM(k_tag) != dtype ||
+      VX_ABI_ELEM(v_tag) != dtype || VX_ABI_ELEM(o_tag) != dtype) {
+    return 0;
+  }
+
+  q_desc = vx_operand_desc(device_args, arg_tags, qi);
+  k_desc = vx_operand_desc(device_args, arg_tags, ki);
+  v_desc = vx_operand_desc(device_args, arg_tags, vi);
+  o_desc = vx_operand_desc(device_args, arg_tags, oi);
+  if (!q_desc || !k_desc || !v_desc || !o_desc) {
+    return 0;
+  }
+
+  q_sizes = vx_memref_sizes(q_desc);
+  k_sizes = vx_memref_sizes(k_desc);
+  v_sizes = vx_memref_sizes(v_desc);
+  o_sizes = vx_memref_sizes(o_desc);
+
+  /* Fully contiguous, not merely row-contiguous: the vendor entry point
+     computes its own strides from the dimensions, so a padded row would be
+     read as data, silently. */
+  {
+    const void *descs[4] = {q_desc, k_desc, v_desc, o_desc};
+    for (i = 0; i < 4; ++i) {
+      const int64_t *sz = vx_memref_sizes(descs[i]);
+      const int64_t *st = vx_memref_strides(descs[i], 2);
+      if (st[1] != 1 || st[0] != sz[1]) {
+        return 0;
+      }
+    }
+  }
+
+  if (q_sizes[0] <= 0 || q_sizes[1] <= 0 || k_sizes[0] <= 0) {
+    return 0;
+  }
+  /* One head dimension everywhere; k and v walk the same sequence; the output
+     is shaped like the query. */
+  if (k_sizes[1] != q_sizes[1] || v_sizes[1] != q_sizes[1] ||
+      o_sizes[1] != q_sizes[1]) {
+    return 0;
+  }
+  if (v_sizes[0] != k_sizes[0] || o_sizes[0] != q_sizes[0]) {
+    return 0;
+  }
+
+  plan->dtype = dtype;
+  plan->sq = q_sizes[0];
+  plan->sk = k_sizes[0];
+  plan->hd = q_sizes[1];
+  plan->q_data = vx_memref_data(q_desc, dtype);
+  plan->k_data = vx_memref_data(k_desc, dtype);
+  plan->v_data = vx_memref_data(v_desc, dtype);
+  plan->o_data = vx_memref_data(o_desc, dtype);
+  if (!plan->q_data || !plan->k_data || !plan->v_data || !plan->o_data) {
+    return 0;
+  }
+
+  return 1;
+}
+
 #ifdef __cplusplus
 }
 #endif

@@ -108,4 +108,18 @@ def Vx_BarrierOp : Vx_Op<"barrier"> {
     let assemblyFormat = "attr-dict";
 }
 
+// Names the operand roles of a region computing fused attention (Vx#378):
+// out = softmax(q @ k^T * scale) @ v. The op computes nothing -- the region's
+// loops are the computation, and remain the fallback the runtime can always
+// run -- but classification needs the roles, and loops do not carry them the
+// way a linalg.matmul's ins/outs do. kernelKindOf reads the note, roles are
+// resolved against the captures, and the note is erased before the region
+// lowers further. Deliberately NOT Pure, for the same reason vx.barrier is
+// not: a pure no-result op would be folded away before classification saw it.
+def Vx_AttentionNoteOp : Vx_Op<"attention_note"> {
+    let summary = "Marks a region as fused attention and names its operand roles.";
+    let arguments = (ins AnyType:$out, AnyType:$q, AnyType:$k, AnyType:$v,
+                     AnyType:$scale);
+}
+
 #endif // VX_DIALECT

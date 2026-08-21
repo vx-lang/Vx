@@ -61,6 +61,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <dlfcn.h>
 #include <string>
 #include <unordered_map>
 
@@ -519,6 +520,130 @@ bool run_gemm(const vx_gemm_plan &plan) {
   return true;
 }
 
+/// The vendor flash-attention entry point (Vx#378): a torch-free shim over the
+/// FlashAttention-2 forward, built separately as `libvx_flash.so`. Resolved
+/// lazily and exactly once; a missing library or symbol refuses the route, and
+/// the outlined kernel computes the same values instead.
+typedef int (*vx_flash_fwd_fn)(void *q, void *k, void *v, void *o, void *lse,
+                               int b, int h, int sq, int sk, float scale,
+                               cudaStream_t stream);
+
+vx_flash_fwd_fn flash_fwd_f16_hd64() {
+  static vx_flash_fwd_fn fn = nullptr;
+  static bool tried = false;
+  if (tried) {
+    return fn;
+  }
+  tried = true;
+  const char *path = getenv("VX_FLASH_LIB");
+  void *lib = dlopen(path ? path : "libvx_flash.so", RTLD_NOW | RTLD_LOCAL);
+  if (!lib) {
+    if (verbose()) {
+      fprintf(stderr,
+              "[Vx CUDA] no flash library (%s); attention runs as emitted\n",
+              dlerror());
+    }
+    return nullptr;
+  }
+  fn = (vx_flash_fwd_fn)dlsym(lib, "vx_flash_fwd_f16_hd64");
+  if (!fn && verbose()) {
+    fprintf(stderr,
+            "[Vx CUDA] flash library has no vx_flash_fwd_f16_hd64; attention "
+            "runs as emitted\n");
+  }
+  return fn;
+}
+
+bool run_attention(const vx_attention_plan &plan) {
+  if (!cuda_available()) {
+    return false;
+  }
+  // The one entry point shipped today is f16 with a head dimension of 64. A
+  // different shape is not an error -- the emitted kernel computes it -- it is
+  // simply not this route.
+  if (plan.dtype != VX_DTYPE_F16 || plan.hd != 64) {
+    return false;
+  }
+  vx_flash_fwd_fn fn = flash_fwd_f16_hd64();
+  if (!fn) {
+    return false;
+  }
+
+  size_t esz = vx_dtype_bytes(plan.dtype);
+  if (esz == 0) {
+    return false;
+  }
+
+  if (verbose()) {
+    fprintf(stderr, "[Vx CUDA] attention %lldx%lldx%lld %s -> libvx_flash\n",
+            (long long)plan.sq, (long long)plan.sk, (long long)plan.hd,
+            vx_dtype_name(plan.dtype));
+  }
+
+  DeviceBuffer q = stage(plan.q_data, plan.sq, plan.hd, plan.hd, esz);
+  DeviceBuffer k = stage(plan.k_data, plan.sk, plan.hd, plan.hd, esz);
+  DeviceBuffer v = stage(plan.v_data, plan.sk, plan.hd, plan.hd, esz);
+
+  DeviceBuffer o;
+  bool out_is_device = is_device_ptr(plan.o_data);
+  if (out_is_device) {
+    o.ptr = plan.o_data;
+    o.owned = false;
+  } else {
+    o.bytes = (size_t)plan.sq * (size_t)plan.hd * esz;
+    o.ptr = device_pool().acquire(o.bytes);
+    o.owned = true;
+    if (!o.ptr) {
+      return false;
+    }
+  }
+
+  // FA-2 also writes the per-row log-sum-exp. The language surface has no
+  // consumer for it yet, so it is scratch: acquired, written, released.
+  DeviceBuffer lse;
+  lse.bytes = (size_t)plan.sq * sizeof(float);
+  lse.ptr = device_pool().acquire(lse.bytes);
+  lse.owned = true;
+  if (!lse.ptr) {
+    return false;
+  }
+
+  /* The same instrument the emitted kernels carry (VX_TIME_KERNEL): a routed
+     attention is part of the same measured program. */
+  const bool time_kernel = getenv("VX_TIME_KERNEL") != nullptr;
+  cudaEvent_t t0 = nullptr, t1 = nullptr;
+  if (time_kernel) {
+    cudaEventCreate(&t0);
+    cudaEventCreate(&t1);
+    cudaEventRecord(t0);
+  }
+  int rc = fn(q.ptr, k.ptr, v.ptr, o.ptr, lse.ptr, /*b=*/1, /*h=*/1,
+              (int)plan.sq, (int)plan.sk, plan.scale, /*stream=*/nullptr);
+  if (time_kernel) {
+    cudaEventRecord(t1);
+    cudaEventSynchronize(t1);
+    float ms = 0.0f;
+    cudaEventElapsedTime(&ms, t0, t1);
+    fprintf(stderr, "[Vx CUDA] attention device time %.3f ms (%lldx%lldx%lld)\n",
+            ms, (long long)plan.sq, (long long)plan.sk, (long long)plan.hd);
+    cudaEventDestroy(t0);
+    cudaEventDestroy(t1);
+  }
+  VX_CUDA_CHECK(cudaDeviceSynchronize());
+  if (rc != 0) {
+    // Refused after the fact; the outlined kernel will rewrite every element
+    // of the output, so a partial write here cannot survive into a result.
+    return false;
+  }
+
+  if (!out_is_device) {
+    VX_CUDA_CHECK(cudaMemcpy(plan.o_data, o.ptr,
+                             (size_t)plan.sq * (size_t)plan.hd * esz,
+                             cudaMemcpyDeviceToHost));
+  }
+  return true;
+}
+
 } // namespace
 
 extern "C" {
@@ -850,6 +975,7 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
   }
 
   vx_gemm_plan plan;
+  vx_attention_plan attn_plan;
   if (vx_gemm_plan_decode(binary_payload, payload_size, device_args, arg_tags,
                           num_args, &plan)) {
     if (cuda_available()) {
@@ -857,6 +983,24 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
                     "dispatch");
     }
     if (run_gemm(plan)) {
+      return 1;
+    }
+  } else if (vx_attention_plan_decode(binary_payload, payload_size, device_args,
+                                      arg_tags, num_args, &attn_plan)) {
+    if (cuda_available()) {
+      select_device(vx_payload_topology(binary_payload, payload_size),
+                    "dispatch");
+    }
+    if (run_attention(attn_plan)) {
+      return 1;
+    }
+    // Not routed -- no library, or a shape the entry point does not ship for.
+    // Unlike a matmul region (whose linalg keeps it off the device), the
+    // attention fallback nest is all scf/arith/math/memref, so the compiler
+    // emitted a device image for it; run that before conceding to the host.
+    if (vx_payload_field(binary_payload, payload_size, "image=") &&
+        run_device_image(binary_payload, payload_size, device_args, arg_tags,
+                         num_args)) {
       return 1;
     }
   } else if (vx_payload_field(binary_payload, payload_size, "image=")) {
