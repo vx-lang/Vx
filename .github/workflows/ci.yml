@@ -40,6 +40,29 @@ jobs:
             exit 1
           fi
 
+      # Process-global atomics are banned for the same reason as locks: a compilation must be
+      # isolated, and a static a worker thread can write is shared mutable state whether or not
+      # it takes a lock to do it. A cached answer also survives across compilations in a long-lived
+      # process (the LSP daemon), so compile N+1 can read what compile N left behind.
+      #
+      # Matched on the type names rather than the word "atomic", because the word appears in prose
+      # -- "**Atomic**: returns false and leaves the stream untouched" is a doc comment about
+      # all-or-nothing lowering, not a primitive. A lint that cannot tell those apart gets
+      # disabled the first time it is wrong.
+      #
+      # A line that genuinely needs one carries `vx-lint: allow-atomic` with a reason. Today the
+      # only holdout is src/intern_mode.rs, whose mode flags and phase timers are the measurement
+      # scaffolding the benchmarks read (Vx#381).
+      - name: Check for process-global atomics
+        run: |
+          if grep -rnE '(std::sync::atomic|Atomic(Bool|Ptr|I8|U8|I16|U16|I32|U32|I64|U64|Isize|Usize))' src/ \
+               | grep -v 'vx-lint: allow-atomic'; then
+            echo "Error: process-global atomics are not allowed in the Vx compiler!"
+            echo "A compilation must be isolated; a static a worker can write is shared mutable state."
+            echo "If a line genuinely needs one, mark it 'vx-lint: allow-atomic' with a reason."
+            exit 1
+          fi
+
       - name: Check Rust Formatting (cargo fmt)
         run: cargo fmt --all -- --check
 

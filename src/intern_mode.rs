@@ -21,9 +21,20 @@
 //
 //===----------------------------------------------------------------------===//
 
+// WHY THIS FILE HOLDS ATOMICS AND NO OTHER DOES.
+//
+// The compiler bans process-global atomics for the same reason it bans locks: a compilation must
+// be isolated, and a static a worker can write is shared mutable state either way. CI enforces it.
+//
+// Everything here is EVAL-ONLY measurement scaffolding -- which interning mode a benchmark run
+// selected, whether phase logging is on, and where the wall time went. None of it is read by the
+// compiler to decide what to emit, so none of it can make one compilation's output depend on
+// another's. The exempt lines are marked individually with `vx-lint: allow-atomic` rather than
+// the file being excluded, so a new one has to justify itself in the diff (Vx#381).
+
 use crate::gid::TypeId;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering}; // vx-lint: allow-atomic (eval-only, see below)
 
 /// How a generic instantiation's identity is formed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,7 +53,7 @@ pub enum InternMode {
     Content,
 }
 
-static MODE: AtomicU8 = AtomicU8::new(0);
+static MODE: AtomicU8 = AtomicU8::new(0); // vx-lint: allow-atomic (eval-only knob, set once before a run)
 
 pub fn set_mode(mode: InternMode) {
     MODE.store(
@@ -126,7 +137,7 @@ where
 /// Tri-state atomic rather than a one-shot lazy cell: 0 = not yet read, 1 = quiet, 2 = loud. A benign
 /// race just re-reads the environment and stores the same answer.
 pub fn quiet() -> bool {
-    static QUIET: AtomicU8 = AtomicU8::new(0);
+    static QUIET: AtomicU8 = AtomicU8::new(0); // vx-lint: allow-atomic (eval-only log gate)
     match QUIET.load(Ordering::Relaxed) {
         1 => true,
         2 => false,
@@ -165,7 +176,9 @@ pub const PHASES: [&str; 15] = [
     "teardown",
 ];
 
-static PHASE_NANOS: [AtomicU64; PHASES.len()] = [const { AtomicU64::new(0) }; PHASES.len()];
+// Accumulated FROM inside the parallel regions being timed, so there is no per-worker place to
+// put it; the alternative is per-worker counters merged at the barrier.
+static PHASE_NANOS: [AtomicU64; PHASES.len()] = [const { AtomicU64::new(0) }; PHASES.len()]; // vx-lint: allow-atomic
 
 fn phase_index(name: &str) -> Option<usize> {
     PHASES.iter().position(|p| *p == name)

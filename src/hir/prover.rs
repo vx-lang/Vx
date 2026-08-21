@@ -55,10 +55,9 @@ impl SmtProver {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 // Used to return Ok(false) -- UNSAT -- so the proof "trivially succeeded" and
                 // compilation continued. That made a missing solver indistinguishable from a
-                // discharged obligation (Vx#374). Now it is reported, unless the user has asked
-                // for unverified compilation, in which case the obligation is still not claimed
-                // as proved -- the caller sees the error and reports it as undischarged.
-                crate::hir::solver::require()?;
+                // discharged obligation (Vx#374). Now it is reported either way: the caller
+                // decides whether an undischarged obligation is an error or, under
+                // `VX_ALLOW_UNVERIFIED`, a warning that says so every time.
                 return Err(crate::hir::solver::missing_message(&e.to_string()));
             }
             Err(e) => return Err(format!("Failed to spawn z3: {}", e)),

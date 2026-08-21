@@ -226,7 +226,6 @@ fn run_z3(script: &str) -> Result<(bool, String), String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             // Was: fail open, returning "not violable" -- which is the verdict that means the
             // seam is safe. A missing solver therefore certified every seam (Vx#374).
-            crate::hir::solver::require()?;
             return Err(crate::hir::solver::missing_message(&e.to_string()));
         }
         Err(e) => return Err(format!("Failed to spawn z3: {e}")),
@@ -358,7 +357,6 @@ impl Solver {
                 // `(false, _)` here means "not violable", i.e. the seam is safe -- so an
                 // unavailable solver used to certify every obligation it was handed (Vx#374).
                 // The caller's Err arm reports an undischarged obligation instead.
-                crate::hir::solver::require()?;
                 return Err(crate::hir::solver::missing_message(
                     "the persistent solver could not be started",
                 ));

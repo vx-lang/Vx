@@ -343,8 +343,8 @@ impl<'a> TypeChecker<'a> {
     /// `prove_expr` refutation loop `Verified<T>` uses. Unprovable is an error -- unless
     /// the call sits in an `unsafe` block, which records the asserted obligation as a
     /// warning instead, the same standing an unverified `spec:` figure has. Note the
-    /// prover fails OPEN when z3 is absent (see `hir/prover.rs`), so this is a proof
-    /// when the toolchain is complete and a recorded assumption when it is not.
+    /// prover fails CLOSED when z3 is absent (Vx#374): the obligation is reported as
+    /// undischarged rather than quietly treated as proved.
     fn raw_bounds_obligation(
         &mut self,
         prim: &str,
@@ -353,16 +353,12 @@ impl<'a> TypeChecker<'a> {
         call_span: &Span,
     ) {
         let span = Some(SourceSpan::from_ast_span(call_span));
-        // The prover fails OPEN without z3 (see `hir/prover.rs`), which would turn every
-        // bounds obligation into a silent yes. Say so once per obligation instead: the
-        // program still compiles, but the compile record shows what was assumed.
-        if !z3_available() {
-            self.errors.push_warning(format!(
-                "z3 is not installed, so the bounds of `raw::{prim}` are recorded as \
-                 assumed, not proven"
-            ));
-            return;
-        }
+        // No pre-check that z3 exists. There was one, and it was written when the prover failed
+        // OPEN without a solver -- a missing z3 turned every bounds obligation into a silent yes,
+        // so this warned once per obligation to keep that visible. Vx#374 made the prover fail
+        // CLOSED, which reports a missing solver itself and reports it accurately, so the guard
+        // now compensates for behaviour that no longer exists. It also cost a `z3 --version`
+        // spawn per obligation unless cached, and the cache was a process-global (Vx#381).
         let idx = self.fold_raw_extent(index);
         for tile in tiles {
             let Some(extent) = tile.static_extent else {
@@ -1119,18 +1115,6 @@ struct RawScan {
 /// Is `e` exactly a call to `name`?
 fn is_raw_call(e: &Expr, name: &str) -> bool {
     matches!(e, Expr::FunctionCall(fc) if fc.name.as_ref() == name)
-}
-
-/// Is z3 on PATH? Checked once per process; the answer decides whether a bounds
-/// obligation is a proof or a recorded assumption.
-fn z3_available() -> bool {
-    static Z3: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *Z3.get_or_init(|| {
-        std::process::Command::new("z3")
-            .arg("--version")
-            .output()
-            .is_ok()
-    })
 }
 
 /// Deep scan over statements. `depth` counts nested statement blocks (0 = the body's own

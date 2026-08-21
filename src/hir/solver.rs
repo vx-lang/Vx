@@ -22,69 +22,33 @@
 // without verification stays possible, because there are legitimate reasons to want it, but it
 // has to be asked for and it is never silent.
 //
+// There is no separate "is z3 installed" probe here, and there was one. Every caller reaches this
+// module from the `ErrorKind::NotFound` arm of its OWN `Command::new("z3").spawn()`, so by the
+// time it asks, the answer is already established and the OS's own error is in hand -- a second
+// `z3 --version` spawn could only confirm it, less accurately. The probe's one virtue was that it
+// ran once per process, and buying that needed a cached global, which is the thing this compiler
+// does not have (Vx#381).
+//
 //===----------------------------------------------------------------------===//
-
-use std::sync::OnceLock;
 
 /// The environment variable that permits compiling with obligations left undischarged.
 pub const ALLOW_UNVERIFIED: &str = "VX_ALLOW_UNVERIFIED";
 
-/// What probing for the solver found. Resolved once per process: the answer cannot change
-/// mid-compilation, and every obligation would otherwise pay for a spawn.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Availability {
-    /// `z3 --version` ran; the string is its reported version, recorded so an artifact can say
-    /// which solver discharged its obligations (Vx#367).
-    Present { version: String },
-    /// The solver could not be run, with the reason as the OS reported it.
-    Missing { reason: String },
-}
-
-impl Availability {
-    pub fn is_present(&self) -> bool {
-        matches!(self, Availability::Present { .. })
-    }
-
-    /// The version string, for provenance. `None` when the solver is absent.
-    pub fn version(&self) -> Option<&str> {
-        match self {
-            Availability::Present { version } => Some(version),
-            Availability::Missing { .. } => None,
-        }
-    }
-}
-
-/// Probe for the solver, once per process.
-pub fn availability() -> &'static Availability {
-    static AVAIL: OnceLock<Availability> = OnceLock::new();
-    AVAIL.get_or_init(probe)
-}
-
-fn probe() -> Availability {
-    match std::process::Command::new("z3").arg("--version").output() {
-        Ok(out) if out.status.success() => Availability::Present {
-            version: String::from_utf8_lossy(&out.stdout).trim().to_string(),
-        },
-        Ok(out) => Availability::Missing {
-            reason: format!("`z3 --version` exited with {}", out.status),
-        },
-        Err(e) => Availability::Missing {
-            reason: e.to_string(),
-        },
-    }
-}
-
 /// Whether the user has asked to compile with obligations left undischarged.
 ///
-/// Read through a `OnceLock` so a mid-compilation change to the environment cannot make one
-/// obligation strict and the next lax.
+/// Read straight from the environment, with nothing cached. There is nothing to cache: this is
+/// reached only after a `z3` spawn has already failed, or once per relaxed transfer edge, so it is
+/// never on a hot path -- and the compiler admits no locking primitive and no process-global
+/// atomic anywhere in `src/`, which CI enforces by name
+/// (docs/parallel_compiler_architecture.md 2.7).
+///
+/// An earlier version memoized this, and a probe beside it, through a once-cell. Both were
+/// removed: the memo bought nothing, and it turned a read of the environment into shared mutable
+/// state that every worker thread reached into.
 pub fn unverified_allowed() -> bool {
-    static ALLOWED: OnceLock<bool> = OnceLock::new();
-    *ALLOWED.get_or_init(|| {
-        std::env::var(ALLOW_UNVERIFIED)
-            .map(|v| v != "0" && !v.is_empty())
-            .unwrap_or(false)
-    })
+    std::env::var(ALLOW_UNVERIFIED)
+        .map(|v| v != "0" && !v.is_empty())
+        .unwrap_or(false)
 }
 
 /// The message shown when an obligation cannot be discharged because no solver is available.
@@ -100,49 +64,9 @@ pub fn missing_message(reason: &str) -> String {
     )
 }
 
-/// `Err(message)` when an obligation needs the solver, none is available, and the user has not
-/// opted out. `Ok(())` when the solver is present, or when the opt-out is set — in which case
-/// the caller reports the obligation as unverified rather than as proved.
-pub fn require() -> Result<(), String> {
-    match availability() {
-        Availability::Present { .. } => Ok(()),
-        Availability::Missing { reason } => {
-            if unverified_allowed() {
-                Ok(())
-            } else {
-                Err(missing_message(reason))
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The probe answers, and answers the same way twice. Which answer is correct depends on the
-    /// machine, so this asserts the shape rather than the verdict.
-    #[test]
-    fn availability_is_resolved_once_and_is_stable() {
-        let a = availability();
-        let b = availability();
-        assert_eq!(a, b, "availability must not change within a process");
-        match a {
-            Availability::Present { version } => {
-                assert!(
-                    !version.is_empty(),
-                    "a present solver must report a version"
-                );
-                assert!(a.is_present());
-                assert_eq!(a.version(), Some(version.as_str()));
-            }
-            Availability::Missing { reason } => {
-                assert!(!reason.is_empty(), "an absent solver must say why");
-                assert!(!a.is_present());
-                assert_eq!(a.version(), None);
-            }
-        }
-    }
 
     /// The message has to name the tool and the escape hatch. A diagnostic that says only
     /// "z3 not found" is how this went unnoticed in the first place.
@@ -161,17 +85,25 @@ mod tests {
         );
     }
 
-    /// `require()` never errors when the solver is present, and never errors under the opt-out.
-    /// The interesting case -- absent and not opted out -- cannot be forced here without
-    /// unsetting PATH for the whole process, so it is covered by the integration test.
+    /// The opt-out is read from the environment every time, with nothing cached between calls.
+    ///
+    /// A cached answer is what this module used to have, and caching it is what put a once-cell
+    /// -- shared mutable state reachable from every worker thread -- on a path that only ever
+    /// needed an environment read.
     #[test]
-    fn require_agrees_with_availability() {
-        if availability().is_present() {
-            assert!(require().is_ok(), "a present solver must satisfy require()");
-        } else if unverified_allowed() {
-            assert!(require().is_ok(), "the opt-out must satisfy require()");
-        } else {
-            assert!(require().is_err(), "an absent solver must fail require()");
-        }
+    fn the_opt_out_is_read_from_the_environment_each_time() {
+        let before = unverified_allowed();
+        assert_eq!(
+            before,
+            unverified_allowed(),
+            "two reads with nothing changed in between must agree"
+        );
+        assert_eq!(
+            unverified_allowed(),
+            std::env::var(ALLOW_UNVERIFIED)
+                .map(|v| v != "0" && !v.is_empty())
+                .unwrap_or(false),
+            "the answer must be the environment, not a remembered copy of it"
+        );
     }
 }
