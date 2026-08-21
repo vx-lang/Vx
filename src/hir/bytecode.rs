@@ -170,6 +170,12 @@ pub enum Opcode {
     /// which are `func` ops -- not device-lowerable, so a kernel containing one was dropped
     /// from GPU compilation entirely (Vx#362).
     Abort = 38,
+    /// `barrier()` inside a spawn region (Vx#379): all threads of a block reach this point
+    /// before any proceeds. On the device clone it becomes `gpu.barrier`; on the host path a
+    /// serial loop already IS the barrier's ordering, so it lowers to a dead store the code
+    /// around it never reads. Codegen carries it as a `vx.barrier`-tagged op so the device
+    /// rewrite can find it after cloning (no operands, no result).
+    Barrier = 39,
 }
 
 impl Opcode {
@@ -218,6 +224,7 @@ impl Opcode {
             36 => CallIndirect,
             37 => FieldAddr,
             38 => Abort,
+            39 => Barrier,
             _ => return None,
         })
     }
@@ -269,3 +276,15 @@ impl HirInstruction {
 pub const IMM_PARALLEL_INIT: u64 = 1;
 /// `imm` tag on the latch `Add` of the same loop (see `Add`'s doc).
 pub const IMM_PARALLEL_STEP: u64 = 1;
+
+/// `imm` tags for the two-level mapping (Vx#379): the induction-variable init `Store` and latch
+/// `Add` of a BLOCK-mapped loop -- offset by `blockIdx.x`, stride `gridDim.x`. Every thread of a
+/// block walks the same block iterations (redundant execution on identical values is the
+/// two-level model's block-scope semantics); only thread-mapped loops partition within a block.
+pub const IMM_BLOCK_INIT: u64 = 2;
+pub const IMM_BLOCK_STEP: u64 = 2;
+/// The same pair for a THREAD-mapped loop -- offset by `threadIdx.x`, stride `blockDim.x`. At a
+/// 1x1x1 launch both mappings collapse to the serial loop, which is what keeps the launcher's
+/// EXPECT degeneracy and the host path exact.
+pub const IMM_THREAD_INIT: u64 = 3;
+pub const IMM_THREAD_STEP: u64 = 3;

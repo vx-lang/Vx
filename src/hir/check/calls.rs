@@ -1305,6 +1305,16 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             Some(Type::Scalar(ElementType::F32))
+        } else if resolved_name == "barrier" {
+            // Block-level synchronization inside a spawn region (Vx#379): all threads of a
+            // block reach it before any proceeds. Serial execution already provides that
+            // ordering, so on the host path it is a no-op; the device pipeline rewrites it to
+            // `gpu.barrier`. Takes nothing, returns nothing worth keeping.
+            if !args.is_empty() {
+                self.errors
+                    .push("Function 'barrier' takes no arguments".to_string());
+            }
+            Some(Type::Scalar(ElementType::I32))
         } else {
             None
         }

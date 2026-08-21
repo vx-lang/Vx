@@ -703,8 +703,18 @@ bool run_device_image(const void *payload, size_t payload_size,
   unsigned grid = 1, block = 1;
   if (const char *launch =
           vx_payload_field(payload, payload_size, "launch=")) {
-    long trip = strtol(launch, nullptr, 10);
-    if (trip > 1) {
+    char *rest = nullptr;
+    long trip = strtol(launch, &rest, 10);
+    if (rest && *rest == ',') {
+      /* Two-level "B,T" (Vx#379): B is a block count -- the block loop
+         strides by gridDim, so capping it is correct, not lossy -- and T is
+         the block shape the compiler suggested. */
+      long t = strtol(rest + 1, nullptr, 10);
+      if (trip > 0 && t > 0) {
+        grid = trip > 4096 ? 4096u : (unsigned)trip;
+        block = t > 1024 ? 1024u : (unsigned)t;
+      }
+    } else if (trip > 1) {
       block = trip < 128 ? (unsigned)trip : 128u;
       unsigned long need = ((unsigned long)trip + block - 1) / block;
       grid = need > 4096 ? 4096u : (unsigned)need;

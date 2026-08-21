@@ -18,7 +18,8 @@
 //===----------------------------------------------------------------------===//
 use crate::gid::TypeId;
 use crate::hir::bytecode::{
-    HirInstruction, Opcode, Register, TypeIdx, IMM_PARALLEL_INIT, IMM_PARALLEL_STEP,
+    HirInstruction, Opcode, Register, TypeIdx, IMM_BLOCK_INIT, IMM_BLOCK_STEP, IMM_PARALLEL_INIT,
+    IMM_PARALLEL_STEP, IMM_THREAD_INIT, IMM_THREAD_STEP,
 };
 use crate::layout::FieldTy;
 use crate::registry::ImmutableGlobalRegistry;
@@ -280,6 +281,11 @@ struct Lowerer<'r> {
     /// `lower_for` takes it and tags its induction-variable init and latch increment
     /// (`IMM_PARALLEL_INIT`/`IMM_PARALLEL_STEP`) so the device clone can grid-stride the loop (#251).
     stride_next_for: bool,
+    /// The two-level plan `parallel_two_level` proved for the region being lowered, when it proved
+    /// one (Vx#379): which `ForLoopStmt` is the block loop and which are thread loops, addressed by
+    /// AST node identity (the AST does not move during lowering). `lower_for` consults it to pick
+    /// block/thread stride tags; any loop not in the plan lowers serially.
+    stride_plan: Option<TwoLevelPlan>,
     /// Place-write field stores collected during lowering, as `(stream position, borrowed root, field
     /// path)`. Post-lowering these reduce to a numeric group/sibling table (`reduce_place_alias`) so
     /// codegen can attach `alias_scopes`/`noalias_scopes` — carrying the borrow checker's disjointness
@@ -309,6 +315,7 @@ impl<'r> Lowerer<'r> {
             pending_place_write: None,
             place_field_stores: Vec::new(),
             stride_next_for: false,
+            stride_plan: None,
         }
     }
 
@@ -694,6 +701,19 @@ impl<'r> Lowerer<'r> {
             Expr::FunctionCall(fc) => {
                 if fc.name.as_ref() == "Tensor" {
                     return self.lower_tensor_alloc(fc);
+                }
+                // `barrier()` (Vx#379): an effect, not a call -- there is no callee anywhere.
+                // The checker typed it i32, so hand back a constant for the value position
+                // nobody should be using it in.
+                if fc.name.as_ref() == "barrier" {
+                    self.emit_effect(Opcode::Barrier, Register(0), Register(0), 0);
+                    return Some(self.emit_value(
+                        Opcode::Const,
+                        Register(0),
+                        Register(0),
+                        ElementType::I32,
+                        0,
+                    ));
                 }
                 let kind = match fc.name.as_ref() {
                     "dot" => 0u64,
@@ -1504,6 +1524,15 @@ impl<'r> Lowerer<'r> {
     fn lower_for(&mut self, f: &crate::syntax::ForLoopStmt) -> Option<()> {
         // Taken (not read) so the tag cannot leak into the nested loops this body lowers.
         let stride = std::mem::take(&mut self.stride_next_for);
+        // The two-level plan addresses loops by node identity, so membership is exact and
+        // nesting-proof: the block loop and each thread loop pick up their own tag kind, and
+        // every other loop -- including sequential loops BETWEEN the two levels -- gets none.
+        let addr = f as *const crate::syntax::ForLoopStmt as usize;
+        let plan_kind = match &self.stride_plan {
+            Some(p) if p.block == addr => Some((IMM_BLOCK_INIT, IMM_BLOCK_STEP)),
+            Some(p) if p.threads.contains(&addr) => Some((IMM_THREAD_INIT, IMM_THREAD_STEP)),
+            _ => None,
+        };
         let Expr::Range(range) = &*f.iterable else {
             // A non-range iterable is an iterator (`for x in v.iter()`): the sugar over
             // `loop { match it.next() { Some(x) => body, None => break } }`. (#242)
@@ -1518,7 +1547,11 @@ impl<'r> Lowerer<'r> {
         };
         // Induction variable `i` and the loop bound both need to survive across blocks -> slots.
         let i_slot = self.emit_alloca(LoweredTy::Scalar(elem.clone()));
-        let init_imm = if stride { IMM_PARALLEL_INIT } else { 0 };
+        let (init_imm, step_imm) = match plan_kind {
+            Some(pair) => pair,
+            None if stride => (IMM_PARALLEL_INIT, IMM_PARALLEL_STEP),
+            None => (0, 0),
+        };
         self.emit_effect(Opcode::Store, i_slot.reg, start.reg, init_imm);
         let end_slot = self.emit_alloca(LoweredTy::Scalar(elem.clone()));
         self.emit_effect(Opcode::Store, end_slot.reg, end.reg, 0);
@@ -1569,7 +1602,6 @@ impl<'r> Lowerer<'r> {
         self.emit_effect(Opcode::BlockStart, Register(0), Register(0), latch as u64);
         let i2 = self.emit_value(Opcode::SlotLoad, i_slot.reg, Register(0), elem.clone(), 0);
         let one = self.emit_value(Opcode::Const, Register(0), Register(0), elem.clone(), 1);
-        let step_imm = if stride { IMM_PARALLEL_STEP } else { 0 };
         let inc = self.emit_value(Opcode::Add, i2.reg, one.reg, elem, step_imm);
         self.emit_effect(Opcode::Store, i_slot.reg, inc.reg, 0);
         self.emit_effect(Opcode::Br, Register(0), Register(0), header as u64);
@@ -1706,10 +1738,25 @@ impl<'r> Lowerer<'r> {
         }
         let top_id = crate::arch::topology_dispatch_id(&s.top);
         self.emit_effect(Opcode::Spawn, Register(0), Register(0), top_id as u64);
-        // When the region's outermost loop provably has disjoint iterations, tag the loop for the
-        // device pipeline to grid-stride and carry the trip count out on the `SpawnEnd` (#251).
-        // `stride_next_for` is armed only for the one statement the analysis named, so a nested or
-        // subsequent loop can never inherit the tag.
+        // Two proofs are offered, most specific first. `parallel_two_level` (Vx#379) accepts a
+        // block loop whose captured writes all happen in thread-mapped inner loops; its plan
+        // addresses the loops by AST identity, so nothing else can inherit a tag. Failing that,
+        // `parallel_outer_for` (#251) grid-strides a flat loop as before. Failing both, the
+        // region lowers serially -- rejection is always free.
+        if let Some((btrip, plan)) = parallel_two_level(&s.stmts) {
+            self.stride_plan = Some(plan);
+            for stmt in &s.stmts {
+                self.lower_stmt(stmt)?;
+            }
+            self.stride_plan = None;
+            self.emit_effect(
+                Opcode::SpawnEnd,
+                Register(0),
+                Register(0),
+                btrip | SPAWN_TWO_LEVEL,
+            );
+            return Some(());
+        }
         let par = parallel_outer_for(&s.stmts);
         for (i, stmt) in s.stmts.iter().enumerate() {
             self.stride_next_for = matches!(par, Some((idx, _)) if idx == i);
@@ -3634,6 +3681,7 @@ fn parallel_outer_for(stmts: &[Statement]) -> Option<(usize, u64)> {
         iv: f.iter.clone(),
         declared: HashSet::new(),
         used_captured: HashSet::new(),
+        affine: None,
     };
     for s in &stmts[..idx] {
         let S::LetDecl(d) = s else {
@@ -3661,6 +3709,221 @@ fn parallel_outer_for(stmts: &[Statement]) -> Option<(usize, u64)> {
         Some((idx, (hi - lo) as u64))
     } else {
         None
+    }
+}
+
+/// The `SpawnEnd` imm bit that says "the trip count below is a BLOCK count and the region uses
+/// the two-level mapping" (Vx#379). The low 32 bits stay the trip.
+pub const SPAWN_TWO_LEVEL: u64 = 1 << 62;
+
+/// What `parallel_two_level` proved: which loop is block-mapped and which are thread-mapped,
+/// addressed by AST node identity (stable for the duration of lowering).
+pub(crate) struct TwoLevelPlan {
+    pub block: usize,
+    pub threads: Vec<usize>,
+}
+
+/// Is this spawn region a sound two-level (block/thread) kernel (Vx#379)?
+///
+/// The accepted shape is
+///
+/// ```text
+/// [local declarations]
+/// for bq in 0..NB {            // block-mapped: iterations -> blocks
+///     <items>
+/// }
+/// ```
+///
+/// where `<items>` is a sequence of: local declarations (each thread makes its own copy --
+/// block-scope statements execute redundantly per thread, which is only sound because nothing at
+/// block scope may write captured memory), `barrier()` calls, THREAD loops, and sequential loops
+/// whose bodies are again `<items>` (a tile loop around cooperative phases).
+///
+/// A THREAD loop is a literal-bound `for t in 0..K` whose body passes the single-level write
+/// walk with one extension: a captured write's first index may be the loop's own IV, or the
+/// affine form `bq * K + t` (either operand order) where `K` is EXACTLY this thread loop's trip
+/// -- each (block, thread-iteration) pair then owns one row and no other. The multiplier
+/// equaling the trip is what makes the partition exact; `bq * 8 + t` with `t in 0..4` would
+/// leave rows unowned and `t in 0..16` would double-book them.
+///
+/// The degeneracy that keeps every existing guarantee: at a 1x1x1 launch, block and thread
+/// strides are both 1 and offsets both 0, so the kernel IS the serial nest -- the host path and
+/// the launcher's EXPECT check hold by construction, not by re-verification.
+fn parallel_two_level(stmts: &[Statement]) -> Option<(u64, TwoLevelPlan)> {
+    use crate::syntax::stmt::Statement as S;
+
+    // Same region prologue rule as the single-level prover: declarations only, then the loop,
+    // nothing after it.
+    let mut for_idx: Option<usize> = None;
+    for (i, s) in stmts.iter().enumerate() {
+        if matches!(s, S::ForLoop(_)) {
+            if for_idx.is_some() {
+                return None;
+            }
+            for_idx = Some(i);
+        }
+    }
+    let idx = for_idx?;
+    if idx + 1 != stmts.len() {
+        return None;
+    }
+    let S::ForLoop(f) = &stmts[idx] else {
+        return None;
+    };
+    let Expr::Range(r) = &*f.iterable else {
+        return None;
+    };
+    let lo = parallel_int_literal(&r.start)?;
+    let hi = parallel_int_literal(&r.end)?;
+    if lo != 0 || hi <= lo {
+        return None; // the affine ownership argument below assumes lb 0
+    }
+
+    // A region with no thread loop or no barrier is not a cooperative kernel; let the flat
+    // grid-stride path have it (it maps the same work with less machinery).
+    let mut scan = ParallelScan {
+        iv: f.iter.clone(),
+        declared: HashSet::new(),
+        used_captured: HashSet::new(),
+        affine: None,
+    };
+    for s in &stmts[..idx] {
+        let S::LetDecl(d) = s else {
+            return None;
+        };
+        let init_ok = match &d.expr {
+            Expr::FunctionCall(fc)
+                if &*fc.name == "Tensor" && fc.args.iter().all(|a| scan.expr(a)) =>
+            {
+                true
+            }
+            e => scan.expr(e),
+        };
+        if !init_ok || !scan.declare(&d.name) {
+            return None;
+        }
+    }
+    if !scan.declare(&f.iter) {
+        return None;
+    }
+
+    let mut walker = TwoLevelWalk {
+        scan,
+        block_iv: f.iter.to_string(),
+        threads: Vec::new(),
+        saw_thread_loop: false,
+    };
+    if !walker.items(&f.body) {
+        return None;
+    }
+    if !walker.saw_thread_loop {
+        return None;
+    }
+    Some((
+        (hi - lo) as u64,
+        TwoLevelPlan {
+            // The address of the ForLoopStmt itself, because that is what `lower_for` is
+            // handed -- the enum wrapper's address would never match.
+            block: f as *const crate::syntax::ForLoopStmt as usize,
+            threads: walker.threads,
+        },
+    ))
+}
+
+/// The block-body grammar walk behind `parallel_two_level`. Wraps the single-level
+/// `ParallelScan` for expression legality and adds the item grammar around it.
+struct TwoLevelWalk {
+    scan: ParallelScan,
+    block_iv: String,
+    threads: Vec<usize>,
+    saw_thread_loop: bool,
+}
+
+impl TwoLevelWalk {
+    fn items(&mut self, stmts: &[Statement]) -> bool {
+        use crate::syntax::stmt::Statement as S;
+        for s in stmts {
+            let ok = match s {
+                // Block-scope declaration: every thread evaluates it into its own copy.
+                // Reads are free; the initializer must not be able to write (same rule and
+                // same Tensor-scratch exception as the region prologue).
+                S::LetDecl(d) => {
+                    let init_ok = match &d.expr {
+                        Expr::FunctionCall(fc)
+                            if &*fc.name == "Tensor"
+                                && fc.args.iter().all(|a| self.scan.expr(a)) =>
+                        {
+                            true
+                        }
+                        e => self.scan.expr(e),
+                    };
+                    init_ok && self.scan.declare(&d.name)
+                }
+                // Block-scope scalar assignment to a LOCAL is redundant-per-thread and
+                // harmless; a captured write at block scope is every thread racing.
+                S::Assign(a) => {
+                    matches!(&a.lhs, Expr::Identifier(id) if self.scan.declared.contains(&*id.name))
+                        && self.scan.expr(&a.rhs)
+                }
+                S::ExprStmt(e) => matches!(
+                    &e.expr,
+                    Expr::FunctionCall(fc) if &*fc.name == "barrier" && fc.args.is_empty()
+                ),
+                S::ForLoop(inner) => self.for_item(inner, s),
+                _ => false,
+            };
+            if !ok {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn for_item(&mut self, inner: &crate::syntax::ForLoopStmt, node: &Statement) -> bool {
+        let Expr::Range(r) = &*inner.iterable else {
+            return false;
+        };
+        let (Some(lo), Some(hi)) = (parallel_int_literal(&r.start), parallel_int_literal(&r.end))
+        else {
+            return false;
+        };
+        if lo != 0 || hi <= lo {
+            return false;
+        }
+        if *inner.iter == *self.block_iv || !self.scan.declare(&inner.iter) {
+            return false;
+        }
+        // Decide the loop's role by its body: a body that is itself a sequence of
+        // items (containing thread loops / barriers) is a SEQUENTIAL loop; otherwise
+        // offer it as a THREAD loop under the extended write rule.
+        let is_sequence = inner.body.iter().any(|s| {
+            use crate::syntax::stmt::Statement as S;
+            match s {
+                S::ForLoop(_) => true,
+                S::ExprStmt(e) => {
+                    matches!(&e.expr, Expr::FunctionCall(fc) if &*fc.name == "barrier")
+                }
+                _ => false,
+            }
+        });
+        if is_sequence {
+            return self.items(&inner.body);
+        }
+        let saved_iv = std::mem::replace(&mut self.scan.iv, inner.iter.to_string());
+        let saved_affine = self.scan.affine.take();
+        self.scan.affine = Some((self.block_iv.clone(), hi - lo));
+        let ok = self.scan.stmts(&inner.body, 0);
+        self.scan.iv = saved_iv;
+        self.scan.affine = saved_affine;
+        if ok {
+            self.saw_thread_loop = true;
+            let addr = match node {
+                Statement::ForLoop(fl) => fl as *const crate::syntax::ForLoopStmt as usize,
+                _ => return false,
+            };
+            self.threads.push(addr);
+        }
+        ok
     }
 }
 
@@ -3713,6 +3976,10 @@ struct ParallelScan {
     iv: String,
     declared: HashSet<String>,
     used_captured: HashSet<String>,
+    /// Set while scanning a THREAD loop of a two-level region (Vx#379): `(block_iv, K)` where `K`
+    /// is the thread loop's trip. Widens the captured-write rule to accept the affine first index
+    /// `block_iv * K + iv` -- the (block, thread-iteration) pair's own row.
+    affine: Option<(String, i64)>,
 }
 
 impl ParallelScan {
@@ -3803,9 +4070,37 @@ impl ParallelScan {
                 }
                 self.note(&id.name);
                 matches!(first, Expr::Identifier(fid) if *fid.name == *self.iv)
+                    || self.affine_first(first)
             }
             _ => false,
         }
+    }
+
+    /// The two-level widening of the first-index rule (Vx#379): `block_iv * K + iv` in either
+    /// operand order, with `K` exactly the thread loop's trip -- see `parallel_two_level` for why
+    /// the multiplier must equal the trip.
+    fn affine_first(&self, e: &Expr) -> bool {
+        let Some((bq, k)) = &self.affine else {
+            return false;
+        };
+        let Expr::BinaryOp(b) = e else {
+            return false;
+        };
+        if !matches!(b.op, BinaryOp::Add) {
+            return false;
+        }
+        let is_scaled_block = |x: &Expr| -> bool {
+            let Expr::BinaryOp(m) = x else {
+                return false;
+            };
+            matches!(m.op, BinaryOp::Mul)
+                && ((matches!(&*m.lhs, Expr::Identifier(id) if *id.name == **bq)
+                    && parallel_int_literal(&m.rhs) == Some(*k))
+                    || (matches!(&*m.rhs, Expr::Identifier(id) if *id.name == **bq)
+                        && parallel_int_literal(&m.lhs) == Some(*k)))
+        };
+        let is_iv = |x: &Expr| matches!(x, Expr::Identifier(id) if *id.name == *self.iv);
+        (is_scaled_block(&b.lhs) && is_iv(&b.rhs)) || (is_iv(&b.lhs) && is_scaled_block(&b.rhs))
     }
 
     /// A read-position expression: allowed unless it could hide a write (a call, a print, a
@@ -4937,6 +5232,99 @@ mod tests {
             .filter(|i| i.opcode == Opcode::Add && i.imm == IMM_PARALLEL_STEP)
             .count();
         assert_eq!((inits, steps), (1, 1), "exactly the outer loop is tagged");
+    }
+
+    #[test]
+    fn a_block_thread_region_gets_the_two_level_plan() {
+        // The Vx#379 shape in miniature: a block loop of 2, a thread loop of 4 whose captured
+        // write leads with `bq * 4 + qi` (multiplier == the thread trip), and a barrier. The
+        // SpawnEnd must carry the block trip with the two-level bit; exactly one block pair and
+        // one thread pair of stride tags must exist.
+        let (did, w) = lower_with_registry(
+            "fn main() -> i32 {\n\
+               let mut o = Tensor<f32>([8, 4]);\n\
+               spawn on (Topology::GPU) {\n\
+                 for bq in 0..2 {\n\
+                   for qi in 0..4 {\n\
+                     o[bq * 4 + qi][0] = 1.0;\n\
+                   }\n\
+                   barrier();\n\
+                 }\n\
+               };\n\
+               return 0;\n\
+             }",
+            "main",
+        );
+        assert!(did, "the two-level region lowers");
+        let end = w
+            .local_hir_stream
+            .iter()
+            .find(|i| i.opcode == Opcode::SpawnEnd)
+            .expect("a SpawnEnd");
+        assert_eq!(end.imm & 0xffff_ffff, 2, "block trip rides the SpawnEnd");
+        assert_ne!(end.imm & SPAWN_TWO_LEVEL, 0, "with the two-level bit");
+        let count_imm = |op: Opcode, imm: u64| {
+            w.local_hir_stream
+                .iter()
+                .filter(|i| i.opcode == op && i.imm == imm)
+                .count()
+        };
+        assert_eq!(
+            count_imm(Opcode::Store, IMM_BLOCK_INIT),
+            1,
+            "one block init"
+        );
+        assert_eq!(count_imm(Opcode::Add, IMM_BLOCK_STEP), 1, "one block step");
+        assert_eq!(
+            count_imm(Opcode::Store, IMM_THREAD_INIT),
+            1,
+            "one thread init"
+        );
+        assert_eq!(
+            count_imm(Opcode::Add, IMM_THREAD_STEP),
+            1,
+            "one thread step"
+        );
+        assert_eq!(
+            w.local_hir_stream
+                .iter()
+                .filter(|i| i.opcode == Opcode::Barrier)
+                .count(),
+            1,
+            "the barrier lowered"
+        );
+    }
+
+    #[test]
+    fn a_wrong_affine_multiplier_keeps_the_region_serial() {
+        // `bq * 8 + qi` with `qi in 0..4` leaves rows unowned: the partition is not exact, so
+        // the two-level prover must reject -- and the single-level prover cannot accept the
+        // outer loop either (its body writes are not led by `bq`), so the region stays serial.
+        let (did, w) = lower_with_registry(
+            "fn main() -> i32 {\n\
+               let mut o = Tensor<f32>([16, 4]);\n\
+               spawn on (Topology::GPU) {\n\
+                 for bq in 0..2 {\n\
+                   for qi in 0..4 {\n\
+                     o[bq * 8 + qi][0] = 1.0;\n\
+                   }\n\
+                   barrier();\n\
+                 }\n\
+               };\n\
+               return 0;\n\
+             }",
+            "main",
+        );
+        assert!(did, "the rejected region still lowers");
+        let end = w
+            .local_hir_stream
+            .iter()
+            .find(|i| i.opcode == Opcode::SpawnEnd)
+            .expect("a SpawnEnd");
+        assert_eq!(
+            end.imm, 0,
+            "no plan of either kind for an inexact partition"
+        );
     }
 
     #[test]

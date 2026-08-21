@@ -98,4 +98,14 @@ def Vx_ReturnOp : Vx_Op<"return", [Terminator, ReturnLike]> {
     let assemblyFormat = "($results^ `:` type($results))? attr-dict";
 }
 
+// Block-level synchronization inside a spawn region (Vx#379). The device
+// clone rewrites it to gpu.barrier; the host lowering erases it, because a
+// serial loop already provides the ordering a barrier asks for. Deliberately
+// NOT Pure: a pure no-result op would be folded away before the device clone
+// ever saw it.
+def Vx_BarrierOp : Vx_Op<"barrier"> {
+    let summary = "All threads of a block reach this point before any proceeds.";
+    let assemblyFormat = "attr-dict";
+}
+
 #endif // VX_DIALECT

@@ -1538,13 +1538,16 @@ pub fn emit_function_mlir(
                     let a = names.get(ins.operand1.0 as usize)?;
                     let b = names.get(ins.operand2.0 as usize)?;
                     let n = format!("%v{idx}");
-                    // The latch increment of a grid-stridable loop -- the marker the device clone
-                    // widens to the grid stride (#251, `IMM_PARALLEL_STEP`). Only an `Add` can
+                    // The latch increment of a stridable loop -- the marker the device clone
+                    // widens to a stride (#251 flat; Vx#379 block/thread). Only an `Add` can
                     // carry it: `lower_for` is the sole tagger.
-                    let attr = if ins.opcode == Opcode::Add
-                        && ins.imm == crate::hir::bytecode::IMM_PARALLEL_STEP
-                    {
-                        " {vx.parallel_step}"
+                    let attr = if ins.opcode == Opcode::Add {
+                        match ins.imm {
+                            crate::hir::bytecode::IMM_PARALLEL_STEP => " {vx.parallel_step}",
+                            crate::hir::bytecode::IMM_BLOCK_STEP => " {vx.parallel_bstep}",
+                            crate::hir::bytecode::IMM_THREAD_STEP => " {vx.parallel_tstep}",
+                            _ => "",
+                        }
                     } else {
                         ""
                     };
@@ -1720,13 +1723,14 @@ pub fn emit_function_mlir(
             Opcode::Store => {
                 let slot = names.get(ins.operand1.0 as usize)?.clone();
                 let val = names.get(ins.operand2.0 as usize)?.clone();
-                // The induction-variable init of a grid-stridable loop carries its tag into the
-                // MLIR text as a discardable attribute -- inert on the host path, the marker the
-                // device clone offsets by thread id (#251, `IMM_PARALLEL_INIT`).
-                let attr = if ins.imm == crate::hir::bytecode::IMM_PARALLEL_INIT {
-                    " {vx.parallel_init}"
-                } else {
-                    ""
+                // The induction-variable init of a stridable loop carries its tag into the MLIR
+                // text as a discardable attribute -- inert on the host path, the marker the
+                // device clone offsets by an id (#251 flat grid-stride; Vx#379 block/thread).
+                let attr = match ins.imm {
+                    crate::hir::bytecode::IMM_PARALLEL_INIT => " {vx.parallel_init}",
+                    crate::hir::bytecode::IMM_BLOCK_INIT => " {vx.parallel_binit}",
+                    crate::hir::bytecode::IMM_THREAD_INIT => " {vx.parallel_tinit}",
+                    _ => "",
                 };
                 if let Some(&Some(agg_gid)) = agg_of.get(ins.operand1.0 as usize) {
                     let agg = ctx.aggs.get(&agg_gid)?;
@@ -2368,8 +2372,19 @@ pub fn emit_function_mlir(
                 // A nonzero `imm` is the trip count `parallel_outer_for` proved for the region's
                 // outermost loop: `vx_parallel_trip` rides the same attribute dict, telling the
                 // device pipeline the loop is safe to grid-stride and how wide the work is (#251).
-                let trip = if ins.imm > 0 {
-                    format!(", vx_parallel_trip = {} : i64", ins.imm)
+                // The `SPAWN_TWO_LEVEL` bit (Vx#379) marks the trip as a BLOCK count instead, and
+                // `vx_parallel_two_level` rides along so the launch is sized as blocks x threads.
+                let two_level = ins.imm & crate::hir::flatten::SPAWN_TWO_LEVEL != 0;
+                let trip_count = ins.imm & 0xffff_ffff;
+                let trip = if trip_count > 0 {
+                    format!(
+                        ", vx_parallel_trip = {trip_count} : i64{}",
+                        if two_level {
+                            ", vx_parallel_two_level"
+                        } else {
+                            ""
+                        }
+                    )
                 } else {
                     String::new()
                 };
@@ -2390,6 +2405,12 @@ pub fn emit_function_mlir(
             // for whichever target the code reaches: `puts` + `abort` + `unreachable` on the
             // host, `__assertfail` inside a kernel. It is also an ORDINARY op, not a
             // terminator, so it needs no block splitting here.
+            // Block-level sync (Vx#379). A registered op with no results and no Pure trait, so
+            // the greedy folder cannot erase it before the device clone rewrites it to
+            // `gpu.barrier`; the host lowering erases it instead (a serial loop IS the barrier).
+            Opcode::Barrier => {
+                body += "  \"vx.barrier\"() : () -> ()\n";
+            }
             Opcode::Abort => {
                 let cond = names.get(ins.operand1.0 as usize)?.clone();
                 let msg = strings

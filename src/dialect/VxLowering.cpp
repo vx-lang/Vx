@@ -664,9 +664,12 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
 
     // The trip count `parallel_outer_for` proved for the region's outermost
     // loop, when it proved one. Carried to the kernel so the device clone can
-    // grid-stride the loop and the payload can size the launch (#251).
+    // grid-stride the loop and the payload can size the launch (#251). Under
+    // `vx_parallel_two_level` (Vx#379) the trip is a BLOCK count instead.
     if (auto trip = op->getAttrOfType<IntegerAttr>("vx_parallel_trip"))
       kernelOp->setAttr("vx_parallel_trip", trip);
+    if (op->hasAttr("vx_parallel_two_level"))
+      kernelOp->setAttr("vx_parallel_two_level", rewriter.getUnitAttr());
 
     // Name what the region computes, so a plugin can route it to a vendor
     // kernel instead of inferring the operation from buffer shapes (#325).
@@ -768,6 +771,8 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
     // runtime learns how wide the strided kernel's work is (#251).
     if (auto trip = op->getAttrOfType<IntegerAttr>("vx_parallel_trip"))
       launchOp->setAttr("vx_parallel_trip", trip);
+    if (op->hasAttr("vx_parallel_two_level"))
+      launchOp->setAttr("vx_parallel_two_level", rewriter.getUnitAttr());
 
     // The topology's declared name, forwarded from the spawn. Optional by
     // design: the flat path emits `vx.spawn` from an instruction stream that
@@ -1185,6 +1190,9 @@ struct ConvertVxToStandardPass
         // Rewritten to `gpu.return` below, so it is not a foreign dialect here.
         if (isa<vx::ReturnOp>(op))
           return WalkResult::advance();
+        // Rewritten to `gpu.barrier` in the device clone below (Vx#379).
+        if (isa<vx::BarrierOp>(op))
+          return WalkResult::advance();
         // A DYNAMIC shared-memory tile cannot become a `.shared` global (those
         // need a static shape), and leaving the alloca as-is ships a kernel
         // that faults: measured on an A100 as ILLEGAL_ADDRESS, because the
@@ -1328,53 +1336,130 @@ struct ConvertVxToStandardPass
       // depend on this transform firing.
       if (kernel->getAttrOfType<IntegerAttr>("vx_parallel_trip")) {
         SmallVector<Operation *> inits, steps;
+        SmallVector<Operation *> binits, bsteps, tinits, tsteps;
         gpuFunc.walk([&](Operation *op) {
           if (op->hasAttr("vx.parallel_init"))
             inits.push_back(op);
           if (op->hasAttr("vx.parallel_step"))
             steps.push_back(op);
+          if (op->hasAttr("vx.parallel_binit"))
+            binits.push_back(op);
+          if (op->hasAttr("vx.parallel_bstep"))
+            bsteps.push_back(op);
+          if (op->hasAttr("vx.parallel_tinit"))
+            tinits.push_back(op);
+          if (op->hasAttr("vx.parallel_tstep"))
+            tsteps.push_back(op);
         });
-        Type ivTy = inits.size() == 1 && steps.size() == 1
-                        ? inits.front()->getOperand(0).getType()
-                        : Type();
-        if (ivTy && ivTy.isIntOrIndex() && !isa<IndexType>(ivTy)) {
+
+        // One id/dim read, cast to the induction variable's type. `which`
+        // selects the dimension pair: thread (tid/ntid), block (bid/nctaid),
+        // or the flat global pair the single-level grid-stride uses.
+        auto idCast = [&](OpBuilder &b, Location loc, Type ivTy,
+                          bool stride_side, bool block_level) -> Value {
+          Type idx = b.getIndexType();
+          Value v;
+          if (block_level) {
+            v = stride_side
+                    ? b.create<gpu::GridDimOp>(loc, idx, gpu::Dimension::x)
+                          .getResult()
+                    : b.create<gpu::BlockIdOp>(loc, idx, gpu::Dimension::x)
+                          .getResult();
+          } else {
+            v = stride_side
+                    ? b.create<gpu::BlockDimOp>(loc, idx, gpu::Dimension::x)
+                          .getResult()
+                    : b.create<gpu::ThreadIdOp>(loc, idx, gpu::Dimension::x)
+                          .getResult();
+          }
+          return b.create<arith::IndexCastOp>(loc, ivTy, v);
+        };
+        auto offsetInit = [&](Operation *init, bool block_level) {
+          Type ivTy = init->getOperand(0).getType();
+          if (!ivTy.isIntOrIndex() || isa<IndexType>(ivTy))
+            return;
+          OpBuilder b(init);
+          Location loc = init->getLoc();
+          Value id = idCast(b, loc, ivTy, /*stride_side=*/false, block_level);
+          init->setOperand(
+              0, b.create<arith::AddIOp>(loc, init->getOperand(0), id));
+        };
+        auto widenStep = [&](Operation *step, bool block_level) {
+          Type ivTy = step->getOperand(1).getType();
+          if (!ivTy.isIntOrIndex() || isa<IndexType>(ivTy))
+            return;
+          OpBuilder b(step);
+          Location loc = step->getLoc();
+          Value dim = idCast(b, loc, ivTy, /*stride_side=*/true, block_level);
+          step->setOperand(
+              1, b.create<arith::MulIOp>(loc, step->getOperand(1), dim));
+        };
+
+        if (kernel->hasAttr("vx_parallel_two_level")) {
+          // Two-level (Vx#379): the block loop strides by blockIdx/gridDim
+          // alone -- every thread of a block walks the same block iterations,
+          // which is the redundant-execution semantics block scope relies on
+          // -- and each thread loop strides by threadIdx/blockDim. All of it
+          // collapses to the serial nest at 1x1x1.
+          if (binits.size() == 1 && bsteps.size() == 1) {
+            offsetInit(binits.front(), /*block_level=*/true);
+            widenStep(bsteps.front(), /*block_level=*/true);
+            for (Operation *ti : tinits)
+              offsetInit(ti, /*block_level=*/false);
+            for (Operation *ts : tsteps)
+              widenStep(ts, /*block_level=*/false);
+          }
+        } else if (inits.size() == 1 && steps.size() == 1) {
+          // Single-level grid-stride (#251): offset by the global thread id,
+          // stride by the whole grid. Composed from the same primitives:
+          // gtid = bid*bdim+tid, stride = gdim*bdim.
           Operation *init = inits.front();
           Operation *step = steps.front();
-
-          auto linearId = [&](OpBuilder &b, Location loc, bool grid) -> Value {
-            Type idx = b.getIndexType();
-            Value bdim =
-                b.create<gpu::BlockDimOp>(loc, idx, gpu::Dimension::x);
-            Value lhs =
-                grid ? b.create<gpu::GridDimOp>(loc, idx, gpu::Dimension::x)
-                           .getResult()
-                     : b.create<gpu::BlockIdOp>(loc, idx, gpu::Dimension::x)
-                           .getResult();
-            Value lin = b.create<arith::MulIOp>(loc, lhs, bdim);
-            if (!grid) {
+          Type ivTy = init->getOperand(0).getType();
+          if (ivTy.isIntOrIndex() && !isa<IndexType>(ivTy)) {
+            {
+              OpBuilder b(init);
+              Location loc = init->getLoc();
+              Type idx = b.getIndexType();
+              Value bdim =
+                  b.create<gpu::BlockDimOp>(loc, idx, gpu::Dimension::x);
+              Value bid =
+                  b.create<gpu::BlockIdOp>(loc, idx, gpu::Dimension::x);
               Value tid =
                   b.create<gpu::ThreadIdOp>(loc, idx, gpu::Dimension::x);
-              lin = b.create<arith::AddIOp>(loc, lin, tid);
+              Value lin = b.create<arith::AddIOp>(
+                  loc, b.create<arith::MulIOp>(loc, bid, bdim), tid);
+              Value gtid = b.create<arith::IndexCastOp>(loc, ivTy, lin);
+              init->setOperand(
+                  0, b.create<arith::AddIOp>(loc, init->getOperand(0), gtid));
             }
-            return b.create<arith::IndexCastOp>(loc, ivTy, lin);
-          };
+            {
+              OpBuilder b(step);
+              Location loc = step->getLoc();
+              Type idx = b.getIndexType();
+              Value bdim =
+                  b.create<gpu::BlockDimOp>(loc, idx, gpu::Dimension::x);
+              Value gdim =
+                  b.create<gpu::GridDimOp>(loc, idx, gpu::Dimension::x);
+              Value stride = b.create<arith::IndexCastOp>(
+                  loc, ivTy, b.create<arith::MulIOp>(loc, gdim, bdim));
+              step->setOperand(
+                  1, b.create<arith::MulIOp>(loc, step->getOperand(1), stride));
+            }
+          }
+        }
+      }
 
-          {
-            OpBuilder b(init);
-            Location loc = init->getLoc();
-            Value gtid = linearId(b, loc, /*grid=*/false);
-            Value offset =
-                b.create<arith::AddIOp>(loc, init->getOperand(0), gtid);
-            init->setOperand(0, offset);
-          }
-          {
-            OpBuilder b(step);
-            Location loc = step->getLoc();
-            Value stride = linearId(b, loc, /*grid=*/true);
-            Value wide =
-                b.create<arith::MulIOp>(loc, step->getOperand(1), stride);
-            step->setOperand(1, wide);
-          }
+      // The device half of `vx.barrier` (Vx#379). The host half is erased by
+      // BarrierOpLowering; both halves exist because the op means "block-wide
+      // sync" and only the device HAS blocks.
+      {
+        SmallVector<vx::BarrierOp> barriers;
+        gpuFunc.walk([&](vx::BarrierOp bar) { barriers.push_back(bar); });
+        for (vx::BarrierOp bar : barriers) {
+          OpBuilder b(bar);
+          b.create<gpu::BarrierOp>(bar.getLoc());
+          bar.erase();
         }
       }
 
@@ -1848,6 +1933,11 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
     if (auto trip = op->getAttrOfType<IntegerAttr>("vx_parallel_trip")) {
       payload += "launch=";
       payload += std::to_string(trip.getInt());
+      // Two-level (Vx#379): "B,T" -- B blocks of T threads, where B is the
+      // block loop's trip and T is a block-shape choice the kernel is correct
+      // under regardless (thread loops stride by the actual blockDim).
+      if (op->hasAttr("vx_parallel_two_level"))
+        payload += ",128";
       payload.push_back('\0');
     }
 
@@ -2067,6 +2157,20 @@ struct ReturnOpLowering : public OpRewritePattern<vx::ReturnOp> {
   LogicalResult matchAndRewrite(vx::ReturnOp op,
                                 PatternRewriter &rewriter) const override {
     rewriter.replaceOpWithNewOp<func::ReturnOp>(op, op.getOperands());
+    return success();
+  }
+};
+
+/// The host half of `vx.barrier` (Vx#379): erased. Serial execution of the
+/// region already provides every ordering a block barrier asks for, so the op
+/// only means something in the device clone -- which rewrote its copy to
+/// `gpu.barrier` before this pattern ever runs.
+struct BarrierOpLowering : public OpRewritePattern<vx::BarrierOp> {
+  using OpRewritePattern<vx::BarrierOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(vx::BarrierOp op,
+                                PatternRewriter &rewriter) const override {
+    rewriter.eraseOp(op);
     return success();
   }
 };
@@ -2347,6 +2451,11 @@ struct ConvertVxToLLVMPass
     target.addIllegalOp<vx::LaunchOp>();
     target.addIllegalOp<vx::KernelOp>();
     target.addIllegalOp<vx::ReturnOp>();
+    // Erased on the host path (the device clone already swapped its copy for
+    // gpu.barrier); illegal so partial conversion actually applies the
+    // pattern rather than letting the op leak to mlir-translate, which does
+    // not know the vx dialect (Vx#379).
+    target.addIllegalOp<vx::BarrierOp>();
 
     LLVMTypeConverter typeConverter(&getContext());
     RewritePatternSet patterns(&getContext());
@@ -2354,6 +2463,7 @@ struct ConvertVxToLLVMPass
     patterns.add<TransferToPluginLowering>(typeConverter, &getContext());
     patterns.add<KernelOpLowering>(&getContext());
     patterns.add<ReturnOpLowering>(&getContext());
+    patterns.add<BarrierOpLowering>(&getContext());
 
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns)))) {
