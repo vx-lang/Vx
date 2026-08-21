@@ -1404,3 +1404,102 @@ impl<'a> TypeChecker<'a> {
         }
     }
 }
+
+#[cfg(test)]
+mod build_cost_tests {
+    use crate::hir::GlobalAstEnv;
+
+    fn machine(i: usize) -> String {
+        format!(
+            "Memory CPU_DRAM {{}}\n\
+             Memory H{i} {{ within: Memory::CPU_DRAM, capacity: 8 GiB, bandwidth: 1 TB/s }}\n\
+             Topology T{i} {{\n\
+             \x20 memory: Memory::H{i},\n\
+             \x20 visible: [Memory::CPU_DRAM, Memory::H{i}],\n\
+             \x20 transfer Memory::CPU_DRAM -> Memory::H{i} : 63 GB/s\n\
+             }}\n"
+        )
+    }
+
+    fn parse(src: &str) -> crate::syntax::Program {
+        let mut lexer = crate::lexer::Lexer::new(src);
+        let tokens = lexer.tokenize();
+        let mut parser = crate::parser::Parser::new(&tokens, src);
+        parser.parse().expect("the machine corpus must parse")
+    }
+
+    /// Building the environment sweeps the transfer graph for shortest paths EXACTLY ONCE.
+    ///
+    /// The sweep is `O(spaces^2)` Dijkstra searches and it is essentially all of `env_build`,
+    /// which runs once per compilation on the serial spine. A redundant sweep changes no answer --
+    /// the later one overwrites the earlier -- so it is invisible except as every compile of a
+    /// program that declares machines getting slower.
+    ///
+    /// It has gone wrong twice. The graph was first built inside `TypeChecker::new`, so the sweep
+    /// ran twice per FUNCTION; hoisting it to one per compilation fixed that and left a second
+    /// sweep behind, once in `seed_from_topologies` and again in `resolve_derived_route_costs`.
+    /// At 800 declared machines that second sweep was 396 ms of a 778 ms phase, and the phase was
+    /// half the compile (Vx#380).
+    ///
+    /// So this counts sweeps rather than timing them: a count is exact, is the same on every
+    /// machine, and names the defect instead of reporting that something got slower.
+    #[test]
+    fn building_the_env_sweeps_the_transfer_graph_once() {
+        const MACHINES: usize = 12;
+        let src: String = (0..MACHINES).map(machine).collect::<Vec<_>>().join("\n")
+            + "\nfn main() -> i32 { return 0; }\n";
+        let program = parse(&src);
+        let programs = vec![program];
+
+        crate::arch::reset_sweep_sizes();
+        let env = GlobalAstEnv::build(&programs);
+        let sizes = crate::arch::sweep_sizes();
+
+        assert_eq!(
+            env.topologies.len(),
+            MACHINES,
+            "the corpus must actually declare the machines this measures"
+        );
+
+        // `TransferCostGraph::default()` sweeps the six built-in spaces before any declaration is
+        // folded in, and that one is cheap and expected. What must not repeat is a sweep over the
+        // DECLARED set, which is the one that grows with the machine file.
+        let over_declared: Vec<usize> = sizes.iter().copied().filter(|&n| n > 8).collect();
+        assert_eq!(
+            over_declared.len(),
+            1,
+            "the enlarged transfer graph must be swept exactly once per compilation; \
+             saw sweeps over {sizes:?} spaces. A second sweep is invisible in the output and \
+             costs O(spaces^2) searches on the serial spine (Vx#380)."
+        );
+        assert!(
+            over_declared[0] >= MACHINES,
+            "the one real sweep must cover every declared space, saw {} for {MACHINES} machines",
+            over_declared[0]
+        );
+    }
+
+    /// The interning strategy is a per-compilation fact carried on the frozen session, not a
+    /// process-global a worker reaches into (Vx#381).
+    #[test]
+    fn the_intern_strategy_is_carried_on_the_session() {
+        use crate::intern_mode::InternMode;
+        use crate::session::GlobalSession;
+
+        let deferred = GlobalSession::new(1);
+        assert_eq!(
+            deferred.intern_mode,
+            InternMode::Deferred,
+            "a session must default to the shipped strategy rather than to whatever ran last"
+        );
+
+        let content = GlobalSession::new(1).in_intern_mode(InternMode::Content);
+        assert_eq!(content.intern_mode, InternMode::Content);
+        assert_eq!(
+            deferred.intern_mode,
+            InternMode::Deferred,
+            "one session's choice must not be visible from another -- that is the whole point of \
+             moving it off a global"
+        );
+    }
+}

@@ -38,6 +38,14 @@ pub use crate::registry::ImmutableGlobalRegistry;
 ///    during the critical lifetime subtyping pass, without stalling on scattered `Vec` pointers.
 pub struct GlobalSession {
     pub epoch: u64,
+    /// How this compilation forms a generic instantiation's identity.
+    ///
+    /// A per-compilation fact, frozen with the rest of the epoch, because that is what it is: two
+    /// compilations in one process may legitimately want different strategies, and a worker must
+    /// not be able to observe a choice that belongs to someone else's compile. It lived in a
+    /// process-global until Vx#381 -- set from `--intern-mode` on one thread and read by every
+    /// worker from inside the parallel type-check.
+    pub intern_mode: crate::intern_mode::InternMode,
     pub registry: Arc<ImmutableGlobalRegistry>,
 
     /// The dense, homogeneous arena for complex parameter and lifetime evaluation.
@@ -65,11 +73,20 @@ impl GlobalSession {
     pub fn with_registry(epoch: u64, registry: ImmutableGlobalRegistry) -> Self {
         Self {
             epoch,
+            intern_mode: crate::intern_mode::InternMode::Deferred,
             registry: Arc::new(registry),
             slow_path_arena: Arc::new(Vec::new()),
             generics_arena: Arc::new(Vec::new()),
             generics_offsets: Arc::new(Vec::new()),
         }
+    }
+
+    /// The same session with a chosen interning strategy. Consuming rather than a setter, because
+    /// the session is frozen once it is shared: every worker holds an `Arc` of it and reads it by
+    /// `&`, so it must be settled before it is wrapped.
+    pub fn in_intern_mode(mut self, mode: crate::intern_mode::InternMode) -> Self {
+        self.intern_mode = mode;
+        self
     }
 }
 

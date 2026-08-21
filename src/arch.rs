@@ -566,6 +566,35 @@ impl Default for TransferCostGraph {
     }
 }
 
+/// How many times the shortest-path sweep has run on this thread, and over how many spaces each
+/// time. Test-only, and a `thread_local` rather than a global counter: per-thread state is not
+/// shared mutable state, so it neither violates the isolation the compiler guarantees nor trips
+/// the lint that enforces it.
+///
+/// This exists because the sweep is `O(spaces^2)` searches and it is the whole of `env_build`,
+/// which is serial. Running it once more than needed does not change any answer -- the second
+/// sweep overwrites the first -- so nothing observable goes wrong and the only symptom is that
+/// every compile of a program declaring machines gets slower. That is exactly the kind of
+/// regression that is invisible until someone measures, and it has now happened twice: once per
+/// function before the graph was hoisted to one per compilation, and once per compile after
+/// (Vx#380).
+#[cfg(test)]
+thread_local! {
+    static SWEEP_SIZES: std::cell::RefCell<Vec<usize>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Forget the sweeps recorded so far on this thread.
+#[cfg(test)]
+pub(crate) fn reset_sweep_sizes() {
+    SWEEP_SIZES.with(|v| v.borrow_mut().clear());
+}
+
+/// The space count of every sweep run on this thread since the last reset, in order.
+#[cfg(test)]
+pub(crate) fn sweep_sizes() -> Vec<usize> {
+    SWEEP_SIZES.with(|v| v.borrow().clone())
+}
+
 impl TransferCostGraph {
     pub fn add_transfer_edge(&mut self, src: MemorySpace, dst: MemorySpace, cost: u32) {
         self.transfer_edges
@@ -720,6 +749,8 @@ impl TransferCostGraph {
             }
         }
         let mut spaces: Vec<MemorySpace> = spaces.into_iter().collect();
+        #[cfg(test)]
+        SWEEP_SIZES.with(|v| v.borrow_mut().push(spaces.len()));
         // A HashSet has no order, and this is the node set every pair below is drawn from. Sorting
         // it costs nothing next to the searches and makes the work split the same way on every run.
         spaces.sort_by_key(|s| format!("{s:?}"));

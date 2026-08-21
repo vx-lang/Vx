@@ -93,20 +93,21 @@ fn run_in(
     paths: &[String],
     emit_mlir: bool,
     sched: Schedule,
+    mode: InternMode,
 ) -> Rep {
     let _ = intern_mode::take_phases(); // drop any timings from a prior rep
     let t = Instant::now();
     let compile = || {
         if emit_mlir {
             Some(
-                vxc::pipeline::compile_pipeline_mlir_with(paths, sched)
+                vxc::pipeline::compile_pipeline_mlir_in(paths, sched, mode)
                     .expect("pipeline")
                     .map(|t| t.len())
                     .unwrap_or(0),
             )
         } else {
-            let _ =
-                vxc::pipeline::compile_pipeline_type_stream_with(paths, sched).expect("pipeline");
+            let _ = vxc::pipeline::compile_pipeline_type_stream_in(paths, sched, mode)
+                .expect("pipeline");
             None
         }
     };
@@ -320,8 +321,7 @@ fn main() {
                     // One warm-up rep per mode, discarded: the first run pays page faults and
                     // filesystem-cache misses that have nothing to do with interning.
                     for &(_, mode) in &modes {
-                        intern_mode::set_mode(mode);
-                        let warm = run_in(pool.as_ref(), &c.paths, emit_mlir, sched);
+                        let warm = run_in(pool.as_ref(), &c.paths, emit_mlir, sched, mode);
                         if warm.mlir_bytes == Some(0) {
                             eprintln!(
                                 "  NOTE: the flat emitter declined this corpus, so every rep below \
@@ -334,8 +334,7 @@ fn main() {
                     }
                     for _ in 0..reps {
                         for (i, &(_, mode)) in modes.iter().enumerate() {
-                            intern_mode::set_mode(mode);
-                            let rep = run_in(pool.as_ref(), &c.paths, emit_mlir, sched);
+                            let rep = run_in(pool.as_ref(), &c.paths, emit_mlir, sched, mode);
                             mlir_bytes[i] = rep.mlir_bytes.unwrap_or(0);
                             samples[i].push(rep.wall.as_secs_f64() * 1e3);
                             phase_samples[i].push(intern_mode::take_phases());
@@ -380,7 +379,6 @@ fn main() {
                         );
                     }
                 }
-                intern_mode::set_mode(InternMode::Deferred);
 
                 // The attribution number. Speedup is measured against each mode's own *sequential*
                 // run when there is one -- the same compiler with rayon off the path -- so the ratio

@@ -111,7 +111,11 @@ struct Frontend {
     ),
 }
 
-fn run_frontend(file_paths: &[String], sched: Schedule) -> Result<Frontend, PipelineError> {
+fn run_frontend(
+    file_paths: &[String],
+    sched: Schedule,
+    intern_mode: crate::intern_mode::InternMode,
+) -> Result<Frontend, PipelineError> {
     // Phase timing (#297), so a sweep can attribute wall clock to serial vs parallel work rather
     // than inferring it from a plateau.
     use crate::intern_mode::timed;
@@ -135,7 +139,8 @@ fn run_frontend(file_paths: &[String], sched: Schedule) -> Result<Frontend, Pipe
         "Built Global Immutable Registry ({} types)",
         registry.layouts.len()
     );
-    let session = std::sync::Arc::new(GlobalSession::with_registry(1, registry));
+    let session =
+        std::sync::Arc::new(GlobalSession::with_registry(1, registry).in_intern_mode(intern_mode));
     #[cfg(debug_assertions)]
     verify_phase_2_registry(&session.registry);
 
@@ -191,10 +196,15 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), PipelineError> {
         type_streams,
         merged_arenas: (merged_slow, merged_gen, merged_off),
         ..
-    } = run_frontend(file_paths, Schedule::Parallel)?;
+    } = run_frontend(
+        file_paths,
+        Schedule::Parallel,
+        crate::intern_mode::InternMode::Deferred,
+    )?;
 
     let _epoch_2_session = std::sync::Arc::new(crate::session::GlobalSession {
         epoch: 2,
+        intern_mode: session.intern_mode,
         registry: session.registry.clone(),
         slow_path_arena: std::sync::Arc::new(merged_slow),
         generics_arena: std::sync::Arc::new(merged_gen),
@@ -249,7 +259,19 @@ pub fn compile_pipeline_type_stream_with(
     file_paths: &[String],
     sched: Schedule,
 ) -> Result<Vec<crate::gid::TypeId>, PipelineError> {
-    Ok(run_frontend(file_paths, sched)?
+    compile_pipeline_type_stream_in(file_paths, sched, crate::intern_mode::InternMode::Deferred)
+}
+
+/// [`compile_pipeline_type_stream_with`] with the interning strategy chosen too.
+///
+/// A parameter rather than a process-global (Vx#381): the strategy is a per-compilation fact, and
+/// a harness that compares two of them must be able to run both without one leaking into the other.
+pub fn compile_pipeline_type_stream_in(
+    file_paths: &[String],
+    sched: Schedule,
+    intern_mode: crate::intern_mode::InternMode,
+) -> Result<Vec<crate::gid::TypeId>, PipelineError> {
+    Ok(run_frontend(file_paths, sched, intern_mode)?
         .type_streams
         .into_iter()
         .flat_map(|(_, stream)| stream)
@@ -275,6 +297,16 @@ pub fn compile_pipeline_mlir_with(
     file_paths: &[String],
     sched: Schedule,
 ) -> Result<Option<String>, PipelineError> {
+    compile_pipeline_mlir_in(file_paths, sched, crate::intern_mode::InternMode::Deferred)
+}
+
+/// [`compile_pipeline_mlir_with`] with the interning strategy chosen too. See
+/// [`compile_pipeline_type_stream_in`] for why it is a parameter.
+pub fn compile_pipeline_mlir_in(
+    file_paths: &[String],
+    sched: Schedule,
+    intern_mode: crate::intern_mode::InternMode,
+) -> Result<Option<String>, PipelineError> {
     let Frontend {
         modules,
         session,
@@ -283,7 +315,7 @@ pub fn compile_pipeline_mlir_with(
         mut checks,
         type_streams,
         merged_arenas,
-    } = run_frontend(file_paths, sched)?;
+    } = run_frontend(file_paths, sched, intern_mode)?;
     let text = crate::intern_mode::timed("codegen", || {
         codegen_mlir_phase(
             &modules,
@@ -663,15 +695,15 @@ fn mint_deferred_generic(
     base: crate::gid::TypeId,
     args: Vec<crate::gid::TypeId>,
 ) -> crate::gid::TypeId {
-    mint_generic_in_mode(crate::intern_mode::mode(), worker, base, args)
+    mint_generic_in_mode(worker.global.intern_mode, worker, base, args)
 }
 
 /// The minting rule, with the strategy passed in rather than read from process-global state.
 ///
-/// Tests pick a mode by calling this directly. Reading the global inside would make every
-/// mode-sensitive test racy against every other: `cargo test` runs tests in parallel threads within
-/// one process, so a test that flipped the mode could change what a concurrently running test
-/// minted. That is not hypothetical -- it produced an intermittent failure before this split.
+/// Tests pick a mode by calling this directly. The caller above now reads the strategy off the
+/// frozen session rather than a process-global (Vx#381), so the two agree by construction; before
+/// that split, a test that flipped the global could change what a concurrently running test
+/// minted, and it produced an intermittent failure.
 fn mint_generic_in_mode(
     mode: crate::intern_mode::InternMode,
     worker: &mut LocalWorkerState,

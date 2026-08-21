@@ -63,29 +63,6 @@ pub enum InternMode {
     Content,
 }
 
-static MODE: AtomicU8 = AtomicU8::new(0); // vx-lint: allow-atomic (eval-only knob, set once before a run)
-
-pub fn set_mode(mode: InternMode) {
-    MODE.store(
-        match mode {
-            InternMode::Deferred => 0,
-            InternMode::Content => 2,
-        },
-        Ordering::SeqCst,
-    );
-}
-
-pub fn mode() -> InternMode {
-    match MODE.load(Ordering::Relaxed) {
-        2 => InternMode::Content,
-        _ => InternMode::Deferred,
-    }
-}
-
-pub fn is_content() -> bool {
-    mode() == InternMode::Content
-}
-
 /// Rewrite a type stream into a canonical form so two interning strategies can be compared for
 /// *semantic* equality despite assigning different arena indices.
 ///

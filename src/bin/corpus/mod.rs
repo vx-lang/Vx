@@ -557,3 +557,99 @@ pub fn params_from_args(args: &[String], modules: usize, fns_per_module: usize) 
         seed: arg(args, "--seed", d.seed),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A memory-algebra corpus actually contains memory-algebra code, and a plain one contains
+    /// none of it.
+    ///
+    /// This guards the blind spot rather than the code. For two weeks the ladder, `intern_bench`
+    /// and every determinism test ran on a corpus with no `Memory`, no `Topology`, no `transfer`
+    /// and no `spawn`, so the whole Vx#352/Vx#353 surface was unmeasured while the reports read
+    /// as though the compiler were covered. The regression that hid there -- half of `env_build`
+    /// serial, total scaling 3.4x -> 1.56x -- was found by hand, not by a test (Vx#380).
+    ///
+    /// A generator that silently stopped emitting these would restore exactly that silence, and
+    /// every number downstream would keep looking healthy.
+    #[test]
+    fn a_memalg_corpus_contains_the_constructs_it_is_named_for() {
+        let mut p = CorpusParams {
+            modules: 4,
+            fns_per_module: 2,
+            memalg_frac: 1.0,
+            ..CorpusParams::default()
+        };
+        let (src, _) = module_source(&p, 0);
+        for construct in [
+            "Memory ",
+            "Topology ",
+            "transfer(",
+            "spawn on(",
+            "Memory::H0",
+        ] {
+            assert!(
+                src.contains(construct),
+                "a corpus generated with --memalg 1.0 must contain `{construct}`, or the ladder \
+                 measures a compiler without it:\n{src}"
+            );
+        }
+
+        p.memalg_frac = 0.0;
+        let (plain, _) = module_source(&p, 0);
+        for construct in ["Memory ", "Topology ", "transfer(", "spawn on("] {
+            assert!(
+                !plain.contains(construct),
+                "the default corpus must stay exactly what it was before this knob existed, so \
+                 numbers measured before it remain comparable; found `{construct}`"
+            );
+        }
+    }
+
+    /// Each machine-bearing module names its topology and spaces after its own index.
+    ///
+    /// Declarations are per-COMPILATION, not per-module, so two modules both spelling
+    /// `Topology Dev` collide and the corpus measures a diagnostic instead of a compile. The first
+    /// draft of the knob did that.
+    #[test]
+    fn machine_modules_do_not_collide_on_names() {
+        let p = CorpusParams {
+            modules: 3,
+            fns_per_module: 1,
+            memalg_frac: 1.0,
+            ..CorpusParams::default()
+        };
+        let names: Vec<String> = (0..3)
+            .map(|m| {
+                let (src, _) = module_source(&p, m);
+                src.lines()
+                    .find(|l| l.starts_with("Topology "))
+                    .expect("a machine module declares a topology")
+                    .to_string()
+            })
+            .collect();
+        let unique: std::collections::HashSet<&String> = names.iter().collect();
+        assert_eq!(
+            unique.len(),
+            names.len(),
+            "every machine module must declare a distinct topology, got {names:?}"
+        );
+    }
+
+    /// The generator version is part of the corpus id, so changing the emitted text cannot leave a
+    /// cached directory looking current.
+    #[test]
+    fn the_corpus_id_separates_memalg_from_plain() {
+        let plain = CorpusParams::default();
+        let memalg = CorpusParams {
+            memalg_frac: 1.0,
+            ..CorpusParams::default()
+        };
+        assert_ne!(
+            plain.id(),
+            memalg.id(),
+            "two corpora with different text must not share a directory"
+        );
+    }
+}

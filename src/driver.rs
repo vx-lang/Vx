@@ -206,13 +206,18 @@ pub struct CompilerDriver {
 
 impl CompilerDriver {
     pub fn new(mut options: DriverOptions) -> Self {
-        // Install the interning strategy before any compilation runs, since `mint_deferred_generic`
-        // reads it on the hot path. An unrecognised value is rejected rather than defaulted: a
-        // benchmark that silently measured `deferred` while its command line said otherwise would
-        // produce a wrong number that looks right.
+        // Validate the interning strategy. It used to be installed into a process-global here,
+        // which is how a per-compilation choice became state every worker thread reached into
+        // (Vx#381); the strategy now travels as a parameter to the pipeline entry points and is
+        // frozen on the session.
+        //
+        // Validated and not used: `vxc`'s own path never mints a deferred generic --
+        // `emit_function_type_gids` is reached only from the pipeline's `check_one_function`, and
+        // this driver does not run the pipeline frontend. The flag is still rejected when
+        // misspelled rather than defaulted, because a benchmark that silently measured `deferred`
+        // while its command line said otherwise would produce a wrong number that looks right.
         match options.intern_mode.as_str() {
-            "deferred" => crate::intern_mode::set_mode(crate::intern_mode::InternMode::Deferred),
-            "content" => crate::intern_mode::set_mode(crate::intern_mode::InternMode::Content),
+            "deferred" | "content" => {}
             other => {
                 eprintln!("error: unknown --intern-mode '{other}' (expected deferred|content)");
                 std::process::exit(2);
