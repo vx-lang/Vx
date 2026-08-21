@@ -22,13 +22,23 @@
 //              warms the library it measures, and says so.
 //   region A   matmul_into(&mut s, &q, &kT)    routed: kind=matmul -> cuBLAS
 //   region B   per-row softmax, own kernel     s <- exp(scale*s - max), row
-//              (one thread per row)            sums kept as 1/l in lrow
+//              (one BLOCK per row)             sums kept as 1/l in lrow
 //   region C   matmul_into(&mut o, &s, &v)     routed again
 //   region D   o[i] *= lrow[i]                 the deferred normalization
 //
 // K is HOSTED transposed (kT, [HD][SK]) so region A is a plain row-major
 // matmul -- the classifier routes a region whose whole job is the one op,
 // and a transpose in the region would make it not be that.
+//
+// Region B is the block-per-row shape the block-row write rule (Vx#379 R3)
+// exists for: the block owns row i, its T threads partition the columns by
+// residue (`t + jj*T`), so a warp's loads are CONSECUTIVE floats -- the
+// one-thread-per-row version ran the same pass at 174 GB/s because each lane
+// touched a different row. The row max and row sum cross threads through
+// SMEM partials, reduced by a 1-trip thread loop between barriers: a block-
+// level reduce built from stage-B primitives, no new device machinery.
+// __VX_SKT__ must be __VX_SK__ / __VX_T__: each thread walks that many
+// columns of the row.
 //
 // The normalization rides AFTER the PV GEMM (fold 1/l into o's rows) instead
 // of as a second walk over the 67 MB score matrix: P's rows enter the GEMM
@@ -53,11 +63,16 @@ Memory CPU_DRAM {}
 Memory GPU_HBM {
   within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
 }
+Memory SMEM {
+  within: Memory::GPU_HBM, capacity: 228 KiB, bandwidth: 128 B/cyc,
+  granule: 1 KiB, managed: explicit, scope: sm
+}
 Topology Dev {
   arch: nvptx64,
   memory: Memory::GPU_HBM,
-  visible: [Memory::GPU_HBM],
-  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s
+  visible: [Memory::GPU_HBM, Memory::SMEM],
+  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s,
+  transfer Memory::GPU_HBM -> Memory::SMEM
 }
 
 fn main() -> i32 {
@@ -115,15 +130,56 @@ fn main() -> i32 {
   }
 
   spawn on(Topology::Dev) {
+    let mut pm = Tensor<f32>([ __VX_T__, 1 ]).with_memory(Memory::SMEM);
+    let mut pl = Tensor<f32>([ __VX_T__, 1 ]).with_memory(Memory::SMEM);
+    let mut red = Tensor<f32>([ 1, 1 ]).with_memory(Memory::SMEM);
     for i in 0..__VX_SQ__ {
-      let mx : f32 = max(s[i]) * scale;
-      let mut l : f32 = 0.0;
-      for j in 0..__VX_SK__ {
-        let p : f32 = (s[i][j] * scale - mx).exp();
-        s[i][j] = p;
-        l = l + p;
+      for t in 0..__VX_T__ {
+        let mut m : f32 = -1000000.0;
+        for jj in 0..__VX_SKT__ {
+          let x : f32 = s[i][t + jj * __VX_T__];
+          let m2 : f32 = if x > m {
+            x
+          } else {
+            m
+          };
+          m = m2;
+        }
+        pm[t][0] = m;
       }
-      lrow[i][0] = 1.0 / l;
+      barrier();
+      for z in 0..1 {
+        let mut m : f32 = pm[0][0];
+        for k in 0..__VX_T__ {
+          let m2 : f32 = if pm[k][0] > m {
+            pm[k][0]
+          } else {
+            m
+          };
+          m = m2;
+        }
+        red[z][0] = m * scale;
+      }
+      barrier();
+      for t in 0..__VX_T__ {
+        let mx : f32 = red[0][0];
+        let mut l : f32 = 0.0;
+        for jj in 0..__VX_SKT__ {
+          let p : f32 = (s[i][t + jj * __VX_T__] * scale - mx).exp();
+          s[i][t + jj * __VX_T__] = p;
+          l = l + p;
+        }
+        pl[t][0] = l;
+      }
+      barrier();
+      for z in 0..1 {
+        let mut l : f32 = 0.0;
+        for k in 0..__VX_T__ {
+          l = l + pl[k][0];
+        }
+        lrow[i][z] = 1.0 / l;
+      }
+      barrier();
     }
   }
 
