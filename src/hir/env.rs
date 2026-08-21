@@ -395,7 +395,10 @@ impl<'a> GlobalAstEnv<'a> {
             let mut g = crate::arch::TransferCostGraph::default();
             let decls: Vec<crate::arch::TopologyDecl> =
                 env.topologies.values().map(|&d| d.clone()).collect();
-            g.seed_from_topologies(&decls);
+            // Edges only. `resolve_derived_route_costs` below rewrites edge costs and then runs
+            // the shortest-path sweep itself, so a sweep here would be computed and immediately
+            // overwritten -- O(spaces^2) searches thrown away, on the serial spine.
+            g.add_topology_edges(&decls);
             // Routing minimises predicted cost (vx-review#19), and a containment hop's cost lives
             // in the memory declarations rather than the topology's. Without this the on-die edges
             // -- which is every hop inside a device on every fleet SKU -- stay unpriced and the

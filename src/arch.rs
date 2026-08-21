@@ -647,6 +647,23 @@ impl TransferCostGraph {
     /// descriptor and add its transfer edges, then recompute the shortest-path matrix. The
     /// per-compilation replacement for the old global-registry seed.
     pub fn seed_from_topologies(&mut self, topologies: &[TopologyDecl]) {
+        self.add_topology_edges(topologies);
+        self.precompute_costs();
+    }
+
+    /// The edge-and-descriptor half of `seed_from_topologies`, without the shortest-path sweep.
+    ///
+    /// Separate because `precompute_costs` is O(spaces^2) shortest-path searches, and a caller that
+    /// is about to change edge costs anyway -- `resolve_derived_route_costs` does, and ends with its
+    /// own sweep -- would have the first sweep's whole result overwritten. On a program declaring
+    /// one machine that waste is invisible. On one declaring 800 it was HALF of `env_build`, which
+    /// is itself serial, so it came straight off the critical path of every compile.
+    ///
+    /// This is the same defect this graph had once before, one level up: the sweep used to run
+    /// twice per *function*, in `default()` and again in `seed_from_topologies`. Hoisting the graph
+    /// to one per compilation (see `GlobalAstEnv::build`) fixed the per-function part and left the
+    /// double sweep in place.
+    pub fn add_topology_edges(&mut self, topologies: &[TopologyDecl]) {
         for decl in topologies {
             self.apply_descriptor_edges(&decl.descriptor);
             self.descriptors.insert(
@@ -654,7 +671,6 @@ impl TransferCostGraph {
                 decl.descriptor.clone(),
             );
         }
-        self.precompute_costs();
     }
 
     /// Returns the default memory space for a given topology, from its registered
@@ -703,7 +719,19 @@ impl TransferCostGraph {
                 spaces.insert(dst.clone());
             }
         }
-        let spaces: Vec<MemorySpace> = spaces.into_iter().collect();
+        let mut spaces: Vec<MemorySpace> = spaces.into_iter().collect();
+        // A HashSet has no order, and this is the node set every pair below is drawn from. Sorting
+        // it costs nothing next to the searches and makes the work split the same way on every run.
+        spaces.sort_by_key(|s| format!("{s:?}"));
+
+        // Every pair is an independent pair of Dijkstra passes reading `&self`, and none of them
+        // reads `cost_matrix` -- the matrix being filled is not an input to filling it. So this
+        // loop is embarrassingly parallel, and on a program declaring many machines it is the
+        // whole of a serial phase (Vx#363). It stays sequential here because `precompute_costs`
+        // cannot see the compile's `Schedule`, and a bare `par_iter` would make the rayon-free
+        // baseline parallel -- measured at 800 machines, the "sequential" column came out at
+        // 140 ms against the 1-thread column's 393 ms, which makes every ratio taken against it
+        // meaningless.
         for src in &spaces {
             for dst in &spaces {
                 if let Some((cost, _)) = self.transfer_path(src, dst) {

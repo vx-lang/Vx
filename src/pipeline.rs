@@ -2610,6 +2610,134 @@ fn main() -> i32 { return 0; }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The memory-algebra constructs are deterministic across thread counts too.
+    ///
+    /// Every other determinism test in this file compiles plain arithmetic. So does the corpus
+    /// generator the ladder and `intern_bench` share -- it emits no `Memory`, no `Topology`, no
+    /// `transfer`, no `spawn`, and no lowering. Two weeks of Vx#353 work therefore ran entirely
+    /// outside what the parallel pipeline is measured on, and "the pipeline is still deterministic"
+    /// was a claim about code none of it touched.
+    ///
+    /// These constructs are the ones most likely to break it, because they are the ones that carry
+    /// state ACROSS functions: a topology declaration is per-compilation rather than per-function,
+    /// a transfer resolves a route against it, and a lowering is selected by (edge, machine).
+    ///
+    /// The topologies are named apart on purpose. Declarations are per-COMPILATION, not per-module
+    /// (docs/parallel_compiler_architecture.md 2.7), so three modules spelling `Topology Dev`
+    /// differently in one compile is a collision by design and not a race -- the first draft did
+    /// exactly that and the transfer resolved against whichever `Dev` won. Cross-compilation
+    /// isolation is a separate guarantee, and architecture_test.rs already pins it.
+    #[test]
+    fn memalg_constructs_are_deterministic_across_thread_counts() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("vx_det_memalg_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // A placement, a transfer and a spawn, per module, with the topology name shared and the
+        // memory different. `impl Transfer` lives in its own module: the third traversal in
+        // `type_check_phase` walks lowerings separately from functions and impl methods, and this
+        // is what puts anything in it.
+        let module = |top: &str, mem: &str, edge_cost: &str, entry: &str| {
+            format!(
+                "Memory CPU_DRAM {{}}\n\
+                 Memory {mem} {{ within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s }}\n\
+                 Topology {top} {{\n\
+                 \x20 arch: nvptx64,\n\
+                 \x20 memory: Memory::{mem},\n\
+                 \x20 visible: [Memory::CPU_DRAM, Memory::{mem}],\n\
+                 \x20 transfer Memory::CPU_DRAM -> Memory::{mem} : {edge_cost}\n\
+                 }}\n\
+                 fn {entry}() -> i32 {{\n\
+                 \x20 let mut a = Tensor<f32>([ 2, 2 ]);\n\
+                 \x20 a[0][0] = 1.0;\n\
+                 \x20 let mut ad = transfer(a, Memory::{mem});\n\
+                 \x20 spawn on(Topology::{top}) {{\n\
+                 \x20   ad[0][0] = 2.0;\n\
+                 \x20 }}\n\
+                 \x20 return 0;\n\
+                 }}\n"
+            )
+        };
+        let with_lowering = "Memory CPU_DRAM {}\n\
+             Memory GPU_HBM { within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s }\n\
+             Memory SMEM {\n\
+               within: Memory::GPU_HBM, capacity: 228 KiB, bandwidth: 128 B/cyc,\n\
+               granule: 1 KiB, managed: explicit, scope: sm\n\
+             }\n\
+             Topology Acc {\n\
+               arch: nvptx64,\n\
+               memory: Memory::GPU_HBM,\n\
+               visible: [Memory::GPU_HBM, Memory::SMEM],\n\
+               transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s,\n\
+               transfer Memory::GPU_HBM -> Memory::SMEM\n\
+             }\n\
+             impl Transfer<Memory::GPU_HBM, Memory::SMEM> for Topology::Acc {\n\
+               fn move_tile(src: &Tensor<f32, [2, 2]>, dst: &mut Tensor<f32, [2, 2]>) -> i32 {\n\
+                 for i in 0..raw::extent(src) {\n\
+                   raw::store(dst, i, raw::load(src, i));\n\
+                 }\n\
+                 raw::barrier();\n\
+                 return 0;\n\
+               }\n\
+             }\n\
+             fn drive() -> i32 { return 0; }\n";
+
+        let srcs = [
+            ("m0.vx", module("DevA", "GPU_HBM", "63 GB/s", "main")),
+            ("m1.vx", module("DevB", "NPU_HBM", "40 GB/s", "run_b")),
+            ("m2.vx", module("DevC", "Local_SRAM", "128 GB/s", "run_c")),
+            ("m3.vx", with_lowering.to_string()),
+        ];
+        let mut paths = Vec::new();
+        for (name, src) in &srcs {
+            let p = dir.join(name);
+            std::fs::File::create(&p)
+                .unwrap()
+                .write_all(src.as_bytes())
+                .unwrap();
+            paths.push(p.to_string_lossy().to_string());
+        }
+
+        let run = |threads: usize| -> Vec<[u64; 4]> {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
+            pool.install(|| {
+                compile_pipeline_type_stream(&paths)
+                    .expect("pipeline")
+                    .into_iter()
+                    .map(|id| id.words)
+                    .collect()
+            })
+        };
+
+        let single = run(1);
+        assert!(
+            !single.is_empty(),
+            "expected a non-empty stream from a memory-algebra corpus"
+        );
+        assert_eq!(
+            single,
+            run(8),
+            "the type stream differs across thread counts on a corpus with topologies, \
+             transfers, spawns and a lowering"
+        );
+        assert_eq!(single, run(4), "the type stream differs across reruns");
+
+        // Same compiler on both schedules, as the arithmetic corpus already demands.
+        let seq =
+            compile_pipeline_type_stream_with(&paths, Schedule::Sequential).expect("pipeline");
+        let seq: Vec<[u64; 4]> = seq.into_iter().map(|id| id.words).collect();
+        assert_eq!(
+            single, seq,
+            "the sequential schedule produces a different type stream than the parallel one"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A module can name another module's type, and the pipeline compiles the result to MLIR.
     ///
     /// This did not work before the module path became the file stem. `resolve_nominal` looks a

@@ -90,6 +90,20 @@ pub struct CorpusParams {
     pub files_per_layer: usize,
     /// Modules from the layer below that each module imports a type from and calls a function in.
     pub deps_per_module: usize,
+    /// Fraction of modules that also declare a machine and move data on it: a `Memory` pair, a
+    /// `Topology` that declares the edge between them, and a function that `transfer`s a tensor
+    /// across it and reads it inside a `spawn on`. `0.0` emits none, and is the default, so every
+    /// corpus measured before this knob existed is byte-identical to the same flags today.
+    ///
+    /// It exists because the memory-algebra work (Vx#352, Vx#353) added a checker surface this
+    /// generator could not reach: route resolution, placement types, spawn regions, and transfer
+    /// lowerings. A ladder run on a corpus without them measures the parallel pipeline on code
+    /// that predates all of it, and reports scaling for a compiler the campaign did not change.
+    ///
+    /// Each such module names its topology and its spaces after its own index. Declarations are
+    /// per-compilation rather than per-module, so two modules spelling `Topology Dev` differently
+    /// would collide by design and the corpus would measure a diagnostic instead of a compile.
+    pub memalg_frac: f64,
     pub seed: u64,
 }
 
@@ -105,6 +119,7 @@ impl Default for CorpusParams {
             locals_per_module: 8,
             files_per_layer: 0,
             deps_per_module: 2,
+            memalg_frac: 0.0,
             seed: 0x5EED,
         }
     }
@@ -128,7 +143,7 @@ const CARRIERS_PER_MODULE: usize = 2;
 /// hypothetical: the first version of this generator named its parameters `p0..p3`, which tripped
 /// W1009 and printed a warning line per parameter from inside the timed region; renaming them to
 /// `_p0..` changed no parameter, so the fix appeared to do nothing until this constant existed.
-const GENERATOR_VERSION: u32 = 3;
+const GENERATOR_VERSION: u32 = 4;
 
 fn splitmix64(state: &mut u64) -> u64 {
     *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
@@ -159,7 +174,8 @@ impl CorpusParams {
 
     fn canonical_string(&self) -> String {
         format!(
-            "v={GENERATOR_VERSION} n={} m={} d={:.4} a={} s={:.4} p={} l={} fpl={} dep={} seed={}",
+            "v={GENERATOR_VERSION} n={} m={} d={:.4} a={} s={:.4} p={} l={} fpl={} dep={} \
+             mem={:.4} seed={}",
             self.modules,
             self.fns_per_module,
             self.density,
@@ -169,6 +185,7 @@ impl CorpusParams {
             self.locals_per_module,
             self.files_per_layer,
             self.deps_per_module,
+            self.memalg_frac,
             self.seed
         )
     }
@@ -295,6 +312,27 @@ fn module_source(p: &CorpusParams, m: usize) -> (String, Vec<Vec<String>>) {
         p.id()
     ));
 
+    // The machine half, when this module drew one. Everything is named after `m`, so N modules
+    // declare N distinct topologies and no two collide inside the one compilation.
+    //
+    // What this reaches that the arithmetic corpus cannot: `transfer` resolves a route through the
+    // per-compilation cost graph, its result carries a placement in the type, the `spawn on` body
+    // is checked against that placement, and the region counter walks it. All of it is per-module
+    // state that the parallel schedule builds on one worker and must not leak to another.
+    let machine = p.memalg_frac > 0.0 && (m as f64) < (p.modules as f64) * p.memalg_frac;
+    if machine {
+        s.push_str(&format!(
+            "Memory CPU_DRAM {{}}\n\
+             Memory H{m} {{ within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s }}\n\
+             Topology T{m} {{\n\
+             \x20 arch: nvptx64,\n\
+             \x20 memory: Memory::H{m},\n\
+             \x20 visible: [Memory::CPU_DRAM, Memory::H{m}],\n\
+             \x20 transfer Memory::CPU_DRAM -> Memory::H{m} : 63 GB/s\n\
+             }}\n\n"
+        ));
+    }
+
     // Dependencies on the layer below: one `import` per dependency, whose imported struct then
     // appears in a signature and whose leaf function is called from a body.
     //
@@ -410,6 +448,25 @@ fn module_source(p: &CorpusParams, m: usize) -> (String, Vec<Vec<String>>) {
             sig.join(", ")
         ));
     }
+
+    // One function that actually moves data on this module's machine. Separate from the loop above
+    // so the per-function knobs (density, arity, params) keep meaning exactly what they meant
+    // before this knob existed -- a memalg corpus is the arithmetic corpus PLUS this, never the
+    // arithmetic corpus with a function taken away.
+    if machine {
+        s.push_str(&format!(
+            "fn m{m}_move() -> i32 {{\n\
+             \x20 let mut a = Tensor<f32>([ 2, 2 ]);\n\
+             \x20 a[0][0] = 1.0;\n\
+             \x20 let mut ad = transfer(a, Memory::H{m});\n\
+             \x20 spawn on(Topology::T{m}) {{\n\
+             \x20   ad[0][0] = 2.0;\n\
+             \x20   ad[1][1] = ad[0][0] * 2.0;\n\
+             \x20 }}\n\
+             \x20 return 0;\n\
+             }}\n\n"
+        ));
+    }
     (s, keys)
 }
 
@@ -496,6 +553,7 @@ pub fn params_from_args(args: &[String], modules: usize, fns_per_module: usize) 
         locals_per_module: arg(args, "--locals-per-module", d.locals_per_module),
         files_per_layer: arg(args, "--files-per-layer", d.files_per_layer),
         deps_per_module: arg(args, "--deps", d.deps_per_module),
+        memalg_frac: arg(args, "--memalg", d.memalg_frac),
         seed: arg(args, "--seed", d.seed),
     }
 }
