@@ -637,10 +637,14 @@ bool run_device_image(const void *payload, size_t payload_size,
       cuGetErrorName(rc, &name);
       fprintf(stderr,
               "[Vx CUDA] FATAL: the device image for %s did not load: %s.\n"
-              "          It was compiled for %s. An unresolved `__nv_` symbol "
-              "means libdevice\n"
-              "          was not linked when the program was compiled -- set "
-              "VX_LIBDEVICE.\n",
+              "          It was compiled for %s. Two known causes: an "
+              "unresolved `__nv_` symbol\n"
+              "          (libdevice was not linked -- set VX_LIBDEVICE), or "
+              "static `.shared`\n"
+              "          storage over the 48 KiB ceiling -- a cooperative "
+              "kernel's SMEM tiles\n"
+              "          must fit it (Vx#379; sum the .with_memory tensors' "
+              "bytes).\n",
               kernel_name, name ? name : "?",
               vx_payload_field(payload, payload_size, "chip=")
                   ? vx_payload_field(payload, payload_size, "chip=")
