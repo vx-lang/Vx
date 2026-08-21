@@ -16,7 +16,10 @@
 // __VX_BENCH_NOTE__
 //
 // Parallelism, since one query offers none: flash-decoding's split-K, written
-// as two placed regions.
+// as three placed regions. This file used to carry a five-region combine
+// TREE; at C=2048 the tree cost 0.161 ms against region 1's 0.102 -- four
+// launch floors and one 48 GB/s pass -- and the group-partial rewrite below
+// took the combine to 0.05 ms total.
 //
 //   region 1  for hc in 0..H*C -- each (head, chunk) walks its SK/C keys with
 //             the one-pass online softmax and writes an UNNORMALIZED partial:
@@ -25,7 +28,15 @@
 //             updates. Rows are owned by hc, so the disjointness rule admits
 //             the loop and the device pipeline grid-strides it (Vx#251) --
 //             H*C threads, reading K and V once each, as vectors (Vx#378 R1).
-//   region 2  for x in 0..H*HD -- rescale the C partials of pair (h, d) onto
+//   region 2  one BLOCK per (head, chunk-group), H*SG of them (Vx#379 R3):
+//             the block reduces its CPS chunks to ONE online triple
+//             (max, sum, HD-wide numerator) -- thread partials in SMEM, two
+//             1-trip reduce loops between barriers, then an accumulation
+//             sweep whose warp reads CONSECUTIVE po columns. The group triple
+//             lands in gm2/gl2/pog2 rows owned by the block (block-row rule).
+//             No global max is needed first: each group rescales against its
+//             own, and the triples merge exactly in region 3.
+//   region 3  for x in 0..H*HD, flat -- merge SG group triples per head
 //             head h's true max and normalize: the same algebra the online
 //             softmax applies per tile, applied once per chunk. Each x owns
 //             one output element (`o[x][0]`), so the combine scales with the
@@ -43,13 +54,24 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // CHECK: vx.transfer
 // CHECK-SAME: cost =
-// CHECK: vx.spawn topology(500)
+// CHECK: vx.spawn topology(1
 
 import std::math;
 
 Memory CPU_DRAM {}
 Memory GPU_HBM {
   within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s
+}
+Memory SMEM {
+  within: Memory::GPU_HBM, capacity: 228 KiB, bandwidth: 128 B/cyc,
+  granule: 1 KiB, managed: explicit, scope: sm
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::GPU_HBM,
+  visible: [Memory::GPU_HBM, Memory::SMEM],
+  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s,
+  transfer Memory::GPU_HBM -> Memory::SMEM
 }
 
 fn main() -> i32 {
@@ -61,10 +83,9 @@ fn main() -> i32 {
   let mut k_h = Tensor<f32>([ __VX_HSK__, __VX_HD__ ]);
   let mut v_h = Tensor<f32>([ __VX_HSK__, __VX_HD__ ]);
   let mut pml_h = Tensor<f32>([ __VX_HC__, 2 ]);
-  let mut gml_h = Tensor<f32>([ __VX_HG__, 2 ]);
-  let mut hml_h = Tensor<f32>([ __VX_H__, 2 ]);
-  let mut pw_h = Tensor<f32>([ __VX_HC__, 1 ]);
-  let mut pog_h = Tensor<f32>([ __VX_HG__, __VX_HD__ ]);
+  let mut gm2_h = Tensor<f32>([ __VX_HSG__, 1 ]);
+  let mut gl2_h = Tensor<f32>([ __VX_HSG__, 1 ]);
+  let mut pog2_h = Tensor<f32>([ __VX_HSG__, __VX_HD__ ]);
   let mut po_h = Tensor<f32>([ __VX_HC__, __VX_HD__ ]);
   // Flat [H*HD][1] rather than [H][HD]: the combine parallelizes over
   // (head, dim) pairs, and the disjointness rule wants each thread's write
@@ -84,19 +105,14 @@ fn main() -> i32 {
   // multiplies the running row, so whatever is here is folded into the
   // result. Tensor allocation does not promise zeros -- `o_h` above is
   // cleared for the same reason.
-  for h in 0..__VX_H__ {
-    hml_h[h][0] = 0.0;
-    hml_h[h][1] = 0.0;
-  }
-  for g in 0..__VX_HG__ {
-    gml_h[g][0] = 0.0;
-    gml_h[g][1] = 0.0;
+  for g in 0..__VX_HSG__ {
+    gm2_h[g][0] = 0.0;
+    gl2_h[g][0] = 0.0;
     for d in 0..__VX_HD__ {
-      pog_h[g][d] = 0.0;
+      pog2_h[g][d] = 0.0;
     }
   }
   for r in 0..__VX_HC__ {
-    pw_h[r][0] = 0.0;
     pml_h[r][0] = 0.0;
     pml_h[r][1] = 0.0;
     for d in 0..__VX_HD__ {
@@ -123,10 +139,9 @@ fn main() -> i32 {
   let k = transfer(k_h, Memory::GPU_HBM);
   let v = transfer(v_h, Memory::GPU_HBM);
   let mut pml = transfer(pml_h, Memory::GPU_HBM);
-  let mut gml = transfer(gml_h, Memory::GPU_HBM);
-  let mut hml = transfer(hml_h, Memory::GPU_HBM);
-  let mut pog = transfer(pog_h, Memory::GPU_HBM);
-  let mut pw = transfer(pw_h, Memory::GPU_HBM);
+  let mut gm2 = transfer(gm2_h, Memory::GPU_HBM);
+  let mut gl2 = transfer(gl2_h, Memory::GPU_HBM);
+  let mut pog2 = transfer(pog2_h, Memory::GPU_HBM);
   let mut po = transfer(po_h, Memory::GPU_HBM);
   let mut o = transfer(o_h, Memory::GPU_HBM);
   let scale : f32 = 0.5;
@@ -136,7 +151,7 @@ fn main() -> i32 {
   // kernel runs -- each K row is read once, as vectors. The accumulator row
   // starts zeroed (host-side fill above), so the first rescale multiplies
   // zero and no explicit clear is needed.
-  spawn on(Topology::GPU) {
+  spawn on(Topology::Dev) {
     let mut acc = Tensor<f32>([ 1, __VX_HD__ ]);
     for hc in 0..__VX_HC__ {
       let h : i32 = hc / __VX_C__;
@@ -196,75 +211,94 @@ fn main() -> i32 {
   // Six dispatches where one serial loop stood: this is a reduction tree
   // hand-built from the one primitive the prover admits, and the repetition
   // is the argument for a language-level parallel reduce (R3 proper).
-  spawn on(Topology::GPU) {
-    for hg in 0..__VX_HG__ {
-      let h : i32 = hg / __VX_G__;
-      let g : i32 = hg - h * __VX_G__;
-      let base : i32 = h * __VX_C__ + g * __VX_CPG__;
-      let mut m : f32 = -1000000.0;
-      for c in 0..__VX_CPG__ {
-        let pm : f32 = pml[base + c][0];
-        if pm > m {
-          m = pm;
+  spawn on(Topology::Dev) {
+    let mut ws2 = Tensor<f32>([ 64, __VX_CPST__ ]).with_memory(Memory::SMEM);
+    let mut pm = Tensor<f32>([ 64, 1 ]).with_memory(Memory::SMEM);
+    let mut pl = Tensor<f32>([ 64, 1 ]).with_memory(Memory::SMEM);
+    let mut red = Tensor<f32>([ 1, 1 ]).with_memory(Memory::SMEM);
+    for bg in 0..__VX_HSG__ {
+      let h : i32 = bg / __VX_SG__;
+      let sg : i32 = bg - h * __VX_SG__;
+      let base : i32 = h * __VX_C__ + sg * __VX_CPS__;
+      for t in 0..64 {
+        let mut m : f32 = -1000000.0;
+        for s in 0..__VX_CPST__ {
+          let x : f32 = pml[base + t + s * 64][0];
+          let m2 : f32 = if x > m {
+            x
+          } else {
+            m
+          };
+          m = m2;
         }
+        pm[t][0] = m;
       }
-      let mut l : f32 = 0.0;
-      for c in 0..__VX_CPG__ {
-        l = l + pml[base + c][1] * (pml[base + c][0] - m).exp();
+      barrier();
+      for z in 0..1 {
+        let mut m : f32 = pm[0][0];
+        for kk in 0..64 {
+          let m2 : f32 = if pm[kk][0] > m {
+            pm[kk][0]
+          } else {
+            m
+          };
+          m = m2;
+        }
+        red[z][0] = m;
+        gm2[bg][z] = m;
       }
-      gml[hg][0] = m;
-      gml[hg][1] = l;
+      barrier();
+      for t in 0..64 {
+        let mm : f32 = red[0][0];
+        let mut lp : f32 = 0.0;
+        for s in 0..__VX_CPST__ {
+          let w : f32 = (pml[base + t + s * 64][0] - mm).exp();
+          ws2[t][s] = w;
+          lp = lp + pml[base + t + s * 64][1] * w;
+        }
+        pl[t][0] = lp;
+      }
+      barrier();
+      for z in 0..1 {
+        let mut l : f32 = 0.0;
+        for kk in 0..64 {
+          l = l + pl[kk][0];
+        }
+        gl2[bg][z] = l;
+      }
+      barrier();
+      for d in 0..__VX_HD__ {
+        let mut a : f32 = 0.0;
+        for s in 0..__VX_CPST__ {
+          for tt in 0..64 {
+            a = a + po[base + tt + s * 64][d] * ws2[tt][s];
+          }
+        }
+        pog2[bg][d] = a;
+      }
+      barrier();
     }
   }
 
-  spawn on(Topology::GPU) {
-    for h in 0..__VX_H__ {
+  spawn on(Topology::Dev) {
+    for x in 0..__VX_HHD__ {
+      let h : i32 = x / __VX_HD__;
+      let d : i32 = x - h * __VX_HD__;
       let mut m : f32 = -1000000.0;
-      for g in 0..__VX_G__ {
-        let gm : f32 = gml[h * __VX_G__ + g][0];
+      for g in 0..__VX_SG__ {
+        let gm : f32 = gm2[h * __VX_SG__ + g][0];
         if gm > m {
           m = gm;
         }
       }
       let mut l : f32 = 0.0;
-      for g in 0..__VX_G__ {
-        l = l + gml[h * __VX_G__ + g][1] * (gml[h * __VX_G__ + g][0] - m).exp();
+      let mut a : f32 = 0.0;
+      for g in 0..__VX_SG__ {
+        let w : f32 = (gm2[h * __VX_SG__ + g][0] - m).exp();
+        l = l + gl2[h * __VX_SG__ + g][0] * w;
+        a = a + pog2[h * __VX_SG__ + g][d] * w;
       }
-      hml[h][0] = m;
-      hml[h][1] = l;
-    }
-  }
-
-  spawn on(Topology::GPU) {
-    for hc in 0..__VX_HC__ {
-      let h : i32 = hc / __VX_C__;
-      pw[hc][0] = (pml[hc][0] - hml[h][0]).exp();
-    }
-  }
-
-  spawn on(Topology::GPU) {
-    let mut gacc = Tensor<f32>([ 1, __VX_HD__ ]);
-    for hg in 0..__VX_HG__ {
-      let h : i32 = hg / __VX_G__;
-      let g : i32 = hg - h * __VX_G__;
-      let base : i32 = h * __VX_C__ + g * __VX_CPG__;
-      gacc[0] = q[h] * 0.0;
-      for c in 0..__VX_CPG__ {
-        gacc[0] = gacc[0] + po[base + c] * pw[base + c][0];
-      }
-      pog[hg] = gacc[0] * 1.0;
-    }
-  }
-
-  spawn on(Topology::GPU) {
-    for x in 0..__VX_HHD__ {
-      let h : i32 = x / __VX_HD__;
-      let d : i32 = x - h * __VX_HD__;
-      let mut s : f32 = 0.0;
-      for g in 0..__VX_G__ {
-        s = s + pog[h * __VX_G__ + g][d];
-      }
-      o[x][0] = s / hml[h][1];
+      o[x][0] = a / l;
     }
   }
 
