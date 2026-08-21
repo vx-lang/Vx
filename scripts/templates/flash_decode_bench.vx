@@ -61,6 +61,10 @@ fn main() -> i32 {
   let mut k_h = Tensor<f32>([ __VX_HSK__, __VX_HD__ ]);
   let mut v_h = Tensor<f32>([ __VX_HSK__, __VX_HD__ ]);
   let mut pml_h = Tensor<f32>([ __VX_HC__, 2 ]);
+  let mut gml_h = Tensor<f32>([ __VX_HG__, 2 ]);
+  let mut hml_h = Tensor<f32>([ __VX_H__, 2 ]);
+  let mut pw_h = Tensor<f32>([ __VX_HC__, 1 ]);
+  let mut pog_h = Tensor<f32>([ __VX_HG__, __VX_HD__ ]);
   let mut po_h = Tensor<f32>([ __VX_HC__, __VX_HD__ ]);
   // Flat [H*HD][1] rather than [H][HD]: the combine parallelizes over
   // (head, dim) pairs, and the disjointness rule wants each thread's write
@@ -80,7 +84,19 @@ fn main() -> i32 {
   // multiplies the running row, so whatever is here is folded into the
   // result. Tensor allocation does not promise zeros -- `o_h` above is
   // cleared for the same reason.
+  for h in 0..__VX_H__ {
+    hml_h[h][0] = 0.0;
+    hml_h[h][1] = 0.0;
+  }
+  for g in 0..__VX_HG__ {
+    gml_h[g][0] = 0.0;
+    gml_h[g][1] = 0.0;
+    for d in 0..__VX_HD__ {
+      pog_h[g][d] = 0.0;
+    }
+  }
   for r in 0..__VX_HC__ {
+    pw_h[r][0] = 0.0;
     pml_h[r][0] = 0.0;
     pml_h[r][1] = 0.0;
     for d in 0..__VX_HD__ {
@@ -107,6 +123,10 @@ fn main() -> i32 {
   let k = transfer(k_h, Memory::GPU_HBM);
   let v = transfer(v_h, Memory::GPU_HBM);
   let mut pml = transfer(pml_h, Memory::GPU_HBM);
+  let mut gml = transfer(gml_h, Memory::GPU_HBM);
+  let mut hml = transfer(hml_h, Memory::GPU_HBM);
+  let mut pog = transfer(pog_h, Memory::GPU_HBM);
+  let mut pw = transfer(pw_h, Memory::GPU_HBM);
   let mut po = transfer(po_h, Memory::GPU_HBM);
   let mut o = transfer(o_h, Memory::GPU_HBM);
   let scale : f32 = 0.5;
@@ -121,17 +141,25 @@ fn main() -> i32 {
     for hc in 0..__VX_HC__ {
       let h : i32 = hc / __VX_C__;
       let c : i32 = hc - h * __VX_C__;
-      let base : i32 = h * __VX_SK__ + c * __VX_CHUNK__;
+      let base : i32 = h * __VX_SK__;
 
       // Accumulate in the thread's own row (R2a, same reasoning as the
       // prefill bench): the online rescale round-tripped po[hc] through
       // global memory once per key; here it stays in the local depot and
       // the partial row is written once, at the end.
+      //
+      // Chunk c owns keys {c, c+C, c+2C, ...}, not a contiguous block
+      // (Vx#378 R3a). The online merge is associative, so the assignment is
+      // free to choose -- and this one makes warp-adjacent threads
+      // (adjacent hc, same h) touch ADJACENT rows at every step: one
+      // contiguous span per warp-step instead of 32 spans a chunk apart.
+      // The set of keys per (head, chunk) partition is unchanged, which the
+      // closed form checks because V varies by position.
       acc[0] = q[h] * 0.0;
       let mut m : f32 = -1000000.0;
       let mut l : f32 = 0.0;
       for jj in 0..__VX_CHUNK__ {
-        let s : f32 = dot(q[h], k[base + jj]) * scale;
+        let s : f32 = dot(q[h], k[base + c + jj * __VX_C__]) * scale;
         let m_new : f32 = if s > m {
           s
         } else {
@@ -141,7 +169,7 @@ fn main() -> i32 {
         let p : f32 = (s - m_new).exp();
         l = l * corr + p;
         acc[0] = acc[0] * corr;
-        acc[0] = acc[0] + v[base + jj] * p;
+        acc[0] = acc[0] + v[base + c + jj * __VX_C__] * p;
         m = m_new;
       }
       po[hc] = acc[0] * 1.0;
@@ -150,31 +178,93 @@ fn main() -> i32 {
     }
   }
 
-  // Region 2: rescale each head's C partials onto the head's true max and
-  // normalize -- parallel over (head, dim) pairs (Vx#378 R4). The serial
-  // 8-thread combine grew linearly with C and overtook region 1 (0.30 ms at
-  // C=128, 2.34 ms at C=1024, against region 1's 0.148 ms); H*HD threads
-  // recompute the head's max and normalizer redundantly per dim, which is
-  // C scalar reads against a combine that no longer bounds the split.
+  // The combine, as a two-level reduction tree (Vx#378 R4). Every level is
+  // the same online-merge algebra and the same disjointness shape: a strided
+  // loop whose iteration owns one output row. The measurements forced each
+  // level into existence -- the serial combine bounded the split at 8
+  // threads, the flat (h, d) combine at its scalar column reads, and the
+  // per-head scan at 8 threads again once everything else was parallel.
+  //
+  //   2a  per (head, group):  max and normalizer over the group's C/G chunks.
+  //   2b  per head:           merge G group [m, l] pairs -- G reads, not C.
+  //   2c  per (head, chunk):  the chunk's rescale weight, one exp.
+  //   2d  per (head, group):  weighted slice-sum of the group's po rows --
+  //                           vector axpys over contiguous rows.
+  //   2e  per (head, dim):    sum G group columns and normalize -- G scalar
+  //                           reads, not C.
+  //
+  // Six dispatches where one serial loop stood: this is a reduction tree
+  // hand-built from the one primitive the prover admits, and the repetition
+  // is the argument for a language-level parallel reduce (R3 proper).
   spawn on(Topology::GPU) {
-    for x in 0..__VX_HHD__ {
-      let h : i32 = x / __VX_HD__;
-      let d : i32 = x - h * __VX_HD__;
+    for hg in 0..__VX_HG__ {
+      let h : i32 = hg / __VX_G__;
+      let g : i32 = hg - h * __VX_G__;
+      let base : i32 = h * __VX_C__ + g * __VX_CPG__;
       let mut m : f32 = -1000000.0;
-      for c in 0..__VX_C__ {
-        let pm : f32 = pml[h * __VX_C__ + c][0];
+      for c in 0..__VX_CPG__ {
+        let pm : f32 = pml[base + c][0];
         if pm > m {
           m = pm;
         }
       }
       let mut l : f32 = 0.0;
-      let mut s : f32 = 0.0;
-      for c in 0..__VX_C__ {
-        let corr : f32 = (pml[h * __VX_C__ + c][0] - m).exp();
-        l = l + pml[h * __VX_C__ + c][1] * corr;
-        s = s + po[h * __VX_C__ + c][d] * corr;
+      for c in 0..__VX_CPG__ {
+        l = l + pml[base + c][1] * (pml[base + c][0] - m).exp();
       }
-      o[x][0] = s / l;
+      gml[hg][0] = m;
+      gml[hg][1] = l;
+    }
+  }
+
+  spawn on(Topology::GPU) {
+    for h in 0..__VX_H__ {
+      let mut m : f32 = -1000000.0;
+      for g in 0..__VX_G__ {
+        let gm : f32 = gml[h * __VX_G__ + g][0];
+        if gm > m {
+          m = gm;
+        }
+      }
+      let mut l : f32 = 0.0;
+      for g in 0..__VX_G__ {
+        l = l + gml[h * __VX_G__ + g][1] * (gml[h * __VX_G__ + g][0] - m).exp();
+      }
+      hml[h][0] = m;
+      hml[h][1] = l;
+    }
+  }
+
+  spawn on(Topology::GPU) {
+    for hc in 0..__VX_HC__ {
+      let h : i32 = hc / __VX_C__;
+      pw[hc][0] = (pml[hc][0] - hml[h][0]).exp();
+    }
+  }
+
+  spawn on(Topology::GPU) {
+    let mut gacc = Tensor<f32>([ 1, __VX_HD__ ]);
+    for hg in 0..__VX_HG__ {
+      let h : i32 = hg / __VX_G__;
+      let g : i32 = hg - h * __VX_G__;
+      let base : i32 = h * __VX_C__ + g * __VX_CPG__;
+      gacc[0] = q[h] * 0.0;
+      for c in 0..__VX_CPG__ {
+        gacc[0] = gacc[0] + po[base + c] * pw[base + c][0];
+      }
+      pog[hg] = gacc[0] * 1.0;
+    }
+  }
+
+  spawn on(Topology::GPU) {
+    for x in 0..__VX_HHD__ {
+      let h : i32 = x / __VX_HD__;
+      let d : i32 = x - h * __VX_HD__;
+      let mut s : f32 = 0.0;
+      for g in 0..__VX_G__ {
+        s = s + pog[h * __VX_G__ + g][d];
+      }
+      o[x][0] = s / hml[h][1];
     }
   }
 
