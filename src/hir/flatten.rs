@@ -768,7 +768,23 @@ impl<'r> Lowerer<'r> {
             // (`to_device`/`to_host`/…) are already rewritten to `Expr::Transfer` by the type checker,
             // so they never reach here as a method. Any other method declines (#226).
             Expr::MethodCall(mc) if mc.method_name.as_ref() == "with_memory" => {
-                self.lower_expr(&mc.base)
+                let v = self.lower_expr(&mc.base)?;
+                // One case is not annotation-only (Vx#379 stage B): a fresh region-local
+                // `Tensor<..>([..]).with_memory(Memory::X)` rides the space's dispatch id out on
+                // the TensorAlloc's unused operand2, and codegen decides what to make of it -- a
+                // `scope: sm` space becomes a space-3 alloca the device pipeline materializes as
+                // `.shared` storage. Anything else keeps the old transparency.
+                if let Some(Expr::MemorySpace(ms)) = mc.args.first() {
+                    let sid = crate::arch::memory_space_dispatch_id(&ms.space);
+                    if sid > 0 {
+                        if let Some(ins) = self.code.get_mut(v.reg.0 as usize) {
+                            if ins.opcode == Opcode::TensorAlloc {
+                                ins.operand2 = Register(sid as u32);
+                            }
+                        }
+                    }
+                }
+                Some(v)
             }
             // A `comptime { .. }` block: the AST codegen lowers it *transparently* (its `sizeof<T>()`
             // folds to a constant and its `assert`s are runtime no-ops), so at runtime a compile-time
@@ -3682,6 +3698,9 @@ fn parallel_outer_for(stmts: &[Statement]) -> Option<(usize, u64)> {
         declared: HashSet::new(),
         used_captured: HashSet::new(),
         affine: None,
+        smem: HashSet::new(),
+        smem_written: HashSet::new(),
+        smem_nonown_read: HashSet::new(),
     };
     for s in &stmts[..idx] {
         let S::LetDecl(d) = s else {
@@ -3786,20 +3805,15 @@ fn parallel_two_level(stmts: &[Statement]) -> Option<(u64, TwoLevelPlan)> {
         declared: HashSet::new(),
         used_captured: HashSet::new(),
         affine: None,
+        smem: HashSet::new(),
+        smem_written: HashSet::new(),
+        smem_nonown_read: HashSet::new(),
     };
     for s in &stmts[..idx] {
         let S::LetDecl(d) = s else {
             return None;
         };
-        let init_ok = match &d.expr {
-            Expr::FunctionCall(fc)
-                if &*fc.name == "Tensor" && fc.args.iter().all(|a| scan.expr(a)) =>
-            {
-                true
-            }
-            e => scan.expr(e),
-        };
-        if !init_ok || !scan.declare(&d.name) {
+        if !scan.let_decl_two_level(d) {
             return None;
         }
     }
@@ -3812,6 +3826,7 @@ fn parallel_two_level(stmts: &[Statement]) -> Option<(u64, TwoLevelPlan)> {
         block_iv: f.iter.to_string(),
         threads: Vec::new(),
         saw_thread_loop: false,
+        max_thread_trip: 0,
     };
     if !walker.items(&f.body) {
         return None;
@@ -3819,8 +3834,9 @@ fn parallel_two_level(stmts: &[Statement]) -> Option<(u64, TwoLevelPlan)> {
     if !walker.saw_thread_loop {
         return None;
     }
+    let threads = walker.max_thread_trip.clamp(1, 1024) as u64;
     Some((
-        (hi - lo) as u64,
+        (hi - lo) as u64 | (threads << 32),
         TwoLevelPlan {
             // The address of the ForLoopStmt itself, because that is what `lower_for` is
             // handed -- the enum wrapper's address would never match.
@@ -3837,46 +3853,59 @@ struct TwoLevelWalk {
     block_iv: String,
     threads: Vec<usize>,
     saw_thread_loop: bool,
+    /// The widest thread-loop trip: the block shape the launch should use, so a TQ=64 kernel
+    /// gets 64 threads instead of 64 working and 64 idling (Vx#379).
+    max_thread_trip: i64,
 }
 
 impl TwoLevelWalk {
     fn items(&mut self, stmts: &[Statement]) -> bool {
         use crate::syntax::stmt::Statement as S;
+        let is_barrier = |s: &Statement| {
+            matches!(s, S::ExprStmt(e) if matches!(
+                &e.expr,
+                Expr::FunctionCall(fc) if &*fc.name == "barrier" && fc.args.is_empty()
+            ))
+        };
+        // A thread loop that wrote block-shared storage must be followed by a barrier --
+        // including at the END of a sequence, because both a sequential loop's next
+        // iteration and the block loop's next block-stride iteration reuse the same
+        // storage. "The next statement is the barrier" is the whole v1 discipline.
+        let mut need_barrier = false;
         for s in stmts {
+            if need_barrier && !is_barrier(s) {
+                return false;
+            }
+            need_barrier = false;
             let ok = match s {
-                // Block-scope declaration: every thread evaluates it into its own copy.
-                // Reads are free; the initializer must not be able to write (same rule and
-                // same Tensor-scratch exception as the region prologue).
-                S::LetDecl(d) => {
-                    let init_ok = match &d.expr {
-                        Expr::FunctionCall(fc)
-                            if &*fc.name == "Tensor"
-                                && fc.args.iter().all(|a| self.scan.expr(a)) =>
-                        {
-                            true
-                        }
-                        e => self.scan.expr(e),
-                    };
-                    init_ok && self.scan.declare(&d.name)
-                }
-                // Block-scope scalar assignment to a LOCAL is redundant-per-thread and
-                // harmless; a captured write at block scope is every thread racing.
+                // Block-scope declaration: every thread evaluates it into its own copy --
+                // unless it is a `.with_memory` tile, which is one block-shared allocation
+                // (Vx#379 stage B) and joins the shared-write discipline.
+                S::LetDecl(d) => self.scan.let_decl_two_level(d),
+                // Block-scope scalar assignment to a thread-private LOCAL is
+                // redundant-per-thread and harmless; a captured or block-shared write at
+                // block scope is every thread racing.
                 S::Assign(a) => {
-                    matches!(&a.lhs, Expr::Identifier(id) if self.scan.declared.contains(&*id.name))
+                    matches!(&a.lhs, Expr::Identifier(id)
+                        if self.scan.declared.contains(&*id.name)
+                            && !self.scan.smem.contains(&*id.name))
                         && self.scan.expr(&a.rhs)
                 }
-                S::ExprStmt(e) => matches!(
-                    &e.expr,
-                    Expr::FunctionCall(fc) if &*fc.name == "barrier" && fc.args.is_empty()
-                ),
-                S::ForLoop(inner) => self.for_item(inner, s),
+                S::ExprStmt(_) => is_barrier(s),
+                S::ForLoop(inner) => {
+                    let ok = self.for_item(inner, s);
+                    if ok && !self.scan.smem_written.is_empty() {
+                        need_barrier = true;
+                    }
+                    ok
+                }
                 _ => false,
             };
             if !ok {
                 return false;
             }
         }
-        true
+        !need_barrier
     }
 
     fn for_item(&mut self, inner: &crate::syntax::ForLoopStmt, node: &Statement) -> bool {
@@ -3893,30 +3922,58 @@ impl TwoLevelWalk {
         if *inner.iter == *self.block_iv || !self.scan.declare(&inner.iter) {
             return false;
         }
-        // Decide the loop's role by its body: a body that is itself a sequence of
-        // items (containing thread loops / barriers) is a SEQUENTIAL loop; otherwise
-        // offer it as a THREAD loop under the extended write rule.
-        let is_sequence = inner.body.iter().any(|s| {
+        // Decide the loop's role by whether its subtree synchronizes: a barrier anywhere
+        // below makes this a SEQUENTIAL phase container (the FA-2 tile loop); no barrier
+        // anywhere makes it a THREAD-loop candidate. Merely containing a `for` must NOT
+        // make a loop sequential -- a thread loop legitimately nests serial walks (the
+        // key loop inside a consume phase), and classifying it sequential sent its inner
+        // serial loop to the thread rule, which rejected the whole region.
+        fn contains_barrier(stmts: &[Statement]) -> bool {
             use crate::syntax::stmt::Statement as S;
-            match s {
-                S::ForLoop(_) => true,
+            stmts.iter().any(|s| match s {
                 S::ExprStmt(e) => {
                     matches!(&e.expr, Expr::FunctionCall(fc) if &*fc.name == "barrier")
                 }
+                S::ForLoop(f) => contains_barrier(&f.body),
+                S::Loop(l) => contains_barrier(&l.body),
                 _ => false,
-            }
-        });
+            })
+        }
+        let is_sequence = contains_barrier(&inner.body);
         if is_sequence {
-            return self.items(&inner.body);
+            let ok = self.items(&inner.body);
+            // The sequence enforced its own discipline -- a trailing shared write inside it
+            // demanded a trailing barrier (items returns false otherwise) -- so its ledgers
+            // must not leak out and demand a second barrier from the statement after the loop.
+            self.scan.smem_written.clear();
+            self.scan.smem_nonown_read.clear();
+            return ok;
         }
         let saved_iv = std::mem::replace(&mut self.scan.iv, inner.iter.to_string());
         let saved_affine = self.scan.affine.take();
         self.scan.affine = Some((self.block_iv.clone(), hi - lo));
-        let ok = self.scan.stmts(&inner.body, 0);
+        self.scan.smem_written.clear();
+        self.scan.smem_nonown_read.clear();
+        let mut ok = self.scan.stmts(&inner.body, 0);
+        // A shared tensor both written and read-at-a-neighbour's-row inside ONE thread
+        // loop is a race no barrier can order -- the FA-2 phases put the two on opposite
+        // sides of one. Written-here plus own-row reads (an accumulator), or reads of a
+        // DIFFERENT shared tensor a previous phase filled (a tile), both stay legal.
+        if ok
+            && self
+                .scan
+                .smem_written
+                .intersection(&self.scan.smem_nonown_read)
+                .next()
+                .is_some()
+        {
+            ok = false;
+        }
         self.scan.iv = saved_iv;
         self.scan.affine = saved_affine;
         if ok {
             self.saw_thread_loop = true;
+            self.max_thread_trip = self.max_thread_trip.max(hi - lo);
             let addr = match node {
                 Statement::ForLoop(fl) => fl as *const crate::syntax::ForLoopStmt as usize,
                 _ => return false,
@@ -3980,9 +4037,54 @@ struct ParallelScan {
     /// is the thread loop's trip. Widens the captured-write rule to accept the affine first index
     /// `block_iv * K + iv` -- the (block, thread-iteration) pair's own row.
     affine: Option<(String, i64)>,
+    /// Region-locals that are BLOCK-SHARED rather than thread-private (Vx#379 stage B): declared
+    /// `Tensor<..>(..).with_memory(Memory::X)`. Any space is treated as shared -- stricter than
+    /// necessary for a non-sm space, never looser. Shared changes the write rule: only a thread
+    /// loop may write one, at its own IV's row.
+    smem: HashSet<String>,
+    /// Per-thread-loop race ledgers, reset by `TwoLevelWalk::for_item`: shared tensors this loop
+    /// wrote, and shared tensors it read at a row other than its own. A tensor in both sets is a
+    /// read-write race between two iterations of the same loop; a written tensor also demands a
+    /// barrier as the next statement.
+    smem_written: HashSet<String>,
+    smem_nonown_read: HashSet<String>,
 }
 
 impl ParallelScan {
+    /// A `let` in a two-level region (prologue or block scope). Three shapes pass: a plain
+    /// expression that cannot write (the ordinary rule), thread-private `Tensor` scratch, and --
+    /// new with Vx#379 stage B -- a `.with_memory` tile over a fresh `Tensor`, which declares
+    /// BLOCK-SHARED storage and joins the shared-write discipline via `smem`.
+    fn let_decl_two_level(&mut self, d: &crate::syntax::stmt::LetDeclStmt) -> bool {
+        let mut is_smem = false;
+        let init_ok = match &d.expr {
+            Expr::FunctionCall(fc)
+                if &*fc.name == "Tensor" && fc.args.iter().all(|a| self.expr(a)) =>
+            {
+                true
+            }
+            Expr::MethodCall(mc)
+                if &*mc.method_name == "with_memory"
+                    && matches!(&*mc.base, Expr::FunctionCall(fc)
+                        if &*fc.name == "Tensor") =>
+            {
+                is_smem = true;
+                match &*mc.base {
+                    Expr::FunctionCall(fc) => fc.args.iter().all(|a| self.expr(a)),
+                    _ => false,
+                }
+            }
+            e => self.expr(e),
+        };
+        if !init_ok || !self.declare(&d.name) {
+            return false;
+        }
+        if is_smem {
+            self.smem.insert(d.name.to_string());
+        }
+        true
+    }
+
     /// Record a read of `name`. Reads of captured state are always fine — but they pin the name as
     /// captured, so a later `let` of the same name rejects the region (see `declare`).
     fn note(&mut self, name: &str) {
@@ -4041,9 +4143,12 @@ impl ParallelScan {
     /// The left of an assignment: where does the write land?
     fn target(&mut self, lhs: &Expr) -> bool {
         match lhs {
-            // A bare name: fine only if it is region-local. A captured scalar written by every
-            // thread is the definition of a race.
-            Expr::Identifier(id) => self.declared.contains(&*id.name),
+            // A bare name: fine only if it is region-local AND thread-private. A captured scalar
+            // written by every thread is the definition of a race; so is a whole-tensor write to
+            // block-shared storage.
+            Expr::Identifier(id) => {
+                self.declared.contains(&*id.name) && !self.smem.contains(&*id.name)
+            }
             // An index chain `a[e0][e1]..`: peel to the base. A local base is thread-private
             // regardless of indices; a captured base must be indexed first by the IV, giving each
             // iteration its own row.
@@ -4066,7 +4171,18 @@ impl ParallelScan {
                     return false;
                 }
                 if self.declared.contains(&*id.name) {
-                    return true;
+                    if !self.smem.contains(&*id.name) {
+                        return true; // thread-private: any indexing is this thread's own
+                    }
+                    // Block-shared (Vx#379 stage B): writable only from a thread loop
+                    // (`affine` is Some exactly there), one row per iteration, the row being
+                    // the loop's own IV. The ledger feeds the barrier-after-write rule and
+                    // the same-loop read/write race check in `TwoLevelWalk::for_item`.
+                    if self.affine.is_none() {
+                        return false;
+                    }
+                    self.smem_written.insert(id.name.to_string());
+                    return matches!(first, Expr::Identifier(fid) if *fid.name == *self.iv);
                 }
                 self.note(&id.name);
                 matches!(first, Expr::Identifier(fid) if *fid.name == *self.iv)
@@ -4119,7 +4235,32 @@ impl ParallelScan {
             Expr::LogicalOp(b) => self.expr(&b.lhs) && self.expr(&b.rhs),
             Expr::UnaryOp(u) => self.expr(&u.expr),
             Expr::AsCast(c) => self.expr(&c.expr),
-            Expr::IndexAccess(ix) => self.expr(&ix.base) && self.expr(&ix.index),
+            Expr::IndexAccess(ix) => {
+                // Ledger for the same-loop shared read/write race check (Vx#379 stage B): a
+                // read of a block-shared tensor at a row other than the thread loop's own IV.
+                // Reading a neighbour's row is exactly what a consume phase does to a tile the
+                // FILL phase wrote -- legal across a barrier, a race within one loop.
+                if self.affine.is_some() {
+                    let mut root = e;
+                    let mut indices = Vec::new();
+                    while let Expr::IndexAccess(step) = root {
+                        indices.push(&*step.index);
+                        root = &step.base;
+                    }
+                    if let Expr::Identifier(id) = root {
+                        if self.smem.contains(&*id.name) {
+                            let own = matches!(
+                                indices.last(),
+                                Some(Expr::Identifier(fid)) if *fid.name == *self.iv
+                            );
+                            if !own {
+                                self.smem_nonown_read.insert(id.name.to_string());
+                            }
+                        }
+                    }
+                }
+                self.expr(&ix.base) && self.expr(&ix.index)
+            }
             Expr::MemberAccess(m) => self.expr(&m.base),
             Expr::Array(a) => a.elements.iter().all(|el| self.expr(el)),
             Expr::Range(r) => self.expr(&r.start) && self.expr(&r.end),
@@ -5232,6 +5373,50 @@ mod tests {
             .filter(|i| i.opcode == Opcode::Add && i.imm == IMM_PARALLEL_STEP)
             .count();
         assert_eq!((inits, steps), (1, 1), "exactly the outer loop is tagged");
+    }
+
+    #[test]
+    fn a_cooperative_tile_region_gets_the_two_level_plan() {
+        // The FA-2 grammar in miniature (Vx#379 stage B): a shared tile filled by one thread
+        // loop, rewritten in place by thread loops inside a sequential loop (each phase
+        // barrier-terminated), and an affine writeback. The regression this pins: a sequential
+        // loop's LAST inner thread loop leaked its shared-write ledger to the outer walk, which
+        // then demanded a barrier the sequence had already provided -- and the whole region
+        // silently fell back to a 1x1 serial launch.
+        let (did, w) = lower_with_registry(
+            "fn main() -> i32 {\n\
+               let mut q = Tensor<f32>([8, 4]);\n\
+               let mut o = Tensor<f32>([8, 4]);\n\
+               spawn on (Topology::GPU) {\n\
+                 let mut qs = Tensor<f32>([2, 4]).with_memory(Memory::SMEM);\n\
+                 for bq in 0..4 {\n\
+                   for qi in 0..2 {\n\
+                     qs[qi] = q[bq * 2 + qi] * 1.0;\n\
+                   }\n\
+                   barrier();\n\
+                   for t in 0..3 {\n\
+                     for r in 0..2 {\n\
+                       qs[r] = qs[r] * 1.0;\n\
+                     }\n\
+                     barrier();\n\
+                   }\n\
+                   for qi in 0..2 {\n\
+                     o[bq * 2 + qi] = qs[qi] * 1.0;\n\
+                   }\n\
+                   barrier();\n\
+                 }\n\
+               };\n\
+               return 0;\n\
+             }",
+            "main",
+        );
+        assert!(did, "lowers");
+        let end = w
+            .local_hir_stream
+            .iter()
+            .find(|i| i.opcode == Opcode::SpawnEnd)
+            .expect("a SpawnEnd");
+        assert_ne!(end.imm & SPAWN_TWO_LEVEL, 0, "two-level fired: imm={:#x}", end.imm);
     }
 
     #[test]

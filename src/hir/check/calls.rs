@@ -1596,7 +1596,16 @@ impl<'a> TypeChecker<'a> {
 
                 // Fallback for hardcoded mock methods
                 if _method.as_ref() == "with_memory" {
-                    base_ty = Type::Ref(Box::new(base_ty), MemorySpace::NPUHBM);
+                    // The annotation names a real space (Vx#379 stage B): a
+                    // `.with_memory(Memory::SMEM)` tile must type as living in SMEM, or the
+                    // visibility check refuses a space the topology explicitly declares
+                    // visible. The NPU_HBM fallback is the ANE-era mock this used to be,
+                    // kept only for a call with no space argument at all.
+                    let space = match args.first() {
+                        Some(Expr::MemorySpace(ms)) => ms.space.clone(),
+                        _ => MemorySpace::NPUHBM,
+                    };
+                    base_ty = Type::Ref(Box::new(base_ty), space);
                 } else if matches!(
                     _method.as_ref(),
                     "to_device"

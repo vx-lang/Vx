@@ -773,6 +773,8 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
       launchOp->setAttr("vx_parallel_trip", trip);
     if (op->hasAttr("vx_parallel_two_level"))
       launchOp->setAttr("vx_parallel_two_level", rewriter.getUnitAttr());
+    if (auto th = op->getAttrOfType<IntegerAttr>("vx_parallel_threads"))
+      launchOp->setAttr("vx_parallel_threads", th);
 
     // The topology's declared name, forwarded from the spawn. Optional by
     // design: the flat path emits `vx.spawn` from an instruction stream that
@@ -1934,10 +1936,17 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
       payload += "launch=";
       payload += std::to_string(trip.getInt());
       // Two-level (Vx#379): "B,T" -- B blocks of T threads, where B is the
-      // block loop's trip and T is a block-shape choice the kernel is correct
-      // under regardless (thread loops stride by the actual blockDim).
-      if (op->hasAttr("vx_parallel_two_level"))
-        payload += ",128";
+      // block loop's trip and T is the widest thread-loop trip the frontend
+      // measured. The kernel is correct under any block shape (thread loops
+      // stride by the actual blockDim); T is the shape that leaves no thread
+      // idle and no iteration doubled.
+      if (op->hasAttr("vx_parallel_two_level")) {
+        int64_t th = 128;
+        if (auto ta = op->getAttrOfType<IntegerAttr>("vx_parallel_threads"))
+          th = ta.getInt();
+        payload += ",";
+        payload += std::to_string(th);
+      }
       payload.push_back('\0');
     }
 

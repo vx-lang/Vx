@@ -1,0 +1,144 @@
+//===- flash_coop_bench.vx - cooperative flash attention -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+//
+// The FA-2 work partition, written as a two-level Vx kernel (Vx#379): a block
+// owns a tile of TQ queries, its threads cooperatively stage K/V tiles into
+// SMEM, a barrier separates fill from use, and each thread walks one query
+// against the staged tile. This is the structure flash_attention_bench.vx
+// cannot express -- there, every thread re-reads K and V through L2 for
+// itself; here a tile is read from global memory ONCE per block and TQ
+// threads consume it from shared storage.
+//
+// __VX_BENCH_NOTE__
+//
+// Shape of the region, and what each piece proves:
+//
+//   for bq in 0..NB           block loop: iterations -> blockIdx
+//     init thread loop        qs/accs/ms/ls rows, one per thread-iteration
+//     barrier()
+//     for t in 0..NT          sequential per block: the key tiles
+//       fill thread loop      kt[r]/vt[r] <- k/v rows: SMEM writes at own row
+//       barrier()             fill visible before any consume
+//       consume thread loop   one query per iteration against kt/vt
+//       barrier()             consume done before the next fill overwrites
+//     writeback thread loop   o[bq*TQ + qi] -- the affine row the pair owns
+//     barrier()
+//
+// SMEM budget at TQ=64, TILE=16, HD=64 (f32): qs 16K + accs 16K + kt/vt 8K
+// + ms/ls 0.5K = 40.5 KiB -- inside the 48 KiB static-.shared ceiling.
+//
+// Same closed form as every bench in this family: Q is zero, so o[i][d] is
+// the mean of column d of V = 0.01*(SK-1)/2, and a tile staged at the wrong
+// offset, a missing barrier corrupting a row, or a broken rescale all move it.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: vx.transfer
+// CHECK-SAME: cost =
+// CHECK: vx.spawn topology(1
+//
+//===----------------------------------------------------------------------===//
+
+import std::math;
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+}
+Memory SMEM {
+  within: Memory::GPU_HBM, capacity: 228 KiB, bandwidth: 128 B/cyc,
+  granule: 1 KiB, managed: explicit, scope: sm
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::GPU_HBM,
+  visible: [Memory::GPU_HBM, Memory::SMEM],
+  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s,
+  transfer Memory::GPU_HBM -> Memory::SMEM
+}
+
+fn main() -> i32 {
+  let mut q_h = Tensor<f32>([ __VX_SQ__, __VX_HD__ ]);
+  let mut k_h = Tensor<f32>([ __VX_SK__, __VX_HD__ ]);
+  let mut v_h = Tensor<f32>([ __VX_SK__, __VX_HD__ ]);
+  let mut o_h = Tensor<f32>([ __VX_SQ__, __VX_HD__ ]);
+
+  for i in 0..__VX_SQ__ {
+    for d in 0..__VX_HD__ {
+      q_h[i][d] = 0.0;
+      o_h[i][d] = 0.0;
+    }
+  }
+  for j in 0..__VX_SK__ {
+    for d in 0..__VX_HD__ {
+      k_h[j][d] = 0.01;
+      v_h[j][d] = (j as f32) * 0.01;
+    }
+  }
+
+  let q = transfer(q_h, Memory::GPU_HBM);
+  let k = transfer(k_h, Memory::GPU_HBM);
+  let v = transfer(v_h, Memory::GPU_HBM);
+  let mut o = transfer(o_h, Memory::GPU_HBM);
+  let scale : f32 = 0.5;
+
+  spawn on(Topology::Dev) {
+    let mut qs = Tensor<f32>([ __VX_TQ__, __VX_HD__ ]).with_memory(Memory::SMEM);
+    let mut accs = Tensor<f32>([ __VX_TQ__, __VX_HD__ ]).with_memory(Memory::SMEM);
+    let mut kt = Tensor<f32>([ __VX_TILE__, __VX_HD__ ]).with_memory(Memory::SMEM);
+    let mut vt = Tensor<f32>([ __VX_TILE__, __VX_HD__ ]).with_memory(Memory::SMEM);
+    let mut ms = Tensor<f32>([ __VX_TQ__, 1 ]).with_memory(Memory::SMEM);
+    let mut ls = Tensor<f32>([ __VX_TQ__, 1 ]).with_memory(Memory::SMEM);
+
+    for bq in 0..__VX_NB__ {
+      for qi in 0..__VX_TQ__ {
+        qs[qi] = q[bq * __VX_TQ__ + qi] * 1.0;
+        accs[qi] = q[bq * __VX_TQ__ + qi] * 0.0;
+        ms[qi][0] = -1000000.0;
+        ls[qi][0] = 0.0;
+      }
+      barrier();
+      for t in 0..__VX_NT__ {
+        for r in 0..__VX_TILE__ {
+          kt[r] = k[t * __VX_TILE__ + r] * 1.0;
+          vt[r] = v[t * __VX_TILE__ + r] * 1.0;
+        }
+        barrier();
+        for qi in 0..__VX_TQ__ {
+          let mut m : f32 = ms[qi][0];
+          let mut l : f32 = ls[qi][0];
+          for jj in 0..__VX_TILE__ {
+            let s : f32 = dot(qs[qi], kt[jj]) * scale;
+            let m_new : f32 = if s > m {
+              s
+            } else {
+              m
+            };
+            let corr : f32 = (m - m_new).exp();
+            let p : f32 = (s - m_new).exp();
+            l = l * corr + p;
+            accs[qi] = accs[qi] * corr;
+            accs[qi] = accs[qi] + vt[jj] * p;
+            m = m_new;
+          }
+          ms[qi][0] = m;
+          ls[qi][0] = l;
+        }
+        barrier();
+      }
+      for qi in 0..__VX_TQ__ {
+        let inv : f32 = 1.0 / ls[qi][0];
+        o[bq * __VX_TQ__ + qi] = accs[qi] * inv;
+      }
+      barrier();
+    }
+  }
+
+  let o_home = transfer(o, Memory::CPU_DRAM);
+  print(o_home);
+  return 0;
+}

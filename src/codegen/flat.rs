@@ -2105,9 +2105,27 @@ pub fn emit_function_mlir(
                 let (elem, shape) = ctx.tensors.get(&gid)?;
                 let memty = tensor_memref_ty(elem, shape)?;
                 let n = format!("%v{idx}");
-                body += &format!("  {n} = memref.alloc() : {memty}\n");
-                names[idx] = n;
-                mem_of[idx] = Some(memty);
+                // `operand2` may carry a memory-space dispatch id from `.with_memory` (Vx#379
+                // stage B). A `scope: sm` space becomes a space-3 ALLOCA: on the host that is a
+                // stack slot like any other, and in the device clone materializeGpuKernels turns
+                // a static space-3 alloca into `.shared` storage -- the machinery #352 built.
+                // Any other space stays a plain allocation; the annotation was advisory.
+                let sm = ins.operand2.0 != 0
+                    && ctx
+                        .subspaces
+                        .get(&(ins.operand2.0 as u64))
+                        .and_then(|s| s.scope.as_deref())
+                        == Some("sm");
+                if sm {
+                    let smty = format!("{}, 3>", memty.strip_suffix('>')?);
+                    body += &format!("  {n} = memref.alloca() : {smty}\n");
+                    names[idx] = n;
+                    mem_of[idx] = Some(smty);
+                } else {
+                    body += &format!("  {n} = memref.alloc() : {memty}\n");
+                    names[idx] = n;
+                    mem_of[idx] = Some(memty);
+                }
             }
             // Index a tensor along its outermost dimension. `operand1` is the base tensor (memref),
             // `operand2` the index (`arith.index_cast` to `index`). A scalar-element result
@@ -2164,8 +2182,13 @@ pub fn emit_function_mlir(
                     let sizes_s = join_i64(&dims);
                     let strides_s = join_i64(&strides);
                     let dimx: String = dims.iter().map(|d| format!("{d}x")).collect();
-                    let result_ty =
-                        format!("memref<{dimx}{et}, strided<[{strides_s}], offset: ?>>");
+                    // A sub-view of shared storage stays in its space: dropping the `, 3` here
+                    // would make the row a generic pointer and the PTX would address `.shared`
+                    // data with global loads.
+                    let space_sfx = if base_memty.ends_with(", 3>") { ", 3" } else { "" };
+                    let result_ty = format!(
+                        "memref<{dimx}{et}, strided<[{strides_s}], offset: ?>{space_sfx}>"
+                    );
                     let n = format!("%v{idx}");
                     body += &format!(
                         "  {n} = memref.reinterpret_cast {base} to offset: [{off}], sizes: [{sizes_s}], strides: [{strides_s}] : {base_memty} to {result_ty}\n"
@@ -2376,13 +2399,19 @@ pub fn emit_function_mlir(
                 // `vx_parallel_two_level` rides along so the launch is sized as blocks x threads.
                 let two_level = ins.imm & crate::hir::flatten::SPAWN_TWO_LEVEL != 0;
                 let trip_count = ins.imm & 0xffff_ffff;
+                // Bits 32..47: the widest thread-loop trip, i.e. the block shape the launch
+                // should use (Vx#379). Zero (a pre-two-level stream) falls back to 128.
+                let threads = (ins.imm >> 32) & 0xffff;
                 let trip = if trip_count > 0 {
                     format!(
                         ", vx_parallel_trip = {trip_count} : i64{}",
                         if two_level {
-                            ", vx_parallel_two_level"
+                            format!(
+                                ", vx_parallel_two_level, vx_parallel_threads = {} : i64",
+                                if threads > 0 { threads } else { 128 }
+                            )
                         } else {
-                            ""
+                            String::new()
                         }
                     )
                 } else {
