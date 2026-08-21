@@ -1272,24 +1272,28 @@ impl<'a> TypeChecker<'a> {
                 }
             }
         } else if resolved_name == "dot" {
-            // Slice reduction (S2): dot(a, b) over two rank-1 f32 slices -> scalar f32.
+            // Slice reduction (S2): dot(a, b) over two rank-1 float slices -> scalar f32.
             // Lowers to vector.load + arith.mulf + vector.reduction<add> (SIMD by construction).
+            // Half-precision slices are welcome, mixed with f32 freely: they widen on load and
+            // the accumulation is f32 regardless (Vx#320) -- a reduction's precision is the
+            // accumulator's, not the storage's.
             if args.len() != 2 {
                 self.errors
                     .push("Function 'dot' expects 2 slice arguments".to_string());
             }
             for t in arg_types.iter().take(2) {
-                if !Self::is_f32_slice(t) {
+                if !Self::is_f32_slice(t) && !Self::is_half_slice(t) {
                     self.errors.push(format!(
-                        "Function 'dot' expects rank-1 f32 slices, got {:?}",
+                        "Function 'dot' expects rank-1 float slices (f32/f16/bf16), got {:?}",
                         t
                     ));
                 }
             }
             Some(Type::Scalar(ElementType::F32))
         } else if resolved_name == "sum" || resolved_name == "max" || resolved_name == "min" {
-            // Slice reduction (S2): sum/max/min(a) over a rank-1 f32 slice -> scalar f32.
-            // Lowers to vector.load + vector.reduction<add|maximumf|minimumf>.
+            // Slice reduction (S2): sum/max/min(a) over a rank-1 float slice -> scalar f32.
+            // Lowers to vector.load + vector.reduction<add|maximumf|minimumf>. Half slices
+            // widen on load; the result is f32 like every reduction's (Vx#320).
             if args.len() != 1 {
                 self.errors.push(format!(
                     "Function '{}' expects 1 slice argument",
@@ -1297,9 +1301,9 @@ impl<'a> TypeChecker<'a> {
                 ));
             }
             if let Some(t) = arg_types.first() {
-                if !Self::is_f32_slice(t) {
+                if !Self::is_f32_slice(t) && !Self::is_half_slice(t) {
                     self.errors.push(format!(
-                        "Function '{}' expects a rank-1 f32 slice, got {:?}",
+                        "Function '{}' expects a rank-1 float slice (f32/f16/bf16), got {:?}",
                         resolved_name, t
                     ));
                 }

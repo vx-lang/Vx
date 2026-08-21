@@ -166,16 +166,24 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
 
-                // Slice elementwise (S3): arithmetic where at least one operand is a rank-1 f32
-                // slice. `slice OP slice`, `slice OP scalar`, `scalar OP slice` -> the slice's
-                // shape (here `*` is elementwise; matmul is `@`/MatMul, handled above). These
-                // lower to vector ops (load/broadcast + arith.{mulf,addf,subf,divf}).
+                // Slice elementwise (S3): arithmetic where at least one operand is a rank-1
+                // float slice. `slice OP slice`, `slice OP scalar`, `scalar OP slice` -> the
+                // slice's shape (here `*` is elementwise; matmul is `@`/MatMul, handled above).
+                // These lower to vector ops (load/broadcast + arith.{mulf,addf,subf,divf}).
+                //
+                // Half-precision slices participate as STORAGE (Vx#320): they widen to f32 on
+                // load, so any op touching an f16/bf16 slice yields an F32 slice -- storage
+                // precision and arithmetic precision are separate decisions, and arithmetic is
+                // always f32. Narrowing back happens only at an explicit store into a half
+                // tensor, which the assignment rules govern.
                 if matches!(
                     op,
                     BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div
                 ) {
-                    let l_slice = Self::is_f32_slice(&lhs_ty);
-                    let r_slice = Self::is_f32_slice(&rhs_ty);
+                    let l_half = Self::is_half_slice(&lhs_ty);
+                    let r_half = Self::is_half_slice(&rhs_ty);
+                    let l_slice = Self::is_f32_slice(&lhs_ty) || l_half;
+                    let r_slice = Self::is_f32_slice(&rhs_ty) || r_half;
                     let l_scalar = matches!(lhs_ty, Type::Scalar(ElementType::F32));
                     let r_scalar = matches!(rhs_ty, Type::Scalar(ElementType::F32));
                     // At least one slice operand; the other must be a slice or an f32 scalar.
@@ -186,7 +194,14 @@ impl<'a> TypeChecker<'a> {
                         (false, false) => false,
                     };
                     if slice_op {
-                        return if l_slice { lhs_ty } else { rhs_ty };
+                        let shape_side = if l_slice { &lhs_ty } else { &rhs_ty };
+                        if l_half || r_half {
+                            // The widened result: same shape and placement, f32 element.
+                            if let Type::Tensor(_, dims, top) = shape_side {
+                                return Type::Tensor(ElementType::F32, dims.clone(), top.clone());
+                            }
+                        }
+                        return shape_side.clone();
                     }
                 }
 

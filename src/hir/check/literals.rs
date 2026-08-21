@@ -230,6 +230,24 @@ impl<'a> TypeChecker<'a> {
         matches!(inner, Type::Tensor(ElementType::F32, _, _))
     }
 
+    /// A rank-1 f16/bf16 tensor slice: half-precision STORAGE that every slice contract widens
+    /// to f32 on load (Vx#320). Storage precision and arithmetic precision are separate
+    /// decisions -- a wide-slice op computes in f32 and its result IS f32; only an explicit
+    /// store back into a half tensor narrows again.
+    pub(crate) fn is_half_slice(t: &Type) -> bool {
+        let inner = match t {
+            Type::Borrow { inner, .. }
+            | Type::Pointer(inner, _, _)
+            | Type::Pinned(inner, _)
+            | Type::Ref(inner, _) => inner.as_ref(),
+            other => other,
+        };
+        matches!(
+            inner,
+            Type::Tensor(ElementType::F16 | ElementType::BF16, _, _)
+        )
+    }
+
     /// A short human name for a type, for diagnostics that only need to say what KIND of thing
     /// the programmer wrote. The `{:?}` rendering used elsewhere prints the whole AST of every
     /// dimension expression, which buries the one word the reader needs.

@@ -567,10 +567,24 @@ impl<'r> Lowerer<'r> {
                 // carries the left operand's type. When either operand is a tensor the op is
                 // *elementwise* and the result is the tensor type (a scalar operand broadcasts) -- an
                 // arith opcode with a tensor result type is the flat HIR's elementwise form, mirroring
-                // `arith.mulf` on a vector in codegen.
+                // `arith.mulf` on a vector in codegen. A HALF tensor operand widens the result to
+                // f32 (Vx#320): the checker already typed the expression so, and codegen loads the
+                // half row through an extf -- arithmetic is always f32, storage is what varies.
+                let widen = |t: &LoweredTy| -> LoweredTy {
+                    match t {
+                        LoweredTy::Tensor {
+                            elem: ElementType::F16 | ElementType::BF16,
+                            shape,
+                        } => LoweredTy::Tensor {
+                            elem: ElementType::F32,
+                            shape: shape.clone(),
+                        },
+                        other => other.clone(),
+                    }
+                };
                 let result_ty = match (&l.ty, &r.ty) {
-                    (LoweredTy::Tensor { .. }, _) => l.ty.clone(),
-                    (_, LoweredTy::Tensor { .. }) => r.ty.clone(),
+                    (LoweredTy::Tensor { .. }, _) => widen(&l.ty),
+                    (_, LoweredTy::Tensor { .. }) => widen(&r.ty),
                     _ => l.ty.clone(),
                 };
                 // Two scalar operands already share a type: the checker types both to the same scalar
@@ -756,7 +770,6 @@ impl<'r> Lowerer<'r> {
                     return None;
                 }
                 let mut regs = [Register(0); 2];
-                let mut elem: Option<ElementType> = None;
                 for (n, arg) in fc.args.iter().enumerate() {
                     let v = self.lower_expr(arg)?;
                     let LoweredTy::Tensor { elem: e, shape } = &v.ty else {
@@ -765,15 +778,19 @@ impl<'r> Lowerer<'r> {
                     if shape.len() != 1 {
                         return None; // a rank-1 slice reduces to a scalar; higher ranks don't
                     }
-                    elem = Some(e.clone());
+                    if !matches!(e, ElementType::F32 | ElementType::F16 | ElementType::BF16) {
+                        return None; // float slices only; halves widen on load (Vx#320)
+                    }
                     regs[n] = v.reg;
                 }
-                let elem = elem?;
+                // The result is f32 REGARDLESS of the slices' storage: a reduction's precision
+                // is its accumulator's, and codegen widens half-precision rows on load (Vx#320).
+                // The checker types the call the same way; mixed f16/f32 dots are welcome.
                 Some(self.emit_typed(
                     Opcode::Reduce,
                     regs[0],
                     regs[1],
-                    LoweredTy::Scalar(elem),
+                    LoweredTy::Scalar(ElementType::F32),
                     kind,
                 ))
             }
@@ -6012,6 +6029,38 @@ mod tests {
             0,
             "no two-level bit: imm={:#x}",
             end.imm
+        );
+    }
+
+    #[test]
+    fn a_half_slice_dot_lowers_flat_with_an_f32_result() {
+        // The storage/arithmetic split (Vx#320): reductions over f16 slices stay on the flat
+        // path and reduce into f32 -- codegen widens the rows on load. The regression this
+        // pins: rejecting the half slice sent the whole program to the AST path, which has
+        // no Reduce at all.
+        let (did, w) = lower_with_registry(
+            "fn main() -> i32 {\n\
+               let mut a = Tensor<f16>([4, 8]);\n\
+               let mut b = Tensor<f16>([4, 8]);\n\
+               let mut acc = Tensor<f32>([1, 8]);\n\
+               a[0][0] = 0.5;\n\
+               let s : f32 = dot(a[0], b[1]);\n\
+               acc[0] = acc[0] + b[2] * 0.5;\n\
+               print(s);\n\
+               return 0;\n\
+             }",
+            "main",
+        );
+        assert!(did, "half-slice reductions lower on the flat path");
+        let red = w
+            .local_hir_stream
+            .iter()
+            .find(|i| i.opcode == Opcode::Reduce)
+            .expect("a Reduce");
+        assert_eq!(
+            w.local_type_stream[red.type_idx.0 as usize],
+            scalar_gid(&ElementType::F32),
+            "the reduction result is f32 regardless of storage"
         );
     }
 

@@ -1281,8 +1281,29 @@ fn coerce_vector(
     if let Some(m) = mem_of.get(op_reg as usize)?.clone() {
         let c0 = format!("%vc{tag}");
         let v = format!("%vl{tag}");
-        let al = vector_align_attr(vecty);
         body.push_str(&format!("  {c0} = arith.constant 0 : index\n"));
+        // Half-precision STORAGE widens on load (Vx#320): when the row's element is
+        // f16/bf16 and the op wants f32 lanes, load the narrow vector and `arith.extf`
+        // it wide. The narrow row still earns the alignment attribute on its own terms
+        // (64 halves are 128 bytes -- v8 packs).
+        let row_elem = m.rsplit('x').next()?.trim_end_matches('>');
+        let row_elem = row_elem.split(',').next()?.trim();
+        if (row_elem == "f16" || row_elem == "bf16") && vecty.ends_with("xf32>") {
+            let lanes = vecty
+                .strip_prefix("vector<")?
+                .split('x')
+                .next()?
+                .to_string();
+            let nvec = format!("vector<{lanes}x{row_elem}>");
+            let nal = vector_align_attr(&nvec);
+            let nv = format!("%vn{tag}");
+            body.push_str(&format!(
+                "  {nv} = vector.load {name}[{c0}]{nal} : {m}, {nvec}\n"
+            ));
+            body.push_str(&format!("  {v} = arith.extf {nv} : {nvec} to {vecty}\n"));
+            return Some(v);
+        }
+        let al = vector_align_attr(vecty);
         body.push_str(&format!(
             "  {v} = vector.load {name}[{c0}]{al} : {m}, {vecty}\n"
         ));
@@ -2217,21 +2238,43 @@ pub fn emit_function_mlir(
                     return None; // the AST lowers only f32 reductions
                 }
                 let et = mlir_scalar(&e)?;
-                let s0 = names.get(ins.operand1.0 as usize)?.clone();
+                // One load per operand, widened when the ROW is half-precision (Vx#320):
+                // f16/bf16 rows come up through `arith.extf` and the multiply, reduction and
+                // result are f32 -- a reduction's precision is its accumulator's, exactly the
+                // contract the checker types (`dot` over any float slices -> f32).
+                let c0 = format!("%rc{idx}");
+                body += &format!("  {c0} = arith.constant 0 : index\n");
+                let load_wide = |reg: u32, tag: &str, body: &mut String| -> Option<String> {
+                    let s = names.get(reg as usize)?.clone();
+                    let m = mem_of.get(reg as usize)?.clone()?;
+                    let d = memref_lead_dim(&m)?;
+                    let row_elem = m.rsplit('x').next()?.trim_end_matches('>');
+                    let row_elem = row_elem.split(',').next()?.trim();
+                    let rvec = format!("vector<{d}x{row_elem}>");
+                    let al = vector_align_attr(&rvec);
+                    let v = format!("%{tag}{idx}");
+                    body.push_str(&format!(
+                        "  {v} = vector.load {s}[{c0}]{al} : {m}, {rvec}\n"
+                    ));
+                    if row_elem == et {
+                        return Some(v);
+                    }
+                    if row_elem != "f16" && row_elem != "bf16" {
+                        return None;
+                    }
+                    let w = format!("%{tag}w{idx}");
+                    body.push_str(&format!(
+                        "  {w} = arith.extf {v} : {rvec} to vector<{d}x{et}>\n"
+                    ));
+                    Some(w)
+                };
+                let v0 = load_wide(ins.operand1.0, "vl", &mut body)?;
                 let m0 = mem_of.get(ins.operand1.0 as usize)?.clone()?;
                 let d = memref_lead_dim(&m0)?;
                 let vecty = format!("vector<{d}x{et}>");
-                let c0 = format!("%rc{idx}");
-                body += &format!("  {c0} = arith.constant 0 : index\n");
-                let al = vector_align_attr(&vecty);
-                let v0 = format!("%vl{idx}");
-                body += &format!("  {v0} = vector.load {s0}[{c0}]{al} : {m0}, {vecty}\n");
                 let (reduce_in, kind) = match ins.imm {
                     0 => {
-                        let s1 = names.get(ins.operand2.0 as usize)?.clone();
-                        let m1 = mem_of.get(ins.operand2.0 as usize)?.clone()?;
-                        let v1 = format!("%vr{idx}");
-                        body += &format!("  {v1} = vector.load {s1}[{c0}]{al} : {m1}, {vecty}\n");
+                        let v1 = load_wide(ins.operand2.0, "vr", &mut body)?;
                         let prod = format!("%vp{idx}");
                         body += &format!("  {prod} = arith.mulf {v0}, {v1} : {vecty}\n");
                         (prod, "add")
