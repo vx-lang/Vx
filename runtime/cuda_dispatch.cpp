@@ -664,8 +664,27 @@ bool run_device_image(const void *payload, size_t payload_size,
     CUmodule mod = nullptr;
     /* PTX, so the driver JITs it here -- once per process per device, which is
        why this is cached rather than done per dispatch. The cost buys an image
-       that needs no `ptxas` anywhere and stays loadable on a newer device. */
-    CUresult rc = cuModuleLoadData(&mod, image);
+       that needs no `ptxas` anywhere and stays loadable on a newer device.
+
+       VX_MAXRREG caps the per-thread registers the JIT may use. The knob
+       exists because ptxas took the split-K attention kernel to 255 registers
+       -- the architectural ceiling, with spill traffic in the hot chain -- and
+       the register/occupancy trade is a measurement, not a guess: a cap buys
+       resident warps at the price of more spills, and only the device clock
+       says which side wins. */
+    CUresult rc;
+    const char *maxrreg = getenv("VX_MAXRREG");
+    if (maxrreg && *maxrreg) {
+      unsigned int cap = (unsigned int)atoi(maxrreg);
+      CUjit_option opts[1] = {CU_JIT_MAX_REGISTERS};
+      void *vals[1] = {(void *)(uintptr_t)cap};
+      rc = cuModuleLoadDataEx(&mod, image, 1, opts, vals);
+      if (verbose()) {
+        fprintf(stderr, "[Vx CUDA] JIT register cap: %u (VX_MAXRREG)\n", cap);
+      }
+    } else {
+      rc = cuModuleLoadData(&mod, image);
+    }
     if (rc != CUDA_SUCCESS) {
       const char *name = nullptr;
       cuGetErrorName(rc, &name);

@@ -2261,9 +2261,13 @@ pub fn emit_function_mlir(
                 let md = mem_of.get(ins.imm as usize)?.clone()?;
                 // "memref<8x16xf32>" -> "f32": the element is the segment after the last 'x',
                 // shorn of the closing '>'. Floats only -- an int matmul declines the program to
-                // the AST path rather than improvising linalg's integer semantics here.
+                // the AST path rather than improvising linalg's integer semantics here. The
+                // half-precision pair is in (Vx#320): the routed backend runs them through
+                // cublasGemmEx with f32 accumulation, and the host fallback's linalg lowers
+                // them like any float -- restricting to f32 here silently evicted every f16
+                // attention program from the flat path, prover and all.
                 let et = md.rsplit('x').next()?.trim_end_matches('>').to_string();
-                if et != "f32" && et != "f64" {
+                if et != "f32" && et != "f64" && et != "f16" && et != "bf16" {
                     return None;
                 }
                 body += &format!("  %mz{idx} = arith.constant 0.0 : {et}\n");
