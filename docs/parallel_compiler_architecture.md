@@ -481,6 +481,22 @@ To prevent identity failures when multiple threads concurrently instantiate iden
 
 1. **The Wait-Free Local Epoch**: Threads do not hit atomic locks. They push argument GIDs to a `LOCAL_GENERICS_ARENA`, set Word 2 to that local index, and flip the `LOCAL_DEFERRED_BIT` in Word 3.
 
+**The Content-Addressed Alternative (`--intern-mode=content`)**:
+The compiler carries a second interning strategy, chosen once per compilation and frozen onto the `GlobalSession` (`InternMode`, Vx#381). Instead of a local arena index, Word 2 stores a 63-bit FNV-1a digest of the argument GIDs (`generic_digest` in `src/gid.rs`, signalled by `GENERIC_DIGEST_FLAG` in Word 3). Identity is final at mint time: two workers that never coordinate compute the same GID for `Vec<i32>`, so there is no arena entry, no deferred bit, nothing to reconcile and nothing to patch. The barrier is absent rather than cheap.
+
+Why `Deferred` stays the default:
+
+- Deferred naming is exact and invertible. The barrier deduplicates by comparing the actual argument lists, and the arena entry lets a consumer read the arguments back out of the GID. A digest is a 63-bit hash (collisions are possible in principle) and cannot be inverted.
+- Measured on the 48-core ladder, the two modes are within 1% of each other at every thread count. The barrier itself measures 0.0 ms, so removing it buys no wall clock today.
+
+What content mode is for:
+
+- It is the running proof that identity-from-content makes the synchronization deletable, which is the design's central claim.
+- It is a differential control: both strategies must canonicalize to the same program (`canonicalise_stream`, asserted in the pipeline), which cross-checks the interning machinery from an independent angle.
+- It is headroom for the day workers stop sharing an address space (incremental or distributed compilation). A digest needs no meeting between processes; a merge barrier does.
+
+Tests: `content_addressed_workers_agree_without_coordinating` (`src/pipeline.rs`) proves the no-coordination agreement; `the_intern_strategy_is_carried_on_the_session` (`src/hir/env.rs`) guards that the choice lives on the session and never leaks between compilations.
+
 ### Phase 4: Parallel Local Deduplication (Bucketed Interning)
 
 - **Pre-conditions:** All worker threads have returned their `LocalWorkerState`.
@@ -1065,6 +1081,7 @@ gaps (what/why/tests, per commit) is
 | D7 | **Phase-separated pipeline** with barriers, on `rayon` | Embarrassingly parallel per phase; no fine-grained cross-thread pipelining/locking | `src/pipeline.rs::compile_pipeline` |
 | D8 | **Verification engine** — invariants asserted at phase boundaries, `#[cfg(debug_assertions)]` | Prove isolation/arena-bounds/patch-completeness under parallelism at zero release cost | `src/parallel_architecture_verifier.rs` |
 | D9 | **Zero-copy metadata** (`bytemuck`, dictionary-encoded GIDs) | Cross-crate load without swizzling — GIDs are absolute | `src/metadata.rs`, `src/gid.rs::serialize_metadata_symbols` |
+| D10 | **Two interning strategies** carried on the session (`InternMode`: `Deferred` default, `Content` opt-in) | Content-addressed identity proves the barrier is deletable and cross-checks the deferred path; the strategy is per-compilation state, never a process global (Vx#381) | `src/intern_mode.rs`, `src/pipeline.rs::mint_generic_in_mode`, `src/gid.rs::generic_digest` |
 
 ### 9.2 Code pointers (concept → source)
 
@@ -1082,6 +1099,7 @@ gaps (what/why/tests, per commit) is
 | Phase 3 type-check workers + **GID stream lowering** | `src/pipeline.rs::type_check_phase`, `emit_function_type_gids`/`emit_type_gid` |
 | Phase 5 dedup (local→global intern) | `src/pipeline.rs::deduplication_phase` |
 | Phase 6 SIMD patch (remap deferred w2, clear bit) | `src/pipeline.rs::simd_patch_phase` |
+| Intern strategy (deferred vs content-addressed) | `src/intern_mode.rs` (`InternMode`), `src/gid.rs` (`generic_digest`, `GENERIC_DIGEST_FLAG`), `src/pipeline.rs::mint_generic_in_mode` |
 | Verification hooks (Phases 1–8) | `src/parallel_architecture_verifier.rs::verify_phase_*` |
 | Zero-copy metadata | `src/metadata.rs` |
 | Topology cost graph (per-compilation, lock-free) | `src/arch.rs` (`TransferCostGraph`, `TopologyDecl`) |
@@ -1094,6 +1112,7 @@ gaps (what/why/tests, per commit) is
 | GID minting (symbol map) + AST attachment | **Implemented** | `resolver.rs`/`resolve.rs`; determinism + module-isolation tests |
 | Flat type-stream emission (Phase 3 lowering) | **Implemented** (signatures) | `emit_function_type_gids`; harvests function **signature** type refs. Body-expression inferred types are **not** yet harvested. |
 | Deferred generic intern + SIMD patch | **Implemented** | `mint_deferred_generic` → `deduplication_phase` → `simd_patch_phase`; `deferred_generic_gid_is_interned_and_patched` |
+| Content-addressed interning (`--intern-mode=content`) | **Implemented** (opt-in) | digest branch of `mint_generic_in_mode`; `content_addressed_workers_agree_without_coordinating`; both modes canonicalize to the same program and measure within 1% on the 48-thread ladder |
 | Zero-lock session; AST-carried topologies/memories | **Implemented** | `session.rs`, `arch.rs`, `env.rs`; concurrency-isolation test |
 | Parallel pipeline + verification hooks | **Implemented** | `compile_pipeline` + `verify_phase_*` (debug) |
 | **Frozen `ImmutableGlobalRegistry` wired into the session** | **Implemented** (pipeline path) | Built at the Phase 2 freeze (`pipeline.rs::build_frozen_registry`) from the resolved modules and stored via `GlobalSession::with_registry`; petgraph cycle detection active (infinite-sized recursive struct → compile error). By-value cycle detection does not yet follow generic instantiations. |

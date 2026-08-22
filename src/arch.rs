@@ -566,18 +566,21 @@ impl Default for TransferCostGraph {
     }
 }
 
-/// How many times the shortest-path sweep has run on this thread, and over how many spaces each
-/// time. Test-only, and a `thread_local` rather than a global counter: per-thread state is not
-/// shared mutable state, so it neither violates the isolation the compiler guarantees nor trips
-/// the lint that enforces it.
-///
-/// This exists because the sweep is `O(spaces^2)` searches and it is the whole of `env_build`,
-/// which is serial. Running it once more than needed does not change any answer -- the second
-/// sweep overwrites the first -- so nothing observable goes wrong and the only symptom is that
-/// every compile of a program declaring machines gets slower. That is exactly the kind of
-/// regression that is invisible until someone measures, and it has now happened twice: once per
-/// function before the graph was hoisted to one per compilation, and once per compile after
-/// (Vx#380).
+// How many times the shortest-path sweep has run on this thread, and over how many spaces each
+// time. Test-only, and a `thread_local` rather than a global counter: per-thread state is not
+// shared mutable state, so it neither violates the isolation the compiler guarantees nor trips
+// the lint that enforces it.
+//
+// This exists because the sweep is `O(spaces^2)` searches and it is the whole of `env_build`,
+// which is serial. Running it once more than needed does not change any answer -- the second
+// sweep overwrites the first -- so nothing observable goes wrong and the only symptom is that
+// every compile of a program declaring machines gets slower. That is exactly the kind of
+// regression that is invisible until someone measures, and it has now happened twice: once per
+// function before the graph was hoisted to one per compilation, and once per compile after
+// (Vx#380).
+//
+// A plain comment rather than a doc comment: rustdoc generates nothing for a macro
+// invocation, so `///` here is rejected by the `unused_doc_comments` lint under -D warnings.
 #[cfg(test)]
 thread_local! {
     static SWEEP_SIZES: std::cell::RefCell<Vec<usize>> = const { std::cell::RefCell::new(Vec::new()) };
