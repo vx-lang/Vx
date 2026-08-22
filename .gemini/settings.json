@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(source config.local)",
+      "Bash(cargo build:*)",
+      "Bash(cargo test:*)",
+      "Bash(cargo fmt:*)",
+      "Bash(cargo clippy:*)",
+      "Bash(mdformat --check:*)",
+      "Bash(./target/debug/vxc:*)",
+      "Bash(./target/release/vxc:*)"
+    ]
+  }
+}
