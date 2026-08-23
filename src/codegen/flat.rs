@@ -36,6 +36,18 @@ use std::collections::HashMap;
 
 /// The MLIR type string for a scalar element type. Integers are signless (signedness lives in the
 /// op, e.g. `divsi`/`divui`); `bool` is `i1`.
+/// Format a float so MLIR can parse it back: Rust's `{:?}` prints `0.00001` as `1e-5`,
+/// and MLIR needs a decimal point before the exponent (Vx#384).
+fn mlir_float_literal(value: f64) -> String {
+    let text = format!("{value:?}");
+    match text.split_once(['e', 'E']) {
+        // `1e-5` -> `1.0e-5`. A mantissa that already has a point, and anything without an
+        // exponent at all (`288.0`, `inf`, `NaN`), is left exactly as Rust printed it.
+        Some((mantissa, exponent)) if !mantissa.contains('.') => format!("{mantissa}.0e{exponent}"),
+        _ => text,
+    }
+}
+
 fn mlir_scalar(elem: &ElementType) -> Option<&'static str> {
     use ElementType::*;
     Some(match elem {
@@ -1538,7 +1550,7 @@ pub fn emit_function_mlir(
                 let e = ty_at(ins.type_idx.0)?;
                 let mt = mlir_scalar(&e)?;
                 let lit = if is_float(&e) {
-                    format!("{:?}", f64::from_bits(ins.imm))
+                    mlir_float_literal(f64::from_bits(ins.imm))
                 } else {
                     (ins.imm as i64).to_string()
                 };
@@ -3195,5 +3207,27 @@ mod tests {
         assert!(f2i.contains("arith.fptosi"), "{f2i}");
         let f2f = emit_and_verify("fn c(a: f32) -> f64 { return a as f64; }");
         assert!(f2f.contains("arith.extf"), "{f2f}");
+    }
+
+    /// Every float the emitter writes has to survive a round trip through MLIR's parser.
+    /// Rust's `{:?}` prints the shortest form that round-trips in Rust, which for small
+    /// magnitudes drops the decimal point entirely: `0.00001` becomes `1e-5`. MLIR reads the
+    /// `1`, then tries to parse `e-5` as the next operation and reports `custom op 'e' is
+    /// unknown`, so the module the emitter just claimed will not parse (Vx#384).
+    #[test]
+    fn float_literals_keep_a_decimal_point_before_the_exponent() {
+        // The exact case that broke `struct_codegen.vx`.
+        assert_eq!(super::mlir_float_literal(1e-5), "1.0e-5");
+
+        // The property, over a spread of magnitudes: whatever Rust chooses to print, the
+        // mantissa always carries a point.
+        for value in [1e-5, 1e-7, 2.5e-9, 288.0, 0.5, -0.25, 1.0, 3.4e38] {
+            let text = super::mlir_float_literal(value);
+            let mantissa = text.split(['e', 'E']).next().unwrap();
+            assert!(
+                mantissa.contains('.'),
+                "{value} formatted as {text}, whose mantissa has no decimal point"
+            );
+        }
     }
 }

@@ -96,6 +96,47 @@ jobs:
           LLC_PATH: llc-22
           CLANG_PATH: clang-22
 
+      # The pipeline's claims -- same bytes at any thread count, isolated compilations,
+      # parity with the AST oracle -- named so a gate silenced with #[ignore] fails the build.
+      - name: Parallel pipeline gates
+        env:
+          LLVM_CONFIG_PATH: llvm-config-22
+          MLIR_TRANSLATE_PATH: mlir-translate-22
+          OPT_PATH: opt-22
+          LLC_PATH: llc-22
+          CLANG_PATH: clang-22
+        run: |
+          set -euo pipefail
+          run_gate () {
+            local target="$1" name="$2"
+            echo "== $name"
+            if ! out=$(cargo test --release $target -- --exact "$name" --nocapture 2>&1); then
+              echo "$out"
+              echo "GATE FAILED: $name"
+              exit 1
+            fi
+            echo "$out" | grep -q "1 passed" || {
+              echo "$out"
+              echo "GATE MISSING: $name did not run (silenced or renamed?)"
+              exit 1
+            }
+          }
+
+          # Determinism: the frontend emits the same bytes however many threads it uses.
+          run_gate "--lib" pipeline::gid_stream_tests::pipeline_emits_byte_identical_mlir_across_thread_counts
+          run_gate "--lib" pipeline::gid_stream_tests::hir_stream_is_deterministic_across_thread_counts
+          run_gate "--lib" pipeline::gid_stream_tests::flat_type_stream_order_is_deterministic_across_thread_counts
+          run_gate "--lib" pipeline::gid_stream_tests::memalg_constructs_are_deterministic_across_thread_counts
+
+          # Isolation: concurrent compilations in one process cannot see each other.
+          run_gate "--test integration_test" integration_test::architecture_test::concurrent_compilations_have_isolated_topologies
+
+          # Parity: what the parallel pipeline emits still matches the AST oracle.
+          run_gate "--test integration_test" integration_test::flat_codegen_differential::pipeline_emits_mlir_that_matches_the_ast_oracle
+
+          # Coverage: how much of the backend corpus the flat path carries (Vx#383).
+          run_gate "--test integration_test" integration_test::flat_corpus_sweep::flat_path_coverage_of_the_backend_corpus_holds
+
       - name: Run stress tests (Every 10th Commit)
         run: |
           if [ $((GITHUB_RUN_NUMBER % 10)) -eq 0 ]; then
