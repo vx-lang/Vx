@@ -166,6 +166,10 @@ fn run_frontend(
     // read it, preserving the lock-free `type_check_phase`.
     timed("return_prov", || env.annotate_return_provenances(&modules));
 
+    // Before any body: a body checked against an ambiguous declaration table has been checked
+    // against a coin flip.
+    timed("decl_check", || declaration_check_phase(&session, &env))?;
+
     let mut checks = timed("type_check", || {
         type_check_phase(&mut modules, &session, &env, sched)
     })?;
@@ -1155,9 +1159,40 @@ fn check_one_function(
     }
 }
 
-/// Per-function checks only. The driver also runs the whole-program declaration checks
-/// (E6012/E6015/E6016 and memory coherence) before checking bodies; this path does not yet,
-/// so it accepts machine models the driver refuses.
+/// The whole-program declaration checks, once, before any body is checked.
+///
+/// Nothing about these is per-function -- they ask whether the machine model is self-consistent,
+/// reading the frozen env and no function at all -- so there is nothing here to distribute. They
+/// are the one part of the frontend this path used to skip entirely: a corpus whose declared
+/// spaces collided onto shared dispatch ids compiled here without a diagnostic while the driver
+/// refused it.
+fn declaration_check_phase(
+    global_session: &std::sync::Arc<GlobalSession>,
+    global_env: &GlobalAstEnv,
+) -> Result<(), PipelineError> {
+    let mut worker = LocalWorkerState::new(global_session.clone());
+    let mut checker = TypeChecker::new(global_env, &mut worker);
+    checker.check_whole_program_declarations();
+
+    let mut errors = 0;
+    for diag in checker.errors.iter() {
+        if diag.level == DiagnosticLevel::Error {
+            errors += 1;
+            println!("Error: {}", diag.message);
+        } else if diag.level == DiagnosticLevel::Warning {
+            println!("Warning: {}", diag.message);
+        }
+    }
+    if errors > 0 {
+        return Err(PipelineError::Semantic(format!(
+            "Compilation failed with {errors} declaration errors"
+        )));
+    }
+    Ok(())
+}
+
+/// Per-function checks. The whole-program declaration checks run once in
+/// [`declaration_check_phase`] before this.
 fn type_check_phase(
     parsed_modules: &mut Vec<VxModule>,
     global_session: &std::sync::Arc<GlobalSession>,
@@ -2580,6 +2615,87 @@ fn main() -> i32 { return 0; }
     /// the emitted MLIR text byte for byte — every symbol, every SSA number, every `distinct[]` id
     /// and string-global index, which are precisely the things a parallel emitter could number by
     /// arrival order if it were written carelessly (#311).
+    /// Write `srcs` into a fresh directory and return their paths, for a test that needs a
+    /// multi-module compilation on disk.
+    fn scratch_modules(tag: &str, srcs: &[(&str, &str)]) -> Vec<String> {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("vx_{tag}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        srcs.iter()
+            .map(|(name, src)| {
+                let path = dir.join(name);
+                std::fs::File::create(&path)
+                    .unwrap()
+                    .write_all(src.as_bytes())
+                    .unwrap();
+                path.to_string_lossy().to_string()
+            })
+            .collect()
+    }
+
+    /// The pipeline refuses a machine model whose declarations contradict each other.
+    ///
+    /// The point is that it refuses at all. These checks read the whole program rather than one
+    /// function, and this path ran none of them -- so the parallel frontend accepted models the
+    /// sequential one rejected, and the corpus the scaling benchmark runs on was one of them.
+    #[test]
+    fn the_pipeline_refuses_a_declaration_model_the_driver_would_refuse() {
+        // Two modules, one name, two different declarations: which one is in force would be the
+        // order the modules happened to merge in.
+        let conflict = scratch_modules(
+            "decl_conflict",
+            &[
+                (
+                    "a.vx",
+                    "Memory CPU_DRAM {}\n                     Memory SMEM { within: Memory::CPU_DRAM, capacity: 1 GiB }\n                     fn one() -> i32 { return 1; }\n",
+                ),
+                (
+                    "b.vx",
+                    "Memory CPU_DRAM {}\n                     Memory SMEM { within: Memory::CPU_DRAM, capacity: 99 GiB }\n                     fn two() -> i32 { return 2; }\n",
+                ),
+            ],
+        );
+        let err = compile_pipeline_mlir(&conflict)
+            .expect_err("two modules declaring SMEM differently must be refused");
+        // On the message, not just on the variant: any error would satisfy `expect_err`, including
+        // one from a phase that never reached these checks.
+        assert!(
+            matches!(&err, PipelineError::Semantic(m) if m.contains("declaration errors")),
+            "expected a declaration error, got {err:?}"
+        );
+
+        // Two names, one dispatch id. DO2TX and DSC0A both hash to 117023822, so everything keyed
+        // by the id would silently treat them as one space.
+        let collision = scratch_modules(
+            "decl_collision",
+            &[(
+                "a.vx",
+                "Memory CPU_DRAM {}\n                 Memory DO2TX { within: Memory::CPU_DRAM, capacity: 60 MiB }\n                 Memory DSC0A { within: Memory::CPU_DRAM, capacity: 24 GiB }\n                 fn one() -> i32 { return 1; }\n",
+            )],
+        );
+        let err = compile_pipeline_mlir(&collision)
+            .expect_err("two spaces sharing a dispatch id must be refused");
+        assert!(
+            matches!(&err, PipelineError::Semantic(m) if m.contains("declaration errors")),
+            "expected a declaration error, got {err:?}"
+        );
+
+        // And a model with nothing wrong with it still compiles, so the check is not simply
+        // refusing every program that declares a memory space.
+        let clean = scratch_modules(
+            "decl_clean",
+            &[(
+                "a.vx",
+                "Memory CPU_DRAM {}\n                 Memory SMEM { within: Memory::CPU_DRAM, capacity: 1 GiB }\n                 fn one() -> i32 { return 1; }\n",
+            )],
+        );
+        assert!(
+            compile_pipeline_mlir(&clean).is_ok(),
+            "a coherent machine model must still compile"
+        );
+    }
+
     #[test]
     fn pipeline_emits_byte_identical_mlir_across_thread_counts() {
         use std::io::Write;

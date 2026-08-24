@@ -145,7 +145,7 @@ pub fn quiet() -> bool {
 /// context from the frozen registry and then walks every function's signature -- work proportional
 /// to the whole program, on the critical path, inside what the phase table otherwise presents as a
 /// parallel-for. Its cost is included in `codegen`, so the three do not sum independently.
-pub const PHASES: [&str; 15] = [
+pub const PHASES: [&str; 16] = [
     "parse",
     "macro_expand",
     "name_resolution",
@@ -153,6 +153,7 @@ pub const PHASES: [&str; 15] = [
     "sig_clone",
     "env_build",
     "return_prov",
+    "decl_check",
     "type_check",
     "dedup_barrier",
     "stream_extract",
@@ -229,9 +230,9 @@ mod tests {
     fn timed_passes_values_through_and_only_knows_declared_phases() {
         assert_eq!(timed("parse", || 41 + 1), 42);
         assert_eq!(timed("not_a_phase", || "ok"), "ok");
-        assert_eq!(phase_index("type_check"), Some(7));
+        assert_eq!(phase_index("type_check"), Some(8));
         assert_eq!(phase_index("not_a_phase"), None);
         // Every name the pipeline instruments must be declared, or its time vanishes.
-        assert_eq!(PHASES.len(), 15);
+        assert_eq!(PHASES.len(), 16);
     }
 }
