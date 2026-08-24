@@ -1,7 +1,9 @@
 pub mod decl;
 pub mod expr;
+pub mod macro_expand;
 pub mod stmt;
 pub mod types;
+pub use macro_expand::MacroExpander;
 
 //===- parser.rs - Vx Compiler ---------------------------------*- Rust -*-===//
 //

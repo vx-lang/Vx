@@ -8,10 +8,13 @@
 //
 // AST transformations for expanding macros into inline code during compilation.
 //
+// This lives under parser/ rather than syntax/ because expanding a macro means parsing the
+// tokens it produced back into AST, so the expander needs the parser.
+//
 //===----------------------------------------------------------------------===//
 
-use super::*;
 use crate::lexer::OwnedTokenType;
+use crate::syntax::*;
 use crate::syntax::{Delimiter, Span};
 use std::collections::HashMap;
 

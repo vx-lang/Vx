@@ -1302,7 +1302,7 @@ impl Transfer<Memory::L2, Memory::SMEM> for Topology::Dev {
         for mac in &program.macros {
             rules.insert(mac.name.clone(), mac.rules.clone());
         }
-        let expander = crate::syntax::MacroExpander::new(&rules);
+        let expander = crate::parser::MacroExpander::new(&rules);
         expander.expand_module(&mut program).unwrap();
         let body = format!("{:?}", program.transfer_impls[0].methods[0].body);
         assert!(

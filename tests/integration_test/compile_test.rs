@@ -107,7 +107,7 @@ fn run_frontend_test(path: &Path, expect_pass: bool) -> Result<(), String> {
     for mac in &program.macros {
         global_macros.insert(mac.name.clone(), mac.rules.clone());
     }
-    let expander = vxc::syntax::MacroExpander::new(&global_macros);
+    let expander = vxc::parser::MacroExpander::new(&global_macros);
     for p in &mut program_arr {
         if let Err(e) = expander.expand_module(p) {
             if !expect_pass {
@@ -219,7 +219,7 @@ fn run_middle_end_test(path: &Path) -> Result<(), String> {
     for mac in &program.macros {
         global_macros.insert(mac.name.clone(), mac.rules.clone());
     }
-    let expander = vxc::syntax::MacroExpander::new(&global_macros);
+    let expander = vxc::parser::MacroExpander::new(&global_macros);
     for p in &mut program_arr {
         if let Err(e) = expander.expand_module(p) {
             return Err(format!(
@@ -359,7 +359,7 @@ fn run_warning_test(path: &Path) -> Result<(), String> {
     for mac in &program.macros {
         global_macros.insert(mac.name.clone(), mac.rules.clone());
     }
-    let expander = vxc::syntax::MacroExpander::new(&global_macros);
+    let expander = vxc::parser::MacroExpander::new(&global_macros);
     for p in &mut program_arr {
         expander
             .expand_module(p)
@@ -452,7 +452,7 @@ fn run_backend_test(path: &Path) -> Result<(), String> {
     for mac in &program.macros {
         global_macros.insert(mac.name.clone(), mac.rules.clone());
     }
-    let expander = vxc::syntax::MacroExpander::new(&global_macros);
+    let expander = vxc::parser::MacroExpander::new(&global_macros);
     for p in &mut program_arr {
         if let Err(e) = expander.expand_module(p) {
             return Err(format!(
@@ -1137,7 +1137,7 @@ fn run_backend_autodiff_test(path: &Path) -> Result<(), String> {
     for mac in &program.macros {
         global_macros.insert(mac.name.clone(), mac.rules.clone());
     }
-    let expander = vxc::syntax::MacroExpander::new(&global_macros);
+    let expander = vxc::parser::MacroExpander::new(&global_macros);
     for p in &mut program_arr {
         if let Err(e) = expander.expand_module(p) {
             return Err(format!(
@@ -1391,7 +1391,7 @@ fn test_melior_matmul() -> Result<(), String> {
     for mac in &program.macros {
         global_macros.insert(mac.name.clone(), mac.rules.clone());
     }
-    let expander = vxc::syntax::MacroExpander::new(&global_macros);
+    let expander = vxc::parser::MacroExpander::new(&global_macros);
     if let Err(e) = expander.expand_module(&mut program) {
         return Err(format!("Macro expansion failed on {:?}: {}", path, e));
     }

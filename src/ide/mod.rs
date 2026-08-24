@@ -102,7 +102,7 @@ impl Analysis {
             return diagnostics;
         }
 
-        use crate::syntax::macro_expand::MacroExpander;
+        use crate::parser::MacroExpander;
 
         let mut modules: Vec<_> = loader.loaded_modules.values().cloned().collect();
 

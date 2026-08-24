@@ -19,9 +19,9 @@ use crate::lexer::Lexer;
 use crate::metadata::VxMetadata;
 #[cfg(debug_assertions)]
 use crate::parallel_architecture_verifier::verify_arch::*;
+use crate::parser::MacroExpander;
 use crate::parser::Parser;
 use crate::session::{GlobalSession, LocalWorkerState};
-use crate::syntax::MacroExpander;
 use crate::syntax::VxModule;
 use rayon::prelude::*;
 

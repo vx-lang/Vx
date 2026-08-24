@@ -11,7 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 use crate::diagnostic::DiagnosticLevel;
-use crate::syntax::MacroExpander;
+use crate::parser::MacroExpander;
 use crate::syntax_printer::AstPrinter;
 use clap::{Parser, ValueEnum};
 use codegen::MeliorGenerator;
