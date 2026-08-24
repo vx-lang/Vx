@@ -133,6 +133,9 @@ jobs:
           # Isolation: concurrent compilations in one process cannot see each other.
           run_gate "--test integration_test" integration_test::architecture_test::concurrent_compilations_have_isolated_topologies
 
+          # Refusal: the parallel frontend rejects the machine models the driver rejects.
+          run_gate "--lib" pipeline::gid_stream_tests::the_pipeline_refuses_a_declaration_model_the_driver_would_refuse
+
           # Parity: what the parallel pipeline emits still matches the AST oracle.
           run_gate "--test integration_test" integration_test::flat_codegen_differential::pipeline_emits_mlir_that_matches_the_ast_oracle
 
