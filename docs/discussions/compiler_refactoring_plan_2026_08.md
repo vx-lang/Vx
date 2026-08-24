@@ -431,3 +431,41 @@ parallel.
   flat path honest.
 - Do not merge `driver` and `pipeline` by deleting one. Their phase orders differ
   for reasons that need to be checked case by case against the gates.
+
+## Corrections found while executing (Vx#387)
+
+Checked against the tree as Phase 0 was carried out. The findings above hold except
+for these.
+
+**Phase 0 item 5 was already done.** No scratch artifact in the repository root is
+tracked, and `.gitignore` lines 10-14 already cover `*.o`, `*.log`, `*.ll`, and
+`*.mlir`. The files sitting there are untracked local clutter. A smaller real
+problem remains behind it: tests and scripts write scratch output to the working
+directory instead of a temp directory.
+
+**Phase 0 item 3 named six types; the set is eight.** `BufferTraffic` and
+`TrafficSource` sit in the same block, and the other six reach them --
+`SpawnRegionTraffic` holds a `Vec<BufferTraffic>`, `Traffic` holds a
+`TrafficSource`. Moving only the six named would have split types from their own
+fields. All eight are in `src/report.rs`.
+
+**There is no `gid`/`session` cycle in shipping code.** `gid.rs` names
+`crate::session` at three places, all after the `#[cfg(test)]` at line 417, and it
+has no top-level import of it. The dependency runs one way, `session` to `gid`.
+The remaining inversions in that finding are one site each: `arch.rs:669` calls
+`hir::memory::MemoryHierarchy::build`, and `registry.rs:93` holds a
+`Vec<hir::bytecode::HirInstruction>`.
+
+**Phase 1 is larger than "mechanical `Option` to `Result`".** The 72 and 96 counts
+do not match the tree: `flatten.rs` has 39 bare `return None;` and `flat.rs` has 31.
+The 96 looks like a count of `None` tokens (98 in `flat.rs`), most of which are
+ordinary values rather than declines. What sizes the phase is the signature change:
+61 `Option`-returning functions in `flatten.rs` and 19 in `flat.rs`, with about 350
+`?` sites propagating through them. `?` works on `Result` unchanged, so propagation
+is free, and the work is choosing a reason at each origin and moving 80 signatures
+with their call sites.
+
+**Phase 0 leaves one edge in each direction it claimed to cut.**
+`codegen/flat.rs:2844` still calls `pipeline::build_frozen_registry`, inside
+`#[cfg(test)] mod tests`. Shipping code no longer crosses. That test wants to be an
+integration test, which is Phase 6's business.
