@@ -335,13 +335,7 @@ impl<'a> TypeChecker<'a> {
         stmts: &[Statement],
         ret: Option<&Expr>,
         outer: &PlacedMap,
-    ) -> Result<
-        (
-            crate::hir::env::Traffic,
-            Vec<crate::hir::env::BufferTraffic>,
-        ),
-        String,
-    > {
+    ) -> Result<(crate::report::Traffic, Vec<crate::report::BufferTraffic>), String> {
         let mut acc = RegionAcc::default();
         let mut exact = true;
         let mut binds = Bindings::new();
@@ -352,22 +346,22 @@ impl<'a> TypeChecker<'a> {
 
         // Per buffer, sorted by name (the BTreeMap already is), then folded into per-space
         // totals sorted by space name so the record is stable run to run.
-        let mut by_buffer: Vec<crate::hir::env::BufferTraffic> = Vec::new();
+        let mut by_buffer: Vec<crate::report::BufferTraffic> = Vec::new();
         for ((name, _), b) in &acc.per_buffer {
             let Some(space) = &b.space else { continue };
-            by_buffer.push(crate::hir::env::BufferTraffic {
+            by_buffer.push(crate::report::BufferTraffic {
                 buffer: name.clone(),
                 space: space.clone(),
                 read_bytes: b.read,
                 written_bytes: b.written,
             });
         }
-        let mut per_space: BTreeMap<String, crate::hir::env::SpaceTraffic> = BTreeMap::new();
+        let mut per_space: BTreeMap<String, crate::report::SpaceTraffic> = BTreeMap::new();
         for b in &by_buffer {
             let e =
                 per_space
                     .entry(b.space.name())
-                    .or_insert_with(|| crate::hir::env::SpaceTraffic {
+                    .or_insert_with(|| crate::report::SpaceTraffic {
                         space: b.space.clone(),
                         read_bytes: 0,
                         written_bytes: 0,
@@ -382,9 +376,9 @@ impl<'a> TypeChecker<'a> {
                 .ok_or_else(overflowed)?;
         }
         Ok((
-            crate::hir::env::Traffic {
+            crate::report::Traffic {
                 per_space: per_space.into_values().collect(),
-                source: crate::hir::env::TrafficSource::SpawnRegion,
+                source: crate::report::TrafficSource::SpawnRegion,
                 exact,
             },
             by_buffer,

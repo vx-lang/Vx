@@ -1598,7 +1598,7 @@ impl<'a> TypeChecker<'a> {
         params: &[(crate::symbol::Symbol, Type)],
         from: &MemorySpace,
         to: &MemorySpace,
-    ) -> Result<crate::hir::env::Traffic, String> {
+    ) -> Result<crate::report::Traffic, String> {
         // `raw::extent(t)` is the natural loop bound in a lowering, and it must resolve
         // HERE, at the transfer site, where the lowering's parameters are not in scope --
         // the checker's own fold looks them up by name and finds nothing. The declared
@@ -1627,20 +1627,20 @@ impl<'a> TypeChecker<'a> {
         self.traffic_stmts(
             body, 1, &mut acc, &mut exact, elem_bytes, src_name, dst_name, exts,
         )?;
-        Ok(crate::hir::env::Traffic {
+        Ok(crate::report::Traffic {
             per_space: vec![
-                crate::hir::env::SpaceTraffic {
+                crate::report::SpaceTraffic {
                     space: from.clone(),
                     read_bytes: acc.from_read,
                     written_bytes: acc.from_written,
                 },
-                crate::hir::env::SpaceTraffic {
+                crate::report::SpaceTraffic {
                     space: to.clone(),
                     read_bytes: acc.to_read,
                     written_bytes: acc.to_written,
                 },
             ],
-            source: crate::hir::env::TrafficSource::LoweringBody,
+            source: crate::report::TrafficSource::LoweringBody,
             exact,
         })
     }

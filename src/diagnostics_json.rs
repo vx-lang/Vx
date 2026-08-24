@@ -13,7 +13,7 @@
 //===----------------------------------------------------------------------===//
 
 use crate::diagnostic::{Diagnostic, DiagnosticFacts, DiagnosticLevel, DiagnosticsVec};
-use crate::hir::env::{ResidentSet, SpawnRegionTraffic, StagingRoute};
+use crate::report::{ResidentSet, SpawnRegionTraffic, StagingRoute};
 
 /// The schema version embedded in every record. **Bump on any incompatible change** — a consumer
 /// pins this, and the rental campaign (#289) will be reading artifacts produced over a period of
@@ -285,7 +285,7 @@ fn route_json(r: &StagingRoute) -> String {
 
 /// One space's read/written pair. Shared by the transfer-route records and the spawn-region
 /// records so a consumer parses one shape, not two that happen to look alike today.
-fn space_traffic_json(st: &crate::hir::env::SpaceTraffic) -> String {
+fn space_traffic_json(st: &crate::report::SpaceTraffic) -> String {
     format!(
         "{{\"space\": \"{}\", \"read_bytes\": {}, \"written_bytes\": {}}}",
         esc(&st.space.name()),
@@ -517,24 +517,24 @@ mod tests {
             edge_costs: vec![Some(300), Some(40)],
             total_cost: 340,
             bytes: Some(16384),
-            cost_source: Some(crate::hir::env::CostSource::Containment),
+            cost_source: Some(crate::report::CostSource::Containment),
             derived_cost: Some(128),
             derived_unit: Some(crate::syntax::RatePer::Cycle),
             composition: Some(crate::syntax::Crossing::Sequenced),
-            traffic: Some(crate::hir::env::Traffic {
+            traffic: Some(crate::report::Traffic {
                 per_space: vec![
-                    crate::hir::env::SpaceTraffic {
+                    crate::report::SpaceTraffic {
                         space: MemorySpace::CPUDRAM,
                         read_bytes: 16384,
                         written_bytes: 0,
                     },
-                    crate::hir::env::SpaceTraffic {
+                    crate::report::SpaceTraffic {
                         space: MemorySpace::Custom("SMEM".into()),
                         read_bytes: 0,
                         written_bytes: 16384,
                     },
                 ],
-                source: crate::hir::env::TrafficSource::BuiltinCopy,
+                source: crate::report::TrafficSource::BuiltinCopy,
                 exact: true,
             }),
             traffic_absent_reason: None,

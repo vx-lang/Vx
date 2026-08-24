@@ -817,7 +817,7 @@ impl<'a> TypeChecker<'a> {
             // capacity diagnostic, so without this its resident set would be absent from the JSON
             // record -- and the resident total is what a downstream consumer needs to compute the
             // utilization an engine must be given (#285). A verdict alone does not carry it.
-            self.resident_sets.push(crate::hir::env::ResidentSet {
+            self.resident_sets.push(crate::report::ResidentSet {
                 space: space.clone(),
                 total_bytes: total,
                 capacity_bytes: cap,
@@ -1107,9 +1107,9 @@ impl<'a> TypeChecker<'a> {
             let derived_unit = derived.map(|d| d.per);
             let cost_source = derived.map(|_| {
                 if link_bw.is_some() {
-                    crate::hir::env::CostSource::LinkRate
+                    crate::report::CostSource::LinkRate
                 } else {
-                    crate::hir::env::CostSource::Containment
+                    crate::report::CostSource::Containment
                 }
             });
 
@@ -1515,20 +1515,20 @@ impl<'a> TypeChecker<'a> {
                     // uncountable movement is reported as uncountable, never as zero.
                     let (traffic, traffic_absent_reason) = match (moved_bytes, &t.lowering) {
                         (Some(b), None) => (
-                            Some(crate::hir::env::Traffic {
+                            Some(crate::report::Traffic {
                                 per_space: vec![
-                                    crate::hir::env::SpaceTraffic {
+                                    crate::report::SpaceTraffic {
                                         space: source_mem.clone(),
                                         read_bytes: b,
                                         written_bytes: 0,
                                     },
-                                    crate::hir::env::SpaceTraffic {
+                                    crate::report::SpaceTraffic {
                                         space: target_mem.clone(),
                                         read_bytes: 0,
                                         written_bytes: b,
                                     },
                                 ],
-                                source: crate::hir::env::TrafficSource::BuiltinCopy,
+                                source: crate::report::TrafficSource::BuiltinCopy,
                                 exact: true,
                             }),
                             None,
@@ -1596,7 +1596,7 @@ impl<'a> TypeChecker<'a> {
                             }
                         }
                     };
-                    self.staging_routes.push(crate::hir::env::StagingRoute {
+                    self.staging_routes.push(crate::report::StagingRoute {
                         path: path.clone(),
                         traffic,
                         traffic_absent_reason,
@@ -1608,19 +1608,18 @@ impl<'a> TypeChecker<'a> {
                         derived_unit,
                         // Only a containment route composes anything -- a link rate is one leg.
                         // Read from the destination, which is where the fill mechanism lives.
-                        composition: (cost_source
-                            == Some(crate::hir::env::CostSource::Containment))
-                        .then(|| {
-                            self.env
-                                .memories
-                                .values()
-                                .find(|d| {
-                                    crate::syntax::MemorySpace::from_name(d.name.as_ref())
-                                        == target_mem
-                                })
-                                .map(|d| d.crossing)
-                                .unwrap_or_default()
-                        }),
+                        composition: (cost_source == Some(crate::report::CostSource::Containment))
+                            .then(|| {
+                                self.env
+                                    .memories
+                                    .values()
+                                    .find(|d| {
+                                        crate::syntax::MemorySpace::from_name(d.name.as_ref())
+                                            == target_mem
+                                    })
+                                    .map(|d| d.crossing)
+                                    .unwrap_or_default()
+                            }),
                     });
                 }
                 // Single hop (`path == [source_mem, target_mem]`): discharge the
@@ -1893,14 +1892,13 @@ impl<'a> TypeChecker<'a> {
                             Err(why) => (None, Vec::new(), Some(why)),
                         };
                     let function = self.current_function.clone();
-                    self.spawn_regions
-                        .push(crate::hir::env::SpawnRegionTraffic {
-                            function,
-                            topology: self.active_topology.display_name(),
-                            traffic,
-                            by_buffer,
-                            traffic_absent_reason: reason,
-                        });
+                    self.spawn_regions.push(crate::report::SpawnRegionTraffic {
+                        function,
+                        topology: self.active_topology.display_name(),
+                        traffic,
+                        by_buffer,
+                        traffic_absent_reason: reason,
+                    });
                 }
 
                 self.pop_scope();

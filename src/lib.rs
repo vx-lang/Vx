@@ -36,6 +36,7 @@ pub mod parser;
 pub mod pipeline;
 pub mod plugin;
 pub mod registry;
+pub mod report;
 pub mod resolver;
 pub mod session;
 pub mod suggest;
