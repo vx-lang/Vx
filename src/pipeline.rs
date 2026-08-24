@@ -450,7 +450,7 @@ fn macro_expansion_phase(
 fn name_resolution_phase(
     parsed_modules: &mut Vec<VxModule>,
     sched: Schedule,
-) -> crate::resolver::SymbolMap {
+) -> crate::syntax::SymbolMap {
     let symbol_map = crate::resolver::build_symbol_map(parsed_modules);
     let resolve = |m: &mut VxModule| m.resolve_names(&symbol_map);
     if sched.is_seq() {
@@ -734,7 +734,7 @@ pub fn build_frozen_registry(
 /// serial spine for no benefit. Callers outside the pipeline keep the one-argument form above.
 pub fn build_frozen_registry_with(
     modules: &[VxModule],
-    symbol_map: &crate::resolver::SymbolMap,
+    symbol_map: &crate::syntax::SymbolMap,
 ) -> Result<crate::registry::ImmutableGlobalRegistry, PipelineError> {
     use crate::registry::TypeDefinition;
 

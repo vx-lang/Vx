@@ -2239,7 +2239,7 @@ impl<'r> Lowerer<'r> {
         // A void callee (`bump(&mut x) -> void`, a `&mut` mutator) has no result value; it appears only
         // in statement position, where the returned `Val` is discarded. Give it a placeholder scalar
         // type — never read — rather than declining the call. (#230)
-        let void_ret = crate::codegen::flat::is_void_ty(&sig.ret_ty);
+        let void_ret = crate::syntax::is_void_ty(&sig.ret_ty);
         let ret_ty = if void_ret {
             LoweredTy::Scalar(ElementType::I32)
         } else {

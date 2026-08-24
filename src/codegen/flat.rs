@@ -30,7 +30,7 @@ use crate::bytecode::{HirInstruction, Opcode};
 use crate::gid::TypeId;
 use crate::hir::flatten::{ptr_gid, scalar_gid, tensor_gid_of};
 use crate::registry::ImmutableGlobalRegistry;
-use crate::syntax::{ElementType, Function, Type};
+use crate::syntax::{is_void_ty, ElementType, Function, Type};
 use rayon::prelude::*;
 use std::collections::HashMap;
 
@@ -205,12 +205,6 @@ fn is_ptr_ty(ty: &Type) -> bool {
         ty,
         Type::Pointer(..) | Type::Borrow { .. } | Type::Function(..) | Type::Closure(..)
     )
-}
-
-/// Whether a return type is `void` — spelled `Type::Struct("void", _)` (the AST codegen matches the
-/// same). A void-returning call produces no result value; the flat emitter prints `-> ()`. (#230)
-pub fn is_void_ty(ty: &Type) -> bool {
-    matches!(ty, Type::Struct(n, _) if n.as_ref() == "void" || n.as_ref() == "none")
 }
 
 /// The MLIR argument-attribute suffix carrying the borrow checker's aliasing guarantee into the

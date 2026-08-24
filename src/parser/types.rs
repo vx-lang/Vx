@@ -118,7 +118,7 @@ impl<'a> Parser<'a> {
                 is_mut,
                 // Not yet bound to a scope depth — the borrow checker assigns the real region during
                 // checking. Reserved sentinel, never a real depth (#267).
-                region_id: crate::borrow::REGION_UNSET as usize,
+                region_id: crate::syntax::REGION_UNSET as usize,
             })
         } else if self.match_token(&TokenType::Star) {
             let is_mut = if self.check(&TokenType::Mut) {

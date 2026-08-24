@@ -12,7 +12,7 @@
 
 use super::*;
 use crate::gid::TypeId;
-use crate::resolver::{SymbolMap, SymbolTable};
+
 use crate::symbol::Symbol;
 use std::collections::HashMap;
 
@@ -379,7 +379,7 @@ impl ImplBlock {
 }
 
 impl Program {
-    pub fn resolve_names(&mut self, symbol_map: &crate::resolver::SymbolMap) {
+    pub fn resolve_names(&mut self, symbol_map: &crate::syntax::SymbolMap) {
         // Build the scope up front: it borrows only `symbol_map` (and owns an index cloned from the
         // imports), so it no longer borrows `self` and we can mutably walk the declarations below.
         let current = symbol_map.get(&self.module_path);

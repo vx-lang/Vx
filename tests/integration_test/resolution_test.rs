@@ -51,7 +51,7 @@ fn peel(mut t: Type) -> Type {
     }
 }
 
-fn resolve1(path: &str, src: &str) -> (VxModule, vxc::resolver::SymbolMap) {
+fn resolve1(path: &str, src: &str) -> (VxModule, vxc::syntax::SymbolMap) {
     let mut m = parse_module(path, src);
     let map = build_symbol_map(std::slice::from_ref(&m));
     m.resolve_names(&map);

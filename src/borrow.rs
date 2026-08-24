@@ -72,42 +72,12 @@
 //===----------------------------------------------------------------------===//
 use crate::gid::{LifetimeSignature, TypeId, UnboundedFunctionMetadata};
 use crate::session::LocalWorkerState;
+use crate::syntax::{
+    REGION_MASK, REGION_MASK_0, REGION_MAX, REGION_MAX_0, REGION_UNSET, REGION_UNSET_0,
+};
 
 const VARIANCE_MASK: u64 = 0xF000;
-const REGION_MASK: u64 = 0x0FFF;
 const PARAM_MASK: u64 = 0xFFFF;
-
-/// The reserved "region not yet assigned" sentinel: the maximum value the 12-bit region field can
-/// hold. A parsed reference type carries it until a scope depth is assigned (see
-/// `src/parser/types.rs`), and it surfaces in generic-deduction diagnostics as `region_id: 4095`.
-///
-/// It is **not** a scope depth — `verify_subtyping_bounds` treats it as a wildcard, never comparing
-/// it numerically, so an unset region neither satisfies nor fails subtyping by accident (#267). It
-/// is reserved: real depths are clamped to [`REGION_MAX`] so none ever equals the sentinel. Anyone
-/// narrowing this field (e.g. #265 shrinking slot 0 to 9 bits) must keep a reserved sentinel at the
-/// new field's maximum and clamp real depths below it — the numeric value must never be trusted as a
-/// region. See `docs/discussions/borrow_checker_architecture.md` §2.
-pub const REGION_UNSET: u64 = REGION_MASK;
-
-/// The largest assignable real region (scope depth): one below the [`REGION_UNSET`] sentinel, so a
-/// genuine depth can never be mistaken for "unset". Deeper nesting is clamped to this (shortest-lived
-/// valid region) rather than overflowing into the sentinel.
-pub const REGION_MAX: u64 = REGION_MASK - 1;
-
-/// Slot 0 (the return slot) reserves its top 3 region bits for the return-provenance code (#265), so
-/// its region field is only **9 bits** — slots 1-3 keep the full 12. Any rule that reads slot 0's
-/// region must mask with this, not [`REGION_MASK`]: reading the wide field would fold the provenance
-/// bits into the lifetime and corrupt the comparison (exactly the truncation #267 warned of).
-pub const REGION_MASK_0: u64 = 0x01FF;
-
-/// The slot-0 counterpart of [`REGION_UNSET`]: the maximum of the narrowed 9-bit return-slot region
-/// is its reserved "unset" sentinel (#265/#267). Recognised as a wildcard exactly like [`REGION_UNSET`].
-pub const REGION_UNSET_0: u64 = REGION_MASK_0;
-
-/// The largest assignable real region in slot 0 — one below [`REGION_UNSET_0`]. A return lifetime is
-/// by construction a parameter's or `'static`, so it never needs deep nesting; anything deeper clamps
-/// here rather than colliding with the sentinel or the provenance bits.
-pub const REGION_MAX_0: u64 = REGION_MASK_0 - 1;
 
 /// The slot-0 analogue of [`region_for_depth`] (#265): map a lexical scope depth to the region stored
 /// in the **return slot**, whose field is 9 bits. The [`REGION_UNSET`] sentinel maps to the slot-0

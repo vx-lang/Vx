@@ -469,3 +469,30 @@ with their call sites.
 `codegen/flat.rs:2844` still calls `pipeline::build_frozen_registry`, inside
 `#[cfg(test)] mod tests`. Shipping code no longer crosses. That test wants to be an
 integration test, which is Phase 6's business.
+
+### The proposed crate list needs two changes (Vx#387)
+
+Found by cutting the cycles rather than by reading the module names.
+
+`vx-hir  bytecode, flatten` cannot hold both. `registry`, `session`, and `metadata`
+all store `HirInstruction`, and `flatten` depends on `registry` and `session`, so
+the instruction format has to sit below all three while the flattener sits above
+them. `bytecode.rs` is now `src/bytecode.rs` and imports nothing at all, which is
+what let the move be a rename.
+
+`vx-lex-parse  lexer, parser, macro expansion` puts the lexer above the AST, and
+the edge runs the other way: `syntax/macro_rules.rs` stores `OwnedToken`, because a
+macro's rules are tokens. `lexer` never reaches `syntax`, so this is a layout
+choice rather than a cycle -- the token types belong below `vx-syntax`, either in
+their own crate or inside it.
+
+`arch` is not in the list at all and should be part of `vx-syntax`. It is the
+vocabulary the AST is written in (`MemorySpace`, `TopologyDescriptor`), `syntax`
+holds one field of it (`Program.topologies`), and `arch` reads `syntax` at 23
+places. In one crate that mutual reference costs nothing; split apart it is a cycle
+with no clean cut.
+
+One cycle is left standing on purpose. `parser` no longer reaches `borrow`, but
+`hir` still reaches `parser`, through `hir::env::parse_ty_str` re-parsing a type
+from its printed form. That is finding 6 above, and Phase 2 deletes it. Cutting it
+any sooner would mean working around the string round-trip instead of removing it.

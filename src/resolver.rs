@@ -14,13 +14,8 @@
 //===----------------------------------------------------------------------===//
 use crate::gid::TypeId;
 use crate::hash::{compute_module_hash, DefPath};
-use crate::syntax::VxModule;
+use crate::syntax::{SymbolMap, VxModule};
 use std::collections::HashMap;
-
-/// A global read-only map generated during Phase 1.25.
-/// Maps module_path -> (symbol_name -> TypeId)
-pub type SymbolTable = HashMap<crate::symbol::Symbol, TypeId>;
-pub type SymbolMap = HashMap<crate::symbol::Symbol, SymbolTable>;
 
 /// Iterates through all parsed modules sequentially and computes their deterministic
 /// 256-bit TypeId for every top-level struct, enum, and trait.
