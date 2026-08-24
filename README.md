@@ -102,7 +102,7 @@ ______________________________________________________________________
 
 Every symbol, nominal type and monomorphized variant is a flat **256-bit GID** (`[u64; 4]`: module hash, symbol hash, generic context, flags). A nominal type system plus mandatory boxing for recursive types decouples modules, so the pipeline is parallel across cores with no query engine and no lock contention. Compilation walks flat arrays, not pointer-chased trees.
 
-The output is deterministic: the emitted MLIR is byte-identical regardless of thread count, which is asserted in the test suite rather than hoped for.
+The output is deterministic: the emitted MLIR is byte-identical regardless of thread count, which is asserted in the test suite rather than hoped for — over 1,000 modules and 16,000 functions, at one thread, at four, and with rayon taken off the path entirely.
 
 ### Backends
 
