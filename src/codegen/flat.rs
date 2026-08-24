@@ -682,12 +682,11 @@ pub struct EmitCtx {
     /// carries no memory decls, so this is threaded in from the per-compilation env. Empty for a program
     /// with no declared sub-spaces (P0-1).
     pub subspaces: HashMap<u64, SubspaceInfo>,
-    /// Declared topology arch by dispatch id (`Topology Dev { arch: nvptx64, ... }` ->
-    /// `1916 -> "nvptx64"`), so a `vx.spawn` can carry the arch its machine file declared and the
-    /// device pipeline can gate on the DECLARATION rather than on the dispatch-id band -- which a
-    /// custom topology can never enter (custom ids are 1000 + fnv % 1000 by construction, and the
-    /// GPU band is [500, 600)). Built-in topologies are not in this map and keep riding the band
-    /// (Vx#352, Vx#353 Track B).
+    /// Declared topology arch by dispatch id, so a `vx.spawn` can carry the arch its machine file
+    /// declared and the device pipeline can gate on the DECLARATION rather than on the dispatch-id
+    /// band -- which a custom topology can never enter (declared ids start at 3000 by
+    /// construction, and the GPU band is [500, 600)). Built-in topologies are not in this map and
+    /// keep riding the band.
     pub topo_archs: HashMap<i64, String>,
 }
 
@@ -760,7 +759,8 @@ pub fn topo_archs_from_env(env: &crate::hir::GlobalAstEnv) -> Vec<(i64, String)>
 }
 
 pub fn subspaces_from_env(env: &crate::hir::GlobalAstEnv) -> Vec<SubspaceInfo> {
-    env.memories
+    let mut out: Vec<SubspaceInfo> = env
+        .memories
         .values()
         .map(|decl| {
             let space = crate::syntax::MemorySpace::from_name(decl.name.as_ref());
@@ -788,7 +788,13 @@ pub fn subspaces_from_env(env: &crate::hir::GlobalAstEnv) -> Vec<SubspaceInfo> {
                 ),
             }
         })
-        .collect()
+        .collect();
+    // Sorted for the same reason `topo_archs_from_env` is: `env.memories` is a HashMap, so its
+    // walk order would otherwise decide which descriptor wins a dispatch-id collision -- and that
+    // order varies per process, which made the emitted MLIR differ between runs of the same file.
+    // E6016 refuses the collision upstream now; the sort keeps the emit order stable regardless.
+    out.sort_by(|a, b| (a.dispatch_id, &a.name).cmp(&(b.dispatch_id, &b.name)));
+    out
 }
 
 impl EmitCtx {

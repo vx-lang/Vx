@@ -1,0 +1,23 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// The same coin-flip identity the topology check refuses, for memory spaces. Codegen keys its
+// descriptors by the dispatch id, so a `transfer` into the second space was emitted with the
+// first space's name, capacity, granule and scope -- a 64 KiB tile placed in a 60 MiB L2
+// instead of 24 GiB of VRAM -- and which one won varied between runs of the same file.
+//
+// DO2TX and DSC0A both hash to 117023822. Finding that pair took a search over a million
+// candidates; back when the range was a thousand wide, L2_GPU5 and GPU6_VMEM collided on sight.
+// CHECK: E6016
+// CHECK: collide on dispatch id 117023822
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 80 GiB, bandwidth: 3 TB/s, managed: cached
+}
+Memory DO2TX {
+  within: Memory::GPU_HBM, capacity: 60 MiB, granule: 128 B, scope: device
+}
+Memory DSC0A {
+  within: Memory::GPU_HBM, capacity: 24 GiB, granule: 4 KiB, scope: device
+}
+fn main() -> i32 {
+  return 0;
+}

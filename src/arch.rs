@@ -263,9 +263,26 @@ fn fnv32(s: &str) -> u32 {
     hash
 }
 
-/// A stable per-name dispatch id in the 1000..1999 band.
+/// The lowest id a declared name can be given. Everything below is spoken for: the built-in
+/// topologies and their canonical memory spaces occupy 0..999 in hundred-wide bands, and slices
+/// occupy 2000..2999.
+pub const CUSTOM_DISPATCH_ID_BASE: i32 = 3000;
+
+/// How many ids a declared name can be given: `CUSTOM_DISPATCH_ID_BASE..=i32::MAX`.
+///
+/// Kept as wide as the wire type allows, because the width is what decides whether two declared
+/// names collide. In the old 1000..1999 band the answer was "constantly": 20 names collided 18% of
+/// the time, 40 names 55%, and the 250-space corpus the scaling benchmark runs on lost 42 of its
+/// descriptors outright. Two billion slots put 1000 names at 0.025% and the corpus at zero.
+const CUSTOM_DISPATCH_ID_SPAN: u32 = (i32::MAX as u32) - (CUSTOM_DISPATCH_ID_BASE as u32) + 1;
+
+/// A stable per-name dispatch id at or above [`CUSTOM_DISPATCH_ID_BASE`].
+///
+/// Still one-way and still capable of colliding -- E6016 refuses a collision rather than resolving
+/// it, and `runtime/vx_manifest.h` mirrors this function byte for byte, so the two must change
+/// together.
 fn fnv_dispatch_id(name: &str) -> i32 {
-    1000 + (fnv32(name) % 1000) as i32
+    CUSTOM_DISPATCH_ID_BASE + (fnv32(name) % CUSTOM_DISPATCH_ID_SPAN) as i32
 }
 
 /// A topology index's compile-time value: a literal, or exact integer arithmetic over literals
@@ -330,7 +347,7 @@ pub fn topology_dispatch_id(top: &Topology) -> i32 {
         // distinct devices for dispatch and seam identity, so they carry distinct stable ids
         // (B4, #253) — every slice used to collapse onto one constant (900), which made a slice
         // unable to name an NVL domain. FNV over the canonical triple, banded to 2000..2999
-        // (`Custom` names own 1000..1999).
+        // (declared names start above at `CUSTOM_DISPATCH_ID_BASE`).
         Topology::Slice(base, start, end) => {
             let key = format!(
                 "{}:{}:{}",
@@ -361,10 +378,9 @@ pub fn memory_space_dispatch_id(mem: &MemorySpace) -> i32 {
         // from each other, so staging into a NIC's buffer and landing in a peer's HBM were one
         // event.
         //
-        // These are the last two free 100-bands below the FNV range that `Custom` names occupy
-        // (1000..1999) and slices occupy (2000..2999). Nothing decodes them yet; giving them
-        // distinct identities is what lets a plugin start to (#348 marshalling), and what stops the
-        // collision from being load-bearing in the meantime.
+        // These are the last two free 100-bands below the slice band (2000..2999) and the range
+        // declared names occupy (`CUSTOM_DISPATCH_ID_BASE` and up). Nothing decodes them yet;
+        // giving them distinct identities is what lets a plugin start to.
         MemorySpace::NicRam => 800,
         MemorySpace::RemoteHbm => 900,
         MemorySpace::Custom(name) => fnv_dispatch_id(name),

@@ -1,22 +1,25 @@
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// Custom dispatch ids are 1000 + fnv(name) % 1000, so distinct names can collide --
-// Dev27 and Dev38 both hash to 1223. Everything keyed by the id (spawn dispatch, seam
-// identity, the declared-arch table) then depends on hash-iteration order for which
-// declaration wins; observed as the same program getting a device image on some runs
-// and not others. A coin-flip identity is not an identity, so it is refused (Vx#352).
+// A declared name's dispatch id is a hash, so two names can still collide -- DO2TX and DSC0A
+// both hash to 117023822. Everything keyed by the id (spawn dispatch, seam identity, the
+// declared-arch table) then depends on hash-iteration order for which declaration wins;
+// observed as the same program getting a device image on some runs and not others. A
+// coin-flip identity is not an identity, so it is refused.
+//
+// The names are deliberately unlovely: finding a colliding pair in the 3000..INT32_MAX range
+// took a search over a million candidates, which is the point of widening it.
 // CHECK: E6016
-// CHECK: collide on dispatch id 1223
+// CHECK: collide on dispatch id 117023822
 Memory CPU_DRAM {}
 Memory GPU_HBM {
   within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
 }
-Topology Dev27 {
+Topology DO2TX {
   arch: nvptx64,
   memory: Memory::GPU_HBM,
   visible: [Memory::GPU_HBM],
   transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s
 }
-Topology Dev38 {
+Topology DSC0A {
   arch: applegpu,
   memory: Memory::GPU_HBM,
   visible: [Memory::GPU_HBM],

@@ -159,7 +159,7 @@ fn extract_image(ir: &str) -> String {
 ///
 /// Before the declared arch travelled onto the outlined kernel, this was impossible by
 /// arithmetic, not by omission: eligibility was the dispatch-id band [500, 600), and a custom
-/// topology's id is 1000 + fnv(name) % 1000 -- no name can land in the band.
+/// topology's id is a hash at or above 3000 -- no name can land in the band.
 #[test]
 fn a_custom_topology_with_a_declared_arch_gets_a_device_image() {
     let ir = emit_llvm("custom_topology_device_image.vx");

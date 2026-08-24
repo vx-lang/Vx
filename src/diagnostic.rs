@@ -275,12 +275,13 @@ pub enum DiagnosticCode {
     /// lowering with no functions (an empty body cannot move anything, and accepting it would
     /// make `impl transfer` an inert annotation rather than code).
     E6015,
-    /// A topology declaration whose identity cannot be relied on. Two forms: the declared name
-    /// shadows a built-in topology (every use of `Topology::<Name>` resolves to the built-in, so
-    /// the declaration is silently ignored -- including its `arch:`); or two declared names
-    /// collide on one dispatch id (custom ids are `1000 + fnv(name) % 1000`), in which case which
-    /// declaration is in force would be hash-iteration order -- observed as the same program
-    /// getting a device image on some runs and not others.
+    /// A `Topology` or `Memory` declaration whose identity cannot be relied on. Two forms: the
+    /// declared name shadows a built-in topology (every use of `Topology::<Name>` resolves to the
+    /// built-in, so the declaration is silently ignored -- including its `arch:`); or two declared
+    /// names collide on one dispatch id (custom ids are derived from the name by hashing), in
+    /// which case which declaration is in force would be hash-iteration order -- observed as the
+    /// same program getting a device image on some runs and not others for a topology, and as a
+    /// `transfer` carrying the other space's capacity and granule for a memory space.
     E6016,
     /// A misuse of the `raw::` transfer-lowering primitives (Vx#353 A2): a `raw::` call
     /// outside an `impl transfer` body, an unknown primitive name, a tile argument that

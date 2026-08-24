@@ -207,8 +207,8 @@ impl<'a> TypeChecker<'a> {
                 );
             }
         }
-        // Dispatch-id collision: custom ids are 1000 + fnv(name) % 1000, so two names can share
-        // one id (Dev27/Dev38 both hash to 1223). Everything keyed by the id -- spawn dispatch,
+        // Dispatch-id collision: the id is a hash of the name, so two names can share one id.
+        // Everything keyed by the id -- spawn dispatch,
         // seam identity, and now the declared-arch table -- then depends on hash-iteration order
         // for which declaration wins; measured as the same program getting a device image on some
         // runs and not others. Refused, because a coin-flip identity is not an identity.
@@ -227,8 +227,8 @@ impl<'a> TypeChecker<'a> {
                             crate::diagnostic::DiagnosticCode::E6016,
                             format!(
                                 "topologies '{}' and '{}' collide on dispatch id {} (custom ids \
-                                 are 1000 + fnv(name) % 1000); which declaration is in force \
-                                 would be hash order -- rename one",
+                                 are derived from the name by hashing); which declaration is in \
+                                 force would be hash order -- rename one",
                                 prev, decl.name, id
                             ),
                             None,
@@ -559,6 +559,39 @@ impl<'a> TypeChecker<'a> {
 
     pub fn check_memory_coherence(&mut self) {
         use crate::hir::memory::{MemoryCoherenceIssue, MemoryHierarchy};
+        // Dispatch-id collision, on the same terms as the topology check above (E6016). Two
+        // declared spaces whose names hash to one id are one space to everything downstream: the
+        // codegen keeps its descriptors in a map keyed by the id, so a `transfer` into the second
+        // space is emitted with the FIRST space's name, capacity, granule and scope, and which one
+        // wins is hash-iteration order. Measured on `L2_GPU5`/`GPU6_VMEM` (both 1277): the same
+        // source file emitted `space = "L2_GPU5"` on 8 of 20 runs and `space = "GPU6_VMEM"` on the
+        // other 12, with a 64 KiB tile placed in a 60 MiB L2 instead of 24 GiB of VRAM and no
+        // diagnostic either way.
+        {
+            let mut by_id: std::collections::HashMap<i32, crate::symbol::Symbol> =
+                std::collections::HashMap::new();
+            let mut sorted: Vec<&crate::symbol::Symbol> = self.env.memories.keys().collect();
+            sorted.sort_by(|a, b| a.as_ref().cmp(b.as_ref()));
+            for name in sorted {
+                let space = crate::syntax::MemorySpace::from_name(name.as_ref());
+                let id = crate::arch::memory_space_dispatch_id(&space);
+                if let Some(prev) = by_id.insert(id, name.clone()) {
+                    if &prev != name {
+                        self.errors.error_with_code(
+                            crate::diagnostic::DiagnosticCode::E6016,
+                            format!(
+                                "memory spaces '{}' and '{}' collide on dispatch id {} (custom \
+                                 ids are derived from the name by hashing); which descriptor a \
+                                 `transfer` into either one carries would be hash order -- \
+                                 rename one",
+                                prev, name, id
+                            ),
+                            None,
+                        );
+                    }
+                }
+            }
+        }
         let issues = MemoryHierarchy::build(self.env.memories.values().copied()).coherence_issues();
         for issue in issues {
             match issue {

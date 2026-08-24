@@ -7,22 +7,24 @@
 //===----------------------------------------------------------------------===//
 // A dispatch carries the topology's declared *name*, not only its id (#348).
 //
-// For a topology declared in a machine file the id is a hash --
-// `1000 + fnv32(name) % 1000` -- so it is one-way and only a thousand wide. A
-// plugin holding `topo=1113` cannot recover `DecodeWorker` from it, and
+// For a topology declared in a machine file the id is a hash of the name, so
+// it is one-way. A plugin holding `topo=1180846465` cannot recover
+// `PrefillWorker` from it, and
 // therefore cannot look the worker up in a fleet manifest to discover which
 // machine it names. That lookup is the whole of resolving a placement to a
 // location, which is what makes `spawn on(Topology::DecodeWorker)` mean the
 // same thing whether the worker is the GPU beside this one or a GPU in another
 // rack.
 //
-// Two names can also collide onto one id, with nothing to notice. Carrying the
-// name makes it the identity and leaves the id as a shortcut.
+// Two names can also collide onto one id -- rare now that the range is two
+// billion wide, and refused by E6016 when it happens, but still not recoverable
+// from the number. Carrying the name makes it the identity and leaves the id a
+// shortcut.
 //
 // This is not hypothetical tidiness. Reading the id-only payload from a
 // two-worker program, the obvious assumption is that the first kernel emitted
 // belongs to the first `spawn` in the source. It does not -- kernels come out
-// in reverse -- so `topo=1669` was read as PrefillWorker when it is
+// in reverse -- so `topo=702233669` was read as PrefillWorker when it is
 // DecodeWorker. The name is what settles it.
 //
 // The two workers are declared in this file rather than in a machine file
@@ -43,11 +45,11 @@
 // Written in *emission* order, which is the reverse of source order: the
 // DecodeWorker spawn is second in this file and first in the output. That is
 // not a quirk being worked around, it is the reason the name is carried at all
-// -- reading an id-only payload, `topo=1669` is naturally taken for the first
+// -- reading an id-only payload, `topo=702233669` is naturally taken for the first
 // spawn in the source, and it is the second.
 //
-// CHECK: \00topo=1669\00toponame=DecodeWorker\00
-// CHECK: \00topo=1113\00toponame=PrefillWorker\00
+// CHECK: \00topo=702233669\00toponame=DecodeWorker\00
+// CHECK: \00topo=1180846465\00toponame=PrefillWorker\00
 
 extern "C" {
   fn vx_alloc_f32(n : i32) -> *mut f32;

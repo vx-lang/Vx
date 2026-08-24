@@ -215,14 +215,16 @@ void test_bounds() {
 // side. A divergence between the two implementations does not fail to build --
 // it routes a dispatch to the wrong machine, or to none.
 void test_dispatch_ids_match_the_compiler() {
-  check(vx_manifest_dispatch_id("PrefillWorker") == 1113,
-        "PrefillWorker -> 1113");
-  check(vx_manifest_dispatch_id("DecodeWorker") == 1669,
-        "DecodeWorker -> 1669");
-  check(vx_manifest_dispatch_id("Node") == 1789, "Node -> 1789");
-  check(vx_manifest_dispatch_id("Device") == 1731, "Device -> 1731");
-  check(vx_manifest_dispatch_id("MyTPU") == 1502, "MyTPU -> 1502");
-  check(vx_manifest_dispatch_id("AcmeCore") == 1836, "AcmeCore -> 1836");
+  check(vx_manifest_dispatch_id("PrefillWorker") == 1180846465,
+        "PrefillWorker -> 1180846465");
+  check(vx_manifest_dispatch_id("DecodeWorker") == 702233669,
+        "DecodeWorker -> 702233669");
+  check(vx_manifest_dispatch_id("Node") == 879234789, "Node -> 879234789");
+  check(vx_manifest_dispatch_id("Device") == 1036766083,
+        "Device -> 1036766083");
+  check(vx_manifest_dispatch_id("MyTPU") == 192274502, "MyTPU -> 192274502");
+  check(vx_manifest_dispatch_id("AcmeCore") == 1926585836,
+        "AcmeCore -> 1926585836");
 
   // Built-in spellings, which are what a real program mostly places on and are
   // *not* hashes of anything. llama2.vx uses GPU[0] and GPU[1]; a manifest that
@@ -243,20 +245,19 @@ void test_dispatch_ids_match_the_compiler() {
   check(vx_manifest_dispatch_id("CpuAvx512") == 600, "CpuAvx512 -> 600");
 
   // A declared name must not collide with a built-in band.
-  check(vx_manifest_dispatch_id("DecodeWorker") >= 1000,
-        "a declared name stays in the hashed band");
+  check(vx_manifest_dispatch_id("DecodeWorker") >= VX_MANIFEST_CUSTOM_ID_BASE,
+        "a declared name stays in the hashed range");
 
-  // And the band: named topologies live in 1000..1999, which is what keeps them
-  // clear of the built-in kinds below and of slices above.
-  check(vx_manifest_dispatch_id("") >= 1000 &&
-            vx_manifest_dispatch_id("") < 2000,
-        "even an empty name lands in the named band");
+  // And the range: declared names start at 3000, which is what keeps them clear
+  // of the built-in kinds below and of slices (2000..2999).
+  check(vx_manifest_dispatch_id("") >= VX_MANIFEST_CUSTOM_ID_BASE,
+        "even an empty name lands in the declared range");
 
   vx_manifest m;
   vx_manifest_init(&m);
   vx_manifest_add(&m, "DecodeWorker", "10.0.0.5", 9001);
-  check(vx_manifest_find_by_id(&m, 1669) != NULL, "lookup by id finds it");
-  check(vx_manifest_find_by_id(&m, 1113) == NULL,
+  check(vx_manifest_find_by_id(&m, 702233669) != NULL, "lookup by id finds it");
+  check(vx_manifest_find_by_id(&m, 1180846465) == NULL,
         "and an id nobody claimed is local");
 }
 

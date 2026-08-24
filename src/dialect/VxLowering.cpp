@@ -745,8 +745,8 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
     // outlined kernel -- a discardable attribute, so no dialect change. It is
     // what lets `materializeGpuKernels` gate device compilation on the
     // DECLARATION instead of the dispatch-id band, which a custom topology
-    // arithmetically cannot enter (custom ids are 1000 + fnv %% 1000; the band
-    // is [500, 600)) (Vx#352).
+    // arithmetically cannot enter (declared ids start at 3000; the band is
+    // [500, 600)).
     if (auto arch = op->getAttrOfType<StringAttr>("arch"))
       kernelOp->setAttr("arch", arch);
 
@@ -1268,7 +1268,7 @@ struct ConvertVxToStandardPass
       // nvptx64` has answered "what code do we emit for this topology" -- that
       // is the field's documented meaning -- and this is the place that needed
       // the answer; before the attribute existed the gate was the band alone,
-      // which a custom topology can never enter (custom ids own 1000..1999 by
+      // which a custom topology can never enter (declared ids start at 3000 by
       // construction), so no declaration could produce a device image (Vx#352).
       //
       // The band stays as the fallback for kernels with no arch attribute:
@@ -1425,10 +1425,10 @@ struct ConvertVxToStandardPass
           // "misaligned address" at an offset like 0x204. Found by
           // compute-sanitizer on the block-per-row softmax (Vx#379 R3): the
           // instructions assumed an alignment the storage never declared.
-          IntegerAttr galign =
-              a.getAlignment() ? atModule.getI64IntegerAttr(
-                                     (int64_t)a.getAlignment().value())
-                               : atModule.getI64IntegerAttr(16);
+          IntegerAttr galign = a.getAlignment()
+                                   ? atModule.getI64IntegerAttr(
+                                         (int64_t)a.getAlignment().value())
+                                   : atModule.getI64IntegerAttr(16);
           atModule.create<memref::GlobalOp>(
               a.getLoc(), gname,
               /*sym_visibility=*/atModule.getStringAttr("private"),
@@ -1560,8 +1560,7 @@ struct ConvertVxToStandardPass
               Type idx = b.getIndexType();
               Value bdim =
                   b.create<gpu::BlockDimOp>(loc, idx, gpu::Dimension::x);
-              Value bid =
-                  b.create<gpu::BlockIdOp>(loc, idx, gpu::Dimension::x);
+              Value bid = b.create<gpu::BlockIdOp>(loc, idx, gpu::Dimension::x);
               Value tid =
                   b.create<gpu::ThreadIdOp>(loc, idx, gpu::Dimension::x);
               Value lin = b.create<arith::AddIOp>(
@@ -2054,12 +2053,11 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
 
     // The name that id was derived from, when the producer knew it.
     //
-    // For a topology declared in a machine file the id is `1000 + fnv32(name) %
-    // 1000` -- one-way, and only a thousand wide. A plugin given `topo=1113`
+    // For a topology declared in a machine file the id is a hash of the name
+    // (src/arch.rs `fnv_dispatch_id`) -- one-way. A plugin given `topo=1234567`
     // cannot recover `DecodeWorker`, so it cannot resolve the worker against a
-    // fleet manifest to find out which machine it is; and two names can collide
-    // onto one id with nothing to notice. The name is the identity, the id a
-    // shortcut, and this is what a remote placement will key on (#348).
+    // fleet manifest to find out which machine it is. The name is the identity,
+    // the id a shortcut, and this is what a remote placement will key on.
     if (auto nameAttr = op->getAttrOfType<StringAttr>("vx.topology_name")) {
       payload += "toponame=";
       payload += nameAttr.getValue().str();

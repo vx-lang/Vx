@@ -63,6 +63,11 @@ typedef struct {
 
 static inline void vx_manifest_init(vx_manifest *m) { m->count = 0; }
 
+/* The compiler's `CUSTOM_DISPATCH_ID_BASE` / `CUSTOM_DISPATCH_ID_SPAN`
+   (src/arch.rs): declared names are given ids from 3000 up to INT32_MAX. */
+#define VX_MANIFEST_CUSTOM_ID_BASE 3000
+#define VX_MANIFEST_CUSTOM_ID_SPAN 2147480648u
+
 /// The compiler's `fnv_dispatch_id`, mirrored byte for byte.
 ///
 /// src/arch.rs is the original and this must agree with it exactly: it is what
@@ -115,11 +120,18 @@ static inline int32_t vx_manifest_dispatch_id(const char *name) {
   if (sscanf(name, "GPU[%d]", &index) == 1) {
     return 500 + index;
   }
-  /* A name declared in a machine file, which is the hashed band. Slices
+  /* A name declared in a machine file, which is the hashed range. Slices
      (2000..2999) are deliberately absent: a slice is an extent of a device
      rather than a machine, and naming one in a manifest would be asking to send
-     a dispatch to half a GPU. */
-  return 1000 + (int32_t)(vx_manifest_fnv32(name) % 1000u);
+     a dispatch to half a GPU.
+
+     The range used to be 1000..1999. A thousand slots collided constantly --
+     40 declared names collided 55% of the time -- and a collision routes an
+     allocation to the wrong device with nothing to notice. These constants are
+     `CUSTOM_DISPATCH_ID_BASE` and `CUSTOM_DISPATCH_ID_SPAN` in src/arch.rs and
+     must keep matching them. */
+  return VX_MANIFEST_CUSTOM_ID_BASE +
+         (int32_t)(vx_manifest_fnv32(name) % VX_MANIFEST_CUSTOM_ID_SPAN);
 }
 
 /// Add one worker. Returns 0 if the table is full, a field is too long, the

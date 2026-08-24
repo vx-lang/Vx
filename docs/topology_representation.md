@@ -70,8 +70,14 @@ placement of the same topology agree by construction.
 | `GPU` | `500` |
 | `CpuAvx512` | `600` |
 | `CpuNeon` | `700` |
-| `Slice(..)` | `900` |
-| `Custom(name)` | FNV hash of `name` |
+| `Slice(..)` | `2000 + FNV(base, start, end) % 1000` |
+| `Custom(name)` | `3000 + FNV(name) % (INT32_MAX - 2999)` |
+
+A declared name's id is a hash, so two names can still collide; E6016 refuses that
+rather than resolving it. The range used to be `1000..1999`, where a thousand slots
+collided constantly — 40 declared names collided 55% of the time, and a 250-space
+corpus lost 42 of its memory descriptors. `runtime/vx_manifest.h`
+mirrors the hash, so the two must change together.
 
 `Topology::Current` is resolved to the enclosing `active_topology` at type-check
 time *before* it becomes a value, so `let d = Topology::Current` inside a
