@@ -21,6 +21,7 @@ mod integration_test {
     mod metadata_test;
     mod mlir_diagnostic_test;
     mod module_api_test;
+    mod pipeline_scale_test;
     mod registry_test;
     mod remote_client_test;
     mod remote_region_test;

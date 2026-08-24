@@ -38,6 +38,8 @@ anyhow = "1.0"
 [dev-dependencies]
 
 proptest = "1.4"
+# Integration tests build their own pools to check determinism across thread counts.
+rayon = "1.10"
 rstest = "0.19"
 
 [workspace]

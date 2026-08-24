@@ -1155,6 +1155,9 @@ fn check_one_function(
     }
 }
 
+/// Per-function checks only. The driver also runs the whole-program declaration checks
+/// (E6012/E6015/E6016 and memory coherence) before checking bodies; this path does not yet,
+/// so it accepts machine models the driver refuses.
 fn type_check_phase(
     parsed_modules: &mut Vec<VxModule>,
     global_session: &std::sync::Arc<GlobalSession>,

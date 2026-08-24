@@ -121,7 +121,7 @@ jobs:
               exit 1
             }
             # Numbers a passing gate reports are the point of running it by name.
-            echo "$out" | grep -E "^flat path:" || true
+            echo "$out" | grep -E "^(flat path:|identical MLIR)" || true
           }
 
           # Determinism: the frontend emits the same bytes however many threads it uses.
@@ -138,6 +138,9 @@ jobs:
 
           # Coverage: how much of the backend corpus the flat path carries (Vx#383).
           run_gate "--test integration_test" integration_test::flat_corpus_sweep::flat_path_coverage_of_the_backend_corpus_holds
+
+          # Scale: the same 16,000 functions the 5.89x was measured on, still byte-identical.
+          run_gate "--test integration_test" integration_test::pipeline_scale_test::pipeline_emits_identical_mlir_at_benchmark_scale
 
       - name: Run stress tests (Every 10th Commit)
         run: |
