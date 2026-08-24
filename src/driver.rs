@@ -1236,7 +1236,7 @@ impl CompilerDriver {
             &alias_tables,
             &subspaces,
             &topo_archs,
-            crate::pipeline::Schedule::Parallel,
+            crate::config::Schedule::Parallel,
         ) {
             Some(t) => t,
             None => {

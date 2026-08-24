@@ -22,8 +22,8 @@
 mod corpus;
 
 use std::time::{Duration, Instant};
+use vxc::config::Schedule;
 use vxc::intern_mode::{self, InternMode};
-use vxc::pipeline::Schedule;
 
 fn median_iqr(mut xs: Vec<f64>) -> (f64, f64, f64) {
     xs.sort_by(|a, b| a.partial_cmp(b).unwrap());

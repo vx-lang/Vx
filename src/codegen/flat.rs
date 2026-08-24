@@ -445,7 +445,7 @@ pub fn build_callee_map(
     registry: &ImmutableGlobalRegistry,
     aggs: &AggMap,
     agg_names: &HashMap<String, TypeId>,
-    sched: crate::pipeline::Schedule,
+    sched: crate::config::Schedule,
 ) -> CalleeMap {
     // A pure map keyed by the callee's GID, so the result does not depend on the order entries are
     // produced -- which is just as well, since it is built from a `HashMap` whose iteration order was
@@ -464,7 +464,7 @@ pub fn build_callee_map(
             },
         )
     };
-    if sched == crate::pipeline::Schedule::Sequential {
+    if sched == crate::config::Schedule::Sequential {
         registry.fn_sigs.iter().map(one).collect()
     } else {
         registry.fn_sigs.par_iter().map(one).collect()
@@ -505,10 +505,7 @@ pub type AggMap = HashMap<TypeId, AggLayout>;
 /// Build the GID→aggregate-layout map from the frozen registry's nominal layouts. Skips a struct
 /// with any by-value nominal field or an unmodelled (0-align stub) layout; a pointer (`Opaque`)
 /// field is modelled as `!llvm.ptr`.
-pub fn build_agg_map(
-    registry: &ImmutableGlobalRegistry,
-    sched: crate::pipeline::Schedule,
-) -> AggMap {
+pub fn build_agg_map(registry: &ImmutableGlobalRegistry, sched: crate::config::Schedule) -> AggMap {
     use crate::layout::FieldTy;
     // Name -> layout GID for every modelled nominal, to resolve a pointer field's pointee aggregate
     // (its layout is instance-independent when the field is behind a pointer, so the base name suffices
@@ -594,7 +591,7 @@ pub fn build_agg_map(
             },
         ))
     };
-    if sched == crate::pipeline::Schedule::Sequential {
+    if sched == crate::config::Schedule::Sequential {
         registry.layouts.iter().filter_map(layout_of).collect()
     } else {
         registry.layouts.par_iter().filter_map(layout_of).collect()
@@ -802,7 +799,7 @@ impl EmitCtx {
     /// registry (tensor types are structural); populate it separately from the lowerer's side table.
     pub fn from_registry(
         registry: &ImmutableGlobalRegistry,
-        sched: crate::pipeline::Schedule,
+        sched: crate::config::Schedule,
     ) -> Self {
         let aggs = build_agg_map(registry, sched);
         let agg_names = build_agg_names(registry, &aggs);
@@ -902,7 +899,7 @@ pub fn emit_module_mlir(
     alias_tables: &[&[(usize, usize, Vec<usize>)]],
     subspaces: &[SubspaceInfo],
     topo_archs: &[(i64, String)],
-    sched: crate::pipeline::Schedule,
+    sched: crate::config::Schedule,
 ) -> Option<String> {
     let setup = std::time::Instant::now();
     let mut ctx = EmitCtx::from_registry(registry, sched);
@@ -962,12 +959,12 @@ pub fn emit_module_mlir(
             _ => None,
         }
     };
-    let sigs: Vec<(TypeId, (Vec<String>, String))> =
-        if sched == crate::pipeline::Schedule::Sequential {
-            funcs.iter().filter_map(compute_sig).collect()
-        } else {
-            funcs.par_iter().filter_map(compute_sig).collect()
-        };
+    let sigs: Vec<(TypeId, (Vec<String>, String))> = if sched == crate::config::Schedule::Sequential
+    {
+        funcs.iter().filter_map(compute_sig).collect()
+    } else {
+        funcs.par_iter().filter_map(compute_sig).collect()
+    };
     for (gid, s) in sigs {
         ctx.func_sigs.insert(gid, s);
     }
@@ -1045,7 +1042,7 @@ pub fn emit_module_mlir(
             });
             Some((text, calls, helpers))
         };
-    let mut emitted: Vec<Option<FnEmission>> = if sched == crate::pipeline::Schedule::Sequential {
+    let mut emitted: Vec<Option<FnEmission>> = if sched == crate::config::Schedule::Sequential {
         funcs.iter().enumerate().map(emit_one).collect()
     } else {
         funcs.par_iter().enumerate().map(emit_one).collect()
@@ -1155,7 +1152,7 @@ pub fn emit_module_mlir(
     // `calls` is one entry per emitted call site -- three heap allocations each, all built by
     // workers -- so it is the same remote-free problem in miniature and gets the same treatment.
     // `declared` borrows from it, so this has to come after the declaration loop.
-    if sched == crate::pipeline::Schedule::Sequential {
+    if sched == crate::config::Schedule::Sequential {
         drop(emitted);
         drop(calls);
     } else {
@@ -2902,7 +2899,7 @@ mod tests {
             &alias_tables,
             &[],
             &[],
-            crate::pipeline::Schedule::Parallel,
+            crate::config::Schedule::Parallel,
         )
         .expect("emits flat module");
 

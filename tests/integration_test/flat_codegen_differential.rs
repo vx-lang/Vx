@@ -217,7 +217,7 @@ fn flat_llvm(src: &str) -> Option<String> {
         &alias_tables,
         &[],
         &[],
-        vxc::pipeline::Schedule::Parallel,
+        vxc::config::Schedule::Parallel,
     )?;
 
     let context = make_context();
@@ -309,7 +309,7 @@ fn flat_module_mlir(src: &str) -> Option<String> {
         &alias_tables,
         &subspaces,
         &[],
-        vxc::pipeline::Schedule::Parallel,
+        vxc::config::Schedule::Parallel,
     )
 }
 
@@ -1303,7 +1303,7 @@ fn program_links_a_function_body_from_a_vxlib_artifact() {
         &[],
         &[],
         &[],
-        vxc::pipeline::Schedule::Parallel,
+        vxc::config::Schedule::Parallel,
     )
     .expect("flat codegen emits the linked module");
     let context = make_context();

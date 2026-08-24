@@ -16,8 +16,9 @@
 #[path = "../../src/bin/corpus/mod.rs"]
 mod corpus;
 
+use vxc::config::Schedule;
 use vxc::intern_mode::InternMode;
-use vxc::pipeline::{compile_pipeline_mlir_in, Schedule};
+use vxc::pipeline::compile_pipeline_mlir_in;
 
 fn from_env(var: &str, default: usize) -> usize {
     std::env::var(var)
