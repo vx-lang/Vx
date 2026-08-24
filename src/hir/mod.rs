@@ -13,7 +13,6 @@
 use crate::syntax::*;
 
 pub mod borrow_cx;
-pub mod bytecode;
 pub mod check;
 pub mod env;
 pub mod expr;
@@ -26,7 +25,6 @@ pub mod seam;
 pub mod solver;
 pub mod stmt;
 
-pub use bytecode::*;
 pub use env::*;
 #[cfg(test)]
 mod tests {

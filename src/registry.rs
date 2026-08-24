@@ -90,7 +90,7 @@ pub struct FnBody {
     pub name: crate::symbol::Symbol,
     pub params: Vec<crate::syntax::Type>,
     pub ret_ty: crate::syntax::Type,
-    pub hir: Vec<crate::hir::bytecode::HirInstruction>,
+    pub hir: Vec<crate::bytecode::HirInstruction>,
     /// The body's type stream (global GIDs), indexed by each instruction's `type_idx`.
     pub types: Vec<TypeId>,
 }

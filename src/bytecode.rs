@@ -11,6 +11,10 @@
 // between the verbose Abstract Syntax Tree and the highly structured MLIR dialects,
 // facilitating easier analysis and optimization.
 //
+// A top-level module with no imports of its own. registry, session, and metadata all store and
+// replay these instructions, while the checker and the flattener that produce them depend on
+// registry and session -- so this has to sit below all of them rather than inside hir/.
+//
 //===----------------------------------------------------------------------===//
 /// High-Level Intermediate Representation (HIR)
 /// Flat Array Bytecode replacing the AST.

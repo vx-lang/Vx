@@ -26,8 +26,8 @@
 // subset, so nothing half-lowered is ever emitted.
 //
 //===----------------------------------------------------------------------===//
+use crate::bytecode::{HirInstruction, Opcode};
 use crate::gid::TypeId;
-use crate::hir::bytecode::{HirInstruction, Opcode};
 use crate::hir::flatten::{ptr_gid, scalar_gid, tensor_gid_of};
 use crate::registry::ImmutableGlobalRegistry;
 use crate::syntax::{ElementType, Function, Type};
@@ -1579,9 +1579,9 @@ pub fn emit_function_mlir(
                     // carry it: `lower_for` is the sole tagger.
                     let attr = if ins.opcode == Opcode::Add {
                         match ins.imm {
-                            crate::hir::bytecode::IMM_PARALLEL_STEP => " {vx.parallel_step}",
-                            crate::hir::bytecode::IMM_BLOCK_STEP => " {vx.parallel_bstep}",
-                            crate::hir::bytecode::IMM_THREAD_STEP => " {vx.parallel_tstep}",
+                            crate::bytecode::IMM_PARALLEL_STEP => " {vx.parallel_step}",
+                            crate::bytecode::IMM_BLOCK_STEP => " {vx.parallel_bstep}",
+                            crate::bytecode::IMM_THREAD_STEP => " {vx.parallel_tstep}",
                             _ => "",
                         }
                     } else {
@@ -1763,9 +1763,9 @@ pub fn emit_function_mlir(
                 // text as a discardable attribute -- inert on the host path, the marker the
                 // device clone offsets by an id (#251 flat grid-stride; Vx#379 block/thread).
                 let attr = match ins.imm {
-                    crate::hir::bytecode::IMM_PARALLEL_INIT => " {vx.parallel_init}",
-                    crate::hir::bytecode::IMM_BLOCK_INIT => " {vx.parallel_binit}",
-                    crate::hir::bytecode::IMM_THREAD_INIT => " {vx.parallel_tinit}",
+                    crate::bytecode::IMM_PARALLEL_INIT => " {vx.parallel_init}",
+                    crate::bytecode::IMM_BLOCK_INIT => " {vx.parallel_binit}",
+                    crate::bytecode::IMM_THREAD_INIT => " {vx.parallel_tinit}",
                     _ => "",
                 };
                 if let Some(&Some(agg_gid)) = agg_of.get(ins.operand1.0 as usize) {

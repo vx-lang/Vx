@@ -1155,7 +1155,7 @@ impl CompilerDriver {
         // linked by the JIT (#265 step 7 / #220).
         let mut imported_entries: Vec<(
             crate::syntax::Function,
-            Vec<crate::hir::bytecode::HirInstruction>,
+            Vec<crate::bytecode::HirInstruction>,
             Vec<crate::gid::TypeId>,
         )> = Vec::new();
         for name in &lowered_names {

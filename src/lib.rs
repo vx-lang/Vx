@@ -14,6 +14,7 @@
 //===----------------------------------------------------------------------===//
 pub mod arch;
 pub mod borrow;
+pub mod bytecode;
 pub mod codegen;
 pub mod config;
 pub mod diagnostic;

@@ -1628,7 +1628,7 @@ fn codegen_mlir_phase(
 
     let funcs: Vec<(
         &syntax::Function,
-        &[crate::hir::bytecode::HirInstruction],
+        &[crate::bytecode::HirInstruction],
         &[crate::gid::TypeId],
     )> = entries
         .iter()
@@ -2329,7 +2329,7 @@ mod gid_stream_tests {
     /// the debug `verify_hir_stream` hook active.
     #[test]
     fn type_check_phase_lowers_scalar_body_to_hir() {
-        use crate::hir::bytecode::Opcode;
+        use crate::bytecode::Opcode;
         let mut modules = vec![parse_only(
             "m",
             "fn add(a: i32, b: i32) -> i32 { return a + b; }",
@@ -2952,7 +2952,7 @@ fn main() -> i32 { return 0; }
     /// it by register). Assert the concatenated stream is byte-identical across thread counts.
     #[test]
     fn hir_stream_is_deterministic_across_thread_counts() {
-        use crate::hir::bytecode::Opcode;
+        use crate::bytecode::Opcode;
         let build =
             || -> Vec<VxModule> {
                 vec![

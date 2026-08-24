@@ -12,8 +12,8 @@
 // of Vx source code to MLIR.
 //
 //===----------------------------------------------------------------------===//
+use crate::bytecode::HirInstruction;
 use crate::gid::{TypeId, UnboundedFunctionMetadata};
-use crate::hir::HirInstruction;
 use std::sync::Arc;
 
 // The frozen nominal-type registry (layouts + module indices + cycle-checked). Built once per

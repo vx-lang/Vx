@@ -16,11 +16,11 @@
 // See docs/discussions/implementation_plans/hir_flattening.md.
 //
 //===----------------------------------------------------------------------===//
-use crate::gid::TypeId;
-use crate::hir::bytecode::{
+use crate::bytecode::{
     HirInstruction, Opcode, Register, TypeIdx, IMM_BLOCK_INIT, IMM_BLOCK_STEP, IMM_PARALLEL_INIT,
     IMM_PARALLEL_STEP, IMM_THREAD_INIT, IMM_THREAD_STEP,
 };
+use crate::gid::TypeId;
 use crate::layout::FieldTy;
 use crate::registry::ImmutableGlobalRegistry;
 use crate::session::LocalWorkerState;

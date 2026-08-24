@@ -12,8 +12,8 @@
 // linking and FFI interoperability.
 //
 //===----------------------------------------------------------------------===//
+use crate::bytecode::{HirInstruction, Opcode, Register, TypeIdx};
 use crate::gid::{deserialize_metadata_symbols, serialize_metadata_symbols, TypeId};
-use crate::hir::bytecode::{HirInstruction, Opcode, Register, TypeIdx};
 use crate::layout::{FieldLayout, FieldTy};
 use crate::registry::{FnBody, FnSig, ImmutableGlobalRegistry, StructFields, TypeDefinition};
 use crate::symbol::Symbol;
