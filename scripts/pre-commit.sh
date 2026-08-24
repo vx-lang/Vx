@@ -68,7 +68,7 @@ fi
 
 # Rule 4: Linting Check
 echo "[4/5] Checking Lints (cargo clippy)..."
-cargo clippy --all-targets --all-features -- -D warnings
+cargo clippy --workspace --all-targets --all-features -- -D warnings
 echo "✅ No clippy warnings found!"
 
 # Rule 5: Test Suite

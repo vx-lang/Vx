@@ -154,7 +154,7 @@ mod tests {
         assert!(!ptr.is_null());
         assert_eq!(vx_vec_len_f32(ptr), 0);
 
-        vx_vec_push_f32(ptr, 3.14);
+        vx_vec_push_f32(ptr, 1.5);
         assert_eq!(vx_vec_len_f32(ptr), 1);
 
         vx_vec_drop_f32(ptr);

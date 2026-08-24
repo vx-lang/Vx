@@ -159,7 +159,7 @@ fn main_loop(connection: Connection) -> Result<(), Box<dyn Error + Sync + Send>>
                                 },
                                 new_text: formatted,
                             };
-                            let result = serde_json::to_value(&vec![edit]).unwrap();
+                            let result = serde_json::to_value(vec![edit]).unwrap();
                             let resp = Response {
                                 id,
                                 result: Some(result),

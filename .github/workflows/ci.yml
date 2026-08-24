@@ -84,6 +84,15 @@ jobs:
           ENZYME_LIB=$(find $(pwd)/.cargo/enzyme -name 'LLVMEnzyme*.so' | head -n 1)
           echo "ENZYME_LIB=$ENZYME_LIB" >> $GITHUB_ENV
 
+      # Clippy has gated commits through scripts/pre-commit.sh for a long time but never gated
+      # CI, so a lint only failed for whoever had the hook installed. Same flags as the hook, so
+      # the two cannot disagree about what is clean.
+      #
+      # --workspace because the build and test steps below already use it: without it the three
+      # member crates are compiled by CI and linted by nothing.
+      - name: Check Lints (cargo clippy)
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
       - name: Build
         run: cargo build --release --workspace --verbose
 
@@ -162,3 +171,50 @@ jobs:
           else
             echo "Skipping benchmarks. They run every 10th commit offset by 1 (current run: $GITHUB_RUN_NUMBER)."
           fi
+
+  # The release job above never runs a line of debug-only code: 15 `#[cfg(debug_assertions)]`
+  # blocks, 33 `debug_assert!` calls, and the integer overflow checks the dev profile turns on.
+  # That includes every hook into parallel_architecture_verifier, so the pipeline's own
+  # phase-by-phase invariants were checked by nothing outside a developer's pre-commit run.
+  #
+  # Its own job rather than another step, so it runs alongside the release job instead of
+  # extending it, and gets its own build cache instead of evicting the release one.
+  test-debug:
+    name: Run Tests (debug profile)
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install LLVM 22
+        run: |
+          wget https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 22
+          sudo apt-get install -y llvm-22-dev libmlir-22-dev mlir-22-tools libpolly-22-dev libclang-22-dev ninja-build cmake z3 lld
+          echo "/usr/lib/llvm-22/bin" >> $GITHUB_PATH
+
+      - name: Install Enzyme
+        run: |
+          chmod +x scripts/install_enzyme.sh
+          ./scripts/install_enzyme.sh
+          ENZYME_LIB=$(find $(pwd)/.cargo/enzyme -name 'LLVMEnzyme*.so' | head -n 1)
+          echo "ENZYME_LIB=$ENZYME_LIB" >> $GITHUB_ENV
+
+      - name: Run tests (debug)
+        run: cargo test --workspace --verbose
+        env:
+          LLVM_CONFIG_PATH: llvm-config-22
+          MLIR_TRANSLATE_PATH: mlir-translate-22
+          OPT_PATH: opt-22
+          LLC_PATH: llc-22
+          CLANG_PATH: clang-22
