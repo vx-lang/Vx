@@ -637,6 +637,15 @@ impl<'c> MeliorGenerator<'c> {
         program: &Program,
         modules: &HashMap<crate::symbol::Symbol, Program>,
     ) -> Result<(), LowerError> {
+        // Walked in name order rather than straight off `modules.values()`. A HashMap iterates in
+        // an order that depends on the process's random hash seed, and the loops below decide the
+        // order function bodies and extern declarations are emitted in -- so the same program
+        // compiled twice came out with its functions in a different order.
+        let sorted_modules: Vec<&Program> = {
+            let mut names: Vec<&crate::symbol::Symbol> = modules.keys().collect();
+            names.sort();
+            names.into_iter().map(|n| &modules[n]).collect()
+        };
         for s in &program.structs {
             self.structs.insert(s.name.clone(), s.clone());
         }
@@ -662,7 +671,7 @@ impl<'c> MeliorGenerator<'c> {
                 );
             }
         }
-        for module in modules.values() {
+        for module in sorted_modules.iter().copied() {
             for s in &module.structs {
                 self.structs.insert(s.name.clone(), s.clone());
             }
@@ -763,7 +772,7 @@ impl<'c> MeliorGenerator<'c> {
             .build()?;
         self.module.body().append_operation(sig_init_decl);
 
-        for module_prog in modules.values() {
+        for module_prog in sorted_modules.iter().copied() {
             for ext in &module_prog.externs {
                 let ret_ty = self.lower_type(&ext.return_type)?;
                 let mut arg_tys = Vec::new();
@@ -776,7 +785,7 @@ impl<'c> MeliorGenerator<'c> {
 
         let mut operations = Vec::new();
 
-        for module_prog in modules.values() {
+        for module_prog in sorted_modules.iter().copied() {
             // Skip generic *templates* — only their concrete instantiations (in `program.functions`,
             // collected as monomorphizations) are codegen'd. Imported modules now retain their
             // generic free functions so the env can instantiate cross-module generic calls (#204).
@@ -808,7 +817,7 @@ impl<'c> MeliorGenerator<'c> {
         }
 
         // Emit module functions (concrete only; generic templates are skipped — see above).
-        for module_prog in modules.values() {
+        for module_prog in sorted_modules.iter().copied() {
             for func in module_prog
                 .functions
                 .iter()
@@ -825,7 +834,7 @@ impl<'c> MeliorGenerator<'c> {
         let body = self.module.body();
 
         let mut all_externs = program.externs.clone();
-        for module_prog in modules.values() {
+        for module_prog in sorted_modules.iter().copied() {
             all_externs.extend(module_prog.externs.clone());
         }
 

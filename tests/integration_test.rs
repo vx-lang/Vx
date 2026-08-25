@@ -3,6 +3,7 @@ mod integration_test {
     mod assert_codegen_test;
     mod basic_integration;
     mod borrow_test;
+    mod codegen_determinism;
     mod compile_test;
     mod device_image_test;
     mod device_pool_test;

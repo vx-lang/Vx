@@ -311,8 +311,6 @@ impl<'a> MacroExpander<'a> {
         tt: &TokenTree,
         block_tree: &Option<TokenTree>,
     ) -> Result<expr::Expr, String> {
-        println!("Expanding macro call: {}!", name);
-
         if name == "mlir" {
             return self.expand_mlir_macro(tt, block_tree);
         }

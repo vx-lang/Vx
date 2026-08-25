@@ -1122,7 +1122,9 @@ impl CompilerDriver {
             .filter(|f| f.generics.is_empty())
             .map(|f| f.name.clone())
             .collect();
-        let mut lowered_names = std::collections::HashSet::new();
+        // A BTreeSet, not a HashSet: this drives the order imported bodies are appended in
+        // below, and a HashSet iterates in whatever order the process's random hash seed gives.
+        let mut lowered_names = std::collections::BTreeSet::new();
         let mut entries: Vec<(crate::syntax::Function, LocalWorkerState)> = Vec::new();
         while let Some(name) = worklist.pop() {
             if !lowered_names.insert(name.clone()) {
@@ -1151,6 +1153,11 @@ impl CompilerDriver {
             for s in &f.body {
                 TypeChecker::extract_uses_stmt(s, &mut uses);
             }
+            // Sorted before pushing: the worklist decides the order functions are lowered and
+            // emitted in, so taking them straight out of the HashSet made the emitted MLIR depend
+            // on the hash seed and differ between runs of the same compiler on the same program.
+            let mut uses: Vec<_> = uses.into_iter().collect();
+            uses.sort();
             for u in uses {
                 worklist.push(crate::symbol::Symbol::from(u.as_str()));
             }
