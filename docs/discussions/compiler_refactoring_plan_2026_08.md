@@ -496,3 +496,43 @@ One cycle is left standing on purpose. `parser` no longer reaches `borrow`, but
 `hir` still reaches `parser`, through `hir::env::parse_ty_str` re-parsing a type
 from its printed form. That is finding 6 above, and Phase 2 deletes it. Cutting it
 any sooner would mean working around the string round-trip instead of removing it.
+
+### What Phase 3 got wrong, checked against the tree (Vx#387)
+
+**`emit_function_mlir` is 1,721 lines, not 1,413.** The plan's figure was taken on
+a pre-#386 tree; the function grew before anyone split it, which is the argument
+for splitting it rather than against.
+
+**Seven emit families should be eight.** `flat/emit/` came out as `arith`,
+`control`, `memory`, `call`, `aggregate`, `tensor`, `parallel`, `io`. Printing and
+aborting are their own family rather than a misc pile, and `transfer` is really
+`parallel` — it also holds `Spawn`, `SpawnEnd` and `Barrier`.
+
+**`TypeChecker` has 42 fields, not 43.** Two of them, `closure_depths` and
+`closure_captures_stack`, carry a stale `#[allow(dead_code)]`; both are live, read
+from `check/access.rs`, `check/control.rs` and `check/raw.rs`.
+
+**The declaration checks are five functions, not a line range.** `check/transfer.rs`
+does not divide into "declaration checks above, expression checks below".
+`check_capacity`, `check_type_placement`, `space_is_cached` and
+`value_memory_space` sit among them and read like declaration checks, but each is
+shared: `check_capacity` is called from `check_transfer_expr`,
+`check_type_placement` from `hir/stmt.rs` per statement, and the other two from
+`check/access.rs` and `check/region_traffic.rs`. What moved to `hir/decl_check/`
+is the five functions reachable only from `check_whole_program_declarations`.
+
+**Splitting `check_transfer_expr` is not code motion.** The plan asks to split its
+749 lines "along its own phases: resolve the edge, route the staging hops, cost
+them, then discharge the obligations". Those phases are not sequential statements
+that can be lifted — 628 of the 749 lines are a single `if let Expr::...` arm, and
+the phases are nested inside it. Doing this means restructuring the memory
+algebra's entry point, with the behaviour risk that implies. It should be scoped as
+its own piece of work, not run as the tail of a mechanical phase.
+
+**A note on method, from Phase 3.** The mechanical rewrites in this phase were
+checked before they were run, and three of the four problems found would have
+compiled cleanly: 22 of the 23 `func.` occurrences in the emitter's match arms are
+emitted MLIR text (`func.call`, `func.return`) rather than field accesses, a
+closure took `body` as a parameter whose name a naive rewrite captured, and prose
+inside comments was rewritten as if it were code. A refactor over a text emitter
+cannot be validated by the type checker alone, because its output is strings.
