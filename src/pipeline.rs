@@ -1664,7 +1664,8 @@ fn codegen_mlir_phase(
         subspaces,
         topo_archs,
         sched,
-    )?;
+    )
+    .ok()?;
     chatter!(
         "Emitted MLIR for {} functions ({} monomorphized, {} shadowed by an earlier definition)",
         funcs.len(),

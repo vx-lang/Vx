@@ -75,11 +75,26 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// Which codegen path the compiler took for one program.
+/// Which codegen path the compiler took for one program, and -- when it fell back -- the reasons
+/// the flat path gave.
 #[derive(PartialEq)]
 enum CodegenPath {
     Flat,
-    Ast,
+    Ast(Vec<String>),
+}
+
+/// The bracketed grouping key the driver prints after each decline: `... [unsupported-expr(Grad)]`.
+fn decline_keys(log: &str) -> Vec<String> {
+    log.lines()
+        .filter(|l| {
+            l.starts_with("[flat-codegen] declined")
+                || l.starts_with("[flat-codegen] emit declined")
+        })
+        .filter_map(|l| {
+            let start = l.rfind('[')?;
+            Some(l[start + 1..].trim_end().trim_end_matches(']').to_string())
+        })
+        .collect()
 }
 
 /// Compile one program and report the path it took. `--action emit-mlir` stops at
@@ -95,7 +110,7 @@ fn path_taken(program: &Path) -> Result<CodegenPath, String> {
     if log.contains("emitted module via the flat path") {
         Ok(CodegenPath::Flat)
     } else if log.contains("program outside the flat subset") {
-        Ok(CodegenPath::Ast)
+        Ok(CodegenPath::Ast(decline_keys(&log)))
     } else {
         // Neither marker: the program never reached codegen. Two ways that happens,
         // and both are worth failing on. Either the program stopped compiling, or a
@@ -122,6 +137,8 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
     let mut declined = BTreeSet::new();
     let mut flat_count = 0usize;
     let mut broken = Vec::new();
+    let mut by_reason: std::collections::BTreeMap<String, usize> = Default::default();
+    let mut unexplained: Vec<String> = Vec::new();
 
     for program in corpus_programs(&root) {
         let source = std::fs::read_to_string(&program).unwrap_or_default();
@@ -136,7 +153,16 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
 
         match path_taken(&program) {
             Ok(CodegenPath::Flat) => flat_count += 1,
-            Ok(CodegenPath::Ast) => {
+            Ok(CodegenPath::Ast(reasons)) => {
+                if reasons.is_empty() {
+                    unexplained.push(name.clone());
+                }
+                // One program declines for one reason -- the first construct the flat path could
+                // not carry. Counting them all would weight a program by how many later
+                // constructs it happens to contain.
+                if let Some(first) = reasons.first() {
+                    *by_reason.entry(first.clone()).or_insert(0) += 1;
+                }
                 declined.insert(name);
             }
             Err(why) => broken.push(format!("{name}: {why}")),
@@ -180,10 +206,28 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         declined.len()
     );
 
+    // Every decline says why. A silent one is a bail-out that was added without a reason, which is
+    // the state this whole mechanism exists to prevent -- it would shrink the histogram below
+    // without shrinking the gap.
+    assert!(
+        unexplained.is_empty(),
+        "these programs fall back to the AST path without saying why:\n  {}",
+        unexplained.join("\n  ")
+    );
+
     println!(
         "flat path: {} of {} portable corpus programs ({} declined, tracked in Vx#383)",
         flat_count,
         flat_count + declined.len(),
         declined.len()
     );
+    // What is missing, rather than which files are missing it. This is a report, not a gate: the
+    // exact-set assertions above are what catch a regression, and duplicating them as expected
+    // counts would be a second table to maintain that catches strictly less (a program starting to
+    // decline and another stopping, for the same reason, leaves every count unchanged).
+    let mut ranked: Vec<_> = by_reason.iter().collect();
+    ranked.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+    for (reason, count) in ranked {
+        println!("flat decline: {count:3} {reason}");
+    }
 }

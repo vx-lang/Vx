@@ -218,7 +218,8 @@ fn flat_llvm(src: &str) -> Option<String> {
         &[],
         &[],
         vxc::config::Schedule::Parallel,
-    )?;
+    )
+    .ok()?;
 
     let context = make_context();
     let mut module = melior::ir::Module::parse(&context, &body).expect("flat MLIR parses");
@@ -311,6 +312,7 @@ fn flat_module_mlir(src: &str) -> Option<String> {
         &[],
         vxc::config::Schedule::Parallel,
     )
+    .ok()
 }
 
 /// The parity assertion for a *printing* program: the flat path lowers it, and its

@@ -130,7 +130,7 @@ jobs:
               exit 1
             }
             # Numbers a passing gate reports are the point of running it by name.
-            echo "$out" | grep -E "^(flat path:|identical MLIR)" || true
+            echo "$out" | grep -E "^(flat path:|flat decline:|identical MLIR)" || true
           }
 
           # Determinism: the frontend emits the same bytes however many threads it uses.

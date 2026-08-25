@@ -52,6 +52,15 @@ pub enum Decline {
     /// Something the flat path does not lower yet that is none of the above. `what` is a short
     /// fixed phrase, never a formatted value, so the histogram groups.
     Unsupported { what: &'static str },
+
+    /// A gap in the flat *emitter* that has not been given a phrase of its own yet, naming the
+    /// source line that produced it.
+    ///
+    /// The emitter bails from roughly 190 places, most of which no corpus program has ever
+    /// reached. Writing a description for each up front would be 190 guesses about which ones
+    /// matter. Carrying the site instead means the histogram names the exact line to describe,
+    /// and only the lines something actually reaches get the work.
+    EmitterGap { site: &'static str },
 }
 
 impl Decline {
@@ -67,6 +76,7 @@ impl Decline {
             Decline::TypeNotModelled { .. } => "type-not-modelled",
             Decline::NeedsMemoryMode { .. } => "needs-memory-mode",
             Decline::Unsupported { .. } => "unsupported",
+            Decline::EmitterGap { .. } => "emitter-gap",
         }
     }
 
@@ -81,6 +91,7 @@ impl Decline {
             Decline::TypeNotModelled { what } => format!("type-not-modelled({what})"),
             Decline::NeedsMemoryMode { construct } => format!("needs-memory-mode({construct})"),
             Decline::Unsupported { what } => format!("unsupported({what})"),
+            Decline::EmitterGap { site } => format!("emitter-gap({site})"),
         }
     }
 }
@@ -99,9 +110,22 @@ impl fmt::Display for Decline {
                 write!(f, "{construct} lowers only in memory mode")
             }
             Decline::Unsupported { what } => write!(f, "no flat lowering for {what}"),
+            Decline::EmitterGap { site } => write!(f, "an emitter gap at {site}"),
         }
     }
 }
 
 /// What a lowering step returns: the value, or the reason the flat path gave up.
 pub type Lowered<T> = Result<T, Decline>;
+
+/// An emitter bail-out that has no phrase of its own yet, stamped with where it is.
+///
+/// A macro rather than a function so `line!()` expands at the bail site.
+#[macro_export]
+macro_rules! emitter_gap {
+    () => {
+        $crate::decline::Decline::EmitterGap {
+            site: concat!("flat.rs:", line!()),
+        }
+    };
+}

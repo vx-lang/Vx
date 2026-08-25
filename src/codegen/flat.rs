@@ -27,6 +27,7 @@
 //
 //===----------------------------------------------------------------------===//
 use crate::bytecode::{HirInstruction, Opcode};
+use crate::decline::{Decline, Lowered};
 use crate::gid::TypeId;
 use crate::hir::flatten::{ptr_gid, scalar_gid, tensor_gid_of};
 use crate::registry::ImmutableGlobalRegistry;
@@ -557,12 +558,12 @@ pub fn build_agg_map(registry: &ImmutableGlobalRegistry, sched: crate::config::S
                 // whole enclosing struct declines. (#242)
                 FieldTy::Nominal(nested_gid) => {
                     match agg_struct_ty_of(*nested_gid, registry, &mut Vec::new()) {
-                        Some(nested_ty) => {
+                        Ok(nested_ty) => {
                             field_tys.push(nested_ty);
                             field_pointee.push(None);
                             field_agg.push(Some(*nested_gid));
                         }
-                        None => {
+                        Err(_) => {
                             modelled = false;
                             break;
                         }
@@ -600,27 +601,31 @@ fn agg_struct_ty_of(
     gid: TypeId,
     registry: &ImmutableGlobalRegistry,
     visiting: &mut Vec<TypeId>,
-) -> Option<String> {
+) -> Lowered<String> {
     use crate::layout::FieldTy;
     if visiting.contains(&gid) {
-        return None;
+        return Err(Decline::TypeNotModelled {
+            what: "an aggregate whose layout is cyclic",
+        });
     }
-    let def = registry.layouts.get(&gid)?;
+    let def = registry.layouts.get(&gid).ok_or(crate::emitter_gap!())?;
     if def.align_bytes == 0 || def.fields.is_empty() {
-        return None;
+        return Err(Decline::TypeNotModelled {
+            what: "an aggregate with no fields or alignment",
+        });
     }
     visiting.push(gid);
     let mut field_tys = Vec::with_capacity(def.fields.len());
     for f in &def.fields {
         let ft = match &f.ty {
-            FieldTy::Scalar(e) => mlir_scalar(e)?.to_string(),
+            FieldTy::Scalar(e) => mlir_scalar(e).ok_or(crate::emitter_gap!())?.to_string(),
             FieldTy::Opaque => "!llvm.ptr".to_string(),
             FieldTy::Nominal(n) => agg_struct_ty_of(*n, registry, visiting)?,
         };
         field_tys.push(ft);
     }
     visiting.pop();
-    Some(format!("!llvm.struct<({})>", field_tys.join(", ")))
+    Ok(format!("!llvm.struct<({})>", field_tys.join(", ")))
 }
 
 /// The base nominal name a pointer/borrow points *to* (`*const Vec<T>` -> `"Vec"`), for resolving a
@@ -861,20 +866,37 @@ fn static_tile_bytes(elem: &ElementType, shape: &[String]) -> Option<u64> {
 /// tensor's memref, or a by-value aggregate's `!llvm.struct`. `None` for a void / unmodelled type.
 /// The single source of truth shared by the `func.func` header and a `FuncConst`'s `func.constant`
 /// signature, so a materialized function pointer's type matches its callee's header exactly. (#242)
-fn ty_mlir(ty: &Type, ctx: &EmitCtx) -> Option<String> {
+fn ty_mlir(ty: &Type, ctx: &EmitCtx) -> Lowered<String> {
     if let Some(e) = scalar_of(ty) {
-        Some(mlir_scalar(&e)?.to_string())
+        Ok(mlir_scalar(&e)
+            .ok_or(Decline::TypeNotModelled {
+                what: "a scalar with no MLIR spelling",
+            })?
+            .to_string())
     } else if let Some(et) = enum_scalar(ty, ctx) {
-        Some(et.to_string())
+        Ok(et.to_string())
     } else if is_ptr_ty(ty) {
-        Some("!llvm.ptr".to_string())
+        Ok("!llvm.ptr".to_string())
     } else if let Some(gid) = tensor_gid_of(ty) {
-        let (elem, shape) = ctx.tensors.get(&gid)?;
-        tensor_memref_ty(elem, shape)
+        let (elem, shape) = ctx.tensors.get(&gid).ok_or(Decline::TypeNotModelled {
+            what: "a tensor with no recorded shape",
+        })?;
+        tensor_memref_ty(elem, shape).ok_or(Decline::TypeNotModelled {
+            what: "a tensor with no memref spelling",
+        })
     } else if let Some(gid) = ctx.agg_gid(ty) {
-        Some(ctx.aggs.get(&gid)?.struct_ty.clone())
+        Ok(ctx
+            .aggs
+            .get(&gid)
+            .ok_or(Decline::TypeNotModelled {
+                what: "an aggregate with no struct type",
+            })?
+            .struct_ty
+            .clone())
     } else {
-        None
+        Err(Decline::TypeNotModelled {
+            what: "a type with no MLIR spelling",
+        })
     }
 }
 
@@ -894,7 +916,7 @@ pub fn emit_module_mlir(
     subspaces: &[SubspaceInfo],
     topo_archs: &[(i64, String)],
     sched: crate::config::Schedule,
-) -> Option<String> {
+) -> Lowered<String> {
     let setup = std::time::Instant::now();
     let mut ctx = EmitCtx::from_registry(registry, sched);
     for s in subspaces {
@@ -942,11 +964,14 @@ pub fn emit_module_mlir(
     // that a race.
     let compute_sig = |(func, _, _): &(&Function, &[HirInstruction], &[TypeId])| {
         let sig = registry.fn_sigs.get(func.name.as_ref())?;
-        let params: Option<Vec<String>> =
-            func.params.iter().map(|(_, t)| ty_mlir(t, &ctx)).collect();
+        let params: Option<Vec<String>> = func
+            .params
+            .iter()
+            .map(|(_, t)| ty_mlir(t, &ctx).ok())
+            .collect();
         let ret = match &func.return_type {
             Type::Scalar(ElementType::Generic(_)) => None,
-            t => ty_mlir(t, &ctx).or(Some("()".to_string())),
+            t => Some(ty_mlir(t, &ctx).unwrap_or_else(|_| "()".to_string())),
         };
         match (params, ret) {
             (Some(params), Some(ret)) => Some((sig.gid, (params, ret))),
@@ -1034,9 +1059,9 @@ pub fn emit_module_mlir(
                     m
                 }
             });
-            Some((text, calls, helpers))
+            Ok((text, calls, helpers))
         };
-    let mut emitted: Vec<Option<FnEmission>> = if sched == crate::config::Schedule::Sequential {
+    let mut emitted: Vec<Lowered<FnEmission>> = if sched == crate::config::Schedule::Sequential {
         funcs.iter().enumerate().map(emit_one).collect()
     } else {
         funcs.par_iter().enumerate().map(emit_one).collect()
@@ -1052,7 +1077,7 @@ pub fn emit_module_mlir(
     // being compiled, which is exactly the shape that flattens a scaling curve.
     let out_len: usize = emitted
         .iter()
-        .filter_map(|e| e.as_ref().map(|(t, _, _)| t.len()))
+        .filter_map(|e| e.as_ref().ok().map(|(t, _, _)| t.len()))
         .sum();
     let mut globals = String::new();
     let mut calls: Vec<(String, Vec<String>, String)> = Vec::new();
@@ -1069,14 +1094,17 @@ pub fn emit_module_mlir(
     // first, so `VX_FLAT_DBG` says the same thing it always did.
     let mut helper_mask = 0u16;
     for (fi, emission) in emitted.iter_mut().enumerate() {
-        let Some((_, fn_calls, helpers)) = emission.as_mut() else {
-            if std::env::var("VX_FLAT_DBG").is_ok() {
-                eprintln!(
-                    "[flat-dbg] emit declined for fn {}",
-                    funcs[fi].0.name.as_ref()
-                );
+        let (_, fn_calls, helpers) = match emission {
+            Ok(e) => e,
+            Err(why) => {
+                if std::env::var("VX_FLAT_DBG").is_ok() {
+                    eprintln!(
+                        "[flat-dbg] emit declined for fn {}",
+                        funcs[fi].0.name.as_ref()
+                    );
+                }
+                return Err(why.clone());
             }
-            return None;
         };
         calls.append(fn_calls);
         helper_mask |= *helpers;
@@ -1153,7 +1181,7 @@ pub fn emit_module_mlir(
         emitted.into_par_iter().for_each(drop);
         calls.into_par_iter().for_each(drop);
     }
-    Some(module)
+    Ok(module)
 }
 
 /// Emit the module-level `llvm.mlir.global` for a string literal: an internal constant array holding
@@ -1282,12 +1310,27 @@ fn coerce_vector(
     mem_of: &[Option<String>],
     vec_of: &[Option<String>],
     etypes: &[Option<ElementType>],
-) -> Option<String> {
-    let name = names.get(op_reg as usize)?.clone();
-    if vec_of.get(op_reg as usize)?.is_some() {
-        return Some(name); // already a vector (a prior elementwise result)
+) -> Lowered<String> {
+    let name = names
+        .get(op_reg as usize)
+        .ok_or(Decline::TypeNotModelled {
+            what: "an operand with no emitted name",
+        })?
+        .clone();
+    if vec_of
+        .get(op_reg as usize)
+        .ok_or(Decline::TypeNotModelled {
+            what: "an operand with no vector record",
+        })?
+        .is_some()
+    {
+        return Ok(name); // already a vector (a prior elementwise result)
     }
-    if let Some(m) = mem_of.get(op_reg as usize)?.clone() {
+    if let Some(m) = mem_of
+        .get(op_reg as usize)
+        .ok_or(crate::emitter_gap!())?
+        .clone()
+    {
         let c0 = format!("%vc{tag}");
         let v = format!("%vl{tag}");
         body.push_str(&format!("  {c0} = arith.constant 0 : index\n"));
@@ -1295,13 +1338,23 @@ fn coerce_vector(
         // f16/bf16 and the op wants f32 lanes, load the narrow vector and `arith.extf`
         // it wide. The narrow row still earns the alignment attribute on its own terms
         // (64 halves are 128 bytes -- v8 packs).
-        let row_elem = m.rsplit('x').next()?.trim_end_matches('>');
-        let row_elem = row_elem.split(',').next()?.trim();
+        let row_elem = m
+            .rsplit('x')
+            .next()
+            .ok_or(crate::emitter_gap!())?
+            .trim_end_matches('>');
+        let row_elem = row_elem
+            .split(',')
+            .next()
+            .ok_or(crate::emitter_gap!())?
+            .trim();
         if (row_elem == "f16" || row_elem == "bf16") && vecty.ends_with("xf32>") {
             let lanes = vecty
-                .strip_prefix("vector<")?
+                .strip_prefix("vector<")
+                .ok_or(crate::emitter_gap!())?
                 .split('x')
-                .next()?
+                .next()
+                .ok_or(crate::emitter_gap!())?
                 .to_string();
             let nvec = format!("vector<{lanes}x{row_elem}>");
             let nal = vector_align_attr(&nvec);
@@ -1310,22 +1363,28 @@ fn coerce_vector(
                 "  {nv} = vector.load {name}[{c0}]{nal} : {m}, {nvec}\n"
             ));
             body.push_str(&format!("  {v} = arith.extf {nv} : {nvec} to {vecty}\n"));
-            return Some(v);
+            return Ok(v);
         }
         let al = vector_align_attr(vecty);
         body.push_str(&format!(
             "  {v} = vector.load {name}[{c0}]{al} : {m}, {vecty}\n"
         ));
-        return Some(v);
+        return Ok(v);
     }
-    if etypes.get(op_reg as usize)?.is_some() {
+    if etypes
+        .get(op_reg as usize)
+        .ok_or(crate::emitter_gap!())?
+        .is_some()
+    {
         let v = format!("%vb{tag}");
         body.push_str(&format!(
             "  {v} = vector.broadcast {name} : {et} to {vecty}\n"
         ));
-        return Some(v);
+        return Ok(v);
     }
-    None
+    Err(Decline::TypeNotModelled {
+        what: "an operand that cannot be coerced to a vector",
+    })
 }
 
 /// Comma-join integers (for `sizes: [..]` / `strides: [..]` lists).
@@ -1373,7 +1432,7 @@ pub fn emit_function_mlir(
     strings: &[String],
     alias_stores: &[(usize, usize, Vec<usize>)],
     distinct_ctr: &mut u32,
-) -> Option<String> {
+) -> Lowered<String> {
     // Signature (taken from the resolved AST signature; the *body* is flat-driven). A scalar param is
     // its element type; a tensor param is a memref recovered by GID from the side table (`ctx.tensors`
     // holds it — the param's `Load` recorded it). Anything else declines.
@@ -1386,20 +1445,30 @@ pub fn emit_function_mlir(
     }
     let ret_elem = match &func.return_type {
         Type::Scalar(e) if !matches!(e, ElementType::Generic(_)) => Some(e.clone()),
-        Type::Scalar(_) => return None,
+        Type::Scalar(_) => {
+            return Err(Decline::TypeNotModelled {
+                what: "a generic scalar return type",
+            })
+        }
         _ => None, // non-scalar: a struct return is handled below; anything else is void
     };
     // The MLIR return type: a scalar, a payload-free enum's `i32` (#227), an `!llvm.struct` (a
     // by-value struct return, #215), or `None` for void. A struct return whose layout isn't modelled
     // declines the whole function.
     let ret_mlir: Option<String> = if let Some(e) = &ret_elem {
-        Some(mlir_scalar(e)?.to_string())
+        Some(mlir_scalar(e).ok_or(crate::emitter_gap!())?.to_string())
     } else if let Some(et) = enum_scalar(&func.return_type, ctx) {
         Some(et.to_string())
     } else if is_ptr_ty(&func.return_type) {
         Some("!llvm.ptr".to_string()) // a pointer-returning function (#235)
     } else if let Some(gid) = ctx.agg_gid(&func.return_type) {
-        Some(ctx.aggs.get(&gid)?.struct_ty.clone())
+        Some(
+            ctx.aggs
+                .get(&gid)
+                .ok_or(crate::emitter_gap!())?
+                .struct_ty
+                .clone(),
+        )
     } else {
         None
     };
@@ -1519,7 +1588,9 @@ pub fn emit_function_mlir(
             // side table) so later index/store ops address it.
             Opcode::Load => {
                 names[idx] = format!("%arg{}", ins.imm);
-                let gid = *types.get(ins.type_idx.0 as usize)?;
+                let gid = *types
+                    .get(ins.type_idx.0 as usize)
+                    .ok_or(crate::emitter_gap!())?;
                 if let Some(e) = elem_of_gid(gid) {
                     etypes[idx] = Some(e);
                 } else if gid == ptr_gid() {
@@ -1544,8 +1615,8 @@ pub fn emit_function_mlir(
                 }
             }
             Opcode::Const => {
-                let e = ty_at(ins.type_idx.0)?;
-                let mt = mlir_scalar(&e)?;
+                let e = ty_at(ins.type_idx.0).ok_or(crate::emitter_gap!())?;
+                let mt = mlir_scalar(&e).ok_or(crate::emitter_gap!())?;
                 let lit = if is_float(&e) {
                     mlir_float_literal(f64::from_bits(ins.imm))
                 } else {
@@ -1561,12 +1632,18 @@ pub fn emit_function_mlir(
             // coerces each operand to a `vector<Nxf32>` (`vector.load`/`broadcast`), applies
             // `arith.{addf,subf,mulf,divf}`, and yields a vector that a row `TensorStore` writes back.
             Opcode::Add | Opcode::Sub | Opcode::Mul | Opcode::Div => {
-                let result_gid = *types.get(ins.type_idx.0 as usize)?;
+                let result_gid = *types
+                    .get(ins.type_idx.0 as usize)
+                    .ok_or(crate::emitter_gap!())?;
                 if let Some(e) = elem_of_gid(result_gid) {
-                    let mt = mlir_scalar(&e)?;
-                    let op = arith_op(ins.opcode, &e)?;
-                    let a = names.get(ins.operand1.0 as usize)?;
-                    let b = names.get(ins.operand2.0 as usize)?;
+                    let mt = mlir_scalar(&e).ok_or(crate::emitter_gap!())?;
+                    let op = arith_op(ins.opcode, &e).ok_or(crate::emitter_gap!())?;
+                    let a = names
+                        .get(ins.operand1.0 as usize)
+                        .ok_or(crate::emitter_gap!())?;
+                    let b = names
+                        .get(ins.operand2.0 as usize)
+                        .ok_or(crate::emitter_gap!())?;
                     let n = format!("%v{idx}");
                     // The latch increment of a stridable loop -- the marker the device clone
                     // widens to a stride (#251 flat; Vx#379 block/thread). Only an `Add` can
@@ -1585,15 +1662,19 @@ pub fn emit_function_mlir(
                     names[idx] = n;
                     etypes[idx] = Some(e);
                 } else {
-                    let (elem, shape) = ctx.tensors.get(&result_gid)?;
+                    let (elem, shape) =
+                        ctx.tensors.get(&result_gid).ok_or(crate::emitter_gap!())?;
                     if !is_float(elem) {
-                        return None; // the AST lowers only f32 elementwise
+                        return Err(Decline::TypeNotModelled {
+                            what: "an elementwise op on non-float elements",
+                        });
                     }
-                    let et = mlir_scalar(elem)?;
+                    let et = mlir_scalar(elem).ok_or(crate::emitter_gap!())?;
                     let d: i64 = shape
                         .iter()
                         .map(|s| s.parse::<i64>().ok())
-                        .collect::<Option<Vec<_>>>()?
+                        .collect::<Option<Vec<_>>>()
+                        .ok_or(crate::emitter_gap!())?
                         .iter()
                         .product();
                     let vecty = format!("vector<{d}x{et}>");
@@ -1624,7 +1705,7 @@ pub fn emit_function_mlir(
                         Opcode::Sub => "arith.subf",
                         Opcode::Mul => "arith.mulf",
                         Opcode::Div => "arith.divf",
-                        _ => return None,
+                        _ => return Err(crate::emitter_gap!()),
                     };
                     let n = format!("%v{idx}");
                     body += &format!("  {n} = {op} {va}, {vb} : {vecty}\n");
@@ -1635,11 +1716,15 @@ pub fn emit_function_mlir(
             // Scalar comparison → `i1`; the relation is in `imm`, the operand type comes from the
             // first operand's tracked type (this instruction's own type is `bool`, the result).
             Opcode::Cmp => {
-                let e = elem_at(&etypes, ins.operand1.0)?;
-                let mt = mlir_scalar(&e)?;
-                let (op, pred) = cmp_op(ins.imm, &e)?;
-                let a = names.get(ins.operand1.0 as usize)?;
-                let b = names.get(ins.operand2.0 as usize)?;
+                let e = elem_at(&etypes, ins.operand1.0).ok_or(crate::emitter_gap!())?;
+                let mt = mlir_scalar(&e).ok_or(crate::emitter_gap!())?;
+                let (op, pred) = cmp_op(ins.imm, &e).ok_or(crate::emitter_gap!())?;
+                let a = names
+                    .get(ins.operand1.0 as usize)
+                    .ok_or(crate::emitter_gap!())?;
+                let b = names
+                    .get(ins.operand2.0 as usize)
+                    .ok_or(crate::emitter_gap!())?;
                 let n = format!("%v{idx}");
                 body += &format!("  {n} = {op} {pred}, {a}, {b} : {mt}\n");
                 names[idx] = n;
@@ -1648,9 +1733,17 @@ pub fn emit_function_mlir(
             // Arithmetic negation `-x` (#214). `type_idx` is the result (= operand) scalar type. Float
             // → `arith.negf`; integers have no `negi`, so `0 - x` via `arith.subi`.
             Opcode::Neg => {
-                let e = elem_of_gid(*types.get(ins.type_idx.0 as usize)?)?;
-                let mt = mlir_scalar(&e)?;
-                let a = names.get(ins.operand1.0 as usize)?.clone();
+                let e = elem_of_gid(
+                    *types
+                        .get(ins.type_idx.0 as usize)
+                        .ok_or(crate::emitter_gap!())?,
+                )
+                .ok_or(crate::emitter_gap!())?;
+                let mt = mlir_scalar(&e).ok_or(crate::emitter_gap!())?;
+                let a = names
+                    .get(ins.operand1.0 as usize)
+                    .ok_or(crate::emitter_gap!())?
+                    .clone();
                 let n = format!("%v{idx}");
                 if is_float(&e) {
                     body += &format!("  {n} = arith.negf {a} : {mt}\n");
@@ -1664,9 +1757,17 @@ pub fn emit_function_mlir(
             }
             // Logical / bitwise not `!x` (#214): `x ^ all-ones` (`1` for a bool `i1`, `-1` for ints).
             Opcode::Not => {
-                let e = elem_of_gid(*types.get(ins.type_idx.0 as usize)?)?;
-                let mt = mlir_scalar(&e)?;
-                let a = names.get(ins.operand1.0 as usize)?.clone();
+                let e = elem_of_gid(
+                    *types
+                        .get(ins.type_idx.0 as usize)
+                        .ok_or(crate::emitter_gap!())?,
+                )
+                .ok_or(crate::emitter_gap!())?;
+                let mt = mlir_scalar(&e).ok_or(crate::emitter_gap!())?;
+                let a = names
+                    .get(ins.operand1.0 as usize)
+                    .ok_or(crate::emitter_gap!())?
+                    .clone();
                 let ones_val = if matches!(e, ElementType::Bool) {
                     "1"
                 } else {
@@ -1683,18 +1784,26 @@ pub fn emit_function_mlir(
             // (whose type comes from its tracked `etypes`). The right `arith` conversion is chosen by
             // the source/target kinds + widths; a same-type cast is a no-op that just aliases.
             Opcode::Cast => {
-                let src = elem_at(&etypes, ins.operand1.0)?;
-                let tgt = elem_of_gid(*types.get(ins.type_idx.0 as usize)?)?;
-                let a = names.get(ins.operand1.0 as usize)?.clone();
-                let op = cast_op(&src, &tgt)?;
+                let src = elem_at(&etypes, ins.operand1.0).ok_or(crate::emitter_gap!())?;
+                let tgt = elem_of_gid(
+                    *types
+                        .get(ins.type_idx.0 as usize)
+                        .ok_or(crate::emitter_gap!())?,
+                )
+                .ok_or(crate::emitter_gap!())?;
+                let a = names
+                    .get(ins.operand1.0 as usize)
+                    .ok_or(crate::emitter_gap!())?
+                    .clone();
+                let op = cast_op(&src, &tgt).ok_or(crate::emitter_gap!())?;
                 if op.is_empty() {
                     names[idx] = a; // reinterpret (e.g. i32 as u32) -> alias
                 } else {
                     let n = format!("%v{idx}");
                     body += &format!(
                         "  {n} = {op} {a} : {} to {}\n",
-                        mlir_scalar(&src)?,
-                        mlir_scalar(&tgt)?
+                        mlir_scalar(&src).ok_or(crate::emitter_gap!())?,
+                        mlir_scalar(&tgt).ok_or(crate::emitter_gap!())?
                     );
                     names[idx] = n;
                 }
@@ -1704,9 +1813,11 @@ pub fn emit_function_mlir(
             // scalar locals); an aggregate (struct) slot is an `llvm.alloca` of the `!llvm.struct`
             // type, its pointer tracked in `agg_of` so field ops can address it.
             Opcode::Alloca => {
-                let gid = *types.get(ins.type_idx.0 as usize)?;
+                let gid = *types
+                    .get(ins.type_idx.0 as usize)
+                    .ok_or(crate::emitter_gap!())?;
                 if let Some(e) = elem_of_gid(gid) {
-                    let mt = mlir_scalar(&e)?;
+                    let mt = mlir_scalar(&e).ok_or(crate::emitter_gap!())?;
                     let n = format!("%v{idx}");
                     if ins.imm == 1 {
                         // An address-taken scalar (`&x`): an `llvm.alloca` of the element type, yielding
@@ -1736,7 +1847,9 @@ pub fn emit_function_mlir(
                     names[idx] = n;
                     pslot_of[idx] = true;
                 } else {
-                    let agg = ctx.aggs.get(&gid)?;
+                    let agg = ctx.aggs.get(&gid).ok_or(Decline::TypeNotModelled {
+                        what: "an aggregate slot with no struct type",
+                    })?;
                     let cnt = format!("%n{idx}");
                     let n = format!("%v{idx}");
                     body += &format!("  {cnt} = llvm.mlir.constant(1 : i32) : i32\n");
@@ -1751,8 +1864,14 @@ pub fn emit_function_mlir(
             // Store a value into a slot (no result). A scalar slot is a rank-0 `memref`; an aggregate
             // slot (a struct value spilled from a struct-returning call) is an `llvm.store` (#215).
             Opcode::Store => {
-                let slot = names.get(ins.operand1.0 as usize)?.clone();
-                let val = names.get(ins.operand2.0 as usize)?.clone();
+                let slot = names
+                    .get(ins.operand1.0 as usize)
+                    .ok_or(crate::emitter_gap!())?
+                    .clone();
+                let val = names
+                    .get(ins.operand2.0 as usize)
+                    .ok_or(crate::emitter_gap!())?
+                    .clone();
                 // The induction-variable init of a stridable loop carries its tag into the MLIR
                 // text as a discardable attribute -- inert on the host path, the marker the
                 // device clone offsets by an id (#251 flat grid-stride; Vx#379 block/thread).
@@ -1763,21 +1882,24 @@ pub fn emit_function_mlir(
                     _ => "",
                 };
                 if let Some(&Some(agg_gid)) = agg_of.get(ins.operand1.0 as usize) {
-                    let agg = ctx.aggs.get(&agg_gid)?;
+                    let agg = ctx.aggs.get(&agg_gid).ok_or(crate::emitter_gap!())?;
                     body += &format!(
                         "  llvm.store {val}, {slot} : {}, !llvm.ptr\n",
                         agg.struct_ty
                     );
-                } else if *pslot_of.get(ins.operand1.0 as usize)? {
+                } else if *pslot_of
+                    .get(ins.operand1.0 as usize)
+                    .ok_or(crate::emitter_gap!())?
+                {
                     // A pointer local: store the `!llvm.ptr` value into its `llvm.alloca` cell. (#235)
                     body += &format!("  llvm.store {val}, {slot} : !llvm.ptr, !llvm.ptr\n");
                 } else if let Some(e) = sslot_of.get(ins.operand1.0 as usize).cloned().flatten() {
                     // An address-taken scalar slot (an `llvm.alloca` of the element): `llvm.store`. (#230)
-                    let mt = mlir_scalar(&e)?;
+                    let mt = mlir_scalar(&e).ok_or(crate::emitter_gap!())?;
                     body += &format!("  llvm.store {val}, {slot}{attr} : {mt}, !llvm.ptr\n");
                 } else {
-                    let e = elem_at(&etypes, ins.operand1.0)?;
-                    let mt = mlir_scalar(&e)?;
+                    let e = elem_at(&etypes, ins.operand1.0).ok_or(crate::emitter_gap!())?;
+                    let mt = mlir_scalar(&e).ok_or(crate::emitter_gap!())?;
                     body += &format!("  memref.store {val}, {slot}[]{attr} : memref<{mt}>\n");
                 }
             }
@@ -1788,8 +1910,10 @@ pub fn emit_function_mlir(
                 // the whole `!llvm.struct` value (`llvm.load`, #242 Vec<Vec<T>>); a scalar slot loads
                 // its element from the rank-0 memref (`memref.load`). (#235)
                 if let Some(&Some(agg_gid)) = agg_of.get(ins.operand1.0 as usize) {
-                    let agg = ctx.aggs.get(&agg_gid)?;
-                    let slot = names.get(ins.operand1.0 as usize)?;
+                    let agg = ctx.aggs.get(&agg_gid).ok_or(crate::emitter_gap!())?;
+                    let slot = names
+                        .get(ins.operand1.0 as usize)
+                        .ok_or(crate::emitter_gap!())?;
                     let n = format!("%v{idx}");
                     body += &format!(
                         "  {n} = llvm.load {slot} : !llvm.ptr -> {}\n",
@@ -1797,24 +1921,33 @@ pub fn emit_function_mlir(
                     );
                     names[idx] = n;
                     agg_val_of[idx] = Some(agg_gid);
-                } else if *pslot_of.get(ins.operand1.0 as usize)? {
-                    let slot = names.get(ins.operand1.0 as usize)?;
+                } else if *pslot_of
+                    .get(ins.operand1.0 as usize)
+                    .ok_or(crate::emitter_gap!())?
+                {
+                    let slot = names
+                        .get(ins.operand1.0 as usize)
+                        .ok_or(crate::emitter_gap!())?;
                     let n = format!("%v{idx}");
                     body += &format!("  {n} = llvm.load {slot} : !llvm.ptr -> !llvm.ptr\n");
                     names[idx] = n;
                     ptr_of[idx] = true;
                 } else if let Some(e) = sslot_of.get(ins.operand1.0 as usize).cloned().flatten() {
                     // An address-taken scalar slot: `llvm.load` the element back from the `!llvm.ptr`. (#230)
-                    let mt = mlir_scalar(&e)?;
-                    let slot = names.get(ins.operand1.0 as usize)?;
+                    let mt = mlir_scalar(&e).ok_or(crate::emitter_gap!())?;
+                    let slot = names
+                        .get(ins.operand1.0 as usize)
+                        .ok_or(crate::emitter_gap!())?;
                     let n = format!("%v{idx}");
                     body += &format!("  {n} = llvm.load {slot} : !llvm.ptr -> {mt}\n");
                     names[idx] = n;
                     etypes[idx] = Some(e);
                 } else {
-                    let e = ty_at(ins.type_idx.0)?;
-                    let mt = mlir_scalar(&e)?;
-                    let slot = names.get(ins.operand1.0 as usize)?;
+                    let e = ty_at(ins.type_idx.0).ok_or(crate::emitter_gap!())?;
+                    let mt = mlir_scalar(&e).ok_or(crate::emitter_gap!())?;
+                    let slot = names
+                        .get(ins.operand1.0 as usize)
+                        .ok_or(crate::emitter_gap!())?;
                     let n = format!("%v{idx}");
                     body += &format!("  {n} = memref.load {slot}[] : memref<{mt}>\n");
                     names[idx] = n;
@@ -1835,38 +1968,56 @@ pub fn emit_function_mlir(
             }
             // `imm` packs the two targets as `then | (else << 32)` (see `flatten::pack_targets`).
             Opcode::CondBr => {
-                let cond = names.get(ins.operand1.0 as usize)?;
+                let cond = names
+                    .get(ins.operand1.0 as usize)
+                    .ok_or(crate::emitter_gap!())?;
                 let then_b = ins.imm & 0xffff_ffff;
                 let else_b = ins.imm >> 32;
                 body += &format!("  cf.cond_br {cond}, ^bb{then_b}, ^bb{else_b}\n");
                 terminated = true;
             }
             Opcode::Ret => {
-                let gid = *types.get(ins.type_idx.0 as usize)?;
-                let a = names.get(ins.operand1.0 as usize)?.clone();
+                let gid = *types
+                    .get(ins.type_idx.0 as usize)
+                    .ok_or(crate::emitter_gap!())?;
+                let a = names
+                    .get(ins.operand1.0 as usize)
+                    .ok_or(crate::emitter_gap!())?
+                    .clone();
                 if let Some(e) = elem_of_gid(gid) {
                     // Coerce the returned scalar to the function's declared return type if they differ
                     // (e.g. `return 10` — a default-`i32` literal — from an `-> i64` function ->
                     // `arith.extsi`), mirroring the AST's `coerce_type` at return. Otherwise the
                     // `func.return` type contradicts the signature.
                     let target = ret_elem.clone().unwrap_or_else(|| e.clone());
-                    if mlir_scalar(&e)? != mlir_scalar(&target)? {
-                        match cast_op(&e, &target)? {
+                    if mlir_scalar(&e).ok_or(crate::emitter_gap!())?
+                        != mlir_scalar(&target).ok_or(crate::emitter_gap!())?
+                    {
+                        match cast_op(&e, &target).ok_or(crate::emitter_gap!())? {
                             "" => {
-                                body += &format!("  func.return {a} : {}\n", mlir_scalar(&target)?)
+                                body += &format!(
+                                    "  func.return {a} : {}\n",
+                                    mlir_scalar(&target).ok_or(crate::emitter_gap!())?
+                                )
                             }
                             op => {
                                 let c = format!("%rc{idx}");
                                 body += &format!(
                                     "  {c} = {op} {a} : {} to {}\n",
-                                    mlir_scalar(&e)?,
-                                    mlir_scalar(&target)?
+                                    mlir_scalar(&e).ok_or(crate::emitter_gap!())?,
+                                    mlir_scalar(&target).ok_or(crate::emitter_gap!())?
                                 );
-                                body += &format!("  func.return {c} : {}\n", mlir_scalar(&target)?);
+                                body += &format!(
+                                    "  func.return {c} : {}\n",
+                                    mlir_scalar(&target).ok_or(crate::emitter_gap!())?
+                                );
                             }
                         }
                     } else {
-                        body += &format!("  func.return {a} : {}\n", mlir_scalar(&e)?);
+                        body += &format!(
+                            "  func.return {a} : {}\n",
+                            mlir_scalar(&e).ok_or(crate::emitter_gap!())?
+                        );
                     }
                 } else if gid == ptr_gid() {
                     body += &format!("  func.return {a} : !llvm.ptr\n"); // a pointer return (#235)
@@ -1888,7 +2039,7 @@ pub fn emit_function_mlir(
                         body += &format!("  func.return {a} : {}\n", agg.struct_ty);
                     }
                 } else {
-                    return None;
+                    return Err(crate::emitter_gap!());
                 }
                 terminated = true;
             }
@@ -1898,46 +2049,62 @@ pub fn emit_function_mlir(
             // `ctx.callees`); `imm` is the arg count, taken from the tail of `pending_args`. Emit
             // `%r = func.call @name(%a, %b) : (Ta, Tb) -> Tret`.
             Opcode::Call => {
-                let gid = *types.get(ins.type_idx.0 as usize)?;
-                let callee = ctx.callees.get(&gid)?;
+                let gid = *types
+                    .get(ins.type_idx.0 as usize)
+                    .ok_or(crate::emitter_gap!())?;
+                let callee = ctx.callees.get(&gid).ok_or(crate::emitter_gap!())?;
                 // Return type: a scalar, an `!llvm.struct` by value for a struct-returning callee
                 // (#215), a pointer, or `()` for a void callee (a `&mut` mutator called in statement
                 // position, #230).
                 let rt = if let Some(e) = &callee.ret {
-                    mlir_scalar(e)?.to_string()
+                    mlir_scalar(e).ok_or(crate::emitter_gap!())?.to_string()
                 } else if let Some(agg_gid) = callee.ret_agg {
-                    ctx.aggs.get(&agg_gid)?.struct_ty.clone()
+                    ctx.aggs
+                        .get(&agg_gid)
+                        .ok_or(crate::emitter_gap!())?
+                        .struct_ty
+                        .clone()
                 } else if callee.ret_ptr {
                     "!llvm.ptr".to_string() // an FFI pointer-returning callee (#235)
                 } else if callee.ret_void {
                     "()".to_string()
                 } else {
-                    return None;
+                    return Err(Decline::TypeNotModelled {
+                        what: "a callee whose return type has no MLIR spelling",
+                    });
                 };
                 let n = ins.imm as usize;
                 if pending_args.len() < n {
-                    return None;
+                    return Err(crate::emitter_gap!());
                 }
                 let args = pending_args.split_off(pending_args.len() - n);
                 let mut arg_names = Vec::with_capacity(n);
                 let mut arg_types: Vec<String> = Vec::with_capacity(n);
                 for a in &args {
-                    arg_names.push(names.get(*a as usize)?.clone());
+                    arg_names.push(names.get(*a as usize).ok_or(crate::emitter_gap!())?.clone());
                     // A scalar arg is its element type; a pointer arg (a string value / FFI pointer, or
                     // an aggregate *slot* passed by reference — `&v` / a `self` pointer, #242) is
                     // `!llvm.ptr`; a tensor arg is its memref type.
                     let at = if let Some(e) = elem_at(&etypes, *a) {
-                        mlir_scalar(&e)?.to_string()
+                        mlir_scalar(&e).ok_or(crate::emitter_gap!())?.to_string()
                     } else if let Some(agg_gid) = agg_val_of.get(*a as usize).copied().flatten() {
                         // A by-value aggregate argument (`push(&outer, a)` passing `a : Vec<i32>` by
                         // value into a `Vec<Vec<T>>::push`) — an `!llvm.struct` value (#242).
-                        ctx.aggs.get(&agg_gid)?.struct_ty.clone()
-                    } else if *ptr_of.get(*a as usize)?
+                        ctx.aggs
+                            .get(&agg_gid)
+                            .ok_or(crate::emitter_gap!())?
+                            .struct_ty
+                            .clone()
+                    } else if *ptr_of.get(*a as usize).ok_or(crate::emitter_gap!())?
                         || agg_of.get(*a as usize).copied().flatten().is_some()
                     {
                         "!llvm.ptr".to_string()
                     } else {
-                        mem_of.get(*a as usize)?.clone()?
+                        mem_of
+                            .get(*a as usize)
+                            .ok_or(crate::emitter_gap!())?
+                            .clone()
+                            .ok_or(crate::emitter_gap!())?
                     };
                     arg_types.push(at);
                 }
@@ -1982,9 +2149,11 @@ pub fn emit_function_mlir(
             // then cast the `FunctionType` value to an opaque `!llvm.ptr` (the ABI of a fn pointer),
             // tracked in `ptr_of`. (#242)
             Opcode::FuncConst => {
-                let gid = *types.get(ins.type_idx.0 as usize)?;
-                let callee = ctx.callees.get(&gid)?;
-                let (params, ret) = ctx.func_sigs.get(&gid)?;
+                let gid = *types
+                    .get(ins.type_idx.0 as usize)
+                    .ok_or(crate::emitter_gap!())?;
+                let callee = ctx.callees.get(&gid).ok_or(crate::emitter_gap!())?;
+                let (params, ret) = ctx.func_sigs.get(&gid).ok_or(crate::emitter_gap!())?;
                 let fnty = format!("({}) -> {}", params.join(", "), ret);
                 let fc = format!("%fc{idx}");
                 let nm = format!("%v{idx}");
@@ -2003,32 +2172,45 @@ pub fn emit_function_mlir(
             // the scalar return type. Reconstruct the function type `(arg types)->ret` from the actual
             // args, cast the pointer to it, and `func.call_indirect`. (#242)
             Opcode::CallIndirect => {
-                let ret_elem = ty_at(ins.type_idx.0)?;
-                let rt = mlir_scalar(&ret_elem)?.to_string();
+                let ret_elem = ty_at(ins.type_idx.0).ok_or(crate::emitter_gap!())?;
+                let rt = mlir_scalar(&ret_elem)
+                    .ok_or(crate::emitter_gap!())?
+                    .to_string();
                 let n = ins.imm as usize;
                 if pending_args.len() < n {
-                    return None;
+                    return Err(crate::emitter_gap!());
                 }
                 let args = pending_args.split_off(pending_args.len() - n);
                 let mut arg_names = Vec::with_capacity(n);
                 let mut arg_types: Vec<String> = Vec::with_capacity(n);
                 for a in &args {
-                    arg_names.push(names.get(*a as usize)?.clone());
+                    arg_names.push(names.get(*a as usize).ok_or(crate::emitter_gap!())?.clone());
                     let at = if let Some(e) = elem_at(&etypes, *a) {
-                        mlir_scalar(&e)?.to_string()
+                        mlir_scalar(&e).ok_or(crate::emitter_gap!())?.to_string()
                     } else if let Some(agg_gid) = agg_val_of.get(*a as usize).copied().flatten() {
-                        ctx.aggs.get(&agg_gid)?.struct_ty.clone()
-                    } else if *ptr_of.get(*a as usize)?
+                        ctx.aggs
+                            .get(&agg_gid)
+                            .ok_or(crate::emitter_gap!())?
+                            .struct_ty
+                            .clone()
+                    } else if *ptr_of.get(*a as usize).ok_or(crate::emitter_gap!())?
                         || agg_of.get(*a as usize).copied().flatten().is_some()
                     {
                         "!llvm.ptr".to_string()
                     } else {
-                        mem_of.get(*a as usize)?.clone()?
+                        mem_of
+                            .get(*a as usize)
+                            .ok_or(crate::emitter_gap!())?
+                            .clone()
+                            .ok_or(crate::emitter_gap!())?
                     };
                     arg_types.push(at);
                 }
                 let fnty = format!("({}) -> {rt}", arg_types.join(", "));
-                let fnptr = names.get(ins.operand1.0 as usize)?.clone();
+                let fnptr = names
+                    .get(ins.operand1.0 as usize)
+                    .ok_or(crate::emitter_gap!())?
+                    .clone();
                 let fc = format!("%fc{idx}");
                 let nm = format!("%v{idx}");
                 body += &format!(
@@ -2046,14 +2228,29 @@ pub fn emit_function_mlir(
             // the field index comes from matching the offset against the layout, the value type from
             // the stored register's tracked type.
             Opcode::FieldStore => {
-                let gid = (*agg_of.get(ins.operand1.0 as usize)?)?;
-                let agg = ctx.aggs.get(&gid)?;
-                let field_idx = agg.offsets.iter().position(|&o| o == ins.imm)?;
+                let gid = (*agg_of
+                    .get(ins.operand1.0 as usize)
+                    .ok_or(crate::emitter_gap!())?)
+                .ok_or(crate::emitter_gap!())?;
+                let agg = ctx.aggs.get(&gid).ok_or(crate::emitter_gap!())?;
+                let field_idx = agg
+                    .offsets
+                    .iter()
+                    .position(|&o| o == ins.imm)
+                    .ok_or(crate::emitter_gap!())?;
                 // The field's declared MLIR type (a scalar element or `!llvm.ptr`), so a pointer field
                 // (`Vec`'s `data`) stores an `!llvm.ptr` value and a scalar field its element (#242).
-                let fty = agg.field_tys.get(field_idx)?.clone();
-                let slot = names.get(ins.operand1.0 as usize)?;
-                let val = names.get(ins.operand2.0 as usize)?;
+                let fty = agg
+                    .field_tys
+                    .get(field_idx)
+                    .ok_or(crate::emitter_gap!())?
+                    .clone();
+                let slot = names
+                    .get(ins.operand1.0 as usize)
+                    .ok_or(crate::emitter_gap!())?;
+                let val = names
+                    .get(ins.operand2.0 as usize)
+                    .ok_or(crate::emitter_gap!())?;
                 let p = format!("%p{idx}");
                 body += &format!(
                     "  {p} = llvm.getelementptr {slot}[0, {field_idx}] : (!llvm.ptr) -> !llvm.ptr, {}\n",
@@ -2071,19 +2268,32 @@ pub fn emit_function_mlir(
             // and this instruction's own `type_idx` the field's scalar type. GEP to the field, then
             // `llvm.load`.
             Opcode::FieldLoad => {
-                let gid = (*agg_of.get(ins.operand1.0 as usize)?)?;
-                let agg = ctx.aggs.get(&gid)?;
-                let field_idx = agg.offsets.iter().position(|&o| o == ins.imm)?;
+                let gid = (*agg_of
+                    .get(ins.operand1.0 as usize)
+                    .ok_or(crate::emitter_gap!())?)
+                .ok_or(crate::emitter_gap!())?;
+                let agg = ctx.aggs.get(&gid).ok_or(crate::emitter_gap!())?;
+                let field_idx = agg
+                    .offsets
+                    .iter()
+                    .position(|&o| o == ins.imm)
+                    .ok_or(crate::emitter_gap!())?;
                 // The field's declared MLIR type drives the load: a scalar field yields its element
                 // (tracked in `etypes`), a pointer field (`Vec`'s `data`) an `!llvm.ptr` value
                 // (tracked in `ptr_of`) — the type is taken from the layout, not the read register's
                 // `type_idx`, so a pointer field (whose `type_idx` is `ptr_gid`) resolves too (#242).
-                let fty = agg.field_tys.get(field_idx)?.clone();
+                let fty = agg
+                    .field_tys
+                    .get(field_idx)
+                    .ok_or(crate::emitter_gap!())?
+                    .clone();
                 // A pointer field pointing to a modelled aggregate (`VecIter`'s `vec : *const Vec<T>`)
                 // tags its loaded value with the pointee GID, so a chained field access through it
                 // (`(*self.vec).len`) GEPs the pointee. (#242)
                 let pointee = agg.field_pointee.get(field_idx).copied().flatten();
-                let slot = names.get(ins.operand1.0 as usize)?;
+                let slot = names
+                    .get(ins.operand1.0 as usize)
+                    .ok_or(crate::emitter_gap!())?;
                 let p = format!("%p{idx}");
                 let n = format!("%v{idx}");
                 body += &format!(
@@ -2107,11 +2317,22 @@ pub fn emit_function_mlir(
             // yield the pointer, tracked as an aggregate slot (its layout GID from `type_idx`), so a
             // chained field access or a method receiver addresses through it. (#242)
             Opcode::FieldAddr => {
-                let parent_gid = (*agg_of.get(ins.operand1.0 as usize)?)?;
-                let agg = ctx.aggs.get(&parent_gid)?;
-                let field_idx = agg.offsets.iter().position(|&o| o == ins.imm)?;
-                let field_gid = *types.get(ins.type_idx.0 as usize)?;
-                let slot = names.get(ins.operand1.0 as usize)?;
+                let parent_gid = (*agg_of
+                    .get(ins.operand1.0 as usize)
+                    .ok_or(crate::emitter_gap!())?)
+                .ok_or(crate::emitter_gap!())?;
+                let agg = ctx.aggs.get(&parent_gid).ok_or(crate::emitter_gap!())?;
+                let field_idx = agg
+                    .offsets
+                    .iter()
+                    .position(|&o| o == ins.imm)
+                    .ok_or(crate::emitter_gap!())?;
+                let field_gid = *types
+                    .get(ins.type_idx.0 as usize)
+                    .ok_or(crate::emitter_gap!())?;
+                let slot = names
+                    .get(ins.operand1.0 as usize)
+                    .ok_or(crate::emitter_gap!())?;
                 let n = format!("%v{idx}");
                 body += &format!(
                     "  {n} = llvm.getelementptr {slot}[0, {field_idx}] : (!llvm.ptr) -> !llvm.ptr, {}\n",
@@ -2131,9 +2352,11 @@ pub fn emit_function_mlir(
             // Allocate a tensor buffer (`Tensor<T>([..])`): a static `memref` of the shape recovered
             // from the side table by GID. Its register is tracked in `mem_of` for later index/store.
             Opcode::TensorAlloc => {
-                let gid = *types.get(ins.type_idx.0 as usize)?;
-                let (elem, shape) = ctx.tensors.get(&gid)?;
-                let memty = tensor_memref_ty(elem, shape)?;
+                let gid = *types
+                    .get(ins.type_idx.0 as usize)
+                    .ok_or(crate::emitter_gap!())?;
+                let (elem, shape) = ctx.tensors.get(&gid).ok_or(crate::emitter_gap!())?;
+                let memty = tensor_memref_ty(elem, shape).ok_or(crate::emitter_gap!())?;
                 let n = format!("%v{idx}");
                 // `operand2` may carry a memory-space dispatch id from `.with_memory` (Vx#379
                 // stage B). A `scope: sm` space becomes a space-3 ALLOCA: on the host that is a
@@ -2147,7 +2370,10 @@ pub fn emit_function_mlir(
                         .and_then(|s| s.scope.as_deref())
                         == Some("sm");
                 if sm {
-                    let smty = format!("{}, 3>", memty.strip_suffix('>')?);
+                    let smty = format!(
+                        "{}, 3>",
+                        memty.strip_suffix('>').ok_or(crate::emitter_gap!())?
+                    );
                     // alignment 16, explicitly. The alloca becomes a `.shared` global under
                     // convert-gpu-to-nvvm, and the DRIVER packs those globals by their declared
                     // alignment -- an unannotated 4-byte-aligned f32 array landed at offset
@@ -2171,11 +2397,25 @@ pub fn emit_function_mlir(
             // tensor GID) rank-reduces the base to a row via `memref.reinterpret_cast` (contiguous
             // base only; a further sub-view of a strided row is deferred).
             Opcode::TensorIndex => {
-                let result_gid = *types.get(ins.type_idx.0 as usize)?;
-                let base = names.get(ins.operand1.0 as usize)?.clone();
-                let base_memty = mem_of.get(ins.operand1.0 as usize)?.clone()?;
-                let imt = mlir_scalar(&elem_at(&etypes, ins.operand2.0)?)?;
-                let iname = names.get(ins.operand2.0 as usize)?.clone();
+                let result_gid = *types
+                    .get(ins.type_idx.0 as usize)
+                    .ok_or(crate::emitter_gap!())?;
+                let base = names
+                    .get(ins.operand1.0 as usize)
+                    .ok_or(crate::emitter_gap!())?
+                    .clone();
+                let base_memty = mem_of
+                    .get(ins.operand1.0 as usize)
+                    .ok_or(crate::emitter_gap!())?
+                    .clone()
+                    .ok_or(crate::emitter_gap!())?;
+                let imt =
+                    mlir_scalar(&elem_at(&etypes, ins.operand2.0).ok_or(crate::emitter_gap!())?)
+                        .ok_or(crate::emitter_gap!())?;
+                let iname = names
+                    .get(ins.operand2.0 as usize)
+                    .ok_or(crate::emitter_gap!())?
+                    .clone();
                 let ic = format!("%ic{idx}");
                 body += &format!("  {ic} = arith.index_cast {iname} : {imt} to index\n");
 
@@ -2194,14 +2434,16 @@ pub fn emit_function_mlir(
                     // Row sub-view: reinterpret the contiguous base as the row at flat offset
                     // `index * product(row dims)`, with row-major strides over the remaining dims.
                     if base_memty.contains("strided") {
-                        return None; // a sub-view of an already-strided row is deferred
+                        return Err(crate::emitter_gap!()); // a sub-view of an already-strided row is deferred
                     }
-                    let (elem, shape) = ctx.tensors.get(&result_gid)?;
-                    let et = mlir_scalar(elem)?;
+                    let (elem, shape) =
+                        ctx.tensors.get(&result_gid).ok_or(crate::emitter_gap!())?;
+                    let et = mlir_scalar(elem).ok_or(crate::emitter_gap!())?;
                     let dims: Vec<i64> = shape
                         .iter()
                         .map(|d| d.parse::<i64>().ok())
-                        .collect::<Option<_>>()?; // symbolic dims not handled
+                        .collect::<Option<_>>()
+                        .ok_or(crate::emitter_gap!())?; // symbolic dims not handled
                     let stride0: i64 = dims.iter().product();
                     let mut strides = vec![1i64; dims.len()];
                     for i in (0..dims.len().saturating_sub(1)).rev() {
@@ -2242,11 +2484,11 @@ pub fn emit_function_mlir(
             // to a `vector<Nxf32>`; `dot` fuses the two with `arith.mulf`; then `vector.reduction`.
             // Float only, matching the AST oracle (`vector<Nxf32>` → `f32`).
             Opcode::Reduce => {
-                let e = ty_at(ins.type_idx.0)?;
+                let e = ty_at(ins.type_idx.0).ok_or(crate::emitter_gap!())?;
                 if !is_float(&e) {
-                    return None; // the AST lowers only f32 reductions
+                    return Err(crate::emitter_gap!()); // the AST lowers only f32 reductions
                 }
-                let et = mlir_scalar(&e)?;
+                let et = mlir_scalar(&e).ok_or(crate::emitter_gap!())?;
                 // One load per operand, widened when the ROW is half-precision (Vx#320):
                 // f16/bf16 rows come up through `arith.extf` and the multiply, reduction and
                 // result are f32 -- a reduction's precision is its accumulator's, exactly the
@@ -2277,13 +2519,18 @@ pub fn emit_function_mlir(
                     ));
                     Some(w)
                 };
-                let v0 = load_wide(ins.operand1.0, "vl", &mut body)?;
-                let m0 = mem_of.get(ins.operand1.0 as usize)?.clone()?;
-                let d = memref_lead_dim(&m0)?;
+                let v0 = load_wide(ins.operand1.0, "vl", &mut body).ok_or(crate::emitter_gap!())?;
+                let m0 = mem_of
+                    .get(ins.operand1.0 as usize)
+                    .ok_or(crate::emitter_gap!())?
+                    .clone()
+                    .ok_or(crate::emitter_gap!())?;
+                let d = memref_lead_dim(&m0).ok_or(crate::emitter_gap!())?;
                 let vecty = format!("vector<{d}x{et}>");
                 let (reduce_in, kind) = match ins.imm {
                     0 => {
-                        let v1 = load_wide(ins.operand2.0, "vr", &mut body)?;
+                        let v1 = load_wide(ins.operand2.0, "vr", &mut body)
+                            .ok_or(crate::emitter_gap!())?;
                         let prod = format!("%vp{idx}");
                         body += &format!("  {prod} = arith.mulf {v0}, {v1} : {vecty}\n");
                         (prod, "add")
@@ -2291,7 +2538,7 @@ pub fn emit_function_mlir(
                     1 => (v0, "add"),
                     2 => (v0, "maximumf"),
                     3 => (v0, "minimumf"),
-                    _ => return None,
+                    _ => return Err(crate::emitter_gap!()),
                 };
                 let n = format!("%v{idx}");
                 body += &format!(
@@ -2305,12 +2552,33 @@ pub fn emit_function_mlir(
             // `kernelKindOf` classifies, so a spawn whose whole job is this op still routes to
             // cuBLAS. The destination register rides the imm (see `Opcode::MatmulInto`).
             Opcode::MatmulInto => {
-                let a = names.get(ins.operand1.0 as usize)?.clone();
-                let ma = mem_of.get(ins.operand1.0 as usize)?.clone()?;
-                let b = names.get(ins.operand2.0 as usize)?.clone();
-                let mb = mem_of.get(ins.operand2.0 as usize)?.clone()?;
-                let dst = names.get(ins.imm as usize)?.clone();
-                let md = mem_of.get(ins.imm as usize)?.clone()?;
+                let a = names
+                    .get(ins.operand1.0 as usize)
+                    .ok_or(crate::emitter_gap!())?
+                    .clone();
+                let ma = mem_of
+                    .get(ins.operand1.0 as usize)
+                    .ok_or(crate::emitter_gap!())?
+                    .clone()
+                    .ok_or(crate::emitter_gap!())?;
+                let b = names
+                    .get(ins.operand2.0 as usize)
+                    .ok_or(crate::emitter_gap!())?
+                    .clone();
+                let mb = mem_of
+                    .get(ins.operand2.0 as usize)
+                    .ok_or(crate::emitter_gap!())?
+                    .clone()
+                    .ok_or(crate::emitter_gap!())?;
+                let dst = names
+                    .get(ins.imm as usize)
+                    .ok_or(crate::emitter_gap!())?
+                    .clone();
+                let md = mem_of
+                    .get(ins.imm as usize)
+                    .ok_or(crate::emitter_gap!())?
+                    .clone()
+                    .ok_or(crate::emitter_gap!())?;
                 // "memref<8x16xf32>" -> "f32": the element is the segment after the last 'x',
                 // shorn of the closing '>'. Floats only -- an int matmul declines the program to
                 // the AST path rather than improvising linalg's integer semantics here. The
@@ -2318,9 +2586,14 @@ pub fn emit_function_mlir(
                 // cublasGemmEx with f32 accumulation, and the host fallback's linalg lowers
                 // them like any float -- restricting to f32 here silently evicted every f16
                 // attention program from the flat path, prover and all.
-                let et = md.rsplit('x').next()?.trim_end_matches('>').to_string();
+                let et = md
+                    .rsplit('x')
+                    .next()
+                    .ok_or(crate::emitter_gap!())?
+                    .trim_end_matches('>')
+                    .to_string();
                 if et != "f32" && et != "f64" && et != "f16" && et != "bf16" {
-                    return None;
+                    return Err(crate::emitter_gap!());
                 }
                 body += &format!("  %mz{idx} = arith.constant 0.0 : {et}\n");
                 body += &format!("  linalg.fill ins(%mz{idx} : {et}) outs({dst} : {md})\n");
@@ -2338,17 +2611,39 @@ pub fn emit_function_mlir(
                 let o_reg = (ins.imm & 0xffff) as usize;
                 let v_reg = ((ins.imm >> 16) & 0xffff) as usize;
                 let s_reg = ((ins.imm >> 32) & 0xffff) as usize;
-                let q = names.get(ins.operand1.0 as usize)?.clone();
-                let mq = mem_of.get(ins.operand1.0 as usize)?.clone()?;
-                let k = names.get(ins.operand2.0 as usize)?.clone();
-                let mk = mem_of.get(ins.operand2.0 as usize)?.clone()?;
-                let o = names.get(o_reg)?.clone();
-                let mo = mem_of.get(o_reg)?.clone()?;
-                let v = names.get(v_reg)?.clone();
-                let mv = mem_of.get(v_reg)?.clone()?;
-                let sc = names.get(s_reg)?.clone();
+                let q = names
+                    .get(ins.operand1.0 as usize)
+                    .ok_or(crate::emitter_gap!())?
+                    .clone();
+                let mq = mem_of
+                    .get(ins.operand1.0 as usize)
+                    .ok_or(crate::emitter_gap!())?
+                    .clone()
+                    .ok_or(crate::emitter_gap!())?;
+                let k = names
+                    .get(ins.operand2.0 as usize)
+                    .ok_or(crate::emitter_gap!())?
+                    .clone();
+                let mk = mem_of
+                    .get(ins.operand2.0 as usize)
+                    .ok_or(crate::emitter_gap!())?
+                    .clone()
+                    .ok_or(crate::emitter_gap!())?;
+                let o = names.get(o_reg).ok_or(crate::emitter_gap!())?.clone();
+                let mo = mem_of
+                    .get(o_reg)
+                    .ok_or(crate::emitter_gap!())?
+                    .clone()
+                    .ok_or(crate::emitter_gap!())?;
+                let v = names.get(v_reg).ok_or(crate::emitter_gap!())?.clone();
+                let mv = mem_of
+                    .get(v_reg)
+                    .ok_or(crate::emitter_gap!())?
+                    .clone()
+                    .ok_or(crate::emitter_gap!())?;
+                let sc = names.get(s_reg).ok_or(crate::emitter_gap!())?.clone();
                 if !matches!(elem_at(&etypes, s_reg as u32), Some(ElementType::F32)) {
-                    return None;
+                    return Err(crate::emitter_gap!());
                 }
                 // "memref<AxBxf16>" -> (A, B, "f16"); anything shaped differently (a strided
                 // layout, a surprise rank) declines rather than guesses.
@@ -2363,15 +2658,15 @@ pub fn emit_function_mlir(
                     }
                     Some((a, b, e))
                 };
-                let (sq, hd, eo) = dims(&mo)?;
-                let (sq2, hd2, eq) = dims(&mq)?;
-                let (sk, hd3, ek) = dims(&mk)?;
-                let (sk2, hd4, ev) = dims(&mv)?;
+                let (sq, hd, eo) = dims(&mo).ok_or(crate::emitter_gap!())?;
+                let (sq2, hd2, eq) = dims(&mq).ok_or(crate::emitter_gap!())?;
+                let (sk, hd3, ek) = dims(&mk).ok_or(crate::emitter_gap!())?;
+                let (sk2, hd4, ev) = dims(&mv).ok_or(crate::emitter_gap!())?;
                 if [&eo, &eq, &ek, &ev].iter().any(|e| e.as_str() != "f16") {
-                    return None;
+                    return Err(crate::emitter_gap!());
                 }
                 if sq != sq2 || sk != sk2 || hd != hd2 || hd != hd3 || hd != hd4 {
-                    return None;
+                    return Err(crate::emitter_gap!());
                 }
                 body += &format!(
                     "  \"vx.attention_note\"({o}, {q}, {k}, {v}, {sc}) : ({mo}, {mq}, {mk}, {mv}, f32) -> ()\n"
@@ -2458,9 +2753,16 @@ pub fn emit_function_mlir(
             // `TensorIndex`) → `memref.store`; a row/sub-view place (an `imm = 0` `TensorIndex`, a row
             // memref in `mem_of`) takes an elementwise vector value → `vector.store`.
             Opcode::TensorStore => {
-                if let Some((base, ic, memty)) = place_of.get(ins.operand1.0 as usize)?.clone() {
+                if let Some((base, ic, memty)) = place_of
+                    .get(ins.operand1.0 as usize)
+                    .ok_or(crate::emitter_gap!())?
+                    .clone()
+                {
                     let vreg = ins.operand2.0;
-                    let mut val = names.get(vreg as usize)?.clone();
+                    let mut val = names
+                        .get(vreg as usize)
+                        .ok_or(crate::emitter_gap!())?
+                        .clone();
                     // Coerce the stored scalar to the tensor's element type when they differ — a
                     // default-`f32` float literal `1.0` stored into a `bf16` tensor becomes
                     // `arith.truncf`, `f32 -> f64` becomes `arith.extf`, etc. The AST path does the
@@ -2476,26 +2778,40 @@ pub fn emit_function_mlir(
                                     let c = format!("%tsc{idx}");
                                     body += &format!(
                                         "  {c} = {op} {val} : {} to {tgt_s}\n",
-                                        mlir_scalar(&src_e)?
+                                        mlir_scalar(&src_e).ok_or(crate::emitter_gap!())?
                                     );
                                     val = c;
                                 }
-                                None => return None, // unmodelled conversion -> decline (AST oracle)
+                                None => return Err(crate::emitter_gap!()), // unmodelled conversion -> decline (AST oracle)
                             }
                         }
                     }
                     body += &format!("  memref.store {val}, {base}[{ic}] : {memty}\n");
-                } else if let Some(rowty) = mem_of.get(ins.operand1.0 as usize)?.clone() {
-                    let dst = names.get(ins.operand1.0 as usize)?.clone();
-                    let vecname = names.get(ins.operand2.0 as usize)?.clone();
-                    let vecty = vec_of.get(ins.operand2.0 as usize)?.clone()?;
+                } else if let Some(rowty) = mem_of
+                    .get(ins.operand1.0 as usize)
+                    .ok_or(crate::emitter_gap!())?
+                    .clone()
+                {
+                    let dst = names
+                        .get(ins.operand1.0 as usize)
+                        .ok_or(crate::emitter_gap!())?
+                        .clone();
+                    let vecname = names
+                        .get(ins.operand2.0 as usize)
+                        .ok_or(crate::emitter_gap!())?
+                        .clone();
+                    let vecty = vec_of
+                        .get(ins.operand2.0 as usize)
+                        .ok_or(crate::emitter_gap!())?
+                        .clone()
+                        .ok_or(crate::emitter_gap!())?;
                     let c0 = format!("%sc{idx}");
                     let al = vector_align_attr(&vecty);
                     body += &format!("  {c0} = arith.constant 0 : index\n");
                     body +=
                         &format!("  vector.store {vecname}, {dst}[{c0}]{al} : {rowty}, {vecty}\n");
                 } else {
-                    return None;
+                    return Err(crate::emitter_gap!());
                 }
             }
             // Move a tensor to a memory space: `operand1` is the source, `imm` the target space's
@@ -2507,11 +2823,20 @@ pub fn emit_function_mlir(
             // `offset`/`slots`) the AST path emits — a device backend needs them to place the tile
             // into VMEM/TMEM, and they are dropped otherwise (B1/P0-1).
             Opcode::Transfer => {
-                let result_gid = *types.get(ins.type_idx.0 as usize)?;
-                let (elem, shape) = ctx.tensors.get(&result_gid)?;
-                let dstty = tensor_memref_ty(elem, shape)?;
-                let src = names.get(ins.operand1.0 as usize)?.clone();
-                let srcty = mem_of.get(ins.operand1.0 as usize)?.clone()?;
+                let result_gid = *types
+                    .get(ins.type_idx.0 as usize)
+                    .ok_or(crate::emitter_gap!())?;
+                let (elem, shape) = ctx.tensors.get(&result_gid).ok_or(crate::emitter_gap!())?;
+                let dstty = tensor_memref_ty(elem, shape).ok_or(crate::emitter_gap!())?;
+                let src = names
+                    .get(ins.operand1.0 as usize)
+                    .ok_or(crate::emitter_gap!())?
+                    .clone();
+                let srcty = mem_of
+                    .get(ins.operand1.0 as usize)
+                    .ok_or(crate::emitter_gap!())?
+                    .clone()
+                    .ok_or(crate::emitter_gap!())?;
                 let n = format!("%v{idx}");
                 let mut attrs = format!("target_topology = {} : i32", ins.imm);
                 if let Some(desc) = ctx.subspaces.get(&ins.imm) {
@@ -2555,32 +2880,43 @@ pub fn emit_function_mlir(
             // to the `printMemref*` runtime helper; a scalar goes to `print_*`. These are the same
             // helpers the AST path calls; `emit_module_mlir` prepends their `private` declarations.
             Opcode::Print => {
-                let arg = names.get(ins.operand1.0 as usize)?.clone();
-                if let Some(memty) = mem_of.get(ins.operand1.0 as usize)?.clone() {
-                    let et = memref_elem(&memty)?;
+                let arg = names
+                    .get(ins.operand1.0 as usize)
+                    .ok_or(crate::emitter_gap!())?
+                    .clone();
+                if let Some(memty) = mem_of
+                    .get(ins.operand1.0 as usize)
+                    .ok_or(crate::emitter_gap!())?
+                    .clone()
+                {
+                    let et = memref_elem(&memty).ok_or(crate::emitter_gap!())?;
                     let helper = match et {
                         "f32" => "printMemrefF32",
                         "f64" => "printMemrefF64",
                         "i32" => "printMemrefI32",
                         "i64" => "printMemrefI64",
-                        _ => return None,
+                        _ => return Err(crate::emitter_gap!()),
                     };
                     let c = format!("%pc{idx}");
                     body += &format!("  {c} = memref.cast {arg} : {memty} to memref<*x{et}>\n");
                     body += &format!("  func.call @{helper}({c}) : (memref<*x{et}>) -> ()\n");
                 } else if let Some(e) = elem_at(&etypes, ins.operand1.0) {
-                    let et = mlir_scalar(&e)?;
+                    let et = mlir_scalar(&e).ok_or(crate::emitter_gap!())?;
                     let helper = match et {
                         "f32" => "print_f32",
                         "f64" => "print_f64",
                         "i32" => "print_i32",
                         "i64" => "print_i64",
-                        _ => return None,
+                        _ => {
+                            return Err(Decline::TypeNotModelled {
+                                what: "a print of an element type with no helper",
+                            })
+                        }
                     };
                     let n = format!("%v{idx}");
                     body += &format!("  {n} = func.call @{helper}({arg}) : ({et}) -> i32\n");
                 } else {
-                    return None;
+                    return Err(crate::emitter_gap!());
                 }
             }
             // Open a `vx.spawn` region (generic form). The op is inline in the enclosing block, which
@@ -2590,7 +2926,7 @@ pub fn emit_function_mlir(
             // dispatch id (the same value the AST path emits as `vx.spawn`'s `topology` attribute).
             Opcode::Spawn => {
                 if spawn_topology.is_some() {
-                    return None; // nested spawn is not modelled
+                    return Err(crate::emitter_gap!()); // nested spawn is not modelled
                 }
                 spawn_topology = Some(ins.imm as i64);
                 body += &format!("  \"vx.spawn\"() ({{\n^bbspawn{idx}:\n");
@@ -2600,7 +2936,7 @@ pub fn emit_function_mlir(
             // terminator already ended it), stamp the `topology` attribute, and resume emitting into
             // the enclosing block (which the spawn op did not terminate).
             Opcode::SpawnEnd => {
-                let topo = spawn_topology.take()?;
+                let topo = spawn_topology.take().ok_or(crate::emitter_gap!())?;
                 if !terminated {
                     body += "  \"vx.yield\"() : () -> ()\n";
                 }
@@ -2662,7 +2998,10 @@ pub fn emit_function_mlir(
                 body += "  \"vx.barrier\"() : () -> ()\n";
             }
             Opcode::Abort => {
-                let cond = names.get(ins.operand1.0 as usize)?.clone();
+                let cond = names
+                    .get(ins.operand1.0 as usize)
+                    .ok_or(crate::emitter_gap!())?
+                    .clone();
                 let msg = strings
                     .get(ins.imm as usize)
                     .map(|s| s.as_str())
@@ -2693,11 +3032,16 @@ pub fn emit_function_mlir(
             // `operand2` the (scalar) index, `type_idx` the pointee element type. The GEP's base
             // element type sets the stride, so `p[i]` addresses `base + i * sizeof(T)`. (#242)
             Opcode::PtrIndex => {
-                let base = names.get(ins.operand1.0 as usize)?.clone();
+                let base = names
+                    .get(ins.operand1.0 as usize)
+                    .ok_or(crate::emitter_gap!())?
+                    .clone();
                 // The pointee element is a scalar (`*mut i32`) or a by-value aggregate
                 // (`*mut Vec<i32>`, #242 Vec<Vec<T>>). The GEP's base element type (`et`) sets the
                 // stride either way; a struct element loads/stores the whole `!llvm.struct`.
-                let gid = *types.get(ins.type_idx.0 as usize)?;
+                let gid = *types
+                    .get(ins.type_idx.0 as usize)
+                    .ok_or(crate::emitter_gap!())?;
                 // A pointer whose pointee is itself a pointer (`&&T`): the element is a bare `!llvm.ptr`
                 // — the deref loads/stores an 8-byte pointer and the loaded value is itself a pointer
                 // (`ptr_of`), so a further deref (`**rr`) chains. (#278)
@@ -2705,14 +3049,23 @@ pub fn emit_function_mlir(
                 let (et, scalar_e, agg_gid) = if elem_is_ptr {
                     ("!llvm.ptr".to_string(), None, None)
                 } else if let Some(e) = elem_of_gid(gid) {
-                    (mlir_scalar(&e)?.to_string(), Some(e), None)
+                    (
+                        mlir_scalar(&e).ok_or(crate::emitter_gap!())?.to_string(),
+                        Some(e),
+                        None,
+                    )
                 } else if let Some(agg) = ctx.aggs.get(&gid) {
                     (agg.struct_ty.clone(), None, Some(gid))
                 } else {
-                    return None;
+                    return Err(crate::emitter_gap!());
                 };
-                let imt = mlir_scalar(&elem_at(&etypes, ins.operand2.0)?)?;
-                let iname = names.get(ins.operand2.0 as usize)?.clone();
+                let imt =
+                    mlir_scalar(&elem_at(&etypes, ins.operand2.0).ok_or(crate::emitter_gap!())?)
+                        .ok_or(crate::emitter_gap!())?;
+                let iname = names
+                    .get(ins.operand2.0 as usize)
+                    .ok_or(crate::emitter_gap!())?
+                    .clone();
                 let p = format!("%pg{idx}");
                 body += &format!(
                     "  {p} = llvm.getelementptr {base}[{iname}] : (!llvm.ptr, {imt}) -> !llvm.ptr, {et}\n"
@@ -2739,13 +3092,27 @@ pub fn emit_function_mlir(
             // element pointer), `operand2` the value, and the pointee element type comes from the
             // place. (#242)
             Opcode::PtrStore => {
-                let place = names.get(ins.operand1.0 as usize)?.clone();
-                let et = pptr_elem.get(ins.operand1.0 as usize)?.clone()?;
-                let val = names.get(ins.operand2.0 as usize)?.clone();
+                let place = names
+                    .get(ins.operand1.0 as usize)
+                    .ok_or(crate::emitter_gap!())?
+                    .clone();
+                let et = pptr_elem
+                    .get(ins.operand1.0 as usize)
+                    .ok_or(crate::emitter_gap!())?
+                    .clone()
+                    .ok_or(crate::emitter_gap!())?;
+                let val = names
+                    .get(ins.operand2.0 as usize)
+                    .ok_or(crate::emitter_gap!())?
+                    .clone();
                 body += &format!("  llvm.store {val}, {place} : {et}, !llvm.ptr\n");
             }
             // Anything else (spawn, matmul, …) is outside this subset.
-            _ => return None,
+            _ => {
+                return Err(Decline::Unsupported {
+                    what: "an opcode the emitter has no case for",
+                })
+            }
         }
     }
 
@@ -2755,7 +3122,7 @@ pub fn emit_function_mlir(
     if !terminated {
         match &ret_mlir {
             None => body += "  func.return\n",
-            Some(_) => return None,
+            Some(_) => return Err(crate::emitter_gap!()),
         }
     }
 
@@ -2771,7 +3138,7 @@ pub fn emit_function_mlir(
     );
     out += &body;
     out += "}\n";
-    Some(out)
+    Ok(out)
 }
 
 #[cfg(test)]

@@ -1247,8 +1247,16 @@ impl CompilerDriver {
             &topo_archs,
             crate::config::Schedule::Parallel,
         ) {
-            Some(t) => t,
-            None => {
+            Ok(t) => t,
+            Err(why) => {
+                // Same reasoning as the flattener's decline: printed unconditionally, because the
+                // emitter's gaps are a different backlog from the flattener's and a histogram that
+                // shows only one of them under-reports.
+                eprintln!(
+                    "[flat-codegen] emit declined: {} [{}]",
+                    why,
+                    why.detail_key()
+                );
                 if std::env::var("VX_FLAT_DBG").is_ok() {
                     eprintln!("[flat-dbg] emit declined (a function outside the emitter subset)");
                 }

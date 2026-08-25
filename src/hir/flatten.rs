@@ -2656,7 +2656,7 @@ impl<'r> Lowerer<'r> {
                 self.registry,
             )
             .ok_or(Decline::TypeNotModelled {
-                what: "an index element type that is not modelled",
+                what: "an index whose element type is not modelled",
             })?;
             let index = self.lower_expr(&ix.index)?;
             if !matches!(index.ty, LoweredTy::Scalar(_)) {
