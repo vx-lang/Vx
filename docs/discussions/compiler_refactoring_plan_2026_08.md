@@ -536,3 +536,39 @@ emitted MLIR text (`func.call`, `func.return`) rather than field accesses, a
 closure took `body` as a parameter whose name a naive rewrite captured, and prose
 inside comments was rewritten as if it were code. A refactor over a text emitter
 cannot be validated by the type checker alone, because its output is strings.
+
+### Phase 3 step 2 was done differently, and why (Vx#387)
+
+The plan asks for a `CheckCx` holding the shared context, with `BorrowChecker`,
+`ConstEval`, `Monomorphizer`, `SeamProver` and `TrafficAccountant` borrowing it.
+What landed instead groups the same state into four structs owned *by*
+`TypeChecker` — `ConstEvalState`, `MonoState`, `SeamState`, `TrafficState` in
+`hir/check_state.rs` — taking the struct from 42 fields to 22.
+
+The measurement is the reason. Of 443 methods across `hir/`, **399 touch no
+analysis-specific field at all**; 33 touch exactly one group, and 11 span more
+than one. A shared context object pays its cost in the 399: each would have to
+reach `self.cx.scopes` instead of `self.scopes`, roughly a thousand sites
+rewritten so that the 44 methods holding real analysis state could be separated.
+Grouping cost 137 sites and separates the same state.
+
+It also follows something already in the tree. `borrow: BorrowCx` is this exact
+pattern, introduced to replace three loose fields, and its module documents why
+the boundary earns its keep: `active_borrows` is private, so a new access path
+cannot skip the dead-borrow sweep. The four new structs have no invariant to
+protect yet and keep their fields reachable; when one grows an invariant it
+should grow methods and hide the field, as `BorrowCx` did. Extending one pattern
+seemed better than standing up a second one beside it.
+
+The eleven methods that span groups are worth naming, since they are where a
+future split would have to do real thinking rather than mechanical work:
+`check_function`, `instantiate_generic_function_call`, `check_identifier_expr`,
+`check_memberaccess_expr`, `check_static_method_call`,
+`instantiate_method_call_rewrite`, `check_raw_primitive`, `check_transfer_expr`,
+`push_scope`, `pop_scope`, and `check_let_decl_stmt`.
+
+One trap worth recording: `eval_env` was initialized as `vec![HashMap::new()]`,
+one open scope, so `ConstEvalState` needs a hand-written `Default`. It was the
+only one of the twenty-four moved fields whose initializer differed from
+`Default::default()`, and deriving it would have started compile-time evaluation
+with no scope to bind into.
