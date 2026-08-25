@@ -1056,7 +1056,7 @@ fn harvest_bodies(
                 continue; // ambiguous across modules -> dropped from fn_sigs
             };
             let mut worker = LocalWorkerState::new(session.clone());
-            if !crate::hir::flatten::lower_function_to_hir(func, &mut worker) {
+            if crate::hir::flatten::lower_function_to_hir(func, &mut worker).is_err() {
                 continue;
             }
             if worker
@@ -1122,7 +1122,7 @@ fn check_one_function(
     emit_function_type_gids(func, &mut worker);
     // Lower the body to flat HIR bytecode; atomic — a no-op for functions outside the supported
     // subset.
-    let lowered = crate::hir::flatten::lower_function_to_hir(func, &mut worker);
+    let lowered = crate::hir::flatten::lower_function_to_hir(func, &mut worker).is_ok();
     #[cfg(debug_assertions)]
     crate::hir::flatten::verify_hir_stream(&worker);
 
@@ -1556,7 +1556,7 @@ fn codegen_mlir_phase(
     let flat_monos: Vec<syntax::Function> = module_buckets.into_iter().flatten().collect();
     let lower_mono = |f: syntax::Function| {
         let mut worker = LocalWorkerState::new(global_session.clone());
-        let lowered = crate::hir::flatten::lower_function_to_hir(&f, &mut worker);
+        let lowered = crate::hir::flatten::lower_function_to_hir(&f, &mut worker).is_ok();
         (f, worker, lowered)
     };
     let monos: Vec<(syntax::Function, LocalWorkerState, bool)> = if sched.is_seq() {

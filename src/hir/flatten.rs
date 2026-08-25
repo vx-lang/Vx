@@ -20,6 +20,7 @@ use crate::bytecode::{
     HirInstruction, Opcode, Register, TypeIdx, IMM_BLOCK_INIT, IMM_BLOCK_STEP, IMM_PARALLEL_INIT,
     IMM_PARALLEL_STEP, IMM_THREAD_INIT, IMM_THREAD_STEP,
 };
+use crate::decline::{Decline, Lowered};
 use crate::gid::TypeId;
 use crate::layout::FieldTy;
 use crate::registry::ImmutableGlobalRegistry;
@@ -441,14 +442,14 @@ impl<'r> Lowerer<'r> {
 
     /// Lower one `print!`/`println!` argument: a string literal emits a `PrintStr`; any other argument
     /// is lowered as a value and `print`ed (routing to the scalar/tensor `print_*` helper by type).
-    fn lower_print_arg(&mut self, arg: &Expr) -> Option<()> {
+    fn lower_print_arg(&mut self, arg: &Expr) -> Lowered<()> {
         if let Expr::StringLiteral(sl) = arg {
             self.emit_print_str(sl.value.as_ref());
         } else {
             let v = self.lower_expr(arg)?;
             self.emit_print(v);
         }
-        Some(())
+        Ok(())
     }
 
     fn bind_local(&mut self, name: Symbol, v: Val) {
@@ -525,12 +526,16 @@ impl<'r> Lowerer<'r> {
 
     /// Lower an expression to the register holding its result (emitting instructions as needed).
     /// Returns `None` for anything outside the current subset — the caller then aborts.
-    fn lower_expr(&mut self, e: &Expr) -> Option<Val> {
+    fn lower_expr(&mut self, e: &Expr) -> Lowered<Val> {
         match e {
             Expr::Number(n) => {
-                let elem = number_elem(n)?;
-                let imm = encode_imm(n.value.as_ref(), &elem)?;
-                Some(self.emit_value(Opcode::Const, Register(0), Register(0), elem, imm))
+                let elem = number_elem(n).ok_or(Decline::TypeNotModelled {
+                    what: "a numeric literal with no element type",
+                })?;
+                let imm = encode_imm(n.value.as_ref(), &elem).ok_or(Decline::TypeNotModelled {
+                    what: "a literal that does not encode",
+                })?;
+                Ok(self.emit_value(Opcode::Const, Register(0), Register(0), elem, imm))
             }
             // A name read: an SSA alias (no instruction) or a `SlotLoad` from its memory slot. A name
             // that isn't a local but names a registered function is a *function pointer* value (a bare
@@ -540,7 +545,7 @@ impl<'r> Lowerer<'r> {
                 // lower to a `bool` (i1) constant, `1` or `0`.
                 if id.name.as_ref() == "true" || id.name.as_ref() == "false" {
                     let v = (id.name.as_ref() == "true") as u64;
-                    return Some(self.emit_value(
+                    return Ok(self.emit_value(
                         Opcode::Const,
                         Register(0),
                         Register(0),
@@ -549,20 +554,28 @@ impl<'r> Lowerer<'r> {
                     ));
                 }
                 match self.scope.get(&id.name).cloned() {
-                    Some(Binding::Reg(v)) => Some(v),
+                    Some(Binding::Reg(v)) => Ok(v),
                     Some(Binding::Slot { reg, ty }) => {
-                        Some(self.emit_typed(Opcode::SlotLoad, reg, Register(0), ty, 0))
+                        Ok(self.emit_typed(Opcode::SlotLoad, reg, Register(0), ty, 0))
                     }
                     // Reading a place-bound reference *as a value* (`f(r)`, `return r`) is an escape —
                     // the analysis materializes those, so this arm is the safety-net decline. (#275)
-                    Some(Binding::Place { .. }) => None,
-                    None => self.lower_func_const(&id.name),
+                    Some(Binding::Place { .. }) => Err(Decline::TypeNotModelled {
+                        what: "a place-bound reference in value position",
+                    }),
+                    None => self
+                        .lower_func_const(&id.name)
+                        .ok_or(Decline::TypeNotModelled {
+                            what: "a name that is neither a local nor a function",
+                        }),
                 }
             }
             Expr::BinaryOp(b) => {
                 let l = self.lower_expr(&b.lhs)?;
                 let r = self.lower_expr(&b.rhs)?;
-                let op = binop_opcode(&b.op)?;
+                let op = binop_opcode(&b.op).ok_or(Decline::Unsupported {
+                    what: "this binary operator",
+                })?;
                 // Operands are type-checked *assignable* but not necessarily identical; the result
                 // carries the left operand's type. When either operand is a tensor the op is
                 // *elementwise* and the result is the tensor type (a scalar operand broadcasts) -- an
@@ -589,7 +602,7 @@ impl<'r> Lowerer<'r> {
                 };
                 // Two scalar operands already share a type: the checker types both to the same scalar
                 // and rejects a genuine mismatch (no implicit conversion, #240), so no coercion here.
-                Some(self.emit_typed(op, l.reg, r.reg, result_ty, 0))
+                Ok(self.emit_typed(op, l.reg, r.reg, result_ty, 0))
             }
             // A comparison yields a `bool`; the relation is carried in `imm`.
             Expr::RelationalOp(r) => {
@@ -597,7 +610,7 @@ impl<'r> Lowerer<'r> {
                 let rhs = self.lower_expr(&r.rhs)?;
                 // Both operands already share a type (the checker reconciles them and rejects a
                 // genuine mismatch, #240), so `Cmp` compares them directly.
-                Some(self.emit_value(
+                Ok(self.emit_value(
                     Opcode::Cmp,
                     l.reg,
                     rhs.reg,
@@ -611,13 +624,15 @@ impl<'r> Lowerer<'r> {
                     UnaryOp::Neg => Opcode::Neg,
                     UnaryOp::Not => Opcode::Not,
                 };
-                Some(self.emit_typed(op, v.reg, Register(0), v.ty, 0))
+                Ok(self.emit_typed(op, v.reg, Register(0), v.ty, 0))
             }
             // A scalar `as` cast: the result carries the (scalar) target type.
             Expr::AsCast(c) => {
                 let v = self.lower_expr(&c.expr)?;
-                let target = scalar_of(&c.target_ty)?;
-                Some(self.emit_value(Opcode::Cast, v.reg, Register(0), target, 0))
+                let target = scalar_of(&c.target_ty).ok_or(Decline::TypeNotModelled {
+                    what: "a cast to a non-scalar",
+                })?;
+                Ok(self.emit_value(Opcode::Cast, v.reg, Register(0), target, 0))
             }
             // A struct field read `base.member`. `base` is either a local aggregate slot (`p.x`,
             // #215) or a pointer to an aggregate (`self.len`/`self.data` where `self : &mut Vec`,
@@ -630,17 +645,23 @@ impl<'r> Lowerer<'r> {
                 let field = self
                     .registry
                     .layouts
-                    .get(&gid)?
+                    .get(&gid)
+                    .ok_or(Decline::TypeNotModelled {
+                        what: "a struct with no modelled layout",
+                    })?
                     .fields
                     .iter()
-                    .find(|f| f.name.as_ref() == m.member.as_ref())?;
+                    .find(|f| f.name.as_ref() == m.member.as_ref())
+                    .ok_or(Decline::TypeNotModelled {
+                        what: "a field not in the modelled layout",
+                    })?;
                 let offset = field.offset as u64;
                 let result_ty = match &field.ty {
                     FieldTy::Scalar(e) => LoweredTy::Scalar(e.clone()),
                     FieldTy::Opaque => LoweredTy::Ptr,
                     FieldTy::Nominal(nested_gid) => LoweredTy::Aggregate(*nested_gid),
                 };
-                Some(self.emit_typed(Opcode::FieldLoad, base_reg, Register(0), result_ty, offset))
+                Ok(self.emit_typed(Opcode::FieldLoad, base_reg, Register(0), result_ty, offset))
             }
             // Indexing `base[index]`. A *tensor* base rank-reduces along its outermost dimension (a
             // remaining shape yields a row/sub-view tensor, an empty one the scalar element; chained
@@ -653,11 +674,15 @@ impl<'r> Lowerer<'r> {
                     LoweredTy::Tensor { elem, shape } => {
                         let (elem, shape) = (elem.clone(), shape.clone());
                         if shape.is_empty() {
-                            return None; // cannot index a rank-0 value
+                            return Err(Decline::TypeNotModelled {
+                                what: "an index of a rank-0 value",
+                            }); // cannot index a rank-0 value
                         }
                         let index = self.lower_expr(&ix.index)?;
                         if !matches!(index.ty, LoweredTy::Scalar(_)) {
-                            return None; // index must be a scalar
+                            return Err(Decline::TypeNotModelled {
+                                what: "an index that is not a scalar",
+                            }); // index must be a scalar
                         }
                         let reduced: Vec<String> = shape[1..].to_vec();
                         let result_ty = if reduced.is_empty() {
@@ -668,23 +693,31 @@ impl<'r> Lowerer<'r> {
                                 shape: reduced,
                             }
                         };
-                        Some(self.emit_typed(
-                            Opcode::TensorIndex,
-                            base.reg,
-                            index.reg,
-                            result_ty,
-                            0,
-                        ))
+                        Ok(self.emit_typed(Opcode::TensorIndex, base.reg, index.reg, result_ty, 0))
                     }
                     LoweredTy::Ptr => {
-                        let elem = pointer_elem_ty(&self.infer_ast_type(&ix.base)?, self.registry)?;
+                        let elem = pointer_elem_ty(
+                            &self
+                                .infer_ast_type(&ix.base)
+                                .ok_or(Decline::TypeNotModelled {
+                                    what: "an index base whose type cannot be inferred",
+                                })?,
+                            self.registry,
+                        )
+                        .ok_or(Decline::TypeNotModelled {
+                            what: "an index whose element type is not modelled",
+                        })?;
                         let index = self.lower_expr(&ix.index)?;
                         if !matches!(index.ty, LoweredTy::Scalar(_)) {
-                            return None; // index must be a scalar
+                            return Err(Decline::TypeNotModelled {
+                                what: "an index that is not a scalar",
+                            }); // index must be a scalar
                         }
-                        Some(self.emit_typed(Opcode::PtrIndex, base.reg, index.reg, elem, 0))
+                        Ok(self.emit_typed(Opcode::PtrIndex, base.reg, index.reg, elem, 0))
                     }
-                    _ => None,
+                    _ => Err(Decline::TypeNotModelled {
+                        what: "a member access the flat path has no layout for",
+                    }),
                 }
             }
             // `transfer(src, Memory::X)`: re-home a tensor into another memory space. The result has
@@ -696,32 +729,38 @@ impl<'r> Lowerer<'r> {
                 // flat emitter has no raw:: opcodes yet. Decline keeps the AST path
                 // the oracle, exactly as for every other unsupported construct.
                 if t.lowering.is_some() {
-                    return None;
+                    return Err(Decline::Unsupported {
+                        what: "a user transfer lowering body",
+                    });
                 }
                 let src = self.lower_expr(&t.expr)?;
                 let LoweredTy::Tensor { elem, shape } = &src.ty else {
-                    return None; // only tensors transfer
+                    return Err(Decline::TypeNotModelled {
+                        what: "a transfer of something that is not a tensor",
+                    }); // only tensors transfer
                 };
                 let result_ty = LoweredTy::Tensor {
                     elem: elem.clone(),
                     shape: shape.clone(),
                 };
                 let mem_id = crate::arch::memory_space_dispatch_id(&t.space) as u64;
-                Some(self.emit_typed(Opcode::Transfer, src.reg, Register(0), result_ty, mem_id))
+                Ok(self.emit_typed(Opcode::Transfer, src.reg, Register(0), result_ty, mem_id))
             }
             // Slice reductions `dot`/`sum`/`max`/`min` over rank-1 tensor slices -> a scalar. `dot`
             // takes two slices (fused multiply then reduce-add); the rest take one. `Tensor<T>([..])`
             // allocates a buffer. Any other name is an ordinary function call.
             Expr::FunctionCall(fc) => {
                 if fc.name.as_ref() == "Tensor" {
-                    return self.lower_tensor_alloc(fc);
+                    return self.lower_tensor_alloc(fc).ok_or(Decline::TypeNotModelled {
+                        what: "a tensor allocation the flat path does not model",
+                    });
                 }
                 // `barrier()` (Vx#379): an effect, not a call -- there is no callee anywhere.
                 // The checker typed it i32, so hand back a constant for the value position
                 // nobody should be using it in.
                 if fc.name.as_ref() == "barrier" {
                     self.emit_effect(Opcode::Barrier, Register(0), Register(0), 0);
-                    return Some(self.emit_value(
+                    return Ok(self.emit_value(
                         Opcode::Const,
                         Register(0),
                         Register(0),
@@ -736,21 +775,30 @@ impl<'r> Lowerer<'r> {
                 // has always lowered this call.
                 if fc.name.as_ref() == "matmul_into" {
                     if fc.args.len() != 3 {
-                        return None;
+                        return Err(Decline::BuiltinShape {
+                            builtin: "matmul_into",
+                            why: "the wrong number of arguments",
+                        });
                     }
                     let mut regs = [Register(0); 3];
                     for (n, arg) in fc.args.iter().enumerate() {
                         let v = self.lower_expr(arg)?;
                         let LoweredTy::Tensor { shape, .. } = &v.ty else {
-                            return None;
+                            return Err(Decline::BuiltinShape {
+                                builtin: "matmul_into",
+                                why: "an argument that is not a tensor",
+                            });
                         };
                         if shape.len() != 2 {
-                            return None;
+                            return Err(Decline::BuiltinShape {
+                                builtin: "matmul_into",
+                                why: "a tensor that is not rank 2",
+                            });
                         }
                         regs[n] = v.reg;
                     }
                     self.emit_effect(Opcode::MatmulInto, regs[1], regs[2], regs[0].0 as u64);
-                    return Some(self.emit_value(
+                    return Ok(self.emit_value(
                         Opcode::Const,
                         Register(0),
                         Register(0),
@@ -768,17 +816,26 @@ impl<'r> Lowerer<'r> {
                 // wrong kernel.
                 if fc.name.as_ref() == "flash_attention_into" {
                     if fc.args.len() != 5 {
-                        return None;
+                        return Err(Decline::BuiltinShape {
+                            builtin: "flash_attention_into",
+                            why: "the wrong number of arguments",
+                        });
                     }
                     let mut regs = [Register(0); 4];
                     let mut shapes: Vec<Vec<String>> = Vec::with_capacity(4);
                     for (n, arg) in fc.args.iter().take(4).enumerate() {
                         let v = self.lower_expr(arg)?;
                         let LoweredTy::Tensor { elem, shape } = &v.ty else {
-                            return None;
+                            return Err(Decline::BuiltinShape {
+                                builtin: "flash_attention_into",
+                                why: "an argument that is not a tensor",
+                            });
                         };
                         if *elem != ElementType::F16 || shape.len() != 2 {
-                            return None;
+                            return Err(Decline::BuiltinShape {
+                                builtin: "flash_attention_into",
+                                why: "a tensor that is not rank-2 f16",
+                            });
                         }
                         shapes.push(shape.clone());
                         regs[n] = v.reg;
@@ -788,11 +845,17 @@ impl<'r> Lowerer<'r> {
                         || shapes[2] != shapes[3]
                         || shapes[1][1] != shapes[2][1]
                     {
-                        return None;
+                        return Err(Decline::BuiltinShape {
+                            builtin: "flash_attention_into",
+                            why: "shapes that do not agree",
+                        });
                     }
                     let scale = self.lower_expr(&fc.args[4])?;
                     if !matches!(scale.ty, LoweredTy::Scalar(ElementType::F32)) {
-                        return None;
+                        return Err(Decline::BuiltinShape {
+                            builtin: "flash_attention_into",
+                            why: "a scale that is not f32",
+                        });
                     }
                     self.emit_effect(
                         Opcode::FlashAttnInto,
@@ -802,7 +865,7 @@ impl<'r> Lowerer<'r> {
                             | ((regs[3].0 as u64) << 16)
                             | ((scale.reg.0 as u64) << 32),
                     );
-                    return Some(self.emit_value(
+                    return Ok(self.emit_value(
                         Opcode::Const,
                         Register(0),
                         Register(0),
@@ -819,26 +882,38 @@ impl<'r> Lowerer<'r> {
                 };
                 let arity = if kind == 0 { 2 } else { 1 };
                 if fc.args.len() != arity {
-                    return None;
+                    return Err(Decline::BuiltinShape {
+                        builtin: "a reduction",
+                        why: "the wrong number of arguments",
+                    });
                 }
                 let mut regs = [Register(0); 2];
                 for (n, arg) in fc.args.iter().enumerate() {
                     let v = self.lower_expr(arg)?;
                     let LoweredTy::Tensor { elem: e, shape } = &v.ty else {
-                        return None; // reductions are over tensor slices
+                        return Err(Decline::BuiltinShape {
+                            builtin: "a reduction",
+                            why: "an operand that is not a tensor slice",
+                        }); // reductions are over tensor slices
                     };
                     if shape.len() != 1 {
-                        return None; // a rank-1 slice reduces to a scalar; higher ranks don't
+                        return Err(Decline::BuiltinShape {
+                            builtin: "a reduction",
+                            why: "a slice that is not rank 1",
+                        }); // a rank-1 slice reduces to a scalar; higher ranks don't
                     }
                     if !matches!(e, ElementType::F32 | ElementType::F16 | ElementType::BF16) {
-                        return None; // float slices only; halves widen on load (Vx#320)
+                        return Err(Decline::BuiltinShape {
+                            builtin: "a reduction",
+                            why: "a slice whose elements are not float",
+                        }); // float slices only; halves widen on load (Vx#320)
                     }
                     regs[n] = v.reg;
                 }
                 // The result is f32 REGARDLESS of the slices' storage: a reduction's precision
                 // is its accumulator's, and codegen widens half-precision rows on load (Vx#320).
                 // The checker types the call the same way; mixed f16/f32 dots are welcome.
-                Some(self.emit_typed(
+                Ok(self.emit_typed(
                     Opcode::Reduce,
                     regs[0],
                     regs[1],
@@ -853,7 +928,9 @@ impl<'r> Lowerer<'r> {
                 for s in &u.stmts {
                     self.lower_stmt(s)?;
                 }
-                self.lower_expr(u.ret.as_deref()?)
+                self.lower_expr(u.ret.as_deref().ok_or(Decline::Unsupported {
+                    what: "a unary form with no operand",
+                })?)
             }
             // A struct literal in value position (e.g. `return P { .. }`, #215): construct it in a slot
             // (the `let x = P { .. }` form is handled directly in `lower_stmt`). The `Val` is the slot,
@@ -882,7 +959,7 @@ impl<'r> Lowerer<'r> {
                         }
                     }
                 }
-                Some(v)
+                Ok(v)
             }
             // A `comptime { .. }` block: the AST codegen lowers it *transparently* (its `sizeof<T>()`
             // folds to a constant and its `assert`s are runtime no-ops), so at runtime a compile-time
@@ -894,7 +971,7 @@ impl<'r> Lowerer<'r> {
                 }
                 match &cb.ret {
                     Some(r) => self.lower_expr(r),
-                    None => Some(self.emit_value(
+                    None => Ok(self.emit_value(
                         Opcode::Const,
                         Register(0),
                         Register(0),
@@ -920,7 +997,7 @@ impl<'r> Lowerer<'r> {
                             .map(|d| d.size_bytes as u64)
                     })
                     .unwrap_or(8);
-                Some(self.emit_value(
+                Ok(self.emit_value(
                     Opcode::Const,
                     Register(0),
                     Register(0),
@@ -934,8 +1011,12 @@ impl<'r> Lowerer<'r> {
             Expr::EnumVariant(ev) => {
                 if let Some(variants) = self.registry.enum_variants.get(&ev.enum_name) {
                     if ev.payload.as_ref().is_none_or(|p| p.is_empty()) {
-                        let ordinal = variants.iter().position(|v| v == &ev.variant_name)? as u64;
-                        return Some(self.emit_value(
+                        let ordinal = variants.iter().position(|v| v == &ev.variant_name).ok_or(
+                            Decline::TypeNotModelled {
+                                what: "a variant not in the enum",
+                            },
+                        )? as u64;
+                        return Ok(self.emit_value(
                             Opcode::Const,
                             Register(0),
                             Register(0),
@@ -957,7 +1038,7 @@ impl<'r> Lowerer<'r> {
             Expr::Borrow(b) => {
                 if let Expr::Identifier(id) = &*b.expr {
                     if let Some(Binding::Slot { reg, .. }) = self.scope.get(&id.name).cloned() {
-                        return Some(Val {
+                        return Ok(Val {
                             reg,
                             ty: LoweredTy::Ptr,
                         });
@@ -967,8 +1048,8 @@ impl<'r> Lowerer<'r> {
                     // `&outer.inner`: the address of a by-value nested-aggregate field — a method
                     // receiver (`self.iter.next()` -> `&self.iter`) or a nested `&o.inner`.
                     // `lower_agg_base` GEPs to the field (a `FieldAddr`); the pointer is the borrow. (#242)
-                    if let Some((reg, _)) = self.lower_agg_base(&b.expr) {
-                        return Some(Val {
+                    if let Ok((reg, _)) = self.lower_agg_base(&b.expr) {
+                        return Ok(Val {
                             reg,
                             ty: LoweredTy::Ptr,
                         });
@@ -979,14 +1060,16 @@ impl<'r> Lowerer<'r> {
                     // Safety is the borrow checker's (return-provenance, #243): the flat path only emits
                     // the address the frontend already proved outlives the callee.
                     if let Some(val) = self.lower_scalar_field_addr(m) {
-                        return Some(val);
+                        return Ok(val);
                     }
                 }
                 let v = self.lower_expr(&b.expr)?;
                 if matches!(v.ty, LoweredTy::Tensor { .. }) {
-                    Some(v)
+                    Ok(v)
                 } else {
-                    None
+                    Err(Decline::TypeNotModelled {
+                        what: "a borrow of something that is not a tensor",
+                    })
                 }
             }
             // A value-position `if` in expression context: nested (`if c { if d { .. } else { .. } }
@@ -996,17 +1079,21 @@ impl<'r> Lowerer<'r> {
             // load the result. (The annotated `let v: T = if ..` form uses its annotation directly in
             // `lower_stmt`, a more precise path that this does not replace.)
             Expr::If(if_expr) => {
-                let result_ty = self.infer_block_ty(&if_expr.then_block)?;
+                let result_ty =
+                    self.infer_block_ty(&if_expr.then_block)
+                        .ok_or(Decline::TypeNotModelled {
+                            what: "an if branch whose type cannot be inferred",
+                        })?;
                 let slot = self.emit_alloca(result_ty.clone());
                 self.lower_if_into_slot(if_expr, slot.reg)?;
-                Some(self.emit_typed(Opcode::SlotLoad, slot.reg, Register(0), result_ty, 0))
+                Ok(self.emit_typed(Opcode::SlotLoad, slot.reg, Register(0), result_ty, 0))
             }
             // A string literal in value position (`let s = "…"`, a string function argument): emit the
             // module-level global + `addressof`, yielding a first-class `!llvm.ptr` value — the same
             // shape the AST path's `StringLiteralExpr` produces. Backs the string-passing FFI programs
             // (`vx_stdout_write(msg, 14)`). A print-*position* string never reaches here; it takes the
             // `PrintStr` effect path in `lower_print_arg`. (#231)
-            Expr::StringLiteral(sl) => Some(self.emit_string_const(sl.value.as_ref())),
+            Expr::StringLiteral(sl) => Ok(self.emit_string_const(sl.value.as_ref())),
             // `*p`: a raw-pointer dereference read, lowered as `p[0]` (`let v = *p`, a `Box`'s heap
             // cell). The store form (`*p = val`) is in `lower_stmt`'s assignment. (#242)
             Expr::Dereference(d) => {
@@ -1030,7 +1117,7 @@ impl<'r> Lowerer<'r> {
                 if std::env::var("VX_FLAT_DBG").is_ok() {
                     eprintln!("[flat-dbg]   unsupported expr: {}", expr_kind(other));
                 }
-                None
+                Err(Decline::UnsupportedExpr(expr_kind(other)))
             }
         }
     }
@@ -1141,14 +1228,14 @@ impl<'r> Lowerer<'r> {
     /// layout GID: either a local bound to an aggregate *slot* (`let p = Point { .. }`, #215) or a
     /// *pointer to* an aggregate (`self : &mut Vec<i32>`, #242). Both are an `!llvm.ptr` to the
     /// struct, so a `FieldLoad`/`FieldStore` addresses them identically. `None` for any other base.
-    fn lower_agg_base(&mut self, base: &Expr) -> Option<(Register, TypeId)> {
+    fn lower_agg_base(&mut self, base: &Expr) -> Lowered<(Register, TypeId)> {
         if let Expr::Identifier(id) = base {
             if let Some(Binding::Slot {
                 reg,
                 ty: LoweredTy::Aggregate(gid),
             }) = self.scope.get(&id.name).cloned()
             {
-                return Some((reg, gid));
+                return Ok((reg, gid));
             }
         }
         // `(*p).field`: a field access through a *dereferenced* pointer (`(*self.vec).len` in
@@ -1156,23 +1243,37 @@ impl<'r> Lowerer<'r> {
         // itself (loading `p`, e.g. `self.vec`, a `*const Vec<T>` field, to an `!llvm.ptr`) plus the
         // pointee aggregate's layout GID, so the following field op GEPs through it. (#242)
         if let Expr::Dereference(d) = base {
-            let base_ty = self.infer_ast_type(base)?; // the pointee (Vec<T>)
-            let gid = agg_gid_of_ty(&base_ty, self.registry)?;
+            let base_ty = self.infer_ast_type(base).ok_or(Decline::TypeNotModelled {
+                what: "a base whose type cannot be inferred",
+            })?; // the pointee (Vec<T>)
+            let gid = agg_gid_of_ty(&base_ty, self.registry).ok_or(Decline::TypeNotModelled {
+                what: "an aggregate with no GID",
+            })?;
             let v = self.lower_expr(&d.expr)?; // lower the pointer, not the deref
-            return matches!(v.ty, LoweredTy::Ptr).then_some((v.reg, gid));
+            return matches!(v.ty, LoweredTy::Ptr)
+                .then_some((v.reg, gid))
+                .ok_or(Decline::TypeNotModelled {
+                    what: "an aggregate base that is not a pointer",
+                });
         }
         // A by-value nested-aggregate field as a base (`outer.inner.a`, or `&self.iter` as a method
         // receiver): recurse to the enclosing aggregate's pointer, then GEP to the nested field via a
         // `FieldAddr`. The nested field must itself be a modelled aggregate. (#242)
         if let Expr::MemberAccess(m) = base {
-            if let Some((parent_reg, parent_gid)) = self.lower_agg_base(&m.base) {
+            if let Ok((parent_reg, parent_gid)) = self.lower_agg_base(&m.base) {
                 let field = self
                     .registry
                     .layouts
-                    .get(&parent_gid)?
+                    .get(&parent_gid)
+                    .ok_or(Decline::TypeNotModelled {
+                        what: "a nested aggregate with no modelled layout",
+                    })?
                     .fields
                     .iter()
-                    .find(|f| f.name.as_ref() == m.member.as_ref())?;
+                    .find(|f| f.name.as_ref() == m.member.as_ref())
+                    .ok_or(Decline::TypeNotModelled {
+                        what: "a field not in the modelled layout",
+                    })?;
                 if let FieldTy::Nominal(nested_gid) = field.ty {
                     let offset = field.offset as u64;
                     let type_idx = TypeIdx(self.types.len() as u32);
@@ -1185,16 +1286,24 @@ impl<'r> Lowerer<'r> {
                         type_idx,
                         offset,
                     ));
-                    return Some((reg, nested_gid));
+                    return Ok((reg, nested_gid));
                 }
             }
         }
         // A pointer to an aggregate: the base lowers to a pointer value; its pointee layout GID comes
         // from the base's AST type (the layout the frozen registry keyed under the base nominal).
-        let base_ty = self.infer_ast_type(base)?;
-        let gid = agg_gid_of_ty(&base_ty, self.registry)?;
+        let base_ty = self.infer_ast_type(base).ok_or(Decline::TypeNotModelled {
+            what: "a base whose type cannot be inferred",
+        })?;
+        let gid = agg_gid_of_ty(&base_ty, self.registry).ok_or(Decline::TypeNotModelled {
+            what: "an aggregate with no GID",
+        })?;
         let v = self.lower_expr(base)?;
-        matches!(v.ty, LoweredTy::Ptr).then_some((v.reg, gid))
+        matches!(v.ty, LoweredTy::Ptr)
+            .then_some((v.reg, gid))
+            .ok_or(Decline::TypeNotModelled {
+                what: "an aggregate base that is not a pointer",
+            })
     }
 
     /// The address of a **scalar** field as an element pointer (`&param.slot`): GEP the parent aggregate
@@ -1203,7 +1312,7 @@ impl<'r> Lowerer<'r> {
     /// tracks it as a plain pointer (not an aggregate slot). `None` when the parent doesn't resolve or the
     /// field is not scalar (a nested-aggregate field is the `lower_agg_base` path instead). (#275 M3b)
     fn lower_scalar_field_addr(&mut self, m: &crate::syntax::MemberAccessExpr) -> Option<Val> {
-        let (parent_reg, parent_gid) = self.lower_agg_base(&m.base)?;
+        let (parent_reg, parent_gid) = self.lower_agg_base(&m.base).ok()?;
         // Snapshot the field's offset + element so the immutable registry borrow ends before we emit.
         let (offset, elem) = {
             let field = self
@@ -1237,7 +1346,7 @@ impl<'r> Lowerer<'r> {
     /// Lower an `if`/`else` statement to basic blocks + branches (memory mode only, so mutated or
     /// cross-block locals are already in slots). Early `return` in a branch is honored: the trailing
     /// `Br` to the merge is skipped when the branch already terminated.
-    fn lower_if(&mut self, e: &crate::syntax::IfExpr) -> Option<()> {
+    fn lower_if(&mut self, e: &crate::syntax::IfExpr) -> Lowered<()> {
         let cond = self.lower_expr(&e.cond)?;
         let then_b = self.new_block();
         let (else_b, merge_b) = match &e.else_block {
@@ -1276,7 +1385,7 @@ impl<'r> Lowerer<'r> {
 
         // merge block — subsequent statements continue here
         self.emit_effect(Opcode::BlockStart, Register(0), Register(0), merge_b as u64);
-        Some(())
+        Ok(())
     }
 
     /// Lower a *statement-form* `match <subject> { <arms> }` over a payload-free enum (#227). The
@@ -1284,7 +1393,7 @@ impl<'r> Lowerer<'r> {
     /// conditional branch to the arm body (taken) or the next arm's test (else) — the same eq-compare
     /// chain the AST codegen emits. A `Wildcard` arm is the unconditional default. Data-carrying
     /// patterns (payload bindings), literal/identifier patterns, and value-producing `match` decline.
-    fn lower_match(&mut self, m: &crate::syntax::MatchExpr) -> Option<()> {
+    fn lower_match(&mut self, m: &crate::syntax::MatchExpr) -> Lowered<()> {
         // A data-carrying enum match (`match o { Option<i32>::Some(v) => .. None => .. }`, #242): the
         // subject is a `{ tag, payload }` aggregate, dispatched on its tag field. Detected from the
         // first `EnumVariant` pattern naming an enum with a payload-carrying variant.
@@ -1313,18 +1422,30 @@ impl<'r> Lowerer<'r> {
         }
         let subj = self.lower_expr(&m.expr)?;
         if !matches!(subj.ty, LoweredTy::Scalar(ElementType::I32)) {
-            return None; // only payload-free enums (a bare i32 discriminant)
+            return Err(Decline::Unsupported {
+                what: "a match over an enum that carries a payload",
+            }); // only payload-free enums (a bare i32 discriminant)
         }
         let merge = self.new_block();
         for arm in &m.arms {
             match &arm.pattern {
                 crate::syntax::Pattern::EnumVariant(enum_name, variant, payload) => {
                     if payload.as_ref().is_some_and(|p| !p.is_empty()) {
-                        return None; // tagged-union payload binding not modelled
+                        return Err(Decline::Unsupported {
+                            what: "a tagged-union payload binding",
+                        }); // tagged-union payload binding not modelled
                     }
                     // Absent from `enum_variants` => a data-carrying (or generic) enum: decline.
-                    let variants = self.registry.enum_variants.get(enum_name)?;
-                    let ordinal = variants.iter().position(|v| v == variant)? as u64;
+                    let variants = self.registry.enum_variants.get(enum_name).ok_or(
+                        Decline::TypeNotModelled {
+                            what: "an enum with no registered variants",
+                        },
+                    )?;
+                    let ordinal = variants.iter().position(|v| v == variant).ok_or(
+                        Decline::TypeNotModelled {
+                            what: "a variant not in the enum",
+                        },
+                    )? as u64;
                     let tag = self.emit_value(
                         Opcode::Const,
                         Register(0),
@@ -1367,7 +1488,11 @@ impl<'r> Lowerer<'r> {
                     // A wildcard is the default; any later arm is unreachable.
                     break;
                 }
-                _ => return None, // literal / identifier patterns not supported
+                _ => {
+                    return Err(Decline::Unsupported {
+                        what: "a literal or identifier match pattern",
+                    })
+                } // literal / identifier patterns not supported
             }
         }
         // No wildcard matched: the final else block falls through to the merge.
@@ -1375,7 +1500,7 @@ impl<'r> Lowerer<'r> {
             self.emit_effect(Opcode::Br, Register(0), Register(0), merge as u64);
         }
         self.emit_effect(Opcode::BlockStart, Register(0), Register(0), merge as u64);
-        Some(())
+        Ok(())
     }
 
     /// Resolve the subject of a data-carrying-enum `match` to a pointer addressing its `{ tag, payload }`
@@ -1384,24 +1509,30 @@ impl<'r> Lowerer<'r> {
     /// tags the pointer param's pointee with the synthetic enum GID); and `match <value>` (a by-value
     /// enum — a call result or a by-value `self` — spilled to a fresh slot so its fields are addressable).
     /// The `*self`/by-value forms are what let `Option::is_none`/`is_some`/`unwrap` lower on flat. (#242)
-    fn lower_data_match_slot(&mut self, subj: &Expr, gid: TypeId) -> Option<Register> {
+    fn lower_data_match_slot(&mut self, subj: &Expr, gid: TypeId) -> Lowered<Register> {
         // `match *self`: the dereferenced pointer *is* the aggregate slot.
         if let Expr::Dereference(d) = subj {
             let v = self.lower_expr(&d.expr)?;
-            return matches!(v.ty, LoweredTy::Ptr).then_some(v.reg);
+            return matches!(v.ty, LoweredTy::Ptr).then_some(v.reg).ok_or(
+                Decline::TypeNotModelled {
+                    what: "a match subject that is not a pointer",
+                },
+            );
         }
         // `match o`: a local aggregate slot (or a self-pointer to one).
-        if let Some((slot, _)) = self.lower_agg_base(subj) {
-            return Some(slot);
+        if let Ok((slot, _)) = self.lower_agg_base(subj) {
+            return Ok(slot);
         }
         // `match <value>`: a by-value enum aggregate — spill it to a slot to address its fields.
         let v = self.lower_expr(subj)?;
         if matches!(v.ty, LoweredTy::Aggregate(_)) {
             let slot = self.emit_alloca(LoweredTy::Aggregate(gid));
             self.emit_effect(Opcode::Store, slot.reg, v.reg, 0);
-            return Some(slot.reg);
+            return Ok(slot.reg);
         }
-        None
+        Err(Decline::TypeNotModelled {
+            what: "a match subject that is not an aggregate slot",
+        })
     }
 
     /// Lower a statement-form `match` over a *data-carrying* enum aggregate (`Option<i32>`): resolve
@@ -1409,12 +1540,25 @@ impl<'r> Lowerer<'r> {
     /// tag against the variant's ordinal and, in the taken block, bind each payload pattern to the
     /// loaded payload field before running the arm body — the same tag-dispatch + `extractvalue` the
     /// AST codegen emits, but through the flat aggregate machinery. (#242)
-    fn lower_data_match(&mut self, m: &crate::syntax::MatchExpr, enum_name: &str) -> Option<()> {
-        let (gid, offsets, payload_types) = self.enum_instance_layout(enum_name)?;
+    fn lower_data_match(&mut self, m: &crate::syntax::MatchExpr, enum_name: &str) -> Lowered<()> {
+        let (gid, offsets, payload_types) =
+            self.enum_instance_layout(enum_name)
+                .ok_or(Decline::TypeNotModelled {
+                    what: "an enum with no modelled instance layout",
+                })?;
         let slot = self.lower_data_match_slot(&m.expr, gid)?;
-        let tag_off = *offsets.first()?;
+        let tag_off = *offsets.first().ok_or(Decline::TypeNotModelled {
+            what: "an enum payload offset that is not laid out",
+        })?;
         let (base, _) = parse_enum_instance(enum_name);
-        let data = self.registry.enum_data.get(base.as_str())?.clone();
+        let data = self
+            .registry
+            .enum_data
+            .get(base.as_str())
+            .ok_or(Decline::TypeNotModelled {
+                what: "an enum with no registered data",
+            })?
+            .clone();
         let merge = self.new_block();
         for arm in &m.arms {
             match &arm.pattern {
@@ -1422,8 +1566,10 @@ impl<'r> Lowerer<'r> {
                     let ordinal = data
                         .variants
                         .iter()
-                        .position(|(n, _)| n.as_ref() == variant.as_ref())?
-                        as u64;
+                        .position(|(n, _)| n.as_ref() == variant.as_ref())
+                        .ok_or(Decline::TypeNotModelled {
+                            what: "a variant not in the enum",
+                        })? as u64;
                     let tag = self.emit_value(
                         Opcode::FieldLoad,
                         slot,
@@ -1458,8 +1604,20 @@ impl<'r> Lowerer<'r> {
                     if let Some(pats) = payload_pats {
                         for (i, pat) in pats.iter().enumerate() {
                             if let crate::syntax::Pattern::Identifier(pname) = pat {
-                                let poff = *offsets.get(i + 1)?;
-                                let lty = lowered_ty(payload_types.get(i)?, self.registry)?;
+                                let poff = *offsets.get(i + 1).ok_or(Decline::TypeNotModelled {
+                                    what: "an enum payload offset that is not laid out",
+                                })?;
+                                let lty = lowered_ty(
+                                    payload_types.get(i).ok_or(Decline::TypeNotModelled {
+                                        what: "an enum payload type that is not laid out",
+                                    })?,
+                                    self.registry,
+                                )
+                                .ok_or(
+                                    Decline::TypeNotModelled {
+                                        what: "an enum payload type that is not modelled",
+                                    },
+                                )?;
                                 let pval = self.emit_typed(
                                     Opcode::FieldLoad,
                                     slot,
@@ -1488,21 +1646,27 @@ impl<'r> Lowerer<'r> {
                     }
                     break;
                 }
-                _ => return None,
+                _ => {
+                    return Err(Decline::Unsupported {
+                        what: "this match arm shape",
+                    })
+                }
             }
         }
         if !self.block_terminated() {
             self.emit_effect(Opcode::Br, Register(0), Register(0), merge as u64);
         }
         self.emit_effect(Opcode::BlockStart, Register(0), Register(0), merge as u64);
-        Some(())
+        Ok(())
     }
 
     /// Lower a value-position `if` into `slot`: each branch stores its trailing value into `slot`,
     /// then the merge block continues (a following `SlotLoad` yields the result). A value `if` must be
     /// total, so an `else` is required. (#201)
-    fn lower_if_into_slot(&mut self, e: &crate::syntax::IfExpr, slot: Register) -> Option<()> {
-        let else_stmts = e.else_block.as_ref()?;
+    fn lower_if_into_slot(&mut self, e: &crate::syntax::IfExpr, slot: Register) -> Lowered<()> {
+        let else_stmts = e.else_block.as_ref().ok_or(Decline::Unsupported {
+            what: "an if with no else in value position",
+        })?;
         let cond = self.lower_expr(&e.cond)?;
         let then_b = self.new_block();
         let else_b = self.new_block();
@@ -1527,7 +1691,7 @@ impl<'r> Lowerer<'r> {
         }
 
         self.emit_effect(Opcode::BlockStart, Register(0), Register(0), merge_b as u64);
-        Some(())
+        Ok(())
     }
 
     /// Lower a branch block whose trailing semicolon-less expression is the branch's value, stored into
@@ -1535,7 +1699,7 @@ impl<'r> Lowerer<'r> {
     /// branches of a value-`if` already agree on the result type — the checker reconciles them and
     /// types a literal branch to the result (no implicit conversion, #240) — so the value is stored
     /// directly.
-    fn lower_block_into_slot(&mut self, stmts: &[Statement], slot: Register) -> Option<()> {
+    fn lower_block_into_slot(&mut self, stmts: &[Statement], slot: Register) -> Lowered<()> {
         let n = stmts.len();
         for (i, s) in stmts.iter().enumerate() {
             if i + 1 == n {
@@ -1543,14 +1707,18 @@ impl<'r> Lowerer<'r> {
                     if !es.has_semi {
                         let v = self.lower_expr(&es.expr)?;
                         self.emit_effect(Opcode::Store, slot, v.reg, 0);
-                        return Some(());
+                        return Ok(());
                     }
                 }
-                return None; // last stmt isn't a trailing value expression
+                return Err(Decline::Unsupported {
+                    what: "a branch whose last statement is not a value",
+                }); // last stmt isn't a trailing value expression
             }
             self.lower_stmt(s)?;
         }
-        None // empty branch has no value
+        Err(Decline::Unsupported {
+            what: "an empty branch in value position",
+        }) // empty branch has no value
     }
 
     /// Lower a short-circuit logical op (`a && b`, `a || b`) to the same branch skeleton the AST
@@ -1558,9 +1726,11 @@ impl<'r> Lowerer<'r> {
     /// the result — otherwise take the short-circuit constant. The `bool` result flows through a slot
     /// (as the value-`if` does), so this needs the memory model; `body_has_control_flow` forces a
     /// function containing a logical op into it, so the `!self.memory` guard is a defensive decline.
-    fn lower_logical(&mut self, e: &crate::syntax::LogicalOpExpr) -> Option<Val> {
+    fn lower_logical(&mut self, e: &crate::syntax::LogicalOpExpr) -> Lowered<Val> {
         if !self.memory {
-            return None;
+            return Err(Decline::NeedsMemoryMode {
+                construct: "a logical operator",
+            });
         }
         let slot = self.emit_alloca(LoweredTy::Scalar(ElementType::Bool));
         let lhs = self.lower_expr(&e.lhs)?;
@@ -1603,7 +1773,7 @@ impl<'r> Lowerer<'r> {
         self.emit_effect(Opcode::Br, Register(0), Register(0), merge_b as u64);
 
         self.emit_effect(Opcode::BlockStart, Register(0), Register(0), merge_b as u64);
-        Some(self.emit_value(
+        Ok(self.emit_value(
             Opcode::SlotLoad,
             slot.reg,
             Register(0),
@@ -1614,7 +1784,7 @@ impl<'r> Lowerer<'r> {
 
     /// Lower an infinite `loop { body }`: a header block the body branches back to, plus an exit
     /// block that `break` targets. `continue` re-enters the header.
-    fn lower_loop(&mut self, body: &[Statement]) -> Option<()> {
+    fn lower_loop(&mut self, body: &[Statement]) -> Lowered<()> {
         let header = self.new_block();
         let exit = self.new_block();
         self.emit_effect(Opcode::Br, Register(0), Register(0), header as u64);
@@ -1629,13 +1799,13 @@ impl<'r> Lowerer<'r> {
             self.emit_effect(Opcode::Br, Register(0), Register(0), header as u64);
         }
         self.emit_effect(Opcode::BlockStart, Register(0), Register(0), exit as u64);
-        Some(())
+        Ok(())
     }
 
     /// Lower `for i in a..b { body }` over a scalar exclusive range. The induction variable and the
     /// (once-evaluated) bound live in slots so they cross blocks; `continue` targets the increment
     /// latch (so it doesn't skip the step), `break` the exit.
-    fn lower_for(&mut self, f: &crate::syntax::ForLoopStmt) -> Option<()> {
+    fn lower_for(&mut self, f: &crate::syntax::ForLoopStmt) -> Lowered<()> {
         // Taken (not read) so the tag cannot leak into the nested loops this body lowers.
         let stride = std::mem::take(&mut self.stride_next_for);
         // The two-level plan addresses loops by node identity, so membership is exact and
@@ -1657,7 +1827,11 @@ impl<'r> Lowerer<'r> {
         let elem = match &start.ty {
             LoweredTy::Scalar(e) => e.clone(),
             // ranges are over scalars
-            LoweredTy::Aggregate(_) | LoweredTy::Tensor { .. } | LoweredTy::Ptr => return None,
+            LoweredTy::Aggregate(_) | LoweredTy::Tensor { .. } | LoweredTy::Ptr => {
+                return Err(Decline::TypeNotModelled {
+                    what: "a range over a non-scalar",
+                })
+            }
         };
         // Induction variable `i` and the loop bound both need to survive across blocks -> slots.
         let i_slot = self.emit_alloca(LoweredTy::Scalar(elem.clone()));
@@ -1721,7 +1895,7 @@ impl<'r> Lowerer<'r> {
         self.emit_effect(Opcode::Br, Register(0), Register(0), header as u64);
 
         self.emit_effect(Opcode::BlockStart, Register(0), Register(0), exit as u64);
-        Some(())
+        Ok(())
     }
 
     /// Lower `for x in <iterator> { body }` — the sugar over
@@ -1730,19 +1904,42 @@ impl<'r> Lowerer<'r> {
     /// `next`, spills its `Option<Element>` result, loads the tag, and dispatches: on `Some` it binds
     /// `x` to the payload and runs the body (branching back to the header), on `None` it exits. This is
     /// the flat-model counterpart of the AST codegen's generic-iterator loop (#242).
-    fn lower_for_iterator(&mut self, f: &crate::syntax::ForLoopStmt) -> Option<()> {
+    fn lower_for_iterator(&mut self, f: &crate::syntax::ForLoopStmt) -> Lowered<()> {
         // The iterator value (`v.iter()` -> `VecIter<i32>`) and its monomorphized `next`.
-        let iter_ast_ty = self.infer_ast_type(&f.iterable)?;
+        let iter_ast_ty = self
+            .infer_ast_type(&f.iterable)
+            .ok_or(Decline::TypeNotModelled {
+                what: "an iterable whose type cannot be inferred",
+            })?;
         let (next_gid, opt_ty) = self.find_iterator_next(&iter_ast_ty)?;
-        let (enum_gid, offsets, payload_types) = self.enum_instance_layout(&opt_ty.to_string())?;
+        let (enum_gid, offsets, payload_types) = self
+            .enum_instance_layout(&opt_ty.to_string())
+            .ok_or(Decline::TypeNotModelled {
+                what: "an enum with no modelled instance layout",
+            })?;
         // `Some`'s discriminant ordinal (the payload-carrying variant).
         let (base, _) = parse_enum_instance(&opt_ty.to_string());
-        let data = self.registry.enum_data.get(base.as_str())?.clone();
-        let some_ord = data.variants.iter().position(|(_, p)| !p.is_empty())? as u64;
+        let data = self
+            .registry
+            .enum_data
+            .get(base.as_str())
+            .ok_or(Decline::TypeNotModelled {
+                what: "an enum with no registered data",
+            })?
+            .clone();
+        let some_ord = data
+            .variants
+            .iter()
+            .position(|(_, p)| !p.is_empty())
+            .ok_or(Decline::TypeNotModelled {
+                what: "an option-like enum with no payload variant",
+            })? as u64;
 
         let iter_val = self.lower_expr(&f.iterable)?;
         if !matches!(iter_val.ty, LoweredTy::Aggregate(_)) {
-            return None;
+            return Err(Decline::TypeNotModelled {
+                what: "a for-loop iterator that is not an aggregate",
+            });
         }
         let it_slot = self.emit_alloca(iter_val.ty.clone());
         self.emit_effect(Opcode::Store, it_slot.reg, iter_val.reg, 0);
@@ -1775,7 +1972,9 @@ impl<'r> Lowerer<'r> {
             opt_slot.reg,
             Register(0),
             ElementType::I32,
-            *offsets.first()?,
+            *offsets.first().ok_or(Decline::TypeNotModelled {
+                what: "an enum payload offset that is not laid out",
+            })?,
         );
         let some_c = self.emit_value(
             Opcode::Const,
@@ -1800,13 +1999,23 @@ impl<'r> Lowerer<'r> {
 
         self.emit_effect(Opcode::BlockStart, Register(0), Register(0), body_b as u64);
         // Bind the loop variable to the payload.
-        let lty = lowered_ty(payload_types.first()?, self.registry)?;
+        let lty = lowered_ty(
+            payload_types.first().ok_or(Decline::TypeNotModelled {
+                what: "an enum payload type that is not laid out",
+            })?,
+            self.registry,
+        )
+        .ok_or(Decline::TypeNotModelled {
+            what: "an enum payload type that is not modelled",
+        })?;
         let x = self.emit_typed(
             Opcode::FieldLoad,
             opt_slot.reg,
             Register(0),
             lty,
-            *offsets.get(1)?,
+            *offsets.get(1).ok_or(Decline::TypeNotModelled {
+                what: "an enum payload offset that is not laid out",
+            })?,
         );
         self.bind_local(f.iter.as_str().into(), x);
         self.loop_stack.push((header, exit)); // continue -> header, break -> exit
@@ -1818,21 +2027,26 @@ impl<'r> Lowerer<'r> {
             self.emit_effect(Opcode::Br, Register(0), Register(0), header as u64);
         }
         self.emit_effect(Opcode::BlockStart, Register(0), Register(0), exit as u64);
-        Some(())
+        Ok(())
     }
 
     /// Find the monomorphized `next` for an iterator type (`VecIter<i32>` -> `VecIter$i32$next$i32`):
     /// its callee GID and `Option<Element>` return type. Matches a `fn_sig` whose name shares the
     /// iterator's base and carries a `next` method (the mangler uses `$`). (#242)
-    fn find_iterator_next(&self, iter_ty: &Type) -> Option<(TypeId, Type)> {
-        let (base, _) = nominal_name_and_args(deref_to_pointee(iter_ty))?;
+    fn find_iterator_next(&self, iter_ty: &Type) -> Lowered<(TypeId, Type)> {
+        let (base, _) =
+            nominal_name_and_args(deref_to_pointee(iter_ty)).ok_or(Decline::TypeNotModelled {
+                what: "an iterator that is not a nominal type",
+            })?;
         for (name, sig) in &self.registry.fn_sigs {
             let n = name.as_ref();
             if n.starts_with(base.as_ref()) && (n.contains("$next$") || n.ends_with("$next")) {
-                return Some((sig.gid, sig.ret_ty.clone()));
+                return Ok((sig.gid, sig.ret_ty.clone()));
             }
         }
-        None
+        Err(Decline::TypeNotModelled {
+            what: "an iterator type with no next function",
+        })
     }
 
     /// Lower `spawn on (<topology>) { body }` into a `Spawn`/`SpawnEnd`-delimited region carrying the
@@ -1846,9 +2060,11 @@ impl<'r> Lowerer<'r> {
     /// iterations are provably disjoint, the loop is tagged for the device pipeline to grid-stride
     /// (#251). Whether the offer is declined or accepted, the lowered body is identical apart from
     /// two inert `imm` bits and the `SpawnEnd`'s trip count — the host path never changes.
-    fn lower_spawn(&mut self, s: &crate::syntax::SpawnOnExpr) -> Option<()> {
+    fn lower_spawn(&mut self, s: &crate::syntax::SpawnOnExpr) -> Lowered<()> {
         if s.ret.is_some() {
-            return None;
+            return Err(Decline::Unsupported {
+                what: "a spawn region that returns a value",
+            });
         }
         let top_id = crate::arch::topology_dispatch_id(&s.top);
         self.emit_effect(Opcode::Spawn, Register(0), Register(0), top_id as u64);
@@ -1868,7 +2084,7 @@ impl<'r> Lowerer<'r> {
             self.stride_next_for = false;
             let trip = par.map(|(_, t)| t).unwrap_or(0);
             self.emit_effect(Opcode::SpawnEnd, Register(0), Register(0), trip);
-            return Some(());
+            return Ok(());
         }
         if let Some((btrip, plan)) = parallel_two_level(&s.stmts) {
             self.stride_plan = Some(plan);
@@ -1882,13 +2098,13 @@ impl<'r> Lowerer<'r> {
                 Register(0),
                 btrip | SPAWN_TWO_LEVEL,
             );
-            return Some(());
+            return Ok(());
         }
         for stmt in &s.stmts {
             self.lower_stmt(stmt)?;
         }
         self.emit_effect(Opcode::SpawnEnd, Register(0), Register(0), 0);
-        Some(())
+        Ok(())
     }
 
     /// Construct a struct literal into a fresh stack slot: `Alloca` the aggregate (sized from its
@@ -1900,14 +2116,27 @@ impl<'r> Lowerer<'r> {
     /// discriminant ordinal into the tag, then `FieldStore` each payload value into its field (a
     /// payload-free variant like `None` stores only the tag, leaving the payload undefined — as the AST
     /// codegen does). Returns the slot as an aggregate `Val`. (#242)
-    fn lower_enum_construct(&mut self, ev: &crate::syntax::EnumVariantExpr) -> Option<Val> {
+    fn lower_enum_construct(&mut self, ev: &crate::syntax::EnumVariantExpr) -> Lowered<Val> {
         let (base, _) = parse_enum_instance(&ev.enum_name);
-        let data = self.registry.enum_data.get(base.as_str())?;
-        let ordinal =
-            data.variants
-                .iter()
-                .position(|(n, _)| n.as_ref() == ev.variant_name.as_ref())? as u64;
-        let (gid, offsets, _) = self.enum_instance_layout(&ev.enum_name)?;
+        let data = self
+            .registry
+            .enum_data
+            .get(base.as_str())
+            .ok_or(Decline::TypeNotModelled {
+                what: "an enum with no registered data",
+            })?;
+        let ordinal = data
+            .variants
+            .iter()
+            .position(|(n, _)| n.as_ref() == ev.variant_name.as_ref())
+            .ok_or(Decline::TypeNotModelled {
+                what: "a variant not in the enum",
+            })? as u64;
+        let (gid, offsets, _) =
+            self.enum_instance_layout(&ev.enum_name)
+                .ok_or(Decline::TypeNotModelled {
+                    what: "an enum with no modelled instance layout",
+                })?;
         let slot = self.emit_alloca(LoweredTy::Aggregate(gid));
         let tag = self.emit_value(
             Opcode::Const,
@@ -1916,14 +2145,28 @@ impl<'r> Lowerer<'r> {
             ElementType::I32,
             ordinal,
         );
-        self.emit_effect(Opcode::FieldStore, slot.reg, tag.reg, *offsets.first()?);
+        self.emit_effect(
+            Opcode::FieldStore,
+            slot.reg,
+            tag.reg,
+            *offsets.first().ok_or(Decline::TypeNotModelled {
+                what: "an enum payload offset that is not laid out",
+            })?,
+        );
         if let Some(payload) = &ev.payload {
             for (i, pexpr) in payload.iter().enumerate() {
                 let v = self.lower_expr(pexpr)?;
-                self.emit_effect(Opcode::FieldStore, slot.reg, v.reg, *offsets.get(i + 1)?);
+                self.emit_effect(
+                    Opcode::FieldStore,
+                    slot.reg,
+                    v.reg,
+                    *offsets.get(i + 1).ok_or(Decline::TypeNotModelled {
+                        what: "an enum payload offset that is not laid out",
+                    })?,
+                );
             }
         }
-        Some(slot)
+        Ok(slot)
     }
 
     /// Like the free `lowered_ty`, but for a *data-carrying enum instance* (`Option<i32>`) it
@@ -1986,7 +2229,7 @@ impl<'r> Lowerer<'r> {
         Some((gid, offsets, payload))
     }
 
-    fn lower_struct_init(&mut self, si: &crate::syntax::StructInitExpr) -> Option<Val> {
+    fn lower_struct_init(&mut self, si: &crate::syntax::StructInitExpr) -> Lowered<Val> {
         // The struct's layout GID: the checker-attached `type_id` when present, else resolved by
         // name. A *monomorphized generic* construction (`Vec<i32> { .. }`) carries no `type_id` (the
         // instance identity isn't a plain module symbol), so fall back to the base nominal's layout
@@ -1994,11 +2237,23 @@ impl<'r> Lowerer<'r> {
         // exactly the `lowered_ty(GenericInstance)` rule (#242).
         let gid = match si.type_id {
             Some(g) => g,
-            None => self.struct_gid_by_name(&si.name)?,
+            None => self
+                .struct_gid_by_name(&si.name)
+                .ok_or(Decline::TypeNotModelled {
+                    what: "a struct with no GID",
+                })?,
         };
-        let def = self.registry.layouts.get(&gid)?;
+        let def = self
+            .registry
+            .layouts
+            .get(&gid)
+            .ok_or(Decline::TypeNotModelled {
+                what: "a struct with no modelled layout",
+            })?;
         if def.align_bytes == 0 {
-            return None; // layout not modelled yet
+            return Err(Decline::TypeNotModelled {
+                what: "a struct layout that is not modelled yet",
+            }); // layout not modelled yet
         }
         // Snapshot (name, offset, type) so the immutable registry borrow ends before we emit.
         let field_layouts: Vec<(Symbol, u64, FieldTy)> = def
@@ -2015,7 +2270,10 @@ impl<'r> Lowerer<'r> {
             let (_, init_expr) = si
                 .fields
                 .iter()
-                .find(|(n, _)| n.as_ref() == name.as_ref())?;
+                .find(|(n, _)| n.as_ref() == name.as_ref())
+                .ok_or(Decline::TypeNotModelled {
+                    what: "a field not in the modelled layout",
+                })?;
             // The initializer already carries the field's declared type — the checker infers a literal
             // to the field type and rejects a genuine mismatch (no implicit conversion, #240).
             let mut v = self.lower_expr(init_expr)?;
@@ -2031,7 +2289,7 @@ impl<'r> Lowerer<'r> {
             }
             self.emit_effect(Opcode::FieldStore, slot.reg, v.reg, offset);
         }
-        Some(slot)
+        Ok(slot)
     }
 
     /// The layout GID of a struct by name — the fallback for a monomorphized generic construction
@@ -2064,9 +2322,11 @@ impl<'r> Lowerer<'r> {
     /// reconciles them), so a following `arr[i]` reads through the same `TensorIndex` path as any
     /// tensor. Declines an empty literal or a non-scalar element. (A `Tensor<T>([…])` shape argument
     /// never reaches here — `lower_tensor_alloc` reads it as dimensions directly.)
-    fn lower_array(&mut self, arr: &crate::syntax::ArrayExpr) -> Option<Val> {
+    fn lower_array(&mut self, arr: &crate::syntax::ArrayExpr) -> Lowered<Val> {
         if arr.elements.is_empty() {
-            return None; // an empty array has no element type to size the buffer
+            return Err(Decline::Unsupported {
+                what: "an empty array literal",
+            }); // an empty array has no element type to size the buffer
         }
         let mut vals = Vec::with_capacity(arr.elements.len());
         for el in &arr.elements {
@@ -2074,10 +2334,17 @@ impl<'r> Lowerer<'r> {
         }
         let elem = match &vals[0].ty {
             LoweredTy::Scalar(e) => e.clone(),
-            _ => return None, // only scalar-element arrays are modelled
+            _ => {
+                return Err(Decline::TypeNotModelled {
+                    what: "an array of non-scalar elements",
+                })
+            } // only scalar-element arrays are modelled
         };
         let n = vals.len();
-        let bytes = (crate::hir::memory::element_bits(&elem)? * n as u64).div_ceil(8);
+        let bytes = (crate::hir::memory::element_bits(&elem).ok_or(Decline::TypeNotModelled {
+            what: "an element type with no known width",
+        })? * n as u64)
+            .div_ceil(8);
         let buf = self.emit_typed(
             Opcode::TensorAlloc,
             Register(0),
@@ -2105,7 +2372,7 @@ impl<'r> Lowerer<'r> {
             );
             self.emit_effect(Opcode::TensorStore, place.reg, v.reg, 0);
         }
-        Some(buf)
+        Ok(buf)
     }
 
     /// Lower an ordinary fixed-arity call `f(a, b, ...)`: resolve the callee via the frozen registry
@@ -2119,29 +2386,63 @@ impl<'r> Lowerer<'r> {
     /// (the flat aggregates are anonymous structs), so any is a valid target — the arity only matters at
     /// the eventual `CallIndirect`, which rebuilds the function type from the actual arguments. Returns
     /// the adapted value (passed by value), or `None` if `arg` isn't a closure. (#242)
-    fn try_adapt_closure_arg(&mut self, arg: &Expr) -> Option<Val> {
-        let cn_name = match self.infer_ast_type(arg)? {
+    fn try_adapt_closure_arg(&mut self, arg: &Expr) -> Lowered<Val> {
+        let cn_name = match self.infer_ast_type(arg).ok_or(Decline::TypeNotModelled {
+            what: "an argument whose type cannot be inferred",
+        })? {
             Type::Struct(name, _) if name.as_ref().starts_with("Closure_") => {
                 name.as_ref().to_string()
             }
-            _ => return None,
+            _ => {
+                return Err(Decline::TypeNotModelled {
+                    what: "an argument that is not a closure",
+                })
+            }
         };
         // env = the address of the closure's environment aggregate (its captured variables).
         let (env_ptr, _cn_gid) = self.lower_agg_base(arg)?;
         // func = a pointer to the closure's generated call function `Closure_N_call`.
         let call_name: Symbol = format!("{cn_name}_call").into();
-        let fnptr = self.lower_func_const(&call_name)?;
+        let fnptr = self
+            .lower_func_const(&call_name)
+            .ok_or(Decline::TypeNotModelled {
+                what: "a closure callee that is not a function constant",
+            })?;
         // Target `ClosureK` layout `{ env: ptr, func: ptr }` — structurally identical for every arity.
-        let ck_gid = struct_layout_gid_by_name(self.registry, "Closure1")?;
+        let ck_gid = struct_layout_gid_by_name(self.registry, "Closure1").ok_or(
+            Decline::TypeNotModelled {
+                what: "the Closure1 layout",
+            },
+        )?;
         let (env_off, func_off) = {
-            let fields = &self.registry.layouts.get(&ck_gid)?.fields;
-            (fields.first()?.offset as u64, fields.get(1)?.offset as u64)
+            let fields = &self
+                .registry
+                .layouts
+                .get(&ck_gid)
+                .ok_or(Decline::TypeNotModelled {
+                    what: "the Closure1 layout",
+                })?
+                .fields;
+            (
+                fields
+                    .first()
+                    .ok_or(Decline::TypeNotModelled {
+                        what: "a Closure1 field offset",
+                    })?
+                    .offset as u64,
+                fields
+                    .get(1)
+                    .ok_or(Decline::TypeNotModelled {
+                        what: "a Closure1 field offset",
+                    })?
+                    .offset as u64,
+            )
         };
         let slot = self.emit_alloca(LoweredTy::Aggregate(ck_gid));
         self.emit_effect(Opcode::FieldStore, slot.reg, env_ptr, env_off);
         self.emit_effect(Opcode::FieldStore, slot.reg, fnptr.reg, func_off);
         // Passed by value: load the completed fat struct.
-        Some(self.emit_typed(
+        Ok(self.emit_typed(
             Opcode::SlotLoad,
             slot.reg,
             Register(0),
@@ -2180,22 +2481,42 @@ impl<'r> Lowerer<'r> {
         &mut self,
         fc: &crate::syntax::FunctionCallExpr,
         callee: Binding,
-    ) -> Option<Val> {
+    ) -> Lowered<Val> {
         // Load the callee function pointer (an SSA alias, or a `SlotLoad` from its slot).
         let fnptr = match callee {
             Binding::Reg(v) => v,
             Binding::Slot { reg, ty } => self.emit_typed(Opcode::SlotLoad, reg, Register(0), ty, 0),
             // A place-bound reference is not a function pointer — decline. (#275)
-            Binding::Place { .. } => return None,
+            Binding::Place { .. } => {
+                return Err(Decline::TypeNotModelled {
+                    what: "a place-bound reference used as a function pointer",
+                })
+            }
         };
         if !matches!(fnptr.ty, LoweredTy::Ptr) {
-            return None;
+            return Err(Decline::TypeNotModelled {
+                what: "a callee that is not a function pointer",
+            });
         }
         // The callee's return type comes from `f`'s AST function type.
-        let ret_elem = match self.ast_types.get(fc.name.as_ref())? {
-            Type::Function(_, ret) | Type::Closure(_, ret) => scalar_of(ret)?,
-            _ => return None,
-        };
+        let ret_elem =
+            match self
+                .ast_types
+                .get(fc.name.as_ref())
+                .ok_or(Decline::TypeNotModelled {
+                    what: "an indirect callee with no recorded AST type",
+                })? {
+                Type::Function(_, ret) | Type::Closure(_, ret) => {
+                    scalar_of(ret).ok_or(Decline::TypeNotModelled {
+                        what: "an indirect callee returning a non-scalar",
+                    })?
+                }
+                _ => {
+                    return Err(Decline::TypeNotModelled {
+                        what: "an indirect callee that is not a function type",
+                    })
+                }
+            };
         let mut arg_regs = Vec::with_capacity(fc.args.len());
         for arg in &fc.args {
             arg_regs.push(self.lower_expr(arg)?.reg);
@@ -2214,10 +2535,10 @@ impl<'r> Lowerer<'r> {
             type_idx,
             fc.args.len() as u64,
         ));
-        Some(Val { reg, ty })
+        Ok(Val { reg, ty })
     }
 
-    fn lower_call(&mut self, fc: &crate::syntax::FunctionCallExpr) -> Option<Val> {
+    fn lower_call(&mut self, fc: &crate::syntax::FunctionCallExpr) -> Lowered<Val> {
         // An indirect call: the callee name is a local holding a function pointer (a fn-pointer
         // parameter, or a `Closure1`'s loaded `func` field), not a registered function. (#242)
         if !self.registry.fn_sigs.contains_key(fc.name.as_ref()) {
@@ -2233,7 +2554,7 @@ impl<'r> Lowerer<'r> {
                 if std::env::var("VX_FLAT_DBG").is_ok() {
                     eprintln!("[flat-dbg]   call: no fn_sig for {}", fc.name.as_ref());
                 }
-                return None;
+                return Err(Decline::UnresolvedCallee(fc.name.as_ref().to_string()));
             }
         };
         // A void callee (`bump(&mut x) -> void`, a `&mut` mutator) has no result value; it appears only
@@ -2243,15 +2564,18 @@ impl<'r> Lowerer<'r> {
         let ret_ty = if void_ret {
             LoweredTy::Scalar(ElementType::I32)
         } else {
-            self.lower_ty_synth(&sig.ret_ty)?
+            self.lower_ty_synth(&sig.ret_ty)
+                .ok_or(Decline::TypeNotModelled {
+                    what: "a callee return type",
+                })?
         };
         let mut arg_regs = Vec::with_capacity(fc.args.len());
         for arg in &fc.args {
             // A closure literal passed where a nominal `ClosureK` is expected (`.map(adder)`) is
             // adapted to the `{ env, func }` fat struct; any other argument lowers normally. (#242)
             let v = match self.try_adapt_closure_arg(arg) {
-                Some(v) => v,
-                None => self.lower_expr(arg)?,
+                Ok(v) => v,
+                Err(_) => self.lower_expr(arg)?,
             };
             arg_regs.push(v.reg);
         }
@@ -2268,7 +2592,7 @@ impl<'r> Lowerer<'r> {
             type_idx,
             fc.args.len() as u64,
         ));
-        Some(Val { reg, ty: ret_ty })
+        Ok(Val { reg, ty: ret_ty })
     }
 
     /// Lower an assignable tensor place `base[index]` (an lvalue for a following `TensorStore`). The
@@ -2281,14 +2605,26 @@ impl<'r> Lowerer<'r> {
     /// or an element place (`is_place=true`, consumed by a `PtrStore`). The pointee element type comes
     /// from `p`'s AST type. Backs `let v = *p` / `*p = val` (`Box`'s heap cell). A non-pointer, or a
     /// pointer whose element isn't a scalar/aggregate, declines. (#242)
-    fn lower_ptr_deref(&mut self, ptr_expr: &Expr, is_place: bool) -> Option<Val> {
+    fn lower_ptr_deref(&mut self, ptr_expr: &Expr, is_place: bool) -> Lowered<Val> {
         let base = self.lower_expr(ptr_expr)?;
         if !matches!(base.ty, LoweredTy::Ptr) {
-            return None;
+            return Err(Decline::TypeNotModelled {
+                what: "a dereference of something that is not a pointer",
+            });
         }
-        let elem = pointer_elem_ty(&self.infer_ast_type(ptr_expr)?, self.registry)?;
+        let elem = pointer_elem_ty(
+            &self
+                .infer_ast_type(ptr_expr)
+                .ok_or(Decline::TypeNotModelled {
+                    what: "a pointer whose type cannot be inferred",
+                })?,
+            self.registry,
+        )
+        .ok_or(Decline::TypeNotModelled {
+            what: "a pointer element type that is not modelled",
+        })?;
         let zero = self.emit_value(Opcode::Const, Register(0), Register(0), ElementType::I32, 0);
-        Some(self.emit_typed(
+        Ok(self.emit_typed(
             Opcode::PtrIndex,
             base.reg,
             zero.reg,
@@ -2297,41 +2633,63 @@ impl<'r> Lowerer<'r> {
         ))
     }
 
-    fn lower_place(&mut self, e: &Expr) -> Option<Val> {
+    fn lower_place(&mut self, e: &Expr) -> Lowered<Val> {
         // A raw-pointer dereference place `*p = val`: `p[0]`.
         if let Expr::Dereference(d) = e {
             return self.lower_ptr_deref(&d.expr, true);
         }
         let Expr::IndexAccess(ix) = e else {
-            return None;
+            return Err(Decline::TypeNotModelled {
+                what: "an index of something that is not a pointer",
+            });
         };
         let base = self.lower_expr(&ix.base)?;
         // A raw-pointer place (`self.data[i] = val`): a `PtrIndex` with `imm = 1` (an element
         // pointer), consumed by a `PtrStore`. The element type comes from the base's AST type (#242).
         if matches!(base.ty, LoweredTy::Ptr) {
-            let elem = pointer_elem_ty(&self.infer_ast_type(&ix.base)?, self.registry)?;
+            let elem = pointer_elem_ty(
+                &self
+                    .infer_ast_type(&ix.base)
+                    .ok_or(Decline::TypeNotModelled {
+                        what: "an index base whose type cannot be inferred",
+                    })?,
+                self.registry,
+            )
+            .ok_or(Decline::TypeNotModelled {
+                what: "an index element type that is not modelled",
+            })?;
             let index = self.lower_expr(&ix.index)?;
             if !matches!(index.ty, LoweredTy::Scalar(_)) {
-                return None;
+                return Err(Decline::TypeNotModelled {
+                    what: "an index whose element type is not modelled",
+                });
             }
-            return Some(self.emit_typed(Opcode::PtrIndex, base.reg, index.reg, elem, 1));
+            return Ok(self.emit_typed(Opcode::PtrIndex, base.reg, index.reg, elem, 1));
         }
         let (elem, shape) = match &base.ty {
             LoweredTy::Tensor { elem, shape } => (elem.clone(), shape.clone()),
-            _ => return None,
+            _ => {
+                return Err(Decline::TypeNotModelled {
+                    what: "an index base that is not a pointer",
+                })
+            }
         };
         if shape.is_empty() {
-            return None; // cannot index a rank-0 value
+            return Err(Decline::TypeNotModelled {
+                what: "an index of a rank-0 value",
+            }); // cannot index a rank-0 value
         }
         let index = self.lower_expr(&ix.index)?;
         if !matches!(index.ty, LoweredTy::Scalar(_)) {
-            return None; // the index must be a scalar
+            return Err(Decline::TypeNotModelled {
+                what: "an index that is not a scalar",
+            }); // the index must be a scalar
         }
         let reduced: Vec<String> = shape[1..].to_vec();
         if reduced.is_empty() {
             // A scalar element place: the final index, marked `imm = 1` so codegen stores into the
             // element rather than loading it (`q[i][j] = <scalar>`).
-            Some(self.emit_typed(
+            Ok(self.emit_typed(
                 Opcode::TensorIndex,
                 base.reg,
                 index.reg,
@@ -2341,7 +2699,7 @@ impl<'r> Lowerer<'r> {
         } else {
             // A row/sub-view place: an addressable sub-view, same shape as the read form
             // (`o[i] = <slice>`).
-            Some(self.emit_typed(
+            Ok(self.emit_typed(
                 Opcode::TensorIndex,
                 base.reg,
                 index.reg,
@@ -2357,7 +2715,7 @@ impl<'r> Lowerer<'r> {
     /// Lower an assignment `lhs = rhs`, dispatching on the place kind. Factored out of `lower_stmt` so a
     /// write through a symbolic place (`*r = v` where `r` is a `Binding::Place`) re-dispatches as a
     /// write to the borrowed place expression itself (§5 Example C). (#242/#275)
-    fn lower_assign(&mut self, lhs: &Expr, rhs: &Expr) -> Option<()> {
+    fn lower_assign(&mut self, lhs: &Expr, rhs: &Expr) -> Lowered<()> {
         // `*r = v` where `r` is a non-escaping place: re-lower as a write to the borrowed lvalue —
         // `p.x = v` `FieldStore`s the field, `x = v` rebinds the local. No pointer is materialized. (#275)
         if let Expr::Dereference(d) = lhs {
@@ -2395,7 +2753,7 @@ impl<'r> Lowerer<'r> {
                 Opcode::TensorStore
             };
             self.emit_effect(store, place.reg, value.reg, 0);
-            return Some(());
+            return Ok(());
         }
         // A raw-pointer dereference store `*p = val` (`Box`'s `*p = val`): the place is `p[0]` (always a
         // pointer, so always a `PtrStore`). (#242)
@@ -2403,7 +2761,7 @@ impl<'r> Lowerer<'r> {
             let place = self.lower_place(lhs)?;
             let value = self.lower_expr(rhs)?;
             self.emit_effect(Opcode::PtrStore, place.reg, value.reg, 0);
-            return Some(());
+            return Ok(());
         }
         // A field store `base.member = value` through an aggregate slot or a `self` pointer
         // (`self.len = self.len + 1`, `self.data = grow(..)`, #242). A by-value nested-aggregate field
@@ -2413,13 +2771,21 @@ impl<'r> Lowerer<'r> {
             let field = self
                 .registry
                 .layouts
-                .get(&gid)?
+                .get(&gid)
+                .ok_or(Decline::TypeNotModelled {
+                    what: "a struct with no modelled layout",
+                })?
                 .fields
                 .iter()
-                .find(|f| f.name.as_ref() == m.member.as_ref())?;
+                .find(|f| f.name.as_ref() == m.member.as_ref())
+                .ok_or(Decline::TypeNotModelled {
+                    what: "a field not in the modelled layout",
+                })?;
             let offset = field.offset as u64;
             if matches!(field.ty, FieldTy::Nominal(_)) {
-                return None;
+                return Err(Decline::TypeNotModelled {
+                    what: "a store to a nested nominal field",
+                });
             }
             let v = self.lower_expr(rhs)?;
             let pos = self.code.len();
@@ -2429,11 +2795,13 @@ impl<'r> Lowerer<'r> {
             if let Some((root, path)) = self.pending_place_write.take() {
                 self.place_field_stores.push((pos, root, path));
             }
-            return Some(());
+            return Ok(());
         }
         // `name = expr` (simple identifier target). The value already matches the slot's type (the
         // checker types a literal RHS to the target and rejects a mismatch, #240).
-        let name = simple_ident(lhs)?;
+        let name = simple_ident(lhs).ok_or(Decline::Unsupported {
+            what: "an assignment to something other than a simple name",
+        })?;
         let mut v = self.lower_expr(rhs)?;
         // An aggregate *construction* RHS (`ret = Some(val)`, `p = Point { .. }`) yields the
         // construction *slot* (a pointer), but the assignment must copy the struct *value* into the
@@ -2443,11 +2811,13 @@ impl<'r> Lowerer<'r> {
         {
             v = self.emit_typed(Opcode::SlotLoad, v.reg, Register(0), v.ty.clone(), 0);
         }
-        self.assign_local(&name, v)
+        self.assign_local(&name, v).ok_or(Decline::Unsupported {
+            what: "an assignment to a local the flat path does not track",
+        })
     }
 
     /// Lower a statement. `None` aborts the whole function's lowering.
-    fn lower_stmt(&mut self, s: &Statement) -> Option<()> {
+    fn lower_stmt(&mut self, s: &Statement) -> Lowered<()> {
         match s {
             Statement::LetDecl(l) => {
                 // Record the local's concrete AST type for `infer_ast_type` (a pointer local like
@@ -2469,7 +2839,7 @@ impl<'r> Lowerer<'r> {
                                 place: (*b.expr).clone(),
                             },
                         );
-                        return Some(());
+                        return Ok(());
                     }
                 }
                 // A struct literal is constructed *in place* into its own slot; the local is that
@@ -2483,7 +2853,7 @@ impl<'r> Lowerer<'r> {
                             ty: slot.ty,
                         },
                     );
-                    return Some(());
+                    return Ok(());
                 }
                 // A data-carrying enum construction (`let o = Option<i32>::Some(30)`) also builds its
                 // aggregate in place; bind the local to that slot directly (else `bind_local` would
@@ -2505,15 +2875,20 @@ impl<'r> Lowerer<'r> {
                                 ty: slot.ty,
                             },
                         );
-                        return Some(());
+                        return Ok(());
                     }
                 }
                 // A value-position `if` (`let v: T = if c { .. } else { .. }`): allocate a result slot,
                 // have each branch store its trailing value into it, and bind the local to the slot
                 // (the merge block loads it). The slot type comes from the `let`'s annotation (#201).
                 if let Expr::If(if_expr) = &l.expr {
-                    let ty_ann = l.ty_ann.as_ref()?;
-                    let result_ty = lowered_ty(ty_ann, self.registry)?;
+                    let ty_ann = l.ty_ann.as_ref().ok_or(Decline::TypeNotModelled {
+                        what: "a let with no type annotation",
+                    })?;
+                    let result_ty =
+                        lowered_ty(ty_ann, self.registry).ok_or(Decline::TypeNotModelled {
+                            what: "a let whose annotated type is not modelled",
+                        })?;
                     let slot = self.emit_alloca(result_ty.clone());
                     self.lower_if_into_slot(if_expr, slot.reg)?;
                     self.scope.insert(
@@ -2523,7 +2898,7 @@ impl<'r> Lowerer<'r> {
                             ty: result_ty,
                         },
                     );
-                    return Some(());
+                    return Ok(());
                 }
                 let v = self.lower_expr(&l.expr)?;
                 // A tensor local is a reference (memref) — bind it as an SSA register, not a slot;
@@ -2536,7 +2911,7 @@ impl<'r> Lowerer<'r> {
                     // implicit conversion, #240), so the value is bound directly.
                     self.bind_local(l.name.clone(), v);
                 }
-                Some(())
+                Ok(())
             }
             Statement::Return(r) => {
                 // `return <match>` (a value-position match whose arms `return` themselves, e.g.
@@ -2546,7 +2921,9 @@ impl<'r> Lowerer<'r> {
                 if let Expr::Match(m) = &r.expr {
                     self.lower_match(m)?;
                     if !self.block_terminated() {
-                        let rty = self.ret_ty.clone()?;
+                        let rty = self.ret_ty.clone().ok_or(Decline::TypeNotModelled {
+                            what: "a function with no recorded return type",
+                        })?;
                         let zero = match &rty {
                             LoweredTy::Scalar(e) => self.emit_value(
                                 Opcode::Const,
@@ -2555,17 +2932,21 @@ impl<'r> Lowerer<'r> {
                                 e.clone(),
                                 0,
                             ),
-                            _ => return None, // a non-scalar default return isn't modelled
+                            _ => {
+                                return Err(Decline::TypeNotModelled {
+                                    what: "a non-scalar default return",
+                                })
+                            } // a non-scalar default return isn't modelled
                         };
                         self.emit_typed(Opcode::Ret, zero.reg, Register(0), rty, 0);
                     }
-                    return Some(());
+                    return Ok(());
                 }
                 // The returned value already carries the function's declared return type — the checker
                 // types a literal to it and rejects a genuine mismatch (#240).
                 let v = self.lower_expr(&r.expr)?;
                 self.emit_typed(Opcode::Ret, v.reg, Register(0), v.ty, 0);
-                Some(())
+                Ok(())
             }
             Statement::Assign(a) => self.lower_assign(&a.lhs, &a.rhs),
             // Compound assignment `lhs op= rhs` desugars to `lhs = (lhs op rhs)`: read the current
@@ -2573,7 +2954,9 @@ impl<'r> Lowerer<'r> {
             Statement::CompoundAssign(a) => {
                 let cur = self.lower_expr(&a.lhs)?;
                 let rhs = self.lower_expr(&a.rhs)?;
-                let op = binop_opcode(&a.op)?;
+                let op = binop_opcode(&a.op).ok_or(Decline::Unsupported {
+                    what: "this compound-assignment operator",
+                })?;
                 // Elementwise if either side is a tensor (the arith opcode carries the tensor result
                 // type), else the scalar result type — mirroring `BinaryOp` in `lower_expr`.
                 let result_ty = match (&cur.ty, &rhs.ty) {
@@ -2587,10 +2970,15 @@ impl<'r> Lowerer<'r> {
                 if matches!(&a.lhs, Expr::IndexAccess(_)) {
                     let place = self.lower_place(&a.lhs)?;
                     self.emit_effect(Opcode::TensorStore, place.reg, combined.reg, 0);
-                    Some(())
+                    Ok(())
                 } else {
-                    let name = simple_ident(&a.lhs)?;
+                    let name = simple_ident(&a.lhs).ok_or(Decline::Unsupported {
+                        what: "a compound assignment to something other than a simple name",
+                    })?;
                     self.assign_local(&name, combined)
+                        .ok_or(Decline::Unsupported {
+                            what: "an assignment to a local the flat path does not track",
+                        })
                 }
             }
             // `assert(cond, msg)` IS a conditional abort, so it is one `Abort` carrying the
@@ -2611,7 +2999,7 @@ impl<'r> Lowerer<'r> {
                         .unwrap_or_else(|| "assertion failed".to_string()),
                 );
                 self.emit_effect(Opcode::Abort, cond.reg, Register(0), imm);
-                Some(())
+                Ok(())
             }
             Statement::ExprStmt(e) => match &e.expr {
                 Expr::If(iff) => self.lower_if(iff),
@@ -2628,7 +3016,7 @@ impl<'r> Lowerer<'r> {
                     if let Some(r) = &ub.ret {
                         self.lower_expr(r)?;
                     }
-                    Some(())
+                    Ok(())
                 }
                 // `print(x)` is a statement-level effect (no result): lower its one argument and emit
                 // a `Print`, whose `type_idx` carries the argument's type (scalar or tensor) so codegen
@@ -2651,12 +3039,12 @@ impl<'r> Lowerer<'r> {
                     let imm = self.strings.len() as u64;
                     self.strings.push("abort() called".to_string());
                     self.emit_effect(Opcode::Abort, never, Register(0), imm);
-                    Some(())
+                    Ok(())
                 }
                 Expr::FunctionCall(fc) if fc.name.as_ref() == "print" && fc.args.len() == 1 => {
                     let v = self.lower_expr(&fc.args[0])?;
                     self.emit_print(v);
-                    Some(())
+                    Ok(())
                 }
                 // The `print!` macro form (`Expr::Print`): prints each argument in sequence via the same
                 // `print_*` / `print_str` helpers, no separators — matching the AST codegen. A
@@ -2665,7 +3053,7 @@ impl<'r> Lowerer<'r> {
                     for arg in &p.args {
                         self.lower_print_arg(arg)?;
                     }
-                    Some(())
+                    Ok(())
                 }
                 // The `println!` macro form (`Expr::Println`): print each argument (as `print!`), then a
                 // trailing newline. The AST path calls a `println()` runtime helper for the newline;
@@ -2675,31 +3063,35 @@ impl<'r> Lowerer<'r> {
                         self.lower_print_arg(arg)?;
                     }
                     self.emit_print_str("\n");
-                    Some(())
+                    Ok(())
                 }
                 other => {
                     self.lower_expr(other)?;
-                    Some(())
+                    Ok(())
                 }
             },
             Statement::Loop(l) => self.lower_loop(&l.body),
             Statement::ForLoop(f) => self.lower_for(f),
             // `break`/`continue` branch to the enclosing loop's exit/continue target.
             Statement::Break(_) => {
-                let (_, brk) = *self.loop_stack.last()?;
+                let (_, brk) = *self.loop_stack.last().ok_or(Decline::Unsupported {
+                    what: "a break outside a loop",
+                })?;
                 self.emit_effect(Opcode::Br, Register(0), Register(0), brk as u64);
-                Some(())
+                Ok(())
             }
             Statement::Continue(_) => {
-                let (cont, _) = *self.loop_stack.last()?;
+                let (cont, _) = *self.loop_stack.last().ok_or(Decline::Unsupported {
+                    what: "a continue outside a loop",
+                })?;
                 self.emit_effect(Opcode::Br, Register(0), Register(0), cont as u64);
-                Some(())
+                Ok(())
             }
             other => {
                 if std::env::var("VX_FLAT_DBG").is_ok() {
                     eprintln!("[flat-dbg]   unsupported stmt: {}", stmt_kind(other));
                 }
-                None
+                Err(Decline::UnsupportedStmt(stmt_kind(other)))
             }
         }
     }
@@ -2734,22 +3126,22 @@ impl<'r> Lowerer<'r> {
 
 /// Lower a whole function body to flat HIR bytecode on `worker`. **Atomic**: returns `false` and
 /// leaves the worker untouched if any construct is outside the current subset, so
-/// `local_hir_stream` is only ever a complete, correct lowering or empty (keep-green). Returns
-/// `true` when the full body lowered.
-pub fn lower_function_to_hir(func: &Function, worker: &mut LocalWorkerState) -> bool {
+/// `local_hir_stream` is only ever a complete, correct lowering or empty (keep-green). `Ok(())`
+/// when the full body lowered; otherwise the reason the flat path gave up.
+pub fn lower_function_to_hir(func: &Function, worker: &mut LocalWorkerState) -> Lowered<()> {
     // Cheap `Arc` clone so the borrow of the registry doesn't collide with the later `&mut worker`
     // in `commit`; the frozen registry is immutable, so this is a pure reference bump.
     let registry = worker.global.registry.clone();
     match try_lower(func, &registry) {
-        Some(lw) => {
+        Ok(lw) => {
             lw.commit(worker);
-            true
+            Ok(())
         }
-        None => false,
+        Err(why) => Err(why),
     }
 }
 
-fn try_lower<'r>(func: &Function, registry: &'r ImmutableGlobalRegistry) -> Option<Lowerer<'r>> {
+fn try_lower<'r>(func: &Function, registry: &'r ImmutableGlobalRegistry) -> Lowered<Lowerer<'r>> {
     let mut lw = Lowerer::new(registry);
     // Local-usage pre-pass (#230): one syntactic walk collecting the locals whose address is taken
     // (`&x`) and those reassigned (`x = ..`), so `bind_local` can slot exactly the locals that need it.
@@ -2779,7 +3171,9 @@ fn try_lower<'r>(func: &Function, registry: &'r ImmutableGlobalRegistry) -> Opti
         // `lower_ty_synth` (not the free `lowered_ty`) so a by-value data-carrying enum parameter
         // (`self : Option<T>` in `Option::unwrap`) synthesizes its `{ tag, payload }` instance layout
         // and binds as an aggregate rather than declining. (#242)
-        let lty = lw.lower_ty_synth(ty)?;
+        let lty = lw.lower_ty_synth(ty).ok_or(Decline::TypeNotModelled {
+            what: "a parameter type",
+        })?;
         // Record the param's concrete AST type so `infer_ast_type` can recover a pointer field's
         // pointee element (`self : &mut Vec<i32>` -> `self.data : *mut i32`, #242).
         lw.ast_types.insert(name.clone(), ty.clone());
@@ -2795,17 +3189,17 @@ fn try_lower<'r>(func: &Function, registry: &'r ImmutableGlobalRegistry) -> Opti
         }
     }
     for (si, stmt) in func.body.iter().enumerate() {
-        if lw.lower_stmt(stmt).is_none() {
+        if let Err(why) = lw.lower_stmt(stmt) {
             if std::env::var("VX_FLAT_DBG").is_ok() {
                 eprintln!(
-                    "[flat-dbg] fn {} declined at stmt #{si}",
+                    "[flat-dbg] fn {} declined at stmt #{si}: {why}",
                     func.name.as_ref()
                 );
             }
-            return None;
+            return Err(why);
         }
     }
-    Some(lw)
+    Ok(lw)
 }
 
 /// The flat-HIR type of an AST type: a scalar, or an aggregate nominal (struct/enum) whose layout
@@ -4691,7 +5085,7 @@ mod tests {
             .into_iter()
             .find(|f| f.name.as_ref() == fn_name)
             .expect("fn present");
-        let did = lower_function_to_hir(&func, &mut worker);
+        let did = lower_function_to_hir(&func, &mut worker).is_ok();
         (did, worker)
     }
 
@@ -4861,10 +5255,7 @@ mod tests {
         // and its element+shape GID enters the flat type stream.
         let f = parse_fn("fn f(q: Tensor<f32, [2, 4]>) -> i32 { return 0; }");
         let mut w = worker();
-        assert!(
-            lower_function_to_hir(&f, &mut w),
-            "tensor-param fn should lower"
-        );
+        lower_function_to_hir(&f, &mut w).expect("tensor-param fn should lower");
         assert_eq!(
             count(&w, Opcode::Alloca),
             0,
@@ -4883,10 +5274,7 @@ mod tests {
         // `q[0][1]` on a rank-2 tensor rank-reduces twice: [2,4] -> [4] -> scalar f32.
         let f = parse_fn("fn f(q: Tensor<f32, [2, 4]>) -> f32 { return q[0][1]; }");
         let mut w = worker();
-        assert!(
-            lower_function_to_hir(&f, &mut w),
-            "tensor element read should lower"
-        );
+        lower_function_to_hir(&f, &mut w).expect("tensor element read should lower");
         assert_eq!(
             count(&w, Opcode::TensorIndex),
             2,
@@ -4911,7 +5299,7 @@ mod tests {
         // `q[0]` on [2,4] yields a rank-1 row view [4] (one TensorIndex, tensor result).
         let f = parse_fn("fn f(q: Tensor<f32, [2, 4]>) -> Tensor<f32, [4]> { return q[0]; }");
         let mut w = worker();
-        assert!(lower_function_to_hir(&f, &mut w), "row view should lower");
+        lower_function_to_hir(&f, &mut w).expect("row view should lower");
         assert_eq!(count(&w, Opcode::TensorIndex), 1);
         let row = tensor_gid(&ElementType::F32, &["4".to_string()]);
         assert!(w.local_type_stream.contains(&row), "row tensor GID present");
@@ -4942,10 +5330,7 @@ mod tests {
             "fn f(a: Tensor<f32, [4]>, b: Tensor<f32, [4]>) -> Tensor<f32, [4]> { return a * b; }",
         );
         let mut w = worker();
-        assert!(
-            lower_function_to_hir(&f, &mut w),
-            "elementwise mul should lower"
-        );
+        lower_function_to_hir(&f, &mut w).expect("elementwise mul should lower");
         assert_eq!(count(&w, Opcode::Mul), 1);
         assert_eq!(
             result_gid(&w, Opcode::Mul),
@@ -4961,10 +5346,7 @@ mod tests {
         // follow the tensor operand, not the lhs.
         let f = parse_fn("fn f(a: Tensor<f32, [4]>, s: f32) -> Tensor<f32, [4]> { return s * a; }");
         let mut w = worker();
-        assert!(
-            lower_function_to_hir(&f, &mut w),
-            "scalar*tensor should lower"
-        );
+        lower_function_to_hir(&f, &mut w).expect("scalar*tensor should lower");
         assert_eq!(
             result_gid(&w, Opcode::Mul),
             tensor_gid(&ElementType::F32, &["4".to_string()]),
@@ -4980,7 +5362,7 @@ mod tests {
             "fn dotp(q: Tensor<f32, [4]>, k: Tensor<f32, [4]>) -> f32 { return dot(q, k); }",
         );
         let mut w = worker();
-        assert!(lower_function_to_hir(&f, &mut w), "dot should lower");
+        lower_function_to_hir(&f, &mut w).expect("dot should lower");
         assert_eq!(count(&w, Opcode::Reduce), 1);
         assert_eq!(reduce_imm(&w), Some(0), "dot kind");
         assert!(
@@ -4994,7 +5376,7 @@ mod tests {
     fn slice_sum_reduces_one_slice_to_a_scalar() {
         let f = parse_fn("fn s(q: Tensor<f32, [4]>) -> f32 { return sum(q); }");
         let mut w = worker();
-        assert!(lower_function_to_hir(&f, &mut w), "sum should lower");
+        lower_function_to_hir(&f, &mut w).expect("sum should lower");
         assert_eq!(count(&w, Opcode::Reduce), 1);
         assert_eq!(reduce_imm(&w), Some(1), "sum kind");
         verify_hir_stream(&w);
@@ -5008,10 +5390,7 @@ mod tests {
             "fn score(q: Tensor<f32, [2, 4]>, k: Tensor<f32, [2, 4]>) -> f32 { return dot(q[0], k[0]); }",
         );
         let mut w = worker();
-        assert!(
-            lower_function_to_hir(&f, &mut w),
-            "dot of rows should lower"
-        );
+        lower_function_to_hir(&f, &mut w).expect("dot of rows should lower");
         assert_eq!(count(&w, Opcode::TensorIndex), 2, "one index per operand");
         assert_eq!(count(&w, Opcode::Reduce), 1);
         assert_eq!(reduce_imm(&w), Some(0));
@@ -5028,10 +5407,7 @@ mod tests {
              { let o = Tensor<f32>([2, 4]); o[0] = v * (dot(q[0], k[0]) * scale); return o; }",
         );
         let mut w = worker();
-        assert!(
-            lower_function_to_hir(&f, &mut w),
-            "the FA write path should lower"
-        );
+        lower_function_to_hir(&f, &mut w).expect("the FA write path should lower");
         assert_eq!(count(&w, Opcode::TensorAlloc), 1, "output buffer");
         assert_eq!(count(&w, Opcode::TensorIndex), 3, "q[0], k[0], o[0]");
         assert_eq!(count(&w, Opcode::Reduce), 1, "the dot");
@@ -5049,10 +5425,7 @@ mod tests {
              { return dot(q[0], k[0]) * scale; }",
         );
         let mut w = worker();
-        assert!(
-            lower_function_to_hir(&f, &mut w),
-            "the FA score expression should lower"
-        );
+        lower_function_to_hir(&f, &mut w).expect("the FA score expression should lower");
         assert_eq!(count(&w, Opcode::TensorIndex), 2, "q[0] and k[0]");
         assert_eq!(count(&w, Opcode::Reduce), 1, "the dot");
         assert_eq!(count(&w, Opcode::Mul), 1, "the scale multiply");
@@ -5078,10 +5451,7 @@ mod tests {
         let f =
             parse_fn("fn f() -> Tensor<f32, [2, 4]> { let o = Tensor<f32>([2, 4]); return o; }");
         let mut w = worker();
-        assert!(
-            lower_function_to_hir(&f, &mut w),
-            "tensor alloc should lower"
-        );
+        lower_function_to_hir(&f, &mut w).expect("tensor alloc should lower");
         assert_eq!(count(&w, Opcode::TensorAlloc), 1);
         assert_eq!(
             op_imm(&w, Opcode::TensorAlloc),
@@ -5103,7 +5473,7 @@ mod tests {
              { let o = Tensor<f32>([2, 4]); o[0] = v; return o; }",
         );
         let mut w = worker();
-        assert!(lower_function_to_hir(&f, &mut w), "row store should lower");
+        lower_function_to_hir(&f, &mut w).expect("row store should lower");
         assert_eq!(count(&w, Opcode::TensorAlloc), 1, "the destination buffer");
         assert_eq!(count(&w, Opcode::TensorIndex), 1, "the row place o[0]");
         assert_eq!(count(&w, Opcode::TensorStore), 1, "the store into it");
@@ -5116,10 +5486,7 @@ mod tests {
         // element *place* (imm 1), and one `TensorStore` writes the scalar through it.
         let f = parse_fn("fn f() -> f32 { let q = Tensor<f32>([4]); q[0] = 1.0; return sum(q); }");
         let mut w = worker();
-        assert!(
-            lower_function_to_hir(&f, &mut w),
-            "scalar-element store should lower"
-        );
+        lower_function_to_hir(&f, &mut w).expect("scalar-element store should lower");
         assert_eq!(count(&w, Opcode::TensorStore), 1);
         let places = w
             .local_hir_stream
@@ -5136,10 +5503,7 @@ mod tests {
         // place (imm 1); exactly one index carries the place flag.
         let f = parse_fn("fn f(q: Tensor<f32, [2, 4]>) -> f32 { q[0][0] = 1.0; return q[1][1]; }");
         let mut w = worker();
-        assert!(
-            lower_function_to_hir(&f, &mut w),
-            "nested scalar-element store should lower"
-        );
+        lower_function_to_hir(&f, &mut w).expect("nested scalar-element store should lower");
         assert_eq!(count(&w, Opcode::TensorStore), 1);
         let places = w
             .local_hir_stream
@@ -5158,7 +5522,7 @@ mod tests {
             "fn f(a: Tensor<f32, [2, 4]>) -> Tensor<f32, [2, 4]> { return transfer(a, Memory::NPU_HBM); }",
         );
         let mut w = worker();
-        assert!(lower_function_to_hir(&f, &mut w), "transfer should lower");
+        lower_function_to_hir(&f, &mut w).expect("transfer should lower");
         assert_eq!(count(&w, Opcode::Transfer), 1);
         assert_eq!(
             op_imm(&w, Opcode::Transfer),
@@ -5195,10 +5559,7 @@ mod tests {
         let f =
             parse_fn("fn f(a: i32) -> i32 { let mut s = 0; for i in 0..a { s += a; } return s; }");
         let mut w = worker();
-        assert!(
-            lower_function_to_hir(&f, &mut w),
-            "compound assign should lower"
-        );
+        lower_function_to_hir(&f, &mut w).expect("compound assign should lower");
         assert!(
             count(&w, Opcode::Add) >= 1,
             "the += combine (plus the loop step)"
@@ -5268,7 +5629,7 @@ mod tests {
             "fn c(a: i32) -> i32 { let mut x = a; if a < 0 { x = 0; } else { x = 1; } return x; }",
         );
         let mut w = worker();
-        assert!(lower_function_to_hir(&f, &mut w));
+        lower_function_to_hir(&f, &mut w).expect("lowers");
         assert_eq!(
             count(&w, Opcode::Alloca),
             1,
@@ -5292,7 +5653,7 @@ mod tests {
     fn if_without_else_targets_merge_directly() {
         let f = parse_fn("fn c(a: i32) -> i32 { let mut x = a; if a < 0 { x = 0; } return x; }");
         let mut w = worker();
-        assert!(lower_function_to_hir(&f, &mut w));
+        lower_function_to_hir(&f, &mut w).expect("lowers");
         assert_eq!(count(&w, Opcode::CondBr), 1);
         assert_eq!(
             count(&w, Opcode::Br),
@@ -5307,7 +5668,7 @@ mod tests {
     fn early_return_in_branch_emits_no_trailing_branch() {
         let f = parse_fn("fn c(a: i32) -> i32 { if a < 0 { return 0; } return a; }");
         let mut w = worker();
-        assert!(lower_function_to_hir(&f, &mut w));
+        lower_function_to_hir(&f, &mut w).expect("lowers");
         // The then-block terminates with Ret, so no `Br` to the merge is appended.
         assert_eq!(
             count(&w, Opcode::Br),
@@ -5324,7 +5685,7 @@ mod tests {
         // No control flow -> SSA mode: reassignment is a rebind, no memory ops or blocks.
         let f = parse_fn("fn c(a: i32) -> i32 { let mut x = a; x = a + a; return x; }");
         let mut w = worker();
-        assert!(lower_function_to_hir(&f, &mut w));
+        lower_function_to_hir(&f, &mut w).expect("lowers");
         assert_eq!(count(&w, Opcode::Alloca), 0);
         assert_eq!(count(&w, Opcode::Store), 0);
         assert_eq!(count(&w, Opcode::BlockStart), 0);
@@ -5345,10 +5706,7 @@ mod tests {
         // exist, gone.
         let f = parse_fn("fn f() -> i32 { let x : i32 = 5; let r : &i32 = &x; return *r; }");
         let mut w = worker();
-        assert!(
-            lower_function_to_hir(&f, &mut w),
-            "non-escaping scalar borrow+deref lowers"
-        );
+        lower_function_to_hir(&f, &mut w).expect("non-escaping scalar borrow+deref lowers");
         assert_eq!(
             count(&w, Opcode::Alloca),
             0,
@@ -5534,7 +5892,7 @@ mod tests {
         // slot), so the pre-pass does not regress straight-line functions into memory traffic. (#230)
         let f = parse_fn("fn g() -> i32 { let x : i32 = 5; return x; }");
         let mut w = worker();
-        assert!(lower_function_to_hir(&f, &mut w));
+        lower_function_to_hir(&f, &mut w).expect("lowers");
         assert_eq!(
             count(&w, Opcode::Alloca),
             0,
@@ -5549,7 +5907,7 @@ mod tests {
         // no `Alloca`. (design doc §3.2 NOTE: only *locals* are demoted.) (#230)
         let f = parse_fn("fn load(a : &i32) -> i32 { return *a; }");
         let mut w = worker();
-        assert!(lower_function_to_hir(&f, &mut w), "reference param derefs");
+        lower_function_to_hir(&f, &mut w).expect("reference param derefs");
         assert_eq!(
             count(&w, Opcode::Alloca),
             0,
@@ -5590,7 +5948,7 @@ mod tests {
             "fn sum(n: i32) -> i32 { let mut s = 0; for i in 0..n { s = s + i; } return s; }",
         );
         let mut w = worker();
-        assert!(lower_function_to_hir(&f, &mut w));
+        lower_function_to_hir(&f, &mut w).expect("lowers");
         assert_eq!(count(&w, Opcode::CondBr), 1, "loop condition test");
         assert_eq!(
             count(&w, Opcode::BlockStart),
@@ -5613,7 +5971,7 @@ mod tests {
             "fn f(a: i32) -> i32 { let mut x = a; loop { x = x - 1; if x < 0 { break; } } return x; }",
         );
         let mut w = worker();
-        assert!(lower_function_to_hir(&f, &mut w));
+        lower_function_to_hir(&f, &mut w).expect("lowers");
         assert!(count(&w, Opcode::CondBr) >= 1, "the if condition");
         // loop header/exit + entry + the if's then/merge blocks.
         assert!(count(&w, Opcode::BlockStart) >= 4);
@@ -5626,7 +5984,7 @@ mod tests {
             "fn f(n: i32) -> i32 { let mut s = 0; for i in 0..n { if i < 2 { continue; } s = s + i; } return s; }",
         );
         let mut w = worker();
-        assert!(lower_function_to_hir(&f, &mut w));
+        lower_function_to_hir(&f, &mut w).expect("lowers");
         verify_hir_stream(&w);
     }
 
@@ -5635,7 +5993,7 @@ mod tests {
         // A non-range iterable (here a call) is outside the supported subset -> atomic abort.
         let f = parse_fn("fn f(a: i32) -> i32 { for i in gen() { } return a; }");
         let mut w = worker();
-        assert!(!lower_function_to_hir(&f, &mut w));
+        assert!(lower_function_to_hir(&f, &mut w).is_err());
         assert!(w.local_hir_stream.is_empty());
     }
 
@@ -5643,7 +6001,7 @@ mod tests {
     fn break_outside_loop_aborts() {
         let f = parse_fn("fn f() -> i32 { break; return 0; }");
         let mut w = worker();
-        assert!(!lower_function_to_hir(&f, &mut w));
+        assert!(lower_function_to_hir(&f, &mut w).is_err());
         assert!(w.local_hir_stream.is_empty());
     }
 
@@ -6359,7 +6717,7 @@ mod tests {
             "fn k(a: i32) -> i32 { spawn on (Topology::GPU) { let x = a + 1; } return a; }",
         );
         let mut w = worker();
-        assert!(lower_function_to_hir(&f, &mut w));
+        lower_function_to_hir(&f, &mut w).expect("lowers");
         assert_eq!(count(&w, Opcode::Spawn), 1);
         assert_eq!(count(&w, Opcode::SpawnEnd), 1);
         // The Spawn carries the topology dispatch id, and the body (`a + 1`) lowered between the
@@ -6385,7 +6743,7 @@ mod tests {
         // A spawn that yields a value (no trailing `;`) is deferred -> atomic abort.
         let f = parse_fn("fn k(a: i32) -> i32 { spawn on (Topology::GPU) { a + 1 } }");
         let mut w = worker();
-        assert!(!lower_function_to_hir(&f, &mut w));
+        assert!(lower_function_to_hir(&f, &mut w).is_err());
         assert!(w.local_hir_stream.is_empty());
     }
 
@@ -6393,7 +6751,7 @@ mod tests {
     fn lowers_params_arithmetic_and_return() {
         let f = parse_fn("fn add(a: i32, b: i32) -> i32 { return a + b; }");
         let mut w = worker();
-        assert!(lower_function_to_hir(&f, &mut w));
+        lower_function_to_hir(&f, &mut w).expect("lowers");
 
         // Load a, Load b, Add(a,b), Ret(add).
         assert_eq!(
@@ -6420,7 +6778,7 @@ mod tests {
         // y = x * x; return y + x  ->  Load x, Mul(0,0), (let y=1), Add(1,0), Ret(2)
         let f = parse_fn("fn sq(x: i32) -> i32 { let y = x * x; return y + x; }");
         let mut w = worker();
-        assert!(lower_function_to_hir(&f, &mut w));
+        lower_function_to_hir(&f, &mut w).expect("lowers");
         assert_eq!(
             opcodes(&w),
             vec![Opcode::Load, Opcode::Mul, Opcode::Add, Opcode::Ret]
@@ -6448,7 +6806,7 @@ mod tests {
         // carries it directly.
         let f = parse_fn("fn seven() -> i64 { return 7; }");
         let mut w = worker();
-        assert!(lower_function_to_hir(&f, &mut w));
+        lower_function_to_hir(&f, &mut w).expect("lowers");
         assert_eq!(opcodes(&w), vec![Opcode::Const, Opcode::Ret]);
         assert_eq!(
             w.local_hir_stream[0].imm, 7,
@@ -6461,7 +6819,7 @@ mod tests {
     fn lowers_float_literal_as_bit_pattern() {
         let f = parse_fn("fn half() -> f64 { return 0.5; }");
         let mut w = worker();
-        assert!(lower_function_to_hir(&f, &mut w));
+        lower_function_to_hir(&f, &mut w).expect("lowers");
         assert_eq!(w.local_hir_stream[0].imm, 0.5f64.to_bits());
     }
 
@@ -6469,7 +6827,7 @@ mod tests {
     fn lowers_comparison_to_bool() {
         let f = parse_fn("fn lt(a: i32, b: i32) -> bool { return a < b; }");
         let mut w = worker();
-        assert!(lower_function_to_hir(&f, &mut w));
+        lower_function_to_hir(&f, &mut w).expect("lowers");
         assert_eq!(
             opcodes(&w),
             vec![Opcode::Load, Opcode::Load, Opcode::Cmp, Opcode::Ret]
@@ -6489,7 +6847,7 @@ mod tests {
     fn lowers_scalar_cast_with_target_type() {
         let f = parse_fn("fn widen(a: i32) -> i64 { return a as i64; }");
         let mut w = worker();
-        assert!(lower_function_to_hir(&f, &mut w));
+        lower_function_to_hir(&f, &mut w).expect("lowers");
         assert_eq!(opcodes(&w), vec![Opcode::Load, Opcode::Cast, Opcode::Ret]);
         let cast = w.local_hir_stream[1];
         assert_eq!(cast.operand1.0, 0, "cast reads the source");
@@ -6505,7 +6863,7 @@ mod tests {
     fn lowers_unary_negation() {
         let f = parse_fn("fn neg(a: i32) -> i32 { return -a; }");
         let mut w = worker();
-        assert!(lower_function_to_hir(&f, &mut w));
+        lower_function_to_hir(&f, &mut w).expect("lowers");
         assert_eq!(opcodes(&w), vec![Opcode::Load, Opcode::Neg, Opcode::Ret]);
         assert_eq!(w.local_hir_stream[1].operand1.0, 0);
         verify_hir_stream(&w);
@@ -6516,7 +6874,7 @@ mod tests {
         // A call is outside the supported subset -> abort, worker untouched.
         let f = parse_fn("fn f(a: i32) -> i32 { return g(a); }");
         let mut w = worker();
-        assert!(!lower_function_to_hir(&f, &mut w));
+        assert!(lower_function_to_hir(&f, &mut w).is_err());
         assert!(w.local_hir_stream.is_empty(), "no partial stream on abort");
         assert!(w.local_type_stream.is_empty(), "no partial types on abort");
     }
@@ -6525,7 +6883,7 @@ mod tests {
     fn aborts_on_non_scalar_parameter() {
         let f = parse_fn("fn f(s: Widget) -> i32 { return 0; }");
         let mut w = worker();
-        assert!(!lower_function_to_hir(&f, &mut w));
+        assert!(lower_function_to_hir(&f, &mut w).is_err());
         assert!(w.local_hir_stream.is_empty());
     }
 
@@ -6536,10 +6894,7 @@ mod tests {
         // `return unsafe { sqrtf(self) }` lower through the flat path (#217).
         let f = parse_fn("fn sq(a: f32) -> f32 { return unsafe { a * a }; }");
         let mut w = worker();
-        assert!(
-            lower_function_to_hir(&f, &mut w),
-            "unsafe-block body lowers"
-        );
+        lower_function_to_hir(&f, &mut w).expect("unsafe-block body lowers");
         assert!(w.local_hir_stream.iter().any(|i| i.opcode == Opcode::Mul));
         assert_eq!(w.local_hir_stream.last().unwrap().opcode, Opcode::Ret);
         verify_hir_stream(&w);

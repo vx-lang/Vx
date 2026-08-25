@@ -2794,7 +2794,7 @@ mod tests {
     fn emit_and_verify(src: &str) -> String {
         let f = parse_fn(src);
         let mut w = LocalWorkerState::new(Arc::new(GlobalSession::new(1)));
-        assert!(lower_function_to_hir(&f, &mut w), "function lowers");
+        assert!(lower_function_to_hir(&f, &mut w).is_ok(), "function lowers");
         let mlir = emit_function_mlir(
             &f,
             &w.local_hir_stream,
@@ -2853,7 +2853,7 @@ mod tests {
         let mut lowered = Vec::new();
         for f in &mods[0].functions {
             let mut w = LocalWorkerState::new(session.clone());
-            assert!(lower_function_to_hir(f, &mut w), "function lowers");
+            assert!(lower_function_to_hir(f, &mut w).is_ok(), "function lowers");
             lowered.push(w);
         }
         let funcs: Vec<(&Function, &[HirInstruction], &[TypeId])> = mods[0]

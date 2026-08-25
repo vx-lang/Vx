@@ -1132,7 +1132,16 @@ impl CompilerDriver {
                 continue; // an extern or a non-function name use -> not lowered here
             };
             let mut worker = LocalWorkerState::new(session.clone());
-            if !crate::hir::flatten::lower_function_to_hir(f, &mut worker) {
+            if let Err(why) = crate::hir::flatten::lower_function_to_hir(f, &mut worker) {
+                // The reason is printed unconditionally, not behind VX_FLAT_DBG: "which construct
+                // is the flat path missing" is the number that steers the backend work, and a
+                // number nobody can read without setting an environment variable is not one.
+                eprintln!(
+                    "[flat-codegen] declined {}: {} [{}]",
+                    f.name,
+                    why,
+                    why.detail_key()
+                );
                 if std::env::var("VX_FLAT_DBG").is_ok() {
                     eprintln!("[flat-dbg] HIR lowering declined: {}", f.name);
                 }

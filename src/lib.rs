@@ -17,6 +17,7 @@ pub mod borrow;
 pub mod bytecode;
 pub mod codegen;
 pub mod config;
+pub mod decline;
 pub mod diagnostic;
 pub mod diagnostics_json;
 pub mod driver;

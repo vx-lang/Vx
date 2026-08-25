@@ -175,7 +175,7 @@ fn flat_llvm(src: &str) -> Option<String> {
     let mut lowered: Vec<LocalWorkerState> = Vec::new();
     for f in &mods[0].functions {
         let mut worker = LocalWorkerState::new(session.clone());
-        if !lower_function_to_hir(f, &mut worker) {
+        if lower_function_to_hir(f, &mut worker).is_err() {
             return None;
         }
         lowered.push(worker);
@@ -267,7 +267,7 @@ fn flat_module_mlir(src: &str) -> Option<String> {
     let mut lowered: Vec<LocalWorkerState> = Vec::new();
     for f in &mods[0].functions {
         let mut worker = LocalWorkerState::new(session.clone());
-        if !lower_function_to_hir(f, &mut worker) {
+        if lower_function_to_hir(f, &mut worker).is_err() {
             return None;
         }
         lowered.push(worker);
@@ -1236,10 +1236,7 @@ fn program_links_a_function_body_from_a_vxlib_artifact() {
     let mut lowered = Vec::new();
     for f in &mods[0].functions {
         let mut worker = LocalWorkerState::new(session.clone());
-        assert!(
-            lower_function_to_hir(f, &mut worker),
-            "app fn lowers to flat HIR"
-        );
+        lower_function_to_hir(f, &mut worker).expect("app fn lowers to flat HIR");
         lowered.push(worker);
     }
 

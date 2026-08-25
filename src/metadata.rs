@@ -1274,7 +1274,7 @@ mod tests {
         let mut worker =
             crate::session::LocalWorkerState::new(Arc::new(crate::session::GlobalSession::new(1)));
         assert!(
-            crate::hir::flatten::lower_function_to_hir(func, &mut worker),
+            crate::hir::flatten::lower_function_to_hir(func, &mut worker).is_ok(),
             "add lowers to flat HIR"
         );
         assert!(!worker.local_hir_stream.is_empty());
