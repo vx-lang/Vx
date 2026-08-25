@@ -1,0 +1,39 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// A transfer moves one tile, so a lowering's two parameters describe that tile
+// from both ends. Declaring different shapes for them leaves the raw:: primitives
+// no single extent to read, so the edge is refused rather than emitted.
+// CHECK: E6023
+// CHECK: declares a [2, 2] source and a [4, 4] destination
+Memory CPU_DRAM {}
+Memory L2 {
+  within: Memory::CPU_DRAM, capacity: 40 MiB, bandwidth: 3 TB/s, managed: cached
+}
+Memory SMEM {
+  within: Memory::L2, capacity: 228 KiB, bandwidth: 128 B/cyc,
+  granule: 1 KiB, managed: explicit, scope: sm
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::L2,
+  visible: [Memory::L2, Memory::SMEM],
+  transfer Memory::CPU_DRAM -> Memory::L2 : 10 GB/s,
+  transfer Memory::L2 -> Memory::SMEM
+}
+impl Transfer<Memory::L2, Memory::SMEM> for Topology::Dev {
+  fn move_tile(src: &Tensor<f32, [2, 2]>, dst: &mut Tensor<f32, [4, 4]>) -> i32 {
+    for i in 0..raw::extent(src) {
+      raw::store(dst, i, raw::load(src, i));
+    }
+    raw::barrier();
+    return 0;
+  }
+}
+fn main() -> i32 {
+  let mut a = Tensor<f32>([ 2, 2 ]);
+  a[0][0] = 1.0;
+  let ad = transfer(a, Memory::L2);
+  spawn on(Topology::Dev) {
+    let tile = transfer(ad, Memory::SMEM);
+  }
+  return 0;
+}

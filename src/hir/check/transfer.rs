@@ -738,20 +738,25 @@ impl<'a> TypeChecker<'a> {
         // [8,8] destination for a [2,2] site emitted 64 stores into a
         // 4-element buffer -- admitted, with `written_bytes: 256`
         // published beside `bytes: 16`.
-        let declared = Self::static_shape(decl_src)
-            .filter(|d| Some(d) == Self::static_shape(decl_dst).as_ref());
-        if Self::static_shape(decl_src) != Self::static_shape(decl_dst) {
+        // Both are statically shaped: that is one of the conditions that made this lowering
+        // emittable in the first place.
+        let src_shape = Self::static_shape(decl_src).expect("an emittable source tile has a shape");
+        let dst_shape =
+            Self::static_shape(decl_dst).expect("an emittable destination tile has a shape");
+        let declared = (src_shape == dst_shape).then(|| src_shape.clone());
+        if src_shape != dst_shape {
             self.errors.error_with_code(
-                    crate::diagnostic::DiagnosticCode::E6023,
-                    format!(
-                        "impl transfer {} -> {} declares a {:?} source and                                          a {:?} destination; a transfer moves a tile, so                                          both sides are the same shape",
-                        source_mem.name(),
-                        target_mem.name(),
-                        Self::static_shape(decl_src),
-                        Self::static_shape(decl_dst)
-                    ),
-                    Some(crate::diagnostic::SourceSpan::from_ast_span(&t.span)),
-                );
+                crate::diagnostic::DiagnosticCode::E6023,
+                format!(
+                    "impl transfer {} -> {} declares a {:?} source and a {:?} destination; a \
+                     transfer moves a tile, so both sides are the same shape",
+                    source_mem.name(),
+                    target_mem.name(),
+                    src_shape,
+                    dst_shape
+                ),
+                Some(crate::diagnostic::SourceSpan::from_ast_span(&t.span)),
+            );
         }
         // Element types too: edge selection does not look at them,
         // and a mismatch reaches MLIR as a bare verifier failure
