@@ -14,6 +14,7 @@ use crate::syntax::*;
 
 pub mod borrow_cx;
 pub mod check;
+pub mod decl_check;
 pub mod env;
 pub mod expr;
 pub mod flatten;
