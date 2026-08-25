@@ -398,7 +398,8 @@ impl<'a> TypeChecker<'a> {
                         )
                     })
                     .or_else(|| {
-                        self.generated_structs
+                        self.mono
+                            .generated_structs
                             .iter()
                             .find(|s| s.name == base_name)
                             .map(|s| {

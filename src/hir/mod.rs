@@ -14,6 +14,7 @@ use crate::syntax::*;
 
 pub mod borrow_cx;
 pub mod check;
+pub mod check_state;
 pub mod decl_check;
 pub mod env;
 pub mod expr;
@@ -559,7 +560,7 @@ fn f(a: Tensor<i32>) -> Pinned<Tensor<i32>, Topology::NPU[0]> {
             crate::session::GlobalSession::new(1),
         ));
         let mut checker = TypeChecker::new(&env, &mut worker);
-        assert!(!checker.verify_seams, "seam verification must default off");
+        assert!(!checker.seam.verify, "seam verification must default off");
         for func in &mut program.functions {
             checker.check_function(func);
         }

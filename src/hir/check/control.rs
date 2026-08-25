@@ -51,7 +51,7 @@ impl<'a> TypeChecker<'a> {
 
         if if_expr.is_comptime {
             let mut tmp_env = std::collections::HashMap::new();
-            for env in &self.eval_env {
+            for env in &self.consteval.env {
                 for (k, v) in env {
                     tmp_env.insert(k.clone(), v.clone());
                 }
@@ -267,8 +267,8 @@ impl<'a> TypeChecker<'a> {
                 let cloned_params = e.params.clone();
 
                 let closure_depth = self.scopes.len();
-                self.closure_depths.push(closure_depth);
-                self.closure_captures_stack.push(HashMap::new());
+                self.mono.closure_depths.push(closure_depth);
+                self.mono.closure_captures_stack.push(HashMap::new());
 
                 let old_ret = self.current_return_type.take();
                 self.current_return_type = Some(Type::Unknown);
@@ -290,8 +290,8 @@ impl<'a> TypeChecker<'a> {
                 self.pop_scope();
                 self.current_return_type = old_ret;
 
-                let captured_vars_map = self.closure_captures_stack.pop().unwrap_or_default();
-                self.closure_depths.pop();
+                let captured_vars_map = self.mono.closure_captures_stack.pop().unwrap_or_default();
+                self.mono.closure_depths.pop();
 
                 let mut captured_vars: Vec<(crate::symbol::Symbol, Type)> =
                     captured_vars_map.into_iter().collect();
@@ -313,7 +313,7 @@ impl<'a> TypeChecker<'a> {
                     fields: captured_vars.clone(),
                     doc_comment: None,
                 };
-                self.generated_structs.push(struct_decl);
+                self.mono.generated_structs.push(struct_decl);
 
                 // Create the Function for calling the closure
                 let mut env_params: Vec<(crate::symbol::Symbol, Type)> = vec![(
@@ -367,7 +367,7 @@ impl<'a> TypeChecker<'a> {
                     doc_comment: None,
                 };
 
-                self.monomorphized_functions.push((call_func, 0));
+                self.mono.functions.push((call_func, 0));
 
                 let mut fields = Vec::new();
                 for (cap_name, _) in &captured_vars {
@@ -389,7 +389,8 @@ impl<'a> TypeChecker<'a> {
                 // `ClosureK<Args.., Ret>` parameter (e.g. `.map`'s `Closure1<T, NewItem>`) needs
                 // them to bind the method's generics. Keyed by the generated struct name.
                 let param_tys: Vec<Type> = cloned_params.iter().map(|(_, ty)| ty.clone()).collect();
-                self.closure_signatures
+                self.mono
+                    .closure_signatures
                     .insert(struct_name.clone().into(), (param_tys, ret_ty));
 
                 Type::Struct(struct_name.into(), None)

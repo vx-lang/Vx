@@ -113,7 +113,7 @@ fn ast_llvm(src: &str) -> String {
     assert_eq!(checker.errors.error_count(), 0, "AST type-checks");
     // Append the monomorphs the checker collected (method-call rewrites like `x.sq()` -> `f32$sq`,
     // generic instances) so their bodies emit and the rewritten calls resolve — as the driver does.
-    for (f, _) in std::mem::take(&mut checker.monomorphized_functions) {
+    for (f, _) in std::mem::take(&mut checker.mono.functions) {
         program.functions.push(f);
     }
 
@@ -156,7 +156,7 @@ fn flat_llvm(src: &str) -> Option<String> {
         for f in &mut mods[0].functions {
             checker.check_function(f);
         }
-        checker.monomorphized_functions
+        checker.mono.functions
     };
     if !monos.is_empty() {
         // Append the monomorph bodies, then re-resolve + rebuild the registry so they land in

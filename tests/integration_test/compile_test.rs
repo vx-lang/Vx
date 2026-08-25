@@ -133,7 +133,7 @@ fn run_frontend_test(path: &Path, expect_pass: bool) -> Result<(), String> {
     let mut worker = vxc::session::LocalWorkerState::new(global_session.clone());
     let mut checker = TypeChecker::new(&env, &mut worker);
     // Opt-in directive: discharge per-seam boundary obligations (as `--verify-seams` does).
-    checker.verify_seams = source.contains("// VERIFY-SEAMS");
+    checker.seam.verify = source.contains("// VERIFY-SEAMS");
     checker.check_topology_coherence(&program.topologies);
     checker.check_memory_coherence();
     for f in &mut program.functions {
@@ -247,7 +247,7 @@ fn run_middle_end_test(path: &Path) -> Result<(), String> {
     // diagnostic and every lowering fail test passes vacuously -- the A2 review proved
     // it by planting a fully legal program with a bogus CHECK line, and it passed.
     for t in &mut program.transfer_impls {
-        checker.transfer_lowering_edge = Some((
+        checker.seam.lowering_edge = Some((
             t.from.clone(),
             t.to.clone(),
             t.topology.display_name().to_string(),
@@ -255,7 +255,7 @@ fn run_middle_end_test(path: &Path) -> Result<(), String> {
         for f in &mut t.methods {
             checker.check_function(f);
         }
-        checker.transfer_lowering_edge = None;
+        checker.seam.lowering_edge = None;
     }
     checker.check_transfer_impls();
     checker.check_transfer_impl_bodies(&program.transfer_impls);
@@ -275,19 +275,15 @@ fn run_middle_end_test(path: &Path) -> Result<(), String> {
     }
 
     // Structs generated during checking (e.g. a closure's `Closure_N` environment) must reach
-    // codegen, exactly as the driver does (`ast.structs.extend(checker.generated_structs)`).
+    // codegen, exactly as the driver does (`ast.structs.extend(checker.mono.generated_structs)`).
     // Without this the harness cannot lower any closure, unlike the real compiler.
-    let generated_structs = std::mem::take(&mut checker.generated_structs);
+    let generated_structs = std::mem::take(&mut checker.mono.generated_structs);
 
     let mut monomorphized_program = program;
     let mut orig_functions = monomorphized_program.functions;
     orig_functions.retain(|f| f.generics.is_empty());
 
-    let mut new_functions: Vec<_> = checker
-        .monomorphized_functions
-        .into_iter()
-        .map(|(f, _)| f)
-        .collect();
+    let mut new_functions: Vec<_> = checker.mono.functions.into_iter().map(|(f, _)| f).collect();
     new_functions.extend(orig_functions);
     monomorphized_program.functions = new_functions;
     monomorphized_program.structs.extend(generated_structs);
@@ -376,7 +372,7 @@ fn run_warning_test(path: &Path) -> Result<(), String> {
     let mut worker = vxc::session::LocalWorkerState::new(global_session.clone());
     let mut checker = TypeChecker::new(&env, &mut worker);
     // Opt-in directive: discharge per-seam boundary obligations (as `--verify-seams` does).
-    checker.verify_seams = source.contains("// VERIFY-SEAMS");
+    checker.seam.verify = source.contains("// VERIFY-SEAMS");
     checker.check_topology_coherence(&program.topologies);
     checker.check_memory_coherence();
     for f in &mut program.functions {
@@ -502,16 +498,12 @@ fn run_backend_test(path: &Path) -> Result<(), String> {
     let mut orig_functions = monomorphized_program.functions;
     orig_functions.retain(|f| f.generics.is_empty());
 
-    let mut new_functions: Vec<_> = checker
-        .monomorphized_functions
-        .into_iter()
-        .map(|(f, _)| f)
-        .collect();
+    let mut new_functions: Vec<_> = checker.mono.functions.into_iter().map(|(f, _)| f).collect();
     new_functions.extend(orig_functions);
     monomorphized_program.functions = new_functions;
     monomorphized_program
         .structs
-        .extend(checker.generated_structs);
+        .extend(checker.mono.generated_structs);
     let mut module_syntaxes = std::collections::HashMap::new();
     for mut p in program_arr {
         let before = p.functions.len();
@@ -1187,11 +1179,7 @@ fn run_backend_autodiff_test(path: &Path) -> Result<(), String> {
     let mut orig_functions = monomorphized_program.functions;
     orig_functions.retain(|f| f.generics.is_empty());
 
-    let mut new_functions: Vec<_> = checker
-        .monomorphized_functions
-        .into_iter()
-        .map(|(f, _)| f)
-        .collect();
+    let mut new_functions: Vec<_> = checker.mono.functions.into_iter().map(|(f, _)| f).collect();
     new_functions.extend(orig_functions);
     monomorphized_program.functions = new_functions;
 

@@ -1111,12 +1111,12 @@ fn check_one_function(
     let mut checker = TypeChecker::new(global_env, &mut worker);
     // Inside an `impl transfer` body the eight `raw::` primitives resolve; everywhere
     // else the edge is `None` and they do not (Vx#353 A2).
-    checker.transfer_lowering_edge = lowering_edge;
+    checker.seam.lowering_edge = lowering_edge;
     checker.check_function(func);
 
     let errors = checker.errors;
-    let monos = checker.monomorphized_functions;
-    let gen_structs = checker.generated_structs;
+    let monos = checker.mono.functions;
+    let gen_structs = checker.mono.generated_structs;
 
     // Lower this function's type references to the flat GID stream (Phase 3).
     emit_function_type_gids(func, &mut worker);

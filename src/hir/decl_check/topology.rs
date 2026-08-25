@@ -181,10 +181,10 @@ impl TypeChecker<'_> {
                 let transfer = Transfer::Relaxed {
                     published: vec!["payload".into()],
                 };
-                if self.seam_solver.is_none() {
-                    self.seam_solver = Some(crate::hir::seam::Solver::new());
+                if self.seam.solver.is_none() {
+                    self.seam.solver = Some(crate::hir::seam::Solver::new());
                 }
-                let solver = self.seam_solver.as_mut().unwrap();
+                let solver = self.seam.solver.as_mut().unwrap();
                 // `if let Ok(Reject)` used to be the whole of this: an Err -- including "no
                 // solver available" -- fell through the pattern and the edge was silently
                 // treated as if it had been proved coherent (Vx#374). An obligation that could

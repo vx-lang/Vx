@@ -96,7 +96,7 @@ impl<'a> TypeChecker<'a> {
         // inside one escapes every whole-body guarantee (barrier reachability, the async
         // walk). Refused at typing -- the only place that reliably sees closure bodies,
         // since they are lifted out before the whole-body scan runs.
-        if !self.closure_captures_stack.is_empty() {
+        if !self.mono.closure_captures_stack.is_empty() {
             self.errors.error_with_code(
                 DiagnosticCode::E6017,
                 format!(
@@ -109,7 +109,7 @@ impl<'a> TypeChecker<'a> {
         }
 
         // The floor property: outside an `impl Transfer` body the names do not resolve.
-        let Some((from, to, machine)) = self.transfer_lowering_edge.clone() else {
+        let Some((from, to, machine)) = self.seam.lowering_edge.clone() else {
             self.errors.error_with_code(
                 DiagnosticCode::E6017,
                 format!(
@@ -273,7 +273,7 @@ impl<'a> TypeChecker<'a> {
         // reproduced: the alias read an in-flight destination without a diagnostic.
         // Locals also have no place in the edge's space mapping (a stack array is in
         // neither `from` nor `to`).
-        if !self.transfer_lowering_params.contains(&id.name) {
+        if !self.seam.lowering_params.contains(&id.name) {
             self.errors.error_with_code(
                 DiagnosticCode::E6017,
                 format!(
@@ -1320,7 +1320,7 @@ impl<'a> TypeChecker<'a> {
     /// as a forged out-of-bounds proof. Overwritten in place rather than removed so
     /// the scope-exit truncation (`constraints.truncate(prev_len)`) keeps its meaning.
     pub(crate) fn neutralize_facts_mentioning(&mut self, name: &str) {
-        for c in self.constraints.iter_mut() {
+        for c in self.consteval.constraints.iter_mut() {
             if expr_mentions(c, name) {
                 *c = Expr::RelationalOp(RelationalOpExpr {
                     lhs: Box::new(Expr::Number(NumberExpr {

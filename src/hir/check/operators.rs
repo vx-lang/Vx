@@ -31,7 +31,7 @@ impl<'a> TypeChecker<'a> {
                 if let Some(func_type) = self.env.functions.get(&*call_method_name) {
                     found_func = Some(func_type.0.clone());
                 } else {
-                    for (func, _) in &self.monomorphized_functions {
+                    for (func, _) in &self.mono.functions {
                         if func.name.as_ref() == call_method_name {
                             let params = func.params.iter().map(|(_, t)| t.clone()).collect();
                             found_func =

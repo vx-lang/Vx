@@ -153,13 +153,14 @@ impl<'a> TypeChecker<'a> {
         self.current_assignment_target = None;
 
         let mut tmp_env = HashMap::new();
-        for env in &self.eval_env {
+        for env in &self.consteval.env {
             for (k, v) in env {
                 tmp_env.insert(k.clone(), v.clone());
             }
         }
         if let Some(val) = self.eval_expr(expr, &tmp_env) {
-            self.eval_env
+            self.consteval
+                .env
                 .last_mut()
                 .unwrap()
                 .insert(name.to_string().into(), val);
@@ -208,7 +209,7 @@ impl<'a> TypeChecker<'a> {
                 rhs: Box::new(self.fold_raw_extent(expr)),
                 span: Span::default(),
             });
-            self.constraints.push(eq_expr);
+            self.consteval.constraints.push(eq_expr);
         }
     }
 
@@ -281,7 +282,7 @@ impl<'a> TypeChecker<'a> {
         self.insert(iter.clone(), iter_ty); // Still assuming i64 for most things, but it works for our current test cases.
 
         // Prove invariants hold on entry, then assume them inside the loop
-        let prev_constraints_len = self.constraints.len();
+        let prev_constraints_len = self.consteval.constraints.len();
 
         // A range loop constrains its induction variable: `for i in a..b` gives
         // `a <= i && i < b` for the body. Recorded as prover facts so bounds obligations
@@ -306,20 +307,24 @@ impl<'a> TypeChecker<'a> {
                 // Only facts the prover can lower are recorded; an unlowerable bound
                 // (a call) would make every later proof in the function warn.
                 if crate::hir::check::raw::prover_expressible(&lo) {
-                    self.constraints.push(Expr::RelationalOp(RelationalOpExpr {
-                        lhs: Box::new(iter_expr.clone()),
-                        op: RelationalOp::Ge,
-                        rhs: Box::new(lo),
-                        span: Span::default(),
-                    }));
+                    self.consteval
+                        .constraints
+                        .push(Expr::RelationalOp(RelationalOpExpr {
+                            lhs: Box::new(iter_expr.clone()),
+                            op: RelationalOp::Ge,
+                            rhs: Box::new(lo),
+                            span: Span::default(),
+                        }));
                 }
                 if crate::hir::check::raw::prover_expressible(&hi) {
-                    self.constraints.push(Expr::RelationalOp(RelationalOpExpr {
-                        lhs: Box::new(iter_expr),
-                        op: RelationalOp::Lt,
-                        rhs: Box::new(hi),
-                        span: Span::default(),
-                    }));
+                    self.consteval
+                        .constraints
+                        .push(Expr::RelationalOp(RelationalOpExpr {
+                            lhs: Box::new(iter_expr),
+                            op: RelationalOp::Lt,
+                            rhs: Box::new(hi),
+                            span: Span::default(),
+                        }));
                 }
             }
         }
@@ -328,7 +333,7 @@ impl<'a> TypeChecker<'a> {
                 self.errors
                     .push("Loop invariant cannot be proven on entry".to_string());
             }
-            self.constraints.push(inv.clone());
+            self.consteval.constraints.push(inv.clone());
         }
 
         self.check_block(body, return_type);
@@ -341,7 +346,7 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
-        self.constraints.truncate(prev_constraints_len);
+        self.consteval.constraints.truncate(prev_constraints_len);
         self.pop_scope();
     }
 
@@ -355,13 +360,13 @@ impl<'a> TypeChecker<'a> {
         } = lp;
         self.push_scope();
 
-        let prev_constraints_len = self.constraints.len();
+        let prev_constraints_len = self.consteval.constraints.len();
         for inv in invariants.iter() {
             if !self.prove_expr(inv) {
                 self.errors
                     .push("Loop invariant cannot be proven on entry".to_string());
             }
-            self.constraints.push(inv.clone());
+            self.consteval.constraints.push(inv.clone());
         }
 
         self.check_block(body, return_type);
@@ -373,7 +378,7 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
-        self.constraints.truncate(prev_constraints_len);
+        self.consteval.constraints.truncate(prev_constraints_len);
         self.pop_scope();
     }
 
@@ -402,14 +407,14 @@ impl<'a> TypeChecker<'a> {
 
         if let Expr::Identifier(IdentifierExpr { name, span: _ }) = lhs {
             let mut tmp_env = HashMap::new();
-            for env in &self.eval_env {
+            for env in &self.consteval.env {
                 for (k, v) in env {
                     tmp_env.insert(k.clone(), v.clone());
                 }
             }
             if let Some(val) = self.eval_expr(rhs, &tmp_env) {
                 // find the scope that has the variable
-                for env in self.eval_env.iter_mut().rev() {
+                for env in self.consteval.env.iter_mut().rev() {
                     if env.contains_key(name.as_ref()) {
                         env.insert(name.to_string().into(), val);
                         break;
@@ -477,7 +482,7 @@ impl<'a> TypeChecker<'a> {
             rhs: Box::new(expr.clone()),
             span: *span,
         });
-        self.return_constraints.push(return_eq);
+        self.consteval.return_constraints.push(return_eq);
     }
 
     /// Check an `assert`: require a boolean condition, evaluate it at comptime when possible, and
@@ -492,7 +497,7 @@ impl<'a> TypeChecker<'a> {
 
         let is_verified = matches!(return_type, Type::Verified(_));
         let mut tmp_env = HashMap::new();
-        for env in &self.eval_env {
+        for env in &self.consteval.env {
             for (k, v) in env {
                 tmp_env.insert(k.clone(), v.clone());
             }
@@ -524,13 +529,13 @@ impl<'a> TypeChecker<'a> {
         } else {
             // It's a standard dynamic assert, add it to our mathematical constraints
             // so we can prove future Verified<T> return conditions!
-            self.constraints.push(*expr.clone());
+            self.consteval.constraints.push(*expr.clone());
         }
     }
 
     pub(crate) fn prove_expr(&mut self, expr: &Expr) -> bool {
         let mut prover = hir::prover::SmtProver::new();
-        for constraint in &self.constraints {
+        for constraint in &self.consteval.constraints {
             if let Err(e) = prover.add_constraint(constraint) {
                 // If we can't lower a constraint, we log a warning
                 self.errors

@@ -633,7 +633,7 @@ impl CompilerDriver {
 
         let mut worker = LocalWorkerState::new(global_session.clone());
         let mut checker = TypeChecker::new(&env, &mut worker);
-        checker.verify_seams = self.options.verify_seams;
+        checker.seam.verify = self.options.verify_seams;
 
         // Everything that is about the program as a whole rather than one function, before any
         // body is checked. Shared with the parallel pipeline so the two frontends cannot drift.
@@ -654,7 +654,7 @@ impl CompilerDriver {
         // The edge is set around each lowering's bodies so the eight `raw::` primitives
         // resolve inside them and nowhere else (Vx#353 A2).
         for t in &mut ast.transfer_impls {
-            checker.transfer_lowering_edge = Some((
+            checker.seam.lowering_edge = Some((
                 t.from.clone(),
                 t.to.clone(),
                 t.topology.display_name().to_string(),
@@ -662,7 +662,7 @@ impl CompilerDriver {
             for f in &mut t.methods {
                 checker.check_function(f);
             }
-            checker.transfer_lowering_edge = None;
+            checker.seam.lowering_edge = None;
         }
         // The per-body contract obligations that need the whole body, not one call site:
         // barrier placement, async-copy discipline, the trailing synchronization grade,
@@ -678,7 +678,7 @@ impl CompilerDriver {
         // fails every A2 check compiled clean before this loop.
         for p in other_asts.values_mut() {
             for t in &mut p.transfer_impls {
-                checker.transfer_lowering_edge = Some((
+                checker.seam.lowering_edge = Some((
                     t.from.clone(),
                     t.to.clone(),
                     t.topology.display_name().to_string(),
@@ -686,7 +686,7 @@ impl CompilerDriver {
                 for f in &mut t.methods {
                     checker.check_function(f);
                 }
-                checker.transfer_lowering_edge = None;
+                checker.seam.lowering_edge = None;
             }
         }
         for p in other_asts.values() {
@@ -726,9 +726,9 @@ impl CompilerDriver {
         if let Some(dest) = &self.options.diagnostics_json {
             let record = crate::diagnostics_json::render(
                 &checker.errors,
-                &checker.staging_routes,
-                &checker.resident_sets,
-                &checker.spawn_regions,
+                &checker.traffic.staging_routes,
+                &checker.traffic.resident_sets,
+                &checker.traffic.spawn_regions,
                 filename,
                 self.options
                     .machine
@@ -759,14 +759,14 @@ impl CompilerDriver {
         // Eval metric M1: per-seam proof cost discharged during this compile. The
         // one-time solver startup is reported separately from the marginal per-seam
         // solving time (the persistent solver is spawned once and reused).
-        if checker.seam_checks > 0 {
+        if checker.seam.checks > 0 {
             eprintln!(
                 "[seam] {} obligation(s): solver init {:.3} ms (once) + {:.3} ms solving \
                  total = {:.4} ms/seam marginal",
-                checker.seam_checks,
-                checker.solver_init_time.as_secs_f64() * 1e3,
-                checker.seam_check_time.as_secs_f64() * 1e3,
-                checker.seam_check_time.as_secs_f64() * 1e3 / checker.seam_checks as f64,
+                checker.seam.checks,
+                checker.seam.init_time.as_secs_f64() * 1e3,
+                checker.seam.check_time.as_secs_f64() * 1e3,
+                checker.seam.check_time.as_secs_f64() * 1e3 / checker.seam.checks as f64,
             );
         }
 
@@ -786,14 +786,11 @@ impl CompilerDriver {
         let mut orig_functions = ast.functions.clone();
         orig_functions.retain(|f| f.generics.is_empty());
 
-        let mut new_functions: Vec<_> = checker
-            .monomorphized_functions
-            .into_iter()
-            .map(|(f, _)| f)
-            .collect();
+        let mut new_functions: Vec<_> =
+            checker.mono.functions.into_iter().map(|(f, _)| f).collect();
         new_functions.extend(orig_functions);
         ast.functions = new_functions;
-        ast.structs.extend(checker.generated_structs);
+        ast.structs.extend(checker.mono.generated_structs);
 
         Ok(())
     }

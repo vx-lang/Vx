@@ -134,7 +134,7 @@ impl<'a> TypeChecker<'a> {
     /// coarser visibility one when the producer's payload is known at compile time.
     pub(crate) fn const_value_of(&self, name: &str) -> Option<u64> {
         let sym = crate::symbol::Symbol::from(name);
-        for env in self.eval_env.iter().rev() {
+        for env in self.consteval.env.iter().rev() {
             if let Some(crate::hir::env::Value::Number(n)) = env.get(&sym) {
                 // A non-negative integer the value field (seam::VAL_BITS = 64) can pin. The
                 // source is an f64, so cap at 2^53 where every integer is still exact rather
@@ -228,11 +228,12 @@ impl<'a> TypeChecker<'a> {
         let key = match &self.current_assignment_target {
             Some(name) => name.clone(),
             None => {
-                self.placement_site += 1;
-                format!("@site{}", self.placement_site)
+                self.traffic.placement_site += 1;
+                format!("@site{}", self.traffic.placement_site)
             }
         };
-        self.memory_placements
+        self.traffic
+            .memory_placements
             .entry(space.clone())
             .or_default()
             .insert(key, rounded);
@@ -245,8 +246,8 @@ impl<'a> TypeChecker<'a> {
     /// `overcommit` downgrades the error (E6010) to a warning (W1028). Clears the per-function
     /// placement map. Only fires when >1 tile shares a space (a lone tile is E6009's job).
     pub(crate) fn check_cumulative_capacity(&mut self) {
-        let placements = std::mem::take(&mut self.memory_placements);
-        self.placement_site = 0;
+        let placements = std::mem::take(&mut self.traffic.memory_placements);
+        self.traffic.placement_site = 0;
         let h = crate::hir::memory::MemoryHierarchy::build(self.env.memories.values().copied());
         // (space, total, cap, tile_count, overcommit, granule)
         let mut violations: Vec<(MemorySpace, u64, u64, usize, bool, Option<u64>)> = Vec::new();
@@ -277,7 +278,7 @@ impl<'a> TypeChecker<'a> {
             // capacity diagnostic, so without this its resident set would be absent from the JSON
             // record -- and the resident total is what a downstream consumer needs to compute the
             // utilization an engine must be given (#285). A verdict alone does not carry it.
-            self.resident_sets.push(crate::report::ResidentSet {
+            self.traffic.resident_sets.push(crate::report::ResidentSet {
                 space: space.clone(),
                 total_bytes: total,
                 capacity_bytes: cap,
@@ -420,12 +421,12 @@ impl<'a> TypeChecker<'a> {
 
         // Lazily spawn the persistent solver on the first seam (one-time cost), then
         // reuse it for every seam so the per-seam timing is solving, not process startup.
-        if self.seam_solver.is_none() {
+        if self.seam.solver.is_none() {
             let init = std::time::Instant::now();
-            self.seam_solver = Some(Solver::new());
-            self.solver_init_time += init.elapsed();
+            self.seam.solver = Some(Solver::new());
+            self.seam.init_time += init.elapsed();
         }
-        let solver = self.seam_solver.as_mut().unwrap();
+        let solver = self.seam.solver.as_mut().unwrap();
 
         let start = std::time::Instant::now();
         // A buffer with a statically-known value gets the stronger value contract (pin
@@ -434,8 +435,8 @@ impl<'a> TypeChecker<'a> {
             Some(v) => solver.check_seam_value(&reached, &transfer, buffer, v),
             None => solver.check_seam_buffers(&reached, &transfer, &consumed),
         };
-        self.seam_check_time += start.elapsed();
-        self.seam_checks += 1;
+        self.seam.check_time += start.elapsed();
+        self.seam.checks += 1;
 
         match verdict {
             Ok(Verdict::Accept) => {}
@@ -489,7 +490,7 @@ impl<'a> TypeChecker<'a> {
 
         // Whether this transfer is a relaxed escape hatch (set by the caller, e.g. the
         // `to_device_relaxed` method arm). Consumed here so it does not leak to siblings.
-        let relaxed = std::mem::take(&mut self.pending_transfer_relaxed);
+        let relaxed = std::mem::take(&mut self.seam.pending_relaxed);
 
         if let Expr::Transfer(t) = expr {
             let prev = self.allow_cross_topology;
@@ -1056,19 +1057,22 @@ impl<'a> TypeChecker<'a> {
                             }
                         }
                     };
-                    self.staging_routes.push(crate::report::StagingRoute {
-                        path: path.clone(),
-                        traffic,
-                        traffic_absent_reason,
-                        edge_costs: vec![edge],
-                        total_cost: _cost,
-                        bytes: moved_bytes,
-                        cost_source,
-                        derived_cost,
-                        derived_unit,
-                        // Only a containment route composes anything -- a link rate is one leg.
-                        // Read from the destination, which is where the fill mechanism lives.
-                        composition: (cost_source == Some(crate::report::CostSource::Containment))
+                    self.traffic
+                        .staging_routes
+                        .push(crate::report::StagingRoute {
+                            path: path.clone(),
+                            traffic,
+                            traffic_absent_reason,
+                            edge_costs: vec![edge],
+                            total_cost: _cost,
+                            bytes: moved_bytes,
+                            cost_source,
+                            derived_cost,
+                            derived_unit,
+                            // Only a containment route composes anything -- a link rate is one leg.
+                            // Read from the destination, which is where the fill mechanism lives.
+                            composition: (cost_source
+                                == Some(crate::report::CostSource::Containment))
                             .then(|| {
                                 self.env
                                     .memories
@@ -1080,13 +1084,13 @@ impl<'a> TypeChecker<'a> {
                                     .map(|d| d.crossing)
                                     .unwrap_or_default()
                             }),
-                    });
+                        });
                 }
                 // Single hop (`path == [source_mem, target_mem]`): discharge the
                 // per-seam local-completeness / soundness obligation. Multi-hop paths
                 // are rewritten into a chain of single-hop transfers below, each of
                 // which re-enters here and is checked individually.
-                if path.len() == 2 && self.verify_seams {
+                if path.len() == 2 && self.seam.verify {
                     let span = Self::buffer_span(&t.expr).unwrap_or(t.span);
                     let buffer = Self::buffer_label(&t.expr);
                     // Prefer the value the consumer asserts of the buffer this transfer
@@ -1096,7 +1100,7 @@ impl<'a> TypeChecker<'a> {
                     let asserted_val = self
                         .current_assignment_target
                         .as_ref()
-                        .and_then(|tgt| self.seam_contracts.get(tgt).copied());
+                        .and_then(|tgt| self.seam.contracts.get(tgt).copied());
                     let known_val = asserted_val.or_else(|| self.const_value_of(&buffer));
                     // A hop over a *declared* `relaxed` edge is relaxed too, not just the caller's
                     // `*_relaxed` intrinsic escape hatch: route it through the same seam obligation so a
@@ -1148,7 +1152,7 @@ impl<'a> TypeChecker<'a> {
             // Recursively re-evaluate to ensure intermediate types and costs are resolved properly!
             // Propagate the relaxed marker so each rewritten single-hop transfer is checked
             // with the right transfer function.
-            self.pending_transfer_relaxed = relaxed;
+            self.seam.pending_relaxed = relaxed;
             return self.check_transfer_expr(expr, consume);
         }
 
@@ -1352,13 +1356,15 @@ impl<'a> TypeChecker<'a> {
                             Err(why) => (None, Vec::new(), Some(why)),
                         };
                     let function = self.current_function.clone();
-                    self.spawn_regions.push(crate::report::SpawnRegionTraffic {
-                        function,
-                        topology: self.active_topology.display_name(),
-                        traffic,
-                        by_buffer,
-                        traffic_absent_reason: reason,
-                    });
+                    self.traffic
+                        .spawn_regions
+                        .push(crate::report::SpawnRegionTraffic {
+                            function,
+                            topology: self.active_topology.display_name(),
+                            traffic,
+                            by_buffer,
+                            traffic_absent_reason: reason,
+                        });
                 }
 
                 self.pop_scope();

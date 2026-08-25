@@ -55,9 +55,9 @@ impl<'a> TypeChecker<'a> {
                 if let Some((ty, _, depth)) = &lookup_depth_res {
                     // If we are inside a closure and the variable is defined outside of it,
                     // we must capture it in all closures between the definition and usage.
-                    for (i, closure_depth) in self.closure_depths.iter().enumerate() {
+                    for (i, closure_depth) in self.mono.closure_depths.iter().enumerate() {
                         if depth < closure_depth {
-                            self.closure_captures_stack[i]
+                            self.mono.closure_captures_stack[i]
                                 .insert(name.to_string().into(), ty.clone());
                         }
                     }
@@ -80,7 +80,7 @@ impl<'a> TypeChecker<'a> {
                     {
                         return Type::Function(params.clone(), Box::new(ret_ty.clone()));
                     }
-                    for (func, _) in &self.monomorphized_functions {
+                    for (func, _) in &self.mono.functions {
                         if func.name.as_ref() == name.as_ref() {
                             let params = func.params.iter().map(|(_, t)| t.clone()).collect();
                             return Type::Function(params, Box::new(func.return_type.clone()));
@@ -347,7 +347,8 @@ impl<'a> TypeChecker<'a> {
                         .get(struct_name.as_ref())
                         .map(|s| (*s).clone())
                         .or_else(|| {
-                            self.generated_structs
+                            self.mono
+                                .generated_structs
                                 .iter()
                                 .find(|s| s.name == *struct_name)
                                 .cloned()
@@ -361,7 +362,8 @@ impl<'a> TypeChecker<'a> {
                             .get(struct_name.as_ref())
                             .map(|s| (*s).clone())
                             .or_else(|| {
-                                self.generated_structs
+                                self.mono
+                                    .generated_structs
                                     .iter()
                                     .find(|s| s.name == *struct_name)
                                     .cloned()
@@ -485,7 +487,8 @@ impl<'a> TypeChecker<'a> {
             .get(struct_name)
             .map(|s| (*s).clone())
             .or_else(|| {
-                self.generated_structs
+                self.mono
+                    .generated_structs
                     .iter()
                     .find(|s| s.name.as_ref() == struct_name)
                     .cloned()
@@ -737,7 +740,8 @@ impl<'a> TypeChecker<'a> {
                     name.starts_with("Closure_") && name.ends_with("_call") && !fc.args.is_empty();
                 let skip_env = is_closure_call
                     && self
-                        .monomorphized_functions
+                        .mono
+                        .functions
                         .iter()
                         .find(|f| f.0.name.as_ref() == name)
                         .map(|f| crate::hir::provenance::compute_return_provenance(&f.0))

@@ -24,7 +24,6 @@
 // parameter that threaded through ~36 checker signatures (#279 R3).
 //
 //===----------------------------------------------------------------------===//
-use crate::report::{ResidentSet, SpawnRegionTraffic, StagingRoute};
 use crate::syntax::*;
 use std::collections::HashMap;
 
@@ -288,7 +287,6 @@ pub struct TypeChecker<'a> {
     pub env: &'a GlobalAstEnv<'a>,
     pub(crate) scopes: Vec<HashMap<crate::symbol::Symbol, (Type, Topology)>>,
     pub allow_cross_topology: bool,
-    pub monomorphized_functions: Vec<(Function, u64)>,
     pub errors: crate::diagnostic::DiagnosticsVec,
     pub(crate) in_unsafe_block: bool,
     pub(crate) active_topology: Topology,
@@ -307,105 +305,29 @@ pub struct TypeChecker<'a> {
     /// "fresh check" entry points (`check_expr_type`, `check_block`) force it back off, so the
     /// field's dynamic scope reproduces the old parameter's exactly.
     pub(crate) speculating: bool,
-    pub constraints: Vec<Expr>,
-    pub return_constraints: Vec<Expr>,
     pub(crate) next_id: u32,
-    pub eval_env: Vec<HashMap<crate::symbol::Symbol, Value>>,
     pub current_return_type: Option<Type>,
     /// Name of the function being checked, so a record produced deep inside a body can say
     /// where it came from (a program may have several `spawn` regions in different
     /// functions). Saved and restored around `check_function` like `current_return_type`.
     pub(crate) current_function: String,
-    #[allow(dead_code)]
-    pub(crate) closure_depths: Vec<usize>,
-    #[allow(dead_code)]
-    pub(crate) closure_captures_stack: Vec<HashMap<crate::symbol::Symbol, Type>>,
-    pub generated_structs: Vec<StructDecl>,
     pub(crate) current_assignment_target: Option<String>,
     /// Tracks which variables have been read during the current function check.
     pub(crate) used_vars: std::collections::HashSet<crate::symbol::Symbol>,
     /// Tracks declared variables with their spans (for unused variable warnings).
     pub(crate) declared_vars: Vec<(crate::symbol::Symbol, crate::syntax::Span)>,
-    /// Set immediately before a transfer is checked to mark it a *relaxed* (escape-hatch)
-    /// transfer that does not carry a synchronizing release/DMA-completion. Consumed and
-    /// reset by `check_transfer_expr`. See `crate::hir::seam`.
-    pub(crate) pending_transfer_relaxed: bool,
-    /// The edge and machine of the `impl Transfer` lowering whose body is being checked, when
-    /// one is. `Some((from, to, machine))` is what makes the eight `raw::` primitives resolve
-    /// (Vx#353 A2) and gives their space and capability obligations an edge to check against.
-    /// `None` everywhere else -- which is the floor property: outside a lowering, `raw::`
-    /// names do not exist. Set by the driver and pipeline around lowering-body checks.
-    ///
-    /// The machine (the lowering's `for Topology::X`, as its display name) is here because a
-    /// capability check that knows only the edge pair cannot tell WHOSE edge: `raw::async_copy`
-    /// asked "does any topology's L2 -> SMEM carry copy_engine", so one machine declaring the
-    /// engine armed every machine's lowerings for the like-named edge. The gate needs to ask
-    /// the machine the body is for.
-    pub transfer_lowering_edge: Option<(MemorySpace, MemorySpace, String)>,
-    /// The current lowering method's parameter names: the only tiles `raw::` may touch.
-    /// A local alias would escape the async-discipline walk (it is name-keyed), so the
-    /// primitives are limited to the names the walk can see. Only read while
-    /// `transfer_lowering_edge` is `Some`.
-    pub(crate) transfer_lowering_params: std::collections::HashSet<crate::symbol::Symbol>,
-    /// Number of per-seam obligations discharged (eval metric M1).
-    pub seam_checks: usize,
-    /// Every staging route this compilation resolved, in source order: the hops a `transfer`
-    /// lowered to and their per-edge costs. An *admitted* program emits no diagnostics, so this
-    /// is what `--diagnostics-json` reports for it -- the accept side of the admission verdict
-    /// (#282).
-    pub staging_routes: Vec<StagingRoute>,
-    /// Per-function, per-space working sets — the resident sets an admitted program implies.
-    /// See [`ResidentSet`]; reported by `--diagnostics-json` (#285).
-    pub resident_sets: Vec<ResidentSet>,
-    /// What each `spawn` region moves, counted from its own code (#353 A4 T4). One entry per
-    /// `spawn on(...)` site, in source order. See [`SpawnRegionTraffic`].
-    pub spawn_regions: Vec<SpawnRegionTraffic>,
-    /// Total marginal solving time across all seams, excluding the one-time solver
-    /// startup below (eval metric M1: per-seam proof cost).
-    pub seam_check_time: std::time::Duration,
-    /// One-time cost of spawning the persistent solver and installing its preamble,
-    /// paid once per compilation regardless of program size (eval metric M1).
-    pub solver_init_time: std::time::Duration,
-    /// Persistent z3 process, lazily started on the first seam and reused for all of
-    /// them so the marginal per-seam cost is solving time, not process startup.
-    pub(crate) seam_solver: Option<crate::hir::seam::Solver>,
-    /// Per-function pre-scan of `assert(var == const)` facts: the value a consumer
-    /// requires of `var`. Populated before statements are checked so a transfer seam
-    /// (checked before the consumer's `spawn` body) can consult the downstream
-    /// contract on the buffer it produces. See `collect_assert_contracts`.
-    pub(crate) seam_contracts: std::collections::HashMap<String, u64>,
-    /// Per-function working set: `memory space -> {buffer key -> granule-rounded bytes}`. Every
-    /// tile placed in a declared space (via `transfer`/`Ref` annotation) is recorded here so the
-    /// *cumulative* budget check can sum them and flag a space whose total exceeds `capacity`.
-    /// Reset per function. See `check_cumulative_capacity`.
-    pub(crate) memory_placements: std::collections::HashMap<
-        crate::syntax::MemorySpace,
-        std::collections::HashMap<String, u64>,
-    >,
-    /// Monotonic id for placements with no binding name (so they still count toward the sum).
-    pub(crate) placement_site: usize,
-    /// Whether to discharge per-seam boundary obligations (the assert pre-scan and the
-    /// z3 checks). Off by default so ordinary compilation pays nothing and needs no
-    /// solver; enabled with `vxc --verify-seams`. See `crate::hir::seam`.
-    pub verify_seams: bool,
-    /// Topology generic parameters (`<D: Topology>`) of the function currently being
-    /// instantiated. Set around the deduction unify at a generic call so `unify_types`
-    /// can bind a `Pinned<_, D>` param's topology variable instead of demanding equality.
-    pub(crate) pending_topo_vars: std::collections::HashSet<crate::symbol::Symbol>,
-    /// Topology bindings (`D -> concrete topology`) deduced during that unify, consumed by
-    /// `instantiate_function` to specialize `on D` and `Pinned<_, D>`.
-    pub(crate) pending_topo_bindings: std::collections::HashMap<crate::symbol::Symbol, Topology>,
     /// Expected type of the expression currently being checked, from a `let x: T = …` or a
     /// `return` in a typed function. Lets a generic call deduce a *return-only* topology (or
     /// type) variable — e.g. `D` in `-> Pinned<T, D>` — from the call's context.
     pub(crate) expected_type: Option<Type>,
-    /// Signature of each closure literal, keyed by its generated `Closure_N` struct name:
-    /// `(param types, return type)`. A closure expression checks to `Struct("Closure_N")`, which
-    /// erases the call signature, so unifying it against a `ClosureK<Args.., Ret>` parameter needs
-    /// this side table to recover the args/ret and bind the method's generics (e.g. `NewItem` in
-    /// `.map(|x| ...)`). See `check_closure_expr` and `unify_types_internal`.
-    pub(crate) closure_signatures:
-        std::collections::HashMap<crate::symbol::Symbol, (Vec<Type>, Type)>,
+    /// Compile-time evaluation state. See [`crate::hir::check_state::ConstEvalState`].
+    pub consteval: crate::hir::check_state::ConstEvalState,
+    /// Monomorphization state and its output. See [`crate::hir::check_state::MonoState`].
+    pub mono: crate::hir::check_state::MonoState,
+    /// The memory algebra's seam obligations. See [`crate::hir::check_state::SeamState`].
+    pub seam: crate::hir::check_state::SeamState,
+    /// Traffic and capacity accounting. See [`crate::hir::check_state::TrafficState`].
+    pub traffic: crate::hir::check_state::TrafficState,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -423,7 +345,6 @@ impl<'a> TypeChecker<'a> {
             env,
             worker,
             scopes: vec![HashMap::new()],
-            monomorphized_functions: Vec::new(),
             errors: crate::diagnostic::DiagnosticsVec::new(),
             in_unsafe_block: false,
             allow_cross_topology: false,
@@ -432,36 +353,17 @@ impl<'a> TypeChecker<'a> {
             transfer_cost_graph,
             borrow: crate::hir::borrow_cx::BorrowCx::default(),
             speculating: false,
-            constraints: Vec::new(),
-            return_constraints: Vec::new(),
             next_id: 1,
-            eval_env: vec![HashMap::new()],
             current_return_type: None,
             current_function: String::new(),
-            closure_depths: Vec::new(),
-            closure_captures_stack: Vec::new(),
-            generated_structs: Vec::new(),
             current_assignment_target: None,
             used_vars: std::collections::HashSet::new(),
             declared_vars: Vec::new(),
-            pending_transfer_relaxed: false,
-            transfer_lowering_edge: None,
-            transfer_lowering_params: std::collections::HashSet::new(),
-            seam_checks: 0,
-            staging_routes: Vec::new(),
-            resident_sets: Vec::new(),
-            spawn_regions: Vec::new(),
-            seam_check_time: std::time::Duration::ZERO,
-            solver_init_time: std::time::Duration::ZERO,
-            seam_solver: None,
-            seam_contracts: std::collections::HashMap::new(),
-            memory_placements: std::collections::HashMap::new(),
-            placement_site: 0,
-            verify_seams: false,
-            pending_topo_vars: std::collections::HashSet::new(),
-            pending_topo_bindings: std::collections::HashMap::new(),
             expected_type: None,
-            closure_signatures: std::collections::HashMap::new(),
+            consteval: Default::default(),
+            mono: Default::default(),
+            seam: Default::default(),
+            traffic: Default::default(),
         }
     }
 
@@ -470,14 +372,14 @@ impl<'a> TypeChecker<'a> {
         self.borrow
             .moved_vars
             .push(std::collections::HashSet::new());
-        self.eval_env.push(std::collections::HashMap::new());
+        self.consteval.env.push(std::collections::HashMap::new());
     }
 
     pub fn pop_scope(&mut self) {
         let depth = self.scopes.len();
         self.scopes.pop();
         self.borrow.moved_vars.pop();
-        self.eval_env.pop();
+        self.consteval.env.pop();
 
         // Lexical Lifetime cleanup: Remove borrows originating in this scope
         self.borrow.retain_scope(depth);
@@ -752,7 +654,7 @@ impl<'a> TypeChecker<'a> {
                 if cn.starts_with("Closure_")
                     && matches!(&**inner, Type::Struct(n, _) if n.starts_with("Closure")) =>
             {
-                if let Some((params, ret)) = self.closure_signatures.get(cn).cloned() {
+                if let Some((params, ret)) = self.mono.closure_signatures.get(cn).cloned() {
                     if gi_args.len() != params.len() + 1 {
                         return false;
                     }
@@ -772,8 +674,9 @@ impl<'a> TypeChecker<'a> {
                 // to the argument's concrete topology; a concrete topology must match. Then
                 // unify the payload (which may itself carry type variables).
                 let tops_ok = match top1 {
-                    Topology::Custom(name) if self.pending_topo_vars.contains(name) => {
-                        self.pending_topo_bindings
+                    Topology::Custom(name) if self.mono.pending_topo_vars.contains(name) => {
+                        self.mono
+                            .pending_topo_bindings
                             .insert(name.clone(), top2.clone());
                         true
                     }
@@ -1030,7 +933,7 @@ impl<'a> TypeChecker<'a> {
             ));
         }
 
-        let prev_constraints = self.constraints.clone();
+        let prev_constraints = self.consteval.constraints.clone();
         let prev_ret_ty = self.current_return_type.clone();
         let prev_fn = std::mem::replace(&mut self.current_function, func.name.as_ref().to_string());
         self.current_return_type = Some(func.return_type.clone());
@@ -1054,31 +957,31 @@ impl<'a> TypeChecker<'a> {
         }
         // Inside a transfer lowering, the raw:: primitives may only touch tiles the
         // transfer was given -- record the parameter names they are allowed to name.
-        if self.transfer_lowering_edge.is_some() {
-            self.transfer_lowering_params = func.params.iter().map(|(n, _)| n.clone()).collect();
+        if self.seam.lowering_edge.is_some() {
+            self.seam.lowering_params = func.params.iter().map(|(n, _)| n.clone()).collect();
         }
 
         // Add preconditions (requires) to our constraints
         for req in &func.requires {
-            self.constraints.push(req.clone());
+            self.consteval.constraints.push(req.clone());
         }
 
         // Pre-scan: gather the value contracts the consumer's asserts impose, so a
         // transfer seam (checked before the consumer's spawn body) can consult them.
         // Only when seam verification is enabled (otherwise we pay nothing for it).
-        let prev_contracts = std::mem::take(&mut self.seam_contracts);
-        if self.verify_seams {
-            Self::collect_assert_contracts(&func.body, &mut self.seam_contracts);
+        let prev_contracts = std::mem::take(&mut self.seam.contracts);
+        if self.seam.verify {
+            Self::collect_assert_contracts(&func.body, &mut self.seam.contracts);
         }
 
         self.check_block(&mut func.body, &func.return_type.clone());
 
-        self.seam_contracts = prev_contracts;
+        self.seam.contracts = prev_contracts;
 
         // Combine return constraints into a single OR constraint
-        if !self.return_constraints.is_empty() {
-            let mut combined = self.return_constraints[0].clone();
-            for rc in self.return_constraints.iter().skip(1) {
+        if !self.consteval.return_constraints.is_empty() {
+            let mut combined = self.consteval.return_constraints[0].clone();
+            for rc in self.consteval.return_constraints.iter().skip(1) {
                 combined = Expr::LogicalOp(LogicalOpExpr {
                     lhs: Box::new(combined),
                     op: LogicalOp::Or,
@@ -1086,8 +989,8 @@ impl<'a> TypeChecker<'a> {
                     span: crate::syntax::Span::default(),
                 });
             }
-            self.constraints.push(combined);
-            self.return_constraints.clear();
+            self.consteval.constraints.push(combined);
+            self.consteval.return_constraints.clear();
         }
 
         // Verify postconditions (ensures)
@@ -1143,7 +1046,7 @@ impl<'a> TypeChecker<'a> {
         self.pop_scope();
         self.current_return_type = prev_ret_ty;
         self.current_function = prev_fn;
-        self.constraints = prev_constraints;
+        self.consteval.constraints = prev_constraints;
         self.active_topology = prev_top;
         self.active_memory = prev_mem;
         self.borrow.current_params = prev_params;
@@ -1180,7 +1083,7 @@ impl<'a> TypeChecker<'a> {
                 // fails to unify against `impl<T> Option<T>` during method resolution.
                 if self.env.structs.contains_key(&name)
                     || self.env.enums.contains_key(&name)
-                    || self.generated_structs.iter().any(|s| s.name == name)
+                    || self.mono.generated_structs.iter().any(|s| s.name == name)
                 {
                     Type::Struct(name, id)
                 } else {

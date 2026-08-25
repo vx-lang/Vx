@@ -53,7 +53,7 @@ impl<'a> TypeChecker<'a> {
         if let Type::Struct(struct_name, _) = callee_ty {
             if struct_name.starts_with("Closure_") {
                 let call_name = format!("{}_call", struct_name);
-                if let Some(func) = self.monomorphized_functions.iter().find(|f| {
+                if let Some(func) = self.mono.functions.iter().find(|f| {
                     f.0.name == <std::string::String as Clone>::clone(&call_name.clone()).into()
                 }) {
                     let param_types: Vec<Type> = func
@@ -512,7 +512,8 @@ impl<'a> TypeChecker<'a> {
                     if struct_name.starts_with("Closure_") {
                         let call_name = format!("{}_call", struct_name);
                         if let Some(func) = self
-                            .monomorphized_functions
+                            .mono
+                            .functions
                             .iter()
                             .find(|f| f.0.name == call_name.as_str().into())
                         {
@@ -629,7 +630,8 @@ impl<'a> TypeChecker<'a> {
                     }
                     ret_ty.clone()
                 } else if let Some(func) = self
-                    .monomorphized_functions
+                    .mono
+                    .functions
                     .iter()
                     .find(|f| f.0.name == resolved_name)
                 {
@@ -753,7 +755,8 @@ impl<'a> TypeChecker<'a> {
                     Type::Unknown
                 } else {
                     let mono_names: Vec<crate::symbol::Symbol> = self
-                        .monomorphized_functions
+                        .mono
+                        .functions
                         .iter()
                         .map(|(f, _)| f.name.clone())
                         .collect();
@@ -907,15 +910,12 @@ impl<'a> TypeChecker<'a> {
             *name = inst_name.clone();
 
             if !self.env.functions.contains_key(inst_name.as_ref())
-                && !self
-                    .monomorphized_functions
-                    .iter()
-                    .any(|(f, _)| f.name == inst_name)
+                && !self.mono.functions.iter().any(|(f, _)| f.name == inst_name)
             {
-                let saved_edge = self.transfer_lowering_edge.take();
+                let saved_edge = self.seam.lowering_edge.take();
                 self.check_function(&mut inst_func);
-                self.transfer_lowering_edge = saved_edge;
-                self.monomorphized_functions.push((inst_func, 0));
+                self.seam.lowering_edge = saved_edge;
+                self.mono.functions.push((inst_func, 0));
             }
 
             inst_ret
@@ -943,7 +943,7 @@ impl<'a> TypeChecker<'a> {
         let mut success = true;
         // Topology generic parameters (`<D: Topology>`): make `unify_types` bind a
         // `Pinned<_, D>` param's topology to the argument's concrete topology.
-        self.pending_topo_vars = generic_func
+        self.mono.pending_topo_vars = generic_func
             .generics
             .iter()
             .filter_map(|g| match g {
@@ -954,7 +954,7 @@ impl<'a> TypeChecker<'a> {
                 _ => None,
             })
             .collect();
-        self.pending_topo_bindings.clear();
+        self.mono.pending_topo_bindings.clear();
         if args.len() != generic_func.params.len() {
             if !self.speculating {
                 self.errors.push(format!(
@@ -1028,8 +1028,8 @@ impl<'a> TypeChecker<'a> {
         }
 
         if success {
-            let topo_mapping = std::mem::take(&mut self.pending_topo_bindings);
-            self.pending_topo_vars.clear();
+            let topo_mapping = std::mem::take(&mut self.mono.pending_topo_bindings);
+            self.mono.pending_topo_vars.clear();
 
             // Discharge `where Reachable<A, B>` now that the topology variables are bound:
             // a transfer path from A's memory to B's must exist in the cost graph.
@@ -1057,10 +1057,7 @@ impl<'a> TypeChecker<'a> {
             *name = inst_name.clone();
 
             if !self.env.functions.contains_key(inst_name.as_ref())
-                && !self
-                    .monomorphized_functions
-                    .iter()
-                    .any(|(f, _)| f.name == inst_name)
+                && !self.mono.functions.iter().any(|(f, _)| f.name == inst_name)
             {
                 // Check the instantiated body in an *isolated* borrow context. It shares
                 // `active_borrows` with the caller otherwise, and a same-named parameter (`m` here,
@@ -1070,11 +1067,11 @@ impl<'a> TypeChecker<'a> {
                 let saved_borrows = self.borrow.take();
                 // An instantiated generic is ordinary code even when the call site sits in
                 // a transfer lowering; the raw:: primitives must not resolve inside it.
-                let saved_edge = self.transfer_lowering_edge.take();
+                let saved_edge = self.seam.lowering_edge.take();
                 self.check_function(&mut inst_func);
-                self.transfer_lowering_edge = saved_edge;
+                self.seam.lowering_edge = saved_edge;
                 self.borrow.restore(saved_borrows);
-                self.monomorphized_functions.push((inst_func, origin_hash));
+                self.mono.functions.push((inst_func, origin_hash));
             }
             Some(inst_ret)
         } else {
@@ -1505,16 +1502,17 @@ impl<'a> TypeChecker<'a> {
 
         if !self.env.functions.contains_key(&*mangled_name)
             && !self
-                .monomorphized_functions
+                .mono
+                .functions
                 .iter()
                 .any(|(f, _)| f.name == crate::symbol::Symbol::from(mangled_name.as_str()))
         {
             // Type check the instantiated method
             let mut func_to_check = method_func.clone();
-            let saved_edge = self.transfer_lowering_edge.take();
+            let saved_edge = self.seam.lowering_edge.take();
             self.check_function(&mut func_to_check);
-            self.transfer_lowering_edge = saved_edge;
-            self.monomorphized_functions.push((func_to_check, 0)); // 0 will fall back to caller_module_idx
+            self.seam.lowering_edge = saved_edge;
+            self.mono.functions.push((func_to_check, 0)); // 0 will fall back to caller_module_idx
         }
 
         // Rewrite AST from MethodCall to FunctionCall
@@ -1692,7 +1690,7 @@ impl<'a> TypeChecker<'a> {
                     });
                     // Mark it so the per-seam obligation in `check_transfer_expr` sends
                     // published payloads to TOP (a stale read).
-                    self.pending_transfer_relaxed = is_relaxed;
+                    self.seam.pending_relaxed = is_relaxed;
                     return self.check_transfer_expr(expr, consume);
                 } else if _method.as_ref() == "to_host" {
                     let target_mem = MemorySpace::CPUDRAM;
@@ -1795,7 +1793,8 @@ impl<'a> TypeChecker<'a> {
         };
         if let Some(call_name) = closure_call {
             if let Some(f) = self
-                .monomorphized_functions
+                .mono
+                .functions
                 .iter()
                 .find(|f| f.0.name.as_ref() == call_name)
             {
@@ -1812,7 +1811,8 @@ impl<'a> TypeChecker<'a> {
             }
         }
         if let Some(f) = self
-            .monomorphized_functions
+            .mono
+            .functions
             .iter()
             .find(|f| f.0.name.as_ref() == resolved_name)
         {
