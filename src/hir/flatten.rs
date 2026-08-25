@@ -26,6 +26,7 @@ use crate::layout::FieldTy;
 use crate::registry::ImmutableGlobalRegistry;
 use crate::session::LocalWorkerState;
 use crate::symbol::Symbol;
+use crate::syntax::scalar_of;
 use crate::syntax::{
     BinaryOp, ElementType, Expr, Function, LogicalOp, NumberExpr, RelationalOp, Statement, Type,
     UnaryOp,
@@ -1399,11 +1400,11 @@ impl<'r> Lowerer<'r> {
         // first `EnumVariant` pattern naming an enum with a payload-carrying variant.
         if let Some(pattern_en) = m.arms.iter().find_map(|a| match &a.pattern {
             crate::syntax::Pattern::EnumVariant(en, _, _) => {
-                let (base, _) = parse_enum_instance(en);
+                let base = base_name(en);
                 let has_payload = self
                     .registry
                     .enum_data
-                    .get(base.as_str())
+                    .get(base)
                     .is_some_and(|d| d.variants.iter().any(|(_, p)| !p.is_empty()));
                 has_payload.then(|| en.to_string())
             }
@@ -1550,11 +1551,11 @@ impl<'r> Lowerer<'r> {
         let tag_off = *offsets.first().ok_or(Decline::TypeNotModelled {
             what: "an enum payload offset that is not laid out",
         })?;
-        let (base, _) = parse_enum_instance(enum_name);
+        let base = base_name(enum_name);
         let data = self
             .registry
             .enum_data
-            .get(base.as_str())
+            .get(base)
             .ok_or(Decline::TypeNotModelled {
                 what: "an enum with no registered data",
             })?
@@ -1912,17 +1913,33 @@ impl<'r> Lowerer<'r> {
                 what: "an iterable whose type cannot be inferred",
             })?;
         let (next_gid, opt_ty) = self.find_iterator_next(&iter_ast_ty)?;
-        let (enum_gid, offsets, payload_types) = self
-            .enum_instance_layout(&opt_ty.to_string())
-            .ok_or(Decline::TypeNotModelled {
-                what: "an enum with no modelled instance layout",
-            })?;
+        // `next` returns `Option<T>`, which the checker hands over as a `GenericInstance` carrying
+        // its base and argument. Take them from the type rather than from its rendering.
+        let (base, args) = match &opt_ty {
+            Type::GenericInstance(b, a) => match b.as_ref() {
+                Type::Enum(n, _) | Type::Struct(n, _) => (n.as_ref(), a.as_slice()),
+                _ => {
+                    return Err(Decline::TypeNotModelled {
+                        what: "an iterator whose next returns an unnamed instance",
+                    })
+                }
+            },
+            _ => {
+                return Err(Decline::TypeNotModelled {
+                    what: "an iterator whose next does not return a generic instance",
+                })
+            }
+        };
+        let (enum_gid, offsets, payload_types) =
+            self.enum_instance_layout_of(base, args)
+                .ok_or(Decline::TypeNotModelled {
+                    what: "an enum with no modelled instance layout",
+                })?;
         // `Some`'s discriminant ordinal (the payload-carrying variant).
-        let (base, _) = parse_enum_instance(&opt_ty.to_string());
         let data = self
             .registry
             .enum_data
-            .get(base.as_str())
+            .get(base)
             .ok_or(Decline::TypeNotModelled {
                 what: "an enum with no registered data",
             })?
@@ -2117,11 +2134,11 @@ impl<'r> Lowerer<'r> {
     /// payload-free variant like `None` stores only the tag, leaving the payload undefined — as the AST
     /// codegen does). Returns the slot as an aggregate `Val`. (#242)
     fn lower_enum_construct(&mut self, ev: &crate::syntax::EnumVariantExpr) -> Lowered<Val> {
-        let (base, _) = parse_enum_instance(&ev.enum_name);
+        let base = base_name(&ev.enum_name);
         let data = self
             .registry
             .enum_data
-            .get(base.as_str())
+            .get(base)
             .ok_or(Decline::TypeNotModelled {
                 what: "an enum with no registered data",
             })?;
@@ -2175,7 +2192,7 @@ impl<'r> Lowerer<'r> {
     /// call's return (`VecIter::next -> Option<i32>`), a `let` binding. Falls back to `lowered_ty`
     /// for everything else. (#242)
     fn lower_ty_synth(&mut self, ty: &Type) -> Option<LoweredTy> {
-        if let Type::GenericInstance(base, _) = ty {
+        if let Type::GenericInstance(base, args) = ty {
             if let Type::Enum(n, _) | Type::Struct(n, _) = base.as_ref() {
                 let is_data = self
                     .registry
@@ -2183,7 +2200,7 @@ impl<'r> Lowerer<'r> {
                     .get(n.as_ref())
                     .is_some_and(|d| d.variants.iter().any(|(_, p)| !p.is_empty()));
                 if is_data {
-                    let (gid, _, _) = self.enum_instance_layout(&ty.to_string())?;
+                    let (gid, _, _) = self.enum_instance_layout_of(n.as_ref(), args)?;
                     return Some(LoweredTy::Aggregate(gid));
                 }
             }
@@ -2199,9 +2216,23 @@ impl<'r> Lowerer<'r> {
     /// enum (a bare `i32` discriminant, not an aggregate) or an unmodelled payload type. (#242)
     fn enum_instance_layout(&mut self, enum_name: &str) -> Option<(TypeId, Vec<u64>, Vec<Type>)> {
         let (base, args) = parse_enum_instance(enum_name);
-        let data = self.registry.enum_data.get(base.as_str())?;
+        self.enum_instance_layout_of(&base, &args)
+    }
+
+    /// The same, for a caller that already holds the instance structurally.
+    ///
+    /// A `Type::GenericInstance` carries its base and its arguments. Rendering one to `"Option<i32>"`
+    /// so this function can split it back apart loses the arguments' identity on the way through the
+    /// text and gains nothing: `parse_scalar_type_arg` can only recover a scalar spelling or a bare
+    /// nominal, so anything else comes back as a `Struct` named by whatever it printed as.
+    fn enum_instance_layout_of(
+        &mut self,
+        base: &str,
+        args: &[Type],
+    ) -> Option<(TypeId, Vec<u64>, Vec<Type>)> {
+        let data = self.registry.enum_data.get(base)?;
         let mut mapping = HashMap::new();
-        for (g, a) in data.generics.iter().zip(&args) {
+        for (g, a) in data.generics.iter().zip(args) {
             mapping.insert(g.clone(), a.clone());
         }
         let payload: Vec<Type> = data
@@ -2222,7 +2253,7 @@ impl<'r> Lowerer<'r> {
             field_tys.push(mlir);
             off += sz;
         }
-        let gid = enum_instance_gid(&base, &args);
+        let gid = enum_instance_gid(base, args);
         if !self.agg_layouts.iter().any(|(g, _, _)| *g == gid) {
             self.agg_layouts.push((gid, offsets.clone(), field_tys));
         }
@@ -2860,11 +2891,11 @@ impl<'r> Lowerer<'r> {
                 // re-`Alloca` and store the slot *pointer*, not the value). A payload-free variant is a
                 // scalar and falls through to the general path. (#242)
                 if let Expr::EnumVariant(ev) = &l.expr {
-                    let (base, _) = parse_enum_instance(&ev.enum_name);
+                    let base = base_name(&ev.enum_name);
                     let is_data = self
                         .registry
                         .enum_data
-                        .get(base.as_str())
+                        .get(base)
                         .is_some_and(|d| d.variants.iter().any(|(_, p)| !p.is_empty()));
                     if is_data {
                         let slot = self.lower_enum_construct(ev)?;
@@ -3768,6 +3799,15 @@ fn simple_ident(e: &Expr) -> Option<Symbol> {
 
 /// Parse a monomorphized enum instance name into its base name + type arguments: `"Option<i32>"` ->
 /// `("Option", [i32])`, `"Color"` -> `("Color", [])`. Type args are parsed as scalars (else a nominal
+/// The name before the type arguments: `"Option<i32>"` -> `"Option"`.
+///
+/// Deliberately not a type parse. Most callers want the enum's own name to look up its registered
+/// data, and parsing the arguments to a `Type` only to drop them invites the mistake of believing
+/// the round-trip preserved something.
+fn base_name(name: &str) -> &str {
+    name.split('<').next().unwrap_or(name)
+}
+
 /// `Struct`), matching the AST codegen's string-keyed approach. (#242)
 fn parse_enum_instance(name: &str) -> (String, Vec<Type>) {
     let Some(lt) = name.find('<') else {
@@ -3813,7 +3853,11 @@ fn enum_payload_field(ty: &Type) -> Option<(u64, u64, String)> {
         Type::Scalar(ElementType::Generic(_)) => None,
         Type::Scalar(e) => {
             let (s, a) = crate::layout::scalar_size_align(e)?;
-            Some((s as u64, a as u64, element_mlir(e)?.to_string()))
+            Some((
+                s as u64,
+                a as u64,
+                crate::mlir_ty::mlir_scalar(e)?.to_string(),
+            ))
         }
         Type::Pointer(..) | Type::Borrow { .. } | Type::Ref(..) => {
             Some((8, 8, "!llvm.ptr".to_string()))
@@ -3824,27 +3868,6 @@ fn enum_payload_field(ty: &Type) -> Option<(u64, u64, String)> {
 
 /// The MLIR scalar type string for an element type (`i32`, `f32`, `i1` for bool, …) — the flat-lowerer
 /// counterpart of codegen's `mlir_scalar`, used to spell a synthesized enum-instance field. (#242)
-fn element_mlir(e: &ElementType) -> Option<&'static str> {
-    use ElementType::*;
-    Some(match e {
-        F16 => "f16",
-        F32 => "f32",
-        F64 => "f64",
-        BF16 => "bf16",
-        I8 | U8 => "i8",
-        I16 | U16 => "i16",
-        I32 | U32 => "i32",
-        I64 | U64 => "i64",
-        I128 | U128 => "i128",
-        I4 | U4 => "i4",
-        Bool => "i1",
-        // fp8 is capacity/declaration-only for now: the JIT has no fp8 arithmetic,
-        // so the flat path declines. Compute support is #249.
-        F8E4M3 | F8E5M2 => return None,
-        Generic(_) => return None,
-    })
-}
-
 /// Strip one borrow/pointer/ref wrapper, yielding the pointee (or the type itself if not a
 /// reference) — used to look through `self : &mut Vec<i32>` to the `Vec<i32>` it points at. (#242)
 fn deref_to_pointee(ty: &Type) -> &Type {
@@ -3968,16 +3991,6 @@ fn pack_targets(then_b: u32, else_b: u32) -> u64 {
     (then_b as u64) | ((else_b as u64) << 32)
 }
 
-/// The scalar element type of a parameter type, or `None` for non-scalars / generic scalars (which
-/// the flat lowering does not model).
-fn scalar_of(ty: &Type) -> Option<ElementType> {
-    match ty {
-        Type::Scalar(ElementType::Generic(_)) => None,
-        Type::Scalar(e) => Some(e.clone()),
-        _ => None,
-    }
-}
-
 /// The byte size a `sizeof<T>()` folds to, matching the AST codegen (`SizeOfExpr`) for the scalar and
 /// pointer types they agree on. Returns `None` for anything else (struct/enum/tensor/`i128`), so the
 /// enclosing `comptime` block declines to the AST path rather than risk a divergent size. (#228)
@@ -4032,13 +4045,9 @@ fn infer_elem(s: &str) -> Option<ElementType> {
     Some(crate::parser::expr::default_number_elem(s))
 }
 
-fn is_float(e: &ElementType) -> bool {
-    e.is_float()
-}
-
 /// Encode a literal's raw 64-bit `imm`: float bit-pattern for float types, else the integer value.
 fn encode_imm(s: &str, elem: &ElementType) -> Option<u64> {
-    if is_float(elem) {
+    if elem.is_float() {
         Some(s.parse::<f64>().ok()?.to_bits())
     } else if *elem == ElementType::Bool {
         match s {

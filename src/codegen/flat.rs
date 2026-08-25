@@ -30,7 +30,9 @@ use crate::bytecode::{HirInstruction, Opcode};
 use crate::decline::{Decline, Lowered};
 use crate::gid::TypeId;
 use crate::hir::flatten::{ptr_gid, scalar_gid, tensor_gid_of};
+use crate::mlir_ty::mlir_scalar;
 use crate::registry::ImmutableGlobalRegistry;
+use crate::syntax::scalar_of;
 use crate::syntax::{is_void_ty, ElementType, Function, Type};
 use rayon::prelude::*;
 use std::collections::HashMap;
@@ -47,31 +49,6 @@ fn mlir_float_literal(value: f64) -> String {
         Some((mantissa, exponent)) if !mantissa.contains('.') => format!("{mantissa}.0e{exponent}"),
         _ => text,
     }
-}
-
-fn mlir_scalar(elem: &ElementType) -> Option<&'static str> {
-    use ElementType::*;
-    Some(match elem {
-        F16 => "f16",
-        F32 => "f32",
-        F64 => "f64",
-        BF16 => "bf16",
-        I4 | U4 => "i4",
-        I8 | U8 => "i8",
-        I16 | U16 => "i16",
-        I32 | U32 => "i32",
-        I64 | U64 => "i64",
-        I128 | U128 => "i128",
-        Bool => "i1",
-        // fp8 is capacity/declaration-only for now: the JIT has no fp8 arithmetic,
-        // so the flat path declines. Compute support is #249.
-        F8E4M3 | F8E5M2 => return None,
-        Generic(_) => return None,
-    })
-}
-
-fn is_float(e: &ElementType) -> bool {
-    e.is_float() // the single float-class predicate (`ElementType::is_float`); P1-4a
 }
 
 /// The inverse of [`mlir_scalar`]: recover an [`ElementType`] from an MLIR scalar type string.
@@ -132,7 +109,7 @@ fn cast_op(src: &ElementType, tgt: &ElementType) -> Option<&'static str> {
     if mlir_scalar(src)? == mlir_scalar(tgt)? {
         return Some(""); // same underlying type -> reinterpret, no op
     }
-    match (is_float(src), is_float(tgt)) {
+    match (src.is_float(), tgt.is_float()) {
         (false, false) => {
             let (sb, tb) = (int_bits(src)?, int_bits(tgt)?);
             Some(if tb < sb {
@@ -174,14 +151,6 @@ fn elem_of_gid(gid: TypeId) -> Option<ElementType> {
     ]
     .into_iter()
     .find(|e| scalar_gid(e) == gid)
-}
-
-fn scalar_of(ty: &Type) -> Option<ElementType> {
-    match ty {
-        Type::Scalar(ElementType::Generic(_)) => None,
-        Type::Scalar(e) => Some(e.clone()),
-        _ => None,
-    }
 }
 
 /// The layout GID of the aggregate a pointer/borrow points *to* (`self : &mut Vec<i32>` → the
@@ -260,7 +229,7 @@ fn alias_store_attrs(own: u32, siblings: &[u32]) -> String {
 
 /// The arith op mnemonic for a binary opcode at a given element type.
 fn arith_op(op: Opcode, e: &ElementType) -> Option<&'static str> {
-    let f = is_float(e);
+    let f = e.is_float();
     Some(match op {
         Opcode::Add => {
             if f {
@@ -301,7 +270,7 @@ fn arith_op(op: Opcode, e: &ElementType) -> Option<&'static str> {
 /// sync with `flatten::rel_code`). Integers use signed vs. unsigned predicates by the element's
 /// signedness; floats use the ordered predicates.
 fn cmp_op(rel: u64, e: &ElementType) -> Option<(&'static str, &'static str)> {
-    if is_float(e) {
+    if e.is_float() {
         let pred = match rel {
             0 => "oeq",
             1 => "one",
@@ -1617,7 +1586,7 @@ pub fn emit_function_mlir(
             Opcode::Const => {
                 let e = ty_at(ins.type_idx.0).ok_or(crate::emitter_gap!())?;
                 let mt = mlir_scalar(&e).ok_or(crate::emitter_gap!())?;
-                let lit = if is_float(&e) {
+                let lit = if e.is_float() {
                     mlir_float_literal(f64::from_bits(ins.imm))
                 } else {
                     (ins.imm as i64).to_string()
@@ -1664,7 +1633,7 @@ pub fn emit_function_mlir(
                 } else {
                     let (elem, shape) =
                         ctx.tensors.get(&result_gid).ok_or(crate::emitter_gap!())?;
-                    if !is_float(elem) {
+                    if !elem.is_float() {
                         return Err(Decline::TypeNotModelled {
                             what: "an elementwise op on non-float elements",
                         });
@@ -1745,7 +1714,7 @@ pub fn emit_function_mlir(
                     .ok_or(crate::emitter_gap!())?
                     .clone();
                 let n = format!("%v{idx}");
-                if is_float(&e) {
+                if e.is_float() {
                     body += &format!("  {n} = arith.negf {a} : {mt}\n");
                 } else {
                     let z = format!("%z{idx}");
@@ -2485,7 +2454,7 @@ pub fn emit_function_mlir(
             // Float only, matching the AST oracle (`vector<Nxf32>` → `f32`).
             Opcode::Reduce => {
                 let e = ty_at(ins.type_idx.0).ok_or(crate::emitter_gap!())?;
-                if !is_float(&e) {
+                if !e.is_float() {
                     return Err(crate::emitter_gap!()); // the AST lowers only f32 reductions
                 }
                 let et = mlir_scalar(&e).ok_or(crate::emitter_gap!())?;

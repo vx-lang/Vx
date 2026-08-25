@@ -32,6 +32,7 @@ pub mod jit;
 pub mod layout;
 pub mod lexer;
 pub mod metadata;
+pub mod mlir_ty;
 pub mod module_loader;
 pub mod parallel_architecture_verifier;
 pub mod parser;

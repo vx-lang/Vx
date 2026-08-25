@@ -56,6 +56,18 @@ pub const REGION_UNSET_0: u64 = REGION_MASK_0;
 /// here rather than colliding with the sentinel or the provenance bits.
 pub const REGION_MAX_0: u64 = REGION_MASK_0 - 1;
 
+/// The element type of a scalar, or `None` for a generic or a non-scalar.
+///
+/// Here rather than in either backend because it asks a question about the AST, and both the
+/// flattener and the flat emitter carried an identical copy of it.
+pub fn scalar_of(ty: &Type) -> Option<ElementType> {
+    match ty {
+        Type::Scalar(ElementType::Generic(_)) => None,
+        Type::Scalar(e) => Some(e.clone()),
+        _ => None,
+    }
+}
+
 /// Whether a return type is `void` — spelled `Type::Struct("void", _)`. A void-returning call
 /// produces no result value; the flat emitter prints `-> ()`.
 pub fn is_void_ty(ty: &Type) -> bool {
