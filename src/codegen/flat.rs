@@ -1382,7 +1382,2002 @@ fn tensor_memref_ty(elem: &ElementType, shape: &[String]) -> Option<String> {
     Some(format!("memref<{dims}{et}>"))
 }
 
-/// Emit a `func.func` for `func` from its flat HIR body, or `None` if the stream uses any construct
+/// Everything one function's instruction walk needs: the read-only context, the per-register
+/// tables it fills in as it goes, and the MLIR text it appends to. The flat path has no AST to
+/// consult, so an instruction that needs an *operand's* type recovers it from the table the
+/// producing instruction wrote. Each opcode family lives in its own `impl` block under
+/// `codegen/flat/emit/`.
+pub(crate) struct FnEmit<'a> {
+    pub(crate) func: &'a Function,
+    pub(crate) types: &'a [TypeId],
+    pub(crate) ctx: &'a EmitCtx,
+    /// Base index of this function's slice of the module-level string globals.
+    pub(crate) str_base: usize,
+    /// This function's string side table, indexed by an instruction's `imm`. `PrintStr` and
+    /// `StringConst` reach their bytes through a module-level global; `Abort` needs the text
+    /// itself, because `cf.assert` carries its message as an inline attribute.
+    pub(crate) strings: &'a [String],
+    /// The function's scalar return element, when it has one — a `Ret` of a differently-typed
+    /// value converts to this.
+    pub(crate) ret_elem: Option<ElementType>,
+    /// Alias-scope metadata for place-write field stores: each tagged store's stream position ->
+    /// its own alias-scope `distinct[]` id and its disjoint-sibling ids. Numbered from the
+    /// module-global counter, so scopes stay distinct across functions.
+    pub(crate) alias_scope_of: HashMap<usize, (u32, Vec<u32>)>,
+    /// Callees this function reaches, collected so the module can declare them.
+    pub(crate) calls: &'a mut Vec<(String, Vec<String>, String)>,
+    /// The SSA name each register carries.
+    pub(crate) names: Vec<String>,
+    /// The scalar element type each register carries, indexed by register (= instruction position
+    /// in the stream) — the type-valued parallel to `names`. As the stream is walked, each
+    /// value-producing instruction records its result type here, so any later instruction can
+    /// recover the type of a register it *reads*. This is the flat-driven stand-in for reading an
+    /// operand's type off the AST: there is no AST node to consult, so types are reconstructed on
+    /// the way.
+    ///
+    /// Why not just read each instruction's own `type_idx`? Most values are self-describing that
+    /// way, but two consumers need an *operand's* type, which their own `type_idx` doesn't give:
+    ///   - `Cmp`: its own result type is `bool`, but choosing `cmpi`/`cmpf` + the signed/unsigned
+    ///     predicate needs the *operands'* type -> `etypes[operand1]`.
+    ///   - `Store`: an effect instruction (its `type_idx` is the no-type sentinel), but printing
+    ///     `memref<T>` needs the slot's element type -> the `Alloca` records it, `Store` reads it
+    ///     back.
+    ///
+    /// Calls use it too: a `func.call`'s argument types come from `etypes[arg_reg]`.
+    ///
+    /// Scalar-only today (`ElementType`); widening it to tensor/aggregate types is future work
+    /// (#200).
+    pub(crate) etypes: Vec<Option<ElementType>>,
+    /// The aggregate GID for each register that is a struct-slot pointer (from an aggregate
+    /// `Alloca`), so a `FieldLoad`/`FieldStore` on that slot recovers the struct's `!llvm.struct`
+    /// type + field offsets. The aggregate analogue of `etypes` (kept separate: struct slots are
+    /// pointers, not scalar values).
+    pub(crate) agg_of: Vec<Option<TypeId>>,
+    /// The aggregate GID for each register that holds a struct *value* (not a slot pointer): an
+    /// aggregate `SlotLoad`, an aggregate-element `PtrIndex` read, or a struct-returning `Call`.
+    /// Lets a consumer (a by-value call argument, a `PtrStore` of the value) print the
+    /// `!llvm.struct` type. The value analogue of `agg_of` (which tracks struct *slots*).
+    pub(crate) agg_val_of: Vec<Option<TypeId>>,
+    /// The memref type string for each register that holds a tensor (from `TensorAlloc`), so a
+    /// `TensorIndex`/`TensorStore` on it prints the right `memref<...>`.
+    pub(crate) mem_of: Vec<Option<String>>,
+    /// For a scalar-element *place* register (a `TensorIndex` with `imm = 1`): the base memref
+    /// name, an `index`-typed index SSA name, and the base memref type — everything the following
+    /// `TensorStore` needs to emit `memref.store %v, %base[%idx]`.
+    pub(crate) place_of: Vec<Option<(String, String, String)>>,
+    /// For a raw-pointer element *place* register (a `PtrIndex` with `imm = 1`): the pointee
+    /// element's MLIR type, so the following `PtrStore` prints
+    /// `llvm.store %v, %place : {elem}, !llvm.ptr`. The place register itself already holds the
+    /// GEP'd element pointer (in `names`).
+    pub(crate) pptr_elem: Vec<Option<String>>,
+    /// The `vector<Nxf32>` type of each register holding an elementwise (slice) result, so a row
+    /// `TensorStore` `vector.store`s it and a further elementwise passes it through.
+    pub(crate) vec_of: Vec<Option<String>>,
+    /// Whether each register holds an opaque `!llvm.ptr` *value* (a string const, a pointer param,
+    /// a pointer-returning call, or a load from a pointer slot) — so a `Call` arg / `func.return`
+    /// types it as `!llvm.ptr`. The pointer analogue of `etypes`.
+    pub(crate) ptr_of: Vec<bool>,
+    /// Whether each register is a pointer *slot* (an `llvm.alloca` of `!llvm.ptr`, a memory-mode
+    /// pointer local), so a `Store`/`SlotLoad` on it uses `llvm.store`/`llvm.load` rather than
+    /// `memref`.
+    pub(crate) pslot_of: Vec<bool>,
+    /// The element type of each register that is an *address-taken scalar slot* (an `llvm.alloca`
+    /// of a scalar, `imm = 1` on the `Alloca`) — so `&x` yields a real `!llvm.ptr` (the slot
+    /// register is also marked in `ptr_of`) and a `Store`/`SlotLoad` uses `llvm.store`/`llvm.load`
+    /// of the element type rather than the rank-0 `memref` a never-borrowed scalar local uses. The
+    /// scalar analogue of `pslot_of`, carrying the element so the load/store types match.
+    pub(crate) sslot_of: Vec<Option<ElementType>>,
+    /// The function body's MLIR text, appended to as the walk proceeds.
+    pub(crate) body: String,
+    /// Whether the block currently being emitted has a terminator yet (a block must end in one).
+    pub(crate) terminated: bool,
+    /// Argument value registers accumulated by the `Arg`s that immediately precede a `Call`; the
+    /// `Call` consumes its `imm` trailing entries (a nested inner call sits between its own `Arg`s
+    /// and the outer ones, so each call's args are exactly the tail — see `flatten::lower_call`).
+    pub(crate) pending_args: Vec<u32>,
+    /// The topology of the currently-open `vx.spawn` region (`Some` between `Spawn` and its
+    /// matching `SpawnEnd`), remembered so `SpawnEnd` can emit the `topology` attribute. `None`
+    /// outside a spawn; a nested spawn (already `Some`) is declined.
+    pub(crate) spawn_topology: Option<i64>,
+    /// Per-function sub-space bump allocator (space dispatch id -> next free byte), mirroring the
+    /// AST path's `MeliorGenerator::subspace_offsets`: each `Transfer` into a granule'd space
+    /// claims the next granule-rounded `offset` and advances the cursor, so both paths assign
+    /// identical offsets. Reset per function, as in the AST codegen.
+    pub(crate) subspace_offsets: HashMap<u64, u64>,
+}
+
+impl<'a> FnEmit<'a> {
+    /// The scalar element type a type-stream index names, if it names one.
+    pub(crate) fn ty_at(&self, ti: u32) -> Option<ElementType> {
+        elem_of_gid(*self.types.get(ti as usize)?)
+    }
+
+    /// The scalar element type a register carries, if the producing instruction recorded one.
+    pub(crate) fn elem_at(&self, r: u32) -> Option<ElementType> {
+        self.etypes.get(r as usize)?.clone()
+    }
+
+    /// Emit one instruction into `body`. An opcode outside the flat subset declines, and
+    /// the AST path stays the oracle for the whole function.
+    pub(crate) fn step(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        match ins.opcode {
+            // Parameter materialization: the register *is* the block argument, no op emitted. A
+            // scalar param records its element type; a tensor param records its memref type (from the
+            // side table) so later index/store ops address it.
+            Opcode::Load => self.op_load(idx, ins),
+            Opcode::Const => self.op_const(idx, ins),
+            // Arithmetic: scalar (a scalar-GID result) or *elementwise* over a rank-1 float slice (a
+            // tensor-GID result). The scalar form is `arith.{addi,mulf,…}`; the elementwise form
+            // coerces each operand to a `vector<Nxf32>` (`vector.load`/`broadcast`), applies
+            // `arith.{addf,subf,mulf,divf}`, and yields a vector that a row `TensorStore` writes back.
+            Opcode::Add | Opcode::Sub | Opcode::Mul | Opcode::Div => self.op_binary(idx, ins),
+            // Scalar comparison → `i1`; the relation is in `imm`, the operand type comes from the
+            // first operand's tracked type (this instruction's own type is `bool`, the result).
+            Opcode::Cmp => self.op_cmp(idx, ins),
+            // Arithmetic negation `-x` (#214). `type_idx` is the result (= operand) scalar type. Float
+            // → `arith.negf`; integers have no `negi`, so `0 - x` via `arith.subi`.
+            Opcode::Neg => self.op_neg(idx, ins),
+            // Logical / bitwise not `!x` (#214): `x ^ all-ones` (`1` for a bool `i1`, `-1` for ints).
+            Opcode::Not => self.op_not(idx, ins),
+            // Scalar `as` cast (#214): `type_idx` is the *target* type, `operand1` the source value
+            // (whose type comes from its tracked `etypes`). The right `arith` conversion is chosen by
+            // the source/target kinds + widths; a same-type cast is a no-op that just aliases.
+            Opcode::Cast => self.op_cast(idx, ins),
+            // A named local's stack slot. A scalar slot is a rank-0 memref (matching the AST codegen's
+            // scalar locals); an aggregate (struct) slot is an `llvm.alloca` of the `!llvm.struct`
+            // type, its pointer tracked in `agg_of` so field ops can address it.
+            Opcode::Alloca => self.op_alloca(idx, ins),
+            // Store a value into a slot (no result). A scalar slot is a rank-0 `memref`; an aggregate
+            // slot (a struct value spilled from a struct-returning call) is an `llvm.store` (#215).
+            Opcode::Store => self.op_store(idx, ins),
+            // Load a value back from a slot; the result type is the slot's element (this
+            // instruction's own `type_idx`).
+            Opcode::SlotLoad => self.op_slot_load(idx, ins),
+            // Block markers → MLIR blocks. Block 0 is the func's entry block (implicit; it carries the
+            // params), so it gets no label; every other id opens `^bbN:`.
+            Opcode::BlockStart => self.op_block_start(idx, ins),
+            Opcode::Br => self.op_br(idx, ins),
+            // `imm` packs the two targets as `then | (else << 32)` (see `flatten::pack_targets`).
+            Opcode::CondBr => self.op_cond_br(idx, ins),
+            Opcode::Ret => self.op_ret(idx, ins),
+            // One argument of the following `Call`: record its value register (no op emitted).
+            Opcode::Arg => self.op_arg(idx, ins),
+            // A fixed-arity call. `type_idx` is the callee's GID (resolved to name + return type via
+            // `ctx.callees`); `imm` is the arg count, taken from the tail of `pending_args`. Emit
+            // `%r = func.call @name(%a, %b) : (Ta, Tb) -> Tret`.
+            Opcode::Call => self.op_call(idx, ins),
+            // Materialize a function pointer for a named function: `type_idx` is the target's GID
+            // (name via `ctx.callees`, signature via `ctx.func_sigs`). Emit `func.constant @name : sig`
+            // then cast the `FunctionType` value to an opaque `!llvm.ptr` (the ABI of a fn pointer),
+            // tracked in `ptr_of`. (#242)
+            Opcode::FuncConst => self.op_func_const(idx, ins),
+            // An indirect call through a function pointer. `operand1` is the callee `!llvm.ptr`, `imm`
+            // the arg count (the tail of `pending_args`, like `Call`), and this instruction's `type_idx`
+            // the scalar return type. Reconstruct the function type `(arg types)->ret` from the actual
+            // args, cast the pointer to it, and `func.call_indirect`. (#242)
+            Opcode::CallIndirect => self.op_call_indirect(idx, ins),
+            // Store a scalar into a struct field (no result). `operand1` is the struct slot pointer,
+            // `operand2` the value, `imm` the field's byte offset. GEP to the field, then `llvm.store`;
+            // the field index comes from matching the offset against the layout, the value type from
+            // the stored register's tracked type.
+            Opcode::FieldStore => self.op_field_store(idx, ins),
+            // Load a scalar struct field. `operand1` is the struct slot, `imm` the field's byte offset,
+            // and this instruction's own `type_idx` the field's scalar type. GEP to the field, then
+            // `llvm.load`.
+            Opcode::FieldLoad => self.op_field_load(idx, ins),
+            // The address of a by-value nested-aggregate field (`&outer.inner`): GEP to the field and
+            // yield the pointer, tracked as an aggregate slot (its layout GID from `type_idx`), so a
+            // chained field access or a method receiver addresses through it. (#242)
+            Opcode::FieldAddr => self.op_field_addr(idx, ins),
+            // Allocate a tensor buffer (`Tensor<T>([..])`): a static `memref` of the shape recovered
+            // from the side table by GID. Its register is tracked in `mem_of` for later index/store.
+            Opcode::TensorAlloc => self.op_tensor_alloc(idx, ins),
+            // Index a tensor along its outermost dimension. `operand1` is the base tensor (memref),
+            // `operand2` the index (`arith.index_cast` to `index`). A scalar-element result
+            // (`type_idx` is a scalar GID) is a value read (`imm = 0` → `memref.load`) or an element
+            // *place* (`imm = 1` → recorded for the following `TensorStore`). A sub-view result (a
+            // tensor GID) rank-reduces the base to a row via `memref.reinterpret_cast` (contiguous
+            // base only; a further sub-view of a strided row is deferred).
+            Opcode::TensorIndex => self.op_tensor_index(idx, ins),
+            // Reduce a rank-1 float slice to a scalar. `operand1` (and `operand2` for `dot`) are the
+            // slices; `imm` the kind (0 = dot, 1 = sum, 2 = max, 3 = min). Each slice is `vector.load`ed
+            // to a `vector<Nxf32>`; `dot` fuses the two with `arith.mulf`; then `vector.reduction`.
+            // Float only, matching the AST oracle (`vector<Nxf32>` → `f32`).
+            Opcode::Reduce => self.op_reduce(idx, ins),
+            // `matmul_into(&mut dst, &a, &b)` (no result): `linalg.fill` + `linalg.matmul` on the
+            // three whole-tensor memrefs, the same pair the AST path builds -- and the exact shape
+            // `kernelKindOf` classifies, so a spawn whose whole job is this op still routes to
+            // cuBLAS. The destination register rides the imm (see `Opcode::MatmulInto`).
+            Opcode::MatmulInto => self.op_matmul_into(idx, ins),
+            // `flash_attention_into(&mut o, &q, &k, &v, scale)` (no result): a serial
+            // `o = softmax(q @ k^T * scale) @ v` nest, preceded by a `vx.attention_note` naming
+            // which memref plays which role. The nest is the correctness contract — a runtime
+            // that cannot (or will not) route runs it as written; the note is what
+            // `kernelKindOf` classifies as `kind=attention` so a runtime that CAN route hands
+            // the region to a fused vendor kernel instead. o, v and scale ride the imm (see
+            // `Opcode::FlashAttnInto`). f16 storage with f32 arithmetic throughout, the same
+            // split the widening contracts (Vx#320) give every half slice.
+            Opcode::FlashAttnInto => self.op_flash_attn_into(idx, ins),
+            // Store into a tensor place (no result). A scalar-element place (an `imm = 1`
+            // `TensorIndex`) → `memref.store`; a row/sub-view place (an `imm = 0` `TensorIndex`, a row
+            // memref in `mem_of`) takes an elementwise vector value → `vector.store`.
+            Opcode::TensorStore => self.op_tensor_store(idx, ins),
+            // Move a tensor to a memory space: `operand1` is the source, `imm` the target space's
+            // dispatch id, `type_idx` the result tensor (same element + shape). Emits `vx.transfer`
+            // (generic form) with `target_topology`; the vx→standard lowering turns it into an
+            // alloc + `memref.copy` (it ignores the source's layout suffix, so the result is a plain
+            // `memref<NxT>`). When the target space declares a sub-space descriptor, re-attach the
+            // scheduling attrs (`space`/`within`/`granule`/`capacity`/`scope` + a bump-allocated
+            // `offset`/`slots`) the AST path emits — a device backend needs them to place the tile
+            // into VMEM/TMEM, and they are dropped otherwise (B1/P0-1).
+            Opcode::Transfer => self.op_transfer(idx, ins),
+            // Print a value (no result). A tensor is `memref.cast`'d to an unranked memref and passed
+            // to the `printMemref*` runtime helper; a scalar goes to `print_*`. These are the same
+            // helpers the AST path calls; `emit_module_mlir` prepends their `private` declarations.
+            Opcode::Print => self.op_print(idx, ins),
+            // Open a `vx.spawn` region (generic form). The op is inline in the enclosing block, which
+            // continues after it; the instructions up to the matching `SpawnEnd` form the region body.
+            // The ops immediately after `Spawn` (a control-flow body's setup, before its first explicit
+            // block) go in the region's entry block, so open a label for it. `imm` is the topology
+            // dispatch id (the same value the AST path emits as `vx.spawn`'s `topology` attribute).
+            Opcode::Spawn => self.op_spawn(idx, ins),
+            // Close the `vx.spawn` region: terminate its last block with `vx.yield` (unless a body
+            // terminator already ended it), stamp the `topology` attribute, and resume emitting into
+            // the enclosing block (which the spawn op did not terminate).
+            Opcode::SpawnEnd => self.op_spawn_end(idx, ins),
+            // Print a string literal (no result): take the address of the module-level global emitted
+            // for this string (`@".str.<n>"`, `n = str_base + imm`) and call the `@print_str` runtime
+            // helper. `emit_module_mlir` emits the global's bytes and the helper's `private` decl.
+            // Conditional abort -- `assert`, and `abort()` with a constant-false condition.
+            // `cf.assert` rather than a hand-written branch onto a call, because MLIR lowers it
+            // for whichever target the code reaches: `puts` + `abort` + `unreachable` on the
+            // host, `__assertfail` inside a kernel. It is also an ORDINARY op, not a
+            // terminator, so it needs no block splitting here.
+            // Block-level sync (Vx#379). A registered op with no results and no Pure trait, so
+            // the greedy folder cannot erase it before the device clone rewrites it to
+            // `gpu.barrier`; the host lowering erases it instead (a serial loop IS the barrier).
+            Opcode::Barrier => self.op_barrier(idx, ins),
+            Opcode::Abort => self.op_abort(idx, ins),
+            Opcode::PrintStr => self.op_print_str(idx, ins),
+            // A string literal in value position (#231): take the address of the module-level global
+            // (`@".str.<n>"`, `n = str_base + imm`, the same numbering as `PrintStr`) as a first-class
+            // `!llvm.ptr` value — what a `let s = "…"` binds or a string argument passes. The global's
+            // bytes are emitted by `emit_module_mlir` from the string side table.
+            Opcode::StringConst => self.op_string_const(idx, ins),
+            // Index a raw pointer `p[i]` (`p : *mut T`): GEP the element, then either load it (a value
+            // read) or hand back the element pointer as a store place. `operand1` is the base pointer,
+            // `operand2` the (scalar) index, `type_idx` the pointee element type. The GEP's base
+            // element type sets the stride, so `p[i]` addresses `base + i * sizeof(T)`. (#242)
+            Opcode::PtrIndex => self.op_ptr_index(idx, ins),
+            // Store into a raw-pointer place (no result): `operand1` is the `PtrIndex` place (the GEP'd
+            // element pointer), `operand2` the value, and the pointee element type comes from the
+            // place. (#242)
+            Opcode::PtrStore => self.op_ptr_store(idx, ins),
+            // Anything else (spawn, matmul, …) is outside this subset.
+            _ => Err(Decline::Unsupported {
+                what: "an opcode the emitter has no case for",
+            }),
+        }
+    }
+
+    // ---- Slots and parameters ----
+
+    // Parameter materialization: the register *is* the block argument, no op emitted. A
+    // scalar param records its element type; a tensor param records its memref type (from the
+    // side table) so later index/store ops address it.
+    fn op_load(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        self.names[idx] = format!("%arg{}", ins.imm);
+        let gid = *self
+            .types
+            .get(ins.type_idx.0 as usize)
+            .ok_or(crate::emitter_gap!())?;
+        if let Some(e) = elem_of_gid(gid) {
+            self.etypes[idx] = Some(e);
+        } else if gid == ptr_gid() {
+            self.ptr_of[idx] = true; // a `!llvm.ptr` parameter (#235)
+                                     // A pointer *to a modelled aggregate* (`self : &mut Vec<i32>`): also track its
+                                     // pointee layout GID, so a `FieldLoad`/`FieldStore` through `self` GEPs the field
+                                     // exactly as through an aggregate slot (#242).
+            if let Some(agg_gid) = self
+                .func
+                .params
+                .get(ins.imm as usize)
+                .and_then(|(_, ty)| pointee_agg_gid(ty, self.ctx))
+            {
+                self.agg_of[idx] = Some(agg_gid);
+            }
+        } else if let Some((elem, shape)) = self.ctx.tensors.get(&gid) {
+            self.mem_of[idx] = tensor_memref_ty(elem, shape);
+        } else if self.ctx.aggs.contains_key(&gid) {
+            // A by-value aggregate parameter (`self : Option<i32>` in `Option::unwrap`, a
+            // by-value struct arg): an `!llvm.struct` value, tracked so it can be spilled to a
+            // slot / passed on by value. (#242)
+            self.agg_val_of[idx] = Some(gid);
+        }
+        Ok(())
+    }
+
+    // A named local's stack slot. A scalar slot is a rank-0 memref (matching the AST codegen's
+    // scalar locals); an aggregate (struct) slot is an `llvm.alloca` of the `!llvm.struct`
+    // type, its pointer tracked in `agg_of` so field ops can address it.
+    fn op_alloca(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let gid = *self
+            .types
+            .get(ins.type_idx.0 as usize)
+            .ok_or(crate::emitter_gap!())?;
+        if let Some(e) = elem_of_gid(gid) {
+            let mt = mlir_scalar(&e).ok_or(crate::emitter_gap!())?;
+            let n = format!("%v{idx}");
+            if ins.imm == 1 {
+                // An address-taken scalar (`&x`): an `llvm.alloca` of the element type, yielding
+                // a real `!llvm.ptr` the borrow can hand out. Its `Store`/`SlotLoad` go through
+                // `sslot_of` (llvm.store/load); `ptr_of` marks it so `&x` types as a pointer arg
+                // / return. Do *not* set `etypes` — the slot register is a pointer, not a scalar
+                // value (that would mistype `&x` as its element at a call site). (#230)
+                let cnt = format!("%n{idx}");
+                self.body += &format!("  {cnt} = llvm.mlir.constant(1 : i32) : i32\n");
+                self.body += &format!("  {n} = llvm.alloca {cnt} x {mt} : (i32) -> !llvm.ptr\n");
+                self.names[idx] = n;
+                self.sslot_of[idx] = Some(e);
+                self.ptr_of[idx] = true;
+            } else {
+                self.body += &format!("  {n} = memref.alloca() : memref<{mt}>\n");
+                self.names[idx] = n;
+                self.etypes[idx] = Some(e);
+            }
+        } else if gid == ptr_gid() {
+            // A pointer local (memory mode): an `llvm.alloca` of one `!llvm.ptr` cell, tracked
+            // in `pslot_of` so its `Store`/`SlotLoad` use `llvm.store`/`llvm.load`. (#235)
+            let cnt = format!("%n{idx}");
+            let n = format!("%v{idx}");
+            self.body += &format!("  {cnt} = llvm.mlir.constant(1 : i32) : i32\n");
+            self.body += &format!("  {n} = llvm.alloca {cnt} x !llvm.ptr : (i32) -> !llvm.ptr\n");
+            self.names[idx] = n;
+            self.pslot_of[idx] = true;
+        } else {
+            let agg = self.ctx.aggs.get(&gid).ok_or(Decline::TypeNotModelled {
+                what: "an aggregate slot with no struct type",
+            })?;
+            let cnt = format!("%n{idx}");
+            let n = format!("%v{idx}");
+            self.body += &format!("  {cnt} = llvm.mlir.constant(1 : i32) : i32\n");
+            self.body += &format!(
+                "  {n} = llvm.alloca {cnt} x {} : (i32) -> !llvm.ptr\n",
+                agg.struct_ty
+            );
+            self.names[idx] = n;
+            self.agg_of[idx] = Some(gid);
+        }
+        Ok(())
+    }
+
+    // Store a value into a slot (no result). A scalar slot is a rank-0 `memref`; an aggregate
+    // slot (a struct value spilled from a struct-returning call) is an `llvm.store` (#215).
+    fn op_store(&mut self, _idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let slot = self
+            .names
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        let val = self
+            .names
+            .get(ins.operand2.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        // The induction-variable init of a stridable loop carries its tag into the MLIR
+        // text as a discardable attribute -- inert on the host path, the marker the
+        // device clone offsets by an id (#251 flat grid-stride; Vx#379 block/thread).
+        let attr = match ins.imm {
+            crate::bytecode::IMM_PARALLEL_INIT => " {vx.parallel_init}",
+            crate::bytecode::IMM_BLOCK_INIT => " {vx.parallel_binit}",
+            crate::bytecode::IMM_THREAD_INIT => " {vx.parallel_tinit}",
+            _ => "",
+        };
+        if let Some(&Some(agg_gid)) = self.agg_of.get(ins.operand1.0 as usize) {
+            let agg = self.ctx.aggs.get(&agg_gid).ok_or(crate::emitter_gap!())?;
+            self.body += &format!(
+                "  llvm.store {val}, {slot} : {}, !llvm.ptr\n",
+                agg.struct_ty
+            );
+        } else if *self
+            .pslot_of
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+        {
+            // A pointer local: store the `!llvm.ptr` value into its `llvm.alloca` cell. (#235)
+            self.body += &format!("  llvm.store {val}, {slot} : !llvm.ptr, !llvm.ptr\n");
+        } else if let Some(e) = self
+            .sslot_of
+            .get(ins.operand1.0 as usize)
+            .cloned()
+            .flatten()
+        {
+            // An address-taken scalar slot (an `llvm.alloca` of the element): `llvm.store`. (#230)
+            let mt = mlir_scalar(&e).ok_or(crate::emitter_gap!())?;
+            self.body += &format!("  llvm.store {val}, {slot}{attr} : {mt}, !llvm.ptr\n");
+        } else {
+            let e = self.elem_at(ins.operand1.0).ok_or(crate::emitter_gap!())?;
+            let mt = mlir_scalar(&e).ok_or(crate::emitter_gap!())?;
+            self.body += &format!("  memref.store {val}, {slot}[]{attr} : memref<{mt}>\n");
+        }
+        Ok(())
+    }
+
+    // Load a value back from a slot; the result type is the slot's element (this
+    // instruction's own `type_idx`).
+    fn op_slot_load(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        // A pointer slot loads back an `!llvm.ptr` value (`llvm.load`); an aggregate slot loads
+        // the whole `!llvm.struct` value (`llvm.load`, #242 Vec<Vec<T>>); a scalar slot loads
+        // its element from the rank-0 memref (`memref.load`). (#235)
+        if let Some(&Some(agg_gid)) = self.agg_of.get(ins.operand1.0 as usize) {
+            let agg = self.ctx.aggs.get(&agg_gid).ok_or(crate::emitter_gap!())?;
+            let slot = self
+                .names
+                .get(ins.operand1.0 as usize)
+                .ok_or(crate::emitter_gap!())?;
+            let n = format!("%v{idx}");
+            self.body += &format!(
+                "  {n} = llvm.load {slot} : !llvm.ptr -> {}\n",
+                agg.struct_ty
+            );
+            self.names[idx] = n;
+            self.agg_val_of[idx] = Some(agg_gid);
+        } else if *self
+            .pslot_of
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+        {
+            let slot = self
+                .names
+                .get(ins.operand1.0 as usize)
+                .ok_or(crate::emitter_gap!())?;
+            let n = format!("%v{idx}");
+            self.body += &format!("  {n} = llvm.load {slot} : !llvm.ptr -> !llvm.ptr\n");
+            self.names[idx] = n;
+            self.ptr_of[idx] = true;
+        } else if let Some(e) = self
+            .sslot_of
+            .get(ins.operand1.0 as usize)
+            .cloned()
+            .flatten()
+        {
+            // An address-taken scalar slot: `llvm.load` the element back from the `!llvm.ptr`. (#230)
+            let mt = mlir_scalar(&e).ok_or(crate::emitter_gap!())?;
+            let slot = self
+                .names
+                .get(ins.operand1.0 as usize)
+                .ok_or(crate::emitter_gap!())?;
+            let n = format!("%v{idx}");
+            self.body += &format!("  {n} = llvm.load {slot} : !llvm.ptr -> {mt}\n");
+            self.names[idx] = n;
+            self.etypes[idx] = Some(e);
+        } else {
+            let e = self.ty_at(ins.type_idx.0).ok_or(crate::emitter_gap!())?;
+            let mt = mlir_scalar(&e).ok_or(crate::emitter_gap!())?;
+            let slot = self
+                .names
+                .get(ins.operand1.0 as usize)
+                .ok_or(crate::emitter_gap!())?;
+            let n = format!("%v{idx}");
+            self.body += &format!("  {n} = memref.load {slot}[] : memref<{mt}>\n");
+            self.names[idx] = n;
+            self.etypes[idx] = Some(e);
+        }
+        Ok(())
+    }
+
+    // ---- Scalar arithmetic, comparison and conversion ----
+
+    fn op_const(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let e = self.ty_at(ins.type_idx.0).ok_or(crate::emitter_gap!())?;
+        let mt = mlir_scalar(&e).ok_or(crate::emitter_gap!())?;
+        let lit = if e.is_float() {
+            mlir_float_literal(f64::from_bits(ins.imm))
+        } else {
+            (ins.imm as i64).to_string()
+        };
+        let n = format!("%v{idx}");
+        self.body += &format!("  {n} = arith.constant {lit} : {mt}\n");
+        self.names[idx] = n;
+        self.etypes[idx] = Some(e);
+        Ok(())
+    }
+
+    // Arithmetic: scalar (a scalar-GID result) or *elementwise* over a rank-1 float slice (a
+    // tensor-GID result). The scalar form is `arith.{addi,mulf,…}`; the elementwise form
+    // coerces each operand to a `vector<Nxf32>` (`vector.load`/`broadcast`), applies
+    // `arith.{addf,subf,mulf,divf}`, and yields a vector that a row `TensorStore` writes back.
+    fn op_binary(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let result_gid = *self
+            .types
+            .get(ins.type_idx.0 as usize)
+            .ok_or(crate::emitter_gap!())?;
+        if let Some(e) = elem_of_gid(result_gid) {
+            let mt = mlir_scalar(&e).ok_or(crate::emitter_gap!())?;
+            let op = arith_op(ins.opcode, &e).ok_or(crate::emitter_gap!())?;
+            let a = self
+                .names
+                .get(ins.operand1.0 as usize)
+                .ok_or(crate::emitter_gap!())?;
+            let b = self
+                .names
+                .get(ins.operand2.0 as usize)
+                .ok_or(crate::emitter_gap!())?;
+            let n = format!("%v{idx}");
+            // The latch increment of a stridable loop -- the marker the device clone
+            // widens to a stride (#251 flat; Vx#379 block/thread). Only an `Add` can
+            // carry it: `lower_for` is the sole tagger.
+            let attr = if ins.opcode == Opcode::Add {
+                match ins.imm {
+                    crate::bytecode::IMM_PARALLEL_STEP => " {vx.parallel_step}",
+                    crate::bytecode::IMM_BLOCK_STEP => " {vx.parallel_bstep}",
+                    crate::bytecode::IMM_THREAD_STEP => " {vx.parallel_tstep}",
+                    _ => "",
+                }
+            } else {
+                ""
+            };
+            self.body += &format!("  {n} = {op} {a}, {b}{attr} : {mt}\n");
+            self.names[idx] = n;
+            self.etypes[idx] = Some(e);
+        } else {
+            let (elem, shape) = self
+                .ctx
+                .tensors
+                .get(&result_gid)
+                .ok_or(crate::emitter_gap!())?;
+            if !elem.is_float() {
+                return Err(Decline::TypeNotModelled {
+                    what: "an elementwise op on non-float elements",
+                });
+            }
+            let et = mlir_scalar(elem).ok_or(crate::emitter_gap!())?;
+            let d: i64 = shape
+                .iter()
+                .map(|s| s.parse::<i64>().ok())
+                .collect::<Option<Vec<_>>>()
+                .ok_or(crate::emitter_gap!())?
+                .iter()
+                .product();
+            let vecty = format!("vector<{d}x{et}>");
+            let va = coerce_vector(
+                &mut self.body,
+                &format!("{idx}a"),
+                ins.operand1.0,
+                &vecty,
+                et,
+                &self.names,
+                &self.mem_of,
+                &self.vec_of,
+                &self.etypes,
+            )?;
+            let vb = coerce_vector(
+                &mut self.body,
+                &format!("{idx}b"),
+                ins.operand2.0,
+                &vecty,
+                et,
+                &self.names,
+                &self.mem_of,
+                &self.vec_of,
+                &self.etypes,
+            )?;
+            let op = match ins.opcode {
+                Opcode::Add => "arith.addf",
+                Opcode::Sub => "arith.subf",
+                Opcode::Mul => "arith.mulf",
+                Opcode::Div => "arith.divf",
+                _ => return Err(crate::emitter_gap!()),
+            };
+            let n = format!("%v{idx}");
+            self.body += &format!("  {n} = {op} {va}, {vb} : {vecty}\n");
+            self.names[idx] = n;
+            self.vec_of[idx] = Some(vecty);
+        }
+        Ok(())
+    }
+
+    // Scalar comparison → `i1`; the relation is in `imm`, the operand type comes from the
+    // first operand's tracked type (this instruction's own type is `bool`, the result).
+    fn op_cmp(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let e = self.elem_at(ins.operand1.0).ok_or(crate::emitter_gap!())?;
+        let mt = mlir_scalar(&e).ok_or(crate::emitter_gap!())?;
+        let (op, pred) = cmp_op(ins.imm, &e).ok_or(crate::emitter_gap!())?;
+        let a = self
+            .names
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?;
+        let b = self
+            .names
+            .get(ins.operand2.0 as usize)
+            .ok_or(crate::emitter_gap!())?;
+        let n = format!("%v{idx}");
+        self.body += &format!("  {n} = {op} {pred}, {a}, {b} : {mt}\n");
+        self.names[idx] = n;
+        self.etypes[idx] = Some(ElementType::Bool);
+        Ok(())
+    }
+
+    // Arithmetic negation `-x` (#214). `type_idx` is the result (= operand) scalar type. Float
+    // → `arith.negf`; integers have no `negi`, so `0 - x` via `arith.subi`.
+    fn op_neg(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let e = elem_of_gid(
+            *self
+                .types
+                .get(ins.type_idx.0 as usize)
+                .ok_or(crate::emitter_gap!())?,
+        )
+        .ok_or(crate::emitter_gap!())?;
+        let mt = mlir_scalar(&e).ok_or(crate::emitter_gap!())?;
+        let a = self
+            .names
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        let n = format!("%v{idx}");
+        if e.is_float() {
+            self.body += &format!("  {n} = arith.negf {a} : {mt}\n");
+        } else {
+            let z = format!("%z{idx}");
+            self.body += &format!("  {z} = arith.constant 0 : {mt}\n");
+            self.body += &format!("  {n} = arith.subi {z}, {a} : {mt}\n");
+        }
+        self.names[idx] = n;
+        self.etypes[idx] = Some(e);
+        Ok(())
+    }
+
+    // Logical / bitwise not `!x` (#214): `x ^ all-ones` (`1` for a bool `i1`, `-1` for ints).
+    fn op_not(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let e = elem_of_gid(
+            *self
+                .types
+                .get(ins.type_idx.0 as usize)
+                .ok_or(crate::emitter_gap!())?,
+        )
+        .ok_or(crate::emitter_gap!())?;
+        let mt = mlir_scalar(&e).ok_or(crate::emitter_gap!())?;
+        let a = self
+            .names
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        let ones_val = if matches!(e, ElementType::Bool) {
+            "1"
+        } else {
+            "-1"
+        };
+        let ones = format!("%ones{idx}");
+        let n = format!("%v{idx}");
+        self.body += &format!("  {ones} = arith.constant {ones_val} : {mt}\n");
+        self.body += &format!("  {n} = arith.xori {a}, {ones} : {mt}\n");
+        self.names[idx] = n;
+        self.etypes[idx] = Some(e);
+        Ok(())
+    }
+
+    // Scalar `as` cast (#214): `type_idx` is the *target* type, `operand1` the source value
+    // (whose type comes from its tracked `etypes`). The right `arith` conversion is chosen by
+    // the source/target kinds + widths; a same-type cast is a no-op that just aliases.
+    fn op_cast(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let src = self.elem_at(ins.operand1.0).ok_or(crate::emitter_gap!())?;
+        let tgt = elem_of_gid(
+            *self
+                .types
+                .get(ins.type_idx.0 as usize)
+                .ok_or(crate::emitter_gap!())?,
+        )
+        .ok_or(crate::emitter_gap!())?;
+        let a = self
+            .names
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        let op = cast_op(&src, &tgt).ok_or(crate::emitter_gap!())?;
+        if op.is_empty() {
+            self.names[idx] = a; // reinterpret (e.g. i32 as u32) -> alias
+        } else {
+            let n = format!("%v{idx}");
+            self.body += &format!(
+                "  {n} = {op} {a} : {} to {}\n",
+                mlir_scalar(&src).ok_or(crate::emitter_gap!())?,
+                mlir_scalar(&tgt).ok_or(crate::emitter_gap!())?
+            );
+            self.names[idx] = n;
+        }
+        self.etypes[idx] = Some(tgt);
+        Ok(())
+    }
+
+    // ---- Blocks, branches and return ----
+
+    // Block markers → MLIR blocks. Block 0 is the func's entry block (implicit; it carries the
+    // params), so it gets no label; every other id opens `^bbN:`.
+    fn op_block_start(&mut self, _idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        if ins.imm != 0 {
+            self.body += &format!("^bb{}:\n", ins.imm);
+        }
+        self.terminated = false;
+        Ok(())
+    }
+
+    fn op_br(&mut self, _idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        self.body += &format!("  cf.br ^bb{}\n", ins.imm);
+        self.terminated = true;
+        Ok(())
+    }
+
+    // `imm` packs the two targets as `then | (else << 32)` (see `flatten::pack_targets`).
+    fn op_cond_br(&mut self, _idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let cond = self
+            .names
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?;
+        let then_b = ins.imm & 0xffff_ffff;
+        let else_b = ins.imm >> 32;
+        self.body += &format!("  cf.cond_br {cond}, ^bb{then_b}, ^bb{else_b}\n");
+        self.terminated = true;
+        Ok(())
+    }
+
+    fn op_ret(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let gid = *self
+            .types
+            .get(ins.type_idx.0 as usize)
+            .ok_or(crate::emitter_gap!())?;
+        let a = self
+            .names
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        if let Some(e) = elem_of_gid(gid) {
+            // Coerce the returned scalar to the function's declared return type if they differ
+            // (e.g. `return 10` — a default-`i32` literal — from an `-> i64` function ->
+            // `arith.extsi`), mirroring the AST's `coerce_type` at return. Otherwise the
+            // `func.return` type contradicts the signature.
+            let target = self.ret_elem.clone().unwrap_or_else(|| e.clone());
+            if mlir_scalar(&e).ok_or(crate::emitter_gap!())?
+                != mlir_scalar(&target).ok_or(crate::emitter_gap!())?
+            {
+                match cast_op(&e, &target).ok_or(crate::emitter_gap!())? {
+                    "" => {
+                        self.body += &format!(
+                            "  func.return {a} : {}\n",
+                            mlir_scalar(&target).ok_or(crate::emitter_gap!())?
+                        )
+                    }
+                    op => {
+                        let c = format!("%rc{idx}");
+                        self.body += &format!(
+                            "  {c} = {op} {a} : {} to {}\n",
+                            mlir_scalar(&e).ok_or(crate::emitter_gap!())?,
+                            mlir_scalar(&target).ok_or(crate::emitter_gap!())?
+                        );
+                        self.body += &format!(
+                            "  func.return {c} : {}\n",
+                            mlir_scalar(&target).ok_or(crate::emitter_gap!())?
+                        );
+                    }
+                }
+            } else {
+                self.body += &format!(
+                    "  func.return {a} : {}\n",
+                    mlir_scalar(&e).ok_or(crate::emitter_gap!())?
+                );
+            }
+        } else if gid == ptr_gid() {
+            self.body += &format!("  func.return {a} : !llvm.ptr\n"); // a pointer return (#235)
+        } else if let Some(agg) = self.ctx.aggs.get(&gid) {
+            // A struct return (#215). The operand is either a slot pointer (a constructed
+            // struct) -> load the value; or already a struct value (a returned call result) ->
+            // return it directly.
+            if self
+                .agg_of
+                .get(ins.operand1.0 as usize)
+                .copied()
+                .flatten()
+                .is_some()
+            {
+                let rv = format!("%rv{idx}");
+                self.body += &format!("  {rv} = llvm.load {a} : !llvm.ptr -> {}\n", agg.struct_ty);
+                self.body += &format!("  func.return {rv} : {}\n", agg.struct_ty);
+            } else {
+                self.body += &format!("  func.return {a} : {}\n", agg.struct_ty);
+            }
+        } else {
+            return Err(crate::emitter_gap!());
+        }
+        self.terminated = true;
+        Ok(())
+    }
+
+    // ---- Calls, direct and indirect ----
+
+    // One argument of the following `Call`: record its value register (no op emitted).
+    fn op_arg(&mut self, _idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        self.pending_args.push(ins.operand1.0);
+        Ok(())
+    }
+
+    // A fixed-arity call. `type_idx` is the callee's GID (resolved to name + return type via
+    // `ctx.callees`); `imm` is the arg count, taken from the tail of `pending_args`. Emit
+    // `%r = func.call @name(%a, %b) : (Ta, Tb) -> Tret`.
+    fn op_call(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let gid = *self
+            .types
+            .get(ins.type_idx.0 as usize)
+            .ok_or(crate::emitter_gap!())?;
+        let callee = self.ctx.callees.get(&gid).ok_or(crate::emitter_gap!())?;
+        // Return type: a scalar, an `!llvm.struct` by value for a struct-returning callee
+        // (#215), a pointer, or `()` for a void callee (a `&mut` mutator called in statement
+        // position, #230).
+        let rt = if let Some(e) = &callee.ret {
+            mlir_scalar(e).ok_or(crate::emitter_gap!())?.to_string()
+        } else if let Some(agg_gid) = callee.ret_agg {
+            self.ctx
+                .aggs
+                .get(&agg_gid)
+                .ok_or(crate::emitter_gap!())?
+                .struct_ty
+                .clone()
+        } else if callee.ret_ptr {
+            "!llvm.ptr".to_string() // an FFI pointer-returning callee (#235)
+        } else if callee.ret_void {
+            "()".to_string()
+        } else {
+            return Err(Decline::TypeNotModelled {
+                what: "a callee whose return type has no MLIR spelling",
+            });
+        };
+        let n = ins.imm as usize;
+        if self.pending_args.len() < n {
+            return Err(crate::emitter_gap!());
+        }
+        let args = self.pending_args.split_off(self.pending_args.len() - n);
+        let mut arg_names = Vec::with_capacity(n);
+        let mut arg_types: Vec<String> = Vec::with_capacity(n);
+        for a in &args {
+            arg_names.push(
+                self.names
+                    .get(*a as usize)
+                    .ok_or(crate::emitter_gap!())?
+                    .clone(),
+            );
+            // A scalar arg is its element type; a pointer arg (a string value / FFI pointer, or
+            // an aggregate *slot* passed by reference — `&v` / a `self` pointer, #242) is
+            // `!llvm.ptr`; a tensor arg is its memref type.
+            let at = if let Some(e) = self.elem_at(*a) {
+                mlir_scalar(&e).ok_or(crate::emitter_gap!())?.to_string()
+            } else if let Some(agg_gid) = self.agg_val_of.get(*a as usize).copied().flatten() {
+                // A by-value aggregate argument (`push(&outer, a)` passing `a : Vec<i32>` by
+                // value into a `Vec<Vec<T>>::push`) — an `!llvm.struct` value (#242).
+                self.ctx
+                    .aggs
+                    .get(&agg_gid)
+                    .ok_or(crate::emitter_gap!())?
+                    .struct_ty
+                    .clone()
+            } else if *self.ptr_of.get(*a as usize).ok_or(crate::emitter_gap!())?
+                || self.agg_of.get(*a as usize).copied().flatten().is_some()
+            {
+                "!llvm.ptr".to_string()
+            } else {
+                self.mem_of
+                    .get(*a as usize)
+                    .ok_or(crate::emitter_gap!())?
+                    .clone()
+                    .ok_or(crate::emitter_gap!())?
+            };
+            arg_types.push(at);
+        }
+        if callee.ret_void {
+            // A void call binds no result register (MLIR forbids `%v = func.call ... -> ()`);
+            // the call is a pure effect (mutation through a `&mut` arg). The private extern decl
+            // records an empty return (no `->`) so a void `extern` declares as `(args)`. (#230)
+            self.body += &format!(
+                "  func.call {}({}) : ({}) -> ()\n",
+                sym_ref(&callee.name),
+                arg_names.join(", "),
+                arg_types.join(", "),
+            );
+            self.calls
+                .push((callee.name.clone(), arg_types.clone(), String::new()));
+        } else {
+            let nm = format!("%v{idx}");
+            self.body += &format!(
+                "  {nm} = func.call {}({}) : ({}) -> {rt}\n",
+                sym_ref(&callee.name),
+                arg_names.join(", "),
+                arg_types.join(", "),
+            );
+            // Record the callee's signature so the module emitter can declare it if it is a
+            // called-but-undefined symbol (an `extern`): the private decl's signature is taken
+            // from the emitted call, so they match by construction.
+            self.calls
+                .push((callee.name.clone(), arg_types.clone(), rt.clone()));
+            self.names[idx] = nm;
+            if let Some(e) = &callee.ret {
+                self.etypes[idx] = Some(e.clone());
+            } else if callee.ret_ptr {
+                self.ptr_of[idx] = true; // the call result is a pointer value (#235)
+            } else if let Some(agg_gid) = callee.ret_agg {
+                // A struct-returning call result is a struct *value*; tracked so it can be
+                // spilled to a slot (`Store`), returned (`Ret`), or passed by value to another
+                // call (#242).
+                self.agg_val_of[idx] = Some(agg_gid);
+            }
+        }
+        Ok(())
+    }
+
+    // Materialize a function pointer for a named function: `type_idx` is the target's GID
+    // (name via `ctx.callees`, signature via `ctx.func_sigs`). Emit `func.constant @name : sig`
+    // then cast the `FunctionType` value to an opaque `!llvm.ptr` (the ABI of a fn pointer),
+    // tracked in `ptr_of`. (#242)
+    fn op_func_const(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let gid = *self
+            .types
+            .get(ins.type_idx.0 as usize)
+            .ok_or(crate::emitter_gap!())?;
+        let callee = self.ctx.callees.get(&gid).ok_or(crate::emitter_gap!())?;
+        let (params, ret) = self.ctx.func_sigs.get(&gid).ok_or(crate::emitter_gap!())?;
+        let fnty = format!("({}) -> {}", params.join(", "), ret);
+        let fc = format!("%fc{idx}");
+        let nm = format!("%v{idx}");
+        self.body += &format!(
+            "  {fc} = func.constant {} : {fnty}\n",
+            sym_ref(&callee.name)
+        );
+        self.body +=
+            &format!("  {nm} = builtin.unrealized_conversion_cast {fc} : {fnty} to !llvm.ptr\n");
+        self.names[idx] = nm;
+        self.ptr_of[idx] = true;
+        Ok(())
+    }
+
+    // An indirect call through a function pointer. `operand1` is the callee `!llvm.ptr`, `imm`
+    // the arg count (the tail of `pending_args`, like `Call`), and this instruction's `type_idx`
+    // the scalar return type. Reconstruct the function type `(arg types)->ret` from the actual
+    // args, cast the pointer to it, and `func.call_indirect`. (#242)
+    fn op_call_indirect(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let ret_elem = self.ty_at(ins.type_idx.0).ok_or(crate::emitter_gap!())?;
+        let rt = mlir_scalar(&ret_elem)
+            .ok_or(crate::emitter_gap!())?
+            .to_string();
+        let n = ins.imm as usize;
+        if self.pending_args.len() < n {
+            return Err(crate::emitter_gap!());
+        }
+        let args = self.pending_args.split_off(self.pending_args.len() - n);
+        let mut arg_names = Vec::with_capacity(n);
+        let mut arg_types: Vec<String> = Vec::with_capacity(n);
+        for a in &args {
+            arg_names.push(
+                self.names
+                    .get(*a as usize)
+                    .ok_or(crate::emitter_gap!())?
+                    .clone(),
+            );
+            let at = if let Some(e) = self.elem_at(*a) {
+                mlir_scalar(&e).ok_or(crate::emitter_gap!())?.to_string()
+            } else if let Some(agg_gid) = self.agg_val_of.get(*a as usize).copied().flatten() {
+                self.ctx
+                    .aggs
+                    .get(&agg_gid)
+                    .ok_or(crate::emitter_gap!())?
+                    .struct_ty
+                    .clone()
+            } else if *self.ptr_of.get(*a as usize).ok_or(crate::emitter_gap!())?
+                || self.agg_of.get(*a as usize).copied().flatten().is_some()
+            {
+                "!llvm.ptr".to_string()
+            } else {
+                self.mem_of
+                    .get(*a as usize)
+                    .ok_or(crate::emitter_gap!())?
+                    .clone()
+                    .ok_or(crate::emitter_gap!())?
+            };
+            arg_types.push(at);
+        }
+        let fnty = format!("({}) -> {rt}", arg_types.join(", "));
+        let fnptr = self
+            .names
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        let fc = format!("%fc{idx}");
+        let nm = format!("%v{idx}");
+        self.body +=
+            &format!("  {fc} = builtin.unrealized_conversion_cast {fnptr} : !llvm.ptr to {fnty}\n");
+        self.body += &format!(
+            "  {nm} = func.call_indirect {fc}({}) : {fnty}\n",
+            arg_names.join(", ")
+        );
+        self.names[idx] = nm;
+        self.etypes[idx] = Some(ret_elem);
+        Ok(())
+    }
+
+    // ---- Struct fields and raw pointers ----
+
+    // Store a scalar into a struct field (no result). `operand1` is the struct slot pointer,
+    // `operand2` the value, `imm` the field's byte offset. GEP to the field, then `llvm.store`;
+    // the field index comes from matching the offset against the layout, the value type from
+    // the stored register's tracked type.
+    fn op_field_store(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let gid = (*self
+            .agg_of
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?)
+        .ok_or(crate::emitter_gap!())?;
+        let agg = self.ctx.aggs.get(&gid).ok_or(crate::emitter_gap!())?;
+        let field_idx = agg
+            .offsets
+            .iter()
+            .position(|&o| o == ins.imm)
+            .ok_or(crate::emitter_gap!())?;
+        // The field's declared MLIR type (a scalar element or `!llvm.ptr`), so a pointer field
+        // (`Vec`'s `data`) stores an `!llvm.ptr` value and a scalar field its element (#242).
+        let fty = agg
+            .field_tys
+            .get(field_idx)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        let slot = self
+            .names
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?;
+        let val = self
+            .names
+            .get(ins.operand2.0 as usize)
+            .ok_or(crate::emitter_gap!())?;
+        let p = format!("%p{idx}");
+        self.body += &format!(
+            "  {p} = llvm.getelementptr {slot}[0, {field_idx}] : (!llvm.ptr) -> !llvm.ptr, {}\n",
+            agg.struct_ty
+        );
+        // A place-write store carries alias-scope metadata (M2b-2): it belongs to its own scope
+        // and does not alias its disjoint siblings' scopes. Direct field stores are unscoped.
+        let attrs = self
+            .alias_scope_of
+            .get(&idx)
+            .map(|(own, sibs)| alias_store_attrs(*own, sibs))
+            .unwrap_or_default();
+        self.body += &format!("  llvm.store {val}, {p}{attrs} : {fty}, !llvm.ptr\n");
+        Ok(())
+    }
+
+    // Load a scalar struct field. `operand1` is the struct slot, `imm` the field's byte offset,
+    // and this instruction's own `type_idx` the field's scalar type. GEP to the field, then
+    // `llvm.load`.
+    fn op_field_load(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let gid = (*self
+            .agg_of
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?)
+        .ok_or(crate::emitter_gap!())?;
+        let agg = self.ctx.aggs.get(&gid).ok_or(crate::emitter_gap!())?;
+        let field_idx = agg
+            .offsets
+            .iter()
+            .position(|&o| o == ins.imm)
+            .ok_or(crate::emitter_gap!())?;
+        // The field's declared MLIR type drives the load: a scalar field yields its element
+        // (tracked in `etypes`), a pointer field (`Vec`'s `data`) an `!llvm.ptr` value
+        // (tracked in `ptr_of`) — the type is taken from the layout, not the read register's
+        // `type_idx`, so a pointer field (whose `type_idx` is `ptr_gid`) resolves too (#242).
+        let fty = agg
+            .field_tys
+            .get(field_idx)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        // A pointer field pointing to a modelled aggregate (`VecIter`'s `vec : *const Vec<T>`)
+        // tags its loaded value with the pointee GID, so a chained field access through it
+        // (`(*self.vec).len`) GEPs the pointee. (#242)
+        let pointee = agg.field_pointee.get(field_idx).copied().flatten();
+        let slot = self
+            .names
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?;
+        let p = format!("%p{idx}");
+        let n = format!("%v{idx}");
+        self.body += &format!(
+            "  {p} = llvm.getelementptr {slot}[0, {field_idx}] : (!llvm.ptr) -> !llvm.ptr, {}\n",
+            agg.struct_ty
+        );
+        self.body += &format!("  {n} = llvm.load {p} : !llvm.ptr -> {fty}\n");
+        self.names[idx] = n;
+        if fty == "!llvm.ptr" {
+            self.ptr_of[idx] = true;
+            self.agg_of[idx] = pointee;
+        } else if let Some(nested_gid) = agg.field_agg.get(field_idx).copied().flatten() {
+            // A by-value nested-aggregate field load yields the whole `!llvm.struct` value,
+            // tracked as an aggregate value so it can be re-stored / passed by value. (#242)
+            self.agg_val_of[idx] = Some(nested_gid);
+        } else {
+            self.etypes[idx] = elem_from_mlir_scalar(&fty);
+        }
+        Ok(())
+    }
+
+    // The address of a by-value nested-aggregate field (`&outer.inner`): GEP to the field and
+    // yield the pointer, tracked as an aggregate slot (its layout GID from `type_idx`), so a
+    // chained field access or a method receiver addresses through it. (#242)
+    fn op_field_addr(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let parent_gid = (*self
+            .agg_of
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?)
+        .ok_or(crate::emitter_gap!())?;
+        let agg = self
+            .ctx
+            .aggs
+            .get(&parent_gid)
+            .ok_or(crate::emitter_gap!())?;
+        let field_idx = agg
+            .offsets
+            .iter()
+            .position(|&o| o == ins.imm)
+            .ok_or(crate::emitter_gap!())?;
+        let field_gid = *self
+            .types
+            .get(ins.type_idx.0 as usize)
+            .ok_or(crate::emitter_gap!())?;
+        let slot = self
+            .names
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?;
+        let n = format!("%v{idx}");
+        self.body += &format!(
+            "  {n} = llvm.getelementptr {slot}[0, {field_idx}] : (!llvm.ptr) -> !llvm.ptr, {}\n",
+            agg.struct_ty
+        );
+        self.names[idx] = n;
+        // A nested-aggregate field's address is tracked as an aggregate slot, so a chained field
+        // access GEPs through it (#242); a *scalar* field's address (`&param.scalar`, #275 M3b
+        // reference returns) is a plain element pointer — the result GID is the field's scalar GID,
+        // which is not in `aggs`, so track it as a pointer instead.
+        if self.ctx.aggs.contains_key(&field_gid) {
+            self.agg_of[idx] = Some(field_gid);
+        } else {
+            self.ptr_of[idx] = true;
+        }
+        Ok(())
+    }
+
+    // Index a raw pointer `p[i]` (`p : *mut T`): GEP the element, then either load it (a value
+    // read) or hand back the element pointer as a store place. `operand1` is the base pointer,
+    // `operand2` the (scalar) index, `type_idx` the pointee element type. The GEP's base
+    // element type sets the stride, so `p[i]` addresses `base + i * sizeof(T)`. (#242)
+    fn op_ptr_index(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let base = self
+            .names
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        // The pointee element is a scalar (`*mut i32`) or a by-value aggregate
+        // (`*mut Vec<i32>`, #242 Vec<Vec<T>>). The GEP's base element type (`et`) sets the
+        // stride either way; a struct element loads/stores the whole `!llvm.struct`.
+        let gid = *self
+            .types
+            .get(ins.type_idx.0 as usize)
+            .ok_or(crate::emitter_gap!())?;
+        // A pointer whose pointee is itself a pointer (`&&T`): the element is a bare `!llvm.ptr`
+        // — the deref loads/stores an 8-byte pointer and the loaded value is itself a pointer
+        // (`ptr_of`), so a further deref (`**rr`) chains. (#278)
+        let elem_is_ptr = gid == ptr_gid();
+        let (et, scalar_e, agg_gid) = if elem_is_ptr {
+            ("!llvm.ptr".to_string(), None, None)
+        } else if let Some(e) = elem_of_gid(gid) {
+            (
+                mlir_scalar(&e).ok_or(crate::emitter_gap!())?.to_string(),
+                Some(e),
+                None,
+            )
+        } else if let Some(agg) = self.ctx.aggs.get(&gid) {
+            (agg.struct_ty.clone(), None, Some(gid))
+        } else {
+            return Err(crate::emitter_gap!());
+        };
+        let imt = mlir_scalar(&self.elem_at(ins.operand2.0).ok_or(crate::emitter_gap!())?)
+            .ok_or(crate::emitter_gap!())?;
+        let iname = self
+            .names
+            .get(ins.operand2.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        let p = format!("%pg{idx}");
+        self.body += &format!(
+            "  {p} = llvm.getelementptr {base}[{iname}] : (!llvm.ptr, {imt}) -> !llvm.ptr, {et}\n"
+        );
+        if ins.imm == 1 {
+            // An element place: the following `PtrStore` writes through it.
+            self.names[idx] = p;
+            self.ptr_of[idx] = true;
+            self.pptr_elem[idx] = Some(et);
+        } else {
+            let n = format!("%v{idx}");
+            self.body += &format!("  {n} = llvm.load {p} : !llvm.ptr -> {et}\n");
+            self.names[idx] = n;
+            self.etypes[idx] = scalar_e;
+            self.agg_val_of[idx] = agg_gid;
+            // The loaded value is a pointer (`*rr : &i32`): mark it so an outer deref treats it
+            // as a `!llvm.ptr` base rather than a scalar. (#278)
+            if elem_is_ptr {
+                self.ptr_of[idx] = true;
+            }
+        }
+        Ok(())
+    }
+
+    // Store into a raw-pointer place (no result): `operand1` is the `PtrIndex` place (the GEP'd
+    // element pointer), `operand2` the value, and the pointee element type comes from the
+    // place. (#242)
+    fn op_ptr_store(&mut self, _idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let place = self
+            .names
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        let et = self
+            .pptr_elem
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone()
+            .ok_or(crate::emitter_gap!())?;
+        let val = self
+            .names
+            .get(ins.operand2.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        self.body += &format!("  llvm.store {val}, {place} : {et}, !llvm.ptr\n");
+        Ok(())
+    }
+
+    // ---- Tensors and the kernels over them ----
+
+    // Allocate a tensor buffer (`Tensor<T>([..])`): a static `memref` of the shape recovered
+    // from the side table by GID. Its register is tracked in `mem_of` for later index/store.
+    fn op_tensor_alloc(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let gid = *self
+            .types
+            .get(ins.type_idx.0 as usize)
+            .ok_or(crate::emitter_gap!())?;
+        let (elem, shape) = self.ctx.tensors.get(&gid).ok_or(crate::emitter_gap!())?;
+        let memty = tensor_memref_ty(elem, shape).ok_or(crate::emitter_gap!())?;
+        let n = format!("%v{idx}");
+        // `operand2` may carry a memory-space dispatch id from `.with_memory` (Vx#379
+        // stage B). A `scope: sm` space becomes a space-3 ALLOCA: on the host that is a
+        // stack slot like any other, and in the device clone materializeGpuKernels turns
+        // a static space-3 alloca into `.shared` storage -- the machinery #352 built.
+        // Any other space stays a plain allocation; the annotation was advisory.
+        let sm = ins.operand2.0 != 0
+            && self
+                .ctx
+                .subspaces
+                .get(&(ins.operand2.0 as u64))
+                .and_then(|s| s.scope.as_deref())
+                == Some("sm");
+        if sm {
+            let smty = format!(
+                "{}, 3>",
+                memty.strip_suffix('>').ok_or(crate::emitter_gap!())?
+            );
+            // alignment 16, explicitly. The alloca becomes a `.shared` global under
+            // convert-gpu-to-nvvm, and the DRIVER packs those globals by their declared
+            // alignment -- an unannotated 4-byte-aligned f32 array landed at offset
+            // 0x204, and LLVM's loop vectorizer (which assumes natural vector alignment
+            // when it widens a serial walk over the tile) issued a 16-byte
+            // `ld.shared.v4` into it: "misaligned address", device-fatal, found by
+            // compute-sanitizer on the block-per-row softmax (Vx#379 R3).
+            self.body += &format!("  {n} = memref.alloca() {{alignment = 16 : i64}} : {smty}\n");
+            self.names[idx] = n;
+            self.mem_of[idx] = Some(smty);
+        } else {
+            self.body += &format!("  {n} = memref.alloc() : {memty}\n");
+            self.names[idx] = n;
+            self.mem_of[idx] = Some(memty);
+        }
+        Ok(())
+    }
+
+    // Index a tensor along its outermost dimension. `operand1` is the base tensor (memref),
+    // `operand2` the index (`arith.index_cast` to `index`). A scalar-element result
+    // (`type_idx` is a scalar GID) is a value read (`imm = 0` → `memref.load`) or an element
+    // *place* (`imm = 1` → recorded for the following `TensorStore`). A sub-view result (a
+    // tensor GID) rank-reduces the base to a row via `memref.reinterpret_cast` (contiguous
+    // base only; a further sub-view of a strided row is deferred).
+    fn op_tensor_index(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let result_gid = *self
+            .types
+            .get(ins.type_idx.0 as usize)
+            .ok_or(crate::emitter_gap!())?;
+        let base = self
+            .names
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        let base_memty = self
+            .mem_of
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone()
+            .ok_or(crate::emitter_gap!())?;
+        let imt = mlir_scalar(&self.elem_at(ins.operand2.0).ok_or(crate::emitter_gap!())?)
+            .ok_or(crate::emitter_gap!())?;
+        let iname = self
+            .names
+            .get(ins.operand2.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        let ic = format!("%ic{idx}");
+        self.body += &format!("  {ic} = arith.index_cast {iname} : {imt} to index\n");
+
+        if let Some(e) = elem_of_gid(result_gid) {
+            // Scalar element: a value read or a store place (works on a contiguous or a
+            // strided-row base — `memref.load`/`store` handle both).
+            if ins.imm == 1 {
+                self.place_of[idx] = Some((base, ic, base_memty));
+            } else {
+                let n = format!("%v{idx}");
+                self.body += &format!("  {n} = memref.load {base}[{ic}] : {base_memty}\n");
+                self.names[idx] = n;
+                self.etypes[idx] = Some(e);
+            }
+        } else {
+            // Row sub-view: reinterpret the contiguous base as the row at flat offset
+            // `index * product(row dims)`, with row-major strides over the remaining dims.
+            if base_memty.contains("strided") {
+                return Err(crate::emitter_gap!()); // a sub-view of an already-strided row is deferred
+            }
+            let (elem, shape) = self
+                .ctx
+                .tensors
+                .get(&result_gid)
+                .ok_or(crate::emitter_gap!())?;
+            let et = mlir_scalar(elem).ok_or(crate::emitter_gap!())?;
+            let dims: Vec<i64> = shape
+                .iter()
+                .map(|d| d.parse::<i64>().ok())
+                .collect::<Option<_>>()
+                .ok_or(crate::emitter_gap!())?; // symbolic dims not handled
+            let stride0: i64 = dims.iter().product();
+            let mut strides = vec![1i64; dims.len()];
+            for i in (0..dims.len().saturating_sub(1)).rev() {
+                strides[i] = strides[i + 1] * dims[i + 1];
+            }
+            let off = if stride0 == 1 {
+                ic.clone()
+            } else {
+                let cst = format!("%cs{idx}");
+                let o = format!("%off{idx}");
+                self.body += &format!("  {cst} = arith.constant {stride0} : index\n");
+                self.body += &format!("  {o} = arith.muli {ic}, {cst} : index\n");
+                o
+            };
+            let sizes_s = join_i64(&dims);
+            let strides_s = join_i64(&strides);
+            let dimx: String = dims.iter().map(|d| format!("{d}x")).collect();
+            // A sub-view of shared storage stays in its space: dropping the `, 3` here
+            // would make the row a generic pointer and the PTX would address `.shared`
+            // data with global loads.
+            let space_sfx = if base_memty.ends_with(", 3>") {
+                ", 3"
+            } else {
+                ""
+            };
+            let result_ty =
+                format!("memref<{dimx}{et}, strided<[{strides_s}], offset: ?>{space_sfx}>");
+            let n = format!("%v{idx}");
+            self.body += &format!(
+                "  {n} = memref.reinterpret_cast {base} to offset: [{off}], sizes: [{sizes_s}], strides: [{strides_s}] : {base_memty} to {result_ty}\n"
+            );
+            self.names[idx] = n;
+            self.mem_of[idx] = Some(result_ty);
+        }
+        Ok(())
+    }
+
+    // Reduce a rank-1 float slice to a scalar. `operand1` (and `operand2` for `dot`) are the
+    // slices; `imm` the kind (0 = dot, 1 = sum, 2 = max, 3 = min). Each slice is `vector.load`ed
+    // to a `vector<Nxf32>`; `dot` fuses the two with `arith.mulf`; then `vector.reduction`.
+    // Float only, matching the AST oracle (`vector<Nxf32>` → `f32`).
+    fn op_reduce(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let e = self.ty_at(ins.type_idx.0).ok_or(crate::emitter_gap!())?;
+        if !e.is_float() {
+            return Err(crate::emitter_gap!()); // the AST lowers only f32 reductions
+        }
+        let et = mlir_scalar(&e).ok_or(crate::emitter_gap!())?;
+        // One load per operand, widened when the ROW is half-precision (Vx#320):
+        // f16/bf16 rows come up through `arith.extf` and the multiply, reduction and
+        // result are f32 -- a reduction's precision is its accumulator's, exactly the
+        // contract the checker types (`dot` over any float slices -> f32).
+        let c0 = format!("%rc{idx}");
+        self.body += &format!("  {c0} = arith.constant 0 : index\n");
+        let names = &self.names;
+        let mem_of = &self.mem_of;
+        let load_wide = |reg: u32, tag: &str, body: &mut String| -> Option<String> {
+            let s = names.get(reg as usize)?.clone();
+            let m = mem_of.get(reg as usize)?.clone()?;
+            let d = memref_lead_dim(&m)?;
+            let row_elem = m.rsplit('x').next()?.trim_end_matches('>');
+            let row_elem = row_elem.split(',').next()?.trim();
+            let rvec = format!("vector<{d}x{row_elem}>");
+            let al = vector_align_attr(&rvec);
+            let v = format!("%{tag}{idx}");
+            body.push_str(&format!(
+                "  {v} = vector.load {s}[{c0}]{al} : {m}, {rvec}\n"
+            ));
+            if row_elem == et {
+                return Some(v);
+            }
+            if row_elem != "f16" && row_elem != "bf16" {
+                return None;
+            }
+            let w = format!("%{tag}w{idx}");
+            body.push_str(&format!(
+                "  {w} = arith.extf {v} : {rvec} to vector<{d}x{et}>\n"
+            ));
+            Some(w)
+        };
+        let v0 = load_wide(ins.operand1.0, "vl", &mut self.body).ok_or(crate::emitter_gap!())?;
+        let m0 = self
+            .mem_of
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone()
+            .ok_or(crate::emitter_gap!())?;
+        let d = memref_lead_dim(&m0).ok_or(crate::emitter_gap!())?;
+        let vecty = format!("vector<{d}x{et}>");
+        let (reduce_in, kind) = match ins.imm {
+            0 => {
+                let v1 =
+                    load_wide(ins.operand2.0, "vr", &mut self.body).ok_or(crate::emitter_gap!())?;
+                let prod = format!("%vp{idx}");
+                self.body += &format!("  {prod} = arith.mulf {v0}, {v1} : {vecty}\n");
+                (prod, "add")
+            }
+            1 => (v0, "add"),
+            2 => (v0, "maximumf"),
+            3 => (v0, "minimumf"),
+            _ => return Err(crate::emitter_gap!()),
+        };
+        let n = format!("%v{idx}");
+        self.body +=
+            &format!("  {n} = vector.reduction <{kind}>, {reduce_in} : {vecty} into {et}\n");
+        self.names[idx] = n;
+        self.etypes[idx] = Some(e);
+        Ok(())
+    }
+
+    // `matmul_into(&mut dst, &a, &b)` (no result): `linalg.fill` + `linalg.matmul` on the
+    // three whole-tensor memrefs, the same pair the AST path builds -- and the exact shape
+    // `kernelKindOf` classifies, so a spawn whose whole job is this op still routes to
+    // cuBLAS. The destination register rides the imm (see `Opcode::MatmulInto`).
+    fn op_matmul_into(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let a = self
+            .names
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        let ma = self
+            .mem_of
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone()
+            .ok_or(crate::emitter_gap!())?;
+        let b = self
+            .names
+            .get(ins.operand2.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        let mb = self
+            .mem_of
+            .get(ins.operand2.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone()
+            .ok_or(crate::emitter_gap!())?;
+        let dst = self
+            .names
+            .get(ins.imm as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        let md = self
+            .mem_of
+            .get(ins.imm as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone()
+            .ok_or(crate::emitter_gap!())?;
+        // "memref<8x16xf32>" -> "f32": the element is the segment after the last 'x',
+        // shorn of the closing '>'. Floats only -- an int matmul declines the program to
+        // the AST path rather than improvising linalg's integer semantics here. The
+        // half-precision pair is in (Vx#320): the routed backend runs them through
+        // cublasGemmEx with f32 accumulation, and the host fallback's linalg lowers
+        // them like any float -- restricting to f32 here silently evicted every f16
+        // attention program from the flat path, prover and all.
+        let et = md
+            .rsplit('x')
+            .next()
+            .ok_or(crate::emitter_gap!())?
+            .trim_end_matches('>')
+            .to_string();
+        if et != "f32" && et != "f64" && et != "f16" && et != "bf16" {
+            return Err(crate::emitter_gap!());
+        }
+        self.body += &format!("  %mz{idx} = arith.constant 0.0 : {et}\n");
+        self.body += &format!("  linalg.fill ins(%mz{idx} : {et}) outs({dst} : {md})\n");
+        self.body += &format!("  linalg.matmul ins({a}, {b} : {ma}, {mb}) outs({dst} : {md})\n");
+        Ok(())
+    }
+
+    // `flash_attention_into(&mut o, &q, &k, &v, scale)` (no result): a serial
+    // `o = softmax(q @ k^T * scale) @ v` nest, preceded by a `vx.attention_note` naming
+    // which memref plays which role. The nest is the correctness contract — a runtime
+    // that cannot (or will not) route runs it as written; the note is what
+    // `kernelKindOf` classifies as `kind=attention` so a runtime that CAN route hands
+    // the region to a fused vendor kernel instead. o, v and scale ride the imm (see
+    // `Opcode::FlashAttnInto`). f16 storage with f32 arithmetic throughout, the same
+    // split the widening contracts (Vx#320) give every half slice.
+    fn op_flash_attn_into(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let o_reg = (ins.imm & 0xffff) as usize;
+        let v_reg = ((ins.imm >> 16) & 0xffff) as usize;
+        let s_reg = ((ins.imm >> 32) & 0xffff) as usize;
+        let q = self
+            .names
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        let mq = self
+            .mem_of
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone()
+            .ok_or(crate::emitter_gap!())?;
+        let k = self
+            .names
+            .get(ins.operand2.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        let mk = self
+            .mem_of
+            .get(ins.operand2.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone()
+            .ok_or(crate::emitter_gap!())?;
+        let o = self.names.get(o_reg).ok_or(crate::emitter_gap!())?.clone();
+        let mo = self
+            .mem_of
+            .get(o_reg)
+            .ok_or(crate::emitter_gap!())?
+            .clone()
+            .ok_or(crate::emitter_gap!())?;
+        let v = self.names.get(v_reg).ok_or(crate::emitter_gap!())?.clone();
+        let mv = self
+            .mem_of
+            .get(v_reg)
+            .ok_or(crate::emitter_gap!())?
+            .clone()
+            .ok_or(crate::emitter_gap!())?;
+        let sc = self.names.get(s_reg).ok_or(crate::emitter_gap!())?.clone();
+        if !matches!(self.elem_at(s_reg as u32), Some(ElementType::F32)) {
+            return Err(crate::emitter_gap!());
+        }
+        // "memref<AxBxf16>" -> (A, B, "f16"); anything shaped differently (a strided
+        // layout, a surprise rank) declines rather than guesses.
+        let dims = |m: &str| -> Option<(i64, i64, String)> {
+            let inner = m.strip_prefix("memref<")?.strip_suffix('>')?;
+            let mut it = inner.split('x');
+            let a = it.next()?.parse::<i64>().ok()?;
+            let b = it.next()?.parse::<i64>().ok()?;
+            let e = it.next()?.to_string();
+            if it.next().is_some() {
+                return None;
+            }
+            Some((a, b, e))
+        };
+        let (sq, hd, eo) = dims(&mo).ok_or(crate::emitter_gap!())?;
+        let (sq2, hd2, eq) = dims(&mq).ok_or(crate::emitter_gap!())?;
+        let (sk, hd3, ek) = dims(&mk).ok_or(crate::emitter_gap!())?;
+        let (sk2, hd4, ev) = dims(&mv).ok_or(crate::emitter_gap!())?;
+        if [&eo, &eq, &ek, &ev].iter().any(|e| e.as_str() != "f16") {
+            return Err(crate::emitter_gap!());
+        }
+        if sq != sq2 || sk != sk2 || hd != hd2 || hd != hd3 || hd != hd4 {
+            return Err(crate::emitter_gap!());
+        }
+        self.body += &format!(
+            "  \"vx.attention_note\"({o}, {q}, {k}, {v}, {sc}) : ({mo}, {mq}, {mk}, {mv}, f32) -> ()\n"
+        );
+        self.body += &format!("  %fasb{idx} = memref.alloca() : memref<{sk}xf32>\n");
+        self.body += &format!("  %fac0{idx} = arith.constant 0 : index\n");
+        self.body += &format!("  %fac1{idx} = arith.constant 1 : index\n");
+        self.body += &format!("  %facq{idx} = arith.constant {sq} : index\n");
+        self.body += &format!("  %fack{idx} = arith.constant {sk} : index\n");
+        self.body += &format!("  %facd{idx} = arith.constant {hd} : index\n");
+        self.body += &format!("  %faz{idx} = arith.constant 0.000000e+00 : f32\n");
+        // -inf: the identity of max over scores that may all be negative.
+        self.body += &format!("  %fan{idx} = arith.constant 0xFF800000 : f32\n");
+        self.body +=
+            &format!("  scf.for %fai{idx} = %fac0{idx} to %facq{idx} step %fac1{idx} {{\n");
+        // Pass 1: this row's scores into the scratch buffer, tracking their max.
+        self.body += &format!(
+            "    %fam{idx} = scf.for %faj{idx} = %fac0{idx} to %fack{idx} step %fac1{idx} iter_args(%famx{idx} = %fan{idx}) -> (f32) {{\n"
+        );
+        self.body += &format!(
+            "      %fad{idx} = scf.for %fae{idx} = %fac0{idx} to %facd{idx} step %fac1{idx} iter_args(%faa{idx} = %faz{idx}) -> (f32) {{\n"
+        );
+        self.body +=
+            &format!("        %faqh{idx} = memref.load {q}[%fai{idx}, %fae{idx}] : {mq}\n");
+        self.body += &format!("        %faqf{idx} = arith.extf %faqh{idx} : f16 to f32\n");
+        self.body +=
+            &format!("        %fakh{idx} = memref.load {k}[%faj{idx}, %fae{idx}] : {mk}\n");
+        self.body += &format!("        %fakf{idx} = arith.extf %fakh{idx} : f16 to f32\n");
+        self.body += &format!("        %fap{idx} = arith.mulf %faqf{idx}, %fakf{idx} : f32\n");
+        self.body += &format!("        %fapa{idx} = arith.addf %faa{idx}, %fap{idx} : f32\n");
+        self.body += &format!("        scf.yield %fapa{idx} : f32\n");
+        self.body += "      }\n";
+        self.body += &format!("      %fas{idx} = arith.mulf %fad{idx}, {sc} : f32\n");
+        self.body +=
+            &format!("      memref.store %fas{idx}, %fasb{idx}[%faj{idx}] : memref<{sk}xf32>\n");
+        self.body += &format!("      %fam2{idx} = arith.maximumf %famx{idx}, %fas{idx} : f32\n");
+        self.body += &format!("      scf.yield %fam2{idx} : f32\n");
+        self.body += "    }\n";
+        // Pass 2: exponentiate shifted scores in place, summing them.
+        self.body += &format!(
+            "    %fal{idx} = scf.for %fajj{idx} = %fac0{idx} to %fack{idx} step %fac1{idx} iter_args(%fall{idx} = %faz{idx}) -> (f32) {{\n"
+        );
+        self.body +=
+            &format!("      %fasl{idx} = memref.load %fasb{idx}[%fajj{idx}] : memref<{sk}xf32>\n");
+        self.body += &format!("      %fash{idx} = arith.subf %fasl{idx}, %fam{idx} : f32\n");
+        // `math.exp`, not a `func.call` into the stdlib: math is the portable spelling
+        // (libm on the host pipeline, the NVVM intrinsic on device), and a func.call to
+        // a host symbol inside a kernel cannot be loaded (see useDeviceMathIn).
+        self.body += &format!("      %faex{idx} = math.exp %fash{idx} : f32\n");
+        self.body +=
+            &format!("      memref.store %faex{idx}, %fasb{idx}[%fajj{idx}] : memref<{sk}xf32>\n");
+        self.body += &format!("      %fal2{idx} = arith.addf %fall{idx}, %faex{idx} : f32\n");
+        self.body += &format!("      scf.yield %fal2{idx} : f32\n");
+        self.body += "    }\n";
+        // Pass 3: o[i][d] = sum_j p[j] * v[j][d] / l, narrowed once on store.
+        self.body +=
+            &format!("    scf.for %fadd{idx} = %fac0{idx} to %facd{idx} step %fac1{idx} {{\n");
+        self.body += &format!(
+            "      %faoc{idx} = scf.for %fajk{idx} = %fac0{idx} to %fack{idx} step %fac1{idx} iter_args(%faoa{idx} = %faz{idx}) -> (f32) {{\n"
+        );
+        self.body += &format!(
+            "        %fapl{idx} = memref.load %fasb{idx}[%fajk{idx}] : memref<{sk}xf32>\n"
+        );
+        self.body +=
+            &format!("        %favh{idx} = memref.load {v}[%fajk{idx}, %fadd{idx}] : {mv}\n");
+        self.body += &format!("        %favf{idx} = arith.extf %favh{idx} : f16 to f32\n");
+        self.body += &format!("        %fapv{idx} = arith.mulf %fapl{idx}, %favf{idx} : f32\n");
+        self.body += &format!("        %fao2{idx} = arith.addf %faoa{idx}, %fapv{idx} : f32\n");
+        self.body += &format!("        scf.yield %fao2{idx} : f32\n");
+        self.body += "      }\n";
+        self.body += &format!("      %faon{idx} = arith.divf %faoc{idx}, %fal{idx} : f32\n");
+        self.body += &format!("      %faoh{idx} = arith.truncf %faon{idx} : f32 to f16\n");
+        self.body += &format!("      memref.store %faoh{idx}, {o}[%fai{idx}, %fadd{idx}] : {mo}\n");
+        self.body += "    }\n";
+        self.body += "  }\n";
+        Ok(())
+    }
+
+    // Store into a tensor place (no result). A scalar-element place (an `imm = 1`
+    // `TensorIndex`) → `memref.store`; a row/sub-view place (an `imm = 0` `TensorIndex`, a row
+    // memref in `mem_of`) takes an elementwise vector value → `vector.store`.
+    fn op_tensor_store(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        if let Some((base, ic, memty)) = self
+            .place_of
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone()
+        {
+            let vreg = ins.operand2.0;
+            let mut val = self
+                .names
+                .get(vreg as usize)
+                .ok_or(crate::emitter_gap!())?
+                .clone();
+            // Coerce the stored scalar to the tensor's element type when they differ — a
+            // default-`f32` float literal `1.0` stored into a `bf16` tensor becomes
+            // `arith.truncf`, `f32 -> f64` becomes `arith.extf`, etc. The AST path does the
+            // same via `coerce_type` before its `memref.store`; without it the store is
+            // ill-typed (`f32` value into a `memref<..xbf16>`).
+            if let (Some(src_e), Some(tgt_s)) = (self.elem_at(vreg), memref_elem(&memty)) {
+                if let Some(tgt_e) = elem_from_mlir_scalar(tgt_s) {
+                    match cast_op(&src_e, &tgt_e) {
+                        Some("") => {} // same MLIR type: no conversion
+                        Some(op) => {
+                            let c = format!("%tsc{idx}");
+                            self.body += &format!(
+                                "  {c} = {op} {val} : {} to {tgt_s}\n",
+                                mlir_scalar(&src_e).ok_or(crate::emitter_gap!())?
+                            );
+                            val = c;
+                        }
+                        None => return Err(crate::emitter_gap!()), // unmodelled conversion -> decline (AST oracle)
+                    }
+                }
+            }
+            self.body += &format!("  memref.store {val}, {base}[{ic}] : {memty}\n");
+        } else if let Some(rowty) = self
+            .mem_of
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone()
+        {
+            let dst = self
+                .names
+                .get(ins.operand1.0 as usize)
+                .ok_or(crate::emitter_gap!())?
+                .clone();
+            let vecname = self
+                .names
+                .get(ins.operand2.0 as usize)
+                .ok_or(crate::emitter_gap!())?
+                .clone();
+            let vecty = self
+                .vec_of
+                .get(ins.operand2.0 as usize)
+                .ok_or(crate::emitter_gap!())?
+                .clone()
+                .ok_or(crate::emitter_gap!())?;
+            let c0 = format!("%sc{idx}");
+            let al = vector_align_attr(&vecty);
+            self.body += &format!("  {c0} = arith.constant 0 : index\n");
+            self.body += &format!("  vector.store {vecname}, {dst}[{c0}]{al} : {rowty}, {vecty}\n");
+        } else {
+            return Err(crate::emitter_gap!());
+        }
+        Ok(())
+    }
+
+    // ---- Transfers, spawn regions and barriers ----
+
+    // Move a tensor to a memory space: `operand1` is the source, `imm` the target space's
+    // dispatch id, `type_idx` the result tensor (same element + shape). Emits `vx.transfer`
+    // (generic form) with `target_topology`; the vx→standard lowering turns it into an
+    // alloc + `memref.copy` (it ignores the source's layout suffix, so the result is a plain
+    // `memref<NxT>`). When the target space declares a sub-space descriptor, re-attach the
+    // scheduling attrs (`space`/`within`/`granule`/`capacity`/`scope` + a bump-allocated
+    // `offset`/`slots`) the AST path emits — a device backend needs them to place the tile
+    // into VMEM/TMEM, and they are dropped otherwise (B1/P0-1).
+    fn op_transfer(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let result_gid = *self
+            .types
+            .get(ins.type_idx.0 as usize)
+            .ok_or(crate::emitter_gap!())?;
+        let (elem, shape) = self
+            .ctx
+            .tensors
+            .get(&result_gid)
+            .ok_or(crate::emitter_gap!())?;
+        let dstty = tensor_memref_ty(elem, shape).ok_or(crate::emitter_gap!())?;
+        let src = self
+            .names
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        let srcty = self
+            .mem_of
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone()
+            .ok_or(crate::emitter_gap!())?;
+        let n = format!("%v{idx}");
+        let mut attrs = format!("target_topology = {} : i32", ins.imm);
+        if let Some(desc) = self.ctx.subspaces.get(&ins.imm) {
+            // Descriptor attrs, in the AST path's emission order (MLIR sorts on print, so the
+            // final parsed form is byte-identical regardless of the order emitted here).
+            attrs += &format!(", space = \"{}\"", desc.name);
+            if let Some(w) = &desc.within {
+                attrs += &format!(", within = \"{w}\"");
+            }
+            if let Some(g) = desc.granule {
+                attrs += &format!(", granule = {g} : i64");
+            }
+            if let Some(c) = desc.capacity {
+                attrs += &format!(", capacity = {c} : i64");
+            }
+            if let Some(s) = &desc.scope {
+                attrs += &format!(", scope = \"{s}\"");
+            }
+            if let Some(m) = &desc.managed {
+                attrs += &format!(", managed = \"{m}\"");
+            }
+            // SS2 bump allocation: a statically-shaped tile into a granule'd space claims the
+            // next granule-rounded `offset`; `slots` is the granule count it occupies.
+            let tile_bytes = static_tile_bytes(elem, shape);
+            if let (Some(granule), Some(bytes)) = (desc.granule, tile_bytes) {
+                if granule > 0 {
+                    let rounded = bytes.div_ceil(granule) * granule;
+                    let offset = *self.subspace_offsets.entry(ins.imm).or_insert(0);
+                    self.subspace_offsets.insert(ins.imm, offset + rounded);
+                    attrs += &format!(", offset = {offset} : i64");
+                    attrs += &format!(", slots = {} : i64", rounded / granule);
+                }
+            }
+        }
+        self.body +=
+            &format!("  {n} = \"vx.transfer\"({src}) {{{attrs}}} : ({srcty}) -> {dstty}\n");
+        self.names[idx] = n;
+        self.mem_of[idx] = Some(dstty);
+        Ok(())
+    }
+
+    // Open a `vx.spawn` region (generic form). The op is inline in the enclosing block, which
+    // continues after it; the instructions up to the matching `SpawnEnd` form the region body.
+    // The ops immediately after `Spawn` (a control-flow body's setup, before its first explicit
+    // block) go in the region's entry block, so open a label for it. `imm` is the topology
+    // dispatch id (the same value the AST path emits as `vx.spawn`'s `topology` attribute).
+    fn op_spawn(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        if self.spawn_topology.is_some() {
+            return Err(crate::emitter_gap!()); // nested spawn is not modelled
+        }
+        self.spawn_topology = Some(ins.imm as i64);
+        self.body += &format!("  \"vx.spawn\"() ({{\n^bbspawn{idx}:\n");
+        self.terminated = false;
+        Ok(())
+    }
+
+    // Close the `vx.spawn` region: terminate its last block with `vx.yield` (unless a body
+    // terminator already ended it), stamp the `topology` attribute, and resume emitting into
+    // the enclosing block (which the spawn op did not terminate).
+    fn op_spawn_end(&mut self, _idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let topo = self.spawn_topology.take().ok_or(crate::emitter_gap!())?;
+        if !self.terminated {
+            self.body += "  \"vx.yield\"() : () -> ()\n";
+        }
+        // A topology that declared an `arch:` sends it along, so the device pipeline can
+        // gate on the declaration instead of the dispatch-id band (Vx#352). Discardable
+        // attribute on the generic form -- no dialect change involved.
+        //
+        // A nonzero `imm` is the trip count `parallel_outer_for` proved for the region's
+        // outermost loop: `vx_parallel_trip` rides the same attribute dict, telling the
+        // device pipeline the loop is safe to grid-stride and how wide the work is (#251).
+        // The `SPAWN_TWO_LEVEL` bit (Vx#379) marks the trip as a BLOCK count instead, and
+        // `vx_parallel_two_level` rides along so the launch is sized as blocks x threads.
+        let two_level = ins.imm & crate::hir::flatten::SPAWN_TWO_LEVEL != 0;
+        // The `SPAWN_COOP` bit (Vx#379 stage C): the barriers are INSIDE the thread
+        // loop, so the region has no serial schedule and the host must refuse it --
+        // `vx_parallel_coop` travels to the launch payload for exactly that refusal.
+        let coop = ins.imm & crate::hir::flatten::SPAWN_COOP != 0;
+        let trip_count = ins.imm & 0xffff_ffff;
+        // Bits 32..47: the widest thread-loop trip, i.e. the block shape the launch
+        // should use (Vx#379). Zero (a pre-two-level stream) falls back to 128.
+        let threads = (ins.imm >> 32) & 0xffff;
+        let trip = if trip_count > 0 {
+            format!(
+                ", vx_parallel_trip = {trip_count} : i64{}",
+                if two_level {
+                    format!(
+                        ", vx_parallel_two_level, vx_parallel_threads = {} : i64{}",
+                        if threads > 0 { threads } else { 128 },
+                        if coop { ", vx_parallel_coop" } else { "" }
+                    )
+                } else {
+                    String::new()
+                }
+            )
+        } else {
+            String::new()
+        };
+        if let Some(arch) = self.ctx.topo_archs.get(&topo) {
+            self.body +=
+                &format!("  }}) {{arch = \"{arch}\", topology = {topo} : i32{trip}}} : () -> ()\n");
+        } else {
+            self.body += &format!("  }}) {{topology = {topo} : i32{trip}}} : () -> ()\n");
+        }
+        self.terminated = false;
+        Ok(())
+    }
+
+    // Print a string literal (no result): take the address of the module-level global emitted
+    // for this string (`@".str.<n>"`, `n = str_base + imm`) and call the `@print_str` runtime
+    // helper. `emit_module_mlir` emits the global's bytes and the helper's `private` decl.
+    // Conditional abort -- `assert`, and `abort()` with a constant-false condition.
+    // `cf.assert` rather than a hand-written branch onto a call, because MLIR lowers it
+    // for whichever target the code reaches: `puts` + `abort` + `unreachable` on the
+    // host, `__assertfail` inside a kernel. It is also an ORDINARY op, not a
+    // terminator, so it needs no block splitting here.
+    // Block-level sync (Vx#379). A registered op with no results and no Pure trait, so
+    // the greedy folder cannot erase it before the device clone rewrites it to
+    // `gpu.barrier`; the host lowering erases it instead (a serial loop IS the barrier).
+    fn op_barrier(&mut self, _idx: usize, _ins: &HirInstruction) -> Lowered<()> {
+        self.body += "  \"vx.barrier\"() : () -> ()\n";
+        Ok(())
+    }
+
+    // ---- Printing and aborting ----
+
+    // Print a value (no result). A tensor is `memref.cast`'d to an unranked memref and passed
+    // to the `printMemref*` runtime helper; a scalar goes to `print_*`. These are the same
+    // helpers the AST path calls; `emit_module_mlir` prepends their `private` declarations.
+    fn op_print(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let arg = self
+            .names
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        if let Some(memty) = self
+            .mem_of
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone()
+        {
+            let et = memref_elem(&memty).ok_or(crate::emitter_gap!())?;
+            let helper = match et {
+                "f32" => "printMemrefF32",
+                "f64" => "printMemrefF64",
+                "i32" => "printMemrefI32",
+                "i64" => "printMemrefI64",
+                _ => return Err(crate::emitter_gap!()),
+            };
+            let c = format!("%pc{idx}");
+            self.body += &format!("  {c} = memref.cast {arg} : {memty} to memref<*x{et}>\n");
+            self.body += &format!("  func.call @{helper}({c}) : (memref<*x{et}>) -> ()\n");
+        } else if let Some(e) = self.elem_at(ins.operand1.0) {
+            let et = mlir_scalar(&e).ok_or(crate::emitter_gap!())?;
+            let helper = match et {
+                "f32" => "print_f32",
+                "f64" => "print_f64",
+                "i32" => "print_i32",
+                "i64" => "print_i64",
+                _ => {
+                    return Err(Decline::TypeNotModelled {
+                        what: "a print of an element type with no helper",
+                    })
+                }
+            };
+            let n = format!("%v{idx}");
+            self.body += &format!("  {n} = func.call @{helper}({arg}) : ({et}) -> i32\n");
+        } else {
+            return Err(crate::emitter_gap!());
+        }
+        Ok(())
+    }
+
+    fn op_abort(&mut self, _idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let cond = self
+            .names
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        let msg = self
+            .strings
+            .get(ins.imm as usize)
+            .map(|s| s.as_str())
+            .unwrap_or("assertion failed");
+        let escaped = msg.replace('\\', "\\\\").replace('"', "\\\"");
+        self.body += &format!("  cf.assert {cond}, \"{escaped}\"\n");
+        Ok(())
+    }
+
+    fn op_print_str(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let n = self.str_base + ins.imm as usize;
+        let p = format!("%pstrp{idx}");
+        let r = format!("%pstr{idx}");
+        self.body += &format!("  {p} = llvm.mlir.addressof @\".str.{n}\" : !llvm.ptr\n");
+        self.body += &format!("  {r} = func.call @print_str({p}) : (!llvm.ptr) -> i32\n");
+        Ok(())
+    }
+
+    // A string literal in value position (#231): take the address of the module-level global
+    // (`@".str.<n>"`, `n = str_base + imm`, the same numbering as `PrintStr`) as a first-class
+    // `!llvm.ptr` value — what a `let s = "…"` binds or a string argument passes. The global's
+    // bytes are emitted by `emit_module_mlir` from the string side table.
+    fn op_string_const(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let n = self.str_base + ins.imm as usize;
+        let p = format!("%v{idx}");
+        self.body += &format!("  {p} = llvm.mlir.addressof @\".str.{n}\" : !llvm.ptr\n");
+        self.names[idx] = p;
+        self.ptr_of[idx] = true;
+        Ok(())
+    }
+}
+
+/// Emit a `func.func` for `func` from its flat HIR body, or a `Decline` naming the first construct
 /// outside the current subset (scalar arithmetic + intra-function control flow + fixed-arity scalar
 /// calls + all-scalar-field struct construction/field access; the AST path stays the oracle there).
 /// `ctx` resolves the callee/struct GIDs the stream references. The returned text is a bare
@@ -1442,65 +3437,6 @@ pub fn emit_function_mlir(
         None
     };
 
-    let ty_at = |ti: u32| -> Option<ElementType> { elem_of_gid(*types.get(ti as usize)?) };
-
-    let mut names: Vec<String> = vec![String::new(); hir.len()];
-    // The scalar element type each register carries, indexed by register (= instruction position in
-    // the stream) — the type-valued parallel to `names` above. As the stream is walked, each value-
-    // producing instruction records its result type here, so any later instruction can recover the
-    // type of a register it *reads*. This is the flat-driven stand-in for reading an operand's type
-    // off the AST: there is no AST node to consult, so we reconstruct types as we go.
-    //
-    // Why not just read each instruction's own `type_idx`? Most values are self-describing that way,
-    // but two consumers need an *operand's* type, which their own `type_idx` doesn't give:
-    //   - `Cmp`: its own result type is `bool`, but choosing `cmpi`/`cmpf` + the signed/unsigned
-    //     predicate needs the *operands'* type -> `etypes[operand1]`.
-    //   - `Store`: an effect instruction (its `type_idx` is the no-type sentinel), but printing
-    //     `memref<T>` needs the slot's element type -> the `Alloca` records it, `Store` reads it back.
-    // Calls use it too: a `func.call`'s argument types come from `etypes[arg_reg]`.
-    //
-    // Scalar-only today (`ElementType`); widening it to tensor/aggregate types is future work (#200).
-    let mut etypes: Vec<Option<ElementType>> = vec![None; hir.len()];
-    let elem_at = |etypes: &[Option<ElementType>], r: u32| -> Option<ElementType> {
-        etypes.get(r as usize)?.clone()
-    };
-    // The aggregate GID for each register that is a struct-slot pointer (from an aggregate `Alloca`),
-    // so a `FieldLoad`/`FieldStore` on that slot recovers the struct's `!llvm.struct` type + field
-    // offsets. The aggregate analogue of `etypes` (kept separate: struct slots are pointers, not
-    // scalar values).
-    let mut agg_of: Vec<Option<TypeId>> = vec![None; hir.len()];
-    // The aggregate GID for each register that holds a struct *value* (not a slot pointer): an
-    // aggregate `SlotLoad`, an aggregate-element `PtrIndex` read, or a struct-returning `Call`. Lets a
-    // consumer (a by-value call argument, a `PtrStore` of the value) print the `!llvm.struct` type.
-    // The value analogue of `agg_of` (which tracks struct *slots*). (#242 Vec<Vec<T>>)
-    let mut agg_val_of: Vec<Option<TypeId>> = vec![None; hir.len()];
-    // The memref type string for each register that holds a tensor (from `TensorAlloc`), so a
-    // `TensorIndex`/`TensorStore` on it prints the right `memref<...>`.
-    let mut mem_of: Vec<Option<String>> = vec![None; hir.len()];
-    // For a scalar-element *place* register (a `TensorIndex` with `imm = 1`): the base memref name, an
-    // `index`-typed index SSA name, and the base memref type — everything the following `TensorStore`
-    // needs to emit `memref.store %v, %base[%idx]`.
-    let mut place_of: Vec<Option<(String, String, String)>> = vec![None; hir.len()];
-    // For a raw-pointer element *place* register (a `PtrIndex` with `imm = 1`): the pointee element's
-    // MLIR type, so the following `PtrStore` prints `llvm.store %v, %place : {elem}, !llvm.ptr`. The
-    // place register itself already holds the GEP'd element pointer (in `names`). (#242)
-    let mut pptr_elem: Vec<Option<String>> = vec![None; hir.len()];
-    // The `vector<Nxf32>` type of each register holding an elementwise (slice) result, so a row
-    // `TensorStore` `vector.store`s it and a further elementwise passes it through.
-    let mut vec_of: Vec<Option<String>> = vec![None; hir.len()];
-    // Whether each register holds an opaque `!llvm.ptr` *value* (a string const, a pointer param, a
-    // pointer-returning call, or a load from a pointer slot) — so a `Call` arg / `func.return` types it
-    // as `!llvm.ptr`. The pointer analogue of `etypes`. (#231/#235)
-    let mut ptr_of: Vec<bool> = vec![false; hir.len()];
-    // Whether each register is a pointer *slot* (an `llvm.alloca` of `!llvm.ptr`, a memory-mode pointer
-    // local), so a `Store`/`SlotLoad` on it uses `llvm.store`/`llvm.load` rather than `memref`. (#235)
-    let mut pslot_of: Vec<bool> = vec![false; hir.len()];
-    // The element type of each register that is an *address-taken scalar slot* (an `llvm.alloca` of a
-    // scalar, `imm = 1` on the `Alloca`) — so `&x` yields a real `!llvm.ptr` (the slot register is also
-    // marked in `ptr_of`) and a `Store`/`SlotLoad` uses `llvm.store`/`llvm.load` of the element type
-    // rather than the rank-0 `memref` a never-borrowed scalar local uses. The scalar analogue of
-    // `pslot_of`, carrying the element so the load/store types match. (#230)
-    let mut sslot_of: Vec<Option<ElementType>> = vec![None; hir.len()];
     // Alias-scope metadata for place-write field stores (M2b-2): map each tagged store's stream
     // position to its own alias-scope `distinct[]` id and its disjoint-sibling ids. Groups are numbered
     // from the module-global `distinct_ctr` (0 is the shared domain), so scopes stay distinct across
@@ -1526,1571 +3462,51 @@ pub fn emit_function_mlir(
             })
             .collect()
     };
-    let mut body = String::new();
+
+    let mut em = FnEmit {
+        func,
+        types,
+        ctx,
+        str_base,
+        strings,
+        ret_elem,
+        alias_scope_of,
+        calls,
+        names: vec![String::new(); hir.len()],
+        etypes: vec![None; hir.len()],
+        agg_of: vec![None; hir.len()],
+        agg_val_of: vec![None; hir.len()],
+        mem_of: vec![None; hir.len()],
+        place_of: vec![None; hir.len()],
+        pptr_elem: vec![None; hir.len()],
+        vec_of: vec![None; hir.len()],
+        ptr_of: vec![false; hir.len()],
+        pslot_of: vec![false; hir.len()],
+        sslot_of: vec![None; hir.len()],
+        body: String::new(),
+        terminated: false,
+        pending_args: Vec::new(),
+        spawn_topology: None,
+        subspace_offsets: HashMap::new(),
+    };
     // `main` installs the runtime crash handler first, exactly as the AST codegen does (`is_main` ->
     // `func.call @vx_init_signals`), so a wild memory access is caught + backtraced rather than exiting
     // raw — otherwise a deliberately-crashing program (`tests/backend/fail/*_oob.vx`) diverges from the
     // oracle. Emitted into the entry block (block 0 has no label), before any local. (#242)
     if func.name.as_ref() == "main" {
-        body += "  func.call @vx_init_signals() : () -> ()\n";
+        em.body += "  func.call @vx_init_signals() : () -> ()\n";
     }
-    // Whether the block currently being emitted has a terminator yet (a block must end in one).
-    let mut terminated = false;
-    // Argument value registers accumulated by the `Arg`s that immediately precede a `Call`; the
-    // `Call` consumes its `imm` trailing entries (a nested inner call sits between its own `Arg`s and
-    // the outer ones, so each call's args are exactly the tail — see `flatten::lower_call`).
-    let mut pending_args: Vec<u32> = Vec::new();
-    // The topology of the currently-open `vx.spawn` region (`Some` between `Spawn` and its matching
-    // `SpawnEnd`), remembered so `SpawnEnd` can emit the `topology` attribute. `None` outside a spawn;
-    // a nested spawn (already `Some`) is declined.
-    let mut spawn_topology: Option<i64> = None;
-    // Per-function sub-space bump allocator (space dispatch id -> next free byte), mirroring the AST
-    // path's `MeliorGenerator::subspace_offsets`: each `Transfer` into a granule'd space claims the
-    // next granule-rounded `offset` and advances the cursor, so both paths assign identical offsets
-    // (P0-1). Reset per function, as in the AST codegen.
-    let mut subspace_offsets: HashMap<u64, u64> = HashMap::new();
 
     for (idx, ins) in hir.iter().enumerate() {
-        match ins.opcode {
-            // Parameter materialization: the register *is* the block argument, no op emitted. A
-            // scalar param records its element type; a tensor param records its memref type (from the
-            // side table) so later index/store ops address it.
-            Opcode::Load => {
-                names[idx] = format!("%arg{}", ins.imm);
-                let gid = *types
-                    .get(ins.type_idx.0 as usize)
-                    .ok_or(crate::emitter_gap!())?;
-                if let Some(e) = elem_of_gid(gid) {
-                    etypes[idx] = Some(e);
-                } else if gid == ptr_gid() {
-                    ptr_of[idx] = true; // a `!llvm.ptr` parameter (#235)
-                                        // A pointer *to a modelled aggregate* (`self : &mut Vec<i32>`): also track its
-                                        // pointee layout GID, so a `FieldLoad`/`FieldStore` through `self` GEPs the field
-                                        // exactly as through an aggregate slot (#242).
-                    if let Some(agg_gid) = func
-                        .params
-                        .get(ins.imm as usize)
-                        .and_then(|(_, ty)| pointee_agg_gid(ty, ctx))
-                    {
-                        agg_of[idx] = Some(agg_gid);
-                    }
-                } else if let Some((elem, shape)) = ctx.tensors.get(&gid) {
-                    mem_of[idx] = tensor_memref_ty(elem, shape);
-                } else if ctx.aggs.contains_key(&gid) {
-                    // A by-value aggregate parameter (`self : Option<i32>` in `Option::unwrap`, a
-                    // by-value struct arg): an `!llvm.struct` value, tracked so it can be spilled to a
-                    // slot / passed on by value. (#242)
-                    agg_val_of[idx] = Some(gid);
-                }
-            }
-            Opcode::Const => {
-                let e = ty_at(ins.type_idx.0).ok_or(crate::emitter_gap!())?;
-                let mt = mlir_scalar(&e).ok_or(crate::emitter_gap!())?;
-                let lit = if e.is_float() {
-                    mlir_float_literal(f64::from_bits(ins.imm))
-                } else {
-                    (ins.imm as i64).to_string()
-                };
-                let n = format!("%v{idx}");
-                body += &format!("  {n} = arith.constant {lit} : {mt}\n");
-                names[idx] = n;
-                etypes[idx] = Some(e);
-            }
-            // Arithmetic: scalar (a scalar-GID result) or *elementwise* over a rank-1 float slice (a
-            // tensor-GID result). The scalar form is `arith.{addi,mulf,…}`; the elementwise form
-            // coerces each operand to a `vector<Nxf32>` (`vector.load`/`broadcast`), applies
-            // `arith.{addf,subf,mulf,divf}`, and yields a vector that a row `TensorStore` writes back.
-            Opcode::Add | Opcode::Sub | Opcode::Mul | Opcode::Div => {
-                let result_gid = *types
-                    .get(ins.type_idx.0 as usize)
-                    .ok_or(crate::emitter_gap!())?;
-                if let Some(e) = elem_of_gid(result_gid) {
-                    let mt = mlir_scalar(&e).ok_or(crate::emitter_gap!())?;
-                    let op = arith_op(ins.opcode, &e).ok_or(crate::emitter_gap!())?;
-                    let a = names
-                        .get(ins.operand1.0 as usize)
-                        .ok_or(crate::emitter_gap!())?;
-                    let b = names
-                        .get(ins.operand2.0 as usize)
-                        .ok_or(crate::emitter_gap!())?;
-                    let n = format!("%v{idx}");
-                    // The latch increment of a stridable loop -- the marker the device clone
-                    // widens to a stride (#251 flat; Vx#379 block/thread). Only an `Add` can
-                    // carry it: `lower_for` is the sole tagger.
-                    let attr = if ins.opcode == Opcode::Add {
-                        match ins.imm {
-                            crate::bytecode::IMM_PARALLEL_STEP => " {vx.parallel_step}",
-                            crate::bytecode::IMM_BLOCK_STEP => " {vx.parallel_bstep}",
-                            crate::bytecode::IMM_THREAD_STEP => " {vx.parallel_tstep}",
-                            _ => "",
-                        }
-                    } else {
-                        ""
-                    };
-                    body += &format!("  {n} = {op} {a}, {b}{attr} : {mt}\n");
-                    names[idx] = n;
-                    etypes[idx] = Some(e);
-                } else {
-                    let (elem, shape) =
-                        ctx.tensors.get(&result_gid).ok_or(crate::emitter_gap!())?;
-                    if !elem.is_float() {
-                        return Err(Decline::TypeNotModelled {
-                            what: "an elementwise op on non-float elements",
-                        });
-                    }
-                    let et = mlir_scalar(elem).ok_or(crate::emitter_gap!())?;
-                    let d: i64 = shape
-                        .iter()
-                        .map(|s| s.parse::<i64>().ok())
-                        .collect::<Option<Vec<_>>>()
-                        .ok_or(crate::emitter_gap!())?
-                        .iter()
-                        .product();
-                    let vecty = format!("vector<{d}x{et}>");
-                    let va = coerce_vector(
-                        &mut body,
-                        &format!("{idx}a"),
-                        ins.operand1.0,
-                        &vecty,
-                        et,
-                        &names,
-                        &mem_of,
-                        &vec_of,
-                        &etypes,
-                    )?;
-                    let vb = coerce_vector(
-                        &mut body,
-                        &format!("{idx}b"),
-                        ins.operand2.0,
-                        &vecty,
-                        et,
-                        &names,
-                        &mem_of,
-                        &vec_of,
-                        &etypes,
-                    )?;
-                    let op = match ins.opcode {
-                        Opcode::Add => "arith.addf",
-                        Opcode::Sub => "arith.subf",
-                        Opcode::Mul => "arith.mulf",
-                        Opcode::Div => "arith.divf",
-                        _ => return Err(crate::emitter_gap!()),
-                    };
-                    let n = format!("%v{idx}");
-                    body += &format!("  {n} = {op} {va}, {vb} : {vecty}\n");
-                    names[idx] = n;
-                    vec_of[idx] = Some(vecty);
-                }
-            }
-            // Scalar comparison → `i1`; the relation is in `imm`, the operand type comes from the
-            // first operand's tracked type (this instruction's own type is `bool`, the result).
-            Opcode::Cmp => {
-                let e = elem_at(&etypes, ins.operand1.0).ok_or(crate::emitter_gap!())?;
-                let mt = mlir_scalar(&e).ok_or(crate::emitter_gap!())?;
-                let (op, pred) = cmp_op(ins.imm, &e).ok_or(crate::emitter_gap!())?;
-                let a = names
-                    .get(ins.operand1.0 as usize)
-                    .ok_or(crate::emitter_gap!())?;
-                let b = names
-                    .get(ins.operand2.0 as usize)
-                    .ok_or(crate::emitter_gap!())?;
-                let n = format!("%v{idx}");
-                body += &format!("  {n} = {op} {pred}, {a}, {b} : {mt}\n");
-                names[idx] = n;
-                etypes[idx] = Some(ElementType::Bool);
-            }
-            // Arithmetic negation `-x` (#214). `type_idx` is the result (= operand) scalar type. Float
-            // → `arith.negf`; integers have no `negi`, so `0 - x` via `arith.subi`.
-            Opcode::Neg => {
-                let e = elem_of_gid(
-                    *types
-                        .get(ins.type_idx.0 as usize)
-                        .ok_or(crate::emitter_gap!())?,
-                )
-                .ok_or(crate::emitter_gap!())?;
-                let mt = mlir_scalar(&e).ok_or(crate::emitter_gap!())?;
-                let a = names
-                    .get(ins.operand1.0 as usize)
-                    .ok_or(crate::emitter_gap!())?
-                    .clone();
-                let n = format!("%v{idx}");
-                if e.is_float() {
-                    body += &format!("  {n} = arith.negf {a} : {mt}\n");
-                } else {
-                    let z = format!("%z{idx}");
-                    body += &format!("  {z} = arith.constant 0 : {mt}\n");
-                    body += &format!("  {n} = arith.subi {z}, {a} : {mt}\n");
-                }
-                names[idx] = n;
-                etypes[idx] = Some(e);
-            }
-            // Logical / bitwise not `!x` (#214): `x ^ all-ones` (`1` for a bool `i1`, `-1` for ints).
-            Opcode::Not => {
-                let e = elem_of_gid(
-                    *types
-                        .get(ins.type_idx.0 as usize)
-                        .ok_or(crate::emitter_gap!())?,
-                )
-                .ok_or(crate::emitter_gap!())?;
-                let mt = mlir_scalar(&e).ok_or(crate::emitter_gap!())?;
-                let a = names
-                    .get(ins.operand1.0 as usize)
-                    .ok_or(crate::emitter_gap!())?
-                    .clone();
-                let ones_val = if matches!(e, ElementType::Bool) {
-                    "1"
-                } else {
-                    "-1"
-                };
-                let ones = format!("%ones{idx}");
-                let n = format!("%v{idx}");
-                body += &format!("  {ones} = arith.constant {ones_val} : {mt}\n");
-                body += &format!("  {n} = arith.xori {a}, {ones} : {mt}\n");
-                names[idx] = n;
-                etypes[idx] = Some(e);
-            }
-            // Scalar `as` cast (#214): `type_idx` is the *target* type, `operand1` the source value
-            // (whose type comes from its tracked `etypes`). The right `arith` conversion is chosen by
-            // the source/target kinds + widths; a same-type cast is a no-op that just aliases.
-            Opcode::Cast => {
-                let src = elem_at(&etypes, ins.operand1.0).ok_or(crate::emitter_gap!())?;
-                let tgt = elem_of_gid(
-                    *types
-                        .get(ins.type_idx.0 as usize)
-                        .ok_or(crate::emitter_gap!())?,
-                )
-                .ok_or(crate::emitter_gap!())?;
-                let a = names
-                    .get(ins.operand1.0 as usize)
-                    .ok_or(crate::emitter_gap!())?
-                    .clone();
-                let op = cast_op(&src, &tgt).ok_or(crate::emitter_gap!())?;
-                if op.is_empty() {
-                    names[idx] = a; // reinterpret (e.g. i32 as u32) -> alias
-                } else {
-                    let n = format!("%v{idx}");
-                    body += &format!(
-                        "  {n} = {op} {a} : {} to {}\n",
-                        mlir_scalar(&src).ok_or(crate::emitter_gap!())?,
-                        mlir_scalar(&tgt).ok_or(crate::emitter_gap!())?
-                    );
-                    names[idx] = n;
-                }
-                etypes[idx] = Some(tgt);
-            }
-            // A named local's stack slot. A scalar slot is a rank-0 memref (matching the AST codegen's
-            // scalar locals); an aggregate (struct) slot is an `llvm.alloca` of the `!llvm.struct`
-            // type, its pointer tracked in `agg_of` so field ops can address it.
-            Opcode::Alloca => {
-                let gid = *types
-                    .get(ins.type_idx.0 as usize)
-                    .ok_or(crate::emitter_gap!())?;
-                if let Some(e) = elem_of_gid(gid) {
-                    let mt = mlir_scalar(&e).ok_or(crate::emitter_gap!())?;
-                    let n = format!("%v{idx}");
-                    if ins.imm == 1 {
-                        // An address-taken scalar (`&x`): an `llvm.alloca` of the element type, yielding
-                        // a real `!llvm.ptr` the borrow can hand out. Its `Store`/`SlotLoad` go through
-                        // `sslot_of` (llvm.store/load); `ptr_of` marks it so `&x` types as a pointer arg
-                        // / return. Do *not* set `etypes` — the slot register is a pointer, not a scalar
-                        // value (that would mistype `&x` as its element at a call site). (#230)
-                        let cnt = format!("%n{idx}");
-                        body += &format!("  {cnt} = llvm.mlir.constant(1 : i32) : i32\n");
-                        body += &format!("  {n} = llvm.alloca {cnt} x {mt} : (i32) -> !llvm.ptr\n");
-                        names[idx] = n;
-                        sslot_of[idx] = Some(e);
-                        ptr_of[idx] = true;
-                    } else {
-                        body += &format!("  {n} = memref.alloca() : memref<{mt}>\n");
-                        names[idx] = n;
-                        etypes[idx] = Some(e);
-                    }
-                } else if gid == ptr_gid() {
-                    // A pointer local (memory mode): an `llvm.alloca` of one `!llvm.ptr` cell, tracked
-                    // in `pslot_of` so its `Store`/`SlotLoad` use `llvm.store`/`llvm.load`. (#235)
-                    let cnt = format!("%n{idx}");
-                    let n = format!("%v{idx}");
-                    body += &format!("  {cnt} = llvm.mlir.constant(1 : i32) : i32\n");
-                    body +=
-                        &format!("  {n} = llvm.alloca {cnt} x !llvm.ptr : (i32) -> !llvm.ptr\n");
-                    names[idx] = n;
-                    pslot_of[idx] = true;
-                } else {
-                    let agg = ctx.aggs.get(&gid).ok_or(Decline::TypeNotModelled {
-                        what: "an aggregate slot with no struct type",
-                    })?;
-                    let cnt = format!("%n{idx}");
-                    let n = format!("%v{idx}");
-                    body += &format!("  {cnt} = llvm.mlir.constant(1 : i32) : i32\n");
-                    body += &format!(
-                        "  {n} = llvm.alloca {cnt} x {} : (i32) -> !llvm.ptr\n",
-                        agg.struct_ty
-                    );
-                    names[idx] = n;
-                    agg_of[idx] = Some(gid);
-                }
-            }
-            // Store a value into a slot (no result). A scalar slot is a rank-0 `memref`; an aggregate
-            // slot (a struct value spilled from a struct-returning call) is an `llvm.store` (#215).
-            Opcode::Store => {
-                let slot = names
-                    .get(ins.operand1.0 as usize)
-                    .ok_or(crate::emitter_gap!())?
-                    .clone();
-                let val = names
-                    .get(ins.operand2.0 as usize)
-                    .ok_or(crate::emitter_gap!())?
-                    .clone();
-                // The induction-variable init of a stridable loop carries its tag into the MLIR
-                // text as a discardable attribute -- inert on the host path, the marker the
-                // device clone offsets by an id (#251 flat grid-stride; Vx#379 block/thread).
-                let attr = match ins.imm {
-                    crate::bytecode::IMM_PARALLEL_INIT => " {vx.parallel_init}",
-                    crate::bytecode::IMM_BLOCK_INIT => " {vx.parallel_binit}",
-                    crate::bytecode::IMM_THREAD_INIT => " {vx.parallel_tinit}",
-                    _ => "",
-                };
-                if let Some(&Some(agg_gid)) = agg_of.get(ins.operand1.0 as usize) {
-                    let agg = ctx.aggs.get(&agg_gid).ok_or(crate::emitter_gap!())?;
-                    body += &format!(
-                        "  llvm.store {val}, {slot} : {}, !llvm.ptr\n",
-                        agg.struct_ty
-                    );
-                } else if *pslot_of
-                    .get(ins.operand1.0 as usize)
-                    .ok_or(crate::emitter_gap!())?
-                {
-                    // A pointer local: store the `!llvm.ptr` value into its `llvm.alloca` cell. (#235)
-                    body += &format!("  llvm.store {val}, {slot} : !llvm.ptr, !llvm.ptr\n");
-                } else if let Some(e) = sslot_of.get(ins.operand1.0 as usize).cloned().flatten() {
-                    // An address-taken scalar slot (an `llvm.alloca` of the element): `llvm.store`. (#230)
-                    let mt = mlir_scalar(&e).ok_or(crate::emitter_gap!())?;
-                    body += &format!("  llvm.store {val}, {slot}{attr} : {mt}, !llvm.ptr\n");
-                } else {
-                    let e = elem_at(&etypes, ins.operand1.0).ok_or(crate::emitter_gap!())?;
-                    let mt = mlir_scalar(&e).ok_or(crate::emitter_gap!())?;
-                    body += &format!("  memref.store {val}, {slot}[]{attr} : memref<{mt}>\n");
-                }
-            }
-            // Load a value back from a slot; the result type is the slot's element (this
-            // instruction's own `type_idx`).
-            Opcode::SlotLoad => {
-                // A pointer slot loads back an `!llvm.ptr` value (`llvm.load`); an aggregate slot loads
-                // the whole `!llvm.struct` value (`llvm.load`, #242 Vec<Vec<T>>); a scalar slot loads
-                // its element from the rank-0 memref (`memref.load`). (#235)
-                if let Some(&Some(agg_gid)) = agg_of.get(ins.operand1.0 as usize) {
-                    let agg = ctx.aggs.get(&agg_gid).ok_or(crate::emitter_gap!())?;
-                    let slot = names
-                        .get(ins.operand1.0 as usize)
-                        .ok_or(crate::emitter_gap!())?;
-                    let n = format!("%v{idx}");
-                    body += &format!(
-                        "  {n} = llvm.load {slot} : !llvm.ptr -> {}\n",
-                        agg.struct_ty
-                    );
-                    names[idx] = n;
-                    agg_val_of[idx] = Some(agg_gid);
-                } else if *pslot_of
-                    .get(ins.operand1.0 as usize)
-                    .ok_or(crate::emitter_gap!())?
-                {
-                    let slot = names
-                        .get(ins.operand1.0 as usize)
-                        .ok_or(crate::emitter_gap!())?;
-                    let n = format!("%v{idx}");
-                    body += &format!("  {n} = llvm.load {slot} : !llvm.ptr -> !llvm.ptr\n");
-                    names[idx] = n;
-                    ptr_of[idx] = true;
-                } else if let Some(e) = sslot_of.get(ins.operand1.0 as usize).cloned().flatten() {
-                    // An address-taken scalar slot: `llvm.load` the element back from the `!llvm.ptr`. (#230)
-                    let mt = mlir_scalar(&e).ok_or(crate::emitter_gap!())?;
-                    let slot = names
-                        .get(ins.operand1.0 as usize)
-                        .ok_or(crate::emitter_gap!())?;
-                    let n = format!("%v{idx}");
-                    body += &format!("  {n} = llvm.load {slot} : !llvm.ptr -> {mt}\n");
-                    names[idx] = n;
-                    etypes[idx] = Some(e);
-                } else {
-                    let e = ty_at(ins.type_idx.0).ok_or(crate::emitter_gap!())?;
-                    let mt = mlir_scalar(&e).ok_or(crate::emitter_gap!())?;
-                    let slot = names
-                        .get(ins.operand1.0 as usize)
-                        .ok_or(crate::emitter_gap!())?;
-                    let n = format!("%v{idx}");
-                    body += &format!("  {n} = memref.load {slot}[] : memref<{mt}>\n");
-                    names[idx] = n;
-                    etypes[idx] = Some(e);
-                }
-            }
-            // Block markers → MLIR blocks. Block 0 is the func's entry block (implicit; it carries the
-            // params), so it gets no label; every other id opens `^bbN:`.
-            Opcode::BlockStart => {
-                if ins.imm != 0 {
-                    body += &format!("^bb{}:\n", ins.imm);
-                }
-                terminated = false;
-            }
-            Opcode::Br => {
-                body += &format!("  cf.br ^bb{}\n", ins.imm);
-                terminated = true;
-            }
-            // `imm` packs the two targets as `then | (else << 32)` (see `flatten::pack_targets`).
-            Opcode::CondBr => {
-                let cond = names
-                    .get(ins.operand1.0 as usize)
-                    .ok_or(crate::emitter_gap!())?;
-                let then_b = ins.imm & 0xffff_ffff;
-                let else_b = ins.imm >> 32;
-                body += &format!("  cf.cond_br {cond}, ^bb{then_b}, ^bb{else_b}\n");
-                terminated = true;
-            }
-            Opcode::Ret => {
-                let gid = *types
-                    .get(ins.type_idx.0 as usize)
-                    .ok_or(crate::emitter_gap!())?;
-                let a = names
-                    .get(ins.operand1.0 as usize)
-                    .ok_or(crate::emitter_gap!())?
-                    .clone();
-                if let Some(e) = elem_of_gid(gid) {
-                    // Coerce the returned scalar to the function's declared return type if they differ
-                    // (e.g. `return 10` — a default-`i32` literal — from an `-> i64` function ->
-                    // `arith.extsi`), mirroring the AST's `coerce_type` at return. Otherwise the
-                    // `func.return` type contradicts the signature.
-                    let target = ret_elem.clone().unwrap_or_else(|| e.clone());
-                    if mlir_scalar(&e).ok_or(crate::emitter_gap!())?
-                        != mlir_scalar(&target).ok_or(crate::emitter_gap!())?
-                    {
-                        match cast_op(&e, &target).ok_or(crate::emitter_gap!())? {
-                            "" => {
-                                body += &format!(
-                                    "  func.return {a} : {}\n",
-                                    mlir_scalar(&target).ok_or(crate::emitter_gap!())?
-                                )
-                            }
-                            op => {
-                                let c = format!("%rc{idx}");
-                                body += &format!(
-                                    "  {c} = {op} {a} : {} to {}\n",
-                                    mlir_scalar(&e).ok_or(crate::emitter_gap!())?,
-                                    mlir_scalar(&target).ok_or(crate::emitter_gap!())?
-                                );
-                                body += &format!(
-                                    "  func.return {c} : {}\n",
-                                    mlir_scalar(&target).ok_or(crate::emitter_gap!())?
-                                );
-                            }
-                        }
-                    } else {
-                        body += &format!(
-                            "  func.return {a} : {}\n",
-                            mlir_scalar(&e).ok_or(crate::emitter_gap!())?
-                        );
-                    }
-                } else if gid == ptr_gid() {
-                    body += &format!("  func.return {a} : !llvm.ptr\n"); // a pointer return (#235)
-                } else if let Some(agg) = ctx.aggs.get(&gid) {
-                    // A struct return (#215). The operand is either a slot pointer (a constructed
-                    // struct) -> load the value; or already a struct value (a returned call result) ->
-                    // return it directly.
-                    if agg_of
-                        .get(ins.operand1.0 as usize)
-                        .copied()
-                        .flatten()
-                        .is_some()
-                    {
-                        let rv = format!("%rv{idx}");
-                        body +=
-                            &format!("  {rv} = llvm.load {a} : !llvm.ptr -> {}\n", agg.struct_ty);
-                        body += &format!("  func.return {rv} : {}\n", agg.struct_ty);
-                    } else {
-                        body += &format!("  func.return {a} : {}\n", agg.struct_ty);
-                    }
-                } else {
-                    return Err(crate::emitter_gap!());
-                }
-                terminated = true;
-            }
-            // One argument of the following `Call`: record its value register (no op emitted).
-            Opcode::Arg => pending_args.push(ins.operand1.0),
-            // A fixed-arity call. `type_idx` is the callee's GID (resolved to name + return type via
-            // `ctx.callees`); `imm` is the arg count, taken from the tail of `pending_args`. Emit
-            // `%r = func.call @name(%a, %b) : (Ta, Tb) -> Tret`.
-            Opcode::Call => {
-                let gid = *types
-                    .get(ins.type_idx.0 as usize)
-                    .ok_or(crate::emitter_gap!())?;
-                let callee = ctx.callees.get(&gid).ok_or(crate::emitter_gap!())?;
-                // Return type: a scalar, an `!llvm.struct` by value for a struct-returning callee
-                // (#215), a pointer, or `()` for a void callee (a `&mut` mutator called in statement
-                // position, #230).
-                let rt = if let Some(e) = &callee.ret {
-                    mlir_scalar(e).ok_or(crate::emitter_gap!())?.to_string()
-                } else if let Some(agg_gid) = callee.ret_agg {
-                    ctx.aggs
-                        .get(&agg_gid)
-                        .ok_or(crate::emitter_gap!())?
-                        .struct_ty
-                        .clone()
-                } else if callee.ret_ptr {
-                    "!llvm.ptr".to_string() // an FFI pointer-returning callee (#235)
-                } else if callee.ret_void {
-                    "()".to_string()
-                } else {
-                    return Err(Decline::TypeNotModelled {
-                        what: "a callee whose return type has no MLIR spelling",
-                    });
-                };
-                let n = ins.imm as usize;
-                if pending_args.len() < n {
-                    return Err(crate::emitter_gap!());
-                }
-                let args = pending_args.split_off(pending_args.len() - n);
-                let mut arg_names = Vec::with_capacity(n);
-                let mut arg_types: Vec<String> = Vec::with_capacity(n);
-                for a in &args {
-                    arg_names.push(names.get(*a as usize).ok_or(crate::emitter_gap!())?.clone());
-                    // A scalar arg is its element type; a pointer arg (a string value / FFI pointer, or
-                    // an aggregate *slot* passed by reference — `&v` / a `self` pointer, #242) is
-                    // `!llvm.ptr`; a tensor arg is its memref type.
-                    let at = if let Some(e) = elem_at(&etypes, *a) {
-                        mlir_scalar(&e).ok_or(crate::emitter_gap!())?.to_string()
-                    } else if let Some(agg_gid) = agg_val_of.get(*a as usize).copied().flatten() {
-                        // A by-value aggregate argument (`push(&outer, a)` passing `a : Vec<i32>` by
-                        // value into a `Vec<Vec<T>>::push`) — an `!llvm.struct` value (#242).
-                        ctx.aggs
-                            .get(&agg_gid)
-                            .ok_or(crate::emitter_gap!())?
-                            .struct_ty
-                            .clone()
-                    } else if *ptr_of.get(*a as usize).ok_or(crate::emitter_gap!())?
-                        || agg_of.get(*a as usize).copied().flatten().is_some()
-                    {
-                        "!llvm.ptr".to_string()
-                    } else {
-                        mem_of
-                            .get(*a as usize)
-                            .ok_or(crate::emitter_gap!())?
-                            .clone()
-                            .ok_or(crate::emitter_gap!())?
-                    };
-                    arg_types.push(at);
-                }
-                if callee.ret_void {
-                    // A void call binds no result register (MLIR forbids `%v = func.call ... -> ()`);
-                    // the call is a pure effect (mutation through a `&mut` arg). The private extern decl
-                    // records an empty return (no `->`) so a void `extern` declares as `(args)`. (#230)
-                    body += &format!(
-                        "  func.call {}({}) : ({}) -> ()\n",
-                        sym_ref(&callee.name),
-                        arg_names.join(", "),
-                        arg_types.join(", "),
-                    );
-                    calls.push((callee.name.clone(), arg_types.clone(), String::new()));
-                } else {
-                    let nm = format!("%v{idx}");
-                    body += &format!(
-                        "  {nm} = func.call {}({}) : ({}) -> {rt}\n",
-                        sym_ref(&callee.name),
-                        arg_names.join(", "),
-                        arg_types.join(", "),
-                    );
-                    // Record the callee's signature so the module emitter can declare it if it is a
-                    // called-but-undefined symbol (an `extern`): the private decl's signature is taken
-                    // from the emitted call, so they match by construction.
-                    calls.push((callee.name.clone(), arg_types.clone(), rt.clone()));
-                    names[idx] = nm;
-                    if let Some(e) = &callee.ret {
-                        etypes[idx] = Some(e.clone());
-                    } else if callee.ret_ptr {
-                        ptr_of[idx] = true; // the call result is a pointer value (#235)
-                    } else if let Some(agg_gid) = callee.ret_agg {
-                        // A struct-returning call result is a struct *value*; tracked so it can be
-                        // spilled to a slot (`Store`), returned (`Ret`), or passed by value to another
-                        // call (#242).
-                        agg_val_of[idx] = Some(agg_gid);
-                    }
-                }
-            }
-            // Materialize a function pointer for a named function: `type_idx` is the target's GID
-            // (name via `ctx.callees`, signature via `ctx.func_sigs`). Emit `func.constant @name : sig`
-            // then cast the `FunctionType` value to an opaque `!llvm.ptr` (the ABI of a fn pointer),
-            // tracked in `ptr_of`. (#242)
-            Opcode::FuncConst => {
-                let gid = *types
-                    .get(ins.type_idx.0 as usize)
-                    .ok_or(crate::emitter_gap!())?;
-                let callee = ctx.callees.get(&gid).ok_or(crate::emitter_gap!())?;
-                let (params, ret) = ctx.func_sigs.get(&gid).ok_or(crate::emitter_gap!())?;
-                let fnty = format!("({}) -> {}", params.join(", "), ret);
-                let fc = format!("%fc{idx}");
-                let nm = format!("%v{idx}");
-                body += &format!(
-                    "  {fc} = func.constant {} : {fnty}\n",
-                    sym_ref(&callee.name)
-                );
-                body += &format!(
-                    "  {nm} = builtin.unrealized_conversion_cast {fc} : {fnty} to !llvm.ptr\n"
-                );
-                names[idx] = nm;
-                ptr_of[idx] = true;
-            }
-            // An indirect call through a function pointer. `operand1` is the callee `!llvm.ptr`, `imm`
-            // the arg count (the tail of `pending_args`, like `Call`), and this instruction's `type_idx`
-            // the scalar return type. Reconstruct the function type `(arg types)->ret` from the actual
-            // args, cast the pointer to it, and `func.call_indirect`. (#242)
-            Opcode::CallIndirect => {
-                let ret_elem = ty_at(ins.type_idx.0).ok_or(crate::emitter_gap!())?;
-                let rt = mlir_scalar(&ret_elem)
-                    .ok_or(crate::emitter_gap!())?
-                    .to_string();
-                let n = ins.imm as usize;
-                if pending_args.len() < n {
-                    return Err(crate::emitter_gap!());
-                }
-                let args = pending_args.split_off(pending_args.len() - n);
-                let mut arg_names = Vec::with_capacity(n);
-                let mut arg_types: Vec<String> = Vec::with_capacity(n);
-                for a in &args {
-                    arg_names.push(names.get(*a as usize).ok_or(crate::emitter_gap!())?.clone());
-                    let at = if let Some(e) = elem_at(&etypes, *a) {
-                        mlir_scalar(&e).ok_or(crate::emitter_gap!())?.to_string()
-                    } else if let Some(agg_gid) = agg_val_of.get(*a as usize).copied().flatten() {
-                        ctx.aggs
-                            .get(&agg_gid)
-                            .ok_or(crate::emitter_gap!())?
-                            .struct_ty
-                            .clone()
-                    } else if *ptr_of.get(*a as usize).ok_or(crate::emitter_gap!())?
-                        || agg_of.get(*a as usize).copied().flatten().is_some()
-                    {
-                        "!llvm.ptr".to_string()
-                    } else {
-                        mem_of
-                            .get(*a as usize)
-                            .ok_or(crate::emitter_gap!())?
-                            .clone()
-                            .ok_or(crate::emitter_gap!())?
-                    };
-                    arg_types.push(at);
-                }
-                let fnty = format!("({}) -> {rt}", arg_types.join(", "));
-                let fnptr = names
-                    .get(ins.operand1.0 as usize)
-                    .ok_or(crate::emitter_gap!())?
-                    .clone();
-                let fc = format!("%fc{idx}");
-                let nm = format!("%v{idx}");
-                body += &format!(
-                    "  {fc} = builtin.unrealized_conversion_cast {fnptr} : !llvm.ptr to {fnty}\n"
-                );
-                body += &format!(
-                    "  {nm} = func.call_indirect {fc}({}) : {fnty}\n",
-                    arg_names.join(", ")
-                );
-                names[idx] = nm;
-                etypes[idx] = Some(ret_elem);
-            }
-            // Store a scalar into a struct field (no result). `operand1` is the struct slot pointer,
-            // `operand2` the value, `imm` the field's byte offset. GEP to the field, then `llvm.store`;
-            // the field index comes from matching the offset against the layout, the value type from
-            // the stored register's tracked type.
-            Opcode::FieldStore => {
-                let gid = (*agg_of
-                    .get(ins.operand1.0 as usize)
-                    .ok_or(crate::emitter_gap!())?)
-                .ok_or(crate::emitter_gap!())?;
-                let agg = ctx.aggs.get(&gid).ok_or(crate::emitter_gap!())?;
-                let field_idx = agg
-                    .offsets
-                    .iter()
-                    .position(|&o| o == ins.imm)
-                    .ok_or(crate::emitter_gap!())?;
-                // The field's declared MLIR type (a scalar element or `!llvm.ptr`), so a pointer field
-                // (`Vec`'s `data`) stores an `!llvm.ptr` value and a scalar field its element (#242).
-                let fty = agg
-                    .field_tys
-                    .get(field_idx)
-                    .ok_or(crate::emitter_gap!())?
-                    .clone();
-                let slot = names
-                    .get(ins.operand1.0 as usize)
-                    .ok_or(crate::emitter_gap!())?;
-                let val = names
-                    .get(ins.operand2.0 as usize)
-                    .ok_or(crate::emitter_gap!())?;
-                let p = format!("%p{idx}");
-                body += &format!(
-                    "  {p} = llvm.getelementptr {slot}[0, {field_idx}] : (!llvm.ptr) -> !llvm.ptr, {}\n",
-                    agg.struct_ty
-                );
-                // A place-write store carries alias-scope metadata (M2b-2): it belongs to its own scope
-                // and does not alias its disjoint siblings' scopes. Direct field stores are unscoped.
-                let attrs = alias_scope_of
-                    .get(&idx)
-                    .map(|(own, sibs)| alias_store_attrs(*own, sibs))
-                    .unwrap_or_default();
-                body += &format!("  llvm.store {val}, {p}{attrs} : {fty}, !llvm.ptr\n");
-            }
-            // Load a scalar struct field. `operand1` is the struct slot, `imm` the field's byte offset,
-            // and this instruction's own `type_idx` the field's scalar type. GEP to the field, then
-            // `llvm.load`.
-            Opcode::FieldLoad => {
-                let gid = (*agg_of
-                    .get(ins.operand1.0 as usize)
-                    .ok_or(crate::emitter_gap!())?)
-                .ok_or(crate::emitter_gap!())?;
-                let agg = ctx.aggs.get(&gid).ok_or(crate::emitter_gap!())?;
-                let field_idx = agg
-                    .offsets
-                    .iter()
-                    .position(|&o| o == ins.imm)
-                    .ok_or(crate::emitter_gap!())?;
-                // The field's declared MLIR type drives the load: a scalar field yields its element
-                // (tracked in `etypes`), a pointer field (`Vec`'s `data`) an `!llvm.ptr` value
-                // (tracked in `ptr_of`) — the type is taken from the layout, not the read register's
-                // `type_idx`, so a pointer field (whose `type_idx` is `ptr_gid`) resolves too (#242).
-                let fty = agg
-                    .field_tys
-                    .get(field_idx)
-                    .ok_or(crate::emitter_gap!())?
-                    .clone();
-                // A pointer field pointing to a modelled aggregate (`VecIter`'s `vec : *const Vec<T>`)
-                // tags its loaded value with the pointee GID, so a chained field access through it
-                // (`(*self.vec).len`) GEPs the pointee. (#242)
-                let pointee = agg.field_pointee.get(field_idx).copied().flatten();
-                let slot = names
-                    .get(ins.operand1.0 as usize)
-                    .ok_or(crate::emitter_gap!())?;
-                let p = format!("%p{idx}");
-                let n = format!("%v{idx}");
-                body += &format!(
-                    "  {p} = llvm.getelementptr {slot}[0, {field_idx}] : (!llvm.ptr) -> !llvm.ptr, {}\n",
-                    agg.struct_ty
-                );
-                body += &format!("  {n} = llvm.load {p} : !llvm.ptr -> {fty}\n");
-                names[idx] = n;
-                if fty == "!llvm.ptr" {
-                    ptr_of[idx] = true;
-                    agg_of[idx] = pointee;
-                } else if let Some(nested_gid) = agg.field_agg.get(field_idx).copied().flatten() {
-                    // A by-value nested-aggregate field load yields the whole `!llvm.struct` value,
-                    // tracked as an aggregate value so it can be re-stored / passed by value. (#242)
-                    agg_val_of[idx] = Some(nested_gid);
-                } else {
-                    etypes[idx] = elem_from_mlir_scalar(&fty);
-                }
-            }
-            // The address of a by-value nested-aggregate field (`&outer.inner`): GEP to the field and
-            // yield the pointer, tracked as an aggregate slot (its layout GID from `type_idx`), so a
-            // chained field access or a method receiver addresses through it. (#242)
-            Opcode::FieldAddr => {
-                let parent_gid = (*agg_of
-                    .get(ins.operand1.0 as usize)
-                    .ok_or(crate::emitter_gap!())?)
-                .ok_or(crate::emitter_gap!())?;
-                let agg = ctx.aggs.get(&parent_gid).ok_or(crate::emitter_gap!())?;
-                let field_idx = agg
-                    .offsets
-                    .iter()
-                    .position(|&o| o == ins.imm)
-                    .ok_or(crate::emitter_gap!())?;
-                let field_gid = *types
-                    .get(ins.type_idx.0 as usize)
-                    .ok_or(crate::emitter_gap!())?;
-                let slot = names
-                    .get(ins.operand1.0 as usize)
-                    .ok_or(crate::emitter_gap!())?;
-                let n = format!("%v{idx}");
-                body += &format!(
-                    "  {n} = llvm.getelementptr {slot}[0, {field_idx}] : (!llvm.ptr) -> !llvm.ptr, {}\n",
-                    agg.struct_ty
-                );
-                names[idx] = n;
-                // A nested-aggregate field's address is tracked as an aggregate slot, so a chained field
-                // access GEPs through it (#242); a *scalar* field's address (`&param.scalar`, #275 M3b
-                // reference returns) is a plain element pointer — the result GID is the field's scalar GID,
-                // which is not in `aggs`, so track it as a pointer instead.
-                if ctx.aggs.contains_key(&field_gid) {
-                    agg_of[idx] = Some(field_gid);
-                } else {
-                    ptr_of[idx] = true;
-                }
-            }
-            // Allocate a tensor buffer (`Tensor<T>([..])`): a static `memref` of the shape recovered
-            // from the side table by GID. Its register is tracked in `mem_of` for later index/store.
-            Opcode::TensorAlloc => {
-                let gid = *types
-                    .get(ins.type_idx.0 as usize)
-                    .ok_or(crate::emitter_gap!())?;
-                let (elem, shape) = ctx.tensors.get(&gid).ok_or(crate::emitter_gap!())?;
-                let memty = tensor_memref_ty(elem, shape).ok_or(crate::emitter_gap!())?;
-                let n = format!("%v{idx}");
-                // `operand2` may carry a memory-space dispatch id from `.with_memory` (Vx#379
-                // stage B). A `scope: sm` space becomes a space-3 ALLOCA: on the host that is a
-                // stack slot like any other, and in the device clone materializeGpuKernels turns
-                // a static space-3 alloca into `.shared` storage -- the machinery #352 built.
-                // Any other space stays a plain allocation; the annotation was advisory.
-                let sm = ins.operand2.0 != 0
-                    && ctx
-                        .subspaces
-                        .get(&(ins.operand2.0 as u64))
-                        .and_then(|s| s.scope.as_deref())
-                        == Some("sm");
-                if sm {
-                    let smty = format!(
-                        "{}, 3>",
-                        memty.strip_suffix('>').ok_or(crate::emitter_gap!())?
-                    );
-                    // alignment 16, explicitly. The alloca becomes a `.shared` global under
-                    // convert-gpu-to-nvvm, and the DRIVER packs those globals by their declared
-                    // alignment -- an unannotated 4-byte-aligned f32 array landed at offset
-                    // 0x204, and LLVM's loop vectorizer (which assumes natural vector alignment
-                    // when it widens a serial walk over the tile) issued a 16-byte
-                    // `ld.shared.v4` into it: "misaligned address", device-fatal, found by
-                    // compute-sanitizer on the block-per-row softmax (Vx#379 R3).
-                    body += &format!("  {n} = memref.alloca() {{alignment = 16 : i64}} : {smty}\n");
-                    names[idx] = n;
-                    mem_of[idx] = Some(smty);
-                } else {
-                    body += &format!("  {n} = memref.alloc() : {memty}\n");
-                    names[idx] = n;
-                    mem_of[idx] = Some(memty);
-                }
-            }
-            // Index a tensor along its outermost dimension. `operand1` is the base tensor (memref),
-            // `operand2` the index (`arith.index_cast` to `index`). A scalar-element result
-            // (`type_idx` is a scalar GID) is a value read (`imm = 0` → `memref.load`) or an element
-            // *place* (`imm = 1` → recorded for the following `TensorStore`). A sub-view result (a
-            // tensor GID) rank-reduces the base to a row via `memref.reinterpret_cast` (contiguous
-            // base only; a further sub-view of a strided row is deferred).
-            Opcode::TensorIndex => {
-                let result_gid = *types
-                    .get(ins.type_idx.0 as usize)
-                    .ok_or(crate::emitter_gap!())?;
-                let base = names
-                    .get(ins.operand1.0 as usize)
-                    .ok_or(crate::emitter_gap!())?
-                    .clone();
-                let base_memty = mem_of
-                    .get(ins.operand1.0 as usize)
-                    .ok_or(crate::emitter_gap!())?
-                    .clone()
-                    .ok_or(crate::emitter_gap!())?;
-                let imt =
-                    mlir_scalar(&elem_at(&etypes, ins.operand2.0).ok_or(crate::emitter_gap!())?)
-                        .ok_or(crate::emitter_gap!())?;
-                let iname = names
-                    .get(ins.operand2.0 as usize)
-                    .ok_or(crate::emitter_gap!())?
-                    .clone();
-                let ic = format!("%ic{idx}");
-                body += &format!("  {ic} = arith.index_cast {iname} : {imt} to index\n");
-
-                if let Some(e) = elem_of_gid(result_gid) {
-                    // Scalar element: a value read or a store place (works on a contiguous or a
-                    // strided-row base — `memref.load`/`store` handle both).
-                    if ins.imm == 1 {
-                        place_of[idx] = Some((base, ic, base_memty));
-                    } else {
-                        let n = format!("%v{idx}");
-                        body += &format!("  {n} = memref.load {base}[{ic}] : {base_memty}\n");
-                        names[idx] = n;
-                        etypes[idx] = Some(e);
-                    }
-                } else {
-                    // Row sub-view: reinterpret the contiguous base as the row at flat offset
-                    // `index * product(row dims)`, with row-major strides over the remaining dims.
-                    if base_memty.contains("strided") {
-                        return Err(crate::emitter_gap!()); // a sub-view of an already-strided row is deferred
-                    }
-                    let (elem, shape) =
-                        ctx.tensors.get(&result_gid).ok_or(crate::emitter_gap!())?;
-                    let et = mlir_scalar(elem).ok_or(crate::emitter_gap!())?;
-                    let dims: Vec<i64> = shape
-                        .iter()
-                        .map(|d| d.parse::<i64>().ok())
-                        .collect::<Option<_>>()
-                        .ok_or(crate::emitter_gap!())?; // symbolic dims not handled
-                    let stride0: i64 = dims.iter().product();
-                    let mut strides = vec![1i64; dims.len()];
-                    for i in (0..dims.len().saturating_sub(1)).rev() {
-                        strides[i] = strides[i + 1] * dims[i + 1];
-                    }
-                    let off = if stride0 == 1 {
-                        ic.clone()
-                    } else {
-                        let cst = format!("%cs{idx}");
-                        let o = format!("%off{idx}");
-                        body += &format!("  {cst} = arith.constant {stride0} : index\n");
-                        body += &format!("  {o} = arith.muli {ic}, {cst} : index\n");
-                        o
-                    };
-                    let sizes_s = join_i64(&dims);
-                    let strides_s = join_i64(&strides);
-                    let dimx: String = dims.iter().map(|d| format!("{d}x")).collect();
-                    // A sub-view of shared storage stays in its space: dropping the `, 3` here
-                    // would make the row a generic pointer and the PTX would address `.shared`
-                    // data with global loads.
-                    let space_sfx = if base_memty.ends_with(", 3>") {
-                        ", 3"
-                    } else {
-                        ""
-                    };
-                    let result_ty =
-                        format!("memref<{dimx}{et}, strided<[{strides_s}], offset: ?>{space_sfx}>");
-                    let n = format!("%v{idx}");
-                    body += &format!(
-                        "  {n} = memref.reinterpret_cast {base} to offset: [{off}], sizes: [{sizes_s}], strides: [{strides_s}] : {base_memty} to {result_ty}\n"
-                    );
-                    names[idx] = n;
-                    mem_of[idx] = Some(result_ty);
-                }
-            }
-            // Reduce a rank-1 float slice to a scalar. `operand1` (and `operand2` for `dot`) are the
-            // slices; `imm` the kind (0 = dot, 1 = sum, 2 = max, 3 = min). Each slice is `vector.load`ed
-            // to a `vector<Nxf32>`; `dot` fuses the two with `arith.mulf`; then `vector.reduction`.
-            // Float only, matching the AST oracle (`vector<Nxf32>` → `f32`).
-            Opcode::Reduce => {
-                let e = ty_at(ins.type_idx.0).ok_or(crate::emitter_gap!())?;
-                if !e.is_float() {
-                    return Err(crate::emitter_gap!()); // the AST lowers only f32 reductions
-                }
-                let et = mlir_scalar(&e).ok_or(crate::emitter_gap!())?;
-                // One load per operand, widened when the ROW is half-precision (Vx#320):
-                // f16/bf16 rows come up through `arith.extf` and the multiply, reduction and
-                // result are f32 -- a reduction's precision is its accumulator's, exactly the
-                // contract the checker types (`dot` over any float slices -> f32).
-                let c0 = format!("%rc{idx}");
-                body += &format!("  {c0} = arith.constant 0 : index\n");
-                let load_wide = |reg: u32, tag: &str, body: &mut String| -> Option<String> {
-                    let s = names.get(reg as usize)?.clone();
-                    let m = mem_of.get(reg as usize)?.clone()?;
-                    let d = memref_lead_dim(&m)?;
-                    let row_elem = m.rsplit('x').next()?.trim_end_matches('>');
-                    let row_elem = row_elem.split(',').next()?.trim();
-                    let rvec = format!("vector<{d}x{row_elem}>");
-                    let al = vector_align_attr(&rvec);
-                    let v = format!("%{tag}{idx}");
-                    body.push_str(&format!(
-                        "  {v} = vector.load {s}[{c0}]{al} : {m}, {rvec}\n"
-                    ));
-                    if row_elem == et {
-                        return Some(v);
-                    }
-                    if row_elem != "f16" && row_elem != "bf16" {
-                        return None;
-                    }
-                    let w = format!("%{tag}w{idx}");
-                    body.push_str(&format!(
-                        "  {w} = arith.extf {v} : {rvec} to vector<{d}x{et}>\n"
-                    ));
-                    Some(w)
-                };
-                let v0 = load_wide(ins.operand1.0, "vl", &mut body).ok_or(crate::emitter_gap!())?;
-                let m0 = mem_of
-                    .get(ins.operand1.0 as usize)
-                    .ok_or(crate::emitter_gap!())?
-                    .clone()
-                    .ok_or(crate::emitter_gap!())?;
-                let d = memref_lead_dim(&m0).ok_or(crate::emitter_gap!())?;
-                let vecty = format!("vector<{d}x{et}>");
-                let (reduce_in, kind) = match ins.imm {
-                    0 => {
-                        let v1 = load_wide(ins.operand2.0, "vr", &mut body)
-                            .ok_or(crate::emitter_gap!())?;
-                        let prod = format!("%vp{idx}");
-                        body += &format!("  {prod} = arith.mulf {v0}, {v1} : {vecty}\n");
-                        (prod, "add")
-                    }
-                    1 => (v0, "add"),
-                    2 => (v0, "maximumf"),
-                    3 => (v0, "minimumf"),
-                    _ => return Err(crate::emitter_gap!()),
-                };
-                let n = format!("%v{idx}");
-                body += &format!(
-                    "  {n} = vector.reduction <{kind}>, {reduce_in} : {vecty} into {et}\n"
-                );
-                names[idx] = n;
-                etypes[idx] = Some(e);
-            }
-            // `matmul_into(&mut dst, &a, &b)` (no result): `linalg.fill` + `linalg.matmul` on the
-            // three whole-tensor memrefs, the same pair the AST path builds -- and the exact shape
-            // `kernelKindOf` classifies, so a spawn whose whole job is this op still routes to
-            // cuBLAS. The destination register rides the imm (see `Opcode::MatmulInto`).
-            Opcode::MatmulInto => {
-                let a = names
-                    .get(ins.operand1.0 as usize)
-                    .ok_or(crate::emitter_gap!())?
-                    .clone();
-                let ma = mem_of
-                    .get(ins.operand1.0 as usize)
-                    .ok_or(crate::emitter_gap!())?
-                    .clone()
-                    .ok_or(crate::emitter_gap!())?;
-                let b = names
-                    .get(ins.operand2.0 as usize)
-                    .ok_or(crate::emitter_gap!())?
-                    .clone();
-                let mb = mem_of
-                    .get(ins.operand2.0 as usize)
-                    .ok_or(crate::emitter_gap!())?
-                    .clone()
-                    .ok_or(crate::emitter_gap!())?;
-                let dst = names
-                    .get(ins.imm as usize)
-                    .ok_or(crate::emitter_gap!())?
-                    .clone();
-                let md = mem_of
-                    .get(ins.imm as usize)
-                    .ok_or(crate::emitter_gap!())?
-                    .clone()
-                    .ok_or(crate::emitter_gap!())?;
-                // "memref<8x16xf32>" -> "f32": the element is the segment after the last 'x',
-                // shorn of the closing '>'. Floats only -- an int matmul declines the program to
-                // the AST path rather than improvising linalg's integer semantics here. The
-                // half-precision pair is in (Vx#320): the routed backend runs them through
-                // cublasGemmEx with f32 accumulation, and the host fallback's linalg lowers
-                // them like any float -- restricting to f32 here silently evicted every f16
-                // attention program from the flat path, prover and all.
-                let et = md
-                    .rsplit('x')
-                    .next()
-                    .ok_or(crate::emitter_gap!())?
-                    .trim_end_matches('>')
-                    .to_string();
-                if et != "f32" && et != "f64" && et != "f16" && et != "bf16" {
-                    return Err(crate::emitter_gap!());
-                }
-                body += &format!("  %mz{idx} = arith.constant 0.0 : {et}\n");
-                body += &format!("  linalg.fill ins(%mz{idx} : {et}) outs({dst} : {md})\n");
-                body += &format!("  linalg.matmul ins({a}, {b} : {ma}, {mb}) outs({dst} : {md})\n");
-            }
-            // `flash_attention_into(&mut o, &q, &k, &v, scale)` (no result): a serial
-            // `o = softmax(q @ k^T * scale) @ v` nest, preceded by a `vx.attention_note` naming
-            // which memref plays which role. The nest is the correctness contract — a runtime
-            // that cannot (or will not) route runs it as written; the note is what
-            // `kernelKindOf` classifies as `kind=attention` so a runtime that CAN route hands
-            // the region to a fused vendor kernel instead. o, v and scale ride the imm (see
-            // `Opcode::FlashAttnInto`). f16 storage with f32 arithmetic throughout, the same
-            // split the widening contracts (Vx#320) give every half slice.
-            Opcode::FlashAttnInto => {
-                let o_reg = (ins.imm & 0xffff) as usize;
-                let v_reg = ((ins.imm >> 16) & 0xffff) as usize;
-                let s_reg = ((ins.imm >> 32) & 0xffff) as usize;
-                let q = names
-                    .get(ins.operand1.0 as usize)
-                    .ok_or(crate::emitter_gap!())?
-                    .clone();
-                let mq = mem_of
-                    .get(ins.operand1.0 as usize)
-                    .ok_or(crate::emitter_gap!())?
-                    .clone()
-                    .ok_or(crate::emitter_gap!())?;
-                let k = names
-                    .get(ins.operand2.0 as usize)
-                    .ok_or(crate::emitter_gap!())?
-                    .clone();
-                let mk = mem_of
-                    .get(ins.operand2.0 as usize)
-                    .ok_or(crate::emitter_gap!())?
-                    .clone()
-                    .ok_or(crate::emitter_gap!())?;
-                let o = names.get(o_reg).ok_or(crate::emitter_gap!())?.clone();
-                let mo = mem_of
-                    .get(o_reg)
-                    .ok_or(crate::emitter_gap!())?
-                    .clone()
-                    .ok_or(crate::emitter_gap!())?;
-                let v = names.get(v_reg).ok_or(crate::emitter_gap!())?.clone();
-                let mv = mem_of
-                    .get(v_reg)
-                    .ok_or(crate::emitter_gap!())?
-                    .clone()
-                    .ok_or(crate::emitter_gap!())?;
-                let sc = names.get(s_reg).ok_or(crate::emitter_gap!())?.clone();
-                if !matches!(elem_at(&etypes, s_reg as u32), Some(ElementType::F32)) {
-                    return Err(crate::emitter_gap!());
-                }
-                // "memref<AxBxf16>" -> (A, B, "f16"); anything shaped differently (a strided
-                // layout, a surprise rank) declines rather than guesses.
-                let dims = |m: &str| -> Option<(i64, i64, String)> {
-                    let inner = m.strip_prefix("memref<")?.strip_suffix('>')?;
-                    let mut it = inner.split('x');
-                    let a = it.next()?.parse::<i64>().ok()?;
-                    let b = it.next()?.parse::<i64>().ok()?;
-                    let e = it.next()?.to_string();
-                    if it.next().is_some() {
-                        return None;
-                    }
-                    Some((a, b, e))
-                };
-                let (sq, hd, eo) = dims(&mo).ok_or(crate::emitter_gap!())?;
-                let (sq2, hd2, eq) = dims(&mq).ok_or(crate::emitter_gap!())?;
-                let (sk, hd3, ek) = dims(&mk).ok_or(crate::emitter_gap!())?;
-                let (sk2, hd4, ev) = dims(&mv).ok_or(crate::emitter_gap!())?;
-                if [&eo, &eq, &ek, &ev].iter().any(|e| e.as_str() != "f16") {
-                    return Err(crate::emitter_gap!());
-                }
-                if sq != sq2 || sk != sk2 || hd != hd2 || hd != hd3 || hd != hd4 {
-                    return Err(crate::emitter_gap!());
-                }
-                body += &format!(
-                    "  \"vx.attention_note\"({o}, {q}, {k}, {v}, {sc}) : ({mo}, {mq}, {mk}, {mv}, f32) -> ()\n"
-                );
-                body += &format!("  %fasb{idx} = memref.alloca() : memref<{sk}xf32>\n");
-                body += &format!("  %fac0{idx} = arith.constant 0 : index\n");
-                body += &format!("  %fac1{idx} = arith.constant 1 : index\n");
-                body += &format!("  %facq{idx} = arith.constant {sq} : index\n");
-                body += &format!("  %fack{idx} = arith.constant {sk} : index\n");
-                body += &format!("  %facd{idx} = arith.constant {hd} : index\n");
-                body += &format!("  %faz{idx} = arith.constant 0.000000e+00 : f32\n");
-                // -inf: the identity of max over scores that may all be negative.
-                body += &format!("  %fan{idx} = arith.constant 0xFF800000 : f32\n");
-                body +=
-                    &format!("  scf.for %fai{idx} = %fac0{idx} to %facq{idx} step %fac1{idx} {{\n");
-                // Pass 1: this row's scores into the scratch buffer, tracking their max.
-                body += &format!(
-                    "    %fam{idx} = scf.for %faj{idx} = %fac0{idx} to %fack{idx} step %fac1{idx} iter_args(%famx{idx} = %fan{idx}) -> (f32) {{\n"
-                );
-                body += &format!(
-                    "      %fad{idx} = scf.for %fae{idx} = %fac0{idx} to %facd{idx} step %fac1{idx} iter_args(%faa{idx} = %faz{idx}) -> (f32) {{\n"
-                );
-                body +=
-                    &format!("        %faqh{idx} = memref.load {q}[%fai{idx}, %fae{idx}] : {mq}\n");
-                body += &format!("        %faqf{idx} = arith.extf %faqh{idx} : f16 to f32\n");
-                body +=
-                    &format!("        %fakh{idx} = memref.load {k}[%faj{idx}, %fae{idx}] : {mk}\n");
-                body += &format!("        %fakf{idx} = arith.extf %fakh{idx} : f16 to f32\n");
-                body += &format!("        %fap{idx} = arith.mulf %faqf{idx}, %fakf{idx} : f32\n");
-                body += &format!("        %fapa{idx} = arith.addf %faa{idx}, %fap{idx} : f32\n");
-                body += &format!("        scf.yield %fapa{idx} : f32\n");
-                body += "      }\n";
-                body += &format!("      %fas{idx} = arith.mulf %fad{idx}, {sc} : f32\n");
-                body += &format!(
-                    "      memref.store %fas{idx}, %fasb{idx}[%faj{idx}] : memref<{sk}xf32>\n"
-                );
-                body += &format!("      %fam2{idx} = arith.maximumf %famx{idx}, %fas{idx} : f32\n");
-                body += &format!("      scf.yield %fam2{idx} : f32\n");
-                body += "    }\n";
-                // Pass 2: exponentiate shifted scores in place, summing them.
-                body += &format!(
-                    "    %fal{idx} = scf.for %fajj{idx} = %fac0{idx} to %fack{idx} step %fac1{idx} iter_args(%fall{idx} = %faz{idx}) -> (f32) {{\n"
-                );
-                body += &format!(
-                    "      %fasl{idx} = memref.load %fasb{idx}[%fajj{idx}] : memref<{sk}xf32>\n"
-                );
-                body += &format!("      %fash{idx} = arith.subf %fasl{idx}, %fam{idx} : f32\n");
-                // `math.exp`, not a `func.call` into the stdlib: math is the portable spelling
-                // (libm on the host pipeline, the NVVM intrinsic on device), and a func.call to
-                // a host symbol inside a kernel cannot be loaded (see useDeviceMathIn).
-                body += &format!("      %faex{idx} = math.exp %fash{idx} : f32\n");
-                body += &format!(
-                    "      memref.store %faex{idx}, %fasb{idx}[%fajj{idx}] : memref<{sk}xf32>\n"
-                );
-                body += &format!("      %fal2{idx} = arith.addf %fall{idx}, %faex{idx} : f32\n");
-                body += &format!("      scf.yield %fal2{idx} : f32\n");
-                body += "    }\n";
-                // Pass 3: o[i][d] = sum_j p[j] * v[j][d] / l, narrowed once on store.
-                body += &format!(
-                    "    scf.for %fadd{idx} = %fac0{idx} to %facd{idx} step %fac1{idx} {{\n"
-                );
-                body += &format!(
-                    "      %faoc{idx} = scf.for %fajk{idx} = %fac0{idx} to %fack{idx} step %fac1{idx} iter_args(%faoa{idx} = %faz{idx}) -> (f32) {{\n"
-                );
-                body += &format!(
-                    "        %fapl{idx} = memref.load %fasb{idx}[%fajk{idx}] : memref<{sk}xf32>\n"
-                );
-                body += &format!(
-                    "        %favh{idx} = memref.load {v}[%fajk{idx}, %fadd{idx}] : {mv}\n"
-                );
-                body += &format!("        %favf{idx} = arith.extf %favh{idx} : f16 to f32\n");
-                body += &format!("        %fapv{idx} = arith.mulf %fapl{idx}, %favf{idx} : f32\n");
-                body += &format!("        %fao2{idx} = arith.addf %faoa{idx}, %fapv{idx} : f32\n");
-                body += &format!("        scf.yield %fao2{idx} : f32\n");
-                body += "      }\n";
-                body += &format!("      %faon{idx} = arith.divf %faoc{idx}, %fal{idx} : f32\n");
-                body += &format!("      %faoh{idx} = arith.truncf %faon{idx} : f32 to f16\n");
-                body +=
-                    &format!("      memref.store %faoh{idx}, {o}[%fai{idx}, %fadd{idx}] : {mo}\n");
-                body += "    }\n";
-                body += "  }\n";
-            }
-            // Store into a tensor place (no result). A scalar-element place (an `imm = 1`
-            // `TensorIndex`) → `memref.store`; a row/sub-view place (an `imm = 0` `TensorIndex`, a row
-            // memref in `mem_of`) takes an elementwise vector value → `vector.store`.
-            Opcode::TensorStore => {
-                if let Some((base, ic, memty)) = place_of
-                    .get(ins.operand1.0 as usize)
-                    .ok_or(crate::emitter_gap!())?
-                    .clone()
-                {
-                    let vreg = ins.operand2.0;
-                    let mut val = names
-                        .get(vreg as usize)
-                        .ok_or(crate::emitter_gap!())?
-                        .clone();
-                    // Coerce the stored scalar to the tensor's element type when they differ — a
-                    // default-`f32` float literal `1.0` stored into a `bf16` tensor becomes
-                    // `arith.truncf`, `f32 -> f64` becomes `arith.extf`, etc. The AST path does the
-                    // same via `coerce_type` before its `memref.store`; without it the store is
-                    // ill-typed (`f32` value into a `memref<..xbf16>`).
-                    if let (Some(src_e), Some(tgt_s)) =
-                        (elem_at(&etypes, vreg), memref_elem(&memty))
-                    {
-                        if let Some(tgt_e) = elem_from_mlir_scalar(tgt_s) {
-                            match cast_op(&src_e, &tgt_e) {
-                                Some("") => {} // same MLIR type: no conversion
-                                Some(op) => {
-                                    let c = format!("%tsc{idx}");
-                                    body += &format!(
-                                        "  {c} = {op} {val} : {} to {tgt_s}\n",
-                                        mlir_scalar(&src_e).ok_or(crate::emitter_gap!())?
-                                    );
-                                    val = c;
-                                }
-                                None => return Err(crate::emitter_gap!()), // unmodelled conversion -> decline (AST oracle)
-                            }
-                        }
-                    }
-                    body += &format!("  memref.store {val}, {base}[{ic}] : {memty}\n");
-                } else if let Some(rowty) = mem_of
-                    .get(ins.operand1.0 as usize)
-                    .ok_or(crate::emitter_gap!())?
-                    .clone()
-                {
-                    let dst = names
-                        .get(ins.operand1.0 as usize)
-                        .ok_or(crate::emitter_gap!())?
-                        .clone();
-                    let vecname = names
-                        .get(ins.operand2.0 as usize)
-                        .ok_or(crate::emitter_gap!())?
-                        .clone();
-                    let vecty = vec_of
-                        .get(ins.operand2.0 as usize)
-                        .ok_or(crate::emitter_gap!())?
-                        .clone()
-                        .ok_or(crate::emitter_gap!())?;
-                    let c0 = format!("%sc{idx}");
-                    let al = vector_align_attr(&vecty);
-                    body += &format!("  {c0} = arith.constant 0 : index\n");
-                    body +=
-                        &format!("  vector.store {vecname}, {dst}[{c0}]{al} : {rowty}, {vecty}\n");
-                } else {
-                    return Err(crate::emitter_gap!());
-                }
-            }
-            // Move a tensor to a memory space: `operand1` is the source, `imm` the target space's
-            // dispatch id, `type_idx` the result tensor (same element + shape). Emits `vx.transfer`
-            // (generic form) with `target_topology`; the vx→standard lowering turns it into an
-            // alloc + `memref.copy` (it ignores the source's layout suffix, so the result is a plain
-            // `memref<NxT>`). When the target space declares a sub-space descriptor, re-attach the
-            // scheduling attrs (`space`/`within`/`granule`/`capacity`/`scope` + a bump-allocated
-            // `offset`/`slots`) the AST path emits — a device backend needs them to place the tile
-            // into VMEM/TMEM, and they are dropped otherwise (B1/P0-1).
-            Opcode::Transfer => {
-                let result_gid = *types
-                    .get(ins.type_idx.0 as usize)
-                    .ok_or(crate::emitter_gap!())?;
-                let (elem, shape) = ctx.tensors.get(&result_gid).ok_or(crate::emitter_gap!())?;
-                let dstty = tensor_memref_ty(elem, shape).ok_or(crate::emitter_gap!())?;
-                let src = names
-                    .get(ins.operand1.0 as usize)
-                    .ok_or(crate::emitter_gap!())?
-                    .clone();
-                let srcty = mem_of
-                    .get(ins.operand1.0 as usize)
-                    .ok_or(crate::emitter_gap!())?
-                    .clone()
-                    .ok_or(crate::emitter_gap!())?;
-                let n = format!("%v{idx}");
-                let mut attrs = format!("target_topology = {} : i32", ins.imm);
-                if let Some(desc) = ctx.subspaces.get(&ins.imm) {
-                    // Descriptor attrs, in the AST path's emission order (MLIR sorts on print, so the
-                    // final parsed form is byte-identical regardless of the order emitted here).
-                    attrs += &format!(", space = \"{}\"", desc.name);
-                    if let Some(w) = &desc.within {
-                        attrs += &format!(", within = \"{w}\"");
-                    }
-                    if let Some(g) = desc.granule {
-                        attrs += &format!(", granule = {g} : i64");
-                    }
-                    if let Some(c) = desc.capacity {
-                        attrs += &format!(", capacity = {c} : i64");
-                    }
-                    if let Some(s) = &desc.scope {
-                        attrs += &format!(", scope = \"{s}\"");
-                    }
-                    if let Some(m) = &desc.managed {
-                        attrs += &format!(", managed = \"{m}\"");
-                    }
-                    // SS2 bump allocation: a statically-shaped tile into a granule'd space claims the
-                    // next granule-rounded `offset`; `slots` is the granule count it occupies.
-                    let tile_bytes = static_tile_bytes(elem, shape);
-                    if let (Some(granule), Some(bytes)) = (desc.granule, tile_bytes) {
-                        if granule > 0 {
-                            let rounded = bytes.div_ceil(granule) * granule;
-                            let offset = *subspace_offsets.entry(ins.imm).or_insert(0);
-                            subspace_offsets.insert(ins.imm, offset + rounded);
-                            attrs += &format!(", offset = {offset} : i64");
-                            attrs += &format!(", slots = {} : i64", rounded / granule);
-                        }
-                    }
-                }
-                body +=
-                    &format!("  {n} = \"vx.transfer\"({src}) {{{attrs}}} : ({srcty}) -> {dstty}\n");
-                names[idx] = n;
-                mem_of[idx] = Some(dstty);
-            }
-            // Print a value (no result). A tensor is `memref.cast`'d to an unranked memref and passed
-            // to the `printMemref*` runtime helper; a scalar goes to `print_*`. These are the same
-            // helpers the AST path calls; `emit_module_mlir` prepends their `private` declarations.
-            Opcode::Print => {
-                let arg = names
-                    .get(ins.operand1.0 as usize)
-                    .ok_or(crate::emitter_gap!())?
-                    .clone();
-                if let Some(memty) = mem_of
-                    .get(ins.operand1.0 as usize)
-                    .ok_or(crate::emitter_gap!())?
-                    .clone()
-                {
-                    let et = memref_elem(&memty).ok_or(crate::emitter_gap!())?;
-                    let helper = match et {
-                        "f32" => "printMemrefF32",
-                        "f64" => "printMemrefF64",
-                        "i32" => "printMemrefI32",
-                        "i64" => "printMemrefI64",
-                        _ => return Err(crate::emitter_gap!()),
-                    };
-                    let c = format!("%pc{idx}");
-                    body += &format!("  {c} = memref.cast {arg} : {memty} to memref<*x{et}>\n");
-                    body += &format!("  func.call @{helper}({c}) : (memref<*x{et}>) -> ()\n");
-                } else if let Some(e) = elem_at(&etypes, ins.operand1.0) {
-                    let et = mlir_scalar(&e).ok_or(crate::emitter_gap!())?;
-                    let helper = match et {
-                        "f32" => "print_f32",
-                        "f64" => "print_f64",
-                        "i32" => "print_i32",
-                        "i64" => "print_i64",
-                        _ => {
-                            return Err(Decline::TypeNotModelled {
-                                what: "a print of an element type with no helper",
-                            })
-                        }
-                    };
-                    let n = format!("%v{idx}");
-                    body += &format!("  {n} = func.call @{helper}({arg}) : ({et}) -> i32\n");
-                } else {
-                    return Err(crate::emitter_gap!());
-                }
-            }
-            // Open a `vx.spawn` region (generic form). The op is inline in the enclosing block, which
-            // continues after it; the instructions up to the matching `SpawnEnd` form the region body.
-            // The ops immediately after `Spawn` (a control-flow body's setup, before its first explicit
-            // block) go in the region's entry block, so open a label for it. `imm` is the topology
-            // dispatch id (the same value the AST path emits as `vx.spawn`'s `topology` attribute).
-            Opcode::Spawn => {
-                if spawn_topology.is_some() {
-                    return Err(crate::emitter_gap!()); // nested spawn is not modelled
-                }
-                spawn_topology = Some(ins.imm as i64);
-                body += &format!("  \"vx.spawn\"() ({{\n^bbspawn{idx}:\n");
-                terminated = false;
-            }
-            // Close the `vx.spawn` region: terminate its last block with `vx.yield` (unless a body
-            // terminator already ended it), stamp the `topology` attribute, and resume emitting into
-            // the enclosing block (which the spawn op did not terminate).
-            Opcode::SpawnEnd => {
-                let topo = spawn_topology.take().ok_or(crate::emitter_gap!())?;
-                if !terminated {
-                    body += "  \"vx.yield\"() : () -> ()\n";
-                }
-                // A topology that declared an `arch:` sends it along, so the device pipeline can
-                // gate on the declaration instead of the dispatch-id band (Vx#352). Discardable
-                // attribute on the generic form -- no dialect change involved.
-                //
-                // A nonzero `imm` is the trip count `parallel_outer_for` proved for the region's
-                // outermost loop: `vx_parallel_trip` rides the same attribute dict, telling the
-                // device pipeline the loop is safe to grid-stride and how wide the work is (#251).
-                // The `SPAWN_TWO_LEVEL` bit (Vx#379) marks the trip as a BLOCK count instead, and
-                // `vx_parallel_two_level` rides along so the launch is sized as blocks x threads.
-                let two_level = ins.imm & crate::hir::flatten::SPAWN_TWO_LEVEL != 0;
-                // The `SPAWN_COOP` bit (Vx#379 stage C): the barriers are INSIDE the thread
-                // loop, so the region has no serial schedule and the host must refuse it --
-                // `vx_parallel_coop` travels to the launch payload for exactly that refusal.
-                let coop = ins.imm & crate::hir::flatten::SPAWN_COOP != 0;
-                let trip_count = ins.imm & 0xffff_ffff;
-                // Bits 32..47: the widest thread-loop trip, i.e. the block shape the launch
-                // should use (Vx#379). Zero (a pre-two-level stream) falls back to 128.
-                let threads = (ins.imm >> 32) & 0xffff;
-                let trip = if trip_count > 0 {
-                    format!(
-                        ", vx_parallel_trip = {trip_count} : i64{}",
-                        if two_level {
-                            format!(
-                                ", vx_parallel_two_level, vx_parallel_threads = {} : i64{}",
-                                if threads > 0 { threads } else { 128 },
-                                if coop { ", vx_parallel_coop" } else { "" }
-                            )
-                        } else {
-                            String::new()
-                        }
-                    )
-                } else {
-                    String::new()
-                };
-                if let Some(arch) = ctx.topo_archs.get(&topo) {
-                    body += &format!(
-                        "  }}) {{arch = \"{arch}\", topology = {topo} : i32{trip}}} : () -> ()\n"
-                    );
-                } else {
-                    body += &format!("  }}) {{topology = {topo} : i32{trip}}} : () -> ()\n");
-                }
-                terminated = false;
-            }
-            // Print a string literal (no result): take the address of the module-level global emitted
-            // for this string (`@".str.<n>"`, `n = str_base + imm`) and call the `@print_str` runtime
-            // helper. `emit_module_mlir` emits the global's bytes and the helper's `private` decl.
-            // Conditional abort -- `assert`, and `abort()` with a constant-false condition.
-            // `cf.assert` rather than a hand-written branch onto a call, because MLIR lowers it
-            // for whichever target the code reaches: `puts` + `abort` + `unreachable` on the
-            // host, `__assertfail` inside a kernel. It is also an ORDINARY op, not a
-            // terminator, so it needs no block splitting here.
-            // Block-level sync (Vx#379). A registered op with no results and no Pure trait, so
-            // the greedy folder cannot erase it before the device clone rewrites it to
-            // `gpu.barrier`; the host lowering erases it instead (a serial loop IS the barrier).
-            Opcode::Barrier => {
-                body += "  \"vx.barrier\"() : () -> ()\n";
-            }
-            Opcode::Abort => {
-                let cond = names
-                    .get(ins.operand1.0 as usize)
-                    .ok_or(crate::emitter_gap!())?
-                    .clone();
-                let msg = strings
-                    .get(ins.imm as usize)
-                    .map(|s| s.as_str())
-                    .unwrap_or("assertion failed");
-                let escaped = msg.replace('\\', "\\\\").replace('"', "\\\"");
-                body += &format!("  cf.assert {cond}, \"{escaped}\"\n");
-            }
-            Opcode::PrintStr => {
-                let n = str_base + ins.imm as usize;
-                let p = format!("%pstrp{idx}");
-                let r = format!("%pstr{idx}");
-                body += &format!("  {p} = llvm.mlir.addressof @\".str.{n}\" : !llvm.ptr\n");
-                body += &format!("  {r} = func.call @print_str({p}) : (!llvm.ptr) -> i32\n");
-            }
-            // A string literal in value position (#231): take the address of the module-level global
-            // (`@".str.<n>"`, `n = str_base + imm`, the same numbering as `PrintStr`) as a first-class
-            // `!llvm.ptr` value — what a `let s = "…"` binds or a string argument passes. The global's
-            // bytes are emitted by `emit_module_mlir` from the string side table.
-            Opcode::StringConst => {
-                let n = str_base + ins.imm as usize;
-                let p = format!("%v{idx}");
-                body += &format!("  {p} = llvm.mlir.addressof @\".str.{n}\" : !llvm.ptr\n");
-                names[idx] = p;
-                ptr_of[idx] = true;
-            }
-            // Index a raw pointer `p[i]` (`p : *mut T`): GEP the element, then either load it (a value
-            // read) or hand back the element pointer as a store place. `operand1` is the base pointer,
-            // `operand2` the (scalar) index, `type_idx` the pointee element type. The GEP's base
-            // element type sets the stride, so `p[i]` addresses `base + i * sizeof(T)`. (#242)
-            Opcode::PtrIndex => {
-                let base = names
-                    .get(ins.operand1.0 as usize)
-                    .ok_or(crate::emitter_gap!())?
-                    .clone();
-                // The pointee element is a scalar (`*mut i32`) or a by-value aggregate
-                // (`*mut Vec<i32>`, #242 Vec<Vec<T>>). The GEP's base element type (`et`) sets the
-                // stride either way; a struct element loads/stores the whole `!llvm.struct`.
-                let gid = *types
-                    .get(ins.type_idx.0 as usize)
-                    .ok_or(crate::emitter_gap!())?;
-                // A pointer whose pointee is itself a pointer (`&&T`): the element is a bare `!llvm.ptr`
-                // — the deref loads/stores an 8-byte pointer and the loaded value is itself a pointer
-                // (`ptr_of`), so a further deref (`**rr`) chains. (#278)
-                let elem_is_ptr = gid == ptr_gid();
-                let (et, scalar_e, agg_gid) = if elem_is_ptr {
-                    ("!llvm.ptr".to_string(), None, None)
-                } else if let Some(e) = elem_of_gid(gid) {
-                    (
-                        mlir_scalar(&e).ok_or(crate::emitter_gap!())?.to_string(),
-                        Some(e),
-                        None,
-                    )
-                } else if let Some(agg) = ctx.aggs.get(&gid) {
-                    (agg.struct_ty.clone(), None, Some(gid))
-                } else {
-                    return Err(crate::emitter_gap!());
-                };
-                let imt =
-                    mlir_scalar(&elem_at(&etypes, ins.operand2.0).ok_or(crate::emitter_gap!())?)
-                        .ok_or(crate::emitter_gap!())?;
-                let iname = names
-                    .get(ins.operand2.0 as usize)
-                    .ok_or(crate::emitter_gap!())?
-                    .clone();
-                let p = format!("%pg{idx}");
-                body += &format!(
-                    "  {p} = llvm.getelementptr {base}[{iname}] : (!llvm.ptr, {imt}) -> !llvm.ptr, {et}\n"
-                );
-                if ins.imm == 1 {
-                    // An element place: the following `PtrStore` writes through it.
-                    names[idx] = p;
-                    ptr_of[idx] = true;
-                    pptr_elem[idx] = Some(et);
-                } else {
-                    let n = format!("%v{idx}");
-                    body += &format!("  {n} = llvm.load {p} : !llvm.ptr -> {et}\n");
-                    names[idx] = n;
-                    etypes[idx] = scalar_e;
-                    agg_val_of[idx] = agg_gid;
-                    // The loaded value is a pointer (`*rr : &i32`): mark it so an outer deref treats it
-                    // as a `!llvm.ptr` base rather than a scalar. (#278)
-                    if elem_is_ptr {
-                        ptr_of[idx] = true;
-                    }
-                }
-            }
-            // Store into a raw-pointer place (no result): `operand1` is the `PtrIndex` place (the GEP'd
-            // element pointer), `operand2` the value, and the pointee element type comes from the
-            // place. (#242)
-            Opcode::PtrStore => {
-                let place = names
-                    .get(ins.operand1.0 as usize)
-                    .ok_or(crate::emitter_gap!())?
-                    .clone();
-                let et = pptr_elem
-                    .get(ins.operand1.0 as usize)
-                    .ok_or(crate::emitter_gap!())?
-                    .clone()
-                    .ok_or(crate::emitter_gap!())?;
-                let val = names
-                    .get(ins.operand2.0 as usize)
-                    .ok_or(crate::emitter_gap!())?
-                    .clone();
-                body += &format!("  llvm.store {val}, {place} : {et}, !llvm.ptr\n");
-            }
-            // Anything else (spawn, matmul, …) is outside this subset.
-            _ => {
-                return Err(Decline::Unsupported {
-                    what: "an opcode the emitter has no case for",
-                })
-            }
-        }
+        em.step(idx, ins)?;
     }
 
     // Every block must end in a terminator. A void function falls through to a bare `return`; a
-    // scalar-returning function whose final block isn't terminated is either ill-typed or has an
+    // scalar-returning function whose final block isn't em.terminated is either ill-typed or has an
     // unreachable trailing block (no value to return) — decline it, leaving the AST path the oracle.
-    if !terminated {
+    if !em.terminated {
         match &ret_mlir {
-            None => body += "  func.return\n",
+            None => em.body += "  func.return\n",
             Some(_) => return Err(crate::emitter_gap!()),
         }
     }
@@ -3105,7 +3521,7 @@ pub fn emit_function_mlir(
         params.join(", "),
         ret_sig
     );
-    out += &body;
+    out += &em.body;
     out += "}\n";
     Ok(out)
 }
