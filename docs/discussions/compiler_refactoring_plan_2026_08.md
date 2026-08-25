@@ -572,3 +572,47 @@ one open scope, so `ConstEvalState` needs a hand-written `Default`. It was the
 only one of the twenty-four moved fields whose initializer differed from
 `Default::default()`, and deriving it would have started compile-time evaluation
 with no scope to bind into.
+
+### Phase 3 step 4, and what made it possible (Vx#387)
+
+The earlier note in this document said splitting `check_transfer_expr` was not
+code motion, because 628 of its 749 lines sat inside one `if let Expr::Transfer`
+arm with the phases nested rather than sequential. That was true of the shape,
+and wrong about the conclusion. The phases the plan named are all there; what
+held them together was not logic but scope. Two facts did it:
+
+- `inner_ty` and `target_mem` were declared uninitialized at the top of the
+  function and assigned inside the arm, so both had to outlive it.
+- The staged-route rewrite ran *after* the arm and needed `expr` back, so the
+  arm could not simply own the borrow.
+
+Naming the arm's output fixed both. `ResolvedEdge` carries the two endpoints, the
+route, and the four cost figures out of the resolver; the deferred `let`s go
+away, the `if let` becomes a `let ... else`, and the staged case becomes an early
+return. What is left is 37 lines that read as the sequence the plan described:
+
+| function | lines | what it answers |
+| --- | --- | --- |
+| `resolve_transfer_edge` | 173 | where does this go, and how does the hardware get there |
+| `select_transfer_lowering` | 159 | whose lowering runs on this edge |
+| `record_emittable_lowering` | 132 | does its declared tile match the one being moved |
+| `record_staging_route` | 139 | what did this route cost, and what traffic did it move |
+| `discharge_seam_obligation` | 35 | is the buffer crossing the seam described well enough |
+| `stage_multi_hop` | 40 | rewrite a staged route into single hops and re-check |
+| `transfer_result_type` | 34 | what type does the value have now |
+| `check_transfer_expr` | 37 | the order the above run in |
+
+Two things came out of it that were not the point. The space-to-topology map was
+written twice, twenty-six identical lines each, and is now `pinned_topology_for`.
+And E6023's source-versus-destination message carries a run of embedded spaces
+from a string continuation that rustfmt folded onto one line; no corpus program
+reaches that arm, which is why it survived.
+
+**On verifying this one.** The type checker cannot tell a faithful move from an
+unfaithful one here, the same way it could not for the emitter in step 1 — the
+output is diagnostics, and a dropped check is silence. So the oracle was the
+compiler's own output: every `.vx` file under `tests/` and `examples/`, 514 of
+them, compiled to MLIR with stderr and exit status captured, snapshotted before
+the first edit and compared after every increment. The snapshot was itself
+checked for stability first, since a nondeterministic baseline would have proved
+nothing. All 514 stayed byte-identical through all six extractions.

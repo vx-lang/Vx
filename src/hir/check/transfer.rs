@@ -11,9 +11,36 @@
 // `impl TypeChecker` block; moves only, zero logic change. Reaches the shared types and helpers via
 // `use super::super::*`, exactly as `expr.rs` uses `use super::*`.
 //
+// A transfer is checked in phases, one function each: resolve the edge, pick the lowering that
+// runs on it, record the route and the traffic it moves, discharge the seam obligation, and give
+// the result its new type. `check_transfer_expr` is the order they run in.
+//
 //===----------------------------------------------------------------------===//
 
 use super::super::*;
+
+/// What resolving a transfer's edge produced: where the value is, where it is going, the route
+/// the hardware takes between them, and what that route costs. Every later phase reads it.
+pub(crate) struct ResolvedEdge {
+    /// The type of the value being moved.
+    pub inner_ty: Type,
+    pub source_mem: MemorySpace,
+    pub target_mem: MemorySpace,
+    /// Every space the value passes through, source first. More than two means the transfer is
+    /// staged, and gets rewritten into a chain of single hops.
+    pub path: Vec<MemorySpace>,
+    /// The cost graph's total for the route, which is the reachability cost rather than the
+    /// bandwidth-derived one below.
+    pub graph_cost: u32,
+    /// Bytes this transfer moves, when the tile's shape is statically known.
+    pub moved_bytes: Option<u64>,
+    /// The bandwidth-derived (roofline) cost, with the unit it is in and which declaration it
+    /// came from. Set when the declarations supply a rate for this edge; `graph_cost` is what
+    /// the router used either way.
+    pub derived_cost: Option<u64>,
+    pub derived_unit: Option<crate::syntax::RatePer>,
+    pub cost_source: Option<crate::report::CostSource>,
+}
 
 impl<'a> TypeChecker<'a> {
     /// Best-effort label for the buffer crossing a seam, taken from the transferred
@@ -483,710 +510,784 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    pub(crate) fn check_transfer_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
-        let mut do_rewrite = None;
-        let target_mem;
-        let inner_ty;
+    /// Resolve where this transfer starts, where it ends, and how the hardware gets from one to
+    /// the other. Reports the edge's own diagnostics on the way: capacity, and a host memory
+    /// nothing declared. `None` when no route exists at all.
+    fn resolve_transfer_edge(&mut self, t: &mut TransferExpr) -> Option<ResolvedEdge> {
+        let prev = self.allow_cross_topology;
+        self.allow_cross_topology = true;
+        let inner_ty = self.check_expr_type_flag(&mut t.expr, false);
+        self.allow_cross_topology = prev;
 
-        // Whether this transfer is a relaxed escape hatch (set by the caller, e.g. the
-        // `to_device_relaxed` method arm). Consumed here so it does not leak to siblings.
-        let relaxed = std::mem::take(&mut self.seam.pending_relaxed);
+        // Extract source memory space, preferring exact space from an inner transfer if present
+        let source_mem = if let Expr::Transfer(inner_t) = &*t.expr {
+            inner_t.space.clone()
+        } else {
+            match &inner_ty {
+                Type::Ref(_, mem) => mem.clone(),
+                // A value pinned on a *declared* custom topology lives in the memory its
+                // descriptor names (`Topology RubinCPX { memory: Memory::GDDR7 }`) -- resolving
+                // through the descriptor, or the declared GDDR7->HBM4 edge is missed and the
+                // handoff reports "no hardware path" (#253). Only an undeclared custom topology
+                // falls back to the like-named space (`Memory::Foo` <-> `Topology::Foo`), the
+                // sub-space placement case (SMEM/TMEM), which has no descriptor.
+                Type::Pinned(_, Topology::Custom(name)) => {
+                    let top = Topology::Custom(name.clone());
+                    if self.transfer_cost_graph.descriptor(&top.kind()).is_some() {
+                        self.transfer_cost_graph.default_memory_for(&top)
+                    } else {
+                        MemorySpace::from_name(name.as_ref())
+                    }
+                }
+                Type::Pinned(_, top) => self.transfer_cost_graph.default_memory_for(top),
+                _ => MemorySpace::CPUDRAM,
+            }
+        };
+        let target_mem = t.space.clone();
 
-        if let Expr::Transfer(t) = expr {
-            let prev = self.allow_cross_topology;
-            self.allow_cross_topology = true;
-            inner_ty = self.check_expr_type_flag(&mut t.expr, false);
-            self.allow_cross_topology = prev;
+        // Capacity: a statically-shaped tensor transferred into a declared space must fit.
+        if let Some((e, d)) = Self::tensor_of(&inner_ty) {
+            self.check_capacity(e, d, &target_mem, "transferred tensor");
+        }
 
-            // Extract source memory space, preferring exact space from an inner transfer if present
-            let source_mem = if let Expr::Transfer(inner_t) = &*t.expr {
-                inner_t.space.clone()
+        // Bandwidth-derived roofline cost (bytes / bandwidth along the hierarchy). When the
+        // memory declarations make it computable it becomes the transfer's cost (emitted on
+        // `vx.transfer`); otherwise the fixed cost-graph value is kept. This does not touch
+        // reachability/seam, which still use `transfer_path` below.
+        // Two ways a hop's cost can be known, and exactly one applies per edge (E6013): a
+        // bandwidth declared on the *link* (`transfer A -> B : 64 GB/s`), or the roofline
+        // derived from the endpoints' own bandwidths along the containment tree. The link rate
+        // is checked first because it exists precisely where the containment walk cannot help
+        // -- a host<->device hop whose endpoints do not nest.
+        // How many bytes this transfer moves. Recorded, not just consumed: a harvested cost is
+        // uninterpretable without the size it is a cost *of*, and S4's freeze artifact is this
+        // record (vx-review#12).
+        let moved_bytes: Option<u64> = Self::tensor_of(&inner_ty)
+            .and_then(|(e, d)| crate::hir::memory::static_tensor_bytes(e, d));
+
+        // Which of the two cost sources applied. They are mutually exclusive by construction
+        // (E6013), so this names the one that fired rather than a precedence winner.
+        let link_bw = self.transfer_cost_graph.link_rate(&source_mem, &target_mem);
+        let derived: Option<crate::hir::memory::DerivedCost> = moved_bytes.and_then(|bytes| {
+            link_bw
+                .and_then(|bw| {
+                    crate::hir::memory::hop_cost(bytes, bw)
+                        .map(|value| crate::hir::memory::DerivedCost { value, per: bw.per })
+                })
+                .or_else(|| {
+                    crate::hir::memory::MemoryHierarchy::build(self.env.memories.values().copied())
+                        .derived_transfer_cost(&source_mem, &target_mem, bytes)
+                })
+        });
+        let derived_cost = derived.map(|d| d.value);
+        let derived_unit = derived.map(|d| d.per);
+        let cost_source = derived.map(|_| {
+            if link_bw.is_some() {
+                crate::report::CostSource::LinkRate
             } else {
-                match &inner_ty {
-                    Type::Ref(_, mem) => mem.clone(),
-                    // A value pinned on a *declared* custom topology lives in the memory its
-                    // descriptor names (`Topology RubinCPX { memory: Memory::GDDR7 }`) -- resolving
-                    // through the descriptor, or the declared GDDR7->HBM4 edge is missed and the
-                    // handoff reports "no hardware path" (#253). Only an undeclared custom topology
-                    // falls back to the like-named space (`Memory::Foo` <-> `Topology::Foo`), the
-                    // sub-space placement case (SMEM/TMEM), which has no descriptor.
-                    Type::Pinned(_, Topology::Custom(name)) => {
-                        let top = Topology::Custom(name.clone());
-                        if self.transfer_cost_graph.descriptor(&top.kind()).is_some() {
-                            self.transfer_cost_graph.default_memory_for(&top)
-                        } else {
-                            MemorySpace::from_name(name.as_ref())
-                        }
+                crate::report::CostSource::Containment
+            }
+        });
+
+        let mut path_result = self
+            .transfer_cost_graph
+            .transfer_path(&source_mem, &target_mem);
+
+        // Sub-spaces have no transfer edges of their own (SMEM/TMEM); a transfer into or
+        // between them is reachable via their enclosing device spaces. If there is no direct
+        // path, resolve each endpoint to itself-or-a-`within:`-ancestor and take the first
+        // reachable pairing -- a sibling->sibling move meets at their common parent. See
+        // subspace_scheduling.md §2.3.
+        if path_result.is_none() {
+            let hierarchy =
+                crate::hir::memory::MemoryHierarchy::build(self.env.memories.values().copied());
+            let sources: Vec<MemorySpace> = std::iter::once(source_mem.clone())
+                .chain(hierarchy.ancestors(&source_mem))
+                .collect();
+            let targets: Vec<MemorySpace> = std::iter::once(target_mem.clone())
+                .chain(hierarchy.ancestors(&target_mem))
+                .collect();
+            'outer: for s in &sources {
+                for t in &targets {
+                    if let Some(p) = self.transfer_cost_graph.transfer_path(s, t) {
+                        path_result = Some(p);
+                        break 'outer;
                     }
-                    Type::Pinned(_, top) => self.transfer_cost_graph.default_memory_for(top),
-                    _ => MemorySpace::CPUDRAM,
                 }
+            }
+        }
+
+        if path_result.is_none() {
+            if !self.speculating {
+                self.errors.push(format!(
+                    "Cannot transfer from {:?} to {:?}: no hardware path exists",
+                    source_mem, target_mem
+                ));
+            }
+            return None;
+        }
+
+        // A seam with the host on one end is reasoning about a host, so
+        // there had better be one. `--machine` describes an accelerator and
+        // says nothing about the machine it hangs off, and `Memory::CPU_DRAM`
+        // otherwise arrives from the built-ins with no declaration at all --
+        // so this edge was being costed against a source nobody described.
+        //
+        // Only when a machine model is present: without one this is an
+        // ordinary native build, not a fleet-level question, and demanding
+        // a host file would be noise.
+        if !self.speculating {
+            let touches_host =
+                source_mem == MemorySpace::CPUDRAM || target_mem == MemorySpace::CPUDRAM;
+            let host_declared = self
+                .env
+                .memories
+                .values()
+                .any(|m| m.name.as_ref() == "CPU_DRAM");
+            let machine_declared = self
+                .env
+                .memories
+                .values()
+                .any(|m| matches!(m.scope, Some(crate::syntax::Scope::Device)));
+            if touches_host && machine_declared && !host_declared {
+                self.errors
+                    .error_with_code(
+                        crate::diagnostic::DiagnosticCode::E6014,
+                        format!(
+                            "this program stages through host memory, but no host was declared: \
+                             the transfer {:?} -> {:?} has an end nothing describes",
+                            source_mem, target_mem
+                        ),
+                        None,
+                    )
+                    .notes
+                    .push(crate::diagnostic::Note {
+                        message: "pass --host <file> to name the host, or --host default for \
+                                  the machine compiling this. `--machine` describes the \
+                                  accelerator only."
+                            .into(),
+                        span: None,
+                    });
+            }
+        }
+        let (graph_cost, path) = path_result.unwrap();
+        Some(ResolvedEdge {
+            inner_ty,
+            source_mem,
+            target_mem,
+            path,
+            graph_cost,
+            moved_bytes,
+            derived_cost,
+            derived_unit,
+            cost_source,
+        })
+    }
+
+    /// The tile shape a type declares, when every extent is a literal. `None` for anything
+    /// whose shape is only known at run time, which is what makes a lowering unemittable.
+    fn static_shape(ty: &Type) -> Option<Vec<u64>> {
+        let (_, dims, _) = Self::as_tensor_operand(ty)?;
+        let mut out = Vec::new();
+        for d in dims {
+            let crate::syntax::Expr::Number(n) = d else {
+                return None;
             };
-            target_mem = t.space.clone();
+            out.push(n.value.as_ref().parse::<u64>().ok()?);
+        }
+        Some(out)
+    }
 
-            // Capacity: a statically-shaped tensor transferred into a declared space must fit.
-            if let Some((e, d)) = Self::tensor_of(&inner_ty) {
-                self.check_capacity(e, d, &target_mem, "transferred tensor");
-            }
-
-            // Bandwidth-derived roofline cost (bytes / bandwidth along the hierarchy). When the
-            // memory declarations make it computable it becomes the transfer's cost (emitted on
-            // `vx.transfer`); otherwise the fixed cost-graph value is kept. This does not touch
-            // reachability/seam, which still use `transfer_path` below.
-            // Two ways a hop's cost can be known, and exactly one applies per edge (E6013): a
-            // bandwidth declared on the *link* (`transfer A -> B : 64 GB/s`), or the roofline
-            // derived from the endpoints' own bandwidths along the containment tree. The link rate
-            // is checked first because it exists precisely where the containment walk cannot help
-            // -- a host<->device hop whose endpoints do not nest.
-            // How many bytes this transfer moves. Recorded, not just consumed: a harvested cost is
-            // uninterpretable without the size it is a cost *of*, and S4's freeze artifact is this
-            // record (vx-review#12).
-            let moved_bytes: Option<u64> = Self::tensor_of(&inner_ty)
-                .and_then(|(e, d)| crate::hir::memory::static_tensor_bytes(e, d));
-
-            // Which of the two cost sources applied. They are mutually exclusive by construction
-            // (E6013), so this names the one that fired rather than a precedence winner.
-            let link_bw = self.transfer_cost_graph.link_rate(&source_mem, &target_mem);
-            let derived: Option<crate::hir::memory::DerivedCost> = moved_bytes.and_then(|bytes| {
-                link_bw
-                    .and_then(|bw| {
-                        crate::hir::memory::hop_cost(bytes, bw)
-                            .map(|value| crate::hir::memory::DerivedCost { value, per: bw.per })
+    /// The tile a lowering declares must be the tile actually being transferred -- same shape,
+    /// same element type. A lowering is chosen by edge, so nothing else ties the two together,
+    /// and the primitives read their extents from the declaration: a smaller declared tile copies
+    /// part of the site's tile and leaves the rest uninitialised, a larger one stores past the end.
+    ///
+    /// Records the lowering on the site when they agree, which is what makes codegen inline it.
+    fn record_emittable_lowering(
+        &mut self,
+        t: &mut TransferExpr,
+        edge: &ResolvedEdge,
+        decl_src: &Type,
+        decl_dst: &Type,
+        topology: &str,
+    ) {
+        let source_mem = edge.source_mem.clone();
+        let target_mem = edge.target_mem.clone();
+        let inner_ty = &edge.inner_ty;
+        // The declared tile shape must be the shape actually being
+        // transferred. A lowering is chosen per EDGE, so nothing
+        // else ties the two together -- and the primitives read
+        // their extents from the declaration. Declaring a smaller
+        // tile than the site's copies part of it and reads the rest
+        // back uninitialised; declaring a larger one stores past
+        // the end. Both were reproduced, the second as a SIGSEGV.
+        let site_dims = Self::as_tensor_operand(inner_ty)
+            .map(|(_, dims, _)| dims.clone())
+            .map(|dims| {
+                dims.iter()
+                    .map(|d| match d {
+                        crate::syntax::Expr::Number(n) => n.value.as_ref().parse::<u64>().ok(),
+                        _ => None,
                     })
-                    .or_else(|| {
-                        crate::hir::memory::MemoryHierarchy::build(
-                            self.env.memories.values().copied(),
-                        )
-                        .derived_transfer_cost(
-                            &source_mem,
-                            &target_mem,
-                            bytes,
-                        )
-                    })
+                    .collect::<Option<Vec<u64>>>()
             });
-            let derived_cost = derived.map(|d| d.value);
-            let derived_unit = derived.map(|d| d.per);
-            let cost_source = derived.map(|_| {
-                if link_bw.is_some() {
-                    crate::report::CostSource::LinkRate
-                } else {
-                    crate::report::CostSource::Containment
-                }
-            });
-
-            let mut path_result = self
-                .transfer_cost_graph
-                .transfer_path(&source_mem, &target_mem);
-
-            // Sub-spaces have no transfer edges of their own (SMEM/TMEM); a transfer into or
-            // between them is reachable via their enclosing device spaces. If there is no direct
-            // path, resolve each endpoint to itself-or-a-`within:`-ancestor and take the first
-            // reachable pairing -- a sibling->sibling move meets at their common parent. See
-            // subspace_scheduling.md §2.3.
-            if path_result.is_none() {
-                let hierarchy =
-                    crate::hir::memory::MemoryHierarchy::build(self.env.memories.values().copied());
-                let sources: Vec<MemorySpace> = std::iter::once(source_mem.clone())
-                    .chain(hierarchy.ancestors(&source_mem))
-                    .collect();
-                let targets: Vec<MemorySpace> = std::iter::once(target_mem.clone())
-                    .chain(hierarchy.ancestors(&target_mem))
-                    .collect();
-                'outer: for s in &sources {
-                    for t in &targets {
-                        if let Some(p) = self.transfer_cost_graph.transfer_path(s, t) {
-                            path_result = Some(p);
-                            break 'outer;
-                        }
-                    }
-                }
+        // BOTH tiles, not just the source. The destination's declared
+        // shape is what `raw::extent(dst)` folds to and what the
+        // primitives delinearize against, so a lowering declaring an
+        // [8,8] destination for a [2,2] site emitted 64 stores into a
+        // 4-element buffer -- admitted, with `written_bytes: 256`
+        // published beside `bytes: 16`.
+        let declared = Self::static_shape(decl_src)
+            .filter(|d| Some(d) == Self::static_shape(decl_dst).as_ref());
+        if Self::static_shape(decl_src) != Self::static_shape(decl_dst) {
+            self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E6023,
+                    format!(
+                        "impl transfer {} -> {} declares a {:?} source and                                          a {:?} destination; a transfer moves a tile, so                                          both sides are the same shape",
+                        source_mem.name(),
+                        target_mem.name(),
+                        Self::static_shape(decl_src),
+                        Self::static_shape(decl_dst)
+                    ),
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(&t.span)),
+                );
+        }
+        // Element types too: edge selection does not look at them,
+        // and a mismatch reaches MLIR as a bare verifier failure
+        // ("result type matches element type of 'memref'") on a
+        // program the checker accepted.
+        let site_elem = Self::as_tensor_operand(inner_ty).map(|(e, _, _)| e.clone());
+        let decl_elem = Self::as_tensor_operand(decl_src).map(|(e, _, _)| e.clone());
+        if let (Some(se), Some(de)) = (&site_elem, &decl_elem) {
+            if se != de {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E6023,
+                    format!(
+                        "impl transfer {} -> {} declares {:?} tiles \
+                             but this transfer moves a {:?} tile; a \
+                             lowering is chosen by edge, so its declared \
+                             element type must be the one it is given",
+                        source_mem.name(),
+                        target_mem.name(),
+                        de,
+                        se
+                    ),
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(&t.span)),
+                );
             }
-
-            if path_result.is_none() {
+        }
+        match (site_dims, declared) {
+            (Some(Some(site)), Some(decl)) if site != decl => {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E6023,
+                    format!(
+                        "impl transfer {} -> {} declares {:?} tiles \
+                             but this transfer moves a {:?} tile; a \
+                             lowering is chosen by edge, so its declared \
+                             shape must be the shape it is given",
+                        source_mem.name(),
+                        target_mem.name(),
+                        decl,
+                        site
+                    ),
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(&t.span)),
+                );
+            }
+            // The site's tile has no statically known shape, so nothing
+            // relates it to the lowering's declared one. Emission would
+            // splice the DECLARED extents and strides against a runtime
+            // ?x? buffer: a [2,2] lowering on a 3x3 tile copies 4 of 9
+            // elements and scatters them to (i/2)*3 + i%2 instead of i.
+            // E6023 exists to prevent exactly that mismatch; falling
+            // through here let the unknown-shape case past it.
+            //
+            // Refusing the LOWERING, not the program: the builtin copy
+            // moves a dynamically shaped tile correctly, so declining to
+            // emit is a silent, correct fallback rather than an error.
+            (Some(None), Some(decl)) => {
                 if !self.speculating {
-                    self.errors.push(format!(
-                        "Cannot transfer from {:?} to {:?}: no hardware path exists",
-                        source_mem, target_mem
+                    self.errors.push_warning(format!(
+                        "impl transfer {} -> {} declares {:?} tiles but \
+                             this transfer's tile has no statically known \
+                             shape, so nothing relates the two; the builtin \
+                             copy is used instead. Emitting the body would \
+                             splice the declared extents and strides against \
+                             a runtime-shaped buffer",
+                        source_mem.name(),
+                        target_mem.name(),
+                        decl
                     ));
                 }
-                return Type::Unknown; // Poison: no valid transfer, don't fake an f32 tensor
             }
+            _ => {
+                t.lowering = Some((source_mem.clone(), target_mem.clone(), topology.to_string()));
+            }
+        }
+    }
 
-            // A seam with the host on one end is reasoning about a host, so
-            // there had better be one. `--machine` describes an accelerator and
-            // says nothing about the machine it hangs off, and `Memory::CPU_DRAM`
-            // otherwise arrives from the built-ins with no declaration at all --
-            // so this edge was being costed against a source nobody described.
+    /// Pick the user-written lowering that runs on this edge, if one both exists and can be
+    /// emitted, and record it on the site. Codegen then inlines that body in place of the
+    /// builtin copy; the builtin, with its barrier, stays the fallback for everything else.
+    ///
+    /// Emittable means exactly one method whose two parameters are the source and destination
+    /// tiles. The body's own obligations -- E6015, E6019, E6021 and E6022 -- were discharged
+    /// when the impl block itself was checked.
+    ///
+    /// Only single hops reach here. Each hop of a staged route re-enters the check and is
+    /// matched on its own.
+    fn select_transfer_lowering(&mut self, t: &mut TransferExpr, edge: &ResolvedEdge) {
+        let source_mem = edge.source_mem.clone();
+        let target_mem = edge.target_mem.clone();
+        // Which machine's lowering runs here. Candidates are the lowerings for this
+        // edge; the topology in force at the site picks among them.
+        //
+        // If the active topology declares this edge itself, its own declarations are
+        // the whole answer: its lowering if it wrote one, the builtin if it did not.
+        // A machine that declined to implement its edge did not delegate the choice
+        // to whoever else implemented a like-named edge -- a peer's body may lean on
+        // capabilities (a copy engine) the active machine never declared, so
+        // borrowing it is not a default, it is a different machine's code. The
+        // review reproduced exactly that: one machine's double-read body silently
+        // counted (and would have been inlined) for a spawn on the machine next to
+        // it (Vx#353).
+        //
+        // The fallback below exists for sites on NO machine that owns this edge --
+        // a host edge is moved from the host, so `transfer(a, Memory::GPU_HBM)` in
+        // `main` runs with the CPU active while implementing an edge that belongs
+        // to the device. There a single candidate is unambiguous and is taken; only
+        // several candidates with nothing to pick among them is refused.
+        let candidates: Vec<&crate::syntax::TransferImplDecl> = self
+            .env
+            .transfer_impls
+            .iter()
+            .filter(|li| li.from == source_mem && li.to == target_mem)
+            .copied()
+            .collect();
+        let active = self.active_topology.display_name();
+        let active_declares_edge = self
+            .env
+            .topologies
+            .values()
+            .find(|d| d.name.as_ref() == active)
+            .map(|d| {
+                d.descriptor
+                    .transfers
+                    .iter()
+                    .any(|e| e.from == source_mem && e.to == target_mem)
+            })
+            .unwrap_or(false);
+        let chosen = candidates
+            .iter()
+            .find(|li| li.topology.display_name() == active)
+            .or(if !active_declares_edge && candidates.len() == 1 {
+                candidates.first()
+            } else {
+                None
+            })
+            .copied();
+        if chosen.is_none() && !active_declares_edge && candidates.len() > 1 {
+            let names: Vec<String> = candidates
+                .iter()
+                .map(|li| li.topology.display_name().to_string())
+                .collect();
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E6015,
+                format!(
+                    "the edge {} -> {} is implemented by {} ({}), and none of them is \
+                     the topology in force here ({}); which lowering should run is \
+                     ambiguous -- perform this transfer inside a `spawn on` for the \
+                     machine that owns it",
+                    source_mem.name(),
+                    target_mem.name(),
+                    names.len(),
+                    names.join(", "),
+                    active
+                ),
+                None,
+            );
+        }
+        if let Some(li) = chosen {
+            // EXACTLY two parameters, both tiles. A third parameter has
+            // nothing to bind to at the site: it would resolve against
+            // whatever the caller happens to have under that name and let
+            // the lowering write into a buffer it never named (constraint
+            // C9), or fail to resolve at all. Reproduced both ways before
+            // this said `==`.
+            // The destination must be SM-scoped. That is the one edge kind
+            // emission handles: the site becomes a shared-memory allocation
+            // the body fills in place. On any other edge the builtin still
+            // runs -- the plugin's device copy, or the host alloc+copy --
+            // and the body would run *beside* it: the same bytes moved
+            // twice, and on a real GPU a host store through a device
+            // pointer. Reproduced on three edges before this gate existed.
+            let dst_is_sm = self
+                .env
+                .memories
+                .values()
+                .find(|d| crate::syntax::MemorySpace::from_name(d.name.as_ref()) == target_mem)
+                .and_then(|d| d.scope)
+                == Some(crate::syntax::Scope::Sm);
+            // The destination is the one the body writes, so it is the one
+            // declared `&mut`. Positional binding alone let a lowering
+            // written `fn move_tile(dst, src)` read the empty tile and
+            // clobber the source, silently.
+            let ordered = li.methods.len() == 1
+                && li.methods[0].params.len() == 2
+                && !matches!(li.methods[0].params[0].1, Type::Borrow { is_mut: true, .. })
+                && matches!(li.methods[0].params[1].1, Type::Borrow { is_mut: true, .. });
+            // The body must be written against the `raw::` primitives. The
+            // whole-body contract -- the trailing barrier (C3), the early-return
+            // refusal, the async discipline -- is SKIPPED for a body with no
+            // `raw::` call ("A1-era body", raw.rs), because such bodies predate
+            // the primitives and are carried, not emitted. Emitting one anyway
+            // took both halves of that bargain: the site is marked
+            // `user_lowered`, so VxLowering skips the builtin copy AND its C3
+            // barrier on the stated grounds that "its own trailing
+            // raw::barrier() is the synchronization (checked, E6021)" -- while
+            // E6021 never ran. Probed: a body filling `dst[i][d] = src[i][d]`
+            // emitted a synchronizing sm transfer with no barrier from either
+            // source, and a nested `return 7` in such a body spliced
+            // `vx.return` into the middle of the kernel region.
             //
-            // Only when a machine model is present: without one this is an
-            // ordinary native build, not a fleet-level question, and demanding
-            // a host file would be noise.
-            if !self.speculating {
-                let touches_host =
-                    source_mem == MemorySpace::CPUDRAM || target_mem == MemorySpace::CPUDRAM;
-                let host_declared = self
-                    .env
-                    .memories
-                    .values()
-                    .any(|m| m.name.as_ref() == "CPU_DRAM");
-                let machine_declared = self
-                    .env
-                    .memories
-                    .values()
-                    .any(|m| matches!(m.scope, Some(crate::syntax::Scope::Device)));
-                if touches_host && machine_declared && !host_declared {
-                    self.errors
-                        .error_with_code(
-                            crate::diagnostic::DiagnosticCode::E6014,
-                            format!(
-                                "this program stages through host memory, but no host was declared: \
-                                 the transfer {:?} -> {:?} has an end nothing describes",
-                                source_mem, target_mem
+            // Carried-but-not-emitted is the A1-era contract; this restores it.
+            let uses_raw = li
+                .methods
+                .iter()
+                .any(|f| crate::hir::check::raw::body_uses_raw(&f.body));
+            let emittable = li.methods.len() == 1
+                && li.methods[0].params.len() == 2
+                && li.methods[0]
+                    .params
+                    .iter()
+                    .all(|(_, ty)| Self::static_shape(ty).is_some())
+                && ordered
+                && uses_raw
+                && dst_is_sm;
+            if !emittable && !self.speculating {
+                self.errors.push_warning(format!(
+                    "impl transfer {} -> {} exists but is not emitted here: \
+                     a lowering needs exactly one method taking exactly two \
+                     statically-shaped tiles -- the source, then the \
+                     destination held by `&mut` -- a body written against the \
+                     `raw::` primitives, and a destination space \
+                     declared `scope: sm`{}. The builtin copy is used instead",
+                    source_mem.name(),
+                    target_mem.name(),
+                    if dst_is_sm {
+                        ""
+                    } else {
+                        " (this one is not sm-scoped)"
+                    }
+                ));
+            } else if emittable {
+                // Copied out of the declaration first: it is borrowed from the environment, and
+                // the checks below report against the checker.
+                let decl_src = li.methods[0].params[0].1.clone();
+                let decl_dst = li.methods[0].params[1].1.clone();
+                let topology = li.topology.display_name().to_string();
+                self.record_emittable_lowering(t, edge, &decl_src, &decl_dst, &topology);
+            }
+        }
+    }
+
+    /// Record the resolved hop for the accept side of `--diagnostics-json`: the route, what it
+    /// costs, and how much traffic it moves. Only single hops are recorded -- a staged route is
+    /// rewritten into a chain that each record themselves, so recording it whole would count the
+    /// same movement twice.
+    fn record_staging_route(&mut self, t: &TransferExpr, edge: &ResolvedEdge) {
+        if self.speculating {
+            return;
+        }
+        let source_mem = edge.source_mem.clone();
+        let target_mem = edge.target_mem.clone();
+        let inner_ty = &edge.inner_ty;
+        let moved_bytes = edge.moved_bytes;
+        let derived_cost = edge.derived_cost;
+        let derived_unit = edge.derived_unit;
+        let cost_source = edge.cost_source;
+        // The figure the machine file *declared* for this edge, not the weight the
+        // router happened to use. Since an edge may now decline to declare a cost
+        // (leaving it to the endpoints' bandwidths), its routing weight is 1 — and
+        // reporting that 1 here would put a number nobody wrote into the record a
+        // measurement campaign harvests.
+        let declared_cost = self
+            .transfer_cost_graph
+            .declared_edge_cost(&source_mem, &target_mem);
+        // Derived traffic (#353 A4). The builtin copy reads the whole tile
+        // from the source space and writes it into the target: one pass, no
+        // amplification, exact by construction. A hop whose body a user
+        // supplied is counted from that body instead (T2), and a hop whose
+        // size is not statically known is not counted at all -- an
+        // uncountable movement is reported as uncountable, never as zero.
+        let (traffic, traffic_absent_reason) = match (moved_bytes, &t.lowering) {
+            (Some(b), None) => (
+                Some(crate::report::Traffic {
+                    per_space: vec![
+                        crate::report::SpaceTraffic {
+                            space: source_mem.clone(),
+                            read_bytes: b,
+                            written_bytes: 0,
+                        },
+                        crate::report::SpaceTraffic {
+                            space: target_mem.clone(),
+                            read_bytes: 0,
+                            written_bytes: b,
+                        },
+                    ],
+                    source: crate::report::TrafficSource::BuiltinCopy,
+                    exact: true,
+                }),
+                None,
+            ),
+            (None, _) => (
+                None,
+                Some("the transferred tile has no statically known size".to_string()),
+            ),
+            // A user lowering's traffic is counted from the body that will
+            // actually run, not from the tile size the builtin would have
+            // moved: that difference is the whole point -- a body that reads
+            // the source twice reports twice the reads, with nobody declaring
+            // anything (#353 A4).
+            (Some(_), Some((_, _, topo))) => {
+                // Look up the lowering sema CHOSE, topology included. Matching on
+                // the edge alone would count the body of whichever machine's
+                // lowering happened to be first in the list.
+                let li = self.env.transfer_impls.iter().find(|li| {
+                    li.from == source_mem
+                        && li.to == target_mem
+                        && li.topology.display_name() == *topo
+                });
+                match li {
+                    Some(li) => {
+                        // Sub-byte elements are refused, not rounded. Rounding
+                        // i4 up to a byte made a FAITHFUL copy of a 2x2 i4
+                        // tile report 4 bytes against a 2-byte tile -- a ratio
+                        // of 2.0, numerically identical to the amplification
+                        // factor that is this stage's evidence that a plan is
+                        // wasteful. A figure indistinguishable from the thing
+                        // it exists to detect is worse than no figure.
+                        let elem_bytes = Self::as_tensor_operand(inner_ty)
+                            .and_then(|(e, _, _)| crate::hir::memory::element_bits(e))
+                            .filter(|bits| bits % 8 == 0)
+                            .map(|bits| bits / 8);
+                        match elem_bytes {
+                            None => (
+                                None,
+                                Some(
+                                    "the tile's element type is not a whole \
+                                     number of bytes, so its movement cannot \
+                                     be counted in bytes"
+                                        .to_string(),
+                                ),
                             ),
-                            None,
-                        )
-                        .notes
-                        .push(crate::diagnostic::Note {
-                            message: "pass --host <file> to name the host, or --host default for \
-                                      the machine compiling this. `--machine` describes the \
-                                      accelerator only."
-                                .into(),
-                            span: None,
-                        });
+                            Some(elem_bytes) => {
+                                let m = &li.methods[0];
+                                match self.derive_lowering_traffic(
+                                    &m.body,
+                                    elem_bytes,
+                                    &m.params,
+                                    &source_mem,
+                                    &target_mem,
+                                ) {
+                                    Ok(t) => (Some(t), None),
+                                    Err(why) => (None, Some(why)),
+                                }
+                            }
+                        }
+                    }
+                    None => (
+                        None,
+                        Some("the matched lowering could not be found".to_string()),
+                    ),
                 }
             }
-
-            let (_cost, path) = path_result.unwrap();
-            if path.len() > 2 {
-                do_rewrite = Some(path);
-            } else {
-                // Record the resolved hop for `--diagnostics-json`'s accept side (#282). Only
-                // single-hop routes are recorded: a multi-hop route is rewritten into a chain of
-                // single-hop transfers that each re-enter here, so recording it too would count
-                // the same movement twice.
-                // #353 A3: when this edge has a user lowering this stage can emit, record
-                // it on the site -- codegen inlines the body in place of the builtin copy;
-                // the builtin (with its barrier) stays the fallback for everything else.
-                // Emittable means: exactly one method whose first two parameters are the
-                // (src, dst) tiles. Only single hops match -- each hop of a staged route
-                // re-enters this check and matches independently. The body's own
-                // obligations (E6015/E6019/E6021/E6022) were already discharged.
-                if path.len() == 2 {
-                    // Which machine's lowering runs here. Candidates are the lowerings for this
-                    // edge; the topology in force at the site picks among them.
-                    //
-                    // If the active topology declares this edge itself, its own declarations are
-                    // the whole answer: its lowering if it wrote one, the builtin if it did not.
-                    // A machine that declined to implement its edge did not delegate the choice
-                    // to whoever else implemented a like-named edge -- a peer's body may lean on
-                    // capabilities (a copy engine) the active machine never declared, so
-                    // borrowing it is not a default, it is a different machine's code. The
-                    // review reproduced exactly that: one machine's double-read body silently
-                    // counted (and would have been inlined) for a spawn on the machine next to
-                    // it (Vx#353).
-                    //
-                    // The fallback below exists for sites on NO machine that owns this edge --
-                    // a host edge is moved from the host, so `transfer(a, Memory::GPU_HBM)` in
-                    // `main` runs with the CPU active while implementing an edge that belongs
-                    // to the device. There a single candidate is unambiguous and is taken; only
-                    // several candidates with nothing to pick among them is refused.
-                    let candidates: Vec<&crate::syntax::TransferImplDecl> = self
-                        .env
-                        .transfer_impls
-                        .iter()
-                        .filter(|li| li.from == source_mem && li.to == target_mem)
-                        .copied()
-                        .collect();
-                    let active = self.active_topology.display_name();
-                    let active_declares_edge = self
-                        .env
-                        .topologies
-                        .values()
-                        .find(|d| d.name.as_ref() == active)
-                        .map(|d| {
-                            d.descriptor
-                                .transfers
-                                .iter()
-                                .any(|e| e.from == source_mem && e.to == target_mem)
-                        })
-                        .unwrap_or(false);
-                    let chosen = candidates
-                        .iter()
-                        .find(|li| li.topology.display_name() == active)
-                        .or(if !active_declares_edge && candidates.len() == 1 {
-                            candidates.first()
-                        } else {
-                            None
-                        })
-                        .copied();
-                    if chosen.is_none() && !active_declares_edge && candidates.len() > 1 {
-                        let names: Vec<String> = candidates
-                            .iter()
-                            .map(|li| li.topology.display_name().to_string())
-                            .collect();
-                        self.errors.error_with_code(
-                            crate::diagnostic::DiagnosticCode::E6015,
-                            format!(
-                                "the edge {} -> {} is implemented by {} ({}), and none of them is \
-                                 the topology in force here ({}); which lowering should run is \
-                                 ambiguous -- perform this transfer inside a `spawn on` for the \
-                                 machine that owns it",
-                                source_mem.name(),
-                                target_mem.name(),
-                                names.len(),
-                                names.join(", "),
-                                active
-                            ),
-                            None,
-                        );
-                    }
-                    if let Some(li) = chosen {
-                        // EXACTLY two parameters, both tiles. A third parameter has
-                        // nothing to bind to at the site: it would resolve against
-                        // whatever the caller happens to have under that name and let
-                        // the lowering write into a buffer it never named (constraint
-                        // C9), or fail to resolve at all. Reproduced both ways before
-                        // this said `==`.
-                        let shaped = |ty: &Type| -> Option<Vec<u64>> {
-                            let (_, dims, _) = Self::as_tensor_operand(ty)?;
-                            let mut out = Vec::new();
-                            for d in dims {
-                                let crate::syntax::Expr::Number(n) = d else {
-                                    return None;
-                                };
-                                out.push(n.value.as_ref().parse::<u64>().ok()?);
-                            }
-                            Some(out)
-                        };
-                        // The destination must be SM-scoped. That is the one edge kind
-                        // emission handles: the site becomes a shared-memory allocation
-                        // the body fills in place. On any other edge the builtin still
-                        // runs -- the plugin's device copy, or the host alloc+copy --
-                        // and the body would run *beside* it: the same bytes moved
-                        // twice, and on a real GPU a host store through a device
-                        // pointer. Reproduced on three edges before this gate existed.
-                        let dst_is_sm = self
-                            .env
+        };
+        self.traffic
+            .staging_routes
+            .push(crate::report::StagingRoute {
+                path: edge.path.clone(),
+                traffic,
+                traffic_absent_reason,
+                edge_costs: vec![declared_cost],
+                total_cost: edge.graph_cost,
+                bytes: moved_bytes,
+                cost_source,
+                derived_cost,
+                derived_unit,
+                // Only a containment route composes anything -- a link rate is one leg.
+                // Read from the destination, which is where the fill mechanism lives.
+                composition: (cost_source == Some(crate::report::CostSource::Containment)).then(
+                    || {
+                        self.env
                             .memories
                             .values()
                             .find(|d| {
                                 crate::syntax::MemorySpace::from_name(d.name.as_ref()) == target_mem
                             })
-                            .and_then(|d| d.scope)
-                            == Some(crate::syntax::Scope::Sm);
-                        // The destination is the one the body writes, so it is the one
-                        // declared `&mut`. Positional binding alone let a lowering
-                        // written `fn move_tile(dst, src)` read the empty tile and
-                        // clobber the source, silently.
-                        let ordered = li.methods.len() == 1
-                            && li.methods[0].params.len() == 2
-                            && !matches!(
-                                li.methods[0].params[0].1,
-                                Type::Borrow { is_mut: true, .. }
-                            )
-                            && matches!(
-                                li.methods[0].params[1].1,
-                                Type::Borrow { is_mut: true, .. }
-                            );
-                        // The body must be written against the `raw::` primitives. The
-                        // whole-body contract -- the trailing barrier (C3), the early-return
-                        // refusal, the async discipline -- is SKIPPED for a body with no
-                        // `raw::` call ("A1-era body", raw.rs), because such bodies predate
-                        // the primitives and are carried, not emitted. Emitting one anyway
-                        // took both halves of that bargain: the site is marked
-                        // `user_lowered`, so VxLowering skips the builtin copy AND its C3
-                        // barrier on the stated grounds that "its own trailing
-                        // raw::barrier() is the synchronization (checked, E6021)" -- while
-                        // E6021 never ran. Probed: a body filling `dst[i][d] = src[i][d]`
-                        // emitted a synchronizing sm transfer with no barrier from either
-                        // source, and a nested `return 7` in such a body spliced
-                        // `vx.return` into the middle of the kernel region.
-                        //
-                        // Carried-but-not-emitted is the A1-era contract; this restores it.
-                        let uses_raw = li
-                            .methods
-                            .iter()
-                            .any(|f| crate::hir::check::raw::body_uses_raw(&f.body));
-                        let emittable = li.methods.len() == 1
-                            && li.methods[0].params.len() == 2
-                            && li.methods[0]
-                                .params
-                                .iter()
-                                .all(|(_, ty)| shaped(ty).is_some())
-                            && ordered
-                            && uses_raw
-                            && dst_is_sm;
-                        if !emittable && !self.speculating {
-                            self.errors.push_warning(format!(
-                                "impl transfer {} -> {} exists but is not emitted here: \
-                                 a lowering needs exactly one method taking exactly two \
-                                 statically-shaped tiles -- the source, then the \
-                                 destination held by `&mut` -- a body written against the \
-                                 `raw::` primitives, and a destination space \
-                                 declared `scope: sm`{}. The builtin copy is used instead",
-                                source_mem.name(),
-                                target_mem.name(),
-                                if dst_is_sm {
-                                    ""
-                                } else {
-                                    " (this one is not sm-scoped)"
-                                }
-                            ));
-                        } else if emittable {
-                            // The declared tile shape must be the shape actually being
-                            // transferred. A lowering is chosen per EDGE, so nothing
-                            // else ties the two together -- and the primitives read
-                            // their extents from the declaration. Declaring a smaller
-                            // tile than the site's copies part of it and reads the rest
-                            // back uninitialised; declaring a larger one stores past
-                            // the end. Both were reproduced, the second as a SIGSEGV.
-                            let site_dims = Self::as_tensor_operand(&inner_ty)
-                                .map(|(_, dims, _)| dims.clone())
-                                .map(|dims| {
-                                    dims.iter()
-                                        .map(|d| match d {
-                                            crate::syntax::Expr::Number(n) => {
-                                                n.value.as_ref().parse::<u64>().ok()
-                                            }
-                                            _ => None,
-                                        })
-                                        .collect::<Option<Vec<u64>>>()
-                                });
-                            // BOTH tiles, not just the source. The destination's declared
-                            // shape is what `raw::extent(dst)` folds to and what the
-                            // primitives delinearize against, so a lowering declaring an
-                            // [8,8] destination for a [2,2] site emitted 64 stores into a
-                            // 4-element buffer -- admitted, with `written_bytes: 256`
-                            // published beside `bytes: 16`.
-                            let declared = shaped(&li.methods[0].params[0].1)
-                                .filter(|d| Some(d) == shaped(&li.methods[0].params[1].1).as_ref());
-                            if shaped(&li.methods[0].params[0].1)
-                                != shaped(&li.methods[0].params[1].1)
-                            {
-                                self.errors.error_with_code(
-                                    crate::diagnostic::DiagnosticCode::E6023,
-                                    format!(
-                                        "impl transfer {} -> {} declares a {:?} source and                                          a {:?} destination; a transfer moves a tile, so                                          both sides are the same shape",
-                                        source_mem.name(),
-                                        target_mem.name(),
-                                        shaped(&li.methods[0].params[0].1),
-                                        shaped(&li.methods[0].params[1].1)
-                                    ),
-                                    Some(crate::diagnostic::SourceSpan::from_ast_span(&t.span)),
-                                );
-                            }
-                            // Element types too: edge selection does not look at them,
-                            // and a mismatch reaches MLIR as a bare verifier failure
-                            // ("result type matches element type of 'memref'") on a
-                            // program the checker accepted.
-                            let site_elem =
-                                Self::as_tensor_operand(&inner_ty).map(|(e, _, _)| e.clone());
-                            let decl_elem = Self::as_tensor_operand(&li.methods[0].params[0].1)
-                                .map(|(e, _, _)| e.clone());
-                            if let (Some(se), Some(de)) = (&site_elem, &decl_elem) {
-                                if se != de {
-                                    self.errors.error_with_code(
-                                        crate::diagnostic::DiagnosticCode::E6023,
-                                        format!(
-                                            "impl transfer {} -> {} declares {:?} tiles \
-                                             but this transfer moves a {:?} tile; a \
-                                             lowering is chosen by edge, so its declared \
-                                             element type must be the one it is given",
-                                            source_mem.name(),
-                                            target_mem.name(),
-                                            de,
-                                            se
-                                        ),
-                                        Some(crate::diagnostic::SourceSpan::from_ast_span(&t.span)),
-                                    );
-                                }
-                            }
-                            match (site_dims, declared) {
-                                (Some(Some(site)), Some(decl)) if site != decl => {
-                                    self.errors.error_with_code(
-                                        crate::diagnostic::DiagnosticCode::E6023,
-                                        format!(
-                                            "impl transfer {} -> {} declares {:?} tiles \
-                                             but this transfer moves a {:?} tile; a \
-                                             lowering is chosen by edge, so its declared \
-                                             shape must be the shape it is given",
-                                            source_mem.name(),
-                                            target_mem.name(),
-                                            decl,
-                                            site
-                                        ),
-                                        Some(crate::diagnostic::SourceSpan::from_ast_span(&t.span)),
-                                    );
-                                }
-                                // The site's tile has no statically known shape, so nothing
-                                // relates it to the lowering's declared one. Emission would
-                                // splice the DECLARED extents and strides against a runtime
-                                // ?x? buffer: a [2,2] lowering on a 3x3 tile copies 4 of 9
-                                // elements and scatters them to (i/2)*3 + i%2 instead of i.
-                                // E6023 exists to prevent exactly that mismatch; falling
-                                // through here let the unknown-shape case past it.
-                                //
-                                // Refusing the LOWERING, not the program: the builtin copy
-                                // moves a dynamically shaped tile correctly, so declining to
-                                // emit is a silent, correct fallback rather than an error.
-                                (Some(None), Some(decl)) => {
-                                    if !self.speculating {
-                                        self.errors.push_warning(format!(
-                                            "impl transfer {} -> {} declares {:?} tiles but \
-                                             this transfer's tile has no statically known \
-                                             shape, so nothing relates the two; the builtin \
-                                             copy is used instead. Emitting the body would \
-                                             splice the declared extents and strides against \
-                                             a runtime-shaped buffer",
-                                            source_mem.name(),
-                                            target_mem.name(),
-                                            decl
-                                        ));
-                                    }
-                                }
-                                _ => {
-                                    t.lowering = Some((
-                                        source_mem.clone(),
-                                        target_mem.clone(),
-                                        li.topology.display_name().to_string(),
-                                    ));
-                                }
-                            }
-                        }
-                    }
-                }
-                // Record the bandwidth-derived roofline cost when the hierarchy provides one;
-                // otherwise leave it unset (the fixed reachability cost stays internal, so
-                // bandwidth-less transfers emit no `cost` attribute — unchanged output).
-                t.cost = derived_cost;
-                if !self.speculating {
-                    // The figure the machine file *declared* for this edge, not the weight the
-                    // router happened to use. Since an edge may now decline to declare a cost
-                    // (leaving it to the endpoints' bandwidths), its routing weight is 1 — and
-                    // reporting that 1 here would put a number nobody wrote into the record a
-                    // measurement campaign harvests.
-                    let edge = self
-                        .transfer_cost_graph
-                        .declared_edge_cost(&source_mem, &target_mem);
-                    // Derived traffic (#353 A4). The builtin copy reads the whole tile
-                    // from the source space and writes it into the target: one pass, no
-                    // amplification, exact by construction. A hop whose body a user
-                    // supplied is counted from that body instead (T2), and a hop whose
-                    // size is not statically known is not counted at all -- an
-                    // uncountable movement is reported as uncountable, never as zero.
-                    let (traffic, traffic_absent_reason) = match (moved_bytes, &t.lowering) {
-                        (Some(b), None) => (
-                            Some(crate::report::Traffic {
-                                per_space: vec![
-                                    crate::report::SpaceTraffic {
-                                        space: source_mem.clone(),
-                                        read_bytes: b,
-                                        written_bytes: 0,
-                                    },
-                                    crate::report::SpaceTraffic {
-                                        space: target_mem.clone(),
-                                        read_bytes: 0,
-                                        written_bytes: b,
-                                    },
-                                ],
-                                source: crate::report::TrafficSource::BuiltinCopy,
-                                exact: true,
-                            }),
-                            None,
-                        ),
-                        (None, _) => (
-                            None,
-                            Some("the transferred tile has no statically known size".to_string()),
-                        ),
-                        // A user lowering's traffic is counted from the body that will
-                        // actually run, not from the tile size the builtin would have
-                        // moved: that difference is the whole point -- a body that reads
-                        // the source twice reports twice the reads, with nobody declaring
-                        // anything (#353 A4).
-                        (Some(_), Some((_, _, topo))) => {
-                            // Look up the lowering sema CHOSE, topology included. Matching on
-                            // the edge alone would count the body of whichever machine's
-                            // lowering happened to be first in the list.
-                            let li = self.env.transfer_impls.iter().find(|li| {
-                                li.from == source_mem
-                                    && li.to == target_mem
-                                    && li.topology.display_name() == *topo
-                            });
-                            match li {
-                                Some(li) => {
-                                    // Sub-byte elements are refused, not rounded. Rounding
-                                    // i4 up to a byte made a FAITHFUL copy of a 2x2 i4
-                                    // tile report 4 bytes against a 2-byte tile -- a ratio
-                                    // of 2.0, numerically identical to the amplification
-                                    // factor that is this stage's evidence that a plan is
-                                    // wasteful. A figure indistinguishable from the thing
-                                    // it exists to detect is worse than no figure.
-                                    let elem_bytes = Self::as_tensor_operand(&inner_ty)
-                                        .and_then(|(e, _, _)| crate::hir::memory::element_bits(e))
-                                        .filter(|bits| bits % 8 == 0)
-                                        .map(|bits| bits / 8);
-                                    match elem_bytes {
-                                        None => (
-                                            None,
-                                            Some(
-                                                "the tile's element type is not a whole \
-                                                 number of bytes, so its movement cannot \
-                                                 be counted in bytes"
-                                                    .to_string(),
-                                            ),
-                                        ),
-                                        Some(elem_bytes) => {
-                                            let m = &li.methods[0];
-                                            match self.derive_lowering_traffic(
-                                                &m.body,
-                                                elem_bytes,
-                                                &m.params,
-                                                &source_mem,
-                                                &target_mem,
-                                            ) {
-                                                Ok(t) => (Some(t), None),
-                                                Err(why) => (None, Some(why)),
-                                            }
-                                        }
-                                    }
-                                }
-                                None => (
-                                    None,
-                                    Some("the matched lowering could not be found".to_string()),
-                                ),
-                            }
-                        }
-                    };
-                    self.traffic
-                        .staging_routes
-                        .push(crate::report::StagingRoute {
-                            path: path.clone(),
-                            traffic,
-                            traffic_absent_reason,
-                            edge_costs: vec![edge],
-                            total_cost: _cost,
-                            bytes: moved_bytes,
-                            cost_source,
-                            derived_cost,
-                            derived_unit,
-                            // Only a containment route composes anything -- a link rate is one leg.
-                            // Read from the destination, which is where the fill mechanism lives.
-                            composition: (cost_source
-                                == Some(crate::report::CostSource::Containment))
-                            .then(|| {
-                                self.env
-                                    .memories
-                                    .values()
-                                    .find(|d| {
-                                        crate::syntax::MemorySpace::from_name(d.name.as_ref())
-                                            == target_mem
-                                    })
-                                    .map(|d| d.crossing)
-                                    .unwrap_or_default()
-                            }),
-                        });
-                }
-                // Single hop (`path == [source_mem, target_mem]`): discharge the
-                // per-seam local-completeness / soundness obligation. Multi-hop paths
-                // are rewritten into a chain of single-hop transfers below, each of
-                // which re-enters here and is checked individually.
-                if path.len() == 2 && self.seam.verify {
-                    let span = Self::buffer_span(&t.expr).unwrap_or(t.span);
-                    let buffer = Self::buffer_label(&t.expr);
-                    // Prefer the value the consumer asserts of the buffer this transfer
-                    // produces (looked up by the let-binding target, e.g. `local_a`), which
-                    // is the boundary contract's conclusion; fall back to the producer's
-                    // own statically-known constant, else the coarse visibility check.
-                    let asserted_val = self
-                        .current_assignment_target
-                        .as_ref()
-                        .and_then(|tgt| self.seam.contracts.get(tgt).copied());
-                    let known_val = asserted_val.or_else(|| self.const_value_of(&buffer));
-                    // A hop over a *declared* `relaxed` edge is relaxed too, not just the caller's
-                    // `*_relaxed` intrinsic escape hatch: route it through the same seam obligation so a
-                    // declared relaxed transfer gets the per-buffer E6004 at the use site, not only the
-                    // blunt declaration-time W1027 (P0-3). A relaxed hop anywhere in a staged multi-hop
-                    // route taints that hop, since each single hop re-enters this check.
-                    let hop_relaxed = self
-                        .transfer_cost_graph
-                        .is_relaxed_edge(&source_mem, &target_mem);
-                    self.run_seam_hop(
-                        &source_mem,
-                        &target_mem,
-                        relaxed || hop_relaxed,
-                        &buffer,
-                        known_val,
-                        span,
-                    );
-                }
-            }
-        } else {
-            unreachable!()
-        }
+                            .map(|d| d.crossing)
+                            .unwrap_or_default()
+                    },
+                ),
+            });
+    }
 
-        if let Some(path) = do_rewrite {
-            let Expr::Transfer(t) = std::mem::replace(
-                expr,
-                Expr::Number(NumberExpr::new("0".to_string(), None, Span::default())),
-            ) else {
-                unreachable!()
-            };
-            let mut current_expr = *t.expr;
-            let path_len = path.len();
-            for intermediate_space in path.into_iter().skip(1).take(path_len - 2) {
-                current_expr = Expr::Transfer(TransferExpr {
-                    expr: Box::new(current_expr),
-                    space: intermediate_space,
-                    cost: None,
-                    lowering: None,
-                    span: t.span,
-                });
-            }
-            *expr = Expr::Transfer(TransferExpr {
+    /// Discharge this hop's local-completeness and soundness obligation, so the buffer crossing
+    /// the seam is one the program has said enough about.
+    fn discharge_seam_obligation(&mut self, t: &TransferExpr, edge: &ResolvedEdge, relaxed: bool) {
+        let source_mem = edge.source_mem.clone();
+        let target_mem = edge.target_mem.clone();
+        let span = Self::buffer_span(&t.expr).unwrap_or(t.span);
+        let buffer = Self::buffer_label(&t.expr);
+        // Prefer the value the consumer asserts of the buffer this transfer
+        // produces (looked up by the let-binding target, e.g. `local_a`), which
+        // is the boundary contract's conclusion; fall back to the producer's
+        // own statically-known constant, else the coarse visibility check.
+        let asserted_val = self
+            .current_assignment_target
+            .as_ref()
+            .and_then(|tgt| self.seam.contracts.get(tgt).copied());
+        let known_val = asserted_val.or_else(|| self.const_value_of(&buffer));
+        // A hop over a *declared* `relaxed` edge is relaxed too, not just the caller's
+        // `*_relaxed` intrinsic escape hatch: route it through the same seam obligation so a
+        // declared relaxed transfer gets the per-buffer E6004 at the use site, not only the
+        // blunt declaration-time W1027 (P0-3). A relaxed hop anywhere in a staged multi-hop
+        // route taints that hop, since each single hop re-enters this check.
+        let hop_relaxed = self
+            .transfer_cost_graph
+            .is_relaxed_edge(&source_mem, &target_mem);
+        self.run_seam_hop(
+            &source_mem,
+            &target_mem,
+            relaxed || hop_relaxed,
+            &buffer,
+            known_val,
+            span,
+        );
+    }
+
+    /// Rewrite a staged transfer into a chain of single-hop transfers, one per edge on the route,
+    /// then check the chain. Each hop re-enters `check_transfer_expr` and is costed, lowered and
+    /// discharged on its own.
+    fn stage_multi_hop(
+        &mut self,
+        expr: &mut Expr,
+        edge: ResolvedEdge,
+        relaxed: bool,
+        consume: bool,
+    ) -> Type {
+        let ResolvedEdge {
+            path, target_mem, ..
+        } = edge;
+        let Expr::Transfer(t) = std::mem::replace(
+            expr,
+            Expr::Number(NumberExpr::new("0".to_string(), None, Span::default())),
+        ) else {
+            unreachable!()
+        };
+        let mut current_expr = *t.expr;
+        let path_len = path.len();
+        for intermediate_space in path.into_iter().skip(1).take(path_len - 2) {
+            current_expr = Expr::Transfer(TransferExpr {
                 expr: Box::new(current_expr),
-                space: target_mem.clone(),
+                space: intermediate_space,
                 cost: None,
                 lowering: None,
                 span: t.span,
             });
-            // Recursively re-evaluate to ensure intermediate types and costs are resolved properly!
-            // Propagate the relaxed marker so each rewritten single-hop transfer is checked
-            // with the right transfer function.
-            self.seam.pending_relaxed = relaxed;
-            return self.check_transfer_expr(expr, consume);
+        }
+        *expr = Expr::Transfer(TransferExpr {
+            expr: Box::new(current_expr),
+            space: target_mem,
+            cost: None,
+            lowering: None,
+            span: t.span,
+        });
+        // Propagate the relaxed marker so each rewritten single-hop transfer is checked with the
+        // right transfer function.
+        self.seam.pending_relaxed = relaxed;
+        self.check_transfer_expr(expr, consume)
+    }
+
+    pub(crate) fn check_transfer_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
+        // Whether this transfer is a relaxed escape hatch (set by the caller, e.g. the
+        // `to_device_relaxed` method arm). Consumed here so it does not leak to siblings.
+        let relaxed = std::mem::take(&mut self.seam.pending_relaxed);
+
+        let Expr::Transfer(t) = expr else {
+            unreachable!()
+        };
+        // No route means no transfer, so the type is poisoned rather than faked as a plausible
+        // f32 tensor that later stages would reason about.
+        let Some(edge) = self.resolve_transfer_edge(t) else {
+            return Type::Unknown;
+        };
+
+        if edge.path.len() > 2 {
+            return self.stage_multi_hop(expr, edge, relaxed, consume);
         }
 
+        // A single hop is the unit everything below is stated for: which lowering runs on it,
+        // what it costs, and the obligation crossing it.
+        let single_hop = edge.path.len() == 2;
+        if single_hop {
+            self.select_transfer_lowering(t, &edge);
+        }
+        // Record the bandwidth-derived roofline cost when the hierarchy provides one; otherwise
+        // leave it unset, so a transfer with no bandwidth behind it emits no `cost` attribute.
+        t.cost = edge.derived_cost;
+        self.record_staging_route(t, &edge);
+        if single_hop && self.seam.verify {
+            self.discharge_seam_obligation(t, &edge, relaxed);
+        }
+
+        self.transfer_result_type(expr, edge.inner_ty, &edge.target_mem, consume)
+    }
+
+    /// Which topology a value living in `space` is pinned on. Every memory space maps to
+    /// one, so this is total.
+    fn pinned_topology_for(space: &MemorySpace) -> Topology {
+        match space {
+            MemorySpace::NPUHBM => Topology::NPU(Box::new(Expr::Number(NumberExpr {
+                value: "0".into(),
+                ty: Some(ElementType::I32),
+                span: Span::default(),
+            }))),
+            MemorySpace::LocalSRAM => Topology::AccCore(Box::new(Expr::Number(NumberExpr {
+                value: "0".into(),
+                ty: Some(ElementType::I32),
+                span: Span::default(),
+            }))),
+            MemorySpace::NicRam | MemorySpace::RemoteHbm => {
+                Topology::NPU(Box::new(Expr::Number(NumberExpr {
+                    value: "0".into(),
+                    ty: Some(ElementType::I32),
+                    span: Span::default(),
+                })))
+            }
+            MemorySpace::GpuHbm => Topology::gpu(0),
+            MemorySpace::CPUDRAM => Topology::CPU,
+            // A value in a user-defined memory space is pinned on the like-named
+            // custom topology (naming convention: Memory::Foo <-> Topology::Foo).
+            MemorySpace::Custom(name) => Topology::Custom(name.clone()),
+        }
+    }
+
+    /// The type a transfer produces: the value's own type, restated in the space it now
+    /// lives in. Called once the edge has been resolved and its obligations discharged.
+    fn transfer_result_type(
+        &mut self,
+        expr: &mut Expr,
+        inner_ty: Type,
+        target_mem: &MemorySpace,
+        consume: bool,
+    ) -> Type {
         match inner_ty {
             Type::Ref(base_ty, _) => Type::Ref(base_ty, target_mem.clone()),
-            Type::Tensor(_, _, _) => {
-                let pinned_top = match &target_mem {
-                    MemorySpace::NPUHBM => Topology::NPU(Box::new(Expr::Number(NumberExpr {
-                        value: "0".into(),
-                        ty: Some(ElementType::I32),
-                        span: Span::default(),
-                    }))),
-                    MemorySpace::LocalSRAM => {
-                        Topology::AccCore(Box::new(Expr::Number(NumberExpr {
-                            value: "0".into(),
-                            ty: Some(ElementType::I32),
-                            span: Span::default(),
-                        })))
-                    }
-                    MemorySpace::NicRam | MemorySpace::RemoteHbm => {
-                        Topology::NPU(Box::new(Expr::Number(NumberExpr {
-                            value: "0".into(),
-                            ty: Some(ElementType::I32),
-                            span: Span::default(),
-                        })))
-                    }
-                    MemorySpace::GpuHbm => Topology::gpu(0),
-                    MemorySpace::CPUDRAM => Topology::CPU,
-                    // A value in a user-defined memory space is pinned on the like-named
-                    // custom topology (naming convention: Memory::Foo <-> Topology::Foo).
-                    MemorySpace::Custom(name) => Topology::Custom(name.clone()),
-                };
-                Type::Pinned(Box::new(inner_ty.clone()), pinned_top)
-            }
+            Type::Tensor(_, _, _) => Type::Pinned(
+                Box::new(inner_ty.clone()),
+                Self::pinned_topology_for(target_mem),
+            ),
             Type::Verified(_inner) => {
                 if let Expr::Transfer(t) = expr {
                     let inner_pinned = self.check_expr_type_flag(&mut t.expr, consume);
@@ -1195,35 +1296,7 @@ impl<'a> TypeChecker<'a> {
                     unreachable!()
                 }
             }
-            Type::Pinned(base, _) => {
-                let pinned_top = match &target_mem {
-                    MemorySpace::NPUHBM => Topology::NPU(Box::new(Expr::Number(NumberExpr {
-                        value: "0".into(),
-                        ty: Some(ElementType::I32),
-                        span: Span::default(),
-                    }))),
-                    MemorySpace::LocalSRAM => {
-                        Topology::AccCore(Box::new(Expr::Number(NumberExpr {
-                            value: "0".into(),
-                            ty: Some(ElementType::I32),
-                            span: Span::default(),
-                        })))
-                    }
-                    MemorySpace::NicRam | MemorySpace::RemoteHbm => {
-                        Topology::NPU(Box::new(Expr::Number(NumberExpr {
-                            value: "0".into(),
-                            ty: Some(ElementType::I32),
-                            span: Span::default(),
-                        })))
-                    }
-                    MemorySpace::GpuHbm => Topology::gpu(0),
-                    MemorySpace::CPUDRAM => Topology::CPU,
-                    // A value in a user-defined memory space is pinned on the like-named
-                    // custom topology (naming convention: Memory::Foo <-> Topology::Foo).
-                    MemorySpace::Custom(name) => Topology::Custom(name.clone()),
-                };
-                Type::Pinned(base, pinned_top)
-            }
+            Type::Pinned(base, _) => Type::Pinned(base, Self::pinned_topology_for(target_mem)),
             _ => {
                 if !self.speculating {
                     self.errors.push(format!(
