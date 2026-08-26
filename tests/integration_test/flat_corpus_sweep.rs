@@ -21,7 +21,6 @@ const KNOWN_DECLINES: &[&str] = &[
     "assert_runtime.vx",
     "benchmark_test.vx",
     "custom_topology_user_lowering.vx",
-    "f16_execution.vx",
     "ffi_simd_extended.vx",
     "flash_attention_v4.vx",
     "gpu_matmul_dtypes.vx",

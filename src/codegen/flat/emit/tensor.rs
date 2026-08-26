@@ -224,6 +224,62 @@ impl FnEmit<'_> {
     // three whole-tensor memrefs, the same pair the AST path builds -- and the exact shape
     // `kernelKindOf` classifies, so a spawn whose whole job is this op still routes to
     // cuBLAS. The destination register rides the imm (see `Opcode::MatmulInto`).
+    // `a @ b`: a matmul producing a fresh tensor, as against `MatmulInto`'s write into a buffer
+    // the caller owns. `type_idx` is the result's own GID -- the flattener sizes it `[m, n]` from
+    // the two operands -- so the destination is allocated here and then filled by the same pair of
+    // ops `MatmulInto` emits.
+    pub(crate) fn op_matmul(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let a = self
+            .names
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        let ma = self
+            .mem_of
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone()
+            .ok_or(crate::emitter_gap!())?;
+        let b = self
+            .names
+            .get(ins.operand2.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        let mb = self
+            .mem_of
+            .get(ins.operand2.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone()
+            .ok_or(crate::emitter_gap!())?;
+        let gid = *self
+            .types
+            .get(ins.type_idx.0 as usize)
+            .ok_or(crate::emitter_gap!())?;
+        let (elem, shape) = self.ctx.tensors.get(&gid).ok_or(crate::emitter_gap!())?;
+        let md = tensor_memref_ty(elem, shape).ok_or(crate::emitter_gap!())?;
+        // A dynamic extent would need its own `memref.dim` operands on the allocation, which the
+        // flattener already declines rather than emitting an allocation with none.
+        if md.contains('?') {
+            return Err(Decline::TypeNotModelled {
+                what: "a matmul result whose shape is not static",
+            });
+        }
+        // Floats only, on the same terms as `MatmulInto`: linalg's integer semantics are not
+        // improvised here.
+        let et = mlir_scalar(elem).ok_or(crate::emitter_gap!())?;
+        if !matches!(et, "f32" | "f64" | "f16" | "bf16") {
+            return Err(crate::emitter_gap!());
+        }
+        let n = format!("%v{idx}");
+        self.body += &format!("  {n} = memref.alloc() : {md}\n");
+        self.body += &format!("  %mz{idx} = arith.constant 0.0 : {et}\n");
+        self.body += &format!("  linalg.fill ins(%mz{idx} : {et}) outs({n} : {md})\n");
+        self.body += &format!("  linalg.matmul ins({a}, {b} : {ma}, {mb}) outs({n} : {md})\n");
+        self.names[idx] = n;
+        self.mem_of[idx] = Some(md);
+        Ok(())
+    }
+
     pub(crate) fn op_matmul_into(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
         let a = self
             .names

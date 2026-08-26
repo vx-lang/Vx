@@ -1591,6 +1591,7 @@ impl<'a> FnEmit<'a> {
             // three whole-tensor memrefs, the same pair the AST path builds -- and the exact shape
             // `kernelKindOf` classifies, so a spawn whose whole job is this op still routes to
             // cuBLAS. The destination register rides the imm (see `Opcode::MatmulInto`).
+            Opcode::Matmul => self.op_matmul(idx, ins),
             Opcode::MatmulInto => self.op_matmul_into(idx, ins),
             // `flash_attention_into(&mut o, &q, &k, &v, scale)` (no result): a serial
             // `o = softmax(q @ k^T * scale) @ v` nest, preceded by a `vx.attention_note` naming

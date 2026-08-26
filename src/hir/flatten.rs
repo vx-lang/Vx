@@ -596,10 +596,41 @@ impl<'r> Lowerer<'r> {
                         other => other.clone(),
                     }
                 };
-                let result_ty = match (&l.ty, &r.ty) {
-                    (LoweredTy::Tensor { .. }, _) => widen(&l.ty),
-                    (_, LoweredTy::Tensor { .. }) => widen(&r.ty),
-                    _ => l.ty.clone(),
+                // Matmul is not elementwise, so neither half of the rule above applies to it:
+                // `[m, k] @ [k, n]` is `[m, n]`, not the left operand's shape, and a half matmul
+                // accumulates in f32 but stores half, so its element type does not widen. Anything
+                // but two rank-2 statically shaped operands declines -- the AST path sizes those
+                // with a runtime `memref.dim`, and stays the oracle for them.
+                let result_ty = if matches!(b.op, BinaryOp::MatMul) {
+                    let (
+                        LoweredTy::Tensor { elem, shape: ls },
+                        LoweredTy::Tensor { shape: rs, .. },
+                    ) = (&l.ty, &r.ty)
+                    else {
+                        return Err(Decline::TypeNotModelled {
+                            what: "a matmul operand that is not a tensor",
+                        });
+                    };
+                    let numeric = |d: &String| d.parse::<i64>().is_ok();
+                    if ls.len() != 2
+                        || rs.len() != 2
+                        || ls[1] != rs[0]
+                        || !ls.iter().chain(rs).all(numeric)
+                    {
+                        return Err(Decline::TypeNotModelled {
+                            what: "a matmul whose operands are not two statically shaped matrices",
+                        });
+                    }
+                    LoweredTy::Tensor {
+                        elem: elem.clone(),
+                        shape: vec![ls[0].clone(), rs[1].clone()],
+                    }
+                } else {
+                    match (&l.ty, &r.ty) {
+                        (LoweredTy::Tensor { .. }, _) => widen(&l.ty),
+                        (_, LoweredTy::Tensor { .. }) => widen(&r.ty),
+                        _ => l.ty.clone(),
+                    }
                 };
                 // Two scalar operands already share a type: the checker types both to the same scalar
                 // and rejects a genuine mismatch (no implicit conversion, #240), so no coercion here.
@@ -2902,6 +2933,18 @@ impl<'r> Lowerer<'r> {
             }
             return Ok(());
         }
+        // `c = a @ b` publishes a NEW buffer under a name that already exists. The AST path stores
+        // the product's descriptor through the local's slot, which outlives a `spawn` region and is
+        // what a placed matmul is expected to publish. A flat tensor is always an SSA value and
+        // never a slot, so rebinding the name here would carry a register out of the region that
+        // defined it. The AST path stays the oracle for this form.
+        if let Expr::BinaryOp(bin) = rhs {
+            if matches!(bin.op, BinaryOp::MatMul) {
+                return Err(Decline::Unsupported {
+                    what: "a matmul assigned to a tensor that already exists",
+                });
+            }
+        }
         // `name = expr` (simple identifier target). The value already matches the slot's type (the
         // checker types a literal RHS to the target and rejects a mismatch, #240).
         let name = simple_ident(lhs).ok_or(Decline::Unsupported {
@@ -5171,6 +5214,58 @@ mod tests {
             .expect("fn present");
         let did = lower_function_to_hir(&func, &mut worker).is_ok();
         (did, worker)
+    }
+
+    #[test]
+    fn matmul_result_is_the_product_shape_not_the_left_operand() {
+        // `[2, 3] @ [3, 4]` is `[2, 4]`. The generic binary rule gives the result the LEFT
+        // operand's type, which is right for an elementwise op and wrong for a matmul.
+        let f = parse_fn(
+            "fn f() -> i32 { let a : Tensor<f32> = Tensor<f32>([2, 3]); \
+             let b : Tensor<f32> = Tensor<f32>([3, 4]); let c : Tensor<f32> = a @ b; return 0; }",
+        );
+        let mut w = worker();
+        lower_function_to_hir(&f, &mut w).expect("a static matmul should lower");
+        let ins = w
+            .local_hir_stream
+            .iter()
+            .position(|i| i.opcode == Opcode::Matmul)
+            .expect("the Matmul instruction");
+        let gid = w.local_type_stream[w.local_hir_stream[ins].type_idx.0 as usize];
+        let shape = w
+            .local_tensor_types
+            .iter()
+            .find(|(g, _, _)| *g == gid)
+            .map(|(_, _, s)| s.clone())
+            .expect("the result's shape is recorded");
+        assert_eq!(shape, vec!["2".to_string(), "4".to_string()]);
+        verify_hir_stream(&w);
+    }
+
+    #[test]
+    fn half_matmul_keeps_its_element_type() {
+        // Elementwise arithmetic on half operands is done in f32, so the generic rule widens the
+        // result. A matmul accumulates in f32 but stores half, so it must not.
+        let f = parse_fn(
+            "fn f() -> i32 { let a : Tensor<f16> = Tensor<f16>([2, 2]); \
+             let b : Tensor<f16> = Tensor<f16>([2, 2]); let c : Tensor<f16> = a @ b; return 0; }",
+        );
+        let mut w = worker();
+        lower_function_to_hir(&f, &mut w).expect("a half matmul should lower");
+        let ins = w
+            .local_hir_stream
+            .iter()
+            .position(|i| i.opcode == Opcode::Matmul)
+            .expect("the Matmul instruction");
+        let gid = w.local_type_stream[w.local_hir_stream[ins].type_idx.0 as usize];
+        let elem = w
+            .local_tensor_types
+            .iter()
+            .find(|(g, _, _)| *g == gid)
+            .map(|(_, e, _)| e.clone())
+            .expect("the result's element type is recorded");
+        assert_eq!(elem, ElementType::F16);
+        verify_hir_stream(&w);
     }
 
     #[test]

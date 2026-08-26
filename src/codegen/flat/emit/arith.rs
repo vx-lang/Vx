@@ -70,13 +70,15 @@ impl FnEmit<'_> {
                 });
             }
             let et = mlir_scalar(elem).ok_or(crate::emitter_gap!())?;
-            let d: i64 = shape
-                .iter()
-                .map(|s| s.parse::<i64>().ok())
-                .collect::<Option<Vec<_>>>()
-                .ok_or(crate::emitter_gap!())?
-                .iter()
-                .product();
+            // Rank 1 only. The operands are read with a single-index `vector.load`, which a
+            // rank-2 memref rejects ("requires 2 indices"), and flattening the shape to one
+            // vector would address it as if it were contiguous rank-1 storage.
+            if shape.len() != 1 {
+                return Err(Decline::TypeNotModelled {
+                    what: "an elementwise op on a tensor that is not rank 1",
+                });
+            }
+            let d: i64 = shape[0].parse::<i64>().map_err(|_| crate::emitter_gap!())?;
             let vecty = format!("vector<{d}x{et}>");
             let va = coerce_vector(
                 &mut self.body,

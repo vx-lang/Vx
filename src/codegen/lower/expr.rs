@@ -751,10 +751,6 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
             } else {
                 false
             };
-            println!(
-                "DEBUG is_matmul: op={:?}, is_memref={}, lhs={}, rhs={}, is_matmul={}",
-                op, is_memref, lhs_ty_str, rhs_ty_str, is_matmul
-            );
         }
 
         if is_matmul {
