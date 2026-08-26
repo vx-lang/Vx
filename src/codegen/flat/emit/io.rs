@@ -34,6 +34,21 @@ impl FnEmit<'_> {
             self.body += &format!("  func.call @{helper}({c}) : (memref<*x{et}>) -> ()\n");
         } else if let Some(e) = self.elem_at(ins.operand1.0) {
             let et = mlir_scalar(&e).ok_or(crate::emitter_gap!())?;
+            // The narrow scalars have no print helper of their own, so widen to one that does.
+            // Same widening the AST path applies, so a program prints the same text either way.
+            let (arg, et) = match et {
+                "f16" | "bf16" => {
+                    let w = format!("%pw{idx}");
+                    self.body += &format!("  {w} = arith.extf {arg} : {et} to f32\n");
+                    (w, "f32")
+                }
+                "i8" | "i16" => {
+                    let w = format!("%pw{idx}");
+                    self.body += &format!("  {w} = arith.extsi {arg} : {et} to i32\n");
+                    (w, "i32")
+                }
+                _ => (arg, et),
+            };
             let helper = match et {
                 "f32" => "print_f32",
                 "f64" => "print_f64",
