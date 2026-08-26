@@ -1558,6 +1558,7 @@ impl<'a> FnEmit<'a> {
             // the scalar return type. Reconstruct the function type `(arg types)->ret` from the actual
             // args, cast the pointer to it, and `func.call_indirect`. (#242)
             Opcode::CallIndirect => self.op_call_indirect(idx, ins),
+            Opcode::AutoDiff => self.op_autodiff(idx, ins),
             // Store a scalar into a struct field (no result). `operand1` is the struct slot pointer,
             // `operand2` the value, `imm` the field's byte offset. GEP to the field, then `llvm.store`;
             // the field index comes from matching the offset against the layout, the value type from

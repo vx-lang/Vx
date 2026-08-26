@@ -28,6 +28,18 @@ use melior::{
 
 use crate::syntax::*;
 
+/// The name of the Enzyme wrapper a differentiated call goes through.
+///
+/// Enzyme recognizes the call by this name, so both backends have to spell it the same way:
+/// `__enzyme_fwddiff_jvp_f` for forward mode, `__enzyme_autodiff_grad_f` for reverse.
+pub fn enzyme_wrapper_name(forward: bool, target: &str) -> String {
+    if forward {
+        format!("__enzyme_fwddiff_jvp_{target}")
+    } else {
+        format!("__enzyme_autodiff_grad_{target}")
+    }
+}
+
 extern "C" {
     fn loadMlirPassPlugin(path: *const std::os::raw::c_char) -> bool;
     fn registerVxDialect(ctx: mlir_sys::MlirContext);

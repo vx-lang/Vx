@@ -148,6 +148,61 @@ impl FnEmit<'_> {
         Ok(())
     }
 
+    // A differentiated call (`grad`/`vjp`/`jvp`). `type_idx` is the TARGET's GID, not a callee's:
+    // the target is materialized as a function constant and handed to Enzyme's wrapper as its
+    // first argument, which is the shape Enzyme recognizes. `imm` packs the argument count with
+    // the mode. The wrapper itself is never defined, so it declares like any other extern.
+    pub(crate) fn op_autodiff(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let gid = *self
+            .types
+            .get(ins.type_idx.0 as usize)
+            .ok_or(crate::emitter_gap!())?;
+        let target = self.ctx.callees.get(&gid).ok_or(crate::emitter_gap!())?;
+        let (params, ret) = self.ctx.func_sigs.get(&gid).ok_or(crate::emitter_gap!())?;
+        let ret_elem = target.ret.clone().ok_or(Decline::TypeNotModelled {
+            what: "an autodiff target whose return type has no MLIR spelling",
+        })?;
+        let fnty = format!("({}) -> {}", params.join(", "), ret);
+        let forward =
+            (ins.imm >> crate::bytecode::AUTODIFF_MODE_SHIFT) == crate::bytecode::AUTODIFF_FORWARD;
+        let n = (ins.imm & 0xffff_ffff) as usize;
+        if self.pending_args.len() < n {
+            return Err(crate::emitter_gap!());
+        }
+        let args = self.pending_args.split_off(self.pending_args.len() - n);
+        // The function constant leads, so the wrapper's signature starts with the target's type.
+        let mut arg_names = vec![format!("%fc{idx}")];
+        let mut arg_types = vec![fnty.clone()];
+        for a in &args {
+            arg_names.push(
+                self.names
+                    .get(*a as usize)
+                    .ok_or(crate::emitter_gap!())?
+                    .clone(),
+            );
+            let e = self.elem_at(*a).ok_or(Decline::TypeNotModelled {
+                what: "an autodiff argument that is not a scalar",
+            })?;
+            arg_types.push(mlir_scalar(&e).ok_or(crate::emitter_gap!())?.to_string());
+        }
+        let wrapper = crate::codegen::enzyme_wrapper_name(forward, &target.name);
+        let nm = format!("%v{idx}");
+        self.body += &format!(
+            "  %fc{idx} = func.constant {} : {fnty}\n",
+            sym_ref(&target.name)
+        );
+        self.body += &format!(
+            "  {nm} = func.call {}({}) : ({}) -> {ret}\n",
+            sym_ref(&wrapper),
+            arg_names.join(", "),
+            arg_types.join(", "),
+        );
+        self.calls.push((wrapper, arg_types, ret.clone()));
+        self.names[idx] = nm;
+        self.etypes[idx] = Some(ret_elem);
+        Ok(())
+    }
+
     // An indirect call through a function pointer. `operand1` is the callee `!llvm.ptr`, `imm`
     // the arg count (the tail of `pending_args`, like `Call`), and this instruction's `type_idx`
     // the scalar return type. Reconstruct the function type `(arg types)->ret` from the actual

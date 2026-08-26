@@ -187,17 +187,7 @@ pub(crate) fn emit_enzyme_decl<'c>(
     arg_tys: &[Type<'c>],
     ret_ty: Type<'c>,
 ) -> String {
-    let prefix = match base_name {
-        "fwddiff" => "__enzyme_fwddiff",
-        _ => "__enzyme_autodiff",
-    };
-    let suffix = match base_name {
-        "fwddiff" => "jvp",
-        "grad" => "grad",
-        "vjp" => "vjp",
-        _ => base_name,
-    };
-    let enzyme_name = format!("{}_{}_{}", prefix, suffix, target_fn);
+    let enzyme_name = crate::codegen::enzyme_wrapper_name(base_name == "fwddiff", target_fn);
     if !gen.functions.contains_key(&*enzyme_name) && gen.enzyme_decls.insert(enzyme_name.clone()) {
         let func_type = melior::ir::r#type::FunctionType::new(gen.context, arg_tys, &[ret_ty]);
         let _name_attr = StringAttribute::new(gen.context, &enzyme_name);

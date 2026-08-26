@@ -1114,6 +1114,10 @@ impl<'r> Lowerer<'r> {
             // A value array literal `[a, b, c]` (#239): a rank-1 tensor buffer with the elements
             // stored into it. (A `Tensor<T>([…])` shape argument is consumed by `lower_tensor_alloc`.)
             Expr::Array(arr) => self.lower_array(arr),
+            // The differentiated calls. All three go through one opcode; see `lower_autodiff`.
+            Expr::Grad(g) => self.lower_autodiff(&g.target_fn, &g.args, false, None),
+            Expr::Vjp(v) => self.lower_autodiff(&v.target_fn, &v.args, false, Some(&v.cotangent)),
+            Expr::Jvp(j) => self.lower_autodiff(&j.target_fn, &j.args, true, Some(&j.tangent)),
             other => {
                 if std::env::var("VX_FLAT_DBG").is_ok() {
                     eprintln!("[flat-dbg]   unsupported expr: {}", expr_kind(other));
@@ -2567,6 +2571,76 @@ impl<'r> Lowerer<'r> {
             fc.args.len() as u64,
         ));
         Ok(Val { reg, ty })
+    }
+
+    /// Lower `grad(f, x)`, `vjp(f, x, v)` and `jvp(f, x, v)`.
+    ///
+    /// All three become a call to an Enzyme wrapper around `f`, so they share one opcode; codegen
+    /// materializes `f` as a function constant and passes it first. Forward mode differentiates
+    /// along a direction, which Enzyme takes as a trailing argument. `vjp` needs no mode of its
+    /// own: it is reverse mode scaled by the cotangent, and that is an ordinary multiply.
+    fn lower_autodiff(
+        &mut self,
+        target: &crate::symbol::Symbol,
+        args: &[Expr],
+        forward: bool,
+        seed: Option<&Expr>,
+    ) -> Lowered<Val> {
+        let sig = self
+            .registry
+            .fn_sigs
+            .get(target.as_ref())
+            .cloned()
+            .ok_or_else(|| Decline::UnresolvedCallee(target.as_ref().to_string()))?;
+        let ret = self
+            .lower_ty_synth(&sig.ret_ty)
+            .ok_or(Decline::TypeNotModelled {
+                what: "an autodiff target's return type",
+            })?;
+        // The seed multiplies the result, and Enzyme's wrapper returns the target's own type, so a
+        // target returning anything but a scalar has no lowering here.
+        let LoweredTy::Scalar(ret_elem) = ret.clone() else {
+            return Err(Decline::TypeNotModelled {
+                what: "an autodiff target that does not return a scalar",
+            });
+        };
+        let mut arg_regs = Vec::with_capacity(args.len() + 1);
+        for arg in args {
+            arg_regs.push(self.lower_expr(arg)?.reg);
+        }
+        if forward {
+            if let Some(tangent) = seed {
+                arg_regs.push(self.lower_expr(tangent)?.reg);
+            }
+        }
+        let argc = arg_regs.len() as u64;
+        for reg in arg_regs {
+            self.emit_effect(Opcode::Arg, reg, Register(0), 0);
+        }
+        let mode = if forward {
+            crate::bytecode::AUTODIFF_FORWARD
+        } else {
+            crate::bytecode::AUTODIFF_REVERSE
+        };
+        let type_idx = TypeIdx(self.types.len() as u32);
+        self.types.push(sig.gid);
+        let reg = Register(self.code.len() as u32);
+        self.code.push(HirInstruction::new(
+            Opcode::AutoDiff,
+            Register(0),
+            Register(0),
+            type_idx,
+            argc | (mode << crate::bytecode::AUTODIFF_MODE_SHIFT),
+        ));
+        let diff = Val { reg, ty: ret };
+        // Enzyme seeds a reverse-mode gradient with 1.0, so `vjp`'s own seed is applied here.
+        match seed {
+            Some(cotangent) if !forward => {
+                let c = self.lower_expr(cotangent)?;
+                Ok(self.emit_value(Opcode::Mul, diff.reg, c.reg, ret_elem, 0))
+            }
+            _ => Ok(diff),
+        }
     }
 
     fn lower_call(&mut self, fc: &crate::syntax::FunctionCallExpr) -> Lowered<Val> {
@@ -5038,6 +5112,7 @@ impl ParallelScan {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bytecode::{AUTODIFF_FORWARD, AUTODIFF_MODE_SHIFT, AUTODIFF_REVERSE};
     use crate::session::GlobalSession;
     use std::sync::Arc;
 
@@ -5096,6 +5171,40 @@ mod tests {
             .expect("fn present");
         let did = lower_function_to_hir(&func, &mut worker).is_ok();
         (did, worker)
+    }
+
+    #[test]
+    fn autodiff_lowers_to_one_opcode_per_mode() {
+        // `grad` and `jvp` differ only by the mode packed into `imm`, and `jvp` carries its tangent
+        // as a trailing argument. `vjp` reuses reverse mode and multiplies by the cotangent, so it
+        // adds a `Mul` rather than a mode of its own.
+        for (call, mode, args, muls) in [
+            ("grad(cube, x)", AUTODIFF_REVERSE, 1, 0),
+            ("vjp(cube, x, x)", AUTODIFF_REVERSE, 1, 1),
+            ("jvp(cube, x, x)", AUTODIFF_FORWARD, 2, 0),
+        ] {
+            let src = format!(
+                "fn cube(v: f32) -> f32 {{ return v * v * v; }}\n\
+                 fn f(x: f32) -> f32 {{ return {call}; }}"
+            );
+            let (did, w) = lower_with_registry(&src, "f");
+            assert!(did, "{call} should lower");
+            assert_eq!(count(&w, Opcode::AutoDiff), 1, "{call}: one AutoDiff");
+            let ins = w
+                .local_hir_stream
+                .iter()
+                .find(|i| i.opcode == Opcode::AutoDiff)
+                .expect("the AutoDiff instruction");
+            assert_eq!(
+                ins.imm >> AUTODIFF_MODE_SHIFT,
+                mode,
+                "{call}: differentiation mode"
+            );
+            assert_eq!(ins.imm & 0xffff_ffff, args, "{call}: argument count");
+            assert_eq!(count(&w, Opcode::Arg), args as usize, "{call}: Arg count");
+            assert_eq!(count(&w, Opcode::Mul), muls, "{call}: seed multiply");
+            verify_hir_stream(&w);
+        }
     }
 
     #[test]

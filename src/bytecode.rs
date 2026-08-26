@@ -199,7 +199,24 @@ pub enum Opcode {
     /// as `kind=attention` so the runtime can route the region to a vendor flash kernel; a
     /// runtime that refuses runs the nest as written -- slower, never wrong.
     FlashAttnInto = 41,
+    /// A differentiated call: `grad(f, x)`, `vjp(f, x, v)` or `jvp(f, x, v)`. `type_idx` is the
+    /// *target* function's GID (its name and signature come from there), and `imm` packs the
+    /// argument count in the low 32 bits with the mode above them -- `AUTODIFF_REVERSE` or
+    /// `AUTODIFF_FORWARD`. The arguments are the `Arg` instructions immediately preceding, as for
+    /// `Call`; forward mode carries its tangent as the last of them.
+    ///
+    /// Codegen materializes the target as a function constant and calls the Enzyme wrapper with
+    /// it as the first argument. `vjp` has no mode of its own: the flattener lowers it as reverse
+    /// mode followed by an ordinary multiply against the cotangent.
+    AutoDiff = 42,
 }
+
+/// Reverse mode for `Opcode::AutoDiff`: the gradient, through `__enzyme_autodiff_grad_*`.
+pub const AUTODIFF_REVERSE: u64 = 0;
+/// Forward mode for `Opcode::AutoDiff`: the tangent, through `__enzyme_fwddiff_jvp_*`.
+pub const AUTODIFF_FORWARD: u64 = 1;
+/// Where the mode sits in `Opcode::AutoDiff`'s `imm`; the argument count is below it.
+pub const AUTODIFF_MODE_SHIFT: u32 = 32;
 
 impl Opcode {
     /// Recover an opcode from its `#[repr(u32)]` discriminant, e.g. when decoding a serialized flat
@@ -250,6 +267,7 @@ impl Opcode {
             39 => Barrier,
             40 => MatmulInto,
             41 => FlashAttnInto,
+            42 => AutoDiff,
             _ => return None,
         })
     }
