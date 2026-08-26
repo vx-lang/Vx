@@ -3471,6 +3471,10 @@ fn body_has_control_flow(stmts: &[Statement]) -> bool {
                 || expr_has_logical(&a.rhs)
                 || block_stmts_of(&a.rhs).is_some_and(body_has_control_flow)
         }
+        // An assert's condition is an expression like any other; `assert(a && b, ..)` was the
+        // one statement this scan skipped, so the logical op reached `lower_logical` in
+        // register mode and hit its defensive decline.
+        Statement::Assert(a) => matches!(*a.expr, Expr::If(_)) || expr_has_logical(&a.expr),
         _ => false,
     })
 }
