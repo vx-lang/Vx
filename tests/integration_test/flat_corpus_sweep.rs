@@ -40,7 +40,6 @@ const KNOWN_DECLINES: &[&str] = &[
     "user_lowering_waste.vx",
     "vec_feature.vx",
     "vec_option_elem.vx",
-    "vec_topology.vx",
 ];
 
 /// Every `.vx` file under `dir`, recursively, sorted for a stable report.

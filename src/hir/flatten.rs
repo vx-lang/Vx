@@ -1145,6 +1145,20 @@ impl<'r> Lowerer<'r> {
             // A value array literal `[a, b, c]` (#239): a rank-1 tensor buffer with the elements
             // stored into it. (A `Tensor<T>([…])` shape argument is consumed by `lower_tensor_alloc`.)
             Expr::Array(arr) => self.lower_array(arr),
+            // A topology used as a value is its stable runtime dispatch id, an i32 -- which is
+            // what makes `Topology::GPU` storable in a `Vec<Topology>` and comparable at run
+            // time. Comptime placement comparisons fold before this, so one reaching here is
+            // genuinely being used as a value.
+            Expr::Topology(t) => {
+                let id = crate::arch::topology_dispatch_id(&t.top) as u64;
+                Ok(self.emit_value(
+                    Opcode::Const,
+                    Register(0),
+                    Register(0),
+                    ElementType::I32,
+                    id,
+                ))
+            }
             // The differentiated calls. All three go through one opcode; see `lower_autodiff`.
             Expr::Grad(g) => self.lower_autodiff(&g.target_fn, &g.args, false, None),
             Expr::Vjp(v) => self.lower_autodiff(&v.target_fn, &v.args, false, Some(&v.cotangent)),
