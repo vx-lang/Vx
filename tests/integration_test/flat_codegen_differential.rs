@@ -2158,6 +2158,45 @@ fn flat_matches_ast_function_pointer_struct_field() {
 }
 
 #[test]
+fn flat_matches_ast_matmul_non_square() {
+    // `[2, 3] @ [3, 4]` is `[2, 4]`. The flattener gave the result the LEFT operand's shape
+    // until Vx#390 -- which only shows on rectangular operands, since a square pair makes the
+    // two coincide. Nothing compared the paths on a matmul at all before this: the flat
+    // emitter declined, so it was never a differential target, so the wrong result type behind
+    // the decline had nothing looking at it.
+    //
+    // `c[1][3]` is 4*4 + 5*8 + 6*12 = 128, the same value gpu_matmul_roles.vx expects.
+    assert_parity(
+        "fn main() -> i32 { let mut a : Tensor<f32> = Tensor<f32>([2, 3]); \
+         let mut b : Tensor<f32> = Tensor<f32>([3, 4]); \
+         for i in 0..2 { for j in 0..3 { a[i][j] = (i * 3 + j + 1) as f32; } } \
+         for i in 0..3 { for j in 0..4 { b[i][j] = (i * 4 + j + 1) as f32; } } \
+         let c : Tensor<f32> = a @ b; return c[1][3] as i32; }",
+        128,
+    );
+}
+
+#[test]
+fn flat_matches_ast_matmul_half_stores_half() {
+    // A half matmul accumulates and STORES half. The flattener widened the result to f32 the
+    // way it does for elementwise arithmetic until Vx#390, which would have given the product
+    // an f32 buffer.
+    //
+    // f16 represents integers exactly only up to 2048, so 1024 + 1025 is the smallest sum that
+    // tells the two storages apart: 2048 in half, 2049 in f32. Both operands are exact in half,
+    // so the difference is the accumulator's own type and nothing else. Offset by 2038 to keep
+    // both outcomes inside the 8-bit exit code and away from zero -- 10 for half, 11 for f32.
+    assert_parity(
+        "fn main() -> i32 { let mut a : Tensor<f16> = Tensor<f16>([2, 2]); \
+         let mut b : Tensor<f16> = Tensor<f16>([2, 2]); \
+         a[0][0] = 1024.0; a[0][1] = 1025.0; a[1][0] = 0.0; a[1][1] = 0.0; \
+         b[0][0] = 1.0; b[0][1] = 0.0; b[1][0] = 1.0; b[1][1] = 0.0; \
+         let c : Tensor<f16> = a @ b; return (c[0][0] - 2038.0) as i32; }",
+        10,
+    );
+}
+
+#[test]
 fn flat_carries_subspace_scheduling_metadata() {
     // P0-1: the sub-space scheduler's output (`space`/`within`/`granule`/`capacity`/`scope` + the
     // bump-allocated `offset`/`slots`) must survive on the *flat* path, not just under
