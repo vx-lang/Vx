@@ -28,7 +28,6 @@ const KNOWN_DECLINES: &[&str] = &[
     "matmul_operand_reuse.vx",
     "matvec_view_routing.vx",
     "option_unwrap.vx",
-    "pointer_cast.vx",
     "spliced_block_tails.vx",
     "tensor_initializer.vx",
     "tensor_view_2d.vx",
@@ -36,7 +35,6 @@ const KNOWN_DECLINES: &[&str] = &[
     "user_lowering_name_collisions.vx",
     "user_lowering_uncountable.vx",
     "user_lowering_waste.vx",
-    "vec_feature.vx",
     "vec_option_elem.vx",
 ];
 

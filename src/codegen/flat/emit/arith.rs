@@ -201,13 +201,28 @@ impl FnEmit<'_> {
     // the source/target kinds + widths; a same-type cast is a no-op that just aliases.
     pub(crate) fn op_cast(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
         let src = self.elem_at(ins.operand1.0).ok_or(crate::emitter_gap!())?;
-        let tgt = elem_of_gid(
-            *self
-                .types
-                .get(ins.type_idx.0 as usize)
-                .ok_or(crate::emitter_gap!())?,
-        )
-        .ok_or(crate::emitter_gap!())?;
+        let gid = *self
+            .types
+            .get(ins.type_idx.0 as usize)
+            .ok_or(crate::emitter_gap!())?;
+        // An integer cast to a pointer (`0 as *mut T`): `llvm.inttoptr`, same as the AST path.
+        // The flattener admits only integer sources, so `src` has an integer spelling here.
+        if gid == ptr_gid() {
+            let a = self
+                .names
+                .get(ins.operand1.0 as usize)
+                .ok_or(crate::emitter_gap!())?
+                .clone();
+            let n = format!("%v{idx}");
+            self.body += &format!(
+                "  {n} = llvm.inttoptr {a} : {} to !llvm.ptr\n",
+                mlir_scalar(&src).ok_or(crate::emitter_gap!())?
+            );
+            self.names[idx] = n;
+            self.ptr_of[idx] = true;
+            return Ok(());
+        }
+        let tgt = elem_of_gid(gid).ok_or(crate::emitter_gap!())?;
         let a = self
             .names
             .get(ins.operand1.0 as usize)

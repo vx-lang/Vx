@@ -661,6 +661,26 @@ impl<'r> Lowerer<'r> {
             // A scalar `as` cast: the result carries the (scalar) target type.
             Expr::AsCast(c) => {
                 let v = self.lower_expr(&c.expr)?;
+                // An integer cast to a pointer (`0 as *mut T`, the null-pointer idiom): the
+                // result is a bare `!llvm.ptr` value, spelled with the pointer GID so codegen
+                // emits `llvm.inttoptr` -- the same op the AST path uses. Only integer sources:
+                // inttoptr of a float is not valid IR on either path.
+                if matches!(c.target_ty, Type::Pointer(..)) {
+                    if let LoweredTy::Scalar(src) = &v.ty {
+                        if !src.is_float() {
+                            return Ok(self.emit_typed(
+                                Opcode::Cast,
+                                v.reg,
+                                Register(0),
+                                LoweredTy::Ptr,
+                                0,
+                            ));
+                        }
+                    }
+                    return Err(Decline::TypeNotModelled {
+                        what: "a pointer cast from something that is not an integer",
+                    });
+                }
                 let target = scalar_of(&c.target_ty).ok_or(Decline::TypeNotModelled {
                     what: "a cast to a non-scalar",
                 })?;
