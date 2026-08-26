@@ -19,7 +19,6 @@ use std::process::Command;
 const KNOWN_DECLINES: &[&str] = &[
     "benchmark_test.vx",
     "custom_topology_user_lowering.vx",
-    "ffi_simd_extended.vx",
     "gpu_matmul_dtypes.vx",
     "gpu_matmul_roles.vx",
     "llama2_v2.vx",

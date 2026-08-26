@@ -1369,11 +1369,20 @@ impl<'r> Lowerer<'r> {
             what: "an aggregate with no GID",
         })?;
         let v = self.lower_expr(base)?;
-        matches!(v.ty, LoweredTy::Ptr)
-            .then_some((v.reg, gid))
-            .ok_or(Decline::TypeNotModelled {
+        match v.ty {
+            LoweredTy::Ptr => Ok((v.reg, gid)),
+            // A by-value aggregate -- a struct-returning call used directly as a base
+            // (`Vec::with_capacity(4).data`): spill it to a fresh slot so the field op has an
+            // address to GEP. The emitter's Store already writes a struct value into a slot.
+            LoweredTy::Aggregate(value_gid) => {
+                let slot = self.emit_alloca(LoweredTy::Aggregate(value_gid));
+                self.emit_effect(Opcode::Store, slot.reg, v.reg, 0);
+                Ok((slot.reg, value_gid))
+            }
+            _ => Err(Decline::TypeNotModelled {
                 what: "an aggregate base that is not a pointer",
-            })
+            }),
+        }
     }
 
     /// The address of a **scalar** field as an element pointer (`&param.slot`): GEP the parent aggregate
@@ -3268,8 +3277,17 @@ impl<'r> Lowerer<'r> {
                     for s in &ub.stmts {
                         self.lower_stmt(s)?;
                     }
-                    if let Some(r) = &ub.ret {
-                        self.lower_expr(r)?;
+                    // A trailing block-`if` (or match) here is the parser's reading of
+                    // `if c { .. }` with no semicolon: in statement position nothing consumes a
+                    // value, so lower it as the statement it is rather than through the
+                    // value-position arm, which would demand a branch type it does not have.
+                    match ub.ret.as_deref() {
+                        Some(Expr::If(iff)) => self.lower_if(iff)?,
+                        Some(Expr::Match(m)) => self.lower_match(m)?,
+                        Some(r) => {
+                            self.lower_expr(r)?;
+                        }
+                        None => {}
                     }
                     Ok(())
                 }
@@ -3547,34 +3565,36 @@ fn block_stmts_of(e: &Expr) -> Option<&[Statement]> {
 fn body_has_control_flow(stmts: &[Statement]) -> bool {
     stmts.iter().any(|s| match s {
         Statement::Loop(_) | Statement::ForLoop(_) => true,
-        Statement::ExprStmt(e) => {
-            matches!(e.expr, Expr::If(_) | Expr::Match(_))
-                || expr_has_logical(&e.expr)
-                || block_stmts_of(&e.expr).is_some_and(body_has_control_flow)
-        }
+        Statement::ExprStmt(e) => expr_has_control_flow(&e.expr),
         // A value-position `if` (`let v = if .. { .. } else { .. }`, #201) lowers to blocks + a result
         // slot, which needs the memory model too — as does a short-circuit `&&`/`||` (#239).
-        Statement::LetDecl(l) => {
-            matches!(l.expr, Expr::If(_))
-                || expr_has_logical(&l.expr)
-                || block_stmts_of(&l.expr).is_some_and(body_has_control_flow)
-        }
-        Statement::Return(r) => {
-            matches!(r.expr, Expr::If(_))
-                || expr_has_logical(&r.expr)
-                || block_stmts_of(&r.expr).is_some_and(body_has_control_flow)
-        }
-        Statement::Assign(a) => {
-            matches!(a.rhs, Expr::If(_))
-                || expr_has_logical(&a.rhs)
-                || block_stmts_of(&a.rhs).is_some_and(body_has_control_flow)
-        }
+        Statement::LetDecl(l) => expr_has_control_flow(&l.expr),
+        Statement::Return(r) => expr_has_control_flow(&r.expr),
+        Statement::Assign(a) => expr_has_control_flow(&a.rhs),
         // An assert's condition is an expression like any other; `assert(a && b, ..)` was the
         // one statement this scan skipped, so the logical op reached `lower_logical` in
         // register mode and hit its defensive decline.
         Statement::Assert(a) => matches!(*a.expr, Expr::If(_)) || expr_has_logical(&a.expr),
         _ => false,
     })
+}
+
+/// Whether an expression brings control flow of its own: an `if`/`match`, a short-circuit
+/// logical op, or a transparent block whose statements -- or trailing expression -- do. The
+/// trailing expression matters: `unsafe { ...; if c { x = v; } }` parses the `if` as the block's
+/// trailing value, and missing it left `has_control_flow` false for exactly the functions whose
+/// only branches sit there.
+fn expr_has_control_flow(e: &Expr) -> bool {
+    if matches!(e, Expr::If(_) | Expr::Match(_)) || expr_has_logical(e) {
+        return true;
+    }
+    let (stmts, ret) = match e {
+        Expr::UnsafeBlock(u) => (&u.stmts, u.ret.as_deref()),
+        Expr::ComptimeBlock(c) => (&c.stmts, c.ret.as_deref()),
+        Expr::SpawnOn(sp) => (&sp.stmts, sp.ret.as_deref()),
+        _ => return false,
+    };
+    body_has_control_flow(stmts) || ret.is_some_and(expr_has_control_flow)
 }
 
 /// Whether an expression contains a short-circuit logical op (`&&`/`||`) that forces the memory
