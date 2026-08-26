@@ -125,7 +125,7 @@ pub type Lowered<T> = Result<T, Decline>;
 macro_rules! emitter_gap {
     () => {
         $crate::decline::Decline::EmitterGap {
-            site: concat!("flat.rs:", line!()),
+            site: concat!(file!(), ":", line!()),
         }
     };
 }

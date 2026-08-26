@@ -542,16 +542,38 @@ impl FnEmit<'_> {
                 .get(ins.operand2.0 as usize)
                 .ok_or(crate::emitter_gap!())?
                 .clone();
-            let vecty = self
+            let vec_rec = self
                 .vec_of
                 .get(ins.operand2.0 as usize)
                 .ok_or(crate::emitter_gap!())?
-                .clone()
-                .ok_or(crate::emitter_gap!())?;
+                .clone();
             let c0 = format!("%sc{idx}");
-            let al = vector_align_attr(&vecty);
-            self.body += &format!("  {c0} = arith.constant 0 : index\n");
-            self.body += &format!("  vector.store {vecname}, {dst}[{c0}]{al} : {rowty}, {vecty}\n");
+            if let Some(vecty) = vec_rec {
+                let al = vector_align_attr(&vecty);
+                self.body += &format!("  {c0} = arith.constant 0 : index\n");
+                self.body +=
+                    &format!("  vector.store {vecname}, {dst}[{c0}]{al} : {rowty}, {vecty}\n");
+            } else if let Some(srcty) = self
+                .mem_of
+                .get(ins.operand2.0 as usize)
+                .ok_or(crate::emitter_gap!())?
+                .clone()
+            {
+                // The stored value is a rank-1 tensor, not a vector -- `m[0] = [10.0, ..]`, a row
+                // written from an array literal's buffer. Read the whole source row as a vector
+                // and store it; the checker already matched the two lengths.
+                let d = memref_lead_dim(&srcty).ok_or(crate::emitter_gap!())?;
+                let et = memref_elem(&srcty).ok_or(crate::emitter_gap!())?;
+                let vecty = format!("vector<{d}x{et}>");
+                let al = vector_align_attr(&vecty);
+                let v = format!("%svl{idx}");
+                self.body += &format!("  {c0} = arith.constant 0 : index\n");
+                self.body +=
+                    &format!("  {v} = vector.load {vecname}[{c0}]{al} : {srcty}, {vecty}\n");
+                self.body += &format!("  vector.store {v}, {dst}[{c0}]{al} : {rowty}, {vecty}\n");
+            } else {
+                return Err(crate::emitter_gap!());
+            }
         } else {
             return Err(crate::emitter_gap!());
         }

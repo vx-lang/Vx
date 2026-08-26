@@ -2405,6 +2405,16 @@ impl<'r> Lowerer<'r> {
     /// dynamic/symbolic shape (its byte size isn't statically known) or a non-scalar element.
     fn lower_tensor_alloc(&mut self, fc: &crate::syntax::FunctionCallExpr) -> Option<Val> {
         let elem = fc.type_args.as_ref()?.first().and_then(scalar_of)?;
+        // An initializer list `Tensor<T>([[..],[..]])`: the nesting is the shape and the leaves
+        // are the contents. The checker draws the same line -- `initializer_shape` answers only
+        // for genuine nesting, so a flat `[d0, d1]` stays a shape below.
+        if let Some(Expr::Array(arr)) = fc.args.first() {
+            if fc.args.len() == 1 {
+                if let Some(shape) = arr.initializer_shape() {
+                    return self.lower_tensor_initializer(&elem, &shape, arr);
+                }
+            }
+        }
         // `Tensor<T>([d0, d1])` passes the shape as one array arg; `Tensor<T>(d0, d1)` as bare args.
         let dims: &[Expr] = match fc.args.first() {
             Some(Expr::Array(arr)) if fc.args.len() == 1 => &arr.elements,
@@ -2414,6 +2424,69 @@ impl<'r> Lowerer<'r> {
         let shape: Vec<String> = dims.iter().map(tensor_dim_string).collect::<Option<_>>()?;
         let ty = LoweredTy::Tensor { elem, shape };
         Some(self.emit_typed(Opcode::TensorAlloc, Register(0), Register(0), ty, bytes))
+    }
+
+    /// Allocate a tensor shaped by an initializer list's nesting and store every leaf at its
+    /// row-major position. Each element chains `TensorIndex` the way a written-out `m[i][j] = v`
+    /// does: a sub-view per leading dimension, then the element place the store writes.
+    fn lower_tensor_initializer(
+        &mut self,
+        elem: &ElementType,
+        shape: &[usize],
+        arr: &crate::syntax::ArrayExpr,
+    ) -> Option<Val> {
+        let count: usize = shape.iter().product();
+        let values = arr.initializer_values();
+        // A ragged literal (rows of unequal length) has fewer leaves than the shape implies;
+        // storing it would misplace every element after the short row.
+        if values.len() != count || count == 0 {
+            return None;
+        }
+        let bytes = (crate::hir::memory::element_bits(elem)? * count as u64).div_ceil(8);
+        let shape_s: Vec<String> = shape.iter().map(|d| d.to_string()).collect();
+        let buf = self.emit_typed(
+            Opcode::TensorAlloc,
+            Register(0),
+            Register(0),
+            LoweredTy::Tensor {
+                elem: elem.clone(),
+                shape: shape_s.clone(),
+            },
+            bytes,
+        );
+        for (k, v) in values.iter().enumerate() {
+            let val = self.lower_expr(v).ok()?;
+            // Row-major digits of `k`, most significant first.
+            let mut digits = vec![0usize; shape.len()];
+            let mut rem = k;
+            for (i, d) in shape.iter().enumerate().rev() {
+                digits[i] = rem % d;
+                rem /= d;
+            }
+            let mut place = buf.reg;
+            for (i, digit) in digits.iter().enumerate() {
+                let idx = self.emit_value(
+                    Opcode::Const,
+                    Register(0),
+                    Register(0),
+                    ElementType::I32,
+                    *digit as u64,
+                );
+                let last = i + 1 == digits.len();
+                let ty = if last {
+                    LoweredTy::Scalar(elem.clone())
+                } else {
+                    LoweredTy::Tensor {
+                        elem: elem.clone(),
+                        shape: shape_s[i + 1..].to_vec(),
+                    }
+                };
+                let step = self.emit_typed(Opcode::TensorIndex, place, idx.reg, ty, last as u64);
+                place = step.reg;
+            }
+            self.emit_effect(Opcode::TensorStore, place, val.reg, 0);
+        }
+        Some(buf)
     }
 
     /// Lower a *value* array literal `[a, b, c]` (#239): allocate a rank-1 tensor buffer and store
@@ -3445,6 +3518,11 @@ fn block_stmts_of(e: &Expr) -> Option<&[Statement]> {
     match e {
         Expr::UnsafeBlock(u) => Some(&u.stmts),
         Expr::ComptimeBlock(c) => Some(&c.stmts),
+        // A spawn body lowers inline too (`lower_spawn`), between Spawn/SpawnEnd markers in the
+        // same basic blocks. Not seeing through it left `has_control_flow` false for a function
+        // whose only loops live in the region, so a scalar mutated in there kept a register and
+        // its rebind escaped the block that defined it.
+        Expr::SpawnOn(sp) => Some(&sp.stmts),
         _ => None,
     }
 }
