@@ -1333,8 +1333,8 @@ impl<'a> TypeChecker<'a> {
             for t in arg_types.iter().take(2) {
                 if !Self::is_f32_slice(t) && !Self::is_half_slice(t) {
                     self.errors.push(format!(
-                        "Function 'dot' expects rank-1 float slices (f32/f16/bf16), got {:?}",
-                        t
+                        "Function 'dot' expects rank-1 float slices (f32/f16/bf16), got {}",
+                        Self::describe_slice_operand(t)
                     ));
                 }
             }
@@ -1352,8 +1352,9 @@ impl<'a> TypeChecker<'a> {
             if let Some(t) = arg_types.first() {
                 if !Self::is_f32_slice(t) && !Self::is_half_slice(t) {
                     self.errors.push(format!(
-                        "Function '{}' expects a rank-1 float slice (f32/f16/bf16), got {:?}",
-                        resolved_name, t
+                        "Function '{}' expects a rank-1 float slice (f32/f16/bf16), got {}",
+                        resolved_name,
+                        Self::describe_slice_operand(t)
                     ));
                 }
             }

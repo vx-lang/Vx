@@ -1217,15 +1217,23 @@ fn memref_lead_dims_and_elem(memty: &str) -> Option<(&str, &str)> {
     Some((&inner[..elem_start], &inner[elem_start..]))
 }
 
-/// The leading static dimension of a memref type string, e.g. `memref<4xf32, strided<…>> -> 4`. Used
-/// as the `vector<Nx…>` width when loading a rank-1 slice for a reduction.
+/// The static length of a **rank-1** memref, e.g. `memref<4xf32, strided<…>> -> 4`. This is the
+/// width of the `vector<Nx…>` a reduction loads the slice into.
+///
+/// `None` for any higher rank, matching the AST path's `slice_vec_len`. The load addresses a
+/// single index, so a rank-2 operand would be read with one index too few and MLIR rejects the op.
+/// Taking the leading dimension without checking the rank answered `memref<4x4xf32>` with 4 and
+/// left the caller no way to tell.
 fn memref_lead_dim(memty: &str) -> Option<i64> {
-    memty
-        .strip_prefix("memref<")?
-        .split('x')
-        .next()?
-        .parse::<i64>()
-        .ok()
+    let inner = memty.strip_prefix("memref<")?;
+    // The shape is the text before any `, strided<…>` layout, e.g. `4xf32`; exactly one `x`
+    // separating a dimension from the element type is rank 1.
+    let shape = inner.split(',').next()?.trim_end_matches('>');
+    let parts: Vec<&str> = shape.split('x').collect();
+    if parts.len() != 2 {
+        return None;
+    }
+    parts[0].parse::<i64>().ok()
 }
 
 /// Coerce a slice-elementwise operand register to a `vector<Nxf32>` value (matching the AST's
@@ -1820,6 +1828,23 @@ mod tests {
     use crate::hir::flatten::lower_function_to_hir;
     use crate::session::{GlobalSession, LocalWorkerState};
     use std::sync::Arc;
+
+    #[test]
+    fn memref_lead_dim_answers_only_for_rank_one() {
+        // The reduction loads a slice with a single-index `vector.load`, so anything but rank 1
+        // has to come back `None`. Taking the leading dimension without checking the rank
+        // answered `memref<4x4xf32>` with 4, and the caller emitted an op MLIR rejects.
+        assert_eq!(memref_lead_dim("memref<4xf32>"), Some(4));
+        assert_eq!(
+            memref_lead_dim("memref<4xf32, strided<[1], offset: ?>>"),
+            Some(4)
+        );
+        assert_eq!(memref_lead_dim("memref<8xf16>"), Some(8));
+        assert_eq!(memref_lead_dim("memref<4x4xf32>"), None);
+        assert_eq!(memref_lead_dim("memref<2x3x4xf32>"), None);
+        // A dynamic extent has no static width either.
+        assert_eq!(memref_lead_dim("memref<?xf32>"), None);
+    }
 
     fn parse_fn(src: &str) -> Function {
         let mut lexer = crate::lexer::Lexer::new(src);

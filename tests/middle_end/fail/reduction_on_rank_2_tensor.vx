@@ -1,0 +1,18 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// A slice reduction loads its operand with a single-index `vector.load`, so it is defined only
+// for rank 1. The predicate that admits the operand answered on the element type alone and let
+// a rank-2 tensor through, and the program then failed in the MLIR verifier with
+// "'vector.load' op requires 2 indices" -- no code, no span, nothing naming the real mistake.
+// CHECK: expects a rank-1 float slice
+// CHECK: got a rank-2 f32 tensor
+fn reduce_all(m : Tensor<f32, [2, 4]>) -> f32 {
+  return sum(m);
+}
+
+fn main() -> i32 {
+  let mut t : Tensor<f32> = Tensor<f32>([ 2, 4 ]);
+  t[0][0] = 1.0;
+  let s : f32 = reduce_all(t);
+  print(s);
+  return 0;
+}

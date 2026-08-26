@@ -218,7 +218,21 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    /// A rank-1 (or, permissively, any-rank) f32 tensor slice, as produced by `q[i]` (S1).
+    /// How to name an operand a slice builtin refused, for the diagnostic. `Display for Type`
+    /// has no tensor arm and falls through to `{:?}`, which prints every dimension's span --
+    /// unreadable, and the rank is the only part the reader needs.
+    pub(crate) fn describe_slice_operand(t: &Type) -> String {
+        match Self::as_tensor_operand(t) {
+            Some((elem, dims, _)) => format!("a rank-{} {} tensor", dims.len(), elem),
+            None => format!("{}", t),
+        }
+    }
+
+    /// A rank-1 f32 tensor slice, as produced by `q[i]` (S1).
+    ///
+    /// The rank is part of the question. Every contract downstream of this reads the slice with
+    /// a single-index `vector.load`, so a higher-rank tensor answered `true` here reaches codegen
+    /// as an op MLIR rejects, with no diagnostic of its own to explain it.
     pub(crate) fn is_f32_slice(t: &Type) -> bool {
         let inner = match t {
             Type::Borrow { inner, .. }
@@ -227,7 +241,7 @@ impl<'a> TypeChecker<'a> {
             | Type::Ref(inner, _) => inner.as_ref(),
             other => other,
         };
-        matches!(inner, Type::Tensor(ElementType::F32, _, _))
+        matches!(inner, Type::Tensor(ElementType::F32, dims, _) if dims.len() == 1)
     }
 
     /// A rank-1 f16/bf16 tensor slice: half-precision STORAGE that every slice contract widens
@@ -244,7 +258,7 @@ impl<'a> TypeChecker<'a> {
         };
         matches!(
             inner,
-            Type::Tensor(ElementType::F16 | ElementType::BF16, _, _)
+            Type::Tensor(ElementType::F16 | ElementType::BF16, dims, _) if dims.len() == 1
         )
     }
 
