@@ -209,6 +209,11 @@ pub enum Opcode {
     /// it as the first argument. `vjp` has no mode of its own: the flattener lowers it as reverse
     /// mode followed by an ordinary multiply against the cotangent.
     AutoDiff = 42,
+    /// Read a rank-0 tensor's element (`memref.load %t[]`): `operand1` is the tensor, the result
+    /// the scalar. Emitted where a rank-0 value sits in scalar position — the arithmetic and
+    /// comparison operands of a `let t : Tensor<el> = <scalar>` local (Vx#396). Shaped tensors
+    /// never emit this; their reads index.
+    TensorLoad = 43,
 }
 
 /// Reverse mode for `Opcode::AutoDiff`: the gradient, through `__enzyme_autodiff_grad_*`.
@@ -268,6 +273,7 @@ impl Opcode {
             40 => MatmulInto,
             41 => FlashAttnInto,
             42 => AutoDiff,
+            43 => TensorLoad,
             _ => return None,
         })
     }

@@ -446,15 +446,12 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
-        // Allow coercing Scalar to Tensor (e.g. 0.0 to Tensor<f32>) for backwards compatibility with tests
+        // A scalar is assignable to a tensor of the *identical* element only: dims-less wraps
+        // it as a rank-0 tensor, shaped is a splat (the reshape corpus). The any-to-any arm
+        // went with the rest of implicit numeric conversion (#240, Vx#396).
         if let Type::Tensor(t_target, _, _) = target {
             if let Type::Scalar(t_source) = &source {
-                if *t_target == *t_source {
-                    return true;
-                }
-                if *t_source != ElementType::Bool && t_target != &ElementType::Bool {
-                    return true;
-                }
+                return *t_target == *t_source;
             }
         }
 

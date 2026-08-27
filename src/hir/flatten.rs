@@ -400,7 +400,33 @@ impl<'r> Lowerer<'r> {
     /// (+ initializing `Store`) in memory mode.
     /// Emit a `Print` for a value: `type_idx` carries the value's type (scalar or tensor) so codegen
     /// routes to the right `print_*` / `printMemref*` runtime helper.
-    fn emit_print(&mut self, v: Val) {
+    /// A rank-0 tensor in scalar position reads as its element: `let t : Tensor<el> = v`
+    /// wraps a scalar, and arithmetic/comparisons operate on the value (Vx#396).
+    fn read_rank0(&mut self, v: Val) -> Val {
+        match &v.ty {
+            LoweredTy::Tensor { elem, shape } if shape.is_empty() => {
+                let e = elem.clone();
+                self.emit_typed(
+                    Opcode::TensorLoad,
+                    v.reg,
+                    Register(0),
+                    LoweredTy::Scalar(e),
+                    0,
+                )
+            }
+            _ => v,
+        }
+    }
+
+    fn emit_print(&mut self, v: Val) -> Lowered<()> {
+        // A rank-0 tensor prints as a bare scalar on the AST path (its `vx.transfer` never
+        // materializes the buffer); the flat memref print would render differently, so the
+        // program stays on the oracle. (Vx#396)
+        if matches!(&v.ty, LoweredTy::Tensor { shape, .. } if shape.is_empty()) {
+            return Err(Decline::TypeNotModelled {
+                what: "printing a rank-0 tensor",
+            });
+        }
         let type_idx = TypeIdx(self.types.len() as u32);
         self.types.push(v.ty.gid());
         if let LoweredTy::Tensor { elem, shape } = &v.ty {
@@ -414,6 +440,7 @@ impl<'r> Lowerer<'r> {
             type_idx,
             0,
         ));
+        Ok(())
     }
 
     /// Emit a `PrintStr` for a string literal (no result): record the bytes in the string side table
@@ -448,7 +475,7 @@ impl<'r> Lowerer<'r> {
             self.emit_print_str(sl.value.as_ref());
         } else {
             let v = self.lower_expr(arg)?;
-            self.emit_print(v);
+            self.emit_print(v)?;
         }
         Ok(())
     }
@@ -573,7 +600,9 @@ impl<'r> Lowerer<'r> {
             }
             Expr::BinaryOp(b) => {
                 let l = self.lower_expr(&b.lhs)?;
+                let l = self.read_rank0(l);
                 let r = self.lower_expr(&b.rhs)?;
+                let r = self.read_rank0(r);
                 let op = binop_opcode(&b.op).ok_or(Decline::Unsupported {
                     what: "this binary operator",
                 })?;
@@ -639,7 +668,9 @@ impl<'r> Lowerer<'r> {
             // A comparison yields a `bool`; the relation is carried in `imm`.
             Expr::RelationalOp(r) => {
                 let l = self.lower_expr(&r.lhs)?;
+                let l = self.read_rank0(l);
                 let rhs = self.lower_expr(&r.rhs)?;
+                let rhs = self.read_rank0(rhs);
                 // Both operands already share a type (the checker reconciles them and rejects a
                 // genuine mismatch, #240), so `Cmp` compares them directly.
                 Ok(self.emit_value(
@@ -652,6 +683,7 @@ impl<'r> Lowerer<'r> {
             }
             Expr::UnaryOp(u) => {
                 let v = self.lower_expr(&u.expr)?;
+                let v = self.read_rank0(v);
                 let op = match u.op {
                     UnaryOp::Neg => Opcode::Neg,
                     UnaryOp::Not => Opcode::Not,
@@ -1820,6 +1852,7 @@ impl<'r> Lowerer<'r> {
         }
         let slot = self.emit_alloca(LoweredTy::Scalar(ElementType::Bool));
         let lhs = self.lower_expr(&e.lhs)?;
+        let lhs = self.read_rank0(lhs);
         let rhs_b = self.new_block();
         let short_b = self.new_block();
         let merge_b = self.new_block();
@@ -1839,6 +1872,7 @@ impl<'r> Lowerer<'r> {
         // The right operand determines the result.
         self.emit_effect(Opcode::BlockStart, Register(0), Register(0), rhs_b as u64);
         let rhs = self.lower_expr(&e.rhs)?;
+        let rhs = self.read_rank0(rhs);
         self.emit_effect(Opcode::Store, slot.reg, rhs.reg, 0);
         self.emit_effect(Opcode::Br, Register(0), Register(0), merge_b as u64);
 
@@ -3180,6 +3214,34 @@ impl<'r> Lowerer<'r> {
                     return Ok(());
                 }
                 let v = self.lower_expr(&l.expr)?;
+                // `let t : Tensor<el> = <scalar>` wraps the value as a rank-0 tensor: materialize
+                // the buffer (alloc + store) so tensor consumers (transfer, spawn) receive a real
+                // tensor. The checker admits identical elements only (Vx#396).
+                if let (Some(Type::Tensor(el, dims, _)), LoweredTy::Scalar(se)) =
+                    (l.ty_ann.as_ref(), &v.ty)
+                {
+                    if dims.is_empty() && el == se {
+                        let bytes = crate::hir::memory::element_bits(se)
+                            .ok_or(Decline::TypeNotModelled {
+                                what: "a rank-0 tensor of this element",
+                            })?
+                            .div_ceil(8);
+                        let se = se.clone();
+                        let buf = self.emit_typed(
+                            Opcode::TensorAlloc,
+                            Register(0),
+                            Register(0),
+                            LoweredTy::Tensor {
+                                elem: se,
+                                shape: vec![],
+                            },
+                            bytes,
+                        );
+                        self.emit_effect(Opcode::TensorStore, buf.reg, v.reg, 0);
+                        self.scope.insert(l.name.clone(), Binding::Reg(buf));
+                        return Ok(());
+                    }
+                }
                 // A tensor local is a reference (memref) — bind it as an SSA register, not a slot;
                 // stores write through the descriptor to the buffer.
                 if matches!(v.ty, LoweredTy::Tensor { .. }) {
@@ -3338,7 +3400,7 @@ impl<'r> Lowerer<'r> {
                 }
                 Expr::FunctionCall(fc) if fc.name.as_ref() == "print" && fc.args.len() == 1 => {
                     let v = self.lower_expr(&fc.args[0])?;
-                    self.emit_print(v);
+                    self.emit_print(v)?;
                     Ok(())
                 }
                 // The `print!` macro form (`Expr::Print`): prints each argument in sequence via the same
@@ -4413,6 +4475,7 @@ pub fn verify_hir_stream(worker: &LocalWorkerState) {
             | Opcode::Not
             | Opcode::SlotLoad
             | Opcode::FieldLoad
+            | Opcode::TensorLoad
             | Opcode::Transfer
             | Opcode::Print
             | Opcode::Arg => assert!(
@@ -5965,6 +6028,26 @@ mod tests {
             result_gid(&w, Opcode::Transfer),
             tensor_gid(&ElementType::F32, &["2".to_string(), "4".to_string()]),
             "same shape -> the destination holds the source",
+        );
+        verify_hir_stream(&w);
+    }
+
+    #[test]
+    fn scalar_under_a_dimsless_tensor_annotation_materializes_rank_0() {
+        // `let t : Tensor<f32> = 1.0` allocates a rank-0 buffer and stores the scalar, so the
+        // transfer receives a tensor, not the initializer's scalar (Vx#396).
+        let f = parse_fn(
+            "fn f() -> i32 { let t : Tensor<f32> = 1.0; let d = transfer(t, Memory::NPU_HBM); return 0; }",
+        );
+        let mut w = worker();
+        lower_function_to_hir(&f, &mut w).expect("rank-0 wrap should lower");
+        assert_eq!(count(&w, Opcode::TensorAlloc), 1);
+        assert_eq!(count(&w, Opcode::TensorStore), 1);
+        assert_eq!(count(&w, Opcode::Transfer), 1);
+        assert_eq!(
+            result_gid(&w, Opcode::Transfer),
+            tensor_gid(&ElementType::F32, &[]),
+            "the transferred value is the rank-0 tensor",
         );
         verify_hir_stream(&w);
     }

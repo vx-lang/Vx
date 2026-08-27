@@ -124,9 +124,9 @@ fn run_pipeline(input: &str) -> Result<vxc::syntax::Program, Vec<vxc::diagnostic
 fn test_integration_operators() -> Result<(), String> {
     let input = r#"
     fn math_ops() -> Tensor<f32> {
-        let mut x = 10;
-        let y = x * 5;
-        x += y + 2;
+        let mut x = 10.0;
+        let y = x * 5.0;
+        x += y + 2.0;
         return x;
     }
     "#;
@@ -140,7 +140,7 @@ fn test_integration_operators() -> Result<(), String> {
 #[test]
 fn test_integration_loops() -> Result<(), String> {
     let input = r#"
-    fn loop_test() -> Tensor<f32> {
+    fn loop_test() -> i32 {
         let mut sum = 0;
         for i in 0..10 {
             sum += i;
@@ -190,11 +190,11 @@ fn test_integration_method_chaining() -> Result<(), String> {
 fn test_integration_function_calls() -> Result<(), String> {
     let input = r#"
     fn helper(x: Tensor<f32>) -> Tensor<f32> {
-        return x + 1;
+        return x + 1.0;
     }
 
     fn main() -> i32 {
-        let y = 10;
+        let y = 10.0;
         let _z = helper(y);
         return 0;
     }

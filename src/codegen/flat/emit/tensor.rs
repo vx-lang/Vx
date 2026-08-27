@@ -51,6 +51,41 @@ impl FnEmit<'_> {
         Ok(())
     }
 
+    // Read a rank-0 tensor's element: `memref.load %t[]`. Only rank-0 bases emit this
+    // (flatten's `read_rank0`); anything shaped is a wrong stream and declines.
+    pub(crate) fn op_tensor_load(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let src = self
+            .names
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        let memty = self
+            .mem_of
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone()
+            .ok_or(crate::emitter_gap!())?;
+        let rank0 = memref_lead_dims_and_elem(&memty).is_some_and(|(d, _)| d.is_empty());
+        if !rank0 {
+            return Err(crate::emitter_gap!());
+        }
+        let e = elem_of_gid(
+            *self
+                .types
+                .get(ins.type_idx.0 as usize)
+                .ok_or(crate::emitter_gap!())?,
+        )
+        .ok_or(crate::emitter_gap!())?;
+        let n = format!("%v{idx}");
+        self.body += &format!(
+            "  {n} = memref.load {src}[] : {memty}
+"
+        );
+        self.names[idx] = n;
+        self.etypes[idx] = Some(e);
+        Ok(())
+    }
+
     // Index a tensor along its outermost dimension. `operand1` is the base tensor (memref),
     // `operand2` the index (`arith.index_cast` to `index`). A scalar-element result
     // (`type_idx` is a scalar GID) is a value read (`imm = 0` → `memref.load`) or an element
@@ -537,6 +572,29 @@ impl FnEmit<'_> {
                 .get(ins.operand1.0 as usize)
                 .ok_or(crate::emitter_gap!())?
                 .clone();
+            // A rank-0 tensor (`memref<el>`, no dims): the stored value is the scalar itself,
+            // written with an empty index list. Elements are identical by the checker's
+            // scalar-into-tensor rule (Vx#396); anything else declines.
+            if memref_lead_dims_and_elem(&rowty).is_some_and(|(d, _)| d.is_empty()) {
+                let vreg = ins.operand2.0;
+                let val = self
+                    .names
+                    .get(vreg as usize)
+                    .ok_or(crate::emitter_gap!())?
+                    .clone();
+                let same_elem = match (self.elem_at(vreg), memref_elem(&rowty)) {
+                    (Some(src_e), Some(tgt_s)) => mlir_scalar(&src_e) == Some(tgt_s),
+                    _ => false,
+                };
+                if !same_elem {
+                    return Err(crate::emitter_gap!());
+                }
+                self.body += &format!(
+                    "  memref.store {val}, {dst}[] : {rowty}
+"
+                );
+                return Ok(());
+            }
             let vecname = self
                 .names
                 .get(ins.operand2.0 as usize)
