@@ -1729,8 +1729,15 @@ pub fn emit_function_mlir(
                 .struct_ty
                 .clone(),
         )
-    } else {
+    } else if crate::syntax::is_void_ty(&func.return_type) {
         None
+    } else {
+        // Anything else -- a tensor return, an unmodelled nominal -- has no spelling here.
+        // Treating it as void mis-signed the function: the body's Ret still carried the value,
+        // and MLIR rejected the pair ("op has 1 operands, but enclosing function returns 0").
+        return Err(Decline::TypeNotModelled {
+            what: "a function return type with no MLIR spelling",
+        });
     };
 
     // Alias-scope metadata for place-write field stores (M2b-2): map each tagged store's stream
