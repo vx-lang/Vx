@@ -1023,6 +1023,13 @@ impl<'r> Lowerer<'r> {
                 }
                 match &cb.ret {
                     Some(r) => self.lower_expr(r),
+                    // No trailing value. When the block's own statements already returned, do
+                    // not materialize the placeholder either -- a constant after a terminator
+                    // is invalid in the block, and nothing can read it.
+                    None if self.block_terminated() => Ok(Val {
+                        reg: Register(0),
+                        ty: LoweredTy::Scalar(ElementType::I32),
+                    }),
                     None => Ok(self.emit_value(
                         Opcode::Const,
                         Register(0),
@@ -3082,6 +3089,14 @@ impl<'r> Lowerer<'r> {
 
     /// Lower a statement. `None` aborts the whole function's lowering.
     fn lower_stmt(&mut self, s: &Statement) -> Lowered<()> {
+        // A statement after a terminator in the same block is unreachable -- `return x;` followed
+        // by more code, common in a synthesized closure body whose value-position block carries
+        // its own `return`. Lowering it appended a second `func.return` to a block that already
+        // ends, which MLIR rejects. The AST path skips dead statements via `has_returned`; this
+        // is the flat path's equivalent, at the one place every statement passes through.
+        if self.block_terminated() {
+            return Ok(());
+        }
         match s {
             Statement::LetDecl(l) => {
                 // Record the local's concrete AST type for `infer_ast_type` (a pointer local like
@@ -3209,6 +3224,13 @@ impl<'r> Lowerer<'r> {
                 // The returned value already carries the function's declared return type — the checker
                 // types a literal to it and rejects a genuine mismatch (#240).
                 let v = self.lower_expr(&r.expr)?;
+                // A transparent block can carry the return itself: `return comptime { ..;
+                // return x; }` is a synthesized closure body's shape, and its inner `return`
+                // already ended the block. A second Ret -- or any op after the first -- is
+                // invalid MLIR, so there is nothing left to emit.
+                if self.block_terminated() {
+                    return Ok(());
+                }
                 self.emit_typed(Opcode::Ret, v.reg, Register(0), v.ty, 0);
                 Ok(())
             }
