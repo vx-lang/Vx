@@ -3526,42 +3526,6 @@ fn lowered_ty(ty: &Type, registry: &ImmutableGlobalRegistry) -> Option<LoweredTy
     }
 }
 
-/// The statements inside a block-shaped expression (`unsafe { … }`, `comptime { … }`).
-///
-/// These are transparent to control flow: they introduce no block of their own and lower inline, so
-/// an `if` inside one is an `if` in the enclosing body as far as basic blocks are concerned. Any
-/// predicate deciding *how* to lower a body has to see through them, or it answers about a body it
-/// has only partly read.
-fn block_stmts_of(e: &Expr) -> Option<&[Statement]> {
-    match e {
-        Expr::UnsafeBlock(u) => Some(&u.stmts),
-        Expr::ComptimeBlock(c) => Some(&c.stmts),
-        // A spawn body lowers inline too (`lower_spawn`), between Spawn/SpawnEnd markers in the
-        // same basic blocks. Not seeing through it left `has_control_flow` false for a function
-        // whose only loops live in the region, so a scalar mutated in there kept a register and
-        // its rebind escaped the block that defined it.
-        Expr::SpawnOn(sp) => Some(&sp.stmts),
-        _ => None,
-    }
-}
-
-/// Whether the body contains control flow (`if`/`loop`/`for`) — the trigger for the memory model, so
-/// mutated or loop-carried locals survive across basic blocks. Nested control flow *inside a
-/// control-flow construct* rides on its enclosing one, and the `lower_*` helpers recurse in memory
-/// mode; but a block-shaped expression is not such a construct, so this descends into it.
-///
-/// Missing that descent was a miscompile, not a decline. `unsafe { let mut s = 0; if c { s = 1; }
-/// print(s); }` scanned as a single `ExprStmt` holding neither an `if` nor a logical operator, so
-/// the body was taken for straight-line code and `s` stayed a pure-SSA binding. The assignment then
-/// rebound `s` to a value defined *inside* the taken branch, and the read after the join used it
-/// from a block that value does not dominate. tests/backend/pass/ffi_fs.vx is exactly this, and the
-/// whole of its `main` is inside one `unsafe` block -- as is most code that touches an extern.
-///
-/// It never reached a user: the MLIR verifier rejects the module, the flat emitter's parse returns
-/// None, and the driver falls back to the AST path, which lowers it correctly. But that is the
-/// backstop working, not the emitter being right -- the emitter claimed the body and produced
-/// invalid IR -- and the backstop does not exist cross-module: a `.vxlib` built from this HIR
-/// carries the broken body to a consumer with no AST to fall back to (#311 §7.1).
 fn body_has_control_flow(stmts: &[Statement]) -> bool {
     stmts.iter().any(|s| match s {
         Statement::Loop(_) | Statement::ForLoop(_) => true,
@@ -3574,7 +3538,8 @@ fn body_has_control_flow(stmts: &[Statement]) -> bool {
         // An assert's condition is an expression like any other; `assert(a && b, ..)` was the
         // one statement this scan skipped, so the logical op reached `lower_logical` in
         // register mode and hit its defensive decline.
-        Statement::Assert(a) => matches!(*a.expr, Expr::If(_)) || expr_has_logical(&a.expr),
+        Statement::Assert(a) => expr_has_control_flow(&a.expr),
+        Statement::CompoundAssign(a) => expr_has_control_flow(&a.rhs),
         _ => false,
     })
 }
@@ -3588,13 +3553,41 @@ fn expr_has_control_flow(e: &Expr) -> bool {
     if matches!(e, Expr::If(_) | Expr::Match(_)) || expr_has_logical(e) {
         return true;
     }
-    let (stmts, ret) = match e {
-        Expr::UnsafeBlock(u) => (&u.stmts, u.ret.as_deref()),
-        Expr::ComptimeBlock(c) => (&c.stmts, c.ret.as_deref()),
-        Expr::SpawnOn(sp) => (&sp.stmts, sp.ret.as_deref()),
-        _ => return false,
-    };
-    body_has_control_flow(stmts) || ret.is_some_and(expr_has_control_flow)
+    match e {
+        // The transparent blocks lower inline: their statements and their trailing expression
+        // are this body's.
+        Expr::UnsafeBlock(u) => {
+            body_has_control_flow(&u.stmts) || u.ret.as_deref().is_some_and(expr_has_control_flow)
+        }
+        Expr::ComptimeBlock(c) => {
+            body_has_control_flow(&c.stmts) || c.ret.as_deref().is_some_and(expr_has_control_flow)
+        }
+        Expr::SpawnOn(sp) => {
+            body_has_control_flow(&sp.stmts) || sp.ret.as_deref().is_some_and(expr_has_control_flow)
+        }
+        // Everything below only forwards the question to its operands: a value-`if` nested in a
+        // call argument (`g(if c { y = 7; 1 } else { 0 })`) creates blocks exactly as a bare one
+        // does, and not recursing here left the function looking straight-line -- the branch's
+        // rebind of `y` then escaped the block that defined it.
+        Expr::BinaryOp(b) => expr_has_control_flow(&b.lhs) || expr_has_control_flow(&b.rhs),
+        Expr::RelationalOp(r) => expr_has_control_flow(&r.lhs) || expr_has_control_flow(&r.rhs),
+        Expr::UnaryOp(u) => expr_has_control_flow(&u.expr),
+        Expr::AsCast(c) => expr_has_control_flow(&c.expr),
+        Expr::Borrow(b) => expr_has_control_flow(&b.expr),
+        Expr::Dereference(d) => expr_has_control_flow(&d.expr),
+        Expr::FunctionCall(fc) => fc.args.iter().any(expr_has_control_flow),
+        Expr::MethodCall(mc) => {
+            expr_has_control_flow(&mc.base) || mc.args.iter().any(expr_has_control_flow)
+        }
+        Expr::MemberAccess(m) => expr_has_control_flow(&m.base),
+        Expr::IndexAccess(ix) => {
+            expr_has_control_flow(&ix.base) || expr_has_control_flow(&ix.index)
+        }
+        Expr::Array(arr) => arr.elements.iter().any(expr_has_control_flow),
+        Expr::StructInit(si) => si.fields.iter().any(|(_, e)| expr_has_control_flow(e)),
+        Expr::EnumVariant(ev) => ev.payload.iter().flatten().any(expr_has_control_flow),
+        _ => false,
+    }
 }
 
 /// Whether an expression contains a short-circuit logical op (`&&`/`||`) that forces the memory
@@ -3616,15 +3609,39 @@ fn expr_has_logical(e: &Expr) -> bool {
 /// for the memory model, since the constructed aggregate must live in an addressable slot.
 fn body_constructs_struct(stmts: &[Statement]) -> bool {
     stmts.iter().any(|s| match s {
-        Statement::LetDecl(l) => {
-            matches!(l.expr, Expr::StructInit(_))
-                || block_stmts_of(&l.expr).is_some_and(body_constructs_struct)
-        }
-        // Same reason as `body_has_control_flow`: a block-shaped expression lowers inline, so a
-        // struct constructed inside one is constructed in this body.
-        Statement::ExprStmt(e) => block_stmts_of(&e.expr).is_some_and(body_constructs_struct),
+        Statement::LetDecl(l) => expr_constructs_struct(&l.expr),
+        Statement::ExprStmt(e) => expr_constructs_struct(&e.expr),
+        Statement::Return(r) => expr_constructs_struct(&r.expr),
+        Statement::Assign(a) => expr_constructs_struct(&a.rhs),
         _ => false,
     })
+}
+
+/// Whether an expression constructs a struct literal anywhere a body would lower it inline: the
+/// literal itself, a transparent block's statements or trailing expression, or an `if`/`match`
+/// branch. The same blind spots `expr_has_control_flow` had, closed the same way.
+fn expr_constructs_struct(e: &Expr) -> bool {
+    match e {
+        Expr::StructInit(_) => true,
+        Expr::UnsafeBlock(u) => {
+            body_constructs_struct(&u.stmts) || u.ret.as_deref().is_some_and(expr_constructs_struct)
+        }
+        Expr::ComptimeBlock(c) => {
+            body_constructs_struct(&c.stmts) || c.ret.as_deref().is_some_and(expr_constructs_struct)
+        }
+        Expr::SpawnOn(sp) => {
+            body_constructs_struct(&sp.stmts)
+                || sp.ret.as_deref().is_some_and(expr_constructs_struct)
+        }
+        Expr::If(i) => {
+            body_constructs_struct(&i.then_block)
+                || i.else_block
+                    .as_ref()
+                    .is_some_and(|b| body_constructs_struct(b))
+        }
+        Expr::Match(m) => m.arms.iter().any(|arm| body_constructs_struct(&arm.body)),
+        _ => false,
+    }
 }
 
 /// Per-body local-usage facts driving slot allocation (#230/#275): which base locals must have their
@@ -5350,6 +5367,50 @@ mod tests {
             .expect("fn present");
         let did = lower_function_to_hir(&func, &mut worker).is_ok();
         (did, worker)
+    }
+
+    #[test]
+    fn the_control_flow_scan_sees_nested_and_trailing_positions() {
+        // Each shape here hid a value-`if` from an earlier version of the scan; the register
+        // path then let a branch's rebind escape its block. The scan is pinned directly, since
+        // an end-to-end repro exists only for shapes the checker admits.
+        let has = |src: &str| body_has_control_flow(&parse_fn(src).body);
+        // A value-if nested in a call argument -- the shape that panicked as invalid MLIR.
+        assert!(has(
+            "fn f() -> i32 { let mut y = 5; let r = g(if y > 1 { y = 7; 1 } else { 0 }); return y + r; }"
+        ));
+        // A compound assignment whose right side branches.
+        assert!(has(
+            "fn f(c : bool) -> i32 { let mut x = 1; x += if c { 10 } else { 20 }; return x; }"
+        ));
+        // A binary operand.
+        assert!(has(
+            "fn f(c : bool) -> i32 { let v = (if c { 1 } else { 2 }) + 3; return v; }"
+        ));
+        // An array element.
+        assert!(has(
+            "fn f(c : bool) -> i32 { let a = [if c { 1 } else { 2 }, 3]; return a[0]; }"
+        ));
+        // A block's trailing expression, at any nesting.
+        assert!(has(
+            "fn f(c : bool) -> i32 { let mut x = 1; unsafe { if c { x = 0; } } return x; }"
+        ));
+        // And straight-line code still reads as straight-line.
+        assert!(!has(
+            "fn f() -> i32 { let a = 1; let b = a + 2; return b; }"
+        ));
+    }
+
+    #[test]
+    fn the_struct_scan_sees_branches_and_trailing_positions() {
+        let has = |src: &str| body_constructs_struct(&parse_fn(src).body);
+        assert!(has(
+            "struct P { x: i32 }\nfn f() -> i32 { let p = unsafe { P { x: 1 } }; return p.x; }"
+        ));
+        assert!(has(
+            "struct P { x: i32 }\nfn f(c : bool) -> i32 { let p = if c { P { x: 1 } } else { P { x: 2 } }; return p.x; }"
+        ));
+        assert!(!has("fn f() -> i32 { return 3; }"));
     }
 
     #[test]
