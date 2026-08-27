@@ -27,24 +27,25 @@ impl<'a> TypeChecker<'a> {
             {
                 let call_method_name = format!("{}_call", name);
 
+                // The call method lives in `env.functions` when the generated function is
+                // already merged into the module (the GID-annotation recheck), and only in
+                // `mono.functions` while the first check is still collecting it. Either way
+                // the signature is params + return type; `env.functions` stores them as
+                // tuple fields (.2 / .0), not as a `Type::Function`.
                 let mut found_func = None;
-                if let Some(func_type) = self.env.functions.get(&*call_method_name) {
-                    found_func = Some(func_type.0.clone());
+                if let Some(entry) = self.env.functions.get(&*call_method_name) {
+                    found_func = Some((entry.2.clone(), entry.0.clone()));
                 } else {
                     for (func, _) in &self.mono.functions {
                         if func.name.as_ref() == call_method_name {
                             let params = func.params.iter().map(|(_, t)| t.clone()).collect();
-                            found_func =
-                                Some(Type::Function(params, Box::new(func.return_type.clone())));
+                            found_func = Some((params, func.return_type.clone()));
                             break;
                         }
                     }
                 }
 
-                if let Some(func_type) = found_func {
-                    let Type::Function(func_args, func_ret) = func_type else {
-                        unreachable!()
-                    };
+                if let Some((func_args, func_ret)) = found_func {
                     let mut args_match = func_args.len() == target_args.len() + 1;
                     if args_match {
                         for (i, target_arg) in target_args.iter().enumerate() {
@@ -55,7 +56,7 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
 
-                    if !args_match || target_ret.as_ref() != func_ret.as_ref() {
+                    if !args_match || target_ret.as_ref() != &func_ret {
                         self.errors.push(format!(
                                 "Closure cast signature mismatch. Expected {:?} but found a function with args {:?} and ret {:?}",
                                 target_ty, func_args, func_ret

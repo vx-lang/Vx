@@ -3585,6 +3585,7 @@ impl<'c> LowerToMelior<'c> for syntax::expr::AsCastExpr {
             let bitcast_ref = block.append_operation(bitcast_op);
             fn_ptr_val = bitcast_ref.result(0)?.into();
 
+            // Fat-pointer layout is { env, func }, the ClosureK convention every call site extracts.
             let fat_ptr_ty = Type::parse(gen.context, "!llvm.struct<(ptr, ptr)>").unwrap();
             let undef_op = OperationBuilder::new("llvm.mlir.undef", gen.loc())
                 .add_results(&[fat_ptr_ty])
@@ -3596,27 +3597,56 @@ impl<'c> LowerToMelior<'c> for syntax::expr::AsCastExpr {
                 .add_operands(&[fat_ptr_val, fn_ptr_val])
                 .add_attributes(&[(
                     Identifier::new(gen.context, "position"),
-                    melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &[0]).into(),
+                    melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &[1]).into(),
                 )])
                 .add_results(&[fat_ptr_ty])
                 .build()?;
             let insert_fn_ref = block.append_operation(insert_fn_op);
             fat_ptr_val = insert_fn_ref.result(0)?.into();
 
+            // The fat pointer's second half is an address. A by-value env struct is spilled to a
+            // stack slot; a borrowed env is already a pointer and is used as-is.
             let mut env_ptr_val = source_val;
-            let ptr_bitcast_op =
-                OperationBuilder::new("builtin.unrealized_conversion_cast", gen.loc())
-                    .add_operands(&[env_ptr_val])
-                    .add_results(&[ptr_ty])
-                    .build()?;
-            let ptr_bitcast_ref = block.append_operation(ptr_bitcast_op);
-            env_ptr_val = ptr_bitcast_ref.result(0)?.into();
+            if _source_ty != ptr_ty {
+                let i32_ty = gen.i32_ty;
+                let c1 = block
+                    .append_operation(
+                        OperationBuilder::new("llvm.mlir.constant", gen.loc())
+                            .add_results(&[i32_ty])
+                            .add_attributes(&[(
+                                Identifier::new(gen.context, "value"),
+                                IntegerAttribute::new(i32_ty, 1).into(),
+                            )])
+                            .build()?,
+                    )
+                    .result(0)?
+                    .into();
+                let slot: melior::ir::Value = block
+                    .append_operation(
+                        OperationBuilder::new("llvm.alloca", gen.loc())
+                            .add_operands(&[c1])
+                            .add_results(&[ptr_ty])
+                            .add_attributes(&[(
+                                Identifier::new(gen.context, "elem_type"),
+                                TypeAttribute::new(_source_ty).into(),
+                            )])
+                            .build()?,
+                    )
+                    .result(0)?
+                    .into();
+                block.append_operation(
+                    OperationBuilder::new("llvm.store", gen.loc())
+                        .add_operands(&[env_ptr_val, slot])
+                        .build()?,
+                );
+                env_ptr_val = slot;
+            }
 
             let insert_env_op = OperationBuilder::new("llvm.insertvalue", gen.loc())
                 .add_operands(&[fat_ptr_val, env_ptr_val])
                 .add_attributes(&[(
                     Identifier::new(gen.context, "position"),
-                    melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &[1]).into(),
+                    melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &[0]).into(),
                 )])
                 .add_results(&[fat_ptr_ty])
                 .build()?;

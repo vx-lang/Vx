@@ -35,6 +35,7 @@ const KNOWN_DECLINES: &[&str] = &[
     "backend/pass/user_lowering_waste.vx",
     "backend/pass/vec_option_elem.vx",
     "frontend/pass/borrow_closure_return_param.vx",
+    "frontend/pass/closure_fat_ptr.vx",
     "frontend/pass/const_generics.vx",
     "frontend/pass/const_generics_multiple.vx",
     "frontend/pass/const_generics_nested.vx",
@@ -222,7 +223,6 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
             "frontend/pass/modules_basic/main.vx",  // imports sibling files
             "frontend/pass/modules_nested/main.vx", // imports sibling files
             "frontend/pass/modules_nested/ops.vx",  // a module of the above, not a program
-            "frontend/pass/closure_fat_ptr.vx",     // checker panic standalone, Vx#395
             "frontend/pass/const_generics_methods.vx", // checker rejects standalone (E2001 on N)
             "optimizations/pass/host_flag_scope.vx", // needs --host
             "optimizations/pass/device_transfer_plugin.vx", // needs --machine and a plugin

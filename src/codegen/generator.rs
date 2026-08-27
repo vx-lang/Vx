@@ -1741,6 +1741,9 @@ impl<'c> MeliorGenerator<'c> {
 
     pub fn infer_ast_type(&self, expr: &Expr) -> Option<syntax::Type> {
         match expr {
+            // A cast's value has the target type by definition (`my_closure as ||->i32`), and the
+            // indirect-call path needs it in `ast_env` to rebuild the callee signature.
+            Expr::AsCast(c) => Some(c.target_ty.clone()),
             Expr::Identifier(id) => self.ast_env.get(&id.name).cloned().or_else(|| {
                 // A bare function name used as a *value* (`let f = probe`) is a function pointer;
                 // recover its signature from the function registry so a later indirect call `f(..)`

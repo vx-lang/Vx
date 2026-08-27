@@ -2320,3 +2320,32 @@ fn pipeline_emits_mlir_that_matches_the_ast_oracle() {
     assert_eq!(exit_code(&module.as_operation().to_string()), 24);
     assert_eq!(ast_exit_code(&format!("{a}{b}")), 24, "oracle agrees");
 }
+
+/// Vx#395: `closure as ||->T` panicked the checker's GID recheck (`env.functions` stores a
+/// `(return, .., params)` tuple, not a `Type::Function`), and the oracle then built the fat
+/// pointer `{fn, env}` while every call site extracts `{env, fn}` — a jump into the environment.
+/// The corpus program asserts through both call shapes (a local fat pointer and a returned one),
+/// so it is executed here, not just emitted.
+#[test]
+fn closure_fat_ptr_program_runs_through_the_oracle() {
+    let vxc = env!("CARGO_BIN_EXE_vxc");
+    let run = std::process::Command::new(vxc)
+        .args([
+            "tests/frontend/pass/closure_fat_ptr.vx",
+            "--action",
+            "run-jit",
+        ])
+        .output()
+        .expect("run vxc");
+    let out = format!(
+        "{}{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(!out.contains("panicked"), "internal panic:\n{out}");
+    assert!(
+        !out.contains("non-zero code"),
+        "the program's own asserts failed:\n{out}"
+    );
+    assert!(run.status.success(), "vxc failed:\n{out}");
+}
