@@ -5,10 +5,11 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
-// Sweeps the backend corpus through the shipping compiler and records which codegen path
+// Sweeps every `pass` family through the shipping compiler and records which codegen path
 // each program took (Vx#383). Declining to the AST path is correct; coverage moving without
 // anyone noticing is not, so the declining set is compared exactly, in both directions.
-// Programs with a `// REQUIRES:` line are skipped -- their path choice differs by host.
+// Programs with a `// REQUIRES:` line are skipped -- their path choice differs by host --
+// as are the few that cannot compile as a bare `vxc file.vx` (each names why, in-line).
 //===----------------------------------------------------------------------===//
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -17,22 +18,93 @@ use std::process::Command;
 /// Programs the flat path declines today, relative to `tests/backend/pass/`.
 /// A worklist, not an exemption list: shrinking it is Vx#383.
 const KNOWN_DECLINES: &[&str] = &[
-    "benchmark_test.vx",
-    "custom_topology_user_lowering.vx",
-    "gpu_matmul_dtypes.vx",
-    "gpu_matmul_roles.vx",
-    "llama2_v2.vx",
-    "matmul_into_buffer.vx",
-    "matmul_operand_reuse.vx",
-    "matvec_view_routing.vx",
-    "option_unwrap.vx",
-    "spliced_block_tails.vx",
-    "tensor_view_2d.vx",
-    "unwind.vx",
-    "user_lowering_name_collisions.vx",
-    "user_lowering_uncountable.vx",
-    "user_lowering_waste.vx",
-    "vec_option_elem.vx",
+    "backend/pass/benchmark_test.vx",
+    "backend/pass/custom_topology_user_lowering.vx",
+    "backend/pass/gpu_matmul_dtypes.vx",
+    "backend/pass/gpu_matmul_roles.vx",
+    "backend/pass/llama2_v2.vx",
+    "backend/pass/matmul_into_buffer.vx",
+    "backend/pass/matmul_operand_reuse.vx",
+    "backend/pass/matvec_view_routing.vx",
+    "backend/pass/option_unwrap.vx",
+    "backend/pass/spliced_block_tails.vx",
+    "backend/pass/tensor_view_2d.vx",
+    "backend/pass/unwind.vx",
+    "backend/pass/user_lowering_name_collisions.vx",
+    "backend/pass/user_lowering_uncountable.vx",
+    "backend/pass/user_lowering_waste.vx",
+    "backend/pass/vec_option_elem.vx",
+    "frontend/pass/borrow_closure_return_param.vx",
+    "frontend/pass/const_generics.vx",
+    "frontend/pass/const_generics_multiple.vx",
+    "frontend/pass/const_generics_nested.vx",
+    "frontend/pass/control_flow.vx",
+    "frontend/pass/control_flow_rigorous.vx",
+    "frontend/pass/coverage_advanced_types_pass.vx",
+    "frontend/pass/custom_matmul.vx",
+    "frontend/pass/enum_match.vx",
+    "frontend/pass/gen_tensor_math_pass.vx",
+    "frontend/pass/generics.vx",
+    "frontend/pass/if_comptime_and_topology.vx",
+    "frontend/pass/illegal_transfer_sram_dram.vx",
+    "frontend/pass/indirect_call.vx",
+    "frontend/pass/legal_acccore_transfer.vx",
+    "frontend/pass/legal_pinned_ane.vx",
+    "frontend/pass/linear_transfer_reuse.vx",
+    "frontend/pass/logical_ops.vx",
+    "frontend/pass/macro_custom_tensor.vx",
+    "frontend/pass/macro_vec_expr.vx",
+    "frontend/pass/macro_vec_func.vx",
+    "frontend/pass/macro_vec_multiple.vx",
+    "frontend/pass/macro_vec_nested.vx",
+    "frontend/pass/macro_vec_single.vx",
+    "frontend/pass/memory_algebra.vx",
+    "frontend/pass/memory_algebra_implicit.vx",
+    "frontend/pass/memory_cached_allows_cross_access.vx",
+    "frontend/pass/memory_relaxed_into_cached.vx",
+    "frontend/pass/rubin_disaggregated.vx",
+    "frontend/pass/spawn_result_located.vx",
+    "frontend/pass/tensor_methods.vx",
+    "frontend/pass/tensor_operations.vx",
+    "frontend/pass/topology_nic_transfer.vx",
+    "frontend/pass/topology_spawn.vx",
+    "frontend/pass/topology_transfer.vx",
+    "frontend/pass/trait_topologies.vx",
+    "frontend/pass/transfer_cost_advanced_dijkstra.vx",
+    "frontend/pass/transfer_cost_dijkstra.vx",
+    "frontend/pass/vector_algorithms.vx",
+    "middle_end/pass/borrow_lexical.vx",
+    "middle_end/pass/closure_return_ref.vx",
+    "middle_end/pass/fnval_indirect_call.vx",
+    "middle_end/pass/generics.vx",
+    "middle_end/pass/implicit_transfer.vx",
+    "middle_end/pass/loops.vx",
+    "middle_end/pass/match_int_literal_arms.vx",
+    "middle_end/pass/pinned_annotation_matches_transfer.vx",
+    "middle_end/pass/pinned_annotation_struct_field.vx",
+    "middle_end/pass/reshape_pad.vx",
+    "middle_end/pass/reshape_transpose.vx",
+    "middle_end/pass/spawn_topology_ids.vx",
+    "middle_end/pass/topology.vx",
+    "middle_end/pass/topology_polymorphism.vx",
+    "middle_end/pass/traits.vx",
+    "optimizations/pass/codegen_error_diagnostics.vx",
+    "optimizations/pass/cpu_lowering.vx",
+    "optimizations/pass/dispatch_abi_tags.vx",
+    "optimizations/pass/kernel_kind_matmul.vx",
+    "optimizations/pass/kernel_kind_unrecognized.vx",
+    "optimizations/pass/kernel_roles_local.vx",
+    "optimizations/pass/loop_unroll.vx",
+    "optimizations/pass/matmul_into_roles.vx",
+    "optimizations/pass/matvec_roles.vx",
+    "optimizations/pass/npu_lowering.vx",
+    "optimizations/pass/scf_to_cf.vx",
+    "optimizations/pass/topology_name_in_payload.vx",
+    "optimizations/pass/two_gpu_devices.vx",
+    "optimizations/pass/vectorize.vx",
+    "warnings/pass/lowering_declined_for_dynamic_tile.vx",
+    "warnings/pass/w1024_implicit_transfer.vx",
+    "warnings/pass/w1029_dynamic_shape_unverified.vx",
 ];
 
 /// Every `.vx` file under `dir`, recursively, sorted for a stable report.
@@ -112,7 +184,18 @@ fn path_taken(program: &Path) -> Result<CodegenPath, String> {
 
 #[test]
 fn flat_path_coverage_of_the_backend_corpus_holds() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/backend/pass");
+    // Every `pass` family, not just the backend's: the flat path compiles most of the tree
+    // now, and gating only backend/pass is how two programs (llama2_math.vx, closures.vx)
+    // panicked at HEAD with nothing noticing. `fail` directories stay out -- their programs
+    // must not compile -- as do multi-file module roots.
+    let tests = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+    let families = [
+        "backend/pass",
+        "frontend/pass",
+        "middle_end/pass",
+        "optimizations/pass",
+        "warnings/pass",
+    ];
     let expected: BTreeSet<String> = KNOWN_DECLINES.iter().map(|s| s.to_string()).collect();
 
     let mut declined = BTreeSet::new();
@@ -121,16 +204,36 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
     let mut by_reason: std::collections::BTreeMap<String, usize> = Default::default();
     let mut unexplained: Vec<String> = Vec::new();
 
-    for program in corpus_programs(&root) {
+    let mut corpus: Vec<(String, PathBuf)> = Vec::new();
+    for family in families {
+        for program in corpus_programs(&tests.join(family)) {
+            let rel = program
+                .strip_prefix(&tests)
+                .unwrap_or(&program)
+                .to_string_lossy()
+                .to_string();
+            corpus.push((rel, program));
+        }
+    }
+    for (name, program) in corpus {
+        // Programs that cannot compile as a bare `vxc file.vx` for reasons that are not the
+        // flat path's business. Each names why; shrinking this list is separate work.
+        const NOT_STANDALONE: &[&str] = &[
+            "frontend/pass/modules_basic/main.vx",  // imports sibling files
+            "frontend/pass/modules_nested/main.vx", // imports sibling files
+            "frontend/pass/modules_nested/ops.vx",  // a module of the above, not a program
+            "frontend/pass/closure_fat_ptr.vx",     // checker panic standalone, Vx#395
+            "frontend/pass/const_generics_methods.vx", // checker rejects standalone (E2001 on N)
+            "optimizations/pass/host_flag_scope.vx", // needs --host
+            "optimizations/pass/device_transfer_plugin.vx", // needs --machine and a plugin
+        ];
+        if NOT_STANDALONE.contains(&name.as_str()) {
+            continue;
+        }
         let source = std::fs::read_to_string(&program).unwrap_or_default();
         if source.contains("// REQUIRES:") {
             continue;
         }
-        let name = program
-            .strip_prefix(&root)
-            .unwrap_or(&program)
-            .to_string_lossy()
-            .to_string();
 
         match path_taken(&program) {
             Ok(CodegenPath::Flat) => flat_count += 1,
