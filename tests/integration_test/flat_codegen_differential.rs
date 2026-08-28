@@ -2371,3 +2371,31 @@ fn flat_matches_ast_tensor_returning_callee() {
         33,
     );
 }
+
+/// Vx#398 family 1: `v[0]` on a `Vec` reached the AST index lowering as a struct base and
+/// emitted `memref.load` on it -- the whole macro_vec set failed to compile on the default
+/// path. The checker now rewrites container index reads to the container's own `get`, one
+/// construct for both backends; the program's own asserts check the values.
+#[test]
+fn vec_index_sugar_program_runs() {
+    let vxc = env!("CARGO_BIN_EXE_vxc");
+    let run = std::process::Command::new(vxc)
+        .args([
+            "tests/frontend/pass/macro_vec_single.vx",
+            "--action",
+            "run-jit",
+        ])
+        .output()
+        .expect("run vxc");
+    let out = format!(
+        "{}{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(!out.contains("panicked"), "internal panic:\n{out}");
+    assert!(
+        !out.contains("non-zero code"),
+        "the program's own asserts failed:\n{out}"
+    );
+    assert!(run.status.success(), "vxc failed:\n{out}");
+}

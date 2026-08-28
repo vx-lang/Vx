@@ -305,6 +305,9 @@ pub struct TypeChecker<'a> {
     /// "fresh check" entry points (`check_expr_type`, `check_block`) force it back off, so the
     /// field's dynamic scope reproduces the old parameter's exactly.
     pub(crate) speculating: bool,
+    /// Set while checking the left-hand side of an assignment (plain or compound): a container
+    /// index there is a *store* place, so the `v[i]` -> `v.get(i)` read rewrite must not fire.
+    pub(crate) checking_assign_lhs: bool,
     pub(crate) next_id: u32,
     pub current_return_type: Option<Type>,
     /// Name of the function being checked, so a record produced deep inside a body can say
@@ -353,6 +356,7 @@ impl<'a> TypeChecker<'a> {
             transfer_cost_graph,
             borrow: crate::hir::borrow_cx::BorrowCx::default(),
             speculating: false,
+            checking_assign_lhs: false,
             next_id: 1,
             current_return_type: None,
             current_function: String::new(),

@@ -385,7 +385,9 @@ impl<'a> TypeChecker<'a> {
     /// Check an assignment / compound assignment: type the LHS, then the RHS expecting the LHS
     /// type (#240), verify assignability, and fold a const RHS into the eval environment.
     fn check_assign_stmt(&mut self, lhs: &mut Expr, rhs: &mut Expr, consume: bool) {
+        self.checking_assign_lhs = true;
         let lhs_ty = self.check_expr_type_flag(lhs, false);
+        self.checking_assign_lhs = false;
 
         // Determine target name for NLL
         if let Expr::Identifier(id) = lhs {

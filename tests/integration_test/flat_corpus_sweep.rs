@@ -49,11 +49,7 @@ const KNOWN_DECLINES: &[&str] = &[
     "frontend/pass/indirect_call.vx",
     "frontend/pass/legal_acccore_transfer.vx",
     "frontend/pass/macro_custom_tensor.vx",
-    "frontend/pass/macro_vec_expr.vx",
-    "frontend/pass/macro_vec_func.vx",
-    "frontend/pass/macro_vec_multiple.vx",
     "frontend/pass/macro_vec_nested.vx",
-    "frontend/pass/macro_vec_single.vx",
     "frontend/pass/memory_algebra.vx",
     "frontend/pass/memory_algebra_implicit.vx",
     "frontend/pass/rubin_disaggregated.vx",
@@ -121,11 +117,6 @@ const KNOWN_BROKEN: &[&str] = &[
     "frontend/pass/enum_match.vx",   // extractvalue on i32 (enum payload)
     "frontend/pass/generics.vx",     // extractvalue on i32 (enum payload)
     "frontend/pass/macro_custom_tensor.vx", // panic: Cannot resolve member access shape
-    "frontend/pass/macro_vec_expr.vx", // memref.load on the Vec struct (v[i])
-    "frontend/pass/macro_vec_func.vx", // memref.load on the Vec struct (v[i])
-    "frontend/pass/macro_vec_multiple.vx", // memref.load on the Vec struct (v[i])
-    "frontend/pass/macro_vec_nested.vx", // memref.load on the Vec struct (v[i])
-    "frontend/pass/macro_vec_single.vx", // memref.load on the Vec struct (v[i])
     "frontend/pass/memory_algebra.vx", // memref.load on f32
     "frontend/pass/memory_algebra_implicit.vx", // insertvalue of memref (Vx#356)
     "frontend/pass/transfer_cost_advanced_dijkstra.vx", // Tensor<f32>::zeros unimplemented

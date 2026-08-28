@@ -516,8 +516,9 @@ impl<'a> TypeChecker<'a> {
             Expr::IndexAccess(IndexAccessExpr {
                 base: obj,
                 index: idx,
-                span: _,
+                span: ix_span,
             }) => {
+                let ix_span = *ix_span;
                 let obj_ty = self.check_expr_type_flag(obj, false);
 
                 // Enforce topology boundary for Pinned types
@@ -558,6 +559,24 @@ impl<'a> TypeChecker<'a> {
                     // A user container (`Vec<T>`): its element type, resolved from the backing
                     // `data` pointer. `v[i]` on a `Vec<i32>` is `i32`, not the `f32` this used to
                     // default to (a bug coercion hid, #240).
+                    //
+                    // In read position the sugar rewrites to the container's own `get`, so both
+                    // backends lower one construct -- the AST index lowering emitted a
+                    // `memref.load` on the struct value here (Vx#398). A store place
+                    // (`v[i] = x`) and a speculative probe keep the typed-only answer: the
+                    // first is not a read, the second must not mutate the AST.
+                    if !self.speculating && !self.checking_assign_lhs {
+                        let mut call = Expr::MethodCall(crate::syntax::MethodCallExpr {
+                            base: obj.clone(),
+                            method_name: "get".into(),
+                            type_args: None,
+                            args: vec![(**idx).clone()],
+                            span: ix_span,
+                        });
+                        let t = self.check_methodcall_expr(&mut call, false);
+                        *expr = call;
+                        return t;
+                    }
                     elem
                 } else if let Type::Scalar(el_ty) = base {
                     // A dynamically shaped `Tensor<T>` carries no dims, so the branch above
