@@ -732,13 +732,23 @@ impl Mangle for Type {
                 write!(w, "ref$")?;
                 inner.mangle_to(w)
             }
-            // Rank is deliberately excluded, as topology is: a tensor's shape is not part of
-            // its method identity, and `impl Tensor<T>` is written rank-generically. Encoding
-            // rank meant a shaped receiver looked for a monomorph the stdlib never emits, so a
-            // precise type broke dispatch (Vx#397).
-            Type::Tensor(el, _, _) => {
+            // Extents are part of the identity: `[2, 3]` and `[4, 5]` are different types that
+            // lower to different memrefs, so a generic instantiated at both needs two symbols
+            // rather than one body serving both (Vx#401). Rank alone was too coarse to separate
+            // them. Topology stays excluded. A dimension the canonical forms below cannot spell
+            // contributes `d`, which is why two such dimensions can still share a name.
+            Type::Tensor(el, dims, _) => {
                 write!(w, "Tensor$")?;
-                el.mangle_to(w)
+                el.mangle_to(w)?;
+                for (i, d) in dims.iter().enumerate() {
+                    write!(w, "{}", if i == 0 { "$" } else { "x" })?;
+                    match d {
+                        Expr::Number(n) => write!(w, "{}", n.value)?,
+                        Expr::Identifier(id) => write!(w, "{}", id.name)?,
+                        _ => write!(w, "d")?,
+                    }
+                }
+                Ok(())
             }
             Type::Matrix => write!(w, "Matrix"),
             Type::Struct(name, _) => write!(w, "{}", name),
@@ -1016,8 +1026,12 @@ mod tests {
         // Topology is intentionally not included in mangling
         assert_eq!(ty_with.mangle(), ty_without.mangle());
         assert_eq!(ty_with.mangle(), "Tensor$f32");
-        // Nor is the shape: `impl Tensor<T>`'s methods are one monomorph for every rank, so a
-        // shaped receiver resolves to the same `fill` a dims-less one does (Vx#397).
+    }
+
+    #[test]
+    fn test_mangle_tensor_separates_extents() {
+        // Two shapes are two types and lower to two memrefs, so they must not share a
+        // monomorph's symbol (Vx#401). Rank alone merged them.
         let num = |v: &str| {
             crate::syntax::Expr::Number(crate::syntax::NumberExpr::new(
                 v.to_string(),
@@ -1025,8 +1039,13 @@ mod tests {
                 Span::default(),
             ))
         };
-        let shaped = Type::Tensor(ElementType::F32, vec![num("2"), num("3")], None);
-        assert_eq!(shaped.mangle(), ty_without.mangle());
+        let a = Type::Tensor(ElementType::F32, vec![num("2"), num("3")], None);
+        let b = Type::Tensor(ElementType::F32, vec![num("4"), num("5")], None);
+        assert_eq!(a.mangle(), "Tensor$f32$2x3");
+        assert_ne!(a.mangle(), b.mangle());
+        // A rank-1 [23] must not collide with a rank-2 [2, 3].
+        let c = Type::Tensor(ElementType::F32, vec![num("23")], None);
+        assert_ne!(a.mangle(), c.mangle());
     }
 
     #[test]

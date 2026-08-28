@@ -2412,3 +2412,44 @@ fn flat_matches_ast_shape_query() {
         4,
     );
 }
+
+/// Vx#401: a generic instantiated at two tensor shapes got one monomorph, and the second
+/// call was emitted against the first one's signature -- a `memref<4x5xf32>` passed to a
+/// function declaring `memref<2x3xf32>`, which the debug assertion caught as invalid MLIR.
+/// Extents are part of a tensor's identity, so the mangled name carries them. `y[3][4]`
+/// reads a position only the [4, 5] shape has, and 1.0 + 7.0 is the exit code.
+#[test]
+fn a_generic_over_two_tensor_shapes_gets_two_monomorphs() {
+    let dir = std::env::temp_dir().join("vx_mono_shapes");
+    let _ = std::fs::create_dir_all(&dir);
+    let src = dir.join("mono_shapes.vx");
+    std::fs::write(
+        &src,
+        "fn ident<T>(v : T) -> T {\n  return v;\n}\n\
+         fn main() -> i32 {\n\
+         \x20 let mut a : Tensor<f32, [2, 3]> = Tensor<f32>([2, 3]);\n\
+         \x20 let mut b : Tensor<f32, [4, 5]> = Tensor<f32>([4, 5]);\n\
+         \x20 for i in 0..2 { for j in 0..3 { a[i][j] = 1.0; } }\n\
+         \x20 for i in 0..4 { for j in 0..5 { b[i][j] = 7.0; } }\n\
+         \x20 let x = ident(a);\n\
+         \x20 let y = ident(b);\n\
+         \x20 return (x[1][2] + y[3][4]) as i32;\n}\n",
+    )
+    .unwrap();
+
+    let run = std::process::Command::new(env!("CARGO_BIN_EXE_vxc"))
+        .args([src.to_str().unwrap(), "--action", "run-jit"])
+        .output()
+        .expect("run vxc");
+    let out = format!(
+        "{}{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(!out.contains("panicked"), "internal panic:\n{out}");
+    assert!(
+        out.contains("exited with code: 8"),
+        "expected 1.0 + 7.0 through two distinct monomorphs, got:\n{out}"
+    );
+}

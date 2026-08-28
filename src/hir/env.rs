@@ -583,7 +583,18 @@ impl<'a> TypeChecker<'a> {
                 } else {
                     e1 == e2
                 };
-                if !e1_match || d1.len() != d2.len() || t1 != t2 {
+                if !e1_match || t1 != t2 {
+                    return false;
+                }
+                // A dims-less pattern is a shape wildcard. `impl Tensor<T>`'s methods are
+                // written rank-generically against `memref<?x?xT>` and apply at any shape, so a
+                // shaped receiver resolves them; likewise a `Tensor<f32>` parameter accepts a
+                // shaped argument. A pattern that names its dimensions still has to match them,
+                // which is the loop below. (Vx#397)
+                if d1.is_empty() {
+                    return true;
+                }
+                if d1.len() != d2.len() {
                     return false;
                 }
                 for (dim1, dim2) in d1.iter().zip(d2.iter()) {
