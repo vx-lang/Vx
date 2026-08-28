@@ -2504,6 +2504,16 @@ impl<'r> Lowerer<'r> {
             Some(Expr::Array(arr)) if fc.args.len() == 1 => &arr.elements,
             _ => &fc.args,
         };
+        // `Tensor<T>()` is the dims-less default construction: a rank-0 buffer, one element,
+        // uninitialized like every other constructed tensor (Vx#396's model).
+        if dims.is_empty() {
+            let bytes = crate::hir::memory::element_bits(&elem)?.div_ceil(8);
+            let ty = LoweredTy::Tensor {
+                elem,
+                shape: vec![],
+            };
+            return Some(self.emit_typed(Opcode::TensorAlloc, Register(0), Register(0), ty, bytes));
+        }
         let bytes = crate::hir::memory::static_tensor_bytes(&elem, dims)?;
         let shape: Vec<String> = dims.iter().map(tensor_dim_string).collect::<Option<_>>()?;
         let ty = LoweredTy::Tensor { elem, shape };
