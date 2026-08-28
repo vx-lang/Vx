@@ -33,6 +33,8 @@ impl FnEmit<'_> {
                 .ok_or(crate::emitter_gap!())?
                 .struct_ty
                 .clone()
+        } else if let Some(mt) = &callee.ret_tensor {
+            mt.clone() // a statically shaped tensor return: the result is a memref value
         } else if callee.ret_ptr {
             "!llvm.ptr".to_string() // an FFI pointer-returning callee (#235)
         } else if callee.ret_void {
@@ -118,6 +120,8 @@ impl FnEmit<'_> {
                 // spilled to a slot (`Store`), returned (`Ret`), or passed by value to another
                 // call (#242).
                 self.agg_val_of[idx] = Some(agg_gid);
+            } else if let Some(mt) = &callee.ret_tensor {
+                self.mem_of[idx] = Some(mt.clone()); // a tensor result: downstream ops index it
             }
         }
         Ok(())

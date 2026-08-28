@@ -27,6 +27,7 @@ impl FnEmit<'_> {
                 "f64" => "printMemrefF64",
                 "i32" => "printMemrefI32",
                 "i64" => "printMemrefI64",
+                "bf16" => "printMemrefBF16",
                 _ => return Err(crate::emitter_gap!()),
             };
             let c = format!("%pc{idx}");

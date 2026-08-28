@@ -2349,3 +2349,25 @@ fn closure_fat_ptr_program_runs_through_the_oracle() {
     );
     assert!(run.status.success(), "vxc failed:\n{out}");
 }
+
+#[test]
+fn flat_matches_ast_tensor_returning_callee() {
+    // A callee returning a statically shaped tensor had no spelling on the flat path (the
+    // whole family behind Vx#383's return-type buckets): the signature, the call result, and
+    // the `Ret` all needed the memref form, and `return a + b` returns a vector register that
+    // must be spilled into the buffer the signature promises.
+    //
+    // add(a, b)[2] = 3.0 + 30.0 = 33.
+    assert_parity(
+        "fn add(a : Tensor<f32, [4]>, b : Tensor<f32, [4]>) -> Tensor<f32, [4]> { \
+           return a + b; \
+         } \
+         fn main() -> i32 { \
+           let mut a : Tensor<f32> = Tensor<f32>([4]); \
+           let mut b : Tensor<f32> = Tensor<f32>([4]); \
+           for i in 0..4 { a[i] = ((i + 1) * 1) as f32; b[i] = ((i + 1) * 10) as f32; } \
+           let c = add(a, b); \
+           return c[2] as i32; }",
+        33,
+    );
+}

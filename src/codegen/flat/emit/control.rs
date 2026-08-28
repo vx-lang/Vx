@@ -82,6 +82,27 @@ impl FnEmit<'_> {
             }
         } else if gid == ptr_gid() {
             self.body += &format!("  func.return {a} : !llvm.ptr\n"); // a pointer return (#235)
+        } else if let Some((elem, shape)) = self.ctx.tensors.get(&gid) {
+            if let Some(vecty) = self.vec_of.get(ins.operand1.0 as usize).cloned().flatten() {
+                // An elementwise result is a vector register; the signature promises a buffer.
+                // Materialize it: alloc, store the vector, return the alloc.
+                let memty = tensor_memref_ty(elem, shape).ok_or(crate::emitter_gap!())?;
+                let al = vector_align_attr(&vecty);
+                let rt = format!("%rt{idx}");
+                let rc = format!("%rc{idx}");
+                self.body += &format!("  {rt} = memref.alloc() : {memty}\n");
+                self.body += &format!("  {rc} = arith.constant 0 : index\n");
+                self.body += &format!("  vector.store {a}, {rt}[{rc}]{al} : {memty}, {vecty}\n");
+                self.body += &format!("  func.return {rt} : {memty}\n");
+            } else {
+                // A memref value: its tracked type is authoritative (a strided row differs from
+                // the plain spelling); fall back to the GID's shape.
+                let memty = match self.mem_of.get(ins.operand1.0 as usize).cloned().flatten() {
+                    Some(m) => m,
+                    None => tensor_memref_ty(elem, shape).ok_or(crate::emitter_gap!())?,
+                };
+                self.body += &format!("  func.return {a} : {memty}\n");
+            }
         } else if let Some(agg) = self.ctx.aggs.get(&gid) {
             // A struct return (#215). The operand is either a slot pointer (a constructed
             // struct) -> load the value; or already a struct value (a returned call result) ->

@@ -400,6 +400,40 @@ impl<'r> Lowerer<'r> {
     /// (+ initializing `Store`) in memory mode.
     /// Emit a `Print` for a value: `type_idx` carries the value's type (scalar or tensor) so codegen
     /// routes to the right `print_*` / `printMemref*` runtime helper.
+    /// A scalar returned from a function whose return type is a dims-less tensor wraps into a
+    /// rank-0 buffer -- the return-position analogue of the let-binding materialization (Vx#396).
+    /// Any other value passes through.
+    fn wrap_scalar_in_rank0_ret(&mut self, v: Val) -> Lowered<Val> {
+        let wrap = matches!(
+            (self.ret_ty.as_ref(), &v.ty),
+            (Some(LoweredTy::Tensor { elem, shape }), LoweredTy::Scalar(se))
+                if shape.is_empty() && elem == se
+        );
+        if !wrap {
+            return Ok(v);
+        }
+        let LoweredTy::Scalar(se) = v.ty.clone() else {
+            return Ok(v);
+        };
+        let bytes = crate::hir::memory::element_bits(&se)
+            .ok_or(Decline::TypeNotModelled {
+                what: "a rank-0 tensor of this element",
+            })?
+            .div_ceil(8);
+        let buf = self.emit_typed(
+            Opcode::TensorAlloc,
+            Register(0),
+            Register(0),
+            LoweredTy::Tensor {
+                elem: se,
+                shape: vec![],
+            },
+            bytes,
+        );
+        self.emit_effect(Opcode::TensorStore, buf.reg, v.reg, 0);
+        Ok(buf)
+    }
+
     /// A rank-0 tensor in scalar position reads as its element: `let t : Tensor<el> = v`
     /// wraps a scalar, and arithmetic/comparisons operate on the value (Vx#396).
     fn read_rank0(&mut self, v: Val) -> Val {
@@ -2832,6 +2866,11 @@ impl<'r> Lowerer<'r> {
     }
 
     fn lower_call(&mut self, fc: &crate::syntax::FunctionCallExpr) -> Lowered<Val> {
+        // `Verified(x)` is the checker-level wrapper in value position -- the identity at
+        // runtime, exactly as the AST path erases it. Lower the wrapped value directly.
+        if fc.name.as_ref() == "Verified" && fc.args.len() == 1 {
+            return self.lower_expr(&fc.args[0]);
+        }
         // An indirect call: the callee name is a local holding a function pointer (a fn-pointer
         // parameter, or a `Closure1`'s loaded `func` field), not a registered function. (#242)
         if !self.registry.fn_sigs.contains_key(fc.name.as_ref()) {
@@ -3293,6 +3332,7 @@ impl<'r> Lowerer<'r> {
                 if self.block_terminated() {
                     return Ok(());
                 }
+                let v = self.wrap_scalar_in_rank0_ret(v)?;
                 self.emit_typed(Opcode::Ret, v.reg, Register(0), v.ty, 0);
                 Ok(())
             }
@@ -3606,6 +3646,11 @@ fn lowered_ty(ty: &Type, registry: &ImmutableGlobalRegistry) -> Option<LoweredTy
         // an unresolved `Struct(_, None)` (a cross-module mono), handled by the nominal arm's
         // name fallback.
         Type::GenericInstance(base, _) => lowered_ty(base, registry),
+        // `Verified<T>`, `Ref<T, Memory>`, `Pinned<T, Topology>` are checker-level wrappers; the
+        // runtime value is the inner type, exactly as the AST codegen's `lower_type` peels them.
+        Type::Verified(inner) | Type::Ref(inner, _) | Type::Pinned(inner, _) => {
+            lowered_ty(inner, registry)
+        }
         _ => None,
     }
 }
@@ -6050,6 +6095,34 @@ mod tests {
             "the transferred value is the rank-0 tensor",
         );
         verify_hir_stream(&w);
+    }
+
+    #[test]
+    fn wrapper_types_peel_to_their_runtime_type() {
+        // `Verified<Ref<Tensor<f32,[2,2]>, Memory>>` is a memref at runtime; the checker
+        // wrappers peel exactly as the AST codegen's `lower_type` peels them.
+        let session = GlobalSession::new(1);
+        let registry = session.registry.as_ref();
+        let num = |v: &str| {
+            Expr::Number(crate::syntax::NumberExpr::new(
+                v.to_string(),
+                None,
+                crate::syntax::Span::default(),
+            ))
+        };
+        let dims = vec![num("2"), num("2")];
+        let tensor = Type::Tensor(ElementType::F32, dims, None);
+        let wrapped = Type::Verified(Box::new(Type::Ref(
+            Box::new(tensor),
+            crate::syntax::MemorySpace::NPUHBM,
+        )));
+        assert!(
+            matches!(
+                lowered_ty(&wrapped, registry),
+                Some(LoweredTy::Tensor { .. })
+            ),
+            "wrappers peel to the tensor",
+        );
     }
 
     #[test]

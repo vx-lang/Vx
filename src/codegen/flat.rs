@@ -172,6 +172,35 @@ fn pointee_agg_gid(ty: &Type, ctx: &EmitCtx) -> Option<TypeId> {
 /// Whether a type lowers to an opaque `!llvm.ptr` — a `*const T`/`*mut T`, a `&T` borrow, or a
 /// function/closure type (a materialized function pointer). The ABI of string values, FFI pointer
 /// arguments/results, and function pointers (matching the AST codegen's `lower_type`). (#231/#235/#242)
+/// Strip the checker-level wrappers (`Verified<T>`, `Ref<T, Memory>`, `Pinned<T, Topology>`)
+/// down to the runtime type, as the AST codegen's `lower_type` does.
+fn peel_wrappers(ty: &Type) -> &Type {
+    match ty {
+        Type::Verified(inner) => peel_wrappers(inner),
+        Type::Ref(inner, _) | Type::Pinned(inner, _) => peel_wrappers(inner),
+        _ => ty,
+    }
+}
+
+/// The memref spelling of a statically shaped tensor type (rank-0 included), peeling wrappers
+/// first. `None` for a non-tensor or any non-literal dimension -- a `?` spelling would contradict
+/// the statically shaped value the body produces.
+fn static_tensor_memref(ty: &Type) -> Option<String> {
+    let Type::Tensor(elem, dims, _) = peel_wrappers(ty) else {
+        return None;
+    };
+    let et = mlir_scalar(elem)?;
+    let mut s = String::new();
+    for d in dims {
+        let crate::syntax::Expr::Number(n) = d else {
+            return None;
+        };
+        let v: i64 = n.value.as_ref().parse().ok()?;
+        s += &format!("{v}x");
+    }
+    Some(format!("memref<{s}{et}>"))
+}
+
 fn is_ptr_ty(ty: &Type) -> bool {
     matches!(
         ty,
@@ -337,6 +366,9 @@ pub struct Callee {
     /// Whether the callee returns `void`. The call emits `func.call @name(..) : (..) -> ()` and binds
     /// no result register — the statement-position form (`bump(&mut x);`) used by `&mut` mutators. (#230)
     pub ret_void: bool,
+    /// The memref spelling when the callee returns a statically shaped tensor (wrappers peeled) --
+    /// the call's result is then a memref value tracked in `mem_of`.
+    pub ret_tensor: Option<String>,
 }
 
 /// GID → callee: the reverse of the registry's name-keyed `fn_sigs`. A `Call`'s `type_idx` resolves
@@ -427,6 +459,7 @@ pub fn build_callee_map(
                 ret_agg: resolve_agg_gid(&sig.ret_ty, aggs, agg_names),
                 ret_ptr: is_ptr_ty(&sig.ret_ty),
                 ret_void: is_void_ty(&sig.ret_ty),
+                ret_tensor: static_tensor_memref(&sig.ret_ty),
             },
         )
     };
@@ -681,11 +714,12 @@ pub struct SubspaceInfo {
 /// `func.func private` declaration prepended. Order is load-bearing — the emit records which of
 /// these a function called as a bitmask over this array's indices, so inserting in the middle
 /// renumbers existing entries.
-const RUNTIME_HELPERS: [(&str, &str); 10] = [
+const RUNTIME_HELPERS: [(&str, &str); 11] = [
     ("printMemrefF32", "(memref<*xf32>)"),
     ("printMemrefF64", "(memref<*xf64>)"),
     ("printMemrefI32", "(memref<*xi32>)"),
     ("printMemrefI64", "(memref<*xi64>)"),
+    ("printMemrefBF16", "(memref<*xbf16>)"),
     ("print_f32", "(f32) -> i32"),
     ("print_f64", "(f64) -> i32"),
     ("print_i32", "(i32) -> i32"),
@@ -838,6 +872,7 @@ fn static_tile_bytes(elem: &ElementType, shape: &[String]) -> Option<u64> {
 /// The single source of truth shared by the `func.func` header and a `FuncConst`'s `func.constant`
 /// signature, so a materialized function pointer's type matches its callee's header exactly. (#242)
 fn ty_mlir(ty: &Type, ctx: &EmitCtx) -> Lowered<String> {
+    let ty = peel_wrappers(ty); // Verified/Ref/Pinned spell as their runtime inner type
     if let Some(e) = scalar_of(ty) {
         Ok(mlir_scalar(&e)
             .ok_or(Decline::TypeNotModelled {
@@ -1730,11 +1765,13 @@ pub fn emit_function_mlir(
                 .struct_ty
                 .clone(),
         )
+    } else if let Some(mt) = static_tensor_memref(&func.return_type) {
+        Some(mt) // a statically shaped tensor return, wrappers peeled (Vx#383)
     } else if crate::syntax::is_void_ty(&func.return_type) {
         None
     } else {
-        // Anything else -- a tensor return, an unmodelled nominal -- has no spelling here.
-        // Treating it as void mis-signed the function: the body's Ret still carried the value,
+        // Anything else -- a dynamically shaped tensor return, an unmodelled nominal -- has no
+        // spelling here. Treating it as void mis-signed the function: the body's Ret still carried the value,
         // and MLIR rejected the pair ("op has 1 operands, but enclosing function returns 0").
         return Err(Decline::TypeNotModelled {
             what: "a function return type with no MLIR spelling",
