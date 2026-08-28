@@ -214,6 +214,9 @@ pub enum Opcode {
     /// comparison operands of a `let t : Tensor<el> = <scalar>` local (Vx#396). Shaped tensors
     /// never emit this; their reads index.
     TensorLoad = 43,
+    /// The runtime extent of one dimension of a tensor (`t.shape[k]` -> `memref.dim`):
+    /// `operand1` the tensor, `operand2` the dimension index, the result an `i32`.
+    TensorDim = 44,
 }
 
 /// Reverse mode for `Opcode::AutoDiff`: the gradient, through `__enzyme_autodiff_grad_*`.
@@ -274,6 +277,7 @@ impl Opcode {
             41 => FlashAttnInto,
             42 => AutoDiff,
             43 => TensorLoad,
+            44 => TensorDim,
             _ => return None,
         })
     }

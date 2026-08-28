@@ -787,6 +787,26 @@ impl<'r> Lowerer<'r> {
             // GEP-loads the pointee element — the element type recovered from the base's AST type,
             // since the layout erases a pointer's pointee (#242).
             Expr::IndexAccess(ix) => {
+                // `t.shape[k]`: the runtime extent of dimension k -- one construct, as on the
+                // AST path (the bare `.shape` member is never a value on its own).
+                if let Expr::MemberAccess(ma) = &*ix.base {
+                    if ma.member.as_ref() == "shape" {
+                        let t = self.lower_expr(&ma.base)?;
+                        if matches!(t.ty, LoweredTy::Tensor { .. }) {
+                            let k = self.lower_expr(&ix.index)?;
+                            return Ok(self.emit_value(
+                                Opcode::TensorDim,
+                                t.reg,
+                                k.reg,
+                                ElementType::I32,
+                                0,
+                            ));
+                        }
+                        return Err(Decline::TypeNotModelled {
+                            what: "a shape query on something that is not a tensor",
+                        });
+                    }
+                }
                 let base = self.lower_expr(&ix.base)?;
                 match &base.ty {
                     LoweredTy::Tensor { elem, shape } => {
@@ -4513,6 +4533,7 @@ pub fn verify_hir_stream(worker: &LocalWorkerState) {
             | Opcode::FieldStore
             | Opcode::TensorIndex
             | Opcode::TensorStore
+            | Opcode::TensorDim
             // `PtrIndex` reads base+index; `PtrStore` reads place+value (#242).
             | Opcode::PtrIndex
             | Opcode::PtrStore

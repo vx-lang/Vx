@@ -452,6 +452,39 @@ impl<'c> LowerToMelior<'c> for syntax::IndexAccessExpr {
         gen: &mut MeliorGenerator<'c>,
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Self::Output {
+        // `t.shape[k]`: the runtime extent of dimension k of a tensor -- `memref.dim`.
+        // The bare `.shape` member has no materialization (nothing lowers it, Vx#398);
+        // only the indexed form is a value, so it is recognized here as one construct.
+        if let syntax::Expr::MemberAccess(ma) = self.base.as_ref() {
+            if ma.member.as_ref() == "shape" {
+                let (t_val, t_ty, block) = gen.generate_expr(&ma.base, block)?;
+                if t_ty.to_string().starts_with("memref<") {
+                    let (i_val, i_ty, block) = gen.generate_expr(&self.index, block)?;
+                    let index_ty = Type::index(gen.context);
+                    let idx_val = if i_ty == index_ty {
+                        i_val
+                    } else {
+                        let cast_op = OperationBuilder::new("arith.index_cast", gen.loc())
+                            .add_operands(&[i_val])
+                            .add_results(&[index_ty])
+                            .build()?;
+                        block.append_operation(cast_op).result(0)?.into()
+                    };
+                    let dim_op = OperationBuilder::new("memref.dim", gen.loc())
+                        .add_operands(&[t_val, idx_val])
+                        .add_results(&[index_ty])
+                        .build()?;
+                    let dim_val: Value<'c, 'c> = block.append_operation(dim_op).result(0)?.into();
+                    let i32_ty = gen.i32_ty;
+                    let out_op = OperationBuilder::new("arith.index_cast", gen.loc())
+                        .add_operands(&[dim_val])
+                        .add_results(&[i32_ty])
+                        .build()?;
+                    let out = block.append_operation(out_op).result(0)?.into();
+                    return Ok((out, i32_ty, block));
+                }
+            }
+        }
         let (base_val, base_ty, indices, block) = gen
             .flatten_indices(&syntax::Expr::IndexAccess(self.clone()), block)
             .expect("Failed to flatten indices for IndexAccess");

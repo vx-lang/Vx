@@ -51,6 +51,39 @@ impl FnEmit<'_> {
         Ok(())
     }
 
+    // The runtime extent of one dimension: `memref.dim %t, %k` (`t.shape[k]`). The index
+    // operand arrives as a scalar and is cast to `index`; the result is cast back to `i32`,
+    // the type the checker gives the expression.
+    pub(crate) fn op_tensor_dim(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let t = self
+            .names
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        let memty = self
+            .mem_of
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone()
+            .ok_or(crate::emitter_gap!())?;
+        let k = self
+            .names
+            .get(ins.operand2.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        let kt = mlir_scalar(&self.elem_at(ins.operand2.0).ok_or(crate::emitter_gap!())?)
+            .ok_or(crate::emitter_gap!())?;
+        let ki = format!("%tdi{idx}");
+        let d = format!("%tdd{idx}");
+        let n = format!("%v{idx}");
+        self.body += &format!("  {ki} = arith.index_cast {k} : {kt} to index\n");
+        self.body += &format!("  {d} = memref.dim {t}, {ki} : {memty}\n");
+        self.body += &format!("  {n} = arith.index_cast {d} : index to i32\n");
+        self.names[idx] = n;
+        self.etypes[idx] = Some(ElementType::I32);
+        Ok(())
+    }
+
     // Read a rank-0 tensor's element: `memref.load %t[]`. Only rank-0 bases emit this
     // (flatten's `read_rank0`); anything shaped is a wrong stream and declines.
     pub(crate) fn op_tensor_load(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {

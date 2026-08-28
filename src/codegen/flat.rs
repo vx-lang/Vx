@@ -1603,6 +1603,7 @@ impl<'a> FnEmit<'a> {
             Opcode::CallIndirect => self.op_call_indirect(idx, ins),
             Opcode::AutoDiff => self.op_autodiff(idx, ins),
             Opcode::TensorLoad => self.op_tensor_load(idx, ins),
+            Opcode::TensorDim => self.op_tensor_dim(idx, ins),
             // Store a scalar into a struct field (no result). `operand1` is the struct slot pointer,
             // `operand2` the value, `imm` the field's byte offset. GEP to the field, then `llvm.store`;
             // the field index comes from matching the offset against the layout, the value type from
