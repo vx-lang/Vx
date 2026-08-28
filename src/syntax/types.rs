@@ -732,10 +732,13 @@ impl Mangle for Type {
                 write!(w, "ref$")?;
                 inner.mangle_to(w)
             }
-            Type::Tensor(el, dims, _) => {
+            // Rank is deliberately excluded, as topology is: a tensor's shape is not part of
+            // its method identity, and `impl Tensor<T>` is written rank-generically. Encoding
+            // rank meant a shaped receiver looked for a monomorph the stdlib never emits, so a
+            // precise type broke dispatch (Vx#397).
+            Type::Tensor(el, _, _) => {
                 write!(w, "Tensor$")?;
-                el.mangle_to(w)?;
-                write!(w, "${}", dims.len())
+                el.mangle_to(w)
             }
             Type::Matrix => write!(w, "Matrix"),
             Type::Struct(name, _) => write!(w, "{}", name),
@@ -1007,12 +1010,23 @@ mod tests {
     }
 
     #[test]
-    fn test_mangle_tensor_ignores_topology() {
+    fn test_mangle_tensor_ignores_topology_and_shape() {
         let ty_with = Type::Tensor(ElementType::F32, vec![], Some(Topology::gpu(0)));
         let ty_without = Type::Tensor(ElementType::F32, vec![], None);
         // Topology is intentionally not included in mangling
         assert_eq!(ty_with.mangle(), ty_without.mangle());
-        assert_eq!(ty_with.mangle(), "Tensor$f32$0");
+        assert_eq!(ty_with.mangle(), "Tensor$f32");
+        // Nor is the shape: `impl Tensor<T>`'s methods are one monomorph for every rank, so a
+        // shaped receiver resolves to the same `fill` a dims-less one does (Vx#397).
+        let num = |v: &str| {
+            crate::syntax::Expr::Number(crate::syntax::NumberExpr::new(
+                v.to_string(),
+                None,
+                Span::default(),
+            ))
+        };
+        let shaped = Type::Tensor(ElementType::F32, vec![num("2"), num("3")], None);
+        assert_eq!(shaped.mangle(), ty_without.mangle());
     }
 
     #[test]
