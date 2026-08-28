@@ -181,6 +181,28 @@ static-polymorphic (const generics, already in the language) or genuinely runtim
    constructions, conform the corpus.
 1. **Then** Vx#391's assignment form, and Vx#245's bounded shapes as `DynTensor`'s verified variant.
 
+## Doing the split, in slices
+
+Each slice below is separately committable and gated. The counts are measured, not estimated.
+
+1. **`len()` answers a scalar** — one line. Removes meaning 4 outright. *(Done, e956d905.)*
+1. **Error recovery becomes `Type::Unknown`** — 24 dims-less `F32` constructions live in the
+   checker, of which 5 clearly sit within a few lines of an error report and the rest need reading
+   one at a time. Blind replacement would be wrong here: some are genuine tensor results and some
+   are fall-through returns. Expect diagnostic churn, since `Unknown` suppresses the cascade a
+   plausible-looking tensor currently produces, and several `fail` tests pin error counts.
+1. **Introduce `DynTensor<T>`** — the type, its parser spelling, and its lowering. Nothing
+   migrates yet, so the corpus stays green.
+1. **Migrate meaning 2** — the four genuinely dynamic programs, plus the parameters and returns
+   that are dynamic rather than erased.
+1. **Make a dims-less `Tensor` unspellable** and conform what remains: 41 local bindings, and
+   whichever of the 20 parameters and 19 returns are static-polymorphic (const generics) rather
+   than dynamic.
+
+Slice 2 is the one to sequence carefully. The remaining 9 dims-less constructions outside the
+checker are the parser's default for a bare `Tensor` spelling and a few type-level defaults; those
+belong with slice 5, where the spelling itself changes.
+
 ## Open question
 
 What is rank-0? The dims-less spelling currently doubles as the rank-0 scalar wrap
