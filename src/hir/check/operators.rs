@@ -163,6 +163,39 @@ impl<'a> TypeChecker<'a> {
                             );
                             return Type::Tensor(el_ty_l.clone(), vec![], top_l.clone());
                         }
+                        // `[m, k] @ [k, n]` is `[m, n]`, and the two `k`s must agree. Computing
+                        // the shape here is what lets a declaration be checked at all: a
+                        // dims-less result made `is_assignable` skip the comparison, so any
+                        // annotation was accepted (Vx#397). A dims-less operand is the dynamic
+                        // spelling and keeps the dims-less answer -- nothing to compute or
+                        // compare until it carries a shape.
+                        if l_len == 2 && r_len == 2 {
+                            let empty_env = std::collections::HashMap::new();
+                            let dim_of = |v: Option<crate::hir::env::Value>| match v {
+                                Some(crate::hir::env::Value::Number(n)) => Some(n),
+                                _ => None,
+                            };
+                            let kl = dim_of(self.eval_expr(&dims_l[1], &empty_env));
+                            let kr = dim_of(self.eval_expr(&dims_r[0], &empty_env));
+                            if let (Some(kl), Some(kr)) = (kl, kr) {
+                                if kl != kr {
+                                    self.errors.error_with_code(
+                                        crate::diagnostic::DiagnosticCode::E7001,
+                                        format!(
+                                            "Tensor multiplication requires the inner dimensions \
+                                             to agree, got {kl} and {kr}"
+                                        ),
+                                        Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                                    );
+                                    return Type::Tensor(el_ty_l.clone(), vec![], top_l.clone());
+                                }
+                            }
+                            return Type::Tensor(
+                                el_ty_l.clone(),
+                                vec![dims_l[0].clone(), dims_r[1].clone()],
+                                top_l.clone(),
+                            );
+                        }
                         return Type::Tensor(el_ty_l.clone(), vec![], top_l.clone());
                     }
                 }
