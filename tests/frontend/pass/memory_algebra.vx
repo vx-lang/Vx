@@ -6,7 +6,7 @@ fn main() -> i32 {
 
   spawn on(Topology::NPU[0]) {
     // Explicit transfer
-    let x = transfer(host_data, Memory::NPU_HBM)[0];
+    let x = transfer(host_data, Memory::NPU_HBM);
   }
   return 0;
 }

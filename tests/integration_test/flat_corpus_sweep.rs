@@ -50,7 +50,6 @@ const KNOWN_DECLINES: &[&str] = &[
     "frontend/pass/legal_acccore_transfer.vx",
     "frontend/pass/macro_custom_tensor.vx",
     "frontend/pass/macro_vec_nested.vx",
-    "frontend/pass/memory_algebra.vx",
     "frontend/pass/memory_algebra_implicit.vx",
     "frontend/pass/rubin_disaggregated.vx",
     "frontend/pass/spawn_result_located.vx",
@@ -111,13 +110,12 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
 /// invalid MLIR or a panic on the default `--action emit-mlir` (Vx#398). Each is a real
 /// compiler defect; the list exists so the set can only shrink, never silently grow.
 const KNOWN_BROKEN: &[&str] = &[
-    "frontend/pass/control_flow.vx", // extractvalue on i32 (enum payload)
-    "frontend/pass/control_flow_rigorous.vx", // panic: Undefined variable 'b'
+    "frontend/pass/control_flow.vx", // extractvalue on i32 (enum payload, Vx#233)
+    "frontend/pass/control_flow_rigorous.vx", // multi-payload variant binding (Vx#233)
     "frontend/pass/custom_matmul.vx", // panic: Cannot resolve member access shape
-    "frontend/pass/enum_match.vx",   // extractvalue on i32 (enum payload)
-    "frontend/pass/generics.vx",     // extractvalue on i32 (enum payload)
+    "frontend/pass/enum_match.vx",   // extractvalue on i32 (enum payload, Vx#233)
+    "frontend/pass/generics.vx",     // extractvalue on i32 (enum payload, Vx#233)
     "frontend/pass/macro_custom_tensor.vx", // panic: Cannot resolve member access shape
-    "frontend/pass/memory_algebra.vx", // memref.load on f32
     "frontend/pass/memory_algebra_implicit.vx", // insertvalue of memref (Vx#356)
     "frontend/pass/transfer_cost_advanced_dijkstra.vx", // Tensor<f32>::zeros unimplemented
     "frontend/pass/transfer_cost_dijkstra.vx", // Tensor<f32>::zeros unimplemented
