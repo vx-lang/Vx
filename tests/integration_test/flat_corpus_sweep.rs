@@ -74,7 +74,6 @@ const KNOWN_DECLINES: &[&str] = &[
     "middle_end/pass/reshape_pad.vx",
     "middle_end/pass/reshape_transpose.vx",
     "middle_end/pass/topology_polymorphism.vx",
-    "optimizations/pass/codegen_error_diagnostics.vx",
     "optimizations/pass/cpu_lowering.vx",
     "optimizations/pass/dispatch_abi_tags.vx",
     "optimizations/pass/kernel_kind_matmul.vx",
@@ -112,12 +111,40 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// Programs where the flat path declines AND the AST fallback then fails to compile --
+/// invalid MLIR or a panic on the default `--action emit-mlir` (Vx#398). Each is a real
+/// compiler defect; the list exists so the set can only shrink, never silently grow.
+const KNOWN_BROKEN: &[&str] = &[
+    "frontend/pass/control_flow.vx", // extractvalue on i32 (enum payload)
+    "frontend/pass/control_flow_rigorous.vx", // panic: Undefined variable 'b'
+    "frontend/pass/custom_matmul.vx", // panic: Cannot resolve member access shape
+    "frontend/pass/enum_match.vx",   // extractvalue on i32 (enum payload)
+    "frontend/pass/generics.vx",     // extractvalue on i32 (enum payload)
+    "frontend/pass/macro_custom_tensor.vx", // panic: Cannot resolve member access shape
+    "frontend/pass/macro_vec_expr.vx", // memref.load on the Vec struct (v[i])
+    "frontend/pass/macro_vec_func.vx", // memref.load on the Vec struct (v[i])
+    "frontend/pass/macro_vec_multiple.vx", // memref.load on the Vec struct (v[i])
+    "frontend/pass/macro_vec_nested.vx", // memref.load on the Vec struct (v[i])
+    "frontend/pass/macro_vec_single.vx", // memref.load on the Vec struct (v[i])
+    "frontend/pass/memory_algebra.vx", // memref.load on f32
+    "frontend/pass/memory_algebra_implicit.vx", // insertvalue of memref (Vx#356)
+    "frontend/pass/transfer_cost_advanced_dijkstra.vx", // Tensor<f32>::zeros unimplemented
+    "frontend/pass/transfer_cost_dijkstra.vx", // Tensor<f32>::zeros unimplemented
+    "middle_end/pass/implicit_transfer.vx", // insertvalue of memref (Vx#356)
+    "middle_end/pass/pinned_annotation_struct_field.vx", // insertvalue of memref (Vx#356)
+    "warnings/pass/w1024_implicit_transfer.vx", // insertvalue of memref (Vx#356)
+];
+
 /// Which codegen path the compiler took for one program, and -- when it fell back -- the reasons
 /// the flat path gave.
 #[derive(PartialEq)]
 enum CodegenPath {
     Flat,
     Ast(Vec<String>),
+    /// The flat path declined and the AST fallback then FAILED to compile (nonzero exit):
+    /// the program does not build on the default path at all. Tracked in KNOWN_BROKEN (Vx#398)
+    /// so the set can only shrink.
+    AstBroken(Vec<String>),
 }
 
 /// The bracketed grouping key the driver prints after each decline: `... [unsupported-expr(Grad)]`.
@@ -147,7 +174,14 @@ fn path_taken(program: &Path) -> Result<CodegenPath, String> {
     if log.contains("emitted module via the flat path") {
         Ok(CodegenPath::Flat)
     } else if log.contains("program outside the flat subset") {
-        Ok(CodegenPath::Ast(decline_keys(&log)))
+        // Falling back is not the same as the fallback working: the AST path can emit
+        // invalid MLIR or panic after the decline, and an exit-blind classification counted
+        // that as success for months (Vx#398).
+        if output.status.success() {
+            Ok(CodegenPath::Ast(decline_keys(&log)))
+        } else {
+            Ok(CodegenPath::AstBroken(decline_keys(&log)))
+        }
     } else {
         // Neither marker: the program never reached codegen. Two ways that happens,
         // and both are worth failing on. Either the program stopped compiling, or a
@@ -183,6 +217,7 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
     let expected: BTreeSet<String> = KNOWN_DECLINES.iter().map(|s| s.to_string()).collect();
 
     let mut declined = BTreeSet::new();
+    let mut fallback_broken = BTreeSet::new();
     let mut flat_count = 0usize;
     let mut broken = Vec::new();
     let mut by_reason: std::collections::BTreeMap<String, usize> = Default::default();
@@ -207,8 +242,9 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
             "frontend/pass/modules_nested/main.vx", // imports sibling files
             "frontend/pass/modules_nested/ops.vx",  // a module of the above, not a program
             "frontend/pass/const_generics_methods.vx", // checker rejects standalone (E2001 on N)
-            "optimizations/pass/host_flag_scope.vx", // needs --host
-            "optimizations/pass/device_transfer_plugin.vx", // needs --machine and a plugin
+            "optimizations/pass/codegen_error_diagnostics.vx", // expects failure by design (RUN: not vxc)
+            "optimizations/pass/host_flag_scope.vx",           // needs --host
+            "optimizations/pass/device_transfer_plugin.vx",    // needs --machine and a plugin
         ];
         if NOT_STANDALONE.contains(&name.as_str()) {
             continue;
@@ -231,6 +267,13 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
                     *by_reason.entry(first.clone()).or_insert(0) += 1;
                 }
                 declined.insert(name);
+            }
+            Ok(CodegenPath::AstBroken(reasons)) => {
+                if let Some(first) = reasons.first() {
+                    *by_reason.entry(first.clone()).or_insert(0) += 1;
+                }
+                declined.insert(name.clone());
+                fallback_broken.insert(name);
             }
             Err(why) => broken.push(format!("{name}: {why}")),
         }
@@ -262,6 +305,34 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         newly_covered.join("\n  "),
         flat_count,
         flat_count + declined.len()
+    );
+
+    let broken_expected: BTreeSet<String> = KNOWN_BROKEN.iter().map(|s| s.to_string()).collect();
+    let newly_broken: Vec<_> = fallback_broken
+        .difference(&broken_expected)
+        .cloned()
+        .collect();
+    let newly_fixed: Vec<_> = broken_expected
+        .difference(&fallback_broken)
+        .cloned()
+        .collect();
+    assert!(
+        newly_broken.is_empty(),
+        "these programs decline the flat path and the AST fallback then fails to compile: \
+         the default path is broken for them (Vx#398 class):\n  {}",
+        newly_broken.join(
+            "
+  "
+        )
+    );
+    assert!(
+        newly_fixed.is_empty(),
+        "the AST fallback now compiles these -- please delete them from KNOWN_BROKEN:
+  {}",
+        newly_fixed.join(
+            "
+  "
+        )
     );
 
     // A floor as well as an exact set: if the corpus itself shrinks, the exact-set
