@@ -1737,7 +1737,9 @@ impl<'a> TypeChecker<'a> {
                 } else if _method.as_ref() == "len" {
                     match &base_ty {
                         Type::Tensor(_, _, _) | Type::Borrow { .. } | Type::Pointer(_, _, _) => {
-                            base_ty = Type::Tensor(ElementType::I64, vec![], None);
+                            // A count is a scalar. It answered `Tensor<i64>` with no dims, which
+                            // is one of the four things that spelling meant (Vx#399).
+                            base_ty = Type::Scalar(ElementType::I64);
                         }
                         _ => {
                             self.errors
