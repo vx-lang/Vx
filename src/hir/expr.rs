@@ -51,7 +51,7 @@ impl<'a> TypeChecker<'a> {
     }
 
     pub(crate) fn check_expr_block(&mut self, stmts: &mut [Statement], consume: bool) -> Type {
-        let mut ret_ty = Type::Tensor(ElementType::F32, vec![], None);
+        let mut ret_ty = Type::Struct("void".into(), None);
         let mut terminated = false;
 
         for s in stmts.iter_mut() {

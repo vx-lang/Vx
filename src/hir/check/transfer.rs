@@ -1415,7 +1415,7 @@ impl<'a> TypeChecker<'a> {
 
                 self.check_expr_block(stmts, consume);
 
-                let mut ret_ty = Type::Tensor(ElementType::F32, vec![], None); // default void-like type
+                let mut ret_ty = Type::Struct("void".into(), None); // default void-like type
                 let has_ret = ret.is_some();
                 if let Some(r) = ret {
                     ret_ty = self.check_expr_type_flag(r, consume);

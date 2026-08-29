@@ -69,13 +69,13 @@ impl<'a> TypeChecker<'a> {
         }
 
         self.push_scope();
-        let mut then_ty = Type::Tensor(ElementType::F32, vec![], None);
+        let mut then_ty = Type::Struct("void".into(), None);
         if !self.speculating && !if_expr.then_block.is_empty() {
             then_ty = self.check_expr_block(&mut if_expr.then_block, consume);
         }
         self.pop_scope();
 
-        let mut else_ty = Type::Tensor(ElementType::F32, vec![], None);
+        let mut else_ty = Type::Struct("void".into(), None);
         if let Some(else_b) = if_expr.else_block.as_mut() {
             if !else_b.is_empty() {
                 self.push_scope();
@@ -97,7 +97,7 @@ impl<'a> TypeChecker<'a> {
             }
         } else if !if_expr.is_comptime {
             // Without else block, it evaluates to unit (represented as dummy Tensor)
-            then_ty = Type::Tensor(ElementType::F32, vec![], None);
+            then_ty = Type::Struct("void".into(), None);
         }
 
         // If it was comptime evaluated to false, the return type should just be the else block type
@@ -219,7 +219,7 @@ impl<'a> TypeChecker<'a> {
                     let arm_ty = if !self.speculating {
                         self.check_expr_block(&mut arm.body, consume)
                     } else {
-                        Type::Tensor(ElementType::F32, vec![], None)
+                        Type::Struct("void".into(), None)
                     };
                     self.pop_scope();
 

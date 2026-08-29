@@ -1191,7 +1191,7 @@ impl<'a> TypeChecker<'a> {
                 self.errors
                     .push("Function 'print' expects 1 argument".to_string());
             }
-            Some(Type::Tensor(ElementType::F32, vec![], None))
+            Some(Type::Struct("void".into(), None))
         } else if resolved_name == "printf" || resolved_name == "vx_internal_printf" {
             if args.is_empty() {
                 self.errors
