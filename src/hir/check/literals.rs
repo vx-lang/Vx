@@ -303,7 +303,7 @@ impl<'a> TypeChecker<'a> {
                             .to_string(),
                         Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
                     );
-                    return Type::Tensor(ElementType::F32, vec![], None);
+                    return Type::Unknown;
                 }
                 // A NESTED literal is how a multi-dimensional initializer is written
                 // (`Tensor<f32>([[1.0, 2.0], [3.0, 4.0]])`), and those rows are consumed as a
@@ -332,7 +332,7 @@ impl<'a> TypeChecker<'a> {
                                     ),
                                     Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
                                 );
-                                return Type::Tensor(ElementType::F32, vec![], None);
+                                return Type::Unknown;
                             }
                         }
                     } else if nested {
@@ -347,7 +347,7 @@ impl<'a> TypeChecker<'a> {
                                     .to_string(),
                                 Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
                             );
-                            return Type::Tensor(ElementType::F32, vec![], None);
+                            return Type::Unknown;
                         }
                         self.check_expr_type(el);
                     } else {

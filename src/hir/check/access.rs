@@ -418,7 +418,7 @@ impl<'a> TypeChecker<'a> {
                             }
                             self.errors
                                 .push(format!("Struct '{}' has no field '{}'", name, member));
-                            return Type::Tensor(ElementType::F32, vec![], None);
+                            return Type::Unknown;
                         }
                     }
                 }
@@ -461,7 +461,7 @@ impl<'a> TypeChecker<'a> {
                     self.errors
                         .push("Member access on non-struct type".to_string());
                 }
-                Type::Tensor(ElementType::F32, vec![], None)
+                Type::Unknown
             }
             _ => panic!("Expected IndexAccess, got {:?}", expr),
         }

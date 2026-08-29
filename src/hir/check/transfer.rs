@@ -1309,7 +1309,7 @@ impl<'a> TypeChecker<'a> {
                         inner_ty
                     ));
                 }
-                Type::Tensor(ElementType::F32, vec![], None)
+                Type::Unknown
             }
         }
     }

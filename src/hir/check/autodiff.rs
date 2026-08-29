@@ -37,7 +37,7 @@ impl<'a> TypeChecker<'a> {
                         "Cannot differentiate unknown function '{}'",
                         target_fn
                     ));
-                    return Type::Tensor(ElementType::F32, vec![], None);
+                    return Type::Unknown;
                 };
                 self.check_differentiability(&func);
 
@@ -79,7 +79,7 @@ impl<'a> TypeChecker<'a> {
                 } else {
                     self.errors
                         .push(format!("Cannot vjp unknown function '{}'", target_fn));
-                    return Type::Tensor(ElementType::F32, vec![], None);
+                    return Type::Unknown;
                 };
                 self.check_differentiability(&func);
 
@@ -122,7 +122,7 @@ impl<'a> TypeChecker<'a> {
                 } else {
                     self.errors
                         .push(format!("Cannot jvp unknown function '{}'", target_fn));
-                    return Type::Tensor(ElementType::F32, vec![], None);
+                    return Type::Unknown;
                 };
                 self.check_differentiability(&func);
 

@@ -152,7 +152,7 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
-        Type::Tensor(ElementType::F32, vec![], None)
+        Type::Unknown
     }
 
     /// Type-check `e` under an explicit expected type, restoring the previous one after. The
@@ -570,7 +570,7 @@ impl<'a> TypeChecker<'a> {
                                     struct_name
                                 ));
                             }
-                            Type::Tensor(ElementType::F32, vec![], None)
+                            Type::Unknown
                         }
                     } else {
                         if !self.speculating {
@@ -579,7 +579,7 @@ impl<'a> TypeChecker<'a> {
                                 resolved_name
                             ));
                         }
-                        Type::Tensor(ElementType::F32, vec![], None)
+                        Type::Unknown
                     }
                 } else if let Some((ret_ty, is_unsafe, param_types, req_topology, _, _)) =
                     self.env.functions.get(resolved_name.as_ref())
@@ -689,7 +689,7 @@ impl<'a> TypeChecker<'a> {
                         &arg_types,
                         &explicit_generic_args,
                     )
-                    .unwrap_or(Type::Tensor(ElementType::F32, vec![], None))
+                    .unwrap_or(Type::Unknown)
                 } else if resolved_name.contains("::") {
                     self.check_static_method_call(&resolved_name, name)
                 } else if let Some(sig) = self
@@ -770,7 +770,7 @@ impl<'a> TypeChecker<'a> {
                             Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                         );
                     }
-                    Type::Tensor(ElementType::F32, vec![], None)
+                    Type::Unknown
                 }
             }
             _ => panic!("Expected IndexAccess, got {:?}", expr),
@@ -924,7 +924,7 @@ impl<'a> TypeChecker<'a> {
                 self.errors
                     .push(format!("Undefined static method '{}'.", resolved_name));
             }
-            Type::Tensor(ElementType::F32, vec![], None)
+            Type::Unknown
         }
     }
 
@@ -1619,7 +1619,7 @@ impl<'a> TypeChecker<'a> {
                             "Module '{}' does not export function '{}'",
                             path, _method
                         ));
-                        return Type::Tensor(ElementType::F32, vec![], None);
+                        return Type::Unknown;
                     }
                 }
 
