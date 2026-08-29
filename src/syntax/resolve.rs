@@ -153,6 +153,12 @@ impl Type {
                     t.resolve_names(scope);
                 }
             }
+            // No dimension expressions to resolve; the placement still names a topology.
+            Type::DynTensor(_, top) => {
+                if let Some(t) = top {
+                    t.resolve_names(scope);
+                }
+            }
             Type::Ref(inner, _)
             | Type::Borrow { inner, .. }
             | Type::Pointer(inner, _, _)

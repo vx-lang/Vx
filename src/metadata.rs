@@ -541,6 +541,11 @@ fn write_type(w: &mut Writer, ty: &Type) -> Result<(), String> {
             write_element_type(w, e);
             write_opt_topology(w, top)?;
         }
+        DynTensor(e, top) => {
+            w.u8(16);
+            write_element_type(w, e);
+            write_opt_topology(w, top)?;
+        }
         Const(_) => return Err("vxlib: const-expression type not yet serializable".into()),
         Module(_, _) => return Err("vxlib: module type not serializable".into()),
     }
@@ -615,6 +620,7 @@ fn read_type(r: &mut Reader) -> Result<Type, String> {
             let e = read_element_type(r)?;
             Tensor(e, Vec::new(), read_opt_topology(r)?)
         }
+        16 => DynTensor(read_element_type(r)?, read_opt_topology(r)?),
         t => return Err(format!("vxlib: bad Type tag {t}")),
     })
 }

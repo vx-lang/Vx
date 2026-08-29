@@ -1,0 +1,20 @@
+//===- dyntensor_takes_no_dimensions.vx - Vx Compiler -----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// A dynamic tensor with a dimension list is the contradiction the split exists
+// to remove, so it is refused at the spelling (Vx#399).
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+// CHECK: DynTensor takes no dimensions
+fn f(t : DynTensor<f32, [2, 3]>) -> i32 {
+  return 0;
+}
+
+fn main() -> i32 {
+  return 0;
+}

@@ -557,6 +557,23 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Unify a tensor pattern's element against a concrete one, binding a generic element
+    /// (`Tensor<T>` against `Tensor<f32>`) into `mapping`.
+    fn unify_tensor_elem(
+        e1: &ElementType,
+        e2: &ElementType,
+        mapping: &mut std::collections::HashMap<crate::symbol::Symbol, Type>,
+    ) -> bool {
+        if let ElementType::Generic(name) = e1 {
+            if let Some(existing) = mapping.get(name) {
+                return existing == &Type::Scalar(e2.clone());
+            }
+            mapping.insert(name.clone(), Type::Scalar(e2.clone()));
+            return true;
+        }
+        e1 == e2
+    }
+
     fn unify_types_internal(
         &mut self,
         generic_ty: &Type,
@@ -573,16 +590,7 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             (Type::Tensor(e1, d1, t1), Type::Tensor(e2, d2, t2)) => {
-                let e1_match = if let ElementType::Generic(ref name) = e1 {
-                    if let Some(existing) = mapping.get(name) {
-                        existing == &Type::Scalar(e2.clone())
-                    } else {
-                        mapping.insert(name.clone(), Type::Scalar(e2.clone()));
-                        true
-                    }
-                } else {
-                    e1 == e2
-                };
+                let e1_match = Self::unify_tensor_elem(e1, e2, mapping);
                 if !e1_match || t1 != t2 {
                     return false;
                 }
@@ -611,6 +619,15 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
                 true
+            }
+            // A `DynTensor<T>` pattern matches any tensor of that element, shaped or not: it is
+            // the wildcard reading a dims-less `Tensor` pattern carries today (Vx#399).
+            (Type::DynTensor(e1, t1), Type::DynTensor(e2, t2)) => {
+                Self::unify_tensor_elem(e1, e2, mapping) && t1 == t2
+            }
+            (Type::DynTensor(e1, _), Type::Tensor(e2, _, _))
+            | (Type::Tensor(e1, _, _), Type::DynTensor(e2, _)) => {
+                Self::unify_tensor_elem(e1, e2, mapping)
             }
             (Type::Pointer(t1, m1, mut1), Type::Pointer(t2, m2, mut2)) => {
                 m1 == m2 && mut1 == mut2 && self.unify_types_internal(t1, t2, mapping)

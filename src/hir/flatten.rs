@@ -84,6 +84,8 @@ pub fn tensor_gid_of(ty: &Type) -> Option<TypeId> {
 /// element, or a dim that isn't a literal/name). The shape is what the flat lowerer rank-reduces on
 /// indexing.
 fn tensor_elem_shape(ty: &Type) -> Option<(ElementType, Vec<String>)> {
+    // A `DynTensor` has no extents to spell, so it is outside the modelled subset and the
+    // caller declines -- the same answer a dims-less `Tensor` gets today (Vx#399).
     let Type::Tensor(elem, dims, _) = ty else {
         return None;
     };

@@ -446,6 +446,33 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
+        // `DynTensor<T>` is the shape-unknown tensor: it accepts a statically shaped tensor of
+        // the same element (the shape is simply forgotten), and a shaped annotation accepts a
+        // dynamic value the way a dims-less source is accepted today. Placement still has to
+        // agree. (Vx#399)
+        {
+            let dyn_parts = |t: &Type| match t {
+                Type::DynTensor(e, top) => Some((e.clone(), top.clone())),
+                _ => None,
+            };
+            let tensor_elem = |t: &Type| match t {
+                Type::Tensor(e, _, top) => Some((e.clone(), top.clone())),
+                _ => None,
+            };
+            if let (Some((te, t_top)), Some((se, _))) = (dyn_parts(target), dyn_parts(source)) {
+                let _ = t_top;
+                return te == se;
+            }
+            if let (Some((te, t_top)), Some((se, s_top))) = (dyn_parts(target), tensor_elem(source))
+            {
+                return te == se && (t_top.is_none() || t_top == s_top);
+            }
+            if let (Some((te, t_top)), Some((se, s_top))) = (tensor_elem(target), dyn_parts(source))
+            {
+                return te == se && (t_top.is_none() || t_top == s_top);
+            }
+        }
+
         // A scalar is assignable to a tensor of the *identical* element only: dims-less wraps
         // it as a rank-0 tensor, shaped is a splat (the reshape corpus). The any-to-any arm
         // went with the rest of implicit numeric conversion (#240, Vx#396).

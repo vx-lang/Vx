@@ -350,6 +350,41 @@ impl<'a> Parser<'a> {
                 }
                 Ok(Type::Tensor(el_ty, Vec::new(), None))
             }
+            // `DynTensor<T>` / `DynTensor<T, Topology::X>`: a tensor whose shape is a run-time
+            // value. It takes no dimension list — carrying one would be the contradiction the
+            // split exists to remove (Vx#399).
+            "DynTensor" => {
+                let mut el_ty = ElementType::F32;
+                let mut top = None;
+                if self.match_token(&TokenType::LeftAngle) {
+                    let ty_ident = match self.advance().kind.clone() {
+                        TokenType::Identifier(s) => s,
+                        _ => return Err(self.error("Expected element type after '<'")),
+                    };
+                    el_ty = if let Ok(parsed_ty) = std::str::FromStr::from_str(ty_ident) {
+                        parsed_ty
+                    } else if self.generic_params.iter().any(|p| p.as_str() == ty_ident) {
+                        ElementType::Generic(ty_ident.into())
+                    } else {
+                        return Err(self.error(&format!("Unknown element type {}", ty_ident)));
+                    };
+                    if self.match_token(&TokenType::Comma) {
+                        if self.check(&TokenType::Topology) {
+                            top = Some(self.parse_topology()?);
+                        } else {
+                            return Err(self.error(
+                                "DynTensor takes no dimensions; write Tensor<T, [..]> for a \
+                                 statically shaped tensor",
+                            ));
+                        }
+                    }
+                    self.consume(
+                        &TokenType::RightAngle,
+                        "Expected '>' after DynTensor parameters",
+                    )?;
+                }
+                Ok(Type::DynTensor(el_ty, top))
+            }
             "Matrix" => Ok(Type::Matrix),
             _ => {
                 if let Ok(el_ty) = std::str::FromStr::from_str(&ident) {

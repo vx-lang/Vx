@@ -1299,6 +1299,10 @@ impl<'c> MeliorGenerator<'c> {
             syntax::Type::Tensor(el_ty, dims, top) => {
                 return self.lower_tensor_type(el_ty, dims, top);
             }
+            // A dynamic tensor lowers to the dynamic memref a dims-less tensor lowers to today.
+            syntax::Type::DynTensor(el_ty, top) => {
+                return self.lower_tensor_type(el_ty, &[], top);
+            }
             syntax::Type::Scalar(el_ty) => {
                 return Ok(match el_ty {
                     ElementType::F16 => self.f16_ty,

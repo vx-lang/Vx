@@ -1,0 +1,25 @@
+//===- dyntensor_basic.vx - Vx Compiler -------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// `DynTensor<T>` is the tensor whose shape is a run-time value (Vx#399). It
+// carries no extents, lowers to a dynamic memref, and accepts a statically
+// shaped tensor -- passing one forgets the shape, which is the whole point of
+// keeping the two spellings apart.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+
+fn takes_dyn(t : DynTensor<f32>) -> i32 {
+  return 0;
+}
+
+fn main() -> i32 {
+  let mut a : Tensor<f32, [2, 3]> = Tensor<f32>([2, 3]);
+  a[0][0] = 1.0;
+  // CHECK: func.func @takes_dyn(%{{.*}}: memref<?x?xf32>) -> i32
+  let r = takes_dyn(a);
+  return r;
+}
