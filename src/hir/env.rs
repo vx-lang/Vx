@@ -558,7 +558,7 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// Unify a tensor pattern's element against a concrete one, binding a generic element
-    /// (`Tensor<T>` against `Tensor<f32>`) into `mapping`.
+    /// (`Tensor<T>` against `DynTensor<f32>`) into `mapping`.
     fn unify_tensor_elem(
         e1: &ElementType,
         e2: &ElementType,
@@ -596,7 +596,7 @@ impl<'a> TypeChecker<'a> {
                 }
                 // A dims-less pattern is a shape wildcard. `impl Tensor<T>`'s methods are
                 // written rank-generically against `memref<?x?xT>` and apply at any shape, so a
-                // shaped receiver resolves them; likewise a `Tensor<f32>` parameter accepts a
+                // shaped receiver resolves them; likewise a `DynTensor<f32>` parameter accepts a
                 // shaped argument. A pattern that names its dimensions still has to match them,
                 // which is the loop below. (Vx#397)
                 if d1.is_empty() {

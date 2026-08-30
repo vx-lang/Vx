@@ -436,7 +436,7 @@ impl<'r> Lowerer<'r> {
         Ok(buf)
     }
 
-    /// A rank-0 tensor in scalar position reads as its element: `let t : Tensor<el> = v`
+    /// A rank-0 tensor in scalar position reads as its element: `let t : DynTensor<el> = v`
     /// wraps a scalar, and arithmetic/comparisons operate on the value (Vx#396).
     fn read_rank0(&mut self, v: Val) -> Val {
         match &v.ty {
@@ -3285,7 +3285,7 @@ impl<'r> Lowerer<'r> {
                     return Ok(());
                 }
                 let v = self.lower_expr(&l.expr)?;
-                // `let t : Tensor<el> = <scalar>` wraps the value as a rank-0 tensor: materialize
+                // `let t : DynTensor<el> = <scalar>` wraps the value as a rank-0 tensor: materialize
                 // the buffer (alloc + store) so tensor consumers (transfer, spawn) receive a real
                 // tensor. The checker admits identical elements only (Vx#396).
                 if let (Some(Type::Tensor(el, dims, _)), LoweredTy::Scalar(se)) =
@@ -5600,8 +5600,8 @@ mod tests {
         // `[2, 3] @ [3, 4]` is `[2, 4]`. The generic binary rule gives the result the LEFT
         // operand's type, which is right for an elementwise op and wrong for a matmul.
         let f = parse_fn(
-            "fn f() -> i32 { let a : Tensor<f32> = Tensor<f32>([2, 3]); \
-             let b : Tensor<f32> = Tensor<f32>([3, 4]); let c : Tensor<f32> = a @ b; return 0; }",
+            "fn f() -> i32 { let a = Tensor<f32>([2, 3]); \
+             let b = Tensor<f32>([3, 4]); let c = a @ b; return 0; }",
         );
         let mut w = worker();
         lower_function_to_hir(&f, &mut w).expect("a static matmul should lower");
@@ -5626,8 +5626,8 @@ mod tests {
         // Elementwise arithmetic on half operands is done in f32, so the generic rule widens the
         // result. A matmul accumulates in f32 but stores half, so it must not.
         let f = parse_fn(
-            "fn f() -> i32 { let a : Tensor<f16> = Tensor<f16>([2, 2]); \
-             let b : Tensor<f16> = Tensor<f16>([2, 2]); let c : Tensor<f16> = a @ b; return 0; }",
+            "fn f() -> i32 { let a = Tensor<f16>([2, 2]); \
+             let b = Tensor<f16>([2, 2]); let c = a @ b; return 0; }",
         );
         let mut w = worker();
         lower_function_to_hir(&f, &mut w).expect("a half matmul should lower");
@@ -6130,11 +6130,12 @@ mod tests {
     }
 
     #[test]
-    fn scalar_under_a_dimsless_tensor_annotation_materializes_rank_0() {
-        // `let t : Tensor<f32> = 1.0` allocates a rank-0 buffer and stores the scalar, so the
-        // transfer receives a tensor, not the initializer's scalar (Vx#396).
+    fn scalar_under_a_rank_0_tensor_annotation_materializes_rank_0() {
+        // `let t : Tensor<f32, []> = 1.0` allocates a rank-0 buffer and stores the scalar, so
+        // the transfer receives a tensor, not the initializer's scalar (Vx#396). The shape is
+        // written out now that the dims-less spelling is gone (Vx#399).
         let f = parse_fn(
-            "fn f() -> i32 { let t : Tensor<f32> = 1.0; let d = transfer(t, Memory::NPU_HBM); return 0; }",
+            "fn f() -> i32 { let t : Tensor<f32, []> = 1.0; let d = transfer(t, Memory::NPU_HBM); return 0; }",
         );
         let mut w = worker();
         lower_function_to_hir(&f, &mut w).expect("rank-0 wrap should lower");

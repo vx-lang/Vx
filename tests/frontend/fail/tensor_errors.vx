@@ -19,13 +19,13 @@ fn requires_specific_layout(t : Tensor<f32, [ 128, 256 ]>) -> i32 {
 
 fn main() -> i32 {
   // 1. Invalid tensor init
-  let t_host : Tensor<f32> = true;
+  let t_host : DynTensor<f32> = true;
 
   // 2. Generic missing
   let a = Tensor([10]);
 
   // 3. Generic not scalar
-  let b = Tensor<Tensor<f32>>([10]);
+  let b = Tensor<DynTensor<f32>>([10]);
 
   // 4. Invalid reshape
   let c : Tensor<f32, [ 128, 128 ]> = 1.0;

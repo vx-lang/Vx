@@ -9,7 +9,7 @@
 // Test: AccCore cannot access host DRAM variables — only LocalSRAM.
 
 fn main() -> i32 {
-  let t_host : Tensor<f32> = 1.0;
+  let t_host : Tensor<f32, []> = 1.0;
 
   spawn on(Topology::AccCore[0]) {
     // AccCore can only see LocalSRAM, not CPU DRAM

@@ -7,7 +7,7 @@ trait Relocatable {
 
 struct CustomHostData {
   id: i32,
-  host_tensor: Tensor<f32>,
+  host_tensor: DynTensor<f32>,
 }
 
 impl Relocatable for CustomHostData {

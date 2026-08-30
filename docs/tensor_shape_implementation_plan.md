@@ -198,9 +198,9 @@ Each slice below is separately committable and gated. The counts are measured, n
    that are dynamic rather than erased. *(Done. 27 signature positions across 9 files and the 3
    locals whose extents are run-time values now spell `DynTensor`. See "What the migration
    found" below.)*
-1. **Make a dims-less `Tensor` unspellable** and conform what remains: 41 local bindings, and
-   whichever of the 20 parameters and 19 returns are static-polymorphic (const generics) rather
-   than dynamic.
+1. **Make a dims-less `Tensor` unspellable** and conform what remains. *(Done. The parser
+   refuses it and names the three replacements; the last program that spells it is the test
+   asserting the refusal.)*
 
 Slice 2 is the one to sequence carefully. The remaining 9 dims-less constructions outside the
 checker are the parser's default for a bare `Tensor` spelling and a few type-level defaults; those
@@ -246,11 +246,50 @@ flat decline:   5 type-not-modelled(a callee return type)
 Carrying run-time extents through the flat lowerer is Vx#409, and it is the single largest flat-path
 gap left.
 
-## Open question
+## Rank 0, settled
 
-What is rank-0? The dims-less spelling currently doubles as the rank-0 scalar wrap
-(`let t : Tensor<f32> = 1.0`, Vx#396). Under the split it becomes `Tensor<f32, []>` — explicit,
-and distinct from `DynTensor<f32>`.
+The dims-less spelling doubled as the rank-0 scalar wrap (`let t : Tensor<f32> = 1.0`, Vx#396).
+It is `Tensor<f32, []>` now, and the three spellings lower to three different things:
+
+| spelling | memref |
+| --- | --- |
+| `Tensor<f32, [2, 3]>` | `memref<2x3xf32>` |
+| `Tensor<f32, []>` | `memref<f32>` |
+| `DynTensor<f32>` | `memref<?x?xf32>` |
+
+The middle row did not hold when slice 5 started. `lower_tensor_type` read an empty dimension
+list as "unknown" and emitted `memref<?x?xf32>`, which was right while the dims-less spelling was
+the only way to say "unknown" and wrong the moment `DynTensor` existed: a parameter that stated
+rank 0 silently became rank 2. Only `DynTensor` reaches that branch now.
+
+Two middle-end tests show what the correction buys. `generics.vx` used to pass a scalar to a
+generic by casting it into a rank-2 memref
+(`builtin.unrealized_conversion_cast %cst : f32 to memref<?x?xf32>`); it now allocates a real
+`memref<f32>` and fills it. That cast was the Vx#396 fiction, and the split removed it rather
+than patching it.
+
+## What slice 5 found
+
+Conforming the corpus was mostly deletion. Of 123 dims-less local bindings, none needed a shape
+written by hand: 33 were the scalar wrap and say `Tensor<T, []>`, and the other 90 dropped an
+annotation that had erased what the initializer already carried. That is meaning 1 measured — the
+type system was discarding a shape the programmer had written one token later, 90 times.
+
+Three checker sites still produced the spelling and now answer for what they hold. `tensor_view_2d`
+takes the constructor's rule, so a view over a caller's buffer keeps the shape its call site states
+and only a run-time extent makes it dynamic. A raw primitive that returns nothing says `void`. And
+`matmul_into` asks whether its operands are tensors rather than statically shaped ones, since
+filling a caller's buffer is the reason it exists.
+
+Making it unspellable then found the gaps that only appear once the two types are really distinct:
+`Type::substitute` had no `DynTensor` arm, so a generic element survived monomorphization and
+reached codegen; `as_ptr`, `len` and relational comparison accepted only `Type::Tensor`, though
+none of them reads a shape. Each is a place the old spelling had been doing double duty.
+
+Coverage moved both ways and ended level. `middle_end/pass/loops.vx` joined the flat path once its
+parameters stated `[10, 10]` instead of nothing; `topology.vx` and `traits.vx` left it, because
+their shape-generic signatures are honestly `DynTensor` and the flat lowerer does not carry
+run-time extents yet (Vx#409, now 12 programs and the largest measured gap).
 
 ## References
 

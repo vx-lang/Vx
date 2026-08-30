@@ -620,20 +620,42 @@ mod tests {
         );
     }
 
+    /// Every spelling that omits the shape is refused, and each of the three that state one
+    /// parses to a different type. The dims-less `Tensor` used to carry all of them (Vx#399).
     #[test]
-    fn test_parse_tensor_type_plain() {
-        let ty = parse_type("Tensor");
-        assert_eq!(
-            ty,
-            Type::Tensor(ElementType::F32, vec![], None),
-            "Plain Tensor should default to f32"
-        );
+    fn a_tensor_without_a_shape_does_not_parse() {
+        for input in ["Tensor", "Tensor<f32>", "Tensor<i64>"] {
+            let mut lexer = Lexer::new(input);
+            let tokens = lexer.tokenize();
+            let mut parser = Parser::new(&tokens, input);
+            let err = parser
+                .parse_type()
+                .expect_err("a Tensor without a shape must not parse");
+            assert!(
+                format!("{err:?}").contains("Tensor needs its shape"),
+                "{input} was refused for the wrong reason: {err:?}"
+            );
+        }
     }
 
     #[test]
-    fn test_parse_tensor_type_with_element_type() {
-        let ty = parse_type("Tensor<i64>");
-        assert_eq!(ty, Type::Tensor(ElementType::I64, vec![], None));
+    fn each_stated_shape_parses_to_its_own_type() {
+        assert_eq!(
+            parse_type("Tensor<f32, []>"),
+            Type::Tensor(ElementType::F32, vec![], None),
+            "an empty dimension list is rank 0"
+        );
+        assert_eq!(
+            parse_type("DynTensor<i64>"),
+            Type::DynTensor(ElementType::I64, None),
+            "a run-time shape is a DynTensor"
+        );
+        let shaped = parse_type("Tensor<f32, [2, 3]>");
+        let Type::Tensor(el, dims, None) = shaped else {
+            panic!("expected a shaped tensor, got {shaped:?}");
+        };
+        assert_eq!(el, ElementType::F32);
+        assert_eq!(dims.len(), 2);
     }
 
     #[test]

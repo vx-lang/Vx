@@ -14,9 +14,9 @@
 // legality itself is sema's job today (E6009/E6010/E6004 and the raw::
 // contract), each pinned by its own test.
 
-fn main() -> Tensor<f32> {
-  let t_host : Tensor<f32> = Tensor([ 1, 1 ]);
-  let t_device : Tensor<f32> = t_host.to_device();
+fn main() -> DynTensor<f32> {
+  let t_host = Tensor([ 1, 1 ]);
+  let t_device : DynTensor<f32> = t_host.to_device();
 
   spawn on(Topology::NPU[0]) {
     let t_core = transfer(t_device, Memory::NPU_HBM);

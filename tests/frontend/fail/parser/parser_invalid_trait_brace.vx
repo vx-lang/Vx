@@ -11,5 +11,5 @@
 // CHECK: fn dim(self: Tensor<f32>) -> Tensor<i32>;
 // CHECK: ^^~~~~
 trait MissingBraces
-fn dim(self: Tensor<f32>) -> Tensor<i32>;
+fn dim(self: DynTensor<f32>) -> DynTensor<i32>;
 }

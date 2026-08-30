@@ -1183,7 +1183,7 @@ mod tests {
     use rstest::rstest;
 
     #[rstest]
-    #[case("fn main() -> Tensor {}")]
+    #[case("fn main() -> DynTensor<f32> {}")]
     fn test_parse_empty_function(#[case] input: &str) {
         let mut lexer = Lexer::new(input);
         let tokens = lexer.tokenize();
@@ -1355,7 +1355,7 @@ fn ordinary(n: i32) -> i32 { return n; }
     #[test]
     fn test_parse_distributed_matmul() {
         let input = r#"
-fn distributed_matmul(a: Ref<Tensor, Memory::CPU_DRAM>, b: Ref<Tensor, Memory::CPU_DRAM>) -> Verified<Tensor> {
+fn distributed_matmul(a: Ref<DynTensor<f32>, Memory::CPU_DRAM>, b: Ref<DynTensor<f32>, Memory::CPU_DRAM>) -> Verified<DynTensor<f32>> {
     spawn on(Topology::NPU[0]) {
         let local_a = transfer(a, Memory::NPU_HBM);
         let local_b = transfer(b, Memory::NPU_HBM);
@@ -1375,10 +1375,10 @@ fn distributed_matmul(a: Ref<Tensor, Memory::CPU_DRAM>, b: Ref<Tensor, Memory::C
         assert_eq!(func.params.len(), 2);
         assert_eq!(func.params[0].0.as_ref(), "a");
 
-        // Assert return type is Verified<Tensor>
+        // Assert return type is Verified<DynTensor<f32>>
         assert_eq!(
             func.return_type,
-            Type::Verified(Box::new(Type::Tensor(ElementType::F32, vec![], None)))
+            Type::Verified(Box::new(Type::DynTensor(ElementType::F32, None)))
         );
 
         // Assert body has one statement (spawn on)
@@ -1412,7 +1412,8 @@ fn distributed_matmul(a: Ref<Tensor, Memory::CPU_DRAM>, b: Ref<Tensor, Memory::C
 
     #[test]
     fn test_parse_let_mut_with_type() {
-        let input = "fn main() -> Tensor { let mut x: Tensor = Tensor([1, 2]); }";
+        let input =
+            "fn main() -> DynTensor<f32> { let mut x: DynTensor<f32> = Tensor<f32>([1, 2]); }";
         let tokens = Lexer::new(input).tokenize();
         let mut parser = Parser::new(&tokens, input);
         let program = parser.parse().unwrap();
@@ -1427,7 +1428,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::CPU_DRAM>, b: Ref<Tensor, Memory::C
         {
             assert_eq!(name.as_ref(), "x");
             assert!(is_mut);
-            assert_eq!(ty, &Some(Type::Tensor(ElementType::F32, vec![], None)));
+            assert_eq!(ty, &Some(Type::DynTensor(ElementType::F32, None)));
             if let Expr::FunctionCall(FunctionCallExpr {
                 name: func_name,
                 args,
@@ -1452,7 +1453,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::CPU_DRAM>, b: Ref<Tensor, Memory::C
 
     #[test]
     fn test_parse_for_loop() {
-        let input = "fn main() -> Tensor { for i in 0..10 { x = 5; } }";
+        let input = "fn main() -> DynTensor<f32> { for i in 0..10 { x = 5; } }";
         let tokens = Lexer::new(input).tokenize();
         let mut parser = Parser::new(&tokens, input);
         let program = parser.parse().unwrap();
@@ -1513,7 +1514,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::CPU_DRAM>, b: Ref<Tensor, Memory::C
 
     #[test]
     fn test_parse_compound_assign() {
-        let input = "fn main() -> Tensor { x[0] += y * z; }";
+        let input = "fn main() -> DynTensor<f32> { x[0] += y * z; }";
         let tokens = Lexer::new(input).tokenize();
         let mut parser = Parser::new(&tokens, input);
         let program = parser.parse().unwrap();
@@ -1575,7 +1576,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::CPU_DRAM>, b: Ref<Tensor, Memory::C
 
     #[test]
     fn test_parse_member_and_method() {
-        let input = "fn main() -> Tensor { x.shape.with_memory(Memory::NPU_HBM); }";
+        let input = "fn main() -> DynTensor<f32> { x.shape.with_memory(Memory::NPU_HBM); }";
         let tokens = Lexer::new(input).tokenize();
         let mut parser = Parser::new(&tokens, input);
         let program = parser.parse().unwrap();
@@ -1622,9 +1623,9 @@ fn distributed_matmul(a: Ref<Tensor, Memory::CPU_DRAM>, b: Ref<Tensor, Memory::C
     #[test]
     fn test_parse_full_custom_matmul() {
         let input = r#"
-        fn custom_matmul(a: Ref<Tensor, Memory::NPU_HBM>, b: Ref<Tensor, Memory::NPU_HBM>) -> Verified<Tensor> {
+        fn custom_matmul(a: Ref<DynTensor<f32>, Memory::NPU_HBM>, b: Ref<DynTensor<f32>, Memory::NPU_HBM>) -> Verified<DynTensor<f32>> {
             spawn on(Topology::NPU[0]) {
-                let mut result: Tensor = Tensor([a.shape[0], b.shape[1]]).with_memory(Memory::NPU_HBM);
+                let mut result: DynTensor<f32> = Tensor<f32>([a.shape[0], b.shape[1]]).with_memory(Memory::NPU_HBM);
                 for i in 0..a.shape[0] {
                     for j in 0..b.shape[1] {
                         result[i][j] = 0;
@@ -1664,11 +1665,11 @@ fn distributed_matmul(a: Ref<Tensor, Memory::CPU_DRAM>, b: Ref<Tensor, Memory::C
     fn test_parse_struct_and_pointers() {
         let input = r#"
         struct Config {
-            value: Tensor<i32>,
-            threshold: Tensor<f32>
+            value: DynTensor<i32>,
+            threshold: DynTensor<f32>
         }
 
-        fn update_config(c: &mut Config) -> Tensor<Bool> {
+        fn update_config(c: &mut Config) -> bool {
             unsafe {
                 let ptr: *mut Config = &mut c;
                 *ptr = Config { value: 10, threshold: 0.5 };
@@ -1729,7 +1730,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::CPU_DRAM>, b: Ref<Tensor, Memory::C
     fn test_parse_extern() {
         let input = r#"
         extern "C" {
-            fn malloc(size: Tensor<i32>) -> *mut Tensor<f32>;
+            fn malloc(size: DynTensor<i32>) -> *mut DynTensor<f32>;
         }
         "#;
         let tokens = Lexer::new(input).tokenize();
@@ -1740,7 +1741,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::CPU_DRAM>, b: Ref<Tensor, Memory::C
         assert_eq!(program.externs[0].name.as_ref(), "malloc");
         assert_eq!(program.externs[0].params.len(), 1);
         if let Type::Pointer(inner, None, true) = &program.externs[0].return_type {
-            assert_eq!(**inner, Type::Tensor(ElementType::F32, vec![], None));
+            assert_eq!(**inner, Type::DynTensor(ElementType::F32, None));
         } else {
             panic!("Expected pointer return type");
         }

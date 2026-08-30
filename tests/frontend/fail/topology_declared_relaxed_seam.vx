@@ -32,7 +32,7 @@ Topology TensorCore5 {
 }
 
 fn f() -> i32 {
-  let b : Tensor<f32> = 0.0;
+  let b : Tensor<f32, []> = 0.0;
   let acc = transfer(b, Memory::TMEM);   // the SMEM->TMEM hop is relaxed
   return 0;
 }

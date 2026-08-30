@@ -171,11 +171,11 @@ fn make() -> Point {
     #[test]
     fn test_sema_distributed_matmul() {
         let input = r#"
-fn custom_matmul(a: Tensor<f32>, b: Tensor<f32>) -> Tensor<f32> {
+fn custom_matmul(a: DynTensor<f32>, b: DynTensor<f32>) -> DynTensor<f32> {
     return a;
 }
 
-fn distributed_matmul(a: Tensor<f32>, b: Tensor<f32>) -> Tensor<f32> {
+fn distributed_matmul(a: DynTensor<f32>, b: DynTensor<f32>) -> DynTensor<f32> {
     let local_a = transfer(a, Memory::NPU_HBM);
     let local_b = transfer(b, Memory::NPU_HBM);
     spawn on(Topology::NPU[0]) {
@@ -214,7 +214,7 @@ fn distributed_matmul(a: Tensor<f32>, b: Tensor<f32>) -> Tensor<f32> {
     #[test]
     fn test_sema_type_mismatch() {
         let input = r#"
-fn bad_matmul() -> Tensor {
+fn bad_matmul() -> DynTensor<f32> {
     return undefined_variable;
 }
         "#;
@@ -243,10 +243,10 @@ fn bad_matmul() -> Tensor {
     fn test_sema_struct_and_pointers() {
         let input = r#"
         struct Config {
-            value: Tensor<f32>
+            value: DynTensor<f32>
         }
 
-        fn test_pointers(c: &mut Config) -> Tensor<Bool> {
+        fn test_pointers(c: &mut Config) -> bool {
             unsafe {
                 let ptr: *mut Config = c;
                 let val = *ptr;
@@ -280,14 +280,14 @@ fn bad_matmul() -> Tensor {
     fn test_sema_extern_unsafe() {
         let input = r#"
         extern "C" {
-            fn malloc(size: Tensor<f32>) -> *mut Tensor<f32>;
+            fn malloc(size: DynTensor<f32>) -> *mut DynTensor<f32>;
         }
 
-        fn safe_wrapper() -> *mut Tensor<f32> {
+        fn safe_wrapper() -> *mut DynTensor<f32> {
             return malloc(1024); // ERROR: unsafe function call
         }
 
-        fn safe_wrapper_fixed() -> *mut Tensor<f32> {
+        fn safe_wrapper_fixed() -> *mut DynTensor<f32> {
             unsafe {
                 return malloc(1024);
             }
@@ -319,10 +319,10 @@ fn bad_matmul() -> Tensor {
     #[test]
     fn test_sema_as_ptr_and_len() {
         let input = r#"
-        fn test_methods(t: Tensor<f32>) -> Tensor<i64> {
-            let ptr: *const Tensor<f32> = t.as_ptr();
-            let mut_ptr: *mut Tensor<f32> = t.as_mut_ptr();
-            let length: Tensor<i64> = t.len();
+        fn test_methods(t: DynTensor<f32>) -> i64 {
+            let ptr: *const DynTensor<f32> = t.as_ptr();
+            let mut_ptr: *mut DynTensor<f32> = t.as_mut_ptr();
+            let length: i64 = t.len();
             return length;
         }
         "#;
@@ -397,10 +397,10 @@ fn bad_matmul() -> Tensor {
 
     #[test]
     fn test_sema_linear_move_consumed() {
-        // A Tensor is linear: using it once consumes it, second use is an error.
+        // A DynTensor<f32> is linear: using it once consumes it, second use is an error.
         let input = r#"
         fn test() -> i32 {
-            let a : Tensor<f32> = 1.0;
+            let a : Tensor<f32, []> = 1.0;
             let b = a;
             let c = a;
             return 0;
@@ -472,11 +472,11 @@ fn bad_matmul() -> Tensor {
         // correctly compile; `use_ref(y)` is what makes this a genuine conflict, as in the companion
         // fixture `borrow_use_after_mut.vx`.)
         let input = r#"
-        fn use_ref(r : &mut Tensor<f32>) -> i32 {
+        fn use_ref(r : &mut DynTensor<f32>) -> i32 {
             return 0;
         }
         fn test() -> i32 {
-            let mut x : Tensor<f32> = 1.0;
+            let mut x : Tensor<f32, []> = 1.0;
             let y = &mut x;
             let z = x;
             use_ref(y);
@@ -512,9 +512,9 @@ fn bad_matmul() -> Tensor {
 
     // A relaxed cross-device transfer whose consumer asserts a value on the buffer.
     const SEAM_ASSERT_PROGRAM: &str = r#"
-fn k(x: Pinned<Tensor<i32>, Topology::NPU[0]>)
-     on Topology::NPU[0] -> Pinned<Tensor<i32>, Topology::NPU[0]> { return x; }
-fn f(a: Tensor<i32>) -> Pinned<Tensor<i32>, Topology::NPU[0]> {
+fn k(x: Pinned<DynTensor<i32>, Topology::NPU[0]>)
+     on Topology::NPU[0] -> Pinned<DynTensor<i32>, Topology::NPU[0]> { return x; }
+fn f(a: DynTensor<i32>) -> Pinned<DynTensor<i32>, Topology::NPU[0]> {
     let local_a = a.to_device_relaxed();
     spawn on(Topology::NPU[0]) {
         assert(local_a == 42);

@@ -11,12 +11,12 @@
 //===----------------------------------------------------------------------===//
 // RUN: not vxc %s 2>&1 | FileCheck %s
 
-fn use_ref(r: &mut Tensor<f32>) -> i32 {
+fn use_ref(r: &mut DynTensor<f32>) -> i32 {
   return 0;
 }
 
 fn main() -> i32 {
-  let mut x : Tensor<f32> = Tensor<f32>();
+  let mut x = Tensor<f32>();
   let y = &mut x;
   let z = x;
   use_ref(y);

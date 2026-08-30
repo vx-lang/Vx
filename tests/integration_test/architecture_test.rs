@@ -57,16 +57,16 @@ fn test_pipeline_architecture_hooks() -> Result<(), String> {
         &file2_path,
         r#"
         fn compute_heavy(
-            p1: &Tensor, p2: &Tensor, p3: &Tensor, p4: &Tensor,
-            p5: &Tensor, p6: &Tensor, p7: &Tensor, p8: &Tensor,
-            p9: &Tensor, p10: &Tensor, p11: &mut Tensor
+            p1: &DynTensor<f32>, p2: &DynTensor<f32>, p3: &DynTensor<f32>, p4: &DynTensor<f32>,
+            p5: &DynTensor<f32>, p6: &DynTensor<f32>, p7: &DynTensor<f32>, p8: &DynTensor<f32>,
+            p9: &DynTensor<f32>, p10: &DynTensor<f32>, p11: &mut DynTensor<f32>
         ) -> f32 {
             return 1.0f32;
         }
 
-        fn run_module_b(t: Tensor) -> Tensor {
+        fn run_module_b(t: DynTensor<f32>) -> DynTensor<f32> {
             let mut result = t;
-            let mut result2: Tensor = Tensor<f32>();
+            let mut result2 = Tensor<f32>();
             compute_heavy(&result, &result, &result, &result, &result, &result, &result, &result, &result, &result, &mut result2);
             return result;
         }

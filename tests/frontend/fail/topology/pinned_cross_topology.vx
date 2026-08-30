@@ -11,7 +11,7 @@
 // lives in NPU_HBM, making it inaccessible from GPU.
 
 fn main() -> i32 {
-  let t : Tensor<f32> = 1.0;
+  let t : Tensor<f32, []> = 1.0;
   let t_npu = transfer(t, Memory::NPU_HBM);
 
   spawn on(Topology::GPU) {

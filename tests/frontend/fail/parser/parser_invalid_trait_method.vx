@@ -11,5 +11,5 @@
 // CHECK:   fn (self: Tensor<f32>) -> Tensor<i32>;
 // CHECK:       ^^^^~~~~
 trait MissingMethodName {
-  fn (self: Tensor<f32>) -> Tensor<i32>;
+  fn (self: DynTensor<f32>) -> DynTensor<i32>;
 }

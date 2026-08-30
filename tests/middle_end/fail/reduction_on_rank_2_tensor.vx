@@ -10,7 +10,7 @@ fn reduce_all(m : Tensor<f32, [2, 4]>) -> f32 {
 }
 
 fn main() -> i32 {
-  let mut t : Tensor<f32> = Tensor<f32>([ 2, 4 ]);
+  let mut t = Tensor<f32>([ 2, 4 ]);
   t[0][0] = 1.0;
   let s : f32 = reduce_all(t);
   print(s);

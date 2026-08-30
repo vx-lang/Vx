@@ -8,7 +8,7 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 
 struct MyModel {
-  weights: Tensor<f32>,
+  weights: DynTensor<f32>,
 }
 
 impl Relocatable for MyModel {

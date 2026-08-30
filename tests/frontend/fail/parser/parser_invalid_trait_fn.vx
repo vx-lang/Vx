@@ -11,5 +11,5 @@
 // CHECK:   dim(self: Tensor<f32>) -> Tensor<i32>;
 // CHECK:   ^^^~~~~
 trait MissingFn {
-  dim(self: Tensor<f32>) -> Tensor<i32>;
+  dim(self: DynTensor<f32>) -> DynTensor<i32>;
 }

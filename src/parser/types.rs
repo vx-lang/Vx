@@ -12,6 +12,12 @@
 
 use super::*;
 
+/// What to say when a `Tensor` is spelled without its shape. Each replacement is one of the
+/// meanings the dims-less spelling used to carry (Vx#399).
+const DIMS_REQUIRED: &str = "Tensor needs its shape: write `Tensor<f32, [2, 3]>` for a shape \
+     known at compile time, `Tensor<f32, []>` for a scalar, or `DynTensor<f32>` for a shape \
+     that is a run-time value";
+
 impl<'a> Parser<'a> {
     pub(crate) fn parse_topology(&mut self) -> ParseResult<'a, Topology> {
         self.consume(&TokenType::Topology, "Expected 'Topology'")?;
@@ -301,14 +307,16 @@ impl<'a> Parser<'a> {
 
         match ident.as_ref() {
             "Tensor" => {
-                let mut el_ty = ElementType::F32;
-                if let TokenType::LeftAngle = &self.peek().kind {
+                if !matches!(&self.peek().kind, TokenType::LeftAngle) {
+                    return Err(self.error(DIMS_REQUIRED));
+                }
+                {
                     self.advance(); // consume '<'
                     let ty_ident = match self.advance().kind.clone() {
                         TokenType::Identifier(s) => s,
                         _ => return Err(self.error("Expected element type after '<'")),
                     };
-                    el_ty = if let Ok(parsed_ty) = std::str::FromStr::from_str(ty_ident) {
+                    let el_ty = if let Ok(parsed_ty) = std::str::FromStr::from_str(ty_ident) {
                         parsed_ty
                     } else if self.generic_params.iter().any(|p| p.as_str() == ty_ident) {
                         ElementType::Generic(ty_ident.into())
@@ -316,8 +324,12 @@ impl<'a> Parser<'a> {
                         return Err(self.error(&format!("Unknown element type {}", ty_ident)));
                     };
                     let mut dims = Vec::new();
+                    // `Tensor<f32, []>` is rank 0 and states its shape; `Tensor<f32>` states
+                    // nothing. Both end with an empty `dims`, so the list has to be tracked.
+                    let mut saw_dims_list = false;
                     if self.match_token(&TokenType::Comma) {
                         if self.match_token(&TokenType::LeftBracket) {
+                            saw_dims_list = true;
                             while !self.check(&TokenType::RightBracket)
                                 && !self.check(&TokenType::Eof)
                             {
@@ -346,9 +358,15 @@ impl<'a> Parser<'a> {
                         &TokenType::RightAngle,
                         "Expected '>' after Tensor parameters",
                     )?;
-                    return Ok(Type::Tensor(el_ty, dims, top));
+                    // A `Tensor` carries its shape. The dims-less spelling used to mean four
+                    // unrelated things at once -- an erased static shape, a run-time shape, a
+                    // scalar, and an error placeholder -- and the two compilers read it two
+                    // different ways (Vx#399, Vx#409).
+                    if !saw_dims_list {
+                        return Err(self.error(DIMS_REQUIRED));
+                    }
+                    Ok(Type::Tensor(el_ty, dims, top))
                 }
-                Ok(Type::Tensor(el_ty, Vec::new(), None))
             }
             // `DynTensor<T>` / `DynTensor<T, Topology::X>`: a tensor whose shape is a run-time
             // value. It takes no dimension list — carrying one would be the contradiction the

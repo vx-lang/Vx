@@ -1,0 +1,26 @@
+//===- tensor_needs_its_shape.vx - Vx Compiler ------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// A `Tensor` spelled without its shape used to mean four unrelated things at once: a shape
+// the type system had erased, a shape known only at run time, a scalar, and the checker's
+// "I do not know" value. The two compilers even read it two different ways -- the flat path
+// as rank 0, the AST path as rank 2 dynamic (Vx#399, Vx#409). Each meaning now has its own
+// spelling, so the ambiguous one is gone rather than diagnosed case by case.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+// CHECK: Tensor needs its shape
+// CHECK-SAME: Tensor<f32, [2, 3]>
+// CHECK-SAME: Tensor<f32, []>
+// CHECK-SAME: DynTensor<f32>
+fn erased(t : Tensor<f32>) -> i32 {
+  return 0;
+}
+
+fn main() -> i32 {
+  return 0;
+}

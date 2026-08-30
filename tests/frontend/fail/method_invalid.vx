@@ -8,10 +8,10 @@
 //===----------------------------------------------------------------------===//
 // RUN: not vxc %s 2>&1 | FileCheck %s
 struct Dummy {
-  val : Tensor<f32>
+  val : DynTensor<f32>
 }
 
-fn test_invalid_method(d: Dummy) -> Tensor<i32> {
+fn test_invalid_method(d: Dummy) -> DynTensor<i32> {
   let ptr = d.as_ptr(); // ERROR: Cannot call as_ptr on Struct
   return 0;
 }

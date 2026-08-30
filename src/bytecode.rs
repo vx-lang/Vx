@@ -211,7 +211,7 @@ pub enum Opcode {
     AutoDiff = 42,
     /// Read a rank-0 tensor's element (`memref.load %t[]`): `operand1` is the tensor, the result
     /// the scalar. Emitted where a rank-0 value sits in scalar position — the arithmetic and
-    /// comparison operands of a `let t : Tensor<el> = <scalar>` local (Vx#396). Shaped tensors
+    /// comparison operands of a `let t : DynTensor<el> = <scalar>` local (Vx#396). Shaped tensors
     /// never emit this; their reads index.
     TensorLoad = 43,
     /// The runtime extent of one dimension of a tensor (`t.shape[k]` -> `memref.dim`):

@@ -11,12 +11,12 @@
 //===----------------------------------------------------------------------===//
 // RUN: not vxc %s 2>&1 | FileCheck %s
 
-fn expects_host(t : Tensor<f32>) -> Tensor<f32> {
+fn expects_host(t : DynTensor<f32>) -> DynTensor<f32> {
   return t;
 }
 
-fn main() -> Tensor<Bool> {
-  let host_tensor : Tensor<f32> = 1.0;
+fn main() -> i32 {
+  let host_tensor : Tensor<f32, []> = 1.0;
 
   // Transfer to device
   let device_tensor = host_tensor.to_device();

@@ -10,7 +10,7 @@
 // Even though both use DRAM, they are distinct topology contexts.
 
 fn main() -> i32 {
-  let t_host : Tensor<f32> = 1.0;
+  let t_host : Tensor<f32, []> = 1.0;
 
   spawn on(Topology::CpuAvx512) {
     // CHECK: Cross-topology access error

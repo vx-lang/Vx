@@ -1,6 +1,6 @@
 //===- logical_ops_type.vx - Vx Compiler -------------------------*- Vx -*-===//
-// CHECK: Type mismatch on return. Expected Tensor(I32, [], None), got
-// Scalar(Bool)
+// CHECK: Type mismatch on return.
+// CHECK-SAME: Scalar(Bool)
 //
 // Part of the Vx Project, under the BSD 3-Clause License.
 // See LICENSE for license information.
@@ -8,9 +8,9 @@
 //
 //===----------------------------------------------------------------------===//
 // RUN: not vxc %s 2>&1 | FileCheck %s
-fn logical_fail() -> Tensor<i32> {
+fn logical_fail() -> Tensor<i32, []> {
   let a = 1;
   let b = 2;
-  let c = a < b; // Tensor<Bool>
+  let c = a < b; // a bool
   return c;      // Expected i32, got Bool
 }

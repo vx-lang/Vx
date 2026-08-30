@@ -18,11 +18,11 @@ use vxc::parser::Parser;
 
 #[test]
 fn test_distributed_matmul_integration() -> Result<(), String> {
-    let input = r#"fn custom_matmul(a: Pinned<Tensor<f32>, Topology::NPU[0]>, b: Pinned<Tensor<f32>, Topology::NPU[0]>) on Topology::NPU[0] -> Pinned<Tensor<f32>, Topology::NPU[0]> {
+    let input = r#"fn custom_matmul(a: Pinned<DynTensor<f32>, Topology::NPU[0]>, b: Pinned<DynTensor<f32>, Topology::NPU[0]>) on Topology::NPU[0] -> Pinned<DynTensor<f32>, Topology::NPU[0]> {
     return a;
 }
 
-fn distributed_matmul(a: Tensor<f32>, b: Tensor<f32>) -> Pinned<Tensor<f32>, Topology::NPU[0]> {
+fn distributed_matmul(a: DynTensor<f32>, b: DynTensor<f32>) -> Pinned<DynTensor<f32>, Topology::NPU[0]> {
     let local_a = a.to_device();
     let local_b = b.to_device();
     spawn on(Topology::NPU[0]) {
@@ -123,7 +123,7 @@ fn run_pipeline(input: &str) -> Result<vxc::syntax::Program, Vec<vxc::diagnostic
 #[test]
 fn test_integration_operators() -> Result<(), String> {
     let input = r#"
-    fn math_ops() -> Tensor<f32> {
+    fn math_ops() -> Tensor<f32, []> {
         let mut x = 10.0;
         let y = x * 5.0;
         x += y + 2.0;
@@ -189,7 +189,7 @@ fn test_integration_method_chaining() -> Result<(), String> {
 #[test]
 fn test_integration_function_calls() -> Result<(), String> {
     let input = r#"
-    fn helper(x: Tensor<f32>) -> Tensor<f32> {
+    fn helper(x: Tensor<f32, []>) -> Tensor<f32, []> {
         return x + 1.0;
     }
 
@@ -209,7 +209,7 @@ fn test_integration_function_calls() -> Result<(), String> {
 #[test]
 fn test_integration_logical_ops() -> Result<(), String> {
     let input = r#"
-    fn logic_test(a: Tensor<f32>, b: Tensor<f32>) -> Tensor<f32> {
+    fn logic_test(a: Tensor<f32, []>, b: Tensor<f32, []>) -> Tensor<f32, []> {
         let is_less = a < b;
         let is_eq = a == b;
         let c = is_less && is_eq;
@@ -226,7 +226,7 @@ fn test_integration_logical_ops() -> Result<(), String> {
 #[test]
 fn test_integration_linear_variable_consumption() -> Result<(), String> {
     let input = r#"
-    fn helper(t: Tensor<f32>) -> Tensor<f32> {
+    fn helper(t: Tensor<f32, [2, 2]>) -> Tensor<f32, [2, 2]> {
         return t;
     }
 

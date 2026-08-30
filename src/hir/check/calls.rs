@@ -1741,12 +1741,10 @@ impl<'a> TypeChecker<'a> {
                 } else if _method.as_ref() == "as_ptr" || **_method == *"as_mut_ptr" {
                     let is_mut = _method.as_ref() == "as_mut_ptr";
                     match &base_ty {
-                        Type::Tensor(el_ty, dims, top) => {
-                            base_ty = Type::Pointer(
-                                Box::new(Type::Tensor(el_ty.clone(), dims.clone(), top.clone())),
-                                None,
-                                is_mut,
-                            );
+                        // Taking the address of the storage does not read the shape, so both
+                        // tensor spellings answer here (Vx#399).
+                        Type::Tensor(..) | Type::DynTensor(..) => {
+                            base_ty = Type::Pointer(Box::new(base_ty.clone()), None, is_mut);
                         }
                         Type::Borrow {
                             inner,
@@ -1771,9 +1769,12 @@ impl<'a> TypeChecker<'a> {
                     }
                 } else if _method.as_ref() == "len" {
                     match &base_ty {
-                        Type::Tensor(_, _, _) | Type::Borrow { .. } | Type::Pointer(_, _, _) => {
-                            // A count is a scalar. It answered `Tensor<i64>` with no dims, which
-                            // is one of the four things that spelling meant (Vx#399).
+                        Type::Tensor(..)
+                        | Type::DynTensor(..)
+                        | Type::Borrow { .. }
+                        | Type::Pointer(_, _, _) => {
+                            // A count is a scalar. It answered a dims-less tensor, which is one
+                            // of the four things that spelling meant (Vx#399).
                             base_ty = Type::Scalar(ElementType::I64);
                         }
                         _ => {

@@ -1297,11 +1297,12 @@ impl<'c> MeliorGenerator<'c> {
     ) -> Result<Type<'c>, crate::codegen::lower::LowerError> {
         let ty_str = match ty {
             syntax::Type::Tensor(el_ty, dims, top) => {
-                return self.lower_tensor_type(el_ty, dims, top);
+                return self.lower_tensor_type(el_ty, dims, top, false);
             }
-            // A dynamic tensor lowers to the dynamic memref a dims-less tensor lowers to today.
+            // A dynamic tensor is the fully dynamic memref. It is the only thing that is now:
+            // an empty dimension list on a `Tensor` means rank 0, not unknown (Vx#399).
             syntax::Type::DynTensor(el_ty, top) => {
-                return self.lower_tensor_type(el_ty, &[], top);
+                return self.lower_tensor_type(el_ty, &[], top, true);
             }
             syntax::Type::Scalar(el_ty) => {
                 return Ok(match el_ty {
@@ -1652,6 +1653,7 @@ impl<'c> MeliorGenerator<'c> {
         el_ty: &ElementType,
         dims: &[syntax::Expr],
         top: &Option<syntax::Topology>,
+        dynamic: bool,
     ) -> Result<Type<'c>, crate::codegen::lower::LowerError> {
         let ty_str = match el_ty {
             ElementType::F16 => "f16",
@@ -1681,9 +1683,14 @@ impl<'c> MeliorGenerator<'c> {
             }
         };
 
+        // `Tensor<f32, []>` is rank 0 -- `memref<f32>` -- and only a `DynTensor` is the
+        // rank-2 dynamic memref. The two used to share the empty dimension list, so a stated
+        // rank-0 parameter silently became `memref<?x?xf32>` (Vx#399).
         let mut shape_str = String::new();
         if dims.is_empty() {
-            shape_str = "?x?".to_string();
+            if dynamic {
+                shape_str = "?x?".to_string();
+            }
         } else {
             for (i, dim) in dims.iter().enumerate() {
                 if let syntax::Expr::Number(NumberExpr {

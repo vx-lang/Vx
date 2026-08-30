@@ -17,7 +17,7 @@ use vxc::parse_module;
 #[test]
 fn test_parse_module_api() -> Result<(), String> {
     let source = "
-        fn hello_world() -> Tensor {
+        fn hello_world() -> Tensor<f32, []> {
             let x = 42;
         }
     ";

@@ -7,7 +7,7 @@
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // CHECK: module
-fn parser_logical_pass() -> Tensor<Bool> {
+fn parser_logical_pass() -> bool {
   let a = 1;
   let b = 2;
   let c = a < b;

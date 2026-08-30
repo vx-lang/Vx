@@ -2167,11 +2167,11 @@ fn flat_matches_ast_matmul_non_square() {
     //
     // `c[1][3]` is 4*4 + 5*8 + 6*12 = 128, the same value gpu_matmul_roles.vx expects.
     assert_parity(
-        "fn main() -> i32 { let mut a : Tensor<f32> = Tensor<f32>([2, 3]); \
-         let mut b : Tensor<f32> = Tensor<f32>([3, 4]); \
+        "fn main() -> i32 { let mut a = Tensor<f32>([2, 3]); \
+         let mut b = Tensor<f32>([3, 4]); \
          for i in 0..2 { for j in 0..3 { a[i][j] = (i * 3 + j + 1) as f32; } } \
          for i in 0..3 { for j in 0..4 { b[i][j] = (i * 4 + j + 1) as f32; } } \
-         let c : Tensor<f32> = a @ b; return c[1][3] as i32; }",
+         let c = a @ b; return c[1][3] as i32; }",
         128,
     );
 }
@@ -2187,11 +2187,11 @@ fn flat_matches_ast_matmul_half_stores_half() {
     // so the difference is the accumulator's own type and nothing else. Offset by 2038 to keep
     // both outcomes inside the 8-bit exit code and away from zero -- 10 for half, 11 for f32.
     assert_parity(
-        "fn main() -> i32 { let mut a : Tensor<f16> = Tensor<f16>([2, 2]); \
-         let mut b : Tensor<f16> = Tensor<f16>([2, 2]); \
+        "fn main() -> i32 { let mut a = Tensor<f16>([2, 2]); \
+         let mut b = Tensor<f16>([2, 2]); \
          a[0][0] = 1024.0; a[0][1] = 1025.0; a[1][0] = 0.0; a[1][1] = 0.0; \
          b[0][0] = 1.0; b[0][1] = 0.0; b[1][0] = 1.0; b[1][1] = 0.0; \
-         let c : Tensor<f16> = a @ b; return (c[0][0] - 2038.0) as i32; }",
+         let c = a @ b; return (c[0][0] - 2038.0) as i32; }",
         10,
     );
 }
@@ -2363,8 +2363,8 @@ fn flat_matches_ast_tensor_returning_callee() {
            return a + b; \
          } \
          fn main() -> i32 { \
-           let mut a : Tensor<f32> = Tensor<f32>([4]); \
-           let mut b : Tensor<f32> = Tensor<f32>([4]); \
+           let mut a = Tensor<f32>([4]); \
+           let mut b = Tensor<f32>([4]); \
            for i in 0..4 { a[i] = ((i + 1) * 1) as f32; b[i] = ((i + 1) * 10) as f32; } \
            let c = add(a, b); \
            return c[2] as i32; }",
@@ -2406,7 +2406,7 @@ fn vec_index_sugar_program_runs() {
 #[test]
 fn flat_matches_ast_shape_query() {
     assert_parity(
-        "fn main() -> i32 { let mut t : Tensor<f32> = Tensor<f32>([3, 4]); \
+        "fn main() -> i32 { let mut t = Tensor<f32>([3, 4]); \
          t[0][0] = 1.0; \
          return t.shape[1]; }",
         4,

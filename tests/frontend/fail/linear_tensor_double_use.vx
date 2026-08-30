@@ -11,7 +11,7 @@
 // RUN: not vxc %s 2>&1 | FileCheck %s
 
 fn main() -> i32 {
-  let a : Tensor<f32> = 1.0;
+  let a : Tensor<f32, []> = 1.0;
   let b = a;
   let c = a;
   return 0;
