@@ -35,8 +35,8 @@
 
 fn main() -> i32 {
   // f64: [[1,2],[3,4]] @ [[5,6],[7,8]] = [[19,22],[43,50]]
-  let mut ad : Tensor<f64> = Tensor<f64>([ 2, 2 ]);
-  let mut bd : Tensor<f64> = Tensor<f64>([ 2, 2 ]);
+  let mut ad = Tensor<f64>([ 2, 2 ]);
+  let mut bd = Tensor<f64>([ 2, 2 ]);
   for i in 0..2 {
     for j in 0..2 {
       ad[i][j] = (i * 2 + j + 1) as f64;
@@ -44,7 +44,7 @@ fn main() -> i32 {
     }
   }
 
-  let mut cd : Tensor<f64> = Tensor<f64>([ 2, 2 ]);
+  let mut cd = Tensor<f64>([ 2, 2 ]);
   spawn on(Topology::GPU) {
     cd = ad @bd;
   }
@@ -56,8 +56,8 @@ fn main() -> i32 {
 
   // 64x64: identity times B is B, so a transposed result is a different number
   // at every off-diagonal coordinate rather than the same one.
-  let mut e : Tensor<f32> = Tensor<f32>([ 64, 64 ]);
-  let mut b : Tensor<f32> = Tensor<f32>([ 64, 64 ]);
+  let mut e = Tensor<f32>([ 64, 64 ]);
+  let mut b = Tensor<f32>([ 64, 64 ]);
   for i in 0..64 {
     for j in 0..64 {
       e[i][j] = 0.0;
@@ -68,7 +68,7 @@ fn main() -> i32 {
     e[i][i] = 1.0;
   }
 
-  let mut r : Tensor<f32> = Tensor<f32>([ 64, 64 ]);
+  let mut r = Tensor<f32>([ 64, 64 ]);
   spawn on(Topology::GPU) {
     r = e @b;
   }

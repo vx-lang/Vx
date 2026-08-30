@@ -2,7 +2,7 @@
 // CHECK: module
 
 fn multi_hop_transfer() -> i32 {
-  let t : Tensor<f32> = 1.0;
+  let t : Tensor<f32, []> = 1.0;
 
   // 1. Transfer from local CPU DRAM to the NIC RAM
   let nic_buffer = transfer(t, Memory::NIC_RAM);

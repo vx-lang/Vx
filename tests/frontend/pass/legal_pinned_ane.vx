@@ -4,7 +4,7 @@
 
 fn main() -> i32 {
   // Transfer a variable to ANE pinned memory
-  let t_host : Tensor<f32> = 1.0;
+  let t_host : Tensor<f32, []> = 1.0;
 
   // Note: transfer to NPU/ANE returns a Pinned type.
   let t_ane = transfer(t_host, Memory::NPU_HBM);

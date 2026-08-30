@@ -523,9 +523,9 @@ fn softmax(x : *mut f32, size : i32) -> i32 {
 // devices (#347). One program text, one placement discipline, one index.
 fn matmul<const D : i32>(xout : *mut f32, x : *mut f32, w : *mut f32, n : i32,
 d : i32) -> i32 {
-  let wt : Tensor<f32> = unsafe { tensor_view_2d(w, d, n) };
-  let xt : Tensor<f32> = unsafe { tensor_view_2d(x, n, 1) };
-  let mut yt : Tensor<f32> = unsafe { tensor_view_2d(xout, d, 1) };
+  let wt = unsafe { tensor_view_2d(w, d, n) };
+  let xt = unsafe { tensor_view_2d(x, n, 1) };
+  let mut yt = unsafe { tensor_view_2d(xout, d, 1) };
   spawn on(Topology::GPU[D]) {
     matmul_into(&mut yt, &wt, &xt);
   }

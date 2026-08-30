@@ -14,7 +14,7 @@
 // CHECK: module
 
 fn main() -> i32 {
-  let t : Tensor<f32> = 1.0;
+  let t : Tensor<f32, []> = 1.0;
 
   // Transfer a copy to NPU_HBM
   let npu_t = transfer(t, Memory::NPU_HBM);

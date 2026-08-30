@@ -42,8 +42,8 @@ fn main() -> i32 {
   let pb : *mut f32 = unsafe { vx_alloc_f32(6) };
   unsafe { for i in 0..6 { pa[i] = (i + 1) as f32; pb[i] = (i + 1) as f32; } }
 
-  let a : Tensor<f32> = unsafe { tensor_view_2d(pa, 2, 3) };
-  let b : Tensor<f32> = unsafe { tensor_view_2d(pb, 3, 2) };
+  let a = unsafe { tensor_view_2d(pa, 2, 3) };
+  let b = unsafe { tensor_view_2d(pb, 3, 2) };
 
   // Row-major strides: element 5 of the buffer is a[1][2].
   print(a[0][0]);
@@ -52,7 +52,7 @@ fn main() -> i32 {
   print!(" ");
 
   // [[1,2,3],[4,5,6]] @ [[1,2],[3,4],[5,6]] = [[22,28],[49,64]].
-  let c : Tensor<f32> = &a @ &b;
+  let c = &a @ &b;
   print(c[0][0]);
   print!(" ");
   print(c[0][1]);
@@ -66,7 +66,7 @@ fn main() -> i32 {
   // taken when the view was made would not. Row 0 becomes [0,2,3], so the
   // first row of the product becomes [0+6+15, 0+8+18] = [21, 26].
   unsafe { pa[0] = 0.0; }
-  let d : Tensor<f32> = &a @ &b;
+  let d = &a @ &b;
   print(d[0][0]);
   print!(" ");
   print(d[0][1]);

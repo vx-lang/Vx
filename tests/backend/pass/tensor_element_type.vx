@@ -34,25 +34,25 @@
 // CHECK: module
 fn main() -> i32 {
   // Dynamically shaped: the case that was broken.
-  let mut h : Tensor<f16> = Tensor<f16>([ 2, 2 ]);
+  let mut h = Tensor<f16>([ 2, 2 ]);
   h[0][0] = 1.5;
   let hv : f16 = h[0][0];
   print(hv);
   print!(" ");
 
-  let mut d : Tensor<f64> = Tensor<f64>([ 2, 2 ]);
+  let mut d = Tensor<f64>([ 2, 2 ]);
   d[0][0] = 2.5;
   let dv : f64 = d[0][0];
   print(dv);
   print!(" ");
 
-  let mut n : Tensor<i32> = Tensor<i32>([ 2, 2 ]);
+  let mut n = Tensor<i32>([ 2, 2 ]);
   n[0][0] = 7;
   let nv : i32 = n[0][0];
   print(nv);
   print!(" ");
 
-  let mut f : Tensor<f32> = Tensor<f32>([ 2, 2 ]);
+  let mut f = Tensor<f32>([ 2, 2 ]);
   f[0][0] = 3.25;
   let fv : f32 = f[0][0];
   print(fv);

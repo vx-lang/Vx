@@ -48,9 +48,9 @@ fn main() -> i32 {
     }
   }
 
-  let w : Tensor<f32> = unsafe { tensor_view_2d(pw, 2, 2) };
-  let x : Tensor<f32> = unsafe { tensor_view_2d(px, 2, 1) };
-  let mut y : Tensor<f32> = unsafe { tensor_view_2d(py, 2, 1) };
+  let w = unsafe { tensor_view_2d(pw, 2, 2) };
+  let x = unsafe { tensor_view_2d(px, 2, 1) };
+  let mut y = unsafe { tensor_view_2d(py, 2, 1) };
 
   matmul_into(&mut y, &w, &x);
   unsafe { print(py[0]); print!(" "); print(py[1]); print!(" "); }

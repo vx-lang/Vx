@@ -32,8 +32,8 @@
 import std::vec;
 
 fn main() -> i32 {
-  let mut a : Tensor<f32> = Tensor<f32>([ 2, 2 ]);
-  let mut b : Tensor<f32> = Tensor<f32>([ 2, 2 ]);
+  let mut a = Tensor<f32>([ 2, 2 ]);
+  let mut b = Tensor<f32>([ 2, 2 ]);
   for i in 0..2 {
     for j in 0..2 {
       a[i][j] = 2.0;

@@ -67,12 +67,14 @@ const KNOWN_DECLINES: &[&str] = &[
     "middle_end/pass/match_int_literal_arms.vx",
     "middle_end/pass/pinned_annotation_struct_field.vx",
     "middle_end/pass/reshape_pad.vx",
-    // A DynTensor parameter (Vx#409). The flat path used to compile this program, but with a
-    // rank-0 `memref<f32>` where the AST oracle gives `memref<?x?xf32>` -- two ABIs for one
+    // A DynTensor parameter (Vx#409) -- also `traits.vx` below. Both used to compile through the
+    // flat path while the dims-less spelling let it read them as rank-0: `topology.vx` got a
+    // `memref<f32>` signature where the AST oracle gives `memref<?x?xf32>`, two ABIs for one
     // function, plus a dropped vx.transfer. Declining is the honest answer until the flat
     // lowerer carries run-time extents.
     "middle_end/pass/reshape_transpose.vx",
     "middle_end/pass/topology.vx",
+    "middle_end/pass/traits.vx",
     "middle_end/pass/topology_polymorphism.vx",
     "optimizations/pass/cpu_lowering.vx",
     "optimizations/pass/dispatch_abi_tags.vx",

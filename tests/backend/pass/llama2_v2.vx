@@ -154,9 +154,9 @@ w : &TransformerWeightOffsets, all_weights: &Tensor<f32>) -> &mut f32 {
       t_wv[0][j] = all_weights[0][wv_off + j];
     }
 
-    let t_q : Tensor<f32> = ptr_to_tensor_1d(s.xb, dim) @ t_wq;
-    let t_k : Tensor<f32> = ptr_to_tensor_1d(s.xb, dim) @ t_wk;
-    let t_v : Tensor<f32> = ptr_to_tensor_1d(s.xb, dim) @ t_wv;
+    let t_q = ptr_to_tensor_1d(s.xb, dim) @ t_wq;
+    let t_k = ptr_to_tensor_1d(s.xb, dim) @ t_wk;
+    let t_v = ptr_to_tensor_1d(s.xb, dim) @ t_wv;
 
     tensor_to_ptr_1d(t_q, s.q, dim);
     tensor_to_ptr_1d(t_k, s.k, kv_dim);
@@ -260,13 +260,13 @@ w : &TransformerWeightOffsets, all_weights: &Tensor<f32>) -> &mut f32 {
       }
     }
 
-    let t_xb_v2 : Tensor<f32> = ptr_to_tensor_1d(s.xb, dim);
+    let t_xb_v2 = ptr_to_tensor_1d(s.xb, dim);
     let mut t_wo = Tensor<f32>([dim, dim]);
     let wo_off = w.wo + l * dim * dim;
     for j in 0..dim * dim {
       t_wo[0][j] = all_weights[0][wo_off + j];
     }
-    let t_xb2 : Tensor<f32> = t_xb_v2 @ t_wo;
+    let t_xb2 = t_xb_v2 @ t_wo;
     tensor_to_ptr_1d(t_xb2, s.xb2, dim);
 
     for i in 0..dim {
@@ -294,8 +294,8 @@ w : &TransformerWeightOffsets, all_weights: &Tensor<f32>) -> &mut f32 {
       t_w3[0][j] = all_weights[0][w3_off + j];
     }
 
-    let t_hb : Tensor<f32> = ptr_to_tensor_1d(s.xb, dim) @ t_w1;
-    let t_hb2 : Tensor<f32> = ptr_to_tensor_1d(s.xb, dim) @ t_w3;
+    let t_hb = ptr_to_tensor_1d(s.xb, dim) @ t_w1;
+    let t_hb2 = ptr_to_tensor_1d(s.xb, dim) @ t_w3;
     tensor_to_ptr_1d(t_hb, s.hb, hidden_dim);
     tensor_to_ptr_1d(t_hb2, s.hb2, hidden_dim);
 
@@ -308,13 +308,13 @@ w : &TransformerWeightOffsets, all_weights: &Tensor<f32>) -> &mut f32 {
       s.hb[i] = val;
     }
 
-    let t_hb_v : Tensor<f32> = ptr_to_tensor_1d(s.hb, hidden_dim);
+    let t_hb_v = ptr_to_tensor_1d(s.hb, hidden_dim);
     let mut t_w2 = Tensor<f32>([hidden_dim, dim]);
     let w2_off = w.w2 + l * hidden_dim * dim;
     for j in 0..hidden_dim * dim {
       t_w2[0][j] = all_weights[0][w2_off + j];
     }
-    let t_xb_out : Tensor<f32> = t_hb_v @ t_w2;
+    let t_xb_out = t_hb_v @ t_w2;
     tensor_to_ptr_1d(t_xb_out, s.xb, dim);
 
     for i in 0..dim {
@@ -330,14 +330,14 @@ w : &TransformerWeightOffsets, all_weights: &Tensor<f32>) -> &mut f32 {
   }
   rmsnorm_1d(x, x, &rms_final_w, dim);
 
-  let t_x : Tensor<f32> = ptr_to_tensor_1d(x, dim);
+  let t_x = ptr_to_tensor_1d(x, dim);
   let mut t_wcls_T : DynTensor<f32> = Tensor<f32>([ dim, p.vocab_size ]);
   for r in 0..p.vocab_size {
     for c in 0..dim {
       t_wcls_T[c][r] = all_weights[0][w.wcls + r * dim + c];
     }
   }
-  let t_logits : Tensor<f32> = t_x @ t_wcls_T;
+  let t_logits = t_x @ t_wcls_T;
   tensor_to_ptr_1d(t_logits, s.logits, p.vocab_size);
   return s.logits;
 }

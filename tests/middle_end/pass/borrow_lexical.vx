@@ -1,7 +1,7 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // CHECK: module
 fn main() -> i32 {
-  let mut x : Tensor<f32> = Tensor<f32>();
+  let mut x = Tensor<f32>();
 
   // Borrow scope 1
   if true {

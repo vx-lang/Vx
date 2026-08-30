@@ -8,17 +8,17 @@
 // RUN: vxc %s --action run-jit 2>&1 | FileCheck %s
 
 extern "C" {
-  fn start_benchmark() -> Tensor<f32>;
-  fn end_benchmark() -> Tensor<i32>;
-  fn trace_start() -> Tensor<i32>;
-  fn trace_end() -> Tensor<i32>;
+  fn start_benchmark() -> f32;
+  fn end_benchmark() -> i32;
+  fn trace_start() -> i32;
+  fn trace_end() -> i32;
 }
 
 fn main() -> i32 {
   unsafe {
     trace_start();
-    let _dummy1 : Tensor<f32> = start_benchmark();
-    let _dummy2 : Tensor<i32> = end_benchmark();
+    let _dummy1 : f32 = start_benchmark();
+    let _dummy2 : i32 = end_benchmark();
     trace_end();
   }
 

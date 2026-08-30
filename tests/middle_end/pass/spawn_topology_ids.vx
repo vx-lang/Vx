@@ -15,7 +15,7 @@
 
 fn on_gpu() -> i32 {
   // GPU has unified-memory visibility to host DRAM, so `t` is read directly.
-  let t : Tensor<f32> = 1.0;
+  let t : Tensor<f32, []> = 1.0;
   spawn on(Topology::GPU) {
     let x = t;
   }
@@ -23,7 +23,7 @@ fn on_gpu() -> i32 {
 }
 
 fn on_npu() -> i32 {
-  let t : Tensor<f32> = 1.0;
+  let t : Tensor<f32, []> = 1.0;
   let td = transfer(t, Memory::NPU_HBM);
   spawn on(Topology::NPU[0]) {
     let x = td;

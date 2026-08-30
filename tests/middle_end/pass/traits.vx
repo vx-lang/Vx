@@ -8,34 +8,33 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 
 trait Dimension {
-  fn dim(self : Tensor<f32>)->Tensor<i32>;
+  fn dim(self : DynTensor<f32>)->i32;
 }
 
 impl Dimension for Tensor<f32> {
-  fn dim(self : Tensor<f32>) -> Tensor<i32> {
+  fn dim(self : DynTensor<f32>) -> i32 {
     return 2;
   }
 }
 
-fn process<T : Dimension>(val : T) -> Tensor<i32> {
+fn process<T : Dimension>(val : T) -> i32 {
   let d = val.dim();
   return d;
 }
 
 fn main() -> i32 {
-  let t : Tensor<f32> = 1.0;
+  let t : Tensor<f32, []> = 1.0;
   let res = process(t);
   return 0;
 }
 
-// CHECK: module
-// CHECK: func.func @Tensor$f32$dim(%arg0: memref<?x?xf32>) -> memref<?x?xi32> {
-// CHECK: arith.constant 2 : i32
-// CHECK: return
-// CHECK: func.func @process$Tensor$f32(%arg0: memref<?x?xf32>) -> memref<?x?xi32> {
-// CHECK: call @Tensor$f32$dim(%
-// CHECK: return
-// CHECK: func.func @main() -> i32 attributes {llvm.emit_c_interface} {
-// CHECK: arith.constant 1.000000e+00 : f32
-// CHECK: call @process$Tensor$f32(%
-// CHECK: return
+// dim() answers a rank, so it returns i32. The receiver is shape-generic, which is what
+// DynTensor spells (Vx#399); the trait method still monomorphizes per element type.
+// CHECK-LABEL: func.func @Tensor$f32$dim(%arg0: memref<?x?xf32>) -> i32 {
+// CHECK: %[[R:.*]] = arith.constant 2 : i32
+// CHECK: return %[[R]] : i32
+// CHECK-LABEL: func.func @process$Tensor$f32(%arg0: memref<?x?xf32>) -> i32 {
+// CHECK: %[[D:.*]] = call @Tensor$f32$dim(%arg0) : (memref<?x?xf32>) -> i32
+// CHECK: return %[[D]] : i32
+// CHECK-LABEL: func.func @main() -> i32 attributes {llvm.emit_c_interface} {
+// CHECK: call @process$Tensor$f32(%{{.*}}) : (memref<?x?xf32>) -> i32

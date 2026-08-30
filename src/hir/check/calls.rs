@@ -1239,8 +1239,11 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
             }
+            // A view over a caller's buffer is a DynTensor, and filling exactly such a buffer is
+            // what this exists for -- so the operands need to be tensors, not statically shaped
+            // ones (Vx#399).
             for t in arg_types.iter().take(3) {
-                if Self::as_tensor_operand(t).is_none() && !self.speculating {
+                if Self::tensor_operand_elem(t).is_none() && !self.speculating {
                     self.errors.push(format!(
                         "Function 'matmul_into' expects tensors, got {:?}",
                         t
@@ -1324,7 +1327,24 @@ impl<'a> TypeChecker<'a> {
                 _ => None,
             };
             match elem {
-                Some(e) => Some(Type::Tensor(e, vec![], None)),
+                // The extents are ordinary arguments, so the same rule the constructor gets
+                // applies: a view whose rows and cols evaluate at compile time is statically
+                // shaped, and one over run-time extents is a DynTensor (Vx#399).
+                Some(e) => {
+                    let mut env = HashMap::new();
+                    for scope in &self.consteval.env {
+                        for (k, v) in scope {
+                            env.insert(k.clone(), v.clone());
+                        }
+                    }
+                    let extents = args.get(1..3).filter(|e| {
+                        e.len() == 2 && e.iter().all(|a| self.eval_expr(a, &env).is_some())
+                    });
+                    match extents {
+                        Some(dims) => Some(Type::Tensor(e, dims.to_vec(), None)),
+                        None => Some(Type::DynTensor(e, None)),
+                    }
+                }
                 None => {
                     if !self.speculating {
                         self.errors.push(format!(

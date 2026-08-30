@@ -73,7 +73,7 @@ impl<'a> TypeChecker<'a> {
         arg_types: &[Type],
         call_span: Span,
     ) -> Type {
-        let unit = || Type::Tensor(crate::syntax::ElementType::F32, vec![], None);
+        let unit = || Type::Struct("void".into(), None);
         let i64_ty = Type::Scalar(crate::syntax::ElementType::I64);
         let span = Some(SourceSpan::from_ast_span(&call_span));
 

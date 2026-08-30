@@ -12,8 +12,8 @@
 
 // --- GPU and ANE have unified memory access to Host DRAM ---
 fn test_unified_host_access() -> i32 {
-  let t_host : Tensor<f32> = 1.0;
-  let t_host2 : Tensor<f32> = 1.0;
+  let t_host : Tensor<f32, []> = 1.0;
+  let t_host2 : Tensor<f32, []> = 1.0;
 
   spawn on(Topology::GPU) {
     // CHECK-NOT: error
@@ -30,7 +30,7 @@ fn test_unified_host_access() -> i32 {
 
 // --- AMX has unified memory access to Host DRAM ---
 fn test_spawn_amx() -> i32 {
-  let t_host : Tensor<f32> = 1.0;
+  let t_host : Tensor<f32, []> = 1.0;
 
   spawn on(Topology::AMX) {
     // CHECK-NOT: error
@@ -44,12 +44,12 @@ fn test_spawn_amx() -> i32 {
 fn test_spawn_cpu_isa_extensions() -> i32 {
   spawn on(Topology::CpuAvx512) {
     // CHECK-NOT: error
-    let avx_val : Tensor<f32> = 2.0;
+    let avx_val : Tensor<f32, []> = 2.0;
   }
 
   spawn on(Topology::CpuNeon) {
     // CHECK-NOT: error
-    let neon_val : Tensor<f32> = 3.0;
+    let neon_val : Tensor<f32, []> = 3.0;
   }
 
   return 0;
@@ -57,7 +57,7 @@ fn test_spawn_cpu_isa_extensions() -> i32 {
 
 // --- Nested spawn blocks switching topology contexts ---
 fn test_nested_spawn() -> i32 {
-  let t_host : Tensor<f32> = 1.0;
+  let t_host : Tensor<f32, []> = 1.0;
   let t_npu = transfer(t_host, Memory::NPU_HBM);
 
   spawn on(Topology::NPU[0]) {
@@ -76,7 +76,7 @@ fn test_nested_spawn() -> i32 {
 fn test_spawn_npu_slice() -> i32 {
   spawn on(Topology::NPU[0..4]) {
     // CHECK-NOT: error
-    let slice_val : Tensor<f32> = 1.0;
+    let slice_val : Tensor<f32, []> = 1.0;
   }
 
   return 0;
@@ -87,7 +87,7 @@ fn test_spawn_npu_dynamic_index() -> i32 {
   for i in 0..4 {
     spawn on(Topology::NPU[i]) {
       // CHECK-NOT: error
-      let dyn_val : Tensor<f32> = 1.0;
+      let dyn_val : Tensor<f32, []> = 1.0;
     }
   }
 

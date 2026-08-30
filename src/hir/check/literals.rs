@@ -218,6 +218,24 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// The element type of any tensor operand, static or dynamic, under the checker-level
+    /// wrappers. `as_tensor_operand` answers only for a statically shaped tensor, because it
+    /// hands back the dimensions; a caller that needs to know *whether* it has a tensor, or only
+    /// what it is made of, asks here and accepts a `DynTensor` too (Vx#399).
+    pub(crate) fn tensor_operand_elem(t: &Type) -> Option<&ElementType> {
+        let mut inner = t;
+        loop {
+            match inner {
+                Type::Tensor(elem, _, _) | Type::DynTensor(elem, _) => return Some(elem),
+                Type::Borrow { inner: i, .. }
+                | Type::Pointer(i, _, _)
+                | Type::Pinned(i, _)
+                | Type::Ref(i, _) => inner = i.as_ref(),
+                _ => return None,
+            }
+        }
+    }
+
     /// How to name an operand a slice builtin refused, for the diagnostic. `Display for Type`
     /// has no tensor arm and falls through to `{:?}`, which prints every dimension's span --
     /// unreadable, and the rank is the only part the reader needs.

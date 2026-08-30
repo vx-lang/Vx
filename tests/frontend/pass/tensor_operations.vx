@@ -12,20 +12,20 @@
 import std::tensor;
 
 fn tensor_add() -> void {
-  let a : Tensor<f32> = Tensor<f32>(4, 4);
-  let b : Tensor<f32> = Tensor<f32>(4, 4);
+  let a = Tensor<f32>(4, 4);
+  let b = Tensor<f32>(4, 4);
   let c = a + b;
 }
 
 fn matmul_basic() -> void {
-  let x : Tensor<f32> = Tensor<f32>(2, 3);
-  let y : Tensor<f32> = Tensor<f32>(3, 4);
+  let x = Tensor<f32>(2, 3);
+  let y = Tensor<f32>(3, 4);
   let z = x @ y;
 }
 
 fn tensor_scalar() -> void {
-  let t1 : Tensor<f64> = Tensor<f64>(10);
-  let t2 : Tensor<f64> = Tensor<f64>(10);
+  let t1 = Tensor<f64>(10);
+  let t2 = Tensor<f64>(10);
   let s = t1 * t2;
 }
 

@@ -3,8 +3,8 @@
 import std::tensor;
 
 fn main() -> i32 {
-  let mut t1 : Tensor<f32> = Tensor<f32>(10, 10);
-  let mut t2 : Tensor<f32> = Tensor<f32>(10, 10);
+  let mut t1 = Tensor<f32>(10, 10);
+  let mut t2 = Tensor<f32>(10, 10);
 
   t1.fill(1.0);
   t2.fill(2.0);
