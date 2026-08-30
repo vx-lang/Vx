@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // The same program as custom_topology_device_image.vx, with ONE difference: the
 // machine model ships an `impl transfer Memory::GPU_HBM -> Memory::SMEM`, so the
 // tile placed in SMEM is filled by USER Vx code instead of the builtin copy
@@ -12,7 +13,7 @@
 // not convert), so the computed answer is identical -- what changes is the shape
 // of the emitted code, and that shape is the witness:
 //
-//   * the body is INLINED at the site (CHECK: user_lowered, gpu.barrier below);
+//   * the body is INLINED at the site (the user_lowered marker and gpu.barrier below);
 //   * the body says raw::barrier() twice, both top-level, the second one
 //     trailing -- so the device image shows exactly TWO bar.sync where the
 //     builtin (post-A3) shows one. device_image_test.rs counts them.

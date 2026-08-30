@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: not vxc %s --action emit-mlir 2>&1 | FileCheck %s
 
 // This file checks 4 invalid pointer casts.
 // CHECK-COUNT-4: Casting an integer to a raw pointer requires an unsafe block

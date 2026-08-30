@@ -1,5 +1,4 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// RUN: %t 2>&1 | FileCheck %s
 
 fn main() -> i32 {
   let mut val = 0;

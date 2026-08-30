@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // A USER-DECLARED topology whose machine model says `arch: nvptx64` gets its
 // kernel compiled to a device image, exactly like the built-in GPU (Vx#352).
 //
@@ -21,8 +22,8 @@
 // declared arch, and the program computes the same answer locally, where the
 // region runs on the host and the transfers are no-ops.
 //
-// CHECK: vx.spawn topology(1916)
-// CHECK: arch = "nvptx64"
+// CHECK: vx.spawn topology({{[0-9]+}}) {
+// CHECK: } {arch = "nvptx64", topology_name = "Dev"}
 // EXPECT: [[0,   1],
 // EXPECT: [1,   2]]
 

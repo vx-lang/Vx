@@ -5,8 +5,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// RUN: %t 2>&1 | FileCheck %s
+// RUN: vxc %s --action run-jit 2>&1 | FileCheck %s
 
 import std::io;
 fn main() -> i32 {
@@ -23,17 +22,7 @@ fn main() -> i32 {
   return 0;
 }
 
-// CHECK: 12.500000
-// CHECK: 8.500000
-// CHECK: 21.000000
-// CHECK: 5.250000
-
-// FRONTEND-LABEL: module {
-// FRONTEND: func.func @test_f32() -> i32
-// FRONTEND: memref.alloc
-
-// MLIR-LABEL: module {
-// MLIR: func.func @test_f32() -> i32
-
-// LLVM-LABEL: module {
-// LLVM: llvm.func @test_f32() -> i32
+// CHECK: 12.5
+// CHECK-SAME: 8.5
+// CHECK-SAME: 21
+// CHECK-SAME: 5.25

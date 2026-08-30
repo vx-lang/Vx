@@ -96,12 +96,3 @@ fn main() -> i32 {
 // EXPECT:  [1,   1,   1,   1],
 // EXPECT:  [1,   1,   1,   1],
 // EXPECT:  [1,   1,   1,   1]]
-
-// FRONTEND-LABEL: module {
-// FRONTEND: func.func @test_f32() -> i32
-
-// MLIR-LABEL: module {
-// MLIR: func.func @test_f32() -> i32
-
-// LLVM-LABEL: module {
-// LLVM: llvm.func @test_f32() -> i32

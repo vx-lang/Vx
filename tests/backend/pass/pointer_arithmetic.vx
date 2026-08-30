@@ -5,8 +5,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// RUN: %t 2>&1 | FileCheck %s
+// RUN: vxc %s --action run-jit 2>&1 | FileCheck %s
 
 import std::io;
 extern "C" {
@@ -22,14 +21,6 @@ fn main() -> i32 {
   return 0;
 }
 
-// CHECK: 0.000000
-
-// FRONTEND-LABEL: module {
-// FRONTEND: func.func @test_f32() -> i32
-// FRONTEND: memref.alloc
-
-// MLIR-LABEL: module {
-// MLIR: func.func @test_f32() -> i32
-
-// LLVM-LABEL: module {
-// LLVM: llvm.func @test_f32() -> i32
+// What malloc left in the block is not ours to predict; the assertion is that indexing a
+// raw `*mut f32` lowers and runs at all, so match any number it prints.
+// CHECK: {{[0-9.eE+-]+}}

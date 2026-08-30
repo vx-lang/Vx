@@ -1,4 +1,4 @@
-// RUN: vxc %s 2>&1 | FileCheck %s
+// RUN: not vxc %s 2>&1 | FileCheck %s
 //! vx-format: OFF
 
 import std::io;

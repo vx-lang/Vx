@@ -24,26 +24,19 @@ fn main() -> i32 {
 }
 
 // CHECK: module
-// CHECK:   func.func @process$Tensor$f32(%arg0: memref<?x?xf32>) ->
-// memref<?x?xf32> { CHECK:     return %arg0 : memref<?x?xf32> CHECK:   } CHECK:
-// func.func @process_TensorI32_(%arg0: memref<?x?xi32>) -> memref<?x?xi32> {
-// CHECK:     return %arg0 : memref<?x?xi32>
-// CHECK:   }
-// CHECK:   func.func @main() -> i32 attributes {llvm.emit_c_interface} {
-// CHECK:     %cst = arith.constant 1.000000e+00 : f32
-// CHECK:     %c2_i32 = arith.constant 2 : i32
-// CHECK:     %0 = builtin.unrealized_conversion_cast %cst : f32 to
-// memref<?x?xf32> CHECK:     %1 = call @process$Tensor$f32(%0) :
-// (memref<?x?xf32>) -> memref<?x?xf32> CHECK:     %2 =
-// builtin.unrealized_conversion_cast %c2_i32 : i32 to memref<?x?xi32> CHECK:
-// call @process_TensorI32_ CHECK: arith.constant 0 : i32 CHECK: return CHECK: }
-
-// FRONTEND-LABEL: module {
-// FRONTEND: func.func @test_f32() -> i32
-// FRONTEND: memref.alloc
-
-// MLIR-LABEL: module {
-// MLIR: func.func @test_f32() -> i32
-
-// LLVM-LABEL: module {
-// LLVM: llvm.func @test_f32() -> i32
+// CHECK: func.func @process$Tensor$f32(%arg0: memref<?x?xf32>) -> memref<?x?xf32> {
+// CHECK: return %arg0 : memref<?x?xf32>
+// CHECK: }
+// CHECK: func.func @process$Tensor$i32(%arg0: memref<?x?xi32>) -> memref<?x?xi32> {
+// CHECK: return %arg0 : memref<?x?xi32>
+// CHECK: }
+// CHECK: func.func @main() -> i32 attributes {llvm.emit_c_interface} {
+// CHECK: %cst = arith.constant 1.000000e+00 : f32
+// CHECK: %c2_i32 = arith.constant 2 : i32
+// CHECK: %0 = builtin.unrealized_conversion_cast %cst : f32 to memref<?x?xf32>
+// CHECK: %1 = call @process$Tensor$f32(%0) : (memref<?x?xf32>) -> memref<?x?xf32>
+// CHECK: %[[I:.*]] = builtin.unrealized_conversion_cast %c2_i32 : i32 to memref<?x?xi32>
+// CHECK: call @process$Tensor$i32(%[[I]]) : (memref<?x?xi32>) -> memref<?x?xi32>
+// CHECK: arith.constant 0 : i32
+// CHECK: return
+// CHECK: }

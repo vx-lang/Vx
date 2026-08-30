@@ -6,7 +6,18 @@
 //
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
+// The if/else chain lowers to unstructured control flow: one comparison per arm feeding a
+// conditional branch, and a single load of the result slot on the way out.
+// CHECK-LABEL: func.func @test_if(%arg0: i32) -> i32 {
+// CHECK: %[[SLOT:.*]] = memref.alloca() : memref<i32>
+// CHECK: %[[GT:.*]] = arith.cmpi sgt, %arg0, %{{.*}} : i32
+// CHECK: cf.cond_br %[[GT]], ^[[THEN:bb[0-9]+]], ^[[ELSE:bb[0-9]+]]
+// CHECK: ^[[THEN]]:
+// CHECK: memref.store %{{.*}}, %[[SLOT]][] : memref<i32>
+// CHECK: ^[[ELSE]]:
+// CHECK: %[[EQ:.*]] = arith.cmpi eq, %arg0, %{{.*}} : i32
+// CHECK: cf.cond_br %[[EQ]],
+// CHECK: memref.load %[[SLOT]][] : memref<i32>
 fn test_if(x : i32) -> i32 {
   let mut res : i32 = 0;
   if x > 10 {
@@ -26,22 +37,3 @@ fn main() -> i32 {
   return 0; // 1 + 2 + 3 = 6
 }
 
-// CHECK: func.func @test_if(%arg0: i32) -> i32 {
-// CHECK: = arith.cmp
-// CHECK: scf.if %
-// CHECK: } else {
-// CHECK: = arith.cmp
-// CHECK: scf.if %
-// CHECK: } else {
-// CHECK: }
-// CHECK: }
-
-// FRONTEND-LABEL: module {
-// FRONTEND: func.func @test_f32() -> i32
-// FRONTEND: memref.alloc
-
-// MLIR-LABEL: module {
-// MLIR: func.func @test_f32() -> i32
-
-// LLVM-LABEL: module {
-// LLVM: llvm.func @test_f32() -> i32

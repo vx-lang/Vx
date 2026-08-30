@@ -143,13 +143,15 @@ fn main() -> i32 {
 }
 // NO_EXEC
 
+// MLIR-LABEL: func.func @main() -> i32 attributes {llvm.emit_c_interface} {
 
-// MLIR-LABEL: module {
-// MLIR: func.func @main() -> i32
+// At -O0 the 128x128 extents are still runtime values: two index casts feed a dynamic alloc.
+// MLIR-O0: %[[D0:.*]] = arith.index_cast %{{.*}} : i32 to index
+// MLIR-O0: %[[D1:.*]] = arith.index_cast %{{.*}} : i32 to index
+// MLIR-O0: memref.alloc(%[[D0]], %[[D1]]) : memref<?x?xf32>
 
-// The `LLVM-LABEL: module {` that stood here checked nothing: this runner
-// matches ordered substrings and ignores every directive but `CHECK:` and
-// `CHECK-NOT:`, whatever prefix they carry. Enforcing it as a plain check
-// then failed, because the output this RUN line produces does not contain
-// that text -- so the line had been asserting something untrue, invisibly.
-// LLVM: llvm.func @main() -> i32
+// At -O3 they fold and the buffer is statically shaped.
+// MLIR-O3: memref.alloc() : memref<128x128xf32>
+
+// --emit-llvm stops at the LLVM dialect, so main is still an llvm.func here.
+// LLVM-LABEL: llvm.func @main() -> i32 attributes {llvm.emit_c_interface} {

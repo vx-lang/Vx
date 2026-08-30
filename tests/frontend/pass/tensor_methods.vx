@@ -1,5 +1,4 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// RUN: %t 2>&1 | FileCheck %s
 
 import std::tensor;
 

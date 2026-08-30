@@ -5,13 +5,17 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // The same program as custom_topology_device_image.vx with the ONE difference
 // that the topology declares no `arch:`. No device image is produced -- the
 // compiler refuses to guess what code to emit for a machine that did not say --
 // and the program still computes the same answer on the host.
 // device_image_test.rs asserts the payload carries no image.
 //
-// CHECK: vx.spawn topology(1916)
+// The attribute dictionary is the assertion: a topology that declared no arch carries
+// none, so nothing downstream can guess what code to emit for it.
+// CHECK: vx.spawn topology({{[0-9]+}}) {
+// CHECK: } {topology_name = "Dev"}
 // EXPECT: [[0,   1],
 // EXPECT: [1,   2]]
 

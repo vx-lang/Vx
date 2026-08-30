@@ -50,13 +50,3 @@ fn test_primitives() -> i32 {
 // CHECK:     return %c0_i32 : i32
 // CHECK:   }
 // CHECK: }
-
-// FRONTEND-LABEL: module {
-// FRONTEND: func.func @test_f32() -> i32
-// FRONTEND: memref.alloc
-
-// MLIR-LABEL: module {
-// MLIR: func.func @test_f32() -> i32
-
-// LLVM-LABEL: module {
-// LLVM: llvm.func @test_f32() -> i32

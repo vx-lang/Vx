@@ -6,7 +6,20 @@
 //
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
+// The libc file entry points are declared, and main threads one handle from fopen through
+// fputs to fclose. Pointers are opaque `!llvm.ptr`, so nothing here names a pointee type.
+// CHECK: func.func private @fopen(!llvm.ptr, !llvm.ptr) -> !llvm.ptr
+// CHECK: func.func private @fputs(!llvm.ptr, !llvm.ptr) -> i32
+// CHECK: func.func private @fclose(!llvm.ptr) -> i32
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: %[[NAME:.*]] = llvm.mlir.addressof @".str.0" : !llvm.ptr
+// CHECK: %[[PATH:.*]] = call @vx_get_temp_file(%[[NAME]]) : (!llvm.ptr) -> !llvm.ptr
+// CHECK: %[[MODE:.*]] = llvm.mlir.addressof @".str.1" : !llvm.ptr
+// CHECK: %[[FH:.*]] = call @fopen(%[[PATH]], %[[MODE]]) : (!llvm.ptr, !llvm.ptr) -> !llvm.ptr
+// CHECK: %[[TEXT:.*]] = llvm.mlir.addressof @".str.2" : !llvm.ptr
+// CHECK: call @fputs(%[[TEXT]], %[[FH]]) : (!llvm.ptr, !llvm.ptr) -> i32
+// CHECK: call @fclose(%[[FH]]) : (!llvm.ptr) -> i32
+// CHECK: call @remove(%[[PATH]]) : (!llvm.ptr) -> i32
 import std::io;
 extern {
   fn fopen(filename : *const i8, mode : *const i8) -> *mut i8;
@@ -35,22 +48,3 @@ fn main() -> i32 {
   return 0;
 }
 
-// CHECK: func.func private @fopen(!llvm.ptr<0>, !llvm.ptr<0>) -> !llvm.ptr<0>
-// CHECK: func.func private @fputs(!llvm.ptr<0>, !llvm.ptr<0>) -> i32
-// CHECK: func.func @main() -> i32 {
-// CHECK: = llvm.mlir.addressof @str_0 : !llvm.ptr<0>
-// CHECK: = llvm.mlir.addressof @str_1 : !llvm.ptr<0>
-// CHECK: = func.call @fopen(%
-// CHECK: = llvm.mlir.addressof @str_2 : !llvm.ptr<0>
-// CHECK: = func.call @fputs(%
-// CHECK: = func.call @fclose(%
-
-// FRONTEND-LABEL: module {
-// FRONTEND: func.func @test_f32() -> i32
-// FRONTEND: memref.alloc
-
-// MLIR-LABEL: module {
-// MLIR: func.func @test_f32() -> i32
-
-// LLVM-LABEL: module {
-// LLVM: llvm.func @test_f32() -> i32

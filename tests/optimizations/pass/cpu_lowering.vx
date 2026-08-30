@@ -1,5 +1,5 @@
 // RUN: vxc %s --emit-mlir -O0 2>&1 | FileCheck %s
-// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 |
+// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1
 // RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard,vx-to-llvm)" 2>&1
 // FileCheck %s
 // | FileCheck %s
@@ -61,15 +61,5 @@ fn process(t : Tensor<f32>) -> Tensor<f32> {
 // VXLLVM:     return %arg0 : memref<?x?xf32>
 // VXLLVM:   }
 // VXLLVM: }
-
-// FRONTEND-LABEL: module {
-// FRONTEND: func.func @test_f32() -> i32
-// FRONTEND: memref.alloc
-
-// MLIR-LABEL: module {
-// MLIR: func.func @test_f32() -> i32
-
-// LLVM-LABEL: module {
-// LLVM: llvm.func @test_f32() -> i32
 
 // CHECK: module

@@ -1,8 +1,9 @@
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir
+// XFAIL: *
 //
-// The IR assertion this file used to carry could not run: the program does not
-// compile on the default path -- a multi-payload variant binding panics the AST
-// lowering (Vx#398, Vx#233). It is restored when that is fixed.
+// The IR assertion this file used to carry could not run: the program does not compile on
+// the default path -- a multi-payload variant binding panics the AST lowering (Vx#398,
+// Vx#233). The XFAIL above reports the day that changes, and the assertions go back.
 enum Result {
   Ok(i32, f32),
   Err,

@@ -14,8 +14,18 @@ fn main() -> i32 {
   return 0;
 }
 
-// CHECK: module
-// CHECK:   func.func @test_for_loop() -> i64
-// CHECK:     scf.for
-// CHECK:   }
-// CHECK: }
+// The for loop lowers to unstructured control flow: index-cast bounds, a header that
+// compares the induction variable against the upper bound, and a latch that steps by one.
+// CHECK-LABEL: func.func @test_for_loop() -> i64 {
+// CHECK: %[[LO:.*]] = arith.index_cast %{{.*}} : i64 to index
+// CHECK: %[[HI:.*]] = arith.index_cast %{{.*}} : i64 to index
+// CHECK: %[[STEP:.*]] = arith.constant 1 : index
+// CHECK: cf.br ^[[HEAD:bb[0-9]+]](%[[LO]] : index)
+// CHECK: ^[[HEAD]](%[[IV:.*]]: index):
+// CHECK: %[[CMP:.*]] = arith.cmpi slt, %[[IV]], %[[HI]] : index
+// CHECK: cf.cond_br %[[CMP]], ^[[BODY:bb[0-9]+]], ^[[EXIT:bb[0-9]+]]
+// CHECK: ^[[BODY]]:
+// CHECK: arith.addi %{{.*}}, %{{.*}} : i64
+// CHECK: ^[[EXIT]]:
+// CHECK: return %{{.*}} : i64
+// CHECK: arith.addi %[[IV]], %[[STEP]] : index

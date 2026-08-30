@@ -163,11 +163,53 @@ fn run_frontend_test(path: &Path, expect_pass: bool) -> Result<(), String> {
     // A file that states CHECK lines gets them executed. This runner used to stop at the
     // semantic verdict, so 281 CHECK lines across this directory asserted nothing and a file
     // could pass with its claims about the emitted IR flatly false (Vx#407). Running them is
-    // what makes the header mean what it says; a file with no CHECK lines is unaffected.
-    if source.lines().any(|l| l.trim().starts_with("// CHECK:")) {
+    // what makes the header mean what it says. XFAIL files come along because that marker is
+    // itself an assertion -- that the RUN line still cannot pass.
+    if source.lines().any(|l| l.trim().starts_with("// CHECK")) || source.contains("// XFAIL: *") {
         run_lit_test(path, false)?;
     }
     Ok(())
+}
+
+/// Match `input` against a file's CHECK directives using the real FileCheck.
+///
+/// The middle-end runner compiles in process -- it drives passes the CLI has no flag for --
+/// so there is no RUN line to hand a shell. Piping what it produced into FileCheck gets the
+/// same matching the lit tiers have: `{{regex}}` holes, CHECK-NEXT, CHECK-DAG, capture
+/// variables. It replaces an ordered substring scan that understood only plain `CHECK:` and
+/// had to refuse everything else to avoid passing vacuously (Vx#407).
+fn filecheck(input: &str, match_file: &Path, prefix: Option<&str>) -> Result<(), String> {
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut cmd = std::process::Command::new("FileCheck");
+    cmd.arg(match_file);
+    if let Some(p) = prefix {
+        cmd.arg(format!("--check-prefix={}", p));
+    }
+    let mut child = cmd
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("could not run FileCheck (is it on PATH?): {}", e))?;
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .map_err(|e| format!("writing to FileCheck: {}", e))?;
+    let out = child
+        .wait_with_output()
+        .map_err(|e| format!("waiting on FileCheck: {}", e))?;
+    if out.status.success() {
+        return Ok(());
+    }
+    Err(format!(
+        "FileCheck failed on {:?}:\n{}{}",
+        match_file,
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    ))
 }
 
 // Middle-End Runner
@@ -179,32 +221,6 @@ fn run_middle_end_test(path: &Path) -> Result<(), String> {
     if source.contains("// REQUIRES: macos") && !cfg!(target_os = "macos") {
         return Ok(());
     }
-
-    // This runner implements only plain `// CHECK:`, matched in order. A file
-    // written against real FileCheck's directives would otherwise contribute no
-    // checks at all and pass vacuously, which is indistinguishable from passing
-    // for the right reason. Refuse it instead and say where such a test goes:
-    // tests/optimizations/ runs its RUN line through real FileCheck.
-    if let Some(bad) = source
-        .lines()
-        .map(str::trim)
-        .find(|line| line.starts_with("// CHECK-") && !line.starts_with("// CHECK-LABEL:"))
-    {
-        return Err(format!(
-            "{:?} uses `{}`, which this runner does not implement -- it reads only \
-             `// CHECK:`, so the file would pass without checking anything. Use plain \
-             `// CHECK:` lines, or move the test to tests/optimizations/pass/ where the \
-             RUN line is executed through real FileCheck.",
-            path, bad
-        ));
-    }
-
-    // Extract // CHECK: lines
-    let check_lines: Vec<String> = source
-        .lines()
-        .filter(|line| line.trim().starts_with("// CHECK:"))
-        .map(|line| line.split_once("CHECK:").unwrap().1.trim().to_string())
-        .collect();
 
     let mut loader = vxc::module_loader::ModuleLoader::new();
     loader
@@ -314,16 +330,7 @@ fn run_middle_end_test(path: &Path) -> Result<(), String> {
         .unwrap();
     let mlir_str = codegen.into_module().as_operation().to_string();
 
-    // Verify // CHECK: lines in order
-    let mut current_idx = 0;
-    for check in check_lines {
-        if let Some(pos) = mlir_str[current_idx..].find(&check) {
-            current_idx += pos + check.len();
-        } else {
-            return Err(format!("FileCheck failed on {:?}: Could not find `{}` after previous checks.\nMLIR Output:\n{}", path, check, mlir_str));
-        }
-    }
-    Ok(())
+    filecheck(&mlir_str, path, None)
 }
 
 // Warning Runner: type-checks the file (which must succeed with no errors) and asserts
@@ -725,245 +732,135 @@ fn run_optimization_test(path: &Path) -> Result<(), String> {
     run_lit_test(path, true)
 }
 
-/// Execute a file's `// RUN:` line and match its `// CHECK:` lines against the output.
+/// Execute a file's `// RUN:` lines through a shell, so `| FileCheck %s` runs the real
+/// FileCheck and every directive it understands works: `{{regex}}` holes, `CHECK-NEXT`,
+/// `CHECK-SAME`, `CHECK-DAG`, `CHECK-COUNT`, capture variables.
 ///
-/// `force_legacy` pins the AST codegen, which the optimizations tests want because they assert
-/// that path's exact IR. The frontend tests run the default path instead: they assert what a
-/// user actually gets, and forcing legacy there would report the AST path's own bugs as frontend
-/// failures (three such programs are recorded on Vx#398).
+/// This used to reimplement FileCheck as an ordered substring scan over `CHECK:` and
+/// `CHECK-NOT:`, which meant the pipe in the RUN line was decoration -- anything else a
+/// file wrote had to be refused, or it would pass while asserting nothing (Vx#407).
+///
+/// `force_legacy` pins the AST codegen, which the optimizations and backend tests want
+/// because they assert that path's exact IR. The frontend tests run the default path
+/// instead: they assert what a user actually gets, and forcing legacy there would report
+/// the AST path's own bugs as frontend failures (three such programs are recorded on
+/// Vx#398).
 fn run_lit_test(path: &Path, force_legacy: bool) -> Result<(), String> {
     let source = fs::read_to_string(path).expect("Failed to read test file");
 
-    // Same lit-style gate the middle-end and backend runners apply. A check
-    // against IR that only a macOS-registered plugin can produce is not a
-    // failure elsewhere, it is a test that does not apply.
+    // Same lit-style gate the middle-end and backend runners apply. A check against IR that
+    // only a macOS-registered plugin can produce is not a failure elsewhere, it is a test
+    // that does not apply.
     if source.contains("// REQUIRES: macos") && !cfg!(target_os = "macos") {
         return Ok(());
     }
 
-    // This runner matches CHECK lines as ordered substrings and understands
-    // only `CHECK:` and `CHECK-NOT:` (with an optional --check-prefix). A file
-    // using real FileCheck's other directives, or a `{{...}}` regex hole, would
-    // contribute no checks and pass without testing anything -- which is
-    // indistinguishable from passing for the right reason. Refuse it instead.
-    // Every prefix in play, not just CHECK: a file may pass --check-prefix=X and
-    // then write `X-SAME:`, which the CHECK-only guard below would wave through
-    // -- the directive contributes nothing and the file passes for no reason.
-    // That is exactly the failure this guard exists to stop, so it has to cover
-    // whatever prefixes the RUN lines actually name.
-    let mut prefixes = vec!["CHECK".to_string()];
-    for line in source.lines() {
-        let line = line.trim();
-        if !line.starts_with("// RUN:") {
-            continue;
-        }
-        for tok in line.split_whitespace() {
-            if let Some(p) = tok.strip_prefix("--check-prefix=") {
-                prefixes.push(p.to_string());
-            }
-        }
+    let run_lines: Vec<&str> = source
+        .lines()
+        .filter(|l| l.trim_start().starts_with("// RUN:"))
+        .collect();
+    if run_lines.is_empty() {
+        return Err(format!("{:?} has no // RUN: line", path));
     }
 
-    if let Some(bad) = source.lines().map(str::trim).find(|line| {
-        prefixes.iter().any(|p| {
-            let dash = format!("// {p}-");
-            let bare = format!("// {p}");
-            let not = format!("// {p}-NOT:");
-            (line.starts_with(&dash) && !line.starts_with(&not))
-                || (line.starts_with(&bare) && line.contains("{{"))
-        })
-    }) {
+    // `// XFAIL: *` marks a RUN line that cannot pass yet because the compiler is wrong,
+    // not because the test is. It keeps the command running, so the day the bug is fixed
+    // the file reports "expected to fail, but passed" and its assertions get restored --
+    // which deleting the RUN line would not do.
+    let xfail = source.contains("// XFAIL: *");
+
+    // A file that states CHECK lines has to feed something into FileCheck, or the directives
+    // assert nothing. FileCheck itself catches the other half of this -- a prefix named on
+    // the command line with no directives behind it is an error, not an empty pass.
+    let states_checks = source
+        .lines()
+        .any(|l| l.trim_start().starts_with("// CHECK"));
+    if states_checks && !xfail && !run_lines.iter().any(|l| l.contains("FileCheck")) {
         return Err(format!(
-            "{:?} uses `{}`. This runner matches ordered substrings and supports only \
-             `CHECK:` / `CHECK-NOT:` -- no CHECK-DAG/NEXT/SAME and no `{{{{...}}}}` holes, \
-             so the file would pass without checking anything. Rewrite it with plain \
-             ordered `CHECK:` lines.",
-            path, bad
+            "{:?} states CHECK lines, but no RUN line pipes into FileCheck, so nothing \
+             matches them.",
+            path
         ));
     }
 
-    let run_lines: Vec<_> = source
-        .lines()
-        .filter(|line| {
-            line.trim().starts_with("// RUN: vxc %s")
-                || line.trim().starts_with("// RUN: not vxc %s")
-                || line.trim().starts_with("// RUN: vx-opt %s")
-        })
-        .collect();
+    // The freshly built vxc/vx-opt lead; the rest of PATH is what carries FileCheck.
+    let bin_dir = Path::new(env!("CARGO_BIN_EXE_vxc")).parent().unwrap();
+    let path_var = format!(
+        "{}:{}",
+        bin_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
 
-    if run_lines.is_empty() {
-        return Err("Missing // RUN: line".to_string());
-    }
+    // %t: a scratch path unique to this file, inside the repo's own target directory.
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    std::hash::Hash::hash(&path, &mut hasher);
+    let hash = std::hash::Hasher::finish(&hasher);
+    let tmp_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/test_tmp");
+    std::fs::create_dir_all(&tmp_dir).unwrap_or_default();
+    let t_val = tmp_dir.join(format!(
+        "vxc_test_{}_{:x}",
+        path.file_stem().unwrap().to_string_lossy(),
+        hash
+    ));
 
     for run_line in run_lines {
-        let run_cmd = run_line.split_once("RUN:").unwrap().1.trim();
-
-        // Parse FileCheck prefix
-        let mut prefix = "CHECK".to_string();
-        if let Some(filecheck_part) = run_cmd.split('|').nth(1) {
-            if let Some(prefix_arg) = filecheck_part
-                .split_whitespace()
-                .find(|s| s.starts_with("--check-prefix="))
-            {
-                prefix = prefix_arg.split_once('=').unwrap().1.to_string();
-            }
-        }
-
-        let check_prefix = format!("// {}:", prefix);
-        let check_not_prefix = format!("// {}-NOT:", prefix);
-
-        let check_lines: Vec<String> = source
-            .lines()
-            .filter(|line| {
-                line.trim().starts_with(&check_prefix)
-                    && !line.trim().starts_with(&check_not_prefix)
-            })
-            .map(|line| {
-                line.split_once(&check_prefix[3..])
-                    .unwrap()
-                    .1
-                    .trim()
-                    .to_string()
-            })
-            .collect();
-
-        let check_not_lines: Vec<String> = source
-            .lines()
-            .filter(|line| line.trim().starts_with(&check_not_prefix))
-            .map(|line| {
-                line.split_once(&check_not_prefix[3..])
-                    .unwrap()
-                    .1
-                    .trim()
-                    .to_string()
-            })
-            .collect();
-
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        std::hash::Hash::hash(&path, &mut hasher);
-        let hash = std::hash::Hasher::finish(&hasher);
-
-        // Ensure temporary files are completely contained within the project repository
-        let tmp_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/test_tmp");
-        std::fs::create_dir_all(&tmp_dir).unwrap_or_default();
-        let t_val = tmp_dir.join(format!(
-            "vxc_test_{}_{:x}",
-            path.file_stem().unwrap().to_string_lossy(),
-            hash
-        ));
-
-        let vxc_cmd_str = run_cmd.split('|').next().unwrap().trim();
-        let vxc_cmd_str = vxc_cmd_str
+        let mut cmd = run_line
+            .split_once("RUN:")
+            .unwrap()
+            .1
+            .trim()
             .replace("%s", path.to_str().unwrap())
             .replace("%t", t_val.to_str().unwrap());
 
-        let mut args: Vec<String> = vec![];
-        let mut current_arg = String::new();
-        let mut in_quotes = false;
-        for c in vxc_cmd_str.chars() {
-            if c == '"' {
-                in_quotes = !in_quotes;
-            } else if c == ' ' && !in_quotes {
-                if !current_arg.is_empty() {
-                    args.push(current_arg.clone());
-                    current_arg.clear();
-                }
-            } else {
-                current_arg.push(c);
+        // `// REQUIRES: flat-codegen` opts a file out: some constructs exist ONLY on the flat
+        // path (`flash_attention_into`, whose note-and-nest emission is what
+        // kernel_kind_attention.vx pins), and forcing legacy there tests a lowering that
+        // deliberately does not exist.
+        if force_legacy && !source.contains("// REQUIRES: flat-codegen") {
+            let split = cmd.find('|').unwrap_or(cmd.len());
+            let (head, tail) = cmd.split_at(split);
+            let mut words = head.split_whitespace();
+            let first = words.next();
+            if first == Some("vxc") || (first == Some("not") && words.next() == Some("vxc")) {
+                cmd = format!("{} --legacy-codegen {}", head.trim_end(), tail);
             }
         }
-        if !current_arg.is_empty() {
-            args.push(current_arg);
-        }
 
-        let mut expect_failure = false;
-        let mut exec_name = args.remove(0);
-        if exec_name == "not" {
-            expect_failure = true;
-            exec_name = args.remove(0);
-        }
-
-        let bin_path = if exec_name == "vxc" {
-            // These FileCheck tests pin the *AST* codegen's MLIR structure (module attributes, op
-            // shapes). Flat codegen is now the default (#201), so force the legacy AST path here; the
-            // flat path's emission is validated separately by the flat-vs-AST differential harness.
-            // Harmless for `-x mlir` RUN lines (no Vx codegen runs).
-            //
-            // `// REQUIRES: flat-codegen` opts a file out: some constructs exist ONLY on the flat
-            // path (`flash_attention_into`, whose note-and-nest emission is what
-            // kernel_kind_attention.vx pins), and forcing legacy there tests a lowering that
-            // deliberately does not exist.
-            if force_legacy && !source.contains("// REQUIRES: flat-codegen") {
-                args.push("--legacy-codegen".to_string());
-            }
-            env!("CARGO_BIN_EXE_vxc")
-        } else if exec_name == "vx-opt" {
-            env!("CARGO_BIN_EXE_vx-opt")
-        } else {
-            println!("Warning: Unknown executable in RUN line: {}", exec_name);
-            continue;
-        };
-
-        let output = std::process::Command::new(bin_path)
-            .args(&args)
+        // pipefail, because a RUN line fails if any stage fails. A shell reports only the
+        // last stage, so a compiler that crashed would still pass whenever its stderr
+        // happened to satisfy the CHECK lines.
+        let output = std::process::Command::new("bash")
+            .arg("-c")
+            .arg(format!("set -o pipefail; {}", cmd))
+            .env("PATH", &path_var)
             .env("RUST_BACKTRACE", "1")
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
             .output()
-            .expect("Failed to execute vxc");
+            .expect("Failed to execute RUN line");
 
-        if expect_failure {
-            if output.status.success() {
-                return Err(format!(
-                    "Command succeeded but was expected to fail:\n{}",
-                    String::from_utf8_lossy(&output.stdout)
-                ));
-            }
-            let out = format!(
-                "{}{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            );
-
-            let mut current_idx = 0;
-            for check in check_lines {
-                if let Some(pos) = out[current_idx..].find(&check) {
-                    current_idx += pos + check.len();
-                } else {
-                    return Err(format!("FileCheck failed on {:?} for prefix {}: Could not find `{}` after previous checks.\nOutput:\n{}", path, prefix, check, out));
-                }
+        if xfail {
+            if !output.status.success() {
+                return Ok(());
             }
             continue;
         }
 
         if !output.status.success() {
             return Err(format!(
-                "vxc failed:\n{}",
+                "RUN line failed for {:?}:\n  {}\nStdout:\n{}\nStderr:\n{}",
+                path,
+                cmd.trim(),
+                String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr)
             ));
         }
-
-        let out = format!(
-            "{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-
-        let mut current_idx = 0;
-        for check in check_lines {
-            if let Some(pos) = out[current_idx..].find(&check) {
-                current_idx += pos + check.len();
-            } else {
-                return Err(format!("FileCheck failed on {:?} for prefix {}: Could not find `{}` after previous checks.\nOutput:\n{}", path, prefix, check, out));
-            }
-        }
-
-        for not_check in check_not_lines {
-            if out.contains(&not_check) {
-                return Err(format!(
-                    "FileCheck failed on {:?} for prefix {}: Found forbidden `{}`.\nOutput:\n{}",
-                    path, prefix, not_check, out
-                ));
-            }
-        }
+    }
+    if xfail {
+        return Err(format!(
+            "{:?} is marked XFAIL, but every RUN line succeeded. The bug it waits on is \
+             fixed: drop the XFAIL and restore the assertions.",
+            path
+        ));
     }
     Ok(())
 }
@@ -973,10 +870,10 @@ fn test_middle_end_fail() -> Result<(), String> {
     run_directory_tests(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/middle_end/fail"),
         |path| {
-            // A fail test must fail AND fail for the declared reason: every `// CHECK:`
-            // line must appear, in order, in the error text. "Any error passes" let a
-            // test keep passing while the diagnostic it pinned was deleted -- the A2
-            // review planted a legal program with `// CHECK: E9999` and it passed.
+            // A fail test must fail AND fail for the declared reason: the error text has
+            // to satisfy the file's CHECK directives. "Any error passes" let a test keep
+            // passing while the diagnostic it pinned was deleted -- the A2 review planted
+            // a legal program with `// CHECK: E9999` and it passed.
             let source = fs::read_to_string(path).expect("Failed to read test file");
             // `// REQUIRES: z3`: the pinned diagnostic needs the prover, and the prover
             // fails OPEN without z3 (the program compiles). Skip rather than fail on a
@@ -990,33 +887,18 @@ fn test_middle_end_fail() -> Result<(), String> {
                     return Ok(());
                 }
             }
-            let check_lines: Vec<String> = source
-                .lines()
-                .filter(|l| l.trim().starts_with("// CHECK:"))
-                .map(|l| l.split_once("CHECK:").unwrap().1.trim().to_string())
-                .collect();
             match run_middle_end_test(path) {
                 Ok(()) => Err(format!(
                     "Expected {} to fail, but it succeeded!",
                     path.display()
                 )),
-                Err(e) => {
-                    let mut current_idx = 0;
-                    for check in &check_lines {
-                        if let Some(pos) = e[current_idx..].find(check.as_str()) {
-                            current_idx += pos + check.len();
-                        } else {
-                            return Err(format!(
-                                "{} failed, but not for the declared reason: `{}` is not \
-                                 in the error output.\nError:\n{}",
-                                path.display(),
-                                check,
-                                e
-                            ));
-                        }
-                    }
-                    Ok(())
-                }
+                Err(e) => filecheck(&e, path, None).map_err(|why| {
+                    format!(
+                        "{} failed, but not for the declared reason.\n{}",
+                        path.display(),
+                        why
+                    )
+                }),
             }
         },
     )
@@ -1040,8 +922,19 @@ fn test_backend() -> Result<(), String> {
         |path| {
             println!("Running test_backend on {:?}", path);
             run_backend_test(path)?;
+            // Any file that states CHECK lines, or whose RUN line names FileCheck, gets
+            // those RUN lines executed. Matching on one exact spelling of the RUN line
+            // left most of this directory's CHECK lines inert, and they had drifted
+            // (Vx#407). CHECK lines alone are enough: a file that states them and has no
+            // RUN line should say so, not slip past.
             let source = std::fs::read_to_string(path).unwrap_or_default();
-            if source.contains("// RUN: vxc %s --emit-mlir") {
+            let has_run = source
+                .lines()
+                .any(|l| l.trim_start().starts_with("// RUN:"));
+            let states_checks = source
+                .lines()
+                .any(|l| l.trim_start().starts_with("// CHECK"));
+            if states_checks || (has_run && source.contains("FileCheck")) {
                 run_optimization_test(path)?;
             }
             Ok(())
@@ -1318,70 +1211,15 @@ where
     Ok(())
 }
 
+// The fail tiers name their own command, so nothing is pinned for them; everything else
+// the lit runner does -- the real FileCheck, pipefail, %s/%t -- applies here too.
 fn run_shell_tests(path: &Path) -> Result<(), String> {
-    let source = std::fs::read_to_string(path).unwrap_or_default();
-    let run_lines: Vec<_> = source
-        .lines()
-        .filter(|l| l.trim_start().starts_with("// RUN:"))
-        .collect();
-    if !run_lines.is_empty() {
-        let vxc_dir = Path::new(env!("CARGO_BIN_EXE_vxc")).parent().unwrap();
-        let current_path = std::env::var("PATH").unwrap_or_default();
-        let new_path = format!("{}:{}", vxc_dir.display(), current_path);
-        for run_line in run_lines {
-            let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            std::hash::Hash::hash(&path, &mut hasher);
-            let hash = std::hash::Hasher::finish(&hasher);
-
-            // Ensure temporary files are completely contained within the project repository
-            let tmp_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/test_tmp");
-            std::fs::create_dir_all(&tmp_dir).unwrap_or_default();
-            let t_val = tmp_dir.join(format!(
-                "vxc_test_{}_{:x}",
-                path.file_stem().unwrap().to_string_lossy(),
-                hash
-            ));
-
-            let cmd = run_line
-                .split_once("RUN:")
-                .unwrap()
-                .1
-                .trim()
-                .replace("%s", path.to_str().unwrap())
-                .replace("%t", t_val.to_str().unwrap());
-            let output = std::process::Command::new("sh")
-                .arg("-c")
-                .arg(&cmd)
-                .env("PATH", &new_path)
-                .output()
-                .expect("Failed to execute shell command");
-            if !output.status.success() {
-                return Err(format!(
-                    "Command '{}' failed for test {:?}\nStdout:\n{}\nStderr:\n{}",
-                    cmd,
-                    path,
-                    String::from_utf8_lossy(&output.stdout),
-                    String::from_utf8_lossy(&output.stderr)
-                ));
-            }
-        }
-    } else {
-        return Err(format!("Test with no RUN line: {:?}", path));
-    }
-    Ok(())
+    run_lit_test(path, false)
 }
 
 #[test]
 fn test_melior_matmul() -> Result<(), String> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/middle_end/pass/matmul.mlr");
-    let source = fs::read_to_string(&path).expect("Failed to read test file");
-
-    let check_lines: Vec<String> = source
-        .lines()
-        .filter(|line| line.trim().starts_with("// CHECK:"))
-        .map(|line| line.split_once("CHECK:").unwrap().1.trim().to_string())
-        .collect();
-
     let mut loader = vxc::module_loader::ModuleLoader::new();
     loader
         .load_main(path.to_str().unwrap())
@@ -1435,15 +1273,7 @@ fn test_melior_matmul() -> Result<(), String> {
         .generate(&checked_program, &std::collections::HashMap::new())
         .unwrap();
 
-    let mut current_idx = 0;
-    for check in check_lines {
-        if let Some(pos) = mlir_str[current_idx..].find(&check) {
-            current_idx += pos + check.len();
-        } else {
-            return Err(format!("FileCheck failed on {:?}: Could not find `{}` after previous checks.\nMLIR Output:\n{}", path, check, mlir_str));
-        }
-    }
-    Ok(())
+    filecheck(&mlir_str, &path, None)
 }
 
 extern "C" {

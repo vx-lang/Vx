@@ -16,7 +16,7 @@
 // Nothing checks an element type against the hardware that will run it; that gap
 // is Vx#405 and is not this file's subject.
 //
-// RUN: vxc %s --action emit-mlir
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 
 // CHECK: func.func @f32_t(%arg0: memref<?x?xf32>)
 fn f32_t(t : DynTensor<f32>) -> i32 {

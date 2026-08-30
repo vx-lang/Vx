@@ -34,8 +34,10 @@
 // gives 2.84482; this software-emulated path gives 2.84484.)
 //
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: vx.transfer
-// CHECK-SAME: cost =
+// The operands move into GPU_HBM and the compute is placed on the GPU topology (dispatch id
+// 500). No `cost =` attribute: sema derives one only where the memory hierarchy declares
+// bandwidths, which the built-in topologies do not.
+// CHECK: "vx.transfer"({{.*}}) <{target_topology = 500 : i32}> {capacity = {{[0-9]+}} : i64, managed = "cached", space = "GPU_HBM", within = "CPU_DRAM"}
 // CHECK: vx.spawn topology(500)
 // CHECK: vector.reduction
 // CHECK: vector.store

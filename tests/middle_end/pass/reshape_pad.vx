@@ -19,17 +19,14 @@ fn process_tensor(val: Tensor<f32, [128, 128]>) -> Tensor<f32, [256]> {
   return padded;
 }
 
-// CHECK: func.func @process_tensor(%arg0: memref<128x128xf32>) ->
-// memref<256xf32> { CHECK:   %cast = memref.cast %arg0 : memref<128x128xf32> to
-// memref<*xf32> CHECK:   %cast_0 = memref.cast %cast : memref<*xf32> to
-// memref<256xf32> CHECK:   return %cast_0 : memref<256xf32> CHECK: }
+// The reshape is a view: one reinterpret_cast rewrites the buffer as a flat 256-element
+// memref, so nothing is copied.
+// CHECK-LABEL: func.func @process_tensor(%arg0: memref<128x128xf32>) -> memref<256xf32> {
+// CHECK-NEXT: %[[V:.*]] = memref.reinterpret_cast %arg0 to offset: [0], sizes: [256], strides: [1] : memref<128x128xf32> to memref<256xf32>
+// CHECK-NEXT: return %[[V]] : memref<256xf32>
 
 fn main() -> i32 {
   let v : Tensor<f32, [ 128, 128 ]> = 1.0;
   process_tensor(v);
   return 0;
 }
-
-// FRONTEND-LABEL: module {
-// FRONTEND: func.func @test_f32() -> i32
-// FRONTEND: memref.alloc

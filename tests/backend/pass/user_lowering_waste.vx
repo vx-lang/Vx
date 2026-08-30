@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // The payoff witness for derived traffic (Vx#353 A4): a lowering that computes
 // the RIGHT ANSWER while moving twice the bytes it needs to.
 //

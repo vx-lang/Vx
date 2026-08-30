@@ -1,4 +1,4 @@
-// RUN: vxc %s --action emit-mlir -X mlir=--pass-pipeline="builtin.module(func.func(convert-linalg-to-affine-loops),func.func(affine-loop-unroll{unroll-factor=4}),func.func(affine-super-vectorize{virtual-vector-size=16}))"
+// RUN: vxc %s --action emit-mlir -X mlir=--pass-pipeline="builtin.module(func.func(convert-linalg-to-affine-loops),func.func(affine-loop-unroll{unroll-factor=4}),func.func(affine-super-vectorize{virtual-vector-size=16}))" 2>&1 | FileCheck %s
 // 2>&1 | FileCheck %s
 
 fn test_vectorize(a : Tensor<f32, [ 16, 16 ]>, b : Tensor<f32, [ 16, 16 ]>)
@@ -11,13 +11,3 @@ fn test_vectorize(a : Tensor<f32, [ 16, 16 ]>, b : Tensor<f32, [ 16, 16 ]>)
 // CHECK: vector.transfer_read
 // CHECK: arith.addf
 // CHECK: vector.transfer_write
-
-// FRONTEND-LABEL: module {
-// FRONTEND: func.func @test_f32() -> i32
-// FRONTEND: memref.alloc
-
-// MLIR-LABEL: module {
-// MLIR: func.func @test_f32() -> i32
-
-// LLVM-LABEL: module {
-// LLVM: llvm.func @test_f32() -> i32

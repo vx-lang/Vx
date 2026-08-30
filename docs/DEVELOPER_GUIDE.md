@@ -50,6 +50,29 @@ cargo test
 
 Tests in `tests/backend/pass/` are end-to-end tests that parse, compile, and execute Vx code, comparing the final output against expected `// CHECK:` comments.
 
+### How CHECK lines are matched
+
+Every tier matches its `// CHECK` directives with the real LLVM `FileCheck`, so the full
+directive set works: `{{regex}}` holes, `[[VAR:pattern]]` captures, `CHECK-NEXT`,
+`CHECK-SAME`, `CHECK-DAG`, `CHECK-NOT`, `CHECK-COUNT-n`. `FileCheck` has to be on `PATH`
+(`config.local` puts the pinned LLVM's `bin` there).
+
+Two ways in:
+
+- `tests/frontend/`, `tests/optimizations/`, `tests/backend/` run the file's `// RUN:` line
+  through `bash -c` with `pipefail`, exactly as written. `%s` is the test file and `%t` a
+  scratch path. A file that states CHECK lines must pipe something into `FileCheck`, or the
+  harness rejects it.
+- `tests/middle_end/` compiles in process, because it drives passes the CLI has no flag for,
+  and pipes what it produced into `FileCheck` against the same file.
+
+`// XFAIL: *` marks a RUN line that cannot pass yet because the compiler is wrong. The
+command still runs, and the day it succeeds the test reports that the marker should go.
+`// REQUIRES: macos` skips a file off that host.
+
+Prose in a test file must not spell a live directive: `FileCheck` reads `CHECK:` anywhere on
+a line, sentence or not.
+
 ### Benchmarking
 
 We maintain a custom benchmark harness to measure raw execution performance without the overhead of JIT compilation. The harness dynamically injects `vx_get_time` timing blocks directly into the AST.

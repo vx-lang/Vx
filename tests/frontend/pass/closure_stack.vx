@@ -1,4 +1,4 @@
-// RUN: vxc %s --action emit-mlir --legacy-codegen
+// RUN: vxc %s --action emit-mlir --legacy-codegen 2>&1 | FileCheck %s
 //
 // The closure environment struct these CHECK lines name is the AST codegen's
 // shape; the flat path (the default since Vx#201) lowers a closure differently

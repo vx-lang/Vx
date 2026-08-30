@@ -1,8 +1,9 @@
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir
+// XFAIL: *
 //
-// The IR assertions this file carried could not run: it does not compile as a
-// standalone program (the checker rejects it on N), which is why the corpus
-// sweep also excludes it. They are restored when that is fixed.
+// The IR assertions this file carried could not run: it does not compile as a standalone
+// program (the checker rejects it on N), which is why the corpus sweep also excludes it.
+// The XFAIL above reports the day that changes, and the assertions go back.
 
 
 struct Buffer<T, const N : i32> {

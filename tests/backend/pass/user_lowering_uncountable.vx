@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // The honesty witness for derived traffic (Vx#353 A4).
 //
 // This lowering is perfectly good code -- it is the cooperative copy the

@@ -7,13 +7,16 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+// RUN: vxc %s --emit-mlir -O0
+// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)"
+// RUN: vxc %s --emit-llvm
+//
 // EXEC_RUN: vxc %s | mlir-opt -convert-scf-to-cf
 // -convert-func-to-llvm="use-bare-ptr-memref-call-conv=true"
 // -expand-strided-metadata -finalize-memref-to-llvm -reconcile-unrealized-casts
-// | mlir-translate -mlir-to-llvmir | llc -filetype=obj -o %t.o EXEC_RUN: clang
-// %t.o -Ltarget/debug/build/*/out -lnpu_dispatch -o %t EXEC_RUN: %t | FileCheck
-// %s --check-prefix=EXEC RUN: vxc %s --emit-mlir -O0 RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" RUN: vxc %s
-// --emit-llvm
+// | mlir-translate -mlir-to-llvmir | llc -filetype=obj -o %t.o
+// EXEC_RUN: clang %t.o -Ltarget/debug/build/*/out -lnpu_dispatch -o %t
+// EXEC_RUN: %t | FileCheck %s --check-prefix=EXPECT
 
 fn main() -> i32 {
   let mut a_host = Tensor<f32>([ 4, 4 ]);
@@ -58,13 +61,3 @@ fn main() -> i32 {
 // EXPECT:  [24,   24,   24,   24],
 // EXPECT:  [24,   24,   24,   24],
 // EXPECT:  [24,   24,   24,   24]]
-
-// FRONTEND-LABEL: module {
-// FRONTEND: func.func @test_f32() -> i32
-// FRONTEND: memref.alloc
-
-// MLIR-LABEL: module {
-// MLIR: func.func @test_f32() -> i32
-
-// LLVM-LABEL: module {
-// LLVM: llvm.func @test_f32() -> i32

@@ -1,11 +1,16 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 
-// CHECK: module
-// CHECK: func.func
-// @"create_wrapper_ConstNumberNumberExpr{value:10_ty:None_span:Span{line:0_column:0_length:0}}"()
-// -> !llvm.struct<"Wrapper_10", (struct<"Array_f32_10", (f32)>)> CHECK:
-// %c10_i32 = arith.constant 10 : i32 CHECK: %{{.*}} = arith.addi %{{.*}},
-// %{{.*}} : i32
+// N reaches both the outer struct and the Array it wraps, and stays available as a
+// value inside the body. The symbol name spells its const argument as a Debug-printed
+// AST (Vx#408), so match past it.
+// CHECK-LABEL: func.func @create_wrapper$const${{.*}}() -> !llvm.struct<"Wrapper_10", (struct<"Array_f32_10", (f32)>)>
+// CHECK: %[[A:.*]] = llvm.mlir.undef : !llvm.struct<"Array_f32_10", (f32)>
+// CHECK: %[[AV:.*]] = llvm.insertvalue %{{.*}}, %[[A]][0]
+// CHECK: %[[W:.*]] = llvm.mlir.undef : !llvm.struct<"Wrapper_10"
+// CHECK: llvm.insertvalue %[[AV]], %[[W]][0]
+// CHECK: %[[N:.*]] = arith.constant 10 : i32
+// CHECK: %[[N2:.*]] = arith.constant 10 : i32
+// CHECK: arith.addi %[[N]], %[[N2]] : i32
 
 struct Array<T, const N : i32> {
   val : T

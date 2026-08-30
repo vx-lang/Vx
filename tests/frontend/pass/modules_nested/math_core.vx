@@ -14,13 +14,3 @@ fn multiply(a : f32, b : f32) -> f32 {
 fn subtract(a : f32, b : f32) -> f32 {
   return a - b;
 }
-
-// FRONTEND-LABEL: module {
-// FRONTEND: func.func @test_f32() -> i32
-// FRONTEND: memref.alloc
-
-// MLIR-LABEL: module {
-// MLIR: func.func @test_f32() -> i32
-
-// LLVM-LABEL: module {
-// LLVM: llvm.func @test_f32() -> i32

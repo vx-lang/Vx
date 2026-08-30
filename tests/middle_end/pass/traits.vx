@@ -29,22 +29,13 @@ fn main() -> i32 {
 }
 
 // CHECK: module
-// CHECK:   func.func @Tensor$f32$dim(%arg0: memref<?x?xf32>) ->
-// memref<?x?xi32> { CHECK:     arith.constant 2 : i32 CHECK:     return CHECK:
-// func.func @process$Tensor$f32(%arg0: memref<?x?xf32>) -> memref<?x?xi32> {
-// CHECK:     call @Tensor$f32$dim(%
-// CHECK:     return
-// CHECK:   func.func @main() -> i32 attributes {llvm.emit_c_interface} {
-// CHECK:     arith.constant 1.000000e+00 : f32
-// CHECK:     call @process$Tensor$f32(%
-// CHECK:     return
-
-// FRONTEND-LABEL: module {
-// FRONTEND: func.func @test_f32() -> i32
-// FRONTEND: memref.alloc
-
-// MLIR-LABEL: module {
-// MLIR: func.func @test_f32() -> i32
-
-// LLVM-LABEL: module {
-// LLVM: llvm.func @test_f32() -> i32
+// CHECK: func.func @Tensor$f32$dim(%arg0: memref<?x?xf32>) -> memref<?x?xi32> {
+// CHECK: arith.constant 2 : i32
+// CHECK: return
+// CHECK: func.func @process$Tensor$f32(%arg0: memref<?x?xf32>) -> memref<?x?xi32> {
+// CHECK: call @Tensor$f32$dim(%
+// CHECK: return
+// CHECK: func.func @main() -> i32 attributes {llvm.emit_c_interface} {
+// CHECK: arith.constant 1.000000e+00 : f32
+// CHECK: call @process$Tensor$f32(%
+// CHECK: return

@@ -53,13 +53,3 @@ fn main() -> i32 {
 // EXPECT: Len: 2
 // EXPECT: Has 10: 1
 // EXPECT: Val 20: 200
-
-// FRONTEND-LABEL: module {
-// FRONTEND: func.func @test_f32() -> i32
-// FRONTEND: memref.alloc
-
-// MLIR-LABEL: module {
-// MLIR: func.func @test_f32() -> i32
-
-// LLVM-LABEL: module {
-// LLVM: llvm.func @test_f32() -> i32

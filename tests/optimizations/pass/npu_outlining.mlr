@@ -1,5 +1,14 @@
 // RUN: vx-opt %s --pass-pipeline="builtin.module(convert-vx-to-standard,gpu-kernel-outlining)" | FileCheck %s
 
+// The spawn region is outlined: its body moves into a `vx.kernel` that carries the topology,
+// and the site it left becomes a `vx.launch` naming that kernel.
+// CHECK-LABEL: func.func @test_gpu_lowering() {
+// CHECK-NEXT: vx.launch @[[K:[a-z0-9_]+]]() {topology = 100 : i32} : () -> ()
+// CHECK-NEXT: return
+// CHECK: vx.kernel @[[K]](100) : () -> () {
+// CHECK-NEXT: func.call @dummy() : () -> ()
+// CHECK-NEXT: vx.return
+
 module {
   func.func private @dummy()
 

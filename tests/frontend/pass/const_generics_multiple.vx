@@ -1,9 +1,14 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 
-// CHECK: module
-// CHECK: func.func @initialize$const$
-// (i32)> CHECK: %c2_i32 = arith.constant 2 : i32 CHECK: %c3_i32 =
-// arith.constant 3 : i32 CHECK: %{{.*}} = arith.muli %c2_i32, %c3_i32 : i32
+// The const arguments reach the emitted type: one instantiation at <2, 3> names its
+// struct Grid_i32_2_3, and R * C folds against the same two constants. The symbol name
+// still spells its const arguments as a Debug-printed AST (Vx#408), so match past it.
+// CHECK-LABEL: func.func @initialize$const${{.*}}() -> !llvm.struct<"Grid_i32_2_3", (i32)>
+// CHECK: %[[R:.*]] = arith.constant 2 : i32
+// CHECK: %[[C:.*]] = arith.constant 3 : i32
+// CHECK: arith.muli %[[R]], %[[C]] : i32
+// CHECK-LABEL: func.func @test_multiple_const_generics()
+// CHECK: call @initialize$const${{.*}} : () -> !llvm.struct<"Grid_i32_2_3", (i32)>
 
 struct Grid<T, const R : i32, const C : i32> {
   val : T
