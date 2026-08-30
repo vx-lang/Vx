@@ -1,8 +1,6 @@
 // RUN: vxc %s --emit-mlir -O0 2>&1 | FileCheck %s
-// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1
-// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard,vx-to-llvm)" 2>&1
-// FileCheck %s
-// | FileCheck %s
+// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s --check-prefix=HOST
+// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard,vx-to-llvm)" 2>&1 | FileCheck %s --check-prefix=HOST
 
 fn dummy(x : i32) on Topology::CPU -> i32 {
   return x;
@@ -16,50 +14,19 @@ fn process(t : Tensor<f32>) -> Tensor<f32> {
   return t;
 }
 
-// HOST: module {
-// HOST:   func.func private @printMemrefF32(memref<*xf32>)
-// HOST:   func.func private @printMemrefF64(memref<*xf64>)
-// HOST:   func.func private @printMemrefI32(memref<*xi32>)
-// HOST:   func.func private @printMemrefI64(memref<*xi64>)
-// HOST:   func.func private @printMemrefBF16(memref<*xbf16>)
-// HOST:   func.func @dummy(%arg0: i32) -> i32 {
-// HOST:     return %arg0 : i32
-// HOST:   }
-// HOST:   func.func @process(%arg0: memref<?x?xf32>) -> memref<?x?xf32> {
-// HOST:     %c0_i32 = arith.constant 0 : i32
-// HOST:     %c4 = arith.constant 4 : index
-// HOST:     %alloc = memref.alloc(%c4, %c4) : memref<?x?xi32>
-// HOST:     %alloca = memref.alloca() : memref<memref<?x?xi32>>
-// HOST:     memref.store %alloc, %alloca[] : memref<memref<?x?xi32>>
-// HOST:     %token = async.execute {
-// HOST:       %0 = func.call @dummy(%c0_i32) : (i32) -> i32
-// HOST:       async.yield
-// HOST:     }
-// HOST:     return %arg0 : memref<?x?xf32>
-// HOST:   }
-// HOST: }
+// CHECK-LABEL: func.func @process(%arg0: memref<?x?xf32>) -> memref<?x?xf32> {
+// CHECK: vx.spawn topology(0)
 
-// VXLLVM: module {
-// VXLLVM:   func.func private @printMemrefF32(memref<*xf32>)
-// VXLLVM:   func.func private @printMemrefF64(memref<*xf64>)
-// VXLLVM:   func.func private @printMemrefI32(memref<*xi32>)
-// VXLLVM:   func.func private @printMemrefI64(memref<*xi64>)
-// VXLLVM:   func.func private @printMemrefBF16(memref<*xbf16>)
-// VXLLVM:   func.func @dummy(%arg0: i32) -> i32 {
-// VXLLVM:     return %arg0 : i32
-// VXLLVM:   }
-// VXLLVM:   func.func @process(%arg0: memref<?x?xf32>) -> memref<?x?xf32> {
-// VXLLVM:     %c0_i32 = arith.constant 0 : i32
-// VXLLVM:     %c4 = arith.constant 4 : index
-// VXLLVM:     %alloc = memref.alloc(%c4, %c4) : memref<?x?xi32>
-// VXLLVM:     %alloca = memref.alloca() : memref<memref<?x?xi32>>
-// VXLLVM:     memref.store %alloc, %alloca[] : memref<memref<?x?xi32>>
-// VXLLVM:     %token = async.execute {
-// VXLLVM:       %0 = func.call @dummy(%c0_i32) : (i32) -> i32
-// VXLLVM:       async.yield
-// VXLLVM:     }
-// VXLLVM:     return %arg0 : memref<?x?xf32>
-// VXLLVM:   }
-// VXLLVM: }
-
-// CHECK: module
+// A CPU spawn stays on the host: convert-vx-to-standard turns it into an async.execute, so
+// there is no kernel to outline and no plugin dispatch. vx-to-llvm then leaves this module
+// untouched, which is why both pipelines above check the same prefix.
+// HOST-LABEL: func.func @process(%arg0: memref<?x?xf32>) -> memref<?x?xf32> {
+// HOST: %[[BUF:.*]] = memref.alloc(%{{.*}}, %{{.*}}) : memref<?x?xi32>
+// HOST: %[[SLOT:.*]] = memref.alloca() : memref<memref<?x?xi32>>
+// HOST: memref.store %[[BUF]], %[[SLOT]][] : memref<memref<?x?xi32>>
+// HOST: async.execute {
+// HOST: func.call @dummy(%{{.*}}) : (i32) -> i32
+// HOST: async.yield
+// HOST: return %arg0 : memref<?x?xf32>
+// HOST-NOT: vx.launch
+// HOST-NOT: vx_plugin_dispatch_async
