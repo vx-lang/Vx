@@ -6,14 +6,14 @@
 //
 //===----------------------------------------------------------------------===//
 extern "C" {
-  fn start_benchmark() -> Tensor<f32>;
-  fn end_benchmark() -> Tensor<i32>;
+  fn start_benchmark() -> f32;
+  fn end_benchmark() -> i32;
 }
 
-fn start() -> Tensor<f32> {
+fn start() -> f32 {
   return unsafe { start_benchmark() };
 }
 
-fn end() -> Tensor<i32> {
+fn end() -> i32 {
   return unsafe { end_benchmark() };
 }

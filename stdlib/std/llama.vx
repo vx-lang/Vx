@@ -129,7 +129,7 @@ impl TransformerWeightOffsets {
     };
   }
 
-  fn load_all_weights(filepath: *const i8, c: &LlamaConfig) -> Tensor<f32> {
+  fn load_all_weights(filepath: *const i8, c: &LlamaConfig) -> DynTensor<f32> {
     let ptr = unsafe { vx_load_weights(filepath) };
     let dim = c.dim;
     let n_layers = c.n_layers;

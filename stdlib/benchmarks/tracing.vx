@@ -6,14 +6,14 @@
 //
 //===----------------------------------------------------------------------===//
 extern "C" {
-  fn trace_start() -> Tensor<i32>;
-  fn trace_end() -> Tensor<i32>;
+  fn trace_start() -> i32;
+  fn trace_end() -> i32;
 }
 
-fn start() -> Tensor<i32> {
+fn start() -> i32 {
   return unsafe { trace_start() };
 }
 
-fn end() -> Tensor<i32> {
+fn end() -> i32 {
   return unsafe { trace_end() };
 }

@@ -6,17 +6,17 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
-impl<T : Float> Tensor<T> {
-  fn from_ptr_1d(ptr: *mut T, d1: i32) -> Tensor<T> {
-    let mut t = Tensor<T>([ 1, d1 ]);
+impl<T : Float> DynTensor<T> {
+  fn from_ptr_1d(ptr: *mut T, d1: i32) -> DynTensor<T> {
+    let mut t = DynTensor<T>([ 1, d1 ]);
     for i in 0..d1 {
       unsafe { t[0][i] = ptr[i]; }
     }
     return t;
   }
 
-  fn from_ptr_2d(ptr: *mut T, d1: i32, d2: i32) -> Tensor<T> {
-    let mut t = Tensor<T>([ d1, d2 ]);
+  fn from_ptr_2d(ptr: *mut T, d1: i32, d2: i32) -> DynTensor<T> {
+    let mut t = DynTensor<T>([ d1, d2 ]);
     for i in 0..d1 {
       for j in 0..d2 {
         unsafe { t[i][j] = ptr[i * d2 + j]; }
@@ -25,8 +25,8 @@ impl<T : Float> Tensor<T> {
     return t;
   }
 
-  fn slice_2d(self: &Tensor<T>, row: i32, d1: i32, d2: i32) -> Tensor<T> {
-    let mut t = Tensor<T>([ d1, d2 ]);
+  fn slice_2d(self: &DynTensor<T>, row: i32, d1: i32, d2: i32) -> DynTensor<T> {
+    let mut t = DynTensor<T>([ d1, d2 ]);
     for i in 0..d1 {
       for j in 0..d2 {
         unsafe { t[i][j] = self[row][i * d2 + j]; }
@@ -35,8 +35,8 @@ impl<T : Float> Tensor<T> {
     return t;
   }
 
-  fn slice_2d_from_1d(self: &Tensor<T>, start: i32, d1: i32, d2: i32) -> Tensor<T> {
-    let mut t = Tensor<T>([ d1, d2 ]);
+  fn slice_2d_from_1d(self: &DynTensor<T>, start: i32, d1: i32, d2: i32) -> DynTensor<T> {
+    let mut t = DynTensor<T>([ d1, d2 ]);
     for i in 0..d1 {
       for j in 0..d2 {
         t[i][j] = self[0][start + i * d2 + j];
@@ -45,8 +45,8 @@ impl<T : Float> Tensor<T> {
     return t;
   }
 
-  fn slice_1d(self: &Tensor<T>, start: i32, d1: i32) -> Tensor<T> {
-    let mut t = Tensor<T>([ 1, d1 ]);
+  fn slice_1d(self: &DynTensor<T>, start: i32, d1: i32) -> DynTensor<T> {
+    let mut t = DynTensor<T>([ 1, d1 ]);
     for i in 0..d1 {
       t[0][i] = self[0][start + i];
     }
@@ -54,7 +54,7 @@ impl<T : Float> Tensor<T> {
   }
 
   // Fills the tensor with a constant value using Linalg
-  fn fill(self : &mut Tensor<T>, val : T) -> void {
+  fn fill(self : &mut DynTensor<T>, val : T) -> void {
     mlir!(
     inputs: (%arg_t = self: memref<?x?xf32>, %arg_v = val: f32),
     clobbers: [self],
@@ -65,7 +65,7 @@ impl<T : Float> Tensor<T> {
     };
   }
 
-  fn copy(self : &mut Tensor<T>, src : &Tensor<T>) -> void {
+  fn copy(self : &mut DynTensor<T>, src : &DynTensor<T>) -> void {
     if comptime
     Topology::Current == Topology::CPU_AVX512 {
       mlir!(
@@ -98,7 +98,7 @@ impl<T : Float> Tensor<T> {
     };
   }
 
-  fn assign(self : &mut Tensor<T>, val : T) -> void {
+  fn assign(self : &mut DynTensor<T>, val : T) -> void {
     if comptime
     Topology::Current == Topology::CPU_AVX512 {
       mlir!(
@@ -131,7 +131,7 @@ impl<T : Float> Tensor<T> {
     };
   }
 
-  fn compare(self : &Tensor<T>, other : &Tensor<T>) -> bool {
+  fn compare(self : &DynTensor<T>, other : &DynTensor<T>) -> bool {
     if comptime
     Topology::Current == Topology::CPU_AVX512 {
       mlir!(

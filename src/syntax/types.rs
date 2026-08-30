@@ -522,6 +522,21 @@ impl Type {
                 let new_dims = dims.iter().map(|d| d.substitute(mapping)).collect();
                 Type::Tensor(new_el_ty, new_dims, top.clone())
             }
+            // Same element substitution as `Tensor`, with no dimensions to rewrite. Without this
+            // arm a `DynTensor<T>` kept its generic element through monomorphization and reached
+            // codegen uninstantiated (Vx#399).
+            Type::DynTensor(el_ty, top) => {
+                let new_el_ty = if let ElementType::Generic(ref name) = el_ty {
+                    if let Some(Type::Scalar(concrete_el)) = mapping.get(name) {
+                        concrete_el.clone()
+                    } else {
+                        el_ty.clone()
+                    }
+                } else {
+                    el_ty.clone()
+                };
+                Type::DynTensor(new_el_ty, top.clone())
+            }
             Type::Ref(inner, mem) => Type::Ref(Box::new(inner.substitute(mapping)), mem.clone()),
             Type::Verified(inner) => Type::Verified(Box::new(inner.substitute(mapping))),
             Type::Pinned(inner, top) => {
