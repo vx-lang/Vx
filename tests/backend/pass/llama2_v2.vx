@@ -57,15 +57,15 @@ fn malloc_run_state(dim: i32, hidden_dim: i32, n_layers: i32, n_heads: i32, n_kv
   return state;
 }
 
-fn ptr_to_tensor_1d(ptr : &mut f32, d1 : i32) -> Tensor<f32> {
-  let mut t : Tensor<f32> = Tensor<f32>([ 1, d1 ]);
+fn ptr_to_tensor_1d(ptr : &mut f32, d1 : i32) -> DynTensor<f32> {
+  let mut t : DynTensor<f32> = Tensor<f32>([ 1, d1 ]);
   for i in 0..d1 {
     t[0][i] = ptr[i];
   }
   return t;
 }
 
-fn tensor_to_ptr_1d(t : Tensor<f32>, ptr : &mut f32, d1 : i32) -> i32 {
+fn tensor_to_ptr_1d(t : DynTensor<f32>, ptr : &mut f32, d1 : i32) -> i32 {
   for i in 0..d1 {
     ptr[i] = t[0][i];
   }
@@ -75,7 +75,7 @@ fn safe_get_rope_freq(pos : i32, i : i32, head_size : i32) -> f32 {
   return unsafe { vx_get_rope_freq(pos, i, head_size) };
 }
 
-fn rmsnorm(o : &mut f32, x : &mut f32, weight : &Tensor<f32>, l: i32, size : i32) -> i32 {
+fn rmsnorm(o : &mut f32, x : &mut f32, weight : &DynTensor<f32>, l: i32, size : i32) -> i32 {
   let mut ss : f32 = 0.0;
   for j in 0..size {
     let val : f32 = x[j];
@@ -92,7 +92,7 @@ fn rmsnorm(o : &mut f32, x : &mut f32, weight : &Tensor<f32>, l: i32, size : i32
   return 0;
 }
 
-fn rmsnorm_1d(o : &mut f32, x : &mut f32, weight : &Tensor<f32>, size : i32) -> i32 {
+fn rmsnorm_1d(o : &mut f32, x : &mut f32, weight : &DynTensor<f32>, size : i32) -> i32 {
   let mut ss : f32 = 0.0;
   for j in 0..size {
     let val : f32 = x[j];
@@ -331,7 +331,7 @@ w : &TransformerWeightOffsets, all_weights: &Tensor<f32>) -> &mut f32 {
   rmsnorm_1d(x, x, &rms_final_w, dim);
 
   let t_x : Tensor<f32> = ptr_to_tensor_1d(x, dim);
-  let mut t_wcls_T : Tensor<f32> = Tensor<f32>([ dim, p.vocab_size ]);
+  let mut t_wcls_T : DynTensor<f32> = Tensor<f32>([ dim, p.vocab_size ]);
   for r in 0..p.vocab_size {
     for c in 0..dim {
       t_wcls_T[c][r] = all_weights[0][w.wcls + r * dim + c];

@@ -7,8 +7,8 @@
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // CHECK: module
-fn custom_matmul(a : Tensor<f32>, b : Tensor<f32>) -> Tensor<f32> {
-  let mut result : Tensor<f32> = Tensor<f32>([ a.shape[0], b.shape[1] ]);
+fn custom_matmul(a : DynTensor<f32>, b : DynTensor<f32>) -> DynTensor<f32> {
+  let mut result : DynTensor<f32> = Tensor<f32>([ a.shape[0], b.shape[1] ]);
   for i in 0..a.shape [0] {
     for j in 0..b.shape [1] {
       result[i][j] = 0.0;
@@ -20,7 +20,7 @@ fn custom_matmul(a : Tensor<f32>, b : Tensor<f32>) -> Tensor<f32> {
   return result;
 }
 
-fn distributed_matmul(a : Tensor<f32>, b : Tensor<f32>) -> Tensor<f32> {
+fn distributed_matmul(a : DynTensor<f32>, b : DynTensor<f32>) -> DynTensor<f32> {
   let local_a = transfer(a, Memory::NPU_HBM);
   let local_b = transfer(b, Memory::NPU_HBM);
   spawn on(Topology::NPU[0]) {

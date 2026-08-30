@@ -13,6 +13,7 @@ Status of the work this document covers:
 | The `Tensor` / `DynTensor` split | Vx#399 | open, design settled here |
 | Monomorph name collision on tensor shapes | Vx#401 | fixed |
 | Bounded dynamic shapes (`[<=N, ..]`) | Vx#245 | open, the home for meaning 2 below |
+| Flat path declines every `DynTensor` parameter | Vx#409 | open, blocked on the split; largest flat gap |
 
 ## How we got here
 
@@ -194,7 +195,9 @@ Each slice below is separately committable and gated. The counts are measured, n
 1. **Introduce `DynTensor<T>`** — the type, its parser spelling, and its lowering. Nothing
    migrates yet, so the corpus stays green.
 1. **Migrate meaning 2** — the four genuinely dynamic programs, plus the parameters and returns
-   that are dynamic rather than erased.
+   that are dynamic rather than erased. *(Done. 27 signature positions across 9 files and the 3
+   locals whose extents are run-time values now spell `DynTensor`. See "What the migration
+   found" below.)*
 1. **Make a dims-less `Tensor` unspellable** and conform what remains: 41 local bindings, and
    whichever of the 20 parameters and 19 returns are static-polymorphic (const generics) rather
    than dynamic.
@@ -202,6 +205,46 @@ Each slice below is separately committable and gated. The counts are measured, n
 Slice 2 is the one to sequence carefully. The remaining 9 dims-less constructions outside the
 checker are the parser's default for a bare `Tensor` spelling and a few type-level defaults; those
 belong with slice 5, where the spelling itself changes.
+
+## What the migration found
+
+Migrating the shape-polymorphic signatures was meant to be a spelling change: a dims-less
+`Tensor<f32>` parameter and a `DynTensor<f32>` parameter both lower to `memref<?x?xf32>`, which a
+reduced program confirms. One program disagreed.
+
+`middle_end/pass/topology.vx` had been compiling through the flat path, and the two compilers were
+giving its one function two different signatures:
+
+```mlir
+func.func @process(%arg0: memref<f32>) -> memref<f32>            // flat path, ships by default
+func.func @process(%arg0: memref<?x?xf32>) -> memref<?x?xf32>    // AST oracle
+```
+
+A rank-0 descriptor is `{ptr, ptr, offset}`; a rank-2 one carries two more sizes and two more
+strides. The flat path also dropped the `vx.transfer` that `t_host.to_device()` emits on the oracle.
+Neither shows up in a single compilation, which is why nothing caught it: the file lives in
+`middle_end/pass`, whose CHECK lines run against the oracle.
+
+The cause is meaning 1 and meaning 2 sharing a spelling, seen from the lowerer's side.
+`tensor_elem_shape` maps a dims-less `Tensor<f32>` to an *empty* shape, which the flat lowerer reads
+as rank-0, while the oracle reads the same spelling as rank-2 dynamic. Spelled `Tensor<f32, [4, 4]>`
+the two paths agree exactly, transfer included.
+
+Spelling it `DynTensor<f32>` makes the flat path decline instead of guessing, so the program moved to
+`KNOWN_DECLINES` and coverage went 235 -> 234. That number is worth reading the right way: one
+program stopped being compiled two different ways.
+
+The decline reason is named rather than folded into the generic parameter bucket, and the histogram
+now measures the gap:
+
+```
+flat decline:  10 type-not-modelled(a dynamic tensor parameter)   <- largest bucket
+flat decline:   8 unresolved-callee
+flat decline:   5 type-not-modelled(a callee return type)
+```
+
+Carrying run-time extents through the flat lowerer is Vx#409, and it is the single largest flat-path
+gap left.
 
 ## Open question
 

@@ -64,7 +64,7 @@
 // RUN: vxc %s --emit-llvm 2>&1 | FileCheck %s --check-prefix=PAYLOAD
 // PAYLOAD: \00kind=matmul\00roles=a:0,b:1,out:2\00outkind=slot\00
 
-fn gemm(a : Tensor<f32>, b : Tensor<f32>) -> Tensor<f32> {
+fn gemm(a : DynTensor<f32>, b : DynTensor<f32>) -> DynTensor<f32> {
   let mut c : Tensor<f32> = Tensor<f32>([ 2, 3 ]);
   spawn on(Topology::GPU) {
     c = a @b;

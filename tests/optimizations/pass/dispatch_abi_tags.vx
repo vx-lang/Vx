@@ -46,7 +46,7 @@
 // CHECK: llvm.mlir.constant(16909824 : i32)
 // CHECK: llvm.mlir.constant(132608 : i32)
 
-fn half_kernel(a : Tensor<f16>) -> Tensor<f16> {
+fn half_kernel(a : DynTensor<f16>) -> DynTensor<f16> {
   let mut c : Tensor<f16> = Tensor<f16>([ 2, 2 ]);
   spawn on(Topology::GPU) {
     for i in 0..2 {
@@ -58,7 +58,7 @@ fn half_kernel(a : Tensor<f16>) -> Tensor<f16> {
   return c;
 }
 
-fn single_kernel(a : Tensor<f32>) -> Tensor<f32> {
+fn single_kernel(a : DynTensor<f32>) -> DynTensor<f32> {
   let mut c : Tensor<f32> = Tensor<f32>([ 2, 2 ]);
   spawn on(Topology::GPU) {
     for i in 0..2 {

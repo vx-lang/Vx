@@ -3601,7 +3601,11 @@ fn try_lower<'r>(func: &Function, registry: &'r ImmutableGlobalRegistry) -> Lowe
         // (`self : Option<T>` in `Option::unwrap`) synthesizes its `{ tag, payload }` instance layout
         // and binds as an aggregate rather than declining. (#242)
         let lty = lw.lower_ty_synth(ty).ok_or(Decline::TypeNotModelled {
-            what: "a parameter type",
+            what: if is_dyn_tensor(ty) {
+                "a dynamic tensor parameter"
+            } else {
+                "a parameter type"
+            },
         })?;
         // Record the param's concrete AST type so `infer_ast_type` can recover a pointer field's
         // pointee element (`self : &mut Vec<i32>` -> `self.data : *mut i32`, #242).
@@ -3684,6 +3688,21 @@ fn lowered_ty(ty: &Type, registry: &ImmutableGlobalRegistry) -> Option<LoweredTy
             lowered_ty(inner, registry)
         }
         _ => None,
+    }
+}
+
+/// Whether a type is a `DynTensor` under the checker-level wrappers. Its extents are run-time
+/// values, and the flat lowerer carries shapes as static strings, so it has nothing to index with
+/// and declines (Vx#409). Named separately from the generic parameter/return bucket so the corpus
+/// sweep's histogram measures the gap.
+fn is_dyn_tensor(ty: &Type) -> bool {
+    match ty {
+        Type::DynTensor(..) => true,
+        Type::Verified(inner) | Type::Ref(inner, _) | Type::Pinned(inner, _) => {
+            is_dyn_tensor(inner)
+        }
+        Type::Borrow { inner, .. } => is_dyn_tensor(inner),
+        _ => false,
     }
 }
 
