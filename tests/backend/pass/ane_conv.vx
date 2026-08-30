@@ -7,6 +7,11 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+// RUN: vxc %s --emit-mlir -O0
+// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)"
+// RUN: vxc %s --emit-llvm
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+//
 // EXEC_RUN: vxc %s | mlir-opt -convert-scf-to-cf
 // -convert-func-to-llvm="use-bare-ptr-memref-call-conv=true"
 // -expand-strided-metadata -finalize-memref-to-llvm -reconcile-unrealized-casts
@@ -87,3 +92,10 @@ fn main() -> i32 {
 // EXPECT: --- EXECUTING ON APPLE NEURAL ENGINE ---
 // EXPECT: [[4,   4],
 // EXPECT:  [4,   4]]
+
+// The dispatch shape, which holds whether or not the ANE runtime is present: the convolution
+// becomes one NPU region, matching the single "Intercepted kernel dispatch" line below.
+// CHECK-LABEL: func.func @main() -> i32 attributes {llvm.emit_c_interface} {
+// CHECK: vx.spawn topology(100) {
+// CHECK: arith.mulf
+// CHECK: } {topology_name = "NPU[0]"}

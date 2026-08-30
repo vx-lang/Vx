@@ -816,7 +816,11 @@ fn run_lit_test(path: &Path, force_legacy: bool) -> Result<(), String> {
         // path (`flash_attention_into`, whose note-and-nest emission is what
         // kernel_kind_attention.vx pins), and forcing legacy there tests a lowering that
         // deliberately does not exist.
-        if force_legacy && !source.contains("// REQUIRES: flat-codegen") {
+        // Skip a command that already names the flag: clap rejects it twice.
+        if force_legacy
+            && !cmd.contains("--legacy-codegen")
+            && !source.contains("// REQUIRES: flat-codegen")
+        {
             let split = cmd.find('|').unwrap_or(cmd.len());
             let (head, tail) = cmd.split_at(split);
             let mut words = head.split_whitespace();
