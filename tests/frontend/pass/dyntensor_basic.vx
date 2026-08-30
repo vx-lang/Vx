@@ -10,7 +10,12 @@
 // shaped tensor -- passing one forgets the shape, which is the whole point of
 // keeping the two spellings apart.
 //
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// This runner checks semantics only and never emits MLIR, so the lowering is
+// asserted in tests/optimizations/pass/dyntensor_element_types.vx instead. What
+// this file pins is that a statically shaped tensor is accepted where a dynamic
+// one is declared.
+//
+// RUN: vxc %s --action emit-mlir
 
 fn takes_dyn(t : DynTensor<f32>) -> i32 {
   return 0;
@@ -19,7 +24,6 @@ fn takes_dyn(t : DynTensor<f32>) -> i32 {
 fn main() -> i32 {
   let mut a : Tensor<f32, [2, 3]> = Tensor<f32>([2, 3]);
   a[0][0] = 1.0;
-  // CHECK: func.func @takes_dyn(%{{.*}}: memref<?x?xf32>) -> i32
   let r = takes_dyn(a);
   return r;
 }

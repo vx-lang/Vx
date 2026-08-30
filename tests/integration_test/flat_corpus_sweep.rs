@@ -71,6 +71,7 @@ const KNOWN_DECLINES: &[&str] = &[
     "middle_end/pass/topology_polymorphism.vx",
     "optimizations/pass/cpu_lowering.vx",
     "optimizations/pass/dispatch_abi_tags.vx",
+    "optimizations/pass/dyntensor_element_types.vx",
     "optimizations/pass/kernel_kind_matmul.vx",
     "optimizations/pass/kernel_kind_unrecognized.vx",
     "optimizations/pass/kernel_roles_local.vx",
