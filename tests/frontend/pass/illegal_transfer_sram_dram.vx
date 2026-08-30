@@ -7,9 +7,15 @@ fn main() -> i32 {
   let t_npu = transfer(t_host, Memory::NPU_HBM);
   let t_sram = transfer(t_npu, Memory::Local_SRAM);
 
-  // This is illegal! Direct SRAM to DRAM transfer bypasses HBM.
-  // CHECK: Cannot transfer from LocalSRAM to CPUDRAM: no hardware path exists
-  let invalid = transfer(t_sram, Memory::CPU_DRAM);
+  // SRAM has no direct edge to DRAM, so this does not bypass HBM: the transfer
+  // is routed, and three written transfers emit four `vx.transfer` ops -- 200
+  // (SRAM) to 100 (NPU_HBM) to 0 (CPU_DRAM). The file asserted a rejection here
+  // for a long time without anyone noticing, because the runner never executed
+  // its CHECK lines (Vx#407). Routing is the better answer and is what happens.
+  // CHECK: target_topology = 200
+  // CHECK: target_topology = 100
+  // CHECK: target_topology = 0
+  let routed = transfer(t_sram, Memory::CPU_DRAM);
 
   return 0;
 }

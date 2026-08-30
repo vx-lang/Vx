@@ -1,4 +1,10 @@
-// RUN: vxc %s --emit-mlir | FileCheck %s
+// RUN: vxc %s --action emit-mlir --legacy-codegen
+//
+// The closure environment struct these CHECK lines name is the AST codegen's
+// shape; the flat path (the default since Vx#201) lowers a closure differently
+// and emits no such struct. The RUN line pins the path the assertions were
+// written against. Nothing noticed the mismatch because this runner did not
+// execute CHECK lines until Vx#407.
 
 /// comment for foo to see in hover.
 fn foo(x: i32) -> i32 {
@@ -19,5 +25,5 @@ fn main() -> i32 {
 
 
 // CHECK: func.func @main
-// CHECK: llvm.mlir.undef : !llvm.struct<"Closure_{{.*}}"
+// CHECK: llvm.mlir.undef : !llvm.struct<"Closure_
 // CHECK: llvm.insertvalue

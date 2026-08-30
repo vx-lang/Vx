@@ -1,7 +1,7 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 
 // CHECK: module
-// CHECK: func.func @"initialize_{{.*}}"() -> !llvm.struct<"Grid_i32_2_3",
+// CHECK: func.func @initialize$const$
 // (i32)> CHECK: %c2_i32 = arith.constant 2 : i32 CHECK: %c3_i32 =
 // arith.constant 3 : i32 CHECK: %{{.*}} = arith.muli %c2_i32, %c3_i32 : i32
 

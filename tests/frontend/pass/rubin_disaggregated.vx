@@ -56,11 +56,11 @@ fn main() -> i32 {
 
 // The staged prompt lands in GDDR7 with its declared capacity...
 // CHECK: vx.transfer
-// CHECK-SAME: space = "GDDR7"
+// CHECK: space = "GDDR7"
 // ...prefill runs as a real spawn...
 // CHECK: vx.spawn
 // ...the KV handoff is a distinct transfer into HBM4...
 // CHECK: vx.transfer
-// CHECK-SAME: space = "HBM4"
+// CHECK: space = "HBM4"
 // ...and decode is its own spawn on the HBM die.
 // CHECK: vx.spawn

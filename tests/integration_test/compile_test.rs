@@ -159,6 +159,14 @@ fn run_frontend_test(path: &Path, expect_pass: bool) -> Result<(), String> {
             ));
         }
     }
+
+    // A file that states CHECK lines gets them executed. This runner used to stop at the
+    // semantic verdict, so 281 CHECK lines across this directory asserted nothing and a file
+    // could pass with its claims about the emitted IR flatly false (Vx#407). Running them is
+    // what makes the header mean what it says; a file with no CHECK lines is unaffected.
+    if source.lines().any(|l| l.trim().starts_with("// CHECK:")) {
+        run_lit_test(path, false)?;
+    }
     Ok(())
 }
 
@@ -713,6 +721,17 @@ fn test_warnings() -> Result<(), String> {
 
 // Optimization Test Runner
 fn run_optimization_test(path: &Path) -> Result<(), String> {
+    // These files pin the AST codegen's MLIR structure, so they force the legacy path.
+    run_lit_test(path, true)
+}
+
+/// Execute a file's `// RUN:` line and match its `// CHECK:` lines against the output.
+///
+/// `force_legacy` pins the AST codegen, which the optimizations tests want because they assert
+/// that path's exact IR. The frontend tests run the default path instead: they assert what a
+/// user actually gets, and forcing legacy there would report the AST path's own bugs as frontend
+/// failures (three such programs are recorded on Vx#398).
+fn run_lit_test(path: &Path, force_legacy: bool) -> Result<(), String> {
     let source = fs::read_to_string(path).expect("Failed to read test file");
 
     // Same lit-style gate the middle-end and backend runners apply. A check
@@ -874,7 +893,7 @@ fn run_optimization_test(path: &Path) -> Result<(), String> {
             // path (`flash_attention_into`, whose note-and-nest emission is what
             // kernel_kind_attention.vx pins), and forcing legacy there tests a lowering that
             // deliberately does not exist.
-            if !source.contains("// REQUIRES: flat-codegen") {
+            if force_legacy && !source.contains("// REQUIRES: flat-codegen") {
                 args.push("--legacy-codegen".to_string());
             }
             env!("CARGO_BIN_EXE_vxc")
