@@ -8,12 +8,16 @@
 // A tensor with a *dynamic* (non-literal) shape placed into a memory space that declares a
 // `capacity` cannot be capacity-checked (E6009/E6010 need static byte sizes). Previously this
 // was skipped silently, so a user believed the placement was verified when it was not. Now it
-// warns (W1029), naming the runtime dimension, and still compiles. Make the shape static, or
+// warns (W1029) and still compiles. Make the shape static, or
 // bound it (P1-1), to get the check back. This is P0-4 from the heterogeneous gap analysis.
+//
+// A runtime dimension now types as `DynTensor` (Vx#399), which carries no extents at all --
+// so the note reports that the shape is unknown rather than naming the dimension. Naming it
+// meant reading a shape off a value that does not have one yet.
 //
 // WARN: W1029
 // WARN: not verified
-// WARN: runtime value 'n'
+// WARN: the shape is not statically known
 
 Memory HBM {
   capacity: 32 GiB, bandwidth: 1200 GB/s

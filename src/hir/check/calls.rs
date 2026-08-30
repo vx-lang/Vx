@@ -1159,7 +1159,22 @@ impl<'a> TypeChecker<'a> {
                     dims = args.to_vec();
                 }
             }
-            Some(Type::Tensor(el_ty, dims, None))
+            // A dimension the compiler cannot evaluate is a run-time value, so the result is a
+            // `DynTensor`: recording `[n, n]` would let later checks read a shape that does not
+            // exist yet, which is what W1029 warns about today. A const-generic dimension does
+            // evaluate, so `Tensor<f32, [N, N]>` stays statically shaped. (Vx#399)
+            let mut env = HashMap::new();
+            for scope in &self.consteval.env {
+                for (k, v) in scope {
+                    env.insert(k.clone(), v.clone());
+                }
+            }
+            let all_static = dims.iter().all(|d| self.eval_expr(d, &env).is_some());
+            if dims.is_empty() || all_static {
+                Some(Type::Tensor(el_ty, dims, None))
+            } else {
+                Some(Type::DynTensor(el_ty, None))
+            }
         } else if resolved_name.starts_with("Math::") {
             if args.len() != 1 {
                 self.errors.push(format!(

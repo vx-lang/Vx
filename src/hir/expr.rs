@@ -562,6 +562,10 @@ impl<'a> TypeChecker<'a> {
     pub(crate) fn tensor_of(ty: &Type) -> Option<(&ElementType, &[Expr])> {
         match ty {
             Type::Tensor(e, d, _) => Some((e, d.as_slice())),
+            // A dynamic tensor is a tensor with no dimensions to report. Callers that size it
+            // get `None` from `static_tensor_bytes` and warn (W1029) instead of skipping, which
+            // is the same answer a runtime dimension produced before it had its own type.
+            Type::DynTensor(e, _) => Some((e, &[])),
             Type::Ref(inner, _) | Type::Pinned(inner, _) | Type::Verified(inner) => {
                 Self::tensor_of(inner)
             }

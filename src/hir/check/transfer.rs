@@ -1289,7 +1289,9 @@ impl<'a> TypeChecker<'a> {
     ) -> Type {
         match inner_ty {
             Type::Ref(base_ty, _) => Type::Ref(base_ty, target_mem.clone()),
-            Type::Tensor(_, _, _) => Type::Pinned(
+            // A dynamic tensor re-homes exactly as a statically shaped one does; only the
+            // capacity check differs, and that is what W1029 reports (Vx#399).
+            Type::Tensor(_, _, _) | Type::DynTensor(_, _) => Type::Pinned(
                 Box::new(inner_ty.clone()),
                 Self::pinned_topology_for(target_mem),
             ),
