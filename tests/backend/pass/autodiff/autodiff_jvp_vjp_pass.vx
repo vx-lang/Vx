@@ -39,4 +39,21 @@ fn main() -> i32 {
   return 0;
 }
 
-// CHECK: module
+// CHECK-DAG: llvm.func @vx_googletest_expect_eq_f32(
+// CHECK-DAG: llvm.func @__enzyme_autodiff_grad_compute_val(
+// CHECK-DAG: llvm.func @__enzyme_fwddiff_jvp_compute_val(
+// CHECK-LABEL: llvm.func @f32$expect_eq(%arg0: f32, %arg1: f32) -> i32
+// CHECK: llvm.call @vx_googletest_expect_eq_f32(%{{.*}}, %{{.*}}) : {{.*}}
+// CHECK-LABEL: llvm.func @expect_eq$f32(%arg0: f32, %arg1: f32) -> i32
+// CHECK: llvm.call @f32$expect_eq(%{{.*}}, %{{.*}}) : {{.*}}
+// CHECK-LABEL: llvm.func @compute_val(%arg0: f32) -> f32
+// CHECK: llvm.return %{{.*}} : f32
+// CHECK-LABEL: llvm.func @main() -> i32
+// CHECK: %[[V0:.*]] = llvm.call @__enzyme_autodiff_grad_compute_val(%{{.*}}, %{{.*}}) : {{.*}}
+// CHECK: llvm.call @expect_eq$f32(%[[V0]], %{{.*}}) : {{.*}}
+// CHECK: %[[V1:.*]] = llvm.call @__enzyme_autodiff_grad_compute_val(%{{.*}}, %{{.*}}) : {{.*}}
+// CHECK: llvm.call @expect_eq$f32(%[[V1]], %{{.*}}) : {{.*}}
+// CHECK: %[[V2:.*]] = llvm.call @__enzyme_fwddiff_jvp_compute_val(%{{.*}}, %{{.*}}, %{{.*}}) : {{.*}}
+// CHECK: llvm.call @expect_eq$f32(%[[V2]], %{{.*}}) : {{.*}}
+// CHECK: llvm.call @__enzyme_autodiff_grad_compute_val(%{{.*}}, %{{.*}}) : {{.*}}
+// CHECK: llvm.call @expect_eq$f32(%{{.*}}, %{{.*}}) : {{.*}}

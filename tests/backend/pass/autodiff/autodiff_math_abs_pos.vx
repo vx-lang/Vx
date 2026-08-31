@@ -1,6 +1,14 @@
 //===- autodiff_math_abs_pos.vx - Vx Compiler -------------------*- Vx -*-===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
+// CHECK-DAG: llvm.func @fabsf(
+// CHECK-DAG: llvm.func @__enzyme_autodiff_grad_test_func(
+// CHECK-LABEL: llvm.func @f32$abs(%arg0: f32) -> f32
+// CHECK: llvm.call @fabsf(%{{.*}}) : {{.*}}
+// CHECK-LABEL: llvm.func @test_func(%arg0: f32) -> f32
+// CHECK: llvm.call @f32$abs(%{{.*}}) : {{.*}}
+// CHECK-LABEL: llvm.func @main() -> i32
+// CHECK: llvm.call @__enzyme_autodiff_grad_test_func(%{{.*}}, %{{.*}}) : {{.*}}
+// CHECK: llvm.call @f32$abs(%{{.*}}) : {{.*}}
 import std::math;
 
 fn test_func(x : f32) -> f32 {

@@ -1129,6 +1129,16 @@ fn run_backend_autodiff_test(path: &Path) -> Result<(), String> {
     }
     let mlir_str = module.as_operation().to_string();
 
+    // This runner read `// EXPECT:` and nothing else, so every CHECK line in this directory
+    // was inert -- including twelve in autodiff_basic.vx that had never once run (Vx#407 left
+    // this directory out). A file that states them gets them matched, like every other tier.
+    if source
+        .lines()
+        .any(|l| l.trim_start().starts_with("// CHECK"))
+    {
+        filecheck(&mlir_str, path, None)?;
+    }
+
     if source.contains("// NO_EXEC") {
         for expect in expect_lines {
             if !mlir_str.contains(&expect) {
