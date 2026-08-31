@@ -937,10 +937,7 @@ impl<'c> MeliorGenerator<'c> {
             di_subp_str, self.current_filename
         );
         let dummy_module = melior::ir::Module::parse(self.context, &mlir_str).ok_or_else(|| {
-            crate::codegen::lower::LowerError::from(format!(
-                "Failed to parse module: {}",
-                &mlir_str
-            ))
+            crate::codegen::lower::LowerError::from(format!("Failed to parse module: {}", mlir_str))
         })?;
         use melior::ir::operation::OperationLike;
         use melior::ir::BlockLike;

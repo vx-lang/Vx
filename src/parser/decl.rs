@@ -849,14 +849,13 @@ impl<'a> Parser<'a> {
 
         // Either `impl Trait for Type` or `impl Type`
         let mut trait_name = None;
-        let target_type;
 
         // Since we don't have lookahead to distinguish `impl Trait for Type` from `impl Type`,
         // if we see `Identifier` followed by `for`, it's a trait. Otherwise it's a type.
         // Note: parse_type handles `Struct(name)`, which is an identifier!
         // We can just peek ahead.
         let parsed_type = self.parse_type()?;
-        if self.check(&TokenType::For) {
+        let target_type = if self.check(&TokenType::For) {
             self.advance(); // consume 'for'
             if let Type::Struct(name, _) = parsed_type {
                 trait_name = Some(name);
@@ -869,10 +868,10 @@ impl<'a> Parser<'a> {
             } else {
                 return Err(self.error("Expected trait name before 'for'"));
             }
-            target_type = self.parse_type()?;
+            self.parse_type()?
         } else {
-            target_type = parsed_type;
-        }
+            parsed_type
+        };
 
         self.consume(&TokenType::LeftBrace, "Expected '{' after impl target")?;
         let mut methods = Vec::new();
@@ -1406,7 +1405,7 @@ fn distributed_matmul(a: Ref<DynTensor<f32>, Memory::CPU_DRAM>, b: Ref<DynTensor
             );
             assert_eq!(stmts.len(), 4);
         } else {
-            panic!("Expected SpawnOn statement, got {:#?}", &func.body[0]);
+            panic!("Expected SpawnOn statement, got {:#?}", func.body[0]);
         }
     }
 
@@ -1657,7 +1656,7 @@ fn distributed_matmul(a: Ref<DynTensor<f32>, Memory::CPU_DRAM>, b: Ref<DynTensor
         {
             assert_eq!(stmts.len(), 3); // Let, For, Return
         } else {
-            panic!("Expected SpawnOn, got {:#?}", &func.body[0]);
+            panic!("Expected SpawnOn, got {:#?}", func.body[0]);
         }
     }
 

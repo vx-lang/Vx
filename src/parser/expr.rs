@@ -27,10 +27,7 @@ pub(crate) fn infer_number_literal(s: &str) -> Result<(&str, Option<ElementType>
     };
 
     let el_ty = if !suffix_part.is_empty() {
-        match suffix_part.parse::<ElementType>() {
-            Ok(el) => Some(el),
-            Err(e) => return Err(e),
-        }
+        Some(suffix_part.parse::<ElementType>()?)
     } else {
         None
     };

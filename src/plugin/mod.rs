@@ -29,6 +29,9 @@ use std::sync::{Arc, LazyLock};
 /// (`arch::topology_dispatch_id`). Static — plugins are compiled in, not registered per
 /// program — so, unlike the topology registry, this needs no per-compilation reset.
 static BUILTIN_PLUGINS: LazyLock<PluginRegistry> = LazyLock::new(|| {
+    // A platform with no built-in plugin registers nothing, so the binding is never
+    // mutated there and `mut` alone would be a warning.
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
     let mut registry = PluginRegistry::new();
     #[cfg(target_os = "macos")]
     registry.register(Arc::new(apple_npe::AppleNPEPlugin));
