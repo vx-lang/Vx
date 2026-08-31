@@ -174,11 +174,16 @@ impl FnEmit<'_> {
                 .get(&result_gid)
                 .ok_or(crate::emitter_gap!())?;
             let et = mlir_scalar(elem).ok_or(crate::emitter_gap!())?;
+            // The strides below are computed from the extents, so a dimension that is not a
+            // literal has nothing to compute with. Naming it keeps the corpus histogram
+            // measuring a feature gap rather than reporting an internal one.
             let dims: Vec<i64> = shape
                 .iter()
                 .map(|d| d.parse::<i64>().ok())
                 .collect::<Option<_>>()
-                .ok_or(crate::emitter_gap!())?; // symbolic dims not handled
+                .ok_or(Decline::TypeNotModelled {
+                    what: "a row of a tensor whose extents are not known at compile time",
+                })?;
             let stride0: i64 = dims.iter().product();
             let mut strides = vec![1i64; dims.len()];
             for i in (0..dims.len().saturating_sub(1)).rev() {

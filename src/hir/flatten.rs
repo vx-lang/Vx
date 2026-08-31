@@ -84,8 +84,15 @@ pub fn tensor_gid_of(ty: &Type) -> Option<TypeId> {
 /// element, or a dim that isn't a literal/name). The shape is what the flat lowerer rank-reduces on
 /// indexing.
 fn tensor_elem_shape(ty: &Type) -> Option<(ElementType, Vec<String>)> {
-    // A `DynTensor` has no extents to spell, so it is outside the modelled subset and the
-    // caller declines -- the same answer a dims-less `Tensor` gets today (Vx#399).
+    // A `DynTensor` carries no extents. The oracle spells it as the rank-2 dynamic memref, so the
+    // flat path answers with the same two dynamic dimensions rather than declining. The rank is
+    // the oracle's assumption rather than anything the type says (Vx#404).
+    if let Type::DynTensor(elem, _) = ty {
+        if matches!(elem, ElementType::Generic(_)) {
+            return None;
+        }
+        return Some((elem.clone(), vec![DYN_DIM.to_string(), DYN_DIM.to_string()]));
+    }
     let Type::Tensor(elem, dims, _) = ty else {
         return None;
     };
@@ -95,6 +102,10 @@ fn tensor_elem_shape(ty: &Type) -> Option<(ElementType, Vec<String>)> {
     let shape: Vec<String> = dims.iter().map(tensor_dim_string).collect::<Option<_>>()?;
     Some((elem.clone(), shape))
 }
+
+/// A dimension whose extent is a run-time value. Spelled the way MLIR spells it, and distinct from
+/// every const-generic name, so a shape entry is either a literal, a name, or this.
+const DYN_DIM: &str = "?";
 
 /// Canonicalize a tensor dimension for the GID: a numeric literal by value, a const/generic name by
 /// its name. Anything else declines (so the tensor stays unmodelled rather than hashing unstably).
@@ -2897,6 +2908,52 @@ impl<'r> Lowerer<'r> {
         }
     }
 
+    /// A shaped tensor reaching a `DynTensor` parameter forgets its extents. MLIR spells that as a
+    /// cast between two memref types, so the argument needs one before the call — the value is not
+    /// already of the parameter's type the way a subtype would be.
+    ///
+    /// Only the widening direction, and only at equal rank. A rank-0 tensor has no dimensions to
+    /// erase into a rank-2 memref, and the flat path declines rather than emitting a cast MLIR
+    /// rejects.
+    fn forget_extents_for_param(&mut self, v: Val, param_ty: Option<&Type>) -> Lowered<Val> {
+        let Some(param_ty) = param_ty else {
+            return Ok(v);
+        };
+        let Some(want) = lowered_ty(param_ty, self.registry) else {
+            return Ok(v);
+        };
+        let (
+            LoweredTy::Tensor {
+                elem: want_elem,
+                shape: want_shape,
+            },
+            LoweredTy::Tensor {
+                elem: have_elem,
+                shape: have_shape,
+            },
+        ) = (&want, &v.ty)
+        else {
+            return Ok(v);
+        };
+        if want_elem != have_elem || want_shape == have_shape {
+            return Ok(v);
+        }
+        if want_shape.len() != have_shape.len() {
+            return Err(Decline::TypeNotModelled {
+                what: "a tensor argument whose rank differs from the parameter",
+            });
+        }
+        // Every position the two disagree on has to be one the parameter leaves open.
+        for (w, h) in want_shape.iter().zip(have_shape) {
+            if w != h && w != DYN_DIM {
+                return Err(Decline::TypeNotModelled {
+                    what: "a tensor argument whose extents differ from the parameter",
+                });
+            }
+        }
+        Ok(self.emit_typed(Opcode::Cast, v.reg, Register(0), want.clone(), 0))
+    }
+
     fn lower_call(&mut self, fc: &crate::syntax::FunctionCallExpr) -> Lowered<Val> {
         // `Verified(x)` is the checker-level wrapper in value position -- the identity at
         // runtime, exactly as the AST path erases it. Lower the wrapped value directly.
@@ -2934,13 +2991,14 @@ impl<'r> Lowerer<'r> {
                 })?
         };
         let mut arg_regs = Vec::with_capacity(fc.args.len());
-        for arg in &fc.args {
+        for (n, arg) in fc.args.iter().enumerate() {
             // A closure literal passed where a nominal `ClosureK` is expected (`.map(adder)`) is
             // adapted to the `{ env, func }` fat struct; any other argument lowers normally. (#242)
             let v = match self.try_adapt_closure_arg(arg) {
                 Ok(v) => v,
                 Err(_) => self.lower_expr(arg)?,
             };
+            let v = self.forget_extents_for_param(v, sig.params.get(n))?;
             arg_regs.push(v.reg);
         }
         for reg in arg_regs {

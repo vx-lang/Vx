@@ -200,11 +200,16 @@ impl FnEmit<'_> {
     // (whose type comes from its tracked `etypes`). The right `arith` conversion is chosen by
     // the source/target kinds + widths; a same-type cast is a no-op that just aliases.
     pub(crate) fn op_cast(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
-        let src = self.elem_at(ins.operand1.0).ok_or(crate::emitter_gap!())?;
         let gid = *self
             .types
             .get(ins.type_idx.0 as usize)
             .ok_or(crate::emitter_gap!())?;
+        // A tensor target: the two memref types differ only in which extents are known, so this
+        // is `memref.cast` rather than any arithmetic conversion.
+        if let Some((elem, shape)) = self.ctx.tensors.get(&gid).cloned() {
+            return self.cast_memref(idx, ins, &elem, &shape);
+        }
+        let src = self.elem_at(ins.operand1.0).ok_or(crate::emitter_gap!())?;
         // An integer cast to a pointer (`0 as *mut T`): `llvm.inttoptr`, same as the AST path.
         // The flattener admits only integer sources, so `src` has an integer spelling here.
         if gid == ptr_gid() {
@@ -241,6 +246,39 @@ impl FnEmit<'_> {
             self.names[idx] = n;
         }
         self.etypes[idx] = Some(tgt);
+        Ok(())
+    }
+
+    /// Forget a tensor's extents: `memref.cast %a : memref<2x3xf32> to memref<?x?xf32>`. Emitted
+    /// where a shaped value reaches a `DynTensor` position, which in MLIR is a different type
+    /// rather than a subtype. Identical types alias instead of emitting a no-op cast.
+    fn cast_memref(
+        &mut self,
+        idx: usize,
+        ins: &HirInstruction,
+        elem: &ElementType,
+        shape: &[String],
+    ) -> Lowered<()> {
+        let a = self
+            .names
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        let src_ty = self
+            .mem_of
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone()
+            .ok_or(crate::emitter_gap!())?;
+        let dst_ty = tensor_memref_ty(elem, shape).ok_or(crate::emitter_gap!())?;
+        if src_ty == dst_ty {
+            self.names[idx] = a;
+        } else {
+            let n = format!("%v{idx}");
+            self.body += &format!("  {n} = memref.cast {a} : {src_ty} to {dst_ty}\n");
+            self.names[idx] = n;
+        }
+        self.mem_of[idx] = Some(dst_ty);
         Ok(())
     }
 }

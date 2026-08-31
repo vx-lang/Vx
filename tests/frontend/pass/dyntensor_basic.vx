@@ -14,9 +14,13 @@
 
 // The declared parameter is dynamic, so the callee takes a fully dynamic memref, and the
 // shaped argument is accepted there -- passing it forgets the shape, which is the point.
-// CHECK-LABEL: func.func @takes_dyn(%arg0: memref<?x?xf32>) -> i32
+// The two memref types are different types rather than one being a subtype of the other, so
+// forgetting the extents is an explicit cast, and the value the call receives is that cast.
 // CHECK-LABEL: func.func @main() -> i32
-// CHECK: call @takes_dyn(%{{.*}}) : (memref<?x?xf32>) -> i32
+// CHECK: %[[A:.*]] = memref.alloc() : memref<2x3xf32>
+// CHECK: %[[DYN:.*]] = memref.cast %[[A]] : memref<2x3xf32> to memref<?x?xf32>
+// CHECK: call @takes_dyn(%[[DYN]]) : (memref<?x?xf32>) -> i32
+// CHECK-LABEL: func.func @takes_dyn(%arg0: memref<?x?xf32>) -> i32
 
 fn takes_dyn(t : DynTensor<f32>) -> i32 {
   return 0;
