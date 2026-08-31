@@ -3174,24 +3174,10 @@ impl<'c> LowerToMelior<'c> for EnumVariantExpr {
                 }
             }
             if enum_name.starts_with("Option<") {
-                if let Some(idx) = enum_name.find('<') {
-                    if let Some(end_idx) = enum_name.find('>') {
-                        let base = &enum_name[..idx];
-                        let ty_arg = &enum_name[idx + 1..end_idx];
-                        let parsed_ty = match ty_arg {
-                            "i32" => syntax::Type::Scalar(syntax::ElementType::I32),
-                            "f32" => syntax::Type::Scalar(syntax::ElementType::F32),
-                            "f64" => syntax::Type::Scalar(syntax::ElementType::F64),
-                            "i64" => syntax::Type::Scalar(syntax::ElementType::I64),
-                            "Bool" => syntax::Type::Scalar(syntax::ElementType::Bool),
-                            _ => syntax::Type::Struct(ty_arg.to_string().into(), None),
-                        };
-                        let t = syntax::Type::GenericInstance(
-                            Box::new(syntax::Type::Struct(base.to_string().into(), None)),
-                            vec![parsed_ty],
-                        );
-                        enum_ty_str = gen.lower_type_str(&t)?;
-                    }
+                // The turbofish arguments arrive re-serialized into the name, so the payload
+                // type comes back out through the type parser (Vx#415).
+                if let Some(t) = crate::parser::types::parse_type_text(enum_name) {
+                    enum_ty_str = gen.lower_type_str(&t)?;
                 }
                 has_payload = true;
             }

@@ -43,6 +43,7 @@ const KNOWN_DECLINES: &[&str] = &[
     "frontend/pass/coverage_advanced_types_pass.vx",
     "frontend/pass/custom_matmul.vx",
     "frontend/pass/enum_match.vx",
+    "frontend/pass/env_args.vx",
     "frontend/pass/gen_tensor_math_pass.vx",
     "frontend/pass/generics.vx",
     "frontend/pass/if_comptime_and_topology.vx",

@@ -258,6 +258,39 @@ mod tests {
         parser.parse_type().expect("Failed to parse type")
     }
 
+    #[test]
+    fn a_type_argument_that_is_not_a_plain_name_parses_as_a_type() {
+        use crate::parser::types::parse_type_text;
+        use crate::syntax::{ElementType, Type};
+
+        // A turbofish argument reaches the checker as text. A pointer spelling has to come back
+        // out as a pointer, not as a generic parameter whose name is `*mut i8` (Vx#415).
+        assert_eq!(
+            parse_type_text("Option<*mut i8>"),
+            Some(Type::GenericInstance(
+                Box::new(Type::Struct("Option".into(), None)),
+                vec![Type::Pointer(
+                    Box::new(Type::Scalar(ElementType::I8)),
+                    None,
+                    true
+                )],
+            ))
+        );
+        assert_eq!(
+            parse_type_text("Option<i32>"),
+            Some(Type::GenericInstance(
+                Box::new(Type::Struct("Option".into(), None)),
+                vec![Type::Scalar(ElementType::I32)],
+            ))
+        );
+        // A bare name is the nominal itself, and trailing text is not a type at all.
+        assert_eq!(
+            parse_type_text("Option"),
+            Some(Type::Struct("Option".into(), None))
+        );
+        assert_eq!(parse_type_text("i32 and then some"), None);
+    }
+
     fn parse_topology(input: &str) -> crate::syntax::Topology {
         let mut lexer = Lexer::new(input);
         let tokens = lexer.tokenize();

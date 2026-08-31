@@ -18,6 +18,42 @@ use crate::hir::expr::expected_numeric_elem;
 use std::collections::HashMap;
 
 impl<'a> TypeChecker<'a> {
+    /// An enum expression's name read back as a type. The parser re-serializes the turbofish
+    /// arguments into the name (`Option<*mut i8>`), so recovering them needs the type parser
+    /// (Vx#415). `None` when the name carries no arguments.
+    fn enum_name_as_type(&self, enum_name: &str) -> Option<Type> {
+        match crate::parser::types::parse_type_text(enum_name)? {
+            Type::GenericInstance(base, args) => Some(Type::GenericInstance(
+                base,
+                args.into_iter()
+                    .map(|a| self.as_scoped_generic(a))
+                    .collect(),
+            )),
+            _ => None,
+        }
+    }
+
+    /// The type arguments that name carries, empty when it carries none.
+    fn enum_name_type_args(&self, enum_name: &str) -> Vec<Type> {
+        match self.enum_name_as_type(enum_name) {
+            Some(Type::GenericInstance(_, args)) => args,
+            _ => Vec::new(),
+        }
+    }
+
+    /// A bare name that is not a declared nominal is a generic parameter still in scope, not a
+    /// struct: `Option<T>::Some(v: T)` has to match its own `Generic("T")` payload (#242).
+    fn as_scoped_generic(&self, ty: Type) -> Type {
+        match ty {
+            Type::Struct(name, None)
+                if !self.env.structs.contains_key(&name) && !self.env.enums.contains_key(&name) =>
+            {
+                Type::Generic(name, None)
+            }
+            other => other,
+        }
+    }
+
     pub(crate) fn check_enumvariant_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
         match expr {
             Expr::EnumVariant(EnumVariantExpr {
@@ -48,41 +84,11 @@ impl<'a> TypeChecker<'a> {
                                     }
                                 } else {
                                     let mut mapping = HashMap::new();
-                                    if let Some(idx) = enum_name.find('<') {
-                                        let ty_args_str = &enum_name[idx + 1..enum_name.len() - 1];
-                                        let ty_args: Vec<&str> = ty_args_str.split(',').collect();
-                                        for (i, param) in enum_decl.generics.iter().enumerate() {
-                                            if i < ty_args.len() {
-                                                let ty_arg = ty_args[i].trim();
-                                                let parsed_ty = match ty_arg {
-                                                    "i32" => Type::Scalar(ElementType::I32),
-                                                    "f32" => Type::Scalar(ElementType::F32),
-                                                    "f64" => Type::Scalar(ElementType::F64),
-                                                    "i64" => Type::Scalar(ElementType::I64),
-                                                    "Bool" => Type::Scalar(ElementType::Bool),
-                                                    // A non-scalar type arg is a known struct/enum
-                                                    // *or* a generic parameter still in scope (a
-                                                    // generic body checked before monomorphization).
-                                                    // Parsing `T` as `Struct("T")` made
-                                                    // `Option<T>::Some(v: T)` mismatch its own
-                                                    // `Generic("T")` payload (E3008 in `VecIter`); a
-                                                    // name that isn't a declared nominal is generic.
-                                                    // (#242)
-                                                    other => {
-                                                        let name: crate::symbol::Symbol =
-                                                            other.to_string().into();
-                                                        if self.env.structs.contains_key(&name)
-                                                            || self.env.enums.contains_key(&name)
-                                                        {
-                                                            Type::Struct(name, None)
-                                                        } else {
-                                                            Type::Generic(name, None)
-                                                        }
-                                                    }
-                                                };
-                                                mapping.insert(param.name().into(), parsed_ty);
-                                            }
-                                        }
+                                    let ty_args = self.enum_name_type_args(enum_name);
+                                    for (param, ty_arg) in
+                                        enum_decl.generics.iter().zip(ty_args.iter())
+                                    {
+                                        mapping.insert(param.name().into(), ty_arg.clone());
                                     }
 
                                     for (i, expr) in expr_payload.iter_mut().enumerate() {
@@ -138,36 +144,8 @@ impl<'a> TypeChecker<'a> {
                     );
                 }
 
-                if let Some(idx) = enum_name.find('<') {
-                    if let Some(end_idx) = enum_name.find('>') {
-                        let base = &enum_name[..idx];
-                        let ty_arg = &enum_name[idx + 1..end_idx];
-                        let parsed_ty = match ty_arg {
-                            "i32" => Type::Scalar(ElementType::I32),
-                            "f32" => Type::Scalar(ElementType::F32),
-                            "f64" => Type::Scalar(ElementType::F64),
-                            "i64" => Type::Scalar(ElementType::I64),
-                            "Bool" => Type::Scalar(ElementType::Bool),
-                            // A non-scalar type arg that isn't a declared nominal is a generic
-                            // parameter in scope, not a struct named `T` — so `Option<T>::None`'s
-                            // result type is `Option<Generic("T")>`, matching a `-> Option<T>` return
-                            // (was `Option<Struct("T")>`, E3002 in `VecIter::next`). (#242)
-                            other => {
-                                let name: crate::symbol::Symbol = other.to_string().into();
-                                if self.env.structs.contains_key(&name)
-                                    || self.env.enums.contains_key(&name)
-                                {
-                                    Type::Struct(name, None)
-                                } else {
-                                    Type::Generic(name, None)
-                                }
-                            }
-                        };
-                        return Type::GenericInstance(
-                            Box::new(Type::Struct(base.to_string().into(), None)),
-                            vec![parsed_ty],
-                        );
-                    }
+                if let Some(ty) = self.enum_name_as_type(enum_name) {
+                    return ty;
                 }
                 Type::Enum(enum_name.clone(), None)
             }

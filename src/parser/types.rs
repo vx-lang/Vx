@@ -18,6 +18,17 @@ const DIMS_REQUIRED: &str = "Tensor needs its shape: write `Tensor<f32, [2, 3]>`
      known at compile time, `Tensor<f32, []>` for a scalar, or `DynTensor<f32>` for a shape \
      that is a run-time value";
 
+/// Parse a type from its source spelling. Expression-position generic arguments are
+/// re-serialized into the call name (`Option<*mut i8>`), so reading them back needs the real
+/// type parser rather than a table of scalar names (Vx#415).
+pub fn parse_type_text(text: &str) -> Option<Type> {
+    let mut lexer = crate::lexer::Lexer::new(text);
+    let tokens = lexer.tokenize();
+    let mut parser = Parser::new(&tokens, text);
+    let ty = parser.parse_type().ok()?;
+    parser.check(&TokenType::Eof).then_some(ty)
+}
+
 impl<'a> Parser<'a> {
     pub(crate) fn parse_topology(&mut self) -> ParseResult<'a, Topology> {
         self.consume(&TokenType::Topology, "Expected 'Topology'")?;

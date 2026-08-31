@@ -1,0 +1,60 @@
+//===- env_args.vx - Vx Compiler ---------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// The command line binding, and the iterator that hands the arguments out one at a time. The
+// turbofish payload type reaches the emitted enum: `Option<*mut i8>` is a tag and a pointer,
+// not a tag and an opaque struct named after the spelling (Vx#415).
+// CHECK: func.func private @vx_env_arg(i32) -> !llvm.ptr
+// CHECK-LABEL: func.func @Args$next(%arg0: !llvm.struct<"Args", (i32, i32)>) -> !llvm.struct<"Option_llvm_ptr", (i32, ptr)>
+// CHECK: %[[P:.*]] = call @arg(%{{.*}}) : (i32) -> !llvm.ptr
+// The `Some` arm tags 0 and carries the pointer; the `None` arm tags 1 and carries nothing.
+// CHECK: %[[SOME:.*]] = llvm.insertvalue %c0_i32, %{{.*}}[0]
+// CHECK: llvm.insertvalue %[[P]], %[[SOME]][1]
+// CHECK: llvm.insertvalue %c1_i32{{.*}}, %{{.*}}[0]
+
+import tests::modules::iter;
+
+extern {
+  fn vx_env_args_count() -> i32;
+  fn vx_env_arg(idx : i32)->*mut i8;
+}
+
+fn args_count() -> i32 {
+  return unsafe { vx_env_args_count() };
+}
+
+fn arg(idx : i32) -> *mut i8 {
+  return unsafe { vx_env_arg(idx) };
+}
+
+struct Args {
+  current : i32, count : i32,
+}
+
+fn args() -> Args {
+  return Args {
+    current : 0, count : args_count()
+  };
+}
+
+impl Iterator<Args, *mut i8> for Args {
+  fn next(self : Args) -> Option<*mut i8> {
+    if self.current < self.count {
+      let val : *mut i8 = arg(self.current);
+      self.current = self.current + 1;
+      return Option<*mut i8>::Some(val);
+    }
+    return Option<*mut i8>::None;
+  }
+}
+
+fn main() -> i32 {
+  let it = args();
+  let _first = it.next();
+  return 0;
+}
