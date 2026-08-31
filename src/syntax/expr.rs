@@ -834,6 +834,24 @@ fn substitute_words(text: &str, mapping: &std::collections::HashMap<Symbol, Type
     result
 }
 
+/// Is this a `Tensor<T>([d0, d1])` construction -- storage the compiler allocated?
+///
+/// A view built with `tensor_view_2d` has the same type and a shape the checker enforces, but
+/// names memory the compiler does not control: two views over one pointer are two names for one
+/// buffer, which no rule about names can see.
+pub fn is_tensor_construction(e: &Expr) -> bool {
+    match e {
+        Expr::FunctionCall(fc) => {
+            let n = fc.name.as_ref();
+            n.starts_with("Tensor")
+                && !n.ends_with("::from")
+                && !n.contains('$')
+                && !n.contains("__")
+        }
+        _ => false,
+    }
+}
+
 /// The local an `@` operand reads, when the operand is a bare name or a borrow of one.
 ///
 /// `None` for anything else, which is the answer a caller wants: `dst = a @ b` fills `dst` in

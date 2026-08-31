@@ -280,6 +280,9 @@ struct Lowerer<'r> {
     /// `*mut i32` for a `self.data[i]` index needs `self : &mut Vec<i32>`'s type substituted into the
     /// base struct's `data : *mut T` field. See `infer_ast_type` (#242).
     ast_types: HashMap<Symbol, Type>,
+    /// Locals bound to a tensor the compiler allocated, as against a view over memory it does
+    /// not control. Only these can be filled in place by `c = a @ b` (Vx#391).
+    owned_tensors: std::collections::HashSet<Symbol>,
     /// Synthetic aggregate layouts for monomorphized data-carrying enum instances (`Option<i32>` ->
     /// `{ i32 tag, i32 payload }`), keyed by a per-instance GID: `(gid, field offsets, field MLIR
     /// types)`. Such a layout is instance-dependent (the by-value payload varies with `T`), so it
@@ -344,6 +347,7 @@ impl<'r> Lowerer<'r> {
             tensor_types: Vec::new(),
             strings: Vec::new(),
             ast_types: HashMap::new(),
+            owned_tensors: std::collections::HashSet::new(),
             agg_layouts: Vec::new(),
             ret_ty: None,
             materialized: HashSet::new(),
@@ -3189,7 +3193,7 @@ impl<'r> Lowerer<'r> {
         let (Some(d), Some(l), Some(r)) = (root(dst), root(a), root(b)) else {
             return false;
         };
-        d != l && d != r
+        self.owned_tensors.contains(&d) && d != l && d != r
     }
 
     /// Lower `c = a @ b` into `c`'s own buffer.
@@ -3364,6 +3368,9 @@ impl<'r> Lowerer<'r> {
                 // annotation is authoritative; else fall back to inferring the initializer's type.
                 if let Some(t) = l.ty_ann.clone().or_else(|| self.infer_ast_type(&l.expr)) {
                     self.ast_types.insert(l.name.clone(), t);
+                }
+                if crate::syntax::is_tensor_construction(&l.expr) {
+                    self.owned_tensors.insert(l.name.clone());
                 }
                 // `let r = &<lvalue>` the escape analysis realized as a place (§5): bind `r` to the
                 // borrowed *place expression* itself, so `*r` re-lowers it (a bare local reads directly

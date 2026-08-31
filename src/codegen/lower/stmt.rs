@@ -101,6 +101,9 @@ impl<'c> LowerToMelior<'c> for LetDeclStmt {
         if let Some(ref t) = ast_ty {
             gen.ast_env.insert(name.to_string().into(), t.clone());
         }
+        if syntax::is_tensor_construction(expr) {
+            gen.owned_tensors.insert(name.to_string().into());
+        }
 
         if *is_mut {
             let ty_str = ty.to_string();
@@ -244,7 +247,7 @@ fn matmul_assign_shapes_agree(gen: &MeliorGenerator<'_>, dst: &Expr, a: &Expr, b
     let (Some(d), Some(l), Some(r)) = (root(dst), root(a), root(b)) else {
         return false;
     };
-    if d == l || d == r {
+    if !gen.owned_tensors.contains(&d) || d == l || d == r {
         return false;
     }
 

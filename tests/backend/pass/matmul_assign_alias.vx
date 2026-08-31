@@ -15,6 +15,8 @@
 //   - `c = &c @ &a` reads `c` through a borrow, so nothing is moved.
 //   - `let r = &c; c = r @ &a` reaches it through a name, which a check on the destination's
 //     own name does not see.
+//   - two `tensor_view_2d` views over one pointer are two names for one buffer, which no rule
+//     about names can see at all. The destination has to be storage the compiler allocated.
 //
 // They are separate functions because a decline aborts the one it is in: together in `main`,
 // the first would take the second off the flat path with it and the second would go unchecked.
@@ -25,7 +27,8 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // CHECK-DAG: func.func @borrowed_self
 // CHECK-DAG: func.func @through_a_name
-// EXPECT: 7 22 7 22
+// CHECK-DAG: func.func @through_a_view
+// EXPECT: 7 22 7 22 7 22
 
 // Both operands are [[1, 2], [3, 4]], so the product is [[7, 10], [15, 22]].
 fn pair() -> Tensor<f32, [2, 2]> {
@@ -59,9 +62,34 @@ fn through_a_name() -> i32 {
   return 0;
 }
 
+extern "C" {
+  fn vx_alloc_f32(n : i32) -> *mut f32;
+}
+
+fn through_a_view() -> i32 {
+  let pc : *mut f32 = unsafe { vx_alloc_f32(4) };
+  let pa : *mut f32 = unsafe { vx_alloc_f32(4) };
+  let c : Tensor<f32, [2, 2]> = unsafe { tensor_view_2d(pc, 2, 2) };
+  let mut w : Tensor<f32, [2, 2]> = unsafe { tensor_view_2d(pc, 2, 2) };
+  let mut a : Tensor<f32, [2, 2]> = unsafe { tensor_view_2d(pa, 2, 2) };
+  for i in 0..2 {
+    for j in 0..2 {
+      w[i][j] = (i * 2 + j + 1) as f32;
+      a[i][j] = (i * 2 + j + 1) as f32;
+    }
+  }
+  w = &c @ &a;
+  print(w[0][0]);
+  print!(" ");
+  print(w[1][1]);
+  return 0;
+}
+
 fn main() -> i32 {
   let _x = borrowed_self();
   print!(" ");
   let _y = through_a_name();
+  print!(" ");
+  let _z = through_a_view();
   return 0;
 }

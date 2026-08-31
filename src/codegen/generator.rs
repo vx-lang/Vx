@@ -28,6 +28,9 @@ pub struct MeliorGenerator<'c> {
     pub(crate) module: Module<'c>,
     pub(crate) env: HashMap<crate::symbol::Symbol, (Value<'c, 'c>, Type<'c>)>,
     pub(crate) ast_env: HashMap<crate::symbol::Symbol, syntax::Type>,
+    /// Locals bound to a tensor the compiler allocated, as against a view over memory it does
+    /// not control. Only these can be filled in place by `c = a @ b` (Vx#391).
+    pub(crate) owned_tensors: std::collections::HashSet<crate::symbol::Symbol>,
     /// Declared memory spaces, keyed by space, so a `transfer` can emit the sub-space descriptor
     /// (granule/capacity/scope/parent) as IR metadata for later passes (see subspace_scheduling.md).
     pub(crate) memories: HashMap<syntax::MemorySpace, syntax::MemoryDecl>,
@@ -548,6 +551,7 @@ impl<'c> MeliorGenerator<'c> {
             module,
             env: HashMap::new(),
             ast_env: HashMap::new(),
+            owned_tensors: std::collections::HashSet::new(),
             memories: HashMap::new(),
             transfer_impls: HashMap::new(),
             topologies: HashMap::new(),
