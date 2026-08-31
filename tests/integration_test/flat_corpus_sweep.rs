@@ -71,7 +71,6 @@ const KNOWN_DECLINES: &[&str] = &[
     // function, plus a dropped vx.transfer. Declining is the honest answer until the flat
     // lowerer carries run-time extents.
     "middle_end/pass/reshape_transpose.vx",
-    "middle_end/pass/topology.vx",
     "middle_end/pass/traits.vx",
     "middle_end/pass/topology_polymorphism.vx",
     "optimizations/pass/cpu_lowering.vx",

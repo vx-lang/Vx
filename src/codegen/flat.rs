@@ -29,7 +29,7 @@
 use crate::bytecode::{HirInstruction, Opcode};
 use crate::decline::{Decline, Lowered};
 use crate::gid::TypeId;
-use crate::hir::flatten::{ptr_gid, scalar_gid, tensor_gid_of};
+use crate::hir::flatten::{ptr_gid, scalar_gid, tensor_gid_of, DYN_DIM};
 use crate::mlir_ty::mlir_scalar;
 use crate::registry::ImmutableGlobalRegistry;
 use crate::syntax::scalar_of;
@@ -182,23 +182,30 @@ fn peel_wrappers(ty: &Type) -> &Type {
     }
 }
 
-/// The memref spelling of a statically shaped tensor type (rank-0 included), peeling wrappers
-/// first. `None` for a non-tensor or any non-literal dimension -- a `?` spelling would contradict
-/// the statically shaped value the body produces.
-fn static_tensor_memref(ty: &Type) -> Option<String> {
-    let Type::Tensor(elem, dims, _) = peel_wrappers(ty) else {
-        return None;
-    };
-    let et = mlir_scalar(elem)?;
-    let mut s = String::new();
-    for d in dims {
-        let crate::syntax::Expr::Number(n) = d else {
-            return None;
-        };
-        let v: i64 = n.value.as_ref().parse().ok()?;
-        s += &format!("{v}x");
+/// The memref spelling of a tensor type (rank-0 included), peeling wrappers first:
+/// `Tensor<f32, [2, 3]>` is `memref<2x3xf32>` and `DynTensor<f32>` is `memref<?x?xf32>`, the rank
+/// the oracle assumes for a shape it does not know (Vx#404).
+///
+/// `None` for a non-tensor, or for a `Tensor` dimension that is not a literal. A shaped value
+/// reaching a dynamic position is cast to it rather than spelled as one, so a signature written
+/// here never contradicts what the body produces.
+fn tensor_memref_of_type(ty: &Type) -> Option<String> {
+    match peel_wrappers(ty) {
+        Type::Tensor(elem, dims, _) => {
+            let mut shape = Vec::with_capacity(dims.len());
+            for d in dims {
+                let crate::syntax::Expr::Number(n) = d else {
+                    return None;
+                };
+                shape.push(n.value.as_ref().parse::<i64>().ok()?.to_string());
+            }
+            tensor_memref_ty(elem, &shape)
+        }
+        Type::DynTensor(elem, _) => {
+            tensor_memref_ty(elem, &[DYN_DIM.to_string(), DYN_DIM.to_string()])
+        }
+        _ => None,
     }
-    Some(format!("memref<{s}{et}>"))
 }
 
 fn is_ptr_ty(ty: &Type) -> bool {
@@ -459,7 +466,7 @@ pub fn build_callee_map(
                 ret_agg: resolve_agg_gid(&sig.ret_ty, aggs, agg_names),
                 ret_ptr: is_ptr_ty(&sig.ret_ty),
                 ret_void: is_void_ty(&sig.ret_ty),
-                ret_tensor: static_tensor_memref(&sig.ret_ty),
+                ret_tensor: tensor_memref_of_type(&sig.ret_ty),
             },
         )
     };
@@ -1766,7 +1773,7 @@ pub fn emit_function_mlir(
                 .struct_ty
                 .clone(),
         )
-    } else if let Some(mt) = static_tensor_memref(&func.return_type) {
+    } else if let Some(mt) = tensor_memref_of_type(&func.return_type) {
         Some(mt) // a statically shaped tensor return, wrappers peeled (Vx#383)
     } else if crate::syntax::is_void_ty(&func.return_type) {
         None

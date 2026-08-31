@@ -105,7 +105,30 @@ fn tensor_elem_shape(ty: &Type) -> Option<(ElementType, Vec<String>)> {
 
 /// A dimension whose extent is a run-time value. Spelled the way MLIR spells it, and distinct from
 /// every const-generic name, so a shape entry is either a literal, a name, or this.
-const DYN_DIM: &str = "?";
+pub(crate) const DYN_DIM: &str = "?";
+
+/// Where a tensor value is flowing, so a shape mismatch there can say which position it was.
+#[derive(Clone, Copy)]
+enum ExtentSite {
+    Argument,
+    Return,
+}
+
+impl ExtentSite {
+    fn rank_mismatch(self) -> &'static str {
+        match self {
+            ExtentSite::Argument => "a tensor argument whose rank differs from the parameter",
+            ExtentSite::Return => "a returned tensor whose rank differs from the return type",
+        }
+    }
+
+    fn extent_mismatch(self) -> &'static str {
+        match self {
+            ExtentSite::Argument => "a tensor argument whose extents differ from the parameter",
+            ExtentSite::Return => "a returned tensor whose extents differ from the return type",
+        }
+    }
+}
 
 /// Canonicalize a tensor dimension for the GID: a numeric literal by value, a const/generic name by
 /// its name. Anything else declines (so the tensor stays unmodelled rather than hashing unstably).
@@ -2922,6 +2945,19 @@ impl<'r> Lowerer<'r> {
         let Some(want) = lowered_ty(param_ty, self.registry) else {
             return Ok(v);
         };
+        self.forget_extents(v, &want, ExtentSite::Argument)
+    }
+
+    /// The same at the return: a shaped value leaving a function declared to return a `DynTensor`
+    /// forgets its extents, so the `Ret` carries the type the signature announces.
+    fn forget_extents_for_return(&mut self, v: Val) -> Lowered<Val> {
+        let Some(want) = self.ret_ty.clone() else {
+            return Ok(v);
+        };
+        self.forget_extents(v, &want, ExtentSite::Return)
+    }
+
+    fn forget_extents(&mut self, v: Val, want: &LoweredTy, site: ExtentSite) -> Lowered<Val> {
         let (
             LoweredTy::Tensor {
                 elem: want_elem,
@@ -2931,7 +2967,7 @@ impl<'r> Lowerer<'r> {
                 elem: have_elem,
                 shape: have_shape,
             },
-        ) = (&want, &v.ty)
+        ) = (want, &v.ty)
         else {
             return Ok(v);
         };
@@ -2940,14 +2976,14 @@ impl<'r> Lowerer<'r> {
         }
         if want_shape.len() != have_shape.len() {
             return Err(Decline::TypeNotModelled {
-                what: "a tensor argument whose rank differs from the parameter",
+                what: site.rank_mismatch(),
             });
         }
-        // Every position the two disagree on has to be one the parameter leaves open.
+        // Every position the two disagree on has to be one the destination leaves open.
         for (w, h) in want_shape.iter().zip(have_shape) {
             if w != h && w != DYN_DIM {
                 return Err(Decline::TypeNotModelled {
-                    what: "a tensor argument whose extents differ from the parameter",
+                    what: site.extent_mismatch(),
                 });
             }
         }
@@ -3423,6 +3459,7 @@ impl<'r> Lowerer<'r> {
                     return Ok(());
                 }
                 let v = self.wrap_scalar_in_rank0_ret(v)?;
+                let v = self.forget_extents_for_return(v)?;
                 self.emit_typed(Opcode::Ret, v.reg, Register(0), v.ty, 0);
                 Ok(())
             }
