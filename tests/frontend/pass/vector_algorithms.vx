@@ -1,14 +1,14 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK-DAG: func.func private @vx_macro_mlir_L0_C0_0(
-// CHECK-DAG: func.func private @vx_macro_mlir_L0_C0_1(
-// CHECK-DAG: func.func private @vx_macro_mlir_L0_C0_2(
+// CHECK-DAG: func.func private @[[FILL:vx_macro_mlir_L[0-9]+_C[0-9]+_0]](
+// CHECK-DAG: func.func private @[[CMP:vx_macro_mlir_L[0-9]+_C[0-9]+_1]](
+// CHECK-DAG: func.func private @[[COPY:vx_macro_mlir_L[0-9]+_C[0-9]+_2]](
 // CHECK-DAG: func.func private @print_str(
 // CHECK-LABEL: func.func @Tensor$f32$10x10$fill$f32(%arg0: memref<memref<?x?xf32>>, %arg1: f32)
-// CHECK: call @vx_macro_mlir_L0_C0_0(%{{.*}}, %{{.*}}) : (memref<?x?xf32>, f32) -> ()
+// CHECK: call @[[FILL]](%{{.*}}, %{{.*}}) : (memref<?x?xf32>, f32) -> ()
 // CHECK-LABEL: func.func @Tensor$f32$10x10$compare$f32(%arg0: memref<memref<?x?xf32>>, %arg1: memref<memref<?x?xf32>>) -> i1
-// CHECK: call @vx_macro_mlir_L0_C0_1(%{{.*}}, %{{.*}}) : (memref<?x?xf32>, memref<?x?xf32>) -> i1
+// CHECK: call @[[CMP]](%{{.*}}, %{{.*}}) : (memref<?x?xf32>, memref<?x?xf32>) -> i1
 // CHECK-LABEL: func.func @Tensor$f32$10x10$copy$f32(%arg0: memref<memref<?x?xf32>>, %arg1: memref<memref<?x?xf32>>)
-// CHECK: call @vx_macro_mlir_L0_C0_2(%{{.*}}, %{{.*}}) : (memref<?x?xf32>, memref<?x?xf32>) -> ()
+// CHECK: call @[[COPY]](%{{.*}}, %{{.*}}) : (memref<?x?xf32>, memref<?x?xf32>) -> ()
 // CHECK-LABEL: func.func @main() -> i32
 // CHECK: call @Tensor$f32$10x10$fill$f32(%{{.*}}, %{{.*}}) : (memref<memref<?x?xf32>>, f32) -> ()
 // CHECK: call @Tensor$f32$10x10$fill$f32(%{{.*}}, %{{.*}}) : (memref<memref<?x?xf32>>, f32) -> ()

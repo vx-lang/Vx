@@ -48,6 +48,7 @@ const KNOWN_DECLINES: &[&str] = &[
     "frontend/pass/generics.vx",
     "frontend/pass/if_comptime_and_topology.vx",
     "frontend/pass/indirect_call.vx",
+    "frontend/pass/inline_mlir_const_generics.vx",
     "frontend/pass/legal_acccore_transfer.vx",
     "frontend/pass/macro_vec_nested.vx",
     "frontend/pass/memory_algebra_implicit.vx",

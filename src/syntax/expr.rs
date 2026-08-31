@@ -803,6 +803,37 @@ macro_rules! delegate_expr {
     };
 }
 
+/// Replace whole identifiers in a fragment of MLIR text with their bound types. Only complete
+/// words are replaced: the `N` in `memref<N x M x f32>` becomes the bound extent, the one
+/// inside `NxMxf32` does not.
+fn substitute_words(text: &str, mapping: &std::collections::HashMap<Symbol, Type>) -> String {
+    if mapping.is_empty() || !mapping.keys().any(|k| text.contains(&**k)) {
+        return text.to_string();
+    }
+    let mut result = String::with_capacity(text.len());
+    let mut word = String::new();
+    let flush = |word: &mut String, result: &mut String| {
+        if word.is_empty() {
+            return;
+        }
+        match mapping.get(word.as_str()) {
+            Some(ty) => result.push_str(&ty.to_string()),
+            None => result.push_str(word),
+        }
+        word.clear();
+    };
+    for c in text.chars() {
+        if c.is_alphanumeric() || c == '_' {
+            word.push(c);
+        } else {
+            flush(&mut word, &mut result);
+            result.push(c);
+        }
+    }
+    flush(&mut word, &mut result);
+    result
+}
+
 impl Expr {
     pub fn span(&self) -> Span {
         delegate_expr!(self, span)
@@ -1122,57 +1153,28 @@ impl Expr {
                 target_ty: e.target_ty.substitute(mapping),
                 span: e.span,
             }),
-            Expr::InlineMlir(e) => {
-                let mut new_block_str = e.block_str.clone();
-                if !mapping.is_empty() {
-                    let mut needs_replace = false;
-                    for k in mapping.keys() {
-                        if new_block_str.contains(&**k) {
-                            needs_replace = true;
-                            break;
-                        }
-                    }
-                    if needs_replace {
-                        let mut result = String::with_capacity(new_block_str.len());
-                        let mut current_word = String::new();
-                        for c in new_block_str.chars() {
-                            if c.is_alphanumeric() || c == '_' {
-                                current_word.push(c);
-                            } else {
-                                if !current_word.is_empty() {
-                                    if let Some(mapped_ty) = mapping.get(current_word.as_str()) {
-                                        result.push_str(&mapped_ty.to_string());
-                                    } else {
-                                        result.push_str(&current_word);
-                                    }
-                                    current_word.clear();
-                                }
-                                result.push(c);
-                            }
-                        }
-                        if !current_word.is_empty() {
-                            if let Some(mapped_ty) = mapping.get(current_word.as_str()) {
-                                result.push_str(&mapped_ty.to_string());
-                            } else {
-                                result.push_str(&current_word);
-                            }
-                        }
-                        new_block_str = result;
-                    }
-                }
-                Expr::InlineMlir(InlineMlirExpr {
-                    inputs: e
-                        .inputs
-                        .iter()
-                        .map(|(n, ex, t)| (n.clone(), ex.substitute(mapping), t.clone()))
-                        .collect(),
-                    clobbers: e.clobbers.iter().map(|ex| ex.substitute(mapping)).collect(),
-                    returns: e.returns.as_ref().map(|t| t.substitute(mapping)),
-                    dialects: e.dialects.clone(),
-                    block_str: new_block_str,
-                    span: e.span,
-                })
-            }
+            // An `mlir!` block is text, so its type parameters are substituted word by word.
+            // The declared input types are the same text and take the same pass: leaving them
+            // alone gave the generated wrapper a `memref<NxMxf32>` signature over a body that
+            // had already become `2x2` (Vx#414).
+            Expr::InlineMlir(e) => Expr::InlineMlir(InlineMlirExpr {
+                inputs: e
+                    .inputs
+                    .iter()
+                    .map(|(n, ex, t)| {
+                        (
+                            n.clone(),
+                            ex.substitute(mapping),
+                            substitute_words(t, mapping),
+                        )
+                    })
+                    .collect(),
+                clobbers: e.clobbers.iter().map(|ex| ex.substitute(mapping)).collect(),
+                returns: e.returns.as_ref().map(|t| t.substitute(mapping)),
+                dialects: e.dialects.clone(),
+                block_str: substitute_words(&e.block_str, mapping),
+                span: e.span,
+            }),
             Expr::Number(_) | Expr::StringLiteral(_) | Expr::MemorySpace(_) | Expr::Topology(_) => {
                 self.clone()
             }

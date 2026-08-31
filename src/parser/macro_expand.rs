@@ -650,6 +650,10 @@ impl<'a> MacroExpander<'a> {
 
                             let mut ty_str = String::new();
                             let mut angle_depth = 0;
+                            // Keep the gaps the source had. Gluing the tokens together turned
+                            // `memref<N x M x f32>` into one word, and a type parameter that is
+                            // not a word of its own cannot be substituted (Vx#414).
+                            let mut prev_end = 0;
                             while !parser.check(&crate::lexer::TokenType::Eof) {
                                 if angle_depth == 0
                                     && (parser.check(&crate::lexer::TokenType::Comma)
@@ -663,6 +667,10 @@ impl<'a> MacroExpander<'a> {
                                 } else if tok.kind == crate::lexer::TokenType::RightAngle {
                                     angle_depth -= 1;
                                 }
+                                if prev_end > 0 && tok.column > prev_end {
+                                    ty_str.push(' ');
+                                }
+                                prev_end = tok.column + tok.length;
                                 ty_str.push_str(&tok.kind.to_string());
                             }
                             inputs.push((arg_name.into(), expr, ty_str));
@@ -737,6 +745,16 @@ impl<'a> MacroExpander<'a> {
             let mut current_col = 0;
 
             for tok in t {
+                let text = tok.kind.to_string();
+                // A delimiter synthesized when the token tree was built carries no position.
+                // Laying one out by column drove the rest of its line hundreds of columns to
+                // the right, and the block stopped parsing (Vx#414).
+                if tok.line == 0 {
+                    s.push_str(&text);
+                    current_col += text.chars().count();
+                    continue;
+                }
+
                 if current_line == 0 {
                     current_line = tok.line;
                     current_col = tok.column;
@@ -756,7 +774,7 @@ impl<'a> MacroExpander<'a> {
                     }
                 }
 
-                s.push_str(&tok.kind.to_string());
+                s.push_str(&text);
                 current_col = tok.column + tok.length;
             }
             s
@@ -764,13 +782,24 @@ impl<'a> MacroExpander<'a> {
             return Err("mlir! macro requires a trailing block".to_string());
         };
 
+        // The macro's own position, so a block that fails to parse can be pointed at. A
+        // default span reported every one of them at 0:0 (Vx#414).
+        let span = tokens
+            .first()
+            .map(|t| Span {
+                line: t.line,
+                column: t.column,
+                length: t.length,
+            })
+            .unwrap_or_default();
+
         Ok(expr::Expr::InlineMlir(expr::InlineMlirExpr {
             inputs,
             clobbers,
             returns,
             dialects,
             block_str,
-            span: Span::default(),
+            span,
         }))
     }
 }

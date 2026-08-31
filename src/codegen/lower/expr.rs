@@ -2927,15 +2927,14 @@ impl<'c> LowerToMelior<'c> for InlineMlirExpr {
         );
 
         gen.context.set_allow_unregistered_dialects(true);
-        let parsed_module = match melior::ir::Module::parse(gen.context, &mlir_source) {
-            Some(m) => m,
-            None => {
-                panic!(
-                    "Failed to parse mlir! block at {:?}. Source:\n{}",
-                    self.span, mlir_source
-                );
-            }
-        };
+        // A block a programmer can write wrong is a diagnostic, not a crash (Vx#414).
+        let parsed_module =
+            melior::ir::Module::parse(gen.context, &mlir_source).ok_or_else(|| {
+                LowerError::ParseType(format!(
+                    "mlir! block at line {}, column {} does not parse:\n{}",
+                    self.span.line, self.span.column, mlir_source
+                ))
+            })?;
 
         use melior::ir::BlockLike;
         let func_op = parsed_module.body().first_operation().unwrap();
