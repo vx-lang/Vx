@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=MLIR
 // RUN: vxc %s --action run-jit 2>&1 | FileCheck %s
 
 import std::io;
@@ -35,3 +36,12 @@ fn main() -> i32 {
 
 // The f32 field survives the struct round trip.
 // CHECK: 0.00001
+
+// The struct is built field by field into one aggregate value, and the f32 field read back out
+// is the one that reaches print -- the round trip the number below measures.
+// MLIR-LABEL: func.func @main() -> i32 attributes {llvm.emit_c_interface} {
+// MLIR: llvm.mlir.undef : !llvm.struct<"Config", (i32, i32, i32, i32, i32, i32, f32)>
+// MLIR: %[[EPS:.*]] = arith.constant 9.99999974E-6 : f32
+// MLIR: %[[FULL:.*]] = llvm.insertvalue %[[EPS]], %{{.*}}[6] : !llvm.struct<"Config", (i32, i32, i32, i32, i32, i32, f32)>
+// MLIR: %[[OUT:.*]] = llvm.extractvalue %[[FULL]][6] : !llvm.struct<"Config", (i32, i32, i32, i32, i32, i32, f32)>
+// MLIR: call @print_f32(%[[OUT]])

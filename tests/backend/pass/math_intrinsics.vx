@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=MLIR
 // RUN: vxc %s --action run-jit 2>&1 | FileCheck %s
 
 import std::io;
@@ -28,3 +29,12 @@ fn main() -> i32 {
 // sqrt(16) and exp(0), printed back to back on one line.
 // CHECK: 4
 // CHECK-SAME: 1
+
+// Each intrinsic is a call to its own monomorph, and the two results are what reach print.
+// MLIR-LABEL: func.func @main() -> i32 attributes {llvm.emit_c_interface} {
+// MLIR: %[[X:.*]] = arith.constant 1.600000e+01 : f32
+// MLIR: %[[Z:.*]] = arith.constant 0.000000e+00 : f32
+// MLIR: %[[R:.*]] = call @f32$sqrt(%[[X]]) : (f32) -> f32
+// MLIR: %[[E:.*]] = call @f32$exp(%[[Z]]) : (f32) -> f32
+// MLIR: call @print_f32(%[[R]])
+// MLIR: call @print_f32(%[[E]])

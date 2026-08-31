@@ -10,6 +10,7 @@
 // value. The match must type as the function's return type `T` rather than the
 // placeholder tensor, so `-> T` type-checks. Exercised both directly and on an
 // Option returned from `Vec<Option<i32>>::get` (#208).
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=MLIR
 // RUN: vxc %s --action run-jit
 import std::vec;
 import std::io;
@@ -33,3 +34,12 @@ fn main() -> i32 {
 
 // EXPECT: 42
 // EXPECT: 7
+
+// The IR half of what the run below measures: `Option<i32>` and `Vec<Option<i32>>` each get
+// their own monomorphs, so an option inside a vector is a distinct instantiation from the
+// option on its own.
+// MLIR: call @Option$i32$unwrap$i32
+// MLIR: call @"Vec::new$Option$i32"
+// MLIR: call @Vec$Option$i32$push$Option$i32
+// MLIR: call @Vec$Option$i32$get$Option$i32
+// MLIR: call @Option$i32$is_some$i32

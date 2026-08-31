@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=MLIR
 // RUN: vxc %s --action run-jit 2>&1 | FileCheck %s
 
 extern "C" {
@@ -27,3 +28,15 @@ fn main() -> i32 {
 
 // CHECK: [TRACE START] Event ID: 100
 // CHECK: [TRACE END] Event ID: 100
+
+// The four externs are called in order, and their signatures are scalars -- a timestamp is not
+// a tensor, which is what the dims-less spelling used to make them (Vx#399).
+// MLIR: func.func private @start_benchmark() -> f32
+// MLIR: func.func private @end_benchmark() -> i32
+// MLIR: func.func private @trace_start() -> i32
+// MLIR: func.func private @trace_end() -> i32
+// MLIR-LABEL: func.func @main() -> i32 attributes {llvm.emit_c_interface} {
+// MLIR: call @trace_start() : () -> i32
+// MLIR: call @start_benchmark() : () -> f32
+// MLIR: call @end_benchmark() : () -> i32
+// MLIR: call @trace_end() : () -> i32

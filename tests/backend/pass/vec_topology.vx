@@ -11,6 +11,7 @@
 // and used to *dispatch* by value. Placement uses (`Pinned`, `spawn on`) are
 // unaffected — see tests/optimizations/pass/topology_dispatch.vx for the device
 // dispatch + MLIR checks.
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=MLIR
 // RUN: vxc %s --action run-jit
 import std::vec;
 import std::io;
@@ -68,3 +69,11 @@ fn main() -> i32 {
 // EXPECT: 256
 // EXPECT: 32
 // EXPECT: gpu-match
+
+// A topology stored as data is an i32, so the vector instantiates at i32 -- there is no
+// Vec$Topology monomorph, which is what makes the dispatch ids printable below.
+// MLIR: call @"Vec::new$i32"
+// MLIR: call @Vec$i32$push$i32
+// MLIR: call @Vec$i32$get$i32
+// MLIR: call @Vec$i32$len$i32
+// MLIR-NOT: Vec$Topology

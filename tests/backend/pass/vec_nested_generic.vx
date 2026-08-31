@@ -9,6 +9,7 @@
 // (`Vec<Vec<i32>>`) must lower to the concrete monomorphized struct, not an
 // opaque `!llvm.struct<"Vec<i32>">`. Also exercises #208: a value returned from
 // a generic method (`outer.get(0)` : `Vec<i32>`) supports further method calls.
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=MLIR
 // RUN: vxc %s --action run-jit
 import std::vec;
 import std::io;
@@ -44,3 +45,12 @@ fn main() -> i32 {
 // EXPECT: 22
 // EXPECT: 55
 // EXPECT: 3
+
+// A `Vec<Vec<i32>>` monomorphizes at both levels: the outer vector's element is the inner
+// vector's instantiation, not a second copy of `Vec<i32>`.
+// MLIR: call @"Vec::new$Vec$i32"
+// MLIR: call @"Vec::new$i32"
+// MLIR: call @Vec$i32$push$i32
+// MLIR: call @Vec$Vec$i32$push$Vec$i32
+// MLIR: call @Vec$Vec$i32$get$Vec$i32
+// MLIR: call @Vec$i32$get$i32

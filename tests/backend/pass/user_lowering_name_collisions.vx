@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=MLIR
 // An `impl transfer` body is INLINED at the transfer site (Vx#353 A3), and the
 // generator's name maps are flat -- no scoping. So every name the body uses is a
 // chance to corrupt the caller. This fixture makes all three collide at once:
@@ -79,3 +80,9 @@ fn main() -> i32 {
   print(home);
   return 0;
 }
+
+// The user lowering is inlined at the site and marked, and the tile it places carries the
+// declaring topology's name -- which is what distinguishes two same-named lowerings.
+// MLIR: "vx.transfer"({{.*}}) <{target_topology = {{[0-9]+}} : i32}> {{{.*}}user_lowered{{.*}}}
+// MLIR: gpu.barrier
+// MLIR: topology_name = "Dev"

@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=MLIR
 // RUN: vxc %s --action run-jit 2>&1 | FileCheck %s
 
 import std::io;
@@ -24,3 +25,12 @@ fn main() -> i32 {
 // What malloc left in the block is not ours to predict; the assertion is that indexing a
 // raw `*mut f32` lowers and runs at all, so match any number it prints.
 // CHECK: {{[0-9.eE+-]+}}
+
+// What the run below cannot assert: indexing a raw `*mut f32` is a getelementptr on the block
+// malloc returned, and the loaded value is what reaches print. The number is whatever malloc
+// left there, but the address arithmetic is not.
+// MLIR-LABEL: func.func @main() -> i32 attributes {llvm.emit_c_interface} {
+// MLIR: %[[P:.*]] = call @malloc(%{{.*}}) : (i32) -> !llvm.ptr
+// MLIR: %[[GEP:.*]] = llvm.getelementptr %[[P]][%{{.*}}] : (!llvm.ptr, i64) -> !llvm.ptr, f32
+// MLIR: %[[V:.*]] = llvm.load %[[GEP]] : !llvm.ptr -> f32
+// MLIR: call @print_f32(%[[V]])

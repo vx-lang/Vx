@@ -10,12 +10,13 @@
 // shaped tensor -- passing one forgets the shape, which is the whole point of
 // keeping the two spellings apart.
 //
-// This runner checks semantics only and never emits MLIR, so the lowering is
-// asserted in tests/optimizations/pass/dyntensor_element_types.vx instead. What
-// this file pins is that a statically shaped tensor is accepted where a dynamic
-// one is declared.
-//
-// RUN: vxc %s --action emit-mlir
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+
+// The declared parameter is dynamic, so the callee takes a fully dynamic memref, and the
+// shaped argument is accepted there -- passing it forgets the shape, which is the point.
+// CHECK-LABEL: func.func @takes_dyn(%arg0: memref<?x?xf32>) -> i32
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: call @takes_dyn(%{{.*}}) : (memref<?x?xf32>) -> i32
 
 fn takes_dyn(t : DynTensor<f32>) -> i32 {
   return 0;

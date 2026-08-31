@@ -9,6 +9,7 @@
 // (`Vec<Option<i32>>::get`) resolves its methods (`is_some`/`is_none`) — the
 // enum type argument keeps a nominal head — and its generic-instance type
 // lowers to the concrete monomorphized enum layout.
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=MLIR
 // RUN: vxc %s --action run-jit
 import std::vec;
 import std::io;
@@ -33,3 +34,11 @@ fn main() -> i32 {
 
 // EXPECT: a=some
 // EXPECT: b=none
+
+// Both option predicates reach the same `Vec<Option<i32>>` instantiation, so `some` and `none`
+// are two values of one element type rather than two element types.
+// MLIR: call @"Vec::new$Option$i32"
+// MLIR: call @Vec$Option$i32$push$Option$i32
+// MLIR: call @Vec$Option$i32$get$Option$i32
+// MLIR: call @Option$i32$is_some$i32
+// MLIR: call @Option$i32$is_none$i32

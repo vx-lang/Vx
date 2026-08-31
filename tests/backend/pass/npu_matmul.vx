@@ -1,7 +1,7 @@
 //===- npu_matmul.vx ---------------------------------*- Vx -*-===//
 // RUN: vxc %s --emit-mlir -O0 2>&1 | FileCheck %s
-// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1
-// RUN: vxc %s --emit-llvm 2>&1 | FileCheck %s
+// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s --check-prefix=STD
+// RUN: vxc %s --emit-llvm 2>&1 | FileCheck %s --check-prefix=LLVM
 // REQUIRES: macos
 // FileCheck %s
 
@@ -80,4 +80,19 @@ fn main() -> i32 {
 
 // NO_EXEC
 
-// CHECK: module
+// Before the pass the extents are still i32 values that have to be cast to index; the buffer
+// is allocated from those casts.
+// CHECK-LABEL: func.func @test_f32() -> i32
+// CHECK: %[[N:.*]] = arith.index_cast %{{.*}} : i32 to index
+// CHECK: memref.alloc(%[[N:.*]], %[[M:.*]]) : memref<?x?xf32>
+
+// convert-vx-to-standard folds them, so the same allocation reads from index constants.
+// STD-LABEL: func.func @test_f32() -> i32
+// STD: %[[C:.*]] = arith.constant {{[0-9]+}} : index
+// STD: memref.alloc(%[[C:.*]], %[[D:.*]]) : memref<?x?xf32>
+
+// --emit-llvm stops at the LLVM dialect, where the same function is an llvm.func and the
+// buffers are raw allocations rather than memrefs.
+// LLVM-LABEL: llvm.func @test_f32() -> i32
+// LLVM: llvm.call @malloc
+// LLVM: llvm.func @main() -> i32 attributes {llvm.emit_c_interface}

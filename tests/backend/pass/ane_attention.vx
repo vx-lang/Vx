@@ -7,9 +7,9 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s --emit-mlir -O0
-// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)"
-// RUN: vxc %s --emit-llvm
+// RUN: vxc %s --emit-mlir -O0 2>&1 | FileCheck %s
+// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" | FileCheck %s --check-prefix=STD
+// RUN: vxc %s --emit-llvm | FileCheck %s --check-prefix=LLVM
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 //
 // EXEC_RUN: vxc %s | mlir-opt -convert-scf-to-cf
@@ -112,3 +112,16 @@ fn main() -> i32 {
 // CHECK: vx.spawn topology(100) {
 // CHECK: arith.mulf
 // CHECK: } {topology_name = "NPU[0]"}
+
+// convert-vx-to-standard outlines the region: the site becomes a vx.launch naming a vx.kernel
+// that carries the topology, and the operands travel as memref descriptors.
+// STD: vx.launch @[[K:[a-z0-9_]+]]({{.*}}) {topology = 100 : i32, vx.topology_name = "NPU[0]"}
+// STD: vx.kernel @[[K]](100) :
+// STD: vx.return
+
+// vx-to-llvm replaces the launch with the vendor-neutral plugin call and a descriptor string
+// carrying the kernel name, its topology id and the topology's name -- the ABI a worker reads.
+// LLVM: llvm.func @vx_plugin_dispatch_async(!llvm.ptr, i64, !llvm.ptr, !llvm.ptr, i64) -> i64
+// LLVM: llvm.mlir.global internal constant @[[K:[a-z0-9_]+]]_str("[[K]]\00topo=100\00toponame=NPU[0]\00")
+// LLVM: llvm.call @vx_plugin_dispatch_async(
+// LLVM: llvm.func @[[K]](

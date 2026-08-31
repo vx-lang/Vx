@@ -1,3 +1,4 @@
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=MLIR
 // EXPECT: Vx runtime panic occurred!
 // EXPECT: Caught panic!
 // EXPECT: Vx runtime panic occurred!
@@ -84,3 +85,12 @@ fn main() -> i32 {
   }
   return 0;
 }
+
+// Each panicking body reaches vx_catch_unwind as its own symbol -- the two closure cases as
+// generated Closure_N_call thunks -- so a caught panic returns to the next call, not past it.
+// MLIR: func.func private @vx_catch_unwind
+// MLIR-DAG: func.func @Closure_1_call
+// MLIR-DAG: func.func @Closure_2_call
+// MLIR: call @vx_catch_unwind
+// MLIR: call @vx_catch_unwind
+// MLIR: call @vx_catch_unwind

@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=MLIR
 // RUN: vxc %s --action run-jit 2>&1 | FileCheck %s
 
 import std::io;
@@ -26,3 +27,17 @@ fn main() -> i32 {
 // CHECK-SAME: 8.5
 // CHECK-SAME: 21
 // CHECK-SAME: 5.25
+
+// The four operations fold to one arith op each over the same two constants, and each result
+// is what reaches print -- which is what ties the numbers below to the IR above them.
+// MLIR-LABEL: func.func @main() -> i32 attributes {llvm.emit_c_interface} {
+// MLIR: %[[A:.*]] = arith.constant 1.050000e+01 : f32
+// MLIR: %[[B:.*]] = arith.constant 2.000000e+00 : f32
+// MLIR: %[[ADD:.*]] = arith.addf %[[A]], %[[B]] : f32
+// MLIR: %[[SUB:.*]] = arith.subf %[[A]], %[[B]] : f32
+// MLIR: %[[MUL:.*]] = arith.mulf %[[A]], %[[B]] : f32
+// MLIR: %[[DIV:.*]] = arith.divf %[[A]], %[[B]] : f32
+// MLIR: call @print_f32(%[[ADD]])
+// MLIR: call @print_f32(%[[SUB]])
+// MLIR: call @print_f32(%[[MUL]])
+// MLIR: call @print_f32(%[[DIV]])
