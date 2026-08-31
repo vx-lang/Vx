@@ -16,6 +16,33 @@ use std::fs::File;
 use std::io::Write;
 use std::process::Command;
 
+/// Where `libvx_std_core` sits for the profile this compiler was built with.
+///
+/// Its absence is worth its own message: `cargo test` never emits the shared library, because a
+/// dependency edge only asks for an rlib, so a checkout that has only been tested reaches the
+/// linker without it and clang reports a missing file with no hint of which build produces it.
+pub fn runtime_library_path() -> Result<String, String> {
+    let profile_dir = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    };
+    let current_dir = std::env::current_dir().map_err(|e| e.to_string())?;
+    let path = current_dir.join("target").join(profile_dir).join(format!(
+        "{}vx_std_core{}",
+        std::env::consts::DLL_PREFIX,
+        std::env::consts::DLL_SUFFIX
+    ));
+    if !path.exists() {
+        return Err(format!(
+            "the Vx runtime library is missing:\n  {}\nBuild it with `cargo build`, which now \
+             covers stdlib/rust_core. `cargo test` alone never produces it.",
+            path.display()
+        ));
+    }
+    Ok(path.to_string_lossy().into_owned())
+}
+
 fn run_cmd(mut cmd: Command, desc: &str) -> Result<std::process::Output, String> {
     let output = cmd
         .output()
@@ -186,13 +213,7 @@ pub fn execute_mlir(
             llvm_libdir,
             std::env::consts::DLL_SUFFIX
         ),
-        &format!(
-            "{}/target/{}/{}vx_std_core{}",
-            current_dir.display(),
-            profile_dir,
-            std::env::consts::DLL_PREFIX,
-            std::env::consts::DLL_SUFFIX
-        ),
+        &runtime_library_path()?,
     ]);
 
     // The dispatch runtime provides vx_plugin_dispatch_async, which any program
@@ -251,4 +272,18 @@ pub fn execute_mlir(
     );
 
     Ok(output_str)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Without the shared library every test that runs a program fails, and each one reports
+    /// only a clang error naming a file it has never heard of. This one names the cause.
+    #[test]
+    fn the_runtime_library_the_jit_links_is_present() {
+        if let Err(why) = runtime_library_path() {
+            panic!("{why}");
+        }
+    }
 }

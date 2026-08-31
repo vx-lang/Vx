@@ -990,12 +990,7 @@ impl CompilerDriver {
             }
             Action::EmitObj => {
                 let current_dir = std::env::current_dir().unwrap();
-                let vx_std_core = format!(
-                    "{}/target/debug/{}vx_std_core{}",
-                    current_dir.display(),
-                    std::env::consts::DLL_PREFIX,
-                    std::env::consts::DLL_SUFFIX
-                );
+                let vx_std_core = crate::jit::runtime_library_path()?;
                 let libnpu = format!(
                     "{}/target/jit/{}npu_shared{}",
                     current_dir.display(),

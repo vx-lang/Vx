@@ -121,17 +121,13 @@ Identical on both platforms.
 source config.local  # required before every cargo command, in every new shell
 
 cargo build --release
-cargo build --release -p vx_std_core
 ```
 
-**Both build commands are required.** `vx_std_core` is declared
-`crate-type = ["staticlib", "cdylib"]`; a root build links it as an rlib and never emits the shared
-library, but the JIT loads it at run time. Skipping the second command produces a compiler that
-builds fine and then fails on the first `--run` with:
-
-```
-clang: error: no such file or directory: '.../target/release/libvx_std_core.so'
-```
+That one command is enough. `vx_std_core` is declared `crate-type = ["staticlib", "cdylib"]`, and
+a dependency edge alone only ever asks for an rlib, so the shared library the JIT loads at run
+time used to need a second `cargo build --release -p vx_std_core`. The workspace now names the
+package in `default-members`, which covers it. `cargo test` on its own still does not produce it —
+test builds never emit a `cdylib` — so a checkout that has only been tested has to be built once.
 
 `setup.sh` puts LLVM *first* on `PATH` so the unsuffixed `llvm-config`, `mlir-translate` and
 `clang++` resolve to the pinned version rather than to Xcode's or to another LLVM on the box. It
@@ -223,8 +219,9 @@ ______________________________________________________________________
 You did not `source config.local`, or you opened a new shell. Once per shell, before any cargo
 command.
 
-**`clang: error: no such file or directory: '.../libvx_std_core.so'`**
-You skipped `cargo build --release -p vx_std_core`. See [Configure and build](#configure-and-build).
+**`the Vx runtime library is missing: .../libvx_std_core.so`**
+The tree has been tested but never built — a test build does not emit the shared library. Run
+`cargo build --release`. See [Configure and build](#configure-and-build).
 
 **Undefined MLIR C-API symbols at link time**
 The LLVM on `PATH` is not version 22, or `libmlir-22-dev` is missing. Check with

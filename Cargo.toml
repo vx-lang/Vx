@@ -47,6 +47,11 @@ members = ["refactor_tool",
     "stdlib/rust_core"
 , "vx-analyzer"]
 
+# A bare `cargo build` has to cover stdlib/rust_core as well. Depending on it only asks for an
+# rlib to link against; the cdylib the JIT loads at run time is built when the package is
+# selected, and nothing selects it by default.
+default-members = [".", "stdlib/rust_core"]
+
 [lints.clippy]
 if_same_then_else = "allow"
 

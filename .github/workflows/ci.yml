@@ -210,6 +210,18 @@ jobs:
           ENZYME_LIB=$(find $(pwd)/.cargo/enzyme -name 'LLVMEnzyme*.so' | head -n 1)
           echo "ENZYME_LIB=$ENZYME_LIB" >> $GITHUB_ENV
 
+      # Every test that runs a program links stdlib/rust_core's cdylib at run time, and
+      # `cargo test` never emits it: a dependency edge only ever asks for an rlib. The release
+      # job happens to be covered by its own build step; this one had nothing, so 117 of its
+      # tests failed on a missing file.
+      #
+      # Deliberately the bare form rather than `--workspace`: that is what a new contributor
+      # types, and it only produces the library because the workspace names stdlib/rust_core in
+      # `default-members`. If that entry is ever dropped, this step fails here rather than in
+      # someone's first clone.
+      - name: Build
+        run: cargo build --verbose
+
       - name: Run tests (debug)
         run: cargo test --workspace --verbose
         env:

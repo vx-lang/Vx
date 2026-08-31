@@ -110,19 +110,16 @@ if [ "$DO_SETUP" = 1 ]; then
      cd '$REMOTE' && bash scripts/setup_linux.sh 2>&1 | tail -3"
 fi
 
-# --- 3. config.local, then the two builds -----------------------------------
+# --- 3. config.local, then the build -----------------------------------------
 #
-# `-p vx_std_core` is a SECOND build, not a flag on the first: a plain
-# `cargo build --release` never emits libvx_std_core.so, and the compiler it
-# produces cannot link anything the JIT compiles (Vx#364, documented in
-# docs/INSTALL.md). Leaving it out yields a vxc that looks built and fails on
-# the first `--run`.
+# One build covers both: the workspace names stdlib/rust_core in `default-members`,
+# so libvx_std_core.so comes out alongside vxc. The `ls` is the check that it did --
+# without that library the compiler looks built and fails on the first `--run`.
 say "building vxc and libvx_std_core"
 "${SSH[@]}" "cd '$REMOTE' && export PATH=\"\$HOME/.cargo/bin:\$PATH\" \
   && ./setup.sh >/dev/null 2>&1 && . ./config.local \
   && export CARGO_TARGET_DIR='$TARGET' CARGO_BUILD_JOBS=\$(( \$(nproc) - 2 )) \
   && time cargo build --release 2>&1 | grep -E '^error|Finished' \
-  && time cargo build --release -p vx_std_core 2>&1 | grep -E '^error|Finished' \
   && ls -la '$TARGET/release/vxc' '$TARGET/release/libvx_std_core.so'"
 
 [ "$DO_BENCH" = 1 ] || { say "done (build only)"; exit 0; }
