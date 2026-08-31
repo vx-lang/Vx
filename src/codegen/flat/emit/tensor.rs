@@ -174,15 +174,29 @@ impl FnEmit<'_> {
                 .get(&result_gid)
                 .ok_or(crate::emitter_gap!())?;
             let et = mlir_scalar(elem).ok_or(crate::emitter_gap!())?;
-            // The strides below are computed from the extents, so a dimension that is not a
-            // literal has nothing to compute with. Naming it keeps the corpus histogram
-            // measuring a feature gap rather than reporting an internal one.
+            // A row of a dynamically shaped tensor: its extent is not a number here, so it is
+            // read off the base with `memref.dim` and the offset is computed against that.
+            // Only the rank-1 row of a rank-2 base, which is the one shape a `DynTensor` has
+            // (Vx#404); anything deeper still needs a stride computation there is nothing to
+            // compute with.
+            if shape.iter().any(|d| d == DYN_DIM) {
+                let et = et.to_string();
+                if shape.len() != 1
+                    || !base_memty.starts_with("memref<?x?x")
+                    || base_memty.ends_with(", 3>")
+                {
+                    return Err(Decline::TypeNotModelled {
+                        what: "a row of a tensor whose extents are not known at compile time",
+                    });
+                }
+                return self.dynamic_row(idx, &base, &base_memty, &ic, &et);
+            }
             let dims: Vec<i64> = shape
                 .iter()
                 .map(|d| d.parse::<i64>().ok())
                 .collect::<Option<_>>()
                 .ok_or(Decline::TypeNotModelled {
-                    what: "a row of a tensor whose extents are not known at compile time",
+                    what: "a row whose extents are not all literals",
                 })?;
             let stride0: i64 = dims.iter().product();
             let mut strides = vec![1i64; dims.len()];
@@ -218,6 +232,34 @@ impl FnEmit<'_> {
             self.names[idx] = n;
             self.mem_of[idx] = Some(result_ty);
         }
+        Ok(())
+    }
+
+    /// The rank-1 row of a rank-2 dynamically shaped tensor. Its extent is not a number to
+    /// compute with, so it is read off the base with `memref.dim` and the flat offset is
+    /// computed against that value. The stride is 1: a row of a row-major rank-2 is contiguous
+    /// whatever its length.
+    fn dynamic_row(
+        &mut self,
+        idx: usize,
+        base: &str,
+        base_memty: &str,
+        ic: &str,
+        et: &str,
+    ) -> Lowered<()> {
+        let one = format!("%rdk{idx}");
+        let width = format!("%rdw{idx}");
+        let off = format!("%rdo{idx}");
+        let n = format!("%v{idx}");
+        self.body += &format!("  {one} = arith.constant 1 : index\n");
+        self.body += &format!("  {width} = memref.dim {base}, {one} : {base_memty}\n");
+        self.body += &format!("  {off} = arith.muli {ic}, {width} : index\n");
+        let result_ty = format!("memref<?x{et}, strided<[1], offset: ?>>");
+        self.body += &format!(
+            "  {n} = memref.reinterpret_cast {base} to offset: [{off}], sizes: [{width}], strides: [1] : {base_memty} to {result_ty}\n"
+        );
+        self.names[idx] = n;
+        self.mem_of[idx] = Some(result_ty);
         Ok(())
     }
 
