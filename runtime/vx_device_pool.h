@@ -80,8 +80,10 @@ public:
         ++live_;
         return p;
       }
+      // Counted while the lock is still held. The allocator below runs without
+      // it, so the count cannot move down there.
+      ++misses_;
     }
-    ++misses_;
     void *p = alloc_(bytes);
     if (!p) {
       drain();
