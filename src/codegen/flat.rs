@@ -880,6 +880,15 @@ fn static_tile_bytes(elem: &ElementType, shape: &[String]) -> Option<u64> {
 /// signature, so a materialized function pointer's type matches its callee's header exactly. (#242)
 fn ty_mlir(ty: &Type, ctx: &EmitCtx) -> Lowered<String> {
     let ty = peel_wrappers(ty); // Verified/Ref/Pinned spell as their runtime inner type
+                                // A borrowed tensor is spelled as the tensor. A memref is already a reference, and a call
+                                // site hands over the memref itself; `!llvm.ptr` gave the signature a type nothing passes
+                                // (Vx#417).
+    let ty = match ty {
+        Type::Borrow { inner, .. } if crate::hir::flatten::tensor_gid_of(inner).is_some() => {
+            peel_wrappers(inner)
+        }
+        other => other,
+    };
     if let Some(e) = scalar_of(ty) {
         Ok(mlir_scalar(&e)
             .ok_or(Decline::TypeNotModelled {

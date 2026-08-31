@@ -1,0 +1,38 @@
+//===- tensor_borrow_param.vx - Vx Compiler ----------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// The flat path's half of Vx#417. A borrowed tensor is spelled as the tensor: a memref is
+// already a reference, and the call site hands over the memref itself. Spelling it
+// `!llvm.ptr` gave the signature a type nothing passes, and the emitter produced text that
+// did not parse rather than declining.
+//
+// The borrow checker's guarantee still rides on the parameter -- `&mut` is exclusive, `&` is
+// never written through -- which is the whole reason to keep the two spellings apart.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK-LABEL: func.func @total(%arg0: memref<2x2xf32> {llvm.readonly}) -> f32
+// CHECK: memref.load
+// CHECK: arith.addf
+// CHECK-LABEL: func.func @fill(%arg0: memref<2x2xf32> {llvm.noalias}, %arg1: f32) -> i32
+// CHECK: memref.store %arg1, %{{.*}} : memref<2xf32, strided<[1], offset: ?>>
+
+fn fill(t : &mut Tensor<f32, [2, 2]>, v : f32) -> i32 {
+  t[0][0] = v;
+  t[1][1] = v + 1.0;
+  return 0;
+}
+
+fn total(t : &Tensor<f32, [2, 2]>) -> f32 {
+  return t[0][0] + t[1][1];
+}
+
+fn main() -> i32 {
+  let mut a = Tensor<f32>([ 2, 2 ]);
+  let _r = fill(&mut a, 3.0);
+  print(total(&a));
+  return 0;
+}

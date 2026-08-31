@@ -541,11 +541,13 @@ impl<'a> TypeChecker<'a> {
                 // indexing a transferred tensor follows the same rule as a local one.
                 let base = match obj_ty {
                     Type::Pinned(inner, _) | Type::Ref(inner, _) => *inner,
+                    // A borrow indexes like what it borrows: `t[i]` on `&Tensor<f32, [N, D]>` is
+                    // the row. Answering with the inner type applied the index to nothing, so
+                    // `t[0][0]` was the row rather than the element (Vx#417).
+                    Type::Borrow { inner, .. } => *inner,
                     other => other,
                 };
                 if let Type::Pointer(inner, _, _) = base {
-                    *inner
-                } else if let Type::Borrow { inner, .. } = base {
                     *inner
                 } else if let Type::Tensor(el_ty, dims, top) = base {
                     if dims.len() > 1 {

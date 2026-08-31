@@ -3809,6 +3809,14 @@ fn lowered_ty(ty: &Type, registry: &ImmutableGlobalRegistry) -> Option<LoweredTy
     if let Some((elem, shape)) = tensor_elem_shape(ty) {
         return Some(LoweredTy::Tensor { elem, shape });
     }
+    // A borrowed tensor is the tensor: a memref is already a reference, and a call site hands over
+    // the memref itself. Reading it as an opaque pointer gave a function body a parameter type its
+    // own signature contradicts (Vx#417).
+    if let Type::Borrow { inner, .. } = ty {
+        if let Some((elem, shape)) = tensor_elem_shape(inner) {
+            return Some(LoweredTy::Tensor { elem, shape });
+        }
+    }
     // A raw pointer (`*const T`/`*mut T`, `&T`) is an opaque `!llvm.ptr` — the ABI of the string-value
     // and FFI-pointer programs (`vx_stdout_write(buffer: *const u8, …)`, an extern returning
     // `*mut i8`). Matches the AST codegen's `lower_type` for `Type::Pointer`/`Type::Borrow`. (#231/#235)

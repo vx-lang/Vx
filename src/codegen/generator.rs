@@ -95,6 +95,29 @@ pub struct MeliorGenerator<'c> {
     pub(crate) assert_facts: Vec<syntax::Expr>,
 }
 
+/// `memref<2x3xf32>` -> `memref<?x?xf32>`, keeping the rank and element type.
+///
+/// Anything carrying a layout or memory space is returned unchanged: there is no shape to erase
+/// there without losing the rest of the type with it.
+fn erase_memref_extents(s: &str) -> String {
+    let Some(inner) = s.strip_prefix("memref<").and_then(|t| t.strip_suffix('>')) else {
+        return s.to_string();
+    };
+    if inner.contains(',') {
+        return s.to_string();
+    }
+    let parts: Vec<&str> = inner.split('x').collect();
+    let Some((elem, dims)) = parts.split_last() else {
+        return s.to_string();
+    };
+    if dims.is_empty() || !dims.iter().all(|d| *d == "?" || d.parse::<i64>().is_ok()) {
+        return s.to_string();
+    }
+    let mut out = vec!["?"; dims.len()];
+    out.push(elem);
+    format!("memref<{}>", out.join("x"))
+}
+
 impl<'c> MeliorGenerator<'c> {
     pub fn loc(&self) -> melior::ir::Location<'c> {
         melior::ir::Location::new(
@@ -1355,7 +1378,11 @@ impl<'c> MeliorGenerator<'c> {
             | syntax::Type::Pointer(inner, mem, _) => {
                 let inner_str = self.lower_type_str(inner)?;
                 if inner_str.starts_with("memref<") {
-                    format!("memref<{}>", inner_str)
+                    // A borrowed tensor is the slot holding its descriptor, and every tensor
+                    // this backend allocates is dynamically shaped. Naming the static shape
+                    // here left the call site casting between two memref element types, which
+                    // `memref.cast` cannot do (Vx#417).
+                    format!("memref<{}>", erase_memref_extents(&inner_str))
                 } else {
                     // A space with no honest target mapping (an undeclared custom space, or one
                     // whose declaration gives no `scope:`) is an error, not a silent fallback --

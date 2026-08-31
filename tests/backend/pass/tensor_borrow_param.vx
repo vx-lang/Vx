@@ -1,0 +1,42 @@
+//===- tensor_borrow_param.vx - Vx Compiler ----------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// A function taking a statically shaped tensor by reference. This did not compile at all
+// (Vx#417): the checker answered `t[i][j]` with the row rather than the element, and this
+// backend named the parameter `memref<memref<2x2xf32>>` while every tensor it allocates is
+// dynamically shaped, so the call site was left casting between two memref element types --
+// which `memref.cast` cannot do.
+//
+// The parameter is the slot holding the descriptor, and its shape is erased to match what a
+// slot actually holds. The shape is still in the Vx type, which is what indexing reads.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK-LABEL: func.func @fill(%arg0: memref<memref<?x?xf32>>, %arg1: f32) -> i32
+// CHECK-LABEL: func.func @total(%arg0: memref<memref<?x?xf32>>) -> f32
+// CHECK: %[[BUF:.*]] = memref.load %arg0[] : memref<memref<?x?xf32>>
+// CHECK: memref.load %[[BUF]]
+//
+// `fill` writes through the borrow and `main` reads the result, so a parameter that had
+// somehow become a copy would show up as 0 rather than 7.
+// EXPECT: 7
+
+fn fill(t : &mut Tensor<f32, [2, 2]>, v : f32) -> i32 {
+  t[0][0] = v;
+  t[1][1] = v + 1.0;
+  return 0;
+}
+
+fn total(t : &Tensor<f32, [2, 2]>) -> f32 {
+  return t[0][0] + t[1][1];
+}
+
+fn main() -> i32 {
+  let mut a = Tensor<f32>([ 2, 2 ]);
+  let _r = fill(&mut a, 3.0);
+  print(total(&a));
+  return 0;
+}
