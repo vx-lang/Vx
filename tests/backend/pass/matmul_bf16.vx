@@ -7,7 +7,12 @@
 //
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
+// The externs this program pulls in are declared, and main calls them in order with the
+// values threaded between them -- the dataflow the run below scores, stated in the IR.
+// CHECK-DAG: func.func private @printMemrefBF16(
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: call @custom_matmul(%{{.*}}, %{{.*}}) : (memref<4x4xbf16>, memref<4x4xbf16>) -> memref<4x4xbf16>
+// CHECK: call @printMemrefBF16(%{{.*}}) : (memref<*xbf16>) -> ()
 // EXPECT:  [24.0,   24.0,   24.0,   24.0],
 // EXPECT:  [24.0,   24.0,   24.0,   24.0],
 // EXPECT:  [24.0,   24.0,   24.0,   24.0]]

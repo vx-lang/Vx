@@ -6,7 +6,14 @@
 //
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
+// The loop lowers to unstructured control flow: a header that compares the induction variable,
+// a body that stores, and a latch that branches back.
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: cf.br ^[[HEAD:bb[0-9]+]]
+// CHECK: ^[[HEAD]](%{{.*}}: index):
+// CHECK: arith.cmpi slt
+// CHECK: cf.cond_br
+// CHECK: memref.store
 fn main() -> i32 {
   let mut sum = 0;
   for i in 0..10 {

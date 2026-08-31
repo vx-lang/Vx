@@ -7,7 +7,13 @@
 //
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
+// The externs this program pulls in are declared, and main calls them in order with the
+// values threaded between them -- the dataflow the run below scores, stated in the IR.
+// CHECK-DAG: func.func private @vx_malloc_f32(
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: call @vx_malloc_f32(%{{.*}}) : (i32) -> !llvm.ptr
+// CHECK: call @vx_malloc_f32(%{{.*}}) : (i32) -> !llvm.ptr
+// CHECK: call @vx_malloc_f32(%{{.*}}) : (i32) -> !llvm.ptr
 extern {
   fn vx_malloc_f32(num_elements : i32)->*mut f32;
 }

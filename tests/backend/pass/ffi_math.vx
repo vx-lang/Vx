@@ -6,7 +6,11 @@
 //
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
+// main calls each function in order; the assertion is that the chain survives to codegen
+// rather than being folded away.
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: %[[V0:.*]] = call @f32$sin(%{{.*}}) : (f32) -> f32
+// CHECK: call @f32$abs(%[[V0]]) : (f32) -> f32
 import std::math;
 
 fn main() -> i32 {

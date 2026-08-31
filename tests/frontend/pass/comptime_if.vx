@@ -31,4 +31,8 @@ fn main() -> i32 {
   };
 }
 
-// CHECK: module
+// The comptime branch is not folded away in the frontend module: the comparison and both
+// arms are still there for a later pass to resolve.
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: arith.cmpi
+// CHECK: cf.cond_br

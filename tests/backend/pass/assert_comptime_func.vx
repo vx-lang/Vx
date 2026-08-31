@@ -6,7 +6,17 @@
 //
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
+// main calls each function in order; the assertion is that the chain survives to codegen
+// rather than being folded away.
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: call @foo() : () -> i64
+// CHECK: call @bar() : () -> i64
+// CHECK: call @foo() : () -> i64
+// CHECK: call @baz() : () -> i64
+// CHECK: call @foo() : () -> i64
+// CHECK: call @baz() : () -> i64
+// CHECK: call @foo() : () -> i64
+// CHECK: call @baz() : () -> i64
 fn foo() -> i64 {
   let a : i64 = 10;
   return a;

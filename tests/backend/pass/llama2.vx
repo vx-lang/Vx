@@ -7,7 +7,25 @@
 //
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
+// The externs this program pulls in are declared, and main calls them in order with the
+// values threaded between them -- the dataflow the run below scores, stated in the IR.
+// CHECK-DAG: func.func private @vx_load_config(
+// CHECK-DAG: func.func private @vx_get_llama_config(
+// CHECK-DAG: func.func private @vx_load_weights(
+// CHECK-DAG: func.func private @vx_build_tokenizer(
+// CHECK-DAG: func.func private @vx_read_prompt_file(
+// CHECK-DAG: func.func private @vx_encode_prompt(
+// CHECK-DAG: func.func private @vx_decode_token(
+// CHECK-DAG: func.func private @print_str(
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: call @vx_load_config(%{{.*}}) : (!llvm.ptr) -> !llvm.ptr
+// CHECK: call @vx_get_llama_config() : () -> !llvm.ptr
+// CHECK: %[[V0:.*]] = call @vx_load_weights(%{{.*}}) : (!llvm.ptr) -> !llvm.ptr
+// CHECK: call @memory_map_weights(%[[V0]], %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, i32, i32, i32, i32, i32, i32, i32, i32) -> !llvm.struct<"TransformerWeights", (ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr)>
+// CHECK: call @memory_map_weights(%[[V0]], %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, i32, i32, i32, i32, i32, i32, i32, i32) -> !llvm.struct<"TransformerWeights", (ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr)>
+// CHECK: call @malloc_run_state(%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}) : (i32, i32, i32, i32, i32, i32, i32) -> !llvm.struct<"RunState", (ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr)>
+// CHECK: call @malloc_run_state(%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}) : (i32, i32, i32, i32, i32, i32, i32) -> !llvm.struct<"RunState", (ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr)>
+// CHECK: %[[V1:.*]] = call @vx_build_tokenizer(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> !llvm.ptr
 
 import tests::modules::llama_rt;
 import std::io;

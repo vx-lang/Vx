@@ -6,7 +6,11 @@
 //
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
+// The SIMD add stays a single f32 addition in the frontend module; vectorization is a later
+// pipeline's job, not the emitter's.
+// CHECK-LABEL: func.func @test_simd
+// CHECK: arith.addf
+// CHECK-LABEL: func.func @main() -> i32
 extern "C" {
   fn vx_advance_ptr_f32(base : *mut f32, offset : i32) -> *mut f32;
 }

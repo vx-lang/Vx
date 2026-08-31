@@ -6,7 +6,17 @@
 //
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
+// main calls each function in order; the assertion is that the chain survives to codegen
+// rather than being folded away.
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: call @test_if(%{{.*}}) : (i32) -> i32
+// CHECK: call @test_if(%{{.*}}) : (i32) -> i32
+// CHECK: call @test_unsafe() : () -> i32
+// CHECK: call @test_comptime() : () -> i32
+// CHECK: call @test_nested_if(%{{.*}}) : (i32) -> i32
+// CHECK: call @test_nested_if(%{{.*}}) : (i32) -> i32
+// CHECK: call @test_nested_if(%{{.*}}) : (i32) -> i32
+// CHECK: call @test_implicit_return(%{{.*}}) : (i32) -> i32
 fn test_if(x : i32) -> i32 {
   let val : i32 = if x > 10 {
     100

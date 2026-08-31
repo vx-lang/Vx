@@ -6,7 +6,20 @@
 //
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
+// `&&` and `||` short-circuit, so they are control flow and not arith.andi/ori: each becomes a
+// branch on the left operand over a result slot, and only the taken arm stores the right one.
+// `!` is the one that stays arithmetic -- a xor against true.
+// CHECK-LABEL: func.func @parser_logical_pass() -> i1
+// CHECK: %[[LT:.*]] = arith.cmpi slt
+// CHECK: %[[EQ:.*]] = arith.cmpi eq
+// CHECK: %[[AND:.*]] = memref.alloca() : memref<i1>
+// CHECK: cf.cond_br %[[LT]], ^[[T:bb[0-9]+]], ^[[F:bb[0-9]+]]
+// CHECK: ^[[T]]:
+// CHECK: memref.store %[[EQ]], %[[AND]][] : memref<i1>
+// CHECK: ^[[F]]:
+// CHECK: %[[FALSE:.*]] = arith.constant false
+// CHECK: memref.store %[[FALSE]], %[[AND]][] : memref<i1>
+// CHECK: arith.xori %[[EQ]], %{{.*}} : i1
 fn parser_logical_pass() -> bool {
   let a = 1;
   let b = 2;

@@ -6,7 +6,17 @@
 //
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
+// main calls each function in order; the assertion is that the chain survives to codegen
+// rather than being folded away.
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: call @"Vec::with_capacity$f32"(%{{.*}}) : (i32) -> !llvm.struct<"Vec_f32", (ptr, i32, i32)>
+// CHECK: call @"Vec::with_capacity$f32"(%{{.*}}) : (i32) -> !llvm.struct<"Vec_f32", (ptr, i32, i32)>
+// CHECK: call @"Vec::with_capacity$f32"(%{{.*}}) : (i32) -> !llvm.struct<"Vec_f32", (ptr, i32, i32)>
+// CHECK: call @"Vec::with_capacity$f32"(%{{.*}}) : (i32) -> !llvm.struct<"Vec_f32", (ptr, i32, i32)>
+// CHECK: call @simd_add_f32x4(%{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, !llvm.ptr, !llvm.ptr) -> i32
+// CHECK: call @simd_sub_f32x4(%{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, !llvm.ptr, !llvm.ptr) -> i32
+// CHECK: call @simd_mul_f32x4(%{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, !llvm.ptr, !llvm.ptr) -> i32
+// CHECK: call @simd_div_f32x4(%{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, !llvm.ptr, !llvm.ptr) -> i32
 import std::simd;
 
 import std::io;
