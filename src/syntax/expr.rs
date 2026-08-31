@@ -834,6 +834,22 @@ fn substitute_words(text: &str, mapping: &std::collections::HashMap<Symbol, Type
     result
 }
 
+/// The local an `@` operand reads, when the operand is a bare name or a borrow of one.
+///
+/// `None` for anything else, which is the answer a caller wants: `dst = a @ b` fills `dst` in
+/// place, and that is only correct while `dst` is disjoint from both operands. A name, and the
+/// declared type behind it, is as far as the caller can settle that without alias analysis.
+pub fn matmul_operand_root(e: &Expr) -> Option<&Symbol> {
+    let e = match e {
+        Expr::Borrow(b) => b.expr.as_ref(),
+        other => other,
+    };
+    match e {
+        Expr::Identifier(id) => Some(&id.name),
+        _ => None,
+    }
+}
+
 impl Expr {
     pub fn span(&self) -> Span {
         delegate_expr!(self, span)

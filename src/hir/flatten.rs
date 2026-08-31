@@ -3170,6 +3170,70 @@ impl<'r> Lowerer<'r> {
         }
     }
 
+    /// Is `dst` a different tensor from both operands of the matmul assigned to it?
+    ///
+    /// Filling `dst` in place zeroes it before the multiply reads its inputs, so an operand that
+    /// names the same buffer reads zeros. Each of the three has to be a local declared a tensor
+    /// -- a name bound to a borrow denotes whatever it points at, and following that is the
+    /// analysis this check exists to avoid.
+    fn matmul_assign_is_disjoint(&self, dst: &Expr, a: &Expr, b: &Expr) -> bool {
+        let root = |e: &Expr| -> Option<crate::symbol::Symbol> {
+            let root = crate::syntax::matmul_operand_root(e)?;
+            // A name declared a borrow or a pointer denotes whatever it points at, which is the
+            // alias the destination's own name does not reveal.
+            match self.ast_types.get(root) {
+                Some(Type::Borrow { .. } | Type::Pointer(..)) => None,
+                _ => Some(root.clone()),
+            }
+        };
+        let (Some(d), Some(l), Some(r)) = (root(dst), root(a), root(b)) else {
+            return false;
+        };
+        d != l && d != r
+    }
+
+    /// Lower `c = a @ b` into `c`'s own buffer.
+    ///
+    /// `matmul_into(&mut c, &a, &b)` is the same operation with a name, and emits the same op.
+    /// Only statically shaped rank-2 operands take this path: a dynamic operand has no product
+    /// shape for the checker to have compared `c` against, so writing into `c` could run past
+    /// it, and the AST path stays the oracle for that form.
+    fn lower_matmul_assign(&mut self, dst: &Expr, a: &Expr, b: &Expr) -> Lowered<()> {
+        if !self.matmul_assign_is_disjoint(dst, a, b) {
+            return Err(Decline::Unsupported {
+                what: "a matmul assignment whose destination may be one of its operands",
+            });
+        }
+        let dst = self.lower_expr(dst)?;
+        let a = self.lower_expr(a)?;
+        let b = self.lower_expr(b)?;
+        let (
+            LoweredTy::Tensor { shape: ds, .. },
+            LoweredTy::Tensor { shape: as_, .. },
+            LoweredTy::Tensor { shape: bs, .. },
+        ) = (&dst.ty, &a.ty, &b.ty)
+        else {
+            return Err(Decline::TypeNotModelled {
+                what: "a matmul assignment whose operands are not all tensors",
+            });
+        };
+        let numeric = |d: &String| d.parse::<i64>().is_ok();
+        if ds.len() != 2
+            || as_.len() != 2
+            || bs.len() != 2
+            || !ds.iter().chain(as_).chain(bs).all(numeric)
+            || as_[1] != bs[0]
+            || ds[0] != as_[0]
+            || ds[1] != bs[1]
+        {
+            return Err(Decline::Unsupported {
+                what: "a matmul assignment whose shapes are not two statically agreeing matrices",
+            });
+        }
+        self.emit_effect(Opcode::MatmulInto, a.reg, b.reg, dst.reg.0 as u64);
+        Ok(())
+    }
+
     /// Lower an assignment `lhs = rhs`, dispatching on the place kind. Factored out of `lower_stmt` so a
     /// write through a symbolic place (`*r = v` where `r` is a `Binding::Place`) re-dispatches as a
     /// write to the borrowed place expression itself (§5 Example C). (#242/#275)
@@ -3255,16 +3319,13 @@ impl<'r> Lowerer<'r> {
             }
             return Ok(());
         }
-        // `c = a @ b` publishes a NEW buffer under a name that already exists. The AST path stores
-        // the product's descriptor through the local's slot, which outlives a `spawn` region and is
-        // what a placed matmul is expected to publish. A flat tensor is always an SSA value and
-        // never a slot, so rebinding the name here would carry a register out of the region that
-        // defined it. The AST path stays the oracle for this form.
+        // `c = a @ b` where `c` already names a buffer: fill it, rather than allocating a second
+        // one and rebinding the name. The destination is a tensor the program asked for and the
+        // checker has compared its shape against the product, so the buffer to write is in hand
+        // and the assignment is the same `MatmulInto` the builtin spelling emits (Vx#391).
         if let Expr::BinaryOp(bin) = rhs {
             if matches!(bin.op, BinaryOp::MatMul) {
-                return Err(Decline::Unsupported {
-                    what: "a matmul assigned to a tensor that already exists",
-                });
+                return self.lower_matmul_assign(lhs, &bin.lhs, &bin.rhs);
             }
         }
         // `name = expr` (simple identifier target). The value already matches the slot's type (the

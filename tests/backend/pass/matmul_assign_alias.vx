@@ -1,0 +1,67 @@
+//===- matmul_assign_alias.vx - Vx Compiler ----------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// `c = a @ b` fills `c` in place (Vx#391), and filling it zeroes it before the multiply reads
+// its inputs. So the destination has to be a different buffer from both operands, or the
+// product is computed from zeros -- which is what these two spellings would do.
+//
+// `c = c @ a` is rejected earlier, by the linear checker: `c` is moved into the multiply and
+// then assigned. These are the two that reach codegen.
+//
+//   - `c = &c @ &a` reads `c` through a borrow, so nothing is moved.
+//   - `let r = &c; c = r @ &a` reaches it through a name, which a check on the destination's
+//     own name does not see.
+//
+// They are separate functions because a decline aborts the one it is in: together in `main`,
+// the first would take the second off the flat path with it and the second would go unchecked.
+//
+// Both keep the allocate-and-publish form. The answer is the same either way, which is the
+// point: the choice of form is the compiler's and the numbers are not.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK-DAG: func.func @borrowed_self
+// CHECK-DAG: func.func @through_a_name
+// EXPECT: 7 22 7 22
+
+// Both operands are [[1, 2], [3, 4]], so the product is [[7, 10], [15, 22]].
+fn pair() -> Tensor<f32, [2, 2]> {
+  let mut t = Tensor<f32>([ 2, 2 ]);
+  for i in 0..2 {
+    for j in 0..2 {
+      t[i][j] = (i * 2 + j + 1) as f32;
+    }
+  }
+  return t;
+}
+
+fn borrowed_self() -> i32 {
+  let a = pair();
+  let mut c = pair();
+  c = &c @ &a;
+  print(c[0][0]);
+  print!(" ");
+  print(c[1][1]);
+  return 0;
+}
+
+fn through_a_name() -> i32 {
+  let a = pair();
+  let mut d = pair();
+  let r = &d;
+  d = r @ &a;
+  print(d[0][0]);
+  print!(" ");
+  print(d[1][1]);
+  return 0;
+}
+
+fn main() -> i32 {
+  let _x = borrowed_self();
+  print!(" ");
+  let _y = through_a_name();
+  return 0;
+}

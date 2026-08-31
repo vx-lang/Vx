@@ -1837,7 +1837,7 @@ fn slice_vec_len(ty_str: &str) -> Option<i64> {
 /// recognises when deciding whether an outlined region can be handed to a
 /// vendor kernel (#325). `dst` is written in place, so no result is produced
 /// and nothing is allocated.
-fn emit_matmul_into<'c>(
+pub(super) fn emit_matmul_into<'c>(
     gen: &mut MeliorGenerator<'c>,
     block: &melior::ir::BlockRef<'c, 'c>,
     lhs_val: Value<'c, 'c>,
@@ -2098,7 +2098,7 @@ fn lower_tensor_view_2d<'c>(
 /// descriptor, so it is loaded here and the operand's type updated to match.
 /// Anything else passes through untouched, so the by-value spelling is
 /// unaffected.
-fn load_tensor_slot<'c>(
+pub(super) fn load_tensor_slot<'c>(
     gen: &MeliorGenerator<'c>,
     block: &melior::ir::BlockRef<'c, 'c>,
     val: Value<'c, 'c>,

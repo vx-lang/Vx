@@ -218,6 +218,58 @@ fn generic_arg_mapping(
     mapping
 }
 
+/// Do `dst = a @ b`'s three tensors have statically agreeing rank-2 shapes?
+///
+/// Only then is the destination known to be the size of the product, which is what makes
+/// filling it in place safe. A dynamic operand has no product shape for the checker to have
+/// compared `dst` against, and keeps the allocate-and-publish form.
+fn matmul_assign_shapes_agree(gen: &MeliorGenerator<'_>, dst: &Expr, a: &Expr, b: &Expr) -> bool {
+    // Filling `dst` in place zeroes it before the multiply reads its inputs, so an operand
+    // naming the same buffer would read zeros. Each of the three has to be a local declared a
+    // tensor -- a name bound to a borrow denotes whatever it points at, and following that is
+    // the analysis this check exists to avoid.
+    let root = |e: &Expr| -> Option<crate::symbol::Symbol> {
+        let r = syntax::matmul_operand_root(e)?;
+        let named = Expr::Identifier(IdentifierExpr {
+            name: r.clone(),
+            span: Span::default(),
+        });
+        // A name declared a borrow or a pointer denotes whatever it points at, which is the
+        // alias the destination's own name does not reveal.
+        match gen.infer_ast_type(&named) {
+            Some(syntax::Type::Borrow { .. } | syntax::Type::Pointer(..)) => None,
+            _ => Some(r.clone()),
+        }
+    };
+    let (Some(d), Some(l), Some(r)) = (root(dst), root(a), root(b)) else {
+        return false;
+    };
+    if d == l || d == r {
+        return false;
+    }
+
+    let dims = |e: &Expr| -> Option<Vec<i64>> {
+        let e = match e {
+            Expr::Borrow(borrow) => borrow.expr.as_ref(),
+            other => other,
+        };
+        match gen.infer_ast_type(e)? {
+            syntax::Type::Tensor(_, dims, _) => dims
+                .iter()
+                .map(|d| match d {
+                    Expr::Number(n) => n.value.as_ref().parse::<i64>().ok(),
+                    _ => None,
+                })
+                .collect(),
+            _ => None,
+        }
+    };
+    let (Some(d), Some(l), Some(r)) = (dims(dst), dims(a), dims(b)) else {
+        return false;
+    };
+    d.len() == 2 && l.len() == 2 && r.len() == 2 && l[1] == r[0] && d[0] == l[0] && d[1] == r[1]
+}
+
 impl<'c> LowerToMelior<'c> for AssignStmt {
     type Output = Result<Option<melior::ir::BlockRef<'c, 'c>>, LowerError>;
     fn lower(
@@ -260,6 +312,35 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                     b.append_operation(store);
                 }
                 return Ok(Some(b));
+            }
+        }
+
+        // `c = a @ b` where `c` already names a buffer: fill it, rather than allocating a second
+        // one and rebinding `c` to it. The checker has compared `c`'s declared shape against the
+        // product, so the destination is the right size (Vx#391).
+        if let Expr::BinaryOp(BinaryOpExpr {
+            lhs: ml,
+            op: BinaryOp::MatMul,
+            rhs: mr,
+            ..
+        }) = rhs
+        {
+            if matmul_assign_shapes_agree(gen, lhs, ml, mr) {
+                let (dst_val, mut dst_ty, block) = gen.generate_expr(lhs, block)?;
+                let (a_val, mut a_ty, block) = gen.generate_expr(ml, block)?;
+                let (b_val, mut b_ty, block) = gen.generate_expr(mr, block)?;
+                let dst_val = super::expr::load_tensor_slot(gen, &block, dst_val, &mut dst_ty)?;
+                let a_val = super::expr::load_tensor_slot(gen, &block, a_val, &mut a_ty)?;
+                let b_val = super::expr::load_tensor_slot(gen, &block, b_val, &mut b_ty)?;
+                let dst_ty_str = dst_ty.to_string();
+                let el_ty_str = dst_ty_str
+                    .rsplit('x')
+                    .next()
+                    .and_then(|t| t.strip_suffix('>'))
+                    .ok_or_else(|| LowerError::from(format!("not a memref: {dst_ty_str}")))?
+                    .to_string();
+                super::expr::emit_matmul_into(gen, &block, a_val, b_val, dst_val, &el_ty_str)?;
+                return Ok(Some(block));
             }
         }
 

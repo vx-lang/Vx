@@ -17,34 +17,39 @@
 // find no roles, and fall back to the outlined loop nest. Silently, and
 // forever.
 //
-// Both operands here are locals, so all six launch operands are slots and the
+// Both operands here are locals, so all three launch operands are slots and the
 // roles are read through the loads. `kernel_kind_matmul.vx` covers the
 // parameter case; between them the two forms of the same program are pinned.
+//
+// The out kind is `buffer` even though the destination is a slot: `c = a @ b`
+// fills the buffer `c` already names rather than allocating a second one and
+// publishing a descriptor (Vx#391), and the runtime follows the one
+// indirection to reach it. `kernel_kind_matmul.vx` and `matvec_roles.vx` keep
+// the `slot` kind, whose operands carry no shape to compare against.
 //
 // The pass pipeline is pinned to the vx lowering alone, since that is where the
 // attribute is created and the later conversion consumes it.
 //
 //
-// The role indices moved when the outliner stopped capturing constants: the
-// launch used to carry three memrefs and three `arith.constant`s -- the loop
-// bounds and the zero-fill value -- so the output landed at operand 5. Those
-// are rematerialized inside the kernel now, the launch carries only the three
-// buffers, and the roles index into that. The mapping is what matters, not the
-// numbers: they say which operand is A, B and the destination, and
+// The role indices have moved twice: once when the outliner stopped capturing
+// the loop bounds and the zero-fill value, and again when the destination
+// became an operand of the matmul rather than something published after it, so
+// it is captured first. The mapping is what matters, not the numbers: they say
+// which operand is A, B and the destination, and
 // tests/integration_test/gemm_plan_test.rs decodes the payload and checks it
 // describes the GEMM the program wrote.
 // RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s
 // CHECK: vx.launch @vx_npu_kernel_0
 // CHECK: vx.kernel_kind = "matmul"
-// CHECK: vx.kernel_out_kind = "slot"
-// CHECK: vx.kernel_roles = "a:0,b:1,out:2"
+// CHECK: vx.kernel_out_kind = "buffer"
+// CHECK: vx.kernel_roles = "a:1,b:2,out:0"
 //
 // The operands really are slots, which is what makes the indirection necessary
 // rather than incidental.
 // CHECK: memref<memref<?x?xf32>>, memref<memref<?x?xf32>>
 //
 // RUN: vxc %s --emit-llvm 2>&1 | FileCheck %s --check-prefix=PAYLOAD
-// PAYLOAD: \00kind=matmul\00roles=a:0,b:1,out:2\00outkind=slot\00
+// PAYLOAD: \00kind=matmul\00roles=a:1,b:2,out:0\00outkind=buffer\00
 
 fn local_gemm() -> f32 {
   let mut a = Tensor<f32>([ 2, 2 ]);
