@@ -6,12 +6,13 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
-//
 // Core iterator interfaces and types.
 //
+// A module, not a test. Compiled on its own it emits an empty module -- these are
+// declarations, materialized only where they are imported -- so the RUN line and the
+// `CHECK: module` that used to sit here were checking nothing (Vx#412).
+//
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
 
 enum Option<T> {
   Some(T),

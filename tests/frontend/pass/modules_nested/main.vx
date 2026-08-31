@@ -6,12 +6,16 @@
 //
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
-fn main() -> i32 {
-  let ops = comptime {
-    import("tests/frontend/pass/modules_nested/ops.ak");
-  };
+// Importing a module that imports another pulls both levels in: the call here resolves to
+// do_ops, and do_ops's own calls resolve to the module it imported.
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: call @do_ops(%{{.*}}, %{{.*}}) : (f32, f32) -> f32
+// CHECK-LABEL: func.func @do_ops(%arg0: f32, %arg1: f32) -> f32
+// CHECK: call @multiply(%{{.*}}, %{{.*}}) : (f32, f32) -> f32
+// CHECK: call @subtract(%{{.*}}, %{{.*}}) : (f32, f32) -> f32
+import tests::frontend::pass::modules_nested::ops;
 
-  let result = ops.do_ops(5.5, 3.5);
+fn main() -> i32 {
+  let result = do_ops(5.5, 3.5);
   return 0;
 }

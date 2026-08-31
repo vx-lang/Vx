@@ -6,12 +6,15 @@
 //
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
-fn main() -> i32 {
-  let math = comptime {
-    import("tests/frontend/pass/modules_basic/math.ak");
-  };
+// The imported module's function is emitted into this module under its own name, and the
+// call here resolves to it -- which is the whole claim of importing a sibling file.
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: call @add(%{{.*}}, %{{.*}}) : (f32, f32) -> f32
+// CHECK-LABEL: func.func @add(%arg0: f32, %arg1: f32) -> f32
+// CHECK: arith.addf
+import tests::frontend::pass::modules_basic::math;
 
-  let result = math.add(1.0, 2.0);
+fn main() -> i32 {
+  let result = add(1.0, 2.0);
   return 0;
 }

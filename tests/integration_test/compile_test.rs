@@ -946,6 +946,24 @@ fn test_backend() -> Result<(), String> {
     )
 }
 
+// The multi-file module roots. `run_directory_tests` reads one level and takes only files, so
+// a subdirectory of `frontend/pass` is walked by nothing unless it is named here -- which is
+// how these three sat for a long time importing a `.ak` extension that no longer exists,
+// against a `comptime { import(..) }` form the parser had stopped accepting (Vx#412).
+#[test]
+fn test_frontend_pass_modules() -> Result<(), String> {
+    for dir in [
+        "tests/frontend/pass/modules_basic",
+        "tests/frontend/pass/modules_nested",
+    ] {
+        run_directory_tests(Path::new(env!("CARGO_MANIFEST_DIR")).join(dir), |path| {
+            println!("Running test_frontend_pass_modules on {:?}", path);
+            run_frontend_test(path, true)
+        })?;
+    }
+    Ok(())
+}
+
 #[test]
 fn test_frontend_pass_formal_verification() -> Result<(), String> {
     if std::process::Command::new("z3")

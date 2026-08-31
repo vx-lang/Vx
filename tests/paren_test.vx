@@ -1,6 +1,0 @@
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
-fn main() -> i32 {
-  let a = (1 + 2) * 3;
-  return a;
-}

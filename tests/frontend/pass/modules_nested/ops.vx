@@ -6,13 +6,18 @@
 //
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
-fn do_ops(a : f32, b : f32) -> f32 {
-  let core = comptime {
-    import("tests/frontend/pass/modules_nested/math_core.ak");
-  };
+// A module that itself imports one: both levels are emitted into this module, and the calls
+// here resolve to them.
+// CHECK-LABEL: func.func @do_ops(%arg0: f32, %arg1: f32) -> f32
+// CHECK: %[[P:.*]] = call @multiply(%{{.*}}, %{{.*}}) : (f32, f32) -> f32
+// CHECK: %[[D:.*]] = call @subtract(%{{.*}}, %{{.*}}) : (f32, f32) -> f32
+// CHECK: arith.addf %[[P]], %[[D]] : f32
+// CHECK-DAG: func.func @multiply(%arg0: f32, %arg1: f32) -> f32
+// CHECK-DAG: func.func @subtract(%arg0: f32, %arg1: f32) -> f32
+import tests::frontend::pass::modules_nested::math_core;
 
-  let prod = core.multiply(a, b);
-  let diff = core.subtract(a, b);
+fn do_ops(a : f32, b : f32) -> f32 {
+  let prod = multiply(a, b);
+  let diff = subtract(a, b);
   return prod + diff;
 }

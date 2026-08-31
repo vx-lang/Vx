@@ -6,8 +6,10 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
+// A module, not a test. Compiled on its own it emits an empty module -- these are
+// declarations, materialized only where they are imported -- so the RUN line and the
+// `CHECK: module` that used to sit here were checking nothing (Vx#412).
+//
 // This file declares the FFI boundary for the LLaMA2 runtime tests.
 // These functions are implemented natively in Rust inside `rt.rs` and
 // exposed as C-compatible symbols.

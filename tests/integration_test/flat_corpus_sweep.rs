@@ -227,9 +227,6 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         // Programs that cannot compile as a bare `vxc file.vx` for reasons that are not the
         // flat path's business. Each names why; shrinking this list is separate work.
         const NOT_STANDALONE: &[&str] = &[
-            "frontend/pass/modules_basic/main.vx",  // imports sibling files
-            "frontend/pass/modules_nested/main.vx", // imports sibling files
-            "frontend/pass/modules_nested/ops.vx",  // a module of the above, not a program
             "frontend/pass/const_generics_methods.vx", // checker rejects standalone (E2001 on N)
             "optimizations/pass/codegen_error_diagnostics.vx", // expects failure by design (RUN: not vxc)
             "optimizations/pass/host_flag_scope.vx",           // needs --host

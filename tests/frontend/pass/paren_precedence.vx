@@ -1,0 +1,14 @@
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// Parentheses group before the multiply: the add is the multiply's operand, not the other
+// way round, which is the whole claim of the file.
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: %[[A:.*]] = arith.constant 1 : i32
+// CHECK: %[[B:.*]] = arith.constant 2 : i32
+// CHECK: %[[SUM:.*]] = arith.addi %[[A]], %[[B]] : i32
+// CHECK: %[[C:.*]] = arith.constant 3 : i32
+// CHECK: %[[PROD:.*]] = arith.muli %[[SUM]], %[[C]] : i32
+// CHECK: return %[[PROD]] : i32
+fn main() -> i32 {
+  let a = (1 + 2) * 3;
+  return a;
+}
