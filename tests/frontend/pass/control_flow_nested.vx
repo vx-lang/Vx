@@ -1,5 +1,19 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: call @test_nested_loops() : () -> i32
+// CHECK: call @test_early_return() : () -> i32
+// CHECK-LABEL: func.func @test_nested_loops() -> i32
+// CHECK: %[[C0:.*]] = arith.cmpi eq, %{{.*}}, %{{.*}} : i32
+// CHECK: cf.cond_br %[[C0]], ^{{.*}}, ^{{.*}}
+// CHECK: %[[C1:.*]] = arith.cmpi eq, %{{.*}}, %{{.*}} : i32
+// CHECK: cf.cond_br %[[C1]], ^{{.*}}, ^{{.*}}
+// CHECK: %[[C2:.*]] = arith.cmpi eq, %{{.*}}, %{{.*}} : i32
+// CHECK: cf.cond_br %[[C2]], ^{{.*}}, ^{{.*}}
+// CHECK-LABEL: func.func @test_early_return() -> i32
+// CHECK: %[[C0:.*]] = arith.cmpi eq, %{{.*}}, %{{.*}} : i32
+// CHECK: cf.cond_br %[[C0]], ^{{.*}}, ^{{.*}}
+// CHECK: %[[C1:.*]] = arith.cmpi eq, %{{.*}}, %{{.*}} : i32
+// CHECK: cf.cond_br %[[C1]], ^{{.*}}, ^{{.*}}
 fn test_nested_loops() -> i32 {
   let mut i = 0;
   let mut sum = 0;

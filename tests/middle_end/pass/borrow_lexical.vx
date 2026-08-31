@@ -1,5 +1,8 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: %[[M0:.*]] = memref.alloc() : memref<f32>
+// CHECK: %[[M1:.*]] = memref.alloca() : memref<memref<f32>>
+// CHECK: memref.store %[[M0]], %[[M1]][] : memref<memref<f32>>
 fn main() -> i32 {
   let mut x = Tensor<f32>();
 

@@ -1,5 +1,11 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: %[[C0:.*]] = arith.cmpi slt, %{{.*}}, %{{.*}} : i32
+// CHECK: cf.cond_br %[[C0]], ^{{.*}}, ^{{.*}}
+// CHECK: %[[C1:.*]] = arith.cmpi slt, %{{.*}}, %{{.*}} : i32
+// CHECK: cf.cond_br %[[C1]], ^{{.*}}, ^{{.*}}
+// CHECK: %[[C2:.*]] = arith.cmpi slt, %{{.*}}, %{{.*}} : i32
+// CHECK: cf.cond_br %[[C2]], ^{{.*}}, ^{{.*}}
 
 fn main() -> i32 {
   for i in 0..4 {

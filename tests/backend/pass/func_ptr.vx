@@ -1,5 +1,10 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
+// CHECK-LABEL: func.func @square(%arg0: i32) -> i32
+// CHECK: %[[V0:.*]] = arith.muli %{{.*}}, %{{.*}} : i32
+// CHECK: return %[[V0]] : i32
+// CHECK-LABEL: func.func @apply_func(%arg0: !llvm.ptr, %arg1: i32) -> i32
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: call @apply_func(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> i32
 fn square(x : i32) -> i32 {
   return x * x;
 }

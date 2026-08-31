@@ -1,5 +1,11 @@
 // RUN: vxc %s --action emit-mlir --legacy-codegen 2>&1 | FileCheck %s
-// CHECK: module
+// CHECK-LABEL: func.func @Closure_1_call(%arg0: !llvm.ptr, %arg1: !llvm.ptr) -> !llvm.ptr
+// CHECK: %[[V0:.*]] = llvm.getelementptr %{{.*}}, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<"Map", (i32, i32)>
+// CHECK: return %[[V0]] : !llvm.ptr
+// CHECK-LABEL: func.func @good(%arg0: !llvm.ptr) -> !llvm.ptr
+// CHECK: call @Closure_1_call(%{{.*}}, %{{.*}}) : (!llvm.ptr, !llvm.ptr) -> !llvm.ptr
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: call @good(%{{.*}}) : (!llvm.ptr) -> !llvm.ptr
 // Codegen (#271): a closure returning a reference lowers correctly. `Closure_1_call` returns a
 // pointer into its parameter and `good` threads it out; `*good(&x)` loads through it. Verified via
 // JIT to return 7. (The harness previously could not lower this because `run_middle_end_test` did

@@ -1,5 +1,76 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
+// CHECK-LABEL: func.func @gen_tensor_math_add() -> i32
+// CHECK: %[[V0:.*]] = arith.constant 16 : i32
+// CHECK: %[[V1:.*]] = arith.index_cast %[[V0]] : i32 to index
+// CHECK: %[[V2:.*]] = arith.constant 16 : i32
+// CHECK: arith.index_cast %[[V2]] : i32 to index
+// CHECK: %[[V3:.*]] = memref.alloc(%[[V1]], %{{.*}} : memref<?x?xf32>
+// CHECK: %[[V4:.*]] = arith.constant 16 : i32
+// CHECK: %[[V5:.*]] = arith.index_cast %[[V4]] : i32 to index
+// CHECK: %[[V6:.*]] = arith.constant 16 : i32
+// CHECK: arith.index_cast %[[V6]] : i32 to index
+// CHECK: memref.alloc(%[[V5]], %{{.*}} : memref<?x?xf32>
+// CHECK: %[[V7:.*]] = arith.constant 0 : index
+// CHECK: %[[V8:.*]] = memref.dim %[[V3]], %[[V7]] : memref<?x?xf32>
+// CHECK: %[[V9:.*]] = arith.constant 1 : index
+// CHECK: memref.dim %[[V3]], %[[V9]] : memref<?x?xf32>
+// CHECK: memref.alloc(%[[V8]], %{{.*}} : memref<?x?xf32>
+// CHECK: %[[V10:.*]] = arith.constant 0 : i32
+// CHECK: return %[[V10]] : i32
+// CHECK-LABEL: func.func @gen_tensor_math_div() -> memref<16x16xf32>
+// CHECK: %[[V0:.*]] = arith.constant 16 : i32
+// CHECK: %[[V1:.*]] = arith.index_cast %[[V0]] : i32 to index
+// CHECK: %[[V2:.*]] = arith.constant 16 : i32
+// CHECK: arith.index_cast %[[V2]] : i32 to index
+// CHECK: %[[V3:.*]] = memref.alloc(%[[V1]], %{{.*}} : memref<?x?xf32>
+// CHECK: %[[V4:.*]] = arith.constant 16 : i32
+// CHECK: %[[V5:.*]] = arith.index_cast %[[V4]] : i32 to index
+// CHECK: %[[V6:.*]] = arith.constant 16 : i32
+// CHECK: arith.index_cast %[[V6]] : i32 to index
+// CHECK: memref.alloc(%[[V5]], %{{.*}} : memref<?x?xf32>
+// CHECK: %[[V7:.*]] = arith.constant 0 : index
+// CHECK: %[[V8:.*]] = memref.dim %[[V3]], %[[V7]] : memref<?x?xf32>
+// CHECK: %[[V9:.*]] = arith.constant 1 : index
+// CHECK: memref.dim %[[V3]], %[[V9]] : memref<?x?xf32>
+// CHECK: %[[V10:.*]] = memref.alloc(%[[V8]], %{{.*}} : memref<?x?xf32>
+// CHECK: %[[V11:.*]] = memref.cast %[[V10]] : memref<?x?xf32> to memref<16x16xf32>
+// CHECK: return %[[V11]] : memref<16x16xf32>
+// CHECK-LABEL: func.func @gen_tensor_math_mul() -> memref<16x16xf32>
+// CHECK: %[[V0:.*]] = arith.constant 16 : i32
+// CHECK: %[[V1:.*]] = arith.index_cast %[[V0]] : i32 to index
+// CHECK: %[[V2:.*]] = arith.constant 16 : i32
+// CHECK: arith.index_cast %[[V2]] : i32 to index
+// CHECK: %[[V3:.*]] = memref.alloc(%[[V1]], %{{.*}} : memref<?x?xf32>
+// CHECK: %[[V4:.*]] = arith.constant 16 : i32
+// CHECK: %[[V5:.*]] = arith.index_cast %[[V4]] : i32 to index
+// CHECK: %[[V6:.*]] = arith.constant 16 : i32
+// CHECK: arith.index_cast %[[V6]] : i32 to index
+// CHECK: memref.alloc(%[[V5]], %{{.*}} : memref<?x?xf32>
+// CHECK: %[[V7:.*]] = arith.constant 0 : index
+// CHECK: %[[V8:.*]] = memref.dim %[[V3]], %[[V7]] : memref<?x?xf32>
+// CHECK: %[[V9:.*]] = arith.constant 1 : index
+// CHECK: memref.dim %[[V3]], %[[V9]] : memref<?x?xf32>
+// CHECK: %[[V10:.*]] = memref.alloc(%[[V8]], %{{.*}} : memref<?x?xf32>
+// CHECK: %[[V11:.*]] = memref.cast %[[V10]] : memref<?x?xf32> to memref<16x16xf32>
+// CHECK: return %[[V11]] : memref<16x16xf32>
+// CHECK-LABEL: func.func @gen_tensor_math_sub() -> memref<16x16xf32>
+// CHECK: %[[V0:.*]] = arith.constant 16 : i32
+// CHECK: %[[V1:.*]] = arith.index_cast %[[V0]] : i32 to index
+// CHECK: %[[V2:.*]] = arith.constant 16 : i32
+// CHECK: arith.index_cast %[[V2]] : i32 to index
+// CHECK: %[[V3:.*]] = memref.alloc(%[[V1]], %{{.*}} : memref<?x?xf32>
+// CHECK: %[[V4:.*]] = arith.constant 16 : i32
+// CHECK: %[[V5:.*]] = arith.index_cast %[[V4]] : i32 to index
+// CHECK: %[[V6:.*]] = arith.constant 16 : i32
+// CHECK: arith.index_cast %[[V6]] : i32 to index
+// CHECK: memref.alloc(%[[V5]], %{{.*}} : memref<?x?xf32>
+// CHECK: %[[V7:.*]] = arith.constant 0 : index
+// CHECK: %[[V8:.*]] = memref.dim %[[V3]], %[[V7]] : memref<?x?xf32>
+// CHECK: %[[V9:.*]] = arith.constant 1 : index
+// CHECK: memref.dim %[[V3]], %[[V9]] : memref<?x?xf32>
+// CHECK: %[[V10:.*]] = memref.alloc(%[[V8]], %{{.*}} : memref<?x?xf32>
+// CHECK: %[[V11:.*]] = memref.cast %[[V10]] : memref<?x?xf32> to memref<16x16xf32>
+// CHECK: return %[[V11]] : memref<16x16xf32>
 
 fn gen_tensor_math_add() -> i32 {
   let a : Tensor<f32, [ 16, 16 ]> = Tensor<f32>(16, 16);

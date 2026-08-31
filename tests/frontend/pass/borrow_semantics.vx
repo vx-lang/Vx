@@ -9,7 +9,34 @@
 // pointer operations, and unsafe blocks.
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: call @read_value(%{{.*}}) : (!llvm.ptr) -> i32
+// CHECK: call @increment(%{{.*}}) : (!llvm.ptr) -> ()
+// CHECK: call @swap(%{{.*}}, %{{.*}}) : (!llvm.ptr, !llvm.ptr) -> ()
+// CHECK-LABEL: func.func @swap(%arg0: !llvm.ptr {llvm.noalias}, %arg1: !llvm.ptr {llvm.noalias})
+// CHECK: arith.constant 0 : i32
+// CHECK: %[[V0:.*]] = llvm.getelementptr %{{.*}} : (!llvm.ptr, i32) -> !llvm.ptr, i32
+// CHECK: llvm.load %[[V0]] : !llvm.ptr -> i32
+// CHECK: arith.constant 0 : i32
+// CHECK: llvm.getelementptr %{{.*}} : (!llvm.ptr, i32) -> !llvm.ptr, i32
+// CHECK: arith.constant 0 : i32
+// CHECK: %[[V1:.*]] = llvm.getelementptr %{{.*}} : (!llvm.ptr, i32) -> !llvm.ptr, i32
+// CHECK: llvm.load %[[V1]] : !llvm.ptr -> i32
+// CHECK: arith.constant 0 : i32
+// CHECK: llvm.getelementptr %{{.*}} : (!llvm.ptr, i32) -> !llvm.ptr, i32
+// CHECK-LABEL: func.func @read_value(%arg0: !llvm.ptr {llvm.readonly}) -> i32
+// CHECK: arith.constant 0 : i32
+// CHECK: %[[V0:.*]] = llvm.getelementptr %{{.*}} : (!llvm.ptr, i32) -> !llvm.ptr, i32
+// CHECK: %[[V1:.*]] = llvm.load %[[V0]] : !llvm.ptr -> i32
+// CHECK: return %[[V1]] : i32
+// CHECK-LABEL: func.func @increment(%arg0: !llvm.ptr {llvm.noalias})
+// CHECK: arith.constant 0 : i32
+// CHECK: llvm.getelementptr %{{.*}} : (!llvm.ptr, i32) -> !llvm.ptr, i32
+// CHECK: arith.constant 0 : i32
+// CHECK: %[[V0:.*]] = llvm.getelementptr %{{.*}} : (!llvm.ptr, i32) -> !llvm.ptr, i32
+// CHECK: %[[V1:.*]] = llvm.load %[[V0]] : !llvm.ptr -> i32
+// CHECK: %[[V2:.*]] = arith.constant 1 : i32
+// CHECK: arith.addi %[[V1]], %[[V2]] : i32
 
 fn read_value(x: &i32) -> i32 {
   return *x;

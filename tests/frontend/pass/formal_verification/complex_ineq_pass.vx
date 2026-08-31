@@ -19,4 +19,12 @@ fn main() -> i32 {
   return 0;
 }
 
-// CHECK: module
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: %[[V0:.*]] = arith.constant 0 : i32
+// CHECK: return %[[V0]] : i32
+// CHECK-LABEL: func.func @test_four_vars(%arg0: i32, %arg1: i32, %arg2: i32, %arg3: i32) -> i32
+// CHECK: %[[V0:.*]] = arith.subi %{{.*}}, %{{.*}} : i32
+// CHECK: return %[[V0]] : i32
+// CHECK-LABEL: func.func @test_transitive_ineq(%arg0: i32, %arg1: i32, %arg2: i32) -> i32
+// CHECK: %[[V0:.*]] = arith.subi %{{.*}}, %{{.*}} : i32
+// CHECK: return %[[V0]] : i32

@@ -22,4 +22,9 @@ fn main() -> i32 {
   return 0;
 }
 
-// CHECK: module
+// CHECK-LABEL: func.func @make() -> i32
+// CHECK: arith.constant 5 : i32
+// CHECK: return %{{.*}} : i32
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: %[[V0:.*]] = arith.constant 0 : i32
+// CHECK: return %[[V0]] : i32

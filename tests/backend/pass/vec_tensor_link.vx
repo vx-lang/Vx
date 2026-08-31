@@ -28,7 +28,9 @@
 // Two allocations, because a single one still produced a working binary in the
 // broken state -- the collision needs a second site to strand a reference.
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
+// CHECK-DAG: func.func private @print_f32(
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: call @print_f32(%{{.*}}) : (f32) -> i32
 import std::vec;
 
 fn main() -> i32 {

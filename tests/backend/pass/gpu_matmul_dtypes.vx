@@ -30,7 +30,17 @@
 // the wrong way round.
 //
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
+// CHECK-DAG: func.func private @print_f64(
+// CHECK-DAG: func.func private @print_str(
+// CHECK-DAG: func.func private @print_f32(
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: call @print_f64(%{{.*}}) : (f64) -> i32
+// CHECK: call @print_str(%{{.*}}) : (!llvm.ptr) -> i32
+// CHECK: call @print_f64(%{{.*}}) : (f64) -> i32
+// CHECK: call @print_str(%{{.*}}) : (!llvm.ptr) -> i32
+// CHECK: call @print_f32(%{{.*}}) : (f32) -> i32
+// CHECK: call @print_str(%{{.*}}) : (!llvm.ptr) -> i32
+// CHECK: call @print_f32(%{{.*}}) : (f32) -> i32
 // EXPECT: 19 50 197 4032
 
 fn main() -> i32 {

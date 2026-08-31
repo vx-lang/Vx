@@ -41,4 +41,24 @@ fn main() -> i32 {
   return 0;
 }
 
-// CHECK: module
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: %[[V0:.*]] = arith.constant 0 : i32
+// CHECK: return %[[V0]] : i32
+// CHECK-LABEL: func.func @test_topology_ane(%arg0: i32) -> i32
+// CHECK: %[[V0:.*]] = arith.constant 1 : i32
+// CHECK: return %[[V0]] : i32
+// CHECK-LABEL: func.func @test_topology_amx(%arg0: i32) -> i32
+// CHECK: %[[V0:.*]] = arith.constant 1 : i32
+// CHECK: return %[[V0]] : i32
+// CHECK-LABEL: func.func @test_topology_gpu(%arg0: i32) -> i32
+// CHECK: %[[V0:.*]] = arith.constant 1 : i32
+// CHECK: return %[[V0]] : i32
+// CHECK-LABEL: func.func @test_topology_acc_core(%arg0: i32) -> i32
+// CHECK: %[[V0:.*]] = arith.constant 1 : i32
+// CHECK: return %[[V0]] : i32
+// CHECK-LABEL: func.func @test_topology_host(%arg0: i32) -> i32
+// CHECK: %[[V0:.*]] = arith.constant 1 : i32
+// CHECK: return %[[V0]] : i32
+// CHECK-LABEL: func.func @test_topology_npu(%arg0: i32) -> i32
+// CHECK: %[[V0:.*]] = arith.constant 1 : i32
+// CHECK: return %[[V0]] : i32

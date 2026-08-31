@@ -11,7 +11,17 @@
 // function 'expect_eq'".
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
+// CHECK-DAG: func.func private @vx_googletest_expect_eq_i32(
+// CHECK-LABEL: func.func @i32$expect_eq(%arg0: i32, %arg1: i32) -> i32
+// CHECK: call @vx_googletest_expect_eq_i32(%{{.*}}, %{{.*}}) : (i32, i32) -> i32
+// CHECK-LABEL: func.func @expect_eq$i32(%arg0: i32, %arg1: i32) -> i32
+// CHECK: call @i32$expect_eq(%{{.*}}, %{{.*}}) : (i32, i32) -> i32
+// CHECK-LABEL: func.func @six() -> i32
+// CHECK: %[[V0:.*]] = arith.constant 6 : i32
+// CHECK: return %[[V0]] : i32
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: %[[V0:.*]] = call @six() : () -> i32
+// CHECK: call @expect_eq$i32(%[[V0]], %{{.*}}) : (i32, i32) -> i32
 import std::googletest;
 
 fn six() -> i32 {

@@ -11,7 +11,19 @@
 // `print_*` FFI helpers. `print!(...)` (the macro form) always worked; this
 // guards the call form for f32/f64/i32/i64. `print!(" ")` supplies separators.
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
+// CHECK-DAG: func.func private @print_f32(
+// CHECK-DAG: func.func private @print_str(
+// CHECK-DAG: func.func private @print_f64(
+// CHECK-DAG: func.func private @print_i32(
+// CHECK-DAG: func.func private @print_i64(
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: call @print_f32(%{{.*}}) : (f32) -> i32
+// CHECK: call @print_str(%{{.*}}) : (!llvm.ptr) -> i32
+// CHECK: call @print_f64(%{{.*}}) : (f64) -> i32
+// CHECK: call @print_str(%{{.*}}) : (!llvm.ptr) -> i32
+// CHECK: call @print_i32(%{{.*}}) : (i32) -> i32
+// CHECK: call @print_str(%{{.*}}) : (!llvm.ptr) -> i32
+// CHECK: call @print_i64(%{{.*}}) : (i64) -> i32
 fn main() -> i32 {
   let a : f32 = 2.5;
   print(a);

@@ -12,7 +12,9 @@
 // now materializes a slot for the reference before taking its address, so `rr`
 // is a real `&&i32`. This is the AST-path oracle for `flat_runs_a_nested_reference`.
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
+// CHECK-DAG: func.func private @print_i32(
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: call @print_i32(%{{.*}}) : (i32) -> i32
 fn main() -> i32 {
   let x = 5;
   let r = &x;    // r  : &i32

@@ -10,7 +10,24 @@
 // triggering "moved or consumed" errors.
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
+// CHECK-LABEL: func.func @test_float_reuse() -> i32
+// CHECK: %[[V0:.*]] = arith.constant 3.140000e+00 : f32
+// CHECK: %[[V1:.*]] = arith.constant 2.000000e+00 : f32
+// CHECK: arith.mulf %[[V0]], %[[V1]] : f32
+// CHECK: %[[V2:.*]] = arith.constant 4.000000e+00 : f32
+// CHECK: arith.mulf %[[V0]], %[[V2]] : f32
+// CHECK: %[[V3:.*]] = arith.constant 0 : i32
+// CHECK: return %[[V3]] : i32
+// CHECK-LABEL: func.func @test_bool_reuse() -> i32
+// CHECK-LABEL: func.func @test_scalar_reuse() -> i32
+// CHECK: %[[V0:.*]] = arith.constant 42 : i32
+// CHECK: %[[V1:.*]] = arith.constant 1 : i32
+// CHECK: arith.addi %[[V0]], %[[V1]] : i32
+// CHECK: %[[V2:.*]] = arith.constant 2 : i32
+// CHECK: arith.addi %[[V0]], %[[V2]] : i32
+// CHECK: %[[V3:.*]] = arith.constant 3 : i32
+// CHECK: %[[V4:.*]] = arith.muli %[[V0]], %[[V3]] : i32
+// CHECK: return %[[V4]] : i32
 
 fn test_scalar_reuse() -> i32 {
   let x = 42;

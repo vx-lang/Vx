@@ -1,5 +1,18 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
+// CHECK-DAG: func.func private @vx_vec_grow(
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: call @"Vec::new$i32"() : () -> !llvm.struct<(ptr, i32, i32)>
+// CHECK: call @ref$mut$Vec$i32$push$i32(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> i32
+// CHECK: call @Vec$i32$push$i32(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> i32
+// CHECK: call @Vec$i32$len$i32(%{{.*}}) : (!llvm.ptr) -> i32
+// CHECK-LABEL: func.func @ref$mut$Vec$i32$push$i32(%arg0: !llvm.ptr {llvm.noalias}, %arg1: i32) -> i32
+// CHECK: call @vx_vec_grow(%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, i64, i64, i64) -> !llvm.ptr
+// CHECK-LABEL: func.func @Vec$i32$push$i32(%arg0: !llvm.ptr {llvm.noalias}, %arg1: i32) -> i32
+// CHECK: call @vx_vec_grow(%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, i64, i64, i64) -> !llvm.ptr
+// CHECK-LABEL: func.func @Vec$i32$len$i32(%arg0: !llvm.ptr {llvm.readonly}) -> i32
+// CHECK: %[[V0:.*]] = llvm.getelementptr %{{.*}}, 1] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<(ptr, i32, i32)>
+// CHECK: %[[V1:.*]] = llvm.load %[[V0]] : !llvm.ptr -> i32
+// CHECK: return %[[V1]] : i32
 import std::vec;
 import std::closure;
 fn main() -> i32 {

@@ -1,5 +1,14 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
+// CHECK-LABEL: func.func @initialize$const$Number_NumberExpr___value___10___ty__None__span__Span___line__0__column__0__length__0_____() -> !llvm.struct<"Array_f32_10", (f32)>
+// CHECK: llvm.mlir.undef : !llvm.struct<"Array_f32_10", (f32)>
+// CHECK: %[[V0:.*]] = arith.constant 1.000000e+00 : f32
+// CHECK: %[[V1:.*]] = llvm.insertvalue %[[V0]], %{{.*}} : !llvm.struct<"Array_f32_10", (f32)>
+// CHECK: %[[V2:.*]] = arith.constant 10 : i32
+// CHECK: %[[V3:.*]] = arith.constant 1 : i32
+// CHECK: arith.addi %[[V2]], %[[V3]] : i32
+// CHECK: return %[[V1]] : !llvm.struct<"Array_f32_10", (f32)>
+// CHECK-LABEL: func.func @test_const_generics()
+// CHECK: call @initialize$const$Number_NumberExpr___value___10___ty__None__span__Span___line__0__column__0__length__0_____() : () -> !llvm.struct<"Array_f32_10", (f32)>
 struct Array<T, const N : i32> {
   val : T
 }

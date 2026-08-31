@@ -6,7 +6,15 @@
 //
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
+// CHECK-DAG: func.func private @sqrt(
+// CHECK-DAG: func.func private @fabs(
+// CHECK-LABEL: func.func @f64$sqrt(%arg0: f64) -> f64
+// CHECK: call @sqrt(%{{.*}}) : (f64) -> f64
+// CHECK-LABEL: func.func @f64$abs(%arg0: f64) -> f64
+// CHECK: call @fabs(%{{.*}}) : (f64) -> f64
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: call @f64$sqrt(%{{.*}}) : (f64) -> f64
+// CHECK: call @f64$abs(%{{.*}}) : (f64) -> f64
 import std::math;
 
 fn main() -> i32 {

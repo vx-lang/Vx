@@ -30,7 +30,19 @@
 // c[1][3] afterwards only works if the extents and strides it wrote are right.
 //
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
+// CHECK-DAG: func.func private @print_f32(
+// CHECK-DAG: func.func private @print_str(
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: call @print_f32(%{{.*}}) : (f32) -> i32
+// CHECK: call @print_str(%{{.*}}) : (!llvm.ptr) -> i32
+// CHECK: call @print_f32(%{{.*}}) : (f32) -> i32
+// CHECK: call @print_str(%{{.*}}) : (!llvm.ptr) -> i32
+// CHECK: call @print_f32(%{{.*}}) : (f32) -> i32
+// CHECK: call @print_str(%{{.*}}) : (!llvm.ptr) -> i32
+// CHECK: call @print_f32(%{{.*}}) : (f32) -> i32
+// CHECK: call @print_str(%{{.*}}) : (!llvm.ptr) -> i32
+// CHECK: call @print_f32(%{{.*}}) : (f32) -> i32
+// CHECK: call @print_str(%{{.*}}) : (!llvm.ptr) -> i32
 // EXPECT: 38 56 83 128 9 7 10
 
 fn main() -> i32 {

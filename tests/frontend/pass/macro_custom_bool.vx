@@ -1,5 +1,7 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: %[[C0:.*]] = arith.cmpi eq, %{{.*}}, %{{.*}} : i32
+// CHECK: cf.cond_br %[[C0]], ^{{.*}}, ^{{.*}}
 import std::vec;
 import std::closure;
 

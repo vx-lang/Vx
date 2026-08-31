@@ -1,5 +1,10 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: %[[V0:.*]] = arith.constant 42 : i32
+// CHECK: %[[V1:.*]] = arith.constant 42 : i32
+// CHECK: arith.cmpi eq, %[[V0]], %[[V1]] : i32
+// CHECK: %[[V2:.*]] = arith.constant 0 : i32
+// CHECK: return %[[V2]] : i32
 macro_rules return_42 { () => {
     42
   }; }

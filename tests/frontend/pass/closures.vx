@@ -1,5 +1,77 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
+// CHECK-DAG: func.func private @print_i32(
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: call @Closure_1_call(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> i32
+// CHECK: call @Closure_2_call(%{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, i32, i32) -> i32
+// CHECK: call @Closure_3_call(%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, i32, i32, i32) -> i32
+// CHECK: call @Closure_4_call(%{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, i32, i32) -> i32
+// CHECK: call @Closure_5_call(%{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, i32, i32) -> i32
+// CHECK: call @Closure_6_call(%{{.*}}) : (!llvm.ptr) -> i32
+// CHECK: call @Closure_8_call(%{{.*}}) : (!llvm.ptr) -> i32
+// CHECK: call @apply_lambda$Closure_9(%{{.*}}, %{{.*}}) : (!llvm.struct<(struct<(i32)>, i32)>, i32) -> i32
+// CHECK: call @print_i32(%{{.*}}) : (i32) -> i32
+// CHECK-LABEL: func.func @apply_lambda$Closure_9(%arg0: !llvm.struct<(struct<(i32)>, i32)>, %arg1: i32) -> i32
+// CHECK: call @Closure_9_call(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> i32
+// CHECK-LABEL: func.func @Closure_9_call(%arg0: !llvm.ptr, %arg1: i32) -> i32
+// CHECK: %[[V0:.*]] = llvm.getelementptr %{{.*}}, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<(struct<(i32)>, i32)>
+// CHECK: llvm.load %[[V0]] : !llvm.ptr -> !llvm.struct<(i32)>
+// CHECK: %[[V1:.*]] = llvm.mlir.constant(1 : i32) : i32
+// CHECK: llvm.alloca %[[V1]] x !llvm.struct<(i32)> : (i32) -> !llvm.ptr
+// CHECK: %[[V2:.*]] = llvm.getelementptr %{{.*}}, 1] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<(struct<(i32)>, i32)>
+// CHECK: %[[V3:.*]] = llvm.load %[[V2]] : !llvm.ptr -> i32
+// CHECK: %[[V4:.*]] = llvm.getelementptr %{{.*}}, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<(i32)>
+// CHECK: %[[V5:.*]] = llvm.load %[[V4]] : !llvm.ptr -> i32
+// CHECK: %[[V6:.*]] = arith.addi %{{.*}}, %[[V5]] : i32
+// CHECK: %[[V7:.*]] = arith.addi %[[V6]], %[[V3]] : i32
+// CHECK: return %[[V7]] : i32
+// CHECK-LABEL: func.func @Closure_8_call(%arg0: !llvm.ptr) -> i32
+// CHECK: %[[V0:.*]] = llvm.getelementptr %{{.*}}, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<(i32)>
+// CHECK: %[[V1:.*]] = llvm.load %[[V0]] : !llvm.ptr -> i32
+// CHECK: return %[[V1]] : i32
+// CHECK-LABEL: func.func @Closure_6_call(%arg0: !llvm.ptr) -> i32
+// CHECK: call @Closure_7_call(%{{.*}}) : (!llvm.ptr) -> i32
+// CHECK-LABEL: func.func @Closure_5_call(%arg0: !llvm.ptr, %arg1: i32, %arg2: i32) -> i32
+// CHECK: %[[V0:.*]] = llvm.getelementptr %{{.*}}, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<(i32)>
+// CHECK: %[[V1:.*]] = llvm.load %[[V0]] : !llvm.ptr -> i32
+// CHECK: %[[V2:.*]] = arith.addi %[[V1]], %{{.*}} : i32
+// CHECK: %[[V3:.*]] = arith.addi %[[V2]], %{{.*}} : i32
+// CHECK: return %[[V3]] : i32
+// CHECK-LABEL: func.func @Closure_4_call(%arg0: !llvm.ptr, %arg1: i32, %arg2: i32) -> i32
+// CHECK: %[[V0:.*]] = llvm.getelementptr %{{.*}}, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<(i32, i32)>
+// CHECK: %[[V1:.*]] = llvm.load %[[V0]] : !llvm.ptr -> i32
+// CHECK: %[[V2:.*]] = llvm.getelementptr %{{.*}}, 1] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<(i32, i32)>
+// CHECK: %[[V3:.*]] = llvm.load %[[V2]] : !llvm.ptr -> i32
+// CHECK: %[[V4:.*]] = arith.addi %{{.*}}, %{{.*}} : i32
+// CHECK: %[[V5:.*]] = arith.addi %[[V4]], %[[V1]] : i32
+// CHECK: %[[V6:.*]] = arith.addi %[[V5]], %[[V3]] : i32
+// CHECK: return %[[V6]] : i32
+// CHECK-LABEL: func.func @Closure_3_call(%arg0: !llvm.ptr, %arg1: i32, %arg2: i32, %arg3: i32) -> i32
+// CHECK: %[[V0:.*]] = llvm.getelementptr %{{.*}}, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<(i32)>
+// CHECK: %[[V1:.*]] = llvm.load %[[V0]] : !llvm.ptr -> i32
+// CHECK: %[[V2:.*]] = arith.addi %{{.*}}, %{{.*}} : i32
+// CHECK: %[[V3:.*]] = arith.addi %[[V2]], %{{.*}} : i32
+// CHECK: %[[V4:.*]] = arith.addi %[[V3]], %[[V1]] : i32
+// CHECK: return %[[V4]] : i32
+// CHECK-LABEL: func.func @Closure_2_call(%arg0: !llvm.ptr, %arg1: i32, %arg2: i32) -> i32
+// CHECK: %[[V0:.*]] = llvm.getelementptr %{{.*}}, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<(i32)>
+// CHECK: %[[V1:.*]] = llvm.load %[[V0]] : !llvm.ptr -> i32
+// CHECK: %[[V2:.*]] = arith.addi %{{.*}}, %{{.*}} : i32
+// CHECK: %[[V3:.*]] = arith.addi %[[V2]], %[[V1]] : i32
+// CHECK: return %[[V3]] : i32
+// CHECK-LABEL: func.func @Closure_1_call(%arg0: !llvm.ptr, %arg1: i32) -> i32
+// CHECK: %[[V0:.*]] = llvm.getelementptr %{{.*}}, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<(i32)>
+// CHECK: %[[V1:.*]] = llvm.load %[[V0]] : !llvm.ptr -> i32
+// CHECK: %[[V2:.*]] = arith.addi %[[V1]], %{{.*}} : i32
+// CHECK: return %[[V2]] : i32
+// CHECK-LABEL: func.func @Closure_7_call(%arg0: !llvm.ptr) -> i32
+// CHECK: %[[V0:.*]] = llvm.getelementptr %{{.*}}, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<(i32, i32)>
+// CHECK: %[[V1:.*]] = llvm.load %[[V0]] : !llvm.ptr -> i32
+// CHECK: %[[V2:.*]] = llvm.getelementptr %{{.*}}, 1] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<(i32, i32)>
+// CHECK: %[[V3:.*]] = llvm.load %[[V2]] : !llvm.ptr -> i32
+// CHECK: %[[V4:.*]] = arith.constant 30 : i32
+// CHECK: %[[V5:.*]] = arith.addi %[[V1]], %[[V3]] : i32
+// CHECK: %[[V6:.*]] = arith.addi %[[V5]], %[[V4]] : i32
+// CHECK: return %[[V6]] : i32
 // EXPECT: 1
 
 import std::io;

@@ -1,5 +1,84 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
+// CHECK-LABEL: func.func @gen_math_i64_sub() -> i64
+// CHECK: %[[V0:.*]] = arith.constant 10 : i64
+// CHECK: %[[V1:.*]] = arith.constant 5 : i64
+// CHECK: %[[V2:.*]] = arith.subi %[[V0]], %[[V1]] : i64
+// CHECK: return %[[V2]] : i64
+// CHECK-LABEL: func.func @gen_math_i64_mul() -> i64
+// CHECK: %[[V0:.*]] = arith.constant 10 : i64
+// CHECK: %[[V1:.*]] = arith.constant 5 : i64
+// CHECK: %[[V2:.*]] = arith.muli %[[V0]], %[[V1]] : i64
+// CHECK: return %[[V2]] : i64
+// CHECK-LABEL: func.func @gen_math_i64_div() -> i64
+// CHECK: %[[V0:.*]] = arith.constant 10 : i64
+// CHECK: %[[V1:.*]] = arith.constant 5 : i64
+// CHECK: %[[V2:.*]] = arith.divsi %[[V0]], %[[V1]] : i64
+// CHECK: return %[[V2]] : i64
+// CHECK-LABEL: func.func @gen_math_i64_add() -> i64
+// CHECK: %[[V0:.*]] = arith.constant 10 : i64
+// CHECK: %[[V1:.*]] = arith.constant 5 : i64
+// CHECK: %[[V2:.*]] = arith.addi %[[V0]], %[[V1]] : i64
+// CHECK: return %[[V2]] : i64
+// CHECK-LABEL: func.func @gen_math_i32_sub() -> i32
+// CHECK: %[[V0:.*]] = arith.constant 10 : i32
+// CHECK: %[[V1:.*]] = arith.constant 5 : i32
+// CHECK: %[[V2:.*]] = arith.subi %[[V0]], %[[V1]] : i32
+// CHECK: return %[[V2]] : i32
+// CHECK-LABEL: func.func @gen_math_i32_mul() -> i32
+// CHECK: %[[V0:.*]] = arith.constant 10 : i32
+// CHECK: %[[V1:.*]] = arith.constant 5 : i32
+// CHECK: %[[V2:.*]] = arith.muli %[[V0]], %[[V1]] : i32
+// CHECK: return %[[V2]] : i32
+// CHECK-LABEL: func.func @gen_math_i32_div() -> i32
+// CHECK: %[[V0:.*]] = arith.constant 10 : i32
+// CHECK: %[[V1:.*]] = arith.constant 5 : i32
+// CHECK: %[[V2:.*]] = arith.divsi %[[V0]], %[[V1]] : i32
+// CHECK: return %[[V2]] : i32
+// CHECK-LABEL: func.func @gen_math_i32_add() -> i32
+// CHECK: %[[V0:.*]] = arith.constant 10 : i32
+// CHECK: %[[V1:.*]] = arith.constant 5 : i32
+// CHECK: %[[V2:.*]] = arith.addi %[[V0]], %[[V1]] : i32
+// CHECK: return %[[V2]] : i32
+// CHECK-LABEL: func.func @gen_math_f64_sub() -> f64
+// CHECK: %[[V0:.*]] = arith.constant 1.000000e+01 : f64
+// CHECK: %[[V1:.*]] = arith.constant 5.000000e+00 : f64
+// CHECK: %[[V2:.*]] = arith.subf %[[V0]], %[[V1]] : f64
+// CHECK: return %[[V2]] : f64
+// CHECK-LABEL: func.func @gen_math_f64_mul() -> f64
+// CHECK: %[[V0:.*]] = arith.constant 1.000000e+01 : f64
+// CHECK: %[[V1:.*]] = arith.constant 5.000000e+00 : f64
+// CHECK: %[[V2:.*]] = arith.mulf %[[V0]], %[[V1]] : f64
+// CHECK: return %[[V2]] : f64
+// CHECK-LABEL: func.func @gen_math_f64_div() -> f64
+// CHECK: %[[V0:.*]] = arith.constant 1.000000e+01 : f64
+// CHECK: %[[V1:.*]] = arith.constant 5.000000e+00 : f64
+// CHECK: %[[V2:.*]] = arith.divf %[[V0]], %[[V1]] : f64
+// CHECK: return %[[V2]] : f64
+// CHECK-LABEL: func.func @gen_math_f64_add() -> f64
+// CHECK: %[[V0:.*]] = arith.constant 1.000000e+01 : f64
+// CHECK: %[[V1:.*]] = arith.constant 5.000000e+00 : f64
+// CHECK: %[[V2:.*]] = arith.addf %[[V0]], %[[V1]] : f64
+// CHECK: return %[[V2]] : f64
+// CHECK-LABEL: func.func @gen_math_f32_sub() -> f32
+// CHECK: %[[V0:.*]] = arith.constant 1.000000e+01 : f32
+// CHECK: %[[V1:.*]] = arith.constant 5.000000e+00 : f32
+// CHECK: %[[V2:.*]] = arith.subf %[[V0]], %[[V1]] : f32
+// CHECK: return %[[V2]] : f32
+// CHECK-LABEL: func.func @gen_math_f32_mul() -> f32
+// CHECK: %[[V0:.*]] = arith.constant 1.000000e+01 : f32
+// CHECK: %[[V1:.*]] = arith.constant 5.000000e+00 : f32
+// CHECK: %[[V2:.*]] = arith.mulf %[[V0]], %[[V1]] : f32
+// CHECK: return %[[V2]] : f32
+// CHECK-LABEL: func.func @gen_math_f32_div() -> f32
+// CHECK: %[[V0:.*]] = arith.constant 1.000000e+01 : f32
+// CHECK: %[[V1:.*]] = arith.constant 5.000000e+00 : f32
+// CHECK: %[[V2:.*]] = arith.divf %[[V0]], %[[V1]] : f32
+// CHECK: return %[[V2]] : f32
+// CHECK-LABEL: func.func @gen_math_f32_add() -> f32
+// CHECK: %[[V0:.*]] = arith.constant 1.000000e+01 : f32
+// CHECK: %[[V1:.*]] = arith.constant 5.000000e+00 : f32
+// CHECK: %[[V2:.*]] = arith.addf %[[V0]], %[[V1]] : f32
+// CHECK: return %[[V2]] : f32
 
 fn gen_math_f32_add() -> f32 {
   let a : f32 = 10f32;

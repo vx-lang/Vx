@@ -1,5 +1,17 @@
 // RUN: vxc %s --action emit-mlir --legacy-codegen 2>&1 | FileCheck %s
-// CHECK: module
+// CHECK-LABEL: func.func @probe(%arg0: !llvm.ptr) -> !llvm.ptr
+// CHECK: %[[V0:.*]] = llvm.getelementptr %{{.*}}, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<"Map", (i32, i32)>
+// CHECK: return %[[V0]] : !llvm.ptr
+// CHECK-LABEL: func.func @insert(%arg0: !llvm.ptr, %arg1: i32)
+// CHECK: llvm.getelementptr %{{.*}}, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<"Map", (i32, i32)>
+// CHECK: arith.constant 1 : i32
+// CHECK: llvm.getelementptr %{{.*}}, 1] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<"Map", (i32, i32)>
+// CHECK-LABEL: func.func @ok() -> i32
+// CHECK: call @probe(%{{.*}}) : (!llvm.ptr) -> !llvm.ptr
+// CHECK: call @insert(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> ()
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: %[[V0:.*]] = arith.constant 0 : i32
+// CHECK: return %[[V0]] : i32
 // Non-regression for #243 (case bc5): the shared loan `found` is dead at its last use
 // (`let copied = *found`) before the mutation, so `insert(&mut m, 42)` is allowed. This is the
 // NLL-vs-lexical discriminator — the reborrow tracking added for bc9 must not over-tighten it.

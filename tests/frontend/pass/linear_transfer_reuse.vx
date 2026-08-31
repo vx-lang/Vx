@@ -11,7 +11,11 @@
 // in its original memory space.
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: arith.constant 1.000000e+00 : f32
+// CHECK: memref.alloc() : memref<f32>
+// CHECK: %[[V0:.*]] = arith.constant 0 : i32
+// CHECK: return %[[V0]] : i32
 
 fn main() -> i32 {
   let t : Tensor<f32, []> = 1.0;

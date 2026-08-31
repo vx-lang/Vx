@@ -1,5 +1,8 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: llvm.mlir.addressof @".str.0" : !llvm.ptr
+// CHECK: %[[V0:.*]] = arith.constant 0 : i32
+// CHECK: return %[[V0]] : i32
 macro_rules get_str { () => {
     "hello from macro!"
   }; }

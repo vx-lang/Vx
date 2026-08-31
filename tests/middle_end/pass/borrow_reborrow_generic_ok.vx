@@ -1,5 +1,11 @@
 // RUN: vxc %s --action emit-mlir --legacy-codegen 2>&1 | FileCheck %s
-// CHECK: module
+// CHECK-LABEL: func.func @pass$i32(%arg0: !llvm.ptr) -> !llvm.ptr
+// CHECK: %[[V0:.*]] = llvm.getelementptr %{{.*}}, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<"Map", (i32, i32)>
+// CHECK: return %[[V0]] : !llvm.ptr
+// CHECK-LABEL: func.func @good(%arg0: !llvm.ptr) -> i32
+// CHECK: call @pass$i32(%{{.*}}) : (!llvm.ptr) -> !llvm.ptr
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: call @good(%{{.*}}) : (!llvm.ptr) -> i32
 // Non-regression for #268: reborrowing through a generic callee whose result is *not* subsequently
 // aliased must still compile — the conservative default (a generic is AnyParam) must not over-reject
 // the common case. `pass<i32>(m)` reborrows `m`, but nothing mutates `m` while `found` is live.

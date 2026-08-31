@@ -1,5 +1,64 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
+// CHECK-DAG: func.func private @vx_vec_grow(
+// CHECK-DAG: func.func private @vx_vec_bounds_check(
+// CHECK-LABEL: func.func @Vec$i32$push$i32(%arg0: !llvm.ptr, %arg1: i32) -> i32
+// CHECK: call @vx_vec_grow(%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, i64, i64, i64) -> !llvm.ptr
+// CHECK-LABEL: func.func @Closure_1_call(%arg0: !llvm.ptr, %arg1: i32) -> i32
+// CHECK: %[[V0:.*]] = llvm.getelementptr %{{.*}}, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<"Closure_1", (i32)>
+// CHECK: llvm.load %[[V0]] : !llvm.ptr -> i32
+// CHECK: memref.alloca() : memref<i32>
+// CHECK: %[[V1:.*]] = memref.load %{{.*}}[] : memref<i32>
+// CHECK: %[[V2:.*]] = arith.addi %{{.*}}, %[[V1]] : i32
+// CHECK: return %[[V2]] : i32
+// CHECK-LABEL: func.func @Vec$i32$iter$i32(%arg0: !llvm.ptr) -> !llvm.struct<"VecIter_i32", (ptr, i32)>
+// CHECK: llvm.mlir.undef : !llvm.struct<"VecIter_i32", (ptr, i32)>
+// CHECK: llvm.insertvalue %{{.*}}, %{{.*}} : !llvm.struct<"VecIter_i32", (ptr, i32)>
+// CHECK: %[[V0:.*]] = arith.constant 0 : i32
+// CHECK: %[[V1:.*]] = llvm.insertvalue %[[V0]], %{{.*}} : !llvm.struct<"VecIter_i32", (ptr, i32)>
+// CHECK: return %[[V1]] : !llvm.struct<"VecIter_i32", (ptr, i32)>
+// CHECK-LABEL: func.func @VecIter$i32$map$i32$i32(%arg0: !llvm.struct<"VecIter_i32", (ptr, i32)>, %arg1: !llvm.struct<"Closure1_i32_i32", (ptr, ptr)>) -> !llvm.struct<"VecMap_i32_i32", (struct<"VecIter_i32", (ptr, i32)>, struct<"Closure1_i32_i32", (ptr, ptr)>)>
+// CHECK: llvm.mlir.undef : !llvm.struct<"VecMap_i32_i32", (struct<"VecIter_i32", (ptr, i32)>, struct<"Closure1_i32_i32", (ptr, ptr)>)>
+// CHECK: llvm.insertvalue %{{.*}}, %{{.*}} : !llvm.struct<"VecMap_i32_i32", (struct<"VecIter_i32", (ptr, i32)>, struct<"Closure1_i32_i32", (ptr, ptr)>)>
+// CHECK: %[[V0:.*]] = llvm.insertvalue %{{.*}}, %{{.*}} : !llvm.struct<"VecMap_i32_i32", (struct<"VecIter_i32", (ptr, i32)>, struct<"Closure1_i32_i32", (ptr, ptr)>)>
+// CHECK: return %[[V0]] : !llvm.struct<"VecMap_i32_i32", (struct<"VecIter_i32", (ptr, i32)>, struct<"Closure1_i32_i32", (ptr, ptr)>)>
+// CHECK-LABEL: func.func @VecIter$i32$next$i32(%arg0: !llvm.ptr) -> !llvm.struct<"Option_i32", (i32, i32)>
+// CHECK: %[[C0:.*]] = arith.cmpi slt, %{{.*}}, %{{.*}} : i32
+// CHECK: cf.cond_br %[[C0]], ^{{.*}}, ^{{.*}}
+// CHECK-LABEL: func.func @Option$i32$is_none$i32(%arg0: !llvm.ptr) -> i1
+// CHECK: %[[C0:.*]] = arith.cmpi eq, %{{.*}}, %{{.*}} : i32
+// CHECK: cf.cond_br %[[C0]], ^{{.*}}, ^{{.*}}
+// CHECK: %[[C1:.*]] = arith.cmpi eq, %{{.*}}, %{{.*}} : i32
+// CHECK: cf.cond_br %[[C1]], ^{{.*}}, ^{{.*}}
+// CHECK-LABEL: func.func @Option$i32$is_some$i32(%arg0: !llvm.ptr) -> i1
+// CHECK: %[[C0:.*]] = arith.cmpi eq, %{{.*}}, %{{.*}} : i32
+// CHECK: cf.cond_br %[[C0]], ^{{.*}}, ^{{.*}}
+// CHECK: %[[C1:.*]] = arith.cmpi eq, %{{.*}}, %{{.*}} : i32
+// CHECK: cf.cond_br %[[C1]], ^{{.*}}, ^{{.*}}
+// CHECK-LABEL: func.func @Option$i32$unwrap$i32(%arg0: !llvm.struct<"Option_i32", (i32, i32)>) -> i32
+// CHECK: call @Option$i32$is_some$i32(%{{.*}}) : (!llvm.ptr) -> i1
+// CHECK-LABEL: func.func @ref$mut$VecMap$i32$i32$next$i32$i32(%arg0: !llvm.ptr) -> !llvm.struct<"Option_i32", (i32, i32)>
+// CHECK: call @VecIter$i32$next$i32(%{{.*}}) : (!llvm.ptr) -> !llvm.struct<"Option_i32", (i32, i32)>
+// CHECK: call @Option$i32$is_none$i32(%{{.*}}) : (!llvm.ptr) -> i1
+// CHECK: call @Option$i32$unwrap$i32(%{{.*}}) : (!llvm.struct<"Option_i32", (i32, i32)>) -> i32
+// CHECK-LABEL: func.func @VecMap$i32$i32$collect$i32$i32(%arg0: !llvm.ptr) -> !llvm.struct<"Vec_i32", (ptr, i32, i32)>
+// CHECK: call @"Vec::new$i32"() : () -> !llvm.struct<"Vec_i32", (ptr, i32, i32)>
+// CHECK: call @ref$mut$VecMap$i32$i32$next$i32$i32(%{{.*}}) : (!llvm.ptr) -> !llvm.struct<"Option_i32", (i32, i32)>
+// CHECK: call @Option$i32$is_none$i32(%{{.*}}) : (!llvm.ptr) -> i1
+// CHECK: %[[V0:.*]] = call @Option$i32$unwrap$i32(%{{.*}}) : (!llvm.struct<"Option_i32", (i32, i32)>) -> i32
+// CHECK: call @Vec$i32$push$i32(%{{.*}}, %[[V0]]) : (!llvm.ptr, i32) -> i32
+// CHECK-LABEL: func.func @Vec$i32$get$i32(%arg0: !llvm.ptr, %arg1: i32) -> i32
+// CHECK: call @vx_vec_bounds_check(%{{.*}}, %{{.*}}) : (i64, i64) -> i32
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: call @"Vec::new$i32"() : () -> !llvm.struct<"Vec_i32", (ptr, i32, i32)>
+// CHECK: call @Vec$i32$push$i32(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> i32
+// CHECK: call @Vec$i32$push$i32(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> i32
+// CHECK: call @Vec$i32$push$i32(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> i32
+// CHECK: %[[V0:.*]] = call @Vec$i32$iter$i32(%{{.*}}) : (!llvm.ptr) -> !llvm.struct<"VecIter_i32", (ptr, i32)>
+// CHECK: call @VecIter$i32$map$i32$i32(%[[V0]], %{{.*}}) : (!llvm.struct<"VecIter_i32", (ptr, i32)>, !llvm.struct<"Closure1_i32_i32", (ptr, ptr)>) -> !llvm.struct<"VecMap_i32_i32", (struct<"VecIter_i32", (ptr, i32)>, struct<"Closure1_i32_i32", (ptr, ptr)>)>
+// CHECK: call @VecMap$i32$i32$collect$i32$i32(%{{.*}}) : (!llvm.ptr) -> !llvm.struct<"Vec_i32", (ptr, i32, i32)>
+// CHECK: call @Vec$i32$get$i32(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> i32
+// CHECK: call @Vec$i32$get$i32(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> i32
+// CHECK: call @Vec$i32$get$i32(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> i32
 //
 // A closure literal (`|x| ...`) passed to the generic stdlib iterator adapter
 // `VecIter::map`, then driven by `next()` / `collect()`. The closure checks to a

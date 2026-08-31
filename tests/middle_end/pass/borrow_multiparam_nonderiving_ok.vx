@@ -1,5 +1,17 @@
 // RUN: vxc %s --action emit-mlir --legacy-codegen 2>&1 | FileCheck %s
-// CHECK: module
+// CHECK-LABEL: func.func @insert(%arg0: !llvm.ptr, %arg1: i32)
+// CHECK: llvm.getelementptr %{{.*}}, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<"Map", (i32, i32)>
+// CHECK: arith.constant 1 : i32
+// CHECK: llvm.getelementptr %{{.*}}, 1] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<"Map", (i32, i32)>
+// CHECK-LABEL: func.func @pick(%arg0: !llvm.ptr, %arg1: !llvm.ptr) -> !llvm.ptr
+// CHECK: %[[V0:.*]] = llvm.getelementptr %{{.*}}, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<"Map", (i32, i32)>
+// CHECK: return %[[V0]] : !llvm.ptr
+// CHECK-LABEL: func.func @use_it() -> i32
+// CHECK: call @pick(%{{.*}}, %{{.*}}) : (!llvm.ptr, !llvm.ptr) -> !llvm.ptr
+// CHECK: call @insert(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> ()
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: %[[V0:.*]] = arith.constant 0 : i32
+// CHECK: return %[[V0]] : i32
 // Precision (#243, E1): `pick` returns a reference derived from `b` only — a signature rustc
 // cannot elide (it demands `'a` on `b`). The result `r` aliases `y` (bound to `b`), not `x`
 // (bound to `a`), so mutating `x` while `r` is live must be ACCEPTED. Per-parameter provenance

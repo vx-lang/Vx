@@ -1,5 +1,23 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
+// CHECK-LABEL: func.func @Closure_2_call(%arg0: !llvm.ptr) -> i32
+// CHECK: %[[V0:.*]] = arith.constant 42 : i32
+// CHECK: return %[[V0]] : i32
+// CHECK-LABEL: func.func @Closure_1_call(%arg0: !llvm.ptr) -> !llvm.struct<"Closure_2", ()>
+// CHECK: %[[V0:.*]] = llvm.mlir.undef : !llvm.struct<"Closure_2", ()>
+// CHECK: return %[[V0]] : !llvm.struct<"Closure_2", ()>
+// CHECK-LABEL: func.func @Closure_3_call(%arg0: !llvm.ptr, %arg1: i32) -> i32
+// CHECK: %[[V0:.*]] = arith.constant 10 : i32
+// CHECK: %[[V1:.*]] = arith.addi %{{.*}}, %[[V0]] : i32
+// CHECK: return %[[V1]] : i32
+// CHECK-LABEL: func.func @Closure_4_call(%arg0: !llvm.ptr, %arg1: i32) -> i32
+// CHECK: %[[V0:.*]] = arith.constant 2 : i32
+// CHECK: %[[V1:.*]] = arith.muli %{{.*}}, %[[V0]] : i32
+// CHECK: return %[[V1]] : i32
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: call @Closure_1_call(%{{.*}}) : (!llvm.ptr) -> !llvm.struct<"Closure_2", ()>
+// CHECK: call @Closure_2_call(%{{.*}}) : (!llvm.ptr) -> i32
+// CHECK: call @Closure_3_call(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> i32
+// CHECK: call @Closure_4_call(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> i32
 fn main() -> i32 {
   let get_closure = || || 42;
 

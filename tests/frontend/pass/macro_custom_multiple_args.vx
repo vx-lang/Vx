@@ -1,5 +1,12 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: %[[V0:.*]] = arith.constant 10 : i32
+// CHECK: %[[V1:.*]] = arith.constant 3 : i32
+// CHECK: %[[V2:.*]] = arith.subi %[[V0]], %[[V1]] : i32
+// CHECK: %[[V3:.*]] = arith.constant 7 : i32
+// CHECK: arith.cmpi eq, %[[V2]], %[[V3]] : i32
+// CHECK: %[[V4:.*]] = arith.constant 0 : i32
+// CHECK: return %[[V4]] : i32
 macro_rules sub { ($a : expr, $b : expr) => {
     $a - $b
   }; }

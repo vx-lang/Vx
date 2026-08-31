@@ -11,7 +11,62 @@
 // this failed with "Function node_count not found".
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
+// CHECK-DAG: func.func private @vx_vec_grow(
+// CHECK-DAG: func.func private @vx_vec_bounds_check(
+// CHECK-LABEL: func.func @graph_inf() -> i32
+// CHECK: %[[V0:.*]] = arith.constant 1000000000 : i32
+// CHECK: return %[[V0]] : i32
+// CHECK-LABEL: func.func @dijkstra(%arg0: !llvm.ptr, %arg1: i32, %arg2: i32) -> i32
+// CHECK: %[[V0:.*]] = call @ref$const$Graph$node_count(%{{.*}}) : (!llvm.ptr) -> i32
+// CHECK: %[[V1:.*]] = call @graph_inf() : () -> i32
+// CHECK: call @"Vec::with_capacity$i32"(%[[V0]]) : (i32) -> !llvm.struct<"Vec_i32", (ptr, i32, i32)>
+// CHECK: call @"Vec::with_capacity$i32"(%[[V0]]) : (i32) -> !llvm.struct<"Vec_i32", (ptr, i32, i32)>
+// CHECK: call @Vec$i32$push$i32(%{{.*}}, %[[V1]]) : (!llvm.ptr, i32) -> i32
+// CHECK: call @Vec$i32$push$i32(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> i32
+// CHECK: call @Vec$i32$set$i32(%{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, i32, i32) -> i32
+// CHECK: call @Vec$i32$get$i32(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> i32
+// CHECK: call @Vec$i32$get$i32(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> i32
+// CHECK: call @Vec$i32$get$i32(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> i32
+// CHECK-LABEL: func.func @bellman_ford(%arg0: !llvm.ptr, %arg1: i32, %arg2: i32) -> i32
+// CHECK: %[[V0:.*]] = call @ref$const$Graph$node_count(%{{.*}}) : (!llvm.ptr) -> i32
+// CHECK: %[[V1:.*]] = call @graph_inf() : () -> i32
+// CHECK: call @"Vec::with_capacity$i32"(%[[V0]]) : (i32) -> !llvm.struct<"Vec_i32", (ptr, i32, i32)>
+// CHECK: call @Vec$i32$push$i32(%{{.*}}, %[[V1]]) : (!llvm.ptr, i32) -> i32
+// CHECK: call @Vec$i32$set$i32(%{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, i32, i32) -> i32
+// CHECK: call @Vec$i32$get$i32(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> i32
+// CHECK: call @ref$const$Graph$weight(%{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, i32, i32) -> i32
+// CHECK: call @Vec$i32$get$i32(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> i32
+// CHECK: call @Vec$i32$get$i32(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> i32
+// CHECK: call @Vec$i32$get$i32(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> i32
+// CHECK-LABEL: func.func @floyd_warshall(%arg0: !llvm.ptr, %arg1: i32, %arg2: i32) -> i32
+// CHECK: call @ref$const$Graph$node_count(%{{.*}}) : (!llvm.ptr) -> i32
+// CHECK: %[[V0:.*]] = call @graph_inf() : () -> i32
+// CHECK: call @"Vec::with_capacity$i32"(%{{.*}}) : (i32) -> !llvm.struct<"Vec_i32", (ptr, i32, i32)>
+// CHECK: call @Vec$i32$push$i32(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> i32
+// CHECK: %[[V1:.*]] = call @ref$const$Graph$weight(%{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, i32, i32) -> i32
+// CHECK: call @Vec$i32$push$i32(%{{.*}}, %[[V1]]) : (!llvm.ptr, i32) -> i32
+// CHECK: call @Vec$i32$push$i32(%{{.*}}, %[[V0]]) : (!llvm.ptr, i32) -> i32
+// CHECK: call @Vec$i32$get$i32(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> i32
+// CHECK: call @Vec$i32$get$i32(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> i32
+// CHECK: call @Vec$i32$get$i32(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> i32
+// CHECK-LABEL: func.func @Vec$i32$push$i32(%arg0: !llvm.ptr, %arg1: i32) -> i32
+// CHECK: call @vx_vec_grow(%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, i64, i64, i64) -> !llvm.ptr
+// CHECK-LABEL: func.func @Vec$i32$set$i32(%arg0: !llvm.ptr, %arg1: i32, %arg2: i32) -> i32
+// CHECK: call @vx_vec_bounds_check(%{{.*}}, %{{.*}}) : (i64, i64) -> i32
+// CHECK-LABEL: func.func @Graph$add_edge(%arg0: !llvm.ptr, %arg1: i32, %arg2: i32, %arg3: i32) -> i32
+// CHECK: call @Vec$i32$set$i32(%{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, i32, i32) -> i32
+// CHECK-LABEL: func.func @ref$const$Graph$node_count(%arg0: !llvm.ptr) -> i32
+// CHECK: %[[V0:.*]] = llvm.getelementptr %{{.*}}, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<"Graph", (i32, struct<"Vec_i32", (ptr, i32, i32)>)>
+// CHECK: %[[V1:.*]] = llvm.load %[[V0]] : !llvm.ptr -> i32
+// CHECK: return %[[V1]] : i32
+// CHECK-LABEL: func.func @Vec$i32$get$i32(%arg0: !llvm.ptr, %arg1: i32) -> i32
+// CHECK: call @vx_vec_bounds_check(%{{.*}}, %{{.*}}) : (i64, i64) -> i32
+// CHECK-LABEL: func.func @ref$const$Graph$weight(%arg0: !llvm.ptr, %arg1: i32, %arg2: i32) -> i32
+// CHECK: call @Vec$i32$get$i32(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> i32
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: call @"Graph::new"(%{{.*}}) : (i32) -> !llvm.struct<"Graph", (i32, struct<"Vec_i32", (ptr, i32, i32)>)>
+// CHECK: call @Graph$add_edge(%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, i32, i32, i32) -> i32
+// CHECK: call @Graph$add_edge(%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, i32, i32, i32) -> i32
 import std::vec;
 import graph::core;
 import graph::shortest_path;

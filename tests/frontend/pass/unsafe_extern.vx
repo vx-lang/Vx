@@ -8,7 +8,14 @@
 // Test extern function declarations and unsafe blocks for FFI.
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
+// CHECK-DAG: func.func private @c_abs(
+// CHECK-DAG: func.func private @c_sqrt(
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: call @safe_abs(%{{.*}}) : (i32) -> i32
+// CHECK-LABEL: func.func @safe_abs(%arg0: i32) -> i32
+// CHECK: call @c_abs(%{{.*}}) : (i32) -> i32
+// CHECK-LABEL: func.func @safe_sqrt(%arg0: f64) -> f64
+// CHECK: call @c_sqrt(%{{.*}}) : (f64) -> f64
 
 extern {
   fn c_sqrt(x: f64) -> f64;

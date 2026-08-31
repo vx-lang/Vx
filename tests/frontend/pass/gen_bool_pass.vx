@@ -1,5 +1,14 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
+// CHECK-LABEL: func.func @gen_bool_or() -> i1
+// CHECK: %[[M0:.*]] = memref.alloca() : memref<i1>
+// CHECK: memref.store %{{.*}}, %[[M0]][] : memref<i1>
+// CHECK: memref.store %{{.*}}, %[[M0]][] : memref<i1>
+// CHECK: %[[M1:.*]] = memref.load %[[M0]][] : memref<i1>
+// CHECK-LABEL: func.func @gen_bool_and() -> i1
+// CHECK: %[[M0:.*]] = memref.alloca() : memref<i1>
+// CHECK: memref.store %{{.*}}, %[[M0]][] : memref<i1>
+// CHECK: memref.store %{{.*}}, %[[M0]][] : memref<i1>
+// CHECK: %[[M1:.*]] = memref.load %[[M0]][] : memref<i1>
 
 fn gen_bool_and() -> Bool {
   let a : Bool = true;

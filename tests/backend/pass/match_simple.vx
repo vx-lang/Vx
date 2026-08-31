@@ -1,5 +1,13 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
+// CHECK-LABEL: func.func @test_match(%arg0: i32) -> i32
+// CHECK: %[[C0:.*]] = arith.cmpi eq, %{{.*}}, %{{.*}} : i32
+// CHECK: cf.cond_br %[[C0]], ^{{.*}}, ^{{.*}}
+// CHECK: %[[C1:.*]] = arith.cmpi eq, %{{.*}}, %{{.*}} : i32
+// CHECK: cf.cond_br %[[C1]], ^{{.*}}, ^{{.*}}
+// CHECK: %[[C2:.*]] = arith.cmpi eq, %{{.*}}, %{{.*}} : i32
+// CHECK: cf.cond_br %[[C2]], ^{{.*}}, ^{{.*}}
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: call @test_match(%{{.*}}) : (i32) -> i32
 enum Color {
   Red,
   Green,

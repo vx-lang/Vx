@@ -8,7 +8,19 @@
 // Test deeply nested control flow: loops, conditionals, break, continue.
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: call @fibonacci(%{{.*}}) : (i32) -> i32
+// CHECK: call @count_evens(%{{.*}}) : (i32) -> i32
+// CHECK-LABEL: func.func @fibonacci(%arg0: i32) -> i32
+// CHECK: %[[C0:.*]] = arith.cmpi sle, %{{.*}}, %{{.*}} : i32
+// CHECK: cf.cond_br %[[C0]], ^{{.*}}, ^{{.*}}
+// CHECK: %[[C1:.*]] = arith.cmpi sgt, %{{.*}}, %{{.*}} : i32
+// CHECK: cf.cond_br %[[C1]], ^{{.*}}, ^{{.*}}
+// CHECK-LABEL: func.func @count_evens(%arg0: i32) -> i32
+// CHECK: %[[C0:.*]] = arith.cmpi slt, %{{.*}}, %{{.*}} : i32
+// CHECK: cf.cond_br %[[C0]], ^{{.*}}, ^{{.*}}
+// CHECK: %[[C1:.*]] = arith.cmpi sge, %{{.*}}, %{{.*}} : i32
+// CHECK: cf.cond_br %[[C1]], ^{{.*}}, ^{{.*}}
 
 fn fibonacci(n: i32) -> i32 {
   if n <= 1 {

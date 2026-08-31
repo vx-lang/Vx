@@ -24,4 +24,12 @@ fn main() -> i32 {
   return 0;
 }
 
-// CHECK: module
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: %[[V0:.*]] = arith.constant 0 : i32
+// CHECK: return %[[V0]] : i32
+// CHECK-LABEL: func.func @test_loop_range(%arg0: i32) -> i32
+// CHECK: %[[C0:.*]] = arith.cmpi slt, %{{.*}}, %{{.*}} : i32
+// CHECK: cf.cond_br %[[C0]], ^{{.*}}, ^{{.*}}
+// CHECK-LABEL: func.func @test_loop_increment(%arg0: i32) -> i32
+// CHECK: %[[C0:.*]] = arith.cmpi slt, %{{.*}}, %{{.*}} : i32
+// CHECK: cf.cond_br %[[C0]], ^{{.*}}, ^{{.*}}

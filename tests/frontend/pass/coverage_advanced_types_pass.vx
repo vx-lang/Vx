@@ -29,4 +29,12 @@ fn main() -> i32 {
   return 0;
 }
 
-// CHECK: module
+// CHECK-LABEL: func.func @test_for_loop() -> i64
+// CHECK: %[[C0:.*]] = arith.cmpi slt, %{{.*}}, %{{.*}} : index
+// CHECK: cf.cond_br %[[C0]], ^{{.*}}, ^{{.*}}
+// CHECK-LABEL: func.func @test_enum_variant() -> i32
+// CHECK: %[[V0:.*]] = arith.constant 0 : i32
+// CHECK: return %[[V0]] : i32
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: call @test_for_loop() : () -> i64
+// CHECK: call @test_enum_variant() : () -> i32

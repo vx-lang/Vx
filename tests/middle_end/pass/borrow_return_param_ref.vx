@@ -1,5 +1,11 @@
 // RUN: vxc %s --action emit-mlir --legacy-codegen 2>&1 | FileCheck %s
-// CHECK: module
+// CHECK-LABEL: func.func @probe(%arg0: !llvm.ptr) -> !llvm.ptr
+// CHECK: %[[V0:.*]] = llvm.getelementptr %{{.*}}, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<"Map", (i32, i32)>
+// CHECK: return %[[V0]] : !llvm.ptr
+// CHECK-LABEL: func.func @id(%arg0: !llvm.ptr) -> !llvm.ptr
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: %[[V0:.*]] = arith.constant 0 : i32
+// CHECK: return %[[V0]] : i32
 // Non-regression for #243: a reference derived from a reference parameter may be returned —
 // both directly (`return r`) and as a field reborrow (`return &m.slot`). External provenance.
 struct Map {

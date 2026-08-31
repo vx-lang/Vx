@@ -1,5 +1,12 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
+// CHECK-DAG: func.func private @print_str(
+// CHECK-DAG: func.func private @print_i32(
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: call @print_str(%{{.*}}) : (!llvm.ptr) -> i32
+// CHECK: call @print_str(%{{.*}}) : (!llvm.ptr) -> i32
+// CHECK: call @print_str(%{{.*}}) : (!llvm.ptr) -> i32
+// CHECK: call @print_i32(%{{.*}}) : (i32) -> i32
+// CHECK: call @print_str(%{{.*}}) : (!llvm.ptr) -> i32
 fn main() -> i32 {
   println!("Hello Vx!");
   println!("Printing a number: %d", 42);

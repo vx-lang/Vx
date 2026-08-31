@@ -1,5 +1,16 @@
 // RUN: vxc %s --action emit-mlir --legacy-codegen 2>&1 | FileCheck %s
-// CHECK: module
+// CHECK-LABEL: func.func @insert(%arg0: !llvm.ptr, %arg1: i32)
+// CHECK: llvm.getelementptr %{{.*}}, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<"Map", (i32, i32)>
+// CHECK: arith.constant 1 : i32
+// CHECK: llvm.getelementptr %{{.*}}, 1] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<"Map", (i32, i32)>
+// CHECK-LABEL: func.func @peek(%arg0: !llvm.ptr) -> i32
+// CHECK: %[[V0:.*]] = llvm.getelementptr %{{.*}}, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<"Map", (i32, i32)>
+// CHECK: %[[V1:.*]] = llvm.load %[[V0]] : !llvm.ptr -> i32
+// CHECK: return %[[V1]] : i32
+// CHECK-LABEL: func.func @ok(%arg0: !llvm.ptr, %arg1: !llvm.ptr) -> i32
+// CHECK: call @insert(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> ()
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: call @ok(%{{.*}}, %{{.*}}) : (!llvm.ptr, !llvm.ptr) -> i32
 // Non-regression for #268: a function-pointer callee that returns a *non-reference* must not
 // persist a borrow of its argument — `g(m)` yields an `i32`, so mutating `m` afterwards is sound.
 // The reborrow decision keys on the pointer's declared return type, so no false positive here.

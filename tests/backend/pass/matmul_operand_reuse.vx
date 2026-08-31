@@ -34,7 +34,19 @@
 // gpu_matmul_roles.vx: the host loop nest and cuBLAS have to agree.
 //
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
+// CHECK-DAG: func.func private @print_f32(
+// CHECK-DAG: func.func private @print_str(
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: call @print_f32(%{{.*}}) : (f32) -> i32
+// CHECK: call @print_str(%{{.*}}) : (!llvm.ptr) -> i32
+// CHECK: call @print_f32(%{{.*}}) : (f32) -> i32
+// CHECK: call @print_str(%{{.*}}) : (!llvm.ptr) -> i32
+// CHECK: call @print_f32(%{{.*}}) : (f32) -> i32
+// CHECK: call @print_str(%{{.*}}) : (!llvm.ptr) -> i32
+// CHECK: call @print_f32(%{{.*}}) : (f32) -> i32
+// CHECK: call @print_str(%{{.*}}) : (!llvm.ptr) -> i32
+// CHECK: call @print_f32(%{{.*}}) : (f32) -> i32
+// CHECK: call @print_str(%{{.*}}) : (!llvm.ptr) -> i32
 // EXPECT: 19 22 43 50 19 50 19 50
 
 fn main() -> i32 {

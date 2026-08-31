@@ -34,4 +34,23 @@ fn main() -> i32 {
   return 0;
 }
 
-// CHECK: module
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: %[[V0:.*]] = arith.constant 0 : i32
+// CHECK: return %[[V0]] : i32
+// CHECK-LABEL: func.func @test_unary_negation(%arg0: i32) -> i32
+// CHECK: %[[V0:.*]] = arith.constant 0 : i32
+// CHECK: %[[V1:.*]] = arith.subi %[[V0]], %{{.*}} : i32
+// CHECK: return %[[V1]] : i32
+// CHECK-LABEL: func.func @test_cancellation(%arg0: i32, %arg1: i32) -> i32
+// CHECK: %[[V0:.*]] = arith.addi %{{.*}}, %{{.*}} : i32
+// CHECK: %[[V1:.*]] = arith.subi %[[V0]], %{{.*}} : i32
+// CHECK: return %[[V1]] : i32
+// CHECK-LABEL: func.func @test_distributive_property(%arg0: i32, %arg1: i32) -> i32
+// CHECK: %[[V0:.*]] = arith.addi %{{.*}}, %{{.*}} : i32
+// CHECK: %[[V1:.*]] = arith.constant 2 : i32
+// CHECK: %[[V2:.*]] = arith.muli %[[V0]], %[[V1]] : i32
+// CHECK: return %[[V2]] : i32
+// CHECK-LABEL: func.func @test_linear_scaling(%arg0: i32) -> i32
+// CHECK: %[[V0:.*]] = arith.constant 3 : i32
+// CHECK: %[[V1:.*]] = arith.muli %{{.*}}, %[[V0]] : i32
+// CHECK: return %[[V1]] : i32

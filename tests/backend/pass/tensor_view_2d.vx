@@ -28,7 +28,21 @@
 // truthfully. That is the same claim `*mut T` indexing already makes.
 //
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
+// CHECK-DAG: func.func private @vx_alloc_f32(
+// CHECK-DAG: func.func private @print_f32(
+// CHECK-DAG: func.func private @print_str(
+// CHECK-DAG: func.func private @vx_free_f32(
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: %[[V0:.*]] = call @vx_alloc_f32(%{{.*}}) : (i32) -> !llvm.ptr
+// CHECK: %[[V1:.*]] = call @vx_alloc_f32(%{{.*}}) : (i32) -> !llvm.ptr
+// CHECK: call @print_f32(%{{.*}}) : (f32) -> i32
+// CHECK: call @print_str(%{{.*}}) : (!llvm.ptr) -> i32
+// CHECK: call @print_f32(%{{.*}}) : (f32) -> i32
+// CHECK: call @print_str(%{{.*}}) : (!llvm.ptr) -> i32
+// CHECK: call @print_f32(%{{.*}}) : (f32) -> i32
+// CHECK: call @print_str(%{{.*}}) : (!llvm.ptr) -> i32
+// CHECK: call @print_f32(%{{.*}}) : (f32) -> i32
+// CHECK: call @print_str(%{{.*}}) : (!llvm.ptr) -> i32
 // EXPECT: 1 6 22 28 49 64 21 26
 
 extern "C" {

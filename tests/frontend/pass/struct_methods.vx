@@ -8,7 +8,35 @@
 // Test struct definitions, field access, method calls, and impl blocks.
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: call @"Point::new"(%{{.*}}, %{{.*}}) : (i32, i32) -> !llvm.struct<(i32, i32)>
+// CHECK: call @"Point::new"(%{{.*}}, %{{.*}}) : (i32, i32) -> !llvm.struct<(i32, i32)>
+// CHECK: call @Point$add(%{{.*}}, %{{.*}}) : (!llvm.ptr, !llvm.ptr) -> !llvm.struct<(i32, i32)>
+// CHECK: call @Point$manhattan_distance(%{{.*}}) : (!llvm.ptr) -> i32
+// CHECK-LABEL: func.func @Point$manhattan_distance(%arg0: !llvm.ptr {llvm.readonly}) -> i32
+// CHECK: %[[V0:.*]] = llvm.getelementptr %{{.*}}, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<(i32, i32)>
+// CHECK: %[[V1:.*]] = llvm.load %[[V0]] : !llvm.ptr -> i32
+// CHECK: %[[V2:.*]] = llvm.getelementptr %{{.*}}, 1] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<(i32, i32)>
+// CHECK: %[[V3:.*]] = llvm.load %[[V2]] : !llvm.ptr -> i32
+// CHECK: %[[V4:.*]] = arith.addi %[[V1]], %[[V3]] : i32
+// CHECK: return %[[V4]] : i32
+// CHECK-LABEL: func.func @Point$add(%arg0: !llvm.ptr {llvm.readonly}, %arg1: !llvm.ptr {llvm.readonly}) -> !llvm.struct<(i32, i32)>
+// CHECK: %[[V0:.*]] = llvm.mlir.constant(1 : i32) : i32
+// CHECK: %[[V1:.*]] = llvm.alloca %[[V0]] x !llvm.struct<(i32, i32)> : (i32) -> !llvm.ptr
+// CHECK: %[[V2:.*]] = llvm.getelementptr %{{.*}}, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<(i32, i32)>
+// CHECK: %[[V3:.*]] = llvm.load %[[V2]] : !llvm.ptr -> i32
+// CHECK: %[[V4:.*]] = llvm.getelementptr %{{.*}}, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<(i32, i32)>
+// CHECK: %[[V5:.*]] = llvm.load %[[V4]] : !llvm.ptr -> i32
+// CHECK: arith.addi %[[V3]], %[[V5]] : i32
+// CHECK: llvm.getelementptr %{{.*}}, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<(i32, i32)>
+// CHECK: %[[V6:.*]] = llvm.getelementptr %{{.*}}, 1] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<(i32, i32)>
+// CHECK: %[[V7:.*]] = llvm.load %[[V6]] : !llvm.ptr -> i32
+// CHECK: %[[V8:.*]] = llvm.getelementptr %{{.*}}, 1] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<(i32, i32)>
+// CHECK: %[[V9:.*]] = llvm.load %[[V8]] : !llvm.ptr -> i32
+// CHECK: arith.addi %[[V7]], %[[V9]] : i32
+// CHECK: llvm.getelementptr %{{.*}}, 1] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<(i32, i32)>
+// CHECK: %[[V10:.*]] = llvm.load %[[V1]] : !llvm.ptr -> !llvm.struct<(i32, i32)>
+// CHECK: return %[[V10]] : !llvm.struct<(i32, i32)>
 
 struct Point {
   x: i32,
