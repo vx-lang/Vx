@@ -383,13 +383,13 @@ ______________________________________________________________________
 
 A tensor's placement was expressible five ways, and they did not agree with each other.
 
-| spelling | position | what it carried |
-| -------- | -------- | --------------- |
-| `Pinned<T, Topology::X>` | type | a device |
-| `Ref<T, Memory::X>` | type | a space |
-| `Tensor<f32, [4, 4], Topology::X>` | type | a device |
-| `.with_memory(Memory::X)` | expression | a space, via a wrapper |
-| `transfer(a, Memory::X)` | expression | a move, not an annotation |
+| spelling | position | what it carried | now |
+| -------- | -------- | --------------- | --- |
+| `Pinned<T, Topology::X>` | type | a device | kept |
+| `Ref<T, Memory::X>` | type | a space | removed for tensors |
+| `Tensor<f32, [4, 4], Topology::X>` | type | a device | kept, and takes a space too |
+| `.with_memory(Memory::X)` | expression | a space, via a wrapper | removed |
+| `transfer(a, Memory::X)` | expression | a move, not an annotation | kept |
 
 Four of the five say the same kind of thing in two different vocabularies — device or space — and
 nothing reconciled them. `is_type_accessible` had to, at each of its 39 call sites, and it did so by
@@ -446,9 +446,25 @@ one — a space held by two devices is ambiguous in a way choosing the first wou
   corpus is written.
 - `.with_memory(..)` and `Ref<T, Memory>` have nothing left to express that the placement slot does
   not, so five spellings become three.
+- A memory space stops being a pseudo-value. `.with_memory(Memory::X)` was the one construction that
+  legitimately took a space as an argument, so while it existed the checker could not refuse
+  `Memory::X` in expression position at all. Removing it let that diagnostic finally be raised where
+  the expression is typed, which is the only place that reaches a bare `let` or a `return`.
 
 ### Status
 
-The space-to-device direction is implemented (`TransferCostGraph::owning_topology`). The rest — the
-`Placement` field itself, the surface accepting `Memory::X` in the placement slot, and the removal of
-the two redundant spellings — is not yet.
+Built. The tensor type carries a `Placement` of a device and a space; both directions are derived
+in name resolution, which is the first pass with program-wide scope — a declared topology's
+`memory:` may arrive from a `--machine` file the module never mentions. The placement slot accepts
+either spelling, `.with_memory(..)` and `Ref<T, Memory::X>` are gone, and `is_type_accessible` reads
+the space off the type rather than fabricating a `Ref` over a mock `f32`. Five spellings are three.
+
+`Placement` records which projection the source wrote. That is not bookkeeping: neither direction is
+injective enough for the completion to guess. A device holding a non-default space and a declared
+topology whose memory is not its like-named space produce indistinguishable pairs, so a heuristic
+over `(topology, space)` gets one of them wrong. Equality ignores the flag, which is the point.
+
+One thing above is still a claim rather than a rule: a space **no** topology declares falls back to
+the like-named device rather than being refused. `owning_topology_in` computes the error; what is
+missing is a pass with both a type walk and a diagnostic channel to report it from. Tracked
+separately, together with the undeclared-topology fallback it has to stay consistent with.

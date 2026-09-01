@@ -42,8 +42,10 @@ the half it did not state, which is why `Placement` records which half the sourc
 ### The `Ref<T, Memory>` Type
 
 > [!NOTE]
-> **Being replaced** by the placement slot above, which says the same thing without a wrapper
-> every consumer has to peel. Documented here because it is what the compiler accepts today.
+> **Replaced for tensors** by the placement slot above. `Ref<Tensor<..>, Memory::X>` and
+> `Tensor<.., Memory::X>` said the same thing, and the wrapper said it worse: every consumer had
+> to peel it, and the AST lowering dropped the space it carried while honouring the same space
+> written as a placement. It is gone from the corpus; the type still exists for non-tensor values.
 
 The fundamental data reference type is `Ref<T, Memory>`.
 
@@ -51,8 +53,8 @@ The fundamental data reference type is `Ref<T, Memory>`.
 // A reference to a generic Matrix located in the Host's DRAM
 let host_matrix: Ref<Matrix, Memory::CPU_DRAM> = ...;
 
-// A reference to a Tensor with statically known layouts [128, 256] in NPU's High Bandwidth Memory
-let npu_tensor: Ref<Tensor<f32, [128, 256]>, Memory::NPU_HBM> = ...;
+// A placed tensor is spelled in the tensor's own type, not through this wrapper
+let npu_tensor: Tensor<f32, [128, 256], Memory::NPU_HBM> = ...;
 ```
 
 **Type Checking Rule 1 (Spatial Isolation):**
