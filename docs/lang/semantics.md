@@ -32,11 +32,11 @@ ______________________________________________________________________
 
 ## 2. Memory Model & Transfers
 
-Standard languages employ a flat memory model (`*mut T`). Vx uses a partitioned address space memory model via `Ref<T, MemorySpace>`.
+Standard languages employ a flat memory model (`*mut T`). Vx uses a partitioned address space memory model: a value's memory space is part of its type. For a tensor that is the placement slot, `Tensor<f32, [4, 4], Memory::CPU_DRAM>`, which may equally be written as the device that holds the space, `Topology::NPU[0]`. `Ref<T, MemorySpace>` says the same thing for values that are not tensors.
 
 ### 2.1 Spatial Isolation
 
-If variable $v$ is of type `Ref<T, Memory::CPU_DRAM>` and execution context is `Topology::NPU[0]`, attempting to dereference $v$ triggers a **spatial fault** (caught statically at compile-time by the Semantic Analyzer).
+If variable $v$ is of type `Tensor<f32, [4, 4], Memory::CPU_DRAM>` and execution context is `Topology::NPU[0]`, attempting to dereference $v$ triggers a **spatial fault** (caught statically at compile-time by the Semantic Analyzer).
 
 ### 2.2 The `transfer` Primitive
 

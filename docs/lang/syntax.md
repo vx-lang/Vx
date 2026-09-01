@@ -178,7 +178,7 @@ fn dispatch<D: Topology>(x: Pinned<i32, Topology::D>) -> i32 {
 Data cannot be implicitly moved across address spaces. Moving data requires the `transfer` primitive, which explicitly tracks ownership and liveness across boundaries.
 
 ```rust
-fn heterogeneous_pipeline(host_input: Ref<Tensor, Memory::CPU_DRAM>) {
+fn heterogeneous_pipeline(host_input: Tensor<f32, [1024], Memory::CPU_DRAM>) {
     spawn on(Topology::NPU[0]) {
         // Explicitly transfer data from Host DRAM to NPU HBM
         let local_data = transfer(host_input, Memory::NPU_HBM);
@@ -197,7 +197,7 @@ fn heterogeneous_pipeline(host_input: Ref<Tensor, Memory::CPU_DRAM>) {
 When transferring data across physically distant memory spaces (e.g., from CPU DRAM to a remote HBM across the network), Vx can utilize the NIC (Network Interface Controller). This creates a multi-hop transfer that the compiler's `TransferCostGraph` routes efficiently.
 
 ```rust
-fn network_transfer_example(host_input: Ref<Tensor, Memory::CPU_DRAM>) {
+fn network_transfer_example(host_input: Tensor<f32, [1024], Memory::CPU_DRAM>) {
     // 1. Transfer from local CPU DRAM to the NIC RAM
     let nic_buffer = transfer(host_input, Memory::NIC_RAM);
 

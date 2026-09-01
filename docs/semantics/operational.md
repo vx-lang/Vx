@@ -84,17 +84,29 @@ $$
 } \\text{ (Spawn-Fail)}
 $$
 
-### 2.4 Memory Space Tracking (`.with_memory`)
+### 2.4 Memory Space Placement
 
-When a tensor is allocated in Host memory, applying `.with_memory(m)` casts it to a bounded reference.
+A tensor's memory space is part of its type, so allocation is what places the value. Nothing casts
+an already-allocated tensor into a space, and a placed tensor is in its space from the moment it
+exists.
+
+A placement is written either as the device or as the space, and each determines the other, so a
+single rule covers both spellings. Write $\\text{space}(\\Theta)$ for the space of the placement
+$\\Theta$.
 
 $$
 \\frac{
-\\langle E, \\sigma, \\tau \\rangle\_\\Omega \\to^\* \\langle l, \\sigma, \\tau \\rangle\_\\Omega \\quad l \\in Loc
+m = \\text{space}(\\Theta) \\quad l \\in Loc_m \\text{ fresh}
 }{
-\\langle E\\text{.with_memory}(m), \\sigma, \\tau \\rangle\_\\Omega \\to \\langle \\text{Ref}(l, m), \\sigma, \\tau \\rangle\_\\Omega
+\\langle \\text{Tensor}\\langle \\tau, d, \\Theta \\rangle\\text{::uninit}(), \\sigma, \\tau \\rangle\_\\Omega \\to \\langle l, \\sigma, \\tau \\rangle\_\\Omega
 }
 $$
+
+`::new()` is the same rule with the storage at $l$ zeroed. Which one a program wants is a real
+choice: zeroing is a pass over the whole buffer, and a tensor about to be overwritten does not need
+it.
+
+Moving a value from one space to another after it exists is `transfer`, below.
 
 ### 2.5 Memory Transfers (`transfer`)
 

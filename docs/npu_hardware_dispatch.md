@@ -81,8 +81,9 @@ However, Apple Silicon utilizes a **Unified Memory Architecture (UMA)**, meaning
 Consider this snippet from `tests/backend/pass/ane_matmul.vx`:
 
 ```rust
-// 1. Memory allocated in standard RAM
-let mut result = Tensor([4, 4]).with_memory(Memory::NPU_HBM);
+// 1. Allocated in standard RAM, then given a home in NPU_HBM
+let mut result_host = Tensor<f32, [4, 4]>::uninit();
+let mut result = transfer(result_host, Memory::NPU_HBM);
 
 // 2. Execution dynamically offloaded to AMX
 spawn on(Topology::NPU[0]) {
@@ -98,6 +99,10 @@ spawn on(Topology::NPU[0]) {
 // 3. CPU reads the updated memory in-place!
 print(result);
 ```
+
+A tensor can also be born in a space, written `Tensor<f32, [4, 4], Memory::NPU_HBM>::uninit()`. The
+file uses `transfer` because it fills the buffer on the host first, and a transfer is what carries
+an existing value across.
 
 Behind the scenes:
 

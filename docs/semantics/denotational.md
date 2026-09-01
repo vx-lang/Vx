@@ -68,13 +68,25 @@ $\\mathcal{E} \\llbracket e \\rrbracket : Env \\to Store \\to (\\mathbb{V} \\tim
   Let $l \\in Loc_{Host}$ be a fresh memory location.
   $\\langle l, \\sigma\_{Host}[l \\mapsto v] \\rangle$
 
-### 3.3 Memory Binding
+### 3.3 Memory Placement
 
-The `.with_memory()` method assigns a spatial bounds to a previously host-allocated structure, effectively creating a `Ref` constrained to the target memory.
+A tensor's memory space is part of its type, so the location it denotes is drawn from that space
+when the tensor is allocated. Nothing rebinds an existing value to a space.
 
-- $\\mathcal{E} \\llbracket e\\text{.with_memory}(m) \\rrbracket \\rho \\sigma =$
-  Let $\\langle l, \\sigma' \\rangle = \\mathcal{E} \\llbracket e \\rrbracket \\rho \\sigma$ where $l \\in \\mathbb{M}\_{Host}$.
-  Return $\\langle \\text{Ref}(l, m), \\sigma' \\rangle$.
+A placement is written either as a device or as a space, and each one determines the other, so a
+single denotation covers both spellings. Write $\\text{space}(\\Theta)$ for the space of the
+placement $\\Theta$.
+
+- $\\mathcal{E} \\llbracket \\text{Tensor}\\langle \\tau, d_1 \\times d_2, \\Theta \\rangle\\text{::new}() \\rrbracket \\rho \\sigma =$
+  Let $m = \\text{space}(\\Theta)$ and let $v \\in \\mathbb{V}\_{Tensor}^{\\tau}$ be a zero matrix of dimension $d_1 \\times d_2$.
+  Let $l \\in Loc_m$ be a fresh memory location in $m$.
+  $\\langle l, \\sigma[l \\mapsto v] \\rangle$
+
+`::uninit()` is the same denotation with $v$ left unconstrained, which is why the two constructors
+are distinguished: zeroing costs a pass over the buffer, and a tensor about to be overwritten does
+not need one.
+
+Changing the space of a value that already exists is `transfer`.
 
 ### 3.4 Topology Spawn
 
