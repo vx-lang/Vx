@@ -870,6 +870,18 @@ impl TransferCostGraph {
         owning_topology_in(space, &self.descriptors)
     }
 
+    /// Is this space one some topology in this compilation holds?
+    ///
+    /// Held is wider than owned: `owning_topology` asks which single device's `memory:` names the
+    /// space, and a space that several devices can see, or that only appears in a `visible:` list,
+    /// has no single owner while still being a real place. A space no topology names either way is
+    /// nowhere, and a value cannot be put there.
+    pub fn is_space_held(&self, space: &MemorySpace) -> bool {
+        self.descriptors
+            .values()
+            .any(|d| d.default_space == *space || d.visibility.contains(space))
+    }
+
     /// The default memory space a topology's values live in.
     pub fn default_memory_for(&self, topology: &Topology) -> MemorySpace {
         if let Topology::Current = topology {

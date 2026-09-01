@@ -1,0 +1,85 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// RUN: not vxc %s 2>&1 | FileCheck %s --check-prefix=COUNT
+// A placement has to name a space some declared topology holds.
+//
+// A placement carries a device and a space together and derives whichever half the source did not
+// write. Both derivations fall back to the like-named other half when the declarations cannot
+// answer: `Memory::Nowhere` derives `Topology::Nowhere`, and `Topology::Nowhere` derives
+// `Memory::Nowhere`. The pair that comes out is internally consistent, compares equal to itself,
+// and describes a machine nobody has. That is why writing a name nothing declares used to compile.
+//
+// Writing the device and writing the space are meant to be two ways of saying one thing, so they
+// have to be refused alike -- refusing one and accepting the other would make the choice of
+// spelling matter. Each is checked on the half the source wrote: a device names a place when the
+// compilation declares it, a space when some declared topology holds it.
+//
+// Only the written half, because the derived one is not filled in yet. The derivation runs in name
+// resolution, and a program that fails the type checker never gets that far, so a placement here
+// still carries what the parser guessed -- for `Topology::Island` that is the like-named
+// `Memory::Island` rather than the `memory:` its declaration gives. Reading the derived half would
+// refuse `holds_by_device` below, which is correct code.
+//
+// Held is wider than owned: a space named only in a topology's `visible:` list has no single
+// owning device and is still a real place, so `Vault` below is accepted through `Island`.
+//
+// All four positions a placed type is spellable in are covered, because each is reached by
+// different code: parameters and return types come from the function table, fields from the struct
+// table, and a `let` annotation from the statement walk, which no declaration table sees.
+//
+// The fail tiers match against the debug dump of the diagnostics rather than the rendered console
+// output, so a code and its message are on separate lines and cannot be matched by one pattern.
+// CHECK-DAG: E6025,
+// CHECK-DAG: `Memory::Nowhere` in function 'as_a_parameter'
+// CHECK-DAG: `Topology::Nowhere` in function 'as_a_device'
+// CHECK-DAG: `Memory::Nowhere` in function 'as_a_return'
+// CHECK-DAG: `Memory::Nowhere` in field 'absent' of struct 'Holder'
+// CHECK-DAG: `Memory::Nowhere` in variable 'annotated'
+//
+// Nothing declared is refused: five diagnostics, not six or seven. Counted on a pass of its own,
+// because a count directive after the group above would ask for five more beyond the five matched.
+// COUNT-COUNT-5: names no location
+// COUNT-NOT: names no location
+
+Memory Vault {
+  capacity: 8 GB, bandwidth: 1 TB/s
+}
+
+Topology Island {
+  memory: Memory::Vault,
+  visible: [ Memory::Vault ],
+  transfer Memory::CPU_DRAM -> Memory::Vault : 100,
+}
+
+struct Holder {
+  absent : Tensor<f32, [ 4, 4 ], Memory::Nowhere>,
+  present : Tensor<f32, [ 4, 4 ], Memory::Vault>,
+}
+
+fn as_a_parameter(t : Tensor<f32, [ 4, 4 ], Memory::Nowhere>) -> void {
+}
+
+fn as_a_device(t : Tensor<f32, [ 4, 4 ], Topology::Nowhere>) -> void {
+}
+
+fn as_a_return() -> Tensor<f32, [ 4, 4 ], Memory::Nowhere> {
+  return Tensor<f32, [ 4, 4 ], Memory::Nowhere>::uninit();
+}
+
+// A declared space, held by a declared topology, in every position the ones above are refused in.
+fn declared_is_fine(t : Tensor<f32, [ 4, 4 ], Memory::Vault>) -> Tensor<f32, [ 4, 4 ], Memory::Vault> {
+  return Tensor<f32, [ 4, 4 ], Memory::Vault>::uninit();
+}
+
+// A built-in space needs no declaration: its owning device is stated in the compiler.
+fn builtin_is_fine(t : Tensor<f32, [ 4, 4 ], Memory::GPU_HBM>) -> void {
+}
+
+// The same place written as the device that holds it. `Island`'s memory is `Vault`, not the
+// like-named `Memory::Island`, so this is the case that fails if the check reads the derived half.
+fn holds_by_device(t : Tensor<f32, [ 4, 4 ], Topology::Island>) -> void {
+}
+
+fn main() -> i32 {
+  let annotated : Tensor<f32, [ 2, 2 ], Memory::Nowhere> = Tensor<f32, [ 2, 2 ], Memory::Nowhere>::uninit();
+  return 0;
+}

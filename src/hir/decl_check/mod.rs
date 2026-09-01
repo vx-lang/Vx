@@ -15,6 +15,7 @@ use super::*;
 
 mod conflicts;
 mod memory;
+mod placement;
 mod topology;
 
 impl TypeChecker<'_> {
@@ -46,5 +47,9 @@ impl TypeChecker<'_> {
         self.check_topology_coherence(&declared);
         // Declared memory spaces: `within:` cycles, oversized sub-spaces, colliding ids.
         self.check_memory_coherence();
+        // Placements written in signatures and struct fields name a space some topology holds.
+        // After the two coherence checks, so a program whose declarations are wrong is told that
+        // first rather than told its placements are unheld as a consequence.
+        self.check_placements_name_a_place();
     }
 }

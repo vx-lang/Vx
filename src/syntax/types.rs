@@ -225,6 +225,13 @@ enum Stated {
     Space,
 }
 
+/// The public reading of [`Stated`], for callers that must derive the other half themselves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Written {
+    Device,
+    Space,
+}
+
 /// Two spellings of one location are one type, so which projection the source happened to write
 /// is not part of equality -- that is the whole point of carrying both.
 impl PartialEq for Placement {
@@ -292,6 +299,32 @@ impl Placement {
                     self.topology = t;
                 }
             }
+        }
+    }
+
+    /// Which projection the source wrote.
+    ///
+    /// A caller that has to check a placement cannot read the derived half and trust it: the
+    /// derivation runs in name resolution, and a program that fails the type checker never gets
+    /// there, so the checker sees the provisional value the parser left. Knowing which half was
+    /// written lets such a caller derive the other from its own tables.
+    pub fn written(&self) -> Written {
+        match self.stated {
+            Stated::Device => Written::Device,
+            Stated::Space => Written::Space,
+        }
+    }
+
+    /// The placement as the source wrote it, for a diagnostic that quotes the program rather than
+    /// the projection derived from it. A reader who wrote `Topology::X` is not helped by being
+    /// told about `Memory::X`.
+    pub fn as_written(&self) -> String {
+        match self.stated {
+            Stated::Device => match self.topology.kind() {
+                TopologyKind::Custom(name) => format!("Topology::{name}"),
+                builtin => format!("Topology::{builtin:?}"),
+            },
+            Stated::Space => format!("Memory::{}", self.space.name()),
         }
     }
 }
@@ -682,6 +715,37 @@ impl Type {
         match self {
             Type::Tensor(_, _, p) | Type::DynTensor(_, p) => p.as_ref(),
             _ => None,
+        }
+    }
+
+    /// Every placement written anywhere inside this type, outermost first.
+    ///
+    /// A placed tensor is reachable through the wrapper types as well as at the top -- a
+    /// `Verified<Tensor<f32, [4], Memory::X>>` states the same location -- so a check that reads
+    /// only the outer type misses the ones that are nested.
+    pub fn for_each_placement(&self, f: &mut impl FnMut(&Placement)) {
+        if let Some(p) = self.placement() {
+            f(p);
+        }
+        match self {
+            Type::Ref(inner, _)
+            | Type::Borrow { inner, .. }
+            | Type::Pointer(inner, _, _)
+            | Type::Verified(inner)
+            | Type::Pinned(inner, _) => inner.for_each_placement(f),
+            Type::GenericInstance(base, args) => {
+                base.for_each_placement(f);
+                for a in args {
+                    a.for_each_placement(f);
+                }
+            }
+            Type::Function(params, ret) | Type::Closure(params, ret) => {
+                for p in params {
+                    p.for_each_placement(f);
+                }
+                ret.for_each_placement(f);
+            }
+            _ => {}
         }
     }
 }

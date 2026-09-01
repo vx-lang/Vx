@@ -395,7 +395,11 @@ impl<'a> TypeChecker<'a> {
 
     /// Walk a declared type for a `Ref`/`Pinned` tensor bound to a capacity-bearing space and
     /// check it fits. Used on `let` annotations.
+    ///
+    /// A `let` annotation is the one placement position not reachable from the declaration tables,
+    /// which is why the check that a placement names a real place is also called from here.
     pub(crate) fn check_type_placement(&mut self, ty: &Type, context: &str) {
+        self.report_unheld_placements(ty, context);
         match ty {
             Type::Ref(inner, mem) => {
                 if let Some((e, d)) = Self::tensor_of(inner) {

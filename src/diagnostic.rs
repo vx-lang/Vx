@@ -323,6 +323,11 @@ pub enum DiagnosticCode {
     /// two alike is what let a missing z3 certify every seam in silence (Vx#374). Set
     /// `VX_ALLOW_UNVERIFIED=1` to downgrade this to W1031 and compile anyway.
     E6024,
+    /// A placement naming a location the machine does not have: a memory space no declared
+    /// topology holds, written either as the space or as the device that would hold it. The
+    /// derivation between the two spellings has a like-named fallback, so an undeclared name
+    /// resolves to a space that exists only in the placement that mentions it.
+    E6025,
 
     // --- Tensor/Math Errors (E7xxx) ---
     /// Matmul dimension mismatch

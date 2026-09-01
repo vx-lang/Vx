@@ -464,7 +464,15 @@ injective enough for the completion to guess. A device holding a non-default spa
 topology whose memory is not its like-named space produce indistinguishable pairs, so a heuristic
 over `(topology, space)` gets one of them wrong. Equality ignores the flag, which is the point.
 
-One thing above is still a claim rather than a rule: a space **no** topology declares falls back to
-the like-named device rather than being refused. `owning_topology_in` computes the error; what is
-missing is a pass with both a type walk and a diagnostic channel to report it from. Tracked
-separately, together with the undeclared-topology fallback it has to stay consistent with.
+A placement now has to name a place the machine has (E6025), in all four positions a placed type is
+spellable in: a parameter, a return type, a struct field, and a `let` annotation. Both spellings are
+refused alike -- an undeclared `Topology::Nowhere` as much as an unheld `Memory::Nowhere` -- so the
+choice of spelling cannot decide whether a program compiles. Held is wider than owned: a space named
+only in a topology's `visible:` list is a real place, and only a space no topology names either way
+is nowhere.
+
+The check reads the half the source wrote rather than the derived one. That is not a shortcut: the
+derivation runs in name resolution, and the type checker runs before it, so the derived half is
+still the parser's guess by the time any rule can look. Every checker-side rule that reads a
+placement's derived half is reading that guess, which is a defect in its own right and is tracked
+separately.

@@ -281,15 +281,12 @@ fn run_middle_end_test(path: &Path) -> Result<(), String> {
         }
         checker.seam.lowering_edge = None;
     }
-    checker.check_transfer_impls();
     checker.check_transfer_impl_bodies(&program.transfer_impls);
-    // Topology coherence, exactly as the driver runs it (E6005/E6013/E6016): read the
-    // declarations from the env so machine-file topologies are covered too. Without
-    // this, the E6016 fail tests passed vacuously -- their diagnostic never existed.
-    let all_topologies: Vec<vxc::arch::TopologyDecl> =
-        env.topologies.values().map(|t| (*t).clone()).collect();
-    checker.check_topology_coherence(&all_topologies);
-    checker.check_memory_coherence();
+    // The whole-program declaration checks, by calling the method the compiler calls rather than
+    // listing them again here. This list was hand-rolled and had already drifted once: the E6016
+    // tests passed vacuously until topology coherence was added back, and a later check went
+    // missing the same way. Calling the method means it cannot drift a third time.
+    checker.check_whole_program_declarations();
     if checker
         .errors
         .iter()
