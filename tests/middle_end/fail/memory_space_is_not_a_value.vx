@@ -1,0 +1,15 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// A memory space is not a value. `transfer(a, Memory::X)` destructures it at the call site,
+// and every other use carries it in a type, so the expression has no value type to answer
+// with.
+//
+// It used to answer a dims-less tensor, and a source with no dims skips the comparison
+// against an annotation -- so this declaration was accepted, and the mismatch surfaced from
+// codegen as "not a runtime value" with nothing said about the type it contradicted. The
+// sibling `Topology::GPU` was rejected here all along, which is what made the asymmetry
+// visible.
+// CHECK: Type mismatch in variable declaration 't'
+fn main() -> i32 {
+  let t : Tensor<f32, [ 2, 2 ]> = Memory::GPU_HBM;
+  return 0;
+}

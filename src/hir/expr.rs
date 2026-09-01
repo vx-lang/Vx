@@ -152,9 +152,11 @@ impl<'a> TypeChecker<'a> {
             Expr::BinaryOp(..) => self.check_binaryop_expr(expr, consume),
             Expr::RelationalOp(..) => self.check_relationalop_expr(expr),
             Expr::LogicalOp(..) => self.check_logicalop_expr(expr),
-            Expr::MemorySpace(MemorySpaceExpr { .. }) => {
-                Type::Tensor(ElementType::F32, vec![], None)
-            }
+            // A memory space is not a value: `transfer(a, Memory::X)` destructures it at the
+            // call site, and every other use carries it in a type. Answering with a dims-less
+            // tensor let `let t : Tensor<f32, [2, 2]> = Memory::GPU_HBM` type-check, because a
+            // source with no dims skips the comparison against the annotation.
+            Expr::MemorySpace(MemorySpaceExpr { .. }) => Type::Unknown,
             Expr::Topology(TopologyExpr { top, span: _ }) => {
                 if matches!(top, Topology::Current) {
                     *top = self.active_topology.clone();
