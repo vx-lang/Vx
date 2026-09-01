@@ -156,7 +156,14 @@ impl<'a> TypeChecker<'a> {
             // call site, and every other use carries it in a type. Answering with a dims-less
             // tensor let `let t : Tensor<f32, [2, 2]> = Memory::GPU_HBM` type-check, because a
             // source with no dims skips the comparison against the annotation.
-            Expr::MemorySpace(MemorySpaceExpr { .. }) => Type::Unknown,
+            Expr::MemorySpace(MemorySpaceExpr { space, .. }) => {
+                self.errors.push(format!(
+                    "`Memory::{}` names a memory space, which is not a value; it belongs in a \
+                     type or as the destination of a `transfer`",
+                    space.name()
+                ));
+                Type::Unknown
+            }
             Expr::Topology(TopologyExpr { top, span: _ }) => {
                 if matches!(top, Topology::Current) {
                     *top = self.active_topology.clone();

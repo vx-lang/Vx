@@ -1,21 +1,26 @@
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// A memory space is not a value. `transfer(a, Memory::X)` and `t.with_memory(Memory::X)`
-// destructure it at the call site, and every other use carries it in a type, so the
-// expression has no value type to answer with.
+// A memory space is not a value. `transfer(a, Memory::X)` destructures it at the call site, and
+// every other use carries it in a type, so the expression has no value type to answer with.
 //
-// It used to answer a dims-less f32 tensor. A source with no dims skips the comparison
-// against an annotation, so a declaration was accepted and the mismatch surfaced from
-// codegen as "not a runtime value", saying nothing about the type it contradicted. The
-// sibling `Topology::GPU` was rejected all along, which is what made the asymmetry visible.
+// It used to answer a dims-less f32 tensor. A source with no dims skips the comparison against an
+// annotation, so a declaration was accepted and the mismatch surfaced from codegen as "not a
+// runtime value", saying nothing about the type it contradicted. The sibling `Topology::GPU` was
+// rejected all along, which is what made the asymmetry visible.
 //
-// The positions are separate because they do not share a check: the declaration has one,
-// the argument has eight, and reaching either through a binding goes a third way. A bare
-// `let` and a `return` have no annotation to contradict and still surface from codegen --
-// see the issue, they need the diagnostic raised where the expression is typed, which
-// cannot be done blindly because `with_memory` reaches the same arm legitimately.
+// The diagnostic is now raised where the expression is typed, so it reaches the two positions that
+// have no annotation to contradict -- a bare `let` and a `return` -- and reports the same thing
+// everywhere instead of four different second-hand complaints. That was blocked until
+// `.with_memory(Memory::X)` was removed (Vx#429): it reached this arm legitimately, so refusing
+// here refused it too. The placement in the type replaced it, and the arm is now unambiguous.
 //
-// CHECK-COUNT-2: Type mismatch in variable declaration
-// CHECK-COUNT-2: Type mismatch in argument 1
+// Six positions, one message. The second-hand complaints that follow some of them -- a
+// declaration against its annotation, an argument against a parameter -- are consequences of the
+// expression having no type, not the claim being made here, so they are not checked; the
+// `CHECK-NOT` is, because it pins that the space is refused in exactly these six places and that
+// `transfer` below is not one of them.
+//
+// CHECK-COUNT-6: names a memory space, which is not a value
+// CHECK-NOT: names a memory space
 fn take(t : Tensor<f32, [ 2, 2 ]>) -> i32 {
   return 0;
 }
@@ -38,6 +43,24 @@ fn in_an_argument() -> i32 {
 fn in_an_argument_through_a_binding() -> i32 {
   let m = Memory::GPU_HBM;
   return take(m);
+}
+
+// The two positions the old, annotation-driven diagnostic could not reach.
+fn in_a_bare_let() -> i32 {
+  let m = Memory::GPU_HBM;
+  return 0;
+}
+
+fn in_a_return() -> i32 {
+  return Memory::GPU_HBM;
+}
+
+// `transfer` names a space as its destination, which is the one position that is not a value use.
+fn a_transfer_still_names_its_destination() -> i32 {
+  let mut a = Tensor<f32, [ 2, 2 ]>::uninit();
+  a[0][0] = 1.0;
+  let b = transfer(a, Memory::NPU_HBM);
+  return 0;
 }
 
 fn main() -> i32 {
