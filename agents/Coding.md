@@ -16,6 +16,9 @@ Write code in Rust by default.
 
 Write unit tests and integration tests for all the code that you write. For testing, prefer using crates like `proptest` for property based testing and `rstest` for test fixtures.
 
+- A test is not evidence until you have watched it fail. Break the code it covers, see it go red, then put the code back.
+- If the break does not turn it red, suspect the break before the test: check it landed where you aimed it (a blind search-and-replace hits the first match, not necessarily yours), and that it removed the behaviour rather than renaming it.
+
 ## Usage of AI Tools
 
 - Use AI tools for writing code when you think it is appropriate.
