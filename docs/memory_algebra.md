@@ -376,3 +376,79 @@ Roughly in dependency order, what is left:
 
 An optimiser over the program graph (min-cut for two devices, DP for a chain) is future work. It
 consumes a truthful graph; it does not belong in the work that establishes truthfulness.
+
+______________________________________________________________________
+
+## 11. Where a value lives: one fact, two projections
+
+A tensor's placement was expressible five ways, and they did not agree with each other.
+
+| spelling | position | what it carried |
+| -------- | -------- | --------------- |
+| `Pinned<T, Topology::X>` | type | a device |
+| `Ref<T, Memory::X>` | type | a space |
+| `Tensor<f32, [4, 4], Topology::X>` | type | a device |
+| `.with_memory(Memory::X)` | expression | a space, via a wrapper |
+| `transfer(a, Memory::X)` | expression | a move, not an annotation |
+
+Four of the five say the same kind of thing in two different vocabularies — device or space — and
+nothing reconciled them. `is_type_accessible` had to, at each of its 39 call sites, and it did so by
+fabricating a `Ref` over a mock `f32` from a `Pinned` and recursing into itself. That function is the
+shape of the problem: the type did not carry enough to answer where a value was, so a graph query
+answered it instead, per use.
+
+### They are not alternatives
+
+Every topology has a default space, and a space is not anywhere in particular without a device that
+holds it. "SMEM" alone is not a location; *this SM's* SMEM is. So device and space are two
+projections of one fact, and a placement carries both:
+
+```rust
+struct Placement { topology: Topology, space: MemorySpace }
+```
+
+The surface lets either be written and derives the other:
+
+| written | topology | space |
+| ------- | -------- | ----- |
+| `Topology::GPU` | as written | `default_memory_for(GPU)` |
+| `Memory::GPU_HBM` | the space's owner | as written |
+| neither | unplaced | unplaced |
+
+Deriving in the second direction is what did not exist. `default_memory_for` has always answered
+which space a device holds; nothing answered which device holds a space.
+
+### Why the owner is stated rather than derived
+
+Two derivations look plausible and both are wrong.
+
+**Inverting the descriptor table.** Each topology kind declares a `default_space`, so the inverse
+looks like a lookup. It is not a function: `CPU_DRAM` is the default of CPU, AMX, CpuAvx512 and
+CpuNeon, and `NPU_HBM` of NPU, ANE and Slice. The two most-used spaces in the language would both be
+ambiguous.
+
+**Following `within:`.** A declared space names its parent, so the root of the chain looks like the
+device. But `within:` is containment in the cost hierarchy, and every chain roots at host memory —
+`Memory GPU_HBM { within: Memory::CPU_DRAM }` is how a GPU's memory is declared. Following it would
+make GPU memory host-owned.
+
+So ownership is a fact about the space, written once: a table for the built-ins, and for a declared
+space, the topology whose `memory:` names it. Exactly one. None is an error, and so is more than
+one — a space held by two devices is ambiguous in a way choosing the first would hide.
+
+### What follows from carrying both
+
+- `is_type_accessible` reads the device and the space off the type rather than reconstructing one
+  from the other.
+- A signature and a body resolve identically, because nothing consults the enclosing region. That
+  matters: `fn f(t : Tensor<f32, [4, 4], Memory::SMEM>)` has no enclosing region, and neither does a
+  buffer declared before the `spawn on` that fills it — which is how every placed destination in the
+  corpus is written.
+- `.with_memory(..)` and `Ref<T, Memory>` have nothing left to express that the placement slot does
+  not, so five spellings become three.
+
+### Status
+
+The space-to-device direction is implemented (`TransferCostGraph::owning_topology`). The rest — the
+`Placement` field itself, the surface accepting `Memory::X` in the placement slot, and the removal of
+the two redundant spellings — is not yet.

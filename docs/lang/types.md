@@ -7,7 +7,38 @@ This document outlines the topology-aware type system of the **Vx** programming 
 In standard languages, a pointer `*mut T` or reference `&T` only encodes the data type, assuming a uniform, flat memory address space.
 In Vx, a reference intrinsically encodes both the data type and its physical or logical address space.
 
+### Placement is part of a tensor's type
+
+A tensor's type carries where it lives, in the third argument of `Tensor<..>`:
+
+```rust
+// A 4x4 tensor in the NPU's high-bandwidth memory
+let a : Tensor<f32, [4, 4], Memory::NPU_HBM> = ...;
+
+// The same placement named by the device instead of the space
+let b : Tensor<f32, [4, 4], Topology::NPU[0]> = ...;
+```
+
+Either spelling may be written and the compiler derives the other, because a device and a space
+are two projections of one fact rather than alternatives: every topology has a default space, and
+a space is not anywhere in particular without a device that holds it. `Memory::SMEM` alone is not
+a location; *this SM's* SMEM is.
+
+Where the device cannot be told from the space, that is an error rather than a guess — a space
+that no topology declares, or one that two do. `docs/memory_algebra.md` §11 has the reasoning and
+why the owner is stated rather than inverted out of the topology table.
+
+> [!NOTE]
+> **Partly implemented.** The space-to-device derivation exists
+> (`TransferCostGraph::owning_topology`). The placement field itself, and the surface accepting
+> `Memory::X` in that slot, do not yet — today the slot takes a topology only, and a memory space
+> is spelled with the `Ref<T, Memory>` type below.
+
 ### The `Ref<T, Memory>` Type
+
+> [!NOTE]
+> **Being replaced** by the placement slot above, which says the same thing without a wrapper
+> every consumer has to peel. Documented here because it is what the compiler accepts today.
 
 The fundamental data reference type is `Ref<T, Memory>`.
 
@@ -212,21 +243,29 @@ fn pipeline() -> Verified<()>
 ## 6. Topology-Aware Allocation
 
 > [!WARNING]
-> **Experimental / Unimplemented Feature**
-> The `with Topology::...` allocation syntax is currently planned but not yet implemented in the parser.
+> **Planned, not implemented.** The constructors below are the agreed design; the parser accepts
+> `Tensor<f32>([8, 8])` today, which is the uninitialized form.
 
-When defining arrays, you can use Topology literals to specify the physical location of the memory as well as minimum alignment requirements (if applicable). If no alignment is specified, the compiler will use the default alignment for the type. For example:
+A tensor is constructed by applying its type. The shape and the placement are in the type, so they
+are written once and the constructor takes no arguments:
 
 ```rust
-// Allocate memory on the NPU
-let x: Ref<Tensor, Topology::NPU_Core> = Tensor::new([8, 8]) with Topology::NPU_Core;
+// Zeroed, in the NPU's memory
+let x = Tensor<f32, [8, 8], Memory::NPU_HBM>::new();
 
-// Allocate memory on the Host
-let y: Ref<Tensor, Topology::Host_Core> = Tensor::new([8, 8]) with Topology::Host_Core;
+// Not initialized -- the caller undertakes to write every element before reading one
+let y = Tensor<f32, [8, 8], Memory::NPU_HBM>::uninit();
 
-// Align to 128 bytes (A16)
-let z: Ref<Tensor, Topology::NPU_Core(128)> = Tensor::new([8, 8]) with Topology::NPU_Core(128);
+// Runtime extents, so they stay an argument
+let z = DynTensor<f32, Memory::NPU_HBM>::new([rows, cols]);
 ```
+
+Both allocation kinds are explicit, and neither is the unmarked default. `::uninit()` exists
+because zeroing a buffer that is about to be written in full is wasted bandwidth, and in this
+domain that is the common case rather than the exception — a decoder that materializes a weight
+matrix and fills it immediately would pay for the zeroing on every token. `::new()` is the one to
+reach for otherwise: a name that promises a valid value should deliver one, and `uninit` is
+greppable when a garbage-value bug is being hunted.
 
 ## 7. Type Coercion and Assignability
 
