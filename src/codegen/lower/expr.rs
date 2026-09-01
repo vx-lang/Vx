@@ -2482,12 +2482,6 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             return Ok((out_val, tgt_ty, block));
         }
 
-        if name.as_ref() == "with_memory" {
-            // For now, with_memory is a no-op in lowering, just returns the tensor
-            let (arg_val, expr_ty, block) = gen.generate_expr(&args[0], block)?;
-            return Ok((arg_val, expr_ty, block));
-        }
-
         if name.as_ref() == "map" {
             return lower_map_call(gen, block, args);
         }

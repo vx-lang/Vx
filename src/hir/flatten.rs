@@ -142,6 +142,16 @@ fn is_tensor_alloc_call(fc: &crate::syntax::FunctionCallExpr) -> bool {
     )
 }
 
+/// The placement a tensor allocation was written with, if any.
+///
+/// A placed region-local is BLOCK-SHARED storage rather than thread-private scratch, which is the
+/// one thing the two-level walk needs to know about a `let`'s initializer.
+fn tensor_alloc_placement(
+    fc: &crate::syntax::FunctionCallExpr,
+) -> Option<&crate::syntax::Placement> {
+    fc.type_args.as_ref()?.first()?.placement()
+}
+
 /// Canonicalize a tensor dimension for the GID: a numeric literal by value, a const/generic name by
 /// its name. Anything else declines (so the tensor stays unmodelled rather than hashing unstably).
 fn tensor_dim_string(e: &Expr) -> Option<String> {
@@ -1126,31 +1136,6 @@ impl<'r> Lowerer<'r> {
             // (the `let x = P { .. }` form is handled directly in `lower_stmt`). The `Val` is the slot,
             // which a `Ret` loads + returns by value.
             Expr::StructInit(si) => self.lower_struct_init(si),
-            // `t.with_memory(Memory::X)` annotates a tensor's home memory space for the seam/type
-            // analysis but emits no op — the AST codegen treats it the same way (`with_memory` returns
-            // its receiver, `codegen/lower/expr.rs`). So it's transparent to lowering: yield the
-            // receiver tensor and drop the memory-space argument. Device-placement *transfers*
-            // (`to_device`/`to_host`/…) are already rewritten to `Expr::Transfer` by the type checker,
-            // so they never reach here as a method. Any other method declines (#226).
-            Expr::MethodCall(mc) if mc.method_name.as_ref() == "with_memory" => {
-                let v = self.lower_expr(&mc.base)?;
-                // One case is not annotation-only (Vx#379 stage B): a fresh region-local
-                // `Tensor<..>([..]).with_memory(Memory::X)` rides the space's dispatch id out on
-                // the TensorAlloc's unused operand2, and codegen decides what to make of it -- a
-                // `scope: sm` space becomes a space-3 alloca the device pipeline materializes as
-                // `.shared` storage. Anything else keeps the old transparency.
-                if let Some(Expr::MemorySpace(ms)) = mc.args.first() {
-                    let sid = crate::arch::memory_space_dispatch_id(&ms.space);
-                    if sid > 0 {
-                        if let Some(ins) = self.code.get_mut(v.reg.0 as usize) {
-                            if ins.opcode == Opcode::TensorAlloc {
-                                ins.operand2 = Register(sid as u32);
-                            }
-                        }
-                    }
-                }
-                Ok(v)
-            }
             // A `comptime { .. }` block: the AST codegen lowers it *transparently* (its `sizeof<T>()`
             // folds to a constant and its `assert`s are runtime no-ops), so at runtime a compile-time
             // block produces no observable effect. Mirror that — lower the inner statements, then the
@@ -2579,7 +2564,7 @@ impl<'r> Lowerer<'r> {
                 shape,
             };
             // The placement's space rides out on the alloc's spare operand, which is where
-            // `.with_memory(Memory::X)` used to put it: a `scope: sm` space becomes a space-3
+            // `.with_memory(Memory::X)` put it before it was removed: a `scope: sm` space is a
             // alloca the device pipeline materializes as `.shared` storage.
             let space = placement
                 .as_ref()
@@ -5083,8 +5068,8 @@ impl TwoLevelWalk {
             need_barrier = false;
             let ok = match s {
                 // Block-scope declaration: every thread evaluates it into its own copy --
-                // unless it is a `.with_memory` tile, which is one block-shared allocation
-                // (Vx#379 stage B) and joins the shared-write discipline.
+                // unless its type names a space, which makes it one block-shared allocation
+                // (Vx#379 stage B) that joins the shared-write discipline.
                 S::LetDecl(d) => self.scan.let_decl_two_level(d),
                 // Block-scope scalar assignment to a thread-private LOCAL is
                 // redundant-per-thread and harmless; a captured or block-shared write at
@@ -5301,7 +5286,7 @@ struct ParallelScan {
     /// `block_iv * K + iv` -- the (block, thread-iteration) pair's own row.
     affine: Option<(String, i64)>,
     /// Region-locals that are BLOCK-SHARED rather than thread-private (Vx#379 stage B): declared
-    /// `Tensor<..>(..).with_memory(Memory::X)`. Any space is treated as shared -- stricter than
+    /// `Tensor<T, [..], Memory::X>::uninit()`. Any space is treated as shared -- stricter than
     /// necessary for a non-sm space, never looser. Shared changes the write rule: only a thread
     /// loop may write one, at its own IV's row.
     smem: HashSet<String>,
@@ -5339,28 +5324,18 @@ impl ParallelScan {
         }
     }
 
-    /// A `let` in a two-level region (prologue or block scope). Three shapes pass: a plain
-    /// expression that cannot write (the ordinary rule), thread-private `Tensor` scratch, and --
-    /// new with Vx#379 stage B -- a `.with_memory` tile over a fresh `Tensor`, which declares
-    /// BLOCK-SHARED storage and joins the shared-write discipline via `smem`.
+    /// A `let` in a two-level region (prologue or block scope). Two shapes pass: a plain
+    /// expression that cannot write (the ordinary rule), and a fresh `Tensor` -- thread-private
+    /// scratch when unplaced, and BLOCK-SHARED storage when its type names a space, which joins
+    /// the shared-write discipline via `smem` (Vx#379 stage B).
     fn let_decl_two_level(&mut self, d: &crate::syntax::stmt::LetDeclStmt) -> bool {
         let mut is_smem = false;
         let init_ok = match &d.expr {
             Expr::FunctionCall(fc)
                 if is_tensor_alloc_call(fc) && fc.args.iter().all(|a| self.expr(a)) =>
             {
+                is_smem = tensor_alloc_placement(fc).is_some();
                 true
-            }
-            Expr::MethodCall(mc)
-                if &*mc.method_name == "with_memory"
-                    && matches!(&*mc.base, Expr::FunctionCall(fc)
-                        if is_tensor_alloc_call(fc)) =>
-            {
-                is_smem = true;
-                match &*mc.base {
-                    Expr::FunctionCall(fc) => fc.args.iter().all(|a| self.expr(a)),
-                    _ => false,
-                }
             }
             e => self.expr(e),
         };
@@ -6944,7 +6919,7 @@ mod tests {
              t[0][0] = 1.0; return 0; }",
         );
         let by_method = alloc_space(
-            "fn main() -> i32 { let mut t = Tensor<f32>([2, 4]).with_memory(Memory::SMEM); \
+            "fn main() -> i32 { let mut t = Tensor<f32, [2, 4], Memory::SMEM>::uninit(); \
              t[0][0] = 1.0; return 0; }",
         );
         assert_eq!(by_type, by_method, "one spelling replaces the other");
@@ -6977,7 +6952,7 @@ mod tests {
                let mut q = Tensor<f32>([8, 4]);\n\
                let mut o = Tensor<f32>([8, 4]);\n\
                spawn on (Topology::GPU) {\n\
-                 let mut qs = Tensor<f32>([2, 4]).with_memory(Memory::SMEM);\n\
+                 let mut qs = Tensor<f32, [2, 4], Memory::SMEM>::uninit();\n\
                  for bq in 0..4 {\n\
                    for qi in 0..2 {\n\
                      qs[qi] = q[bq * 2 + qi] * 1.0;\n\
@@ -7087,7 +7062,7 @@ mod tests {
                let mut k = Tensor<f32>([6, 4]);\n\
                let mut o = Tensor<f32>([8, 4]);\n\
                spawn on (Topology::GPU) {\n\
-                 let mut kt = Tensor<f32>([2, 4]).with_memory(Memory::SMEM);\n\
+                 let mut kt = Tensor<f32, [2, 4], Memory::SMEM>::uninit();\n\
                  let mut acc = Tensor<f32>([1, 4]);\n\
                  for bq in 0..4 {\n\
                    for qi in 0..2 {\n\
@@ -7140,7 +7115,7 @@ mod tests {
                let mut k = Tensor<f32>([6, 4]);\n\
                let mut o = Tensor<f32>([8, 4]);\n\
                spawn on (Topology::GPU) {\n\
-                 let mut kt = Tensor<f32>([2, 4]).with_memory(Memory::SMEM);\n\
+                 let mut kt = Tensor<f32, [2, 4], Memory::SMEM>::uninit();\n\
                  let mut acc = Tensor<f32>([1, 4]);\n\
                  for bq in 0..4 {\n\
                    for qi in 0..2 {\n\
@@ -7184,7 +7159,7 @@ mod tests {
                let mut k = Tensor<f32>([6, 4]);\n\
                let mut o = Tensor<f32>([8, 4]);\n\
                spawn on (Topology::GPU) {\n\
-                 let mut kt = Tensor<f32>([2, 4]).with_memory(Memory::SMEM);\n\
+                 let mut kt = Tensor<f32, [2, 4], Memory::SMEM>::uninit();\n\
                  for bq in 0..4 {\n\
                    for qi in 0..2 {\n\
                      let n : i64 = 3;\n\
@@ -7226,7 +7201,7 @@ mod tests {
                let mut s = Tensor<f32>([4, 4]);\n\
                let mut lrow = Tensor<f32>([4, 1]);\n\
                spawn on (Topology::GPU) {\n\
-                 let mut pm = Tensor<f32>([2, 1]).with_memory(Memory::SMEM);\n\
+                 let mut pm = Tensor<f32, [2, 1], Memory::SMEM>::uninit();\n\
                  for i in 0..4 {\n\
                    for t in 0..2 {\n\
                      let mut m : f32 = -1000000.0;\n\
@@ -7495,7 +7470,7 @@ mod tests {
                let mut k = Tensor<f32>([6, 4]);\n\
                let mut o = Tensor<f32>([8, 4]);\n\
                spawn on (Topology::GPU) {\n\
-                 let mut kt = Tensor<f32>([2, 4]).with_memory(Memory::SMEM);\n\
+                 let mut kt = Tensor<f32, [2, 4], Memory::SMEM>::uninit();\n\
                  for bq in 0..4 {\n\
                    for qi in 0..2 {\n\
                      for t in 0..3 {\n\

@@ -172,10 +172,10 @@ fn test_integration_arrays_and_indexing() -> Result<(), String> {
 }
 
 #[test]
-fn test_integration_method_chaining() -> Result<(), String> {
+fn a_placed_tensor_round_trips_through_the_pipeline() -> Result<(), String> {
     let input = r#"
-    fn memory_test() -> Ref<Tensor<f32, [10]>, Memory::NPU_HBM> {
-        let mut mem = Tensor<f32>([10]).with_memory(Memory::NPU_HBM);
+    fn memory_test() -> Tensor<f32, [10], Memory::NPU_HBM> {
+        let mut mem = Tensor<f32, [10], Memory::NPU_HBM>::uninit();
         return mem;
     }
     "#;

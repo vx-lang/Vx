@@ -1575,7 +1575,7 @@ fn distributed_matmul(a: Ref<DynTensor<f32>, Memory::CPU_DRAM>, b: Ref<DynTensor
 
     #[test]
     fn test_parse_member_and_method() {
-        let input = "fn main() -> DynTensor<f32> { x.shape.with_memory(Memory::NPU_HBM); }";
+        let input = "fn main() -> DynTensor<f32> { x.shape.scaled(Memory::NPU_HBM); }";
         let tokens = Lexer::new(input).tokenize();
         let mut parser = Parser::new(&tokens, input);
         let program = parser.parse().unwrap();
@@ -1593,7 +1593,7 @@ fn distributed_matmul(a: Ref<DynTensor<f32>, Memory::CPU_DRAM>, b: Ref<DynTensor
                 type_args: _,
             }) = expr
             {
-                assert_eq!(method.as_ref(), "with_memory");
+                assert_eq!(method.as_ref(), "scaled");
                 assert_eq!(args.len(), 1);
                 if let Expr::MemberAccess(MemberAccessExpr {
                     base: inner_obj,
@@ -1624,7 +1624,7 @@ fn distributed_matmul(a: Ref<DynTensor<f32>, Memory::CPU_DRAM>, b: Ref<DynTensor
         let input = r#"
         fn custom_matmul(a: Ref<DynTensor<f32>, Memory::NPU_HBM>, b: Ref<DynTensor<f32>, Memory::NPU_HBM>) -> Verified<DynTensor<f32>> {
             spawn on(Topology::NPU[0]) {
-                let mut result: DynTensor<f32> = Tensor<f32>([a.shape[0], b.shape[1]]).with_memory(Memory::NPU_HBM);
+                let mut result: DynTensor<f32> = DynTensor<f32, Memory::NPU_HBM>::uninit([a.shape[0], b.shape[1]]);
                 for i in 0..a.shape[0] {
                     for j in 0..b.shape[1] {
                         result[i][j] = 0;

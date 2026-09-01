@@ -26,7 +26,7 @@ impl FnEmit<'_> {
         let (elem, shape) = self.ctx.tensors.get(&gid).ok_or(crate::emitter_gap!())?;
         let memty = tensor_memref_ty(elem, shape).ok_or(crate::emitter_gap!())?;
         let n = format!("%v{idx}");
-        // `operand2` may carry a memory-space dispatch id from `.with_memory` (Vx#379
+        // `operand2` may carry a memory-space dispatch id from the placement in the type (Vx#379
         // stage B). A `scope: sm` space becomes a space-3 ALLOCA: on the host that is a
         // stack slot like any other, and in the device clone materializeGpuKernels turns
         // a static space-3 alloca into `.shared` storage -- the machinery #352 built.

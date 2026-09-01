@@ -847,13 +847,14 @@ fn flat_matches_ast_println_string() {
 }
 
 #[test]
-fn flat_matches_ast_with_memory_method() {
-    // `Tensor<..>(..).with_memory(Memory::X)` annotates a tensor's home memory for the seam/type
-    // analysis but emits no op — the flat path lowers it as a transparent pass-through of the receiver
-    // tensor, matching the AST codegen (#226). The device-placement transfer *methods*
-    // (`to_device`/`to_host`) are already rewritten to `Expr::Transfer` by the type checker.
+fn flat_matches_ast_placed_tensor() {
+    // A tensor whose type names a space runs the same on both paths. It used to be spelled
+    // `Tensor<..>(..).with_memory(Memory::X)`, a method the type checker wrapped in a `Ref` and
+    // both backends then ignored; the placement says the same thing in the type (Vx#429). The
+    // device-placement transfer *methods* (`to_device`/`to_host`) are a different thing and are
+    // rewritten to `Expr::Transfer` by the type checker.
     assert_output_parity(
-        "fn main() -> i32 { let mut c = Tensor<f32>([2]).with_memory(Memory::NPU_HBM); \
+        "fn main() -> i32 { let mut c = Tensor<f32, [2], Memory::NPU_HBM>::uninit(); \
          c[0] = 3.0; c[1] = 4.0; print(c[0]); return 0; }",
     );
 }
