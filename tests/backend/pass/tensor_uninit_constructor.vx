@@ -7,7 +7,7 @@
 //===----------------------------------------------------------------------===//
 // A tensor is built from its type: `Tensor<f32, [2, 2]>::uninit()` (Vx#429).
 //
-// The older `Tensor<f32, [2, 2]>::uninit()` names a constructor and splits the element and the shape
+// The older `Tensor<f32>([2, 2])` names a constructor and splits the element and the shape
 // between the generic argument and the call arguments, which leaves three places in the compiler
 // rebuilding the type from the call. It also has nowhere to put a placement -- `Memory::GPU_HBM`
 // is part of a tensor's type, and that spelling has no slot for one.
@@ -48,9 +48,11 @@ fn by_type() -> f32 {
   return t[0][0] + t[0][1] + t[1][0] + t[1][1];
 }
 
-// The same tensor, written the older way.
+// The same tensor, written the older way. The corpus migration rewrote this body once, which
+// left the file comparing one spelling with itself; it goes back to the old spelling until that
+// spelling is gone.
 fn by_call() -> f32 {
-  let mut t = Tensor<f32, [2, 2]>::uninit();
+  let mut t = Tensor<f32>([ 2, 2 ]);
   for i in 0..2 {
     for j in 0..2 {
       t[i][j] = (i * 2 + j + 1) as f32;

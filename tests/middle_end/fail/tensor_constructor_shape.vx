@@ -8,7 +8,7 @@
 //
 // A `Tensor`'s extents are part of its type, so an extent nothing can evaluate is not a static
 // extent (Vx#399). Written down, that has to be refused rather than quietly answered with a
-// `DynTensor`: the older `Tensor<f32, [n, m]>::uninit()` spelling had no type to contradict and could be
+// `DynTensor`: the older `Tensor<f32>([n, m])` spelling had no type to contradict and could be
 // reclassified silently, but a type the source states is a claim, and answering a different one
 // is how a shape nobody can read comes to be trusted by a later check.
 //
