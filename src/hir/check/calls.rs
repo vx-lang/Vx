@@ -1121,6 +1121,26 @@ impl<'a> TypeChecker<'a> {
                     "'{resolved_name}' expects {wanted} argument(s): {why}"
                 ));
             }
+            // A `Tensor`'s extents are part of its type, so an extent nothing can evaluate is not
+            // a static extent (Vx#399). Refused rather than quietly answered with a `DynTensor`:
+            // the type was written down, and handing back a different one is how a shape nobody
+            // can read comes to be trusted by a later check. A const generic does evaluate.
+            if let Type::Tensor(_, dims, _) = ty {
+                let mut env = HashMap::new();
+                for scope in &self.consteval.env {
+                    for (k, v) in scope {
+                        env.insert(k.clone(), v.clone());
+                    }
+                }
+                if !dims.iter().all(|d| self.eval_expr(d, &env).is_some()) {
+                    self.errors.push(
+                        "a Tensor's shape is part of its type, so every extent has to be known \
+                         at compile time; write `DynTensor<T>::uninit([..])` for a shape that is \
+                         not"
+                        .to_string(),
+                    );
+                }
+            }
             return Some(ty.clone());
         }
         if resolved_name == "Verified" {
