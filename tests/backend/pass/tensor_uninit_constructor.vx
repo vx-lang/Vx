@@ -12,10 +12,14 @@
 // rebuilding the type from the call. It also has nowhere to put a placement -- `Memory::GPU_HBM`
 // is part of a tensor's type, and that spelling has no slot for one.
 //
-// `uninit` rather than `new` because that is what this does: the storage arrives as it was found.
-// Zeroing is a full pass over the buffer, which for a weight matrix about to be overwritten is a
-// cost with nothing to show for it, so which one a program wants is a real choice and is written
-// down. `::new()` is refused until the zeroing exists -- see the middle_end test.
+// The two constructors differ only in whether the storage arrives zeroed. Zeroing is a full pass
+// over the buffer, which for a weight matrix about to be overwritten is a cost with nothing to
+// show for it, so which one a program wants is a real choice and is written down.
+//
+// `zeroed` reads what `::new()` left, but the value it prints is weak evidence on its own --
+// fresh pages read as zero often enough that an unfilled buffer would pass. The CHECK line below
+// is the real one: exactly the `linalg.fill` count the three `::new()`-free functions here do not
+// produce.
 //
 // Both spellings are here because the answer must not depend on which was written: `by_type` and
 // `by_call` build the same tensor and the sum below is over both.
@@ -23,7 +27,15 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // CHECK-DAG: func.func @by_type
 // CHECK-DAG: func.func @by_call
-// EXPECT: 10 10 3
+// CHECK-COUNT-1: linalg.fill
+// CHECK-NOT: linalg.fill
+//
+// The two paths emit the fill separately, so the AST one is pinned too -- otherwise removing it
+// there would leave this file green while `::new()` handed back whatever was in the buffer.
+// RUN: vxc %s --action emit-mlir --legacy-codegen 2>&1 | FileCheck %s --check-prefix=AST
+// AST-COUNT-1: linalg.fill
+// AST-NOT: linalg.fill
+// EXPECT: 10 10 3 0
 
 // The shape is in the type, so the constructor takes nothing.
 fn by_type() -> f32 {
@@ -57,11 +69,19 @@ fn rank_one() -> f32 {
   return v[0] + v[1] + v[2];
 }
 
+// `::new()` zeroes; nothing here writes to it, so every element is the one the fill wrote.
+fn zeroed() -> f32 {
+  let z = Tensor<f32, [2, 2]>::new();
+  return z[0][0] + z[0][1] + z[1][0] + z[1][1];
+}
+
 fn main() -> i32 {
   print(by_type());
   print!(" ");
   print(by_call());
   print!(" ");
   print(rank_one());
+  print!(" ");
+  print(zeroed());
   return 0;
 }

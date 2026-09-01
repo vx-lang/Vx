@@ -2578,7 +2578,13 @@ impl<'r> Lowerer<'r> {
                 elem: el.clone(),
                 shape,
             };
-            return Some(self.emit_typed(Opcode::TensorAlloc, Register(0), Register(0), ty, bytes));
+            let buf = self.emit_typed(Opcode::TensorAlloc, Register(0), Register(0), ty, bytes);
+            // `::new()` zeroes what `::uninit()` leaves as it was found. A separate instruction,
+            // so the allocation is the same one either way and only the fill is conditional.
+            if fc.name.as_ref().ends_with("::new") {
+                self.emit_effect(Opcode::TensorZero, buf.reg, Register(0), 0);
+            }
+            return Some(buf);
         }
         let elem = scalar_of(written)?;
         // An initializer list `Tensor<T>([[..],[..]])`: the nesting is the shape and the leaves

@@ -1107,17 +1107,6 @@ impl<'a> TypeChecker<'a> {
                     .push(format!("'{resolved_name}' has no type to build"));
                 return Some(Type::Unknown);
             };
-            // `::new()` is refused rather than treated as `::uninit()`. The two differ only in
-            // whether the storage arrives zeroed, so accepting it before the zeroing exists would
-            // hand back uninitialized memory to a program that asked for zeros -- and be
-            // indistinguishable from working until something read it.
-            if resolved_name.ends_with("::new") {
-                self.errors.push(
-                    "`::new()` (zeroed storage) is not built yet; `::uninit()` gives storage as \
-                     it was found, which is what every tensor construction does today"
-                        .to_string(),
-                );
-            }
             // A static shape lives in the type and a dynamic one in the argument, so each form
             // takes exactly the arguments the other cannot.
             let wanted = usize::from(matches!(ty, Type::DynTensor(..)));

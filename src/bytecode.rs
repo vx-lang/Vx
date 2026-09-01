@@ -217,6 +217,14 @@ pub enum Opcode {
     /// The runtime extent of one dimension of a tensor (`t.shape[k]` -> `memref.dim`):
     /// `operand1` the tensor, `operand2` the dimension index, the result an `i32`.
     TensorDim = 44,
+    /// Zero a freshly allocated tensor (`Tensor<T, [..]>::new()`, no result): `operand1` is the
+    /// buffer. Lowers to `linalg.fill` with a zero of the element type -- the same fill
+    /// `MatmulInto` emits before accumulating, so there is one way a tensor gets zeroed.
+    ///
+    /// A separate instruction rather than a flag on `TensorAlloc` because the alloc's two operand
+    /// fields are spoken for (`operand2` carries a memory-space dispatch id) and a register field
+    /// pressed into service as a boolean is a decoding hazard, not a saving.
+    TensorZero = 45,
 }
 
 /// Reverse mode for `Opcode::AutoDiff`: the gradient, through `__enzyme_autodiff_grad_*`.
@@ -278,6 +286,7 @@ impl Opcode {
             42 => AutoDiff,
             43 => TensorLoad,
             44 => TensorDim,
+            45 => TensorZero,
             _ => return None,
         })
     }

@@ -1831,23 +1831,19 @@ fn slice_vec_len(ty_str: &str) -> Option<i64> {
     None
 }
 
-/// Emit `linalg.fill(0)` then `linalg.matmul` into an existing buffer.
+/// Emit `linalg.fill(0)` over an existing buffer.
 ///
-/// The pair is what a GEMM with beta = 0 is, and it is the shape `kernelKindOf`
-/// recognises when deciding whether an outlined region can be handed to a
-/// vendor kernel (#325). `dst` is written in place, so no result is produced
-/// and nothing is allocated.
-pub(super) fn emit_matmul_into<'c>(
+/// The zero a `Tensor<T, [..]>::new()` arrives holding, and the beta = 0 a GEMM starts from. One
+/// emission, so the two cannot come to disagree about what zero is for an element type.
+pub(super) fn emit_zero_fill<'c>(
     gen: &mut MeliorGenerator<'c>,
     block: &melior::ir::BlockRef<'c, 'c>,
-    lhs_val: Value<'c, 'c>,
-    rhs_val: Value<'c, 'c>,
     dst_val: Value<'c, 'c>,
     el_ty_str: &str,
 ) -> Result<(), LowerError> {
     let el_ty = Type::parse(gen.context, el_ty_str)
         .ok_or_else(|| LowerError::ParseType(el_ty_str.to_string()))?;
-    let is_float = el_ty_str.starts_with('f');
+    let is_float = el_ty_str.starts_with('f') || el_ty_str.starts_with("bf");
 
     let zero_attr: melior::ir::Attribute = if is_float {
         FloatAttribute::new(gen.context, el_ty, 0.0).into()
@@ -1881,6 +1877,28 @@ pub(super) fn emit_matmul_into<'c>(
         .add_regions([region_fill])
         .build()?;
     block.append_operation(fill_op);
+    Ok(())
+}
+
+/// Emit `linalg.fill(0)` then `linalg.matmul` into an existing buffer.
+///
+/// The pair is what a GEMM with beta = 0 is, and it is the shape `kernelKindOf`
+/// recognises when deciding whether an outlined region can be handed to a
+/// vendor kernel (#325). `dst` is written in place, so no result is produced
+/// and nothing is allocated.
+pub(super) fn emit_matmul_into<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    block: &melior::ir::BlockRef<'c, 'c>,
+    lhs_val: Value<'c, 'c>,
+    rhs_val: Value<'c, 'c>,
+    dst_val: Value<'c, 'c>,
+    el_ty_str: &str,
+) -> Result<(), LowerError> {
+    let el_ty = Type::parse(gen.context, el_ty_str)
+        .ok_or_else(|| LowerError::ParseType(el_ty_str.to_string()))?;
+    let is_float = el_ty_str.starts_with('f');
+
+    emit_zero_fill(gen, block, dst_val, el_ty_str)?;
 
     // linalg.matmul: acc = acc + lhs * rhs, per element.
     let region_matmul = Region::new();
@@ -2316,7 +2334,13 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                 .add_results(&[tensor_ty])
                 .build()?;
             let alloc_ref = block.append_operation(alloc_op);
-            return Ok((alloc_ref.result(0)?.into(), tensor_ty, block));
+            let alloc_val: Value = alloc_ref.result(0)?.into();
+            // `::new()` zeroes what `::uninit()` leaves as it was found. The same fill a matmul
+            // emits before it accumulates, so there is one answer to what zero is per element.
+            if name.as_ref().ends_with("::new") {
+                emit_zero_fill(gen, &block, alloc_val, &mlir_ty_str)?;
+            }
+            return Ok((alloc_val, tensor_ty, block));
         }
 
         if name.as_ref() == "reshape" || **name == *"transpose" {

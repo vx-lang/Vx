@@ -1636,6 +1636,9 @@ impl<'a> FnEmit<'a> {
             // Allocate a tensor buffer (`Tensor<T>([..])`): a static `memref` of the shape recovered
             // from the side table by GID. Its register is tracked in `mem_of` for later index/store.
             Opcode::TensorAlloc => self.op_tensor_alloc(idx, ins),
+            // Zero the buffer a preceding `TensorAlloc` produced (`::new()` rather than
+            // `::uninit()`): `linalg.fill`, the same fill a matmul emits before accumulating.
+            Opcode::TensorZero => self.op_tensor_zero(idx, ins),
             // Index a tensor along its outermost dimension. `operand1` is the base tensor (memref),
             // `operand2` the index (`arith.index_cast` to `index`). A scalar-element result
             // (`type_idx` is a scalar GID) is a value read (`imm = 0` → `memref.load`) or an element

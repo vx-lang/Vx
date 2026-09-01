@@ -5,6 +5,16 @@
 
 use super::super::*;
 
+/// The element type of a memref spelling: `memref<8x16xf32>` -> `f32`.
+///
+/// The element is the segment after the last `x`, shorn of the closing `>` and of a memory-space
+/// suffix (`memref<4x4xf32, 3>`). A rank-0 memref has no `x` and is all element.
+fn memref_element(memty: &str) -> Option<&str> {
+    let inner = memty.strip_prefix("memref<")?;
+    let inner = inner.split(',').next()?.trim_end_matches('>');
+    Some(inner.rsplit_once('x').map_or(inner, |(_, el)| el))
+}
+
 impl FnEmit<'_> {
     // Allocate a tensor buffer (`Tensor<T>([..])`): a static `memref` of the shape recovered
     // from the side table by GID. Its register is tracked in `mem_of` for later index/store.
@@ -48,6 +58,35 @@ impl FnEmit<'_> {
             self.names[idx] = n;
             self.mem_of[idx] = Some(memty);
         }
+        Ok(())
+    }
+
+    /// Zero a freshly allocated tensor (`Tensor<T, [..]>::new()`): `linalg.fill` with a zero of
+    /// the element type, which is the fill `MatmulInto` already emits before it accumulates.
+    ///
+    /// Integer elements are spelled with an integer zero rather than declined -- `linalg.fill`
+    /// writes the value it is given, so there is no integer semantics to improvise here, unlike
+    /// the multiply-accumulate `MatmulInto` guards against.
+    pub(crate) fn op_tensor_zero(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let t = self
+            .names
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        let memty = self
+            .mem_of
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone()
+            .ok_or(crate::emitter_gap!())?;
+        let et = memref_element(&memty).ok_or(crate::emitter_gap!())?;
+        let zero = if et.starts_with('f') || et.starts_with("bf") {
+            "0.0"
+        } else {
+            "0"
+        };
+        self.body += &format!("  %z{idx} = arith.constant {zero} : {et}\n");
+        self.body += &format!("  linalg.fill ins(%z{idx} : {et}) outs({t} : {memty})\n");
         Ok(())
     }
 
@@ -429,19 +468,12 @@ impl FnEmit<'_> {
             .ok_or(crate::emitter_gap!())?
             .clone()
             .ok_or(crate::emitter_gap!())?;
-        // "memref<8x16xf32>" -> "f32": the element is the segment after the last 'x',
-        // shorn of the closing '>'. Floats only -- an int matmul declines the program to
-        // the AST path rather than improvising linalg's integer semantics here. The
-        // half-precision pair is in (Vx#320): the routed backend runs them through
-        // cublasGemmEx with f32 accumulation, and the host fallback's linalg lowers
-        // them like any float -- restricting to f32 here silently evicted every f16
-        // attention program from the flat path, prover and all.
-        let et = md
-            .rsplit('x')
-            .next()
-            .ok_or(crate::emitter_gap!())?
-            .trim_end_matches('>')
-            .to_string();
+        // Floats only -- an int matmul declines the program to the AST path rather than
+        // improvising linalg's integer semantics here. The half-precision pair is in (Vx#320):
+        // the routed backend runs them through cublasGemmEx with f32 accumulation, and the host
+        // fallback's linalg lowers them like any float -- restricting to f32 here silently
+        // evicted every f16 attention program from the flat path, prover and all.
+        let et = memref_element(&md).ok_or(crate::emitter_gap!())?;
         if et != "f32" && et != "f64" && et != "f16" && et != "bf16" {
             return Err(crate::emitter_gap!());
         }
