@@ -318,6 +318,25 @@ impl<'a> Parser<'a> {
             }));
         }
 
+        // `Tensor<f32, [4, 4], Memory::X>::uninit()`: the type says what to build, and the
+        // constructor says whether it arrives initialized.
+        //
+        // Read with the real type parser rather than `parse_generic_type_args`, because a tensor
+        // type's arguments are not all types -- `[4, 4]` is a shape and `Memory::X` a placement --
+        // so the generic-argument parser cannot read them at all. Falls through to the older
+        // `Tensor<f32>([4, 4])` spelling when the type does not parse or no `::` follows.
+        if (call_name == "Tensor" || call_name == "DynTensor") && self.check(&TokenType::LeftAngle)
+        {
+            let saved = self.pos;
+            self.pos -= 1; // back onto the identifier, which `parse_named_type` consumes
+            match self.parse_named_type() {
+                Ok(ty) if self.check(&TokenType::DoubleColon) => {
+                    return self.parse_tensor_constructor(ty, span);
+                }
+                _ => self.pos = saved,
+            }
+        }
+
         // `Reachable<A, B>` as a value: a comptime transferability predicate. Same constraint
         // as the `where` clause of the same name, usable in `if comptime`. Spelled
         // `Transfer<A, B>` until Vx#353; see the `where` parser for why it moved.
@@ -456,6 +475,47 @@ impl<'a> Parser<'a> {
                 span,
             }))
         }
+    }
+
+    /// `<tensor type>::new(..)` or `::uninit(..)`, with the type already parsed.
+    ///
+    /// The two differ only in whether the storage arrives zeroed. Both are spelled out because
+    /// which one a program wants is a real choice: zeroing a weight matrix that is about to be
+    /// overwritten is a full pass over the buffer, and inference does that per token.
+    ///
+    /// The parsed type rides on `type_args` rather than being re-derived downstream from the
+    /// call's name and arguments, which is what the older spelling forces three separate places to
+    /// do -- and which cannot carry a placement at all.
+    fn parse_tensor_constructor(&mut self, ty: Type, span: Span) -> ParseResult<'a, Expr> {
+        self.consume(&TokenType::DoubleColon, "Expected '::' after a tensor type")?;
+        let ctor = self.expect_identifier("Expected a constructor after a tensor type")?;
+        if ctor != "new" && ctor != "uninit" {
+            return Err(self.error(
+                "A tensor type is built with `::new()` for zeroed storage or `::uninit()` for \
+                 storage left as it was found",
+            ));
+        }
+        let head = match ty {
+            Type::DynTensor(..) => "DynTensor",
+            _ => "Tensor",
+        };
+        self.consume(&TokenType::LeftParen, "Expected '(' after the constructor")?;
+        let mut args = Vec::new();
+        if !self.check(&TokenType::RightParen) {
+            loop {
+                args.push(self.parse_expr()?);
+                if !self.match_token(&TokenType::Comma) {
+                    break;
+                }
+            }
+        }
+        self.consume(&TokenType::RightParen, "Expected ')' after the constructor")?;
+        Ok(Expr::FunctionCall(FunctionCallExpr {
+            name: format!("{head}::{ctor}").into(),
+            type_args: Some(vec![ty]),
+            args,
+            span,
+        }))
     }
 
     /// Applies parsed generic type arguments to a call name, e.g. `Foo` + `[i32, f64]` → `Foo<i32, f64>`.

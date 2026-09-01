@@ -1,0 +1,35 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// A tensor constructor takes exactly the arguments its type does not already carry (Vx#429).
+//
+// `Tensor<f32, [2, 2]>` has its shape in the type, so the constructor takes nothing; passing one
+// anyway would be a second shape with no rule saying which wins. `DynTensor<f32>` has no shape in
+// its type at all -- that is what the variant is for -- so the constructor is where the shape
+// arrives, and omitting it leaves a tensor nothing can size.
+//
+// `::new()` is refused rather than treated as `::uninit()`. The two differ only in whether the
+// storage arrives zeroed, so accepting it before the zeroing exists would hand uninitialized
+// memory to a program that asked for zeros, and be indistinguishable from working until
+// something read it.
+//
+// CHECK-DAG: 'Tensor::uninit' expects 0 argument(s)
+// CHECK-DAG: 'DynTensor::uninit' expects 1 argument(s)
+// CHECK-DAG: `::new()` (zeroed storage) is not built yet
+
+fn shape_written_twice() -> i32 {
+  let t = Tensor<f32, [ 2, 2 ]>::uninit([ 2, 2 ]);
+  return 0;
+}
+
+fn shape_written_nowhere() -> i32 {
+  let t = DynTensor<f32>::uninit();
+  return 0;
+}
+
+fn zeroed_is_not_built_yet() -> i32 {
+  let t = Tensor<f32, [ 2, 2 ]>::new();
+  return 0;
+}
+
+fn main() -> i32 {
+  return 0;
+}

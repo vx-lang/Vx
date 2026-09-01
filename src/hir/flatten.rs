@@ -130,6 +130,18 @@ impl ExtentSite {
     }
 }
 
+/// Does this call allocate a tensor?
+///
+/// Two spellings reach here: `Tensor<T>([d0, d1])`, which names the constructor and splits the
+/// element and shape between the generic argument and the call arguments, and `Tensor<T, [d0,
+/// d1]>::uninit()`, which writes the type. One predicate so the four sites that ask cannot drift.
+fn is_tensor_alloc_call(fc: &crate::syntax::FunctionCallExpr) -> bool {
+    matches!(
+        fc.name.as_ref(),
+        "Tensor" | "Tensor::new" | "Tensor::uninit" | "DynTensor::new" | "DynTensor::uninit"
+    )
+}
+
 /// Canonicalize a tensor dimension for the GID: a numeric literal by value, a const/generic name by
 /// its name. Anything else declines (so the tensor stays unmodelled rather than hashing unstably).
 fn tensor_dim_string(e: &Expr) -> Option<String> {
@@ -928,7 +940,7 @@ impl<'r> Lowerer<'r> {
             // takes two slices (fused multiply then reduce-add); the rest take one. `Tensor<T>([..])`
             // allocates a buffer. Any other name is an ordinary function call.
             Expr::FunctionCall(fc) => {
-                if fc.name.as_ref() == "Tensor" {
+                if is_tensor_alloc_call(fc) {
                     return self.lower_tensor_alloc(fc).ok_or(Decline::TypeNotModelled {
                         what: "a tensor allocation the flat path does not model",
                     });
@@ -2548,7 +2560,27 @@ impl<'r> Lowerer<'r> {
     /// whose `imm` is the static byte size, so the buffer has room for every element. Declines a
     /// dynamic/symbolic shape (its byte size isn't statically known) or a non-scalar element.
     fn lower_tensor_alloc(&mut self, fc: &crate::syntax::FunctionCallExpr) -> Option<Val> {
-        let elem = fc.type_args.as_ref()?.first().and_then(scalar_of)?;
+        let written = fc.type_args.as_ref()?.first()?;
+        // `Tensor<T, [d0, d1]>::uninit()` writes the element and shape in the type and takes no
+        // arguments, so there is nothing to recover from the call. A `DynTensor` has no static
+        // shape to size the buffer from and falls through to the decline below.
+        if let crate::syntax::Type::Tensor(el, dims, _) = written {
+            if matches!(el, ElementType::Generic(_)) {
+                return None;
+            }
+            let bytes = if dims.is_empty() {
+                crate::hir::memory::element_bits(el)?.div_ceil(8)
+            } else {
+                crate::hir::memory::static_tensor_bytes(el, dims)?
+            };
+            let shape: Vec<String> = dims.iter().map(tensor_dim_string).collect::<Option<_>>()?;
+            let ty = LoweredTy::Tensor {
+                elem: el.clone(),
+                shape,
+            };
+            return Some(self.emit_typed(Opcode::TensorAlloc, Register(0), Register(0), ty, bytes));
+        }
+        let elem = scalar_of(written)?;
         // An initializer list `Tensor<T>([[..],[..]])`: the nesting is the shape and the leaves
         // are the contents. The checker draws the same line -- `initializer_shape` answers only
         // for genuine nesting, so a flat `[d0, d1]` stays a shape below.
@@ -4836,7 +4868,7 @@ fn parallel_outer_for(stmts: &[Statement]) -> Option<(usize, u64)> {
         // expression passes through the same no-side-door walk as body reads.
         let init_ok = match &d.expr {
             Expr::FunctionCall(fc)
-                if &*fc.name == "Tensor" && fc.args.iter().all(|a| scan.expr(a)) =>
+                if is_tensor_alloc_call(fc) && fc.args.iter().all(|a| scan.expr(a)) =>
             {
                 true
             }
@@ -5295,14 +5327,14 @@ impl ParallelScan {
         let mut is_smem = false;
         let init_ok = match &d.expr {
             Expr::FunctionCall(fc)
-                if &*fc.name == "Tensor" && fc.args.iter().all(|a| self.expr(a)) =>
+                if is_tensor_alloc_call(fc) && fc.args.iter().all(|a| self.expr(a)) =>
             {
                 true
             }
             Expr::MethodCall(mc)
                 if &*mc.method_name == "with_memory"
                     && matches!(&*mc.base, Expr::FunctionCall(fc)
-                        if &*fc.name == "Tensor") =>
+                        if is_tensor_alloc_call(fc)) =>
             {
                 is_smem = true;
                 match &*mc.base {

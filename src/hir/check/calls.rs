@@ -1094,6 +1094,46 @@ impl<'a> TypeChecker<'a> {
         if let Some(prim) = resolved_name.strip_prefix("raw::") {
             return Some(self.check_raw_primitive(prim, args, arg_types, call_span));
         }
+        // `Tensor<T, [..], P>::uninit()` and the `DynTensor` form: the type is written, so it is
+        // read off the call rather than rebuilt from the call's name and arguments. That
+        // reconstruction is what the older spelling forces on three separate places, and it cannot
+        // carry a placement at all -- there is nowhere in `Tensor<f32>([4, 4])` to put one.
+        if matches!(
+            resolved_name,
+            "Tensor::new" | "Tensor::uninit" | "DynTensor::new" | "DynTensor::uninit"
+        ) {
+            let Some(ty) = explicit_generic_args.first() else {
+                self.errors
+                    .push(format!("'{resolved_name}' has no type to build"));
+                return Some(Type::Unknown);
+            };
+            // `::new()` is refused rather than treated as `::uninit()`. The two differ only in
+            // whether the storage arrives zeroed, so accepting it before the zeroing exists would
+            // hand back uninitialized memory to a program that asked for zeros -- and be
+            // indistinguishable from working until something read it.
+            if resolved_name.ends_with("::new") {
+                self.errors.push(
+                    "`::new()` (zeroed storage) is not built yet; `::uninit()` gives storage as \
+                     it was found, which is what every tensor construction does today"
+                        .to_string(),
+                );
+            }
+            // A static shape lives in the type and a dynamic one in the argument, so each form
+            // takes exactly the arguments the other cannot.
+            let wanted = usize::from(matches!(ty, Type::DynTensor(..)));
+            if args.len() != wanted {
+                let why = if wanted == 0 {
+                    "a Tensor's shape is part of its type, so the constructor takes no arguments"
+                } else {
+                    "a DynTensor's shape is not part of its type, so the constructor takes it: \
+                     `::new([n, m])`"
+                };
+                self.errors.push(format!(
+                    "'{resolved_name}' expects {wanted} argument(s): {why}"
+                ));
+            }
+            return Some(ty.clone());
+        }
         if resolved_name == "Verified" {
             if args.len() != 1 {
                 self.errors.push(format!(

@@ -834,7 +834,7 @@ fn substitute_words(text: &str, mapping: &std::collections::HashMap<Symbol, Type
     result
 }
 
-/// Is this a `Tensor<T>([d0, d1])` construction -- storage the compiler allocated?
+/// Is this a tensor construction -- storage the compiler allocated?
 ///
 /// A view built with `tensor_view_2d` has the same type and a shape the checker enforces, but
 /// names memory the compiler does not control: two views over one pointer are two names for one
@@ -843,6 +843,12 @@ pub fn is_tensor_construction(e: &Expr) -> bool {
     match e {
         Expr::FunctionCall(fc) => {
             let n = fc.name.as_ref();
+            if matches!(
+                n,
+                "Tensor::new" | "Tensor::uninit" | "DynTensor::new" | "DynTensor::uninit"
+            ) {
+                return true;
+            }
             n.starts_with("Tensor")
                 && !n.ends_with("::from")
                 && !n.contains('$')

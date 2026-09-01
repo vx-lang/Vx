@@ -2221,16 +2221,32 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             return lower_tensor_view_2d(gen, args, type_args.as_deref(), block);
         }
 
-        if name.as_ref() == "Tensor" {
-            let mlir_ty_str = if let Some(tys) = type_args {
-                if !tys.is_empty() {
-                    gen.lower_type_str(&tys[0])?
-                } else {
-                    panic!("Tensor initialization requires an explicit generic type argument");
+        if matches!(
+            name.as_ref(),
+            "Tensor" | "Tensor::new" | "Tensor::uninit" | "DynTensor::new" | "DynTensor::uninit"
+        ) {
+            // `Tensor<T, [d0, d1]>::uninit()` writes its element and shape in the type; the older
+            // `Tensor<T>([d0, d1])` splits them between the generic argument and the call
+            // arguments. Normalising the first into the second's shape -- one array argument of
+            // extents -- keeps a single lowering rather than two that must agree.
+            let written = type_args.as_ref().and_then(|t| t.first());
+            let (elem, shape_args): (syntax::Type, Vec<Expr>) = match written {
+                Some(syntax::Type::Tensor(el, dims, _)) => (
+                    syntax::Type::Scalar(el.clone()),
+                    vec![Expr::Array(syntax::ArrayExpr::new(
+                        dims.clone(),
+                        syntax::Span::default(),
+                    ))],
+                ),
+                // A `DynTensor`'s shape is not in its type, so it stays where it was written.
+                Some(syntax::Type::DynTensor(el, _)) => {
+                    (syntax::Type::Scalar(el.clone()), args.to_vec())
                 }
-            } else {
-                panic!("Tensor initialization requires an explicit generic type argument");
+                Some(scalar) => (scalar.clone(), args.to_vec()),
+                None => panic!("Tensor initialization requires an explicit generic type argument"),
             };
+            let mlir_ty_str = gen.lower_type_str(&elem)?;
+            let args: &[Expr] = &shape_args;
             // Initializer list: `Tensor<T>([[..],[..]])` allocates a shaped buffer and stores the
             // constant values in place, so no fill loop is needed.
             if let Some(Expr::Array(arr)) = args.first() {

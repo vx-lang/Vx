@@ -1836,6 +1836,14 @@ impl<'c> MeliorGenerator<'c> {
                 let name = fc.name.to_string();
                 // `Tensor<T>([d0, d1, ...])` constructor: recover the static shape so slice
                 // indexing / vectorized reductions know the tile dims (mirrors sema in hir/expr).
+                // The newer spelling writes the whole type, placement included, so there is
+                // nothing to recover -- hand it back as written.
+                if matches!(
+                    name.as_str(),
+                    "Tensor::new" | "Tensor::uninit" | "DynTensor::new" | "DynTensor::uninit"
+                ) {
+                    return fc.type_args.as_ref().and_then(|a| a.first()).cloned();
+                }
                 if name.starts_with("Tensor")
                     && !name.ends_with("::from")
                     && !name.contains('$')
