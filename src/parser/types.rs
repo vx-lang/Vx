@@ -376,7 +376,7 @@ impl<'a> Parser<'a> {
                     if !saw_dims_list {
                         return Err(self.error(DIMS_REQUIRED));
                     }
-                    Ok(Type::Tensor(el_ty, dims, top))
+                    Ok(Type::Tensor(el_ty, dims, top.map(Placement::on)))
                 }
             }
             // `DynTensor<T>` / `DynTensor<T, Topology::X>`: a tensor whose shape is a run-time
@@ -412,7 +412,7 @@ impl<'a> Parser<'a> {
                         "Expected '>' after DynTensor parameters",
                     )?;
                 }
-                Ok(Type::DynTensor(el_ty, top))
+                Ok(Type::DynTensor(el_ty, top.map(Placement::on)))
             }
             "Matrix" => Ok(Type::Matrix),
             _ => {

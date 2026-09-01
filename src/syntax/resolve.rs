@@ -149,14 +149,14 @@ impl Type {
                 for dim in dims {
                     dim.resolve_names(scope);
                 }
-                if let Some(t) = top {
-                    t.resolve_names(scope);
+                if let Some(p) = top {
+                    p.topology.resolve_names(scope);
                 }
             }
             // No dimension expressions to resolve; the placement still names a topology.
             Type::DynTensor(_, top) => {
-                if let Some(t) = top {
-                    t.resolve_names(scope);
+                if let Some(p) = top {
+                    p.topology.resolve_names(scope);
                 }
             }
             Type::Ref(inner, _)

@@ -505,6 +505,23 @@ pub fn topology_address_space(
     declared_address_space(&space, decls.get(&space))
 }
 
+/// The space a topology kind holds, from the built-in table alone.
+///
+/// The parser has no declaration table, so a placement written as a device starts here and
+/// `resolve_names` corrects it where a declaration says otherwise. A custom kind falls back to
+/// the like-named space, which is the convention `default_memory_for` already applies.
+pub fn builtin_default_space(kind: &crate::syntax::TopologyKind) -> MemorySpace {
+    use crate::syntax::TopologyKind as K;
+    match kind {
+        K::CPU | K::AMX | K::CpuAvx512 | K::CpuNeon => MemorySpace::CPUDRAM,
+        K::GPU => MemorySpace::GpuHbm,
+        K::NPU | K::ANE | K::Slice => MemorySpace::NPUHBM,
+        K::AccCore => MemorySpace::LocalSRAM,
+        K::Custom(name) => MemorySpace::from_name(name.as_ref()),
+        K::Current => MemorySpace::CPUDRAM,
+    }
+}
+
 /// The topology a built-in memory space belongs to.
 ///
 /// Stated rather than derived. The obvious derivation -- invert `default_space` over the

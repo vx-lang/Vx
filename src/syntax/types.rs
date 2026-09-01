@@ -194,6 +194,39 @@ impl PartialEq for Topology {
     }
 }
 
+/// Where a value lives: the device that holds it, and the space on that device.
+///
+/// Both, always. A topology has a default space and a space is not anywhere in particular
+/// without a device holding it, so these are two projections of one fact rather than
+/// alternatives. The surface lets either be written; the other is derived.
+///
+/// Equality is over both, which is why the derivation cannot be deferred: a placement written as
+/// a device and one written as its space name the same location and have to compare equal.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Placement {
+    pub topology: Topology,
+    pub space: MemorySpace,
+}
+
+impl Placement {
+    /// A placement written as a device. The space is the one that device holds.
+    ///
+    /// The derivation is the built-in table, which is all the parser can see: a declared
+    /// topology's own `memory:` is program-wide information that arrives later. So the space
+    /// projection is not yet trustworthy for a declared topology whose memory differs from its
+    /// name. Nothing reads it today, and both spellings derive the same answer, so type equality
+    /// stays consistent -- but it has to be corrected before the surface accepts a space here.
+    pub fn on(topology: Topology) -> Self {
+        let space = crate::arch::builtin_default_space(&topology.kind());
+        Self { topology, space }
+    }
+
+    /// A placement written as a space, once its owning device is known.
+    pub fn in_space(space: MemorySpace, topology: Topology) -> Self {
+        Self { topology, space }
+    }
+}
+
 #[allow(non_camel_case_types)]
 #[derive(Debug, Clone)]
 pub enum Topology {
@@ -427,12 +460,12 @@ pub enum Type {
     /// are different types and get different monomorphs (Vx#401). A dims-less spelling still
     /// parses to this and still means "shape unknown"; Vx#399 moves that reading to `DynTensor`
     /// and makes the dims-less `Tensor` unspellable.
-    Tensor(ElementType, Vec<Expr>, Option<Topology>),
+    Tensor(ElementType, Vec<Expr>, Option<Placement>),
     /// A tensor whose shape is not known until run time — a model config's dimensions, a
     /// shape-polymorphic library function. Carries no extents by construction, so nothing can
     /// read a shape off it that a static check would then trust (Vx#399). The verified variant
     /// (a declared upper bound, Vx#245) is a later addition to this variant.
-    DynTensor(ElementType, Option<Topology>),
+    DynTensor(ElementType, Option<Placement>),
     Matrix,
     Ref(Box<Type>, MemorySpace),
     Borrow {
@@ -572,8 +605,13 @@ impl Type {
     // Mangle trait is implemented below
 
     pub fn topology(&self) -> Option<Topology> {
+        self.placement().map(|p| p.topology.clone())
+    }
+
+    /// Where this value lives, when its type says.
+    pub fn placement(&self) -> Option<&Placement> {
         match self {
-            Type::Tensor(_, _, top) => top.clone(),
+            Type::Tensor(_, _, p) | Type::DynTensor(_, p) => p.as_ref(),
             _ => None,
         }
     }
@@ -948,7 +986,11 @@ mod tests {
 
     #[test]
     fn test_type_topology_tensor_with_topology() {
-        let ty = Type::Tensor(ElementType::F32, vec![], Some(Topology::gpu(0)));
+        let ty = Type::Tensor(
+            ElementType::F32,
+            vec![],
+            Some(Placement::on(Topology::gpu(0))),
+        );
         assert_eq!(ty.topology(), Some(Topology::gpu(0)));
     }
 
@@ -1026,14 +1068,18 @@ mod tests {
         let ty = Type::Tensor(
             ElementType::Generic("T".into()),
             vec![],
-            Some(Topology::gpu(0)),
+            Some(Placement::on(Topology::gpu(0))),
         );
         let mut mapping = HashMap::new();
         mapping.insert("T".into(), Type::Scalar(ElementType::F32));
         let result = ty.substitute(&mapping);
         assert_eq!(
             result,
-            Type::Tensor(ElementType::F32, vec![], Some(Topology::gpu(0)))
+            Type::Tensor(
+                ElementType::F32,
+                vec![],
+                Some(Placement::on(Topology::gpu(0)))
+            )
         );
     }
 
@@ -1051,7 +1097,11 @@ mod tests {
 
     #[test]
     fn test_mangle_tensor_ignores_topology_and_shape() {
-        let ty_with = Type::Tensor(ElementType::F32, vec![], Some(Topology::gpu(0)));
+        let ty_with = Type::Tensor(
+            ElementType::F32,
+            vec![],
+            Some(Placement::on(Topology::gpu(0))),
+        );
         let ty_without = Type::Tensor(ElementType::F32, vec![], None);
         // Topology is intentionally not included in mangling
         assert_eq!(ty_with.mangle(), ty_without.mangle());

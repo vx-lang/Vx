@@ -1680,7 +1680,7 @@ impl<'c> MeliorGenerator<'c> {
         &self,
         el_ty: &ElementType,
         dims: &[syntax::Expr],
-        top: &Option<syntax::Topology>,
+        top: &Option<syntax::Placement>,
         dynamic: bool,
     ) -> Result<Type<'c>, crate::codegen::lower::LowerError> {
         let ty_str = match el_ty {
@@ -1749,14 +1749,16 @@ impl<'c> MeliorGenerator<'c> {
         // fallback to constant memory (#258).
         let addr_space = match top.as_ref() {
             None => crate::arch::AddressSpace::Host,
-            Some(t) => crate::arch::topology_address_space(t, &self.memories, &self.topologies)
-                .ok_or_else(|| {
+            Some(p) => {
+                crate::arch::topology_address_space(&p.topology, &self.memories, &self.topologies)
+                    .ok_or_else(|| {
                     LowerError::from(format!(
                     "topology '{}' has no memory space that maps to this target's address spaces; \
                      declare its memory with a `scope:` (device/sm/cta/thread)",
-                    t.display_name()
+                    p.topology.display_name()
                 ))
-                })?,
+                })?
+            }
         };
 
         let memref_str = if addr_space != crate::arch::AddressSpace::Host {

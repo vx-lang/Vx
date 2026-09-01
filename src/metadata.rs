@@ -17,7 +17,7 @@ use crate::gid::{deserialize_metadata_symbols, serialize_metadata_symbols, TypeI
 use crate::layout::{FieldLayout, FieldTy};
 use crate::registry::{FnBody, FnSig, ImmutableGlobalRegistry, StructFields, TypeDefinition};
 use crate::symbol::Symbol;
-use crate::syntax::{ElementType, Expr, MemorySpace, Topology, Type};
+use crate::syntax::{ElementType, Expr, MemorySpace, Placement, Topology, Type};
 use rustc_hash::FxHashMap;
 use std::fs;
 use std::io;
@@ -424,22 +424,29 @@ fn read_topology(r: &mut Reader) -> Result<Topology, String> {
     })
 }
 
-fn write_opt_topology(w: &mut Writer, o: &Option<Topology>) -> Result<(), String> {
+fn write_opt_placement(w: &mut Writer, o: &Option<Placement>) -> Result<(), String> {
     match o {
         None => w.u8(0),
-        Some(t) => {
+        Some(p) => {
             w.u8(1);
-            write_topology(w, t)?;
+            write_topology(w, &p.topology)?;
+            write_memory_space(w, &p.space);
         }
     }
     Ok(())
 }
 
-fn read_opt_topology(r: &mut Reader) -> Result<Option<Topology>, String> {
+fn read_opt_placement(r: &mut Reader) -> Result<Option<Placement>, String> {
     Ok(match r.u8()? {
         0 => None,
-        1 => Some(read_topology(r)?),
-        t => return Err(format!("vxlib: bad Option<Topology> tag {t}")),
+        1 => {
+            // Written topology-first; the space follows, so a declared space survives the
+            // round trip rather than being re-derived from the device.
+            let topology = read_topology(r)?;
+            let space = read_memory_space(r)?;
+            Some(Placement::in_space(space, topology))
+        }
+        t => return Err(format!("vxlib: bad Option<Placement> tag {t}")),
     })
 }
 
@@ -539,12 +546,12 @@ fn write_type(w: &mut Writer, ty: &Type) -> Result<(), String> {
             }
             w.u8(15);
             write_element_type(w, e);
-            write_opt_topology(w, top)?;
+            write_opt_placement(w, top)?;
         }
         DynTensor(e, top) => {
             w.u8(16);
             write_element_type(w, e);
-            write_opt_topology(w, top)?;
+            write_opt_placement(w, top)?;
         }
         Const(_) => return Err("vxlib: const-expression type not yet serializable".into()),
         Module(_, _) => return Err("vxlib: module type not serializable".into()),
@@ -618,9 +625,9 @@ fn read_type(r: &mut Reader) -> Result<Type, String> {
         14 => Unknown,
         15 => {
             let e = read_element_type(r)?;
-            Tensor(e, Vec::new(), read_opt_topology(r)?)
+            Tensor(e, Vec::new(), read_opt_placement(r)?)
         }
-        16 => DynTensor(read_element_type(r)?, read_opt_topology(r)?),
+        16 => DynTensor(read_element_type(r)?, read_opt_placement(r)?),
         t => return Err(format!("vxlib: bad Type tag {t}")),
     })
 }
