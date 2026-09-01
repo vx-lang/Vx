@@ -505,6 +505,55 @@ pub fn topology_address_space(
     declared_address_space(&space, decls.get(&space))
 }
 
+/// The topology a built-in memory space belongs to.
+///
+/// Stated rather than derived. The obvious derivation -- invert `default_space` over the
+/// descriptor table -- is not a function: `CPU_DRAM` is the default of CPU, AMX, CpuAvx512 and
+/// CpuNeon, and `NPU_HBM` of NPU, ANE and Slice. Nor does `within:` answer it, since that is a
+/// containment relation whose root is always host memory, which would make GPU memory
+/// host-owned. Ownership is a fact about the space, so it is written here once.
+///
+/// `NIC_RAM` and `Remote_HBM` are the host's provisionally. A NIC is host-attached, so that one
+/// is close to right; remote HBM is memory on another machine and its owner is a topology the
+/// type system cannot name yet. Neither is added to any topology's visibility, so this settles
+/// where they are without granting local access to them.
+pub fn builtin_space_owner(space: &MemorySpace) -> Option<crate::syntax::TopologyKind> {
+    use crate::syntax::TopologyKind as K;
+    Some(match space {
+        MemorySpace::CPUDRAM => K::CPU,
+        MemorySpace::GpuHbm => K::GPU,
+        MemorySpace::NPUHBM => K::NPU,
+        MemorySpace::LocalSRAM => K::AccCore,
+        MemorySpace::NicRam | MemorySpace::RemoteHbm => K::CPU,
+        MemorySpace::Custom(_) => return None,
+    })
+}
+
+/// The lowest device index, for a topology kind that carries one. A space names a kind, not an
+/// instance -- `Memory::GPU_HBM` says which memory, never which GPU.
+fn first_device_of(kind: &crate::syntax::TopologyKind) -> Topology {
+    use crate::syntax::TopologyKind as K;
+    let zero = || {
+        Box::new(crate::syntax::Expr::Number(crate::syntax::NumberExpr {
+            value: "0".into(),
+            ty: None,
+            span: crate::syntax::Span::default(),
+        }))
+    };
+    match kind {
+        K::CPU => Topology::CPU,
+        K::AMX => Topology::AMX,
+        K::ANE => Topology::ANE,
+        K::CpuAvx512 => Topology::CpuAvx512,
+        K::CpuNeon => Topology::CpuNeon,
+        K::GPU => Topology::GPU(zero()),
+        K::NPU | K::Slice => Topology::NPU(zero()),
+        K::AccCore => Topology::AccCore(zero()),
+        K::Custom(name) => Topology::Custom(name.clone()),
+        K::Current => Topology::Current,
+    }
+}
+
 /// The built-in topology descriptions, encoding what `arch.rs` previously hardcoded.
 /// `visibility` includes each topology's own `default_space`, which subsumes the old
 /// "a topology sees its own memory" special-cases (NPU→NPUHBM, AccCore→LocalSRAM,
@@ -727,6 +776,47 @@ impl TransferCostGraph {
     /// from the graph's per-compilation `descriptors` — no global registry.
     pub fn descriptor(&self, kind: &crate::syntax::TopologyKind) -> Option<&TopologyDescriptor> {
         self.descriptors.get(kind)
+    }
+
+    /// The topology a memory space belongs to, or why it cannot be told.
+    ///
+    /// A built-in space has a stated owner. A declared one is owned by the topology whose
+    /// `memory:` names it -- exactly one, since a space held by two devices is ambiguous in a
+    /// way a default would silently pick a side on.
+    ///
+    /// This is the direction `default_memory_for` does not run, and the reason a placement can
+    /// be written either way round: `Topology::GPU` gives the space, `Memory::GPU_HBM` gives
+    /// the device.
+    pub fn owning_topology(&self, space: &MemorySpace) -> Result<Topology, String> {
+        if let Some(kind) = builtin_space_owner(space) {
+            return Ok(first_device_of(&kind));
+        }
+        let mut owners: Vec<&crate::syntax::TopologyKind> = self
+            .descriptors
+            .iter()
+            .filter(|(_, d)| d.default_space == *space)
+            .map(|(k, _)| k)
+            .collect();
+        owners.sort_by_key(|k| format!("{k:?}"));
+        match owners.as_slice() {
+            [one] => Ok(first_device_of(one)),
+            [] => Err(format!(
+                "no topology declares `Memory::{}` as its memory, so there is no device it \
+                 names; give a topology `memory: Memory::{}`",
+                space.name(),
+                space.name()
+            )),
+            many => Err(format!(
+                "`Memory::{}` is declared as the memory of {} topologies ({}), so which device \
+                 it names is ambiguous; write the topology instead",
+                space.name(),
+                many.len(),
+                many.iter()
+                    .map(|k| format!("{k:?}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+        }
     }
 
     /// The default memory space a topology's values live in.
@@ -1998,5 +2088,76 @@ mod tests {
                 MemorySpace::RemoteHbm
             ]
         );
+    }
+
+    #[test]
+    fn a_built_in_space_names_the_device_that_holds_it() {
+        let g = TransferCostGraph::default();
+        assert_eq!(
+            g.owning_topology(&MemorySpace::CPUDRAM).unwrap(),
+            Topology::CPU
+        );
+        assert_eq!(
+            g.owning_topology(&MemorySpace::GpuHbm).unwrap(),
+            Topology::gpu(0)
+        );
+        assert!(matches!(
+            g.owning_topology(&MemorySpace::NPUHBM).unwrap(),
+            Topology::NPU(_)
+        ));
+        assert!(matches!(
+            g.owning_topology(&MemorySpace::LocalSRAM).unwrap(),
+            Topology::AccCore(_)
+        ));
+    }
+
+    #[test]
+    fn the_owner_is_stated_because_inverting_the_descriptors_is_not_a_function() {
+        // `CPU_DRAM` is the default space of CPU, AMX, CpuAvx512 and CpuNeon, and `NPU_HBM` of
+        // NPU, ANE and Slice. Deriving the owner by inverting that table would make the two
+        // most-used spaces ambiguous, so the answer comes from `builtin_space_owner` instead.
+        let g = TransferCostGraph::default();
+        let sharing_cpu_dram = g
+            .descriptors
+            .values()
+            .filter(|d| d.default_space == MemorySpace::CPUDRAM)
+            .count();
+        assert!(
+            sharing_cpu_dram > 1,
+            "the ambiguity this test exists for is gone"
+        );
+        assert_eq!(
+            g.owning_topology(&MemorySpace::CPUDRAM).unwrap(),
+            Topology::CPU
+        );
+    }
+
+    #[test]
+    fn a_space_no_topology_claims_has_no_owner_rather_than_a_default() {
+        let g = TransferCostGraph::default();
+        let orphan = MemorySpace::Custom("Scratchpad".into());
+        let err = g.owning_topology(&orphan).unwrap_err();
+        assert!(err.contains("no topology declares"), "{err}");
+        assert!(err.contains("Scratchpad"), "{err}");
+    }
+
+    #[test]
+    fn a_space_two_topologies_claim_is_ambiguous_rather_than_first_wins() {
+        let mut g = TransferCostGraph::default();
+        let shared = MemorySpace::Custom("Shared".into());
+        for name in ["DevA", "DevB"] {
+            g.descriptors.insert(
+                crate::syntax::TopologyKind::Custom(name.into()),
+                TopologyDescriptor {
+                    arch: None,
+                    default_space: shared.clone(),
+                    visibility: vec![shared.clone()],
+                    transfers: Vec::new(),
+                },
+            );
+        }
+        let err = g.owning_topology(&shared).unwrap_err();
+        assert!(err.contains("ambiguous"), "{err}");
+        assert!(err.contains("DevA") && err.contains("DevB"), "{err}");
     }
 }
