@@ -30,6 +30,11 @@ pub struct ResolutionScope<'a> {
     current_path: Option<Symbol>,
     symbol_map: &'a SymbolMap,
     imports: ImportIndex,
+    /// Every topology this compilation declares, indexed by kind, so a placement written as a
+    /// device can be given the space that device actually holds. Owned for the same reason
+    /// `ImportIndex` is: the scope must not borrow the `Program` during the mutable walk, and a
+    /// `--machine` file's declarations arrive from a *different* program in the array anyway.
+    topologies: HashMap<TopologyKind, crate::arch::TopologyDescriptor>,
 }
 
 /// A module's `import` declarations, pre-indexed for the two resolution shapes.
@@ -54,6 +59,7 @@ impl<'a> ResolutionScope<'a> {
         current_path: Option<Symbol>,
         symbol_map: &'a SymbolMap,
         imports: &[crate::syntax::ImportDecl],
+        topologies: &[crate::arch::TopologyDecl],
     ) -> Self {
         let mut leaf_to_module = HashMap::new();
         let mut alias_to_module = HashMap::new();
@@ -77,6 +83,10 @@ impl<'a> ResolutionScope<'a> {
                 leaf_to_module,
                 alias_to_module,
             },
+            topologies: topologies
+                .iter()
+                .map(|d| (TopologyKind::Custom(d.name.clone()), d.descriptor.clone()))
+                .collect(),
         }
     }
 
@@ -150,13 +160,13 @@ impl Type {
                     dim.resolve_names(scope);
                 }
                 if let Some(p) = top {
-                    p.topology.resolve_names(scope);
+                    p.resolve_names(scope);
                 }
             }
-            // No dimension expressions to resolve; the placement still names a topology.
+            // No dimension expressions to resolve; the placement still names a location.
             Type::DynTensor(_, top) => {
                 if let Some(p) = top {
-                    p.topology.resolve_names(scope);
+                    p.resolve_names(scope);
                 }
             }
             Type::Ref(inner, _)
@@ -193,6 +203,16 @@ impl Type {
             Type::Matrix | Type::Scalar(_) | Type::Simd(_, _) => {}
             Type::Unknown => {}
         }
+    }
+}
+
+impl Placement {
+    /// Resolve the names inside the device, then fill in whichever projection the source did not
+    /// write. This is the pass with program-wide scope, so it is the first point at which
+    /// `Topology SmemDev { memory: Memory::SMEM }` can say what `Topology::SmemDev` holds.
+    pub fn resolve_names(&mut self, scope: &ResolutionScope) {
+        self.topology.resolve_names(scope);
+        self.complete(&scope.topologies);
     }
 }
 
@@ -385,15 +405,27 @@ impl ImplBlock {
 }
 
 impl Program {
-    pub fn resolve_names(&mut self, symbol_map: &crate::syntax::SymbolMap) {
-        // Build the scope up front: it borrows only `symbol_map` (and owns an index cloned from the
-        // imports), so it no longer borrows `self` and we can mutably walk the declarations below.
+    /// `topologies` is every topology *the compilation* declares, which is not the same as this
+    /// module's: a `--machine` file is a separate program in the array and is where a fleet's
+    /// topologies are declared. This module's own are folded in here, so a caller with a single
+    /// module can pass `&[]`.
+    pub fn resolve_names(
+        &mut self,
+        symbol_map: &crate::syntax::SymbolMap,
+        topologies: &[crate::arch::TopologyDecl],
+    ) {
+        // Build the scope up front: it borrows only `symbol_map` (and owns indexes cloned from the
+        // imports and topologies), so it no longer borrows `self` and we can mutably walk the
+        // declarations below.
         let current = symbol_map.get(&self.module_path);
+        let mut decls = topologies.to_vec();
+        decls.extend(self.topologies.iter().cloned());
         let scope = ResolutionScope::new(
             current,
             Some(self.module_path.clone()),
             symbol_map,
             &self.imports,
+            &decls,
         );
         for s in &mut self.structs {
             s.resolve_names(&scope);

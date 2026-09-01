@@ -141,7 +141,7 @@ fn flat_llvm(src: &str) -> Option<String> {
     program.module_path = "crate::diff".into();
     let mut mods = vec![program];
     let symbol_map = vxc::resolver::build_symbol_map(&mods);
-    mods[0].resolve_names(&symbol_map);
+    mods[0].resolve_names(&symbol_map, &[]);
     let registry = vxc::pipeline::build_frozen_registry(&mods).ok()?;
     let session = std::sync::Arc::new(GlobalSession::with_registry(1, registry));
 
@@ -165,7 +165,7 @@ fn flat_llvm(src: &str) -> Option<String> {
             mods[0].functions.push(f);
         }
         let symbol_map = vxc::resolver::build_symbol_map(&mods);
-        mods[0].resolve_names(&symbol_map);
+        mods[0].resolve_names(&symbol_map, &[]);
     }
     let registry = vxc::pipeline::build_frozen_registry(&mods).ok()?;
     let session = std::sync::Arc::new(GlobalSession::with_registry(1, registry));
@@ -243,7 +243,7 @@ fn flat_module_mlir(src: &str) -> Option<String> {
     program.module_path = "crate::diff".into();
     let mut mods = vec![program];
     let symbol_map = vxc::resolver::build_symbol_map(&mods);
-    mods[0].resolve_names(&symbol_map);
+    mods[0].resolve_names(&symbol_map, &[]);
     let registry = vxc::pipeline::build_frozen_registry(&mods).ok()?;
     let session = std::sync::Arc::new(GlobalSession::with_registry(1, registry));
     let env_mods = mods.clone();
@@ -1202,7 +1202,7 @@ fn build_lib_interface(path: &str, src: &str) -> Vec<u8> {
     prog.module_path = path.into();
     let mut mods = vec![prog];
     let symbol_map = vxc::resolver::build_symbol_map(&mods);
-    mods[0].resolve_names(&symbol_map);
+    mods[0].resolve_names(&symbol_map, &[]);
     vxc::pipeline::emit_module_interface(&mods).expect("emit module interface")
 }
 
@@ -1226,7 +1226,7 @@ fn program_links_a_function_body_from_a_vxlib_artifact() {
     app.module_path = "crate::app".into();
     let mut mods = vec![app];
     let symbol_map = vxc::resolver::build_symbol_map(&mods);
-    mods[0].resolve_names(&symbol_map);
+    mods[0].resolve_names(&symbol_map, &[]);
 
     // Fold the precompiled library interface into the app's frozen registry (no parse of the lib).
     let mut registry = vxc::pipeline::build_frozen_registry(&mods).expect("app registry");

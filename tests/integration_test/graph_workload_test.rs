@@ -52,7 +52,7 @@ fn graph_library_parallel_resolution_is_deterministic() {
             let mut mods = modules.clone();
             let symbol_map = build_symbol_map(&mods);
             mods.par_iter_mut()
-                .for_each(|m| m.resolve_names(&symbol_map));
+                .for_each(|m| m.resolve_names(&symbol_map, &[]));
             let mut gids: Vec<[u64; 4]> = symbol_map
                 .values()
                 .flat_map(|t| t.values().map(|id| id.words))
@@ -85,7 +85,7 @@ fn graph_library_parallel_resolution_stress() {
     (0..64).into_par_iter().for_each(|_| {
         let mut mods = modules.clone();
         let map = build_symbol_map(&mods);
-        mods.par_iter_mut().for_each(|m| m.resolve_names(&map));
+        mods.par_iter_mut().for_each(|m| m.resolve_names(&map, &[]));
         let n: usize = map.values().map(|t| t.len()).sum();
         assert_eq!(n, baseline, "symbol count diverged under contention");
     });

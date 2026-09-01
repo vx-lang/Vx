@@ -43,6 +43,19 @@ pub fn build_symbol_map(modules: &[VxModule]) -> SymbolMap {
         .collect()
 }
 
+/// Every topology the compilation declares, gathered across its modules.
+///
+/// Companion to `build_symbol_map` and used the same way: computed once from `&[VxModule]`, then
+/// handed to each module's `resolve_names` during the mutable walk. Owned because that walk takes
+/// the array by `&mut`, and because a topology declared in a `--machine` file has to reach the
+/// module that names it, which a per-module view cannot do.
+pub fn collect_topologies(modules: &[VxModule]) -> Vec<crate::arch::TopologyDecl> {
+    modules
+        .iter()
+        .flat_map(|m| m.topologies.iter().cloned())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

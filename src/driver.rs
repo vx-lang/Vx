@@ -531,8 +531,9 @@ impl CompilerDriver {
         filename: &str,
     ) -> Result<(), String> {
         let symbol_map = crate::resolver::build_symbol_map(program_arr);
+        let topologies = crate::resolver::collect_topologies(program_arr);
         for m in program_arr.iter_mut() {
-            m.resolve_names(&symbol_map);
+            m.resolve_names(&symbol_map, &topologies);
         }
         let (bytes, report) = crate::pipeline::emit_module_interface_reporting(program_arr)
             .map_err(|e| format!("Failed to build module interface: {}", e))?;
@@ -1051,8 +1052,9 @@ impl CompilerDriver {
         let mut mods: Vec<crate::syntax::Program> = vec![main_ast.clone()];
         mods.extend(module_syntaxes.values().cloned());
         let symbol_map = crate::resolver::build_symbol_map(&mods);
+        let topologies = crate::resolver::collect_topologies(&mods);
         for m in &mut mods {
-            m.resolve_names(&symbol_map);
+            m.resolve_names(&symbol_map, &topologies);
         }
         let mut registry = crate::pipeline::build_frozen_registry(&mods).ok()?;
         // Fold each precompiled interface's signatures + portable flat-HIR bodies into this compile's

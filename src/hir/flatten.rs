@@ -5696,7 +5696,7 @@ mod tests {
         prog.module_path = "crate::t".into();
         let mut mods = vec![prog];
         let symbol_map = crate::resolver::build_symbol_map(&mods);
-        mods[0].resolve_names(&symbol_map);
+        mods[0].resolve_names(&symbol_map, &[]);
         let registry = crate::pipeline::build_frozen_registry(&mods).expect("registry builds");
         let mut worker = LocalWorkerState::new(Arc::new(GlobalSession::with_registry(1, registry)));
 

@@ -56,7 +56,7 @@ fn make() -> Point {
         // Resolve names, then freeze the registry so `StructInit` GID resolution has an oracle.
         let mut mods = vec![program];
         let symbol_map = crate::resolver::build_symbol_map(&mods);
-        mods[0].resolve_names(&symbol_map);
+        mods[0].resolve_names(&symbol_map, &[]);
         let registry = crate::pipeline::build_frozen_registry(&mods).expect("registry builds");
         let expected = registry
             .resolve_unique_nominal(&crate::symbol::Symbol::from("Point"))

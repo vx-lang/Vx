@@ -120,8 +120,9 @@ impl Analysis {
 
         // 2. Name Resolution
         let symbol_map = crate::resolver::build_symbol_map(&modules);
+        let topologies = crate::resolver::collect_topologies(&modules);
         for m in modules.iter_mut() {
-            m.resolve_names(&symbol_map);
+            m.resolve_names(&symbol_map, &topologies);
         }
 
         let global_env_modules: Vec<_> = modules.iter().map(|m| m.clone_signature()).collect();

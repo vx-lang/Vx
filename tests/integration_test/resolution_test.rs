@@ -54,7 +54,7 @@ fn peel(mut t: Type) -> Type {
 fn resolve1(path: &str, src: &str) -> (VxModule, vxc::syntax::SymbolMap) {
     let mut m = parse_module(path, src);
     let map = build_symbol_map(std::slice::from_ref(&m));
-    m.resolve_names(&map);
+    m.resolve_names(&map, &[]);
     (m, map)
 }
 
@@ -68,7 +68,7 @@ fn cross_module_qualified_reference_resolves_to_defining_module() {
     let mut module_b = parse_module("B", "fn use_foo(f: A::Foo) -> i32 { return 0; }");
 
     let symbol_map = build_symbol_map(&[module_a.clone(), module_b.clone()]);
-    module_b.resolve_names(&symbol_map);
+    module_b.resolve_names(&symbol_map, &[]);
 
     let a_foo = symbol_map[&sym("A")][&sym("Foo")];
     match param_ty(&module_b, 0) {
@@ -100,7 +100,7 @@ fn qualified_reference_is_not_shadowed_by_local_same_name() {
     );
 
     let symbol_map = build_symbol_map(&[module_a.clone(), module_b.clone()]);
-    module_b.resolve_names(&symbol_map);
+    module_b.resolve_names(&symbol_map, &[]);
 
     let a_foo = symbol_map[&sym("A")][&sym("Foo")];
     let b_foo = symbol_map[&sym("B")][&sym("Foo")];
@@ -125,7 +125,7 @@ fn qualified_self_reference_resolves_via_local_table() {
         "struct Foo { x: i32 }\nfn use_foo(f: A::Foo) -> i32 { return 0; }",
     );
     let symbol_map = build_symbol_map(&[module_a.clone()]);
-    module_a.resolve_names(&symbol_map);
+    module_a.resolve_names(&symbol_map, &[]);
 
     let a_foo = symbol_map[&sym("A")][&sym("Foo")];
     match param_ty(&module_a, 0) {
@@ -151,7 +151,7 @@ fn imported_unqualified_name_resolves_cross_module() {
     );
 
     let symbol_map = build_symbol_map(&[module_a.clone(), module_b.clone()]);
-    module_b.resolve_names(&symbol_map);
+    module_b.resolve_names(&symbol_map, &[]);
 
     let a_foo = symbol_map[&sym("crate::a")][&sym("Foo")];
     match param_ty(&module_b, 0) {
@@ -250,8 +250,8 @@ fn cross_module_mutual_recursion_resolves_each_side() {
     let mut a = parse_module("A", "struct Node { other: B::Other }");
     let mut b = parse_module("B", "struct Other { back: A::Node }");
     let map = build_symbol_map(&[a.clone(), b.clone()]);
-    a.resolve_names(&map);
-    b.resolve_names(&map);
+    a.resolve_names(&map, &[]);
+    b.resolve_names(&map, &[]);
 
     let a_node = map[&sym("A")][&sym("Node")];
     let b_other = map[&sym("B")][&sym("Other")];
@@ -286,7 +286,7 @@ fn multi_segment_module_path_resolves() {
     let a = parse_module("a::b::c", "struct Foo { x: i32 }");
     let mut user = parse_module("user", "struct Use { f: a::b::c::Foo }");
     let map = build_symbol_map(&[a.clone(), user.clone()]);
-    user.resolve_names(&map);
+    user.resolve_names(&map, &[]);
 
     let foo = map[&sym("a::b::c")][&sym("Foo")];
     match field_ty(&user, 0, 0) {
@@ -365,7 +365,7 @@ fn enum_payload_cross_module_reference_resolves() {
     let a = parse_module("A", "struct Foo { x: i32 }");
     let mut b = parse_module("B", "enum Wrap { None, Some(A::Foo) }");
     let map = build_symbol_map(&[a.clone(), b.clone()]);
-    b.resolve_names(&map);
+    b.resolve_names(&map, &[]);
 
     let a_foo = map[&sym("A")][&sym("Foo")];
     match variant_payload_ty(&b, 0, 1, 0) {
@@ -411,7 +411,7 @@ fn test_local_name_resolution() -> Result<(), String> {
     let symbol_map = build_symbol_map(&[module.clone()]);
 
     // Phase 1.5: Resolve the AST
-    module.resolve_names(&symbol_map);
+    module.resolve_names(&symbol_map, &[]);
 
     // Verify that `Vector` was mapped to a deterministic `TypeId`
     if let Type::Struct(name, id) = &module.functions[0].return_type {
@@ -468,7 +468,7 @@ fn test_unresolved_symbol_remains_none() -> Result<(), String> {
     };
 
     let symbol_map = build_symbol_map(&[module.clone()]);
-    module.resolve_names(&symbol_map);
+    module.resolve_names(&symbol_map, &[]);
 
     if let Type::Struct(name, id) = &module.functions[0].return_type {
         if name.as_ref() != "Vector" {
@@ -527,7 +527,7 @@ fn test_nested_type_resolution() -> Result<(), String> {
     };
 
     let symbol_map = build_symbol_map(&[module.clone()]);
-    module.resolve_names(&symbol_map);
+    module.resolve_names(&symbol_map, &[]);
 
     if let Type::Borrow { inner, .. } = &module.functions[0].params[0].1 {
         if let Type::Struct(name, id) = &**inner {
@@ -592,7 +592,7 @@ fn test_expr_and_stmt_resolution() -> Result<(), String> {
     };
 
     let symbol_map = build_symbol_map(&[module.clone()]);
-    module.resolve_names(&symbol_map);
+    module.resolve_names(&symbol_map, &[]);
 
     if let Statement::LetDecl(LetDeclStmt {
         ty_ann: Some(Type::Struct(name, id)),
@@ -610,4 +610,121 @@ fn test_expr_and_stmt_resolution() -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// The source for the fleet-file shape: a declared space, a topology that holds it, and a
+/// function whose parameter is placed on that topology.
+const SMEM_FLEET: &str = "\
+Memory SMEM {
+  within: Memory::GPU_HBM, capacity: 228 KiB, granule: 1 KiB, managed: explicit, scope: sm
+}
+Topology SmemDev {
+  memory: Memory::SMEM,
+  visible: [Memory::SMEM]
+}
+";
+
+fn placement_of(m: &VxModule, fn_idx: usize) -> vxc::syntax::Placement {
+    match param_ty(m, fn_idx) {
+        Type::Tensor(_, _, Some(p)) => p,
+        other => panic!("expected a placed tensor parameter, got {other:?}"),
+    }
+}
+
+/// A placement written as a device gets the space that device *declares*, not the one its name
+/// suggests (Vx#429).
+///
+/// The parser sees `Topology::SmemDev` and has only the built-in table to derive a space from, so
+/// it guesses the like-named `Memory::SmemDev`. What the topology holds is `Memory::SMEM`, and
+/// that fact lives in a declaration somewhere else in the program -- which makes name resolution,
+/// the pass with program-wide scope, the first point at which the placement can be completed.
+///
+/// Asserting the provisional value first is deliberate: without it a green test would be
+/// consistent with the parser having got it right all along, and the correction never running.
+#[test]
+fn a_declared_topologys_placement_gets_its_declared_space() {
+    let src = format!(
+        "{SMEM_FLEET}fn f(p : Tensor<f32, [4, 4], Topology::SmemDev>) -> i32 {{ return 0; }}"
+    );
+    let mut m = parse_module("fleet", &src);
+
+    let before = placement_of(&m, 0);
+    assert_eq!(
+        before.topology,
+        vxc::syntax::Topology::Custom(sym("SmemDev"))
+    );
+    assert_eq!(
+        before.space,
+        vxc::syntax::MemorySpace::Custom(sym("SmemDev")),
+        "the parser is expected to guess the like-named space; if it no longer does, this test \
+         has stopped covering the correction"
+    );
+
+    let symbol_map = build_symbol_map(std::slice::from_ref(&m));
+    m.resolve_names(&symbol_map, &[]);
+
+    let after = placement_of(&m, 0);
+    assert_eq!(
+        after.topology,
+        vxc::syntax::Topology::Custom(sym("SmemDev"))
+    );
+    assert_eq!(after.space, vxc::syntax::MemorySpace::Custom(sym("SMEM")));
+}
+
+/// The declaration reaches the module that names it even when it is in a *different* module,
+/// which is the `--machine` shape: a fleet file declares the topologies and the program under
+/// compilation only refers to them (Vx#429).
+///
+/// This is why `resolve_names` takes the compilation's declarations rather than reading the
+/// module's own: a per-module view leaves exactly this case uncorrected.
+#[test]
+fn a_topology_declared_in_another_module_still_completes_the_placement() {
+    let machine = parse_module("machine", SMEM_FLEET);
+    let mut user = parse_module(
+        "user",
+        "fn f(p : Tensor<f32, [4, 4], Topology::SmemDev>) -> i32 { return 0; }",
+    );
+
+    let mods = [machine, user.clone()];
+    let symbol_map = build_symbol_map(&mods);
+    let topologies = vxc::resolver::collect_topologies(&mods);
+    user.resolve_names(&symbol_map, &topologies);
+
+    assert_eq!(
+        placement_of(&user, 0).space,
+        vxc::syntax::MemorySpace::Custom(sym("SMEM"))
+    );
+
+    // Without the compilation's declarations there is nothing to correct from, so the module
+    // keeps the parser's guess. Pins the difference the parameter makes.
+    let mut alone = parse_module(
+        "user",
+        "fn f(p : Tensor<f32, [4, 4], Topology::SmemDev>) -> i32 { return 0; }",
+    );
+    alone.resolve_names(&symbol_map, &[]);
+    assert_eq!(
+        placement_of(&alone, 0).space,
+        vxc::syntax::MemorySpace::Custom(sym("SmemDev"))
+    );
+}
+
+/// The two spellings of one location are one type (Vx#429).
+///
+/// Equality over `Placement` is over both projections, so this holds only because the device
+/// spelling has been given the declared space. It is the property the surface work depends on:
+/// once `Memory::SMEM` is accepted in the placement slot, the two have to be interchangeable.
+#[test]
+fn a_device_spelling_and_a_space_spelling_are_the_same_placement() {
+    let src = format!(
+        "{SMEM_FLEET}fn f(p : Tensor<f32, [4, 4], Topology::SmemDev>) -> i32 {{ return 0; }}"
+    );
+    let mut m = parse_module("fleet", &src);
+    let symbol_map = build_symbol_map(std::slice::from_ref(&m));
+    m.resolve_names(&symbol_map, &[]);
+
+    let written_as_space = vxc::syntax::Placement::in_space(
+        vxc::syntax::MemorySpace::Custom(sym("SMEM")),
+        vxc::syntax::Topology::Custom(sym("SmemDev")),
+    );
+    assert_eq!(placement_of(&m, 0), written_as_space);
 }

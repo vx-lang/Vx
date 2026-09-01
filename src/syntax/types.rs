@@ -202,28 +202,81 @@ impl PartialEq for Topology {
 ///
 /// Equality is over both, which is why the derivation cannot be deferred: a placement written as
 /// a device and one written as its space name the same location and have to compare equal.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Placement {
     pub topology: Topology,
     pub space: MemorySpace,
+    /// Which projection the source stated. The other is derived, and is provisional until
+    /// [`Placement::complete`] has this compilation's topology declarations: the parser can
+    /// consult only the built-in table, and `Topology SmemDev { memory: Memory::SMEM }` is
+    /// program-wide information that arrives in name resolution.
+    ///
+    /// Recorded rather than inferred because neither projection is injective in the direction
+    /// that would let completion guess: a device holding a non-default space and a declared
+    /// topology whose memory is not its like-named space are indistinguishable from the pair
+    /// alone.
+    stated: Stated,
+}
+
+/// Which half of a [`Placement`] the source wrote.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Stated {
+    Device,
+    Space,
+}
+
+/// Two spellings of one location are one type, so which projection the source happened to write
+/// is not part of equality -- that is the whole point of carrying both.
+impl PartialEq for Placement {
+    fn eq(&self, other: &Self) -> bool {
+        self.topology == other.topology && self.space == other.space
+    }
 }
 
 impl Placement {
     /// A placement written as a device. The space is the one that device holds.
-    ///
-    /// The derivation is the built-in table, which is all the parser can see: a declared
-    /// topology's own `memory:` is program-wide information that arrives later. So the space
-    /// projection is not yet trustworthy for a declared topology whose memory differs from its
-    /// name. Nothing reads it today, and both spellings derive the same answer, so type equality
-    /// stays consistent -- but it has to be corrected before the surface accepts a space here.
     pub fn on(topology: Topology) -> Self {
         let space = crate::arch::builtin_default_space(&topology.kind());
-        Self { topology, space }
+        Self {
+            topology,
+            space,
+            stated: Stated::Device,
+        }
     }
 
-    /// A placement written as a space, once its owning device is known.
+    /// A placement written as a space, with the device it names.
+    ///
+    /// The caller supplies a provisional device where it cannot yet know the real one; `complete`
+    /// replaces it. Also the constructor for a placement read back from a `.vxlib`, where both
+    /// projections were serialized and neither needs deriving -- those are never re-completed,
+    /// since a metadata type does not pass through name resolution.
     pub fn in_space(space: MemorySpace, topology: Topology) -> Self {
-        Self { topology, space }
+        Self {
+            topology,
+            space,
+            stated: Stated::Space,
+        }
+    }
+
+    /// Fill the derived projection from this compilation's topology declarations.
+    ///
+    /// Idempotent, and a no-op for a placement whose stated side already determines the other
+    /// under the built-in table. A space with no owning topology keeps its provisional device:
+    /// resolution has no diagnostic channel, so the checker reports that.
+    pub fn complete(
+        &mut self,
+        descriptors: &std::collections::HashMap<TopologyKind, crate::arch::TopologyDescriptor>,
+    ) {
+        match self.stated {
+            Stated::Device => {
+                self.space = crate::arch::default_space_in(&self.topology, descriptors)
+            }
+            Stated::Space => {
+                if let Ok(t) = crate::arch::owning_topology_in(&self.space, descriptors) {
+                    self.topology = t;
+                }
+            }
+        }
     }
 }
 

@@ -1113,7 +1113,7 @@ mod tests {
         prog.module_path = path.into();
         let mut mods = vec![prog];
         let symbol_map = crate::resolver::build_symbol_map(&mods);
-        mods[0].resolve_names(&symbol_map);
+        mods[0].resolve_names(&symbol_map, &[]);
         mods.pop().unwrap()
     }
 

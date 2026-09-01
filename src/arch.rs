@@ -571,6 +571,68 @@ fn first_device_of(kind: &crate::syntax::TopologyKind) -> Topology {
     }
 }
 
+/// The space a topology holds, over a table of topology descriptors.
+///
+/// The declaration wins where there is one -- `Topology SmemDev { memory: Memory::SMEM }` holds
+/// `SMEM`, not the like-named `Memory::SmemDev` the built-in fallback would invent. Declarations
+/// are always `TopologyKind::Custom`, so consulting them first cannot shadow a built-in.
+pub fn default_space_in(
+    top: &Topology,
+    descriptors: &HashMap<crate::syntax::TopologyKind, TopologyDescriptor>,
+) -> MemorySpace {
+    let kind = top.kind();
+    descriptors
+        .get(&kind)
+        .map(|d| d.default_space.clone())
+        .unwrap_or_else(|| builtin_default_space(&kind))
+}
+
+/// The topology a memory space belongs to, over a table of topology descriptors, or why it
+/// cannot be told.
+///
+/// This is the direction `default_space_in` does not run, and the reason a placement can be
+/// written either way round: `Topology::GPU` gives the space, `Memory::GPU_HBM` gives the device.
+/// A built-in space has a stated owner. A declared one is owned by the topology whose `memory:`
+/// names it -- exactly one, since a space held by two devices is ambiguous in a way a default
+/// would silently pick a side on.
+///
+/// Taking the table rather than a `TransferCostGraph` is what lets name resolution answer this
+/// without building one: the graph is a per-compilation object with an all-pairs sweep in it, and
+/// resolution runs before there is one.
+pub fn owning_topology_in(
+    space: &MemorySpace,
+    descriptors: &HashMap<crate::syntax::TopologyKind, TopologyDescriptor>,
+) -> Result<Topology, String> {
+    if let Some(kind) = builtin_space_owner(space) {
+        return Ok(first_device_of(&kind));
+    }
+    let mut owners: Vec<&crate::syntax::TopologyKind> = descriptors
+        .iter()
+        .filter(|(_, d)| d.default_space == *space)
+        .map(|(k, _)| k)
+        .collect();
+    owners.sort_by_key(|k| format!("{k:?}"));
+    match owners.as_slice() {
+        [one] => Ok(first_device_of(one)),
+        [] => Err(format!(
+            "no topology declares `Memory::{}` as its memory, so there is no device it \
+             names; give a topology `memory: Memory::{}`",
+            space.name(),
+            space.name()
+        )),
+        many => Err(format!(
+            "`Memory::{}` is declared as the memory of {} topologies ({}), so which device \
+             it names is ambiguous; write the topology instead",
+            space.name(),
+            many.len(),
+            many.iter()
+                .map(|k| format!("{k:?}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
+}
+
 /// The built-in topology descriptions, encoding what `arch.rs` previously hardcoded.
 /// `visibility` includes each topology's own `default_space`, which subsumes the old
 /// "a topology sees its own memory" special-cases (NPU→NPUHBM, AccCore→LocalSRAM,
@@ -805,35 +867,7 @@ impl TransferCostGraph {
     /// be written either way round: `Topology::GPU` gives the space, `Memory::GPU_HBM` gives
     /// the device.
     pub fn owning_topology(&self, space: &MemorySpace) -> Result<Topology, String> {
-        if let Some(kind) = builtin_space_owner(space) {
-            return Ok(first_device_of(&kind));
-        }
-        let mut owners: Vec<&crate::syntax::TopologyKind> = self
-            .descriptors
-            .iter()
-            .filter(|(_, d)| d.default_space == *space)
-            .map(|(k, _)| k)
-            .collect();
-        owners.sort_by_key(|k| format!("{k:?}"));
-        match owners.as_slice() {
-            [one] => Ok(first_device_of(one)),
-            [] => Err(format!(
-                "no topology declares `Memory::{}` as its memory, so there is no device it \
-                 names; give a topology `memory: Memory::{}`",
-                space.name(),
-                space.name()
-            )),
-            many => Err(format!(
-                "`Memory::{}` is declared as the memory of {} topologies ({}), so which device \
-                 it names is ambiguous; write the topology instead",
-                space.name(),
-                many.len(),
-                many.iter()
-                    .map(|k| format!("{k:?}"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )),
-        }
+        owning_topology_in(space, &self.descriptors)
     }
 
     /// The default memory space a topology's values live in.
@@ -2105,6 +2139,23 @@ mod tests {
                 MemorySpace::RemoteHbm
             ]
         );
+    }
+
+    /// The two statements of "what space does this built-in device hold" have to agree.
+    ///
+    /// `builtin_default_space` exists because the parser needs the answer without a descriptor
+    /// table to allocate, and `builtin_descriptors` is what everything downstream reads. Two
+    /// tables of one fact drift silently -- a device added to one and forgotten in the other
+    /// would place values in a different space depending on which side of name resolution asked.
+    #[test]
+    fn the_built_in_default_space_agrees_with_the_descriptor_table() {
+        for (kind, desc) in builtin_descriptors() {
+            assert_eq!(
+                builtin_default_space(&kind),
+                desc.default_space,
+                "{kind:?} holds two different spaces depending on who asks"
+            );
+        }
     }
 
     #[test]
