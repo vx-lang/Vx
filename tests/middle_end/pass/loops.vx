@@ -13,7 +13,7 @@
 // CHECK: return
 
 fn test_loop(a : Tensor<f32, [10, 10]>, b : Tensor<f32, [10, 10]>) -> Tensor<f32, [10, 10]> {
-  let mut result = Tensor<f32>([ 10, 10 ]);
+  let mut result = Tensor<f32, [10, 10]>::uninit();
   for i in 0..10 {
     result[i][i] = a[i][i] * b[i][i];
   }

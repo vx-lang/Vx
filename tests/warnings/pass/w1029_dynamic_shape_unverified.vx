@@ -33,7 +33,7 @@ Topology TensorCore {
 }
 
 fn kernel(n : i32) -> i32 {
-  let a = Tensor<f32>([n, n]);          // dynamic: n is a runtime value
+  let a = DynTensor<f32>::uninit([n, n]);          // dynamic: n is a runtime value
   let va = transfer(a, Memory::VMEM);   // 64 MB space; the placement is unverifiable
   return 0;
 }

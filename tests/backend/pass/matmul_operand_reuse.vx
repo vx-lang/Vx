@@ -50,8 +50,8 @@
 // EXPECT: 19 22 43 50 19 50 19 50
 
 fn main() -> i32 {
-  let mut a = Tensor<f32>([ 2, 2 ]);
-  let mut b = Tensor<f32>([ 2, 2 ]);
+  let mut a = Tensor<f32, [2, 2]>::uninit();
+  let mut b = Tensor<f32, [2, 2]>::uninit();
   for i in 0..2 {
     for j in 0..2 {
       a[i][j] = (i * 2 + j + 1) as f32;
@@ -72,8 +72,8 @@ fn main() -> i32 {
   print!(" ");
 
   // The same two tensors, read by kernels placed on two different GPUs.
-  let mut p = Tensor<f32>([ 2, 2 ]);
-  let mut q = Tensor<f32>([ 2, 2 ]);
+  let mut p = Tensor<f32, [2, 2]>::uninit();
+  let mut q = Tensor<f32, [2, 2]>::uninit();
   spawn on(Topology::GPU[0]) {
     p = &a @ &b;
   }

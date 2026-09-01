@@ -13,7 +13,7 @@ macro_rules shape_zero { ($t : expr) => {
     $t.shape[0]
   }; }
 fn main() -> i32 {
-  let t = Tensor<f32>([ 10, 20 ]);
+  let t = Tensor<f32, [10, 20]>::uninit();
   let s = shape_zero!(t);
   return s;
 }

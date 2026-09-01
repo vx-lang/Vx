@@ -20,13 +20,13 @@
 // EXEC_RUN: %t | FileCheck %s --check-prefix=EXPECT
 
 fn main() -> i32 {
-  let mut q_host = Tensor<f32>([ 4, 4 ]);
-  let mut k_host = Tensor<f32>([ 4, 4 ]);
-  let mut v_host = Tensor<f32>([ 4, 4 ]);
-  let mut k_t_host = Tensor<f32>([ 4, 4 ]);
-  let mut score_host = Tensor<f32>([ 4, 4 ]);
-  let mut att_host = Tensor<f32>([ 4, 4 ]);
-  let mut result_host = Tensor<f32>([ 4, 4 ]);
+  let mut q_host = Tensor<f32, [4, 4]>::uninit();
+  let mut k_host = Tensor<f32, [4, 4]>::uninit();
+  let mut v_host = Tensor<f32, [4, 4]>::uninit();
+  let mut k_t_host = Tensor<f32, [4, 4]>::uninit();
+  let mut score_host = Tensor<f32, [4, 4]>::uninit();
+  let mut att_host = Tensor<f32, [4, 4]>::uninit();
+  let mut result_host = Tensor<f32, [4, 4]>::uninit();
 
   for i in 0..4 {
     for j in 0..4 {

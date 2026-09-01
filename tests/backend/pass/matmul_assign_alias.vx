@@ -32,7 +32,7 @@
 
 // Both operands are [[1, 2], [3, 4]], so the product is [[7, 10], [15, 22]].
 fn pair() -> Tensor<f32, [2, 2]> {
-  let mut t = Tensor<f32>([ 2, 2 ]);
+  let mut t = Tensor<f32, [2, 2]>::uninit();
   for i in 0..2 {
     for j in 0..2 {
       t[i][j] = (i * 2 + j + 1) as f32;

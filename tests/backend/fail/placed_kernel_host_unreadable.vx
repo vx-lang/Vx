@@ -50,8 +50,8 @@ Memory GPU_HBM {
 }
 
 fn main() -> i32 {
-  let mut q_h = Tensor<f32>([ 4, 4 ]);
-  let mut o_h = Tensor<f32>([ 4, 4 ]);
+  let mut q_h = Tensor<f32, [4, 4]>::uninit();
+  let mut o_h = Tensor<f32, [4, 4]>::uninit();
   for i in 0..4 {
     for j in 0..4 {
       q_h[i][j] = (i + j) as f32;

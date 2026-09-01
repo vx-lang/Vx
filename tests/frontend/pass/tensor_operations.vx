@@ -6,6 +6,13 @@
 //
 //===----------------------------------------------------------------------===//
 // Test tensor creation, element types, and matmul operator.
+//
+// `elementwise_f64` used to be written `Tensor<f64>(10)`, a single bare extent, and that spelling
+// meant two different things at once: the checker and the flat path read it as a 10-element rank-1
+// tensor, while the AST emitter matched only the bracketed form and dropped the extent, allocating
+// rank 0. The CHECK lines below pinned the AST side, so the disagreement had a green test over it.
+// Writing the shape in the type leaves nothing to match on, and the function is now the
+// elementwise multiply it always read as (Vx#429).
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // CHECK-LABEL: func.func @tensor_add()
@@ -41,39 +48,37 @@
 // CHECK: memref.dim %[[V7]], %[[V10]] : memref<?x?xf32>
 // CHECK: memref.alloc(%[[V9]], %{{.*}} : memref<?x?xf32>
 // CHECK: arith.constant 0.000000e+00 : f32
-// CHECK-LABEL: func.func @tensor_scalar()
-// CHECK: memref.alloc() : memref<f64>
-// CHECK: memref.alloc() : memref<f64>
-// CHECK: %[[V0:.*]] = memref.load %{{.*}}[] : memref<f64>
-// CHECK: %[[V1:.*]] = memref.load %{{.*}}[] : memref<f64>
-// CHECK: arith.mulf %[[V0]], %[[V1]] : f64
+// CHECK-LABEL: func.func @elementwise_f64()
+// CHECK: %[[E0:.*]] = memref.alloc(%{{.*}}) : memref<?xf64>
+// CHECK: %[[E1:.*]] = memref.alloc(%{{.*}}) : memref<?xf64>
+// CHECK: linalg.mul ins(%[[E0]], %[[E1]] : memref<?xf64>, memref<?xf64>)
 // CHECK-LABEL: func.func @main() -> i32
 // CHECK: call @tensor_add() : () -> ()
 // CHECK: call @matmul_basic() : () -> ()
-// CHECK: call @tensor_scalar() : () -> ()
+// CHECK: call @elementwise_f64() : () -> ()
 import std::tensor;
 
 fn tensor_add() -> void {
-  let a = Tensor<f32>(4, 4);
-  let b = Tensor<f32>(4, 4);
+  let a = Tensor<f32, [4, 4]>::uninit();
+  let b = Tensor<f32, [4, 4]>::uninit();
   let c = a + b;
 }
 
 fn matmul_basic() -> void {
-  let x = Tensor<f32>(2, 3);
-  let y = Tensor<f32>(3, 4);
+  let x = Tensor<f32, [2, 3]>::uninit();
+  let y = Tensor<f32, [3, 4]>::uninit();
   let z = x @ y;
 }
 
-fn tensor_scalar() -> void {
-  let t1 = Tensor<f64>(10);
-  let t2 = Tensor<f64>(10);
+fn elementwise_f64() -> void {
+  let t1 = Tensor<f64, [10]>::uninit();
+  let t2 = Tensor<f64, [10]>::uninit();
   let s = t1 * t2;
 }
 
 fn main() -> i32 {
   tensor_add();
   matmul_basic();
-  tensor_scalar();
+  elementwise_f64();
   return 0;
 }

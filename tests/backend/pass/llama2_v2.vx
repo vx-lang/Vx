@@ -70,7 +70,7 @@ fn malloc_run_state(dim: i32, hidden_dim: i32, n_layers: i32, n_heads: i32, n_kv
 }
 
 fn ptr_to_tensor_1d(ptr : &mut f32, d1 : i32) -> DynTensor<f32> {
-  let mut t : DynTensor<f32> = Tensor<f32>([ 1, d1 ]);
+  let mut t : DynTensor<f32> = DynTensor<f32>::uninit([1, d1]);
   for i in 0..d1 {
     t[0][i] = ptr[i];
   }
@@ -141,26 +141,26 @@ w : &TransformerWeightOffsets, all_weights: &DynTensor<f32>) -> &mut f32 {
   }
 
   for l in 0..p.n_layers {
-    let mut rms_att_w = Tensor<f32>([1, dim]);
+    let mut rms_att_w = DynTensor<f32>::uninit([1, dim]);
     let rms_att_off = w.rms_att_weight + l * dim;
     for j in 0..dim {
       rms_att_w[0][j] = all_weights[0][rms_att_off + j];
     }
     rmsnorm_1d(s.xb, x, &rms_att_w, dim);
 
-    let mut t_wq = Tensor<f32>([dim, dim]);
+    let mut t_wq = DynTensor<f32>::uninit([dim, dim]);
     let wq_off = w.wq + l * dim * dim;
     for j in 0..dim * dim {
       t_wq[0][j] = all_weights[0][wq_off + j];
     }
 
-    let mut t_wk = Tensor<f32>([dim, kv_dim]);
+    let mut t_wk = DynTensor<f32>::uninit([dim, kv_dim]);
     let wk_off = w.wk + l * dim * kv_dim;
     for j in 0..dim * kv_dim {
       t_wk[0][j] = all_weights[0][wk_off + j];
     }
 
-    let mut t_wv = Tensor<f32>([dim, kv_dim]);
+    let mut t_wv = DynTensor<f32>::uninit([dim, kv_dim]);
     let wv_off = w.wv + l * dim * kv_dim;
     for j in 0..dim * kv_dim {
       t_wv[0][j] = all_weights[0][wv_off + j];
@@ -273,7 +273,7 @@ w : &TransformerWeightOffsets, all_weights: &DynTensor<f32>) -> &mut f32 {
     }
 
     let t_xb_v2 = ptr_to_tensor_1d(s.xb, dim);
-    let mut t_wo = Tensor<f32>([dim, dim]);
+    let mut t_wo = DynTensor<f32>::uninit([dim, dim]);
     let wo_off = w.wo + l * dim * dim;
     for j in 0..dim * dim {
       t_wo[0][j] = all_weights[0][wo_off + j];
@@ -287,20 +287,20 @@ w : &TransformerWeightOffsets, all_weights: &DynTensor<f32>) -> &mut f32 {
       x[i] = x_val + xb2_val;
     }
 
-    let mut rms_ffn_w = Tensor<f32>([1, dim]);
+    let mut rms_ffn_w = DynTensor<f32>::uninit([1, dim]);
     let rms_ffn_off = w.rms_ffn_weight + l * dim;
     for j in 0..dim {
       rms_ffn_w[0][j] = all_weights[0][rms_ffn_off + j];
     }
     rmsnorm_1d(s.xb, x, &rms_ffn_w, dim);
 
-    let mut t_w1 = Tensor<f32>([dim, hidden_dim]);
+    let mut t_w1 = DynTensor<f32>::uninit([dim, hidden_dim]);
     let w1_off = w.w1 + l * dim * hidden_dim;
     for j in 0..dim * hidden_dim {
       t_w1[0][j] = all_weights[0][w1_off + j];
     }
 
-    let mut t_w3 = Tensor<f32>([dim, hidden_dim]);
+    let mut t_w3 = DynTensor<f32>::uninit([dim, hidden_dim]);
     let w3_off = w.w3 + l * dim * hidden_dim;
     for j in 0..dim * hidden_dim {
       t_w3[0][j] = all_weights[0][w3_off + j];
@@ -321,7 +321,7 @@ w : &TransformerWeightOffsets, all_weights: &DynTensor<f32>) -> &mut f32 {
     }
 
     let t_hb_v = ptr_to_tensor_1d(s.hb, hidden_dim);
-    let mut t_w2 = Tensor<f32>([hidden_dim, dim]);
+    let mut t_w2 = DynTensor<f32>::uninit([hidden_dim, dim]);
     let w2_off = w.w2 + l * hidden_dim * dim;
     for j in 0..hidden_dim * dim {
       t_w2[0][j] = all_weights[0][w2_off + j];
@@ -336,14 +336,14 @@ w : &TransformerWeightOffsets, all_weights: &DynTensor<f32>) -> &mut f32 {
     }
   }
 
-  let mut rms_final_w = Tensor<f32>([1, dim]);
+  let mut rms_final_w = DynTensor<f32>::uninit([1, dim]);
   for j in 0..dim {
     rms_final_w[0][j] = all_weights[0][w.rms_final_weight + j];
   }
   rmsnorm_1d(x, x, &rms_final_w, dim);
 
   let t_x = ptr_to_tensor_1d(x, dim);
-  let mut t_wcls_T : DynTensor<f32> = Tensor<f32>([ dim, p.vocab_size ]);
+  let mut t_wcls_T : DynTensor<f32> = DynTensor<f32>::uninit([dim, p.vocab_size]);
   for r in 0..p.vocab_size {
     for c in 0..dim {
       t_wcls_T[c][r] = all_weights[0][w.wcls + r * dim + c];

@@ -17,13 +17,13 @@
 // CHECK: memref.reinterpret_cast
 
 fn main() -> i32 {
-  let mut q = Tensor<f32>([4, 2]);
+  let mut q = Tensor<f32, [4, 2]>::uninit();
   q[0][0] = 0.0;  q[0][1] = 1.0;
   q[1][0] = 10.0; q[1][1] = 11.0;
   q[2][0] = 20.0; q[2][1] = 21.0;
   q[3][0] = 30.0; q[3][1] = 31.0;
 
-  let mut o = Tensor<f32>([1, 1]);
+  let mut o = Tensor<f32, [1, 1]>::uninit();
   let row : Tensor<f32, [2]> = q[1];
   o[0][0] = row[0] + row[1] * 100.0;
   print(o);

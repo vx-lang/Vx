@@ -11,7 +11,7 @@ fn verify_bypass<N, M>(val : Tensor<f32, [ N, M ]>, dyn_var : i32)
 
 fn main()
 ->i32 {
-  let t : Tensor<f32, [ 16, 32 ]> = Tensor<f32>(16, 32);
+  let t : Tensor<f32, [ 16, 32 ]> = Tensor<f32, [16, 32]>::uninit();
   let dyn : i32 = 5;
   let v : Verified<Tensor<f32, [ 16, 32 ]>> = verify_bypass(t, dyn);
   return 0;

@@ -19,9 +19,9 @@ Memory Local_SRAM {
 }
 
 fn main() -> i32 {
-  let mut qt = Tensor<f32>([128, 256]);
-  let mut kt = Tensor<f32>([128, 256]);
-  let mut vt = Tensor<f32>([128, 256]);
+  let mut qt = Tensor<f32, [128, 256]>::uninit();
+  let mut kt = Tensor<f32, [128, 256]>::uninit();
+  let mut vt = Tensor<f32, [128, 256]>::uninit();
   for i in 0..128 {
     for j in 0..256 {
       qt[i][j] = 1.0;

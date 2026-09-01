@@ -46,8 +46,8 @@ impl<T : Float, const N : i32, const M : i32> Tensor<T, [N, M]> {
 }
 
 fn main() -> i32 {
-  let mut a : Tensor<f32, [2, 2]> = Tensor<f32>([2, 2]);
-  let mut b : Tensor<f32, [2, 2]> = Tensor<f32>([2, 2]);
+  let mut a : Tensor<f32, [2, 2]> = Tensor<f32, [2, 2]>::uninit();
+  let mut b : Tensor<f32, [2, 2]> = Tensor<f32, [2, 2]>::uninit();
   for i in 0..2 {
     for j in 0..2 {
       a[i][j] = ((i + j) as f32);

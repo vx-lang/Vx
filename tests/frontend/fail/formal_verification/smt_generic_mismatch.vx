@@ -18,7 +18,7 @@ fn main()
   let m : i32 = 20; // Deliberate mismatch
   // assert(n == m, "Pre-condition for outer"); // If we omit the assert, SMT
   // solver fails to prove it!
-  let t : Tensor<f32, [ n, m ]> = Tensor<f32>(n, m);
+  let t : Tensor<f32, [ n, m ]> = Tensor<f32, [n, m]>::uninit();
   let v : Verified<Tensor<f32, [ n, m ]>> = outer(t);
   return 0;
 }

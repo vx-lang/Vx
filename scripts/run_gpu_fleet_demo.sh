@@ -209,9 +209,9 @@ Memory HBM_A {
 Topology DevA { memory: Memory::HBM_A, visible: [ Memory::HBM_A ] }
 
 fn main() -> i32 {
-  let mut a_h = Tensor<f32>([ 64, 64 ]);
-  let mut b_h = Tensor<f32>([ 64, 64 ]);
-  let mut c_h = Tensor<f32>([ 64, 64 ]);
+  let mut a_h = Tensor<f32, [64, 64]>::uninit();
+  let mut b_h = Tensor<f32, [64, 64]>::uninit();
+  let mut c_h = Tensor<f32, [64, 64]>::uninit();
   for i in 0..64 {
     for j in 0..64 {
       a_h[i][j] = ((i + j) as f32) * 0.01;
@@ -245,9 +245,9 @@ Topology DevA { memory: Memory::HBM_A, visible: [ Memory::HBM_A ] }
 Topology DevB { memory: Memory::HBM_B, visible: [ Memory::HBM_B ] }
 
 fn main() -> i32 {
-  let mut a_h = Tensor<f32>([ 64, 64 ]);
-  let mut b_h = Tensor<f32>([ 64, 64 ]);
-  let mut c_h = Tensor<f32>([ 64, 64 ]);
+  let mut a_h = Tensor<f32, [64, 64]>::uninit();
+  let mut b_h = Tensor<f32, [64, 64]>::uninit();
+  let mut c_h = Tensor<f32, [64, 64]>::uninit();
   for i in 0..64 {
     for j in 0..64 {
       a_h[i][j] = ((i + j) as f32) * 0.01;
@@ -286,9 +286,9 @@ Memory HBM_A {
 Topology DevA { memory: Memory::HBM_A, visible: [ Memory::HBM_A ] }
 
 fn main() -> i32 {
-  let mut a_h = Tensor<f32>([ 64, 64 ]);
-  let mut b_h = Tensor<f32>([ 64, 64 ]);
-  let mut c_h = Tensor<f32>([ 64, 64 ]);
+  let mut a_h = Tensor<f32, [64, 64]>::uninit();
+  let mut b_h = Tensor<f32, [64, 64]>::uninit();
+  let mut c_h = Tensor<f32, [64, 64]>::uninit();
   for i in 0..64 {
     for j in 0..64 {
       a_h[i][j] = ((i + j) - ((i + j) / 4) * 4) as f32;

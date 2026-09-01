@@ -5,7 +5,7 @@
 // FileCheck %s
 
 fn test_f32() -> i32 {
-  let mut a = Tensor<f32>([4]);
+  let mut a = Tensor<f32, [4]>::uninit();
   a[0] = 1.0;
   a[1] = 2.0;
   a[2] = 3.0;
@@ -20,7 +20,7 @@ fn test_f32() -> i32 {
 }
 
 fn test_bf16() -> i32 {
-  let mut a = Tensor<bf16>([4]);
+  let mut a = Tensor<bf16, [4]>::uninit();
   a[0] = 1.0;
   a[1] = 2.0;
   a[2] = 3.0;

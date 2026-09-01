@@ -36,7 +36,7 @@ fn main() -> i32 {
   print!(" ");
 
   // Store and load through an f16 tensor.
-  let mut t = Tensor<f16>([ 2, 2 ]);
+  let mut t = Tensor<f16, [2, 2]>::uninit();
   for i in 0..2 {
     for j in 0..2 {
       t[i][j] = 1.5;
@@ -47,8 +47,8 @@ fn main() -> i32 {
   print!(" ");
 
   // f16 matmul. Every entry of a 2x2 of 1.0 times a 2x2 of 3.0 is 6.0.
-  let mut a = Tensor<f16>([ 2, 2 ]);
-  let mut b = Tensor<f16>([ 2, 2 ]);
+  let mut a = Tensor<f16, [2, 2]>::uninit();
+  let mut b = Tensor<f16, [2, 2]>::uninit();
   for i in 0..2 {
     for j in 0..2 {
       a[i][j] = 1.0;

@@ -44,7 +44,7 @@ impl Transfer<Memory::CPU_DRAM, Memory::GPU_HBM> for Topology::B {
   }
 }
 fn main() -> i32 {
-  let mut a = Tensor<f32>([ 2, 2 ]);
+  let mut a = Tensor<f32, [2, 2]>::uninit();
   for i in 0..2 {
     for d in 0..2 {
       a[i][d] = 1.0;

@@ -48,32 +48,32 @@
 // CHECK: call @print_str(%{{.*}}) : (!llvm.ptr) -> i32
 fn main() -> i32 {
   // Dynamically shaped: the case that was broken.
-  let mut h = Tensor<f16>([ 2, 2 ]);
+  let mut h = Tensor<f16, [2, 2]>::uninit();
   h[0][0] = 1.5;
   let hv : f16 = h[0][0];
   print(hv);
   print!(" ");
 
-  let mut d = Tensor<f64>([ 2, 2 ]);
+  let mut d = Tensor<f64, [2, 2]>::uninit();
   d[0][0] = 2.5;
   let dv : f64 = d[0][0];
   print(dv);
   print!(" ");
 
-  let mut n = Tensor<i32>([ 2, 2 ]);
+  let mut n = Tensor<i32, [2, 2]>::uninit();
   n[0][0] = 7;
   let nv : i32 = n[0][0];
   print(nv);
   print!(" ");
 
-  let mut f = Tensor<f32>([ 2, 2 ]);
+  let mut f = Tensor<f32, [2, 2]>::uninit();
   f[0][0] = 3.25;
   let fv : f32 = f[0][0];
   print(fv);
   print!(" ");
 
   // Statically shaped: reaches the element type by the other branch.
-  let mut s : Tensor<f16, [ 2, 2 ]> = Tensor<f16>([ 2, 2 ]);
+  let mut s : Tensor<f16, [ 2, 2 ]> = Tensor<f16, [2, 2]>::uninit();
   s[1][1] = 4.5;
   let sv : f16 = s[1][1];
   print(sv);

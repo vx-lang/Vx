@@ -266,19 +266,25 @@ fn a_count_that_overflows_is_reported_as_absent_not_clamped() {
 /// detect is worse than no figure.
 #[test]
 fn a_sub_byte_element_type_is_refused_rather_than_rounded() {
-    let rec = record_source(
-        "i4tile",
-        &with_body(
-            "  fn move_tile(src: &Tensor<i4, [2, 2]>, dst: &mut Tensor<i4, [2, 2]>) -> i32 {\n\
-             \x20   for i in 0..raw::extent(src) {\n\
-             \x20     raw::store(dst, i, raw::load(src, i));\n\
-             \x20   }\n\
-             \x20   raw::barrier();\n\
-             \x20   return 0;\n\
-             \x20 }",
-        )
-        .replace("Tensor<f32>([ 2, 2 ])", "Tensor<i4>([ 2, 2 ])"),
+    let src = with_body(
+        "  fn move_tile(src: &Tensor<i4, [2, 2]>, dst: &mut Tensor<i4, [2, 2]>) -> i32 {\n\
+         \x20   for i in 0..raw::extent(src) {\n\
+         \x20     raw::store(dst, i, raw::load(src, i));\n\
+         \x20   }\n\
+         \x20   raw::barrier();\n\
+         \x20   return 0;\n\
+         \x20 }",
     );
+    // The fixture's own tensors have to be retyped too -- the substituted body borrows them.
+    // Checked rather than replaced blind: a respelling in the corpus file would otherwise leave
+    // this test measuring f32 while claiming to measure i4, which is exactly what happened when
+    // the constructor syntax changed (Vx#429).
+    const F32_TILE: &str = "Tensor<f32, [2, 2]>";
+    assert!(
+        src.contains(F32_TILE),
+        "the fixture no longer spells its tensors `{F32_TILE}`, so this test would measure f32"
+    );
+    let rec = record_source("i4tile", &src.replace(F32_TILE, "Tensor<i4, [2, 2]>"));
     let route = smem_route(&rec);
     assert!(
         route.contains("\"traffic\": null") && route.contains("whole number of bytes"),

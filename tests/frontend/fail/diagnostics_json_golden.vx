@@ -32,9 +32,9 @@ Topology TC {
 }
 
 fn main() -> i32 {
-  let q : Tensor<f32, [128, 128]> = Tensor<f32>([128, 128]);
-  let k : Tensor<f32, [128, 128]> = Tensor<f32>([128, 128]);
-  let v : Tensor<f32, [128, 128]> = Tensor<f32>([128, 128]);
+  let q : Tensor<f32, [128, 128]> = Tensor<f32, [128, 128]>::uninit();
+  let k : Tensor<f32, [128, 128]> = Tensor<f32, [128, 128]>::uninit();
+  let v : Tensor<f32, [128, 128]> = Tensor<f32, [128, 128]>::uninit();
   let _sq = transfer(q, Memory::SMEM);
   let _sk = transfer(k, Memory::SMEM);
   let _sv = transfer(v, Memory::SMEM);

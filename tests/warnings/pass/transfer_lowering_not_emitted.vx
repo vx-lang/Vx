@@ -38,7 +38,7 @@ impl Transfer<Memory::CPU_DRAM, Memory::L2> for Topology::Dev {
 }
 
 fn main() -> i32 {
-  let mut a = Tensor<f32>([ 2, 2 ]);
+  let mut a = Tensor<f32, [2, 2]>::uninit();
   a[0][0] = 1.0;
   let staged = transfer(a, Memory::L2);
   return 0;

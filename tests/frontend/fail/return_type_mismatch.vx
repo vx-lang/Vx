@@ -11,6 +11,6 @@
 // CHECK: Type mismatch
 
 fn should_return_i32() -> i32 {
-  let x = Tensor<f32>(10);
+  let x = Tensor<f32, [10]>::uninit();
   return x;
 }

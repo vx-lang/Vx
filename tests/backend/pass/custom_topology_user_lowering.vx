@@ -58,8 +58,8 @@ impl Transfer<Memory::GPU_HBM, Memory::SMEM> for Topology::Dev {
 }
 
 fn main() -> i32 {
-  let mut a = Tensor<f32>([ 2, 2 ]);
-  let mut o = Tensor<f32>([ 2, 2 ]);
+  let mut a = Tensor<f32, [2, 2]>::uninit();
+  let mut o = Tensor<f32, [2, 2]>::uninit();
   for i in 0..2 {
     for d in 0..2 {
       a[i][d] = ((i + d) as f32) * 0.5;

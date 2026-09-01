@@ -39,7 +39,7 @@ impl Transfer<Memory::GPU_HBM, Memory::SMEM> for Topology::Dev {
 }
 fn main() -> i32 {
   let n = 3;
-  let mut a = Tensor<f32>([ n, n ]);
+  let mut a = Tensor<f32, [n, n]>::uninit();
   let ad = transfer(a, Memory::GPU_HBM);
   spawn on(Topology::Dev) {
     let tile = transfer(ad, Memory::SMEM);

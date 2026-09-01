@@ -65,7 +65,7 @@ fn main() -> i32 {
   let w = unsafe { tensor_view_2d(pw, 4, 3) };
   let x = unsafe { tensor_view_2d(px, 3, 1) };
 
-  let mut y = Tensor<f32>([ 4, 1 ]);
+  let mut y = Tensor<f32, [4, 1]>::uninit();
   spawn on(Topology::GPU[0]) {
     y = &w @ &x;
   }

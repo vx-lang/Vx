@@ -70,7 +70,7 @@ fn main() -> i32 {
   }
 
   // 2. an accumulator declared and summed inside a placed region.
-  let mut o_host = Tensor<f32>([ 2, 2 ]);
+  let mut o_host = Tensor<f32, [2, 2]>::uninit();
   for i in 0..2 {
     for j in 0..2 {
       o_host[i][j] = 0.0;

@@ -37,7 +37,7 @@
 // NOHOST-NOT: llvm.target_triple
 
 fn main() -> i32 {
-  let mut weights = Tensor<f32>([ 64, 64 ]);
+  let mut weights = Tensor<f32, [64, 64]>::uninit();
   weights[0][0] = 1.0;
   return 0;
 }

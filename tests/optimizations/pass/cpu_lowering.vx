@@ -7,7 +7,7 @@ fn dummy(x : i32) on Topology::CPU -> i32 {
 }
 
 fn process(t : DynTensor<f32>) -> DynTensor<f32> {
-  let mut res = Tensor<i32>([ 4, 4 ]).with_memory(Memory::CPU_DRAM);
+  let mut res = Tensor<i32, [4, 4]>::uninit().with_memory(Memory::CPU_DRAM);
   let val = spawn on(Topology::CPU) {
     dummy(0)
   };

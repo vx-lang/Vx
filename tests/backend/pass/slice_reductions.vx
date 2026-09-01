@@ -20,7 +20,7 @@
 // CHECK: vector.reduction
 
 fn main() -> i32 {
-  let mut q = Tensor<f32>([2, 4]);
+  let mut q = Tensor<f32, [2, 4]>::uninit();
   q[0][0] = 1.0; q[0][1] = 2.0; q[0][2] = 3.0; q[0][3] = 4.0;
   q[1][0] = 5.0; q[1][1] = 6.0; q[1][2] = 7.0; q[1][3] = 8.0;
 
@@ -35,7 +35,7 @@ fn main() -> i32 {
     d_scalar = d_scalar + q[0][k] * q[1][k];
   }
 
-  let mut o = Tensor<f32>([1, 5]);
+  let mut o = Tensor<f32, [1, 5]>::uninit();
   o[0][0] = d;
   o[0][1] = d_scalar;   // must equal o[0][0]
   o[0][2] = sum(a);

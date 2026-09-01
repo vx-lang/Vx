@@ -34,7 +34,7 @@ Topology Rubin {
 }
 
 fn serve() -> i32 {
-  let prompt : Tensor<f32, [8192, 128]> = Tensor<f32>([8192, 128]);
+  let prompt : Tensor<f32, [8192, 128]> = Tensor<f32, [8192, 128]>::uninit();
   // Stage the prompt into the prefill die's memory (declared path, cost 300).
   let staged = transfer(prompt, Memory::GDDR7);
   // Prefill: builds the KV cache in GDDR7.

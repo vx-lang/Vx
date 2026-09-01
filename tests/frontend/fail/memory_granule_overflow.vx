@@ -24,9 +24,9 @@ Memory PAD {
 }
 
 fn main() -> i32 {
-  let a = Tensor<f32>([128, 64]);
-  let b = Tensor<f32>([128, 64]);
-  let c = Tensor<f32>([128, 64]);
+  let a = Tensor<f32, [128, 64]>::uninit();
+  let b = Tensor<f32, [128, 64]>::uninit();
+  let c = Tensor<f32, [128, 64]>::uninit();
   let sa = transfer(a, Memory::PAD);
   let sb = transfer(b, Memory::PAD);
   let sc = transfer(c, Memory::PAD);

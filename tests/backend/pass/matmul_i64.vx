@@ -20,7 +20,7 @@
 fn custom_matmul(a : Pinned<Tensor<i64, [ 4, 4 ]>, Topology::NPU[0]>,
 b : Pinned<Tensor<i64, [ 4, 4 ]>, Topology::NPU[0]>)
 -> Verified<Ref<Tensor<i64, [ 4, 4 ]>, Memory::NPU_HBM>> {
-  let mut result = Tensor<i64>([ 4, 4 ]).with_memory(Memory::NPU_HBM);
+  let mut result = Tensor<i64, [4, 4]>::uninit().with_memory(Memory::NPU_HBM);
   spawn on(Topology::NPU[0]) {
     for i in 0..4 {
       for j in 0..4 {
@@ -35,8 +35,8 @@ b : Pinned<Tensor<i64, [ 4, 4 ]>, Topology::NPU[0]>)
 }
 
 fn main() -> i32 {
-  let mut a_host = Tensor<i64>([ 4, 4 ]); // Defaults to CPU_DRAM
-  let mut b_host = Tensor<i64>([ 4, 4 ]);
+  let mut a_host = Tensor<i64, [4, 4]>::uninit(); // Defaults to CPU_DRAM
+  let mut b_host = Tensor<i64, [4, 4]>::uninit();
 
   for i in 0..4 {
     for j in 0..4 {

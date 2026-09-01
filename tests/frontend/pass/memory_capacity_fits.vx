@@ -15,7 +15,7 @@ Memory NPU_HBM {
 }
 
 fn main() -> i32 {
-  let big: Tensor<f32, [64, 64]> = Tensor<f32>([64, 64]);
+  let big: Tensor<f32, [64, 64]> = Tensor<f32, [64, 64]>::uninit();
   let staged = transfer(big, Memory::NPU_HBM);
   return 0;
 }

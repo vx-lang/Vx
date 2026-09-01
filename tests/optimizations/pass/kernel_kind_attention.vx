@@ -53,10 +53,10 @@ Topology Dev {
 }
 
 fn main() -> i32 {
-  let mut q_h = Tensor<f16>([ 8, 64 ]);
-  let mut k_h = Tensor<f16>([ 16, 64 ]);
-  let mut v_h = Tensor<f16>([ 16, 64 ]);
-  let mut o_h = Tensor<f16>([ 8, 64 ]);
+  let mut q_h = Tensor<f16, [8, 64]>::uninit();
+  let mut k_h = Tensor<f16, [16, 64]>::uninit();
+  let mut v_h = Tensor<f16, [16, 64]>::uninit();
+  let mut o_h = Tensor<f16, [8, 64]>::uninit();
 
   for i in 0..8 {
     for d in 0..64 {

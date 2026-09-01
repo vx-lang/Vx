@@ -20,9 +20,9 @@
 // EXEC_RUN: %t | FileCheck %s --check-prefix=EXPECT
 
 fn main() -> i32 {
-  let mut x_host = Tensor<f32>([ 3, 3 ]);
-  let mut w_host = Tensor<f32>([ 2, 2 ]);
-  let mut result_host = Tensor<f32>([ 2, 2 ]);
+  let mut x_host = Tensor<f32, [3, 3]>::uninit();
+  let mut w_host = Tensor<f32, [2, 2]>::uninit();
+  let mut result_host = Tensor<f32, [2, 2]>::uninit();
 
   for i in 0..3 {
     for j in 0..3 {
@@ -37,9 +37,9 @@ fn main() -> i32 {
   }
 
   // im2col: Flatten 4 patches of 2x2 into a 4x4 matrix
-  let mut im2col_host = Tensor<f32>([ 4, 4 ]);
-  let mut w_flat_host = Tensor<f32>([ 4, 4 ]);
-  let mut matmul_res_host = Tensor<f32>([ 4, 4 ]);
+  let mut im2col_host = Tensor<f32, [4, 4]>::uninit();
+  let mut w_flat_host = Tensor<f32, [4, 4]>::uninit();
+  let mut matmul_res_host = Tensor<f32, [4, 4]>::uninit();
 
   // Pad the 2x2 weights into a 4x1 vector, stored in the first column of a 4x4 matrix
   w_flat_host[0][0] = w_host[0][0];

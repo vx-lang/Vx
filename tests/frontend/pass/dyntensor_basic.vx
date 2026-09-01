@@ -27,7 +27,7 @@ fn takes_dyn(t : DynTensor<f32>) -> i32 {
 }
 
 fn main() -> i32 {
-  let mut a : Tensor<f32, [2, 3]> = Tensor<f32>([2, 3]);
+  let mut a : Tensor<f32, [2, 3]> = Tensor<f32, [2, 3]>::uninit();
   a[0][0] = 1.0;
   let r = takes_dyn(a);
   return r;

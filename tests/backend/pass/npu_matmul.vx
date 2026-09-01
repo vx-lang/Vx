@@ -6,9 +6,9 @@
 // FileCheck %s
 
 fn test_f32() -> i32 {
-  let mut a = Tensor<f32>([ 4, 4 ]);
-  let mut b = Tensor<f32>([ 4, 4 ]);
-  let mut c = Tensor<f32>([ 4, 4 ]).with_memory(Memory::NPU_HBM);
+  let mut a = Tensor<f32, [4, 4]>::uninit();
+  let mut b = Tensor<f32, [4, 4]>::uninit();
+  let mut c = Tensor<f32, [4, 4]>::uninit().with_memory(Memory::NPU_HBM);
 
   for i in 0..4 {
     for j in 0..4 {
@@ -40,9 +40,9 @@ fn test_f32() -> i32 {
 }
 
 fn test_bf16() -> i32 {
-  let mut a = Tensor<bf16>([ 4, 4 ]);
-  let mut b = Tensor<bf16>([ 4, 4 ]);
-  let mut c = Tensor<bf16>([ 4, 4 ]).with_memory(Memory::NPU_HBM);
+  let mut a = Tensor<bf16, [4, 4]>::uninit();
+  let mut b = Tensor<bf16, [4, 4]>::uninit();
+  let mut c = Tensor<bf16, [4, 4]>::uninit().with_memory(Memory::NPU_HBM);
 
   for i in 0..4 {
     for j in 0..4 {

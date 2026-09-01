@@ -21,7 +21,7 @@ Memory HBM {
 }
 
 fn main() -> i32 {
-  let kv : Tensor<f32, [1024, 1024]> = Tensor<f32>([1024, 1024]);
+  let kv : Tensor<f32, [1024, 1024]> = Tensor<f32, [1024, 1024]>::uninit();
   let _staged = transfer(kv, Memory::HBM);
   return 0;
 }

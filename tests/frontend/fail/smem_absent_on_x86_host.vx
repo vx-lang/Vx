@@ -31,7 +31,7 @@
 // CHECK-SAME: no hardware path exists
 
 fn main() -> i32 {
-  let mut tile = Tensor<f32>([ 64, 64 ]);
+  let mut tile = Tensor<f32, [64, 64]>::uninit();
   let tile_s = transfer(tile, Memory::SMEM);
   return 0;
 }

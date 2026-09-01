@@ -73,26 +73,26 @@
 // CHECK: return %[[V11]] : memref<16x16xf32>
 
 fn gen_tensor_math_add() -> i32 {
-  let a : Tensor<f32, [ 16, 16 ]> = Tensor<f32>(16, 16);
-  let b : Tensor<f32, [ 16, 16 ]> = Tensor<f32>(16, 16);
+  let a : Tensor<f32, [ 16, 16 ]> = Tensor<f32, [16, 16]>::uninit();
+  let b : Tensor<f32, [ 16, 16 ]> = Tensor<f32, [16, 16]>::uninit();
   let c = a + b;
   return 0;
 }
 
 fn gen_tensor_math_div() -> Tensor<f32, [ 16, 16 ]> {
-  let a : Tensor<f32, [ 16, 16 ]> = Tensor<f32>(16, 16);
-  let b : Tensor<f32, [ 16, 16 ]> = Tensor<f32>(16, 16);
+  let a : Tensor<f32, [ 16, 16 ]> = Tensor<f32, [16, 16]>::uninit();
+  let b : Tensor<f32, [ 16, 16 ]> = Tensor<f32, [16, 16]>::uninit();
   return a / b;
 }
 
 fn gen_tensor_math_mul() -> Tensor<f32, [ 16, 16 ]> {
-  let a : Tensor<f32, [ 16, 16 ]> = Tensor<f32>(16, 16);
-  let b : Tensor<f32, [ 16, 16 ]> = Tensor<f32>(16, 16);
+  let a : Tensor<f32, [ 16, 16 ]> = Tensor<f32, [16, 16]>::uninit();
+  let b : Tensor<f32, [ 16, 16 ]> = Tensor<f32, [16, 16]>::uninit();
   return a * b;
 }
 
 fn gen_tensor_math_sub() -> Tensor<f32, [ 16, 16 ]> {
-  let a : Tensor<f32, [ 16, 16 ]> = Tensor<f32>(16, 16);
-  let b : Tensor<f32, [ 16, 16 ]> = Tensor<f32>(16, 16);
+  let a : Tensor<f32, [ 16, 16 ]> = Tensor<f32, [16, 16]>::uninit();
+  let b : Tensor<f32, [ 16, 16 ]> = Tensor<f32, [16, 16]>::uninit();
   return a - b;
 }

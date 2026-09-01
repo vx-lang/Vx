@@ -35,7 +35,7 @@ fn total(t : &Tensor<f32, [2, 2]>) -> f32 {
 }
 
 fn main() -> i32 {
-  let mut a = Tensor<f32>([ 2, 2 ]);
+  let mut a = Tensor<f32, [2, 2]>::uninit();
   let _r = fill(&mut a, 3.0);
   print(total(&a));
   return 0;

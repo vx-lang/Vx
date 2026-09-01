@@ -22,11 +22,11 @@
 import std::math;
 
 fn main() -> i32 {
-  let mut q = Tensor<f32>([2, 4]);
-  let mut k = Tensor<f32>([4, 4]);
-  let mut v = Tensor<f32>([4, 4]);
-  let mut o = Tensor<f32>([2, 4]);
-  let mut ts = Tensor<f32>([1, 2]); // scores for the current K/V tile (Bc = 2)
+  let mut q = Tensor<f32, [2, 4]>::uninit();
+  let mut k = Tensor<f32, [4, 4]>::uninit();
+  let mut v = Tensor<f32, [4, 4]>::uninit();
+  let mut o = Tensor<f32, [2, 4]>::uninit();
+  let mut ts = Tensor<f32, [1, 2]>::uninit(); // scores for the current K/V tile (Bc = 2)
 
   for d in 0..4 {
     q[0][d] = 1.0;

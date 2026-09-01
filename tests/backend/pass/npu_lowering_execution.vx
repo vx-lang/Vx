@@ -20,8 +20,8 @@
 // EXPECT:  [0,   0,   0,   0]]
 
 fn main() -> i32 {
-  let mut a = Tensor<i32>([ 4, 4 ]);
-  let mut b = Tensor<i32>([ 4, 4 ]);
+  let mut a = Tensor<i32, [4, 4]>::uninit();
+  let mut b = Tensor<i32, [4, 4]>::uninit();
 
   a[0][0] = 1;
   a[0][1] = 2;

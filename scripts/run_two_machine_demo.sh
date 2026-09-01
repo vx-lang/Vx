@@ -143,9 +143,9 @@ echo "GPU[0]  127.0.0.1  $PORT" > "$OUTDIR/manifest"
 write_programs() {
   cat > "$OUTDIR/matmul_unplaced.vx" <<'EOF'
 fn main() -> i32 {
-  let mut a = Tensor<f32>([ 64, 64 ]);
-  let mut b = Tensor<f32>([ 64, 64 ]);
-  let mut c = Tensor<f32>([ 64, 64 ]);
+  let mut a = Tensor<f32, [64, 64]>::uninit();
+  let mut b = Tensor<f32, [64, 64]>::uninit();
+  let mut c = Tensor<f32, [64, 64]>::uninit();
   for i in 0..64 {
     for j in 0..64 {
       a[i][j] = ((i + j) as f32) * 0.01;
@@ -174,9 +174,9 @@ Memory GPU_HBM {
 }
 
 fn main() -> i32 {
-  let mut a_h = Tensor<f32>([ 64, 64 ]);
-  let mut b_h = Tensor<f32>([ 64, 64 ]);
-  let mut c_h = Tensor<f32>([ 64, 64 ]);
+  let mut a_h = Tensor<f32, [64, 64]>::uninit();
+  let mut b_h = Tensor<f32, [64, 64]>::uninit();
+  let mut c_h = Tensor<f32, [64, 64]>::uninit();
   for i in 0..64 {
     for j in 0..64 {
       a_h[i][j] = ((i + j) as f32) * 0.01;
@@ -205,7 +205,7 @@ Memory GPU_HBM {
 }
 
 fn main() -> i32 {
-  let mut kt_h = Tensor<f32>([ 16, 64 ]);
+  let mut kt_h = Tensor<f32, [16, 64]>::uninit();
   for d in 0..16 {
     for j in 0..64 {
       kt_h[d][j] = ((j - d) as f32) * 0.03;
@@ -213,8 +213,8 @@ fn main() -> i32 {
   }
   let kt = transfer(kt_h, Memory::GPU_HBM);
 
-  let mut q = Tensor<f32>([ 1, 16 ]);
-  let mut s = Tensor<f32>([ 1, 64 ]);
+  let mut q = Tensor<f32, [1, 16]>::uninit();
+  let mut s = Tensor<f32, [1, 64]>::uninit();
   let mut acc : f32 = 0.0;
   for step in 0..8 {
     for d in 0..16 {

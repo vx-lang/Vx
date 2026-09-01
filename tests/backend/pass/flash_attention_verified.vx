@@ -45,12 +45,12 @@
 import std::math;
 
 fn main() -> i32 {
-  let mut q_h = Tensor<f32>([ 32, 16 ]);
-  let mut k_h = Tensor<f32>([ 64, 16 ]);
-  let mut v_h = Tensor<f32>([ 64, 16 ]);
-  let mut o_h = Tensor<f32>([ 32, 16 ]);
-  let mut o_ref = Tensor<f32>([ 32, 16 ]);
-  let mut srow = Tensor<f32>([ 1, 64 ]);
+  let mut q_h = Tensor<f32, [32, 16]>::uninit();
+  let mut k_h = Tensor<f32, [64, 16]>::uninit();
+  let mut v_h = Tensor<f32, [64, 16]>::uninit();
+  let mut o_h = Tensor<f32, [32, 16]>::uninit();
+  let mut o_ref = Tensor<f32, [32, 16]>::uninit();
+  let mut srow = Tensor<f32, [1, 64]>::uninit();
 
   // Values that vary along both axes, so no operand can be ignored and no two
   // rows coincide, scaled small enough that the exponentials stay in range.
@@ -99,7 +99,7 @@ fn main() -> i32 {
   }
 
   // --- flash: one pass, tiled, no score matrix ------------------------------
-  let mut ts = Tensor<f32>([ 1, 16 ]);
+  let mut ts = Tensor<f32, [1, 16]>::uninit();
   for i in 0..32 {
     let mut m : f32 = -1000000.0;
     let mut l : f32 = 0.0;

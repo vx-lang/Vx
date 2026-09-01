@@ -65,7 +65,7 @@
 // PAYLOAD: \00kind=matmul\00roles=a:0,b:1,out:2\00outkind=slot\00
 
 fn gemm(a : DynTensor<f32>, b : DynTensor<f32>) -> DynTensor<f32> {
-  let mut c = Tensor<f32>([ 2, 3 ]);
+  let mut c = Tensor<f32, [2, 3]>::uninit();
   spawn on(Topology::GPU) {
     c = a @b;
   }

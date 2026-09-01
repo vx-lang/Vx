@@ -33,9 +33,9 @@
 // PAYLOAD: topo=500
 
 fn prefill() -> f32 {
-  let mut a = Tensor<f32>([ 2, 2 ]);
-  let mut b = Tensor<f32>([ 2, 2 ]);
-  let mut c = Tensor<f32>([ 2, 2 ]);
+  let mut a = Tensor<f32, [2, 2]>::uninit();
+  let mut b = Tensor<f32, [2, 2]>::uninit();
+  let mut c = Tensor<f32, [2, 2]>::uninit();
   spawn on(Topology::GPU[0]) {
     c = a @b;
   }
@@ -43,9 +43,9 @@ fn prefill() -> f32 {
 }
 
 fn decode() -> f32 {
-  let mut p = Tensor<f32>([ 2, 2 ]);
-  let mut q = Tensor<f32>([ 2, 2 ]);
-  let mut r = Tensor<f32>([ 2, 2 ]);
+  let mut p = Tensor<f32, [2, 2]>::uninit();
+  let mut q = Tensor<f32, [2, 2]>::uninit();
+  let mut r = Tensor<f32, [2, 2]>::uninit();
   spawn on(Topology::GPU[1]) {
     r = p @q;
   }

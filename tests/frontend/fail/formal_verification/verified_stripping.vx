@@ -13,7 +13,7 @@ fn requires_unverified(x : Tensor<f32, [ 10, 10 ]>) -> i32 {
 }
 
 fn test() -> i32 {
-  let unverified : Tensor<f32, [ 10, 10 ]> = Tensor<f32>(10, 10);
+  let unverified : Tensor<f32, [ 10, 10 ]> = Tensor<f32, [10, 10]>::uninit();
   let verified : Verified<Tensor<f32, [ 10, 10 ]>> = Verified(unverified);
   // Verified wrappers must be explicitly unpacked, they do not implicitly
   // coerce down to unverified equivalents

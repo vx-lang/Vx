@@ -372,9 +372,13 @@ inferred from the nesting. This replaces an explicit fill loop:
 // A 2x4 tensor with these values (shape inferred from the [[..],[..]] nesting):
 let q = Tensor<f32>([[1.0, 1.0, 1.0, 1.0], [0.0, 0.0, 0.0, 0.0]]);
 
-// A *flat* array in the constructor is still an explicit shape, not data:
-let z = Tensor<f32>([2, 4]);   // an (uninitialized) 2x4 tensor
+// Storage of the same shape and nothing in it -- the shape is written in the type:
+let z = Tensor<f32, [2, 4]>::uninit();
 ```
+
+The initializer list is the one construction still written the older way, because it supplies
+*contents* rather than a shape and the type-applying constructors take neither. See
+[types.md §6](./types.md#6-topology-aware-allocation) for `::new()` and `::uninit()`.
 
 A **slice** (a row of a tensor, see the slice operators in
 [`slice_operators.md`](../discussions/implementation_plans/slice_operators.md)) can be initialized

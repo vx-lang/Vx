@@ -10,7 +10,7 @@ Memory GPU_HBM {
   within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s
 }
 fn main() -> i32 {
-  let mut a = Tensor<f32>([ 2, 2 ]);
+  let mut a = Tensor<f32, [2, 2]>::uninit();
   a[0][0] = 1.0;
   let ad = transfer(a, Memory::GPU_HBM);
   let arr = [ ad ];

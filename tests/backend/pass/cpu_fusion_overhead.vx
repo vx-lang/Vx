@@ -7,11 +7,11 @@ import std::io;
 import std::time;
 
 fn main() -> i32 {
-  let mut a = Tensor<f32>(128, 128);
-  let mut b = Tensor<f32>(128, 128);
-  let mut bias = Tensor<f32>(128, 128);
-  let mut out_unfused = Tensor<f32>(128, 128);
-  let mut out_fused = Tensor<f32>(128, 128);
+  let mut a = Tensor<f32, [128, 128]>::uninit();
+  let mut b = Tensor<f32, [128, 128]>::uninit();
+  let mut bias = Tensor<f32, [128, 128]>::uninit();
+  let mut out_unfused = Tensor<f32, [128, 128]>::uninit();
+  let mut out_fused = Tensor<f32, [128, 128]>::uninit();
 
   for i in 0..128 {
     for j in 0..128 {
@@ -29,8 +29,8 @@ fn main() -> i32 {
     }
   }
 
-  let mut temp_matmul = Tensor<f32>(128, 128);
-  let mut temp_bias = Tensor<f32>(128, 128);
+  let mut temp_matmul = Tensor<f32, [128, 128]>::uninit();
+  let mut temp_bias = Tensor<f32, [128, 128]>::uninit();
 
   // Warmup Unfused
   for i in 0..128 {

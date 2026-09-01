@@ -24,10 +24,10 @@
 import std::math;
 
 fn main() -> i32 {
-  let mut q = Tensor<f32>([2, 4]);
-  let mut k = Tensor<f32>([2, 2]);
-  let mut v = Tensor<f32>([2, 2]);
-  let mut o = Tensor<f32>([2, 4]);
+  let mut q = Tensor<f32, [2, 4]>::uninit();
+  let mut k = Tensor<f32, [2, 2]>::uninit();
+  let mut v = Tensor<f32, [2, 2]>::uninit();
+  let mut o = Tensor<f32, [2, 4]>::uninit();
 
   for c in 0..2 {
     k[0][c] = 0.0;

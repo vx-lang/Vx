@@ -18,7 +18,7 @@ struct Holder {
 }
 
 fn main() -> i32 {
-  let mut b = Tensor<f32>([ 2, 2 ]);
+  let mut b = Tensor<f32, [2, 2]>::uninit();
   b[0][0] = 2.0;
   let bd = transfer(b, Memory::GPU_HBM);
   let h = Holder {

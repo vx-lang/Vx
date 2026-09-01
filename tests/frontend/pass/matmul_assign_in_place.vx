@@ -21,9 +21,9 @@
 // CHECK: linalg.matmul ins(%[[A]], %[[B]] : memref<2x3xf32>, memref<3x4xf32>) outs(%[[C]] : memref<2x4xf32>)
 
 fn main() -> i32 {
-  let mut a = Tensor<f32>([2, 3]);
-  let mut b = Tensor<f32>([3, 4]);
-  let mut c = Tensor<f32>([2, 4]);
+  let mut a = Tensor<f32, [2, 3]>::uninit();
+  let mut b = Tensor<f32, [3, 4]>::uninit();
+  let mut c = Tensor<f32, [2, 4]>::uninit();
   for i in 0..2 {
     for k in 0..3 {
       a[i][k] = ((i * 3 + k) as f32);

@@ -83,9 +83,9 @@ cat > "$OUTDIR/prog.vx" <<'EOF'
 // every iteration is paying a round trip per operand per dispatch for bytes the
 // worker already has.
 fn main() -> i32 {
-  let mut a = Tensor<f32>([ 64, 64 ]);
-  let mut b = Tensor<f32>([ 64, 64 ]);
-  let mut c = Tensor<f32>([ 64, 64 ]);
+  let mut a = Tensor<f32, [64, 64]>::uninit();
+  let mut b = Tensor<f32, [64, 64]>::uninit();
+  let mut c = Tensor<f32, [64, 64]>::uninit();
   for i in 0..64 {
     for j in 0..64 {
       a[i][j] = ((i + j) as f32) * 0.01;

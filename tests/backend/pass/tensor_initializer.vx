@@ -9,7 +9,7 @@
 // shape inferred from the nesting -- `Tensor<f32>([[..],[..]])` is a 2x4 buffer of that data,
 // replacing a fill loop. A flat array literal assigned to a row (`o[i] = [a, b, c, d]`)
 // initializes that slice in place (the S1 row view). (A flat array in the constructor is still
-// an explicit shape: `Tensor<f32>([2, 4])` is a 2x4 tensor.)
+// an explicit shape: `Tensor<f32, [2, 4]>::uninit()` is a 2x4 tensor.)
 //
 // m starts as [[1,2,3,4],[5,6,7,8]]; row 0 is overwritten with [10,20,30,40].
 // dot(row0, row1) = 10*5 + 20*6 + 30*7 + 40*8 = 50+120+210+320 = 700.

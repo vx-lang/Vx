@@ -34,8 +34,8 @@ Memory TMEM {
 }
 
 fn main() -> i32 {
-  let a = Tensor<f32>([64, 64]);
-  let b = Tensor<f32>([64, 64]);
+  let a = Tensor<f32, [64, 64]>::uninit();
+  let b = Tensor<f32, [64, 64]>::uninit();
 
   // Stage one tile into each sibling from the host.
   let sa = transfer(a, Memory::SMEM); // CPU -> SMEM: offset 0

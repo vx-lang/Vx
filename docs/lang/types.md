@@ -247,10 +247,6 @@ fn pipeline() -> Verified<()>
 
 ## 6. Topology-Aware Allocation
 
-> [!WARNING]
-> **Planned, not implemented.** The constructors below are the agreed design; the parser accepts
-> `Tensor<f32>([8, 8])` today, which is the uninitialized form.
-
 A tensor is constructed by applying its type. The shape and the placement are in the type, so they
 are written once and the constructor takes no arguments:
 
@@ -271,6 +267,16 @@ domain that is the common case rather than the exception — a decoder that mate
 matrix and fills it immediately would pay for the zeroing on every token. `::new()` is the one to
 reach for otherwise: a name that promises a valid value should deliver one, and `uninit` is
 greppable when a garbage-value bug is being hunted.
+
+A `Tensor`'s extents are part of its type, so every one of them has to be known at compile time —
+a literal or a const generic. An extent that is a run-time value is refused, naming `DynTensor`,
+because a type the source states is a claim and quietly answering with a different one is how a
+shape nobody can read comes to be trusted by a later check.
+
+> [!NOTE]
+> The older `Tensor<f32>([8, 8])` spelling is still accepted. It names a constructor rather than
+> applying a type, so the element and shape arrive split between the generic argument and the call
+> arguments, and there is nowhere in it to write a placement. It is on its way out.
 
 ## 7. Type Coercion and Assignability
 

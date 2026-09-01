@@ -16,9 +16,9 @@ Memory NPU_SRAM {
 }
 
 fn main() -> i32 {
-  let kv: Tensor<f8e4m3, [64, 64]> = Tensor<f8e4m3>([64, 64]);
+  let kv: Tensor<f8e4m3, [64, 64]> = Tensor<f8e4m3, [64, 64]>::uninit();
   let staged = transfer(kv, Memory::NPU_SRAM);
-  let w: Tensor<f8e5m2, [50, 50]> = Tensor<f8e5m2>([50, 50]);
+  let w: Tensor<f8e5m2, [50, 50]> = Tensor<f8e5m2, [50, 50]>::uninit();
   let staged2 = transfer(w, Memory::NPU_SRAM);
   return 0;
 }

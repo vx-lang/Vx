@@ -43,7 +43,7 @@
 
 // A `spawn` region whose last statement is an `if`.
 fn tail_if_in_spawn() -> i32 {
-  let mut a = Tensor<f32>([ 1, 1 ]);
+  let mut a = Tensor<f32, [1, 1]>::uninit();
   a[0][0] = 0.0;
   let x : f32 = 2.0;
   spawn on(Topology::GPU) {
@@ -57,7 +57,7 @@ fn tail_if_in_spawn() -> i32 {
 
 // A loop inside the surviving branch of an `if comptime`.
 fn loop_in_comptime_branch() -> i32 {
-  let mut a = Tensor<f32>([ 1, 1 ]);
+  let mut a = Tensor<f32, [1, 1]>::uninit();
   a[0][0] = 0.0;
   if comptime
   Topology::Current == Topology::CPU {
@@ -70,7 +70,7 @@ fn loop_in_comptime_branch() -> i32 {
 
 // The same, in a `comptime { }` block.
 fn loop_in_comptime_block() -> i32 {
-  let mut a = Tensor<f32>([ 1, 1 ]);
+  let mut a = Tensor<f32, [1, 1]>::uninit();
   a[0][0] = 0.0;
   comptime {
     for i in 0..4 {

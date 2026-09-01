@@ -31,7 +31,7 @@ Topology Rubin {
 }
 
 fn serve() -> i32 {
-  let prompt : Tensor<f32, [8192, 128]> = Tensor<f32>([8192, 128]);
+  let prompt : Tensor<f32, [8192, 128]> = Tensor<f32, [8192, 128]>::uninit();
   let staged = transfer(prompt, Memory::GDDR7);
   let kv = spawn on(Topology::RubinCPX) {
     staged

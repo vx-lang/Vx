@@ -27,15 +27,15 @@
 import std::math;
 
 fn main() -> i32 {
-  let mut q = Tensor<f32>([2, 2]);
-  let mut k = Tensor<f32>([2, 2]);
-  let mut v = Tensor<f32>([2, 2]);
-  let mut p = Tensor<f32>([2, 2]);  // softmax(scale * Q K^T)
-  let mut dp = Tensor<f32>([2, 2]);
-  let mut ds = Tensor<f32>([2, 2]);
-  let mut dv = Tensor<f32>([2, 2]);
-  let mut dq = Tensor<f32>([2, 2]);
-  let mut dk = Tensor<f32>([2, 2]);
+  let mut q = Tensor<f32, [2, 2]>::uninit();
+  let mut k = Tensor<f32, [2, 2]>::uninit();
+  let mut v = Tensor<f32, [2, 2]>::uninit();
+  let mut p = Tensor<f32, [2, 2]>::uninit();  // softmax(scale * Q K^T)
+  let mut dp = Tensor<f32, [2, 2]>::uninit();
+  let mut ds = Tensor<f32, [2, 2]>::uninit();
+  let mut dv = Tensor<f32, [2, 2]>::uninit();
+  let mut dq = Tensor<f32, [2, 2]>::uninit();
+  let mut dk = Tensor<f32, [2, 2]>::uninit();
 
   q[0][0] = 1.0; q[0][1] = 0.0; q[1][0] = 0.0; q[1][1] = 1.0;
   k[0][0] = 1.0; k[0][1] = 1.0; k[1][0] = 0.0; k[1][1] = 1.0;

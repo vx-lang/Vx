@@ -3,7 +3,7 @@
 // CHECK: Type mismatch in variable declaration 'x'
 
 fn test_unverified_to_verified() -> i32 {
-  let unverified : Tensor<f32, [ 10, 10 ]> = Tensor<f32>(10, 10);
+  let unverified : Tensor<f32, [ 10, 10 ]> = Tensor<f32, [10, 10]>::uninit();
   // Cannot assign unverified tensor to a verified tensor
   let x : Verified<Tensor<f32, [ 10, 10 ]>> = unverified;
   return 0;

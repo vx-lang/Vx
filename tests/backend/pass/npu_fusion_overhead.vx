@@ -8,11 +8,11 @@ import std::io;
 import std::time;
 
 fn main() -> i32 {
-  let mut a_host = Tensor<f32>(128, 128);
-  let mut b_host = Tensor<f32>(128, 128);
-  let mut bias_host = Tensor<f32>(128, 128);
-  let mut out_unfused_host = Tensor<f32>(128, 128);
-  let mut out_fused_host = Tensor<f32>(128, 128);
+  let mut a_host = Tensor<f32, [128, 128]>::uninit();
+  let mut b_host = Tensor<f32, [128, 128]>::uninit();
+  let mut bias_host = Tensor<f32, [128, 128]>::uninit();
+  let mut out_unfused_host = Tensor<f32, [128, 128]>::uninit();
+  let mut out_fused_host = Tensor<f32, [128, 128]>::uninit();
 
   for i in 0..128 {
     for j in 0..128 {
@@ -37,8 +37,8 @@ fn main() -> i32 {
   let mut out_unfused = transfer(out_unfused_host, Memory::NPU_HBM);
   let mut out_fused = transfer(out_fused_host, Memory::NPU_HBM);
 
-  let mut temp_matmul = Tensor<f32>(128, 128);
-  let mut temp_bias = Tensor<f32>(128, 128);
+  let mut temp_matmul = Tensor<f32, [128, 128]>::uninit();
+  let mut temp_bias = Tensor<f32, [128, 128]>::uninit();
   let mut temp_matmul_npu = transfer(temp_matmul, Memory::NPU_HBM);
   let mut temp_bias_npu = transfer(temp_bias, Memory::NPU_HBM);
 

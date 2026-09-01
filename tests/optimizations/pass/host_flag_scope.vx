@@ -36,7 +36,7 @@
 // FILE: vx.transfer
 
 fn main() -> i32 {
-  let mut weights = Tensor<f32>([ 64, 64 ]);
+  let mut weights = Tensor<f32, [64, 64]>::uninit();
   let weights_d = transfer(weights, Memory::HBM);
   return 0;
 }

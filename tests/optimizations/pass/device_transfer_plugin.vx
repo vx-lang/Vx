@@ -67,8 +67,8 @@
 // HOST: scope = "device"
 
 fn main() -> i32 {
-  let mut a = Tensor<f32>([ 2, 2 ]);
-  let mut e = Tensor<f32>([ 2, 2 ]);
+  let mut a = Tensor<f32, [2, 2]>::uninit();
+  let mut e = Tensor<f32, [2, 2]>::uninit();
   for i in 0..2 {
     for j in 0..2 {
       a[i][j] = (i * 2 + j + 1) as f32;
@@ -81,7 +81,7 @@ fn main() -> i32 {
 
   let a_d = transfer(a, Memory::HBM);
   let e_d = transfer(e, Memory::HBM);
-  let mut r = Tensor<f32>([ 2, 2 ]);
+  let mut r = Tensor<f32, [2, 2]>::uninit();
   let mut r_d = transfer(r, Memory::HBM);
 
   spawn on(Topology::Device) {

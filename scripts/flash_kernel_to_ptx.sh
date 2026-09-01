@@ -45,7 +45,7 @@
 #   call. The pass now rewrites it to `math.exp`, which lowers to libm on the
 #   host and to a device intrinsic here.
 #
-#   The in-region `Tensor<f32>([1,16])` -- `ts`, the score tile -- lowered to
+#   The in-region `Tensor<f32, [1,16]>::uninit()` -- `ts`, the score tile -- lowered to
 #   `memref.alloc`, a device-side `malloc` call per launch for 64 bytes of
 #   scratch. The pass now puts entry-block scratch on the stack.
 #

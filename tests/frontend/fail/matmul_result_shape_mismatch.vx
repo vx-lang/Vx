@@ -13,8 +13,8 @@
 // RUN: not vxc %s 2>&1 | FileCheck %s
 
 fn main() -> i32 {
-  let mut a : Tensor<f32, [2, 3]> = Tensor<f32>([2, 3]);
-  let mut b : Tensor<f32, [3, 4]> = Tensor<f32>([3, 4]);
+  let mut a : Tensor<f32, [2, 3]> = Tensor<f32, [2, 3]>::uninit();
+  let mut b : Tensor<f32, [3, 4]> = Tensor<f32, [3, 4]>::uninit();
   a[0][0] = 1.0;
   b[0][0] = 1.0;
   // CHECK: Type mismatch in variable declaration 'c'
