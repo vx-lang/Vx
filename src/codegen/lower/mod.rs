@@ -738,8 +738,13 @@ pub(crate) fn lower_print_call<'c>(
     };
 
     if arg_ty.to_string().contains(", ") {
-        let stripped_ty = Type::parse(gen.context, &format!("memref<?x?x{}>", el_ty_str))
-            .ok_or_else(|| LowerError::ParseType(format!("memref<?x?x{}>", el_ty_str)))?;
+        // Strip the space and nothing else -- `memref.memory_space_cast` cannot change the shape,
+        // so naming a dynamic one here made the cast invalid for any statically shaped placed
+        // tensor (Vx#429). Falls back to the old spelling where there is no space to strip.
+        let stripped = crate::codegen::generator::strip_memref_space(&arg_ty.to_string())
+            .unwrap_or_else(|| format!("memref<?x?x{}>", el_ty_str));
+        let stripped_ty = Type::parse(gen.context, &stripped)
+            .ok_or_else(|| LowerError::ParseType(stripped.clone()))?;
         let mcast_op = block.append_operation(
             OperationBuilder::new("memref.memory_space_cast", gen.loc())
                 .add_operands(&[arg_val])

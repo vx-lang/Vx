@@ -949,9 +949,12 @@ impl TransferCostGraph {
             return self.is_type_accessible(active_topology, pinned_top, &mock_ty);
         }
 
-        // Determine the memory space of the variable
-        let target_mem = match ty {
-            Type::Ref(_, mem) => mem.clone(),
+        // Determine the memory space of the variable. A placed tensor says where it lives in its
+        // own type, so it is read there rather than reconstructed from the owning device -- which
+        // is the point of carrying a placement at all (Vx#429).
+        let target_mem = match (ty.placement(), ty) {
+            (Some(p), _) => p.space.clone(),
+            (None, Type::Ref(_, mem)) => mem.clone(),
             _ => {
                 if var_topology == active_topology {
                     return true;
@@ -980,6 +983,9 @@ impl TransferCostGraph {
 
     /// The memory space where a value of type `ty` owned by `var_topology` lives.
     fn memory_of(&self, var_topology: &Topology, ty: &Type) -> MemorySpace {
+        if let Some(p) = ty.placement() {
+            return p.space.clone();
+        }
         match ty {
             Type::Pinned(_, top) => self.default_memory_for(top),
             Type::Ref(_, mem) => mem.clone(),

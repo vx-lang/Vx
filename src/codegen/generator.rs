@@ -118,6 +118,18 @@ fn erase_memref_extents(s: &str) -> String {
     format!("memref<{}>", out.join("x"))
 }
 
+/// `memref<4x4xf64, 1>` -> `memref<4x4xf64>`, keeping the shape and element type.
+///
+/// `memref.memory_space_cast` changes the space and nothing else, so a cast that also has to
+/// change the shape needs the intermediate type this produces. Returns `None` where there is no
+/// space to strip, or where the trailing component is a layout rather than a space.
+pub(crate) fn strip_memref_space(s: &str) -> Option<String> {
+    let inner = s.strip_prefix("memref<")?.strip_suffix('>')?;
+    let (head, tail) = inner.rsplit_once(',')?;
+    tail.trim().parse::<u32>().ok()?;
+    Some(format!("memref<{head}>"))
+}
+
 impl<'c> MeliorGenerator<'c> {
     pub fn loc(&self) -> melior::ir::Location<'c> {
         melior::ir::Location::new(

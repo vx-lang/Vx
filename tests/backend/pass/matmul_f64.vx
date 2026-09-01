@@ -11,7 +11,13 @@
 // values threaded between them -- the dataflow the run below scores, stated in the IR.
 // CHECK-DAG: func.func private @printMemrefF64(
 // CHECK-LABEL: func.func @main() -> i32
-// CHECK: call @custom_matmul(%{{.*}}, %{{.*}}) : (memref<4x4xf64>, memref<4x4xf64>) -> memref<4x4xf64>
+//
+// The result carries NPU_HBM's address space, because the return type says the tensor lives there.
+// It used to be spelled `Ref<Tensor<..>, Memory::NPU_HBM>`, and the AST lowering of `Ref` dropped
+// the space -- while a placement on the same tensor kept it, which is what
+// tests/frontend/fail/gpu_address_spaces.vx pins. Folding the two spellings into one had to pick a
+// side, and the type's word is the side worth keeping (Vx#429).
+// CHECK: call @custom_matmul(%{{.*}}, %{{.*}}) : (memref<4x4xf64>, memref<4x4xf64>) -> memref<4x4xf64, 1>
 // CHECK: call @printMemrefF64(%{{.*}}) : (memref<*xf64>) -> ()
 // EXPECT:  [24,   24,   24,   24],
 // EXPECT:  [24,   24,   24,   24],
@@ -19,8 +25,8 @@
 
 fn custom_matmul(a : Pinned<Tensor<f64, [ 4, 4 ]>, Topology::NPU[0]>,
 b : Pinned<Tensor<f64, [ 4, 4 ]>, Topology::NPU[0]>)
--> Verified<Ref<Tensor<f64, [ 4, 4 ]>, Memory::NPU_HBM>> {
-  let mut result = Tensor<f64, [4, 4]>::uninit().with_memory(Memory::NPU_HBM);
+-> Verified<Tensor<f64, [ 4, 4 ], Memory::NPU_HBM>> {
+  let mut result = Tensor<f64, [4, 4], Memory::NPU_HBM>::uninit();
   spawn on(Topology::NPU[0]) {
     for i in 0..4 {
       for j in 0..4 {

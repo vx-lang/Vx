@@ -21,17 +21,33 @@ impl<'c> LowerToMelior<'c> for ReturnStmt {
         if let Some(ret_ty) = gen.current_return_type {
             if expr_ty != ret_ty {
                 if gen.is_memref(&expr_ty) && gen.is_memref(&ret_ty) {
-                    let mut cast_op_name = "memref.cast";
                     let expr_parts = expr_ty.to_string();
                     let ret_parts = ret_ty.to_string();
-                    let _expr_has_space =
-                        expr_parts.matches(',').count() > 0 && !expr_parts.contains("strided");
-                    let _ret_has_space =
-                        ret_parts.matches(',').count() > 0 && !ret_parts.contains("strided");
-                    if expr_parts.matches(',').count() != ret_parts.matches(',').count() {
-                        cast_op_name = "memref.memory_space_cast";
+                    let space_differs =
+                        expr_parts.matches(',').count() != ret_parts.matches(',').count();
+                    // `memref.memory_space_cast` changes the space and nothing else, and
+                    // `memref.cast` cannot change the space at all. A return whose type differs in
+                    // both -- a placed tensor with a written shape, returned from a body that
+                    // allocated it dynamically -- needs one of each, shape first (Vx#429).
+                    if space_differs {
+                        if let Some(no_space) =
+                            crate::codegen::generator::strip_memref_space(&ret_parts)
+                                .filter(|s| *s != expr_parts)
+                        {
+                            let shaped = Type::parse(gen.context, &no_space)
+                                .ok_or_else(|| LowerError::ParseType(no_space.clone()))?;
+                            let shape_op = OperationBuilder::new("memref.cast", gen.loc())
+                                .add_operands(&[val])
+                                .add_results(&[shaped])
+                                .build()?;
+                            val = block.append_operation(shape_op).result(0)?.into();
+                        }
                     }
-
+                    let cast_op_name = if space_differs {
+                        "memref.memory_space_cast"
+                    } else {
+                        "memref.cast"
+                    };
                     let cast_op = OperationBuilder::new(cast_op_name, gen.loc())
                         .add_operands(&[val])
                         .add_results(&[ret_ty])

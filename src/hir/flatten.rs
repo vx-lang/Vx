@@ -2564,7 +2564,7 @@ impl<'r> Lowerer<'r> {
         // `Tensor<T, [d0, d1]>::uninit()` writes the element and shape in the type and takes no
         // arguments, so there is nothing to recover from the call. A `DynTensor` has no static
         // shape to size the buffer from and falls through to the decline below.
-        if let crate::syntax::Type::Tensor(el, dims, _) = written {
+        if let crate::syntax::Type::Tensor(el, dims, placement) = written {
             if matches!(el, ElementType::Generic(_)) {
                 return None;
             }
@@ -2578,7 +2578,21 @@ impl<'r> Lowerer<'r> {
                 elem: el.clone(),
                 shape,
             };
-            let buf = self.emit_typed(Opcode::TensorAlloc, Register(0), Register(0), ty, bytes);
+            // The placement's space rides out on the alloc's spare operand, which is where
+            // `.with_memory(Memory::X)` used to put it: a `scope: sm` space becomes a space-3
+            // alloca the device pipeline materializes as `.shared` storage.
+            let space = placement
+                .as_ref()
+                .map(|p| crate::arch::memory_space_dispatch_id(&p.space))
+                .filter(|id| *id > 0)
+                .unwrap_or(0);
+            let buf = self.emit_typed(
+                Opcode::TensorAlloc,
+                Register(0),
+                Register(space as u32),
+                ty,
+                bytes,
+            );
             // `::new()` zeroes what `::uninit()` leaves as it was found. A separate instruction,
             // so the allocation is the same one either way and only the fill is conditional.
             if fc.name.as_ref().ends_with("::new") {
@@ -6904,6 +6918,50 @@ mod tests {
             .filter(|i| i.opcode == Opcode::Add && i.imm == IMM_PARALLEL_STEP)
             .count();
         assert_eq!((inits, steps), (1, 1), "exactly the outer loop is tagged");
+    }
+
+    /// A placement in the type puts the space's dispatch id on the allocation, which is exactly
+    /// where `.with_memory(Memory::X)` used to put it (Vx#429).
+    ///
+    /// The two spellings have to agree, because one replaces the other: a `scope: sm` space is
+    /// what turns the allocation into a space-3 alloca, and that decision is made from this
+    /// operand alone. If the placement stopped reaching it, every shared tile would quietly
+    /// become an ordinary allocation and the region would still compile.
+    #[test]
+    fn a_placed_tensor_carries_its_space_on_the_allocation() {
+        let alloc_space = |src: &str| {
+            let (did, w) = lower_with_registry(src, "main");
+            assert!(did, "lowers: {src}");
+            w.local_hir_stream
+                .iter()
+                .find(|i| i.opcode == Opcode::TensorAlloc)
+                .expect("an allocation")
+                .operand2
+                .0
+        };
+        let by_type = alloc_space(
+            "fn main() -> i32 { let mut t = Tensor<f32, [2, 4], Memory::SMEM>::uninit(); \
+             t[0][0] = 1.0; return 0; }",
+        );
+        let by_method = alloc_space(
+            "fn main() -> i32 { let mut t = Tensor<f32>([2, 4]).with_memory(Memory::SMEM); \
+             t[0][0] = 1.0; return 0; }",
+        );
+        assert_eq!(by_type, by_method, "one spelling replaces the other");
+        assert_eq!(
+            by_type,
+            crate::arch::memory_space_dispatch_id(&crate::syntax::MemorySpace::from_name("SMEM"))
+                as u32
+        );
+        // A tensor with no placement leaves the operand alone, so a nonzero id above means the
+        // space was carried rather than defaulted into.
+        assert_eq!(
+            alloc_space(
+                "fn main() -> i32 { let mut t = Tensor<f32, [2, 4]>::uninit(); \
+                         t[0][0] = 1.0; return 0; }"
+            ),
+            0
+        );
     }
 
     #[test]
