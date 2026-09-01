@@ -244,6 +244,22 @@ impl Placement {
         }
     }
 
+    /// A placement written as a space. The device is the one that holds it.
+    ///
+    /// A built-in space names its device outright. A declared one is held by whichever topology's
+    /// `memory:` names it, which only the program's declarations can say, so the device starts as
+    /// the like-named topology -- the convention `default_memory_for` already applies in the
+    /// other direction -- and `complete` replaces it.
+    pub fn at(space: MemorySpace) -> Self {
+        let topology = crate::arch::owning_topology_in(&space, &Default::default())
+            .unwrap_or_else(|_| Topology::Custom(Symbol::from(space.name().as_str())));
+        Self {
+            topology,
+            space,
+            stated: Stated::Space,
+        }
+    }
+
     /// A placement written as a space, with the device it names.
     ///
     /// The caller supplies a provisional device where it cannot yet know the real one; `complete`

@@ -28,11 +28,16 @@ Where the device cannot be told from the space, that is an error rather than a g
 that no topology declares, or one that two do. `docs/memory_algebra.md` §11 has the reasoning and
 why the owner is stated rather than inverted out of the topology table.
 
+The derivation happens in name resolution, not in the parser: a declared topology's `memory:` is
+program-wide information, and it may arrive from a different file altogether — a `--machine` fleet
+file is where topologies are usually declared. Until then each spelling holds a placeholder for
+the half it did not state, which is why `Placement` records which half the source wrote.
+
 > [!NOTE]
-> **Partly implemented.** The space-to-device derivation exists
-> (`TransferCostGraph::owning_topology`). The placement field itself, and the surface accepting
-> `Memory::X` in that slot, do not yet — today the slot takes a topology only, and a memory space
-> is spelled with the `Ref<T, Memory>` type below.
+> **Partly implemented.** The placement field, both spellings in the slot, and the derivation in
+> name resolution are built. The *diagnostic* above is not: a space no topology claims currently
+> falls back to the like-named device rather than being refused, which is what an undeclared
+> `Topology::X` already does.
 
 ### The `Ref<T, Memory>` Type
 

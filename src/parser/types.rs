@@ -125,6 +125,24 @@ impl<'a> Parser<'a> {
         Ok(MemorySpace::from_name(&ident))
     }
 
+    /// Where a value lives, written either way round: `Topology::GPU` or `Memory::GPU_HBM`.
+    ///
+    /// Both name one location, and which one the source picked is not part of the type -- the
+    /// unwritten projection is derived, here from the built-in tables and then corrected in name
+    /// resolution, where a declared topology's `memory:` is finally in scope.
+    pub(crate) fn parse_placement(&mut self) -> ParseResult<'a, Placement> {
+        if self.check(&TokenType::Topology) {
+            Ok(Placement::on(self.parse_topology()?))
+        } else if self.check(&TokenType::Memory) {
+            Ok(Placement::at(self.parse_memory_space()?))
+        } else {
+            Err(self.error(
+                "Expected a placement -- `Topology::X` for the device or `Memory::X` for the \
+                 space it holds",
+            ))
+        }
+    }
+
     pub(crate) fn parse_type(&mut self) -> ParseResult<'a, Type> {
         if self.match_token(&TokenType::Ampersand) {
             let is_mut = self.match_token(&TokenType::Mut);
@@ -361,8 +379,8 @@ impl<'a> Parser<'a> {
                     }
 
                     let mut top = None;
-                    if self.match_token(&TokenType::Comma) && self.check(&TokenType::Topology) {
-                        top = Some(self.parse_topology()?);
+                    if self.match_token(&TokenType::Comma) {
+                        top = Some(self.parse_placement()?);
                     }
 
                     self.consume(
@@ -376,7 +394,7 @@ impl<'a> Parser<'a> {
                     if !saw_dims_list {
                         return Err(self.error(DIMS_REQUIRED));
                     }
-                    Ok(Type::Tensor(el_ty, dims, top.map(Placement::on)))
+                    Ok(Type::Tensor(el_ty, dims, top))
                 }
             }
             // `DynTensor<T>` / `DynTensor<T, Topology::X>`: a tensor whose shape is a run-time
@@ -398,8 +416,8 @@ impl<'a> Parser<'a> {
                         return Err(self.error(&format!("Unknown element type {}", ty_ident)));
                     };
                     if self.match_token(&TokenType::Comma) {
-                        if self.check(&TokenType::Topology) {
-                            top = Some(self.parse_topology()?);
+                        if self.check(&TokenType::Topology) || self.check(&TokenType::Memory) {
+                            top = Some(self.parse_placement()?);
                         } else {
                             return Err(self.error(
                                 "DynTensor takes no dimensions; write Tensor<T, [..]> for a \
@@ -412,7 +430,7 @@ impl<'a> Parser<'a> {
                         "Expected '>' after DynTensor parameters",
                     )?;
                 }
-                Ok(Type::DynTensor(el_ty, top.map(Placement::on)))
+                Ok(Type::DynTensor(el_ty, top))
             }
             "Matrix" => Ok(Type::Matrix),
             _ => {

@@ -51,6 +51,26 @@ fn f_acc(p : Tensor<f32, [4, 4], Topology::AccCore[0]>) -> i32 {
   return 0;
 }
 
+// The same three locations written as the space instead of the device (Vx#429). `Memory::SMEM`
+// and `Topology::SmemDev` name one place and reach the same address space.
+//
+// What this pins is the surface: a space is spellable in the placement slot and survives to
+// codegen. It does NOT pin the device the space resolves to -- `topology_address_space` reaches
+// the right memory decl through the like-named fallback whether or not the placement's device was
+// ever corrected, which was measured, not assumed. That correction is covered by
+// tests/integration_test/resolution_test.rs, where the two spellings are compared as types.
+fn f_smem_by_space(p : Tensor<f32, [4, 4], Memory::SMEM>) -> i32 {
+  return 0;
+}
+
+fn f_l2_by_space(p : Tensor<f32, [4, 4], Memory::L2>) -> i32 {
+  return 0;
+}
+
+fn f_gpu_by_space(p : Tensor<f32, [4, 4], Memory::GPU_HBM>) -> i32 {
+  return 0;
+}
+
 fn main() -> i32 {
   return 0;
 }
@@ -59,3 +79,6 @@ fn main() -> i32 {
 // CHECK-DAG: func.func @f_l2(%arg0: memref<4x4xf32, 1>)
 // CHECK-DAG: func.func @f_gpu(%arg0: memref<4x4xf32, 1>)
 // CHECK-DAG: func.func @f_acc(%arg0: memref<4x4xf32, 3>)
+// CHECK-DAG: func.func @f_smem_by_space(%arg0: memref<4x4xf32, 3>)
+// CHECK-DAG: func.func @f_l2_by_space(%arg0: memref<4x4xf32, 1>)
+// CHECK-DAG: func.func @f_gpu_by_space(%arg0: memref<4x4xf32, 1>)

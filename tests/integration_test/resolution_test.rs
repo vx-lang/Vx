@@ -710,21 +710,68 @@ fn a_topology_declared_in_another_module_still_completes_the_placement() {
 
 /// The two spellings of one location are one type (Vx#429).
 ///
-/// Equality over `Placement` is over both projections, so this holds only because the device
-/// spelling has been given the declared space. It is the property the surface work depends on:
-/// once `Memory::SMEM` is accepted in the placement slot, the two have to be interchangeable.
+/// This is the acceptance criterion for carrying both projections at all. `Topology::SmemDev`
+/// arrives from the parser holding the like-named space and `Memory::SMEM` holding the like-named
+/// device, so neither is the other until resolution has replaced the derived half of each. The
+/// types are compared whole, not projection by projection, because that is how the checker
+/// compares them.
 #[test]
-fn a_device_spelling_and_a_space_spelling_are_the_same_placement() {
+fn a_device_spelling_and_a_space_spelling_are_the_same_type() {
     let src = format!(
-        "{SMEM_FLEET}fn f(p : Tensor<f32, [4, 4], Topology::SmemDev>) -> i32 {{ return 0; }}"
+        "{SMEM_FLEET}\
+         fn by_device(p : Tensor<f32, [4, 4], Topology::SmemDev>) -> i32 {{ return 0; }}\n\
+         fn by_space(p : Tensor<f32, [4, 4], Memory::SMEM>) -> i32 {{ return 0; }}"
     );
     let mut m = parse_module("fleet", &src);
+
+    // Neither spelling is the other before resolution: each holds its own name in both slots.
+    assert_ne!(param_ty(&m, 0), param_ty(&m, 1));
+
     let symbol_map = build_symbol_map(std::slice::from_ref(&m));
     m.resolve_names(&symbol_map, &[]);
 
-    let written_as_space = vxc::syntax::Placement::in_space(
-        vxc::syntax::MemorySpace::Custom(sym("SMEM")),
-        vxc::syntax::Topology::Custom(sym("SmemDev")),
+    assert_eq!(param_ty(&m, 0), param_ty(&m, 1));
+    let p = placement_of(&m, 1);
+    assert_eq!(p.topology, vxc::syntax::Topology::Custom(sym("SmemDev")));
+    assert_eq!(p.space, vxc::syntax::MemorySpace::Custom(sym("SMEM")));
+}
+
+/// A built-in space needs no declaration to name its device, so the two spellings already agree
+/// at the parser (Vx#429). Separate from the declared case because it exercises the stated owner
+/// table rather than a `memory:` field, and because it is the spelling most programs will use.
+#[test]
+fn a_built_in_space_and_its_device_are_the_same_type() {
+    let mut m = parse_module(
+        "builtins",
+        "fn by_device(p : Tensor<f32, [4, 4], Topology::GPU>) -> i32 { return 0; }\n\
+         fn by_space(p : Tensor<f32, [4, 4], Memory::GPU_HBM>) -> i32 { return 0; }\n\
+         fn dyn_by_space(p : DynTensor<f32, Memory::NPU_HBM>) -> i32 { return 0; }\n\
+         fn dyn_by_device(p : DynTensor<f32, Topology::NPU[0]>) -> i32 { return 0; }",
     );
-    assert_eq!(placement_of(&m, 0), written_as_space);
+    let symbol_map = build_symbol_map(std::slice::from_ref(&m));
+    m.resolve_names(&symbol_map, &[]);
+
+    assert_eq!(param_ty(&m, 0), param_ty(&m, 1));
+    assert_eq!(param_ty(&m, 2), param_ty(&m, 3));
+}
+
+/// A space no topology claims keeps the like-named device rather than being silently dropped
+/// (Vx#429).
+///
+/// Recording today's behaviour, not endorsing it: `Memory::Nowhere` names no location the machine
+/// has, and saying so needs a diagnostic channel that name resolution does not have. It matches
+/// what an undeclared `Topology::Nowhere` already does, so the two spellings stay consistent with
+/// each other while that remains open.
+#[test]
+fn a_space_no_topology_claims_falls_back_to_the_like_named_device() {
+    let mut m = parse_module(
+        "orphan",
+        "fn by_space(p : Tensor<f32, [4, 4], Memory::Nowhere>) -> i32 { return 0; }",
+    );
+    let symbol_map = build_symbol_map(std::slice::from_ref(&m));
+    m.resolve_names(&symbol_map, &[]);
+
+    let p = placement_of(&m, 0);
+    assert_eq!(p.topology, vxc::syntax::Topology::Custom(sym("Nowhere")));
+    assert_eq!(p.space, vxc::syntax::MemorySpace::Custom(sym("Nowhere")));
 }
