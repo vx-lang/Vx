@@ -1,0 +1,36 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// RUN: not vxc %s 2>&1 | FileCheck %s --check-prefix=NOCRASH
+// A path on `Tensor` is a method call, and an undefined one is reported rather than built.
+//
+// The older constructor spelling is recognised by a prefix: a call whose name begins with `Tensor`
+// is a construction and its arguments are the extents. A prefix admits paths too, so
+// `Tensor<f32>::totally_made_up(1, 2)` was accepted as a construction of a 1x2 tensor. Nothing
+// lowers that name on either path, so the flat path declined it for want of a signature and the
+// AST backend panicked: a program the checker had approved crashed the compiler.
+//
+// Both functions here type-checked cleanly while that was true, which is why they are alone in this
+// file. Any other error in the same program stops compilation before codegen and the crash never
+// happens, so a file that mixes this with a case that fails the checker cannot pin it.
+//
+// CHECK-DAG: Undefined static method 'Tensor<f32>::from'
+// CHECK-DAG: Undefined static method 'Tensor<f32>::totally_made_up'
+//
+// NOCRASH-NOT: Internal Error
+
+extern "C" {
+  fn vx_alloc_f32(n : i32) -> *mut f32;
+}
+
+// `from` was once a constructor of its own here, taking a pointer and a shape. The pointer landed
+// in the extent position, so the accepted type was a tensor shaped by whatever was passed.
+fn from_a_pointer() -> i32 {
+  let p : *mut f32 = unsafe { vx_alloc_f32(6) };
+  let v = unsafe { Tensor<f32>::from(p, [ 2, 3 ]) };
+  return 0;
+}
+
+// Nothing about `from` was special: every method name on the path was a constructor.
+fn any_other_method() -> i32 {
+  let v = Tensor<f32>::totally_made_up(1, 2);
+  return 0;
+}

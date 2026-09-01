@@ -1152,33 +1152,12 @@ impl<'a> TypeChecker<'a> {
             }
             let inner_ty = arg_types[0].clone();
             Some(Type::Verified(Box::new(inner_ty)))
-        } else if resolved_name.starts_with("Tensor") && resolved_name.ends_with("::from") {
-            if args.len() != 2 {
-                self.errors.push(format!(
-                    "Function '{}' expects 2 arguments (pointer, shape), got {}",
-                    resolved_name,
-                    args.len()
-                ));
-            }
-            if !self.in_unsafe_block {
-                self.errors.push(format!("Call to '{}' is unsafe because it interprets raw memory. Requires unsafe block.", resolved_name));
-            }
-            let mut el_ty = ElementType::F32;
-            if resolved_name.contains("_i32") {
-                el_ty = ElementType::I32;
-            } else if resolved_name.contains("_i64") {
-                el_ty = ElementType::I64;
-            } else if resolved_name.contains("_f64") {
-                el_ty = ElementType::F64;
-            }
-            let mut dims = Vec::new();
-            if args.len() == 2 {
-                if let Expr::Array(arr) = &args[1] {
-                    dims = arr.elements.clone();
-                }
-            }
-            Some(Type::Tensor(el_ty, dims, None))
+        // The older spelling, `Tensor<f32>([2, 3])`, names the constructor by its prefix. A name
+        // holding `::` is a path -- the four constructors above are matched exactly, so anything
+        // else is a method nothing defines, and reporting it undefined beats building a tensor
+        // out of whatever its arguments were.
         } else if resolved_name.starts_with("Tensor")
+            && !resolved_name.contains("::")
             && !resolved_name.contains("$")
             && !resolved_name.contains("__")
         {

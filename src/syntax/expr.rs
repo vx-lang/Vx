@@ -849,10 +849,7 @@ pub fn is_tensor_construction(e: &Expr) -> bool {
             ) {
                 return true;
             }
-            n.starts_with("Tensor")
-                && !n.ends_with("::from")
-                && !n.contains('$')
-                && !n.contains("__")
+            n.starts_with("Tensor") && !n.contains("::") && !n.contains('$') && !n.contains("__")
         }
         _ => false,
     }

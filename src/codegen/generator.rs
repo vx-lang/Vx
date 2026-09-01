@@ -1857,7 +1857,7 @@ impl<'c> MeliorGenerator<'c> {
                     return fc.type_args.as_ref().and_then(|a| a.first()).cloned();
                 }
                 if name.starts_with("Tensor")
-                    && !name.ends_with("::from")
+                    && !name.contains("::")
                     && !name.contains('$')
                     && !name.contains("__")
                 {

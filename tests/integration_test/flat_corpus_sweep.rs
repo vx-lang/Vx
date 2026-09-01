@@ -57,7 +57,6 @@ const KNOWN_DECLINES: &[&str] = &[
     "frontend/pass/topology_spawn.vx",
     "frontend/pass/trait_topologies.vx",
     "frontend/pass/transfer_cost_advanced_dijkstra.vx",
-    "frontend/pass/transfer_cost_dijkstra.vx",
     "frontend/pass/vector_algorithms.vx",
     "middle_end/pass/closure_return_ref.vx",
     "middle_end/pass/fnval_indirect_call.vx",
@@ -115,8 +114,7 @@ const KNOWN_BROKEN: &[&str] = &[
     "frontend/pass/enum_match.vx",   // extractvalue on i32 (enum payload, Vx#233)
     "frontend/pass/generics.vx",     // extractvalue on i32 (enum payload, Vx#233)
     "frontend/pass/memory_algebra_implicit.vx", // insertvalue of memref (Vx#356)
-    "frontend/pass/transfer_cost_advanced_dijkstra.vx", // Tensor<f32>::zeros unimplemented
-    "frontend/pass/transfer_cost_dijkstra.vx", // Tensor<f32>::zeros unimplemented
+    "frontend/pass/transfer_cost_advanced_dijkstra.vx", // `.topology()` has no lowering
     "middle_end/pass/implicit_transfer.vx", // insertvalue of memref (Vx#356)
     "middle_end/pass/pinned_annotation_struct_field.vx", // insertvalue of memref (Vx#356)
     "warnings/pass/w1024_implicit_transfer.vx", // insertvalue of memref (Vx#356)

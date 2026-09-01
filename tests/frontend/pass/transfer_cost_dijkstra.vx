@@ -1,18 +1,26 @@
-// RUN: vxc %s --action emit-mlir
-// XFAIL: *
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 //
-// The IR assertion this file used to carry could not run: the program does not compile on
-// the default path (Vx#398), so there is no module to match against. The XFAIL above
-// reports the day that changes, and the assertions go back. The semantic check below is
-// what this file verifies today.
-
-// Verify that a multi-hop transfer across topologies completes successfully
-// using Dijkstra's algorithm.
+// A multi-hop transfer across topologies, routed by shortest path.
+//
+// `Memory::Local_SRAM` cannot be reached from CPU DRAM in one step, so the router goes
+// CPU_DRAM -> NPU_HBM -> Local_SRAM and the module carries two transfers, the second consuming the
+// first. A single `vx.transfer` would mean the route collapsed onto a hop the machine does not
+// have, which is the failure worth catching here: the program would still compile and still look
+// like it moved the data.
+//
+// This file could not assert anything until recently. It was written `Tensor<f32>::zeros([10])`, a
+// constructor spelling with no lowering on either path, so the program did not compile and there
+// was no module to match against. The shape was already in the annotation, and `::new()` is the
+// constructor that zeroes, so the two say the same thing and this one is built.
+//
+// CHECK-LABEL: func.func @test_multi_hop_transfer
+// CHECK: %[[A:.*]] = memref.alloc() : memref<10xf32>
+// CHECK: %[[HOP1:.*]] = "vx.transfer"(%[[A]])
+// CHECK: "vx.transfer"(%[[HOP1]])
 
 fn test_multi_hop_transfer() -> void {
-  let a : Tensor<f32, [10]> = Tensor<f32>::zeros([10]);
+  let a : Tensor<f32, [10]> = Tensor<f32, [10]>::new();
   // Local_SRAM requires routing: CPU_DRAM -> NPU_HBM -> Local_SRAM
   // Costs: 50 + 10 = 60
   let b = transfer(a, Memory::Local_SRAM);
 }
-

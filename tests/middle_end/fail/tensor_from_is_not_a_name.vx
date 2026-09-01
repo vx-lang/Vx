@@ -1,0 +1,30 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// RUN: not vxc %s 2>&1 | FileCheck %s --check-prefix=NOCRASH
+// `Tensor_f64::from` is not a constructor, and the element type is not read out of a name.
+//
+// A branch here matched any call whose name began with `Tensor` and ended with `::from`, took a
+// pointer and a shape, required `unsafe`, and read the element type from the `_f64` or `_i32` in
+// the function's own name. Written in an identifier, an element type is somewhere nothing can check
+// it, which is the same complaint that moved a tensor's placement into its type.
+//
+// The branch had no call sites anywhere in the tree and no lowering on either path, so a program
+// using it type-checked and then crashed the compiler. The bridge from a pointer to a tensor is
+// `tensor_view_2d`, which points a memref at storage the compiler does not own and costs no copy.
+//
+// This case is alone in its file for the same reason as the other one: it type-checked cleanly
+// while the branch existed, so a second error in the same program would stop compilation before
+// codegen and hide the crash.
+//
+// CHECK: Undefined static method 'Tensor_f32::from'
+//
+// NOCRASH-NOT: Internal Error
+
+extern "C" {
+  fn vx_alloc_f32(n : i32) -> *mut f32;
+}
+
+fn element_type_in_the_name() -> i32 {
+  let p : *mut f32 = unsafe { vx_alloc_f32(6) };
+  let v = unsafe { Tensor_f32::from(p, [ 2, 3 ]) };
+  return 0;
+}
