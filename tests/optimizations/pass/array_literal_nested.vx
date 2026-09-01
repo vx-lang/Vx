@@ -1,0 +1,24 @@
+//===- array_literal_nested.vx - Vx Compiler ---------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// An array literal is a memref whose elements must be scalars, so a nested literal has
+// nothing to lower to. Unlike the `tensor<Nx tensor<..>>` this used to build, a
+// `memref<Nx memref<..>>` parses -- so the restriction has to be checked rather than
+// discovered by a failed parse, or the nesting reaches the MLIR verifier with no
+// diagnostic (Vx#422).
+//
+// tests/middle_end/fail/array_literal_of_tensors.vx is the same restriction reached
+// through named tensors, where the checker catches it first -- which is why this one
+// lives here instead: that tier runs codegen in-process, and a codegen error there is a
+// panic rather than a diagnostic.
+// CHECK: elements must be scalars
+fn main() -> i32 {
+  let a : Tensor<f32, [ 2, 2 ]> = [ [ 1.0, 2.0 ], [ 3.0, 4.0 ] ];
+  print(a[0][0]);
+  return 0;
+}

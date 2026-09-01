@@ -3006,10 +3006,17 @@ impl<'c> LowerToMelior<'c> for ArrayExpr {
         })?;
         let num_elements = elements.len();
 
-        // `tensor.from_elements` takes SCALAR elements, so a non-scalar element type produces a
-        // string like `tensor<2x tensor<...>>` that MLIR will not parse. Report which type did
-        // it rather than unwrapping the `None`.
-        let tensor_ty = Type::parse(gen.context, &format!("tensor<{}x{}>", num_elements, el_ty))
+        // A memref, like every other tensor value this backend produces. `tensor.from_elements`
+        // gave the literal a `tensor<Nx...>` that nothing downstream reads -- indexing emits
+        // `memref.load`, and no bufferization runs between the two (Vx#422).
+        //
+        // A non-scalar element has no spelling here, and unlike `tensor<Nx tensor<..>>` a
+        // `memref<Nx memref<..>>` parses -- so the check has to be its own rather than a failed
+        // parse, else a nested literal reaches the verifier instead of a diagnostic.
+        let el_str = el_ty.to_string();
+        let scalar_element = !el_str.contains('<') && !el_str.starts_with('!');
+        let memref_ty = Type::parse(gen.context, &format!("memref<{}x{}>", num_elements, el_ty))
+            .filter(|_| scalar_element)
             .ok_or_else(|| {
                 LowerError::from(format!(
                     "an array literal's elements must be scalars; `{el_ty}` cannot be the \
@@ -3017,13 +3024,32 @@ impl<'c> LowerToMelior<'c> for ArrayExpr {
                 ))
             })?;
 
-        let op = OperationBuilder::new("tensor.from_elements", gen.loc())
-            .add_operands(&vals)
-            .add_results(&[tensor_ty])
+        let alloc = OperationBuilder::new("memref.alloc", gen.loc())
+            .add_attributes(&[(
+                Identifier::new(gen.context, "operandSegmentSizes"),
+                DenseI32ArrayAttribute::new(gen.context, &[0, 0]).into(),
+            )])
+            .add_results(&[memref_ty])
             .build()?;
+        let buf: Value = current_b.append_operation(alloc).result(0)?.into();
 
-        let val = current_b.append_operation(op).result(0)?.into();
-        Ok((val, tensor_ty, current_b))
+        let index_ty = Type::index(gen.context);
+        for (i, v) in vals.into_iter().enumerate() {
+            let idx_op = OperationBuilder::new("arith.constant", gen.loc())
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "value"),
+                    IntegerAttribute::new(index_ty, i as i64).into(),
+                )])
+                .add_results(&[index_ty])
+                .build()?;
+            let idx = current_b.append_operation(idx_op).result(0)?.into();
+            let store = OperationBuilder::new("memref.store", gen.loc())
+                .add_operands(&[v, buf, idx])
+                .build()?;
+            current_b.append_operation(store);
+        }
+
+        Ok((buf, memref_ty, current_b))
     }
 }
 

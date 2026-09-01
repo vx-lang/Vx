@@ -1,10 +1,10 @@
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// An array literal lowers to `tensor.from_elements`, whose elements must be
-// scalars, so an array of tensors has nothing to lower to. The checker used to
-// accept this -- the element type silently stayed at its `f32` default and the
-// literal reported `Tensor<f32>` for something that is nothing of the sort --
-// and codegen then died with an internal error while building
-// `tensor<2x tensor<...>>` (Vx#354).
+// An array literal lowers to a memref whose elements must be scalars, so an
+// array of tensors has nothing to lower to. The checker used to accept this --
+// the element type silently stayed at its `f32` default and the literal
+// reported `Tensor<f32>` for something that is nothing of the sort -- and
+// codegen then died with an internal error while building the element type
+// (Vx#354).
 //
 // Nothing about this needs a device: plain host tensors crash it just the same,
 // which is why the diagnostic talks about tensors rather than placement.

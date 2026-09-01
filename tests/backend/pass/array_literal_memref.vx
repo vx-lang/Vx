@@ -1,0 +1,30 @@
+//===- array_literal_memref.vx - Vx Compiler ---------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// An array literal is a memref, like every other tensor value this backend produces. It used
+// to be `tensor.from_elements`, and nothing downstream could read that: indexing emits
+// `memref.load`, and no bufferization runs between the two, so any program that read an
+// element back failed the verifier (Vx#422).
+//
+// This tier runs the AST backend, which is the one that was broken; the flat path allocated
+// and stored all along. tests/frontend/pass/array_index.vx covers the same ground on the
+// other path, and could not have caught this.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: %[[BUF:.*]] = memref.alloc() : memref<4xf32>
+// CHECK: memref.store %{{.*}}, %[[BUF]]
+// CHECK-NOT: tensor.from_elements
+// EXPECT: 1 4
+
+fn main() -> i32 {
+  let a : Tensor<f32, [4]> = [ 1.0, 2.0, 3.0, 4.0 ];
+  print(a[0]);
+  print!(" ");
+  print(a[3]);
+  return 0;
+}
