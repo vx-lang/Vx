@@ -1,10 +1,8 @@
 # A 64 KiB tile the part has room for and CUDA will not declare statically
 
-## Status: the CUDA half has not been run
+## Status: both halves verified
 
-The Vx half is verified. The CUDA half is written and has **not** been executed — the rented A100 was
-released before this pair existed. Nothing below claims an observed CUDA result, and the row should
-stay out of any table until it has one.
+Run on an A100-SXM4-80GB, driver 580.159.04, CUDA 12.8, `-arch=sm_80`, 2026-09-02T20:02:35Z.
 
 ## The mistake, or rather the absence of one
 
@@ -31,7 +29,28 @@ is compiling for -- pair 05 has that refusal verbatim, `0xc000 max`, checked at 
 shared memory the hardware already has, the program must switch to `extern __shared__` and opt in
 with `cudaFuncSetAttribute(..., cudaFuncAttributeMaxDynamicSharedMemorySize, ...)`.
 
-`cuda.cu` here is that rewrite. **Expected** to compile and run and print 8128; not yet observed.
+`cuda.cu` here is that rewrite. It compiles, launches and produces the right answer:
+
+```
+sharedMemPerMultiprocessor=167936 bytes
+sharedMemPerBlock(default)=49152 bytes
+requesting dynamic smem=65536 bytes
+cudaFuncSetAttribute=no error
+launch=no error
+sync=no error
+out=8128.000000 expected=8128.000000
+```
+
+Those first two lines are the pair in three numbers, reported by the CUDA runtime rather than by us:
+
+- **167936 bytes of shared memory per SM.** That is 164 KiB, exactly what `fleet/a100-80.vx`
+  declares. The machine model is corroborated by the device, which is worth more than the pairing it
+  was written for.
+- **49152 bytes per block by default.** That is 48 KiB, exactly the `0xc000 max` `ptxas` refused at
+  in pair 05.
+
+So the 48 KiB is a default per-block allowance rather than the part's capacity, and the two differ by
+more than 3x. The tile runs once the program asks for the room the hardware already had.
 
 ## Why this pair matters more than pair 05
 
@@ -48,9 +67,6 @@ Run 05 and 06 next to each other or neither. Alone, 05 flatters CUDA and 06 flat
 they say the accurate thing, which is that a fixed ceiling is wrong in both directions and a
 declared one is not.
 
-## To finish it
+## Reproducing it
 
-On an A100-80: `NVCC=/usr/local/cuda/bin/nvcc ./run.sh --cuda-only 06`. If it prints
-`out=8128.000000` and exits 0, the hardware has the room and pair 05's refusal was about a compiler
-constant. If the launch fails instead, this pair is wrong and should be deleted rather than
-explained.
+On an A100-80: `NVCC=/usr/local/cuda/bin/nvcc ./run.sh --cuda-only 06`.
