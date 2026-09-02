@@ -20,6 +20,17 @@ Vx is a suite someone chose the cases for. The interesting claim is about which 
 toolchain catches and where in the pipeline, so a case CUDA catches at compile time belongs in the
 table as much as one it misses.
 
+`06_smem_under_fixed_over_declared` is the same ceiling from the other side, and it contains no
+mistake at all: a 64 KiB tile that the A100 has room for, that the declared model admits, and that
+`nvcc` will not accept as a static `__shared__` array. Run 05 and 06 together or neither. Alone, 05
+flatters CUDA and 06 flatters Vx; together they say the accurate thing, which is that a fixed ceiling
+is wrong in both directions and a declared one is not.
+
+A pair therefore says which outcome it expects from each side — `EXPECT_VX` (`refused` by default,
+`accepted` for 06) and `EXPECT_CUDA` (`runtime-failure`, `compile-error`, or `runtime-success`).
+A Vx acceptance is reported as `ACCEPTED` in capitals when the pair expected a refusal, because for
+those pairs it means the program the case is built around is no longer being rejected.
+
 ## Running it
 
 ```

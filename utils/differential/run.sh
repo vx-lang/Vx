@@ -102,6 +102,9 @@ for d in "$HERE"/pairs/*/; do
   fi
 
   TITLE=""; VX_SOURCE=""; VX_ARGS=""; E_CODE=""; EXPECT_CUDA=""; EXPECT_GPU=""
+  # Most pairs are "Vx refuses, CUDA does not". Pair 06 is the other way round, so
+  # which outcome counts as correct is per-pair rather than assumed.
+  EXPECT_VX="refused"
   # shellcheck disable=SC1091
   . "$d/pair.env"
 
@@ -125,7 +128,8 @@ for d in "$HERE"/pairs/*/; do
     # pair 02 is about, and a pattern requiring a code would drop it.
     vx_evidence="$(grep -hE '^Error' "$cell/vx.stdout" "$cell/vx.stderr" 2>/dev/null | head -1)"
     if [[ $vx_rc -eq 0 ]]; then
-      vx_verdict="ACCEPTED"
+      # Correct for a pair that expects admission, alarming for one that does not.
+      if [[ "$EXPECT_VX" == "accepted" ]]; then vx_verdict="accepted"; else vx_verdict="ACCEPTED"; fi
     elif [[ -z "$vx_evidence" ]]; then
       # Non-zero with nothing that looks like a diagnostic. A crash, a missing
       # machine file, a compiler that is not there. Not a refusal, whatever the
@@ -179,6 +183,8 @@ for d in "$HERE"/pairs/*/; do
         if [[ "$cuda_compiles" == "yes" && "$cuda_runs" != "yes" ]]; then agrees="yes"; else agrees="NO"; fi ;;
       compile-error)
         if [[ "$cuda_compiles" == "no" ]]; then agrees="yes"; else agrees="NO"; fi ;;
+      runtime-success)
+        if [[ "$cuda_compiles" == "yes" && "$cuda_runs" == "yes" ]]; then agrees="yes"; else agrees="NO"; fi ;;
     esac
     echo "   pair: expected=$EXPECT_CUDA observed_as_expected=$agrees"
   fi

@@ -1,0 +1,26 @@
+//===- 06_smem_under_fixed_over_declared/vx.vx - Vx Compiler ----*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// A 64 KiB tile in SMEM, which the A100 has room for and CUDA will not declare.
+//
+// 128 x 128 f32 = 65536 bytes. `fleet/a100-80.vx` declares SMEM at 164 KiB, the
+// A100's real per-SM shared memory, so this fits the part and Vx admits it.
+//
+// The CUDA half of this pair cannot say the same thing statically: `nvcc` refuses
+// any static `__shared__` array over a fixed 48 KiB, regardless of the part it is
+// compiling for, so the same tile has to be requested dynamically with an opt-in
+// call. Pair 05 is that refusal.
+//
+// This file is the Vx half of a differential pair; see utils/differential/.
+//
+// RUN: vxc --host default --machine fleet/a100-80.vx %s --action emit-mlir -o /dev/null
+
+fn main() -> i32 {
+  let tile : Tensor<f32, [ 128, 128 ]> = Tensor<f32, [ 128, 128 ]>::uninit();
+  let _on_chip = transfer(tile, Memory::SMEM);
+  return 0;
+}
