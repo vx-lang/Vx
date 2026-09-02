@@ -6,10 +6,10 @@ A working set that does not fit the part it is staged onto.
 
 ## Vx
 
-Refused at compile time against `fleet/a100-40.vx`, in bytes:
+Refused at compile time against `fleet/a100-80.vx`, in bytes:
 
 ```
-Error[E6009]: transferred tensor needs 68719476736 bytes but memory space 'HBM' has capacity 42949672960 bytes
+Error[E6009]: transferred tensor needs 137438953472 bytes but memory space 'HBM' has capacity 85899345920 bytes
 ```
 
 The check is plain arithmetic -- element size times extents, rounded by the declared granule,
@@ -36,7 +36,8 @@ faults later, somewhere less obviously connected to the cause.
 
 ## The card matters
 
-`EXPECT_GPU` pins this to an A100-40. The bound in the Vx half comes from `fleet/a100-40.vx`, so
-running it against an 80 GiB card would compare a refusal at 40 GiB against hardware that has 80,
-and the pairing would be measuring nothing. The runner refuses to run it on the wrong card rather
-than producing a row that looks fine.
+`EXPECT_GPU` pins this to an A100-80, and the bound in the Vx half comes from `fleet/a100-80.vx`.
+Running it against a card with a different capacity would compare a refusal computed for one part
+against hardware that is another, so the runner refuses rather than producing a row that looks fine.
+Moving this pair to a different card means changing both the tile size and the `--machine` file, and
+the two have to move together.

@@ -8,8 +8,8 @@ the sum.
 ## Vx
 
 ```
-Error[E6010]: the working set placed in memory space 'HBM' (3 tiles) sums to 51539607552 bytes,
-over its 42949672960 byte capacity; place fewer/smaller tiles or declare it `overcommit`
+Error[E6010]: the working set placed in memory space 'HBM' (3 tiles) sums to 103079215104 bytes,
+over its 85899345920 byte capacity; place fewer/smaller tiles or declare it `overcommit`
 ```
 
 The diagnostic names the space, the tile count, the sum, and the bound. `overcommit` on the memory
@@ -33,6 +33,6 @@ difference between "later" and "not expressible" is visible.
 
 ## The card matters
 
-`EXPECT_GPU` pins this to an A100-40, for the same reason as pair 03: the 40 GiB bound comes from
-the cited model, and running against an 80 GiB card would compare a refusal against hardware the
+`EXPECT_GPU` pins this to an A100-80, for the same reason as pair 03: the bound comes from the cited
+model, and running against a card of another capacity would compare a refusal against hardware the
 refusal was not computed for.

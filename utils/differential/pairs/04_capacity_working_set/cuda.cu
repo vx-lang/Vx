@@ -1,6 +1,6 @@
 // Three buffers that each fit and together do not.
 //
-// 16 GiB each onto a 40 GiB A100. No single allocation is too big, so nothing
+// 32 GiB each onto an 80 GiB A100. No single allocation is too big, so nothing
 // about any one of them is wrong. The mistake is a property of the set, and CUDA
 // has no notion of a set: it allocates until one fails.
 
@@ -9,8 +9,8 @@
 #include <cuda_runtime.h>
 
 int main() {
-  // Same figure as the Vx half: 65536 * 65536 * sizeof(float).
-  const size_t bytes = 17179869184ULL;
+  // Same figure as the Vx half: 131072 * 65536 * sizeof(float).
+  const size_t bytes = 34359738368ULL;
   const int count = 3;
 
   size_t free_bytes = 0, total_bytes = 0;

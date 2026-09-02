@@ -1,15 +1,16 @@
 // One allocation larger than the device has.
 //
-// 64 GiB onto a 40 GiB A100. Vx refuses this before the card is rented, in bytes,
-// against the capacity its machine model declares. CUDA finds out on the card.
+// 128 GiB onto an 80 GiB A100. Vx refuses this before the card is rented, in
+// bytes, against the capacity its machine model declares. CUDA finds out on the
+// card.
 
 #include <cstdio>
 #include <cstdlib>
 #include <cuda_runtime.h>
 
 int main() {
-  // Same figure as the Vx half: 131072 * 131072 * sizeof(float).
-  const size_t bytes = 68719476736ULL;
+  // Same figure as the Vx half: 262144 * 131072 * sizeof(float).
+  const size_t bytes = 137438953472ULL;
 
   size_t free_bytes = 0, total_bytes = 0;
   cudaMemGetInfo(&free_bytes, &total_bytes);

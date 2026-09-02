@@ -7,21 +7,21 @@
 //===----------------------------------------------------------------------===//
 // Three tiles that each fit and together do not.
 //
-// 65536 x 65536 f32 = 17179869184 bytes = 16 GiB. Any one of them fits the 40 GiB
-// `fleet/a100-40.vx` declares; all three resident at once need 48 GiB.
+// 131072 x 65536 f32 = 34359738368 bytes = 32 GiB. Any one of them fits the 80 GiB
+// `fleet/a100-80.vx` declares; all three resident at once need 96 GiB.
 //
 // This is the case a per-allocation check cannot see. Nothing here is individually
 // too big, so the error is a property of the set.
 //
 // This file is the Vx half of a differential pair; see utils/differential/.
 //
-// RUN: not vxc --host default --machine fleet/a100-40.vx %s --action emit-mlir -o /dev/null 2>&1 | FileCheck %s
+// RUN: not vxc --host default --machine fleet/a100-80.vx %s --action emit-mlir -o /dev/null 2>&1 | FileCheck %s
 // CHECK: E6010
 
 fn main() -> i32 {
-  let q : Tensor<f32, [ 65536, 65536 ]> = Tensor<f32, [ 65536, 65536 ]>::uninit();
-  let k : Tensor<f32, [ 65536, 65536 ]> = Tensor<f32, [ 65536, 65536 ]>::uninit();
-  let v : Tensor<f32, [ 65536, 65536 ]> = Tensor<f32, [ 65536, 65536 ]>::uninit();
+  let q : Tensor<f32, [ 131072, 65536 ]> = Tensor<f32, [ 131072, 65536 ]>::uninit();
+  let k : Tensor<f32, [ 131072, 65536 ]> = Tensor<f32, [ 131072, 65536 ]>::uninit();
+  let v : Tensor<f32, [ 131072, 65536 ]> = Tensor<f32, [ 131072, 65536 ]>::uninit();
   let _dq = transfer(q, Memory::HBM);
   let _dk = transfer(k, Memory::HBM);
   let _dv = transfer(v, Memory::HBM);

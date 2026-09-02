@@ -26,6 +26,10 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
 VXC="${VXC:-$REPO/target/debug/vxc}"
 NVCC="${NVCC:-nvcc}"
+# Compile for the part the results are about. Without this nvcc picks a default
+# old enough to warn about its own deprecation, and a table of run-time behaviour
+# built from code compiled for another architecture invites the obvious question.
+NVCC_ARCH="${NVCC_ARCH:-sm_80}"
 
 if [[ "${1:-}" == "--list" ]]; then
   for d in "$HERE"/pairs/*/; do
@@ -74,6 +78,7 @@ command -v "$NVCC" >/dev/null 2>&1 && HAVE_NVCC=yes
   echo "utc: $STAMP"
   echo "gpu: $GPU_NAME"
   echo "nvcc: $HAVE_NVCC"
+  echo "nvcc_arch: $NVCC_ARCH"
   command -v "$NVCC" >/dev/null 2>&1 && "$NVCC" --version | tail -2
   nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1 | sed 's/^/driver: /'
 } > "$OUT/environment.txt"
@@ -143,7 +148,7 @@ for d in "$HERE"/pairs/*/; do
     cuda_evidence="pair expects $EXPECT_GPU, found $GPU_NAME"
     echo "   cuda: SKIPPED — $cuda_evidence"
   else
-    "$NVCC" -O2 -o "$cell/a.out" "$d/cuda.cu" > "$cell/nvcc.stdout" 2> "$cell/nvcc.stderr"
+    "$NVCC" -O2 -arch="$NVCC_ARCH" -o "$cell/a.out" "$d/cuda.cu" > "$cell/nvcc.stdout" 2> "$cell/nvcc.stderr"
     nvcc_rc=$?
     if [[ $nvcc_rc -ne 0 ]]; then
       cuda_compiles="no"
