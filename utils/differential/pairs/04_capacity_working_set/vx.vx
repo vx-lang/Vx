@@ -1,0 +1,29 @@
+//===- 04_capacity_working_set/vx.vx - Vx Compiler --------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Three tiles that each fit and together do not.
+//
+// 65536 x 65536 f32 = 17179869184 bytes = 16 GiB. Any one of them fits the 40 GiB
+// `fleet/a100-40.vx` declares; all three resident at once need 48 GiB.
+//
+// This is the case a per-allocation check cannot see. Nothing here is individually
+// too big, so the error is a property of the set.
+//
+// This file is the Vx half of a differential pair; see utils/differential/.
+//
+// RUN: not vxc --host default --machine fleet/a100-40.vx %s --action emit-mlir -o /dev/null 2>&1 | FileCheck %s
+// CHECK: E6010
+
+fn main() -> i32 {
+  let q : Tensor<f32, [ 65536, 65536 ]> = Tensor<f32, [ 65536, 65536 ]>::uninit();
+  let k : Tensor<f32, [ 65536, 65536 ]> = Tensor<f32, [ 65536, 65536 ]>::uninit();
+  let v : Tensor<f32, [ 65536, 65536 ]> = Tensor<f32, [ 65536, 65536 ]>::uninit();
+  let _dq = transfer(q, Memory::HBM);
+  let _dk = transfer(k, Memory::HBM);
+  let _dv = transfer(v, Memory::HBM);
+  return 0;
+}

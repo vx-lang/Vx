@@ -1,0 +1,31 @@
+//===- host_reads_gpu_memory.vx - Vx Compiler -------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// The reverse direction of `memory_algebra.vx`: a value that lives on the device,
+// read by the host.
+//
+// The visibility rule runs both ways, and the corpus only covered one of them.
+// `memory_algebra.vx` has the host produce a value and a device region read it;
+// here the device holds the value and the host reads it, which is the mistake a
+// program makes by forgetting the transfer *back*.
+//
+// `Memory::GPU_HBM` rather than `Memory::NPU_HBM` on purpose. The built-in CPU
+// descriptor's visibility is [CPU_DRAM, NPU_HBM] -- an Apple part shares one
+// physical memory, so the host reading NPU_HBM is legal and is not a mistake to
+// catch. A discrete GPU's memory is not in that list, so this one is.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: Cross-topology access error
+// CHECK-SAME: from CPU
+
+fn main() -> i32 {
+  let host_data : Tensor<f32, [ 4, 4 ]> = Tensor<f32, [ 4, 4 ]>::new();
+  let on_gpu = transfer(host_data, Memory::GPU_HBM);
+  // No transfer back, so this read happens where the value is not addressable.
+  print(on_gpu[0][0]);
+  return 0;
+}

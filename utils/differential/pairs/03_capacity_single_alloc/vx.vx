@@ -1,0 +1,27 @@
+//===- 03_capacity_single_alloc/vx.vx - Vx Compiler -------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// One tile larger than the device it is staged into.
+//
+// 131072 x 131072 f32 = 68719476736 bytes = 64 GiB, against the 40 GiB that
+// `fleet/a100-40.vx` declares. The bound comes from that cited model rather than
+// from a number chosen to match whichever card was rented -- if the two
+// boundaries agreed because someone typed them to agree, the pair would
+// establish nothing.
+//
+// This file is the Vx half of a differential pair; see utils/differential/.
+//
+// RUN: not vxc --host default --machine fleet/a100-40.vx %s --action emit-mlir -o /dev/null 2>&1 | FileCheck %s
+// CHECK: E6009
+// CHECK-SAME: 'HBM' has capacity 42949672960 bytes
+
+fn main() -> i32 {
+  // 131072 x 131072 f32 = 68719476736 bytes = 64 GiB, against a 40 GiB device.
+  let weights : Tensor<f32, [ 131072, 131072 ]> = Tensor<f32, [ 131072, 131072 ]>::uninit();
+  let _staged = transfer(weights, Memory::HBM);
+  return 0;
+}

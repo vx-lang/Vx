@@ -1,0 +1,3 @@
+# Run output: one directory per invocation, with the raw logs behind each row.
+# The evidence worth keeping travels in a paper or an issue, not in the tree.
+results/
