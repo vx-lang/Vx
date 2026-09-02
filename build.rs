@@ -131,17 +131,64 @@ fn main() {
         // --- Automate ANE Primitive Generation ---
         println!("cargo:warning=Building ANE primitive models via CoreML...");
 
-        let py_status = Command::new("python3")
-            .args([
-                "scripts/generate_ane_primitives.py",
-                "--out-dir",
-                &out_dir,
-                "--dim",
-                "4",
-            ])
-            .status();
+        // The interpreter has to be one that can actually *build* a model, which
+        // the first `python3` on PATH generally cannot: this checkout keeps
+        // coremltools in its own venv. Picking by name rather than by capability
+        // meant the models were never generated on a machine provisioned for
+        // them, and the warning was the same one a machine with no coremltools at
+        // all prints.
+        //
+        // The probe imports `libmilstoragepython`, not just `coremltools`.
+        // coremltools is part pure Python and part compiled extension, and only
+        // the pure half installs on an interpreter it ships no wheel for -- so
+        // `import coremltools` succeeds on a Python too new for it and the model
+        // build then dies much later with `RuntimeError: BlobWriter not loaded`.
+        // Probing the half that is missing is what makes the fallback work.
+        let python = ["VX_PYTHON"]
+            .iter()
+            .filter_map(|k| env::var(k).ok())
+            .chain(
+                [
+                    "venv/bin/python3",
+                    "python3",
+                    "python3.13",
+                    "python3.12",
+                    "python3.11",
+                ]
+                .iter()
+                .map(|s| s.to_string()),
+            )
+            .find(|p| {
+                Command::new(p)
+                    .args(["-c", "import coremltools, coremltools.libmilstoragepython"])
+                    .status()
+                    .map(|s| s.success())
+                    .unwrap_or(false)
+            });
 
-        if let Ok(status) = py_status {
+        match &python {
+            Some(p) => println!("cargo:warning=ANE models: generating with {p}"),
+            None => println!(
+                "cargo:warning=No interpreter can build the ANE models: none of $VX_PYTHON, \
+                 venv/bin/python3, python3, python3.13, python3.12 or python3.11 has a working \
+                 coremltools (the compiled half, libmilstoragepython, is what is checked). \
+                 Dispatch will use the CPU shim. Set VX_PYTHON to one that does."
+            ),
+        }
+
+        let py_status = python.as_ref().map(|p| {
+            Command::new(p)
+                .args([
+                    "scripts/generate_ane_primitives.py",
+                    "--out-dir",
+                    &out_dir,
+                    "--dim",
+                    "4",
+                ])
+                .status()
+        });
+
+        if let Some(Ok(status)) = py_status {
             if status.success() {
                 // Compile the .mlpackage into .mlmodelc
                 for model_name in &["matmul_4x4", "affine_4"] {
@@ -151,7 +198,26 @@ fn main() {
                         PathBuf::from(&out_dir).join(format!("{}.mlmodelc", model_name));
 
                     // coremlc compile <pkg> <out_dir>
-                    let coremlc_status = Command::new("xcrun")
+                    //
+                    // `coremlc` ships with Xcode and not with the Command Line
+                    // Tools, so `xcrun` cannot find it when `xcode-select` points
+                    // at the CLT -- which is the default on a machine that has
+                    // both. Pointing DEVELOPER_DIR at Xcode for this one call
+                    // fixes that without `sudo xcode-select -s`, which is not a
+                    // build script's business.
+                    let mut coremlc = Command::new("xcrun");
+                    if Command::new("xcrun")
+                        .args(["--find", "coremlc"])
+                        .output()
+                        .map(|o| !o.status.success())
+                        .unwrap_or(true)
+                    {
+                        let xcode = "/Applications/Xcode.app/Contents/Developer";
+                        if PathBuf::from(xcode).exists() {
+                            coremlc.env("DEVELOPER_DIR", xcode);
+                        }
+                    }
+                    let coremlc_status = coremlc
                         .args(["coremlc", "compile", pkg_path.to_str().unwrap(), &out_dir])
                         .status();
 
@@ -187,8 +253,11 @@ fn main() {
             } else {
                 println!("cargo:warning=Python script failed to generate ANE models.");
             }
-        } else {
-            println!("cargo:warning=Failed to invoke python3. Make sure python3 and coremltools are installed.");
+        } else if python.is_some() {
+            println!(
+                "cargo:warning=Failed to invoke the ANE model generator; \
+                 dispatch will use the CPU shim"
+            );
         }
 
         // Determine compiler and flags
