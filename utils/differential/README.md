@@ -25,16 +25,33 @@ table as much as one it misses.
 ```
 ./run.sh                 # every pair
 ./run.sh 01 03           # named pairs only
+./run.sh --cuda-only     # the GPU half alone, no vxc needed
 ./run.sh --list          # what is here, no compiling
 ```
 
 Writes `results/<utc-timestamp>/` with one directory per pair, the raw stdout/stderr of every
 command, and `results.json` collecting the four facts per toolchain per pair.
 
-The Vx half runs anywhere. The CUDA half needs a real GPU: the claim is about run-time behaviour, so
-it has to be observed rather than argued. A rented pod is adequate — pod *timing* is indicative only
-(see `docs/discussions/walkthrough_gpu_campaign_m5_2026_08_10.md`), and nothing here is timed. A
-fault is a fault.
+### It takes two machines, and that is fine
+
+The Vx half is a compile-time refusal. It says the same thing on any machine, so run it wherever the
+compiler is and keep the output.
+
+The CUDA half needs a real GPU, because the claim is about run-time behaviour and has to be observed
+rather than argued. A rented pod is adequate — pod *timing* is indicative only (see
+`docs/discussions/walkthrough_gpu_campaign_m5_2026_08_10.md`), and nothing here is timed. A fault is
+a fault.
+
+**On the GPU box, use `--cuda-only`.** `vxc` is built for whichever host built it, so a macOS arm64
+binary will not run on a Linux pod, and carrying a compiler over to re-derive a machine-independent
+refusal buys nothing. `--cuda-only` skips the Vx half and records it as `not-run-here` rather than
+inventing a verdict for it.
+
+Without `--cuda-only`, a missing `vxc` is a hard error before anything runs. That guard is there for
+a specific reason: a missing binary exits 127, 127 is non-zero, and a runner that reads "non-zero
+means refused" would record a clean refusal for all five pairs without ever starting a compiler. The
+same reasoning is why a non-zero exit with no diagnostic on stdout or stderr is reported as
+`NO-DIAGNOSTIC` instead of `refused` — a crash and a refusal are not the same result.
 
 ## Capacity cases and the machine model
 

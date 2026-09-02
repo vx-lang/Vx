@@ -34,6 +34,32 @@ if [[ "${1:-}" == "--list" ]]; then
   exit 0
 fi
 
+# The Vx half is a compile-time refusal and says the same thing on any machine, so
+# there is no reason to carry a compiler to the GPU box to re-derive it. `vxc` is
+# also built for the host that built it -- a macOS arm64 binary will not run on a
+# Linux pod -- so on the pod this is the mode to use.
+CUDA_ONLY=no
+if [[ "${1:-}" == "--cuda-only" ]]; then
+  CUDA_ONLY=yes
+  shift
+fi
+
+# Fail here rather than halfway through. A missing `vxc` exits 127, and 127 is
+# non-zero, so a runner that reads "non-zero means refused" would record a clean
+# refusal for every pair and never touch a compiler.
+if [[ "$CUDA_ONLY" == no ]]; then
+  if [[ ! -x "$VXC" ]]; then
+    echo "no vxc at $VXC" >&2
+    echo "build it, set VXC=..., or run with --cuda-only to do the GPU half alone." >&2
+    exit 2
+  fi
+fi
+
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "python3 is needed to escape the evidence into results.json" >&2
+  exit 2
+fi
+
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 OUT="$HERE/results/$STAMP"
 mkdir -p "$OUT"
@@ -79,21 +105,32 @@ for d in "$HERE"/pairs/*/; do
   echo "== $name — $TITLE"
 
   # ---- the Vx half -------------------------------------------------------
-  # Expected to REFUSE. A zero exit here is the interesting failure: it means the
-  # program the pair is built around is no longer rejected.
-  # shellcheck disable=SC2086
-  "$VXC" $VX_ARGS "$REPO/$VX_SOURCE" > "$cell/vx.stdout" 2> "$cell/vx.stderr"
-  vx_rc=$?
-  if [[ $vx_rc -ne 0 ]]; then
-    vx_verdict="refused"
+  vx_verdict="not-run-here"
+  vx_evidence=""
+  if [[ "$CUDA_ONLY" == yes ]]; then
+    echo "   vx:   not run (--cuda-only); the refusal is machine-independent and recorded elsewhere"
   else
-    vx_verdict="ACCEPTED"
+    # Expected to REFUSE. A zero exit here is the interesting failure: it means the
+    # program the pair is built around is no longer rejected.
+    # shellcheck disable=SC2086
+    "$VXC" $VX_ARGS "$REPO/$VX_SOURCE" > "$cell/vx.stdout" 2> "$cell/vx.stderr"
+    vx_rc=$?
+    # `Error[E6003] at 8:13: ...` and a bare `Error: ...` are both real shapes, so
+    # match the line rather than the code -- an uncoded diagnostic is exactly what
+    # pair 02 is about, and a pattern requiring a code would drop it.
+    vx_evidence="$(grep -hE '^Error' "$cell/vx.stdout" "$cell/vx.stderr" 2>/dev/null | head -1)"
+    if [[ $vx_rc -eq 0 ]]; then
+      vx_verdict="ACCEPTED"
+    elif [[ -z "$vx_evidence" ]]; then
+      # Non-zero with nothing that looks like a diagnostic. A crash, a missing
+      # machine file, a compiler that is not there. Not a refusal, whatever the
+      # exit code says.
+      vx_verdict="NO-DIAGNOSTIC(rc=$vx_rc)"
+    else
+      vx_verdict="refused"
+    fi
+    echo "   vx:   $vx_verdict  ${vx_evidence:-<no Error line>}"
   fi
-  # `Error[E6003] at 8:13: ...` and a bare `Error: ...` are both real shapes, so
-  # match the line rather than the code -- an uncoded diagnostic is exactly what
-  # pair 02 is about, and a pattern requiring a code would drop it.
-  vx_evidence="$(grep -hE '^Error' "$cell/vx.stdout" "$cell/vx.stderr" 2>/dev/null | head -1)"
-  echo "   vx:   $vx_verdict  ${vx_evidence:-<no Error line>}"
 
   # ---- the CUDA half -----------------------------------------------------
   cuda_compiles="skipped"; cuda_runs="skipped"; cuda_evidence=""; cuda_rc=""
