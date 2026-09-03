@@ -1,0 +1,313 @@
+//===- flash_attention_split.vx - Vx Compiler -------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// One attention, two devices, named in the program text.
+//
+// Every matmul runs on the Apple Neural Engine. Everything else -- the running
+// max, the exponentials, the normalizer, the rescale of the accumulator --
+// runs on the CPU. Both halves are written as `spawn on`, so the program says
+// where each piece belongs and the compiler places and checks it.
+//
+// Why the split falls where it does
+// ---------------------------------
+//
+// It is measured, not chosen. Asked through CoreML's own `MLComputePlan` which
+// device it prefers (scripts/ane_device_check.py), the answers are:
+//
+//   f16 matmul, 512 square           Neural Engine
+//   f16 softmax, 512x512, on its own CPU
+//
+// A softmax reaches the Neural Engine only at around 16M elements, or when it
+// sits in the same submitted graph as a matmul. The score tile here is 512x512
+// -- 262144 elements, sixty-four times under that -- so a softmax primitive
+// built for this shape would be a model that runs on the host while looking
+// like accelerator coverage. The CPU is where this softmax belongs, and the
+// program says so rather than pretending.
+//
+// Why every matmul is 512 cubed
+// -----------------------------
+//
+// The Neural Engine route takes a square f16 matmul with contiguous rows, and a
+// primitive exists for 512 and 1024. With a head dimension of 512 and a key
+// tile of 512 both matmuls of the flash inner loop land exactly on it:
+//
+//   S    = Q  @ Kt   is [512, 512] @ [512, 512]
+//   PV   = P  @ V    is [512, 512] @ [512, 512]
+//
+// So the shape is not a demonstration convenience. It is the shape the hardware
+// takes, and the algorithm was tiled to meet it.
+//
+// The algorithm is still flash attention
+// --------------------------------------
+//
+// The full sq x sk score matrix is never materialized: one 512-wide tile exists
+// at a time, and the running max, normalizer and accumulator carry across
+// tiles with the usual rescale. Two tiles of keys are enough to exercise that
+// -- the rescale on the second tile is what a single-tile version would not
+// test.
+//
+// What is honest about the handoffs
+// ---------------------------------
+//
+// The device operands are declared in NPU_HBM and written by the host. That
+// direction is what the model enforces: a region on `NPU` declares
+// `visible: [NPU_HBM]`, so a kernel reading an operand the host left in
+// CPU_DRAM is refused -- see
+// tests/frontend/fail/ane_prefill_decode_missing_transfer.vx.
+//
+// `transfer(q_h, Memory::NPU_HBM)` would be the other spelling and does not
+// compose here: it yields `Pinned<T, Topology>`, while a tensor declared
+// `Memory::NPU_HBM` is `Tensor<T, dims, Placement>`, and the two are different
+// types for the same fact. Filed separately; it does not change what runs
+// where.
+//
+// The other direction is not enforced, and should not be. `CPU` declares
+// `visible: [CPU_DRAM, NPU_HBM]` because Apple silicon shares one physical
+// memory, so the host reads the score tile where the Neural Engine produced it
+// and no copy happens. The model refuses to invent a barrier the silicon does
+// not have. On a part that does not share memory the same program needs a
+// transfer there, and the checker would say so.
+//
+// So: the per-tile staging below is a real cross-space write -- the host reads
+// K and V from CPU_DRAM and writes the tile into NPU_HBM -- and it costs
+// nothing on this machine beyond the copy itself.
+//
+// Checking
+// --------
+//
+// Four query rows are recomputed from scratch against the host, over all 1024
+// keys and all 512 head positions, and compared. A full reference would be a
+// 537 MFLOP scalar loop under -O0; four rows catch a transposed operand, a
+// wrong row stride, a dropped scale or a mis-tiled accumulation just as well.
+//
+// Inputs are pseudo-random and non-zero. With zeros the softmax is uniform and
+// every one of those bugs returns the right answer.
+//
+// A stack the default does not give
+// --------------------------------
+//
+// This program needs more than 16 MiB of stack and the shell default is 8 MiB;
+// without the raise it dies with no diagnostic, exit -1. That is a compiler
+// bug rather than a property of the program, and it is filed: the emitted
+// `main` allocas about 230 bytes in total, all in the entry block, and the
+// tensors are heap. What consumes the rest is not yet identified. The same
+// reference loop runs standalone at the default stack; it only fails after the
+// tile loop has run, and the CPU spawns are not the cause (replacing them with
+// plain blocks fails identically).
+//
+// Build and run:
+//   source config.local
+//   ulimit -s 65520
+//   VX_DISPATCH_VERBOSE=1 ./target/debug/vxc \
+//       benchmarks/flash_attention_ane/flash_attention_split.vx --action run-jit
+//
+// Expect four dispatches -- two tiles, two matmuls each -- and a max absolute
+// error of 2.3e-5 against the host reference.
+//
+// benchmarks/flash_attention_ane/flash_attention.vx is the other half of the
+// story: the same algorithm written out entirely in Vx, placed on the ANE and
+// executed on the host shim, since there is no Neural Engine code generator.
+// This file gets the arithmetic onto the hardware by naming operations the
+// device has.
+
+import std::math;
+
+extern "C" {
+  fn vx_rand_seed(s : u64) -> void;
+  fn vx_rand_range_f32(lo : f32, hi : f32) -> f32;
+}
+
+fn main() -> i32 {
+  // Host-side operands. K and V hold two key tiles; Q is one block of queries.
+  let mut q_h = Tensor<f16, [ 512, 512 ]>::new();
+  let mut k_h = Tensor<f16, [ 1024, 512 ]>::new();
+  let mut v_h = Tensor<f16, [ 1024, 512 ]>::new();
+
+  let lo : f32 = -1.0;
+  let hi : f32 = 1.0;
+  unsafe {
+    vx_rand_seed(20260902);
+    for i in 0..512 {
+      for d in 0..512 {
+        q_h[i][d] = vx_rand_range_f32(lo, hi) as f16;
+      }
+    }
+    for j in 0..1024 {
+      for d in 0..512 {
+        k_h[j][d] = vx_rand_range_f32(lo, hi) as f16;
+        v_h[j][d] = vx_rand_range_f32(lo, hi) as f16;
+      }
+    }
+  }
+
+  // The tile operands and results live where the device can reach them. `Kt` is
+  // K transposed, because the score matmul is `Q @ Kt` and the route takes a
+  // plain matmul rather than a transposing one.
+  let mut q = Tensor<f16, [ 512, 512 ], Memory::NPU_HBM>::new();
+  let mut kt = Tensor<f16, [ 512, 512 ], Memory::NPU_HBM>::new();
+  let mut vt = Tensor<f16, [ 512, 512 ], Memory::NPU_HBM>::new();
+  let mut s = Tensor<f16, [ 512, 512 ], Memory::NPU_HBM>::new();
+  let mut p = Tensor<f16, [ 512, 512 ], Memory::NPU_HBM>::new();
+  let mut pv = Tensor<f16, [ 512, 512 ], Memory::NPU_HBM>::new();
+
+  // The running state of the online softmax, and the output accumulator. All
+  // f32: this is where precision is worth paying for, and it is host-side work.
+  let mut acc = Tensor<f32, [ 512, 512 ]>::new();
+  let mut mrow = Tensor<f32, [ 1, 512 ]>::new();
+  let mut lrow = Tensor<f32, [ 1, 512 ]>::new();
+  for i in 0..512 {
+    mrow[0][i] = -100000.0;
+    lrow[0][i] = 0.0;
+  }
+
+  // Q into the Neural Engine's memory, once: it is the same for every tile.
+  spawn on(Topology::CPU) {
+    for i in 0..512 {
+      for d in 0..512 {
+        q[i][d] = q_h[i][d];
+      }
+    }
+  }
+
+  let scale : f32 = 0.04419417;
+
+  for t in 0..2 {
+    // Stage this tile of K (transposed) and V. The host reads CPU_DRAM and
+    // writes NPU_HBM, which is the handoff.
+    spawn on(Topology::CPU) {
+      for jj in 0..512 {
+        let j : i32 = t * 512 + jj;
+        for d in 0..512 {
+          kt[d][jj] = k_h[j][d];
+          vt[jj][d] = v_h[j][d];
+        }
+      }
+    }
+
+    // Scores for the tile, on the Neural Engine.
+    spawn on(Topology::NPU[0]) {
+      s = q @ kt;
+    }
+
+    // The online softmax update, on the CPU. Reads the score tile where the
+    // Neural Engine left it.
+    spawn on(Topology::CPU) {
+      for i in 0..512 {
+        let mut tm : f32 = -100000.0;
+        for j in 0..512 {
+          let sv : f32 = (s[i][j] as f32) * scale;
+          if sv > tm {
+            tm = sv;
+          }
+        }
+        let m_old : f32 = mrow[0][i];
+        let m_new : f32 = if tm > m_old {
+          tm
+        } else {
+          m_old
+        };
+        // On the first tile this is exp of a large negative and underflows to
+        // zero, which is right: the accumulator and normalizer are zero there.
+        let corr : f32 = (m_old - m_new).exp();
+        let mut rs : f32 = 0.0;
+        for j in 0..512 {
+          let sv : f32 = (s[i][j] as f32) * scale;
+          let e : f32 = (sv - m_new).exp();
+          p[i][j] = e as f16;
+          rs = rs + e;
+        }
+        lrow[0][i] = lrow[0][i] * corr + rs;
+        for d in 0..512 {
+          acc[i][d] = acc[i][d] * corr;
+        }
+        mrow[0][i] = m_new;
+      }
+    }
+
+    // The weighted sum of V, on the Neural Engine.
+    spawn on(Topology::NPU[0]) {
+      pv = p @ vt;
+    }
+
+    // And fold it into the running output, on the CPU.
+    spawn on(Topology::CPU) {
+      for i in 0..512 {
+        for d in 0..512 {
+          acc[i][d] = acc[i][d] + (pv[i][d] as f32);
+        }
+      }
+    }
+  }
+
+  // Normalize.
+  spawn on(Topology::CPU) {
+    for i in 0..512 {
+      for d in 0..512 {
+        acc[i][d] = acc[i][d] / lrow[0][i];
+      }
+    }
+  }
+
+  // The reference: four query rows recomputed against the host over every key.
+  let mut row = Tensor<f32, [ 1, 1024 ]>::new();
+  let mut worst : f32 = 0.0;
+  for r in 0..4 {
+    let i : i32 = if r == 0 {
+      0
+    } else if r == 1 {
+      7
+    } else if r == 2 {
+      256
+    } else {
+      511
+    };
+    let mut rm : f32 = -100000.0;
+    for j in 0..1024 {
+      let mut sv : f32 = 0.0;
+      for d in 0..512 {
+        sv = sv + (q_h[i][d] as f32) * (k_h[j][d] as f32);
+      }
+      sv = sv * scale;
+      row[0][j] = sv;
+      if sv > rm {
+        rm = sv;
+      }
+    }
+    let mut rl : f32 = 0.0;
+    for j in 0..1024 {
+      let e : f32 = (row[0][j] - rm).exp();
+      row[0][j] = e;
+      rl = rl + e;
+    }
+    for d in 0..512 {
+      let mut a : f32 = 0.0;
+      for j in 0..1024 {
+        a = a + row[0][j] * (v_h[j][d] as f32);
+      }
+      let want : f32 = a / rl;
+      let diff : f32 = acc[i][d] - want;
+      let mag : f32 = if diff < 0.0 {
+        0.0 - diff
+      } else {
+        diff
+      };
+      if mag > worst {
+        worst = mag;
+      }
+    }
+  }
+
+  // Fail rather than print a plausible number. The threshold sits between what
+  // f16 arithmetic costs here (2.3e-5) and what a real defect costs: staging Kt
+  // untransposed, which is the easiest mistake in this file to make, moves it to
+  // 4.1e-2.
+  assert(worst < 0.001, "the split attention disagrees with the host reference");
+
+  print!("max abs error  ");
+  print(worst);
+  return 0;
+}

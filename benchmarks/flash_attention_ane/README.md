@@ -1,4 +1,41 @@
-# Flash attention on Apple silicon, written in Vx
+# Flash attention on Apple silicon
+
+Two files, making two different claims.
+
+| file | what runs where |
+|---|---|
+| `flash_attention_split.vx` | every matmul on the Neural Engine, everything else on the CPU |
+| `flash_attention.vx` | the whole algorithm in Vx, placed on the ANE, executed on the host shim |
+
+## flash_attention_split.vx — two devices, both named
+
+Each matmul of the flash inner loop is `spawn on(Topology::NPU[0])` and lands on
+the Neural Engine; the online softmax is `spawn on(Topology::CPU)`. The split is
+measured rather than chosen: CoreML puts a 512-square f16 matmul on the ANE and
+a 512x512 softmax on the CPU, and a softmax only reaches the ANE at around 16M
+elements or inside a matmul's own graph. `scripts/ane_device_check.py` pins all
+of that.
+
+With a head dimension of 512 and a 512-key tile both matmuls are exactly 512
+cubed, which is the shape the ANE route takes -- the algorithm was tiled to meet
+the hardware, not the other way round.
+
+```
+source config.local
+ulimit -s 65520
+VX_DISPATCH_VERBOSE=1 ./target/debug/vxc \
+    benchmarks/flash_attention_ane/flash_attention_split.vx --action run-jit
+```
+
+Four dispatches (two tiles, two matmuls each) and a max absolute error of 2.3e-5
+against a host reference over four query rows. The `ulimit` raise is working
+around a compiler bug, filed separately: the program needs more than 16 MiB of
+stack and dies with no diagnostic at the 8 MiB default.
+
+Verified by breaking it: staging Kt untransposed moves the error to 4.1e-2 and
+trips the assert.
+
+# The Vx-native version, executed on the host
 
 `flash_attention.vx` is fused attention with the algorithm in the program text,
 placed on `Topology::ANE`. There is no builtin standing in for the kernel body
