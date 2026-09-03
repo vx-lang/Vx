@@ -28,10 +28,11 @@
 // semicolon follows it: the parser promotes the last semicolon-less expression
 // statement to the region's value, and `if` is an expression in Vx.
 //
-// The spawn below is placed on a device rather than the host because a host
-// region cannot carry control flow at all: it lowers to `async.execute`, whose
-// body must be a single block. `convert-vx-to-standard` says so now; before, the
-// pass moved the region's first block and dropped the rest.
+// The spawn below is placed on a device rather than the host, which is what
+// this file is about. A host region carries control flow too now that it is
+// inlined rather than wrapped in `async.execute` -- see
+// tests/backend/pass/host_region_control_flow.vx -- so the device placement
+// here is the subject, not a way around a limitation.
 //
 // `Topology::Current == Topology::CPU` holds under the default configuration,
 // so each `if comptime` below keeps its `then` branch. That is the case that

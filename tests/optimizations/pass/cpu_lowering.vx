@@ -17,16 +17,25 @@ fn process(t : DynTensor<f32>) -> DynTensor<f32> {
 // CHECK-LABEL: func.func @process(%arg0: memref<?x?xf32>) -> memref<?x?xf32> {
 // CHECK: vx.spawn topology(0)
 
-// A CPU spawn stays on the host: convert-vx-to-standard turns it into an async.execute, so
-// there is no kernel to outline and no plugin dispatch. vx-to-llvm then leaves this module
-// untouched, which is why both pipelines above check the same prefix.
+// A CPU spawn stays on the host, and convert-vx-to-standard inlines the region where it
+// was written: the parent block splits around the spawn, the region's block lands in
+// between, and the `vx.yield` becomes a branch to the continuation. So there is no kernel
+// to outline and no plugin dispatch. vx-to-llvm then leaves this module untouched, which is
+// why both pipelines above check the same prefix.
+//
+// It used to be wrapped in `async.execute` instead, which nothing lowered -- the module
+// reached `mlir-translate` still holding an async op and translation refused it, so no host
+// region ran. The absence of async below is the point, not an incidental detail.
 // HOST-LABEL: func.func @process(%arg0: memref<?x?xf32>) -> memref<?x?xf32> {
 // HOST: %[[BUF:.*]] = memref.alloc(%{{.*}}, %{{.*}}) : memref<?x?xi32>
 // HOST: %[[SLOT:.*]] = memref.alloca() : memref<memref<?x?xi32>>
 // HOST: memref.store %[[BUF]], %[[SLOT]][] : memref<memref<?x?xi32>>
-// HOST: async.execute {
-// HOST: func.call @dummy(%{{.*}}) : (i32) -> i32
-// HOST: async.yield
+// HOST: cf.br ^[[BODY:.*]]
+// HOST: ^[[BODY]]:
+// HOST: call @dummy(%{{.*}}) : (i32) -> i32
+// HOST: cf.br ^[[CONT:.*]]
+// HOST: ^[[CONT]]:
 // HOST: return %arg0 : memref<?x?xf32>
+// HOST-NOT: async.execute
 // HOST-NOT: vx.launch
 // HOST-NOT: vx_plugin_dispatch_async

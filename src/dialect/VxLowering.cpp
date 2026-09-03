@@ -626,39 +626,47 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
           rewriter.eraseOp(n);
       }
 
-      auto asyncExecuteOp =
-          rewriter.create<async::ExecuteOp>(op.getLoc(),
-                                            /*resultTypes=*/TypeRange{},
-                                            /*dependencies=*/ValueRange{},
-                                            /*operands=*/ValueRange{});
-      Region &asyncBody = asyncExecuteOp.getRegion();
-
-      // `vx.yield` terminates the spawn region and `async.yield` terminates
-      // this one. Rewritten before the blocks move and found by walking the
-      // region, because a region with control flow in it yields from its merge
-      // block rather than from the block it started in.
+      // The region runs here, in place. It used to be wrapped in
+      // `async.execute`, which nothing downstream lowered: the module reached
+      // `mlir-translate` still holding an async op, and translation refused it
+      // with "Dialect `async' not found" -- so every `spawn on(Topology::CPU)`
+      // failed to run at all.
+      //
+      // Wrapping it was the wrong shape regardless. A spawn states where a
+      // region belongs, and for the host there is nothing to dispatch to; the
+      // placement is a declaration the checker enforces, not a request for
+      // concurrency. Running it sequentially where it was written is what the
+      // program means.
       SmallVector<Value> yieldedValues;
       SmallVector<vx::YieldOp> yields;
       spawnBody.walk([&](vx::YieldOp y) { yields.push_back(y); });
+      if (!yields.empty())
+        llvm::append_range(yieldedValues, yields.front().getOperands());
+
+      // The parent block splits around the spawn: everything after it becomes
+      // the continuation, the region's blocks land in between, and each
+      // `vx.yield` becomes a branch to the continuation. A region holding any
+      // `for` or `if` is more than one block, so this cannot just splice the
+      // entry block's operations.
+      Block *entry = &spawnBody.front();
+      Block *before = rewriter.getInsertionBlock();
+      Block *continuation =
+          rewriter.splitBlock(before, rewriter.getInsertionPoint());
+
       for (vx::YieldOp y : yields) {
-        if (yields.front() == y)
-          llvm::append_range(yieldedValues, y.getOperands());
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPoint(y);
-        rewriter.create<async::YieldOp>(y.getLoc(), ValueRange{});
+        rewriter.create<cf::BranchOp>(y.getLoc(), continuation);
         rewriter.eraseOp(y);
       }
 
-      // Every block of the spawn region becomes a block of the async region,
-      // its entry block included. Moving only the first block's *operations* --
-      // which is what this did -- dropped every other block, and carried the
-      // branch to them into the middle of the async body. A region containing
-      // any `for` or `if` is more than one block, so
-      // `spawn on(Topology::CPU) { for ... }` failed to compile with
-      // "operation with block successors must terminate its parent block".
-      while (!asyncBody.empty())
-        rewriter.eraseBlock(&asyncBody.front());
-      rewriter.inlineRegionBefore(spawnBody, asyncBody, asyncBody.end());
+      rewriter.inlineRegionBefore(spawnBody, continuation);
+
+      {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToEnd(before);
+        rewriter.create<cf::BranchOp>(op.getLoc(), entry);
+      }
 
       rewriter.replaceOp(op, yieldedValues);
       return success();
@@ -1143,25 +1151,13 @@ static LogicalResult diagnoseUnrunnableSpawns(Operation *root) {
   root->walk([&](vx::SpawnOp spawn) {
     int32_t topology = spawn.getTopology();
 
-    // A host region lowers to `async.execute`, whose body must be a single
-    // block -- and any `if`, `for` or `match` in the region makes it several.
-    // Said here, naming the construct, rather than left to surface three passes
-    // later as `'async.execute' op expects region #0 to have 0 or 1 blocks`,
-    // which describes an operation the program never mentions.
-    if (topology == 0) {
-      Region &body = spawn.getBody();
-      if (!body.empty() && !body.hasOneBlock()) {
-        spawn.emitError()
-            << "a region placed on the host cannot carry control flow: it "
-               "lowers to `async.execute`, whose body is a single block, and "
-               "an `if`, `for` or `match` here makes it several.\n"
-            << "  Either lift the control flow out of the region, or place the "
-               "region on a device topology, where it is outlined into a "
-               "kernel and keeps its blocks.";
-        failed = true;
-      }
+    // A host region carries control flow like any other code. It used to be
+    // refused here, because it was wrapped in `async.execute` and that op takes
+    // a single block -- so `spawn on(Topology::CPU) { for ... }` was rejected
+    // for a reason that was about the lowering rather than about the program.
+    // The region is inlined now, and a loop or branch in it is ordinary.
+    if (topology == 0)
       return;
-    }
 
     Region &body = spawn.getBody();
     if (body.empty())

@@ -1,0 +1,49 @@
+//===- host_region_control_flow.vx - Vx Compiler ----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// A region placed on the host, with a loop in it, that compiles and runs.
+//
+// This was a fail test. `spawn on(Topology::CPU)` was lowered to
+// `async.execute`, whose body the async dialect requires to be a single block,
+// and a `for` is four -- so a host region carrying any control flow was
+// rejected, naming the async op the program never wrote. That file also
+// recorded a second gap: nothing lowered `async.execute` either, and
+// `mlir-translate` does not register the async dialect, so even a single-block
+// host region failed to translate. Every `spawn on(Topology::CPU)` was
+// unrunnable.
+//
+// Both had one cause. A spawn states where a region belongs; for the host there
+// is nothing to dispatch to, and the placement is a declaration the checker
+// enforces rather than a request for concurrency. The region is inlined where
+// it was written -- the parent block splits around it, its blocks land in
+// between, and each `vx.yield` becomes a branch to the continuation -- so a
+// loop or a branch inside it is ordinary code.
+//
+// What this pins is that the host half of a two-device program can be spelled.
+// A program that puts a matmul on the Neural Engine and the rest on the CPU
+// says both placements only if this compiles; otherwise the host half has to be
+// bare code and the program names one device while using two.
+//
+// The accumulator starts non-zero so that "the loop did not run" and "the
+// tensor was never written" are different answers.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK-LABEL: func.func @main
+// CHECK: vx.spawn topology(0)
+// EXPECT: 4.5
+
+fn main() -> i32 {
+  let mut a = Tensor<f32, [ 1, 1 ]>::new();
+  a[0][0] = 1.5;
+  spawn on(Topology::CPU) {
+    for _i in 0..3 {
+      a[0][0] = a[0][0] + 1.0;
+    }
+  }
+  print(a[0][0]);
+  return 0;
+}

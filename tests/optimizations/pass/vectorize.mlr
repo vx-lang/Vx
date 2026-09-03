@@ -25,6 +25,13 @@ module {
 // CHECK: arith.addf
 // CHECK: vector.transfer_write
 
+// A host spawn inlines where it was written -- branch in, the region's block,
+// branch to the continuation. It was wrapped in `async.execute` before, which
+// nothing lowered, so no host region ran at all.
 // VX: func.func @test_vx_dialect
-// VX: async.execute
-// VX: async.yield
+// VX: cf.br ^[[BODY:.*]]
+// VX: ^[[BODY]]:
+// VX: call @dummy() : () -> ()
+// VX: cf.br ^[[CONT:.*]]
+// VX: ^[[CONT]]:
+// VX-NOT: async.execute
