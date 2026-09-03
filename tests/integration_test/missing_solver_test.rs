@@ -47,9 +47,34 @@ struct Run {
     ok: bool,
 }
 
+/// A directory with nothing in it, to be the whole of PATH when the point is that
+/// there is no solver.
+///
+/// The first version of this used `/usr/bin:/bin`, on the reasoning that replacing
+/// PATH outright does not depend on where z3 is installed. It depends on it
+/// completely: that is exactly where a Linux `apt install z3` puts it, so on CI the
+/// absence fixture had a solver in it and the runs it was meant to starve came back
+/// with real verdicts. An empty directory cannot contain z3 on any platform.
+fn solverless_path() -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("vx-no-solver-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("failed to create the solverless PATH directory");
+    dir
+}
+
+/// The absence has to be real for anything below it to mean anything. A decided
+/// verdict in a run that was supposed to have no solver is a broken fixture, and it
+/// should say so rather than surfacing as a confusing assertion about E6024.
+fn assert_no_solver_was_reachable(run: &Run, case: &str) {
+    assert!(
+        !run.stdout.contains("violates the boundary contract"),
+        "{case}: the compiler reached a solver and decided the obligation, so this \
+         run does not test the missing-solver path at all:\n{}",
+        run.stdout
+    );
+}
+
 /// Run the compiler over the relaxed-seam program. `solver` chooses whether z3
-/// is reachable: the PATH is replaced outright rather than filtered, so this
-/// does not depend on where z3 happens to be installed.
+/// is reachable.
 fn compile(solver: bool, allow_unverified: bool) -> Run {
     compile_file(RELAXED_SEAM, &[], solver, allow_unverified)
 }
@@ -63,7 +88,7 @@ fn compile_file(src: &str, extra: &[&str], solver: bool, allow_unverified: bool)
         // The inherited PATH, which the suite's own environment provides.
         cmd.env("PATH", std::env::var("PATH").unwrap_or_default());
     } else {
-        cmd.env("PATH", "/usr/bin:/bin");
+        cmd.env("PATH", solverless_path());
     }
     if allow_unverified {
         cmd.env("VX_ALLOW_UNVERIFIED", "1");
@@ -99,6 +124,7 @@ fn an_undischarged_obligation_fails_the_build() {
 
     // Absent: refused, and the diagnostic names the tool and the escape hatch.
     let none = compile(false, false);
+    assert_no_solver_was_reachable(&none, "declaration seam, no solver");
     assert!(
         none.stdout.contains("E6024"),
         "no solver must produce E6024, got:\n{}",
@@ -174,6 +200,7 @@ fn a_transfer_site_obligation_also_fails_the_build() {
     }
 
     let none = compile_file(TRANSFER_SEAM, &["--verify-seams"], false, false);
+    assert_no_solver_was_reachable(&none, "transfer seam, no solver");
     assert!(
         none.stdout.contains("E6024"),
         "no solver must produce E6024 at a transfer seam too, got:\n{}",
