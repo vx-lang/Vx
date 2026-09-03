@@ -1,0 +1,88 @@
+//===- ane_prefill_decode.vx - Vx Compiler ----------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Prefill on the Neural Engine, decode on the host, from one program text.
+//
+// The Rubin shape (tests/frontend/pass/rubin_disaggregated.vx) on parts this
+// machine has: fused attention over the whole prompt runs on the Neural Engine,
+// the KV comes home, and decode reads it where the host can.
+//
+// Two things about the handoffs are worth stating exactly, because they are not
+// symmetric and the asymmetry is real hardware rather than an omission.
+//
+// **Inbound is enforced.** `NPU` declares `visible: [NPU_HBM]`, so a region on it
+// cannot read what the host left in CPU_DRAM. Deleting the staging transfers is
+// E6003, named in the fail sibling.
+//
+// **Outbound is not.** `CPU` declares `visible: [CPU_DRAM, NPU_HBM]` because
+// Apple silicon shares one physical memory, so the host may read the KV where the
+// Neural Engine produced it and the transfer home is legal to omit. It is written
+// anyway: on a part that does not share memory the same program needs it, and
+// leaving it out would make this program mean something only on Apple. What the
+// model refuses to do is pretend there is a barrier that the silicon does not
+// have.
+//
+// Decode is ordinary host code rather than `spawn on(Topology::CPU)`. That
+// spelling would say where decode runs, and it currently emits `async.execute`
+// into a module that does not register the `async` dialect -- Vx#439. When that
+// is fixed this should become a spawn, so the program states both placements
+// rather than one.
+//
+// The prefill shape is f16 256x8192 because that is what reaches the Neural
+// Engine: CoreML prefers the CPU for every fp32 attention and for f16 below about
+// 2M elements per operand (Vx#437).
+//
+// Driven by tests/integration_test/ane_attention_test.rs. Not in
+// tests/backend/pass, which compiles with --legacy-codegen, and
+// `flash_attention_into` has no AST lowering.
+
+extern "C" {
+  fn vx_rand_seed(s : u64) -> void;
+  fn vx_rand_range_f32(lo : f32, hi : f32) -> f32;
+}
+
+fn main() -> i32 {
+  let mut q_h = Tensor<f16, [ 256, 8192 ]>::new();
+  let mut k_h = Tensor<f16, [ 256, 8192 ]>::new();
+  let mut v_h = Tensor<f16, [ 256, 8192 ]>::new();
+  let o_h = Tensor<f16, [ 256, 8192 ]>::new();
+
+  let lo : f32 = -0.5;
+  let hi : f32 = 0.5;
+  unsafe {
+    vx_rand_seed(20260903);
+    for i in 0..256 {
+      for d in 0..64 {
+        q_h[i][d] = vx_rand_range_f32(lo, hi) as f16;
+        k_h[i][d] = vx_rand_range_f32(lo, hi) as f16;
+        v_h[i][d] = vx_rand_range_f32(lo, hi) as f16;
+      }
+    }
+  }
+
+  // Stage the prompt into the Neural Engine's memory. Required.
+  let q = transfer(q_h, Memory::NPU_HBM);
+  let k = transfer(k_h, Memory::NPU_HBM);
+  let v = transfer(v_h, Memory::NPU_HBM);
+  let mut kv = transfer(o_h, Memory::NPU_HBM);
+
+  // Prefill: one fused attention over the whole prompt, on the Neural Engine.
+  spawn on(Topology::NPU[0]) {
+    flash_attention_into(&mut kv, &q, &k, &v, 0.01104854);
+  }
+
+  // The handoff. Legal to omit on a part that shares memory, written because the
+  // program should not depend on that.
+  let kv_home = transfer(kv, Memory::CPU_DRAM);
+
+  // Decode: reads what the other part produced. One step -- what is under test is
+  // where the data is, not how long the loop runs.
+  let step = kv_home[0][0] + kv_home[255][7];
+
+  print(step);
+  return 0;
+}

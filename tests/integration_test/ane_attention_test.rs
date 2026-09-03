@@ -75,3 +75,41 @@ fn attention_on_the_neural_engine_computes_the_uniform_mean() {
         "varied attention drifted from the host fallback's 0.012176514: {varied}"
     );
 }
+
+/// Prefill on the Neural Engine, decode on the host, from one program text.
+///
+/// The disaggregated shape on parts this machine has: fused attention over the
+/// whole prompt runs on the ANE, the KV is transferred home, and decode reads it
+/// where the host can. Checked against the host fallback on the same seeded
+/// inputs, which is what makes the comparison mean anything.
+#[test]
+#[cfg(target_os = "macos")]
+fn prefill_on_the_neural_engine_and_decode_on_the_host() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let src = root.join("tests/flat/ane_prefill_decode.vx");
+    let out = Command::new(env!("CARGO_BIN_EXE_vxc"))
+        .arg(&src)
+        .args(["--action", "run-jit"])
+        .current_dir(root)
+        .output()
+        .expect("vxc should execute");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "vxc --action run-jit failed:\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    // The host fallback returns -0.021697998 on these seeded inputs, obtained by
+    // running the same program with the CoreML model moved aside. The tolerance
+    // covers the Neural Engine accumulating in f16 where the host does not.
+    let step: f64 = stdout
+        .lines()
+        .rfind(|l| !l.trim().is_empty())
+        .and_then(|l| l.split_whitespace().next())
+        .and_then(|t| t.parse().ok())
+        .unwrap_or_else(|| panic!("expected a decode value in:\n{stdout}"));
+    assert!(
+        (step - -0.021697998).abs() < 1e-3,
+        "decode drifted from the host fallback's -0.021697998: {step}"
+    );
+}
