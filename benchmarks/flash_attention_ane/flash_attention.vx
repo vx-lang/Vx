@@ -22,8 +22,10 @@
 //
 //   Conditional rescaling. The `exp(m - m_new)` correction is applied only when
 //   the running max grows by more than tau = log2(256) = 8. Exact either way,
-//   since a max that has not grown by tau cannot overflow the exponential; it
-//   removes most of the vector rescales.
+//   since a max that has not grown by tau cannot overflow the exponential. Over
+//   these inputs it fires once per query row, on the tile that seeds the max,
+//   and every later tile skips it -- which is the saving it exists for rather
+//   than a branch left untested.
 //
 //   A software exponential. `exp_poly` range-reduces to 2^n * 2^f and evaluates
 //   2^f with a degree-4 polynomial, so the kernel calls no libm and carries no
@@ -157,7 +159,9 @@ fn main() -> i32 {
             tm = sij;
           }
         }
-        // Rescale only when the running max actually grew enough to matter.
+        // Rescale only when the running max actually grew enough to matter. On
+        // the seeding tile `acc` and `l` are still zero, so it does not matter
+        // that `exp_poly` saturates near 2^-48 there instead of reaching 0.
         let m_cand : f32 = if tm > m {
           tm
         } else {
