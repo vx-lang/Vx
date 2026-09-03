@@ -258,9 +258,37 @@ impl<'a> TypeChecker<'a> {
         id
     }
 
+    /// A located tensor split into what it holds and where it is, for either
+    /// spelling. `None` for a type that says nothing about where it lives.
+    fn located_parts(t: &Type) -> Option<(Type, Topology)> {
+        match t {
+            Type::Pinned(inner, top) => Some(((**inner).clone(), top.clone())),
+            Type::Tensor(e, d, Some(p)) => {
+                Some((Type::Tensor(e.clone(), d.clone(), None), p.topology.clone()))
+            }
+            Type::DynTensor(e, Some(p)) => {
+                Some((Type::DynTensor(e.clone(), None), p.topology.clone()))
+            }
+            _ => None,
+        }
+    }
+
     pub(crate) fn is_assignable(&self, target: &Type, source: &Type) -> bool {
         if target == source {
             return true;
+        }
+
+        // `Pinned<T, D>` and a `T` carrying a placement on `D` are two spellings of
+        // one fact: this value is on that device. Both are real -- a signature can
+        // write `Pinned<Tensor<bf16, [4, 4]>, Topology::NPU[0]>`, and the checker
+        // wraps a topology-bound return the same way, while `transfer` and a
+        // `Memory::` annotation produce the placed tensor. Comparing them by
+        // constructor made a transferred tensor unassignable to a parameter that
+        // named the same device.
+        if let (Some((t_inner, t_top)), Some((s_inner, s_top))) =
+            (Self::located_parts(target), Self::located_parts(source))
+        {
+            return t_top == s_top && self.is_assignable(&t_inner, &s_inner);
         }
 
         if let Type::Struct(n_target, id_target) = target {
@@ -365,6 +393,19 @@ impl<'a> TypeChecker<'a> {
                     return false;
                 }
 
+                // An annotation that names no place asks for host data, so a value
+                // sitting on a device does not satisfy it -- passing one to
+                // `fn f(t : Tensor<f32, [4]>)` is exactly the mistake `transfer`
+                // exists to make visible. A value placed in CPU_DRAM does satisfy
+                // it: that is where an unplaced tensor lives.
+                if top_target.is_none() {
+                    if let Some(p) = top_source {
+                        if p.space != MemorySpace::CPUDRAM {
+                            return false;
+                        }
+                    }
+                }
+
                 if !dims_target.is_empty() && !dims_source.is_empty() {
                     if dims_target.len() != dims_source.len() {
                         return false;
@@ -465,17 +506,46 @@ impl<'a> TypeChecker<'a> {
                 Type::Tensor(e, _, top) => Some((e.clone(), top.clone())),
                 _ => None,
             };
-            if let (Some((te, t_top)), Some((se, _))) = (dyn_parts(target), dyn_parts(source)) {
-                let _ = t_top;
-                return te == se;
+            if let (Some((te, t_top)), Some((se, s_top))) = (dyn_parts(target), dyn_parts(source)) {
+                if te != se {
+                    return false;
+                }
+                // Same rule as for a shaped tensor: an annotation naming no place
+                // asks for host data, and a value on a device does not satisfy it.
+                // Dropping the placement here let a transferred `DynTensor` reach a
+                // parameter declared plain `DynTensor<f32>`.
+                if t_top.is_none() {
+                    if let Some(p) = s_top {
+                        return p.space == MemorySpace::CPUDRAM;
+                    }
+                }
+                return t_top.is_none() || t_top == s_top;
             }
+            // A dynamic annotation forgets the shape, not the place: `t_top.is_none()`
+            // means "no place named", which asks for host data rather than "any
+            // place will do". Reading it as the latter let a transferred tensor
+            // satisfy a plain `DynTensor<f32>` parameter.
+            let placed_off_host =
+                |p: &Option<Placement>| p.as_ref().is_some_and(|p| p.space != MemorySpace::CPUDRAM);
             if let (Some((te, t_top)), Some((se, s_top))) = (dyn_parts(target), tensor_elem(source))
             {
-                return te == se && (t_top.is_none() || t_top == s_top);
+                if te != se {
+                    return false;
+                }
+                if t_top.is_none() {
+                    return !placed_off_host(&s_top);
+                }
+                return t_top == s_top;
             }
             if let (Some((te, t_top)), Some((se, s_top))) = (tensor_elem(target), dyn_parts(source))
             {
-                return te == se && (t_top.is_none() || t_top == s_top);
+                if te != se {
+                    return false;
+                }
+                if t_top.is_none() {
+                    return !placed_off_host(&s_top);
+                }
+                return t_top == s_top;
             }
         }
 

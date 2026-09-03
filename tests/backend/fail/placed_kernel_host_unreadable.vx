@@ -73,6 +73,10 @@ fn main() -> i32 {
     }
   }
 
-  print(o);
+  // Transferred home before it is read. Without this the *explicit* host read of
+  // GPU_HBM is refused first, and that error -- correct in itself -- would hide
+  // the implicit one this file is about.
+  let o_home = transfer(o, Memory::CPU_DRAM);
+  print(o_home);
   return 0;
 }

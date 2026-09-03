@@ -53,17 +53,14 @@
 // What is honest about the handoffs
 // ---------------------------------
 //
-// The device operands are declared in NPU_HBM and written by the host. That
-// direction is what the model enforces: a region on `NPU` declares
-// `visible: [NPU_HBM]`, so a kernel reading an operand the host left in
-// CPU_DRAM is refused -- see
+// Q is staged with an explicit `transfer`, and that direction is what the model
+// enforces: a region on `NPU` declares `visible: [NPU_HBM]`, so a kernel reading
+// an operand the host left in CPU_DRAM is refused -- see
 // tests/frontend/fail/ane_prefill_decode_missing_transfer.vx.
 //
-// `transfer(q_h, Memory::NPU_HBM)` would be the other spelling and does not
-// compose here: it yields `Pinned<T, Topology>`, while a tensor declared
-// `Memory::NPU_HBM` is `Tensor<T, dims, Placement>`, and the two are different
-// types for the same fact. Filed separately; it does not change what runs
-// where.
+// The per-tile operands are declared in NPU_HBM and written by the host each
+// tile, which is the staging a real pipeline does: read K and V from CPU_DRAM,
+// write the tile where the device will read it.
 //
 // The other direction is not enforced, and should not be. `CPU` declares
 // `visible: [CPU_DRAM, NPU_HBM]` because Apple silicon shares one physical
@@ -134,7 +131,6 @@ fn main() -> i32 {
   // The tile operands and results live where the device can reach them. `Kt` is
   // K transposed, because the score matmul is `Q @ Kt` and the route takes a
   // plain matmul rather than a transposing one.
-  let mut q = Tensor<f16, [ 512, 512 ], Memory::NPU_HBM>::new();
   let mut kt = Tensor<f16, [ 512, 512 ], Memory::NPU_HBM>::new();
   let mut vt = Tensor<f16, [ 512, 512 ], Memory::NPU_HBM>::new();
   let mut s = Tensor<f16, [ 512, 512 ], Memory::NPU_HBM>::new();
@@ -152,13 +148,7 @@ fn main() -> i32 {
   }
 
   // Q into the Neural Engine's memory, once: it is the same for every tile.
-  spawn on(Topology::CPU) {
-    for i in 0..512 {
-      for d in 0..512 {
-        q[i][d] = q_h[i][d];
-      }
-    }
-  }
+  let q = transfer(q_h, Memory::NPU_HBM);
 
   let scale : f32 = 0.04419417;
 

@@ -521,17 +521,27 @@ impl<'a> TypeChecker<'a> {
                 let ix_span = *ix_span;
                 let obj_ty = self.check_expr_type_flag(obj, false);
 
-                // Enforce topology boundary for Pinned types
-                if let Type::Pinned(_, pinned_top) = &obj_ty {
+                // Enforce the topology boundary, reading where the value lives from
+                // either spelling: a placement carried on the tensor itself, or the
+                // older `Pinned` wrapper. Matching only `Pinned` meant a transferred
+                // tensor stopped being checked the moment `transfer` started returning
+                // a placed tensor -- and the failure was silent, since an unchecked
+                // read simply compiles.
+                let located_on = match &obj_ty {
+                    Type::Pinned(_, top) => Some(top.clone()),
+                    _ => obj_ty.placement().map(|p| p.topology.clone()),
+                };
+                if let Some(value_top) = located_on {
                     if !self.transfer_cost_graph.is_type_accessible(
                         &self.active_topology,
-                        pinned_top,
+                        &value_top,
                         &obj_ty,
                     ) && !self.speculating
                     {
                         self.errors.push(format!(
-                            "Cross-topology access error: Cannot access Pinned type on {:?} from {:?}",
-                            pinned_top, self.active_topology
+                            "Cross-topology access error: a value on {} cannot be read from {}",
+                            value_top.display_name(),
+                            self.active_topology.display_name()
                         ));
                     }
                 }

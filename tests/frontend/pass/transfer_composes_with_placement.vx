@@ -1,0 +1,51 @@
+//===- transfer_composes_with_placement.vx - Vx Compiler --------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// A tensor that got somewhere by `transfer` and one declared to be there are the
+// same type.
+//
+// They were not. `transfer` produced `Pinned<T, Topology>` -- the wrapper shape
+// from before placement was folded into the tensor type -- while
+// `Tensor<f16, [n, n], Memory::NPU_HBM>` produced a placed tensor. Two spellings
+// of one fact, and assigning either to the other was a type error, so a program
+// staging its operands the way the language documents could not then feed them
+// to a placed kernel. `Pinned` also carries only a topology, so the space the
+// transfer named was not recorded on the value at all.
+//
+// `transfer` now yields the placed tensor. `Pinned` stays, because it is
+// writable in a signature and the checker still wraps a topology-bound return
+// in it, and the two compare equal when they name the same device.
+//
+// Values are non-zero and the operands differ, so a matmul that read the wrong
+// buffer would not produce the same answer: 2.0 x 1.0 summed over 512 is 1024.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK-LABEL: func.func @main
+// CHECK: vx.spawn topology(100)
+// EXPECT: 1024
+
+fn main() -> i32 {
+  let mut q_h = Tensor<f16, [ 512, 512 ]>::new();
+  // Declared where the device can reach it, rather than transferred there.
+  let mut kt = Tensor<f16, [ 512, 512 ], Memory::NPU_HBM>::new();
+  let mut s = Tensor<f16, [ 512, 512 ], Memory::NPU_HBM>::new();
+  for i in 0..512 {
+    for j in 0..512 {
+      q_h[i][j] = 2.0;
+      kt[i][j] = 1.0;
+    }
+  }
+
+  // Transferred there instead. The two have to meet in the matmul below.
+  let q = transfer(q_h, Memory::NPU_HBM);
+  spawn on(Topology::NPU[0]) {
+    s = q @ kt;
+  }
+
+  print(s[0][0]);
+  return 0;
+}

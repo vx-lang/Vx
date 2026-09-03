@@ -6,4 +6,7 @@ fn main(device_data: Pinned<DynTensor<f32>, Topology::CPU>) on Topology::NPU[0] 
   return 0;
 }
 
-// CHECK: Cannot access Pinned type on CPU from NPU
+// The message no longer names `Pinned`. The check reads where a value is from
+// either spelling -- the wrapper, or a placement on the tensor itself -- so
+// naming one of them described the type rather than the mistake.
+// CHECK: Cross-topology access error: a value on CPU cannot be read from NPU

@@ -381,6 +381,14 @@ impl<'a> TypeChecker<'a> {
     /// topology default space, else the space of `fallback_top` (the binding's topology). Used
     /// to find the space whose `managed` policy governs an implicit cross-space use.
     pub(crate) fn value_memory_space(&self, ty: &Type, fallback_top: &Topology) -> MemorySpace {
+        // A placed tensor names its space outright, which is the whole point of
+        // carrying a placement -- read it before falling back to deriving one from
+        // a topology. Without this arm a transferred tensor reported the binding's
+        // space instead of its own, and the visibility diagnostic that depends on
+        // this stopped firing.
+        if let Some(p) = ty.placement() {
+            return p.space.clone();
+        }
         match ty {
             Type::Ref(_, mem) => mem.clone(),
             Type::Pinned(_, topo) if !matches!(topo, Topology::Current) => {
@@ -400,6 +408,15 @@ impl<'a> TypeChecker<'a> {
     /// which is why the check that a placement names a real place is also called from here.
     pub(crate) fn check_type_placement(&mut self, ty: &Type, context: &str) {
         self.report_unheld_placements(ty, context);
+        // A placed tensor is checked against the space it names, the same as the
+        // two wrapper spellings below.
+        if let Some(p) = ty.placement() {
+            if let Some((e, d)) = Self::tensor_of(ty) {
+                let space = p.space.clone();
+                self.check_capacity(e, d, &space, context);
+            }
+            return;
+        }
         match ty {
             Type::Ref(inner, mem) => {
                 if let Some((e, d)) = Self::tensor_of(inner) {
@@ -526,6 +543,13 @@ impl<'a> TypeChecker<'a> {
         // Extract source memory space, preferring exact space from an inner transfer if present
         let source_mem = if let Expr::Transfer(inner_t) = &*t.expr {
             inner_t.space.clone()
+        } else if let Some(space) = inner_ty.placement().map(|p| p.space.clone()) {
+            // A placed tensor names the space it is in. While `transfer` produced
+            // `Pinned`, a transferred value matched an arm below and the fallback saw
+            // only genuinely host-resident values; with the placement unread it called
+            // this one host memory and computed the edge from CPU_DRAM, inserting a
+            // redundant staging hop into the region.
+            space
         } else {
             match &inner_ty {
                 Type::Ref(_, mem) => mem.clone(),
@@ -1295,9 +1319,27 @@ impl<'a> TypeChecker<'a> {
             Type::Ref(base_ty, _) => Type::Ref(base_ty, target_mem.clone()),
             // A dynamic tensor re-homes exactly as a statically shaped one does; only the
             // capacity check differs, and that is what W1029 reports (Vx#399).
-            Type::Tensor(_, _, _) | Type::DynTensor(_, _) => Type::Pinned(
-                Box::new(inner_ty.clone()),
-                Self::pinned_topology_for(target_mem),
+            //
+            // The result is a *placed tensor*, the same type a declaration produces. It used to
+            // be `Pinned<Tensor, Topology>`, which is the older wrapper shape from before Vx#429
+            // folded placement into the tensor type -- so `transfer(x, Memory::NPU_HBM)` and
+            // `Tensor<f16, [n, n], Memory::NPU_HBM>` were two different types for the same fact
+            // and would not assign to one another. `Pinned` also carries only a topology, so the
+            // space the transfer named was not recorded on the value at all.
+            Type::Tensor(el, dims, _) => Type::Tensor(
+                el,
+                dims,
+                Some(Placement::in_space(
+                    target_mem.clone(),
+                    Self::pinned_topology_for(target_mem),
+                )),
+            ),
+            Type::DynTensor(el, _) => Type::DynTensor(
+                el,
+                Some(Placement::in_space(
+                    target_mem.clone(),
+                    Self::pinned_topology_for(target_mem),
+                )),
             ),
             Type::Verified(_inner) => {
                 if let Expr::Transfer(t) = expr {

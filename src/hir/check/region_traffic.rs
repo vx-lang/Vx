@@ -170,9 +170,17 @@ impl<'a> TypeChecker<'a> {
     /// kernel-local scratch into the device-memory traffic figure, which is exactly the kind
     /// of plausible-but-wrong number this stage must not publish.
     ///
-    /// So placement must be carried by the TYPE: `Pinned` (what a `transfer` yields) or a
-    /// `Ref` annotated with a space. Anything else is unplaced and contributes nothing.
+    /// So placement must be carried by the TYPE: a tensor's own `Placement` (what a
+    /// `transfer` yields, and what `Memory::` on a declaration writes), the older
+    /// `Pinned` wrapper, or a `Ref` annotated with a space. Anything else is unplaced
+    /// and contributes nothing.
     fn placed_space(&self, ty: &Type) -> Option<MemorySpace> {
+        // The placement names the space outright, which is the case this stage wants:
+        // it is carried by the type rather than guessed from a topology, so kernel-local
+        // scratch -- which carries none -- still contributes nothing.
+        if let Some(p) = ty.placement() {
+            return Some(p.space.clone());
+        }
         match ty {
             Type::Ref(_, mem) => Some(mem.clone()),
             Type::Pinned(_, topo) if !matches!(topo, Topology::Current) => {

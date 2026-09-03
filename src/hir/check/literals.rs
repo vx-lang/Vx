@@ -264,7 +264,19 @@ impl<'a> TypeChecker<'a> {
     pub(crate) fn short_type_name(t: &Type) -> String {
         match t {
             Type::Scalar(e) => format!("a scalar {e:?}"),
+            // A placed tensor says where it is, the same as the `Pinned` arm below --
+            // they are two spellings of one fact, and a diagnostic that named it for
+            // only one of them lost the detail as soon as `transfer` started
+            // producing the other.
+            Type::Tensor(e, _, Some(p)) => format!(
+                "a tensor of {e:?} placed on Topology::{}",
+                p.topology.display_name()
+            ),
             Type::Tensor(e, _, _) => format!("a tensor of {e:?}"),
+            Type::DynTensor(e, Some(p)) => format!(
+                "a dynamic tensor of {e:?} placed on Topology::{}",
+                p.topology.display_name()
+            ),
             Type::Pinned(inner, top) => format!(
                 "{} placed on Topology::{}",
                 Self::short_type_name(inner),

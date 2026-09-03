@@ -961,6 +961,13 @@ impl TransferCostGraph {
             return self.is_type_accessible(active_topology, pinned_top, &mock_ty);
         }
 
+        // Where the value *is*, which after a transfer is not where it was declared.
+        // The binding's topology is the scope that owns the name; a placed tensor
+        // carries its own device, and letting the binding speak for it made the
+        // host-resident fallback below fire for a value sitting in device memory.
+        let placed_top = ty.placement().map(|p| p.topology.clone());
+        let var_topology = placed_top.as_ref().unwrap_or(var_topology);
+
         // Determine the memory space of the variable. A placed tensor says where it lives in its
         // own type, so it is read there rather than reconstructed from the owning device -- which
         // is the point of carrying a placement at all (Vx#429).
