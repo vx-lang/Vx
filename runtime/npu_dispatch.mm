@@ -135,14 +135,20 @@ extern "C" int vx_dispatch_gpu(float *xout, float *x, float *w, int n, int d) {
   }
 }
 
-// The square size the Neural Engine will actually take.
+// Which square f16 matmuls have a CoreML primitive is decided by what
+// build.rs generated, not by a constant here (Vx#173).
 //
-// Asked through MLComputePlan which device it prefers, CoreML answers CPU for
-// every fp32 matmul at every size tried, and for fp16 up to 384. At 512 in fp16
-// it answers Neural Engine. So both halves of this constant matter: the
-// precision decides whether the ANE is eligible at all, and the size decides
-// whether CoreML bothers.
-#define VX_ANE_F16_DIM 512
+// The dispatcher asks for `matmul_<d>x<d>_fp16.mlmodelc` and falls back to the
+// CPU shim when there is no such file, so adding a shape is a line in the build
+// list rather than an edit to this file. The old code hardcoded 4 and could
+// only ever have run the one primitive it was written against.
+//
+// Precision is still a real constraint rather than a lookup: asked through
+// MLComputePlan which device it prefers, CoreML answers CPU for every fp32
+// matmul at every size tried, and for fp16 up to 384, switching to the Neural
+// Engine at 512. So an fp32 model never reaches the ANE however large, and a
+// small f16 one does not either -- which is why only f16 is routed here, and why
+// generating a 64x64 primitive would add a model that runs on the CPU.
 
 // The fp16 matmul, which is the one that reaches the Neural Engine.
 //
@@ -155,21 +161,32 @@ extern "C" int vx_dispatch_gpu(float *xout, float *x, float *w, int n, int d) {
 extern "C" int vx_dispatch_ane_f16(void *xout, const void *x, const void *w,
                                    int n, int d) {
   @autoreleasepool {
-    static MLModel *model = nil;
+    // One model per shape, loaded once. A miss is not an error: it means this
+    // build shipped no primitive for that size, and the caller falls back.
+    static NSMutableDictionary<NSNumber *, MLModel *> *models = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+      models = [NSMutableDictionary dictionary];
+    });
+
     NSError *error = nil;
+    NSNumber *key = @(d);
+    MLModel *model = models[key];
     if (!model) {
-      NSURL *modelURL =
-          [NSURL fileURLWithPath:@"matmul_512x512_fp16.mlmodelc"];
+      NSString *name =
+          [NSString stringWithFormat:@"matmul_%dx%d_fp16.mlmodelc", d, n];
+      NSURL *modelURL = [NSURL fileURLWithPath:name];
       MLModelConfiguration *config = [[MLModelConfiguration alloc] init];
       config.computeUnits = MLComputeUnitsAll;
       model = [MLModel modelWithContentsOfURL:modelURL
                                 configuration:config
                                         error:&error];
       if (!model) {
-        VX_NPU_LOG("[Vx Dispatcher] no matmul_512x512_fp16.mlmodelc; using the "
-                   "CPU shim\n");
+        VX_NPU_LOG("[Vx Dispatcher] no %s; using the CPU shim\n",
+                   [name UTF8String]);
         return 0;
       }
+      models[key] = model;
     }
 
     const size_t elems = (size_t)d * (size_t)n;
@@ -473,17 +490,20 @@ extern "C" uint64_t vx_plugin_dispatch_async(const void *binary_payload,
                plan.out_kind == VX_GEMM_OUT_SLOT ? "slot" : "buffer");
   }
 
-  if (is_gemm && plan.dtype == VX_DTYPE_F16 && plan.m == VX_ANE_F16_DIM &&
-      plan.n == VX_ANE_F16_DIM && plan.k == VX_ANE_F16_DIM &&
-      plan.a_row_stride == VX_ANE_F16_DIM &&
-      plan.b_row_stride == VX_ANE_F16_DIM &&
-      plan.out_row_stride == VX_ANE_F16_DIM) {
+  // Any square f16 GEMM whose rows are contiguous. Whether a primitive exists
+  // for that size is answered by trying to load it, not by a constant here.
+  const bool square_f16 =
+      is_gemm && plan.dtype == VX_DTYPE_F16 && plan.m == plan.n &&
+      plan.n == plan.k && plan.a_row_stride == plan.k &&
+      plan.b_row_stride == plan.n && plan.out_row_stride == plan.n;
+  if (square_f16) {
+    const int dim = (int)plan.m;
     void *result = plan.out_data;
     if (plan.out_kind == VX_GEMM_OUT_SLOT) {
-      result = malloc((size_t)VX_ANE_F16_DIM * VX_ANE_F16_DIM * sizeof(uint16_t));
+      result = malloc((size_t)dim * dim * sizeof(uint16_t));
     }
-    if (result && vx_dispatch_ane_f16(result, plan.b_data, plan.a_data,
-                                      VX_ANE_F16_DIM, VX_ANE_F16_DIM)) {
+    if (result &&
+        vx_dispatch_ane_f16(result, plan.b_data, plan.a_data, dim, dim)) {
       if (plan.out_kind == VX_GEMM_OUT_SLOT) {
         vx_gemm_publish_slot(&plan, (float *)result);
       }

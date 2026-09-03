@@ -128,6 +128,11 @@ fn main() {
         let obj_path = PathBuf::from(&out_dir).join("npu_dispatch.o");
         let lib_path = PathBuf::from(&out_dir).join("libnpu_dispatch.a");
 
+        // Square f16 matmul sizes to build Neural Engine primitives for.
+        // Adding one is a change here and nowhere else: the dispatcher looks the
+        // model up by shape and falls back when there is none (Vx#173).
+        const VX_ANE_DIMS: &str = "512,1024";
+
         // --- Automate ANE Primitive Generation ---
         println!("cargo:warning=Building ANE primitive models via CoreML...");
 
@@ -184,6 +189,8 @@ fn main() {
                     &out_dir,
                     "--dim",
                     "4",
+                    "--ane-dims",
+                    VX_ANE_DIMS,
                 ])
                 .status()
         });
@@ -195,7 +202,12 @@ fn main() {
                 // CoreML prefers the CPU for every fp32 matmul at every size, and
                 // for fp16 below 512. The 4x4 pair stays for the affine path and
                 // the tests written to it.
-                for model_name in &["matmul_4x4", "affine_4", "matmul_512x512_fp16"] {
+                for model_name in &[
+                    "matmul_4x4",
+                    "affine_4",
+                    "matmul_512x512_fp16",
+                    "matmul_1024x1024_fp16",
+                ] {
                     let pkg_path =
                         PathBuf::from(&out_dir).join(format!("{}.mlpackage", model_name));
                     let modelc_path =
