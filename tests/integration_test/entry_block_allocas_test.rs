@@ -49,11 +49,9 @@ fn block_label(line: &str) -> Option<&str> {
 #[test]
 fn stack_slots_are_allocated_once_not_per_iteration() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let vxc = root.join("target/debug/vxc");
-    if !vxc.is_file() {
-        eprintln!("skipping: {} is not built", vxc.display());
-        return;
-    }
+    // cargo points this at the profile the suite is running in; a hardcoded
+    // `target/debug/vxc` is absent under `cargo test --release` and this skipped.
+    let vxc = PathBuf::from(env!("CARGO_BIN_EXE_vxc"));
     let src = root.join("benchmarks/flash_attention_ane/flash_attention_split.vx");
     assert!(src.is_file(), "missing {}", src.display());
 

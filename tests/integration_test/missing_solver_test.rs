@@ -81,7 +81,7 @@ fn compile(solver: bool, allow_unverified: bool) -> Run {
 
 fn compile_file(src: &str, extra: &[&str], solver: bool, allow_unverified: bool) -> Run {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let mut cmd = Command::new(root.join("target/debug/vxc"));
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_vxc"));
     cmd.current_dir(&root).args([src, "--action", "print-ast"]);
     cmd.args(extra);
     if solver {
@@ -116,12 +116,6 @@ fn z3_on_path() -> bool {
 
 #[test]
 fn an_undischarged_obligation_fails_the_build() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    if !root.join("target/debug/vxc").is_file() {
-        eprintln!("skipping: target/debug/vxc is not built");
-        return;
-    }
-
     // Absent: refused, and the diagnostic names the tool and the escape hatch.
     let none = compile(false, false);
     assert_no_solver_was_reachable(&none, "declaration seam, no solver");
@@ -193,12 +187,6 @@ fn a_transfer_site_obligation_also_fails_the_build() {
     // an unsound program built depended on what happened to be installed. The old code
     // said so in a warning and carried on -- under E6004, a code meaning the contract was
     // shown to be violated, when nothing had been shown at all.
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    if !root.join("target/debug/vxc").is_file() {
-        eprintln!("skipping: target/debug/vxc is not built");
-        return;
-    }
-
     let none = compile_file(TRANSFER_SEAM, &["--verify-seams"], false, false);
     assert_no_solver_was_reachable(&none, "transfer seam, no solver");
     assert!(

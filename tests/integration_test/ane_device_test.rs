@@ -113,14 +113,14 @@ fn coreml_places_these_graphs_where_we_measured() {
 /// The line is now derived from `MLComputePlan`, so it reports the device CoreML
 /// picked rather than the route the dispatcher took. This pins both halves: the
 /// measured line appears, and the unmeasured claim does not come back.
+// The binary under test comes from CARGO_BIN_EXE_vxc, which cargo points at the
+// profile the suite is running in. A hardcoded `target/debug/vxc` is absent under
+// `cargo test --release`, and these tests skipped there rather than failing -- so
+// they read as passing in a job that never ran them.
 #[test]
 fn the_dispatcher_reports_the_device_coreml_chose() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let vxc = root.join("target/debug/vxc");
-    if !vxc.is_file() {
-        eprintln!("skipping: target/debug/vxc is not built");
-        return;
-    }
+    let vxc = PathBuf::from(env!("CARGO_BIN_EXE_vxc"));
     let program = root.join("benchmarks/flash_attention_ane/flash_attention_split.vx");
     if !program.is_file() {
         eprintln!("skipping: {} is absent", program.display());
