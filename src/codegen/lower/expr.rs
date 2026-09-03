@@ -3621,6 +3621,17 @@ impl<'c> LowerToMelior<'c> for syntax::expr::AsCastExpr {
         gen: &mut MeliorGenerator<'c>,
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Self::Output {
+        // A slice `as` is a vector conversion, which only the flat path emits. Say so:
+        // without this the legacy walk tried to build a scalar conversion from a vector
+        // and failed much later with `ParseType`, naming nothing.
+        if let Some(syntax::Type::Tensor(_, dims, _)) = self.source_ty.as_ref() {
+            if dims.len() == 1 && matches!(&self.target_ty, syntax::Type::Scalar(_)) {
+                panic!(
+                    "an elementwise cast over a slice has no legacy (AST) lowering; it \
+                     requires the flat path (drop --legacy-codegen)"
+                );
+            }
+        }
         let (source_val, _source_ty, block) = gen.generate_expr(&self.expr, block)?;
         if let syntax::Type::Closure(_, _) = &self.target_ty {
             let closure_struct_name = match self.source_ty.as_ref() {

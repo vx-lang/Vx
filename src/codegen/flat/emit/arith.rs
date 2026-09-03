@@ -204,6 +204,69 @@ impl FnEmit<'_> {
             .types
             .get(ins.type_idx.0 as usize)
             .ok_or(crate::emitter_gap!())?;
+        // A slice `as`: the source is a vector an elementwise op produced, so the cast is
+        // `arith.truncf`/`arith.extf` over the lanes. This is the spelling that narrows a
+        // widened slice back into half storage, which the checker requires be written.
+        if let Some(src_vec) = self
+            .vec_of
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone()
+        {
+            // `as f16` names an element type, so the target GID is the scalar; the lane
+            // count comes from the operand it is applied to.
+            let elem = elem_of_gid(gid).ok_or(crate::emitter_gap!())?;
+            if !elem.is_float() {
+                return Err(Decline::TypeNotModelled {
+                    what: "a slice cast to a non-float element type",
+                });
+            }
+            let lanes = src_vec
+                .strip_prefix("vector<")
+                .ok_or(crate::emitter_gap!())?
+                .split('x')
+                .next()
+                .ok_or(crate::emitter_gap!())?
+                .to_string();
+            let src_elem = src_vec
+                .rsplit('x')
+                .next()
+                .ok_or(crate::emitter_gap!())?
+                .trim_end_matches('>')
+                .to_string();
+            let et = mlir_scalar(&elem).ok_or(crate::emitter_gap!())?;
+            let dst_vec = format!("vector<{lanes}x{et}>");
+            let a = self
+                .names
+                .get(ins.operand1.0 as usize)
+                .ok_or(crate::emitter_gap!())?
+                .clone();
+            if src_elem == et {
+                self.names[idx] = a;
+                self.vec_of[idx] = Some(dst_vec);
+                return Ok(());
+            }
+            let src_ty =
+                crate::mlir_ty::float_elem_of_mlir(&src_elem).ok_or(crate::emitter_gap!())?;
+            let src_bits = src_ty.bits().ok_or(crate::emitter_gap!())?;
+            let dst_bits = elem.bits().ok_or(crate::emitter_gap!())?;
+            // f16 and bf16 are both 16 bits and neither `truncf` nor `extf` converts between
+            // them, so that pair declines rather than emitting a conversion that lies.
+            let conv = match dst_bits.cmp(&src_bits) {
+                std::cmp::Ordering::Less => "arith.truncf",
+                std::cmp::Ordering::Greater => "arith.extf",
+                std::cmp::Ordering::Equal => {
+                    return Err(Decline::TypeNotModelled {
+                        what: "a slice cast between two equal-width float types",
+                    })
+                }
+            };
+            let n = format!("%v{idx}");
+            self.body += &format!("  {n} = {conv} {a} : {src_vec} to {dst_vec}\n");
+            self.names[idx] = n;
+            self.vec_of[idx] = Some(dst_vec);
+            return Ok(());
+        }
         // A tensor target: the two memref types differ only in which extents are known, so this
         // is `memref.cast` rather than any arithmetic conversion.
         if let Some((elem, shape)) = self.ctx.tensors.get(&gid).cloned() {

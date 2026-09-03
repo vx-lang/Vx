@@ -37,3 +37,17 @@ pub fn mlir_scalar(elem: &ElementType) -> Option<&'static str> {
         Generic(_) => return None,
     })
 }
+
+/// The float element type an MLIR spelling names, for reading a vector type back apart.
+/// Floats only: the vectorized slice ops are the only place a spelling is re-parsed, and
+/// they are float-only.
+pub fn float_elem_of_mlir(spelling: &str) -> Option<ElementType> {
+    use ElementType::*;
+    Some(match spelling {
+        "f16" => F16,
+        "f32" => F32,
+        "f64" => F64,
+        "bf16" => BF16,
+        _ => return None,
+    })
+}

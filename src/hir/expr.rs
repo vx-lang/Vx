@@ -355,9 +355,6 @@ impl<'a> TypeChecker<'a> {
                 let mut el_match = false;
                 if *t_target == *t_source {
                     el_match = true;
-                } else if *t_source == ElementType::F32 && t_target != &ElementType::Bool {
-                    // Literals currently parse as f32, so we allow f32 to coerce
-                    el_match = true;
                 }
 
                 if !el_match {

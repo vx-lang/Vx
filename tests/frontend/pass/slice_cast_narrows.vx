@@ -1,0 +1,68 @@
+//===- slice_cast_narrows.vx - Vx Compiler ----------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// `as` over a slice: the elementwise cast that stores a widened row back.
+//
+// A half slice is storage. It widens to f32 on load, the arithmetic happens in
+// f32, and getting back to half storage is a narrowing conversion the program
+// has to write -- the fail sibling pins that omitting it is E3004.
+//
+// What the lowering has to get right, and did not:
+//
+//   The row widens on load (`arith.extf` over the vector).
+//   A half *scalar* widens too, before it is broadcast. Broadcasting it as if
+//   it were already f32 names the wrong type for the value and the module does
+//   not parse.
+//   The result narrows on the way out (`arith.truncf`), and the store is
+//   `vector<Nxf16>` into `memref<Nxf16>` rather than a f32 vector into half
+//   storage.
+//
+// f32 slices are unchanged: no conversion appears around them at all, which is
+// the regression this file also pins.
+//
+// Flat path only. The legacy walk builds a scalar conversion and has nothing to
+// do with a vector, so it says so rather than failing in the MLIR parser.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+
+fn main() -> i32 {
+  let mut h = Tensor<f16, [ 2, 4 ]>::new();
+  let mut b = Tensor<bf16, [ 2, 4 ]>::new();
+  let mut f = Tensor<f32, [ 2, 4 ]>::new();
+
+  // An f16 row against an f32 scalar: the row widens, the result narrows back.
+  let s32 : f32 = 0.5;
+  // CHECK: arith.extf {{.*}} : vector<4xf16> to vector<4xf32>
+  // CHECK: vector.broadcast {{.*}} : f32 to vector<4xf32>
+  // CHECK: arith.mulf {{.*}} : vector<4xf32>
+  // CHECK: arith.truncf {{.*}} : vector<4xf32> to vector<4xf16>
+  // CHECK: vector.store {{.*}} vector<4xf16>
+  h[0] = (h[0] * s32) as f16;
+
+  // An f16 row against an f16 scalar: the scalar widens before the broadcast.
+  let s16 : f16 = 2.0;
+  // CHECK: arith.extf {{.*}} : vector<4xf16> to vector<4xf32>
+  // CHECK: arith.extf {{.*}} : f16 to f32
+  // CHECK: vector.broadcast {{.*}} : f32 to vector<4xf32>
+  // CHECK: arith.truncf {{.*}} : vector<4xf32> to vector<4xf16>
+  h[1] = (h[1] * s16) as f16;
+
+  // bf16 is half storage on the same terms.
+  // CHECK: arith.extf {{.*}} : vector<4xbf16> to vector<4xf32>
+  // CHECK: arith.truncf {{.*}} : vector<4xf32> to vector<4xbf16>
+  // CHECK: vector.store {{.*}} vector<4xbf16>
+  b[0] = (b[0] * s32) as bf16;
+
+  // f32 needs no conversion, and must not grow one.
+  // CHECK: vector.broadcast {{.*}} : f32 to vector<4xf32>
+  // CHECK-NOT: arith.truncf
+  // CHECK: vector.store {{.*}} vector<4xf32>
+  f[0] = f[0] * s32;
+
+  print(h[0][0]);
+  return 0;
+}

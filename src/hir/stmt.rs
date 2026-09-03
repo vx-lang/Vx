@@ -404,7 +404,18 @@ impl<'a> TypeChecker<'a> {
         let rhs_ty = self.check_expr_expecting(rhs, Some(lhs_ty.clone()), consume);
         self.current_assignment_target = None;
         if !self.is_assignable(&lhs_ty, &rhs_ty) {
-            self.errors.push("Type mismatch in assignment".to_string());
+            // Named types and a location, like every other type error: this fires on a
+            // narrowing store into half storage, where the fix is to write the `as` the
+            // language requires rather than to guess what was meant.
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E3004,
+                format!(
+                    "Type mismatch in assignment: cannot assign {} to {}; write an explicit \
+                     `as` cast if the conversion is intended",
+                    rhs_ty, lhs_ty
+                ),
+                Some(crate::diagnostic::SourceSpan::from_ast_span(&lhs.span())),
+            );
         }
 
         if let Expr::Identifier(IdentifierExpr { name, span: _ }) = lhs {

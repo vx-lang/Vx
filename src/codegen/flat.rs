@@ -1401,11 +1401,26 @@ fn coerce_vector(
         ));
         return Ok(v);
     }
-    if etypes
+    if let Some(se) = etypes
         .get(op_reg as usize)
         .ok_or(crate::emitter_gap!())?
-        .is_some()
+        .clone()
     {
+        // A half scalar widens before it is broadcast, the same way a half row does
+        // (Vx#320). Broadcasting it as if it were already `et` names the wrong type for
+        // the value and the module does not parse.
+        let mut name = name;
+        let se_mlir = crate::mlir_ty::mlir_scalar(&se).ok_or(crate::emitter_gap!())?;
+        if se_mlir != et {
+            if !se.is_float() {
+                return Err(Decline::TypeNotModelled {
+                    what: "a non-float scalar operand of an elementwise slice op",
+                });
+            }
+            let w = format!("%vw{tag}");
+            body.push_str(&format!("  {w} = arith.extf {name} : {se_mlir} to {et}\n"));
+            name = w;
+        }
         let v = format!("%vb{tag}");
         body.push_str(&format!(
             "  {v} = vector.broadcast {name} : {et} to {vecty}\n"

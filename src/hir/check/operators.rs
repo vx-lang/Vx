@@ -73,6 +73,15 @@ impl<'a> TypeChecker<'a> {
                     return Type::Unknown;
                 }
             }
+            // `slice as f16`: an elementwise cast over a rank-1 float slice, yielding a
+            // slice of the target element type. This is the spelling that narrows a
+            // widened slice back into half storage, which the assignment rules require
+            // rather than performing silently.
+            (Type::Tensor(src_el, dims, top), Type::Scalar(dst_el))
+                if dims.len() == 1 && src_el.is_float() && dst_el.is_float() =>
+            {
+                return Type::Tensor(dst_el.clone(), dims.clone(), top.clone());
+            }
             (Type::Scalar(_), Type::Scalar(_)) => {
                 return target_ty;
             }
@@ -218,8 +227,28 @@ impl<'a> TypeChecker<'a> {
                     let r_half = Self::is_half_slice(&rhs_ty);
                     let l_slice = Self::is_f32_slice(&lhs_ty) || l_half;
                     let r_slice = Self::is_f32_slice(&rhs_ty) || r_half;
-                    let l_scalar = matches!(lhs_ty, Type::Scalar(ElementType::F32));
-                    let r_scalar = matches!(rhs_ty, Type::Scalar(ElementType::F32));
+                    // A half scalar is admitted alongside f32 for the same reason a half slice
+                    // is (Vx#320): it widens to f32 and the arithmetic happens there. Refusing
+                    // it here left `slice * f16_scalar` to fall through to the splat rule, which
+                    // typed it as a half slice and crashed the emitter.
+                    let float_scalar = |t: &Type| {
+                        matches!(
+                            t,
+                            Type::Scalar(ElementType::F32)
+                                | Type::Scalar(ElementType::F16)
+                                | Type::Scalar(ElementType::BF16)
+                        )
+                    };
+                    let l_scalar = float_scalar(&lhs_ty);
+                    let r_scalar = float_scalar(&rhs_ty);
+                    let l_half_scalar = matches!(
+                        lhs_ty,
+                        Type::Scalar(ElementType::F16) | Type::Scalar(ElementType::BF16)
+                    );
+                    let r_half_scalar = matches!(
+                        rhs_ty,
+                        Type::Scalar(ElementType::F16) | Type::Scalar(ElementType::BF16)
+                    );
                     // At least one slice operand; the other must be a slice or an f32 scalar.
                     let slice_op = match (l_slice, r_slice) {
                         (true, true) => true,      // slice OP slice
@@ -229,7 +258,7 @@ impl<'a> TypeChecker<'a> {
                     };
                     if slice_op {
                         let shape_side = if l_slice { &lhs_ty } else { &rhs_ty };
-                        if l_half || r_half {
+                        if l_half || r_half || l_half_scalar || r_half_scalar {
                             // The widened result: same shape and placement, f32 element.
                             if let Type::Tensor(_, dims, top) = shape_side {
                                 return Type::Tensor(ElementType::F32, dims.clone(), top.clone());

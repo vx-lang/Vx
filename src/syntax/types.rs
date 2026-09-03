@@ -880,6 +880,28 @@ impl std::fmt::Display for Type {
                     write!(f, "{{{:?}}}", expr)
                 }
             }
+            // Without this a tensor reached the `{:?}` fallback, so a type error naming one
+            // printed the whole dims AST -- `NumberExpr { value: "4", span: .. }` per extent.
+            Type::Tensor(el, dims, top) => {
+                write!(f, "Tensor<{}", el)?;
+                if !dims.is_empty() {
+                    write!(f, ", [")?;
+                    for (i, d) in dims.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        match d {
+                            syntax::expr::Expr::Number(n) => write!(f, "{}", n.value)?,
+                            _ => write!(f, "?")?,
+                        }
+                    }
+                    write!(f, "]")?;
+                }
+                if let Some(p) = top {
+                    write!(f, ", {:?}", p)?;
+                }
+                write!(f, ">")
+            }
             Type::Unknown => write!(f, "?"),
             Type::Function(params, ret) => {
                 write!(f, "fn(")?;

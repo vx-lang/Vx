@@ -37,9 +37,8 @@
 //   f16 operands, f32 accumulator. Q/K/V are f16 because that is the precision
 //   Apple's matrix hardware wants; the running max, normalizer and output
 //   accumulator are f32, and the result is rounded to f16 once on store. This is
-//   what flash attention does everywhere, and it is also the only mixed form the
-//   flat emitter currently handles -- an f16 row slice times a scalar emits
-//   MLIR that does not parse, which is filed separately.
+//   what flash attention does everywhere: the accumulator is where precision is
+//   worth paying for, and rounding once at the end beats rounding every tile.
 //
 // What this does and does not claim. Placement is declared and checked: the
 // operands are moved into NPU_HBM, and a region on `ANE` may read them because

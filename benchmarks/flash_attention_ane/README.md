@@ -50,9 +50,8 @@ uses libm instead, so the comparison checks the fusion and the polynomial at
 once.
 
 Q/K/V are f16 and the accumulator is f32, rounded once on store. That is what
-flash attention does everywhere, and it is currently also the only mixed form
-the flat emitter handles: an f16 row slice times a scalar emits MLIR that does
-not parse.
+flash attention does everywhere: the accumulator is where the precision is worth
+paying for, and rounding once at the end beats rounding every tile.
 
 ## Sabotage-checked
 
