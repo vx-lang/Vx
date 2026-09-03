@@ -1,0 +1,54 @@
+//===- ane_attention_f16.vx - Vx Compiler -----------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Fused attention placed on the Apple Neural Engine.
+//
+// Written for this combination rather than adapted from
+// `flash_attention_disaggregated.vx`, which cannot run here however it is
+// shaped. That file writes the algorithm out longhand, and works on NVIDIA
+// because the whole kernel is compiled to PTX and shipped in the dispatch
+// payload. The Neural Engine executes CoreML models, not arbitrary kernels, so
+// the only routable form is the classified one -- `flash_attention_into`, which
+// the compiler recognises as `kind = "attention"` (Vx#378) and which the Apple
+// dispatcher now sends to a `scaled_dot_product_attention` primitive.
+//
+// The shape is not arbitrary. Measured with CoreML's own MLComputePlan: no fp32
+// attention is preferred on the Neural Engine at any shape tried, and no f16 one
+// below roughly 2M elements per operand. 256 x 8192 is 2,097,152, which is over
+// the line. Wide and short on purpose -- the host fallback for attention costs
+// sq*sk*hd, so a long sequence would make the non-ANE path impractical while
+// buying nothing, since total size is what the ANE threshold reads.
+//
+// q and k are left zeroed, so every score is equal and the softmax is uniform
+// over all 256 keys. The output row is then the mean of v. Filling one v row
+// with 1.0 and leaving the rest zero makes that mean 1/256 = 0.00390625, which
+// is exact in f16 -- so the expected number is a property of the arithmetic
+// rather than a tolerance.
+//
+// Driven by tests/integration_test/ane_attention_test.rs rather than by RUN
+// lines. `flash_attention_into` has no AST lowering, and tests/backend/pass is
+// compiled with --legacy-codegen, so this cannot live there; tests/flat is where
+// programs that require the flat path go, and they are run from Rust.
+
+fn main() -> i32 {
+  let mut q = Tensor<f16, [ 256, 8192 ], Memory::NPU_HBM>::new();
+  let mut k = Tensor<f16, [ 256, 8192 ], Memory::NPU_HBM>::new();
+  let mut v = Tensor<f16, [ 256, 8192 ], Memory::NPU_HBM>::new();
+  let mut o = Tensor<f16, [ 256, 8192 ], Memory::NPU_HBM>::new();
+
+  // One row of v carries the signal; `::new()` zeroed the rest.
+  for d in 0..8192 {
+    v[0][d] = 1.0;
+  }
+
+  spawn on(Topology::NPU[0]) {
+    flash_attention_into(&mut o, &q, &k, &v, 1.0);
+  }
+
+  print(o[0][0]);
+  return 0;
+}

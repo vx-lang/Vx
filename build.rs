@@ -132,6 +132,10 @@ fn main() {
         // Adding one is a change here and nowhere else: the dispatcher looks the
         // model up by shape and falls back when there is none (Vx#173).
         const VX_ANE_DIMS: &str = "512,1024";
+        // Fused-attention primitives, <sq>x<sk>x<hd>. Wide and short: the ANE
+        // wants ~2M elements per operand, and the host fallback costs sq*sk*hd,
+        // so a long sequence makes the non-ANE path impractical.
+        const VX_ANE_ATTN: &str = "256x256x8192";
 
         // --- Automate ANE Primitive Generation ---
         println!("cargo:warning=Building ANE primitive models via CoreML...");
@@ -191,6 +195,8 @@ fn main() {
                     "4",
                     "--ane-dims",
                     VX_ANE_DIMS,
+                    "--attn-shapes",
+                    VX_ANE_ATTN,
                 ])
                 .status()
         });
@@ -207,6 +213,7 @@ fn main() {
                     "affine_4",
                     "matmul_512x512_fp16",
                     "matmul_1024x1024_fp16",
+                    "attention_256x256x8192_fp16",
                 ] {
                     let pkg_path =
                         PathBuf::from(&out_dir).join(format!("{}.mlpackage", model_name));
