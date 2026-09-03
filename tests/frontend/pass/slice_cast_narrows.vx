@@ -24,6 +24,13 @@
 // f32 slices are unchanged: no conversion appears around them at all, which is
 // the regression this file also pins.
 //
+// Every row is filled with distinct non-zero values, and each differs per lane.
+// A zero-filled row makes the arithmetic return zero whatever the conversion
+// did, and a uniform row cannot tell a correct lane order from a broadcast of
+// one element. This tier compiles rather than executes, so the values are here
+// for the reader and for whatever runs the file next; run with `--action
+// run-jit` and the four rows print 0.75, 6, 1.25 and 2.
+//
 // Flat path only. The legacy walk builds a scalar conversion and has nothing to
 // do with a vector, so it says so rather than failing in the MLIR parser.
 //
@@ -33,6 +40,12 @@ fn main() -> i32 {
   let mut h = Tensor<f16, [ 2, 4 ]>::new();
   let mut b = Tensor<bf16, [ 2, 4 ]>::new();
   let mut f = Tensor<f32, [ 2, 4 ]>::new();
+  for d in 0..4 {
+    h[0][d] = 1.5 + (d as f16);
+    h[1][d] = 3.0 + (d as f16);
+    b[0][d] = 2.5 + (d as bf16);
+    f[0][d] = 4.0 + (d as f32);
+  }
 
   // An f16 row against an f32 scalar: the row widens, the result narrows back.
   let s32 : f32 = 0.5;
@@ -64,5 +77,8 @@ fn main() -> i32 {
   f[0] = f[0] * s32;
 
   print(h[0][0]);
+  print(h[1][0]);
+  print(b[0][0]);
+  print(f[0][0]);
   return 0;
 }

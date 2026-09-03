@@ -154,6 +154,10 @@ fn main() {
             .filter_map(|k| env::var(k).ok())
             .chain(
                 [
+                    // The checkout keeps a coremltools that can build a model in
+                    // `venv-ane`; without this a machine provisioned for the ANE
+                    // still reports that no interpreter can build the models.
+                    "venv-ane/bin/python3",
                     "venv/bin/python3",
                     "python3",
                     "python3.13",

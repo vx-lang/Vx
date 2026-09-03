@@ -1,4 +1,5 @@
 mod integration_test {
+    mod ane_device_test;
     mod architecture_test;
     mod assert_codegen_test;
     mod basic_integration;

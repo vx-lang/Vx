@@ -22,6 +22,11 @@
 
 fn main() -> i32 {
   let mut o = Tensor<f16, [ 2, 4 ]>::new();
+  // Non-zero and distinct per lane, so the file stays a valid program to run if
+  // the refusal below is ever lifted.
+  for d in 0..4 {
+    o[0][d] = 1.5 + (d as f16);
+  }
   let corr : f32 = 0.5;
   // CHECK: E3004{{.*}}cannot assign Tensor<f32, [4]> to Tensor<f16, [4]>
   o[0] = o[0] * corr;
