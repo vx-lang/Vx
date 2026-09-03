@@ -5,21 +5,21 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
-// The prefill/decode split (tests/flat/ane_prefill_decode.vx) with each handoff
-// deleted in turn.
+// A prefill/decode split with each handoff deleted in turn.
 //
 // Only the inbound direction is refused, and that is the honest result rather
 // than a gap in the test. `NPU` declares `visible: [NPU_HBM]`, so a region on it
 // cannot read what the host left behind, and staging is enforced. The return
 // journey is not: `CPU` declares `visible: [CPU_DRAM, NPU_HBM]` because Apple
 // silicon shares one physical memory, so reading the KV where the Neural Engine
-// left it is legal. The pass sibling transfers it home regardless, so that the
-// program means the same thing on a part that does not share memory.
+// left it is legal. benchmarks/flash_attention_ane/flash_attention.vx transfers
+// it home regardless, so that the program means the same thing on a part that
+// does not share memory.
 //
 // `Topology::AMX` would have made the return journey enforceable on paper --
 // it declares `visible: [CPU_DRAM]` -- and does not: a region on AMX reading an
 // NPU_HBM tensor produces no diagnostic at all. That is a second finding rather
-// than a property to lean on here, and it is filed as part of Vx#439.
+// than a property to lean on here, and it is filed separately.
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s
 // CHECK: E6003{{.*}}'prompt' lives in CPU_DRAM but NPU[0] sees only [NPU_HBM]

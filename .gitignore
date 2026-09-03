@@ -45,4 +45,3 @@ utils/memalg/session-*.tgz
 /affine_4.mlmodelc/
 /matmul_512x512_fp16.mlmodelc/
 /matmul_1024x1024_fp16.mlmodelc/
-/attention_256x256x8192_fp16.mlmodelc/

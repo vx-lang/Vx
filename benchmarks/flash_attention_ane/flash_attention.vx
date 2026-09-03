@@ -1,0 +1,250 @@
+//===- flash_attention.vx - Vx Compiler -------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Flash attention for Apple silicon, written in Vx and placed on the Neural
+// Engine.
+//
+// The algorithm is in the program text. Q, K and V are staged into NPU_HBM, the
+// whole fused kernel sits inside `spawn on(Topology::ANE)`, and the compiler
+// compiles it -- there is no builtin standing in for the body and no vendor
+// model being looked up behind the call. What the program says is what runs.
+//
+// The shape of the kernel:
+//
+//   Online softmax. K and V are streamed in tiles of 32 while a running max `m`,
+//   normalizer `l` and rescaled accumulator `acc` are carried across them. The
+//   score matrix is never materialized, which is the whole point of the fusion
+//   and the reason this cannot be decomposed into a matmul/softmax/matmul chain.
+//
+//   Conditional rescaling. The `exp(m - m_new)` correction is applied only when
+//   the running max grows by more than tau = log2(256) = 8. Exact either way,
+//   since a max that has not grown by tau cannot overflow the exponential; it
+//   removes most of the vector rescales.
+//
+//   A software exponential. `exp_poly` range-reduces to 2^n * 2^f and evaluates
+//   2^f with a degree-4 polynomial, so the kernel calls no libm and carries no
+//   dependency on a device math library. Relative error over the softmax range
+//   is below 1e-3, under f16's own precision. It is declared
+//   `on Topology::ANE`, so it is a device-side helper rather than a host call
+//   reached from inside the region.
+//
+//   f16 operands, f32 accumulator. Q/K/V are f16 because that is the precision
+//   Apple's matrix hardware wants; the running max, normalizer and output
+//   accumulator are f32, and the result is rounded to f16 once on store. This is
+//   what flash attention does everywhere, and it is also the only mixed form the
+//   flat emitter currently handles -- an f16 row slice times a scalar emits
+//   MLIR that does not parse, which is filed separately.
+//
+// What this does and does not claim. Placement is declared and checked: the
+// operands are moved into NPU_HBM, and a region on `ANE` may read them because
+// the topology says it sees that space. The arithmetic runs on the host, since
+// Vx has no Neural Engine code generator -- `spawn on(Topology::ANE)` states
+// where the work belongs and the CPU shim executes it. So this is a placed and
+// verified kernel, not a measurement of Neural Engine throughput, and the
+// timing below is the host's.
+//
+// Correctness is checked in the run. A materialized reference attention over the
+// same inputs runs on the host and the two are compared elementwise, so a
+// transposed operand, a wrong row stride or a dropped scale fails the program
+// rather than printing a plausible number. The inputs are pseudo-random for the
+// same reason: with zeros the softmax is uniform and all three of those bugs
+// return the right answer.
+//
+// Build and run:
+//   source config.local
+//   ./target/debug/vxc benchmarks/flash_attention_ane/flash_attention.vx \
+//       --action run-jit
+
+import std::math;
+import std::time;
+
+extern "C" {
+  fn vx_rand_seed(s : u64) -> void;
+  fn vx_rand_range_f32(lo : f32, hi : f32) -> f32;
+}
+
+// exp(x) without libm: 2^(x*log2e) = 2^n * 2^f, with 2^f by a degree-4 Horner
+// and 2^n by repeated scaling. Bound to the device the kernel runs on.
+fn exp_poly(x : f32) on Topology::ANE -> f32 {
+  let log2e : f32 = 1.442695;
+  let y : f32 = x * log2e;
+  // n = floor(y): truncation rounds toward zero, so step down for negatives.
+  let t : i32 = y as i32;
+  let tf : f32 = t as f32;
+  let n : i32 = if tf > y {
+    t - 1
+  } else {
+    t
+  };
+  let f : f32 = y - (n as f32);
+  let two_f : f32 = 1.0 + f * (0.6931472 + f * (0.2401596 + f * (0.0555829 + f * 0.0096147)));
+  let mut pw : f32 = 1.0;
+  let mut nn : i32 = if n < 0 {
+    0 - n
+  } else {
+    n
+  };
+  // Fixed trip count: the exponent is small over the softmax range, and a
+  // bounded loop keeps the helper free of data-dependent control flow.
+  if n < 0 {
+    for _i in 0..48 {
+      if nn > 0 {
+        pw = pw * 0.5;
+        nn = nn - 1;
+      }
+    }
+  } else {
+    for _i in 0..48 {
+      if nn > 0 {
+        pw = pw * 2.0;
+        nn = nn - 1;
+      }
+    }
+  }
+  return two_f * pw;
+}
+
+fn main() -> i32 {
+  // 128 queries against 128 keys with a 64-wide head, streamed in 4 tiles of 32.
+  let mut q_h = Tensor<f16, [ 128, 64 ]>::new();
+  let mut k_h = Tensor<f16, [ 128, 64 ]>::new();
+  let mut v_h = Tensor<f16, [ 128, 64 ]>::new();
+  let acc_h = Tensor<f32, [ 128, 64 ]>::new();
+
+  let lo : f32 = -1.0;
+  let hi : f32 = 1.0;
+  unsafe {
+    vx_rand_seed(20260902);
+    for i in 0..128 {
+      for d in 0..64 {
+        q_h[i][d] = vx_rand_range_f32(lo, hi) as f16;
+        k_h[i][d] = vx_rand_range_f32(lo, hi) as f16;
+        v_h[i][d] = vx_rand_range_f32(lo, hi) as f16;
+      }
+    }
+  }
+
+  // Stage the operands where the Neural Engine can read them.
+  let q = transfer(q_h, Memory::NPU_HBM);
+  let k = transfer(k_h, Memory::NPU_HBM);
+  let v = transfer(v_h, Memory::NPU_HBM);
+  let mut acc = transfer(acc_h, Memory::NPU_HBM);
+
+  let scale : f32 = 0.125;
+  let tau : f32 = 8.0;
+
+  let t_start : f32 = now();
+  spawn on(Topology::ANE) {
+    // One tile of scores, reused by every query row. This is the only score
+    // storage the kernel has: 32 values, never sq x sk.
+    let mut ts = Tensor<f32, [ 1, 32 ]>::new();
+    for i in 0..128 {
+      let mut m : f32 = -1000000.0;
+      let mut l : f32 = 0.0;
+      for t in 0..4 {
+        // Score the tile, tracking its own max.
+        let mut tm : f32 = -1000000.0;
+        for jj in 0..32 {
+          let j = t * 32 + jj;
+          // The head-dim reduction as one vector op, not a scalar loop over d.
+          let sij : f32 = dot(q[i], k[j]) * scale;
+          ts[0][jj] = sij;
+          if sij > tm {
+            tm = sij;
+          }
+        }
+        // Rescale only when the running max actually grew enough to matter.
+        let m_cand : f32 = if tm > m {
+          tm
+        } else {
+          m
+        };
+        if m_cand - m > tau {
+          let corr : f32 = exp_poly(m - m_cand);
+          l = l * corr;
+          acc[i] = acc[i] * corr;
+          m = m_cand;
+        }
+        // Accumulate the tile into the running output row.
+        for jj in 0..32 {
+          let j = t * 32 + jj;
+          let p : f32 = exp_poly(ts[0][jj] - m);
+          l = l + p;
+          acc[i] = acc[i] + p * v[j];
+        }
+      }
+      acc[i] = acc[i] / l;
+    }
+  }
+  let t_end : f32 = now();
+
+  // Bring the result home. Legal to omit on a part that shares memory; written
+  // so the program means the same thing on one that does not.
+  let out = transfer(acc, Memory::CPU_DRAM);
+
+  // The reference: attention with the score row materialized, on the host, in
+  // f32, exponentiated by libm. Different code shape and a different
+  // exponential, so it checks the fusion and `exp_poly` at the same time --
+  // and the host cannot call `exp_poly`, which is placed on the device.
+  let mut ref_o = Tensor<f32, [ 128, 64 ]>::new();
+  let mut row = Tensor<f32, [ 1, 128 ]>::new();
+  let t_ref_start : f32 = now();
+  for i in 0..128 {
+    let mut rm : f32 = -1000000.0;
+    for j in 0..128 {
+      let mut s : f32 = 0.0;
+      for d in 0..64 {
+        s = s + (q_h[i][d] as f32) * (k_h[j][d] as f32);
+      }
+      s = s * scale;
+      row[0][j] = s;
+      if s > rm {
+        rm = s;
+      }
+    }
+    let mut rl : f32 = 0.0;
+    for j in 0..128 {
+      let e : f32 = (row[0][j] - rm).exp();
+      row[0][j] = e;
+      rl = rl + e;
+    }
+    for d in 0..64 {
+      let mut a : f32 = 0.0;
+      for j in 0..128 {
+        a = a + row[0][j] * (v_h[j][d] as f32);
+      }
+      ref_o[i][d] = a / rl;
+    }
+  }
+  let t_ref_end : f32 = now();
+
+  // Compare. The tolerance is the f32 accumulation order, not a fudge: the two
+  // kernels sum the same terms in different sequences.
+  let mut worst : f32 = 0.0;
+  for i in 0..128 {
+    for d in 0..64 {
+      let diff : f32 = out[i][d] - ref_o[i][d];
+      let mag : f32 = if diff < 0.0 {
+        0.0 - diff
+      } else {
+        diff
+      };
+      if mag > worst {
+        worst = mag;
+      }
+    }
+  }
+  assert(worst < 0.0001, "fused attention disagrees with the materialized reference");
+
+  print!("placed  ");
+  print(t_end - t_start);
+  print!("reference  ");
+  print(t_ref_end - t_ref_start);
+  print!("max abs error  ");
+  print(worst);
+  return 0;
+}
