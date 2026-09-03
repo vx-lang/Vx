@@ -519,13 +519,32 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             Err(e) => {
-                // Solver error: fail open (as prover.rs does) but record a warning.
+                // An obligation that could not be discharged is not a discharged one. This site
+                // used to warn and carry on, which meant a machine with no solver *accepted* the
+                // programs a machine with one rejects -- the same fail-open Vx#374 closed at the
+                // declaration site, left open at the transfer site that `--verify-seams` drives.
+                // E6004 was also the wrong code to say it with: that code means the contract was
+                // shown to be violated, and nothing here was shown at all.
                 if !self.speculating {
-                    self.errors.warn(
-                        crate::diagnostic::DiagnosticCode::E6004,
-                        format!("seam obligation could not be discharged: {}", e),
-                        Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
+                    let msg = format!(
+                        "the seam obligation for '{buffer}' across the {} -> {} hop was NOT \
+                         verified: {e}",
+                        src.name(),
+                        dst.name()
                     );
+                    if crate::hir::solver::unverified_allowed() {
+                        self.errors.warn(
+                            crate::diagnostic::DiagnosticCode::W1031,
+                            msg,
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
+                        );
+                    } else {
+                        self.errors.error_with_code(
+                            crate::diagnostic::DiagnosticCode::E6024,
+                            msg,
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
+                        );
+                    }
                 }
             }
         }

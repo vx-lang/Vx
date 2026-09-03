@@ -35,6 +35,13 @@ use std::process::Command;
 /// obligation is what needs a solver.
 const RELAXED_SEAM: &str = "tests/frontend/fail/topology_declared_relaxed_seam.vx";
 
+/// The *other* place an obligation is discharged, and a different code path: the
+/// declaration check above runs over topology declarations, while this one runs per
+/// transfer under `--verify-seams`. With z3 present this program is rejected (E6004),
+/// which is what makes it a usable probe -- a machine that accepts it has stopped
+/// checking.
+const TRANSFER_SEAM: &str = "tests/frontend/fail/memory_relaxed_into_explicit.vx";
+
 struct Run {
     stdout: String,
     ok: bool,
@@ -44,10 +51,14 @@ struct Run {
 /// is reachable: the PATH is replaced outright rather than filtered, so this
 /// does not depend on where z3 happens to be installed.
 fn compile(solver: bool, allow_unverified: bool) -> Run {
+    compile_file(RELAXED_SEAM, &[], solver, allow_unverified)
+}
+
+fn compile_file(src: &str, extra: &[&str], solver: bool, allow_unverified: bool) -> Run {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let mut cmd = Command::new(root.join("target/debug/vxc"));
-    cmd.current_dir(&root)
-        .args([RELAXED_SEAM, "--action", "print-ast"]);
+    cmd.current_dir(&root).args([src, "--action", "print-ast"]);
+    cmd.args(extra);
     if solver {
         // The inherited PATH, which the suite's own environment provides.
         cmd.env("PATH", std::env::var("PATH").unwrap_or_default());
@@ -144,6 +155,68 @@ fn an_undischarged_obligation_fails_the_build() {
         present.stdout.contains("W1027"),
         "this edge does not preserve visibility, so a solver that ran must \
          report W1027 -- the verdict, not the missing-solver code:\n{}",
+        present.stdout
+    );
+}
+
+#[test]
+fn a_transfer_site_obligation_also_fails_the_build() {
+    // Vx#374 closed the fail-open at the declaration site and left it open here, at the
+    // site `--verify-seams` actually drives. The symptom was exact: this program compiled
+    // clean (exit 0) on a machine with no z3 and was rejected on one with it, so whether
+    // an unsound program built depended on what happened to be installed. The old code
+    // said so in a warning and carried on -- under E6004, a code meaning the contract was
+    // shown to be violated, when nothing had been shown at all.
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    if !root.join("target/debug/vxc").is_file() {
+        eprintln!("skipping: target/debug/vxc is not built");
+        return;
+    }
+
+    let none = compile_file(TRANSFER_SEAM, &["--verify-seams"], false, false);
+    assert!(
+        none.stdout.contains("E6024"),
+        "no solver must produce E6024 at a transfer seam too, got:\n{}",
+        none.stdout
+    );
+    assert!(
+        !none.ok,
+        "an undischarged transfer obligation must fail the build, not warn:\n{}",
+        none.stdout
+    );
+    assert!(
+        none.stdout.contains("hop was NOT verified"),
+        "the diagnostic must say the obligation was not verified, and name the hop:\n{}",
+        none.stdout
+    );
+
+    let allowed = compile_file(TRANSFER_SEAM, &["--verify-seams"], false, true);
+    assert!(
+        allowed.stdout.contains("W1031") && !allowed.stdout.contains("E6024"),
+        "VX_ALLOW_UNVERIFIED must downgrade to W1031 here as well:\n{}",
+        allowed.stdout
+    );
+    assert!(
+        allowed.ok,
+        "the downgrade must let the build through:\n{}",
+        allowed.stdout
+    );
+
+    // The control, and the whole point: with a solver the obligation is *decided*, and
+    // this program is refused for the reason it should be -- E6004, the violated contract.
+    if !z3_on_path() {
+        eprintln!("skipping the z3-present control: no z3 on PATH");
+        return;
+    }
+    let present = compile_file(TRANSFER_SEAM, &["--verify-seams"], true, false);
+    assert!(
+        !present.stdout.contains("E6024"),
+        "with a solver the obligation is discharged, so E6024 must not appear:\n{}",
+        present.stdout
+    );
+    assert!(
+        present.stdout.contains("E6004") && !present.ok,
+        "a decided obligation that fails must be reported as the violated contract:\n{}",
         present.stdout
     );
 }
