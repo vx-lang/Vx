@@ -447,6 +447,7 @@ impl CompilerDriver {
                         default_space: crate::syntax::MemorySpace::CPUDRAM,
                         visibility: vec![crate::syntax::MemorySpace::CPUDRAM],
                         transfers: Vec::new(),
+                        dtypes: None,
                     },
                 }],
                 imports: Vec::new(),

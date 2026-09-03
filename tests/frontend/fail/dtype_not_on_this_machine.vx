@@ -1,0 +1,44 @@
+//===- dtype_not_on_this_machine.vx - Vx Compiler ---------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// A tensor placed on hardware that cannot represent its element type. E6026.
+//
+// The machine model already says how much a device holds and what it can reach.
+// `dtypes:` says what kinds of value it can hold at all, which is a different
+// question and a real hardware boundary: Hopper's tensor cores added fp8 to
+// Ampere's set and have no fp4, which arrives with Blackwell. A program that
+// places an fp4 tensor on an H100 is asking for silicon that is not there.
+//
+// Nothing about that needs the program to run. The placement is in the type and
+// the machine is a declaration the compiler already reads, so the answer is
+// available before a kernel is emitted -- rather than at a launch, on the
+// machine that lacks the type, after the job has been scheduled.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: E6026
+// CHECK-SAME: element type f4e2m1
+// CHECK-SAME: cannot represent
+
+Memory CPU_DRAM {}
+Memory HBM {
+  within: Memory::CPU_DRAM, capacity: 80 GiB, managed: explicit, scope: device
+}
+
+Topology Hopper {
+  arch: nvptx64,
+  memory: Memory::HBM,
+  visible: [Memory::HBM],
+  // Fourth-generation tensor cores: fp8 in both encodings, no fp4.
+  dtypes: [f64, f32, bf16, f16, f8e4m3, f8e5m2, i8, u8, bool],
+  transfer Memory::CPU_DRAM -> Memory::HBM : 63 GB/s
+}
+
+fn main() -> i32 {
+  let t = Tensor<f4e2m1, [8, 8]>::uninit();
+  let staged = transfer(t, Memory::HBM);
+  return 0;
+}

@@ -1353,10 +1353,10 @@ impl<'c> MeliorGenerator<'c> {
                     ElementType::I16 | ElementType::U16 => self.i16_ty,
                     ElementType::I128 | ElementType::U128 => self.i128_ty,
                     ElementType::Bool => self.i1_ty,
-                    ElementType::F8E4M3 | ElementType::F8E5M2 => {
+                    ElementType::F8E4M3 | ElementType::F8E5M2 | ElementType::F4E2M1 => {
                         return Err(LowerError::from(
-                            "fp8 element types are capacity/declaration-only; fp8 codegen is \
-                             tracked in #249"
+                            "sub-8-bit float element types are capacity/declaration-only; \
+                             their codegen is not implemented"
                                 .to_string(),
                         ));
                     }
@@ -1597,10 +1597,10 @@ impl<'c> MeliorGenerator<'c> {
                     ElementType::I64 | ElementType::U64 => "i64",
                     ElementType::I128 | ElementType::U128 => "i128",
                     ElementType::Bool => "i1",
-                    ElementType::F8E4M3 | ElementType::F8E5M2 => {
+                    ElementType::F8E4M3 | ElementType::F8E5M2 | ElementType::F4E2M1 => {
                         return Err(LowerError::from(
-                            "fp8 element types are capacity/declaration-only; fp8 codegen is \
-                             tracked in #249"
+                            "sub-8-bit float element types are capacity/declaration-only; \
+                             their codegen is not implemented"
                                 .to_string(),
                         ));
                     }
@@ -1707,10 +1707,10 @@ impl<'c> MeliorGenerator<'c> {
             ElementType::I64 | ElementType::U64 => "i64",
             ElementType::I128 | ElementType::U128 => "i128",
             ElementType::Bool => "i1",
-            ElementType::F8E4M3 | ElementType::F8E5M2 => {
+            ElementType::F8E4M3 | ElementType::F8E5M2 | ElementType::F4E2M1 => {
                 return Err(LowerError::from(
-                    "fp8 element types are capacity/declaration-only; fp8 codegen is \
-                     tracked in #249"
+                    "sub-8-bit float element types are capacity/declaration-only; \
+                     their codegen is not implemented"
                         .to_string(),
                 ));
             }

@@ -200,6 +200,18 @@ pub struct TopologyDescriptor {
     /// Transfer edges (morphisms) this topology contributes to the cost graph. Seeded into
     /// a `TransferCostGraph` via `seed_from_topologies`.
     pub transfers: Vec<TransferEdge>,
+    /// The element types this hardware can represent -- `dtypes: [f32, f16]` in the declaration.
+    ///
+    /// `None` is *undeclared*, not empty, and undeclared is permissive: a machine file that says
+    /// nothing about element types constrains nothing, so every file written before this field
+    /// existed keeps its meaning. Silence cannot mean "supports nothing" without turning every
+    /// older declaration into a machine that can hold no data at all.
+    ///
+    /// The distinction this exists to draw is a real one in silicon and a sharp one: an H100 has
+    /// no fp4, and a program that places an fp4 tensor on one is asking for hardware that is not
+    /// there. That is answerable here, before anything is emitted, because the placement is in the
+    /// type and the machine is a declaration the compiler already reads.
+    pub dtypes: Option<Vec<crate::syntax::ElementType>>,
 }
 
 /// A user-declared topology: its name plus its descriptor. Carried on the AST
@@ -645,6 +657,9 @@ fn builtin_descriptors() -> HashMap<crate::syntax::TopologyKind, TopologyDescrip
         default_space,
         visibility: visibility.to_vec(),
         transfers: Vec::new(), // built-in transfer edges live in TransferCostGraph::default
+        // The built-ins describe a class of device rather than a part, and which element types a
+        // GPU has is a property of the part. Undeclared, so they constrain nothing.
+        dtypes: None,
     };
     let mut m = HashMap::new();
     m.insert(K::CPU, d(CPUDRAM, &[CPUDRAM, NPUHBM]));
@@ -1679,6 +1694,7 @@ mod tests {
                 rate_edge(cs("B"), cs("C"), 450),
             ],
             arch: None,
+            dtypes: None,
         };
         let mut g = TransferCostGraph::default();
         g.apply_descriptor_edges(&desc);
@@ -1711,6 +1727,7 @@ mod tests {
                 rate_edge(cs("B"), cs("C"), 1),
             ],
             arch: None,
+            dtypes: None,
         };
         let mut g = TransferCostGraph::default();
         g.apply_descriptor_edges(&desc);
@@ -1748,6 +1765,7 @@ mod tests {
                 rate_edge(cs("B"), cs("C"), 450),
             ],
             arch: None,
+            dtypes: None,
         };
         let mut g = TransferCostGraph::default();
         g.apply_descriptor_edges(&desc);
@@ -1996,6 +2014,7 @@ mod tests {
                 default_space: default_space.clone(),
                 visibility: vec![default_space],
                 transfers: Vec::new(),
+                dtypes: None,
             },
         }
     }
@@ -2076,6 +2095,7 @@ mod tests {
                 sync: true,
                 copy_engine: false,
             }],
+            dtypes: None,
         };
         graph.apply_descriptor_edges(&desc);
         graph.precompute_costs();
@@ -2106,6 +2126,7 @@ mod tests {
                 sync: true,
                 copy_engine: false,
             }],
+            dtypes: None,
         };
         graph.apply_descriptor_edges(&desc);
         graph.precompute_costs();
@@ -2124,6 +2145,7 @@ mod tests {
             default_space: island.clone(),
             visibility: vec![island.clone()],
             transfers: Vec::new(),
+            dtypes: None,
         };
         assert!(
             descriptor_coherence(&bad, &graph).contains(&CoherenceIssue::MemoryUnreachableFromHost)
@@ -2135,6 +2157,7 @@ mod tests {
             default_space: MemorySpace::LocalSRAM,
             visibility: vec![MemorySpace::CPUDRAM],
             transfers: Vec::new(),
+            dtypes: None,
         };
         assert!(descriptor_coherence(&bad2, &graph).contains(&CoherenceIssue::DefaultNotVisible));
 
@@ -2144,6 +2167,7 @@ mod tests {
             default_space: MemorySpace::NPUHBM,
             visibility: vec![MemorySpace::NPUHBM],
             transfers: Vec::new(),
+            dtypes: None,
         };
         assert!(descriptor_coherence(&good, &graph).is_empty());
     }
@@ -2246,6 +2270,7 @@ mod tests {
                     default_space: shared.clone(),
                     visibility: vec![shared.clone()],
                     transfers: Vec::new(),
+                    dtypes: None,
                 },
             );
         }

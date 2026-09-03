@@ -540,6 +540,9 @@ pub enum ElementType {
     BF16,
     F8E4M3,
     F8E5M2,
+    /// OCP fp4 (E2M1). Blackwell-class tensor cores have it; Hopper does not,
+    /// which is the boundary a machine file needs to be able to state.
+    F4E2M1,
     I4,
     U4,
     I8,
@@ -761,6 +764,7 @@ impl ElementType {
                 | ElementType::BF16
                 | ElementType::F8E4M3
                 | ElementType::F8E5M2
+                | ElementType::F4E2M1
         )
     }
 
@@ -773,7 +777,7 @@ impl ElementType {
     pub fn bits(&self) -> Option<u32> {
         Some(match self {
             ElementType::Bool => 1,
-            ElementType::I4 | ElementType::U4 => 4,
+            ElementType::I4 | ElementType::U4 | ElementType::F4E2M1 => 4,
             ElementType::I8 | ElementType::U8 | ElementType::F8E4M3 | ElementType::F8E5M2 => 8,
             ElementType::F16 | ElementType::BF16 | ElementType::I16 | ElementType::U16 => 16,
             ElementType::F32 | ElementType::I32 | ElementType::U32 => 32,
@@ -793,6 +797,7 @@ impl std::fmt::Display for ElementType {
             ElementType::BF16 => write!(f, "bf16"),
             ElementType::F8E4M3 => write!(f, "f8e4m3"),
             ElementType::F8E5M2 => write!(f, "f8e5m2"),
+            ElementType::F4E2M1 => write!(f, "f4e2m1"),
             ElementType::I4 => write!(f, "i4"),
             ElementType::U4 => write!(f, "u4"),
             ElementType::I8 => write!(f, "i8"),
@@ -805,7 +810,9 @@ impl std::fmt::Display for ElementType {
             ElementType::U64 => write!(f, "u64"),
             ElementType::I128 => write!(f, "i128"),
             ElementType::U128 => write!(f, "u128"),
-            ElementType::Bool => write!(f, "Bool"),
+            // The surface spelling, which is what `from_str` reads and what a machine
+            // file or a type annotation writes. Debug still renders the variant.
+            ElementType::Bool => write!(f, "bool"),
             ElementType::Generic(g) => write!(f, "{}", g),
         }
     }
@@ -822,6 +829,7 @@ impl std::str::FromStr for ElementType {
             "bf16" => Ok(ElementType::BF16),
             "f8e4m3" => Ok(ElementType::F8E4M3),
             "f8e5m2" => Ok(ElementType::F8E5M2),
+            "f4e2m1" => Ok(ElementType::F4E2M1),
             "i4" => Ok(ElementType::I4),
             "u4" => Ok(ElementType::U4),
             "i8" => Ok(ElementType::I8),

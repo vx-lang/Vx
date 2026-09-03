@@ -333,6 +333,16 @@ pub enum DiagnosticCode {
     /// derivation between the two spellings has a like-named fallback, so an undeclared name
     /// resolves to a space that exists only in the placement that mentions it.
     E6025,
+    /// A tensor whose element type the target hardware cannot represent, placed on it anyway.
+    ///
+    /// The machine model states what a device has (`dtypes: [f32, f16, ...]`); this is the check
+    /// that a placement stays inside it. An H100 has no fp4, so an fp4 tensor placed on one asks
+    /// for silicon that is not there -- and the placement is in the type, so the question is
+    /// answerable here rather than at a kernel launch on the machine that lacks the type.
+    ///
+    /// Only fires against a topology that declares `dtypes:`. An undeclared machine constrains
+    /// nothing, which is what keeps every machine file written before the field kept working.
+    E6026,
 
     // --- Tensor/Math Errors (E7xxx) ---
     /// Matmul dimension mismatch

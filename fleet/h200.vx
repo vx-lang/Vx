@@ -40,6 +40,10 @@ Topology Device {
   arch: nvptx64,
   memory: Memory::HBM,
   visible: [Memory::HBM, Memory::L2, Memory::SMEM],
+  // spec: NVIDIA Hopper Architecture Whitepaper -- fourth-generation Tensor Cores add FP8
+  // (E4M3 and E5M2). No FP4. Same GH100 die as h100-sxm, so the same vocabulary.
+  // UNVERIFIED: transcribed from the architecture whitepaper from memory.
+  dtypes: [f64, f32, bf16, f16, f8e4m3, f8e5m2, i8, u8, i4, u4, i32, u32, i64, u64, bool],
   // spec: PCIe Gen5 x16 = 63 GB/s per direction (32 GT/s x 16 lanes, 128b/130b).
   // UNVERIFIED on this SKU; a Grace/C2C-attached part reaches the host at ~450 GB/s instead,
   // a 7x difference in every host-seam prediction. Settling it is experiment M1/M4.

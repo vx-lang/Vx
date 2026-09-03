@@ -275,6 +275,7 @@ mod tests {
             ElementType::I8,
             ElementType::F8E4M3,
             ElementType::F8E5M2,
+            ElementType::F4E2M1,
             ElementType::F16,
             ElementType::BF16,
             ElementType::F32,

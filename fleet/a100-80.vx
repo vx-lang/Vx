@@ -40,6 +40,11 @@ Topology Device {
   arch: nvptx64,
   memory: Memory::HBM,
   visible: [Memory::HBM, Memory::L2, Memory::SMEM],
+  // spec: NVIDIA Ampere Architecture Whitepaper -- third-generation Tensor Cores:
+  // FP64, TF32, BF16, FP16, INT8, INT4. No FP8; that arrives with Hopper. Same die as
+  // a100-40, so the same vocabulary.
+  // UNVERIFIED: transcribed from the architecture whitepaper from memory.
+  dtypes: [f64, f32, bf16, f16, i8, u8, i4, u4, i32, u32, i64, u64, bool],
   // spec: PCIe Gen4 x16 = 31.5 GB/s per direction (16 GT/s x 16 lanes, 128b/130b).
   // UNVERIFIED on this SKU; the host link and its achieved bandwidth are experiment M1/M4.
   // The on-die hops below declare no cost -- their `bandwidth:` figures derive it (E6013).

@@ -193,6 +193,7 @@ fn write_element_type(w: &mut Writer, e: &ElementType) {
         // Appended after Generic: tags are stable on disk, never renumber.
         F8E4M3 => 18,
         F8E5M2 => 19,
+        F4E2M1 => 20,
     };
     w.u8(tag);
     if let Generic(s) = e {
@@ -223,6 +224,7 @@ fn read_element_type(r: &mut Reader) -> Result<ElementType, String> {
         17 => Generic(r.sym()?),
         18 => F8E4M3,
         19 => F8E5M2,
+        20 => F4E2M1,
         t => return Err(format!("vxlib: bad ElementType tag {t}")),
     })
 }

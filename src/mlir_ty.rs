@@ -33,7 +33,7 @@ pub fn mlir_scalar(elem: &ElementType) -> Option<&'static str> {
         Bool => "i1",
         // fp8 is capacity/declaration-only for now: the JIT has no fp8 arithmetic,
         // so the flat path declines. Compute support is #249.
-        F8E4M3 | F8E5M2 => return None,
+        F8E4M3 | F8E5M2 | F4E2M1 => return None,
         Generic(_) => return None,
     })
 }

@@ -223,6 +223,7 @@ impl<'a> Parser<'a> {
         let mut visibility: Vec<MemorySpace> = Vec::new();
         let mut visible_given = false;
         let mut transfers: Vec<crate::arch::TransferEdge> = Vec::new();
+        let mut dtypes: Option<Vec<crate::syntax::ElementType>> = None;
 
         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
             // `transfer Memory::<From> -> Memory::<To> : <cost> [relaxed|sync]` -- a declared
@@ -314,6 +315,45 @@ impl<'a> Parser<'a> {
                     }
                     self.consume(&TokenType::RightBracket, "Expected ']' after visible list")?;
                 }
+                // Which element types this hardware can represent. Absent is undeclared and
+                // undeclared is permissive -- an empty list would say the machine can hold no
+                // data at all, which is never what a machine file means to say, so it is
+                // refused here rather than silently rejecting every program placed on it.
+                "dtypes" => {
+                    self.consume(&TokenType::LeftBracket, "Expected '[' after 'dtypes'")?;
+                    let mut listed: Vec<crate::syntax::ElementType> = Vec::new();
+                    while !self.check(&TokenType::RightBracket) && !self.check(&TokenType::Eof) {
+                        let name = match &self.advance().kind {
+                            TokenType::Identifier(s) => s.to_string(),
+                            other => {
+                                return Err(self.error(&format!(
+                                    "`dtypes:` expects element type names, got {:?}",
+                                    other
+                                )))
+                            }
+                        };
+                        match name.parse::<crate::syntax::ElementType>() {
+                            Ok(e) => listed.push(e),
+                            Err(_) => {
+                                return Err(self.error(&format!(
+                                    "`dtypes:` does not know the element type '{}'",
+                                    name
+                                )))
+                            }
+                        }
+                        if !self.match_token(&TokenType::Comma) {
+                            break;
+                        }
+                    }
+                    self.consume(&TokenType::RightBracket, "Expected ']' after dtypes list")?;
+                    if listed.is_empty() {
+                        return Err(self.error(
+                            "`dtypes:` is empty, which would say this machine can represent no \
+                             element type at all; omit the field to leave it unstated",
+                        ));
+                    }
+                    dtypes = Some(listed);
+                }
                 other => return Err(self.error(&format!("Unknown topology field '{}'", other))),
             }
             self.match_token(&TokenType::Comma);
@@ -343,6 +383,7 @@ impl<'a> Parser<'a> {
                 default_space,
                 visibility,
                 transfers,
+                dtypes,
             },
         })
     }

@@ -176,6 +176,53 @@ impl<'a> TypeChecker<'a> {
         None
     }
 
+    /// Whether the hardware holding `space` can represent `elem` at all, per the `dtypes:` list
+    /// on its topology. E6026.
+    ///
+    /// The capacity check asks whether a value fits; this asks whether the machine can hold that
+    /// kind of value in the first place. Both read a declared property of a device and compare a
+    /// placement against it, which is why they are called from the same four positions.
+    ///
+    /// Silent unless the topology declares `dtypes:`. Undeclared is permissive by construction --
+    /// a machine file that says nothing about element types constrains nothing.
+    pub(crate) fn check_element_type(
+        &mut self,
+        elem: &ElementType,
+        space: &MemorySpace,
+        context: &str,
+    ) {
+        // An un-substituted generic is not an element type yet; the instantiated body is checked.
+        if matches!(elem, ElementType::Generic(_)) {
+            return;
+        }
+        let Ok(topology) = self.transfer_cost_graph.owning_topology(space) else {
+            return;
+        };
+        let Some(desc) = self.transfer_cost_graph.descriptor(&topology.kind()) else {
+            return;
+        };
+        let Some(declared) = desc.dtypes.as_ref() else {
+            return;
+        };
+        if declared.contains(elem) {
+            return;
+        }
+        let listed = declared
+            .iter()
+            .map(|e| e.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E6026,
+            format!(
+                "{context} has element type {elem}, which {} cannot represent; it declares [{}]",
+                topology.display_name(),
+                listed
+            ),
+            None,
+        );
+    }
+
     /// If a statically-shaped `Tensor<elem, dims>` placed in `space` exceeds that space's
     /// declared `capacity` (after granule rounding), emit E6009. No-op for a dynamic shape, an
     /// undeclared space, or a space with no `capacity`.
@@ -414,6 +461,7 @@ impl<'a> TypeChecker<'a> {
             if let Some((e, d)) = Self::tensor_of(ty) {
                 let space = p.space.clone();
                 self.check_capacity(e, d, &space, context);
+                self.check_element_type(e, &space, context);
             }
             return;
         }
@@ -421,12 +469,14 @@ impl<'a> TypeChecker<'a> {
             Type::Ref(inner, mem) => {
                 if let Some((e, d)) = Self::tensor_of(inner) {
                     self.check_capacity(e, d, mem, context);
+                    self.check_element_type(e, mem, context);
                 }
             }
             Type::Pinned(inner, top) if !matches!(top, Topology::Current) => {
                 if let Some((e, d)) = Self::tensor_of(inner) {
                     let space = self.transfer_cost_graph.default_memory_for(top);
                     self.check_capacity(e, d, &space, context);
+                    self.check_element_type(e, &space, context);
                 }
             }
             _ => {}
@@ -595,6 +645,7 @@ impl<'a> TypeChecker<'a> {
         // Capacity: a statically-shaped tensor transferred into a declared space must fit.
         if let Some((e, d)) = Self::tensor_of(&inner_ty) {
             self.check_capacity(e, d, &target_mem, "transferred tensor");
+            self.check_element_type(e, &target_mem, "transferred tensor");
         }
 
         // Bandwidth-derived roofline cost (bytes / bandwidth along the hierarchy). When the

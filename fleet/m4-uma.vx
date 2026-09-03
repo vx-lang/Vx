@@ -77,6 +77,10 @@ Topology Device {
   arch: applegpu,
   memory: Memory::HBM,
   visible: [Memory::HBM, Memory::L2, Memory::SMEM],
+  // spec: Apple GPU family / Metal Shading Language -- FP32, FP16, BF16 and the integer
+  // types. No FP8 or FP4 in the general compute path.
+  // UNVERIFIED: transcribed from Metal documentation from memory.
+  dtypes: [f32, bf16, f16, i8, u8, i16, u16, i32, u32, i64, u64, bool],
   transfer Memory::CPU_DRAM -> Memory::HBM : 120 GB/s,
   transfer Memory::HBM -> Memory::L2,
   transfer Memory::L2 -> Memory::SMEM

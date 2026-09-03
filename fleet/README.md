@@ -100,6 +100,7 @@ fact; `spec:` says where the belief came from.
 | `L2` capacity and bandwidth | **unverified** — transcribed from architecture whitepapers from memory |
 | `SMEM` capacity | **unverified** — per-SM/CU configurable maximum |
 | Interconnect figures in `node-8gpu.vx` | **unverified** |
+| `dtypes` lists | **unverified** — transcribed from architecture whitepapers from memory. The generational boundaries are what the checks turn on: fp8 from Hopper, fp4 from Blackwell |
 | Transfer costs (`: N` on an edge) | not physical — relative latencies for path selection |
 
 The first verification pass found **four wrong figures**, all in the direction of understating the

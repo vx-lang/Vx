@@ -1,0 +1,64 @@
+//===- dtype_declared_on_this_machine.vx - Vx Compiler ----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// The two cases that make dtype_not_on_this_machine.vx mean something.
+//
+// A check that refused every placement would satisfy the failing test as well as
+// a correct one. These separate them:
+//
+//   * a type the machine declares is accepted, on a topology that does refuse
+//     others -- so the rule reads the list rather than the element type;
+//   * a topology that declares no `dtypes:` accepts a type the declaring one
+//     would refuse, because undeclared is permissive. That is not a convenience.
+//     Silence has to mean "not stated" or every machine file written before the
+//     field existed would become a machine that can hold no data at all.
+//
+// Both element types here have codegen, so the program runs and stays on the flat
+// path. The fp4 case belongs in the failing test, where the checker refuses it
+// before codegen is reached.
+//
+// RUN: vxc %s | FileCheck %s
+
+Memory CPU_DRAM {}
+Memory HBM {
+  within: Memory::CPU_DRAM, capacity: 80 GiB, managed: explicit, scope: device
+}
+Memory SRAM {
+  within: Memory::CPU_DRAM, capacity: 16 MiB, managed: explicit, scope: device
+}
+
+// A narrow device: single-precision and predicates, nothing wider.
+Topology Narrow {
+  arch: nvptx64,
+  memory: Memory::HBM,
+  visible: [Memory::HBM],
+  dtypes: [f32, bool],
+  transfer Memory::CPU_DRAM -> Memory::HBM : 63 GB/s
+}
+
+// States nothing about element types, so it constrains none of them.
+Topology Unstated {
+  arch: nvptx64,
+  memory: Memory::SRAM,
+  visible: [Memory::SRAM],
+  transfer Memory::CPU_DRAM -> Memory::SRAM : 10 GB/s
+}
+
+fn main() -> i32 {
+  // Declared by Narrow: accepted.
+  let a = Tensor<f32, [4, 4]>::uninit();
+  let _on_narrow = transfer(a, Memory::HBM);
+
+  // f64 is exactly what Narrow refuses, onto the machine that states nothing.
+  let b = Tensor<f64, [4, 4]>::uninit();
+  let _on_unstated = transfer(b, Memory::SRAM);
+
+  print(7);
+  return 0;
+}
+
+// CHECK: 7
