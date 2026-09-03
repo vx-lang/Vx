@@ -1544,6 +1544,18 @@ pub(crate) struct FnEmit<'a> {
     /// scalar analogue of `pslot_of`, carrying the element so the load/store types match.
     pub(crate) sslot_of: Vec<Option<ElementType>>,
     /// The function body's MLIR text, appended to as the walk proceeds.
+    /// The function's entry block, for allocations that must happen once.
+    ///
+    /// A stack slot emitted where its `let` appears sits inside whatever loop
+    /// encloses it, and an `alloca` is only given back when the function
+    /// returns -- so a slot in a loop body grows the stack once per iteration.
+    /// A nest running a couple of million times then exhausts it and the
+    /// program dies with SIGSEGV having compiled cleanly.
+    ///
+    /// These allocations take no operands, so hoisting them is always valid:
+    /// the entry block dominates every use, and each iteration stores its own
+    /// value into the slot before reading it.
+    pub(crate) entry: String,
     pub(crate) body: String,
     /// Whether the block currently being emitted has a terminator yet (a block must end in one).
     pub(crate) terminated: bool,
@@ -1575,6 +1587,29 @@ impl<'a> FnEmit<'a> {
 
     /// Emit one instruction into `body`. An opcode outside the flat subset declines, and
     /// the AST path stays the oracle for the whole function.
+    /// Where a stack slot's allocation belongs.
+    ///
+    /// The function's entry block, so a slot inside a loop is taken once rather
+    /// than once per iteration -- except inside a `vx.spawn`, where hoisting
+    /// past the region boundary would change what the program means. A slot
+    /// lifted out of a spawn stops being the region's own and becomes a value
+    /// defined above it, which outlining then captures and passes in: a device
+    /// kernel would receive a host stack pointer for what should be its own
+    /// scratch. So a region keeps its slots, and a `let` in a loop *inside* a
+    /// spawn still allocates per iteration.
+    pub(crate) fn emit_slot(&mut self, text: &str) {
+        match self.spawn_topology {
+            // A device region is outlined into its own function, so a slot
+            // lifted out of it stops being the kernel's own scratch and becomes
+            // a value defined above it -- which outlining captures and passes
+            // in, handing a device kernel a host stack pointer. Those stay.
+            Some(t) if t != 0 => self.body += text,
+            // A host region is inlined where it was written, so its slots
+            // belong to the enclosing function like any other.
+            _ => self.entry += text,
+        }
+    }
+
     pub(crate) fn step(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
         match ins.opcode {
             // Parameter materialization: the register *is* the block argument, no op emitted. A
@@ -1859,6 +1894,7 @@ pub fn emit_function_mlir(
         ptr_of: vec![false; hir.len()],
         pslot_of: vec![false; hir.len()],
         sslot_of: vec![None; hir.len()],
+        entry: String::new(),
         body: String::new(),
         terminated: false,
         pending_args: Vec::new(),
@@ -1870,7 +1906,7 @@ pub fn emit_function_mlir(
     // raw — otherwise a deliberately-crashing program (`tests/backend/fail/*_oob.vx`) diverges from the
     // oracle. Emitted into the entry block (block 0 has no label), before any local. (#242)
     if func.name.as_ref() == "main" {
-        em.body += "  func.call @vx_init_signals() : () -> ()\n";
+        em.entry += "  func.call @vx_init_signals() : () -> ()\n";
     }
 
     for (idx, ins) in hir.iter().enumerate() {
@@ -1897,6 +1933,7 @@ pub fn emit_function_mlir(
         params.join(", "),
         ret_sig
     );
+    out += &em.entry;
     out += &em.body;
     out += "}\n";
     Ok(out)

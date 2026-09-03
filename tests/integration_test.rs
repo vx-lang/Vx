@@ -8,6 +8,7 @@ mod integration_test {
     mod compile_test;
     mod device_image_test;
     mod device_pool_test;
+    mod entry_block_allocas_test;
     mod flash_routed_test;
     mod flat_codegen_differential;
     mod flat_corpus_sweep;

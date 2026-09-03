@@ -59,13 +59,15 @@ impl FnEmit<'_> {
                 // / return. Do *not* set `etypes` — the slot register is a pointer, not a scalar
                 // value (that would mistype `&x` as its element at a call site). (#230)
                 let cnt = format!("%n{idx}");
-                self.body += &format!("  {cnt} = llvm.mlir.constant(1 : i32) : i32\n");
-                self.body += &format!("  {n} = llvm.alloca {cnt} x {mt} : (i32) -> !llvm.ptr\n");
+                self.emit_slot(&format!("  {cnt} = llvm.mlir.constant(1 : i32) : i32\n"));
+                self.emit_slot(&format!(
+                    "  {n} = llvm.alloca {cnt} x {mt} : (i32) -> !llvm.ptr\n"
+                ));
                 self.names[idx] = n;
                 self.sslot_of[idx] = Some(e);
                 self.ptr_of[idx] = true;
             } else {
-                self.body += &format!("  {n} = memref.alloca() : memref<{mt}>\n");
+                self.emit_slot(&format!("  {n} = memref.alloca() : memref<{mt}>\n"));
                 self.names[idx] = n;
                 self.etypes[idx] = Some(e);
             }
@@ -74,8 +76,10 @@ impl FnEmit<'_> {
             // in `pslot_of` so its `Store`/`SlotLoad` use `llvm.store`/`llvm.load`. (#235)
             let cnt = format!("%n{idx}");
             let n = format!("%v{idx}");
-            self.body += &format!("  {cnt} = llvm.mlir.constant(1 : i32) : i32\n");
-            self.body += &format!("  {n} = llvm.alloca {cnt} x !llvm.ptr : (i32) -> !llvm.ptr\n");
+            self.emit_slot(&format!("  {cnt} = llvm.mlir.constant(1 : i32) : i32\n"));
+            self.emit_slot(&format!(
+                "  {n} = llvm.alloca {cnt} x !llvm.ptr : (i32) -> !llvm.ptr\n"
+            ));
             self.names[idx] = n;
             self.pslot_of[idx] = true;
         } else {
@@ -84,11 +88,11 @@ impl FnEmit<'_> {
             })?;
             let cnt = format!("%n{idx}");
             let n = format!("%v{idx}");
-            self.body += &format!("  {cnt} = llvm.mlir.constant(1 : i32) : i32\n");
-            self.body += &format!(
+            self.emit_slot(&format!("  {cnt} = llvm.mlir.constant(1 : i32) : i32\n"));
+            self.emit_slot(&format!(
                 "  {n} = llvm.alloca {cnt} x {} : (i32) -> !llvm.ptr\n",
                 agg.struct_ty
-            );
+            ));
             self.names[idx] = n;
             self.agg_of[idx] = Some(gid);
         }

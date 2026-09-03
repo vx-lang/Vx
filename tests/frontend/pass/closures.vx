@@ -12,11 +12,14 @@
 // CHECK: call @print_i32(%{{.*}}) : (i32) -> i32
 // CHECK-LABEL: func.func @apply_lambda$Closure_9(%arg0: !llvm.struct<(struct<(i32)>, i32)>, %arg1: i32) -> i32
 // CHECK: call @Closure_9_call(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> i32
+// The capture's slot is allocated in the entry block, ahead of the loads that
+// fill it: a slot emitted where it is first needed sits inside whatever loop
+// encloses it, and an alloca is only given back when the function returns.
 // CHECK-LABEL: func.func @Closure_9_call(%arg0: !llvm.ptr, %arg1: i32) -> i32
-// CHECK: %[[V0:.*]] = llvm.getelementptr %{{.*}}, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<(struct<(i32)>, i32)>
-// CHECK: llvm.load %[[V0]] : !llvm.ptr -> !llvm.struct<(i32)>
 // CHECK: %[[V1:.*]] = llvm.mlir.constant(1 : i32) : i32
 // CHECK: llvm.alloca %[[V1]] x !llvm.struct<(i32)> : (i32) -> !llvm.ptr
+// CHECK: %[[V0:.*]] = llvm.getelementptr %{{.*}}, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<(struct<(i32)>, i32)>
+// CHECK: llvm.load %[[V0]] : !llvm.ptr -> !llvm.struct<(i32)>
 // CHECK: %[[V2:.*]] = llvm.getelementptr %{{.*}}, 1] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<(struct<(i32)>, i32)>
 // CHECK: %[[V3:.*]] = llvm.load %[[V2]] : !llvm.ptr -> i32
 // CHECK: %[[V4:.*]] = llvm.getelementptr %{{.*}}, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<(i32)>

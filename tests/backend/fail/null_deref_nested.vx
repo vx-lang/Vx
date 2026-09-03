@@ -9,7 +9,12 @@
 // CHECK: Backtrace
 // CHECK: vx_sigsegv_handler
 // CHECK: {{_?}}f4
-// CHECK: Program exited with non-zero code: -1
+// The runtime's own handler prints the SIGSEGV above, then aborts -- so what the
+// JIT sees is the abort, named. This line used to read "exited with non-zero
+// code: -1", which is what an exit status reports when the process was killed
+// by a signal and there is no code to report: it read as though the program
+// returned -1 and said nothing about a crash.
+// CHECK: Program was killed by signal 6 (SIGABRT
 
 import std::box;
 

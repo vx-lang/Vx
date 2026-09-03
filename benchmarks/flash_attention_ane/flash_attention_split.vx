@@ -87,21 +87,8 @@
 // Inputs are pseudo-random and non-zero. With zeros the softmax is uniform and
 // every one of those bugs returns the right answer.
 //
-// A stack the default does not give
-// --------------------------------
-//
-// This program needs more than 16 MiB of stack and the shell default is 8 MiB;
-// without the raise it dies with no diagnostic, exit -1. That is a compiler
-// bug rather than a property of the program, and it is filed: the emitted
-// `main` allocas about 230 bytes in total, all in the entry block, and the
-// tensors are heap. What consumes the rest is not yet identified. The same
-// reference loop runs standalone at the default stack; it only fails after the
-// tile loop has run, and the CPU spawns are not the cause (replacing them with
-// plain blocks fails identically).
-//
 // Build and run:
 //   source config.local
-//   ulimit -s 65520
 //   VX_DISPATCH_VERBOSE=1 ./target/debug/vxc \
 //       benchmarks/flash_attention_ane/flash_attention_split.vx --action run-jit
 //

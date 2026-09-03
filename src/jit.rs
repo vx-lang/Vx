@@ -250,8 +250,23 @@ pub fn execute_mlir(
     if !exe_out.status.success() {
         let err_str = String::from_utf8_lossy(&exe_out.stderr);
         let out_str = String::from_utf8_lossy(&exe_out.stdout);
-        let code = exe_out.status.code().unwrap_or(-1);
-        println!("[JIT] Program exited with code: {}", code);
+        // A process killed by a signal has no exit code, and reporting the
+        // `unwrap_or` fallback as if it were one turned every crash into
+        // "exited with code -1" -- which reads like the program returned -1 and
+        // says nothing about a segfault, an abort or an out-of-memory kill.
+        //
+        // Only the signal case is new wording. Both exit-code messages are
+        // byte-identical to what they were, because callers match on them: the
+        // differential harness parses the number off the end of the error, and
+        // a monomorphization test looks for "exited with code: 8".
+        let killed = killed_by_signal(&exe_out.status);
+        match &killed {
+            Some(how) => println!("[JIT] Program {}", how),
+            None => println!(
+                "[JIT] Program exited with code: {}",
+                exe_out.status.code().unwrap_or(-1)
+            ),
+        }
         if !out_str.is_empty() {
             println!("{}", out_str);
         }
@@ -262,7 +277,13 @@ pub fn execute_mlir(
                 err_str
             );
         }
-        return Err(format!("Program exited with non-zero code: {}", code));
+        return Err(match killed {
+            Some(how) => format!("Program {how}"),
+            None => format!(
+                "Program exited with non-zero code: {}",
+                exe_out.status.code().unwrap_or(-1)
+            ),
+        });
     }
 
     let output_str = format!(
@@ -272,6 +293,33 @@ pub fn execute_mlir(
     );
 
     Ok(output_str)
+}
+
+/// The signal that killed a run, in words, or `None` for an ordinary exit.
+///
+/// A signal is not an exit code: `ExitStatus::code` answers `None` for one, so
+/// the usual `unwrap_or(-1)` turns every crash into "exited with code -1" --
+/// which reads as though the program returned -1 and hides the difference
+/// between a wrong answer and a segfault.
+fn killed_by_signal(status: &std::process::ExitStatus) -> Option<String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(sig) = status.signal() {
+            let name = match sig {
+                4 => " (SIGILL)",
+                6 => " (SIGABRT, often a failed assert)",
+                8 => " (SIGFPE)",
+                9 => " (SIGKILL, killed by the system rather than crashing)",
+                10 => " (SIGBUS)",
+                11 => " (SIGSEGV, a bad memory access; a stack overflow reaches here too)",
+                _ => "",
+            };
+            return Some(format!("was killed by signal {sig}{name}"));
+        }
+    }
+    let _ = status;
+    None
 }
 
 #[cfg(test)]

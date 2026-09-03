@@ -22,15 +22,12 @@ the hardware, not the other way round.
 
 ```
 source config.local
-ulimit -s 65520
 VX_DISPATCH_VERBOSE=1 ./target/debug/vxc \
     benchmarks/flash_attention_ane/flash_attention_split.vx --action run-jit
 ```
 
 Four dispatches (two tiles, two matmuls each) and a max absolute error of 2.3e-5
-against a host reference over four query rows. The `ulimit` raise is working
-around a compiler bug, filed separately: the program needs more than 16 MiB of
-stack and dies with no diagnostic at the 8 MiB default.
+against a host reference over four query rows.
 
 Verified by breaking it: staging Kt untransposed moves the error to 4.1e-2 and
 trips the assert.

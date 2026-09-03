@@ -9,10 +9,13 @@
 // `&&` and `||` short-circuit, so they are control flow and not arith.andi/ori: each becomes a
 // branch on the left operand over a result slot, and only the taken arm stores the right one.
 // `!` is the one that stays arithmetic -- a xor against true.
+// The result slot is allocated in the entry block, ahead of the comparisons: a
+// slot emitted where its value is first needed sits inside whatever loop
+// encloses it, and an alloca is only given back when the function returns.
 // CHECK-LABEL: func.func @parser_logical_pass() -> i1
+// CHECK: %[[AND:.*]] = memref.alloca() : memref<i1>
 // CHECK: %[[LT:.*]] = arith.cmpi slt
 // CHECK: %[[EQ:.*]] = arith.cmpi eq
-// CHECK: %[[AND:.*]] = memref.alloca() : memref<i1>
 // CHECK: cf.cond_br %[[LT]], ^[[T:bb[0-9]+]], ^[[F:bb[0-9]+]]
 // CHECK: ^[[T]]:
 // CHECK: memref.store %[[EQ]], %[[AND]][] : memref<i1>

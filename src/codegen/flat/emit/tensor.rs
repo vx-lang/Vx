@@ -50,7 +50,11 @@ impl FnEmit<'_> {
             // when it widens a serial walk over the tile) issued a 16-byte
             // `ld.shared.v4` into it: "misaligned address", device-fatal, found by
             // compute-sanitizer on the block-per-row softmax (Vx#379 R3).
-            self.body += &format!("  {n} = memref.alloca() {{alignment = 16 : i64}} : {smty}\n");
+            // Entry block: a tensor declared inside a loop would otherwise take a
+            // fresh stack slot per iteration and never give one back.
+            self.emit_slot(&format!(
+                "  {n} = memref.alloca() {{alignment = 16 : i64}} : {smty}\n"
+            ));
             self.names[idx] = n;
             self.mem_of[idx] = Some(smty);
         } else {
