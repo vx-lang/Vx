@@ -100,3 +100,69 @@ fn coreml_places_these_graphs_where_we_measured() {
          stdout:\n{stdout}\nstderr:\n{stderr}"
     );
 }
+
+/// The dispatcher must not claim hardware it has not asked about.
+///
+/// `--- EXECUTING ON APPLE NEURAL ENGINE ---` printed whenever the dispatcher
+/// took the CoreML route, which says nothing about what CoreML then did with the
+/// work. For the primitives shipped at the time it did the work on the CPU, so
+/// the one line in the system that appeared to attest Neural Engine execution
+/// was asserting hardware nobody had checked -- and a paper or a README citing
+/// it would have been citing that.
+///
+/// The line is now derived from `MLComputePlan`, so it reports the device CoreML
+/// picked rather than the route the dispatcher took. This pins both halves: the
+/// measured line appears, and the unmeasured claim does not come back.
+#[test]
+fn the_dispatcher_reports_the_device_coreml_chose() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let vxc = root.join("target/debug/vxc");
+    if !vxc.is_file() {
+        eprintln!("skipping: target/debug/vxc is not built");
+        return;
+    }
+    let program = root.join("benchmarks/flash_attention_ane/flash_attention_split.vx");
+    if !program.is_file() {
+        eprintln!("skipping: {} is absent", program.display());
+        return;
+    }
+
+    let out = Command::new(&vxc)
+        .current_dir(&root)
+        .arg(&program)
+        .env("VX_DISPATCH_VERBOSE", "1")
+        .output()
+        .expect("failed to run vxc");
+    let log = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // The rule is about every route, and the log of one program can only speak
+    // for the routes that program took. This one drives the f16 GEMM path and
+    // never reaches the affine path, so asserting the absence of the old banner
+    // here would pass whether or not that path still printed it -- which is
+    // exactly what it did when this test was first written. The source is where
+    // the claim can be checked for all of them at once.
+    let dispatcher = std::fs::read_to_string(root.join("runtime/npu_dispatch.mm"))
+        .expect("failed to read runtime/npu_dispatch.mm");
+    assert!(
+        !dispatcher.contains("EXECUTING ON APPLE NEURAL ENGINE"),
+        "a dispatch route announces the Neural Engine without asking CoreML \
+         which device it chose; the banner has to come from the compute plan"
+    );
+
+    // The positive half needs the route to have fired at all. Without the
+    // compiled primitives the program falls back to the CPU shim, and there is
+    // no plan to report -- which is a missing fixture rather than a failure.
+    if !log.contains("Recognised GEMM 512x512x512 f16") {
+        eprintln!("skipping the placement check: the f16 GEMM route did not fire");
+        return;
+    }
+    assert!(
+        log.contains("CoreML plans matmul_512x512_fp16.mlmodelc on the Neural Engine"),
+        "the f16 512 primitive is the one CoreML puts on the Neural Engine, and \
+         the dispatcher must say so from the plan rather than from the route:\n{log}"
+    );
+}

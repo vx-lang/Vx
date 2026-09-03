@@ -41,6 +41,89 @@ static bool vx_npu_verbose() {
     }                                                                          \
   } while (0)
 
+/// Which device CoreML will actually use for a model, asked rather than assumed.
+///
+/// `computeUnits = MLComputeUnitsAll` lets CoreML choose among the CPU, the GPU
+/// and the Neural Engine, so the fact that this dispatcher took the CoreML route
+/// says nothing about the hardware that then ran the work. The two were reported
+/// as one for a long time, and they disagreed: a 4x4 fp32 matmul announced the
+/// Neural Engine and ran on the CPU.
+///
+/// `MLComputePlan` is CoreML's own answer. It is a plan rather than an execution
+/// trace -- it says where CoreML intends to put each operation -- which is still
+/// the difference between a measured statement and a hopeful one. `const`
+/// operations carry no device usage and are not counted; they are folded values,
+/// not work.
+///
+/// Logged once per model, at load, because that is when the answer is fixed.
+static void vx_log_planned_device(NSURL *url, MLModelConfiguration *config,
+                                  const char *name) {
+  if (!vx_npu_verbose()) {
+    return;
+  }
+  if (@available(macOS 14.4, *)) {
+    __block int ane = 0, gpu = 0, cpu = 0, other = 0;
+    __block bool answered = false;
+    dispatch_semaphore_t done = dispatch_semaphore_create(0);
+    [MLComputePlan
+        loadContentsOfURL:url
+            configuration:config
+        completionHandler:^(MLComputePlan *plan, NSError *planError) {
+          if (plan) {
+            MLModelStructureProgram *program = plan.modelStructure.program;
+            MLModelStructureProgramFunction *fn = program.functions[@"main"];
+            for (MLModelStructureProgramOperation *op in fn.block.operations) {
+              MLComputePlanDeviceUsage *usage =
+                  [plan computeDeviceUsageForMLProgramOperation:op];
+              if (!usage) {
+                continue;
+              }
+              id<MLComputeDeviceProtocol> device = usage.preferredComputeDevice;
+              if ([device isKindOfClass:[MLNeuralEngineComputeDevice class]]) {
+                ane++;
+              } else if ([device isKindOfClass:[MLGPUComputeDevice class]]) {
+                gpu++;
+              } else if ([device isKindOfClass:[MLCPUComputeDevice class]]) {
+                cpu++;
+              } else {
+                other++;
+              }
+            }
+            answered = true;
+          }
+          dispatch_semaphore_signal(done);
+        }];
+    dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
+
+    if (!answered) {
+      VX_NPU_LOG("[Vx Dispatcher] CoreML would not report a plan for %s\n", name);
+      return;
+    }
+    const int total = ane + gpu + cpu + other;
+    if (total == 0) {
+      VX_NPU_LOG("[Vx Dispatcher] %s has no scheduled operations\n", name);
+    } else if (ane == total) {
+      VX_NPU_LOG("[Vx Dispatcher] CoreML plans %s on the Neural Engine "
+                 "(%d op(s))\n",
+                 name, total);
+    } else if (cpu == total) {
+      VX_NPU_LOG("[Vx Dispatcher] CoreML plans %s on the CPU (%d op(s))\n", name,
+                 total);
+    } else if (gpu == total) {
+      VX_NPU_LOG("[Vx Dispatcher] CoreML plans %s on the GPU (%d op(s))\n", name,
+                 total);
+    } else {
+      VX_NPU_LOG("[Vx Dispatcher] CoreML plans %s across devices "
+                 "(%d ANE, %d GPU, %d CPU, %d other)\n",
+                 name, ane, gpu, cpu, other);
+    }
+  } else {
+    VX_NPU_LOG("[Vx Dispatcher] cannot say where %s will run: MLComputePlan "
+               "needs macOS 14.4\n",
+               name);
+  }
+}
+
 extern "C" int vx_dispatch_amx(float *xout, float *x, float *w, int n, int d) {
   @autoreleasepool {
     // std::cout << "[Vx Dispatcher] Offloading to Apple AMX (Accelerate)..." <<
@@ -186,6 +269,7 @@ extern "C" int vx_dispatch_ane_f16(void *xout, const void *x, const void *w,
                    [name UTF8String]);
         return 0;
       }
+      vx_log_planned_device(modelURL, config, [name UTF8String]);
       models[key] = model;
     }
 
@@ -280,6 +364,7 @@ extern "C" int vx_dispatch_ane(float *xout, float *x, float *w, int n, int d) {
                   << std::endl;
         return 0;
       }
+      vx_log_planned_device(modelURL, config, "matmul_4x4.mlmodelc");
     }
 
     // Allocate MLMultiArrays directly and copy data into them.
@@ -345,7 +430,10 @@ extern "C" int vx_dispatch_ane(float *xout, float *x, float *w, int n, int d) {
 extern "C" int vx_dispatch_ane_affine(float *out, float *x, float alpha,
                                       float beta, int length) {
   @autoreleasepool {
-    VX_NPU_LOG("--- EXECUTING ON APPLE NEURAL ENGINE (AFFINE) ---\n");
+    // The fp32 matmul banner was corrected and this one was left claiming the
+    // Neural Engine for work MLComputePlan puts entirely on the CPU -- every
+    // operation in affine_4, not merely most of them.
+    VX_NPU_LOG("--- DISPATCHING VIA COREML (compute unit chosen by CoreML) ---\n");
     static MLModel *affineModel = nil;
     NSError *error = nil;
     if (!affineModel) {
@@ -361,6 +449,7 @@ extern "C" int vx_dispatch_ane_affine(float *out, float *x, float alpha,
                   << std::endl;
         return 0;
       }
+      vx_log_planned_device(modelURL, config, "affine_4.mlmodelc");
     }
 
     MLMultiArray *arrayX =
