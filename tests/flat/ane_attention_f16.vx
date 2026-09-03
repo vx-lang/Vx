@@ -82,9 +82,39 @@ fn scored() -> f16 {
   return o[0][0];
 }
 
+// Every row and several head positions distinct, q and k asymmetric so a
+// transposed operand shows, and a real 1/sqrt(hd) scale. The two cases above
+// have exact closed forms and are precise regression guards, but both leave most
+// of the input zero: only one key ever carries weight, and only one position of
+// the 8192-wide dot product is ever non-zero, so a row-indexing or transposition
+// error could survive them. This one has no closed form and is checked against
+// the host fallback instead, which is what the differential is for.
+fn varied() -> f16 {
+  let mut q = Tensor<f16, [ 256, 8192 ], Memory::NPU_HBM>::new();
+  let mut k = Tensor<f16, [ 256, 8192 ], Memory::NPU_HBM>::new();
+  let mut v = Tensor<f16, [ 256, 8192 ], Memory::NPU_HBM>::new();
+  let mut o = Tensor<f16, [ 256, 8192 ], Memory::NPU_HBM>::new();
+
+  for i in 0..256 {
+    for d in 0..64 {
+      q[i][d] = (((i as f32) * 0.003 - (d as f32) * 0.007 - 0.2) as f16);
+      k[i][d] = (((d as f32) * 0.005 - (i as f32) * 0.002 + 0.1) as f16);
+      v[i][d] = (((i as f32) * 0.004 + (d as f32) * 0.001 - 0.3) as f16);
+    }
+  }
+
+  spawn on(Topology::NPU[0]) {
+    flash_attention_into(&mut o, &q, &k, &v, 0.01104854);
+  }
+
+  return o[255][7];
+}
+
 fn main() -> i32 {
   print(uniform());
   print!(" ");
   print(scored());
+  print!(" ");
+  print(varied());
   return 0;
 }
