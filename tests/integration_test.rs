@@ -1,4 +1,8 @@
 mod integration_test {
+    // The whole module is macOS-only: it drives CoreML through a Python
+    // interpreter that only exists there. Gating the test alone leaves its
+    // helpers behind as dead code everywhere else.
+    #[cfg(target_os = "macos")]
     mod ane_device_test;
     mod architecture_test;
     mod assert_codegen_test;

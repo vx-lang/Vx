@@ -59,7 +59,6 @@ fn usable_python(root: &PathBuf) -> Option<String> {
 }
 
 #[test]
-#[cfg(target_os = "macos")]
 fn coreml_places_these_graphs_where_we_measured() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let script = root.join("scripts/ane_device_check.py");
