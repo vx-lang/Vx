@@ -135,9 +135,119 @@ extern "C" int vx_dispatch_gpu(float *xout, float *x, float *w, int n, int d) {
   }
 }
 
+// The square size the Neural Engine will actually take.
+//
+// Asked through MLComputePlan which device it prefers, CoreML answers CPU for
+// every fp32 matmul at every size tried, and for fp16 up to 384. At 512 in fp16
+// it answers Neural Engine. So both halves of this constant matter: the
+// precision decides whether the ANE is eligible at all, and the size decides
+// whether CoreML bothers.
+#define VX_ANE_F16_DIM 512
+
+// The fp16 matmul, which is the one that reaches the Neural Engine.
+//
+// Deliberately not a conversion of the fp32 path. Downcasting an f32 program to
+// f16 to reach an accelerator would change the arithmetic the program asked for
+// without saying so, which is the failure Vx#405 is about -- the element type is
+// part of the placement's meaning, and silently altering it to satisfy hardware
+// is the thing the machine model should be refusing, not the thing the runtime
+// should be doing quietly.
+extern "C" int vx_dispatch_ane_f16(void *xout, const void *x, const void *w,
+                                   int n, int d) {
+  @autoreleasepool {
+    static MLModel *model = nil;
+    NSError *error = nil;
+    if (!model) {
+      NSURL *modelURL =
+          [NSURL fileURLWithPath:@"matmul_512x512_fp16.mlmodelc"];
+      MLModelConfiguration *config = [[MLModelConfiguration alloc] init];
+      config.computeUnits = MLComputeUnitsAll;
+      model = [MLModel modelWithContentsOfURL:modelURL
+                                configuration:config
+                                        error:&error];
+      if (!model) {
+        VX_NPU_LOG("[Vx Dispatcher] no matmul_512x512_fp16.mlmodelc; using the "
+                   "CPU shim\n");
+        return 0;
+      }
+    }
+
+    const size_t elems = (size_t)d * (size_t)n;
+
+    // The model computes in fp16 on the Neural Engine, and its *interface* is
+    // fp32 regardless: CoreML normalises an mlprogram's boundary to fp32 even
+    // when the MIL spec asks for fp16 inputs. So the halves are widened here and
+    // narrowed on the way back. Widening is exact, and the narrowing is over
+    // values the ANE already produced in fp16, so nothing is lost that the
+    // program did not already ask for by declaring `f16`.
+    const __fp16 *w16 = (const __fp16 *)w;
+    const __fp16 *x16 = (const __fp16 *)x;
+    __fp16 *out16 = (__fp16 *)xout;
+
+    MLMultiArray *arrayW =
+        [[MLMultiArray alloc] initWithShape:@[ @(d), @(n) ]
+                                   dataType:MLMultiArrayDataTypeFloat32
+                                      error:&error];
+    if (!arrayW) {
+      return 0;
+    }
+    {
+      float *dst = (float *)arrayW.dataPointer;
+      for (size_t i = 0; i < elems; i++) {
+        dst[i] = (float)w16[i];
+      }
+    }
+
+    MLMultiArray *arrayX =
+        [[MLMultiArray alloc] initWithShape:@[ @(n), @(d) ]
+                                   dataType:MLMultiArrayDataTypeFloat32
+                                      error:&error];
+    if (!arrayX) {
+      return 0;
+    }
+    {
+      float *dst = (float *)arrayX.dataPointer;
+      for (size_t i = 0; i < elems; i++) {
+        dst[i] = (float)x16[i];
+      }
+    }
+
+    id<MLFeatureProvider> inputFeatures = [[MLDictionaryFeatureProvider alloc]
+        initWithDictionary:@{@"w" : arrayW, @"x" : arrayX}
+                     error:&error];
+    id<MLFeatureProvider> outputFeatures =
+        [model predictionFromFeatures:inputFeatures error:&error];
+    if (error || !outputFeatures) {
+      VX_NPU_LOG("[Vx Dispatcher] fp16 CoreML prediction failed; using the CPU "
+                 "shim\n");
+      return 0;
+    }
+
+    NSString *outputName = [outputFeatures.featureNames anyObject];
+    MLMultiArray *outArray =
+        [outputFeatures featureValueForName:outputName].multiArrayValue;
+    if (!outArray || !outArray.dataPointer) {
+      return 0;
+    }
+    {
+      const float *src = (const float *)outArray.dataPointer;
+      for (size_t i = 0; i < elems; i++) {
+        out16[i] = (__fp16)src[i];
+      }
+    }
+    VX_NPU_LOG("--- COREML RAN THE fp16 %dx%d MATMUL ---\n", d, n);
+    return 1;
+  }
+}
+
 extern "C" int vx_dispatch_ane(float *xout, float *x, float *w, int n, int d) {
   @autoreleasepool {
-    VX_NPU_LOG("--- EXECUTING ON APPLE NEURAL ENGINE ---\n");
+    // Not "executing on the Neural Engine": `computeUnits = MLComputeUnitsAll`
+    // asks CoreML to choose, and for this 4x4 fp32 primitive it chooses the CPU
+    // every time (Vx#436, measured with MLComputePlan). Claiming the ANE here
+    // asserted hardware nobody had checked. The fp16 512x512 path above is the
+    // one CoreML does put on the Neural Engine.
+    VX_NPU_LOG("--- DISPATCHING VIA COREML (compute unit chosen by CoreML) ---\n");
     static MLModel *model = nil;
     NSError *error = nil;
     if (!model) {
@@ -361,6 +471,27 @@ extern "C" uint64_t vx_plugin_dispatch_async(const void *binary_payload,
                (long long)plan.m, (long long)plan.n, (long long)plan.k,
                vx_dtype_name(plan.dtype),
                plan.out_kind == VX_GEMM_OUT_SLOT ? "slot" : "buffer");
+  }
+
+  if (is_gemm && plan.dtype == VX_DTYPE_F16 && plan.m == VX_ANE_F16_DIM &&
+      plan.n == VX_ANE_F16_DIM && plan.k == VX_ANE_F16_DIM &&
+      plan.a_row_stride == VX_ANE_F16_DIM &&
+      plan.b_row_stride == VX_ANE_F16_DIM &&
+      plan.out_row_stride == VX_ANE_F16_DIM) {
+    void *result = plan.out_data;
+    if (plan.out_kind == VX_GEMM_OUT_SLOT) {
+      result = malloc((size_t)VX_ANE_F16_DIM * VX_ANE_F16_DIM * sizeof(uint16_t));
+    }
+    if (result && vx_dispatch_ane_f16(result, plan.b_data, plan.a_data,
+                                      VX_ANE_F16_DIM, VX_ANE_F16_DIM)) {
+      if (plan.out_kind == VX_GEMM_OUT_SLOT) {
+        vx_gemm_publish_slot(&plan, (float *)result);
+      }
+      return 1;
+    }
+    if (plan.out_kind == VX_GEMM_OUT_SLOT) {
+      free(result);
+    }
   }
 
   if (is_gemm && plan.dtype == VX_DTYPE_F32 && plan.m == 4 && plan.n == 4 &&

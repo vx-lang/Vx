@@ -191,7 +191,11 @@ fn main() {
         if let Some(Ok(status)) = py_status {
             if status.success() {
                 // Compile the .mlpackage into .mlmodelc
-                for model_name in &["matmul_4x4", "affine_4"] {
+                // The fp16 512x512 is the one the Neural Engine will actually take:
+                // CoreML prefers the CPU for every fp32 matmul at every size, and
+                // for fp16 below 512. The 4x4 pair stays for the affine path and
+                // the tests written to it.
+                for model_name in &["matmul_4x4", "affine_4", "matmul_512x512_fp16"] {
                     let pkg_path =
                         PathBuf::from(&out_dir).join(format!("{}.mlpackage", model_name));
                     let modelc_path =

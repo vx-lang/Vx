@@ -1,0 +1,45 @@
+//===- ane_matmul_f16.vx - Vx Compiler --------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// A placed matmul in the shape and precision the Apple Neural Engine will take.
+//
+// The three older `ane_*.vx` files carry no `// EXPECT:` line and an `EXEC_RUN:`
+// directive that is implemented nowhere, so nothing ever ran them. This one runs.
+//
+// f16 and 512x512 are both required, and neither is a tuning choice. Asked
+// through CoreML's own `MLComputePlan` which device it prefers, CoreML answers
+// CPU for every fp32 matmul at every size tried, and for f16 up to 384. At 512
+// in f16 it answers Neural Engine. An f32 primitive therefore never reaches the
+// ANE however large it is (Vx#436).
+//
+// What this test pins is the *answer*, on every platform: 2.0 x 1.0 summed over
+// 512 terms is 1024, whether the work went to the Neural Engine, to a CoreML CPU
+// path, or to the portable host shim on Linux. It does not pin which device ran
+// it, because a `.vx` test cannot see that -- the device assignment is checked
+// separately against `MLComputePlan`, and the dispatcher no longer claims the
+// ANE for work it merely handed to CoreML.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK-LABEL: func.func @main
+// EXPECT: 1024
+
+fn main() -> i32 {
+  let mut a = Tensor<f16, [ 512, 512 ], Memory::NPU_HBM>::new();
+  let mut b = Tensor<f16, [ 512, 512 ], Memory::NPU_HBM>::new();
+  let mut c = Tensor<f16, [ 512, 512 ], Memory::NPU_HBM>::new();
+  for i in 0..512 {
+    for j in 0..512 {
+      a[i][j] = 2.0;
+      b[i][j] = 1.0;
+    }
+  }
+  spawn on(Topology::NPU[0]) {
+    c = a @ b;
+  }
+  print(c[0][0]);
+  return 0;
+}

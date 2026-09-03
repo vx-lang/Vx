@@ -7,6 +7,16 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+// The assertions below use the DISPATCH prefix, not EXPECT.
+//
+// `// EXPECT:` means two different things here: FileCheck reads it as a prefix
+// for the EXEC_RUN pipeline, and the backend harness reads it as a literal line
+// the program must print. These files meant the first and got both, so building
+// the CoreML models made the harness demand dispatcher logs that only appear
+// under VX_DISPATCH_VERBOSE -- i.e. these tests passed only while the ANE path
+// was broken (Vx#366, Vx#436). Renaming the prefix separates the two meanings.
+//
+// EXEC_RUN itself is implemented nowhere, so nothing below runs today.
 // RUN: vxc %s --emit-mlir -O0 2>&1 | FileCheck %s
 // RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" | FileCheck %s --check-prefix=STD
 // RUN: vxc %s --emit-llvm | FileCheck %s --check-prefix=LLVM
@@ -16,7 +26,7 @@
 // -expand-strided-metadata -finalize-memref-to-llvm -reconcile-unrealized-casts
 // | mlir-translate -mlir-to-llvmir | llc -filetype=obj -o %t.o
 // EXEC_RUN: clang %t.o -Ltarget/debug/build/*/out -lnpu_dispatch -o %t
-// EXEC_RUN: %t | FileCheck %s --check-prefix=EXPECT
+// EXEC_RUN: %t | FileCheck %s --check-prefix=DISPATCH
 
 fn main() -> i32 {
   let mut a_host = Tensor<f32, [4, 4]>::uninit();
@@ -54,13 +64,13 @@ fn main() -> i32 {
   return 0;
 }
 
-// EXPECT: [Vx Dispatcher] Intercepted kernel dispatch: vx_npu_kernel_{{[0-9]+}} with 5 args
-// EXPECT: --- EXECUTING ON APPLE NEURAL ENGINE ---
-// EXPECT: Unranked Memref base@
-// EXPECT: [[24,   24,   24,   24],
-// EXPECT:  [24,   24,   24,   24],
-// EXPECT:  [24,   24,   24,   24],
-// EXPECT:  [24,   24,   24,   24]]
+// DISPATCH: [Vx Dispatcher] Intercepted kernel dispatch: vx_npu_kernel_{{[0-9]+}} with 5 args
+// DISPATCH: --- DISPATCHING VIA COREML (compute unit chosen by CoreML) ---
+// DISPATCH: Unranked Memref base@
+// DISPATCH: [[24,   24,   24,   24],
+// DISPATCH:  [24,   24,   24,   24],
+// DISPATCH:  [24,   24,   24,   24],
+// DISPATCH:  [24,   24,   24,   24]]
 
 // The dispatch shape, which holds whether or not the ANE runtime is present: the matmul
 // becomes one NPU region, matching the single "Intercepted kernel dispatch" line below.
