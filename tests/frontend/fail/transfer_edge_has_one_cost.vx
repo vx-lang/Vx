@@ -1,0 +1,55 @@
+//===- transfer_edge_has_one_cost.vx - Vx Compiler --------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// An edge that states a cost the spaces it connects already imply. E6013.
+//
+// A transfer edge gets exactly one cost source. `transfer A -> B : 5` states one
+// outright; `bandwidth:` on the spaces derives one from bytes and rate. Writing
+// both leaves two answers to "what does this hop cost", and a model that answers
+// a question twice is not a model -- whichever the compiler picked would be a
+// silent decision about which of the programmer's two figures to believe.
+//
+// So the fix is a choice, and the diagnostic says so: drop the `: …` to use the
+// derived figure, or drop the `bandwidth:` if the written one is the one meant.
+//
+// GPU_HBM -> SMEM is the derivable pair here: both carry a `bandwidth:` and SMEM
+// is `within:` GPU_HBM, which is what makes a figure computable from the
+// containment tree. The CPU_DRAM -> GPU_HBM edge above it states a cost and is
+// fine, because CPU_DRAM declares no bandwidth and nothing is derivable for it.
+// That contrast is the point: the rule is about two sources, not about writing a
+// cost.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: E6013
+// CHECK-SAME: transfer Memory::GPU_HBM -> Memory::SMEM declares a cost
+// CHECK-SAME: already derivable
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+}
+Memory SMEM {
+  // Denominated in seconds like GPU_HBM above. A path that mixes cycles and
+  // seconds is not derivable at all, which would make this file pass for the
+  // wrong reason.
+  within: Memory::GPU_HBM, capacity: 228 KiB, bandwidth: 19 TB/s,
+  granule: 1 KiB, managed: explicit, scope: sm
+}
+
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::GPU_HBM,
+  visible: [Memory::GPU_HBM, Memory::SMEM],
+  // Fine: CPU_DRAM declares no bandwidth, so nothing is derivable here.
+  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s,
+  // Refused: both ends carry a bandwidth, so this figure is the second answer.
+  transfer Memory::GPU_HBM -> Memory::SMEM : 5
+}
+
+fn main() -> i32 {
+  return 0;
+}

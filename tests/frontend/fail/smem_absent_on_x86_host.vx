@@ -27,7 +27,8 @@
 // since a test in this directory has to fail.
 //
 // RUN: not vxc %s --machine fleet/xeon-e5-2666v3.vx 2>&1 | FileCheck %s
-// CHECK: Cannot transfer from CPUDRAM to Custom("SMEM")
+// CHECK: E6002
+// CHECK-SAME: Cannot transfer from CPU_DRAM to SMEM
 // CHECK-SAME: no hardware path exists
 
 fn main() -> i32 {

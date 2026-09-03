@@ -1,0 +1,34 @@
+//===- generic_call_needs_its_topology.vx - Vx Compiler ---------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// The generic half of E6001, and a different code path from the one in
+// call_needs_its_topology.vx.
+//
+// A call resolves in one of two places: a concrete function found in the
+// environment, or a monomorphized instance found after substitution. Both carry
+// a topology and both have to check it, and the check is written twice -- so a
+// test that only exercises the concrete path leaves the generic one free to
+// silently drop the requirement, which is the failure this file exists to catch.
+//
+// The instance is what is checked, not the template: `scaled<4>` is a device
+// function no matter which argument produced it.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: E6001
+// CHECK-SAME: requires topology
+// CHECK-SAME: NPU
+
+fn scaled<const N : i32>(x : f32) on Topology::NPU[0] -> f32 {
+  return x * (N as f32);
+}
+
+fn main() -> i32 {
+  // The instance is device-bound; the call site is the host.
+  let v : f32 = scaled<4>(1.5);
+  print(v);
+  return 0;
+}

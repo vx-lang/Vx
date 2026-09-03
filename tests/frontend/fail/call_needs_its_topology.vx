@@ -1,0 +1,38 @@
+//===- call_needs_its_topology.vx - Vx Compiler -----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// A function bound to a device, called from the host. E6001.
+//
+// `fn f(..) on Topology::T` says where the function's body may run, and the call
+// has to happen somewhere that satisfies it. Calling it from ordinary host code
+// asks the host to execute a device body, which is the mistake the annotation
+// exists to catch.
+//
+// This is not a theoretical case. benchmarks/flash_attention_ane/flash_attention.vx
+// declares its software exponential `on Topology::ANE` so that it is a
+// device-side helper rather than a host call reached from inside the region --
+// and the host reference in that same file cannot call it, which is exactly this
+// diagnostic doing its job.
+//
+// The mirror of this -- calling it from a region placed on the topology it names
+// -- is the passing case, and that is what the benchmark's kernel does.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: E6001
+// CHECK-SAME: requires topology
+// CHECK-SAME: NPU
+
+fn scaled_on_device(x : f32) on Topology::NPU[0] -> f32 {
+  return x * 2.5;
+}
+
+fn main() -> i32 {
+  // Called from the host, which is not the topology the function names.
+  let v : f32 = scaled_on_device(1.5);
+  print(v);
+  return 0;
+}

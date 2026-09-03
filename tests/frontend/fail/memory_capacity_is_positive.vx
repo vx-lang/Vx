@@ -1,0 +1,32 @@
+//===- memory_capacity_is_positive.vx - Vx Compiler -------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// A memory space that declares it holds nothing. E6008.
+//
+// `capacity: 0` is not a small space, it is a contradiction: every placement
+// into it exceeds it, so the capacity check (E6009) would refuse every program
+// that used the space, one placement at a time, without ever saying that the
+// declaration is what is wrong. `bandwidth` and `granule` are refused on the
+// same terms -- a zero bandwidth makes every derived transfer cost infinite,
+// and a zero granule makes every alignment computation a division by zero.
+//
+// Caught in the declaration rather than at the use, because the declaration is
+// where the mistake is and the uses are only where it becomes visible.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: E6008
+// CHECK-SAME: 'Empty'
+// CHECK-SAME: non-positive `capacity`
+
+Memory CPU_DRAM {}
+Memory Empty {
+  within: Memory::CPU_DRAM, capacity: 0 GiB
+}
+
+fn main() -> i32 {
+  return 0;
+}

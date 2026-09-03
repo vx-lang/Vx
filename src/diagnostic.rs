@@ -230,7 +230,12 @@ pub enum DiagnosticCode {
     E6001,
     /// Cannot transfer between memory spaces (no hardware path)
     E6002,
-    /// Cannot transfer non-reference type
+    /// A value is used from a topology that cannot see the memory space it lives in.
+    /// The diagnostic names the value's space, the visible set of the topology reading it,
+    /// and the cost of the transfer that would fix it -- so a misplaced handoff (an
+    /// un-transferred KV cache in a disaggregated prefill/decode split, say) is a compile
+    /// error that carries its own remedy. A `managed: cached` space the topology can reach
+    /// across a declared seam is coherent in hardware and is not reported here.
     E6003,
     /// Transfer violates the boundary contract at a seam (per-seam local-completeness
     /// / soundness obligation is `sat`; a stale read can violate the contract).

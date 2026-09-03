@@ -194,9 +194,10 @@ impl TypeChecker<'_> {
                         self.errors.warn(
                             crate::diagnostic::DiagnosticCode::W1027,
                             format!(
-                                "topology '{name}': declared relaxed transfer {:?} -> {:?} does \
+                                "topology '{name}': declared relaxed transfer {} -> {} does \
                                  not preserve visibility; a consumer may read stale data",
-                                edge.from, edge.to
+                                edge.from.name(),
+                                edge.to.name()
                             ),
                             None,
                         );
@@ -206,10 +207,14 @@ impl TypeChecker<'_> {
                         // An obligation that could not be discharged fails the build, unless the
                         // user has explicitly accepted unverified compilation -- in which case it
                         // is still said out loud, every time. The two must not look alike.
+                        // Spaces by name: `{:?}` renders a declared one as
+                        // `Custom("SMEM")`, which names the compiler's representation
+                        // rather than anything the program wrote.
                         let msg = format!(
-                            "topology '{name}': the visibility of relaxed transfer {:?} -> {:?} \
+                            "topology '{name}': the visibility of relaxed transfer {} -> {} \
                              was NOT verified: {e}",
-                            edge.from, edge.to
+                            edge.from.name(),
+                            edge.to.name()
                         );
                         if crate::hir::solver::unverified_allowed() {
                             self.errors

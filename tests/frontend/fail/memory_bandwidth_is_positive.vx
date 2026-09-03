@@ -1,0 +1,28 @@
+//===- memory_bandwidth_is_positive.vx - Vx Compiler ------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// E6008 covers three fields, and this is the second of them.
+//
+// A zero `bandwidth` is not a slow memory, it is one that never finishes: every
+// cost derived from it is bytes divided by nothing. The router would then either
+// see an infinity it cannot compare or a division it cannot perform, and the
+// program that placed a tensor there would be rejected -- or worse, routed -- for
+// a reason nowhere near the declaration that caused it.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: E6008
+// CHECK-SAME: 'Stalled'
+// CHECK-SAME: non-positive `bandwidth`
+
+Memory CPU_DRAM {}
+Memory Stalled {
+  within: Memory::CPU_DRAM, capacity: 8 GiB, bandwidth: 0 TB/s
+}
+
+fn main() -> i32 {
+  return 0;
+}

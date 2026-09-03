@@ -156,7 +156,9 @@ pub struct DriverOptions {
     pub legacy_codegen: bool,
 
     /// Discharge per-seam boundary obligations at cross-device transfers (assert
-    /// pre-scan + z3 checks). Off by default; requires z3 on PATH (fails open if absent).
+    /// pre-scan + z3 checks). Off by default; requires z3 on PATH. With no solver the
+    /// obligations are undischarged and the compilation fails with E6024 rather than
+    /// certifying every seam in silence; `VX_ALLOW_UNVERIFIED=1` downgrades that to W1031.
     #[arg(long = "verify-seams")]
     pub verify_seams: bool,
 

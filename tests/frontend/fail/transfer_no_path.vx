@@ -21,5 +21,9 @@ fn main() -> i32 {
   return 0;
 }
 
-// CHECK: Cannot transfer
+// The code is pinned, not just the words. E6002 was declared and emitted
+// nowhere, so the compiler could not produce it while this diagnostic -- the one
+// it names -- carried no code at all and printed as a bare `Error:`.
+// CHECK: E6002
+// CHECK-SAME: Cannot transfer from CPU_DRAM to Island
 // CHECK-SAME: no hardware path

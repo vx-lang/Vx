@@ -588,8 +588,10 @@ impl<'a> TypeChecker<'a> {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E6001,
                             format!(
-                                "Type error: Function '{}' requires topology '{:?}', but is called from '{:?}'",
-                                resolved_name, req_topology, self.active_topology
+                                "Type error: Function '{}' requires topology '{}', but is called from '{}'",
+                                resolved_name,
+                                req_topology.display_name(),
+                                self.active_topology.display_name()
                             ),
                             Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                         );
@@ -639,8 +641,10 @@ impl<'a> TypeChecker<'a> {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E6001,
                             format!(
-                                "Type error: Function '{}' requires topology '{:?}', but is called from '{:?}'",
-                                resolved_name, func.0.topology, self.active_topology
+                                "Type error: Function '{}' requires topology '{}', but is called from '{}'",
+                                resolved_name,
+                                func.0.topology.display_name(),
+                                self.active_topology.display_name()
                             ),
                             Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                         );
@@ -688,6 +692,7 @@ impl<'a> TypeChecker<'a> {
                         args,
                         &arg_types,
                         &explicit_generic_args,
+                        span,
                     )
                     .unwrap_or(Type::Unknown)
                 } else if resolved_name.contains("::") {
@@ -938,6 +943,7 @@ impl<'a> TypeChecker<'a> {
         args: &[Expr],
         arg_types: &[Type],
         explicit_generic_args: &[Type],
+        span: &crate::syntax::Span,
     ) -> Option<Type> {
         let mut mapping: std::collections::HashMap<crate::symbol::Symbol, Type> = HashMap::new();
         let mut success = true;
@@ -1055,6 +1061,24 @@ impl<'a> TypeChecker<'a> {
             let inst_name = inst_func.name.clone();
 
             *name = inst_name.clone();
+
+            // The instance carries the placement, not the template: a generic bound to a device is
+            // a device function for every argument it is instantiated with. The two concrete call
+            // paths check this and this one must too -- the call site names the template, so it
+            // never reaches the `mono.functions` arm that would have caught it, and without this
+            // an `on Topology::..` on a generic was accepted from anywhere.
+            if !inst_func.topology.same_device(&self.active_topology) && !self.speculating {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E6001,
+                    format!(
+                        "Type error: Function '{}' requires topology '{}', but is called from '{}'",
+                        generic_func.name,
+                        inst_func.topology.display_name(),
+                        self.active_topology.display_name()
+                    ),
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                );
+            }
 
             if !self.env.functions.contains_key(inst_name.as_ref())
                 && !self.mono.functions.iter().any(|(f, _)| f.name == inst_name)

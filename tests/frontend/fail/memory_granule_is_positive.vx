@@ -1,0 +1,27 @@
+//===- memory_granule_is_positive.vx - Vx Compiler --------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// The third field E6008 covers.
+//
+// `granule` is the unit a space is addressed in, so it is the divisor in every
+// alignment and every occupancy figure computed against the space. Zero makes
+// each of those a division by zero -- the declaration is refused here rather
+// than left to fault somewhere in the middle of a placement decision.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: E6008
+// CHECK-SAME: 'Unaddressable'
+// CHECK-SAME: non-positive `granule`
+
+Memory CPU_DRAM {}
+Memory Unaddressable {
+  within: Memory::CPU_DRAM, capacity: 8 GiB, granule: 0 KiB
+}
+
+fn main() -> i32 {
+  return 0;
+}

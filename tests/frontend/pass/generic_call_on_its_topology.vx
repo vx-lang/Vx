@@ -1,0 +1,38 @@
+//===- generic_call_on_its_topology.vx - Vx Compiler ------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// The passing half of generic_call_needs_its_topology.vx, and the reason that
+// test proves anything.
+//
+// A topology check that refused every generic call would satisfy the failing
+// test just as well as a correct one. These two cases are what separate them:
+// the device-bound generic called from a region placed on the topology it names
+// compiles, and so does an unplaced generic called from the host.
+//
+// RUN: vxc %s | FileCheck %s
+
+fn scaled<const N : i32>(x : f32) on Topology::NPU[0] -> f32 {
+  return x * (N as f32);
+}
+
+fn twice<const N : i32>(x : f32) -> f32 {
+  return x * (N as f32);
+}
+
+fn main() -> i32 {
+  // Placed generic, called from the topology it names.
+  spawn on(Topology::NPU[0]) {
+    let d : f32 = scaled<4>(1.5);
+    print(d);
+  }
+  // Unplaced generic, called from the host: no requirement to violate.
+  let h : f32 = twice<3>(2.0);
+  print(h);
+  return 0;
+}
+
+// CHECK: 66

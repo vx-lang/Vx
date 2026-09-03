@@ -647,10 +647,20 @@ impl<'a> TypeChecker<'a> {
 
         if path_result.is_none() {
             if !self.speculating {
-                self.errors.push(format!(
-                    "Cannot transfer from {:?} to {:?}: no hardware path exists",
-                    source_mem, target_mem
-                ));
+                // E6002 is this diagnostic's code, and it used to carry none: the
+                // code was declared and emitted nowhere, so the compiler could not
+                // produce it while the behaviour it names was already refused here.
+                // Spaces print by name rather than by `{:?}`, which rendered a
+                // declared one as `Custom("Island")`.
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E6002,
+                    format!(
+                        "Cannot transfer from {} to {}: no hardware path exists",
+                        source_mem.name(),
+                        target_mem.name()
+                    ),
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(&t.span)),
+                );
             }
             return None;
         }

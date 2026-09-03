@@ -22,6 +22,7 @@ mod integration_test {
     mod memory_algebra_axioms;
     mod memory_algebra_fleet;
     mod metadata_test;
+    mod missing_solver_test;
     mod mlir_diagnostic_test;
     mod module_api_test;
     mod pipeline_scale_test;
