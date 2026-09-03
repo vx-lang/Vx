@@ -52,12 +52,16 @@ fn attention_on_the_neural_engine_computes_the_uniform_mean() {
         "expected exp(1)/(exp(1)+255) = 0.010543823; a wrong value near 0.00395 \
          means the scale was dropped:\n{stdout}"
     );
-    // Varied: every row and several head positions distinct, so a row-indexing
-    // or transposition error shows. It has no closed form, so the reference is
-    // the host fallback -- 0.2064209 for o[255][7], obtained by running the same
-    // program with the CoreML model moved aside. The tolerance is real rather
-    // than cosmetic: the Neural Engine accumulates in f16 and the host does not,
-    // so the two agree to about 1e-4 and not to the bit.
+    // Varied: every row and several head positions filled with seeded random
+    // values, so a row-indexing or transposition error shows and no structure in
+    // the input can hide one. It has no closed form, so the reference is the host
+    // fallback -- 0.012176514 for o[255][7], obtained by running the same program
+    // with the CoreML model moved aside. The seed is what makes that comparison
+    // legitimate: both paths draw the same numbers.
+    //
+    // The tolerance is real rather than cosmetic: the Neural Engine accumulates
+    // in f16 and the host does not, so the two agree to about 1e-5 here and not
+    // to the bit.
     // The program's own output is the last non-empty line; stdout also carries
     // the JIT's progress messages.
     let varied: f64 = stdout
@@ -67,7 +71,7 @@ fn attention_on_the_neural_engine_computes_the_uniform_mean() {
         .and_then(|t| t.parse().ok())
         .unwrap_or_else(|| panic!("expected a third value in:\n{stdout}"));
     assert!(
-        (varied - 0.2064209).abs() < 1e-3,
-        "varied attention drifted from the host fallback's 0.2064209: {varied}"
+        (varied - 0.012176514).abs() < 1e-3,
+        "varied attention drifted from the host fallback's 0.012176514: {varied}"
     );
 }

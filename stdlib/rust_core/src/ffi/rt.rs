@@ -211,3 +211,79 @@ pub extern "C-unwind" fn vx_catch_unwind(f: extern "C-unwind" fn() -> i32) -> i3
         }
     }
 }
+
+// ============================================================================
+// Pseudo-random numbers
+// ============================================================================
+//
+// SplitMix64, which is a multiply-xor-shift over a 64-bit counter. Cheap on
+// purpose: this exists so a test can fill a matrix with values that are not all
+// zero, and a zero-filled matrix hides indexing and transposition errors that
+// varied input catches immediately.
+//
+// Deterministic and seedable, which matters more here than statistical quality:
+// a differential test compares two execution paths on the *same* inputs, so the
+// sequence has to repeat exactly. `vx_rand_seed` sets it; the default seed is
+// fixed rather than taken from the clock, so a run is reproducible without
+// asking for it.
+//
+// Not cryptographic, and not a substitute for a real generator if distribution
+// quality ever matters. SplitMix64 passes BigCrush, which is far more than
+// filling test matrices needs.
+
+/// The generator's state. An atomic because a Vx program may fill buffers from
+/// more than one thread, and a torn read here would be a data race rather than
+/// merely a worse sequence.
+static VX_RNG_STATE: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0x9E37_79B9_7F4A_7C15);
+
+/// One SplitMix64 step: advance the counter, then scramble the value taken.
+fn vx_next_u64() -> u64 {
+    use std::sync::atomic::Ordering;
+    let z = VX_RNG_STATE
+        .fetch_add(0x9E37_79B9_7F4A_7C15, Ordering::Relaxed)
+        .wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    let z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+/// Set the seed, so a differential run sees the same sequence twice.
+#[no_mangle]
+pub extern "C" fn vx_rand_seed(seed: u64) {
+    VX_RNG_STATE.store(seed, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// A uniform `u64` over the whole range.
+#[no_mangle]
+pub extern "C" fn vx_rand_u64() -> u64 {
+    vx_next_u64()
+}
+
+/// A uniform `i32` over the whole range, negatives included.
+#[no_mangle]
+pub extern "C" fn vx_rand_i32() -> i32 {
+    (vx_next_u64() >> 32) as u32 as i32
+}
+
+/// A uniform `f32` in [0, 1).
+///
+/// Built from the top 24 bits rather than by dividing the integer, because f32
+/// has 24 bits of mantissa: taking more would round and could return exactly
+/// 1.0, which a caller scaling into a half-open range does not expect.
+#[no_mangle]
+pub extern "C" fn vx_rand_f32() -> f32 {
+    ((vx_next_u64() >> 40) as f32) * (1.0 / 16_777_216.0)
+}
+
+/// A uniform `f64` in [0, 1), on the same terms with 53 bits.
+#[no_mangle]
+pub extern "C" fn vx_rand_f64() -> f64 {
+    ((vx_next_u64() >> 11) as f64) * (1.0 / 9_007_199_254_740_992.0)
+}
+
+/// A uniform `f32` in [lo, hi), which is what filling a test matrix wants.
+#[no_mangle]
+pub extern "C" fn vx_rand_range_f32(lo: f32, hi: f32) -> f32 {
+    lo + (hi - lo) * vx_rand_f32()
+}

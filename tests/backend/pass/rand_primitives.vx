@@ -1,0 +1,66 @@
+//===- rand_primitives.vx - Vx Compiler -------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Pseudo-random numbers from the runtime, across the element types a test needs.
+//
+// This exists because zero-filled inputs hide bugs. A matrix of zeros gives the
+// right answer under a transposed operand, a wrong row stride, or a dropped
+// scale, and three separate defects in the ANE work were invisible until the
+// inputs varied.
+//
+// Determinism is the property under test, not distribution. A differential run
+// compares two execution paths on the *same* inputs, so re-seeding must replay
+// the sequence exactly -- which is why the expected values below are written
+// out rather than checked for being "random enough". SplitMix64 is integer
+// arithmetic and the conversions are IEEE, so the sequence is identical on
+// every platform.
+//
+// f16 comes from `vx_rand_f32() as f16` rather than its own entry point: Rust's
+// `f16` is still unstable, so the runtime cannot return one across the C ABI.
+// The cast is the honest spelling and loses nothing a random value needed.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK-LABEL: func.func @main
+// EXPECT: 0.3898297 0.016788244 | 0.3898297 0.016788244 | -1109970394 2949826092126892291 | -0.47693908 0.03164673
+
+extern "C" {
+  fn vx_rand_seed(s : u64) -> void;
+  fn vx_rand_u64() -> u64;
+  fn vx_rand_i32() -> i32;
+  fn vx_rand_f32() -> f32;
+  fn vx_rand_range_f32(lo : f32, hi : f32) -> f32;
+}
+
+fn main() -> i32 {
+  unsafe {
+    // Two draws, then the same two after re-seeding: the pair must repeat.
+    vx_rand_seed(7);
+    print(vx_rand_f32());
+    print!(" ");
+    print(vx_rand_f32());
+    print!(" | ");
+    vx_rand_seed(7);
+    print(vx_rand_f32());
+    print!(" ");
+    print(vx_rand_f32());
+
+    // The integer widths, from a seed of their own.
+    print!(" | ");
+    vx_rand_seed(42);
+    print(vx_rand_i32());
+    print!(" ");
+    print(vx_rand_u64());
+
+    // A signed range, and f16 by cast.
+    print!(" | ");
+    vx_rand_seed(99);
+    print(vx_rand_range_f32(-1.0, 1.0));
+    print!(" ");
+    print(vx_rand_f32() as f16);
+  }
+  return 0;
+}
