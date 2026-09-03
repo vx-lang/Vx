@@ -34,12 +34,22 @@ fn attention_on_the_neural_engine_computes_the_uniform_mean() {
         out.status.success(),
         "vxc --action run-jit failed:\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
-    // q and k are zero, so the softmax is uniform over 256 keys and the output
-    // row is the mean of v. One row of v is 1.0, so that mean is 1/256, which
-    // is exact in f16 -- the number is a property of the arithmetic, not a
-    // tolerance.
+    // Uniform: q and k are zero, so the softmax is uniform over 256 keys and the
+    // output row is the mean of v. One v row is 1.0, so the mean is 1/256, exact
+    // in f16 -- a property of the arithmetic rather than a tolerance.
     assert!(
         stdout.contains("0.00390625"),
         "expected the uniform mean 1/256 = 0.00390625:\n{stdout}"
+    );
+    // Scored: a genuinely non-uniform softmax, exp(1)/(exp(1)+255). This is the
+    // one that fails if the dispatcher drops Vx's scale -- CoreML's
+    // scaled_dot_product_attention always divides by sqrt(head_dim) and takes no
+    // scale argument, so q has to be pre-multiplied to cancel it. The uniform
+    // case above cannot see that bug, because a uniform softmax does not depend
+    // on the scale.
+    assert!(
+        stdout.contains("0.010543823"),
+        "expected exp(1)/(exp(1)+255) = 0.010543823; a wrong value near 0.00395 \
+         means the scale was dropped:\n{stdout}"
     );
 }

@@ -171,7 +171,8 @@ extern "C" int vx_dispatch_gpu(float *xout, float *x, float *w, int n, int d) {
 // range would be a model that runs on the host while looking like ANE coverage.
 extern "C" int vx_dispatch_ane_attention(void *o, const void *q, const void *k,
                                          const void *v, long long sq,
-                                         long long sk, long long hd) {
+                                         long long sk, long long hd,
+                                         float scale) {
   @autoreleasepool {
     static NSMutableDictionary<NSString *, MLModel *> *models = nil;
     static dispatch_once_t once;
@@ -206,8 +207,19 @@ extern "C" int vx_dispatch_ane_attention(void *o, const void *q, const void *k,
     const __fp16 *v16 = (const __fp16 *)v;
     __fp16 *o16 = (__fp16 *)o;
 
-    MLMultiArray *(^widen)(const __fp16 *, long long, size_t) =
-        ^MLMultiArray *(const __fp16 *src, long long seq, size_t elems) {
+    // CoreML's scaled_dot_product_attention has no scale parameter: it always
+    // divides by sqrt(head_dim). Vx carries an explicit scale, so q is
+    // pre-multiplied by scale*sqrt(hd) and the two cancel --
+    // (q*scale*sqrt(hd)).k / sqrt(hd) == (q.k)*scale.
+    //
+    // Dropping this was a real miscompile, and a cheap one to make: with q and k
+    // zero the softmax is uniform whatever the scale is, so the first test could
+    // not see it. A differential against the host fallback with a non-uniform
+    // softmax is what caught it.
+    const float q_scale = scale * sqrtf((float)hd);
+
+    MLMultiArray *(^widen)(const __fp16 *, long long, size_t, float) =
+        ^MLMultiArray *(const __fp16 *src, long long seq, size_t elems, float mul) {
       NSError *e = nil;
       MLMultiArray *a =
           [[MLMultiArray alloc] initWithShape:@[ @1, @(seq), @(hd) ]
@@ -218,14 +230,14 @@ extern "C" int vx_dispatch_ane_attention(void *o, const void *q, const void *k,
       }
       float *dst = (float *)a.dataPointer;
       for (size_t i = 0; i < elems; i++) {
-        dst[i] = (float)src[i];
+        dst[i] = (float)src[i] * mul;
       }
       return a;
     };
 
-    MLMultiArray *aq = widen(q16, sq, q_elems);
-    MLMultiArray *ak = widen(k16, sk, kv_elems);
-    MLMultiArray *av = widen(v16, sk, kv_elems);
+    MLMultiArray *aq = widen(q16, sq, q_elems, q_scale);
+    MLMultiArray *ak = widen(k16, sk, kv_elems, 1.0f);
+    MLMultiArray *av = widen(v16, sk, kv_elems, 1.0f);
     if (!aq || !ak || !av) {
       return 0;
     }
@@ -589,7 +601,8 @@ extern "C" uint64_t vx_plugin_dispatch_async(const void *binary_payload,
                (long long)attn.sq, (long long)attn.sk, (long long)attn.hd);
     if (vx_dispatch_ane_attention(attn.o_data, attn.q_data, attn.k_data,
                                   attn.v_data, (long long)attn.sq,
-                                  (long long)attn.sk, (long long)attn.hd)) {
+                                  (long long)attn.sk, (long long)attn.hd,
+                                  attn.scale)) {
       return 1;
     }
   }

@@ -23,18 +23,27 @@
 // sq*sk*hd, so a long sequence would make the non-ANE path impractical while
 // buying nothing, since total size is what the ANE threshold reads.
 //
-// q and k are left zeroed, so every score is equal and the softmax is uniform
-// over all 256 keys. The output row is then the mean of v. Filling one v row
-// with 1.0 and leaving the rest zero makes that mean 1/256 = 0.00390625, which
-// is exact in f16 -- so the expected number is a property of the arithmetic
-// rather than a tolerance.
+// Two cases, and the second exists because the first cannot fail the way this
+// code actually broke.
+//
+// `uniform` leaves q and k zeroed, so every score is equal and the softmax is
+// uniform over all 256 keys. The output row is the mean of v; one v row of 1.0
+// makes that 1/256 = 0.00390625, exact in f16.
+//
+// `scored` points every query along dimension 0 where only key 0 has weight, so
+// the softmax is genuinely non-uniform: exp(1)/(exp(1)+255) = 0.010543823. This
+// is the case that exercises the scoring path. CoreML's
+// scaled_dot_product_attention has no scale parameter and always divides by
+// sqrt(head_dim), so the dispatcher pre-multiplies q to cancel it -- and the
+// first version did not, which the uniform case could not see, because a
+// uniform softmax is uniform whatever the scale is.
 //
 // Driven by tests/integration_test/ane_attention_test.rs rather than by RUN
 // lines. `flash_attention_into` has no AST lowering, and tests/backend/pass is
 // compiled with --legacy-codegen, so this cannot live there; tests/flat is where
 // programs that require the flat path go, and they are run from Rust.
 
-fn main() -> i32 {
+fn uniform() -> f16 {
   let mut q = Tensor<f16, [ 256, 8192 ], Memory::NPU_HBM>::new();
   let mut k = Tensor<f16, [ 256, 8192 ], Memory::NPU_HBM>::new();
   let mut v = Tensor<f16, [ 256, 8192 ], Memory::NPU_HBM>::new();
@@ -49,6 +58,33 @@ fn main() -> i32 {
     flash_attention_into(&mut o, &q, &k, &v, 1.0);
   }
 
-  print(o[0][0]);
+  return o[0][0];
+}
+
+fn scored() -> f16 {
+  let mut q = Tensor<f16, [ 256, 8192 ], Memory::NPU_HBM>::new();
+  let mut k = Tensor<f16, [ 256, 8192 ], Memory::NPU_HBM>::new();
+  let mut v = Tensor<f16, [ 256, 8192 ], Memory::NPU_HBM>::new();
+  let mut o = Tensor<f16, [ 256, 8192 ], Memory::NPU_HBM>::new();
+
+  for i in 0..256 {
+    q[i][0] = 1.0;
+  }
+  k[0][0] = 1.0;
+  for d in 0..8192 {
+    v[0][d] = 1.0;
+  }
+
+  spawn on(Topology::NPU[0]) {
+    flash_attention_into(&mut o, &q, &k, &v, 1.0);
+  }
+
+  return o[0][0];
+}
+
+fn main() -> i32 {
+  print(uniform());
+  print!(" ");
+  print(scored());
   return 0;
 }
