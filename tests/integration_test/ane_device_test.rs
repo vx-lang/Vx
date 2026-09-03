@@ -122,10 +122,7 @@ fn the_dispatcher_reports_the_device_coreml_chose() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let vxc = PathBuf::from(env!("CARGO_BIN_EXE_vxc"));
     let program = root.join("benchmarks/flash_attention_ane/flash_attention_split.vx");
-    if !program.is_file() {
-        eprintln!("skipping: {} is absent", program.display());
-        return;
-    }
+    assert!(program.is_file(), "missing {}", program.display());
 
     let out = Command::new(&vxc)
         .current_dir(&root)
@@ -153,13 +150,27 @@ fn the_dispatcher_reports_the_device_coreml_chose() {
          which device it chose; the banner has to come from the compute plan"
     );
 
-    // The positive half needs the route to have fired at all. Without the
-    // compiled primitives the program falls back to the CPU shim, and there is
-    // no plan to report -- which is a missing fixture rather than a failure.
-    if !log.contains("Recognised GEMM 512x512x512 f16") {
-        eprintln!("skipping the placement check: the f16 GEMM route did not fire");
+    // The positive half needs the route to have fired, and "it did not fire" has two
+    // very different causes. With no compiled primitive the program falls back to the
+    // CPU shim and there is nothing to report, which is a missing fixture. With the
+    // primitive present, a route that does not fire is the regression this test is
+    // for -- so the model on disk decides which of the two this is, rather than the
+    // absence of a log line skipping the check either way.
+    let primitive = root.join("matmul_512x512_fp16.mlmodelc");
+    let fired = log.contains("Recognised GEMM 512x512x512 f16");
+    if !fired && !primitive.is_dir() {
+        eprintln!(
+            "skipping the placement check: no {} was built",
+            primitive.display()
+        );
         return;
     }
+    assert!(
+        fired,
+        "{} exists, so the f16 GEMM route should have taken it; the dispatcher \
+         fell back instead:\n{log}",
+        primitive.display()
+    );
     assert!(
         log.contains("CoreML plans matmul_512x512_fp16.mlmodelc on the Neural Engine"),
         "the f16 512 primitive is the one CoreML puts on the Neural Engine, and \
