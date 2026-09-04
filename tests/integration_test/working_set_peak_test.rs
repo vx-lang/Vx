@@ -23,9 +23,6 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-/// 1024*768*4.
-const TILE: u64 = 3_145_728;
-
 /// Roomy on purpose. The matrix below measures the peak the checker computes, so every
 /// shape in it has to compile -- a refusal would stop the figure being reported at all
 /// and the case would say nothing about which tiles coexist.
@@ -42,122 +39,177 @@ Topology Dev {
 }
 ";
 
-/// A placement of one tile, bound to `name`.
-fn place(name: &str) -> String {
-    format!(
-        "  let {name}_t = Tensor<f32, [1024, 768]>::uninit();\n  \
-         let _{name} = transfer({name}_t, Memory::W);\n"
-    )
-}
+/// One tile: 1024*768*4 bytes.
+const TILE: u64 = 3_145_728;
 
 struct Case {
     /// What the shape is, in the failure message.
     what: &'static str,
-    /// Statements for the body of `main`.
-    body: String,
-    /// Expected peak residency in W, in bytes.
-    peak: u64,
-    /// Expected number of tiles in that peak.
+    /// The body of `main`, written out so the shape can be read here rather than
+    /// assembled from fragments.
+    body: &'static str,
+    /// Expected peak residency in W, in tiles. Each tile is TILE bytes.
     tiles: usize,
 }
 
-fn cases() -> Vec<Case> {
-    let one = |n| TILE * n;
-    vec![
-        Case {
-            what: "one placement",
-            body: place("a"),
-            peak: one(1),
-            tiles: 1,
-        },
-        Case {
-            what: "two in the same block coexist until the function ends",
-            body: place("a") + &place("b"),
-            peak: one(2),
-            tiles: 2,
-        },
-        Case {
-            what: "a block's tile is gone before the next one is placed",
-            body: format!("  if true {{\n{}  }}\n{}", place("a"), place("b")),
-            peak: one(1),
-            tiles: 1,
-        },
-        Case {
-            what: "sibling blocks never share the space",
-            body: format!(
-                "  if true {{\n{}  }}\n  if true {{\n{}  }}\n",
-                place("a"),
-                place("b")
-            ),
-            peak: one(1),
-            tiles: 1,
-        },
-        Case {
-            what: "the arms of one `if` are siblings too",
-            body: format!(
-                "  if true {{\n{}  }} else {{\n{}  }}\n",
-                place("a"),
-                place("b")
-            ),
-            peak: one(1),
-            tiles: 1,
-        },
-        Case {
-            what: "an enclosing tile is still resident inside the block",
-            body: place("a") + &format!("  if true {{\n{}  }}\n", place("b")),
-            peak: one(2),
-            tiles: 2,
-        },
-        Case {
-            what: "an outer placement after the block does not meet the block's tile",
-            body: format!("  if true {{\n{}  }}\n", place("a")) + &place("b"),
-            peak: one(1),
-            tiles: 1,
-        },
-        Case {
-            // The two outer tiles are two, not three: the block's tile was released when
-            // the block closed and never meets `c`. A sum over the function would say 3.
-            what: "outer, then a block, then outer again: the two outer ones meet",
-            body: place("a") + &format!("  if true {{\n{}  }}\n", place("b")) + &place("c"),
-            peak: one(2),
-            tiles: 2,
-        },
-        Case {
-            what: "nesting accumulates down a chain",
-            body: place("a")
-                + &format!(
-                    "  if true {{\n{}    if true {{\n{}    }}\n  }}\n",
-                    place("b"),
-                    place("c")
-                ),
-            peak: one(3),
-            tiles: 3,
-        },
-        Case {
-            what: "a deep chain whose branches are siblings",
-            body: format!(
-                "  if true {{\n{}    if true {{\n{}    }}\n    if true {{\n{}    }}\n  }}\n",
-                place("a"),
-                place("b"),
-                place("c")
-            ),
-            peak: one(2),
-            tiles: 2,
-        },
-        Case {
-            what: "a loop body is one residency, not one per iteration",
-            body: format!("  for i in 0..4 {{\n{}  }}\n", place("a")),
-            peak: one(1),
-            tiles: 1,
-        },
-        Case {
-            what: "a tile enclosing a loop meets the loop's own",
-            body: place("a") + &format!("  for i in 0..4 {{\n{}  }}\n", place("b")),
-            peak: one(2),
-            tiles: 2,
-        },
-    ]
-}
+/// Every case places 3 MiB tiles into `W`. What differs is the blocks they sit in,
+/// which is what decides how many of them are resident at once.
+const CASES: &[Case] = &[
+    Case {
+        what: "one placement",
+        body: "
+  let a = Tensor<f32, [1024, 768]>::uninit();
+  let _sa = transfer(a, Memory::W);
+",
+        tiles: 1,
+    },
+    Case {
+        what: "two in the same block are resident together until the function ends",
+        body: "
+  let a = Tensor<f32, [1024, 768]>::uninit();
+  let _sa = transfer(a, Memory::W);
+  let b = Tensor<f32, [1024, 768]>::uninit();
+  let _sb = transfer(b, Memory::W);
+",
+        tiles: 2,
+    },
+    Case {
+        what: "a block's tile is released before the next one is placed",
+        body: "
+  if true {
+    let a = Tensor<f32, [1024, 768]>::uninit();
+    let _sa = transfer(a, Memory::W);
+  }
+  let b = Tensor<f32, [1024, 768]>::uninit();
+  let _sb = transfer(b, Memory::W);
+",
+        tiles: 1,
+    },
+    Case {
+        what: "sibling blocks never share the space",
+        body: "
+  if true {
+    let a = Tensor<f32, [1024, 768]>::uninit();
+    let _sa = transfer(a, Memory::W);
+  }
+  if true {
+    let b = Tensor<f32, [1024, 768]>::uninit();
+    let _sb = transfer(b, Memory::W);
+  }
+",
+        tiles: 1,
+    },
+    Case {
+        what: "the two arms of one `if` are siblings too",
+        body: "
+  if true {
+    let a = Tensor<f32, [1024, 768]>::uninit();
+    let _sa = transfer(a, Memory::W);
+  } else {
+    let b = Tensor<f32, [1024, 768]>::uninit();
+    let _sb = transfer(b, Memory::W);
+  }
+",
+        tiles: 1,
+    },
+    Case {
+        what: "an enclosing tile is still resident inside the block",
+        body: "
+  let a = Tensor<f32, [1024, 768]>::uninit();
+  let _sa = transfer(a, Memory::W);
+  if true {
+    let b = Tensor<f32, [1024, 768]>::uninit();
+    let _sb = transfer(b, Memory::W);
+  }
+",
+        tiles: 2,
+    },
+    Case {
+        what: "a tile placed after a block does not meet the block's own",
+        body: "
+  if true {
+    let a = Tensor<f32, [1024, 768]>::uninit();
+    let _sa = transfer(a, Memory::W);
+  }
+  let b = Tensor<f32, [1024, 768]>::uninit();
+  let _sb = transfer(b, Memory::W);
+",
+        tiles: 1,
+    },
+    Case {
+        // Two, not three: `b` is gone by the time `c` is placed. A sum would say three,
+        // and this is the shape that needs the program-order bound as well as the
+        // prefix test -- `a` and `c` share a scope chain with `b`'s prefix.
+        what: "outer, then a block, then outer again: only the two outer ones meet",
+        body: "
+  let a = Tensor<f32, [1024, 768]>::uninit();
+  let _sa = transfer(a, Memory::W);
+  if true {
+    let b = Tensor<f32, [1024, 768]>::uninit();
+    let _sb = transfer(b, Memory::W);
+  }
+  let c = Tensor<f32, [1024, 768]>::uninit();
+  let _sc = transfer(c, Memory::W);
+",
+        tiles: 2,
+    },
+    Case {
+        what: "nesting accumulates down a chain",
+        body: "
+  let a = Tensor<f32, [1024, 768]>::uninit();
+  let _sa = transfer(a, Memory::W);
+  if true {
+    let b = Tensor<f32, [1024, 768]>::uninit();
+    let _sb = transfer(b, Memory::W);
+    if true {
+      let c = Tensor<f32, [1024, 768]>::uninit();
+      let _sc = transfer(c, Memory::W);
+    }
+  }
+",
+        tiles: 3,
+    },
+    Case {
+        what: "a deep chain whose two inner branches are siblings",
+        body: "
+  if true {
+    let a = Tensor<f32, [1024, 768]>::uninit();
+    let _sa = transfer(a, Memory::W);
+    if true {
+      let b = Tensor<f32, [1024, 768]>::uninit();
+      let _sb = transfer(b, Memory::W);
+    }
+    if true {
+      let c = Tensor<f32, [1024, 768]>::uninit();
+      let _sc = transfer(c, Memory::W);
+    }
+  }
+",
+        tiles: 2,
+    },
+    Case {
+        what: "a loop body is one residency, not one per iteration",
+        body: "
+  for i in 0..4 {
+    let a = Tensor<f32, [1024, 768]>::uninit();
+    let _sa = transfer(a, Memory::W);
+  }
+",
+        tiles: 1,
+    },
+    Case {
+        what: "a tile enclosing a loop meets the loop's own",
+        body: "
+  let a = Tensor<f32, [1024, 768]>::uninit();
+  let _sa = transfer(a, Memory::W);
+  for i in 0..4 {
+    let b = Tensor<f32, [1024, 768]>::uninit();
+    let _sb = transfer(b, Memory::W);
+  }
+",
+        tiles: 2,
+    },
+];
 
 fn compile(root: &PathBuf, src: &std::path::Path) -> (bool, String) {
     let out = Command::new(env!("CARGO_BIN_EXE_vxc"))
@@ -205,30 +257,31 @@ fn the_working_set_is_the_peak_of_what_coexists() {
     std::fs::create_dir_all(&dir).expect("failed to create the scratch directory");
 
     let mut wrong = Vec::new();
-    for (i, case) in cases().iter().enumerate() {
+    for (i, case) in CASES.iter().enumerate() {
+        let program = format!(
+            "{MACHINE}\nfn main() -> i32 {{{}  return 0;\n}}\n",
+            case.body
+        );
         let src = dir.join(format!("case{i}.vx"));
-        std::fs::write(
-            &src,
-            format!(
-                "{MACHINE}\nfn main() -> i32 {{\n{}  return 0;\n}}\n",
-                case.body
-            ),
-        )
-        .expect("failed to write the case");
+        std::fs::write(&src, &program).expect("failed to write the case");
 
         let (ok, log) = compile(&root, &src);
-        // Every case here fits: the point is the figure, not the refusal. A case that
-        // does not compile is a broken fixture and says nothing about the peak.
+        // Every case here fits: the point is the figure, not the refusal. A case that does
+        // not compile is a broken fixture and says nothing about which tiles coexist.
         if !ok {
-            wrong.push(format!("  {}: did not compile\n{}", case.what, log));
+            wrong.push(format!("{}: did not compile\n{program}\n{log}", case.what));
             continue;
         }
+        let expected = TILE * case.tiles as u64;
         match resident(&log) {
-            None => wrong.push(format!("  {}: no resident set was recorded", case.what)),
-            Some((bytes, tiles)) if bytes != case.peak || tiles != case.tiles => {
+            None => wrong.push(format!(
+                "{}: no resident set was recorded\n{program}",
+                case.what
+            )),
+            Some((bytes, tiles)) if bytes != expected || tiles != case.tiles => {
                 wrong.push(format!(
-                    "  {}: expected {} bytes over {} tile(s), got {} over {}",
-                    case.what, case.peak, case.tiles, bytes, tiles
+                    "{}: expected {} bytes over {} tile(s), got {} over {}\n{program}",
+                    case.what, expected, case.tiles, bytes, tiles
                 ))
             }
             Some(_) => {}
@@ -238,7 +291,7 @@ fn the_working_set_is_the_peak_of_what_coexists() {
 
     assert!(
         wrong.is_empty(),
-        "the working set does not match what coexists:\n{}",
+        "the working set does not match what coexists:\n\n{}",
         wrong.join("\n")
     );
 }
@@ -250,43 +303,60 @@ fn a_peak_over_capacity_is_still_refused() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let dir = std::env::temp_dir().join(format!("vx-working-set-over-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("failed to create the scratch directory");
-
-    // Three tiles in one block: 9 MiB into a 4 MiB space.
+    // 3 MiB tiles into a 4 MiB space, so two of them already do not fit.
     let small = MACHINE.replace("capacity: 64 MiB", "capacity: 4 MiB");
+
+    let over = format!(
+        "{small}
+fn main() -> i32 {{
+  let a = Tensor<f32, [1024, 768]>::uninit();
+  let _sa = transfer(a, Memory::W);
+  let b = Tensor<f32, [1024, 768]>::uninit();
+  let _sb = transfer(b, Memory::W);
+  let c = Tensor<f32, [1024, 768]>::uninit();
+  let _sc = transfer(c, Memory::W);
+  return 0;
+}}
+"
+    );
     let src = dir.join("over.vx");
-    std::fs::write(
-        &src,
-        format!(
-            "{small}\nfn main() -> i32 {{\n{}{}{}  return 0;\n}}\n",
-            place("a"),
-            place("b"),
-            place("c")
-        ),
-    )
-    .expect("failed to write the case");
+    std::fs::write(&src, &over).expect("failed to write the case");
     let (ok, log) = compile(&root, &src);
-    assert!(!ok, "three tiles in one block must not fit 4 MiB:\n{log}");
+    assert!(
+        !ok,
+        "three tiles in one block must not fit 4 MiB:\n{over}\n{log}"
+    );
     assert!(
         log.contains("E6010") && log.contains(&(TILE * 3).to_string()),
         "the refusal must name the peak it computed:\n{log}"
     );
 
-    // The same three, each in its own block: never more than one at a time.
+    // The same three tiles, each in its own block: never more than one at a time.
+    let spread = format!(
+        "{small}
+fn main() -> i32 {{
+  if true {{
+    let a = Tensor<f32, [1024, 768]>::uninit();
+    let _sa = transfer(a, Memory::W);
+  }}
+  if true {{
+    let b = Tensor<f32, [1024, 768]>::uninit();
+    let _sb = transfer(b, Memory::W);
+  }}
+  if true {{
+    let c = Tensor<f32, [1024, 768]>::uninit();
+    let _sc = transfer(c, Memory::W);
+  }}
+  return 0;
+}}
+"
+    );
     let src = dir.join("spread.vx");
-    std::fs::write(
-        &src,
-        format!(
-            "{small}\nfn main() -> i32 {{\n  if true {{\n{}  }}\n  if true {{\n{}  }}\n  if true {{\n{}  }}\n  return 0;\n}}\n",
-            place("a"),
-            place("b"),
-            place("c")
-        ),
-    )
-    .expect("failed to write the case");
+    std::fs::write(&src, &spread).expect("failed to write the case");
     let (ok, log) = compile(&root, &src);
     let _ = std::fs::remove_dir_all(&dir);
     assert!(
         ok,
-        "the same three tiles in sibling blocks never coexist and must fit:\n{log}"
+        "the same three tiles in sibling blocks never coexist and must fit:\n{spread}\n{log}"
     );
 }
