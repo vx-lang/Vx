@@ -79,6 +79,19 @@ impl BorrowCx {
         self.current_stmt_idx.pop();
     }
 
+    /// Whether `name` is read at all in the innermost block.
+    ///
+    /// A binding nobody reads has no last use, so it is absent from the block's liveness map. The
+    /// lowering releases such a tile where it is made -- nothing can observe it -- and the capacity
+    /// check needs the same answer to agree with what runs. Unknown means read, which keeps the
+    /// tile resident and is the conservative direction.
+    pub(crate) fn is_variable_ever_read(&self, name: &str) -> bool {
+        match self.block_liveness.last() {
+            Some(liveness) => liveness.contains_key(&Symbol::from(name)),
+            None => true,
+        }
+    }
+
     /// Whether `name` is still read at a statement *after* the one currently being checked, in the
     /// innermost block. The NLL predicate the dead-borrow sweep turns on.
     fn is_variable_used_after(&self, name: &str) -> bool {

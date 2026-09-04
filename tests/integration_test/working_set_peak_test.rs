@@ -35,7 +35,8 @@ Topology Dev {
   arch: nvptx64,
   memory: Memory::W,
   visible: [Memory::W],
-  transfer Memory::CPU_DRAM -> Memory::W : 10
+  transfer Memory::CPU_DRAM -> Memory::W : 10,
+  transfer Memory::W -> Memory::CPU_DRAM : 10
 }
 ";
 
@@ -58,18 +59,21 @@ const CASES: &[Case] = &[
     Case {
         what: "one placement",
         body: "
-  let a = Tensor<f32, [1024, 768]>::uninit();
-  let _sa = transfer(a, Memory::W);
+  let aT = Tensor<f32, [1024, 768]>::uninit();
+  let a = transfer(aT, Memory::W);
+  let _ra = transfer(a, Memory::CPU_DRAM);
 ",
         tiles: 1,
     },
     Case {
-        what: "two in the same block are resident together until the function ends",
+        what: "two in the same block, both live until they are read",
         body: "
-  let a = Tensor<f32, [1024, 768]>::uninit();
-  let _sa = transfer(a, Memory::W);
-  let b = Tensor<f32, [1024, 768]>::uninit();
-  let _sb = transfer(b, Memory::W);
+  let aT = Tensor<f32, [1024, 768]>::uninit();
+  let a = transfer(aT, Memory::W);
+  let bT = Tensor<f32, [1024, 768]>::uninit();
+  let b = transfer(bT, Memory::W);
+  let _ra = transfer(a, Memory::CPU_DRAM);
+  let _rb = transfer(b, Memory::CPU_DRAM);
 ",
         tiles: 2,
     },
@@ -77,11 +81,13 @@ const CASES: &[Case] = &[
         what: "a block's tile is released before the next one is placed",
         body: "
   if true {
-    let a = Tensor<f32, [1024, 768]>::uninit();
-    let _sa = transfer(a, Memory::W);
+    let aT = Tensor<f32, [1024, 768]>::uninit();
+    let a = transfer(aT, Memory::W);
+    let _ra = transfer(a, Memory::CPU_DRAM);
   }
-  let b = Tensor<f32, [1024, 768]>::uninit();
-  let _sb = transfer(b, Memory::W);
+  let bT = Tensor<f32, [1024, 768]>::uninit();
+  let b = transfer(bT, Memory::W);
+  let _rb = transfer(b, Memory::CPU_DRAM);
 ",
         tiles: 1,
     },
@@ -89,12 +95,14 @@ const CASES: &[Case] = &[
         what: "sibling blocks never share the space",
         body: "
   if true {
-    let a = Tensor<f32, [1024, 768]>::uninit();
-    let _sa = transfer(a, Memory::W);
+    let aT = Tensor<f32, [1024, 768]>::uninit();
+    let a = transfer(aT, Memory::W);
+    let _ra = transfer(a, Memory::CPU_DRAM);
   }
   if true {
-    let b = Tensor<f32, [1024, 768]>::uninit();
-    let _sb = transfer(b, Memory::W);
+    let bT = Tensor<f32, [1024, 768]>::uninit();
+    let b = transfer(bT, Memory::W);
+    let _rb = transfer(b, Memory::CPU_DRAM);
   }
 ",
         tiles: 1,
@@ -103,11 +111,13 @@ const CASES: &[Case] = &[
         what: "the two arms of one `if` are siblings too",
         body: "
   if true {
-    let a = Tensor<f32, [1024, 768]>::uninit();
-    let _sa = transfer(a, Memory::W);
+    let aT = Tensor<f32, [1024, 768]>::uninit();
+    let a = transfer(aT, Memory::W);
+    let _ra = transfer(a, Memory::CPU_DRAM);
   } else {
-    let b = Tensor<f32, [1024, 768]>::uninit();
-    let _sb = transfer(b, Memory::W);
+    let bT = Tensor<f32, [1024, 768]>::uninit();
+    let b = transfer(bT, Memory::W);
+    let _rb = transfer(b, Memory::CPU_DRAM);
   }
 ",
         tiles: 1,
@@ -115,12 +125,14 @@ const CASES: &[Case] = &[
     Case {
         what: "an enclosing tile is still resident inside the block",
         body: "
-  let a = Tensor<f32, [1024, 768]>::uninit();
-  let _sa = transfer(a, Memory::W);
+  let aT = Tensor<f32, [1024, 768]>::uninit();
+  let a = transfer(aT, Memory::W);
   if true {
-    let b = Tensor<f32, [1024, 768]>::uninit();
-    let _sb = transfer(b, Memory::W);
+    let bT = Tensor<f32, [1024, 768]>::uninit();
+    let b = transfer(bT, Memory::W);
+    let _rb = transfer(b, Memory::CPU_DRAM);
   }
+  let _ra = transfer(a, Memory::CPU_DRAM);
 ",
         tiles: 2,
     },
@@ -128,44 +140,49 @@ const CASES: &[Case] = &[
         what: "a tile placed after a block does not meet the block's own",
         body: "
   if true {
-    let a = Tensor<f32, [1024, 768]>::uninit();
-    let _sa = transfer(a, Memory::W);
+    let aT = Tensor<f32, [1024, 768]>::uninit();
+    let a = transfer(aT, Memory::W);
+    let _ra = transfer(a, Memory::CPU_DRAM);
   }
-  let b = Tensor<f32, [1024, 768]>::uninit();
-  let _sb = transfer(b, Memory::W);
+  let bT = Tensor<f32, [1024, 768]>::uninit();
+  let b = transfer(bT, Memory::W);
+  let _rb = transfer(b, Memory::CPU_DRAM);
 ",
         tiles: 1,
     },
     Case {
-        // Two, not three: `b` is gone by the time `c` is placed. A sum would say three,
-        // and this is the shape that needs the program-order bound as well as the
-        // prefix test -- `a` and `c` share a scope chain with `b`'s prefix.
         what: "outer, then a block, then outer again: only the two outer ones meet",
         body: "
-  let a = Tensor<f32, [1024, 768]>::uninit();
-  let _sa = transfer(a, Memory::W);
+  let aT = Tensor<f32, [1024, 768]>::uninit();
+  let a = transfer(aT, Memory::W);
   if true {
-    let b = Tensor<f32, [1024, 768]>::uninit();
-    let _sb = transfer(b, Memory::W);
+    let bT = Tensor<f32, [1024, 768]>::uninit();
+    let b = transfer(bT, Memory::W);
+    let _rb = transfer(b, Memory::CPU_DRAM);
   }
-  let c = Tensor<f32, [1024, 768]>::uninit();
-  let _sc = transfer(c, Memory::W);
+  let cT = Tensor<f32, [1024, 768]>::uninit();
+  let c = transfer(cT, Memory::W);
+  let _ra = transfer(a, Memory::CPU_DRAM);
+  let _rc = transfer(c, Memory::CPU_DRAM);
 ",
         tiles: 2,
     },
     Case {
         what: "nesting accumulates down a chain",
         body: "
-  let a = Tensor<f32, [1024, 768]>::uninit();
-  let _sa = transfer(a, Memory::W);
+  let aT = Tensor<f32, [1024, 768]>::uninit();
+  let a = transfer(aT, Memory::W);
   if true {
-    let b = Tensor<f32, [1024, 768]>::uninit();
-    let _sb = transfer(b, Memory::W);
+    let bT = Tensor<f32, [1024, 768]>::uninit();
+    let b = transfer(bT, Memory::W);
     if true {
-      let c = Tensor<f32, [1024, 768]>::uninit();
-      let _sc = transfer(c, Memory::W);
+      let cT = Tensor<f32, [1024, 768]>::uninit();
+      let c = transfer(cT, Memory::W);
+      let _rc = transfer(c, Memory::CPU_DRAM);
     }
+    let _rb = transfer(b, Memory::CPU_DRAM);
   }
+  let _ra = transfer(a, Memory::CPU_DRAM);
 ",
         tiles: 3,
     },
@@ -173,16 +190,19 @@ const CASES: &[Case] = &[
         what: "a deep chain whose two inner branches are siblings",
         body: "
   if true {
-    let a = Tensor<f32, [1024, 768]>::uninit();
-    let _sa = transfer(a, Memory::W);
+    let aT = Tensor<f32, [1024, 768]>::uninit();
+    let a = transfer(aT, Memory::W);
     if true {
-      let b = Tensor<f32, [1024, 768]>::uninit();
-      let _sb = transfer(b, Memory::W);
+      let bT = Tensor<f32, [1024, 768]>::uninit();
+      let b = transfer(bT, Memory::W);
+      let _rb = transfer(b, Memory::CPU_DRAM);
     }
     if true {
-      let c = Tensor<f32, [1024, 768]>::uninit();
-      let _sc = transfer(c, Memory::W);
+      let cT = Tensor<f32, [1024, 768]>::uninit();
+      let c = transfer(cT, Memory::W);
+      let _rc = transfer(c, Memory::CPU_DRAM);
     }
+    let _ra = transfer(a, Memory::CPU_DRAM);
   }
 ",
         tiles: 2,
@@ -191,8 +211,9 @@ const CASES: &[Case] = &[
         what: "a loop body is one residency, not one per iteration",
         body: "
   for i in 0..4 {
-    let a = Tensor<f32, [1024, 768]>::uninit();
-    let _sa = transfer(a, Memory::W);
+    let aT = Tensor<f32, [1024, 768]>::uninit();
+    let a = transfer(aT, Memory::W);
+    let _ra = transfer(a, Memory::CPU_DRAM);
   }
 ",
         tiles: 1,
@@ -200,12 +221,14 @@ const CASES: &[Case] = &[
     Case {
         what: "a tile enclosing a loop meets the loop's own",
         body: "
-  let a = Tensor<f32, [1024, 768]>::uninit();
-  let _sa = transfer(a, Memory::W);
+  let aT = Tensor<f32, [1024, 768]>::uninit();
+  let a = transfer(aT, Memory::W);
   for i in 0..4 {
-    let b = Tensor<f32, [1024, 768]>::uninit();
-    let _sb = transfer(b, Memory::W);
+    let bT = Tensor<f32, [1024, 768]>::uninit();
+    let b = transfer(bT, Memory::W);
+    let _rb = transfer(b, Memory::CPU_DRAM);
   }
+  let _ra = transfer(a, Memory::CPU_DRAM);
 ",
         tiles: 2,
     },
@@ -309,12 +332,15 @@ fn a_peak_over_capacity_is_still_refused() {
     let over = format!(
         "{small}
 fn main() -> i32 {{
-  let a = Tensor<f32, [1024, 768]>::uninit();
-  let _sa = transfer(a, Memory::W);
-  let b = Tensor<f32, [1024, 768]>::uninit();
-  let _sb = transfer(b, Memory::W);
-  let c = Tensor<f32, [1024, 768]>::uninit();
-  let _sc = transfer(c, Memory::W);
+  let aT = Tensor<f32, [1024, 768]>::uninit();
+  let a = transfer(aT, Memory::W);
+  let bT = Tensor<f32, [1024, 768]>::uninit();
+  let b = transfer(bT, Memory::W);
+  let cT = Tensor<f32, [1024, 768]>::uninit();
+  let c = transfer(cT, Memory::W);
+  let _ra = transfer(a, Memory::CPU_DRAM);
+  let _rb = transfer(b, Memory::CPU_DRAM);
+  let _rc = transfer(c, Memory::CPU_DRAM);
   return 0;
 }}
 "

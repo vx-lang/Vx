@@ -493,6 +493,10 @@ impl<'a> TypeChecker<'a> {
                 Self::extract_uses_expr(&i.index, uses);
             }
             Expr::Borrow(b) => Self::extract_uses_expr(&b.expr, uses),
+            // `transfer(x, Memory::W)` reads `x`. Without this the block's liveness map has no
+            // entry for a value whose only reader is a transfer, which makes a live tile look
+            // dead -- and the same map is what the dead-borrow sweep consults.
+            Expr::Transfer(t) => Self::extract_uses_expr(&t.expr, uses),
             Expr::Dereference(d) => Self::extract_uses_expr(&d.expr, uses),
             Expr::StructInit(s) => {
                 for f in &s.fields {

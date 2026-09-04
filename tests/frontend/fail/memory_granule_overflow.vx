@@ -30,6 +30,11 @@ fn main() -> i32 {
   let sa = transfer(a, Memory::PAD);
   let sb = transfer(b, Memory::PAD);
   let sc = transfer(c, Memory::PAD);
+  // Read after the last placement: a tile's life runs to its last reader, so tiles
+  // nobody reads are released where they are made and never share the space.
+  let _ra = transfer(sa, Memory::CPU_DRAM);
+  let _rb = transfer(sb, Memory::CPU_DRAM);
+  let _rc = transfer(sc, Memory::CPU_DRAM);
   return 0;
 }
 

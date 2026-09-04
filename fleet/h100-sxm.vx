@@ -59,6 +59,9 @@ Topology Device {
   // No FP4: that arrives with Blackwell, which is the boundary this list exists to state.
   dtypes: [f64, f32, bf16, f16, f8e4m3, f8e5m2, i8, u8, i16, u16, i32, u32, i64, u64, bool],
   transfer Memory::CPU_DRAM -> Memory::HBM : 63 GB/s,
+  // The way home. Reading a placed tensor back is how a program says it still
+  // holds it; without the edge the model can only describe one direction.
+  transfer Memory::HBM -> Memory::CPU_DRAM : 63 GB/s,
   transfer Memory::HBM -> Memory::L2,
   // spec: Hopper keeps Ampere's cp.async and adds the TMA (PTX ISA 8.3 section 9.7.8.25);
   // one `copy_engine` flag covers both -- the algebra models capability, not which engine.

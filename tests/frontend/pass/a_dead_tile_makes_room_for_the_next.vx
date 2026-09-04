@@ -1,0 +1,72 @@
+//===- a_dead_tile_makes_room_for_the_next.vx - Vx Compiler -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Three placements into a space that holds only the largest of them.
+//
+// 16 MiB, then 16 KiB, then 64 MiB, into 64 MiB. Summed they are 83902464 bytes
+// and do not fit. They are never summed, because nothing reads them: a tile's
+// life runs to its last reader, so each is released where it is made and the next
+// is allocated into a space the previous one has already given back.
+//
+//   %11 = call @vx_plugin_alloc_and_transfer(...)   // 16 MiB
+//   call @vx_plugin_free(%11, ...)
+//   %17 = call @vx_plugin_alloc_and_transfer(...)   // 16 KiB
+//   call @vx_plugin_free(%17, ...)
+//   %23 = call @vx_plugin_alloc_and_transfer(...)   // 64 MiB
+//   call @vx_plugin_free(%23, ...)
+//
+// So the peak is 67108864 -- the largest single tile, filling the space exactly --
+// and the program is admitted.
+//
+// This is the case the accounting was built for and could not express until the
+// release followed lifetime rather than block dominance. Before that a placement
+// was held to the end of the function whether or not anything could still read it,
+// and this program was refused for residency it never had.
+//
+// `fills_the_space` is the same 64 MiB tile in its own function, which is where
+// the budget resets: it reports full utilization on its own.
+//
+// RUN: vxc %s --action emit-mlir -o /dev/null --diagnostics-json 2>/dev/null | FileCheck %s
+// CHECK: "resident_sets"
+// CHECK: "space": "W"
+// CHECK-SAME: "total_bytes": 67108864
+// CHECK-SAME: "capacity_bytes": 67108864
+// CHECK-SAME: "utilization": 1
+// CHECK-SAME: "tiles": 1
+// main holds one tile at a time, and its peak is the largest of the three.
+// CHECK: "space": "W"
+// CHECK-SAME: "total_bytes": 67108864
+// CHECK-SAME: "utilization": 1
+// CHECK-SAME: "tiles": 1
+
+Memory CPU_DRAM {}
+Memory W {
+  within: Memory::CPU_DRAM, capacity: 64 MiB, managed: explicit
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::W,
+  visible: [Memory::W],
+  transfer Memory::CPU_DRAM -> Memory::W : 10
+}
+
+// A single tile the exact size of the space it is placed in.
+fn fills_the_space() -> i32 {
+  let whole = Tensor<f32, [4096, 4096]>::uninit();
+  let _w = transfer(whole, Memory::W);
+  return 0;
+}
+
+fn main() -> i32 {
+  let big = Tensor<f32, [2048, 2048]>::uninit();
+  let s = transfer(big, Memory::W);
+  let small = Tensor<f32, [64, 64]>::uninit();
+  let s = transfer(small, Memory::W);
+  let whole = Tensor<f32, [4096, 4096]>::uninit();
+  let s = transfer(whole, Memory::W);
+  return fills_the_space();
+}

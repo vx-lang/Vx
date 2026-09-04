@@ -32,6 +32,11 @@ fn main() -> i32 {
   let q = transfer(qt, Memory::Local_SRAM);
   let k = transfer(kt, Memory::Local_SRAM);
   let v = transfer(vt, Memory::Local_SRAM);
+  // Read after the last placement: a tile's life runs to its last reader, so tiles
+  // nobody reads are released where they are made and never share the space.
+  let _rq = transfer(q, Memory::CPU_DRAM);
+  let _rk = transfer(k, Memory::CPU_DRAM);
+  let _rv = transfer(v, Memory::CPU_DRAM);
   return 0;
 }
 

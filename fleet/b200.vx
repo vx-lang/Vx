@@ -98,6 +98,9 @@ Topology Device {
   // a 7x difference in every host-seam prediction. Settling it is experiment M1/M4.
   // The on-die hops below declare no cost -- their `bandwidth:` figures derive it (E6013).
   transfer Memory::CPU_DRAM -> Memory::HBM : 63 GB/s,
+  // The way home. Reading a placed tensor back is how a program says it still
+  // holds it; without the edge the model can only describe one direction.
+  transfer Memory::HBM -> Memory::CPU_DRAM : 63 GB/s,
   transfer Memory::HBM -> Memory::L2,
   transfer Memory::L2 -> Memory::SMEM
 }

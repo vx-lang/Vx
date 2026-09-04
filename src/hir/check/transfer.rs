@@ -331,7 +331,18 @@ impl<'a> TypeChecker<'a> {
         // Order is assigned once per placement. A node the checker visits twice keeps the
         // position it had the first time, so a re-check cannot make one tile look like two
         // that straddle a block boundary.
-        let scope = self.traffic.scope_chain.clone();
+        // A tile nobody reads is released where it is made, so it never joins the residency of
+        // anything placed after it. Giving it a scope of its own says exactly that: no later
+        // placement has this chain as a prefix, so no later peak counts it.
+        let never_read = match &self.current_assignment_target {
+            Some(name) => !self.borrow.is_variable_ever_read(name),
+            None => false,
+        };
+        let mut scope = self.traffic.scope_chain.clone();
+        if never_read {
+            self.traffic.next_scope_id += 1;
+            scope.push(self.traffic.next_scope_id);
+        }
         let tiles = self
             .traffic
             .memory_placements

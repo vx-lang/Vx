@@ -75,6 +75,18 @@ fn admit<const LAYERS : i32, const HEADS : i32, const KVHEADS : i32, const HDIM 
   let a : Tensor<f16, [BATCH * CTX, HEADS * HDIM]> = Tensor<f16>([BATCH * CTX, HEADS * HDIM]);
   let _activations = transfer(a, Memory::HBM);
 
+  // The step reads all three together, which is what makes them co-resident.
+  // Placement alone does not: a tile's life runs to its last reader, so three
+  // tensors nobody reads are released where they are made and the peak is the
+  // largest of them rather than their sum. The serving step this configuration is
+  // sized for holds weights, cache and activations at once, and says so here.
+  //
+  // Read back to the host rather than through a device call, because a host caller
+  // cannot see HBM -- passing a placed tensor to one is the visibility error, not a
+  // read. The host declares no capacity, so these add no residency of their own.
+  let _rw = transfer(_weights, Memory::CPU_DRAM);
+  let _rk = transfer(_kv_cache, Memory::CPU_DRAM);
+  let _ra = transfer(_activations, Memory::CPU_DRAM);
   return 0;
 }
 

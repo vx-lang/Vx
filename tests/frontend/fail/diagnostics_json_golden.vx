@@ -28,7 +28,8 @@ Topology TC {
   memory: Memory::SMEM,
   visible: [Memory::SMEM, Memory::HBM],
   transfer Memory::CPU_DRAM -> Memory::HBM : 300,
-  transfer Memory::HBM -> Memory::SMEM : 40
+  transfer Memory::HBM -> Memory::SMEM : 40,
+  transfer Memory::SMEM -> Memory::HBM : 40
 }
 
 fn main() -> i32 {
@@ -38,6 +39,11 @@ fn main() -> i32 {
   let _sq = transfer(q, Memory::SMEM);
   let _sk = transfer(k, Memory::SMEM);
   let _sv = transfer(v, Memory::SMEM);
+  // Read after the last placement: a tile's life runs to its last reader, so tiles
+  // nobody reads are released where they are made and never share the space.
+  let _rq = transfer(_sq, Memory::HBM);
+  let _rk = transfer(_sk, Memory::HBM);
+  let _rv = transfer(_sv, Memory::HBM);
   return 0;
 }
 

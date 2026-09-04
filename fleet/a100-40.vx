@@ -49,6 +49,9 @@ Topology Device {
   // UNVERIFIED on this SKU; the host link and its achieved bandwidth are experiment M1/M4.
   // The on-die hops below declare no cost -- their `bandwidth:` figures derive it (E6013).
   transfer Memory::CPU_DRAM -> Memory::HBM : 31.5 GB/s,
+  // The way home. Reading a placed tensor back is how a program says it still
+  // holds it; without the edge the model can only describe one direction.
+  transfer Memory::HBM -> Memory::CPU_DRAM : 31.5 GB/s,
   transfer Memory::HBM -> Memory::L2,
   transfer Memory::L2 -> Memory::SMEM
 }

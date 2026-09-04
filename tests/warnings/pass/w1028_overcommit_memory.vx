@@ -32,5 +32,12 @@ fn main() -> i32 {
   let q = transfer(qt, Memory::Local_SRAM);
   let k = transfer(kt, Memory::Local_SRAM);
   let v = transfer(vt, Memory::Local_SRAM);
+  // Read all three after the last is placed, which is what makes them coexist: a
+  // tile's life runs to its last reader, so one nobody reads is released where it is
+  // made and never joins anyone else's residency. Q/K/V are read together by the
+  // matmul this space is sized for, so reading them here is the shape, not a prop.
+  let _rq = transfer(q, Memory::CPU_DRAM);
+  let _rk = transfer(k, Memory::CPU_DRAM);
+  let _rv = transfer(v, Memory::CPU_DRAM);
   return 0;
 }
