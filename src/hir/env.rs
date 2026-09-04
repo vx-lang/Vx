@@ -372,14 +372,10 @@ impl<'a> TypeChecker<'a> {
     }
 
     pub fn push_scope(&mut self) {
-        // A lexical scope is also the lifetime of every tile placed inside it: the lowering
-        // releases a placement at the end of the block that made it, and these are the scopes
-        // that become blocks -- a control-flow body, a loop, a spawn region, the function. The
-        // capacity check reads the chain to tell tiles that coexist from tiles that merely share
-        // a function.
-        self.traffic.next_scope_id += 1;
-        let scope_id = self.traffic.next_scope_id;
-        self.traffic.scope_chain.push(scope_id);
+        // Conservative by default: the tiles placed in here are treated as still resident
+        // outside it. Only `push_releasing_scope` claims otherwise, and only for the scopes
+        // whose end the lowering actually frees at.
+        self.traffic.scope_releases.push(false);
         self.scopes.push(std::collections::HashMap::new());
         self.borrow
             .moved_vars
@@ -387,8 +383,29 @@ impl<'a> TypeChecker<'a> {
         self.consteval.env.push(std::collections::HashMap::new());
     }
 
+    /// A scope the lowering frees at the end of: an `if` arm, a loop body. A tile placed inside
+    /// one is gone once it closes, so it does not count against what is placed afterwards.
+    ///
+    /// Verified against the emitted IR rather than assumed, because the rule the lowering follows
+    /// is dominance rather than nesting -- a scope whose block dominates the function's exits has
+    /// its frees hoisted there instead. `if` arms and loop bodies do not dominate; a `spawn`
+    /// region does, which is why it uses the plain `push_scope`.
+    pub fn push_releasing_scope(&mut self) {
+        self.traffic.next_scope_id += 1;
+        let scope_id = self.traffic.next_scope_id;
+        self.traffic.scope_chain.push(scope_id);
+        self.scopes.push(std::collections::HashMap::new());
+        self.traffic.scope_releases.push(true);
+        self.borrow
+            .moved_vars
+            .push(std::collections::HashSet::new());
+        self.consteval.env.push(std::collections::HashMap::new());
+    }
+
     pub fn pop_scope(&mut self) {
-        self.traffic.scope_chain.pop();
+        if self.traffic.scope_releases.pop().unwrap_or(false) {
+            self.traffic.scope_chain.pop();
+        }
         let depth = self.scopes.len();
         self.scopes.pop();
         self.borrow.moved_vars.pop();

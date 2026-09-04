@@ -146,8 +146,17 @@ pub struct TrafficState {
     pub memory_placements: HashMap<MemorySpace, HashMap<String, Placement>>,
     /// Monotonic id for placements with no binding name, so they still count toward the sum.
     pub placement_site: usize,
-    /// The blocks currently open, outermost first. Pushed by `check_block`.
+    /// The *releasing* blocks currently open, outermost first.
+    ///
+    /// Only scopes the lowering actually frees at the end of are on this chain. That is
+    /// narrower than "lexical scope": the release goes to the function's exits whenever the
+    /// defining block dominates them, so an unconditionally-entered scope -- a `spawn` region,
+    /// whose block ends in an unconditional branch -- holds its tiles until the function
+    /// returns. Treating one of those as releasing admits a program that then exceeds the space.
     pub scope_chain: Vec<u32>,
+    /// Whether each open scope put an id on `scope_chain`, so `pop_scope` can undo exactly
+    /// what its `push` did.
+    pub scope_releases: Vec<bool>,
     /// Ids for the blocks in `scope_chain`; a block gets a fresh one each time it is entered.
     pub next_scope_id: u32,
     /// Program order for placements, so "already placed when this one happened" is answerable.

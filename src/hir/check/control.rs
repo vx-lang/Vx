@@ -68,7 +68,7 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
-        self.push_scope();
+        self.push_releasing_scope();
         let mut then_ty = Type::Struct("void".into(), None);
         if !self.speculating && !if_expr.then_block.is_empty() {
             then_ty = self.check_expr_block(&mut if_expr.then_block, consume);
@@ -78,7 +78,7 @@ impl<'a> TypeChecker<'a> {
         let mut else_ty = Type::Struct("void".into(), None);
         if let Some(else_b) = if_expr.else_block.as_mut() {
             if !else_b.is_empty() {
-                self.push_scope();
+                self.push_releasing_scope();
                 if !self.speculating {
                     else_ty = self.check_expr_block(else_b, consume);
                 }

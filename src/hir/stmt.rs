@@ -224,7 +224,7 @@ impl<'a> TypeChecker<'a> {
             span: _,
         } = floop;
         let iterable_ty = self.check_expr_type_flag(iterable, consume);
-        self.push_scope();
+        self.push_releasing_scope();
 
         // If it's Range, it's I64. If it's Iterator, we extract from Option<T>
         // If it's Tensor, we extract the ElementType
@@ -358,7 +358,7 @@ impl<'a> TypeChecker<'a> {
             span: _,
             invariants,
         } = lp;
-        self.push_scope();
+        self.push_releasing_scope();
 
         let prev_constraints_len = self.consteval.constraints.len();
         for inv in invariants.iter() {

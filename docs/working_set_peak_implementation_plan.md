@@ -22,9 +22,11 @@ Three properties, and the analysis needs all three:
    reasoning.
 1. **Spaces declare a capacity.** The budget is a number in the machine model rather than a property
    of the machine the program happens to run on.
-1. **Release is lexical.** The lowering emits the release at the end of the block that made the
-   placement, so a tile's lifetime is exactly its enclosing block. That is what turns "do these
-   overlap" into a question about the syntax tree.
+1. **Release follows the block structure, for the scopes that can be bypassed.** The lowering's
+   rule is dominance rather than nesting: a block that dominates the function's exits has its
+   frees hoisted to those exits, and only a block that can be skipped is freed at its own end.
+   For an `if` arm or a loop body -- which can be -- the tile's lifetime is exactly that block,
+   which is what turns "do these overlap" into a question about the syntax tree.
 
 The third is the one that does the work, and it is worth being precise about it. From the emitted IR
 for a tile placed inside an `if` body and another placed after it:
@@ -50,6 +52,42 @@ the same block, the release follows the use:
   %15 = call @vx_plugin_transfer_device_to_host(%11, %14, ...)   // the use
   call @vx_plugin_free(%11, ...)                                 // after it
 ```
+
+### Which scopes actually release
+
+Nesting and lifetime are not the same thing here, and reading them as the same was a real
+unsoundness. A `spawn` region ends in an unconditional branch, so its block dominates the exits and
+its tile lives to the function's return:
+
+```
+^bb1:                                            // the spawn region
+  %11 = call @vx_plugin_alloc_and_transfer(...)
+  br ^bb2                                        // no free
+^bb2:
+  %17 = call @vx_plugin_alloc_and_transfer(...)
+  call @vx_plugin_free(%11, ...)                 // both released only here
+  call @vx_plugin_free(%17, ...)
+```
+
+An `if` arm nests exactly the same way in the source and behaves the opposite way, because it can be
+bypassed and therefore does not dominate:
+
+```
+^bb1:
+  %11 = call @vx_plugin_alloc_and_transfer(...)
+  call @vx_plugin_free(%11, ...)                 // freed at the end of its own block
+  br ^bb2
+```
+
+So the chain records only the scopes whose end the lowering frees at. `push_releasing_scope` marks
+those; `push_scope` -- the default -- does not, which keeps a scope's tiles resident outside it. The
+default is the conservative direction: it can refuse a program that would fit, and cannot admit one
+that does not.
+
+Opted in, each verified against emitted IR rather than reasoned about: **`if` arms** and **loop
+bodies**. Left conservative: `spawn` regions, `comptime` and `unsafe` blocks, match arms, and closure
+bodies. A match arm is probably releasing on the same grounds as an `if` arm; it stays out until
+someone checks the IR, because the cost of being wrong is asymmetric.
 
 ## The algorithm
 
