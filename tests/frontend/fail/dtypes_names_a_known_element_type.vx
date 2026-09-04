@@ -1,0 +1,37 @@
+//===- dtypes_names_a_known_element_type.vx - Vx Compiler -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// A `dtypes:` entry the compiler has never heard of.
+//
+// The spelling is `f8e4m3`, not `fp8`, and the difference matters more here than
+// it usually would: an unrecognised name that were skipped would silently narrow
+// the machine's vocabulary, and the resulting E6026 would name a topology that
+// looks like it should have accepted the placement. A machine file is a
+// declaration, so a word in it that means nothing is refused where it is written.
+//
+// This is also why hardware types with no `ElementType` -- tf32, fp6 -- appear in
+// no machine file rather than being written down and ignored.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: does not know the element type 'fp8'
+
+Memory CPU_DRAM {}
+Memory HBM {
+  within: Memory::CPU_DRAM, capacity: 8 GiB
+}
+
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::HBM,
+  visible: [Memory::HBM],
+  // The OCP name for this encoding is `f8e4m3`.
+  dtypes: [f32, fp8]
+}
+
+fn main() -> i32 {
+  return 0;
+}

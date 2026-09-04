@@ -1,0 +1,38 @@
+//===- dtypes_list_is_not_empty.vx - Vx Compiler ----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// A machine that declares it can represent nothing.
+//
+// `dtypes: []` is not a narrow machine, it is a contradiction: every placement on
+// it would be refused, one element type at a time, and no program could put any
+// value there at all. Nothing a machine file means to say comes out that way.
+//
+// The distinction it collides with is the one the field rests on. An absent
+// `dtypes:` means unstated and constrains nothing, which is what keeps every
+// machine file written before the field existed working. An empty list would be
+// the opposite reading of the same silence, so writing one is refused rather
+// than quietly treated as either.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: `dtypes:` is empty
+// CHECK-SAME: omit the field
+
+Memory CPU_DRAM {}
+Memory HBM {
+  within: Memory::CPU_DRAM, capacity: 8 GiB
+}
+
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::HBM,
+  visible: [Memory::HBM],
+  dtypes: []
+}
+
+fn main() -> i32 {
+  return 0;
+}
