@@ -172,7 +172,7 @@ impl<'a> TypeChecker<'a> {
                     .push(format!("Type mismatch in variable declaration '{}'", name));
             }
             // Capacity: a `Ref`/`Pinned` tensor annotation must fit its memory space.
-            self.check_type_placement(ann, &format!("variable '{}'", name));
+            self.check_type_placement(ann, &format!("variable '{}'", name), span);
             self.insert(name.to_string(), ann.clone());
             ann.clone()
         } else {

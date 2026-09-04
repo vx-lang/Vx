@@ -1,0 +1,39 @@
+//===- working_set_counts_a_placement_once.vx - Vx Compiler -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// One tile, placed once, counted once.
+//
+// The companion to working_set_counts_shadowed_placements.vx, and the reason that
+// test cannot be satisfied by just making the key unique per visit. A method-call
+// transfer is checked twice -- once as written, once after it is rewritten into a
+// call -- and `check_capacity` has no guard against the second visit. A key that
+// counts visits rather than placements turns this single 3 MiB tile into 6 MiB and
+// refuses a program that fits.
+//
+// That is not hypothetical: keying by a counter did exactly this, and it read as a
+// working-set overflow with the right arithmetic on a tile that was only ever
+// placed once.
+//
+// RUN: vxc %s | FileCheck %s
+
+Memory Local_SRAM {
+  capacity: 4 MiB, managed: cached
+}
+
+fn main() -> i32 {
+  // 3 MiB into a 4 MiB space: fits once, overflows if counted twice.
+  //
+  // The receiver is a call rather than a name on purpose. A placement rooted at an
+  // identifier takes its position from that identifier and is stable across the
+  // second visit on its own; this shape has no such position, which is the case
+  // the fallback exists for and the one that actually double-counted.
+  let _s = Tensor<f32, [1024, 768]>::uninit().to_sram_relaxed();
+  print(5);
+  return 0;
+}
+
+// CHECK: 5

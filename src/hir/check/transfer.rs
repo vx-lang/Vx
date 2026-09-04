@@ -232,6 +232,7 @@ impl<'a> TypeChecker<'a> {
         dims: &[Expr],
         space: &MemorySpace,
         context: &str,
+        span: &Span,
     ) {
         let sized = {
             let h = crate::hir::memory::MemoryHierarchy::build(self.env.memories.values().copied());
@@ -298,13 +299,34 @@ impl<'a> TypeChecker<'a> {
                 tiles: None,
             });
         }
-        // Record for the cumulative (working-set) budget check at end of function.
-        let key = match &self.current_assignment_target {
-            Some(name) => name.clone(),
-            None => {
-                self.traffic.placement_site += 1;
-                format!("@site{}", self.traffic.placement_site)
-            }
+        // Record for the cumulative (working-set) budget check at end of function, keyed by
+        // *where the placement is written* rather than by the name it is bound to.
+        //
+        // The binding name collapsed two placements that shared one, which is a legal program:
+        // shadowing is deliberate here, and nothing releases the tile the shadowed name held. So
+        // `let s = ..; let s = ..;` recorded one tile of the later size, understating the working
+        // set and reporting a resident-set figure that was the last placement's size rather than
+        // the peak (Vx#443).
+        //
+        // A source position is the identity that survives the thing that goes wrong with a
+        // counter: `check_capacity` has no `speculating` guard, unlike `record_staging_route`
+        // beside it, so a node checked twice must land on the same key both times. A counter mints
+        // a fresh one per visit and would inflate the sum; a span does not move.
+        // Whatever the key is, it has to be the *same* on every visit to one placement. The
+        // checker walks some nodes twice -- a method-call transfer is checked once as written and
+        // again after it is rewritten into a call, both times with `speculating` false -- and
+        // `check_capacity` has no guard against that, unlike `record_staging_route` beside it. A
+        // counter mints a fresh key per visit and turns one 3 MiB tile into two.
+        let key = if span.line != 0 || span.column != 0 {
+            format!("@{}:{}:{}", span.line, span.column, span.length)
+        } else if let Some(name) = &self.current_assignment_target {
+            // A synthesized placement carrying no position: fall back to the binding, which is
+            // what this keyed on before and is stable across the second visit. Two shadowed
+            // placements that *both* lack a position still collapse, exactly as they did before.
+            name.clone()
+        } else {
+            self.traffic.placement_site += 1;
+            format!("@site{}", self.traffic.placement_site)
         };
         self.traffic
             .memory_placements
@@ -453,14 +475,14 @@ impl<'a> TypeChecker<'a> {
     ///
     /// A `let` annotation is the one placement position not reachable from the declaration tables,
     /// which is why the check that a placement names a real place is also called from here.
-    pub(crate) fn check_type_placement(&mut self, ty: &Type, context: &str) {
+    pub(crate) fn check_type_placement(&mut self, ty: &Type, context: &str, span: &Span) {
         self.report_unheld_placements(ty, context);
         // A placed tensor is checked against the space it names, the same as the
         // two wrapper spellings below.
         if let Some(p) = ty.placement() {
             if let Some((e, d)) = Self::tensor_of(ty) {
                 let space = p.space.clone();
-                self.check_capacity(e, d, &space, context);
+                self.check_capacity(e, d, &space, context, span);
                 self.check_element_type(e, &space, context);
             }
             return;
@@ -468,14 +490,14 @@ impl<'a> TypeChecker<'a> {
         match ty {
             Type::Ref(inner, mem) => {
                 if let Some((e, d)) = Self::tensor_of(inner) {
-                    self.check_capacity(e, d, mem, context);
+                    self.check_capacity(e, d, mem, context, span);
                     self.check_element_type(e, mem, context);
                 }
             }
             Type::Pinned(inner, top) if !matches!(top, Topology::Current) => {
                 if let Some((e, d)) = Self::tensor_of(inner) {
                     let space = self.transfer_cost_graph.default_memory_for(top);
-                    self.check_capacity(e, d, &space, context);
+                    self.check_capacity(e, d, &space, context, span);
                     self.check_element_type(e, &space, context);
                 }
             }
@@ -644,7 +666,11 @@ impl<'a> TypeChecker<'a> {
 
         // Capacity: a statically-shaped tensor transferred into a declared space must fit.
         if let Some((e, d)) = Self::tensor_of(&inner_ty) {
-            self.check_capacity(e, d, &target_mem, "transferred tensor");
+            // `TransferExpr` carries no position of its own, so the buffer it moves supplies
+            // one: distinct per `transfer(..)` written in the source, and the same on a
+            // second visit to the same node.
+            let placement_span = Self::buffer_span(&t.expr).unwrap_or(t.span);
+            self.check_capacity(e, d, &target_mem, "transferred tensor", &placement_span);
             self.check_element_type(e, &target_mem, "transferred tensor");
         }
 
