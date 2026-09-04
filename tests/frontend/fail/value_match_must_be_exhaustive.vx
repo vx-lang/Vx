@@ -1,0 +1,39 @@
+//===- value_match_must_be_exhaustive.vx - Vx Compiler ----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// A `match` used as a value has to produce one on every path. This one names
+// two of `Color`'s three variants and has no wildcard, so `Blue` falls through
+// with nothing to yield.
+//
+// The refusal names the variant that is missing, because that is the edit: add
+// the arm, or add a `_`. Codegen used to answer the whole match with a constant
+// zero, which made the missing case indistinguishable from an arm returning 0.
+//
+// The statement-position form of the same match is fine and is not refused --
+// nothing reads its value, so falling through yields nothing that is needed.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: E3020
+// CHECK-SAME: produces a value but does not cover Blue
+// CHECK-SAME: add a `_` arm
+
+enum Color {
+  Red, Green, Blue
+}
+
+fn main() -> i32 {
+  let c = Color::Blue;
+  let x = match c {
+    Color::Red => {
+      1
+    }
+    Color::Green => {
+      42
+    }
+  };
+  return x;
+}

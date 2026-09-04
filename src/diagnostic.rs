@@ -207,6 +207,20 @@ pub enum DiagnosticCode {
     /// element type silently stayed at its `f32` default) and then crash codegen with an
     /// internal error rather than a diagnostic. See Vx#354.
     E3018,
+    /// A `match` arm whose integer literal cannot be represented in the scrutinee's type.
+    ///
+    /// The arm can never be selected, so the program does not mean what it says. Codegen used to
+    /// parse the literal with a zero fallback, which turned an unrepresentable arm into a
+    /// comparison against 0 -- so the arm fired for scrutinee 0, the most common value there is,
+    /// with no diagnostic.
+    E3019,
+    /// A `match` used as a value that no arm is guaranteed to match.
+    ///
+    /// A value-position match must produce a value on every path, so it needs a wildcard arm or
+    /// must name every variant of its scrutinee's enum. Without that the fall-through edge has
+    /// no value to carry, and codegen used to paper over it by evaluating the whole match to a
+    /// constant zero.
+    E3020,
 
     // --- Borrow/Ownership Errors (E4xxx) ---
     /// Use of moved or consumed linear variable

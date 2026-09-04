@@ -786,6 +786,47 @@ impl ElementType {
             ElementType::Generic(_) => return None,
         })
     }
+
+    /// Whether an integer literal, as written, is representable in this type.
+    ///
+    /// `None` when the question does not apply (a float or generic element type, or a literal
+    /// with a fractional part -- those are type errors reported elsewhere, and answering
+    /// "out of range" for them would name the wrong defect).
+    pub fn accepts_integer_literal(&self, text: &str) -> Option<bool> {
+        if text.contains('.') {
+            return None;
+        }
+        let bits = self.bits()?;
+        let signed = match self {
+            ElementType::I4
+            | ElementType::I8
+            | ElementType::I16
+            | ElementType::I32
+            | ElementType::I64
+            | ElementType::I128 => true,
+            ElementType::U4
+            | ElementType::U8
+            | ElementType::U16
+            | ElementType::U32
+            | ElementType::U64
+            | ElementType::U128 => false,
+            _ => return None,
+        };
+        Some(if signed {
+            match text.parse::<i128>() {
+                // 128 bits is the widest we can hold, so a successful parse is in range.
+                Ok(_) if bits >= 128 => true,
+                Ok(v) => v >= -(1i128 << (bits - 1)) && v < (1i128 << (bits - 1)),
+                Err(_) => false,
+            }
+        } else {
+            match text.parse::<u128>() {
+                Ok(_) if bits >= 128 => true,
+                Ok(v) => v < (1u128 << bits),
+                Err(_) => false,
+            }
+        })
+    }
 }
 
 impl std::fmt::Display for ElementType {

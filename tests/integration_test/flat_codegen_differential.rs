@@ -899,6 +899,46 @@ fn flat_matches_ast_enum_match_wildcard() {
     );
 }
 
+/// A `match` used as a value evaluates to the arm that matched.
+///
+/// The AST lowering used to branch through the arms and then return a hard-coded
+/// `arith.constant 0` as the match's value, so every value-producing match evaluated to zero --
+/// silently, with the wrong value reaching the process exit code. The flat path declines `Match`
+/// and falls back to this oracle, so nothing else was in a position to catch it.
+///
+/// Asserted through the AST path alone, since the flat path has no lowering to compare against.
+#[test]
+fn a_value_match_evaluates_to_the_arm_that_matched() {
+    let src = "enum Color { Red, Green, Blue }\n\
+               fn pick(c: Color) -> i32 { let x = match c { Color::Red => { 1 } \
+                 Color::Green => { 42 } Color::Blue => { 3 } }; return x; }\n\
+               fn main() -> i32 { return pick(Color::Green); }";
+    assert_eq!(ast_exit_code(src), 42, "the Green arm's value, not zero");
+
+    // Each arm, so the answer tracks the scrutinee rather than happening to equal one arm.
+    for (variant, want) in [("Red", 1), ("Green", 42), ("Blue", 3)] {
+        let src = format!(
+            "enum Color {{ Red, Green, Blue }}\n\
+             fn pick(c: Color) -> i32 {{ let x = match c {{ Color::Red => {{ 1 }} \
+               Color::Green => {{ 42 }} Color::Blue => {{ 3 }} }}; return x; }}\n\
+             fn main() -> i32 {{ return pick(Color::{variant}); }}"
+        );
+        assert_eq!(ast_exit_code(&src), want, "arm {variant}");
+    }
+}
+
+/// An integer `match` in value position, selected by a wildcard arm.
+#[test]
+fn a_value_match_over_integers_takes_its_wildcard() {
+    assert_eq!(
+        ast_exit_code(
+            "fn main() -> i32 { let n = 7; let x = match n { 1 => { 10 } 2 => { 20 } \
+             _ => { 99 } }; return x; }"
+        ),
+        99
+    );
+}
+
 #[test]
 fn flat_matches_ast_sizeof_value() {
     // `sizeof<T>()` folds to a compile-time `i64` constant of `T`'s byte size, matching the AST

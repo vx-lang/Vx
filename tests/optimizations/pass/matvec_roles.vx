@@ -31,6 +31,13 @@
 // A view produces this shape, which is how it was found, and a view is how a
 // model's weights become tensors in the first place (#336).
 //
+// `a` and `b` are what this test is about, and they still arrive re-homed: the
+// kernel stores each captured buffer into a local slot and reads it back. The
+// destination is filled in place rather than allocated and published, because
+// codegen now recovers a literal-extent view's shape whether or not the binding
+// repeats it as an annotation. It used to depend on that annotation, so the
+// `outkind` here was pinned by which spelling the program happened to use.
+//
 // The store that fills the slot has to be the only one, or what it holds at the
 // matmul is not decidable by inspection and no role is claimed.
 //
@@ -46,11 +53,11 @@
 // RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s
 // CHECK: vx.launch @vx_npu_kernel_0
 // CHECK: vx.kernel_kind = "matmul"
-// CHECK: vx.kernel_out_kind = "slot"
-// CHECK: vx.kernel_roles = "a:0,b:1,out:2"
+// CHECK: vx.kernel_out_kind = "buffer"
+// CHECK: vx.kernel_roles = "a:1,b:2,out:0"
 //
 // RUN: vxc %s --emit-llvm 2>&1 | FileCheck %s --check-prefix=PAYLOAD
-// PAYLOAD: \00kind=matmul\00roles=a:0,b:1,out:2\00outkind=slot\00
+// PAYLOAD: \00kind=matmul\00roles=a:1,b:2,out:0\00outkind=buffer\00
 
 extern "C" {
   fn vx_alloc_f32(n : i32) -> *mut f32;

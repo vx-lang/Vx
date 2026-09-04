@@ -3182,12 +3182,62 @@ impl<'c> LowerToMelior<'c> for MatchExpr {
     ) -> Self::Output {
         let (match_val, match_ty, block) = gen.generate_expr(&self.expr, block)?;
 
+        // The match yields a value exactly when an arm ends in a tail expression -- the same
+        // rule the checker uses to type it. The merge block then takes that value as a block
+        // argument and each arm branches with its own, which is what makes the match evaluate
+        // to what its arms say. The type comes from the first such arm rather than from
+        // `expected_type`, which is unset for an unannotated `let`.
+        let tail_expr = self.arms.iter().find_map(|arm| match arm.body.last() {
+            Some(syntax::Statement::ExprStmt(syntax::stmt::ExprStmtStmt {
+                expr,
+                has_semi: false,
+                ..
+            })) => Some(expr),
+            _ => None,
+        });
+        // The fallback to `expected_type` applies only when there *is* a tail expression whose
+        // type could not be inferred. Applying it to a match with no tail expression at all
+        // would make a statement-position match look value-producing, and every arm would then
+        // have to yield something it never had.
+        let value_ty = tail_expr.and_then(|e| {
+            match e {
+                // `infer_ast_type` has no arm for a bare literal, and an arm body is usually
+                // exactly that. Read the literal's own type, which the checker stamps, and fall
+                // back to how the parser would have typed it.
+                Expr::Number(n) => {
+                    let elem = n.ty.clone().unwrap_or_else(|| {
+                        crate::parser::expr::default_number_elem(n.value.as_ref())
+                    });
+                    gen.lower_type(&syntax::Type::Scalar(elem)).ok()
+                }
+                other => gen
+                    .infer_ast_type(other)
+                    .and_then(|t| gen.lower_type(&t).ok()),
+            }
+            .or(gen.expected_type)
+        });
+
         let parent_region = block.parent_region().unwrap();
-        let merge_block = parent_region.append_block(melior::ir::Block::new(&[]));
-        generate_match_chain(gen, &self.arms, match_val, match_ty, block, merge_block)?;
+        let merge_block = match value_ty {
+            Some(ty) => parent_region.append_block(melior::ir::Block::new(&[(ty, gen.loc())])),
+            None => parent_region.append_block(melior::ir::Block::new(&[])),
+        };
+        generate_match_chain(
+            gen,
+            &self.arms,
+            match_val,
+            match_ty,
+            block,
+            merge_block,
+            value_ty,
+        )?;
         let block = merge_block;
 
-        // Return dummy value for now like IfExpr
+        if let Some(ty) = value_ty {
+            return Ok((block.argument(0)?.into(), ty, block));
+        }
+
+        // Statement position: nothing reads the result, so a placeholder is the whole story.
         let ty = melior::ir::r#type::IntegerType::new(gen.context, 32).into();
         let op = OperationBuilder::new("arith.constant", gen.loc())
             .add_results(&[ty])

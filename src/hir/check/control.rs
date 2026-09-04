@@ -156,6 +156,56 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// The variant names of `ty`'s enum declaration, or `None` when it is not an enum this
+    /// compilation declares (so exhaustiveness cannot be decided by enumeration).
+    fn enum_variants_of(&self, ty: &Type) -> Option<Vec<crate::symbol::Symbol>> {
+        let name = match ty {
+            Type::Enum(n, _) | Type::Struct(n, _) => n.clone(),
+            Type::GenericInstance(inner, _) => match &**inner {
+                Type::Enum(n, _) | Type::Struct(n, _) => n.clone(),
+                _ => return None,
+            },
+            _ => return None,
+        };
+        let base = match name.find('<') {
+            Some(i) => crate::symbol::Symbol::from(&name[..i]),
+            None => name,
+        };
+        self.env
+            .enums
+            .get(base.as_ref())
+            .map(|d| d.variants.iter().map(|v| v.0.clone()).collect())
+    }
+
+    /// Refuse a `match` arm whose integer literal cannot be represented in the scrutinee's type.
+    ///
+    /// Such an arm can never be selected. Codegen parses the literal with a zero fallback, which
+    /// silently turns it into a comparison against 0 -- so the arm fires for scrutinee 0 instead
+    /// of never. Reported here, where the scrutinee's type is known.
+    pub(crate) fn check_literal_pattern_range(&mut self, pattern: &Pattern, expr_ty: &Type) {
+        if self.speculating {
+            return;
+        }
+        let Pattern::Literal(Expr::Number(n)) = pattern else {
+            return;
+        };
+        let elem = match expr_ty {
+            Type::Scalar(e) => e,
+            _ => return,
+        };
+        if elem.accepts_integer_literal(n.value.as_ref()) == Some(false) {
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E3019,
+                format!(
+                    "match arm literal '{}' is not representable in the scrutinee's type '{}', \
+                     so the arm can never be selected",
+                    n.value, elem
+                ),
+                Some(crate::diagnostic::SourceSpan::from_ast_span(&n.span)),
+            );
+        }
+    }
+
     pub(crate) fn bind_pattern_variables(&mut self, pattern: &Pattern, expr_ty: &Type) {
         match pattern {
             Pattern::Identifier(name) => {
@@ -212,8 +262,16 @@ impl<'a> TypeChecker<'a> {
                 let expr_ty = self.check_expr_type(match_expr);
 
                 let mut match_ty: Option<Type> = None;
+                let mut covered: Vec<crate::symbol::Symbol> = Vec::new();
+                let mut has_wildcard = false;
                 for arm in arms {
+                    match &arm.pattern {
+                        Pattern::Wildcard | Pattern::Identifier(_) => has_wildcard = true,
+                        Pattern::EnumVariant(_, variant, _) => covered.push(variant.clone()),
+                        _ => {}
+                    }
                     self.push_scope();
+                    self.check_literal_pattern_range(&arm.pattern, &expr_ty);
                     self.bind_pattern_variables(&arm.pattern, &expr_ty);
 
                     let arm_ty = if !self.speculating {
@@ -238,6 +296,38 @@ impl<'a> TypeChecker<'a> {
                     );
                     if yields_value && match_ty.is_none() {
                         match_ty = Some(arm_ty);
+                    }
+                }
+
+                // A match in value position has to produce one on every path. Without a
+                // wildcard arm or full variant coverage there is a path through it that
+                // yields nothing, which codegen cannot lower and used to answer with zero.
+                if match_ty.is_some() && !has_wildcard && !self.speculating {
+                    let variants = self.enum_variants_of(&expr_ty);
+                    let exhaustive = match &variants {
+                        Some(all) => all.iter().all(|v| covered.contains(v)),
+                        None => false,
+                    };
+                    if !exhaustive {
+                        let missing = match &variants {
+                            Some(all) => {
+                                let m: Vec<String> = all
+                                    .iter()
+                                    .filter(|v| !covered.contains(v))
+                                    .map(|v| v.to_string())
+                                    .collect();
+                                format!("does not cover {}", m.join(", "))
+                            }
+                            None => "has no arm matching every value".to_string(),
+                        };
+                        self.errors.error_with_code(
+                            crate::diagnostic::DiagnosticCode::E3020,
+                            format!(
+                                "this `match` produces a value but {missing}; add a `_` arm so \
+                                 every path yields one"
+                            ),
+                            None,
+                        );
                     }
                 }
 

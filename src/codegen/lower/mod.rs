@@ -218,17 +218,102 @@ pub(crate) fn emit_enzyme_decl<'c>(
     enzyme_name
 }
 
+/// Lower one arm's body into `b` and branch to the merge block, carrying the arm's tail value
+/// when the match is in value position.
+///
+/// `value_ty` is `Some` exactly when the merge block takes an argument. An arm that diverges
+/// (its body ends in `return`) branches nowhere and contributes no value, which is what lets a
+/// match whose arms all return type-check and lower.
+fn lower_match_arm_body<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    body: &[syntax::Statement],
+    mut b: melior::ir::BlockRef<'c, 'c>,
+    merge_block: melior::ir::BlockRef<'c, 'c>,
+    value_ty: Option<melior::ir::Type<'c>>,
+) -> Result<(), LowerError> {
+    let mut terminated = false;
+    let mut tail = None;
+    for (i, stmt) in body.iter().enumerate() {
+        let is_last = i == body.len() - 1;
+        if is_last && value_ty.is_some() {
+            if let syntax::Statement::ExprStmt(syntax::stmt::ExprStmtStmt {
+                expr,
+                has_semi: false,
+                ..
+            }) = stmt
+            {
+                let (val, ty, nb) = gen.generate_expr(expr, b)?;
+                b = nb;
+                tail = Some((val, ty));
+                continue;
+            }
+        }
+        match gen.generate_statement(stmt, b)? {
+            Some(nb) => b = nb,
+            None => {
+                terminated = true;
+                break;
+            }
+        }
+    }
+    if terminated {
+        return Ok(());
+    }
+
+    let mut operands = Vec::new();
+    if let Some(want) = value_ty {
+        // Refuse rather than emit a branch whose operands do not match the block's arguments.
+        // This used to be a hard-coded `arith.constant 0` returned in place of the match, so a
+        // value-producing match silently evaluated to zero.
+        let Some((val, got)) = tail else {
+            return Err(LowerError::ParseType(
+                "a `match` arm in value position ends in a statement, so it produces no value"
+                    .to_string(),
+            ));
+        };
+        if got != want {
+            return Err(LowerError::ParseType(format!(
+                "`match` arms disagree on value type: expected {want}, this arm yields {got}"
+            )));
+        }
+        operands.push(val);
+    }
+    b.append_operation(
+        OperationBuilder::new("cf.br", gen.loc())
+            .add_operands(&operands)
+            .add_successors(&[&*merge_block])
+            .build()?,
+    );
+    Ok(())
+}
+
 pub fn generate_match_chain<'c>(
     gen: &mut MeliorGenerator<'c>,
     arms: &[MatchArm],
     match_val: melior::ir::Value<'c, 'c>,
     _match_ty: melior::ir::Type<'c>,
-    mut block: melior::ir::BlockRef<'c, 'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
     merge_block: melior::ir::BlockRef<'c, 'c>,
+    value_ty: Option<melior::ir::Type<'c>>,
 ) -> Result<melior::ir::BlockRef<'c, 'c>, LowerError> {
     if arms.is_empty() {
+        // The chain always ends in a fall-through block. In value position the checker has
+        // already established that some arm matches (a wildcard, or every variant of the
+        // scrutinee's enum), so this edge is unreachable -- but it still has to satisfy the
+        // merge block's argument, and an undef says "unreachable" where a zero would be
+        // indistinguishable from a real result.
+        let mut operands = Vec::new();
+        if let Some(ty) = value_ty {
+            let undef = block.append_operation(
+                OperationBuilder::new("llvm.mlir.undef", gen.loc())
+                    .add_results(&[ty])
+                    .build()?,
+            );
+            operands.push(undef.result(0)?.into());
+        }
         block.append_operation(
             OperationBuilder::new("cf.br", gen.loc())
+                .add_operands(&operands)
                 .add_successors(&[&*merge_block])
                 .build()?,
         );
@@ -238,27 +323,12 @@ pub fn generate_match_chain<'c>(
     let arm = &arms[0];
 
     if let Pattern::Wildcard = arm.pattern {
-        let mut then_terminated = false;
-        for stmt in &arm.body {
-            if let Some(b) = gen.generate_statement(stmt, block)? {
-                block = b;
-            } else {
-                then_terminated = true;
-                break;
-            }
-        }
-        if !then_terminated {
-            block.append_operation(
-                OperationBuilder::new("cf.br", gen.loc())
-                    .add_successors(&[&*merge_block])
-                    .build()?,
-            );
-        }
+        lower_match_arm_body(gen, &arm.body, block, merge_block, value_ty)?;
         return Ok(block);
     }
 
     let parent_region = block.parent_region().unwrap();
-    let mut then_block = parent_region.append_block(melior::ir::Block::new(&[]));
+    let then_block = parent_region.append_block(melior::ir::Block::new(&[]));
     let else_block = parent_region.append_block(melior::ir::Block::new(&[]));
 
     let cond_val = match &arm.pattern {
@@ -410,22 +480,7 @@ pub fn generate_match_chain<'c>(
         }
     }
 
-    let mut then_terminated = false;
-    for stmt in &arm.body {
-        if let Some(b) = gen.generate_statement(stmt, then_block)? {
-            then_block = b;
-        } else {
-            then_terminated = true;
-            break;
-        }
-    }
-    if !then_terminated {
-        then_block.append_operation(
-            OperationBuilder::new("cf.br", gen.loc())
-                .add_successors(&[&*merge_block])
-                .build()?,
-        );
-    }
+    lower_match_arm_body(gen, &arm.body, then_block, merge_block, value_ty)?;
 
     generate_match_chain(
         gen,
@@ -434,6 +489,7 @@ pub fn generate_match_chain<'c>(
         _match_ty,
         else_block,
         merge_block,
+        value_ty,
     )?;
 
     Ok(block)

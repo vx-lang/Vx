@@ -1797,6 +1797,11 @@ impl<'c> MeliorGenerator<'c> {
             // A cast's value has the target type by definition (`my_closure as ||->i32`), and the
             // indirect-call path needs it in `ast_env` to rebuild the callee signature.
             Expr::AsCast(c) => Some(c.target_ty.clone()),
+            // An `unsafe { .. }` block has the type of its tail expression. Without this arm an
+            // unannotated `let` over one records nothing in `ast_env`, so every consumer is blind
+            // to a type the checker already computed -- and a redundant annotation then decides
+            // which code is generated. The flat path's inference already sees through it.
+            Expr::UnsafeBlock(u) => self.infer_ast_type(u.ret.as_deref()?),
             Expr::Identifier(id) => self.ast_env.get(&id.name).cloned().or_else(|| {
                 // A bare function name used as a *value* (`let f = probe`) is a function pointer;
                 // recover its signature from the function registry so a later indirect call `f(..)`
@@ -1883,6 +1888,29 @@ impl<'c> MeliorGenerator<'c> {
                         _ => fc.args.clone(),
                     };
                     return Some(syntax::Type::Tensor(el_ty, dims, None));
+                }
+                // `tensor_view_2d(p, rows, cols)` over literal extents is a statically shaped
+                // view, which is how the checker types it. Recovering it here is what keeps an
+                // unannotated binding and a redundantly annotated one generating the same code;
+                // run-time extents stay unshaped, as they are for the checker too.
+                if name == "tensor_view_2d" && fc.args.len() == 3 {
+                    let dims: Vec<Expr> = fc.args[1..3]
+                        .iter()
+                        .filter(|a| matches!(a, Expr::Number(_)))
+                        .cloned()
+                        .collect();
+                    if dims.len() == 2 {
+                        let el_ty = match self.infer_ast_type(&fc.args[0]) {
+                            Some(syntax::Type::Pointer(inner, _, _)) => match *inner {
+                                syntax::Type::Scalar(e) => Some(e),
+                                _ => None,
+                            },
+                            _ => None,
+                        };
+                        if let Some(el_ty) = el_ty {
+                            return Some(syntax::Type::Tensor(el_ty, dims, None));
+                        }
+                    }
                 }
                 self.syntax_functions
                     .get(&fc.name)

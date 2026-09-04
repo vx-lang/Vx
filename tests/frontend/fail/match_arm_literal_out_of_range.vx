@@ -1,0 +1,36 @@
+//===- match_arm_literal_out_of_range.vx - Vx Compiler ----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// A match arm whose literal cannot be represented in the scrutinee's type can
+// never be selected, so the program does not mean what it says.
+//
+// Codegen parsed the literal with a zero fallback, which turned the arm into a
+// comparison against 0 -- so it fired for scrutinee 0, the most common value
+// there is, and this program printed 777 with no diagnostic.
+//
+// The range is the scrutinee's, not a fixed width: the same literal against an
+// i64 or i128 scrutinee is a different question, which is why the check reads
+// the type rather than assuming one.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: E3019
+// CHECK-SAME: match arm literal '99999999999999999999'
+// CHECK-SAME: not representable in the scrutinee's type 'i32'
+// CHECK-SAME: can never be selected
+
+fn main() -> i32 {
+  let n = 0;
+  match n {
+    99999999999999999999 => {
+      print(777);
+    }
+    _ => {
+      print(1);
+    }
+  }
+  return 0;
+}
