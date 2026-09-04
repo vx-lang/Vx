@@ -1,0 +1,52 @@
+//===- spawn_region_reads_keep_tiles_live.vx - Vx Compiler ------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Two tiles read inside a `spawn` region are live across it. E6010.
+//
+// A region is where a placed tensor can legally be read -- the host cannot see
+// device memory, so a read from outside is the visibility error and a read from
+// inside is the ordinary way to use one. That makes a region the place where the
+// reads keeping a tile alive most often are.
+//
+// They were invisible. `extract_uses_expr` walks 17 of the 38 expression forms and
+// drops the rest through a catch-all, and `spawn on` was among the dropped ones. So
+// the liveness map had no entry for either tile, the working set read them both as
+// dead on arrival, and 6 MiB fitted a 4 MiB space. The lowering held them to the
+// function's return, which is where they actually are, so the admitted program
+// would have run and exceeded the space.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: E6010
+// CHECK-SAME: (2 tiles)
+// CHECK-SAME: sums to 6291456 bytes
+
+Memory CPU_DRAM {}
+Memory W {
+  within: Memory::CPU_DRAM, capacity: 4 MiB, managed: explicit
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::W,
+  visible: [Memory::W],
+  transfer Memory::CPU_DRAM -> Memory::W : 10
+}
+
+// Runs where the tiles live, which is what makes reading them legal.
+fn use_both<A, B>(_p : A, _q : B) on Topology::Dev -> i32 {
+  return 0;
+}
+
+fn main() -> i32 {
+  let x = Tensor<f32, [1024, 768]>::uninit();
+  let sx = transfer(x, Memory::W);
+  let y = Tensor<f32, [1024, 768]>::uninit();
+  let sy = transfer(y, Memory::W);
+  spawn on(Topology::Dev) {
+    use_both(sx, sy);
+  }
+  return 0;
+}

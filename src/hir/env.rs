@@ -497,6 +497,39 @@ impl<'a> TypeChecker<'a> {
             // entry for a value whose only reader is a transfer, which makes a live tile look
             // dead -- and the same map is what the dead-borrow sweep consults.
             Expr::Transfer(t) => Self::extract_uses_expr(&t.expr, uses),
+            // A `spawn` region is where a placed tensor can legally be read, so the reads
+            // that matter most for residency are inside one. Missing them made two tiles
+            // held across a region look like one, which the space then had room for.
+            Expr::SpawnOn(s) => {
+                for stmt in &s.stmts {
+                    Self::extract_uses_stmt(stmt, uses);
+                }
+                if let Some(ret) = &s.ret {
+                    Self::extract_uses_expr(ret, uses);
+                }
+            }
+            Expr::Print(pr) => {
+                for a in &pr.args {
+                    Self::extract_uses_expr(a, uses);
+                }
+            }
+            Expr::Println(pr) => {
+                for a in &pr.args {
+                    Self::extract_uses_expr(a, uses);
+                }
+            }
+            Expr::Match(m) => {
+                Self::extract_uses_expr(&m.expr, uses);
+                for arm in &m.arms {
+                    for stmt in &arm.body {
+                        Self::extract_uses_stmt(stmt, uses);
+                    }
+                }
+            }
+            Expr::Range(r) => {
+                Self::extract_uses_expr(&r.start, uses);
+                Self::extract_uses_expr(&r.end, uses);
+            }
             Expr::Dereference(d) => Self::extract_uses_expr(&d.expr, uses),
             Expr::StructInit(s) => {
                 for f in &s.fields {
