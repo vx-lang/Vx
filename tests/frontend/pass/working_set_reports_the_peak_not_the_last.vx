@@ -1,0 +1,77 @@
+//===- working_set_reports_the_peak_not_the_last.vx - Vx Compiler *- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// The half of the shadowing bug that no diagnostic would have caught.
+//
+// Both tiles fit here, so nothing is refused either way and the verdict is the
+// same before and after the fix. What was wrong was the number: keyed by the
+// binding name, the second placement overwrote the first, and the space that held
+// 16 MiB and then 16 KiB reported 16 KiB across one tile -- a utilization of
+// 0.0002 where the peak is 0.25.
+//
+// That figure is not decoration. `--diagnostics-json` resident sets are what a
+// downstream consumer reads to compute the utilization an engine must be given,
+// so a wrong one is a wrong input to something else rather than a missing warning.
+// A test that only checked the refusal would have passed throughout.
+//
+// 2048*2048*4 = 16777216, plus 64*64*4 = 16384, is 16793600 across two tiles.
+//
+// `fills_the_space` is the other boundary: 4096*4096*4 is 67108864, exactly the
+// declared capacity. The cumulative check refuses on `total > cap`, so a tile that
+// fills a space to the byte is admitted and reports a utilization of 1. Written as
+// its own function deliberately: in `main` it would join the tiles above and sum to
+// 83902464, over capacity, and be refused.
+//
+// Refused rather than wrong. The earlier tiles are dead by then -- `s` was shadowed
+// and neither buffer is read again -- so a compiler that released them would fit all
+// three. This one does not: the emitted MLIR for a placement is an allocation with no
+// matching release, on both the flat and the AST paths, so the bytes really are all
+// resident and the sum really is the peak.
+//
+// The accounting is monotone because the storage is. Both would have to change
+// together: an accounting that assumed a release the runtime does not perform would
+// admit a program that then runs out of the space.
+//
+// RUN: vxc %s --action emit-mlir -o /dev/null --diagnostics-json 2>/dev/null | FileCheck %s
+// CHECK: "resident_sets"
+// Exactly at capacity: admitted, and reported as full.
+// CHECK: "space": "W"
+// CHECK-SAME: "total_bytes": 67108864
+// CHECK-SAME: "capacity_bytes": 67108864
+// CHECK-SAME: "utilization": 1
+// CHECK-SAME: "tiles": 1
+// The peak of the two shadowed placements, not the size of the last one.
+// CHECK: "space": "W"
+// CHECK-SAME: "total_bytes": 16793600
+// CHECK-SAME: "capacity_bytes": 67108864
+// CHECK-SAME: "tiles": 2
+
+Memory CPU_DRAM {}
+Memory W {
+  within: Memory::CPU_DRAM, capacity: 64 MiB, managed: explicit
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::W,
+  visible: [Memory::W],
+  transfer Memory::CPU_DRAM -> Memory::W : 10
+}
+
+// A single tile the exact size of the space it is placed in.
+fn fills_the_space() -> i32 {
+  let whole = Tensor<f32, [4096, 4096]>::uninit();
+  let _w = transfer(whole, Memory::W);
+  return 0;
+}
+
+fn main() -> i32 {
+  let big = Tensor<f32, [2048, 2048]>::uninit();
+  let s = transfer(big, Memory::W);
+  let small = Tensor<f32, [64, 64]>::uninit();
+  let s = transfer(small, Memory::W);
+  return fills_the_space();
+}
