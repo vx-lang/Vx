@@ -161,4 +161,12 @@ pub struct TrafficState {
     pub next_scope_id: u32,
     /// Program order for placements, so "already placed when this one happened" is answerable.
     pub placement_order: usize,
+    /// Whether the placement being checked is a hop feeding another transfer.
+    ///
+    /// A staged route is rewritten into a chain, and each inner hop's tile is read by the hop
+    /// above it -- so it is never one of the tiles nobody reads, whatever the binding the whole
+    /// chain is eventually bound to does. Attributing the binding's readership to the transit
+    /// copy said two of them never coexisted, when the emitted code holds both to the end of the
+    /// block.
+    pub consumed_by_transfer: bool,
 }

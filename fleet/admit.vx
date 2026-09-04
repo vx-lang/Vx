@@ -42,18 +42,26 @@
 // the matrix, not a second program.
 //
 // ---------------------------------------------------------------------------
-// THE RESIDENT-SET MODELLING RULE (#286) -- load-bearing, read before editing:
+// THE RESIDENT-SET MODELLING RULE -- read before editing:
 //
-// The cumulative working-set check (E6010) sums the tiles placed in a space
-// *within one function*, and resets at each function boundary. So all three
-// residents must be placed in ONE function to be summed against capacity.
+// The cumulative working-set check (E6010) takes the *peak* of the tiles that
+// are resident at once in a space, over one function, and resets at each
+// function boundary. Two things follow, and this file depends on both.
 //
-// This is not a stylistic preference. An earlier draft of this file placed
-// each tensor in its own helper function, and a configuration needing 100 GiB
-// of residents on an 80 GiB card compiled as **admitted** -- a false accept,
-// because no single tensor exceeded capacity and nothing ever added them up.
-// Splitting these placements across functions silently disables the check that
+// All three residents must be placed in ONE function. An earlier draft placed
+// each tensor in its own helper, and a configuration needing 100 GiB of
+// residents on an 80 GiB card compiled as **admitted** -- a false accept,
+// because no single tensor exceeded capacity and nothing brought them
+// together. A caller's tile is still not counted against a callee's
+// placements, so splitting these across functions silently disables the check
 // most operator-relevant rejections depend on.
+//
+// And all three must be *read* after the last is placed. Peak means resident
+// at once, and a tile is resident until its last reader: three tensors that
+// are transferred in and never touched are released where they are made, and
+// the peak is the largest of them rather than their sum. Placement declares
+// where a tensor lives, not for how long. The read below is what says these
+// are held together, which is also what the serving step does.
 // ---------------------------------------------------------------------------
 
 // One serving configuration, one verdict. Every resident is placed here so the

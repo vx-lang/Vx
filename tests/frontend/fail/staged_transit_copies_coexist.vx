@@ -1,0 +1,57 @@
+//===- staged_transit_copies_coexist.vx - Vx Compiler -----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Two staged routes through one transit space. E6010, against the transit space.
+//
+// A route with no direct edge is rewritten into a chain, and each hop's tile is
+// an ordinary placement in the space it lands in. Neither final tile is read
+// here, so both are released where they are made -- but the transit copies are
+// not those tiles. Each is read by the hop above it, and the emitted code holds
+// both to the end of the block:
+//
+//   %11 = call @vx_plugin_alloc_and_transfer(...)      // transit copy 1
+//   %14 = call @vx_plugin_transfer_peer(%11, ...)      // on to Dest
+//   call @vx_plugin_free(%14, ...)                     // the Dest tile, at once
+//   %20 = call @vx_plugin_alloc_and_transfer(...)      // transit copy 2
+//   ...
+//   call @vx_plugin_free(%11, ...)                     // both transit copies
+//   call @vx_plugin_free(%20, ...)                     // only here
+//
+// So 1179648 bytes are resident in a 1 MiB space. Attributing the binding's
+// readership to the transit copy said otherwise -- the chain is bound to a name
+// nothing reads, so both copies looked dead on arrival and the program was
+// admitted while the run holds two.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: E6010
+// CHECK-SAME: 'Transit'
+// CHECK-SAME: (2 tiles)
+// CHECK-SAME: sums to 1179648 bytes
+
+Memory CPU_DRAM {}
+Memory Transit {
+  within: Memory::CPU_DRAM, capacity: 1 MiB, managed: explicit
+}
+Memory Dest {
+  within: Memory::CPU_DRAM, capacity: 64 GiB, managed: explicit
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::Dest,
+  visible: [Memory::Dest, Memory::Transit],
+  transfer Memory::CPU_DRAM -> Memory::Transit : 10,
+  transfer Memory::Transit -> Memory::Dest : 5
+}
+
+fn main() -> i32 {
+  // 384*384*4 = 589824 each; two of them do not fit the transit space.
+  let p = Tensor<f32, [384, 384]>::uninit();
+  let _sp = transfer(p, Memory::Dest);
+  let q = Tensor<f32, [384, 384]>::uninit();
+  let _sq = transfer(q, Memory::Dest);
+  return 0;
+}

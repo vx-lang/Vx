@@ -334,10 +334,11 @@ impl<'a> TypeChecker<'a> {
         // A tile nobody reads is released where it is made, so it never joins the residency of
         // anything placed after it. Giving it a scope of its own says exactly that: no later
         // placement has this chain as a prefix, so no later peak counts it.
-        let never_read = match &self.current_assignment_target {
-            Some(name) => !self.borrow.is_variable_ever_read(name),
-            None => false,
-        };
+        let never_read = !self.traffic.consumed_by_transfer
+            && match &self.current_assignment_target {
+                Some(name) => !self.borrow.is_variable_ever_read(name),
+                None => false,
+            };
         let mut scope = self.traffic.scope_chain.clone();
         if never_read {
             self.traffic.next_scope_id += 1;
@@ -693,7 +694,12 @@ impl<'a> TypeChecker<'a> {
     fn resolve_transfer_edge(&mut self, t: &mut TransferExpr) -> Option<ResolvedEdge> {
         let prev = self.allow_cross_topology;
         self.allow_cross_topology = true;
+        // Anything placed while checking this operand is a hop feeding this transfer, so it has
+        // a reader whether or not the binding this chain lands in is ever read.
+        let prev_consumed = self.traffic.consumed_by_transfer;
+        self.traffic.consumed_by_transfer = true;
         let inner_ty = self.check_expr_type_flag(&mut t.expr, false);
+        self.traffic.consumed_by_transfer = prev_consumed;
         self.allow_cross_topology = prev;
 
         // Extract source memory space, preferring exact space from an inner transfer if present
