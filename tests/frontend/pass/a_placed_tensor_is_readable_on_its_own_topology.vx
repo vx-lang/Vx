@@ -1,0 +1,48 @@
+//===- a_placed_tensor_is_readable_on_its_own_topology.vx -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// A tensor placed on a declared topology is readable from that same topology.
+//
+// It was refused as unreachable from itself: "a value on Dev cannot be read
+// from Dev". A placement carries two projections and the source writes one; the
+// other is filled in by name resolution. The AST frontend runs the type checker
+// before any resolution, and a placement the checker mints mid-check is never
+// resolved at all -- so a rule that read the derived half saw the parser's
+// guess, a like-named `Memory::Dev` that this file does not declare and that no
+// transfer edge reaches. Every rule now derives the half it needs from the half
+// the source wrote.
+//
+// The reach rule itself is unchanged, which the fail-tier
+// a_placed_tensor_is_not_readable_from_the_host.vx holds down: the same tensor
+// read from the host is still refused, because CPU_DRAM -> Extra is a real
+// boundary and crossing it still needs a transfer.
+//
+// RUN: vxc %s --action emit-mlir -o - 2>&1 | FileCheck %s
+// CHECK-NOT: cannot be read from
+// CHECK-NOT: unreachable
+// CHECK: func.func
+
+Memory Extra {
+  capacity: 1 GB, bandwidth: 1 TB/s
+}
+
+Topology Dev {
+  memory: Memory::Extra,
+  visible: [ Memory::Extra ],
+  transfer Memory::CPU_DRAM -> Memory::Extra : 100,
+}
+
+fn use_it(t : Tensor<f32, [4, 4], Topology::Dev>) -> i32 {
+  spawn on(Topology::Dev) {
+    let x = t[0][0];
+  }
+  return 0;
+}
+
+fn main() -> i32 {
+  return 0;
+}

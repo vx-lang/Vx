@@ -1,0 +1,32 @@
+//===- a_declared_position_states_a_tile_that_cannot_fit.vx -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// A parameter, a return type and a struct field can each state where a tensor
+// lives. Each was walked for "does this name a real place" (E6025) and none of
+// them for "does it fit" (E6009), so a 60 GB tile declared in any of those
+// positions compiled clean against a 40 GiB space.
+//
+// A declared position states a location without allocating one here -- the
+// caller owns the tile -- so it takes the per-tile verdict and stays out of this
+// function's working set. Billing it to whichever function happened to declare
+// it would charge the tile to the wrong frame.
+//
+// RUN: not vxc %s --machine fleet/a100-40.vx 2>&1 | FileCheck %s
+// CHECK-DAG: E6009{{.*}}field 'big' of struct 'Holder' needs 60000000000 bytes
+// CHECK-DAG: E6009{{.*}}function 'takes' needs 60000000000 bytes
+
+struct Holder {
+  big : Tensor<f32, [120000, 125000], Memory::HBM>
+}
+
+fn takes(t : Tensor<f32, [120000, 125000], Memory::HBM>) -> i32 {
+  return 0;
+}
+
+fn main() -> i32 {
+  return 0;
+}

@@ -1,0 +1,34 @@
+//===- placement_in_the_initializer_is_admitted.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// A placement is in the type whether or not the binding repeats it as an
+// annotation, so both spellings are admitted against the same capacity.
+//
+// Only the annotated one used to be. `check_type_placement` was reachable from
+// the annotated branch of `let` alone, so the ordinary spelling -- placement
+// written once, in the initializer -- escaped capacity admission entirely, and
+// 60 GB was accepted into a 40 GiB space with no diagnostic. It escaped the
+// working set with it, so E6010 and the resident-set figure were blind too.
+//
+// Both machine files are run, because a refusal alone does not show that
+// capacity is what decided it. a100-40 declares 42949672960 bytes of HBM and
+// refuses; a100-80 declares 85899345920 and admits the identical program. The
+// pair isolates capacity as the admission variable.
+//
+// RUN: not vxc %s --machine fleet/a100-40.vx 2>&1 | FileCheck %s
+// CHECK: E6009
+// CHECK-SAME: variable 'big' needs 60000000000 bytes
+// CHECK-SAME: 'HBM' has capacity 42949672960 bytes
+//
+// RUN: vxc %s --machine fleet/a100-80.vx --action emit-mlir -o - 2>&1 | FileCheck %s --check-prefix=FITS
+// FITS-NOT: E6009
+// FITS: func.func @main
+
+fn main() -> i32 {
+  let big = Tensor<f32, [120000, 125000], Memory::HBM>::uninit();
+  return 0;
+}

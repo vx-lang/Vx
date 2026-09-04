@@ -980,14 +980,14 @@ impl TransferCostGraph {
         // The binding's topology is the scope that owns the name; a placed tensor
         // carries its own device, and letting the binding speak for it made the
         // host-resident fallback below fire for a value sitting in device memory.
-        let placed_top = ty.placement().map(|p| p.topology.clone());
+        let placed_top = ty.placement().map(|p| self.placement_topology(p));
         let var_topology = placed_top.as_ref().unwrap_or(var_topology);
 
         // Determine the memory space of the variable. A placed tensor says where it lives in its
         // own type, so it is read there rather than reconstructed from the owning device -- which
         // is the point of carrying a placement at all (Vx#429).
         let target_mem = match (ty.placement(), ty) {
-            (Some(p), _) => p.space.clone(),
+            (Some(p), _) => self.placement_space(p),
             (None, Type::Ref(_, mem)) => mem.clone(),
             _ => {
                 if var_topology == active_topology {
@@ -1016,9 +1016,33 @@ impl TransferCostGraph {
     }
 
     /// The memory space where a value of type `ty` owned by `var_topology` lives.
+    /// The space a placement occupies, derived from the half the source wrote.
+    ///
+    /// A placement's derived half is filled in by name resolution. One frontend runs that after
+    /// the type checker and the other before it, and a placement the checker mints mid-check is
+    /// never resolved at all -- so a rule that reads the derived half sees whatever the parser
+    /// guessed. For `Topology::Dev` the guess is a like-named `Memory::Dev` that no declaration
+    /// mentions, which made a tensor on a declared topology unreachable from that same topology.
+    pub fn placement_space(&self, p: &crate::syntax::Placement) -> MemorySpace {
+        match p.written() {
+            crate::syntax::Written::Space => p.space.clone(),
+            crate::syntax::Written::Device => self.default_memory_for(&p.topology),
+        }
+    }
+
+    /// The device holding a placement, derived from the half the source wrote. The mirror of
+    /// [`Self::placement_space`], for the same reason.
+    pub fn placement_topology(&self, p: &crate::syntax::Placement) -> Topology {
+        match p.written() {
+            crate::syntax::Written::Device => p.topology.clone(),
+            crate::syntax::Written::Space => owning_topology_in(&p.space, &self.descriptors)
+                .unwrap_or_else(|_| p.topology.clone()),
+        }
+    }
+
     fn memory_of(&self, var_topology: &Topology, ty: &Type) -> MemorySpace {
         if let Some(p) = ty.placement() {
-            return p.space.clone();
+            return self.placement_space(p);
         }
         match ty {
             Type::Pinned(_, top) => self.default_memory_for(top),

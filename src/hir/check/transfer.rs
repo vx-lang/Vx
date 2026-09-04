@@ -234,6 +234,19 @@ impl<'a> TypeChecker<'a> {
         context: &str,
         span: &Span,
     ) {
+        self.check_capacity_of(elem, dims, space, context, span, true)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn check_capacity_of(
+        &mut self,
+        elem: &ElementType,
+        dims: &[Expr],
+        space: &MemorySpace,
+        context: &str,
+        span: &Span,
+        record: bool,
+    ) {
         let sized = {
             let h = crate::hir::memory::MemoryHierarchy::build(self.env.memories.values().copied());
             let Some(decl) = h.descriptor(space) else {
@@ -298,6 +311,9 @@ impl<'a> TypeChecker<'a> {
                 available_bytes: cap,
                 tiles: None,
             });
+        }
+        if !record {
+            return;
         }
         // Record for the cumulative (working-set) budget check at end of function, keyed by
         // *where the placement is written* rather than by the name it is bound to.
@@ -602,33 +618,91 @@ impl<'a> TypeChecker<'a> {
     ///
     /// A `let` annotation is the one placement position not reachable from the declaration tables,
     /// which is why the check that a placement names a real place is also called from here.
-    pub(crate) fn check_type_placement(&mut self, ty: &Type, context: &str, span: &Span) {
-        self.report_unheld_placements(ty, context);
-        // A placed tensor is checked against the space it names, the same as the
-        // two wrapper spellings below.
-        if let Some(p) = ty.placement() {
-            if let Some((e, d)) = Self::tensor_of(ty) {
-                let space = p.space.clone();
-                self.check_capacity(e, d, &space, context, span);
-                self.check_element_type(e, &space, context);
-            }
-            return;
-        }
+    /// The space a placement occupies, derived from the half the source actually wrote.
+    ///
+    /// Never reads the derived half. That half is filled in by name resolution, which one
+    /// frontend runs before the checker and the other after, and which never runs at all for a
+    /// placement the checker mints mid-check -- so what a checker rule finds there is whatever
+    /// the parser guessed. For `Topology::Dev` the guess is the like-named `Memory::Dev`, which
+    /// no declaration mentions: reading it checked a tensor against a space that does not exist
+    /// while the space the declaration gives went unchecked.
+    pub(crate) fn placement_space(&self, p: &crate::syntax::Placement) -> MemorySpace {
+        self.transfer_cost_graph.placement_space(p)
+    }
+
+    /// Every placed tensor a type carries, as (element type, dimensions, the space it occupies).
+    ///
+    /// Descends the wrappers, so a placement inside `Verified<..>`, `&..` or `*const ..` is found
+    /// rather than only the outermost one. A tensor that states its own placement takes it; a
+    /// wrapper's location applies only to a tensor that states none.
+    fn placed_tensors(&self, ty: &Type) -> Vec<(ElementType, Vec<Expr>, MemorySpace)> {
+        let mut out = Vec::new();
+        self.collect_placed_tensors(ty, &mut out);
+        out
+    }
+
+    fn collect_placed_tensors(
+        &self,
+        ty: &Type,
+        out: &mut Vec<(ElementType, Vec<Expr>, MemorySpace)>,
+    ) {
+        let before = out.len();
         match ty {
-            Type::Ref(inner, mem) => {
-                if let Some((e, d)) = Self::tensor_of(inner) {
-                    self.check_capacity(e, d, mem, context, span);
-                    self.check_element_type(e, mem, context);
-                }
-            }
-            Type::Pinned(inner, top) if !matches!(top, Topology::Current) => {
-                if let Some((e, d)) = Self::tensor_of(inner) {
-                    let space = self.transfer_cost_graph.default_memory_for(top);
-                    self.check_capacity(e, d, &space, context, span);
-                    self.check_element_type(e, &space, context);
+            Type::Ref(inner, _)
+            | Type::Borrow { inner, .. }
+            | Type::Pointer(inner, _, _)
+            | Type::Verified(inner)
+            | Type::Pinned(inner, _) => self.collect_placed_tensors(inner, out),
+            Type::GenericInstance(base, args) => {
+                self.collect_placed_tensors(base, out);
+                for a in args {
+                    self.collect_placed_tensors(a, out);
                 }
             }
             _ => {}
+        }
+        if let (Some(p), Some((e, d))) = (ty.placement(), Self::tensor_of(ty)) {
+            let space = self.placement_space(p);
+            out.push((e.clone(), d.to_vec(), space));
+            return;
+        }
+        // A wrapper states the location for a tensor that does not state one itself.
+        if out.len() == before {
+            match ty {
+                Type::Ref(inner, mem) => {
+                    if let Some((e, d)) = Self::tensor_of(inner) {
+                        out.push((e.clone(), d.to_vec(), mem.clone()));
+                    }
+                }
+                Type::Pinned(inner, top) if !matches!(top, Topology::Current) => {
+                    if let Some((e, d)) = Self::tensor_of(inner) {
+                        let space = self.transfer_cost_graph.default_memory_for(top);
+                        out.push((e.clone(), d.to_vec(), space));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    pub(crate) fn check_type_placement(&mut self, ty: &Type, context: &str, span: &Span) {
+        self.check_placement_of_type(ty, context, span, true)
+    }
+
+    /// [`Self::check_type_placement`] for a *declared* position -- a parameter, a return type, a
+    /// struct field -- which states where a tensor lives without materializing one here: the
+    /// caller allocates it. The per-tile question ("this tensor cannot fit in that space at all")
+    /// is answerable and wrong to skip, but counting it against this function's working set would
+    /// bill the tile to the wrong frame.
+    pub(crate) fn check_declared_type_placement(&mut self, ty: &Type, context: &str, span: &Span) {
+        self.check_placement_of_type(ty, context, span, false)
+    }
+
+    fn check_placement_of_type(&mut self, ty: &Type, context: &str, span: &Span, record: bool) {
+        self.report_unheld_placements(ty, context);
+        for (e, d, space) in self.placed_tensors(ty) {
+            self.check_capacity_of(&e, &d, &space, context, span, record);
+            self.check_element_type(&e, &space, context);
         }
     }
 

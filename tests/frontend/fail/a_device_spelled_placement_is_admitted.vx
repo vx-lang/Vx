@@ -1,0 +1,34 @@
+//===- a_device_spelled_placement_is_admitted.vx - Vx Compiler --*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// The two spellings of one location are one placement, so both are checked
+// against the space the machine file declares.
+//
+// A placement carries two projections and the source writes one of them. The
+// other is filled in by name resolution -- which one frontend runs after the
+// type checker and the other before, and which never runs at all for a
+// placement the checker mints mid-check. So a rule that reads the derived half
+// sees whatever the parser guessed: for `Topology::Device` that guess is a
+// like-named `Memory::Device` that no machine file declares, and a space with no
+// declared capacity is not checked. 60 GB went into a 40 GiB HBM silently.
+//
+// The capacity check now derives the space from the half the source wrote, so
+// `Topology::Device` resolves to the `memory:` a100-40 gives it.
+//
+// RUN: not vxc %s --machine fleet/a100-40.vx 2>&1 | FileCheck %s
+// CHECK: E6009
+// CHECK-SAME: needs 60000000000 bytes
+// CHECK-SAME: 'HBM' has capacity 42949672960 bytes
+
+fn mk() on Topology::Device -> i32 {
+  let big : Tensor<f32, [120000, 125000], Topology::Device> = Tensor<f32, [120000, 125000], Topology::Device>::uninit();
+  return 0;
+}
+
+fn main() -> i32 {
+  return 0;
+}

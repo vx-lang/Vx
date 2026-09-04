@@ -1,0 +1,34 @@
+//===- a_placed_tensor_is_not_readable_from_the_host.vx ---------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// The control for a_placed_tensor_is_readable_on_its_own_topology.vx.
+//
+// Deriving a placement's other half from the half the source wrote made a
+// Dev-placed tensor readable on Dev. This is the half that must not move: the
+// same tensor read from the host is still refused, so the fix restored a
+// reachability answer rather than removing the question.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: cannot be read from CPU
+
+Memory Extra {
+  capacity: 1 GB, bandwidth: 1 TB/s
+}
+
+Topology Dev {
+  memory: Memory::Extra,
+  visible: [ Memory::Extra ],
+  transfer Memory::CPU_DRAM -> Memory::Extra : 100,
+}
+
+fn use_it(t : Tensor<f32, [4, 4], Topology::Dev>) -> f32 {
+  return t[0][0];
+}
+
+fn main() -> i32 {
+  return 0;
+}

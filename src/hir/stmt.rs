@@ -166,16 +166,31 @@ impl<'a> TypeChecker<'a> {
                 .insert(name.to_string().into(), val);
         }
 
+        // A `transfer(..)` validates its destination and records the tile it lands, at its own
+        // site. The binding adds nothing: checking its type as well reported the same overflow
+        // twice, counted one tile as two, and re-litigated a destination the transfer had
+        // already accepted.
+        let initializer_places_its_own = matches!(expr, Expr::Transfer(_));
+        let context = format!("variable '{}'", name);
         let binding_ty = if let Some(ann) = ty_ann {
             if !self.is_assignable(ann, &ty) {
                 self.errors
                     .push(format!("Type mismatch in variable declaration '{}'", name));
             }
-            // Capacity: a `Ref`/`Pinned` tensor annotation must fit its memory space.
-            self.check_type_placement(ann, &format!("variable '{}'", name), span);
+            // Capacity: a placed tensor annotation must fit its memory space.
+            if !initializer_places_its_own {
+                self.check_type_placement(ann, &context, span);
+            }
             self.insert(name.to_string(), ann.clone());
             ann.clone()
         } else {
+            // A placement is in the type whether or not the binding repeats it as an annotation,
+            // so the inferred type gets the same check. Without this, every placement written
+            // only in the initializer -- the ordinary spelling -- escaped capacity admission,
+            // element-type admission, and the working set.
+            if !initializer_places_its_own {
+                self.check_type_placement(&ty, &context, span);
+            }
             self.insert(name.to_string(), ty.clone());
             ty
         };

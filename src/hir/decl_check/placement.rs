@@ -50,7 +50,9 @@ impl TypeChecker<'_> {
 
         for (context, tys) in sites {
             for ty in &tys {
-                self.report_unheld_placements(ty, &context);
+                // A declared position states where a tensor lives without allocating one here,
+                // so it takes the per-tile verdict and stays out of any function's working set.
+                self.check_declared_type_placement(ty, &context, &crate::syntax::Span::default());
             }
         }
     }
