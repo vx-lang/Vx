@@ -52,10 +52,12 @@ Topology Device {
   arch: nvptx64,
   memory: Memory::HBM,
   visible: [Memory::HBM, Memory::L2, Memory::SMEM],
-  // spec: NVIDIA Hopper Architecture Whitepaper -- fourth-generation Tensor Cores add FP8
-  // (E4M3 and E5M2) to Ampere's set. Hopper has no FP4: that arrives with Blackwell's
-  // fifth-generation Tensor Cores, which is the boundary this list exists to state.
-  dtypes: [f64, f32, bf16, f16, f8e4m3, f8e5m2, i8, u8, i4, u4, bool],
+  // spec: NVIDIA "NVIDIA Hopper Architecture In-Depth" (developer.nvidia.com/blog):
+  // "The FP8, FP16, BF16, TF32, FP64, and INT8 MMA data types are supported."
+  // INT4 is absent from that list and is not native on Hopper -- deprecated after Ampere
+  // and emulated over int8 MMA on sm_90 -- so it is not declared here.
+  // No FP4: that arrives with Blackwell, which is the boundary this list exists to state.
+  dtypes: [f64, f32, bf16, f16, f8e4m3, f8e5m2, i8, u8, i16, u16, i32, u32, i64, u64, bool],
   transfer Memory::CPU_DRAM -> Memory::HBM : 63 GB/s,
   transfer Memory::HBM -> Memory::L2,
   // spec: Hopper keeps Ampere's cp.async and adds the TMA (PTX ISA 8.3 section 9.7.8.25);

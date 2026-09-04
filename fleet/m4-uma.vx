@@ -77,9 +77,11 @@ Topology Device {
   arch: applegpu,
   memory: Memory::HBM,
   visible: [Memory::HBM, Memory::L2, Memory::SMEM],
-  // spec: Apple GPU family / Metal Shading Language -- FP32, FP16, BF16 and the integer
-  // types. No FP8 or FP4 in the general compute path.
-  // UNVERIFIED: transcribed from Metal documentation from memory.
+  // spec: Apple, Metal Shading Language Specification, "Scalar Data Types" (Table 2.1):
+  // bool, char/uchar, short/ushort, int/uint, long/ulong, half, bfloat and float, with
+  // "Metal does not support the double, long long, unsigned long long, and long double
+  // data types" -- so no f64 here, unlike every other row in the fleet. `bfloat` is Metal
+  // 3.1 and later. No fp8 or fp4 type exists in the language.
   dtypes: [f32, bf16, f16, i8, u8, i16, u16, i32, u32, i64, u64, bool],
   transfer Memory::CPU_DRAM -> Memory::HBM : 120 GB/s,
   transfer Memory::HBM -> Memory::L2,

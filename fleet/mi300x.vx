@@ -47,10 +47,12 @@ Topology Device {
   arch: amdgcn,
   memory: Memory::HBM,
   visible: [Memory::HBM, Memory::L2, Memory::SMEM],
-  // spec: AMD CDNA 3 Architecture Whitepaper -- Matrix Cores cover FP64, FP32, TF32, BF16,
-  // FP16, FP8 and INT8. No FP4.
-  // UNVERIFIED: transcribed from the architecture whitepaper from memory.
-  dtypes: [f64, f32, bf16, f16, f8e4m3, f8e5m2, i8, u8, i32, u32, i64, u64, bool],
+  // spec: AMD ROCm documentation, "AMD Instinct MI300 series microarchitecture" -- the
+  // per-datatype table lists Matrix FP64, FP32, FP16, BF16, FP8 and INT8, with Vector
+  // FP64, FP32 and TF32. No INT4 and no FP4 appear in it.
+  // The table says "FP8" without naming encodings; CDNA 3 carries both OCP forms (E4M3
+  // and E5M2, the latter AMD's BF8), so both are declared.
+  dtypes: [f64, f32, bf16, f16, f8e4m3, f8e5m2, i8, u8, i16, u16, i32, u32, i64, u64, bool],
   // spec: PCIe Gen5 x16 = 63 GB/s per direction (32 GT/s x 16 lanes, 128b/130b).
   // UNVERIFIED on this SKU; a Grace/C2C-attached part reaches the host at ~450 GB/s instead,
   // a 7x difference in every host-seam prediction. Settling it is experiment M1/M4.

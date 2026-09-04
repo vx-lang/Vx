@@ -38,10 +38,13 @@ Topology Device {
   arch: nvptx64,
   memory: Memory::HBM,
   visible: [Memory::HBM, Memory::L2, Memory::SMEM],
-  // spec: NVIDIA Ampere Architecture Whitepaper -- third-generation Tensor Cores:
-  // FP64, TF32, BF16, FP16, INT8, INT4. No FP8; that arrives with Hopper.
-  // UNVERIFIED: transcribed from the architecture whitepaper from memory.
-  dtypes: [f64, f32, bf16, f16, i8, u8, i4, u4, i32, u32, i64, u64, bool],
+  // spec: NVIDIA A100 Tensor Core GPU Architecture whitepaper v1.0, "A100 Tensor Cores
+  // Support All DL Data Types" (p.26): "In addition to FP16 precision introduced on the
+  // Volta Tensor Core, and the INT8, INT4 and binary 1-bit precisions added in the Turing
+  // Tensor Core, the A100 Tensor Core adds support for TF32, BF16 and FP64 formats."
+  // Table 2 (p.23) lists the set; Figure 7 (p.22) shows INT32/FP32/FP64 CUDA cores.
+  // No FP8: it arrives with Hopper. TF32 has no ElementType, so it is not listed.
+  dtypes: [f64, f32, bf16, f16, i4, u4, i8, u8, i16, u16, i32, u32, i64, u64, bool],
   // spec: PCIe Gen4 x16 = 31.5 GB/s per direction (16 GT/s x 16 lanes, 128b/130b).
   // UNVERIFIED on this SKU; the host link and its achieved bandwidth are experiment M1/M4.
   // The on-die hops below declare no cost -- their `bandwidth:` figures derive it (E6013).

@@ -16,6 +16,7 @@ mod integration_test {
     mod flash_routed_test;
     mod flat_codegen_differential;
     mod flat_corpus_sweep;
+    mod fleet_dtype_test;
     mod fuzz;
     mod gemm_plan_test;
     mod graph_workload_test;

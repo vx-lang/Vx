@@ -58,6 +58,45 @@ file rather than replacing it — but note that the `--machine` flag currently t
 (#281), so the node file re-declares the SKU spaces it needs. Declaration import (#224) would let
 these compose properly; see the note in that file.
 
+## Element type vocabularies
+
+`dtypes:` on a topology states which element types the hardware can natively represent and compute
+on. A placement outside the list is E6026. A topology that omits the field constrains nothing, so a
+machine file written before the field existed keeps its meaning.
+
+The list is the union of the part's matrix-unit types and its general scalar types — a machine that
+holds an `i32` array is not required to have an `i32` matrix instruction. Types Vx has no
+`ElementType` for are simply absent: **TF32** (all three vendors have it) and **FP6** (Blackwell) are
+not listed anywhere, and a machine file naming an element type the compiler does not know is a parse
+error rather than a silently ignored word.
+
+| SKU | Source |
+|---|---|
+| a100-40, a100-80 | NVIDIA A100 Tensor Core GPU Architecture whitepaper v1.0 — "A100 Tensor Cores Support All DL Data Types" (p.26), Table 2 (p.23), Figure 7 (p.22) |
+| h100-sxm, h200 | NVIDIA, "NVIDIA Hopper Architecture In-Depth" — "The FP8, FP16, BF16, TF32, FP64, and INT8 MMA data types are supported." |
+| b200 | NVIDIA RTX Blackwell PRO GPU Architecture whitepaper v1.0 — "Blackwell 5th Generation Tensor Cores" |
+| mi300x | AMD ROCm documentation, "AMD Instinct MI300 series microarchitecture" — per-datatype table |
+| m4-uma | Apple, Metal Shading Language Specification — "Scalar Data Types", Table 2.1 |
+
+What the declarations then say, which is the point of writing them down:
+
+| | fp8 | fp4 | int4 | f64 |
+|---|---|---|---|---|
+| a100-80 | no | no | **yes** | yes |
+| h100-sxm | yes | no | no | yes |
+| b200 | yes | **yes** | no | yes |
+| mi300x | yes | no | no | yes |
+| m4-uma | no | no | no | **no** |
+
+Note the `int4` column. It is not a version number that only grows: Ampere's Tensor Cores take INT4,
+Hopper's do not — it was deprecated after Ampere and is emulated over int8 MMA on sm_90 and sm_100.
+A rule of the form "newer hardware supports more" gets that backwards, which is why the vocabulary is
+declared per part rather than derived from a generation.
+
+The host files (`xeon-e5-2666v3`, `host-x86-e5-2666v3`) declare no `dtypes:`. A CPU's element
+vocabulary is set by the ISA extensions the code is built for rather than by the part alone, so
+stating one here would claim more than the file knows.
+
 ## Provenance of the numbers
 
 **Every capacity, bandwidth, and link figure carries a `spec:` comment naming its source.** The
@@ -100,7 +139,7 @@ fact; `spec:` says where the belief came from.
 | `L2` capacity and bandwidth | **unverified** — transcribed from architecture whitepapers from memory |
 | `SMEM` capacity | **unverified** — per-SM/CU configurable maximum |
 | Interconnect figures in `node-8gpu.vx` | **unverified** |
-| `dtypes` lists | **unverified** — transcribed from architecture whitepapers from memory. The generational boundaries are what the checks turn on: fp8 from Hopper, fp4 from Blackwell |
+| `dtypes` lists | **verified 2026-09-03** — each quoted from a vendor document; see "Element type vocabularies" below |
 | Transfer costs (`: N` on an edge) | not physical — relative latencies for path selection |
 
 The first verification pass found **four wrong figures**, all in the direction of understating the
