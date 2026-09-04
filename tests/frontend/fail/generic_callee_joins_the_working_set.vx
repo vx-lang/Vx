@@ -1,0 +1,43 @@
+//===- generic_callee_joins_the_working_set.vx - Vx Compiler ----*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// The cross-call fold runs over the *monomorphized* call graph: the call site
+// names the template, the summary belongs to the instance, and the path in
+// the refusal names the instance. Same shape as the direct-call case -- the
+// caller holds its tile across the call, the callee places its own, and only
+// their sum overflows.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: E6027
+// CHECK-SAME: call path 'main -> stage$i32'
+// CHECK-SAME: peaks at 6291456 bytes, over its 4194304 byte capacity
+
+Memory CPU_DRAM {}
+Memory W {
+  within: Memory::CPU_DRAM, capacity: 4 MiB, managed: explicit
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::W,
+  visible: [Memory::W],
+  transfer Memory::CPU_DRAM -> Memory::W : 10
+  transfer Memory::W -> Memory::CPU_DRAM : 10
+}
+
+fn stage<T>(_t: T) -> i32 {
+  let y = Tensor<f32, [1024, 768]>::uninit();
+  let _sy = transfer(y, Memory::W);
+  return 1;
+}
+
+fn main() -> i32 {
+  let x = Tensor<f32, [1024, 768]>::uninit();
+  let sx = transfer(x, Memory::W);
+  let r = stage(7);
+  let _back = transfer(sx, Memory::CPU_DRAM);
+  return r;
+}

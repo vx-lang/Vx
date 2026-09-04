@@ -482,6 +482,9 @@ struct FunctionCheck {
     generated_structs: Vec<syntax::StructDecl>,
     name: crate::symbol::Symbol,
     lowered: bool,
+    /// Capacity summaries this worker produced (the function, plus any generic it was first
+    /// to instantiate) -- the cross-call fold's input, collected after the parallel phase.
+    capacity_summaries: Vec<crate::hir::check::capacity_fold::FnCapacitySummary>,
 }
 
 /// The order in which [`type_check_phase`] visits a module's functions -- its free functions, then
@@ -1122,6 +1125,7 @@ fn check_one_function(
     let errors = checker.errors;
     let monos = checker.mono.functions;
     let gen_structs = checker.mono.generated_structs;
+    let capacity_summaries = std::mem::take(&mut checker.traffic.capacity_summaries);
 
     // Lower this function's type references to the flat GID stream (Phase 3).
     emit_function_type_gids(func, &mut worker);
@@ -1139,6 +1143,7 @@ fn check_one_function(
         generated_structs: gen_structs,
         name: func.name.clone(),
         lowered,
+        capacity_summaries,
     }
 }
 
@@ -1279,6 +1284,30 @@ fn type_check_phase(
     let mut total_errors = 0;
     for check in &check_results {
         for diag in check.diagnostics.iter() {
+            if diag.level == DiagnosticLevel::Error {
+                total_errors += 1;
+                println!("Error: {}", diag.message);
+            } else if diag.level == DiagnosticLevel::Warning {
+                println!("Warning: {}", diag.message);
+            }
+        }
+    }
+
+    // The cross-call capacity fold: the one whole-program step, after the parallel phase and
+    // reading only what it exported. Same core as the sequential driver, so the two frontends
+    // cannot drift on what they refuse.
+    {
+        let summaries: Vec<crate::hir::check::capacity_fold::FnCapacitySummary> = check_results
+            .iter()
+            .flat_map(|c| c.capacity_summaries.iter().cloned())
+            .collect();
+        let mut fold_diags = crate::diagnostic::DiagnosticsVec::new();
+        crate::hir::check::capacity_fold::fold_cross_call_capacity(
+            &summaries,
+            global_env,
+            &mut fold_diags,
+        );
+        for diag in fold_diags.iter() {
             if diag.level == DiagnosticLevel::Error {
                 total_errors += 1;
                 println!("Error: {}", diag.message);
@@ -1768,6 +1797,7 @@ mod gid_stream_tests {
                 worker,
                 module_idx: 0,
                 generated_structs: Vec::new(),
+                capacity_summaries: Vec::new(),
                 name: crate::symbol::Symbol::from("f"),
                 lowered: true,
             }];

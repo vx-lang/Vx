@@ -718,6 +718,19 @@ impl CompilerDriver {
         // when compiled on their own). Drop anything it added; keep the instantiations.
         checker.errors.inner.truncate(errors_before_imports);
 
+        // The cross-call half of the capacity check: fold every function's summary over the
+        // monomorphized call graph. Reads only the summaries the per-function checks exported,
+        // never a body, and only ever adds refusals.
+        {
+            let summaries = std::mem::take(&mut checker.traffic.capacity_summaries);
+            crate::hir::check::capacity_fold::fold_cross_call_capacity(
+                &summaries,
+                checker.env,
+                &mut checker.errors,
+            );
+            checker.traffic.capacity_summaries = summaries;
+        }
+
         let has_errors = checker
             .errors
             .iter()

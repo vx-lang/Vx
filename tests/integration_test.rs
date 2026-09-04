@@ -10,6 +10,7 @@ mod integration_test {
     mod borrow_test;
     mod codegen_determinism;
     mod compile_test;
+    mod cross_call_capacity_test;
     mod device_image_test;
     mod device_pool_test;
     mod entry_block_allocas_test;

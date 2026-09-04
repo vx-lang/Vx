@@ -100,7 +100,8 @@ pub enum DiagnosticCode {
     /// shows a consumer may read stale data). See the topology coherence check.
     W1027,
     /// The working set of a memory space exceeds `capacity`, but the space is declared
-    /// `overcommit`, so the cumulative-budget error (E6010) is downgraded to this warning.
+    /// `overcommit`, so the cumulative-budget errors (E6010, and the cross-call E6027/E6028)
+    /// are downgraded to this warning.
     W1028,
     /// A tensor placed in a memory space that declares a `capacity` has a *dynamic* (non-
     /// literal) shape, so the capacity check (E6009/E6010) could not run — the placement is
@@ -343,6 +344,17 @@ pub enum DiagnosticCode {
     /// Only fires against a topology that declares `dtypes:`. An undeclared machine constrains
     /// nothing, which is what keeps every machine file written before the field kept working.
     E6026,
+    /// A working set that overflows a space only across call boundaries: the peak along some
+    /// call path -- what each caller still holds when it calls, plus the deepest callee's own
+    /// peak -- exceeds the space's declared capacity, while every function on the path fits by
+    /// itself (that case is E6010's). Computed by folding per-function capacity summaries over
+    /// the call graph, after the per-function checks. Downgraded to W1028 when the space is
+    /// declared `overcommit`.
+    E6027,
+    /// A recursive cycle that places tiles in a space with a declared capacity. The recursion
+    /// depth is not known at compile time, so the true peak is unbounded and the placement is
+    /// refused conservatively. Downgraded to W1028 when the space is declared `overcommit`.
+    E6028,
 
     // --- Tensor/Math Errors (E7xxx) ---
     /// Matmul dimension mismatch

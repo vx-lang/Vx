@@ -1,0 +1,41 @@
+//===- recursion_with_residency_is_refused.vx - Vx Compiler -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// One 3 MiB tile per activation, and the depth is a runtime value: the peak is
+// depth * 3 MiB against a 4 MiB space, with nothing at compile time to bound
+// it. The fold refuses the cycle conservatively. A future `requires` capacity
+// contract on the recursive function is the principled lift: the body would
+// check as own footprint + recursive requires within the declared bound.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: E6028
+// CHECK-SAME: 'deep' calls itself and places up to 3145728 bytes in memory space 'W' per activation
+// CHECK-SAME: unbounded
+
+Memory CPU_DRAM {}
+Memory W {
+  within: Memory::CPU_DRAM, capacity: 4 MiB, managed: explicit
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::W,
+  visible: [Memory::W],
+  transfer Memory::CPU_DRAM -> Memory::W : 10
+}
+
+fn deep(n: i32) -> i32 {
+  let x = Tensor<f32, [1024, 768]>::uninit();
+  let _sx = transfer(x, Memory::W);
+  if n <= 0 {
+    return 0;
+  }
+  return deep(n - 1);
+}
+
+fn main() -> i32 {
+  return deep(64);
+}

@@ -169,4 +169,20 @@ pub struct TrafficState {
     /// copy said two of them never coexisted, when the emitted code holds both to the end of the
     /// block.
     pub consumed_by_transfer: bool,
+    /// The calls the current function makes, keyed by call-site span (a probe may check the
+    /// same expression twice; the first visit's program order wins). Taken, with the
+    /// placements, when the function's summary is built.
+    pub call_sites: HashMap<String, CallSite>,
+    /// One finished capacity summary per checked function, in check order -- what the
+    /// cross-call fold reads after every body is done.
+    pub capacity_summaries: Vec<crate::hir::check::capacity_fold::FnCapacitySummary>,
+}
+
+/// A resolved call, recorded where the checker resolves it: who is called, from inside which
+/// open blocks, and where it sits in program order relative to the placements around it.
+pub struct CallSite {
+    pub callee: String,
+    pub scope: Vec<u32>,
+    pub order: usize,
+    pub span: crate::syntax::Span,
 }

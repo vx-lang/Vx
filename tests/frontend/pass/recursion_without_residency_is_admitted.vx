@@ -1,0 +1,42 @@
+//===- recursion_without_residency_is_admitted.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Recursion that never touches a bounded space needs no annotation: `fact`
+// places nothing, so its cycle folds to zero in every budgeted space and the
+// conservative cycle refusal (E6028) stays silent. The placement in `main`
+// proves the capacity machinery is awake in this compile, so the admission is
+// a real verdict.
+//
+// RUN: vxc %s --action emit-mlir -o /dev/null --diagnostics-json 2>/dev/null | FileCheck %s
+// CHECK: "resident_sets"
+// CHECK: "space": "W"
+// CHECK-SAME: "total_bytes": 3145728
+// CHECK-NOT: "E6028"
+
+Memory CPU_DRAM {}
+Memory W {
+  within: Memory::CPU_DRAM, capacity: 4 MiB, managed: explicit
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::W,
+  visible: [Memory::W],
+  transfer Memory::CPU_DRAM -> Memory::W : 10
+}
+
+fn fact(n: i32) -> i32 {
+  if n <= 1 {
+    return 1;
+  }
+  return n * fact(n - 1);
+}
+
+fn main() -> i32 {
+  let x = Tensor<f32, [1024, 768]>::uninit();
+  let _sx = transfer(x, Memory::W);
+  return fact(5);
+}

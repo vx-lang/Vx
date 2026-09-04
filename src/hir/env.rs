@@ -1032,6 +1032,14 @@ impl<'a> TypeChecker<'a> {
         let prev_ret_ty = self.current_return_type.clone();
         let prev_fn = std::mem::replace(&mut self.current_function, func.name.as_ref().to_string());
         self.current_return_type = Some(func.return_type.clone());
+        // A generic instantiation is checked from inside its caller's body, and the placement
+        // walk is per-function: without a fresh slate the caller's tiles placed so far land in
+        // the callee's cumulative check (mis-attributed and then lost to the caller, since that
+        // check takes the map). Swap the per-function traffic out, restore it on exit.
+        let prev_placements = std::mem::take(&mut self.traffic.memory_placements);
+        let prev_call_sites = std::mem::take(&mut self.traffic.call_sites);
+        let prev_scope_chain = std::mem::take(&mut self.traffic.scope_chain);
+        let prev_scope_releases = std::mem::take(&mut self.traffic.scope_releases);
         self.push_scope();
 
         let prev_top = self.active_topology.clone();
@@ -1139,6 +1147,10 @@ impl<'a> TypeChecker<'a> {
         self.check_cumulative_capacity();
 
         self.pop_scope();
+        self.traffic.memory_placements = prev_placements;
+        self.traffic.call_sites = prev_call_sites;
+        self.traffic.scope_chain = prev_scope_chain;
+        self.traffic.scope_releases = prev_scope_releases;
         self.current_return_type = prev_ret_ty;
         self.current_function = prev_fn;
         self.consteval.constraints = prev_constraints;

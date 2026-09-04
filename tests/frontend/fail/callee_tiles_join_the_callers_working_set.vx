@@ -1,0 +1,52 @@
+//===- callee_tiles_join_the_callers_working_set.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// The admit that motivated the cross-call fold: `sx` is read after `g()`
+// returns, so it is resident for the whole of `g`, and the true peak in `W` is
+// two tiles -- 6 MiB against a 4 MiB capacity. Each function fits by itself
+// (3 MiB), so the per-function check (E6010) admits both; only the fold over
+// the call graph sees the sum.
+//
+// The refusal names the path and both contributions: what the caller still
+// holds when it calls, and the callee's own peak.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: E6027
+// CHECK-SAME: call path 'f -> g'
+// CHECK-SAME: peaks at 6291456 bytes, over its 4194304 byte capacity
+// CHECK-SAME: 'f' holds 3145728 bytes across its call
+// CHECK-SAME: 'g' itself peaks at 3145728 bytes
+
+Memory CPU_DRAM {}
+Memory W {
+  within: Memory::CPU_DRAM, capacity: 4 MiB, managed: explicit
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::W,
+  visible: [Memory::W],
+  transfer Memory::CPU_DRAM -> Memory::W : 10
+  transfer Memory::W -> Memory::CPU_DRAM : 10
+}
+
+fn g() -> i32 {
+  let y = Tensor<f32, [1024, 768]>::uninit();
+  let _sy = transfer(y, Memory::W);
+  return 1;
+}
+
+fn f() -> i32 {
+  let x = Tensor<f32, [1024, 768]>::uninit();
+  let sx = transfer(x, Memory::W);
+  let r = g();
+  let _back = transfer(sx, Memory::CPU_DRAM);
+  return r;
+}
+
+fn main() -> i32 {
+  return f();
+}

@@ -1,0 +1,45 @@
+//===- a_closed_block_releases_before_the_call.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// What a caller holds across a call is exactly its *live* tiles. The tile in
+// the `if` block is read there and released when the
+// block closes, so nothing is resident at the call to `g` and two 3 MiB tiles
+// in a 4 MiB space are admitted. A fold that ignored block release would
+// refuse this at 6 MiB.
+//
+// RUN: vxc %s --action emit-mlir -o /dev/null --diagnostics-json 2>/dev/null | FileCheck %s
+// CHECK: "resident_sets"
+// CHECK: "space": "W"
+// CHECK-SAME: "total_bytes": 3145728
+// CHECK-NOT: "E6027"
+
+Memory CPU_DRAM {}
+Memory W {
+  within: Memory::CPU_DRAM, capacity: 4 MiB, managed: explicit
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::W,
+  visible: [Memory::W],
+  transfer Memory::CPU_DRAM -> Memory::W : 10
+  transfer Memory::W -> Memory::CPU_DRAM : 10
+}
+
+fn g() -> i32 {
+  let y = Tensor<f32, [1024, 768]>::uninit();
+  let _sy = transfer(y, Memory::W);
+  return 1;
+}
+
+fn main() -> i32 {
+  if 1 == 1 {
+    let x = Tensor<f32, [1024, 768]>::uninit();
+    let s = transfer(x, Memory::W);
+    let _back = transfer(s, Memory::CPU_DRAM);
+  }
+  return g();
+}

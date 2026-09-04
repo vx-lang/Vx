@@ -366,6 +366,27 @@ impl<'a> TypeChecker<'a> {
         );
     }
 
+    /// Record a resolved call for the cross-call capacity fold: which function, from inside
+    /// which open blocks, at what point in program order. Mirrors `check_capacity`'s discipline
+    /// exactly -- no `speculating` guard, span-keyed so a node checked twice lands on the same
+    /// record, first visit's program order kept.
+    pub(crate) fn record_call_edge(&mut self, callee: &str, span: &crate::syntax::Span) {
+        let key = format!("@{}:{}:{}:{}", span.line, span.column, span.length, callee);
+        if self.traffic.call_sites.contains_key(&key) {
+            return;
+        }
+        self.traffic.placement_order += 1;
+        self.traffic.call_sites.insert(
+            key,
+            crate::hir::check_state::CallSite {
+                callee: callee.to_string(),
+                scope: self.traffic.scope_chain.clone(),
+                order: self.traffic.placement_order,
+                span: *span,
+            },
+        );
+    }
+
     /// Cumulative budget check: for each memory space, the sum of the tiles a function places
     /// there (its working set) must fit `capacity`. This catches the collective overflow that
     /// the per-tile check (E6009) misses -- e.g. Q/K/V in SMEM or S/P/O in TMEM summing past the
@@ -374,7 +395,26 @@ impl<'a> TypeChecker<'a> {
     /// placement map. Only fires when >1 tile shares a space (a lone tile is E6009's job).
     pub(crate) fn check_cumulative_capacity(&mut self) {
         let placements = std::mem::take(&mut self.traffic.memory_placements);
+        let call_sites = std::mem::take(&mut self.traffic.call_sites);
         self.traffic.placement_site = 0;
+        // The function's capacity summary, built alongside the checks: its own per-space peak
+        // and what stays resident across each call. The cross-call fold reads these after
+        // every body is done; since it reads only summaries, the per-function phase stays
+        // parallel.
+        let mut calls: Vec<crate::hir::check_state::CallSite> = call_sites.into_values().collect();
+        calls.sort_by_key(|c| c.order);
+        let mut summary = crate::hir::check::capacity_fold::FnCapacitySummary {
+            name: self.current_function.clone(),
+            self_peak: std::collections::BTreeMap::new(),
+            calls: calls
+                .iter()
+                .map(|c| crate::hir::check::capacity_fold::CallEdge {
+                    callee: c.callee.clone(),
+                    live: std::collections::BTreeMap::new(),
+                    span: c.span,
+                })
+                .collect(),
+        };
         let h = crate::hir::memory::MemoryHierarchy::build(self.env.memories.values().copied());
         // (space, total, cap, tile_count, overcommit, granule)
         let mut violations: Vec<(MemorySpace, u64, u64, usize, bool, Option<u64>)> = Vec::new();
@@ -436,6 +476,24 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             let tile_count = peak_tiles.max(1);
+            if total > 0 {
+                summary.self_peak.insert(space.name(), total);
+            }
+            // What is still resident when each call transfers control: every tile placed
+            // earlier in program order whose block is still open -- the same prefix test the
+            // peak walk uses, evaluated at the call instead of at a placement.
+            for (k, c) in calls.iter().enumerate() {
+                let held: u64 = placed
+                    .iter()
+                    .filter(|(_, sc, ord)| {
+                        *ord < c.order && sc.len() <= c.scope.len() && c.scope.starts_with(sc)
+                    })
+                    .map(|&(b, _, _)| b)
+                    .sum();
+                if held > 0 {
+                    summary.calls[k].live.insert(space.name(), held);
+                }
+            }
             // Record the working set whether or not it violates. An *admitted* program emits no
             // capacity diagnostic, so without this its resident set would be absent from the JSON
             // record -- and the resident total is what a downstream consumer needs to compute the
@@ -459,6 +517,9 @@ impl<'a> TypeChecker<'a> {
                     granule,
                 ));
             }
+        }
+        if !summary.self_peak.is_empty() || !summary.calls.is_empty() {
+            self.traffic.capacity_summaries.push(summary);
         }
         for (space, total, cap, count, overcommit, granule) in violations {
             let rounded_note = match granule {

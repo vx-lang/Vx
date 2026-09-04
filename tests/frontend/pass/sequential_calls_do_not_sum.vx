@@ -1,0 +1,49 @@
+//===- sequential_calls_do_not_sum.vx - Vx Compiler -------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Two calls in sequence, each placing a 3 MiB tile in a 4 MiB space. `f`
+// returns before `g` is called, so the tiles never coexist and the true peak
+// is one tile. The cross-call fold composes sequential calls by max: a fix
+// for the nested case that summed every function's working set would refuse
+// this program, which would be a false refusal rather than a stricter check.
+//
+// RUN: vxc %s --action emit-mlir -o /dev/null --diagnostics-json 2>/dev/null | FileCheck %s
+// CHECK: "resident_sets"
+// CHECK: "space": "W"
+// CHECK-SAME: "total_bytes": 3145728
+// CHECK: "space": "W"
+// CHECK-SAME: "total_bytes": 3145728
+// CHECK-NOT: "E6027"
+
+Memory CPU_DRAM {}
+Memory W {
+  within: Memory::CPU_DRAM, capacity: 4 MiB, managed: explicit
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::W,
+  visible: [Memory::W],
+  transfer Memory::CPU_DRAM -> Memory::W : 10
+}
+
+fn g() -> i32 {
+  let y = Tensor<f32, [1024, 768]>::uninit();
+  let _sy = transfer(y, Memory::W);
+  return 1;
+}
+
+fn f() -> i32 {
+  let x = Tensor<f32, [1024, 768]>::uninit();
+  let _sx = transfer(x, Memory::W);
+  return 2;
+}
+
+fn main() -> i32 {
+  let a = f();
+  let b = g();
+  return a + b;
+}

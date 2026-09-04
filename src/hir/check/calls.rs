@@ -40,8 +40,8 @@ struct ReborrowPlan {
 
 impl<'a> TypeChecker<'a> {
     pub(crate) fn check_indirectcall_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
-        let (callee, args) = match expr {
-            Expr::IndirectCall(c) => (&mut c.callee, &mut c.args),
+        let (callee, args, call_span) = match expr {
+            Expr::IndirectCall(c) => (&mut c.callee, &mut c.args, c.span),
             _ => panic!("Expected IndexAccess, got {:?}", expr),
         };
         let callee_ty = self.check_expr_type_flag(callee, consume);
@@ -53,16 +53,26 @@ impl<'a> TypeChecker<'a> {
         if let Type::Struct(struct_name, _) = callee_ty {
             if struct_name.starts_with("Closure_") {
                 let call_name = format!("{}_call", struct_name);
-                if let Some(func) = self.mono.functions.iter().find(|f| {
-                    f.0.name == <std::string::String as Clone>::clone(&call_name.clone()).into()
-                }) {
-                    let param_types: Vec<Type> = func
-                        .0
-                        .params
-                        .iter()
-                        .skip(1)
-                        .map(|(_, t)| t.clone())
-                        .collect();
+                if let Some((param_types, closure_ret)) = self
+                    .mono
+                    .functions
+                    .iter()
+                    .find(|f| {
+                        f.0.name == <std::string::String as Clone>::clone(&call_name.clone()).into()
+                    })
+                    .map(|func| {
+                        (
+                            func.0
+                                .params
+                                .iter()
+                                .skip(1)
+                                .map(|(_, t)| t.clone())
+                                .collect::<Vec<Type>>(),
+                            func.0.return_type.clone(),
+                        )
+                    })
+                {
+                    self.record_call_edge(&call_name, &call_span);
                     if args.len() != param_types.len() {
                         if !self.speculating {
                             self.errors.push(format!(
@@ -97,7 +107,7 @@ impl<'a> TypeChecker<'a> {
                         span: Span::default(),
                     });
 
-                    return func.0.return_type.clone();
+                    return closure_ret;
                 } else {
                     if !self.speculating {
                         self.errors.push(format!(
@@ -584,6 +594,7 @@ impl<'a> TypeChecker<'a> {
                 } else if let Some((ret_ty, is_unsafe, param_types, req_topology, _, _)) =
                     self.env.functions.get(resolved_name.as_ref())
                 {
+                    self.record_call_edge(resolved_name.as_ref(), span);
                     if !req_topology.same_device(&self.active_topology) && !self.speculating {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E6001,
@@ -631,26 +642,36 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                     ret_ty.clone()
-                } else if let Some(func) = self
+                } else if let Some((mono_topology, param_types, mono_ret)) = self
                     .mono
                     .functions
                     .iter()
                     .find(|f| f.0.name == resolved_name)
+                    .map(|func| {
+                        (
+                            func.0.topology.clone(),
+                            func.0
+                                .params
+                                .iter()
+                                .map(|(_, t)| t.clone())
+                                .collect::<Vec<Type>>(),
+                            func.0.return_type.clone(),
+                        )
+                    })
                 {
-                    if !func.0.topology.same_device(&self.active_topology) && !self.speculating {
+                    self.record_call_edge(resolved_name.as_ref(), span);
+                    if !mono_topology.same_device(&self.active_topology) && !self.speculating {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E6001,
                             format!(
                                 "Type error: Function '{}' requires topology '{}', but is called from '{}'",
                                 resolved_name,
-                                func.0.topology.display_name(),
+                                mono_topology.display_name(),
                                 self.active_topology.display_name()
                             ),
                             Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                         );
                     }
-                    let param_types: Vec<Type> =
-                        func.0.params.iter().map(|(_, t)| t.clone()).collect();
                     if args.len() != param_types.len() {
                         if !self.speculating {
                             self.errors.error_with_code(
@@ -680,7 +701,7 @@ impl<'a> TypeChecker<'a> {
                             }
                         }
                     }
-                    func.0.return_type.clone()
+                    mono_ret
                 } else if let Some((generic_func, origin_hash)) =
                     self.env.generic_functions.get(base_name.as_ref()).cloned()
                 {
@@ -696,7 +717,7 @@ impl<'a> TypeChecker<'a> {
                     )
                     .unwrap_or(Type::Unknown)
                 } else if resolved_name.contains("::") {
-                    self.check_static_method_call(&resolved_name, name)
+                    self.check_static_method_call(&resolved_name, name, span)
                 } else if let Some(sig) = self
                     .worker
                     .global
@@ -705,6 +726,7 @@ impl<'a> TypeChecker<'a> {
                     .get(&crate::symbol::Symbol::from(resolved_name.as_ref()))
                     .cloned()
                 {
+                    self.record_call_edge(resolved_name.as_ref(), span);
                     // Imported callee resolved from a merged `.vxlib` interface (#219 flip, phase 2):
                     // its AST is absent from this compile, so type-check the call against the registry
                     // `FnSig` — arg count + per-argument assignability against `params`, result type is
@@ -792,6 +814,7 @@ impl<'a> TypeChecker<'a> {
         &mut self,
         resolved_name: &crate::symbol::Symbol,
         name: &mut crate::symbol::Symbol,
+        span: &crate::syntax::Span,
     ) -> Type {
         let idx = resolved_name.find("::").expect("caller guards on `::`");
         let mut struct_name = resolved_name[..idx].to_string();
@@ -913,6 +936,7 @@ impl<'a> TypeChecker<'a> {
             let inst_name = inst_func.name.clone();
 
             *name = inst_name.clone();
+            self.record_call_edge(inst_name.as_ref(), span);
 
             if !self.env.functions.contains_key(inst_name.as_ref())
                 && !self.mono.functions.iter().any(|(f, _)| f.name == inst_name)
@@ -1061,6 +1085,7 @@ impl<'a> TypeChecker<'a> {
             let inst_name = inst_func.name.clone();
 
             *name = inst_name.clone();
+            self.record_call_edge(inst_name.as_ref(), span);
 
             // The instance carries the placement, not the template: a generic bound to a device is
             // a device function for every argument it is instantiated with. The two concrete call
@@ -1693,6 +1718,7 @@ impl<'a> TypeChecker<'a> {
                     if let Some(exported_ty) = exports.get(_method) {
                         let prefix = TypeChecker::mangle_path(path);
                         let mangled_name = format!("{}_{}", prefix, _method);
+                        self.record_call_edge(&mangled_name, &method_span);
                         let func_call = Expr::FunctionCall(FunctionCallExpr {
                             name: crate::symbol::Symbol::from(mangled_name.as_str()),
                             type_args: None,
