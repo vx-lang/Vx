@@ -5,42 +5,51 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
-// Three placements into a space that holds only the largest of them.
+// A tile is resident until its last reader, so one nobody reads is released where
+// it is made and the next is allocated into a space it has already given back:
 //
-// 16 MiB, then 16 KiB, then 64 MiB, into 64 MiB. Summed they are 83902464 bytes
-// and do not fit. They are never summed, because nothing reads them: a tile's
-// life runs to its last reader, so each is released where it is made and the next
-// is allocated into a space the previous one has already given back.
-//
-//   %11 = call @vx_plugin_alloc_and_transfer(...)   // 16 MiB
+//   %11 = call @vx_plugin_alloc_and_transfer(...)
 //   call @vx_plugin_free(%11, ...)
-//   %17 = call @vx_plugin_alloc_and_transfer(...)   // 16 KiB
+//   %17 = call @vx_plugin_alloc_and_transfer(...)
 //   call @vx_plugin_free(%17, ...)
-//   %23 = call @vx_plugin_alloc_and_transfer(...)   // 64 MiB
-//   call @vx_plugin_free(%23, ...)
 //
-// So the peak is 67108864 -- the largest single tile, filling the space exactly --
-// and the program is admitted.
+// Three functions, because the budget resets at each one and so each reports a
+// resident set of its own. They cover the two ways the working set can be wrong
+// and the boundary between them.
 //
-// This is the case the accounting was built for and could not express until the
-// release followed lifetime rather than block dominance. Before that a placement
-// was held to the end of the function whether or not anything could still read it,
-// and this program was refused for residency it never had.
+// `fills_the_space` -- 4096*4096*4 is 67108864, exactly the declared capacity.
+// The cumulative check refuses on `total > cap`, so a tile that fills a space to
+// the byte is admitted and reports a utilization of 1.
 //
-// `fills_the_space` is the same 64 MiB tile in its own function, which is where
-// the budget resets: it reports full utilization on its own.
+// `peak_is_not_the_last` -- 16 MiB and then 16 KiB, both bound to `s`. Both fit
+// either way, so no verdict turns on this; the figure does. The working set used
+// to be keyed by the binding name, so the second placement overwrote the first and
+// the space reported 16384 at a utilization of 0.0002, which is the size of the
+// last placement rather than the peak. `--diagnostics-json` resident sets are what
+// a consumer reads to compute the utilization an engine must be given, so that is
+// a wrong input to something else rather than a missing warning.
+//
+// `main` -- 64 MiB, 16 MiB, 16 KiB. Summed they are 83902464 and do not fit; the
+// peak is 67108864 and does, exactly. Held to the end of the function, as they
+// were before the release followed lifetime rather than block dominance, this was
+// refused for residency it never has.
 //
 // RUN: vxc %s --action emit-mlir -o /dev/null --diagnostics-json 2>/dev/null | FileCheck %s
 // CHECK: "resident_sets"
+// fills_the_space: exactly at capacity, admitted, reported as full.
 // CHECK: "space": "W"
 // CHECK-SAME: "total_bytes": 67108864
 // CHECK-SAME: "capacity_bytes": 67108864
 // CHECK-SAME: "utilization": 1
 // CHECK-SAME: "tiles": 1
-// main holds one tile at a time, and its peak is the largest of the three.
+// peak_is_not_the_last: the larger of the two, not the size of the last.
+// CHECK: "space": "W"
+// CHECK-SAME: "total_bytes": 16777216
+// CHECK-SAME: "utilization": 0.25
+// CHECK-SAME: "tiles": 1
+// main: the sum is 83902464 and would not fit; the peak is one tile and does.
 // CHECK: "space": "W"
 // CHECK-SAME: "total_bytes": 67108864
-// CHECK-SAME: "utilization": 1
 // CHECK-SAME: "tiles": 1
 
 Memory CPU_DRAM {}
@@ -61,12 +70,22 @@ fn fills_the_space() -> i32 {
   return 0;
 }
 
-fn main() -> i32 {
+// The larger placement first, so that the peak and the last placement are
+// different numbers and the difference is what is asserted.
+fn peak_is_not_the_last() -> i32 {
   let big = Tensor<f32, [2048, 2048]>::uninit();
   let s = transfer(big, Memory::W);
   let small = Tensor<f32, [64, 64]>::uninit();
   let s = transfer(small, Memory::W);
+  return 0;
+}
+
+fn main() -> i32 {
   let whole = Tensor<f32, [4096, 4096]>::uninit();
   let s = transfer(whole, Memory::W);
-  return fills_the_space();
+  let big = Tensor<f32, [2048, 2048]>::uninit();
+  let s = transfer(big, Memory::W);
+  let small = Tensor<f32, [64, 64]>::uninit();
+  let s = transfer(small, Memory::W);
+  return fills_the_space() + peak_is_not_the_last();
 }
