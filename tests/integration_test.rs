@@ -39,4 +39,5 @@ mod integration_test {
     mod traffic_test;
     mod transport_test;
     mod wire_test;
+    mod working_set_peak_test;
 }

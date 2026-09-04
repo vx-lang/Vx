@@ -19,6 +19,18 @@ use crate::{hir::env::Value, syntax::Function};
 use std::collections::{HashMap, HashSet};
 
 /// Compile-time evaluation: the constant environment and the constraints gathered from it.
+/// One tile placed in a memory space: what it costs, where it lives, and when it happened.
+#[derive(Debug, Clone)]
+pub struct Placement {
+    pub bytes: u64,
+    /// The blocks open when it was placed, outermost first. A tile is live for exactly the
+    /// program points inside its innermost block.
+    pub scope: Vec<u32>,
+    /// Position in program order, used to tell a tile placed before a sibling block from one
+    /// placed after it has closed.
+    pub order: usize,
+}
+
 pub struct ConstEvalState {
     /// Scoped constant bindings, innermost last.
     pub env: Vec<HashMap<Symbol, Value>>,
@@ -125,7 +137,19 @@ pub struct TrafficState {
     /// tile placed in a declared space (via `transfer`/`Ref` annotation) is recorded here so the
     /// *cumulative* budget check can sum them and flag a space whose total exceeds `capacity`.
     /// Reset per function.
-    pub memory_placements: HashMap<MemorySpace, HashMap<String, u64>>,
+    /// Each entry is the tile's granule-rounded bytes, the chain of blocks it was placed
+    /// inside, and its position in program order.
+    ///
+    /// The chain is what makes this a peak rather than a sum. A placed tile is released at the
+    /// end of the block that placed it, so two tiles in sibling blocks never occupy the space at
+    /// the same time, and adding them together describes a program that was never run.
+    pub memory_placements: HashMap<MemorySpace, HashMap<String, Placement>>,
     /// Monotonic id for placements with no binding name, so they still count toward the sum.
     pub placement_site: usize,
+    /// The blocks currently open, outermost first. Pushed by `check_block`.
+    pub scope_chain: Vec<u32>,
+    /// Ids for the blocks in `scope_chain`; a block gets a fresh one each time it is entered.
+    pub next_scope_id: u32,
+    /// Program order for placements, so "already placed when this one happened" is answerable.
+    pub placement_order: usize,
 }

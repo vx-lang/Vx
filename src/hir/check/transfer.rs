@@ -328,11 +328,30 @@ impl<'a> TypeChecker<'a> {
             self.traffic.placement_site += 1;
             format!("@site{}", self.traffic.placement_site)
         };
-        self.traffic
+        // Order is assigned once per placement. A node the checker visits twice keeps the
+        // position it had the first time, so a re-check cannot make one tile look like two
+        // that straddle a block boundary.
+        let scope = self.traffic.scope_chain.clone();
+        let tiles = self
+            .traffic
             .memory_placements
             .entry(space.clone())
-            .or_default()
-            .insert(key, rounded);
+            .or_default();
+        let order = match tiles.get(&key) {
+            Some(existing) => existing.order,
+            None => {
+                self.traffic.placement_order += 1;
+                self.traffic.placement_order
+            }
+        };
+        tiles.insert(
+            key,
+            crate::hir::check_state::Placement {
+                bytes: rounded,
+                scope,
+                order,
+            },
+        );
     }
 
     /// Cumulative budget check: for each memory space, the sum of the tiles a function places
@@ -366,10 +385,45 @@ impl<'a> TypeChecker<'a> {
             // A granule'd sub-space consumes the *granule-rounded* size per tile (SS3): a 1-byte
             // tile still occupies a whole granule, so the true working set rounds each tile up.
             let granule = decl.granule.as_ref().map(|g| g.0).filter(|g| *g > 0);
-            let total: u64 = tiles
+            // The peak, not the sum. Walk the placements in program order; at each one the
+            // tiles still occupying the space are those placed earlier in a block that is still
+            // open -- that is, whose scope chain is a prefix of this one. A tile in a sibling
+            // block was released when that block closed and is not among them.
+            //
+            // A function whose placements all sit in one block is unaffected: every chain is a
+            // prefix of every other, so the peak is the sum, which is what those tiles really do.
+            let mut placed: Vec<(u64, &Vec<u32>, usize)> = tiles
                 .values()
-                .map(|&b| crate::hir::memory::granule_round(b, granule))
-                .sum();
+                .map(|p| {
+                    (
+                        crate::hir::memory::granule_round(p.bytes, granule),
+                        &p.scope,
+                        p.order,
+                    )
+                })
+                .collect();
+            placed.sort_by_key(|&(_, _, order)| order);
+            let mut total: u64 = 0;
+            let mut peak_tiles = 0usize;
+            for (i, (_, scope, _)) in placed.iter().enumerate() {
+                let live: u64 = placed[..=i]
+                    .iter()
+                    .filter(|(_, earlier, _)| {
+                        earlier.len() <= scope.len() && scope.starts_with(earlier)
+                    })
+                    .map(|&(b, _, _)| b)
+                    .sum();
+                if live > total {
+                    total = live;
+                    peak_tiles = placed[..=i]
+                        .iter()
+                        .filter(|(_, earlier, _)| {
+                            earlier.len() <= scope.len() && scope.starts_with(earlier)
+                        })
+                        .count();
+                }
+            }
+            let tile_count = peak_tiles.max(1);
             // Record the working set whether or not it violates. An *admitted* program emits no
             // capacity diagnostic, so without this its resident set would be absent from the JSON
             // record -- and the resident total is what a downstream consumer needs to compute the
@@ -378,17 +432,17 @@ impl<'a> TypeChecker<'a> {
                 space: space.clone(),
                 total_bytes: total,
                 capacity_bytes: cap,
-                tiles: tiles.len(),
+                tiles: tile_count,
                 overcommit: decl.overcommit,
             });
             // The cumulative *diagnostic* stays gated on >1 tile: a lone oversized tile is
             // E6009's job, and reporting it twice would double-count in the record.
-            if total > cap && tiles.len() > 1 {
+            if total > cap && tile_count > 1 {
                 violations.push((
                     space.clone(),
                     total,
                     cap,
-                    tiles.len(),
+                    tile_count,
                     decl.overcommit,
                     granule,
                 ));

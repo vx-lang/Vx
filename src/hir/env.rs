@@ -372,6 +372,14 @@ impl<'a> TypeChecker<'a> {
     }
 
     pub fn push_scope(&mut self) {
+        // A lexical scope is also the lifetime of every tile placed inside it: the lowering
+        // releases a placement at the end of the block that made it, and these are the scopes
+        // that become blocks -- a control-flow body, a loop, a spawn region, the function. The
+        // capacity check reads the chain to tell tiles that coexist from tiles that merely share
+        // a function.
+        self.traffic.next_scope_id += 1;
+        let scope_id = self.traffic.next_scope_id;
+        self.traffic.scope_chain.push(scope_id);
         self.scopes.push(std::collections::HashMap::new());
         self.borrow
             .moved_vars
@@ -380,6 +388,7 @@ impl<'a> TypeChecker<'a> {
     }
 
     pub fn pop_scope(&mut self) {
+        self.traffic.scope_chain.pop();
         let depth = self.scopes.len();
         self.scopes.pop();
         self.borrow.moved_vars.pop();

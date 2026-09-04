@@ -1,0 +1,56 @@
+//===- working_set_is_a_peak_not_a_sum.vx - Vx Compiler ---------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Two tiles that never share the space, and together do not fit it.
+//
+// A placed tile is released at the end of the block that placed it. In the
+// emitted IR the `if` body allocates its tile and frees it before the branch,
+// and the tile after the block is allocated only then:
+//
+//   ^bb1:
+//     %11 = call @vx_plugin_alloc_and_transfer(...)
+//     call @vx_plugin_free(%11, ...)
+//     br ^bb2
+//   ^bb2:
+//     %17 = call @vx_plugin_alloc_and_transfer(...)
+//
+// So the peak here is one tile. Summing every placement in the function reported
+// two and refused the program, which described a residency the run never has.
+//
+// The distinction is scope, not last use. Both tiles below are dead the moment
+// they are bound, and the one in `main`'s own block is still resident until the
+// function ends -- release follows the block, so the accounting has to as well.
+// Accounting at last use instead would be finer than the runtime and would admit
+// programs that then exceed the space.
+//
+// RUN: vxc %s | FileCheck %s
+
+Memory CPU_DRAM {}
+Memory W {
+  within: Memory::CPU_DRAM, capacity: 4 MiB, managed: explicit
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::W,
+  visible: [Memory::W],
+  transfer Memory::CPU_DRAM -> Memory::W : 10
+}
+
+fn main() -> i32 {
+  // 3 MiB, released when the block closes.
+  if true {
+    let x = Tensor<f32, [1024, 768]>::uninit();
+    let _sx = transfer(x, Memory::W);
+  }
+  // 3 MiB, allocated after that one is gone. 6 MiB never coexists in a 4 MiB space.
+  let y = Tensor<f32, [1024, 768]>::uninit();
+  let _sy = transfer(y, Memory::W);
+  print(3);
+  return 0;
+}
+
+// CHECK: 3

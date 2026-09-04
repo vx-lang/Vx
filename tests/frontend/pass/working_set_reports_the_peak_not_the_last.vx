@@ -26,15 +26,11 @@
 // its own function deliberately: in `main` it would join the tiles above and sum to
 // 83902464, over capacity, and be refused.
 //
-// Refused rather than wrong. The earlier tiles are dead by then -- `s` was shadowed
-// and neither buffer is read again -- so a compiler that released them would fit all
-// three. This one does not: the emitted MLIR for a placement is an allocation with no
-// matching release, on both the flat and the AST paths, so the bytes really are all
-// resident and the sum really is the peak.
-//
-// The accounting is monotone because the storage is. Both would have to change
-// together: an accounting that assumed a release the runtime does not perform would
-// admit a program that then runs out of the space.
+// Refused, and correctly, though not for the reason the shapes suggest. A placed tile
+// is released at the end of the block that placed it, so tiles in sibling blocks never
+// coexist. These are all in one block, which is where the sum really is the peak: the
+// releases all land together at the end of `main`, so the three tiles are resident at
+// once no matter that two of them are dead.
 //
 // RUN: vxc %s --action emit-mlir -o /dev/null --diagnostics-json 2>/dev/null | FileCheck %s
 // CHECK: "resident_sets"
