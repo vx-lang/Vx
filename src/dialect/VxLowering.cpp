@@ -1938,6 +1938,54 @@ struct TransferToPluginLowering : public OpRewritePattern<vx::TransferOp> {
     {
       OpBuilder::InsertionGuard guard(rewriter);
       Block *defBlock = op->getBlock();
+
+      // Dominance is a proxy for the thing that actually decides this, which is the
+      // tile's lifetime, and it is wrong in both directions. It frees too late for a
+      // tile nobody reads -- a `spawn` region ends in an unconditional branch, so it
+      // dominates the exits and its tile was held to the return although the binding
+      // is not visible past the region. Block-end, which it replaced, frees too early
+      // for a tile read inside a later loop.
+      //
+      // Where the uses are answers both. A result with no users cannot be read, so it
+      // dies where it is made; one whose users all sit in the defining block dies with
+      // that block. Anything else -- a use in a loop, a use down a branch -- keeps the
+      // dominance placement, which is conservative and is what the loop case needs.
+      SmallVector<Operation *> users(op->getResult(0).getUsers().begin(),
+                                     op->getResult(0).getUsers().end());
+      bool noUsers = users.empty();
+      bool usesConfinedToDefBlock = true;
+      for (Operation *user : users) {
+        if (user->getBlock() != defBlock) {
+          usesConfinedToDefBlock = false;
+          break;
+        }
+      }
+
+      if (noUsers) {
+        // Nothing reads it: release it where it is produced, so it never joins the
+        // residency of anything placed after it.
+        rewriter.setInsertionPointAfter(op);
+        rewriter.create<LLVM::CallOp>(
+            loc, TypeRange{},
+            SymbolRefAttr::get(rewriter.getContext(), freeName),
+            ValueRange{devicePtr, topoVal});
+        rewriter.replaceOp(op, result);
+        return success();
+      }
+      if (usesConfinedToDefBlock) {
+        if (!defBlock->empty() &&
+            defBlock->back().hasTrait<OpTrait::IsTerminator>())
+          rewriter.setInsertionPoint(&defBlock->back());
+        else
+          rewriter.setInsertionPointToEnd(defBlock);
+        rewriter.create<LLVM::CallOp>(
+            loc, TypeRange{},
+            SymbolRefAttr::get(rewriter.getContext(), freeName),
+            ValueRange{devicePtr, topoVal});
+        rewriter.replaceOp(op, result);
+        return success();
+      }
+
       Operation *parentFn = op->getParentOfType<LLVM::LLVMFuncOp>();
       if (!parentFn)
         parentFn = op->getParentOfType<func::FuncOp>();

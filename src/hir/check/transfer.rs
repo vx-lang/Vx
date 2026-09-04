@@ -1613,7 +1613,9 @@ impl<'a> TypeChecker<'a> {
 
                 *top = actual_top;
 
-                self.push_scope();
+                // The region's tiles are released at its end now that the free follows the
+                // tile's lifetime rather than the block's dominance.
+                self.push_releasing_scope();
 
                 // The placed values this region can see, captured BEFORE its body is checked
                 // (#353 A4 T4). Checking mutates the scopes it reads -- a call that consumes a

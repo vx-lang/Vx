@@ -1,0 +1,55 @@
+//===- spawn_region_releases_its_tile.vx - Vx Compiler ----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// A tile placed in a `spawn` region is gone when the region ends.
+//
+// Two 3 MiB tiles into a 4 MiB space, and they fit because they never share it.
+// `_sa` is bound inside the region and is not visible after it, so nothing can
+// read it and the release goes where it is made:
+//
+//   ^bb1:                                            // the region
+//     %11 = call @vx_plugin_alloc_and_transfer(...)
+//     call @vx_plugin_free(%11, ...)                 // here
+//     br ^bb2
+//   ^bb2:
+//     %17 = call @vx_plugin_alloc_and_transfer(...)
+//
+// It took two goes to get here. The release used to be placed by dominance, and a
+// region ends in an unconditional branch, so it dominated the function's exits and
+// its tile was held to the return -- which made this program 6 MiB in a 4 MiB space.
+// Reading the region as releasing anyway admitted it, which is the direction this
+// check exists to prevent.
+//
+// Dominance was never the condition. A tile's life ends where its last reader is,
+// and a tile with no readers ends where it starts.
+//
+// RUN: vxc %s --action emit-mlir -o /dev/null --diagnostics-json 2>/dev/null | FileCheck %s
+// CHECK: "resident_sets"
+// CHECK: "space": "W"
+// CHECK-SAME: "total_bytes": 3145728
+// CHECK-SAME: "tiles": 1
+
+Memory CPU_DRAM {}
+Memory W {
+  within: Memory::CPU_DRAM, capacity: 4 MiB, managed: explicit
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::W,
+  visible: [Memory::W],
+  transfer Memory::CPU_DRAM -> Memory::W : 10
+}
+
+fn main() -> i32 {
+  spawn on(Topology::CPU) {
+    let a = Tensor<f32, [1024, 768]>::uninit();
+    let _sa = transfer(a, Memory::W);
+  }
+  let b = Tensor<f32, [1024, 768]>::uninit();
+  let _sb = transfer(b, Memory::W);
+  return 0;
+}
