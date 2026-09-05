@@ -13,6 +13,14 @@
 // This is the case a per-allocation check cannot see. Nothing here is individually
 // too big, so the error is a property of the set.
 //
+// The three reads at the end are what make them a set. Placement alone does not:
+// a tile's life runs to its last reader, so three tensors nobody reads are each
+// released where they are made and the peak is one tile rather than their sum.
+// That is also the honest model of the workload this pair is drawn from -- an
+// attention step holds Q, K and V at once, and says so here. Read back to the
+// host rather than through a device call, because a host caller cannot see HBM;
+// the host declares no capacity, so the reads add no residency of their own.
+//
 // This file is the Vx half of a differential pair; see utils/differential/.
 //
 // RUN: not vxc --host default --machine fleet/a100-80.vx %s --action emit-mlir -o /dev/null 2>&1 | FileCheck %s
@@ -22,8 +30,12 @@ fn main() -> i32 {
   let q : Tensor<f32, [ 131072, 65536 ]> = Tensor<f32, [ 131072, 65536 ]>::uninit();
   let k : Tensor<f32, [ 131072, 65536 ]> = Tensor<f32, [ 131072, 65536 ]>::uninit();
   let v : Tensor<f32, [ 131072, 65536 ]> = Tensor<f32, [ 131072, 65536 ]>::uninit();
-  let _dq = transfer(q, Memory::HBM);
-  let _dk = transfer(k, Memory::HBM);
-  let _dv = transfer(v, Memory::HBM);
+  let dq = transfer(q, Memory::HBM);
+  let dk = transfer(k, Memory::HBM);
+  let dv = transfer(v, Memory::HBM);
+
+  let _rq = transfer(dq, Memory::CPU_DRAM);
+  let _rk = transfer(dk, Memory::CPU_DRAM);
+  let _rv = transfer(dv, Memory::CPU_DRAM);
   return 0;
 }
