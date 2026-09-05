@@ -90,11 +90,11 @@ fn main() -> i32 {
   let scale : f32 = 0.5;
 
   spawn on(Topology::Dev) {
-    let mut accs = Tensor<f32>([ __VX_TQ__, __VX_HD__ ]).with_memory(Memory::SMEM);
-    let mut kt = Tensor<f32>([ __VX_TILE__, __VX_HD__ ]).with_memory(Memory::SMEM);
-    let mut vt = Tensor<f32>([ __VX_TILE__, __VX_HD__ ]).with_memory(Memory::SMEM);
-    let mut ms = Tensor<f32>([ __VX_TQ__, 1 ]).with_memory(Memory::SMEM);
-    let mut ls = Tensor<f32>([ __VX_TQ__, 1 ]).with_memory(Memory::SMEM);
+    let mut accs = Tensor<f32, [__VX_TQ__, __VX_HD__], Memory::SMEM>::uninit();
+    let mut kt = Tensor<f32, [__VX_TILE__, __VX_HD__], Memory::SMEM>::uninit();
+    let mut vt = Tensor<f32, [__VX_TILE__, __VX_HD__], Memory::SMEM>::uninit();
+    let mut ms = Tensor<f32, [__VX_TQ__, 1], Memory::SMEM>::uninit();
+    let mut ls = Tensor<f32, [__VX_TQ__, 1], Memory::SMEM>::uninit();
 
     for bq in 0..__VX_NB__ {
       for qi in 0..__VX_TQ__ {

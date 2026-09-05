@@ -37,6 +37,30 @@
 set -uo pipefail
 
 BUNDLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The bundle root is whichever directory holds stdlib/ -- the script's own on a pod,
+# where it is copied to the bundle root, and its parent in a checkout, where the
+# script lives in scripts/. Assuming the script's own directory was the root made
+# this runnable only on a pod: from the repo it looked for the template under
+# scripts/scripts/, then for "$VXC", then failed to resolve std::math. Nobody could
+# run it from a checkout to notice the template had rotted.
+if [ ! -d "$BUNDLE_DIR/stdlib" ] && [ -d "$BUNDLE_DIR/../stdlib" ]; then
+  BUNDLE_DIR="$(cd "$BUNDLE_DIR/.." && pwd)"
+fi
+# The compiler: the bundle root on a pod, a cargo target/ directory in a checkout.
+if [ -n "${VXC:-}" ]; then
+  :
+elif [ -x "$BUNDLE_DIR/vxc" ]; then
+  VXC="$BUNDLE_DIR/vxc"
+elif [ -x "$BUNDLE_DIR/target/release/vxc" ]; then
+  VXC="$BUNDLE_DIR/target/release/vxc"
+elif [ -x "$BUNDLE_DIR/target/debug/vxc" ]; then
+  VXC="$BUNDLE_DIR/target/debug/vxc"
+elif command -v vxc >/dev/null 2>&1; then
+  VXC="$(command -v vxc)"
+else
+  echo "error: no vxc found (set VXC=/path/to/vxc)" >&2
+  exit 1
+fi
 TEMPLATE="scripts/templates/gpu_gemm_bench.vx"
 SIZES="256 512 1024 2048"
 ITERS_LO=20
@@ -80,7 +104,7 @@ run_one() {  # path n iters dev extra_env...
       "$TEMPLATE" > "$src"
   local t0 t1 secs
   t0=$(date +%s.%N)
-  env "$@" ./vxc "$src" --run > "$OUTDIR/out-$path-$n-$iters.txt" 2>&1
+  env "$@" "$VXC" "$src" --run > "$OUTDIR/out-$path-$n-$iters.txt" 2>&1
   local status=$?
   t1=$(date +%s.%N)
   secs=$(awk -v a="$t0" -v b="$t1" 'BEGIN{printf "%.3f", b-a}')
@@ -142,6 +166,15 @@ wait "$W" 2>/dev/null
 
 # --- the numbers ------------------------------------------------------------
 echo
+# Refuse to present a table when nothing was measured. Every run used to be able to
+# fail -- the template had rotted and would not parse -- and this still printed a
+# grid of `?`, a DISAGREE, and exited 0, so a caller checking the status learned
+# that a sweep measuring nothing had succeeded.
+if [ "$(grep -c . "$CSV")" -le 1 ]; then
+  echo "error: no measurements recorded; every run failed. See $OUTDIR/out-*.txt" >&2
+  exit 1
+fi
+
 echo "=== Per-GEMM cost, and what it implies ==="
 awk -F, -v lo="$ITERS_LO" -v hi="$ITERS_HI" '
   NR>1 { t[$1,$2,$3] = $4; paths[$1]=1; sizes[$2]=1 }
@@ -189,8 +222,16 @@ for n in $SIZES; do
     echo "  agree"
   else
     echo "  DISAGREE"
+    DISAGREED=1
   fi
 done
 
 echo
 echo "Evidence in $OUTDIR/ (timings.csv is the raw data)"
+
+# A disagreement between two devices computing the same GEMM is the finding this
+# script exists to surface, so it is a failure rather than a remark.
+if [ "${DISAGREED:-0}" = "1" ]; then
+  echo "error: the devices did not agree; the numbers above describe different results" >&2
+  exit 1
+fi

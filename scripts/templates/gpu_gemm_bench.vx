@@ -62,11 +62,11 @@ fn main() -> i32 {
     }
   }
 
-  let a : Tensor<f32> =
+  let a : Tensor<f32, [__VX_BENCH_N__, __VX_BENCH_N__]> =
   unsafe { tensor_view_2d(pa, __VX_BENCH_N__, __VX_BENCH_N__) };
-  let b : Tensor<f32> =
+  let b : Tensor<f32, [__VX_BENCH_N__, __VX_BENCH_N__]> =
   unsafe { tensor_view_2d(pb, __VX_BENCH_N__, __VX_BENCH_N__) };
-  let mut c : Tensor<f32> =
+  let mut c : Tensor<f32, [__VX_BENCH_N__, __VX_BENCH_N__]> =
   unsafe { tensor_view_2d(pc, __VX_BENCH_N__, __VX_BENCH_N__) };
 
   for _it in 0..__VX_BENCH_ITERS__ {

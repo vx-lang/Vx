@@ -83,7 +83,11 @@ fn main() -> i32 {
   // the top of each query is `q[i] * 0.0` because an alloca's initial
   // contents are garbage that `* 0.0` would keep as NaN.
   spawn on(Topology::GPU) {
-    let mut acc = Tensor<f32>([ 1, __VX_HD__ ]);
+    // Placed where the tensors it exchanges rows with live. It used to be an
+    // unplaced Tensor<f32>([..]), so `acc[0] = q[i] * 0.0` assigned a GPU_HBM row
+    // to a CPU_DRAM one and the template stopped compiling; the spelling also
+    // predates placement being carried in the type.
+    let mut acc = Tensor<f32, [1, __VX_HD__], Memory::GPU_HBM>::uninit();
     for i in 0..__VX_SQ__ {
       acc[0] = q[i] * 0.0;
       let mut m : f32 = -1000000.0;

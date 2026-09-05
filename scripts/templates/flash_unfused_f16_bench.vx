@@ -137,9 +137,9 @@ fn main() -> i32 {
   }
 
   spawn on(Topology::Dev) {
-    let mut pm = Tensor<f32>([ __VX_T__, 1 ]).with_memory(Memory::SMEM);
-    let mut pl = Tensor<f32>([ __VX_T__, 1 ]).with_memory(Memory::SMEM);
-    let mut red = Tensor<f32>([ 1, 1 ]).with_memory(Memory::SMEM);
+    let mut pm = Tensor<f32, [__VX_T__, 1], Memory::SMEM>::uninit();
+    let mut pl = Tensor<f32, [__VX_T__, 1], Memory::SMEM>::uninit();
+    let mut red = Tensor<f32, [1, 1], Memory::SMEM>::uninit();
     for i in 0..__VX_SQ__ {
       for t in 0..__VX_T__ {
         let mut m : f32 = -1000000.0;

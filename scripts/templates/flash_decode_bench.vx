@@ -152,7 +152,7 @@ fn main() -> i32 {
   // starts zeroed (host-side fill above), so the first rescale multiplies
   // zero and no explicit clear is needed.
   spawn on(Topology::Dev) {
-    let mut acc = Tensor<f32>([ 1, __VX_HD__ ]);
+    let mut acc = Tensor<f32, [1, __VX_HD__], Memory::GPU_HBM>::uninit();
     for hc in 0..__VX_HC__ {
       let h : i32 = hc / __VX_C__;
       let c : i32 = hc - h * __VX_C__;
@@ -212,10 +212,10 @@ fn main() -> i32 {
   // hand-built from the one primitive the prover admits, and the repetition
   // is the argument for a language-level parallel reduce (R3 proper).
   spawn on(Topology::Dev) {
-    let mut ws2 = Tensor<f32>([ 64, __VX_CPST__ ]).with_memory(Memory::SMEM);
-    let mut pm = Tensor<f32>([ 64, 1 ]).with_memory(Memory::SMEM);
-    let mut pl = Tensor<f32>([ 64, 1 ]).with_memory(Memory::SMEM);
-    let mut red = Tensor<f32>([ 1, 1 ]).with_memory(Memory::SMEM);
+    let mut ws2 = Tensor<f32, [64, __VX_CPST__], Memory::SMEM>::uninit();
+    let mut pm = Tensor<f32, [64, 1], Memory::SMEM>::uninit();
+    let mut pl = Tensor<f32, [64, 1], Memory::SMEM>::uninit();
+    let mut red = Tensor<f32, [1, 1], Memory::SMEM>::uninit();
     for bg in 0..__VX_HSG__ {
       let h : i32 = bg / __VX_SG__;
       let sg : i32 = bg - h * __VX_SG__;
