@@ -1,0 +1,38 @@
+//===- print_after_the_transfer_home.vx - Vx Compiler -----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//----------------------------------------------------------------------===//
+// The other half of print_reads_its_argument_at_home.vx: the correction that
+// refusal points at, and the one the flash bench template already writes.
+//
+// `transfer(o, Memory::CPU_DRAM)` is the declared way home. It lowers to the
+// plugin's read-back, and the movement is priced by the algebra rather than
+// hidden inside printing -- which is the reason to refuse the other spelling
+// rather than insert the transfer silently.
+//
+// RUN: vxc %s --action emit-mlir -o - 2>&1 | FileCheck %s
+// CHECK-NOT: reads its argument
+// CHECK: func.func @main
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  capacity: 40 GiB, bandwidth: 1555 GB/s, managed: explicit
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::GPU_HBM,
+  visible: [ Memory::GPU_HBM ],
+  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 10,
+  transfer Memory::GPU_HBM -> Memory::CPU_DRAM : 10
+}
+
+fn main() -> i32 {
+  let h = Tensor<f32, [4, 4]>::uninit();
+  let o = transfer(h, Memory::GPU_HBM);
+  let home = transfer(o, Memory::CPU_DRAM);
+  print(home);
+  return 0;
+}

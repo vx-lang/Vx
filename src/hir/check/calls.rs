@@ -1128,6 +1128,62 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// `print` reads its operand where the program is running, so a value the active topology
+    /// cannot see is refused -- the same question `o[0][0]` is refused on.
+    ///
+    /// It used to be asked only of an identifier, so `print(o)` on a binding was refused while
+    /// `print(mk())` on a call returning the same placed type was accepted. That one lowers to
+    /// MLIR's `printMemrefF32`, which walks the memref on the host: with a device present the
+    /// data pointer is device memory and the walk faults.
+    fn check_print_operand_is_visible(&mut self, ty: Option<&Type>, span: crate::syntax::Span) {
+        if self.speculating || self.allow_cross_topology {
+            return;
+        }
+        let Some(ty) = ty else { return };
+        let Some(p) = ty.placement() else { return };
+        let owner = self.transfer_cost_graph.placement_topology(p);
+        let src = self.transfer_cost_graph.placement_space(p);
+        // Same admission the identifier rule applies (M5): a space declared `managed: cached` is
+        // hardware-coherent, so reading it across the boundary is legal when a path exists. Only
+        // an `explicit` space obliges a transfer -- refusing a cached one here would refuse what
+        // the model permits everywhere else.
+        let reach = self
+            .transfer_cost_graph
+            .reachable(&self.active_topology, &owner, ty);
+        if matches!(reach, crate::arch::Reachability::Visible)
+            || (matches!(reach, crate::arch::Reachability::NeedsSeam { .. })
+                && self.space_is_cached(&src))
+        {
+            return;
+        }
+        let dst = self
+            .transfer_cost_graph
+            .default_memory_for(&self.active_topology);
+        let visible = self
+            .transfer_cost_graph
+            .descriptor(&self.active_topology.kind())
+            .map(|d| {
+                d.visibility
+                    .iter()
+                    .map(|s| s.name())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_default();
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E6003,
+            format!(
+                "`print` reads its argument on {}, which sees only [{}], but the value \
+                 lives in {}; bring it home first with `transfer(.., Memory::{})`",
+                self.active_topology.display_name(),
+                visible,
+                src.name(),
+                dst.name()
+            ),
+            Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
+        );
+    }
+
     pub(crate) fn resolve_intrinsic_function(
         &mut self,
         resolved_name: &str,
@@ -1283,6 +1339,7 @@ impl<'a> TypeChecker<'a> {
                 self.errors
                     .push("Function 'print' expects 1 argument".to_string());
             }
+            self.check_print_operand_is_visible(arg_types.first(), call_span);
             Some(Type::Struct("void".into(), None))
         } else if resolved_name == "printf" || resolved_name == "vx_internal_printf" {
             if args.is_empty() {

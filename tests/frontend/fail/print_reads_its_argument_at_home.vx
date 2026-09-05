@@ -1,0 +1,53 @@
+//===- print_reads_its_argument_at_home.vx - Vx Compiler --------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// `print` reads its operand where the program is running, so a value the active
+// topology cannot see is refused -- the same question `o[0][0]` is refused on.
+//
+// The question used to be asked only of an identifier, so the asymmetry was
+// narrower than it looked: `print(o)` on a binding was already refused, while
+// `print(mk())` on a call returning the same placed type was accepted. That one
+// lowers to MLIR's `printMemrefF32`, which walks the memref on the host; with a
+// device present the data pointer is device memory and the walk faults, which
+// is what a rented A100 found the first time anything ran that far.
+//
+// Refusing is the whole fix. The transfer home already exists and works, and
+// every program that hits this has a one-line correction that makes its data
+// movement a priced edge instead of a side effect of printing.
+//
+// `GPU_HBM` is `managed: explicit` here on purpose. A space left to the default
+// is `cached`, and a cached space is readable across the boundary by the same
+// M5 rule that governs every other implicit cross-space use -- so refusing it
+// would refuse what the model permits everywhere else.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: E6003
+// CHECK-SAME: `print` reads its argument on CPU
+// CHECK-SAME: the value lives in GPU_HBM
+// CHECK-SAME: transfer(.., Memory::CPU_DRAM)
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  capacity: 40 GiB, bandwidth: 1555 GB/s, managed: explicit
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::GPU_HBM,
+  visible: [ Memory::GPU_HBM ],
+  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 10,
+  transfer Memory::GPU_HBM -> Memory::CPU_DRAM : 10
+}
+
+fn mk() -> Tensor<f32, [4, 4], Memory::GPU_HBM> {
+  let h = Tensor<f32, [4, 4]>::uninit();
+  return transfer(h, Memory::GPU_HBM);
+}
+
+fn main() -> i32 {
+  print(mk());
+  return 0;
+}
