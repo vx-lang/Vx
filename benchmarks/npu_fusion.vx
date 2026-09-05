@@ -6,11 +6,11 @@ extern "C" {
 }
 
 fn run_benchmark_128() -> i32 {
-  let mut a_host = Tensor_f32(128, 128);
-  let mut b_host = Tensor_f32(128, 128);
-  let mut bias_host = Tensor_f32(128, 128);
-  let mut out_unfused_host = Tensor_f32(128, 128);
-  let mut out_fused_host = Tensor_f32(128, 128);
+  let mut a_host = Tensor<f32, [128, 128]>::uninit();
+  let mut b_host = Tensor<f32, [128, 128]>::uninit();
+  let mut bias_host = Tensor<f32, [128, 128]>::uninit();
+  let mut out_unfused_host = Tensor<f32, [128, 128]>::uninit();
+  let mut out_fused_host = Tensor<f32, [128, 128]>::uninit();
 
   for i in 0..128 {
     for j in 0..128 {
@@ -35,8 +35,8 @@ fn run_benchmark_128() -> i32 {
   let mut out_unfused = transfer(out_unfused_host, Memory::NPU_HBM);
   let mut out_fused = transfer(out_fused_host, Memory::NPU_HBM);
 
-  let mut temp_matmul = Tensor_f32(128, 128);
-  let mut temp_bias = Tensor_f32(128, 128);
+  let mut temp_matmul = Tensor<f32, [128, 128]>::uninit();
+  let mut temp_bias = Tensor<f32, [128, 128]>::uninit();
   let mut temp_matmul_npu = transfer(temp_matmul, Memory::NPU_HBM);
   let mut temp_bias_npu = transfer(temp_bias, Memory::NPU_HBM);
 
@@ -155,8 +155,8 @@ fn run_benchmark_128() -> i32 {
   }
 
   // Verification
-  let out_unfused_res = transfer(out_unfused, Memory::Host_DRAM);
-  let out_fused_res = transfer(out_fused, Memory::Host_DRAM);
+  let out_unfused_res = transfer(out_unfused, Memory::CPU_DRAM);
+  let out_fused_res = transfer(out_fused, Memory::CPU_DRAM);
   for i in 0..128 {
     for j in 0..128 {
       assert(out_unfused_res[i][j] == out_fused_res[i][j],
@@ -168,11 +168,11 @@ fn run_benchmark_128() -> i32 {
 }
 
 fn run_benchmark_256() -> i32 {
-  let mut a_host = Tensor_f32(256, 256);
-  let mut b_host = Tensor_f32(256, 256);
-  let mut bias_host = Tensor_f32(256, 256);
-  let mut out_unfused_host = Tensor_f32(256, 256);
-  let mut out_fused_host = Tensor_f32(256, 256);
+  let mut a_host = Tensor<f32, [256, 256]>::uninit();
+  let mut b_host = Tensor<f32, [256, 256]>::uninit();
+  let mut bias_host = Tensor<f32, [256, 256]>::uninit();
+  let mut out_unfused_host = Tensor<f32, [256, 256]>::uninit();
+  let mut out_fused_host = Tensor<f32, [256, 256]>::uninit();
 
   for i in 0..256 {
     for j in 0..256 {
@@ -197,8 +197,8 @@ fn run_benchmark_256() -> i32 {
   let mut out_unfused = transfer(out_unfused_host, Memory::NPU_HBM);
   let mut out_fused = transfer(out_fused_host, Memory::NPU_HBM);
 
-  let mut temp_matmul = Tensor_f32(256, 256);
-  let mut temp_bias = Tensor_f32(256, 256);
+  let mut temp_matmul = Tensor<f32, [256, 256]>::uninit();
+  let mut temp_bias = Tensor<f32, [256, 256]>::uninit();
   let mut temp_matmul_npu = transfer(temp_matmul, Memory::NPU_HBM);
   let mut temp_bias_npu = transfer(temp_bias, Memory::NPU_HBM);
 
@@ -317,8 +317,8 @@ fn run_benchmark_256() -> i32 {
   }
 
   // Verification
-  let out_unfused_res = transfer(out_unfused, Memory::Host_DRAM);
-  let out_fused_res = transfer(out_fused, Memory::Host_DRAM);
+  let out_unfused_res = transfer(out_unfused, Memory::CPU_DRAM);
+  let out_fused_res = transfer(out_fused, Memory::CPU_DRAM);
   for i in 0..256 {
     for j in 0..256 {
       assert(out_unfused_res[i][j] == out_fused_res[i][j],
@@ -330,11 +330,11 @@ fn run_benchmark_256() -> i32 {
 }
 
 fn run_benchmark_512() -> i32 {
-  let mut a_host = Tensor_f32(512, 512);
-  let mut b_host = Tensor_f32(512, 512);
-  let mut bias_host = Tensor_f32(512, 512);
-  let mut out_unfused_host = Tensor_f32(512, 512);
-  let mut out_fused_host = Tensor_f32(512, 512);
+  let mut a_host = Tensor<f32, [512, 512]>::uninit();
+  let mut b_host = Tensor<f32, [512, 512]>::uninit();
+  let mut bias_host = Tensor<f32, [512, 512]>::uninit();
+  let mut out_unfused_host = Tensor<f32, [512, 512]>::uninit();
+  let mut out_fused_host = Tensor<f32, [512, 512]>::uninit();
 
   for i in 0..512 {
     for j in 0..512 {
@@ -359,8 +359,8 @@ fn run_benchmark_512() -> i32 {
   let mut out_unfused = transfer(out_unfused_host, Memory::NPU_HBM);
   let mut out_fused = transfer(out_fused_host, Memory::NPU_HBM);
 
-  let mut temp_matmul = Tensor_f32(512, 512);
-  let mut temp_bias = Tensor_f32(512, 512);
+  let mut temp_matmul = Tensor<f32, [512, 512]>::uninit();
+  let mut temp_bias = Tensor<f32, [512, 512]>::uninit();
   let mut temp_matmul_npu = transfer(temp_matmul, Memory::NPU_HBM);
   let mut temp_bias_npu = transfer(temp_bias, Memory::NPU_HBM);
 
@@ -479,8 +479,8 @@ fn run_benchmark_512() -> i32 {
   }
 
   // Verification
-  let out_unfused_res = transfer(out_unfused, Memory::Host_DRAM);
-  let out_fused_res = transfer(out_fused, Memory::Host_DRAM);
+  let out_unfused_res = transfer(out_unfused, Memory::CPU_DRAM);
+  let out_fused_res = transfer(out_fused, Memory::CPU_DRAM);
   for i in 0..512 {
     for j in 0..512 {
       assert(out_unfused_res[i][j] == out_fused_res[i][j],
@@ -492,11 +492,11 @@ fn run_benchmark_512() -> i32 {
 }
 
 fn run_benchmark_1024() -> i32 {
-  let mut a_host = Tensor_f32(1024, 1024);
-  let mut b_host = Tensor_f32(1024, 1024);
-  let mut bias_host = Tensor_f32(1024, 1024);
-  let mut out_unfused_host = Tensor_f32(1024, 1024);
-  let mut out_fused_host = Tensor_f32(1024, 1024);
+  let mut a_host = Tensor<f32, [1024, 1024]>::uninit();
+  let mut b_host = Tensor<f32, [1024, 1024]>::uninit();
+  let mut bias_host = Tensor<f32, [1024, 1024]>::uninit();
+  let mut out_unfused_host = Tensor<f32, [1024, 1024]>::uninit();
+  let mut out_fused_host = Tensor<f32, [1024, 1024]>::uninit();
 
   for i in 0..1024 {
     for j in 0..1024 {
@@ -521,8 +521,8 @@ fn run_benchmark_1024() -> i32 {
   let mut out_unfused = transfer(out_unfused_host, Memory::NPU_HBM);
   let mut out_fused = transfer(out_fused_host, Memory::NPU_HBM);
 
-  let mut temp_matmul = Tensor_f32(1024, 1024);
-  let mut temp_bias = Tensor_f32(1024, 1024);
+  let mut temp_matmul = Tensor<f32, [1024, 1024]>::uninit();
+  let mut temp_bias = Tensor<f32, [1024, 1024]>::uninit();
   let mut temp_matmul_npu = transfer(temp_matmul, Memory::NPU_HBM);
   let mut temp_bias_npu = transfer(temp_bias, Memory::NPU_HBM);
 
@@ -641,8 +641,8 @@ fn run_benchmark_1024() -> i32 {
   }
 
   // Verification
-  let out_unfused_res = transfer(out_unfused, Memory::Host_DRAM);
-  let out_fused_res = transfer(out_fused, Memory::Host_DRAM);
+  let out_unfused_res = transfer(out_unfused, Memory::CPU_DRAM);
+  let out_fused_res = transfer(out_fused, Memory::CPU_DRAM);
   for i in 0..1024 {
     for j in 0..1024 {
       assert(out_unfused_res[i][j] == out_fused_res[i][j],
@@ -654,11 +654,11 @@ fn run_benchmark_1024() -> i32 {
 }
 
 fn run_benchmark_2048() -> i32 {
-  let mut a_host = Tensor_f32(2048, 2048);
-  let mut b_host = Tensor_f32(2048, 2048);
-  let mut bias_host = Tensor_f32(2048, 2048);
-  let mut out_unfused_host = Tensor_f32(2048, 2048);
-  let mut out_fused_host = Tensor_f32(2048, 2048);
+  let mut a_host = Tensor<f32, [2048, 2048]>::uninit();
+  let mut b_host = Tensor<f32, [2048, 2048]>::uninit();
+  let mut bias_host = Tensor<f32, [2048, 2048]>::uninit();
+  let mut out_unfused_host = Tensor<f32, [2048, 2048]>::uninit();
+  let mut out_fused_host = Tensor<f32, [2048, 2048]>::uninit();
 
   for i in 0..2048 {
     for j in 0..2048 {
@@ -683,8 +683,8 @@ fn run_benchmark_2048() -> i32 {
   let mut out_unfused = transfer(out_unfused_host, Memory::NPU_HBM);
   let mut out_fused = transfer(out_fused_host, Memory::NPU_HBM);
 
-  let mut temp_matmul = Tensor_f32(2048, 2048);
-  let mut temp_bias = Tensor_f32(2048, 2048);
+  let mut temp_matmul = Tensor<f32, [2048, 2048]>::uninit();
+  let mut temp_bias = Tensor<f32, [2048, 2048]>::uninit();
   let mut temp_matmul_npu = transfer(temp_matmul, Memory::NPU_HBM);
   let mut temp_bias_npu = transfer(temp_bias, Memory::NPU_HBM);
 
@@ -803,8 +803,8 @@ fn run_benchmark_2048() -> i32 {
   }
 
   // Verification
-  let out_unfused_res = transfer(out_unfused, Memory::Host_DRAM);
-  let out_fused_res = transfer(out_fused, Memory::Host_DRAM);
+  let out_unfused_res = transfer(out_unfused, Memory::CPU_DRAM);
+  let out_fused_res = transfer(out_fused, Memory::CPU_DRAM);
   for i in 0..2048 {
     for j in 0..2048 {
       assert(out_unfused_res[i][j] == out_fused_res[i][j],

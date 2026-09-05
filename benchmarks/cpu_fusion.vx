@@ -6,11 +6,11 @@ extern "C" {
 }
 
 fn run_benchmark_128() -> i32 {
-  let mut a = Tensor_f32(128, 128);
-  let mut b = Tensor_f32(128, 128);
-  let mut bias = Tensor_f32(128, 128);
-  let mut out_unfused = Tensor_f32(128, 128);
-  let mut out_fused = Tensor_f32(128, 128);
+  let mut a = Tensor<f32, [128, 128]>::uninit();
+  let mut b = Tensor<f32, [128, 128]>::uninit();
+  let mut bias = Tensor<f32, [128, 128]>::uninit();
+  let mut out_unfused = Tensor<f32, [128, 128]>::uninit();
+  let mut out_fused = Tensor<f32, [128, 128]>::uninit();
 
   for i in 0..128 {
     for j in 0..128 {
@@ -28,8 +28,8 @@ fn run_benchmark_128() -> i32 {
     }
   }
 
-  let mut temp_matmul = Tensor_f32(128, 128);
-  let mut temp_bias = Tensor_f32(128, 128);
+  let mut temp_matmul = Tensor<f32, [128, 128]>::uninit();
+  let mut temp_bias = Tensor<f32, [128, 128]>::uninit();
 
   unsafe {
     // Warmup Unfused immediately before benchmark
@@ -140,11 +140,11 @@ fn run_benchmark_128() -> i32 {
 }
 
 fn run_benchmark_256() -> i32 {
-  let mut a = Tensor_f32(256, 256);
-  let mut b = Tensor_f32(256, 256);
-  let mut bias = Tensor_f32(256, 256);
-  let mut out_unfused = Tensor_f32(256, 256);
-  let mut out_fused = Tensor_f32(256, 256);
+  let mut a = Tensor<f32, [256, 256]>::uninit();
+  let mut b = Tensor<f32, [256, 256]>::uninit();
+  let mut bias = Tensor<f32, [256, 256]>::uninit();
+  let mut out_unfused = Tensor<f32, [256, 256]>::uninit();
+  let mut out_fused = Tensor<f32, [256, 256]>::uninit();
 
   for i in 0..256 {
     for j in 0..256 {
@@ -162,8 +162,8 @@ fn run_benchmark_256() -> i32 {
     }
   }
 
-  let mut temp_matmul = Tensor_f32(256, 256);
-  let mut temp_bias = Tensor_f32(256, 256);
+  let mut temp_matmul = Tensor<f32, [256, 256]>::uninit();
+  let mut temp_bias = Tensor<f32, [256, 256]>::uninit();
 
   unsafe {
     // Warmup Unfused immediately before benchmark
@@ -274,11 +274,11 @@ fn run_benchmark_256() -> i32 {
 }
 
 fn run_benchmark_512() -> i32 {
-  let mut a = Tensor_f32(512, 512);
-  let mut b = Tensor_f32(512, 512);
-  let mut bias = Tensor_f32(512, 512);
-  let mut out_unfused = Tensor_f32(512, 512);
-  let mut out_fused = Tensor_f32(512, 512);
+  let mut a = Tensor<f32, [512, 512]>::uninit();
+  let mut b = Tensor<f32, [512, 512]>::uninit();
+  let mut bias = Tensor<f32, [512, 512]>::uninit();
+  let mut out_unfused = Tensor<f32, [512, 512]>::uninit();
+  let mut out_fused = Tensor<f32, [512, 512]>::uninit();
 
   for i in 0..512 {
     for j in 0..512 {
@@ -296,8 +296,8 @@ fn run_benchmark_512() -> i32 {
     }
   }
 
-  let mut temp_matmul = Tensor_f32(512, 512);
-  let mut temp_bias = Tensor_f32(512, 512);
+  let mut temp_matmul = Tensor<f32, [512, 512]>::uninit();
+  let mut temp_bias = Tensor<f32, [512, 512]>::uninit();
 
   unsafe {
     // Warmup Unfused immediately before benchmark
@@ -408,11 +408,11 @@ fn run_benchmark_512() -> i32 {
 }
 
 fn run_benchmark_1024() -> i32 {
-  let mut a = Tensor_f32(1024, 1024);
-  let mut b = Tensor_f32(1024, 1024);
-  let mut bias = Tensor_f32(1024, 1024);
-  let mut out_unfused = Tensor_f32(1024, 1024);
-  let mut out_fused = Tensor_f32(1024, 1024);
+  let mut a = Tensor<f32, [1024, 1024]>::uninit();
+  let mut b = Tensor<f32, [1024, 1024]>::uninit();
+  let mut bias = Tensor<f32, [1024, 1024]>::uninit();
+  let mut out_unfused = Tensor<f32, [1024, 1024]>::uninit();
+  let mut out_fused = Tensor<f32, [1024, 1024]>::uninit();
 
   for i in 0..1024 {
     for j in 0..1024 {
@@ -430,8 +430,8 @@ fn run_benchmark_1024() -> i32 {
     }
   }
 
-  let mut temp_matmul = Tensor_f32(1024, 1024);
-  let mut temp_bias = Tensor_f32(1024, 1024);
+  let mut temp_matmul = Tensor<f32, [1024, 1024]>::uninit();
+  let mut temp_bias = Tensor<f32, [1024, 1024]>::uninit();
 
   unsafe {
     // Warmup Unfused immediately before benchmark
@@ -542,11 +542,11 @@ fn run_benchmark_1024() -> i32 {
 }
 
 fn run_benchmark_2048() -> i32 {
-  let mut a = Tensor_f32(2048, 2048);
-  let mut b = Tensor_f32(2048, 2048);
-  let mut bias = Tensor_f32(2048, 2048);
-  let mut out_unfused = Tensor_f32(2048, 2048);
-  let mut out_fused = Tensor_f32(2048, 2048);
+  let mut a = Tensor<f32, [2048, 2048]>::uninit();
+  let mut b = Tensor<f32, [2048, 2048]>::uninit();
+  let mut bias = Tensor<f32, [2048, 2048]>::uninit();
+  let mut out_unfused = Tensor<f32, [2048, 2048]>::uninit();
+  let mut out_fused = Tensor<f32, [2048, 2048]>::uninit();
 
   for i in 0..2048 {
     for j in 0..2048 {
@@ -564,8 +564,8 @@ fn run_benchmark_2048() -> i32 {
     }
   }
 
-  let mut temp_matmul = Tensor_f32(2048, 2048);
-  let mut temp_bias = Tensor_f32(2048, 2048);
+  let mut temp_matmul = Tensor<f32, [2048, 2048]>::uninit();
+  let mut temp_bias = Tensor<f32, [2048, 2048]>::uninit();
 
   unsafe {
     // Warmup Unfused immediately before benchmark

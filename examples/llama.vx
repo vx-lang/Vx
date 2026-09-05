@@ -148,7 +148,7 @@ fn rmsnorm(o : *mut f32, x : *mut f32, weight : *mut f32, size : i32) -> i32 {
     let val : f32 = unsafe { x[j] };
     ss = ss + (val * val);
   }
-  let div : f32 = ss / size;
+  let div : f32 = ss / (size as f32);
   let add : f32 = div + 0.00001;
   ss = 1.0 / add.sqrt();
   for j in 0..size {
@@ -291,7 +291,7 @@ w : &TransformerWeights) -> i32 {
             let k_val : f32 = s.key_cache[t_cache_offset + kv_offset + i];
             score = score + q_val * k_val;
           }
-          let hf : f32 = head_size;
+          let hf : f32 = head_size as f32;
           score = score / hf.sqrt();
 
           let mut m_new : f32 = m;
