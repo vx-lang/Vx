@@ -283,7 +283,7 @@ comparing them never.
 Three things fall out, and they are the reason this is worth doing rather than tidy:
 
 **Cross-compilation becomes ordinary.** Build on a laptop for an x86 host with an A100 attached.
-The bundle shipped to a rented pod today (`scripts/make_gpu_bundle.sh`) exists partly because the
+The bundle shipped to a rented pod today (`scripts/provision/make_gpu_bundle.sh`) exists partly because the
 compiler can only emit for the machine it runs on.
 
 **The incoherent combination stops being expressible.** A triple derived from a declaration cannot

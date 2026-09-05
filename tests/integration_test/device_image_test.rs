@@ -9,7 +9,7 @@
 // A GPU-placed region that no vendor library can stand in for is compiled to
 // PTX and carried in the dispatch payload (#251).
 //
-// scripts/flash_kernel_to_ptx.sh drives the same kernel through the same passes
+// scripts/tools/flash_kernel_to_ptx.sh drives the same kernel through the same passes
 // from outside the compiler, and the two agree byte for byte -- that comparison
 // is what established the pipeline. It cannot run in CI, though: it needs
 // `mlir-opt` on PATH. These tests are the part that can, and they check the two

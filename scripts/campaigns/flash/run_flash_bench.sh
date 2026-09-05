@@ -30,16 +30,20 @@
 
 set -uo pipefail
 
-BUNDLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# The bundle root is whichever directory holds stdlib/ -- the script's own on a pod,
-# where it is copied to the bundle root, and its parent in a checkout, where the
-# script lives in scripts/. Assuming the script's own directory was the root made
-# this runnable only on a pod: from the repo it looked for the template under
-# scripts/scripts/, then for "$VXC", then failed to resolve std::math. Nobody could
-# run it from a checkout to notice the template had rotted.
-if [ ! -d "$BUNDLE_DIR/stdlib" ] && [ -d "$BUNDLE_DIR/../stdlib" ]; then
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The template lives beside its runner, so finding it needs no path convention at
+# all. It used to sit in a shared scripts/templates/ that only one script ever
+# substituted -- a coupling nothing expressed, and all nine templates there had
+# rotted unnoticed.
+TEMPLATE="$SCRIPT_DIR/flash_attention_bench.vx"
+# The root is the nearest ancestor holding stdlib/: the bundle root on a pod, the
+# repo root in a checkout. Taking the script's own directory as the root made this
+# runnable only on a pod, which is why nobody saw the template rot.
+BUNDLE_DIR="$SCRIPT_DIR"
+for _ in 1 2 3 4; do
+  [ -d "$BUNDLE_DIR/stdlib" ] && break
   BUNDLE_DIR="$(cd "$BUNDLE_DIR/.." && pwd)"
-fi
+done
 # The compiler: the bundle root on a pod, a cargo target/ directory in a checkout.
 if [ -n "${VXC:-}" ]; then
   :
@@ -55,7 +59,6 @@ else
   echo "error: no vxc found (set VXC=/path/to/vxc)" >&2
   exit 1
 fi
-TEMPLATE="scripts/templates/flash_attention_bench.vx"
 SQ=128
 HD=64
 TILE=64

@@ -16,7 +16,7 @@
 // ---------------------------------
 //
 // It is measured, not chosen. Asked through CoreML's own `MLComputePlan` which
-// device it prefers (scripts/ane_device_check.py), the answers are:
+// device it prefers (scripts/tools/ane_device_check.py), the answers are:
 //
 //   f16 matmul, 512 square           Neural Engine
 //   f16 softmax, 512x512, on its own CPU

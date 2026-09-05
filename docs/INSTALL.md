@@ -66,7 +66,7 @@ ______________________________________________________________________
 
 ### Packages
 
-`scripts/setup_linux.sh` installs all of the following. Run it, or install them by hand if your
+`scripts/provision/setup_linux.sh` installs all of the following. Run it, or install them by hand if your
 image is managed:
 
 ```bash
@@ -87,13 +87,13 @@ it is not pulled in by `llvm-22-dev`.
 Rust is installed separately by the script via `rustup` (stable, minimal profile).
 
 ```bash
-./scripts/setup_linux.sh
+./scripts/provision/setup_linux.sh
 ```
 
 Override the LLVM major version if the pin ever moves:
 
 ```bash
-LLVM_VERSION=23 ./scripts/setup_linux.sh
+LLVM_VERSION=23 ./scripts/provision/setup_linux.sh
 ```
 
 ### Getting the source onto a box you cannot clone to
@@ -177,7 +177,7 @@ The build succeeds without any of these. Each unlocks one path.
 Needed only for the autodiff tests and `grad`/`jvp`/`vjp` lowering.
 
 ```bash
-./scripts/install_enzyme.sh
+./scripts/provision/install_enzyme.sh
 export ENZYME_LIB="$(pwd)/.cargo/enzyme/LLVMEnzyme-22.dylib"   # .so on Linux
 ```
 
@@ -228,7 +228,7 @@ The LLVM on `PATH` is not version 22, or `libmlir-22-dev` is missing. Check with
 `llvm-config --version` *after* sourcing `config.local`.
 
 **`setup.sh`: "Could not automatically locate LLVM 22"**
-macOS: `brew install llvm`. Linux: `./scripts/setup_linux.sh`. If LLVM is installed somewhere
+macOS: `brew install llvm`. Linux: `./scripts/provision/setup_linux.sh`. If LLVM is installed somewhere
 unusual, set `LLVM_VERSION` or write `config.local` by hand from `config.template`.
 
 **Four seam/verification suites fail with missing diagnostics**

@@ -107,7 +107,7 @@ if [ "$DO_SETUP" = 1 ]; then
   "${SSH[@]}" "command -v sudo >/dev/null 2>&1 || {
        printf '#!/bin/sh\nexec \"\$@\"\n' > /usr/local/bin/sudo && chmod +x /usr/local/bin/sudo
        echo '  installed a sudo shim (root container, no sudo binary)'; }
-     cd '$REMOTE' && bash scripts/setup_linux.sh 2>&1 | tail -3"
+     cd '$REMOTE' && bash scripts/provision/setup_linux.sh 2>&1 | tail -3"
 fi
 
 # --- 3. config.local, then the build -----------------------------------------
@@ -141,8 +141,8 @@ say "assembling the bench bundle"
 "${SSH[@]}" "set -e; cd '$REMOTE'
   ln -sfn '$TARGET' target
   B='$REMOTE/../bundle'; mkdir -p \"\$B/scripts/templates\"
-  cp scripts/run_flash_bench.sh \"\$B/\"
-  cp scripts/templates/flash_attention_bench.vx \"\$B/scripts/templates/\"
+  cp scripts/campaigns/flash/run_flash_bench.sh \"\$B/\"
+  cp scripts/campaigns/flash/flash_attention_bench.vx \"\$B/scripts/templates/\"
   ln -sfn '$REMOTE/stdlib' \"\$B/stdlib\"
   ln -sfn '$REMOTE/tests'  \"\$B/tests\"
   ln -sfn '$TARGET'        \"\$B/target\"
@@ -162,7 +162,7 @@ say "smoke test"
 "${SSH[@]}" "cd '$REMOTE/../bundle' && . ./env.sh && ulimit -s 524288
   sed -e 's/__VX_SQ__/128/g' -e 's/__VX_SK__/512/g' -e 's/__VX_HD__/64/g' \
       -e 's/__VX_TILE__/64/g' -e 's/__VX_NT__/8/g' -e 's/__VX_BENCH_NOTE__/bootstrap smoke/' \
-      scripts/templates/flash_attention_bench.vx > /tmp/smoke.vx
+      scripts/campaigns/flash/flash_attention_bench.vx > /tmp/smoke.vx
   VX_DISPATCH_VERBOSE=1 ./vxc /tmp/smoke.vx --run 2>&1 \
     | grep -E 'Vx CUDA|SIGSEGV' | sed 's/^/  /'
   # 0.01*(512-1)/2 = 2.555, the closed form the bench checks at every size.

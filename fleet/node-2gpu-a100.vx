@@ -92,7 +92,7 @@ Topology Node {
   // right direction for a claim that a refusal can be trusted: over-declaring
   // the link would admit a placement whose handoff does not fit its budget.
   //
-  // `nvidia-smi topo -m` settles it on the pod, and scripts/setup_gpu_pod.sh
+  // `nvidia-smi topo -m` settles it on the pod, and scripts/provision/setup_gpu_pod.sh
   // records the matrix next to the run so the declared figure and the observed
   // one are archived together rather than one being quietly corrected to match.
   transfer Memory::HBM -> Memory::PEER_HBM : 31.5 GB/s,

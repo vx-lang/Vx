@@ -7,7 +7,7 @@
 //===----------------------------------------------------------------------===//
 // What outlining has to do to a region before the result is a kernel a device
 // could load. Each of these was found by driving the FlashAttention region to
-// PTX (scripts/flash_kernel_to_ptx.sh) and reading what the kernel still
+// PTX (scripts/tools/flash_kernel_to_ptx.sh) and reading what the kernel still
 // depended on; each is invisible on the host, where the fallback resolves it.
 //
 //   `.exp()`     lowered to `func.call @expf`, host libm. A dispatched kernel

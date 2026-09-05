@@ -79,8 +79,8 @@ jobs:
 
       - name: Install Enzyme
         run: |
-          chmod +x scripts/install_enzyme.sh
-          ./scripts/install_enzyme.sh
+          chmod +x scripts/provision/install_enzyme.sh
+          ./scripts/provision/install_enzyme.sh
           ENZYME_LIB=$(find $(pwd)/.cargo/enzyme -name 'LLVMEnzyme*.so' | head -n 1)
           echo "ENZYME_LIB=$ENZYME_LIB" >> $GITHUB_ENV
 
@@ -205,8 +205,8 @@ jobs:
 
       - name: Install Enzyme
         run: |
-          chmod +x scripts/install_enzyme.sh
-          ./scripts/install_enzyme.sh
+          chmod +x scripts/provision/install_enzyme.sh
+          ./scripts/provision/install_enzyme.sh
           ENZYME_LIB=$(find $(pwd)/.cargo/enzyme -name 'LLVMEnzyme*.so' | head -n 1)
           echo "ENZYME_LIB=$ENZYME_LIB" >> $GITHUB_ENV
 

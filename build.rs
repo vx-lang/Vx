@@ -122,7 +122,7 @@ fn main() {
     if cfg!(target_os = "macos") {
         println!("cargo:rerun-if-changed=runtime/npu_dispatch.mm");
         println!("cargo:rerun-if-changed=runtime/npu_dispatch.h");
-        println!("cargo:rerun-if-changed=scripts/generate_ane_primitives.py");
+        println!("cargo:rerun-if-changed=scripts/tools/generate_ane_primitives.py");
 
         let out_dir = env::var("OUT_DIR").unwrap();
         let obj_path = PathBuf::from(&out_dir).join("npu_dispatch.o");
@@ -188,7 +188,7 @@ fn main() {
         let py_status = python.as_ref().map(|p| {
             Command::new(p)
                 .args([
-                    "scripts/generate_ane_primitives.py",
+                    "scripts/tools/generate_ane_primitives.py",
                     "--out-dir",
                     &out_dir,
                     "--dim",

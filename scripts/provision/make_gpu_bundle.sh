@@ -114,14 +114,14 @@ cp "$REPO_ROOT/runtime/cuda_dispatch.cpp" "$BUNDLE/runtime/"
 # worker (#348).
 cp "$REPO_ROOT/runtime/vx_worker_main.cpp" "$BUNDLE/runtime/"
 cp "$REPO_ROOT/include/vx_hardware_runtime.h" "$BUNDLE/include/"
-cp "$REPO_ROOT/scripts/setup_gpu_pod.sh" "$BUNDLE/"
+cp "$REPO_ROOT/scripts/provision/setup_gpu_pod.sh" "$BUNDLE/"
 
 # The disaggregated run and the files that make it checkable (#347). Carried
 # unconditionally rather than behind a flag: it costs a few kilobytes, and a
 # run whose evidence-gathering was left behind on the build box is a run that
 # has to be paid for twice.
-cp "$REPO_ROOT/scripts/run_disagg_demo.sh" "$BUNDLE/"
-cp "$REPO_ROOT/scripts/run_fleet_demo.sh" "$BUNDLE/"
+cp "$REPO_ROOT/scripts/demos/run_disagg_demo.sh" "$BUNDLE/"
+cp "$REPO_ROOT/scripts/demos/run_fleet_demo.sh" "$BUNDLE/"
 
 # Programs keep their repository-relative path, and the standard library comes
 # along. Module imports resolve against `stdlib/std`, `stdlib` and the working

@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
-// Drives scripts/ane_device_check.py, which asks CoreML where it will place
+// Drives scripts/tools/ane_device_check.py, which asks CoreML where it will place
 // each of a set of graphs and asserts the answer.
 //
 // This exists because no `.vx` test can make the claim. A backend test sees the
@@ -61,7 +61,7 @@ fn usable_python(root: &PathBuf) -> Option<String> {
 #[test]
 fn coreml_places_these_graphs_where_we_measured() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let script = root.join("scripts/ane_device_check.py");
+    let script = root.join("scripts/tools/ane_device_check.py");
     assert!(script.is_file(), "missing {}", script.display());
 
     let Some(python) = usable_python(&root) else {

@@ -87,7 +87,7 @@ Topology Node {
   //
   // The spread here is 7x rather than the A100's 8x, and it is the single
   // figure the disaggregated demo actually rests on. `nvidia-smi topo -m`
-  // settles it, and scripts/setup_gpu_pod.sh records the matrix next to the run
+  // settles it, and scripts/provision/setup_gpu_pod.sh records the matrix next to the run
   // so the declared figure and the observed one are archived together rather
   // than one being quietly corrected to match.
   //

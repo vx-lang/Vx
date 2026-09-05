@@ -13,7 +13,7 @@ Each matmul of the flash inner loop is `spawn on(Topology::NPU[0])` and lands on
 the Neural Engine; the online softmax is `spawn on(Topology::CPU)`. The split is
 measured rather than chosen: CoreML puts a 512-square f16 matmul on the ANE and
 a 512x512 softmax on the CPU, and a softmax only reaches the ANE at around 16M
-elements or inside a matmul's own graph. `scripts/ane_device_check.py` pins all
+elements or inside a matmul's own graph. `scripts/tools/ane_device_check.py` pins all
 of that.
 
 With a head dimension of 512 and a 512-key tile both matmuls are exactly 512
