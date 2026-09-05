@@ -13,6 +13,7 @@ extern {
   fn vx_get_time() -> f32;
   fn vx_sleep(seconds : f32)->i32;
   fn vx_unix_timestamp() -> f64;
+  fn vx_bench_report(name : *const i8, unit : *const i8, value : f32) -> i32;
 }
 
 fn now() -> f32 {
@@ -25,4 +26,16 @@ fn sleep(seconds : f32) -> i32 {
 
 fn unix_timestamp() -> f64 {
   return unsafe { vx_unix_timestamp() };
+}
+
+// Report one benchmark measurement, as the single line `cargo vx-bench` reads:
+//
+//   vx-bench <name> <unit> <value>
+//
+// Printed by the runtime rather than by `println!`, which emits its format string
+// literally and appends the arguments after it, so a Vx-side interpolation cannot
+// produce a parseable record. A program reports only what it can know -- its own
+// name, unit and number; the runner supplies the commit and the machine.
+fn bench_report(name : *const i8, unit : *const i8, value : f32) -> i32 {
+  return unsafe { vx_bench_report(name, unit, value) };
 }

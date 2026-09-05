@@ -13,6 +13,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+use std::ffi::{c_char, CStr};
 use std::ptr;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -101,6 +102,31 @@ pub extern "C" fn end_benchmark() {
             println!("{}", elapsed);
         }
     }
+}
+
+/// Report one benchmark measurement as a single machine-readable line.
+///
+/// Printed from Rust because `println!` in Vx emits its format string literally and appends the
+/// arguments after it (Vx#450), so a Vx-side `println!("{} {}", name, value)` cannot produce a
+/// parseable record. The line is what `cargo vx-bench` reads and what CI gates the presence of;
+/// the runner adds the commit and the machine, which a program cannot know about itself.
+///
+/// Shape: `vx-bench <name> <unit> <value>` -- one space-separated record, no interpolation, so it
+/// survives being mixed into JIT chatter on stdout. `name` and `unit` must not contain spaces.
+#[no_mangle]
+pub extern "C" fn vx_bench_report(name: *const c_char, unit: *const c_char, value: f32) -> i32 {
+    if name.is_null() || unit.is_null() {
+        eprintln!("vx_bench_report: null name or unit");
+        return 1;
+    }
+    let name = unsafe { CStr::from_ptr(name) }.to_string_lossy();
+    let unit = unsafe { CStr::from_ptr(unit) }.to_string_lossy();
+    if name.contains(char::is_whitespace) || unit.contains(char::is_whitespace) {
+        eprintln!("vx_bench_report: name and unit must not contain whitespace");
+        return 1;
+    }
+    println!("vx-bench {name} {unit} {value}");
+    0
 }
 
 #[no_mangle]

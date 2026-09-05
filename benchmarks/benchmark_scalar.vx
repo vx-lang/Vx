@@ -34,7 +34,7 @@ fn main() -> i32 {
 
     let end : f32 = now();
     let elapsed : f32 = end - start;
-    println!("{}", elapsed);
+    bench_report("scalar_axpy_1m", "seconds", elapsed);
   }
   return 0;
 }

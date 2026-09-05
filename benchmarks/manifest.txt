@@ -1,0 +1,20 @@
+# The benchmarks `cargo vx-bench` runs, one path per line.
+#
+# A file is a benchmark when it reports a measurement. Everything else under
+# benchmarks/ is a workload or a demo -- still compiled by the shipped-programs
+# gate, but not something with a number to record. Listing them explicitly is
+# what keeps a program that stopped reporting from being silently skipped: the
+# runner fails when a listed benchmark emits nothing.
+#
+# Not listed, and why:
+#   ane_decode_bench.vx   crashes at run time (SIGTRAP)
+#   npu_fusion.vx         crashes at run time (SIGABRT); reports are wired up
+#   llama2_100.vx         flat emitter produces MLIR that does not parse
+#   llama2_scaling.vx     same
+#   benchmark_test.vx     a tracing demo, times nothing
+#   matmul_execution.vx   an execution demo, times nothing
+
+benchmarks/benchmark_scalar.vx
+benchmarks/benchmark_simd.vx
+benchmarks/spawn_dispatch.vx
+benchmarks/cpu_fusion.vx

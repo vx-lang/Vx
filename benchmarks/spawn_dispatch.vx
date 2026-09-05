@@ -24,6 +24,6 @@ fn main() -> i32 {
   }
   let end : f32 = now();
   let elapsed : f32 = end - start;
-  println!("{}", elapsed);
+  bench_report("spawn_dispatch", "seconds", elapsed);
   return 0;
 }

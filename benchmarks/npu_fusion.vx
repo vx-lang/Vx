@@ -149,8 +149,8 @@ fn run_benchmark_128() -> i32 {
     let t4 = now();
     let time_fused = t4 - t3;
 
-    print!(time_unfused);
-    print!(time_fused);
+    bench_report("npu_fusion_128_unfused", "seconds", time_unfused);
+    bench_report("npu_fusion_128_fused", "seconds", time_fused);
     assert(time_fused <= time_unfused);
   }
 
@@ -311,8 +311,8 @@ fn run_benchmark_256() -> i32 {
     let t4 = now();
     let time_fused = t4 - t3;
 
-    print!(time_unfused);
-    print!(time_fused);
+    bench_report("npu_fusion_256_unfused", "seconds", time_unfused);
+    bench_report("npu_fusion_256_fused", "seconds", time_fused);
     assert(time_fused <= time_unfused);
   }
 
@@ -473,8 +473,8 @@ fn run_benchmark_512() -> i32 {
     let t4 = now();
     let time_fused = t4 - t3;
 
-    print!(time_unfused);
-    print!(time_fused);
+    bench_report("npu_fusion_512_unfused", "seconds", time_unfused);
+    bench_report("npu_fusion_512_fused", "seconds", time_fused);
     assert(time_fused <= time_unfused);
   }
 
@@ -635,8 +635,8 @@ fn run_benchmark_1024() -> i32 {
     let t4 = now();
     let time_fused = t4 - t3;
 
-    print!(time_unfused);
-    print!(time_fused);
+    bench_report("npu_fusion_1024_unfused", "seconds", time_unfused);
+    bench_report("npu_fusion_1024_fused", "seconds", time_fused);
     assert(time_fused <= time_unfused);
   }
 
@@ -797,8 +797,8 @@ fn run_benchmark_2048() -> i32 {
     let t4 = now();
     let time_fused = t4 - t3;
 
-    print!(time_unfused);
-    print!(time_fused);
+    bench_report("npu_fusion_2048_unfused", "seconds", time_unfused);
+    bench_report("npu_fusion_2048_fused", "seconds", time_fused);
     assert(time_fused <= time_unfused);
   }
 

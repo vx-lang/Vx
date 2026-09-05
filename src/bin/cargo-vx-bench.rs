@@ -5,149 +5,191 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
-use anyhow::{Context, Result};
-use rayon::prelude::*;
-use std::env;
-use std::fs;
-use vxc::lexer::Lexer;
-use vxc::parser;
+//
+// Runs the benchmarks named in `benchmarks/manifest.txt` and records what they
+// report.
+//
+// It drives `vxc` rather than compiling anything itself. It used to build its own
+// reduced pipeline -- Lexer, parser, GlobalAstEnv, TypeChecker, MeliorGenerator --
+// which never loaded stdlib modules, so `import std::time` did not resolve and
+// every benchmark failed on an undefined `now`. It then spliced in a harness
+// calling `vx_print_float`, a symbol that does not exist, so the two files that
+// got past the checker failed to link. All ten failed, the summary printed no
+// rows, and the process exited 0.
+//
+// A benchmark reports its own measurements now (`bench_report` in `std::time`),
+// so there is nothing to splice: this runs the program and reads the lines.
+//
+//===----------------------------------------------------------------------===//
 
-fn run_benchmark(path: &std::path::Path) -> Result<(String, f32)> {
-    let file_name = path.file_name().unwrap().to_str().unwrap().to_string();
-    let source = fs::read_to_string(path).context("Failed to read benchmark file")?;
+use std::path::{Path, PathBuf};
+use std::process::{Command, ExitCode};
 
-    let mut lexer = Lexer::new(&source);
-    let tokens = lexer.tokenize();
-    let mut parser = parser::Parser::new(&tokens, &source);
-
-    let mut ast = parser
-        .parse()
-        .map_err(|e| anyhow::anyhow!("Parse Error: {}", e.format(&source)))?;
-
-    let mut has_main = false;
-    for func in &mut ast.functions {
-        if func.name.as_ref() == "main" {
-            func.name = std::sync::Arc::from("__user_main");
-            has_main = true;
-            break;
-        }
-    }
-
-    if has_main {
-        let harness_code = "
-extern {
-    fn vx_get_time() -> f32;
-    fn vx_print_float(val: f32) -> i32;
+/// One measurement, as a benchmark reported it plus the context it cannot know.
+struct Record {
+    benchmark: String,
+    name: String,
+    unit: String,
+    value: f64,
 }
-fn main() -> i32 {
-    unsafe {
-        let __start = vx_get_time();
-        let _ = __user_main();
-        let __end = vx_get_time();
-        let _ = vx_print_float(__end - __start);
-    }
-    return 0;
+
+/// The `vxc` built alongside this binary.
+fn vxc_path() -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("vxc")))
+        .filter(|p| p.exists())
+        .unwrap_or_else(|| PathBuf::from("vxc"))
 }
-";
-        let mut lexer2 = Lexer::new(harness_code);
-        let tokens2 = lexer2.tokenize();
-        let mut parser2 = parser::Parser::new(&tokens2, harness_code);
-        let harness_ast = parser2.parse().unwrap();
 
-        ast.functions.extend(harness_ast.functions);
-        ast.externs.extend(harness_ast.externs);
-    }
+fn capture(cmd: &str, args: &[&str]) -> String {
+    Command::new(cmd)
+        .args(args)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_else(|| "unknown".to_string())
+}
 
-    let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
-    let program_arr = [ast.clone()];
-    let env = vxc::hir::GlobalAstEnv::build(&program_arr);
-    let mut worker = vxc::session::LocalWorkerState::new(global_session.clone());
-    let mut checker = vxc::hir::TypeChecker::new(&env, &mut worker);
-    for f in &mut ast.functions {
-        checker.check_function(f);
-    }
-
-    if !checker.errors.is_empty() {
-        let mut err_msg = String::new();
-        for err in checker.errors {
-            err_msg.push_str(&format!(" - {}\n", err));
-        }
-        anyhow::bail!("Semantic Errors:\n{}", err_msg);
-    }
-
-    let monomorphized_ast = ast;
-    let module_syntaxes = std::collections::HashMap::new();
-    let context = melior::Context::new();
-    let registry = melior::dialect::DialectRegistry::new();
-    melior::utility::register_all_dialects(&registry);
-    context.append_dialect_registry(&registry);
-    context.load_all_available_dialects();
-    vxc::codegen::register_vx_dialect(&context);
-
-    let mut codegen = vxc::codegen::MeliorGenerator::new(&context, file_name.clone());
-    let _ = codegen.generate(&monomorphized_ast, &module_syntaxes);
-    let mut module = codegen.into_module();
-    vxc::codegen::lower_to_llvm(&context, &mut module)
-        .map_err(|e| anyhow::anyhow!("Lowering Error: {:?}", e))?;
-    let mlir_str = format!("{}", module.as_operation());
-
-    let output = vxc::jit::execute_mlir(&mlir_str, vec![], 3, false)
-        .map_err(|e| anyhow::anyhow!("Execution Error: {}", e))?;
-
-    let re_time = regex::Regex::new(r"\[([0-9]+\.[0-9]+)\]").unwrap();
-    if let Some(last_match) = re_time.captures_iter(&output).last() {
-        let time_f = last_match[1].parse::<f32>().unwrap();
-        Ok((file_name, time_f))
+/// What a number has to carry to be comparable with another one: which commit
+/// produced it and which machine ran it. No existing schema recorded either, so a
+/// figure could not be told from a figure taken on different silicon.
+fn provenance() -> (String, String) {
+    let commit = capture("git", &["rev-parse", "--short", "HEAD"]);
+    let dirty = !capture("git", &["status", "--porcelain"]).is_empty();
+    let commit = if dirty {
+        format!("{commit}-dirty")
     } else {
-        anyhow::bail!("No timing output found. Raw output:\n{}", output);
-    }
+        commit
+    };
+    let machine = format!(
+        "{} {}",
+        capture("uname", &["-s"]),
+        capture("uname", &["-m"])
+    );
+    (commit, machine)
 }
 
-fn main() -> Result<()> {
-    println!("=====================================");
-    println!("       Vx Benchmark Runner           ");
-    println!("=====================================\n");
-
-    let benchmarks_dir = env::current_dir()?.join("benchmarks");
-
-    if !benchmarks_dir.exists() {
-        anyhow::bail!("Error: 'benchmarks' directory not found.");
-    }
-
-    let entries = fs::read_dir(&benchmarks_dir)?;
-    let mut paths = Vec::new();
-    for entry in entries {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_file() && path.extension().is_some_and(|ext| ext == "vx") {
-            paths.push(path);
-        }
-    }
-
-    let results: Vec<Result<(String, f32)>> = paths
-        .par_iter()
-        .map(|path| {
-            let file_name = path.file_name().unwrap().to_str().unwrap();
-            println!("▶ Benchmarking {:<30}", file_name);
-
-            let res = run_benchmark(path);
-            match &res {
-                Ok((_, time_f)) => println!("{} -> {:.4}s", file_name, time_f),
-                Err(e) => println!("{} -> FAILED: {}", file_name, e),
-            }
-            res
+/// Parse `vx-bench <name> <unit> <value>` out of a run's stdout, ignoring the JIT
+/// chatter it is mixed into.
+fn records_from(benchmark: &str, stdout: &str) -> Vec<Record> {
+    stdout
+        .lines()
+        .filter_map(|l| l.strip_prefix("vx-bench "))
+        .filter_map(|rest| {
+            let mut f = rest.split_whitespace();
+            let (name, unit, value) = (f.next()?, f.next()?, f.next()?);
+            Some(Record {
+                benchmark: benchmark.to_string(),
+                name: name.to_string(),
+                unit: unit.to_string(),
+                value: value.parse().ok()?,
+            })
         })
-        .collect();
+        .collect()
+}
 
-    println!("\n=====================================");
-    println!("             Summary                 ");
-    println!("=====================================");
-    let mut success_results: Vec<(String, f32)> =
-        results.into_iter().filter_map(|r| r.ok()).collect();
-    success_results.sort_by(|a, b| a.0.cmp(&b.0));
-    for (name, time) in &success_results {
-        println!("{:<30} {:.4}s", name, time);
+fn manifest_entries(root: &Path) -> Result<Vec<PathBuf>, String> {
+    let path = root.join("benchmarks/manifest.txt");
+    let text = std::fs::read_to_string(&path)
+        .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    Ok(text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(|l| root.join(l))
+        .collect())
+}
+
+fn main() -> ExitCode {
+    let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let entries = match manifest_entries(&root) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if entries.is_empty() {
+        eprintln!("error: the manifest names no benchmarks");
+        return ExitCode::FAILURE;
     }
 
-    Ok(())
+    let vxc = vxc_path();
+    let (commit, machine) = provenance();
+    println!("commit {commit}   machine {machine}");
+    println!();
+
+    let mut records = Vec::new();
+    let mut failed = Vec::new();
+
+    for path in &entries {
+        let rel = path
+            .strip_prefix(&root)
+            .unwrap_or(path)
+            .display()
+            .to_string();
+        if !path.exists() {
+            failed.push(format!("{rel}: listed in the manifest but does not exist"));
+            continue;
+        }
+        let out = match Command::new(&vxc).arg(path).arg("--run").output() {
+            Ok(o) => o,
+            Err(e) => {
+                failed.push(format!("{rel}: could not run {}: {e}", vxc.display()));
+                continue;
+            }
+        };
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let mine = records_from(&rel, &stdout);
+        if !out.status.success() {
+            failed.push(format!("{rel}: exited {}", out.status));
+        } else if mine.is_empty() {
+            // The case the old runner could not see: it ran, it succeeded, and it
+            // measured nothing.
+            failed.push(format!("{rel}: ran but reported no measurement"));
+        }
+        records.extend(mine);
+    }
+
+    if !records.is_empty() {
+        let w = records
+            .iter()
+            .map(|r| r.name.len())
+            .max()
+            .unwrap_or(4)
+            .max(4);
+        println!("{:<w$}  {:>14}  unit", "name", "value", w = w);
+        for r in &records {
+            println!(
+                "{:<w$}  {:>14.9}  {}   ({})",
+                r.name,
+                r.value,
+                r.unit,
+                r.benchmark,
+                w = w
+            );
+        }
+        println!();
+    }
+
+    if failed.is_empty() {
+        println!(
+            "{} measurements from {} benchmarks",
+            records.len(),
+            entries.len()
+        );
+        ExitCode::SUCCESS
+    } else {
+        eprintln!(
+            "{} of {} benchmarks did not report:",
+            failed.len(),
+            entries.len()
+        );
+        for f in &failed {
+            eprintln!("  {f}");
+        }
+        ExitCode::FAILURE
+    }
 }

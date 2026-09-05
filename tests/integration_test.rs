@@ -7,6 +7,7 @@ mod integration_test {
     mod architecture_test;
     mod assert_codegen_test;
     mod basic_integration;
+    mod benchmarks_report_metrics;
     mod borrow_test;
     mod codegen_determinism;
     mod compile_test;
