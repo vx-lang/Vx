@@ -102,7 +102,8 @@ pub enum Opcode {
     Reduce = 25,
     /// Allocate storage for a tensor (`Tensor<T>([..])`): `type_idx` is the tensor type, `imm` its
     /// static byte size (element size × the product of the dims) — so the receiving side of a store
-    /// has enough room. The result is the tensor buffer.
+    /// has enough room. A `?` dimension's extent is the `operand1` of an `Arg` immediately before
+    /// this instruction, one per `?` in order, and `imm` is then 0. The result is the tensor buffer.
     TensorAlloc = 26,
     /// Store a value into a tensor place (no result): `operand1` is the destination `TensorIndex`
     /// place, `operand2` the value. The place type selects the store: a row/sub-view place takes a

@@ -6,16 +6,15 @@
 //
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK-LABEL: func.func @custom_matmul(%arg0: memref<?x?xf32>, %arg1: memref<?x?xf32>) -> memref<?x?xf32>
-// CHECK: %[[C0:.*]] = arith.cmpi slt, %{{.*}}, %{{.*}} : index
-// CHECK: cf.cond_br %[[C0]], ^{{.*}}, ^{{.*}}
-// CHECK: %[[C1:.*]] = arith.cmpi slt, %{{.*}}, %{{.*}} : index
-// CHECK: cf.cond_br %[[C1]], ^{{.*}}, ^{{.*}}
-// CHECK: %[[C2:.*]] = arith.cmpi slt, %{{.*}}, %{{.*}} : index
-// CHECK: cf.cond_br %[[C2]], ^{{.*}}, ^{{.*}}
+// The flat path compiles this now: the result buffer is sized from the operands'
+// extents, and the three loops bound themselves the same way.
 // CHECK-LABEL: func.func @distributed_matmul(%arg0: memref<?x?xf32>, %arg1: memref<?x?xf32>) -> memref<?x?xf32>
-// CHECK: arith.constant 0 : index
 // CHECK: return %{{.*}} : memref<?x?xf32>
+// CHECK-LABEL: func.func @custom_matmul(%arg0: memref<?x?xf32>, %arg1: memref<?x?xf32>) -> memref<?x?xf32>
+// CHECK: memref.dim %arg0
+// CHECK: memref.dim %arg1
+// CHECK: memref.alloc(%{{.*}}, %{{.*}}) : memref<?x?xf32>
+// CHECK-COUNT-3: cf.cond_br
 fn custom_matmul(a : Tensor<f32, [?, ?]>, b : Tensor<f32, [?, ?]>) -> Tensor<f32, [?, ?]> {
   let mut result : Tensor<f32, [?, ?]> = Tensor<f32, [?, ?]>::uninit([a.extent(0), b.extent(1)]);
   for i in 0..a.extent(0) {

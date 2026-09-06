@@ -2534,18 +2534,35 @@ impl<'r> Lowerer<'r> {
     }
 
     /// Lower a tensor allocation `Tensor<T>([d0, d1, ...])` (or `Tensor<T>(d0, d1)`): a `TensorAlloc`
-    /// whose `imm` is the static byte size, so the buffer has room for every element. Declines a
-    /// dynamic/symbolic shape (its byte size isn't statically known) or a non-scalar element.
+    /// whose `imm` is the static byte size, so the buffer has room for every element. A run-time
+    /// extent is an `Arg` immediately before the `TensorAlloc`, one per `?` in the shape and in
+    /// order, and the byte size is then 0: the emitter reads the extents off those. Declines a
+    /// dimension it cannot lower or a non-scalar element.
     fn lower_tensor_alloc(&mut self, fc: &crate::syntax::FunctionCallExpr) -> Option<Val> {
         let written = fc.type_args.as_ref()?.first()?;
         // `Tensor<T, [d0, d1]>::uninit()` writes the element and shape in the type and takes no
-        // arguments, so there is nothing to recover from the call. A tensor with a `?` extent has no static
-        // shape to size the buffer from and falls through to the decline below.
+        // arguments, so there is nothing to recover from the call. With a `?` in the type the
+        // one argument is the full shape, and the `?` positions take their extents from it.
         if let crate::syntax::Type::Tensor(el, dims, placement) = written {
             if matches!(el, ElementType::Generic(_)) {
                 return None;
             }
-            let bytes = if dims.is_empty() {
+            let dynamic = dims.iter().any(|d| matches!(d, Dim::Dyn));
+            let mut extents: Vec<Register> = Vec::new();
+            let bytes = if dynamic {
+                let Some(Expr::Array(arr)) = fc.args.first() else {
+                    return None;
+                };
+                if fc.args.len() != 1 || arr.elements.len() != dims.len() {
+                    return None;
+                }
+                for (d, e) in dims.iter().zip(arr.elements.iter()) {
+                    if matches!(d, Dim::Dyn) {
+                        extents.push(self.lower_scalar_extent(e)?);
+                    }
+                }
+                0
+            } else if dims.is_empty() {
                 crate::hir::memory::element_bits(el)?.div_ceil(8)
             } else {
                 crate::hir::memory::static_tensor_bytes(el, dims)?
@@ -2555,6 +2572,9 @@ impl<'r> Lowerer<'r> {
                 elem: el.clone(),
                 shape,
             };
+            for r in extents {
+                self.emit_effect(Opcode::Arg, r, Register(0), 0);
+            }
             // The placement's space rides out on the alloc's spare operand, which is where
             // `.with_memory(Memory::X)` put it before it was removed: a `scope: sm` space is a
             // alloca the device pipeline materializes as `.shared` storage.
@@ -2608,11 +2628,49 @@ impl<'r> Lowerer<'r> {
             };
             return Some(self.emit_typed(Opcode::TensorAlloc, Register(0), Register(0), ty, bytes));
         }
-        let dims: Vec<Dim> = dims.iter().cloned().map(Dim::Static).collect();
-        let bytes = crate::hir::memory::static_tensor_bytes(&elem, &dims)?;
-        let shape: Vec<String> = dims.iter().map(tensor_dim_string).collect::<Option<_>>()?;
+        // A literal is a static extent; anything else is a run-time one, lowered to a value the
+        // alloc reads. The checker typed the result the same way, per position.
+        let mut shape = Vec::with_capacity(dims.len());
+        let mut extents: Vec<Register> = Vec::new();
+        for d in dims {
+            if let Expr::Number(n) = d {
+                shape.push(n.value.as_ref().to_string());
+            } else {
+                extents.push(self.lower_scalar_extent(d)?);
+                shape.push(DYN_DIM.to_string());
+            }
+        }
+        let bytes = if extents.is_empty() {
+            let dims: Vec<Dim> = dims.iter().cloned().map(Dim::Static).collect();
+            crate::hir::memory::static_tensor_bytes(&elem, &dims)?
+        } else {
+            0
+        };
         let ty = LoweredTy::Tensor { elem, shape };
+        for r in extents {
+            self.emit_effect(Opcode::Arg, r, Register(0), 0);
+        }
         Some(self.emit_typed(Opcode::TensorAlloc, Register(0), Register(0), ty, bytes))
+    }
+
+    /// A run-time extent for an allocation: the expression lowered to an integer register.
+    fn lower_scalar_extent(&mut self, e: &Expr) -> Option<Register> {
+        let v = self.lower_expr(e).ok()?;
+        match v.ty {
+            LoweredTy::Scalar(ref s)
+                if !matches!(
+                    s,
+                    ElementType::F16
+                        | ElementType::BF16
+                        | ElementType::F32
+                        | ElementType::F64
+                        | ElementType::Bool
+                ) =>
+            {
+                Some(v.reg)
+            }
+            _ => None,
+        }
     }
 
     /// Allocate a tensor shaped by an initializer list's nesting and store every leaf at its
@@ -6201,6 +6259,50 @@ mod tests {
         assert_eq!(count(&w, Opcode::Reduce), 1, "the dot");
         assert_eq!(count(&w, Opcode::Mul), 2, "scale the score, then weight v");
         assert_eq!(count(&w, Opcode::TensorStore), 1, "o[0] = ...");
+        verify_hir_stream(&w);
+    }
+
+    #[test]
+    fn a_run_time_extent_rides_on_an_arg_before_the_alloc() {
+        // `Tensor<f32>([n])` with `n` a parameter: the extent is an `Arg` immediately before the
+        // `TensorAlloc`, the shape says `?` there, and the byte size is 0 -- there is none to
+        // state. The typed form `Tensor<f32, [?, 4]>::uninit([n, 4])` reads its `?` off the array.
+        let f = parse_fn(
+            "fn build(n: i32) -> Tensor<f32, [?]> { let a = Tensor<f32>([n]); return a; }",
+        );
+        let mut w = worker();
+        lower_function_to_hir(&f, &mut w).expect("a run-time allocation lowers");
+        assert_eq!(count(&w, Opcode::Arg), 1, "one extent");
+        assert_eq!(count(&w, Opcode::TensorAlloc), 1);
+        assert_eq!(
+            op_imm(&w, Opcode::TensorAlloc),
+            Some(0),
+            "no static byte size"
+        );
+        let (i, _) = w
+            .local_hir_stream
+            .iter()
+            .enumerate()
+            .find(|(_, ins)| ins.opcode == Opcode::TensorAlloc)
+            .unwrap();
+        assert_eq!(
+            w.local_hir_stream[i - 1].opcode,
+            Opcode::Arg,
+            "the extent precedes the alloc"
+        );
+        verify_hir_stream(&w);
+
+        let f = parse_fn(
+            "fn build(n: i32) -> Tensor<f32, [?, 4]> { let a = Tensor<f32, [?, 4]>::uninit([n, 4]); return a; }",
+        );
+        let mut w = worker();
+        lower_function_to_hir(&f, &mut w).expect("the typed form lowers");
+        assert_eq!(
+            count(&w, Opcode::Arg),
+            1,
+            "only the `?` position is an extent"
+        );
+        assert_eq!(op_imm(&w, Opcode::TensorAlloc), Some(0));
         verify_hir_stream(&w);
     }
 

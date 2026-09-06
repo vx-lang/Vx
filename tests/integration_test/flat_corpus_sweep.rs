@@ -39,13 +39,11 @@ const KNOWN_DECLINES: &[&str] = &[
     "frontend/pass/control_flow.vx",
     "frontend/pass/control_flow_rigorous.vx",
     "frontend/pass/coverage_advanced_types_pass.vx",
-    "frontend/pass/custom_matmul.vx",
     "frontend/pass/enum_match.vx",
     "frontend/pass/env_args.vx",
     "frontend/pass/gen_tensor_math_pass.vx",
     "frontend/pass/generics.vx",
     "frontend/pass/if_comptime_and_topology.vx",
-    "frontend/pass/impl_most_specific_pattern_wins.vx",
     "frontend/pass/indirect_call.vx",
     "frontend/pass/inline_mlir_const_generics.vx",
     "frontend/pass/legal_acccore_transfer.vx",
@@ -53,10 +51,7 @@ const KNOWN_DECLINES: &[&str] = &[
     "frontend/pass/memory_algebra_implicit.vx",
     "frontend/pass/rubin_disaggregated.vx",
     "frontend/pass/spawn_result_located.vx",
-    "frontend/pass/tensor_dynamic_extent_rank_one.vx",
-    "frontend/pass/tensor_extent_accessor.vx",
     "frontend/pass/tensor_methods.vx",
-    "frontend/pass/tensor_mixed_extents.vx",
     "frontend/pass/tensor_operations.vx",
     "frontend/pass/topology_spawn.vx",
     "frontend/pass/trait_topologies.vx",
@@ -84,7 +79,6 @@ const KNOWN_DECLINES: &[&str] = &[
     "optimizations/pass/vectorize.vx",
     "warnings/pass/lowering_declined_for_dynamic_tile.vx",
     "warnings/pass/w1024_implicit_transfer.vx",
-    "warnings/pass/w1029_dynamic_shape_unverified.vx",
 ];
 
 /// Every `.vx` file under `dir`, recursively, sorted for a stable report.

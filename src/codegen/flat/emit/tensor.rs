@@ -26,6 +26,29 @@ impl FnEmit<'_> {
         let (elem, shape) = self.ctx.tensors.get(&gid).ok_or(crate::emitter_gap!())?;
         let memty = tensor_memref_ty(elem, shape).ok_or(crate::emitter_gap!())?;
         let n = format!("%v{idx}");
+        // A `?` dimension's extent is the `Arg` before this instruction, one per `?` in order:
+        // `memref.alloc(%d0, %d1)` takes them as indices.
+        let dyn_count = shape.iter().filter(|d| *d == DYN_DIM).count();
+        if self.pending_args.len() < dyn_count {
+            return Err(crate::emitter_gap!());
+        }
+        let extents = self
+            .pending_args
+            .split_off(self.pending_args.len() - dyn_count);
+        let mut sizes = Vec::with_capacity(dyn_count);
+        for (k, r) in extents.iter().enumerate() {
+            let v = self
+                .names
+                .get(*r as usize)
+                .ok_or(crate::emitter_gap!())?
+                .clone();
+            let vt = mlir_scalar(&self.elem_at(*r).ok_or(crate::emitter_gap!())?)
+                .ok_or(crate::emitter_gap!())?;
+            let ix = format!("%tai{idx}_{k}");
+            self.body += &format!("  {ix} = arith.index_cast {v} : {vt} to index\n");
+            sizes.push(ix);
+        }
+        let sizes = sizes.join(", ");
         // `operand2` may carry a memory-space dispatch id from the placement in the type (Vx#379
         // stage B). A `scope: sm` space becomes a space-3 ALLOCA: on the host that is a
         // stack slot like any other, and in the device clone materializeGpuKernels turns
@@ -39,6 +62,12 @@ impl FnEmit<'_> {
                 .and_then(|s| s.scope.as_deref())
                 == Some("sm");
         if sm {
+            // Shared storage is packed by the driver from static sizes; a run-time one has none.
+            if dyn_count > 0 {
+                return Err(Decline::TypeNotModelled {
+                    what: "a tile of run-time size in shared memory",
+                });
+            }
             let smty = format!(
                 "{}, 3>",
                 memty.strip_suffix('>').ok_or(crate::emitter_gap!())?
@@ -58,7 +87,7 @@ impl FnEmit<'_> {
             self.names[idx] = n;
             self.mem_of[idx] = Some(smty);
         } else {
-            self.body += &format!("  {n} = memref.alloc() : {memty}\n");
+            self.body += &format!("  {n} = memref.alloc({sizes}) : {memty}\n");
             self.names[idx] = n;
             self.mem_of[idx] = Some(memty);
         }

@@ -919,6 +919,26 @@ fn flat_matches_ast_two_tensors_differing_only_in_placement() {
 }
 
 #[test]
+fn flat_matches_ast_run_time_allocation() {
+    // `Tensor<f32>([n])` with `n` a parameter allocates a `memref<?xf32>` sized from the value
+    // on the flat path; the AST path allocates fully dynamic and casts. Both fill and read it
+    // back the same: 1 + 2 + 3.
+    assert_parity(
+        "fn build(n : i32) -> Tensor<f32, [?]> { let mut a = Tensor<f32>([n]);            a[0] = 1.0; a[1] = 2.0; a[2] = 3.0; return a; }\n\
+         fn total(t : Tensor<f32, [?]>) -> f32 { let mut s = 0.0;            for i in 0..t.extent(0) { s = s + t[i]; } return s; }\n\
+         fn main() -> i32 { let a = build(3); return total(a) as i32; }",
+        6,
+    );
+    // The typed form: the `?` position takes its extent from the argument, the static one is
+    // the type's, and `::new` zeroes the whole buffer before the one store.
+    assert_parity(
+        "fn build(n : i32) -> Tensor<f32, [?, 4]> {            let mut m = Tensor<f32, [?, 4]>::new([n, 4]); m[1][2] = 5.0; return m; }\n\
+         fn main() -> i32 { let m = build(2); return (m[1][2] + m[0][0] + m[1][3]) as i32; }",
+        5,
+    );
+}
+
+#[test]
 fn flat_matches_ast_tensor_store_element_coercion() {
     // A default-`f32` float literal stored into a non-`f32` tensor is coerced to the element type at
     // the store (`bf16` -> `arith.truncf`), matching the AST's `coerce_type` before its `memref.store`
