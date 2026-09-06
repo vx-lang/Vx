@@ -51,5 +51,61 @@ impl TypeChecker<'_> {
         // After the two coherence checks, so a program whose declarations are wrong is told that
         // first rather than told its placements are unheld as a consequence.
         self.check_placements_name_a_place();
+        // An `extern` signature has to be spellable in C, and a tensor is not.
+        self.check_extern_signatures();
+    }
+
+    /// Refuse a tensor anywhere in an `extern` signature.
+    ///
+    /// Lowering expands a memref into its seven descriptor scalars, so such a declaration names a
+    /// C symbol with a signature no C source could have written, and the mismatch shows up as
+    /// corrupt arguments at run time rather than as a link error.
+    fn check_extern_signatures(&mut self) {
+        for ext in &self.env.externs {
+            let span = crate::diagnostic::SourceSpan::from_ast_span(&ext.span);
+            for (name, ty) in &ext.params {
+                if let Some(found) = tensor_within(ty) {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E3022,
+                        format!(
+                            "parameter `{}` of extern fn `{}` is {}; an extern signature cannot \
+                             mention a tensor -- take a raw pointer and build the tensor in Vx",
+                            name,
+                            ext.name,
+                            Self::short_type_name(found)
+                        ),
+                        Some(span.clone()),
+                    );
+                }
+            }
+            if let Some(found) = tensor_within(&ext.return_type) {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E3022,
+                    format!(
+                        "extern fn `{}` returns {}; an extern signature cannot mention a tensor \
+                         -- return a raw pointer and build the tensor in Vx",
+                        ext.name,
+                        Self::short_type_name(found)
+                    ),
+                    Some(span),
+                );
+            }
+        }
+    }
+}
+
+/// The tensor inside a type, through the wrappers that restate where a value lives, and through
+/// one level of pointer or borrow -- `*mut DynTensor<f32>` is a descriptor pointer, which is no
+/// more spellable in C than the descriptor itself.
+fn tensor_within(ty: &crate::syntax::Type) -> Option<&crate::syntax::Type> {
+    use crate::syntax::Type;
+    match ty {
+        Type::Tensor(..) | Type::DynTensor(..) => Some(ty),
+        Type::Verified(inner) | Type::Pinned(inner, _) | Type::Ref(inner, _) => {
+            tensor_within(inner)
+        }
+        Type::Borrow { inner, .. } => tensor_within(inner),
+        Type::Pointer(inner, _, _) => tensor_within(inner),
+        _ => None,
     }
 }

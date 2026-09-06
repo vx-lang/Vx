@@ -94,6 +94,31 @@ impl<'a> TypeChecker<'a> {
                                     for (i, expr) in expr_payload.iter_mut().enumerate() {
                                         let expr_ty = self.check_expr_type_flag(expr, consume);
                                         let expected_ty = exp_types[i].substitute(&mapping);
+                                        // A tensor payload has no lowering: the variant's slot is
+                                        // built with `llvm.insertvalue`, which takes primitives,
+                                        // and the AST path emitted the tag and dropped the tensor
+                                        // without saying so.
+                                        if Self::is_tensor_payload(&expected_ty) {
+                                            if !self.speculating {
+                                                self.errors.error_with_code(
+                                                    crate::diagnostic::DiagnosticCode::E3021,
+                                                    format!(
+                                                        "payload argument {} of {}::{} is {}; an \
+                                                         enum variant cannot carry a tensor",
+                                                        i + 1,
+                                                        actual_enum_name,
+                                                        variant,
+                                                        Self::short_type_name(&expected_ty)
+                                                    ),
+                                                    Some(
+                                                        crate::diagnostic::SourceSpan::from_ast_span(
+                                                            span,
+                                                        ),
+                                                    ),
+                                                );
+                                            }
+                                            continue;
+                                        }
                                         if !self.is_assignable(&expected_ty, &expr_ty)
                                             && !matches!(&expected_ty, Type::Generic(_, _))
                                             && !self.speculating
@@ -261,6 +286,18 @@ impl<'a> TypeChecker<'a> {
     /// A short human name for a type, for diagnostics that only need to say what KIND of thing
     /// the programmer wrote. The `{:?}` rendering used elsewhere prints the whole AST of every
     /// dimension expression, which buries the one word the reader needs.
+    /// Whether a payload type is a tensor, through the wrappers that restate where it lives
+    /// without changing how it is represented.
+    fn is_tensor_payload(t: &Type) -> bool {
+        match t {
+            Type::Tensor(..) | Type::DynTensor(..) => true,
+            Type::Verified(inner) | Type::Pinned(inner, _) | Type::Ref(inner, _) => {
+                Self::is_tensor_payload(inner)
+            }
+            _ => false,
+        }
+    }
+
     pub(crate) fn short_type_name(t: &Type) -> String {
         match t {
             Type::Scalar(e) => format!("a scalar {e:?}"),
@@ -277,6 +314,7 @@ impl<'a> TypeChecker<'a> {
                 "a dynamic tensor of {e:?} placed on Topology::{}",
                 p.topology.display_name()
             ),
+            Type::DynTensor(e, _) => format!("a dynamic tensor of {e:?}"),
             Type::Pinned(inner, top) => format!(
                 "{} placed on Topology::{}",
                 Self::short_type_name(inner),

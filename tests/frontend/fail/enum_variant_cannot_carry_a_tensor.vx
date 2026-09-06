@@ -1,0 +1,31 @@
+//===- enum_variant_cannot_carry_a_tensor.vx - Vx Compiler ------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// An enum payload is stored into the variant's slot with `llvm.insertvalue`,
+// which takes primitive operands, and a tensor is a memref descriptor.
+//
+// This was accepted and miscompiled rather than refused: the construction
+// emitted the tag and dropped the tensor, so the program compiled, ran, and
+// lost the payload with nothing said. A scalar payload is unaffected and stays
+// legal -- `Val(i32)` below constructs and matches.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: E3021
+// CHECK-SAME: payload argument 1 of Payload::Weights
+// CHECK-SAME: cannot carry a tensor
+
+enum Payload {
+  Weights(Tensor<f32, [2, 2]>),
+  Val(i32),
+}
+
+fn main() -> i32 {
+  let ok = Payload::Val(7);
+  let a = Tensor<f32>([2, 2]);
+  let bad = Payload::Weights(a);
+  return 0;
+}

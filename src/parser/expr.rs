@@ -411,7 +411,7 @@ impl<'a> Parser<'a> {
                 name: call_name.into(),
                 type_args: parsed_type_args,
                 args,
-                span: Span::default(),
+                span,
             }))
         } else if self.check(&TokenType::LeftBrace) {
             let is_struct_init = matches!(
@@ -537,6 +537,8 @@ impl<'a> Parser<'a> {
         call_name: &mut String,
         parsed_type_args: Option<Vec<Type>>,
     ) -> ParseResult<'a, Expr> {
+        let variant_line = self.peek().line;
+        let variant_column = self.peek().column;
         let variant = match self.advance().kind.clone() {
             TokenType::Identifier(v) => v,
             _ => return Err(self.error("Expected enum variant after ::")),
@@ -560,7 +562,11 @@ impl<'a> Parser<'a> {
             enum_name: call_name.clone().into(),
             variant_name: variant.to_string().into(),
             payload,
-            span: Span::default(),
+            span: Span {
+                line: variant_line,
+                column: variant_column,
+                length: 0,
+            },
         }))
     }
 

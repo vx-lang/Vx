@@ -1,0 +1,35 @@
+//===- extern_signature_cannot_mention_a_tensor.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Lowering expands a memref parameter into the seven scalars of its descriptor,
+// so a tensor in an `extern` signature declares a C symbol taking seven
+// arguments -- a signature no C source writes. The call links by name and
+// passes something the callee never agreed to.
+//
+// This was accepted: `fn c_take(t : DynTensor<f32>) -> i32` emitted
+// `llvm.func @c_take(!llvm.ptr, !llvm.ptr, i64, i64, i64, i64, i64)`.
+//
+// A raw pointer stays legal, and is how the corpus does it: `vx_load_weights`
+// in std::llama returns `*mut f32`, and `DynTensor::from_ptr_2d` builds the
+// tensor on the Vx side.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: E3022
+// CHECK-SAME: parameter `t` of extern fn `c_take`
+// CHECK-SAME: cannot mention a tensor
+// CHECK: E3022
+// CHECK-SAME: extern fn `c_give` returns
+
+extern {
+  fn c_ok(p : *mut f32, n : i32) -> i32;
+  fn c_take(t : DynTensor<f32>) -> i32;
+  fn c_give(n : i32) -> DynTensor<f32>;
+}
+
+fn main() -> i32 {
+  return 0;
+}

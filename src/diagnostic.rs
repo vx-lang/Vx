@@ -221,6 +221,23 @@ pub enum DiagnosticCode {
     /// no value to carry, and codegen used to paper over it by evaluating the whole match to a
     /// constant zero.
     E3020,
+    /// An enum variant whose payload is a tensor.
+    ///
+    /// A payload is stored into the variant's tagged-union slot with `llvm.insertvalue`, which
+    /// takes primitive operands, and a tensor is a memref descriptor. The AST path dropped such a
+    /// payload silently: the construction emitted the tag and nothing else, so a program carrying
+    /// a tensor through an enum compiled, ran, and lost it with no diagnostic. See Vx#356 for the
+    /// struct-field form of the same representational gap.
+    E3021,
+    /// An `extern` function whose signature mentions a tensor.
+    ///
+    /// A tensor is a memref, and lowering expands a memref parameter into the seven scalars of
+    /// its descriptor -- allocated pointer, aligned pointer, offset, and a size and stride per
+    /// rank. So `fn c_take(t : DynTensor<f32>) -> i32` declares a C symbol taking seven
+    /// arguments, which is not a signature anyone writes on the C side; the call links by name
+    /// and passes something the callee never agreed to. Take a raw pointer and build the tensor
+    /// in Vx (`DynTensor::from_ptr_2d`), which is what the corpus already does.
+    E3022,
 
     // --- Borrow/Ownership Errors (E4xxx) ---
     /// Use of moved or consumed linear variable

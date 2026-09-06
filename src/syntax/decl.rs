@@ -88,6 +88,8 @@ pub struct ExternDecl {
     pub is_safe: bool,
     pub params: Vec<(Symbol, Type)>,
     pub return_type: Type,
+    /// Where the declaration was written, so a diagnostic about the signature can point at it.
+    pub span: Span,
 }
 
 #[derive(Debug, PartialEq, Clone)]

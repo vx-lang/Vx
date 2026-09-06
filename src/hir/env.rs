@@ -64,6 +64,10 @@ pub struct GlobalAstEnv<'a> {
     /// duplicate-edge check (E6015) needs to SEE both declarations to report one, and a map
     /// would have silently kept whichever was inserted last.
     pub transfer_impls: Vec<&'a crate::syntax::TransferImplDecl>,
+    /// Every `extern` declaration in this compilation, for the checks that are about the
+    /// signature rather than a call. `env.functions` cannot serve: it merges externs with Vx
+    /// functions and keeps no way to tell them apart.
+    pub externs: Vec<&'a crate::syntax::ExternDecl>,
     /// User-defined topologies (`Topology <Name> { ... }`), indexed by name. Populated from
     /// `Program.topologies`; the per-compilation home for topology descriptors, seeded into each
     /// `TransferCostGraph` — no global registry (see docs/parallel_compiler_architecture.md).
@@ -112,6 +116,7 @@ impl<'a> GlobalAstEnv<'a> {
             topologies: HashMap::new(),
             duplicate_decls: Vec::new(),
             transfer_impls: Vec::new(),
+            externs: Vec::new(),
             return_provenances: HashMap::new(),
             transfer_cost_graph: crate::arch::TransferCostGraph::default(),
         };
@@ -162,6 +167,7 @@ impl<'a> GlobalAstEnv<'a> {
                 env.impls.entry(trait_name).or_default().push(i);
             }
             for ext in &module.externs {
+                env.externs.push(ext);
                 let param_types: Vec<Type> = ext.params.iter().map(|(_, t)| t.clone()).collect();
                 env.functions.insert(
                     ext.name.clone(),

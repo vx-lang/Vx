@@ -11,18 +11,21 @@
 // mlir-translate --mlir-to-llvmir | lli --load=./libvx_rt.dylib RUN: %t |
 // FileCheck %s
 
+// The four symbols live in stdlib/rust_core/src/ffi/rt.rs. Three of them return
+// nothing and the fourth returns a plain f32; this file used to declare all four
+// as returning a rank-0 tensor, which is a different ABI on every one of them.
 extern "C" {
-  fn start_benchmark() -> Tensor<f32, []>;
-  fn end_benchmark() -> Tensor<i32, []>;
-  fn trace_start() -> Tensor<i32, []>;
-  fn trace_end() -> Tensor<i32, []>;
+  fn start_benchmark() -> f32;
+  fn end_benchmark() -> void;
+  fn trace_start() -> void;
+  fn trace_end() -> void;
 }
 
 fn main() -> i32 {
   unsafe {
     trace_start();
-    let _dummy1 : Tensor<f32, []> = start_benchmark();
-    let _dummy2 : Tensor<i32, []> = end_benchmark();
+    let _elapsed : f32 = start_benchmark();
+    end_benchmark();
     trace_end();
   }
 

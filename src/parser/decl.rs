@@ -807,6 +807,8 @@ impl<'a> Parser<'a> {
         let mut externs = Vec::new();
 
         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
+            let decl_line = self.peek().line;
+            let decl_column = self.peek().column;
             let is_safe = self.match_token(&TokenType::Safe);
             self.consume(&TokenType::Fn, "Expected 'fn'")?;
             let name = self.expect_identifier("Expected function name")?;
@@ -824,6 +826,11 @@ impl<'a> Parser<'a> {
                 is_safe,
                 params,
                 return_type,
+                span: Span {
+                    line: decl_line,
+                    column: decl_column,
+                    length: 0,
+                },
             });
         }
         self.consume(&TokenType::RightBrace, "Expected '}'")?;
