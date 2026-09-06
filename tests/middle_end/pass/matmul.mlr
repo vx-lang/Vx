@@ -22,7 +22,7 @@ fn main() -> i32 {
 // CHECK:     linalg.matmul ins(%arg0, %arg1 : memref<128x64xf32>, memref<64x256xf32>) outs(%alloc : memref<128x256xf32>)
 // CHECK:     return %alloc : memref<128x256xf32>
 // CHECK:   }
-// CHECK:   func.func @main() -> i32 attributes {llvm.emit_c_interface} {
+// CHECK:   func.func @main() -> i32 {
 // CHECK:     %cst = arith.constant 1.000000e+00 : f32
 // CHECK:     %cst_0 = arith.constant 1.000000e+00 : f32
 // CHECK:     %alloc = memref.alloc() : memref<128x64xf32>

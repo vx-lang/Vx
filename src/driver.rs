@@ -1006,27 +1006,12 @@ impl CompilerDriver {
                 println!("{}", out);
             }
             Action::EmitObj => {
-                let current_dir = std::env::current_dir().unwrap();
-                let vx_std_core = crate::jit::runtime_library_path()?;
-                let libnpu = format!(
-                    "{}/target/jit/{}npu_shared{}",
-                    current_dir.display(),
-                    std::env::consts::DLL_PREFIX,
-                    std::env::consts::DLL_SUFFIX
-                );
-
-                let mlir_c_runner =
-                    format!("libmlir_c_runner_utils{}", std::env::consts::DLL_SUFFIX);
-                let mlir_runner = format!("libmlir_runner_utils{}", std::env::consts::DLL_SUFFIX);
-                let mut shared_libs = vec![
-                    mlir_c_runner.clone(),
-                    mlir_runner.clone(),
-                    vx_std_core.clone(),
-                ];
-                if cfg!(target_os = "macos") {
-                    shared_libs.push(libnpu.clone());
-                }
-
+                // One resolution, shared with the JIT. This arm used to build its own list from
+                // bare filenames, which MLIR resolves against the process CWD, so it looked for
+                // `libmlir_runner_utils` in the repo root; and for the dispatch plugin under
+                // `target/jit/`, which the build never writes. Both failed by printing to stderr
+                // and producing no object.
+                let shared_libs = crate::jit::shared_library_paths()?;
                 let shared_libs_refs: Vec<&str> = shared_libs.iter().map(|s| s.as_ref()).collect();
 
                 let engine = melior::ExecutionEngine::new(
@@ -1043,7 +1028,27 @@ impl CompilerDriver {
                     p
                 });
 
+                // Whether an object was actually written is the only thing that says this
+                // succeeded. `dump_to_object_file` returns nothing and the arm returned `Ok(())`
+                // regardless, so emit-obj reported success in three distinct failure modes: a
+                // library it could not load, a symbol it could not resolve, and a module the
+                // verifier rejected. Anything gating on the exit status learned nothing.
+                let existed_before = output_path.exists();
+                let mtime_before = std::fs::metadata(&output_path)
+                    .and_then(|m| m.modified())
+                    .ok();
                 engine.dump_to_object_file(output_path.to_str().unwrap());
+                let wrote = match std::fs::metadata(&output_path) {
+                    Ok(m) => m.len() > 0 && (!existed_before || m.modified().ok() != mtime_before),
+                    Err(_) => false,
+                };
+                if !wrote {
+                    return Err(format!(
+                        "emit-obj produced no object at '{}'; the module could not be compiled \
+                         (see the diagnostics above)",
+                        output_path.display()
+                    ));
+                }
             }
             _ => {}
         }

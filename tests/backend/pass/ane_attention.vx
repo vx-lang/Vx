@@ -115,7 +115,7 @@ fn main() -> i32 {
 // The dispatch shape, which holds whether or not the ANE runtime is present: the two matmuls
 // (Q dot K-transpose, then att dot V) each become their own NPU region, one per "Intercepted
 // kernel dispatch" line below.
-// CHECK-LABEL: func.func @main() -> i32 attributes {llvm.emit_c_interface} {
+// CHECK-LABEL: func.func @main() -> i32 {
 // CHECK: vx.spawn topology(100) {
 // CHECK: arith.mulf
 // CHECK: } {topology_name = "NPU[0]"}

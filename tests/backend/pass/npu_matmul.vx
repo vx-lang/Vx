@@ -95,4 +95,4 @@ fn main() -> i32 {
 // buffers are raw allocations rather than memrefs.
 // LLVM-LABEL: llvm.func @test_f32() -> i32
 // LLVM: llvm.call @malloc
-// LLVM: llvm.func @main() -> i32 attributes {llvm.emit_c_interface}
+// LLVM: llvm.func @main() -> i32

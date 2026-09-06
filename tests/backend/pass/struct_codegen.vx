@@ -39,7 +39,7 @@ fn main() -> i32 {
 
 // The struct is built field by field into one aggregate value, and the f32 field read back out
 // is the one that reaches print -- the round trip the number below measures.
-// MLIR-LABEL: func.func @main() -> i32 attributes {llvm.emit_c_interface} {
+// MLIR-LABEL: func.func @main() -> i32 {
 // MLIR: llvm.mlir.undef : !llvm.struct<"Config", (i32, i32, i32, i32, i32, i32, f32)>
 // MLIR: %[[EPS:.*]] = arith.constant 9.99999974E-6 : f32
 // MLIR: %[[FULL:.*]] = llvm.insertvalue %[[EPS]], %{{.*}}[6] : !llvm.struct<"Config", (i32, i32, i32, i32, i32, i32, f32)>

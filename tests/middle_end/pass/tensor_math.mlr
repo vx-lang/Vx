@@ -162,7 +162,7 @@ fn main() -> i32 {
 // CHECK:     linalg.sub ins(%arg0, %arg1 : memref<?x?x?xf32>, memref<?x?x?xf32>) outs(%alloc : memref<?x?x?xf32>)
 // CHECK:     return %alloc : memref<?x?x?xf32>
 // CHECK:   }
-// CHECK:   func.func @main() -> i32 attributes {llvm.emit_c_interface} {
+// CHECK:   func.func @main() -> i32 {
 // CHECK:     %c0_i32 = arith.constant 0 : i32
 // CHECK:     return %c0_i32 : i32
 // CHECK:   }

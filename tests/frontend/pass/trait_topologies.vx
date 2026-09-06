@@ -301,7 +301,7 @@ fn main() -> i32 {
 // CHECK:     %1 = call @NPU$transfer_tensor_to_cpu(%0, %arg0) : (!llvm.struct<"NPU", ()>, memref<?x?xf32>) -> memref<?x?xf32>
 // CHECK:     return
 // CHECK:   }
-// CHECK:   func.func @main() -> i32 attributes {llvm.emit_c_interface} {
+// CHECK:   func.func @main() -> i32 {
 // CHECK:     %c0_i32 = arith.constant 0 : i32
 // CHECK:     return %c0_i32 : i32
 // CHECK:   }

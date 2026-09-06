@@ -20,6 +20,56 @@ use std::process::Command;
 ///
 /// Its absence is worth its own message: `cargo test` never emits the shared library, because a
 /// dependency edge only asks for an rlib, so a checkout that has only been tested reaches the
+/// The directory LLVM installs its runtime libraries in.
+///
+/// Resolved through PATH by default (config.local puts the intended LLVM first), matching how
+/// build.rs locates the toolchain. Hardcoding a Homebrew prefix made this unusable on Linux.
+pub fn llvm_libdir() -> Result<String, String> {
+    let llvm_config_path =
+        std::env::var("LLVM_CONFIG_PATH").unwrap_or_else(|_| "llvm-config".to_string());
+    let out = Command::new(&llvm_config_path)
+        .arg("--libdir")
+        .output()
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                format!(
+                    "Compiler toolchain error: '{llvm_config_path}' was not found. Please ensure LLVM is installed and in your PATH, or set LLVM_CONFIG_PATH."
+                )
+            } else {
+                format!("Failed to run {llvm_config_path}: {e}")
+            }
+        })?;
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// The shared libraries a compiled program needs at load time: MLIR's two runner utils, the Vx
+/// standard-library core, and the dispatch plugin.
+///
+/// One resolution shared by the JIT and by `--action emit-obj`. The object path used to build its
+/// own list from BARE FILENAMES, which MLIR resolves against the process CWD, so it looked for
+/// `libmlir_runner_utils` in the repo root and silently produced no object; and it looked for the
+/// dispatch plugin under `target/jit/`, a directory the build never writes.
+pub fn shared_library_paths() -> Result<Vec<String>, String> {
+    let libdir = llvm_libdir()?;
+    let mut libs = vec![
+        format!(
+            "{libdir}/libmlir_c_runner_utils{}",
+            std::env::consts::DLL_SUFFIX
+        ),
+        format!(
+            "{libdir}/libmlir_runner_utils{}",
+            std::env::consts::DLL_SUFFIX
+        ),
+        runtime_library_path()?,
+    ];
+    let npu = std::env::var("VX_DISPATCH_LIB")
+        .unwrap_or_else(|_| std::env!("NPU_SHARED_LIB_PATH").to_string());
+    if !npu.is_empty() && std::path::Path::new(&npu).exists() {
+        libs.push(npu);
+    }
+    Ok(libs)
+}
+
 /// linker without it and clang reports a missing file with no hint of which build produces it.
 pub fn runtime_library_path() -> Result<String, String> {
     let profile_dir = if cfg!(debug_assertions) {

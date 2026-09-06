@@ -20,6 +20,6 @@ fn main() -> i32 {
 // read memref<?x?xi32> -> memref<memref<?x?xf32>>, which is what spelling a scalar as a
 // dims-less tensor bought (Vx#399).
 // CHECK: func.func private @malloc(i32) -> !llvm.ptr
-// CHECK-LABEL: func.func @main() -> i32 attributes {llvm.emit_c_interface} {
+// CHECK-LABEL: func.func @main() -> i32 {
 // CHECK: %[[N:.*]] = arith.constant 1024 : i32
 // CHECK: call @malloc(%[[N]]) : (i32) -> !llvm.ptr

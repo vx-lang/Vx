@@ -29,7 +29,7 @@ fn main() -> i32 {
 // What the run below cannot assert: indexing a raw `*mut f32` is a getelementptr on the block
 // malloc returned, and the loaded value is what reaches print. The number is whatever malloc
 // left there, but the address arithmetic is not.
-// MLIR-LABEL: func.func @main() -> i32 attributes {llvm.emit_c_interface} {
+// MLIR-LABEL: func.func @main() -> i32 {
 // MLIR: %[[P:.*]] = call @malloc(%{{.*}}) : (i32) -> !llvm.ptr
 // MLIR: %[[GEP:.*]] = llvm.getelementptr %[[P]][%{{.*}}] : (!llvm.ptr, i64) -> !llvm.ptr, f32
 // MLIR: %[[V:.*]] = llvm.load %[[GEP]] : !llvm.ptr -> f32

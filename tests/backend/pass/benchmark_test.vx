@@ -35,7 +35,7 @@ fn main() -> i32 {
 // MLIR: func.func private @end_benchmark() -> i32
 // MLIR: func.func private @trace_start() -> i32
 // MLIR: func.func private @trace_end() -> i32
-// MLIR-LABEL: func.func @main() -> i32 attributes {llvm.emit_c_interface} {
+// MLIR-LABEL: func.func @main() -> i32 {
 // MLIR: call @trace_start() : () -> i32
 // MLIR: call @start_benchmark() : () -> f32
 // MLIR: call @end_benchmark() : () -> i32

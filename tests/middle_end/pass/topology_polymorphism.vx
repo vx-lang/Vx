@@ -161,7 +161,7 @@ fn main() -> i32 {
 // CHECK:     %c0_i32 = arith.constant 0 : i32
 // CHECK:     return %c0_i32 : i32
 // CHECK:   }
-// CHECK:   func.func @main() -> i32 attributes {llvm.emit_c_interface} {
+// CHECK:   func.func @main() -> i32 {
 // CHECK:     call @vx_init_signals() : () -> ()
 // CHECK:     %0 = vx.spawn topology(500) {
 // CHECK:       %c5_i32 = arith.constant 5 : i32

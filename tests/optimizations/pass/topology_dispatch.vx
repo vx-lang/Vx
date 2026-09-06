@@ -126,7 +126,7 @@ fn main() -> i32 {
 // CHECK:   func.func @gpu_kernel() {
 // CHECK:     return
 // CHECK:   }
-// CHECK:   func.func @main() -> i32 attributes {llvm.emit_c_interface} {
+// CHECK:   func.func @main() -> i32 {
 // CHECK:     call @vx_init_signals() : () -> ()
 // CHECK:     %0 = llvm.mlir.undef : !llvm.struct<"topology_test", (i32)>
 // CHECK:     %c10_i32 = arith.constant 10 : i32

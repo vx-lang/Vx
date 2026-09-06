@@ -30,7 +30,7 @@ fn main() -> i32 {
 
 // The four operations fold to one arith op each over the same two constants, and each result
 // is what reaches print -- which is what ties the numbers below to the IR above them.
-// MLIR-LABEL: func.func @main() -> i32 attributes {llvm.emit_c_interface} {
+// MLIR-LABEL: func.func @main() -> i32 {
 // MLIR: %[[A:.*]] = arith.constant 1.050000e+01 : f32
 // MLIR: %[[B:.*]] = arith.constant 2.000000e+00 : f32
 // MLIR: %[[ADD:.*]] = arith.addf %[[A]], %[[B]] : f32

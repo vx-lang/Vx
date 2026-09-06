@@ -15,6 +15,7 @@ mod integration_test {
     mod device_image_test;
     mod device_pool_test;
     mod differential_pairs_hold;
+    mod emit_obj_produces_objects;
     mod entry_block_allocas_test;
     mod flash_routed_test;
     mod flat_codegen_differential;

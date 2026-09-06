@@ -22,7 +22,7 @@ fn process(t_host : DynTensor<f32>) -> DynTensor<f32> {
 }
 
 // CHECK: module
-// CHECK:   func.func @main() -> i32 attributes {llvm.emit_c_interface} {
+// CHECK:   func.func @main() -> i32 {
 // CHECK:     arith.constant 0 : i32
 // CHECK:     return
 // CHECK:   }

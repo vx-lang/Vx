@@ -1071,7 +1071,7 @@ impl<'c> MeliorGenerator<'c> {
 
         self.current_return_type = None;
 
-        let mut func_attributes = vec![
+        let func_attributes = vec![
             (
                 melior::ir::Identifier::new(self.context, "sym_name"),
                 name_attr.into(),
@@ -1082,17 +1082,20 @@ impl<'c> MeliorGenerator<'c> {
             ),
         ];
 
-        if is_main {
-            func_attributes.push((
-                melior::ir::Identifier::new(self.context, "llvm.emit_c_interface"),
-                melior::ir::attribute::Attribute::parse(self.context, "unit").ok_or_else(|| {
-                    crate::codegen::lower::LowerError::from(format!(
-                        "Failed to parse attribute: {}",
-                        "unit"
-                    ))
-                })?,
-            ));
-        }
+        // `main` deliberately carries no `llvm.emit_c_interface`.
+        //
+        // The attribute makes `convert-func-to-llvm` synthesize an `_mlir_ciface_main` wrapper and
+        // copy this function's location onto it -- including the `distinct !DISubprogram` that
+        // location fuses, once debug emission was turned on. A distinct DISubprogram may be
+        // attached to one function only, so LLVM's verifier rejected the module, the execution
+        // engine returned null, and `--action emit-obj` dereferenced it and died with SIGSEGV for
+        // every program that reached this path.
+        //
+        // Nothing wanted the wrapper. The ciface convention is how the dispatcher finds an
+        // *outlined kernel* -- `runtime/vx_host_call.h` builds `_mlir_ciface_<kernel>` and the
+        // attribute is set for that in `KernelOpLowering` -- and `main` is entered through its
+        // ordinary symbol.
+        let _ = is_main;
 
         let func_op = melior::ir::operation::OperationBuilder::new("func.func", func_loc)
             .add_attributes(&func_attributes)
