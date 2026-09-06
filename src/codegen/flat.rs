@@ -459,7 +459,9 @@ pub fn build_callee_map(
             sig.gid,
             Callee {
                 name: name.to_string(),
-                ret: scalar_of(&sig.ret_ty),
+                // A `Pinned<i32, ..>` return is the scalar it wraps: the placement is a fact
+                // about the value, not its spelling, the same as for a tensor return.
+                ret: scalar_of(peel_wrappers(&sig.ret_ty)),
                 ret_agg: resolve_agg_gid(&sig.ret_ty, aggs, agg_names),
                 ret_ptr: is_ptr_ty(&sig.ret_ty),
                 ret_void: is_void_ty(&sig.ret_ty),
@@ -1560,10 +1562,10 @@ pub(crate) struct FnEmit<'a> {
     /// `Call` consumes its `imm` trailing entries (a nested inner call sits between its own `Arg`s
     /// and the outer ones, so each call's args are exactly the tail — see `flatten::lower_call`).
     pub(crate) pending_args: Vec<u32>,
-    /// The topology of the currently-open `vx.spawn` region (`Some` between `Spawn` and its
-    /// matching `SpawnEnd`), remembered so `SpawnEnd` can emit the `topology` attribute. `None`
-    /// outside a spawn; a nested spawn (already `Some`) is declined.
-    pub(crate) spawn_topology: Option<i64>,
+    /// The open `vx.spawn` regions, innermost last: each is its topology, for `SpawnEnd` to
+    /// stamp the `topology` attribute, and where in `body` its op begins, so a region with a
+    /// value can be given its result name when the value is known. Empty outside a spawn.
+    pub(crate) spawn_stack: Vec<(i64, usize)>,
     /// Per-function sub-space bump allocator (space dispatch id -> next free byte), mirroring the
     /// AST path's `MeliorGenerator::subspace_offsets`: each `Transfer` into a granule'd space
     /// claims the next granule-rounded `offset` and advances the cursor, so both paths assign
@@ -1595,12 +1597,12 @@ impl<'a> FnEmit<'a> {
     /// scratch. So a region keeps its slots, and a `let` in a loop *inside* a
     /// spawn still allocates per iteration.
     pub(crate) fn emit_slot(&mut self, text: &str) {
-        match self.spawn_topology {
+        match self.spawn_stack.last() {
             // A device region is outlined into its own function, so a slot
             // lifted out of it stops being the kernel's own scratch and becomes
             // a value defined above it -- which outlining captures and passes
             // in, handing a device kernel a host stack pointer. Those stay.
-            Some(t) if t != 0 => self.body += text,
+            Some((t, _)) if *t != 0 => self.body += text,
             // A host region is inlined where it was written, so its slots
             // belong to the enclosing function like any other.
             _ => self.entry += text,
@@ -1810,7 +1812,8 @@ pub fn emit_function_mlir(
         let pty = ty_mlir(ty, ctx)?;
         params.push(format!("%arg{i}: {pty}{}", param_alias_attrs(ty)));
     }
-    let ret_elem = match &func.return_type {
+    // A `Pinned<i32, ..>` return is the scalar it wraps, as at a call site.
+    let ret_elem = match peel_wrappers(&func.return_type) {
         Type::Scalar(e) if !matches!(e, ElementType::Generic(_)) => Some(e.clone()),
         Type::Scalar(_) => {
             return Err(Decline::TypeNotModelled {
@@ -1899,7 +1902,7 @@ pub fn emit_function_mlir(
         body: String::new(),
         terminated: false,
         pending_args: Vec::new(),
-        spawn_topology: None,
+        spawn_stack: Vec::new(),
         subspace_offsets: HashMap::new(),
     };
     // `main` installs the runtime crash handler first, exactly as the AST codegen does (`is_main` ->

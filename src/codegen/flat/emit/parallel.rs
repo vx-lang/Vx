@@ -83,10 +83,7 @@ impl FnEmit<'_> {
     // block) go in the region's entry block, so open a label for it. `imm` is the topology
     // dispatch id (the same value the AST path emits as `vx.spawn`'s `topology` attribute).
     pub(crate) fn op_spawn(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
-        if self.spawn_topology.is_some() {
-            return Err(crate::emitter_gap!()); // nested spawn is not modelled
-        }
-        self.spawn_topology = Some(ins.imm as i64);
+        self.spawn_stack.push((ins.imm as i64, self.body.len()));
         self.body += &format!("  \"vx.spawn\"() ({{\n^bbspawn{idx}:\n");
         self.terminated = false;
         Ok(())
@@ -95,11 +92,37 @@ impl FnEmit<'_> {
     // Close the `vx.spawn` region: terminate its last block with `vx.yield` (unless a body
     // terminator already ended it), stamp the `topology` attribute, and resume emitting into
     // the enclosing block (which the spawn op did not terminate).
-    pub(crate) fn op_spawn_end(&mut self, _idx: usize, ins: &HirInstruction) -> Lowered<()> {
-        let topo = self.spawn_topology.take().ok_or(crate::emitter_gap!())?;
-        if !self.terminated {
+    pub(crate) fn op_spawn_end(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let (topo, open_at) = self.spawn_stack.pop().ok_or(crate::emitter_gap!())?;
+        // A region with a value yields `operand1`, and the op that opened at `open_at` gets
+        // the result name now that the value's type is known. A scalar or a tensor.
+        let mut result_ty: Option<String> = None;
+        if self.types.get(ins.type_idx.0 as usize).is_some() {
+            let r = ins.operand1.0 as usize;
+            let v = self.names.get(r).ok_or(crate::emitter_gap!())?.clone();
+            let ty = if let Some(Some(m)) = self.mem_of.get(r) {
+                m.clone()
+            } else {
+                mlir_scalar(&self.elem_at(ins.operand1.0).ok_or(crate::emitter_gap!())?)
+                    .ok_or(crate::emitter_gap!())?
+                    .to_string()
+            };
+            if !self.terminated {
+                self.body += &format!("  \"vx.yield\"({v}) : ({ty}) -> ()\n");
+            }
+            let n = format!("%v{idx}");
+            self.body.insert_str(open_at + 2, &format!("{n} = "));
+            self.names[idx] = n;
+            if self.mem_of.get(r).is_some_and(|m| m.is_some()) {
+                self.mem_of[idx] = Some(ty.clone());
+            } else {
+                self.etypes[idx] = self.elem_at(ins.operand1.0);
+            }
+            result_ty = Some(ty);
+        } else if !self.terminated {
             self.body += "  \"vx.yield\"() : () -> ()\n";
         }
+        let result_ty = result_ty.unwrap_or_default();
         // A topology that declared an `arch:` sends it along, so the device pipeline can
         // gate on the declaration instead of the dispatch-id band (Vx#352). Discardable
         // attribute on the generic form -- no dialect change involved.
@@ -135,10 +158,12 @@ impl FnEmit<'_> {
             String::new()
         };
         if let Some(arch) = self.ctx.topo_archs.get(&topo) {
-            self.body +=
-                &format!("  }}) {{arch = \"{arch}\", topology = {topo} : i32{trip}}} : () -> ()\n");
+            self.body += &format!(
+                "  }}) {{arch = \"{arch}\", topology = {topo} : i32{trip}}} : () -> ({result_ty})\n"
+            );
         } else {
-            self.body += &format!("  }}) {{topology = {topo} : i32{trip}}} : () -> ()\n");
+            self.body +=
+                &format!("  }}) {{topology = {topo} : i32{trip}}} : () -> ({result_ty})\n");
         }
         self.terminated = false;
         Ok(())

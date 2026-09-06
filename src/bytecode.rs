@@ -72,6 +72,8 @@ pub enum Opcode {
     /// spawned kernel body.
     Spawn = 20,
     /// Closes the `vx.spawn` region opened by the nearest preceding `Spawn` (maps to `vx.yield`).
+    /// A region with a value yields `operand1` and is typed with it; this instruction's register
+    /// is then the spawn's result.
     /// `imm` is the trip count of the region's outermost loop when `parallel_outer_for` proved its
     /// iterations disjoint (0 otherwise) — codegen stamps it on the `vx.spawn` op as
     /// `vx_parallel_trip`, and the device pipeline grid-strides the loop and sizes the launch from

@@ -985,6 +985,41 @@ fn flat_lowers_a_row_of_a_row() {
 }
 
 #[test]
+fn flat_matches_ast_spawn_regions_with_a_value_a_tail_and_nesting() {
+    // A spawn in expression position: the region's tail is its value, pinned to the
+    // topology, which a comparison reads through.
+    assert_parity(
+        "fn main() -> i32 { let v = spawn on(Topology::CPU) { 40 + 2 }; \
+           if v == 42 { return 42; } return 0; }",
+        42,
+    );
+    // A trailing `if` with no semicolon is the region's tail as the parser reads it, and in
+    // statement position it is the last thing the region does, not a value.
+    assert_parity(
+        "fn main() -> i32 { let mut a = Tensor<f32, [1, 1]>::uninit(); a[0][0] = 0.0; \
+           let x : f32 = 2.0; \
+           spawn on(Topology::CPU) { a[0][0] = 1.0; if x > 1.0 { a[0][0] = 3.0; } } \
+           return a[0][0] as i32; }",
+        3,
+    );
+    // A function whose value is a spawn's: `Pinned<i32, ..>` is the scalar it wraps on both
+    // sides of the call.
+    assert_parity(
+        "fn get() -> Pinned<i32, Topology::CPU> { let v = spawn on(Topology::CPU) { 40 + 2 }; return v; }\n\
+         fn main() -> i32 { let p = get(); if p == 42 { return 42; } return 0; }",
+        42,
+    );
+    // A nested region: the inner one is the outer's tail, and each closes with its own
+    // topology.
+    assert_parity(
+        "fn main() -> i32 { let mut a = Tensor<f32, [1, 1]>::uninit(); a[0][0] = 0.0; \
+           spawn on(Topology::CPU) { let y = 1; spawn on(Topology::CPU) { a[0][0] = 5.0; } } \
+           return a[0][0] as i32; }",
+        5,
+    );
+}
+
+#[test]
 fn flat_matches_ast_tensor_store_element_coercion() {
     // A default-`f32` float literal stored into a non-`f32` tensor is coerced to the element type at
     // the store (`bf16` -> `arith.truncf`), matching the AST's `coerce_type` before its `memref.store`

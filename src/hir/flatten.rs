@@ -1305,6 +1305,10 @@ impl<'r> Lowerer<'r> {
                     id,
                 ))
             }
+            // `let v = spawn on(..) { .. }`: the region's tail is the value.
+            Expr::SpawnOn(sp) => self.lower_spawn(sp, true)?.ok_or(Decline::Unsupported {
+                what: "a spawn expression whose region has no value",
+            }),
             // The differentiated calls. All three go through one opcode; see `lower_autodiff`.
             Expr::Grad(g) => self.lower_autodiff(&g.target_fn, &g.args, false, None),
             Expr::Vjp(v) => self.lower_autodiff(&v.target_fn, &v.args, false, Some(&v.cotangent)),
@@ -2283,10 +2287,19 @@ impl<'r> Lowerer<'r> {
     /// iterations are provably disjoint, the loop is tagged for the device pipeline to grid-stride
     /// (#251). Whether the offer is declined or accepted, the lowered body is identical apart from
     /// two inert `imm` bits and the `SpawnEnd`'s trip count — the host path never changes.
-    fn lower_spawn(&mut self, s: &crate::syntax::SpawnOnExpr) -> Lowered<()> {
-        if s.ret.is_some() {
+    ///
+    /// In expression position the region's tail is its value: the `SpawnEnd` carries it as
+    /// `operand1` and is typed with it, so the end instruction's register is the value. In
+    /// statement position a tail is the last thing the region does -- a trailing `if` with no
+    /// semicolon, or a nested spawn -- and lowers as the statement it is.
+    fn lower_spawn(
+        &mut self,
+        s: &crate::syntax::SpawnOnExpr,
+        want_value: bool,
+    ) -> Lowered<Option<Val>> {
+        if want_value && s.ret.is_none() {
             return Err(Decline::Unsupported {
-                what: "a spawn region that returns a value",
+                what: "a spawn expression whose region has no value",
             });
         }
         let top_id = crate::arch::topology_dispatch_id(&s.top);
@@ -2299,35 +2312,53 @@ impl<'r> Lowerer<'r> {
         // what flat cannot express at all: barriers, shared tiles, affine and block-row
         // ownership. Failing both, the region lowers serially -- rejection is always free.
         let par = parallel_outer_for(&s.stmts);
-        if par.is_some() {
+        let end_imm = if par.is_some() {
             for (i, stmt) in s.stmts.iter().enumerate() {
                 self.stride_next_for = matches!(par, Some((idx, _)) if idx == i);
                 self.lower_stmt(stmt)?;
             }
             self.stride_next_for = false;
-            let trip = par.map(|(_, t)| t).unwrap_or(0);
-            self.emit_effect(Opcode::SpawnEnd, Register(0), Register(0), trip);
-            return Ok(());
-        }
-        if let Some((btrip, plan)) = parallel_two_level(&s.stmts) {
+            par.map(|(_, t)| t).unwrap_or(0)
+        } else if let Some((btrip, plan)) = parallel_two_level(&s.stmts) {
             self.stride_plan = Some(plan);
             for stmt in &s.stmts {
                 self.lower_stmt(stmt)?;
             }
             self.stride_plan = None;
-            self.emit_effect(
+            btrip | SPAWN_TWO_LEVEL
+        } else {
+            for stmt in &s.stmts {
+                self.lower_stmt(stmt)?;
+            }
+            0
+        };
+        if want_value {
+            let tail = s.ret.as_deref().ok_or(Decline::Unsupported {
+                what: "a spawn expression whose region has no value",
+            })?;
+            let v = self.lower_expr(tail)?;
+            let ty = v.ty.clone();
+            return Ok(Some(self.emit_typed(
                 Opcode::SpawnEnd,
+                v.reg,
                 Register(0),
-                Register(0),
-                btrip | SPAWN_TWO_LEVEL,
-            );
-            return Ok(());
+                ty,
+                end_imm,
+            )));
         }
-        for stmt in &s.stmts {
-            self.lower_stmt(stmt)?;
+        match s.ret.as_deref() {
+            Some(Expr::If(iff)) => self.lower_if(iff)?,
+            Some(Expr::Match(m)) => self.lower_match(m)?,
+            Some(Expr::SpawnOn(inner)) => {
+                self.lower_spawn(inner, false)?;
+            }
+            Some(r) => {
+                self.lower_expr(r)?;
+            }
+            None => {}
         }
-        self.emit_effect(Opcode::SpawnEnd, Register(0), Register(0), 0);
-        Ok(())
+        self.emit_effect(Opcode::SpawnEnd, Register(0), Register(0), end_imm);
+        Ok(None)
     }
 
     /// Construct a struct literal into a fresh stack slot: `Alloca` the aggregate (sized from its
@@ -3724,7 +3755,7 @@ impl<'r> Lowerer<'r> {
             Statement::ExprStmt(e) => match &e.expr {
                 Expr::If(iff) => self.lower_if(iff),
                 Expr::Match(m) => self.lower_match(m),
-                Expr::SpawnOn(sp) => self.lower_spawn(sp),
+                Expr::SpawnOn(sp) => self.lower_spawn(sp, false).map(|_| ()),
                 // A statement-position `unsafe { … }` (an FFI program's `unsafe { … }` wrapper with no
                 // trailing value): safety was checked upstream, so `unsafe` is transparent — lower the
                 // inner statements, and its trailing value expression if any. (The value-position form,
@@ -7786,12 +7817,26 @@ mod tests {
     }
 
     #[test]
-    fn value_producing_spawn_aborts() {
-        // A spawn that yields a value (no trailing `;`) is deferred -> atomic abort.
+    fn value_producing_spawn_yields_through_its_end() {
+        // A spawn that yields a value (no trailing `;`): the region's tail is lowered inside
+        // it, the `SpawnEnd` carries the value as `operand1` and is typed with it, and that
+        // instruction's register is what the function returns.
         let f = parse_fn("fn k(a: i32) -> i32 { spawn on (Topology::GPU) { a + 1 } }");
         let mut w = worker();
-        assert!(lower_function_to_hir(&f, &mut w).is_err());
-        assert!(w.local_hir_stream.is_empty());
+        lower_function_to_hir(&f, &mut w).expect("a value-producing spawn lowers");
+        let end = w
+            .local_hir_stream
+            .iter()
+            .position(|i| i.opcode == Opcode::SpawnEnd)
+            .expect("a SpawnEnd");
+        let ins = w.local_hir_stream[end];
+        assert_ne!(ins.type_idx.0, NO_TYPE, "the end is typed with the value");
+        assert_eq!(
+            w.local_hir_stream[ins.operand1.0 as usize].opcode,
+            Opcode::Add,
+            "the value is the region's tail"
+        );
+        verify_hir_stream(&w);
     }
 
     #[test]
