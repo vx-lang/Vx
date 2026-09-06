@@ -412,9 +412,15 @@ fn resolve_agg_gid(
         other => other,
     };
     match nominal {
-        Type::Struct(name, id) | Type::Enum(name, id) => id
-            .filter(|g| aggs.contains_key(g))
-            .or_else(|| agg_names.get(name.as_ref()).copied()),
+        Type::Struct(name, id) | Type::Enum(name, id) => {
+            // A data-carrying enum with no generics is the instance with no arguments.
+            let bare = crate::hir::flatten::enum_instance_gid(name.as_ref(), &[]);
+            if aggs.contains_key(&bare) {
+                return Some(bare);
+            }
+            id.filter(|g| aggs.contains_key(g))
+                .or_else(|| agg_names.get(name.as_ref()).copied())
+        }
         _ => None,
     }
 }

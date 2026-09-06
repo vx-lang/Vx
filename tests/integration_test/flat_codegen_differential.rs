@@ -1298,6 +1298,55 @@ fn flat_matches_ast_tensor_map() {
 }
 
 #[test]
+fn flat_runs_a_data_enum_without_generics() {
+    // `Result { Ok(i32), Err(i32) }` is the enum instance with no arguments: constructed,
+    // returned, passed, and matched with its payload bound. Flat-only: the AST path fails on a
+    // payload extraction. 2 + 4 * 10.
+    assert_flat_exit(
+        "enum R { Ok(i32), Err(i32) }\n\
+         fn c(x : i32) -> R { if x >= 0 { return R::Ok(x); } return R::Err(0 - x); }\n\
+         fn u(r : R, d : i32) -> i32 { let mut o = d; \
+           match r { R::Ok(v) => { o = v; } R::Err(e) => { o = e * 10; } } return o; }\n\
+         fn main() -> i32 { return u(c(2), 0) + u(c(0 - 4), 0); }",
+        42,
+    );
+}
+
+#[test]
+fn flat_matches_ast_generic_struct_receiver() {
+    // A method on a generic struct instance: `self : &Pair<i32>` resolves to the synthesized
+    // instance layout, so the field reads through it. 40 + 2.
+    assert_parity(
+        "struct Pair<T> { first : T, second : T }\n\
+         impl<T> Pair<T> { fn sum(self : &Pair<T>) -> T { return self.first + self.second; } }\n\
+         fn main() -> i32 { let p = Pair<i32> { first : 40, second : 2 }; return p.sum(); }",
+        42,
+    );
+}
+
+#[test]
+fn flat_matches_ast_function_bound_to_a_let() {
+    // `let f = probe;` gives `f` the function's type, so the indirect call knows its result.
+    assert_parity(
+        "struct Map { slot : i32, present : i32 }\n\
+         fn probe(m : &Map) -> &i32 { return &m.slot; }\n\
+         fn main() -> i32 { let x = Map { slot : 42, present : 1 }; let f = probe; return *f(&x); }",
+        42,
+    );
+}
+
+#[test]
+fn flat_matches_ast_spawn_with_no_value() {
+    // A spawn region with no value as the trailing expression of a block: lowered as the effect
+    // it is, and the block's value is the placeholder a void call gets.
+    assert_parity(
+        "fn main() -> i32 { unsafe { let k = 1; spawn on(Topology::CPU) { let z = k; } } \
+           return 42; }",
+        42,
+    );
+}
+
+#[test]
 fn flat_matches_ast_tensor_store_element_coercion() {
     // A default-`f32` float literal stored into a non-`f32` tensor is coerced to the element type at
     // the store (`bf16` -> `arith.truncf`), matching the AST's `coerce_type` before its `memref.store`
@@ -1868,16 +1917,15 @@ fn driver_link_interface_declines_cleanly_outside_flat_subset() {
         dir.join("reflib.vxlib"),
     );
     std::fs::write(&lib, "fn double(x : i32) -> i32 { return x * 2; }\n").unwrap();
-    // `main` binds a *data-carrying enum from a call* (`let o = mk(..)`) — a flat-coverage gap (#274)
-    // that declines the flat path — while also calling the imported `double`. The decline forces the
-    // AST path, which has no AST for the imported body, so the driver must emit a clean diagnostic
-    // rather than ICE. (Scalar references — the construct this test used before — now lower on the
-    // flat path, see `driver_import_runs_cross_module_scalar_references`.)
+    // `main` allocates a tensor whose extent is a local (`Tensor<f32, [n, n]>`), which the flat
+    // path does not model and so declines, while also calling the imported `double`. The
+    // decline forces the AST path, which has no AST for the imported body, so the driver must
+    // emit a clean diagnostic rather than ICE. (A data-carrying enum from a call, the construct
+    // this test used before, now lowers on the flat path.)
     std::fs::write(
         &app,
-        "enum Opt { None, Some(i32) }\n\
-         fn mk(v : i32) -> Opt { return Opt::Some(v); }\n\
-         fn main() -> i32 { let o = mk(double(10)); match o { Opt::Some(n) => { return n; } Opt::None => { return 0; } } }\n",
+        "fn main() -> i32 { let n = 3; let mut a = Tensor<f32, [n, n]>::uninit(); \
+           a[0][0] = 1.0; return double(10) + (a[0][0] as i32); }\n",
     )
     .unwrap();
 

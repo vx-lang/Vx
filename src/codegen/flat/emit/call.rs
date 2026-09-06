@@ -303,10 +303,22 @@ impl FnEmit<'_> {
     // the scalar return type. Reconstruct the function type `(arg types)->ret` from the actual
     // args, cast the pointer to it, and `func.call_indirect`. (#242)
     pub(crate) fn op_call_indirect(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
-        let ret_elem = self.ty_at(ins.type_idx.0).ok_or(crate::emitter_gap!())?;
-        let rt = mlir_scalar(&ret_elem)
-            .ok_or(crate::emitter_gap!())?
-            .to_string();
+        // The result is a scalar, or a pointer when the type is the pointer GID.
+        let ret_gid = *self
+            .types
+            .get(ins.type_idx.0 as usize)
+            .ok_or(crate::emitter_gap!())?;
+        let ret_ptr = ret_gid == crate::hir::flatten::ptr_gid();
+        let ret_elem = if ret_ptr {
+            None
+        } else {
+            self.ty_at(ins.type_idx.0)
+        };
+        let rt = match &ret_elem {
+            Some(e) => mlir_scalar(e).ok_or(crate::emitter_gap!())?.to_string(),
+            None if ret_ptr => "!llvm.ptr".to_string(),
+            None => return Err(crate::emitter_gap!()),
+        };
         let n = ins.imm as usize;
         if self.pending_args.len() < n {
             return Err(crate::emitter_gap!());
@@ -358,7 +370,11 @@ impl FnEmit<'_> {
             arg_names.join(", ")
         );
         self.names[idx] = nm;
-        self.etypes[idx] = Some(ret_elem);
+        if ret_ptr {
+            self.ptr_of[idx] = true;
+        } else {
+            self.etypes[idx] = ret_elem;
+        }
         Ok(())
     }
 }

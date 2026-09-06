@@ -1375,10 +1375,19 @@ impl<'r> Lowerer<'r> {
                     id,
                 ))
             }
-            // `let v = spawn on(..) { .. }`: the region's tail is the value.
-            Expr::SpawnOn(sp) => self.lower_spawn(sp, true)?.ok_or(Decline::Unsupported {
-                what: "a spawn expression whose region has no value",
-            }),
+            // `let v = spawn on(..) { .. }`: the region's tail is the value. A region with no
+            // value, the trailing expression of an `unsafe` block, gets the placeholder a void
+            // call gets: a type never read.
+            Expr::SpawnOn(sp) => match self.lower_spawn(sp, sp.ret.is_some())? {
+                Some(v) => Ok(v),
+                None => Ok(self.emit_value(
+                    Opcode::Const,
+                    Register(0),
+                    Register(0),
+                    ElementType::I32,
+                    0,
+                )),
+            },
             Expr::InlineMlir(im) => self.lower_inline_mlir(im),
             Expr::MethodCall(mc) if matches!(mc.method_name.as_ref(), "reshape" | "transpose") => {
                 self.lower_tensor_reshape(mc)
@@ -1492,11 +1501,16 @@ impl<'r> Lowerer<'r> {
             Expr::Dereference(d) => Some(deref_to_pointee(&self.infer_ast_type(&d.expr)?).clone()),
             // A call's type is its callee's return type (`v.iter()` -> `Vec$iter`'s `VecIter<i32>`),
             // for typing a `for x in v.iter()` iterable.
+            // A named function's return type, else a function-typed local's (`let f = probe;`).
             Expr::FunctionCall(fc) => self
                 .registry
                 .fn_sigs
                 .get(fc.name.as_ref())
-                .map(|s| s.ret_ty.clone()),
+                .map(|s| s.ret_ty.clone())
+                .or_else(|| match self.ast_types.get(&fc.name)? {
+                    Type::Function(_, ret) | Type::Closure(_, ret) => Some(ret.as_ref().clone()),
+                    _ => None,
+                }),
             _ => None,
         }
     }
@@ -1523,9 +1537,11 @@ impl<'r> Lowerer<'r> {
             let base_ty = self.infer_ast_type(base).ok_or(Decline::TypeNotModelled {
                 what: "a base whose type cannot be inferred",
             })?; // the pointee (Vec<T>)
-            let gid = agg_gid_of_ty(&base_ty, self.registry).ok_or(Decline::TypeNotModelled {
-                what: "an aggregate with no GID",
-            })?;
+            let gid = self
+                .agg_gid_synth(&base_ty)
+                .ok_or(Decline::TypeNotModelled {
+                    what: "an aggregate with no GID",
+                })?;
             let v = self.lower_expr(&d.expr)?; // lower the pointer, not the deref
             return matches!(v.ty, LoweredTy::Ptr)
                 .then_some((v.reg, gid))
@@ -1570,9 +1586,11 @@ impl<'r> Lowerer<'r> {
         let base_ty = self.infer_ast_type(base).ok_or(Decline::TypeNotModelled {
             what: "a base whose type cannot be inferred",
         })?;
-        let gid = agg_gid_of_ty(&base_ty, self.registry).ok_or(Decline::TypeNotModelled {
-            what: "an aggregate with no GID",
-        })?;
+        let gid = self
+            .agg_gid_synth(&base_ty)
+            .ok_or(Decline::TypeNotModelled {
+                what: "an aggregate with no GID",
+            })?;
         let v = self.lower_expr(base)?;
         match v.ty {
             LoweredTy::Ptr => Ok((v.reg, gid)),
@@ -2548,6 +2566,20 @@ impl<'r> Lowerer<'r> {
     /// call's return (`VecIter::next -> Option<i32>`), a `let` binding. Falls back to `lowered_ty`
     /// for everything else. (#242)
     fn lower_ty_synth(&mut self, ty: &Type) -> Option<LoweredTy> {
+        // A data-carrying enum with no generics (`Result { Ok(i32), Err(i32) }`) is the instance
+        // with no arguments: the same synthesized `{ tag, payload }` layout. A parameter spells
+        // it as a bare nominal, which is a `Struct` until resolution says otherwise.
+        if let Type::Enum(n, _) | Type::Struct(n, _) = ty {
+            let is_data = self
+                .registry
+                .enum_data
+                .get(n.as_ref())
+                .is_some_and(|d| d.variants.iter().any(|(_, p)| !p.is_empty()));
+            if is_data {
+                let (gid, _, _) = self.enum_instance_layout_of(n.as_ref(), &[])?;
+                return Some(LoweredTy::Aggregate(gid));
+            }
+        }
         if let Type::GenericInstance(base, args) = ty {
             if let Type::Enum(n, _) | Type::Struct(n, _) = base.as_ref() {
                 let is_data = self
@@ -2602,6 +2634,20 @@ impl<'r> Lowerer<'r> {
             .1
             .clone();
         self.lower_ty_synth(&ty)
+    }
+
+    /// The layout GID behind an aggregate base's type, synthesizing a generic struct instance's
+    /// (`self : &Pair<i32>`, whose base layout is a stub) the way `lower_ty_synth` does.
+    fn agg_gid_synth(&mut self, ty: &Type) -> Option<TypeId> {
+        if let Some(gid) = agg_gid_of_ty(ty, self.registry) {
+            return Some(gid);
+        }
+        if let Type::GenericInstance(base, args) = deref_to_pointee(ty) {
+            if let Type::Struct(n, _) = base.as_ref() {
+                return self.struct_instance_layout_of(n.as_ref(), args);
+            }
+        }
+        None
     }
 
     /// A layout by GID: a synthesized struct instance's, else the frozen registry's.
@@ -3390,25 +3436,26 @@ impl<'r> Lowerer<'r> {
                 what: "a callee that is not a function pointer",
             });
         }
-        // The callee's return type comes from `f`'s AST function type.
-        let ret_elem =
-            match self
-                .ast_types
-                .get(fc.name.as_ref())
-                .ok_or(Decline::TypeNotModelled {
-                    what: "an indirect callee with no recorded AST type",
-                })? {
-                Type::Function(_, ret) | Type::Closure(_, ret) => {
-                    scalar_of(ret).ok_or(Decline::TypeNotModelled {
-                        what: "an indirect callee returning a non-scalar",
-                    })?
-                }
-                _ => {
-                    return Err(Decline::TypeNotModelled {
-                        what: "an indirect callee that is not a function type",
-                    })
-                }
-            };
+        // The callee's return type comes from `f`'s AST function type: a scalar, or a pointer
+        // for a borrow, reference or raw pointer.
+        let ty = match self
+            .ast_types
+            .get(fc.name.as_ref())
+            .ok_or(Decline::TypeNotModelled {
+                what: "an indirect callee with no recorded AST type",
+            })? {
+            Type::Function(_, ret) | Type::Closure(_, ret) => match ret.as_ref() {
+                Type::Borrow { .. } | Type::Ref(..) | Type::Pointer(..) => LoweredTy::Ptr,
+                other => LoweredTy::Scalar(scalar_of(other).ok_or(Decline::TypeNotModelled {
+                    what: "an indirect callee returning a non-scalar",
+                })?),
+            },
+            _ => {
+                return Err(Decline::TypeNotModelled {
+                    what: "an indirect callee that is not a function type",
+                })
+            }
+        };
         let mut arg_regs = Vec::with_capacity(fc.args.len());
         for arg in &fc.args {
             arg_regs.push(self.lower_expr(arg)?.reg);
@@ -3416,7 +3463,6 @@ impl<'r> Lowerer<'r> {
         for reg in arg_regs {
             self.emit_effect(Opcode::Arg, reg, Register(0), 0);
         }
-        let ty = LoweredTy::Scalar(ret_elem);
         let type_idx = TypeIdx(self.types.len() as u32);
         self.types.push(ty.gid());
         let reg = Register(self.code.len() as u32);
@@ -3938,7 +3984,21 @@ impl<'r> Lowerer<'r> {
                 // Record the local's concrete AST type for `infer_ast_type` (a pointer local like
                 // `let ptr : *mut T = ...` -> its pointee element for a later index, #242). The
                 // annotation is authoritative; else fall back to inferring the initializer's type.
-                if let Some(t) = l.ty_ann.clone().or_else(|| self.infer_ast_type(&l.expr)) {
+                let fn_value_ty = match &l.expr {
+                    // `let f = probe;`: a function used as a value has the function's type.
+                    Expr::Identifier(id) if !self.scope.contains_key(&id.name) => {
+                        self.registry.fn_sigs.get(id.name.as_ref()).map(|sig| {
+                            Type::Function(sig.params.clone(), Box::new(sig.ret_ty.clone()))
+                        })
+                    }
+                    _ => None,
+                };
+                if let Some(t) = l
+                    .ty_ann
+                    .clone()
+                    .or_else(|| self.infer_ast_type(&l.expr))
+                    .or(fn_value_ty)
+                {
                     self.ast_types.insert(l.name.clone(), t);
                 }
                 if crate::syntax::is_tensor_construction(&l.expr) {
@@ -5029,6 +5089,13 @@ fn parse_enum_instance(name: &str) -> (String, Vec<Type>) {
 /// a nominal `Struct` (name resolution is unavailable here; substitution only needs the leaf identity).
 fn parse_scalar_type_arg(s: &str) -> Type {
     use ElementType::*;
+    // A pointer argument (`Option<*mut i8>`): the pointee parsed the same way.
+    if let Some(inner) = s.strip_prefix("*mut ") {
+        return Type::Pointer(Box::new(parse_scalar_type_arg(inner.trim())), None, true);
+    }
+    if let Some(inner) = s.strip_prefix("*const ") {
+        return Type::Pointer(Box::new(parse_scalar_type_arg(inner.trim())), None, false);
+    }
     // A `const` argument (`Array<f32, 10>`) is the literal it was written as.
     if s.chars().all(|c| c.is_ascii_digit()) && !s.is_empty() {
         return Type::Const(Box::new(Expr::Number(crate::syntax::NumberExpr::new(

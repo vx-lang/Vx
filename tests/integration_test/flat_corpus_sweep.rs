@@ -27,14 +27,10 @@ const KNOWN_DECLINES: &[&str] = &[
     "frontend/pass/closure_fat_ptr.vx",
     "frontend/pass/control_flow_rigorous.vx",
     "frontend/pass/coverage_advanced_types_pass.vx",
-    "frontend/pass/enum_match.vx",
-    "frontend/pass/env_args.vx",
-    "frontend/pass/generics.vx",
     "frontend/pass/if_comptime_and_topology.vx",
     "frontend/pass/memory_algebra_implicit.vx",
     "frontend/pass/trait_topologies.vx",
     "frontend/pass/transfer_cost_advanced_dijkstra.vx",
-    "middle_end/pass/fnval_indirect_call.vx",
     "middle_end/pass/implicit_transfer.vx",
     // A parameter with run-time extents (Vx#409). It used to compile through the flat path
     // while the dims-less spelling let it read as rank-0: `topology.vx` got a `memref<f32>`
@@ -73,8 +69,6 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
 /// compiler defect; the list exists so the set can only shrink, never silently grow.
 const KNOWN_BROKEN: &[&str] = &[
     "frontend/pass/control_flow_rigorous.vx", // multi-payload variant binding (Vx#233)
-    "frontend/pass/enum_match.vx",            // extractvalue on i32 (enum payload, Vx#233)
-    "frontend/pass/generics.vx",              // extractvalue on i32 (enum payload, Vx#233)
     "frontend/pass/memory_algebra_implicit.vx", // insertvalue of memref (Vx#356)
     "frontend/pass/transfer_cost_advanced_dijkstra.vx", // `.topology()` has no lowering
     "middle_end/pass/implicit_transfer.vx",   // insertvalue of memref (Vx#356)

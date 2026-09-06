@@ -7,13 +7,19 @@
 //===----------------------------------------------------------------------===//
 // Test enum definitions, variant construction, and pattern matching.
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s --action emit-mlir
-// XFAIL: *
-//
-// The IR assertion this file used to carry could not run: the program does not compile on
-// the default path (Vx#398), so there is no module to match against. The XFAIL above
-// reports the day that changes, and the assertions go back. The semantic check below is
-// what this file verifies today.
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// `Result` is a data-carrying enum with no generics: a `{ tag, payload }` value, constructed
+// in place, returned by value, and matched by tag. The program compiles on the flat path; the
+// AST path still fails on the payload extraction (Vx#398).
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: call @classify(%{{.*}}) : (i32) -> !llvm.struct<(i32, i32)>
+// CHECK: call @unwrap_or(%{{.*}}, %{{.*}}) : (!llvm.struct<(i32, i32)>, i32) -> i32
+// CHECK-LABEL: func.func @unwrap_or(%arg0: !llvm.struct<(i32, i32)>, %arg1: i32) -> i32
+// CHECK: %[[TAG:.*]] = llvm.load %{{.*}} : !llvm.ptr -> i32
+// CHECK: %[[OK:.*]] = arith.cmpi eq, %[[TAG]], %{{.*}} : i32
+// CHECK: cf.cond_br %[[OK]], ^bb1, ^bb2
+// CHECK-LABEL: func.func @classify(%arg0: i32) -> !llvm.struct<(i32, i32)>
+// CHECK: arith.cmpi sge, %arg0, %{{.*}} : i32
 
 enum Result {
   Ok(i32),
