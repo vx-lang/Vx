@@ -1,14 +1,16 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 
-// The const arguments reach the emitted type: one instantiation at <2, 3> names its
-// struct Grid_i32_2_3, and R * C folds against the same two constants. The symbol name
-// still spells its const arguments as a Debug-printed AST (Vx#408), so match past it.
-// CHECK-LABEL: func.func @initialize$const${{.*}}() -> !llvm.struct<"Grid_i32_2_3", (i32)>
-// CHECK: %[[R:.*]] = arith.constant 2 : i32
-// CHECK: %[[C:.*]] = arith.constant 3 : i32
-// CHECK: arith.muli %[[R]], %[[C]] : i32
+// The flat path compiles this: the instance `Grid<i32, 2, 3>` has a layout synthesized from
+// the declaration with both constants bound, they reach the emitted symbol by value, and
+// `R * C` folds against the same two. The symbol still spells its const arguments as a
+// Debug-printed AST (Vx#408), so match past it.
 // CHECK-LABEL: func.func @test_multiple_const_generics()
-// CHECK: call @initialize$const${{.*}} : () -> !llvm.struct<"Grid_i32_2_3", (i32)>
+// CHECK: call @initialize$const${{.*}}() : () -> !llvm.struct<(i32)>
+// CHECK-LABEL: func.func @initialize$const${{.*}}() -> !llvm.struct<(i32)>
+// CHECK-DAG: %[[R:.*]] = arith.constant 2 : i32
+// CHECK-DAG: %[[C:.*]] = arith.constant 3 : i32
+// CHECK: arith.muli %[[R]], %[[C]] : i32
+// CHECK: return %{{.*}} : !llvm.struct<(i32)>
 
 struct Grid<T, const R : i32, const C : i32> {
   val : T

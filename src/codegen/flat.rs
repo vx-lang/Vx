@@ -400,6 +400,11 @@ fn resolve_agg_gid(
             if aggs.contains_key(&gid) {
                 return Some(gid);
             }
+            // A generic struct instance whose layout the lowerer synthesized (`Array<f32, 10>`).
+            let gid = crate::hir::flatten::struct_instance_gid(name.as_ref(), args);
+            if aggs.contains_key(&gid) {
+                return Some(gid);
+            }
         }
     }
     let nominal = match ty {

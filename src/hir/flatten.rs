@@ -73,6 +73,28 @@ pub fn enum_instance_gid(base: &str, args: &[Type]) -> TypeId {
     TypeId::new(0, sym, 0, 0)
 }
 
+/// The stable per-instance GID of a monomorphized generic struct whose layout depends on its
+/// arguments (`Array<f32, 10>`): module 0 + a content hash of the base name and each argument's
+/// identity. A `const` argument contributes its value, so the same instance named from a
+/// signature and from a construction hashes the same; the Debug rendering `mangle` uses for a
+/// `Const` carries a span and would not.
+pub fn struct_instance_gid(base: &str, args: &[Type]) -> TypeId {
+    use crate::syntax::types::Mangle;
+    let keys: Vec<String> = args
+        .iter()
+        .map(|a| match a {
+            Type::Const(e) => match e.as_ref() {
+                Expr::Number(n) => n.value.as_ref().to_string(),
+                other => format!("{other:?}"),
+            },
+            other => other.mangle(),
+        })
+        .collect();
+    let sym = crate::hash::DefPath::Named(&format!("$struct::{base}<{}>", keys.join(",")))
+        .compute_symbol_hash();
+    TypeId::new(0, sym, 0, 0)
+}
+
 /// The tensor GID of a `Type::Tensor`, or `None` if it is not a tensor, its element is generic, or a
 /// dim is not a literal or a plain name (canonicalizing an arbitrary expression would not be stable).
 pub fn tensor_gid_of(ty: &Type) -> Option<TypeId> {
@@ -303,6 +325,11 @@ struct Lowerer<'r> {
     /// isn't in the frozen registry; synthesized here as an enum is constructed/matched and committed
     /// so codegen can address it (the tagged-union analogue of `tensor_types`). (#242)
     agg_layouts: Vec<(TypeId, Vec<u64>, Vec<String>)>,
+    /// A generic struct whose layout depends on its arguments (`Array<T, const N> { val: T }`):
+    /// its base layout in the registry is a stub, so each instance's is synthesized here, keyed by
+    /// `struct_instance_gid`, and read through `layout_of` wherever a layout is read by GID. The
+    /// emitter gets the same entries through `agg_layouts`.
+    instance_layouts: HashMap<TypeId, crate::registry::TypeDefinition>,
     /// The function's lowered return type, for a `return <match>` whose arms `return` themselves:
     /// the match's fall-through merge block needs a terminator, so it returns a default (zero) value of
     /// this type — mirroring the AST codegen's default-return merge block (`Option::unwrap`). (#242)
@@ -363,6 +390,7 @@ impl<'r> Lowerer<'r> {
             ast_types: HashMap::new(),
             owned_tensors: std::collections::HashSet::new(),
             agg_layouts: Vec::new(),
+            instance_layouts: HashMap::new(),
             ret_ty: None,
             materialized: HashSet::new(),
             mutated: HashSet::new(),
@@ -419,12 +447,9 @@ impl<'r> Lowerer<'r> {
             // keep the match total; if one ever reaches here its size is left unencoded. A pointer
             // slot is a single `!llvm.ptr` cell, so its size is likewise implied by its type.
             LoweredTy::Scalar(_) | LoweredTy::Tensor { .. } | LoweredTy::Ptr => 0,
-            LoweredTy::Aggregate(id) => self
-                .registry
-                .layouts
-                .get(id)
-                .map(|d| d.size_bytes as u64)
-                .unwrap_or(0),
+            LoweredTy::Aggregate(id) => {
+                self.layout_of(id).map(|d| d.size_bytes as u64).unwrap_or(0)
+            }
         };
         self.emit_typed(Opcode::Alloca, Register(0), Register(0), ty, imm)
     }
@@ -815,9 +840,7 @@ impl<'r> Lowerer<'r> {
             Expr::MemberAccess(m) => {
                 let (base_reg, gid) = self.lower_agg_base(&m.base)?;
                 let field = self
-                    .registry
-                    .layouts
-                    .get(&gid)
+                    .layout_of(&gid)
                     .ok_or(Decline::TypeNotModelled {
                         what: "a struct with no modelled layout",
                     })?
@@ -1171,7 +1194,7 @@ impl<'r> Lowerer<'r> {
                 let size = sizeof_bytes(&s.target_ty)
                     .or_else(|| {
                         agg_gid_of_ty(&s.target_ty, self.registry)
-                            .and_then(|g| self.registry.layouts.get(&g))
+                            .and_then(|g| self.layout_of(&g))
                             .map(|d| d.size_bytes as u64)
                     })
                     .unwrap_or(8);
@@ -1462,9 +1485,7 @@ impl<'r> Lowerer<'r> {
         if let Expr::MemberAccess(m) = base {
             if let Ok((parent_reg, parent_gid)) = self.lower_agg_base(&m.base) {
                 let field = self
-                    .registry
-                    .layouts
-                    .get(&parent_gid)
+                    .layout_of(&parent_gid)
                     .ok_or(Decline::TypeNotModelled {
                         what: "a nested aggregate with no modelled layout",
                     })?
@@ -1525,9 +1546,7 @@ impl<'r> Lowerer<'r> {
         // Snapshot the field's offset + element so the immutable registry borrow ends before we emit.
         let (offset, elem) = {
             let field = self
-                .registry
-                .layouts
-                .get(&parent_gid)?
+                .layout_of(&parent_gid)?
                 .fields
                 .iter()
                 .find(|f| f.name.as_ref() == m.member.as_ref())?;
@@ -2440,9 +2459,112 @@ impl<'r> Lowerer<'r> {
                     let (gid, _, _) = self.enum_instance_layout_of(n.as_ref(), args)?;
                     return Some(LoweredTy::Aggregate(gid));
                 }
+                // A generic struct whose layout depends on its arguments: the base layout is a
+                // stub, so the instance's is synthesized.
+                if matches!(base.as_ref(), Type::Struct(..))
+                    && struct_layout_gid_by_name(self.registry, n.as_ref()).is_none()
+                {
+                    if let Some(gid) = self.struct_instance_layout_of(n.as_ref(), args) {
+                        return Some(LoweredTy::Aggregate(gid));
+                    }
+                }
             }
         }
         lowered_ty(ty, self.registry)
+    }
+
+    /// A layout by GID: a synthesized struct instance's, else the frozen registry's.
+    fn layout_of(&self, gid: &TypeId) -> Option<&crate::registry::TypeDefinition> {
+        self.instance_layouts
+            .get(gid)
+            .or_else(|| self.registry.layouts.get(gid))
+    }
+
+    /// Synthesize (once) and record the layout of a generic struct instance whose base layout
+    /// is a stub -- a by-value generic field makes the size depend on the arguments. The
+    /// declared fields are substituted with the instance's arguments and laid out with natural
+    /// alignment, the way the registry lays out a concrete struct; scalar and pointer fields
+    /// only. Declines a name two modules declare, so a wrong layout is never chosen.
+    fn struct_instance_layout_of(&mut self, base: &str, args: &[Type]) -> Option<TypeId> {
+        let gid = struct_instance_gid(base, args);
+        if self.instance_layouts.contains_key(&gid) {
+            return Some(gid);
+        }
+        let mut found: Option<TypeId> = None;
+        for def in self.registry.layouts.values() {
+            if def.name == base {
+                if found.is_some_and(|g| g != def.id) {
+                    return None;
+                }
+                found = Some(def.id);
+            }
+        }
+        let decl = self.registry.structs.get(&found?)?;
+        let mut mapping = HashMap::new();
+        for (g, a) in decl.generics.iter().zip(args) {
+            mapping.insert(g.clone(), a.clone());
+        }
+        let mut fields = Vec::with_capacity(decl.fields.len());
+        let mut offsets = Vec::with_capacity(decl.fields.len());
+        let mut field_tys = Vec::with_capacity(decl.fields.len());
+        let (mut off, mut align) = (0u64, 1u64);
+        let decl_fields = decl.fields.clone();
+        for (name, ty) in &decl_fields {
+            let fty = ty.substitute(&mapping);
+            // A by-value field that is itself an instance (`Wrapper<N> { inner: Array<f32, N> }`)
+            // is laid out first and embedded as its own `!llvm.struct`.
+            let (sz, al, mlir, kind) = match &fty {
+                Type::GenericInstance(b, a) if matches!(b.as_ref(), Type::Struct(..)) => {
+                    let Type::Struct(inner_name, _) = b.as_ref() else {
+                        return None;
+                    };
+                    let inner = self.struct_instance_layout_of(inner_name.as_ref(), a)?;
+                    let def = self.instance_layouts.get(&inner)?;
+                    let tys = &self.agg_layouts.iter().find(|(g, _, _)| *g == inner)?.2;
+                    (
+                        def.size_bytes as u64,
+                        def.align_bytes as u64,
+                        format!("!llvm.struct<({})>", tys.join(", ")),
+                        FieldTy::Nominal(inner),
+                    )
+                }
+                _ => {
+                    let (sz, al, mlir) = enum_payload_field(&fty)?;
+                    let kind = match &fty {
+                        Type::Scalar(e) => FieldTy::Scalar(e.clone()),
+                        _ => FieldTy::Opaque,
+                    };
+                    (sz, al, mlir, kind)
+                }
+            };
+            off = crate::layout::align_up(off as usize, al as usize) as u64;
+            fields.push(crate::layout::FieldLayout {
+                name: name.clone(),
+                offset: off as usize,
+                size: sz as usize,
+                ty: kind,
+            });
+            offsets.push(off);
+            field_tys.push(mlir);
+            off += sz;
+            align = align.max(al);
+        }
+        let size = crate::layout::align_up(off as usize, align as usize);
+        self.instance_layouts.insert(
+            gid,
+            crate::registry::TypeDefinition {
+                id: gid,
+                name: base.to_string(),
+                size_bytes: size,
+                align_bytes: align as usize,
+                fields,
+                by_value_dependencies: Vec::new(),
+            },
+        );
+        if !self.agg_layouts.iter().any(|(g, _, _)| *g == gid) {
+            self.agg_layouts.push((gid, offsets, field_tys));
+        }
+        Some(gid)
     }
 
     /// Synthesize (once) and record the aggregate layout of a monomorphized data-carrying enum
@@ -2505,19 +2627,23 @@ impl<'r> Lowerer<'r> {
         // exactly the `lowered_ty(GenericInstance)` rule (#242).
         let gid = match si.type_id {
             Some(g) => g,
-            None => self
-                .struct_gid_by_name(&si.name)
-                .ok_or(Decline::TypeNotModelled {
-                    what: "a struct with no GID",
-                })?,
+            None => match self.struct_gid_by_name(&si.name) {
+                Some(g) => g,
+                // A generic struct whose layout depends on its arguments: the base is a stub,
+                // and the name carries the instance's arguments, so its layout is synthesized.
+                None => {
+                    let (base, args) = parse_enum_instance(si.name.as_ref());
+                    self.struct_instance_layout_of(&base, &args).ok_or(
+                        Decline::TypeNotModelled {
+                            what: "a struct with no GID",
+                        },
+                    )?
+                }
+            },
         };
-        let def = self
-            .registry
-            .layouts
-            .get(&gid)
-            .ok_or(Decline::TypeNotModelled {
-                what: "a struct with no modelled layout",
-            })?;
+        let def = self.layout_of(&gid).ok_or(Decline::TypeNotModelled {
+            what: "a struct with no modelled layout",
+        })?;
         if def.align_bytes == 0 {
             return Err(Decline::TypeNotModelled {
                 what: "a struct layout that is not modelled yet",
@@ -2911,9 +3037,7 @@ impl<'r> Lowerer<'r> {
         )?;
         let (env_off, func_off) = {
             let fields = &self
-                .registry
-                .layouts
-                .get(&ck_gid)
+                .layout_of(&ck_gid)
                 .ok_or(Decline::TypeNotModelled {
                     what: "the Closure1 layout",
                 })?
@@ -3463,9 +3587,7 @@ impl<'r> Lowerer<'r> {
         if let Expr::MemberAccess(m) = lhs {
             let (base_reg, gid) = self.lower_agg_base(&m.base)?;
             let field = self
-                .registry
-                .layouts
-                .get(&gid)
+                .layout_of(&gid)
                 .ok_or(Decline::TypeNotModelled {
                     what: "a struct with no modelled layout",
                 })?
@@ -4616,6 +4738,14 @@ fn parse_enum_instance(name: &str) -> (String, Vec<Type>) {
 /// a nominal `Struct` (name resolution is unavailable here; substitution only needs the leaf identity).
 fn parse_scalar_type_arg(s: &str) -> Type {
     use ElementType::*;
+    // A `const` argument (`Array<f32, 10>`) is the literal it was written as.
+    if s.chars().all(|c| c.is_ascii_digit()) && !s.is_empty() {
+        return Type::Const(Box::new(Expr::Number(crate::syntax::NumberExpr::new(
+            s.to_string(),
+            None,
+            crate::syntax::Span::default(),
+        ))));
+    }
     let e = match s {
         "i8" => I8,
         "u8" => U8,

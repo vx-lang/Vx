@@ -1,14 +1,15 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK-LABEL: func.func @initialize$const$Number_NumberExpr___value___10___ty__None__span__Span___line__0__column__0__length__0_____() -> !llvm.struct<"Array_f32_10", (f32)>
-// CHECK: llvm.mlir.undef : !llvm.struct<"Array_f32_10", (f32)>
-// CHECK: %[[V0:.*]] = arith.constant 1.000000e+00 : f32
-// CHECK: %[[V1:.*]] = llvm.insertvalue %[[V0]], %{{.*}} : !llvm.struct<"Array_f32_10", (f32)>
-// CHECK: %[[V2:.*]] = arith.constant 10 : i32
-// CHECK: %[[V3:.*]] = arith.constant 1 : i32
-// CHECK: arith.addi %[[V2]], %[[V3]] : i32
-// CHECK: return %[[V1]] : !llvm.struct<"Array_f32_10", (f32)>
+// The flat path compiles this: the instance `Array<f32, 10>` has a layout synthesized from
+// the declaration with `N` bound, the construction stores into it, and the value is returned
+// whole. The const argument reaches the emitted symbol, which carries it by value.
 // CHECK-LABEL: func.func @test_const_generics()
-// CHECK: call @initialize$const$Number_NumberExpr___value___10___ty__None__span__Span___line__0__column__0__length__0_____() : () -> !llvm.struct<"Array_f32_10", (f32)>
+// CHECK: call @initialize$const${{.*}}value___10{{.*}}() : () -> !llvm.struct<(f32)>
+// CHECK-LABEL: func.func @initialize$const${{.*}}value___10{{.*}}() -> !llvm.struct<(f32)>
+// CHECK: %[[S:.*]] = llvm.alloca %{{.*}} x !llvm.struct<(f32)> : (i32) -> !llvm.ptr
+// CHECK: llvm.getelementptr %[[S]][0, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<(f32)>
+// CHECK: arith.addi %c10_i32, %c1_i32 : i32
+// CHECK: %[[V:.*]] = llvm.load %[[S]] : !llvm.ptr -> !llvm.struct<(f32)>
+// CHECK: return %[[V]] : !llvm.struct<(f32)>
 struct Array<T, const N : i32> {
   val : T
 }

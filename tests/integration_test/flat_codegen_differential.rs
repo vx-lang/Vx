@@ -117,10 +117,12 @@ fn ast_llvm(src: &str) -> String {
         program.functions.push(f);
     }
     // The structs the checker synthesized (a closure's `Closure_N` environment), as the driver
-    // adds them: a named `!llvm.struct` with no body does not parse.
+    // adds them: a named `!llvm.struct` with no body does not parse. A generic template stays
+    // out, as in the driver: its instances are the monomorphs appended above.
     program
         .structs
         .extend(std::mem::take(&mut checker.mono.generated_structs));
+    program.functions.retain(|f| f.generics.is_empty());
 
     let context = make_context();
     let mut codegen = MeliorGenerator::new(&context, "diff_ast".to_string());
@@ -175,6 +177,8 @@ fn flat_llvm(src: &str) -> Option<String> {
         let symbol_map = vxc::resolver::build_symbol_map(&mods);
         mods[0].resolve_names(&symbol_map, &[]);
     }
+    // A generic template is not lowered, as in the driver: its instances are the monomorphs.
+    mods[0].functions.retain(|f| f.generics.is_empty());
     let registry = vxc::pipeline::build_frozen_registry(&mods).ok()?;
     let session = std::sync::Arc::new(GlobalSession::with_registry(1, registry));
 
@@ -1064,6 +1068,19 @@ fn flat_matches_ast_closure_capturing_nothing() {
          fn good(m : &Map) -> &i32 { let f = |q : &Map| &q.slot; return f(m); }\n\
          fn main() -> i32 { let x = Map { slot : 7, present : 1 }; return *good(&x); }",
         7,
+    );
+}
+
+#[test]
+fn flat_matches_ast_const_generic_struct_instance() {
+    // A struct generic over a `const`, with a by-value generic field: its base layout is a stub,
+    // so the instance `Pair<f32, 4>` gets a synthesized one -- as a return type, at the
+    // construction, and at each field read. 2 * 10 + 1.
+    assert_parity(
+        "struct Pair<T, const N : i32> { a : T, b : T }\n\
+         fn make<const N : i32>() -> Pair<f32, N> { let p = Pair<f32, N> { a : 1.0, b : 2.0 }; return p; }\n\
+         fn main() -> i32 { let p = make<4>(); return (p.b * 10.0 + p.a) as i32; }",
+        21,
     );
 }
 
