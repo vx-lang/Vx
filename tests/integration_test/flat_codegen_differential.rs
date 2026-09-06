@@ -939,6 +939,34 @@ fn flat_matches_ast_run_time_allocation() {
 }
 
 #[test]
+fn flat_lowers_rows_of_mixed_and_deeper_rank_dynamic_tensors() {
+    // Flat only: the AST oracle reads a row's length out of the memref text and cannot take
+    // `memref<?x4x..>`. A row of a `[?, ?]` tensor has a `?` extent, so its width is read off
+    // the base and the row offset is the index times it. `m[0][3]` is read back too: an
+    // offset that is off by the stride rather than the width lands `m[1][2]` on it.
+    assert_flat_exit(
+        "fn build(n : i32) -> Tensor<f32, [?, ?]> { \
+           let mut m = Tensor<f32>([n, 4]); m[1][2] = 5.0; m[0][3] = 7.0; return m; }\n\
+         fn main() -> i32 { let m = build(2); return (m[1][2] * 10.0 + m[0][3]) as i32; }",
+        57,
+    );
+    // A row of a `[?, 4]` tensor has a static shape, so it takes the literal-stride path over a
+    // dynamic base, and `dot` over two rows loads `vector<4xf32>`.
+    assert_flat_exit(
+        "fn build(n : i32) -> Tensor<f32, [?, 4]> { \
+           let mut m = Tensor<f32, [?, 4]>::new([n, 4]); m[0][2] = 2.0; m[1][2] = 5.0; return m; }\n\
+         fn main() -> i32 { let m = build(2); return dot(m[0], m[1]) as i32; }",
+        10,
+    );
+    // A rank-3 dynamic tensor's row is a rank-2 view; both of its extents come from the base.
+    assert_flat_exit(
+        "fn build(n : i32) -> Tensor<f32, [?, ?, ?]> { let m = Tensor<f32>([n, 3, 4]); return m; }\n\
+         fn main() -> i32 { let m = build(2); let r = m[1]; return r.extent(0) * 10 + r.extent(1); }",
+        34,
+    );
+}
+
+#[test]
 fn flat_matches_ast_tensor_store_element_coercion() {
     // A default-`f32` float literal stored into a non-`f32` tensor is coerced to the element type at
     // the store (`bf16` -> `arith.truncf`), matching the AST's `coerce_type` before its `memref.store`

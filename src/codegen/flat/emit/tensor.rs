@@ -270,22 +270,13 @@ impl FnEmit<'_> {
                 .get(&result_gid)
                 .ok_or(crate::emitter_gap!())?;
             let et = mlir_scalar(elem).ok_or(crate::emitter_gap!())?;
-            // A row of a dynamically shaped tensor: its extent is not a number here, so it is
-            // read off the base with `memref.dim` and the offset is computed against that.
-            // Only the rank-1 row of a rank-2 base, which is the one shape a `[?, ?]` tensor has
-            // (Vx#404); anything deeper still needs a stride computation there is nothing to
-            // compute with.
+            // A row with a run-time extent anywhere: each `?` size is read off the base with
+            // `memref.dim`, the strides are the row-major products, and the offset is the index
+            // times the row's element count. A static position stays a literal in the type.
             if shape.iter().any(|d| d == DYN_DIM) {
                 let et = et.to_string();
-                if shape.len() != 1
-                    || !base_memty.starts_with("memref<?x?x")
-                    || base_memty.ends_with(", 3>")
-                {
-                    return Err(Decline::TypeNotModelled {
-                        what: "a row of a tensor whose extents are not known at compile time",
-                    });
-                }
-                return self.dynamic_row(idx, &base, &base_memty, &ic, &et);
+                let shape = shape.clone();
+                return self.dynamic_row(idx, &base, &base_memty, &ic, &et, &shape);
             }
             let dims: Vec<i64> = shape
                 .iter()
@@ -342,21 +333,83 @@ impl FnEmit<'_> {
         base_memty: &str,
         ic: &str,
         et: &str,
+        shape: &[String],
     ) -> Lowered<()> {
-        let one = format!("%rdk{idx}");
-        let width = format!("%rdw{idx}");
-        let off = format!("%rdo{idx}");
+        // Sizes: a literal stays one; a `?` is `memref.dim` of the base at that position, which
+        // is one deeper than in the row (the outermost dimension is the one being indexed).
+        let mut sizes: Vec<String> = Vec::with_capacity(shape.len());
+        for (k, d) in shape.iter().enumerate() {
+            if d == DYN_DIM {
+                let c = format!("%rdc{idx}_{k}");
+                let s = format!("%rds{idx}_{k}");
+                self.body += &format!("  {c} = arith.constant {} : index\n", k + 1);
+                self.body += &format!("  {s} = memref.dim {base}, {c} : {base_memty}\n");
+                sizes.push(s);
+            } else {
+                sizes.push(d.clone());
+            }
+        }
+        // Strides, row-major from the back: the last is 1, each other is the next stride
+        // times the next size. A product of literals stays a literal.
+        let r = shape.len();
+        let mut strides: Vec<String> = vec!["1".to_string(); r];
+        for k in (0..r.saturating_sub(1)).rev() {
+            let (a, b) = (strides[k + 1].clone(), sizes[k + 1].clone());
+            strides[k] = self.mul_extent(&a, &b, &format!("%rdt{idx}_{k}"));
+        }
+        // Offset: the index times the row's element count.
+        let count = self.mul_extent(&strides[0], &sizes[0], &format!("%rdn{idx}"));
+        let off = self.mul_extent(ic, &count, &format!("%rdo{idx}"));
+        let as_ty = |v: &String| {
+            if v.starts_with('%') {
+                "?".to_string()
+            } else {
+                v.clone()
+            }
+        };
+        let dims: String = sizes.iter().map(|s| format!("{}x", as_ty(s))).collect();
+        let stride_tys: Vec<String> = strides.iter().map(as_ty).collect();
+        let result_ty = format!(
+            "memref<{dims}{et}, strided<[{}], offset: ?>>",
+            stride_tys.join(", ")
+        );
         let n = format!("%v{idx}");
-        self.body += &format!("  {one} = arith.constant 1 : index\n");
-        self.body += &format!("  {width} = memref.dim {base}, {one} : {base_memty}\n");
-        self.body += &format!("  {off} = arith.muli {ic}, {width} : index\n");
-        let result_ty = format!("memref<?x{et}, strided<[1], offset: ?>>");
         self.body += &format!(
-            "  {n} = memref.reinterpret_cast {base} to offset: [{off}], sizes: [{width}], strides: [1] : {base_memty} to {result_ty}\n"
+            "  {n} = memref.reinterpret_cast {base} to offset: [{off}], sizes: [{}], strides: [{}] : {base_memty} to {result_ty}\n",
+            sizes.join(", "),
+            strides.join(", ")
         );
         self.names[idx] = n;
         self.mem_of[idx] = Some(result_ty);
         Ok(())
+    }
+
+    /// The product of two extents, each a literal or an `index` SSA name: a literal when both
+    /// are, otherwise an `arith.muli` with any literal operand materialized first.
+    fn mul_extent(&mut self, a: &str, b: &str, name: &str) -> String {
+        if let (Ok(x), Ok(y)) = (a.parse::<i64>(), b.parse::<i64>()) {
+            return (x * y).to_string();
+        }
+        // A unit factor contributes nothing; a rank-1 row's element count is its width.
+        if a == "1" {
+            return b.to_string();
+        }
+        if b == "1" {
+            return a.to_string();
+        }
+        let operand = |v: &str, tag: &str, body: &mut String| -> String {
+            if v.starts_with('%') {
+                v.to_string()
+            } else {
+                let c = format!("{name}{tag}");
+                *body += &format!("  {c} = arith.constant {v} : index\n");
+                c
+            }
+        };
+        let a = operand(a, "a", &mut self.body);
+        let b = operand(b, "b", &mut self.body);
+        self.body += &format!("  {name} = arith.muli {a}, {b} : index\n");
+        name.to_string()
     }
 
     // Reduce a rank-1 float slice to a scalar. `operand1` (and `operand2` for `dot`) are the
