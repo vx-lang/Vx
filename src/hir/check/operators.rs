@@ -184,8 +184,16 @@ impl<'a> TypeChecker<'a> {
                                 Some(crate::hir::env::Value::Number(n)) => Some(n),
                                 _ => None,
                             };
-                            let kl = dim_of(self.eval_expr(&dims_l[1], &empty_env));
-                            let kr = dim_of(self.eval_expr(&dims_r[0], &empty_env));
+                            let kl = dim_of(
+                                dims_l[1]
+                                    .as_static()
+                                    .and_then(|e| self.eval_expr(e, &empty_env)),
+                            );
+                            let kr = dim_of(
+                                dims_r[0]
+                                    .as_static()
+                                    .and_then(|e| self.eval_expr(e, &empty_env)),
+                            );
                             if let (Some(kl), Some(kr)) = (kl, kr) {
                                 if kl != kr {
                                     self.errors.error_with_code(

@@ -194,10 +194,7 @@ fn tensor_memref_of_type(ty: &Type) -> Option<String> {
         Type::Tensor(elem, dims, _) => {
             let mut shape = Vec::with_capacity(dims.len());
             for d in dims {
-                let crate::syntax::Expr::Number(n) = d else {
-                    return None;
-                };
-                shape.push(n.value.as_ref().parse::<i64>().ok()?.to_string());
+                shape.push(d.literal()?.parse::<i64>().ok()?.to_string());
             }
             tensor_memref_ty(elem, &shape)
         }

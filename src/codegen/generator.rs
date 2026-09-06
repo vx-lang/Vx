@@ -1694,7 +1694,7 @@ impl<'c> MeliorGenerator<'c> {
     fn lower_tensor_type(
         &self,
         el_ty: &ElementType,
-        dims: &[syntax::Expr],
+        dims: &[syntax::Dim],
         top: &Option<syntax::Placement>,
         dynamic: bool,
     ) -> Result<Type<'c>, crate::codegen::lower::LowerError> {
@@ -1736,11 +1736,11 @@ impl<'c> MeliorGenerator<'c> {
             }
         } else {
             for (i, dim) in dims.iter().enumerate() {
-                if let syntax::Expr::Number(NumberExpr {
+                if let syntax::Dim::Static(syntax::Expr::Number(NumberExpr {
                     value: n_str,
                     ty: _,
                     span: _,
-                }) = dim
+                })) = dim
                 {
                     if let Ok(n) = n_str.parse::<f64>() {
                         shape_str.push_str(&format!("{}", n as i64));
@@ -1894,6 +1894,7 @@ impl<'c> MeliorGenerator<'c> {
                         },
                         _ => fc.args.clone(),
                     };
+                    let dims = dims.into_iter().map(syntax::Dim::Static).collect();
                     return Some(syntax::Type::Tensor(el_ty, dims, None));
                 }
                 // `tensor_view_2d(p, rows, cols)` over literal extents is a statically shaped
@@ -1915,6 +1916,7 @@ impl<'c> MeliorGenerator<'c> {
                             _ => None,
                         };
                         if let Some(el_ty) = el_ty {
+                            let dims = dims.into_iter().map(syntax::Dim::Static).collect();
                             return Some(syntax::Type::Tensor(el_ty, dims, None));
                         }
                     }

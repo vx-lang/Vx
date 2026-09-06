@@ -878,14 +878,14 @@ pub(crate) fn lower_raw_primitive<'c>(
                 syntax::Type::Tensor(_, dims, _) => {
                     let mut out = Vec::new();
                     for d in dims {
-                        let syntax::Expr::Number(n) = d else {
+                        let Some(n) = d.literal() else {
                             return Err(LowerError::from(
                                 "raw:: tile has a non-static dim; the device path \
                                  refuses dynamic shared tiles (#353 A3)"
                                     .to_string(),
                             ));
                         };
-                        out.push(n.value.as_ref().parse::<u64>().map_err(|_| {
+                        out.push(n.parse::<u64>().map_err(|_| {
                             LowerError::from("raw:: tile dim is not an integer".to_string())
                         })?);
                     }

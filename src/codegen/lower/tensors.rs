@@ -247,10 +247,7 @@ impl<'c> LowerToMelior<'c> for syntax::TransferExpr {
             if let syntax::Type::Tensor(e, dims, _) = inner {
                 let static_dims: Vec<u64> = dims
                     .iter()
-                    .filter_map(|d| match d {
-                        syntax::Expr::Number(n) => n.value.as_ref().parse().ok(),
-                        _ => None,
-                    })
+                    .filter_map(|d| d.literal().and_then(|v| v.parse().ok()))
                     .collect();
                 if static_dims.len() == dims.len() && !dims.is_empty() {
                     let elem = match e {

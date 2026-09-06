@@ -275,10 +275,7 @@ fn matmul_assign_shapes_agree(gen: &MeliorGenerator<'_>, dst: &Expr, a: &Expr, b
         match gen.infer_ast_type(e)? {
             syntax::Type::Tensor(_, dims, _) => dims
                 .iter()
-                .map(|d| match d {
-                    Expr::Number(n) => n.value.as_ref().parse::<i64>().ok(),
-                    _ => None,
-                })
+                .map(|d| d.literal().and_then(|v| v.parse::<i64>().ok()))
                 .collect(),
             _ => None,
         }

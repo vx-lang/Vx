@@ -207,7 +207,7 @@ impl<'a> TypeChecker<'a> {
     /// which is what a resident weight is) resolves too.
     pub(crate) fn as_tensor_operand(
         t: &Type,
-    ) -> Option<(&ElementType, &Vec<crate::syntax::Expr>, &Option<Placement>)> {
+    ) -> Option<(&ElementType, &Vec<crate::syntax::Dim>, &Option<Placement>)> {
         let mut inner = t;
         loop {
             match inner {

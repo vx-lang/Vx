@@ -40,7 +40,7 @@ use super::super::*;
 use crate::diagnostic::{DiagnosticCode, SourceSpan};
 use crate::syntax::expr::{Expr, FunctionCallExpr, LogicalOpExpr, NumberExpr, RelationalOpExpr};
 use crate::syntax::stmt::Statement;
-use crate::syntax::{LogicalOp, RelationalOp, Span};
+use crate::syntax::{Dim, LogicalOp, RelationalOp, Span};
 
 /// The eight primitive names, for the unknown-name diagnostic.
 const RAW_PRIMITIVES: &[&str] = &[
@@ -315,11 +315,10 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// The element count when every declared dimension is a literal; `None` otherwise.
-    fn static_extent_of_dims(dims: &[Expr]) -> Option<u64> {
+    fn static_extent_of_dims(dims: &[Dim]) -> Option<u64> {
         let mut product: u64 = 1;
         for d in dims {
-            let Expr::Number(n) = d else { return None };
-            let v: u64 = n.value.as_ref().parse().ok()?;
+            let v: u64 = d.literal()?.parse().ok()?;
             product = product.checked_mul(v)?;
         }
         Some(product)
@@ -1607,8 +1606,7 @@ impl<'a> TypeChecker<'a> {
             let (_, dims, _) = Self::as_tensor_operand(ty)?;
             let mut n: u64 = 1;
             for d in dims {
-                let Expr::Number(lit) = d else { return None };
-                n = n.checked_mul(lit.value.as_ref().parse::<u64>().ok()?)?;
+                n = n.checked_mul(d.literal()?.parse::<u64>().ok()?)?;
             }
             Some(n)
         };

@@ -28,8 +28,8 @@ use crate::session::LocalWorkerState;
 use crate::symbol::Symbol;
 use crate::syntax::scalar_of;
 use crate::syntax::{
-    BinaryOp, ElementType, Expr, Function, LogicalOp, NumberExpr, RelationalOp, Statement, Type,
-    UnaryOp,
+    BinaryOp, Dim, ElementType, Expr, Function, LogicalOp, NumberExpr, RelationalOp, Statement,
+    Type, UnaryOp,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -159,11 +159,12 @@ fn tensor_alloc_placement(
 
 /// Canonicalize a tensor dimension for the GID: a numeric literal by value, a const/generic name by
 /// its name. Anything else declines (so the tensor stays unmodelled rather than hashing unstably).
-fn tensor_dim_string(e: &Expr) -> Option<String> {
-    match e {
-        Expr::Number(n) => Some(n.value.as_ref().to_string()),
-        Expr::Identifier(id) => Some(id.name.as_ref().to_string()),
-        _ => None,
+fn tensor_dim_string(d: &Dim) -> Option<String> {
+    match d {
+        Dim::Static(Expr::Number(n)) => Some(n.value.as_ref().to_string()),
+        Dim::Static(Expr::Identifier(id)) => Some(id.name.as_ref().to_string()),
+        Dim::Static(_) => None,
+        Dim::Dyn => Some(DYN_DIM.to_string()),
     }
 }
 
@@ -2621,7 +2622,8 @@ impl<'r> Lowerer<'r> {
             };
             return Some(self.emit_typed(Opcode::TensorAlloc, Register(0), Register(0), ty, bytes));
         }
-        let bytes = crate::hir::memory::static_tensor_bytes(&elem, dims)?;
+        let dims: Vec<Dim> = dims.iter().cloned().map(Dim::Static).collect();
+        let bytes = crate::hir::memory::static_tensor_bytes(&elem, &dims)?;
         let shape: Vec<String> = dims.iter().map(tensor_dim_string).collect::<Option<_>>()?;
         let ty = LoweredTy::Tensor { elem, shape };
         Some(self.emit_typed(Opcode::TensorAlloc, Register(0), Register(0), ty, bytes))
@@ -6371,7 +6373,7 @@ mod tests {
                 crate::syntax::Span::default(),
             ))
         };
-        let dims = vec![num("2"), num("2")];
+        let dims = vec![Dim::Static(num("2")), Dim::Static(num("2"))];
         let tensor = Type::Tensor(ElementType::F32, dims, None);
         let wrapped = Type::Verified(Box::new(Type::Ref(
             Box::new(tensor),

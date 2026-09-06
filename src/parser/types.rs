@@ -364,7 +364,7 @@ impl<'a> Parser<'a> {
                             {
                                 let mut dim = self.parse_expr()?;
                                 super::expr::stamp_dim_literals(&mut dim);
-                                dims.push(dim);
+                                dims.push(Dim::Static(dim));
                                 if !self.match_token(&TokenType::Comma) {
                                     break;
                                 }

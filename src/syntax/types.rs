@@ -559,13 +559,53 @@ pub enum ElementType {
     Generic(Symbol),
 }
 
+/// One dimension of a tensor type. The extent state is the tag, so the type stays open to
+/// a further state (a run-time extent with a declared bound) without every site that reads
+/// a dimension changing again.
+///
+/// `Static` is the common case and `Dyn` the exception, so boxing the expression would cost
+/// an allocation per dimension of every tensor type to shrink the rare `?`.
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, PartialEq, Clone)]
+pub enum Dim {
+    /// `[2, 3]`, `[N, M]`, `[BATCH * CTX]`: a literal, a const-generic name, or an expression
+    /// the checker folds. Everything a dimension could be before `?` existed.
+    Static(Expr),
+    /// `?`: the extent is a run-time value. Carries nothing; the rank is the list's length.
+    Dyn,
+}
+
+impl Dim {
+    /// The expression of a static dimension; `None` for `?`.
+    pub fn as_static(&self) -> Option<&Expr> {
+        match self {
+            Dim::Static(e) => Some(e),
+            Dim::Dyn => None,
+        }
+    }
+
+    /// The value of a dimension spelled as a number literal.
+    pub fn literal(&self) -> Option<&str> {
+        match self {
+            Dim::Static(Expr::Number(n)) => Some(n.value.as_ref()),
+            _ => None,
+        }
+    }
+
+    pub fn substitute(&self, mapping: &std::collections::HashMap<Symbol, Type>) -> Dim {
+        match self {
+            Dim::Static(e) => Dim::Static(e.substitute(mapping)),
+            Dim::Dyn => Dim::Dyn,
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub enum Type {
-    /// A statically shaped tensor. Its extents are part of the type, so `[2, 3]` and `[4, 5]`
-    /// are different types and get different monomorphs (Vx#401). A dims-less spelling still
-    /// parses to this and still means "shape unknown"; Vx#399 moves that reading to `DynTensor`
-    /// and makes the dims-less `Tensor` unspellable.
-    Tensor(ElementType, Vec<Expr>, Option<Placement>),
+    /// A shaped tensor. Its extents are part of the type, so `[2, 3]` and `[4, 5]` are
+    /// different types and get different monomorphs (Vx#401); each is a [`Dim`], so a
+    /// run-time extent is spelled per position rather than by a different type.
+    Tensor(ElementType, Vec<Dim>, Option<Placement>),
     /// A tensor whose shape is not known until run time — a model config's dimensions, a
     /// shape-polymorphic library function. Carries no extents by construction, so nothing can
     /// read a shape off it that a static check would then trust (Vx#399). The verified variant
@@ -940,8 +980,9 @@ impl std::fmt::Display for Type {
                             write!(f, ", ")?;
                         }
                         match d {
-                            syntax::expr::Expr::Number(n) => write!(f, "{}", n.value)?,
-                            _ => write!(f, "?")?,
+                            Dim::Static(syntax::expr::Expr::Number(n)) => write!(f, "{}", n.value)?,
+                            Dim::Static(_) => write!(f, "{{..}}")?,
+                            Dim::Dyn => write!(f, "?")?,
                         }
                     }
                     write!(f, "]")?;
@@ -1009,9 +1050,10 @@ impl Mangle for Type {
                 for (i, d) in dims.iter().enumerate() {
                     write!(w, "{}", if i == 0 { "$" } else { "x" })?;
                     match d {
-                        Expr::Number(n) => write!(w, "{}", n.value)?,
-                        Expr::Identifier(id) => write!(w, "{}", id.name)?,
-                        _ => write!(w, "d")?,
+                        Dim::Static(Expr::Number(n)) => write!(w, "{}", n.value)?,
+                        Dim::Static(Expr::Identifier(id)) => write!(w, "{}", id.name)?,
+                        Dim::Static(_) => write!(w, "d")?,
+                        Dim::Dyn => write!(w, "_")?,
                     }
                 }
                 Ok(())
@@ -1317,11 +1359,11 @@ mod tests {
         // Two shapes are two types and lower to two memrefs, so they must not share a
         // monomorph's symbol (Vx#401). Rank alone merged them.
         let num = |v: &str| {
-            crate::syntax::Expr::Number(crate::syntax::NumberExpr::new(
+            Dim::Static(crate::syntax::Expr::Number(crate::syntax::NumberExpr::new(
                 v.to_string(),
                 None,
                 Span::default(),
-            ))
+            )))
         };
         let a = Type::Tensor(ElementType::F32, vec![num("2"), num("3")], None);
         let b = Type::Tensor(ElementType::F32, vec![num("4"), num("5")], None);

@@ -15,7 +15,7 @@
 //===----------------------------------------------------------------------===//
 
 use crate::syntax::{
-    Bandwidth, ByteSize, ElementType, Expr, MemoryDecl, MemorySpace, RatePer, Scope,
+    Bandwidth, ByteSize, Dim, ElementType, Expr, MemoryDecl, MemorySpace, RatePer, Scope,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -161,13 +161,13 @@ fn const_dim(e: &Expr) -> Option<u64> {
 /// is arithmetic — a KV cache is `2 * layers * context` by `heads * head_dim` — and requiring a
 /// bare literal meant every such placement was silently reported "unverified" (W1029) instead of
 /// admitted or rejected, which would have made an admission matrix over realistic configs vacuous.
-pub fn static_tensor_bytes(elem: &ElementType, dims: &[Expr]) -> Option<u64> {
+pub fn static_tensor_bytes(elem: &ElementType, dims: &[Dim]) -> Option<u64> {
     if dims.is_empty() {
         return None;
     }
     let mut count: u64 = 1;
     for d in dims {
-        count = count.checked_mul(const_dim(d)?)?;
+        count = count.checked_mul(const_dim(d.as_static()?)?)?;
     }
     Some(element_bits(elem)?.checked_mul(count)?.div_ceil(8))
 }
@@ -776,14 +776,17 @@ mod tests {
     fn tensor_bytes_folds_arithmetic_dimensions() {
         // 2 * 512 x 512 f32 = 2 MiB. Previously `None` (not a bare literal).
         assert_eq!(
-            static_tensor_bytes(&ElementType::F32, &[mul(dim("2"), dim("512")), dim("512")]),
+            static_tensor_bytes(
+                &ElementType::F32,
+                &st(&[mul(dim("2"), dim("512")), dim("512")])
+            ),
             Some(2 * 1024 * 1024)
         );
         // The KV-cache shape: (2 * layers * ctx) x (heads * head_dim), f16.
         let rows = mul(mul(dim("2"), dim("2")), dim("128")); // 512
         let cols = mul(dim("8"), dim("64")); // 512
         assert_eq!(
-            static_tensor_bytes(&ElementType::F16, &[rows, cols]),
+            static_tensor_bytes(&ElementType::F16, &st(&[rows, cols])),
             Some(512 * 512 * 2)
         );
         // Folding is exact integer arithmetic, so a product far past f64's exact-integer range
@@ -791,7 +794,7 @@ mod tests {
         assert_eq!(
             static_tensor_bytes(
                 &ElementType::F32,
-                &[mul(dim("4294967296"), dim("4294967296"))]
+                &st(&[mul(dim("4294967296"), dim("4294967296"))])
             ),
             None,
             "overflow declines rather than wrapping"
@@ -807,12 +810,12 @@ mod tests {
             span: crate::syntax::Span::default(),
         });
         assert_eq!(
-            static_tensor_bytes(&ElementType::F32, &[ident.clone(), dim("4")]),
+            static_tensor_bytes(&ElementType::F32, &st(&[ident.clone(), dim("4")])),
             None
         );
         // Arithmetic *containing* a runtime value is equally unknown.
         assert_eq!(
-            static_tensor_bytes(&ElementType::F32, &[mul(dim("2"), ident)]),
+            static_tensor_bytes(&ElementType::F32, &st(&[mul(dim("2"), ident)])),
             None
         );
     }
@@ -821,29 +824,34 @@ mod tests {
     fn tensor_bytes_dense_and_subbyte() {
         // 256x256 f32 = 262144 bytes (256 KiB).
         assert_eq!(
-            static_tensor_bytes(&ElementType::F32, &[dim("256"), dim("256")]),
+            static_tensor_bytes(&ElementType::F32, &st(&[dim("256"), dim("256")])),
             Some(256 * 1024)
         );
         // 8x8 i4 = 64 elems * 4 bits = 256 bits = 32 bytes (sub-byte packs).
         assert_eq!(
-            static_tensor_bytes(&ElementType::I4, &[dim("8"), dim("8")]),
+            static_tensor_bytes(&ElementType::I4, &st(&[dim("8"), dim("8")])),
             Some(32)
         );
         // 3 bools = 3 bits -> ceil to 1 byte.
         assert_eq!(
-            static_tensor_bytes(&ElementType::Bool, &[dim("3")]),
+            static_tensor_bytes(&ElementType::Bool, &st(&[dim("3")])),
             Some(1)
         );
         // 64x64 f8e4m3 = 4096 elems * 8 bits = 4096 bytes (fp8 stores like i8).
         assert_eq!(
-            static_tensor_bytes(&ElementType::F8E4M3, &[dim("64"), dim("64")]),
+            static_tensor_bytes(&ElementType::F8E4M3, &st(&[dim("64"), dim("64")])),
             Some(4096)
         );
         // f8e5m2 has the same storage width; the variants differ only in exponent/mantissa split.
         assert_eq!(
-            static_tensor_bytes(&ElementType::F8E5M2, &[dim("50"), dim("50")]),
+            static_tensor_bytes(&ElementType::F8E5M2, &st(&[dim("50"), dim("50")])),
             Some(2500)
         );
+    }
+
+    /// Test dims are written as expressions; the byte counter takes them per dimension.
+    fn st(dims: &[Expr]) -> Vec<Dim> {
+        dims.iter().cloned().map(Dim::Static).collect()
     }
 
     fn mem_bw(name: &str, parent: Option<&str>, bw_bytes: u64, per: RatePer) -> MemoryDecl {
@@ -1268,14 +1276,14 @@ mod tests {
             span: crate::syntax::Span::default(),
         });
         assert_eq!(
-            static_tensor_bytes(&ElementType::F32, &[dyn_dim, dim("4")]),
+            static_tensor_bytes(&ElementType::F32, &st(&[dyn_dim, dim("4")])),
             None
         );
         // Empty shape (scalar-broadcast tensor) is also unknown.
-        assert_eq!(static_tensor_bytes(&ElementType::F32, &[]), None);
+        assert_eq!(static_tensor_bytes(&ElementType::F32, &st(&[])), None);
         // Un-instantiated generic element is unknown.
         assert_eq!(
-            static_tensor_bytes(&ElementType::Generic("T".into()), &[dim("4")]),
+            static_tensor_bytes(&ElementType::Generic("T".into()), &st(&[dim("4")])),
             None
         );
     }

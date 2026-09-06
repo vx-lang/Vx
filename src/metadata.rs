@@ -1393,7 +1393,11 @@ mod tests {
             FnSig {
                 gid: TypeId::new(1, 2, 0, 0),
                 params: Vec::new(),
-                ret_ty: Type::Tensor(ElementType::F32, vec![dim], None),
+                ret_ty: Type::Tensor(
+                    ElementType::F32,
+                    vec![crate::syntax::Dim::Static(dim)],
+                    None,
+                ),
                 ret_prov: 0,
             },
         );

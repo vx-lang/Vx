@@ -156,7 +156,10 @@ impl Type {
             // binds it to `_`); leave it None.
             Type::Generic(..) => {}
             Type::Tensor(_, dims, top) => {
-                for dim in dims {
+                for dim in dims.iter_mut().filter_map(|d| match d {
+                    Dim::Static(e) => Some(e),
+                    Dim::Dyn => None,
+                }) {
                     dim.resolve_names(scope);
                 }
                 if let Some(p) = top {

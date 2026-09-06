@@ -566,10 +566,7 @@ impl<'c> LowerToMelior<'c> for syntax::IndexAccessExpr {
             let base_dims: Vec<i64> = match gen.infer_ast_type(self.base.as_ref()) {
                 Some(syntax::Type::Tensor(_, dims, _)) => dims
                     .iter()
-                    .map(|d| match d {
-                        syntax::Expr::Number(n) => n.value.as_ref().parse::<i64>().ok(),
-                        _ => None,
-                    })
+                    .map(|d| d.literal().and_then(|v| v.parse::<i64>().ok()))
                     .collect::<Option<Vec<i64>>>()
                     .unwrap_or_default(),
                 _ => Vec::new(),
@@ -2282,7 +2279,13 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                 Some(syntax::Type::Tensor(el, dims, _)) => (
                     syntax::Type::Scalar(el.clone()),
                     vec![Expr::Array(syntax::ArrayExpr::new(
-                        dims.clone(),
+                        dims.iter()
+                            .map(|d| {
+                                d.as_static()
+                                    .cloned()
+                                    .expect("a run-time extent has no static shape to allocate")
+                            })
+                            .collect(),
                         syntax::Span::default(),
                     ))],
                 ),

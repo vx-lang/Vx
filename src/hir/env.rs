@@ -675,10 +675,10 @@ impl<'a> TypeChecker<'a> {
                     return false;
                 }
                 for (dim1, dim2) in d1.iter().zip(d2.iter()) {
-                    if let Expr::Identifier(id) = dim1 {
-                        if let Expr::Number(n) = dim2 {
+                    if let Dim::Static(Expr::Identifier(id)) = dim1 {
+                        if let Dim::Static(Expr::Number(n)) = dim2 {
                             mapping.insert(id.name.clone(), Type::Generic(n.value.clone(), None));
-                        } else if let Expr::Identifier(id2) = dim2 {
+                        } else if let Dim::Static(Expr::Identifier(id2)) = dim2 {
                             mapping.insert(id.name.clone(), Type::Generic(id2.name.clone(), None));
                         } else if dim1 != dim2 {
                             return false;

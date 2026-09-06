@@ -229,7 +229,7 @@ impl<'a> TypeChecker<'a> {
     pub(crate) fn check_capacity(
         &mut self,
         elem: &ElementType,
-        dims: &[Expr],
+        dims: &[Dim],
         space: &MemorySpace,
         context: &str,
         span: &Span,
@@ -241,7 +241,7 @@ impl<'a> TypeChecker<'a> {
     fn check_capacity_of(
         &mut self,
         elem: &ElementType,
-        dims: &[Expr],
+        dims: &[Dim],
         space: &MemorySpace,
         context: &str,
         span: &Span,
@@ -265,11 +265,12 @@ impl<'a> TypeChecker<'a> {
                 let dyn_note = dims
                     .iter()
                     .enumerate()
-                    .find(|(_, d)| !matches!(d, Expr::Number(_)))
+                    .find(|(_, d)| d.literal().is_none())
                     .map(|(i, d)| match d {
-                        Expr::Identifier(id) => {
+                        Dim::Static(Expr::Identifier(id)) => {
                             format!("dimension {i} is the runtime value '{}'", id.name)
                         }
+                        Dim::Dyn => format!("dimension {i} is a run-time extent"),
                         _ => format!("dimension {i} is not a compile-time constant"),
                     })
                     .unwrap_or_else(|| "the shape is not statically known".to_string());
@@ -635,7 +636,7 @@ impl<'a> TypeChecker<'a> {
     /// Descends the wrappers, so a placement inside `Verified<..>`, `&..` or `*const ..` is found
     /// rather than only the outermost one. A tensor that states its own placement takes it; a
     /// wrapper's location applies only to a tensor that states none.
-    fn placed_tensors(&self, ty: &Type) -> Vec<(ElementType, Vec<Expr>, MemorySpace)> {
+    fn placed_tensors(&self, ty: &Type) -> Vec<(ElementType, Vec<Dim>, MemorySpace)> {
         let mut out = Vec::new();
         self.collect_placed_tensors(ty, &mut out);
         out
@@ -644,7 +645,7 @@ impl<'a> TypeChecker<'a> {
     fn collect_placed_tensors(
         &self,
         ty: &Type,
-        out: &mut Vec<(ElementType, Vec<Expr>, MemorySpace)>,
+        out: &mut Vec<(ElementType, Vec<Dim>, MemorySpace)>,
     ) {
         let before = out.len();
         match ty {
@@ -1030,10 +1031,7 @@ impl<'a> TypeChecker<'a> {
         let (_, dims, _) = Self::as_tensor_operand(ty)?;
         let mut out = Vec::new();
         for d in dims {
-            let crate::syntax::Expr::Number(n) = d else {
-                return None;
-            };
-            out.push(n.value.as_ref().parse::<u64>().ok()?);
+            out.push(d.literal()?.parse::<u64>().ok()?);
         }
         Some(out)
     }
@@ -1066,10 +1064,7 @@ impl<'a> TypeChecker<'a> {
             .map(|(_, dims, _)| dims.clone())
             .map(|dims| {
                 dims.iter()
-                    .map(|d| match d {
-                        crate::syntax::Expr::Number(n) => n.value.as_ref().parse::<u64>().ok(),
-                        _ => None,
-                    })
+                    .map(|d| d.literal().and_then(|v| v.parse::<u64>().ok()))
                     .collect::<Option<Vec<u64>>>()
             });
         // BOTH tiles, not just the source. The destination's declared

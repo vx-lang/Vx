@@ -412,8 +412,8 @@ impl<'a> TypeChecker<'a> {
                     }
                     let empty_env = std::collections::HashMap::new();
                     for (dt, ds) in dims_target.iter().zip(dims_source.iter()) {
-                        let vt = self.eval_expr(dt, &empty_env);
-                        let vs = self.eval_expr(ds, &empty_env);
+                        let vt = dt.as_static().and_then(|e| self.eval_expr(e, &empty_env));
+                        let vs = ds.as_static().and_then(|e| self.eval_expr(e, &empty_env));
                         if vt.is_some() && vs.is_some() {
                             if vt != vs {
                                 return false;
@@ -638,7 +638,7 @@ impl<'a> TypeChecker<'a> {
         false
     }
     /// The `(element, dims)` of the tensor at the core of a (possibly wrapped) type, if any.
-    pub(crate) fn tensor_of(ty: &Type) -> Option<(&ElementType, &[Expr])> {
+    pub(crate) fn tensor_of(ty: &Type) -> Option<(&ElementType, &[Dim])> {
         match ty {
             Type::Tensor(e, d, _) => Some((e, d.as_slice())),
             // A dynamic tensor is a tensor with no dimensions to report. Callers that size it

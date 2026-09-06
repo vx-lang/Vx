@@ -1245,7 +1245,10 @@ impl<'a> TypeChecker<'a> {
                         env.insert(k.clone(), v.clone());
                     }
                 }
-                if !dims.iter().all(|d| self.eval_expr(d, &env).is_some()) {
+                if !dims.iter().all(|d| {
+                    d.as_static()
+                        .is_some_and(|e| self.eval_expr(e, &env).is_some())
+                }) {
                     self.errors.push(
                         "a Tensor's shape is part of its type, so every extent has to be known \
                          at compile time; write `DynTensor<T>::uninit([..])` for a shape that is \
@@ -1312,7 +1315,11 @@ impl<'a> TypeChecker<'a> {
             }
             let all_static = dims.iter().all(|d| self.eval_expr(d, &env).is_some());
             if dims.is_empty() || all_static {
-                Some(Type::Tensor(el_ty, dims, None))
+                Some(Type::Tensor(
+                    el_ty,
+                    dims.into_iter().map(Dim::Static).collect(),
+                    None,
+                ))
             } else {
                 Some(Type::DynTensor(el_ty, None))
             }
@@ -1483,7 +1490,11 @@ impl<'a> TypeChecker<'a> {
                         e.len() == 2 && e.iter().all(|a| self.eval_expr(a, &env).is_some())
                     });
                     match extents {
-                        Some(dims) => Some(Type::Tensor(e, dims.to_vec(), None)),
+                        Some(dims) => Some(Type::Tensor(
+                            e,
+                            dims.iter().cloned().map(Dim::Static).collect(),
+                            None,
+                        )),
                         None => Some(Type::DynTensor(e, None)),
                     }
                 }
@@ -2089,7 +2100,9 @@ impl<'a> TypeChecker<'a> {
                     let empty_env = HashMap::new();
                     let mut src_elements = 1.0;
                     for d in dims {
-                        if let Some(Value::Number(v)) = self.eval_expr(d, &empty_env) {
+                        if let Some(Value::Number(v)) =
+                            d.as_static().and_then(|e| self.eval_expr(e, &empty_env))
+                        {
                             src_elements *= v;
                         } else {
                             self.errors.push(
@@ -2122,7 +2135,11 @@ impl<'a> TypeChecker<'a> {
                     }
 
                     return Some((
-                        Type::Tensor(el_ty.clone(), new_dims.clone(), top.clone()),
+                        Type::Tensor(
+                            el_ty.clone(),
+                            new_dims.iter().cloned().map(Dim::Static).collect(),
+                            top.clone(),
+                        ),
                         false,
                     ));
                 } else {
@@ -2169,11 +2186,11 @@ impl<'a> TypeChecker<'a> {
                 {
                     let empty_env = HashMap::new();
                     let mut new_dims = vec![
-                        Expr::Number(NumberExpr {
+                        Dim::Static(Expr::Number(NumberExpr {
                             value: "0".into(),
                             ty: Some(ElementType::I32),
                             span: Span::default()
-                        });
+                        }));
                         dims.len()
                     ];
                     if perm.len() != dims.len() {
