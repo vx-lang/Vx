@@ -221,6 +221,46 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// A note for a mismatch between two tensors of different rank: no cast changes a rank,
+    /// and the Debug rendering of the two types buries the one number that differs.
+    pub(crate) fn rank_note(expected: &Type, got: &Type) -> String {
+        match (
+            Self::as_tensor_operand(expected),
+            Self::as_tensor_operand(got),
+        ) {
+            (Some((_, ed, _)), Some((_, gd, _))) if ed.len() != gd.len() => format!(
+                "; rank {} does not match rank {}, and rank is static",
+                gd.len(),
+                ed.len()
+            ),
+            _ => String::new(),
+        }
+    }
+
+    /// A note when a `const` dimension in a parameter met a `?` in the argument: the name
+    /// stands for a compile-time extent, and the argument has none in that position.
+    pub(crate) fn const_extent_note(param: &Type, arg: &Type) -> String {
+        let (Some((_, pd, _)), Some((_, ad, _))) =
+            (Self::as_tensor_operand(param), Self::as_tensor_operand(arg))
+        else {
+            return String::new();
+        };
+        for (i, (p, a)) in pd.iter().zip(ad.iter()).enumerate() {
+            if let (
+                crate::syntax::Dim::Static(crate::syntax::Expr::Identifier(id)),
+                crate::syntax::Dim::Dyn,
+            ) = (p, a)
+            {
+                return format!(
+                    "; '{}' is a compile-time extent, but dimension {i} of the argument has a \
+                     run-time extent",
+                    id.name
+                );
+            }
+        }
+        String::new()
+    }
+
     /// The element type of any tensor operand, static or dynamic, under the checker-level
     /// wrappers. `as_tensor_operand` answers only for a statically shaped tensor, because it
     /// hands back the dimensions; a caller that needs to know *whether* it has a tensor, or only

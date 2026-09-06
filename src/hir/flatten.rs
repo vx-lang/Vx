@@ -841,10 +841,10 @@ impl<'r> Lowerer<'r> {
             // GEP-loads the pointee element — the element type recovered from the base's AST type,
             // since the layout erases a pointer's pointee (#242).
             Expr::IndexAccess(ix) => {
-                // `t.shape[k]`: the runtime extent of dimension k -- one construct, as on the
-                // AST path (the bare `.shape` member is never a value on its own).
+                // `t.extent(k)`, which the checker rewrote to this indexed-member form: the
+                // runtime extent of dimension k -- one construct, as on the AST path.
                 if let Expr::MemberAccess(ma) = &*ix.base {
-                    if ma.member.as_ref() == "shape" {
+                    if ma.member.as_ref() == "$extent" {
                         let t = self.lower_expr(&ma.base)?;
                         if matches!(t.ty, LoweredTy::Tensor { .. }) {
                             let k = self.lower_expr(&ix.index)?;

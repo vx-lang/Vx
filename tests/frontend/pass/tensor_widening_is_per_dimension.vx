@@ -11,7 +11,6 @@
 // per-dimension: `[512, 8]` -> `[?, 8]` forgets one extent, not both.
 //
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// XFAIL: *
 // CHECK-COUNT-2: memref.cast %{{.*}} : memref<512x8xf32> to memref<?x8xf32>
 // CHECK-NOT: memref<?x?xf32>
 

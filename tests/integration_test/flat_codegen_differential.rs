@@ -2500,7 +2500,7 @@ fn vec_index_sugar_program_runs() {
     assert!(run.status.success(), "vxc failed:\n{out}");
 }
 
-/// `t.shape[k]` is the runtime extent of dimension k. Nothing lowered the construct on
+/// `t.extent(k)` is the runtime extent of dimension k. Nothing lowered the construct on
 /// either backend (the AST path panicked "Cannot resolve member access shape", Vx#398);
 /// both now emit `memref.dim` as one construct.
 #[test]
@@ -2508,7 +2508,7 @@ fn flat_matches_ast_shape_query() {
     assert_parity(
         "fn main() -> i32 { let mut t = Tensor<f32>([3, 4]); \
          t[0][0] = 1.0; \
-         return t.shape[1]; }",
+         return t.extent(1); }",
         4,
     );
 }

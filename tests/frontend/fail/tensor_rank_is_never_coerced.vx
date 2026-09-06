@@ -12,7 +12,6 @@
 // `memref<?x?xf32>`. Rank is static, and no cast changes it.
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// XFAIL: *
 // CHECK: rank 1
 // CHECK-SAME: rank 2
 // CHECK-NOT: memref.cast

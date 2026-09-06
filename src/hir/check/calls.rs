@@ -633,8 +633,9 @@ impl<'a> TypeChecker<'a> {
                                 self.errors.error_with_code(
                                     crate::diagnostic::DiagnosticCode::E3003,
                                     format!(
-                                        "Type mismatch in argument {} for function '{}'. Expected {:?}, got {:?}",
-                                        i + 1, resolved_name, param_ty, arg_ty
+                                        "Type mismatch in argument {} for function '{}'. Expected {:?}, got {:?}{}",
+                                        i + 1, resolved_name, param_ty, arg_ty,
+                                        Self::rank_note(param_ty, &arg_ty)
                                     ),
                                     Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                                 );
@@ -693,8 +694,9 @@ impl<'a> TypeChecker<'a> {
                                 self.errors.error_with_code(
                                     crate::diagnostic::DiagnosticCode::E3003,
                                     format!(
-                                        "Type mismatch in argument {} for function '{}'. Expected {:?}, got {:?}",
-                                        i + 1, resolved_name, param_ty, arg_ty
+                                        "Type mismatch in argument {} for function '{}'. Expected {:?}, got {:?}{}",
+                                        i + 1, resolved_name, param_ty, arg_ty,
+                                        Self::rank_note(param_ty, &arg_ty)
                                     ),
                                     Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                                 );
@@ -751,8 +753,9 @@ impl<'a> TypeChecker<'a> {
                                 self.errors.error_with_code(
                                     crate::diagnostic::DiagnosticCode::E3003,
                                     format!(
-                                        "Type mismatch in argument {} for function '{}'. Expected {:?}, got {:?}",
-                                        i + 1, resolved_name, param_ty, arg_ty
+                                        "Type mismatch in argument {} for function '{}'. Expected {:?}, got {:?}{}",
+                                        i + 1, resolved_name, param_ty, arg_ty,
+                                        Self::rank_note(param_ty, &arg_ty)
                                     ),
                                     Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                                 );
@@ -1006,7 +1009,13 @@ impl<'a> TypeChecker<'a> {
                 let param_ty = &generic_func.params[i].1;
                 if !self.unify_types(param_ty, &arg_ty, &mut mapping) {
                     if !self.speculating {
-                        self.errors.push(format!("Failed to deduce types for generic function '{}': Expected {:?}, got {:?}", name, param_ty, arg_ty));
+                        self.errors.push(format!(
+                            "Failed to deduce types for generic function '{}': Expected {:?}, got {:?}{}",
+                            name,
+                            param_ty,
+                            arg_ty,
+                            Self::const_extent_note(param_ty, &arg_ty)
+                        ));
                     }
                     success = false;
                 }
@@ -1810,6 +1819,48 @@ impl<'a> TypeChecker<'a> {
                             path, _method
                         ));
                         return Type::Unknown;
+                    }
+                }
+
+                // `t.extent(i)`: the run-time extent of dimension `i`, an i32. Rewritten to the
+                // indexed-member form both lowerings carry, under a member name no source can
+                // spell, so a written `.shape` is refused while this is not.
+                if _method.as_ref() == "extent" {
+                    if let Some((_, dims, _)) = Self::as_tensor_operand(&base_ty) {
+                        let rank = dims.len();
+                        let index = match args.as_slice() {
+                            [Expr::Number(n)] => n.value.as_ref().parse::<usize>().ok(),
+                            _ => None,
+                        };
+                        let Some(i) = index else {
+                            self.errors.error_with_code(
+                                crate::diagnostic::DiagnosticCode::E3025,
+                                "`extent(i)` takes one literal dimension index".to_string(),
+                                Some(crate::diagnostic::SourceSpan::from_ast_span(&method_span)),
+                            );
+                            return Type::Scalar(ElementType::I32);
+                        };
+                        if i >= rank {
+                            self.errors.error_with_code(
+                                crate::diagnostic::DiagnosticCode::E3025,
+                                format!(
+                                    "`extent({i})` is out of range: the tensor has rank {rank}"
+                                ),
+                                Some(crate::diagnostic::SourceSpan::from_ast_span(&method_span)),
+                            );
+                            return Type::Scalar(ElementType::I32);
+                        }
+                        let index = args[0].clone();
+                        *expr = Expr::IndexAccess(IndexAccessExpr::new(
+                            Box::new(Expr::MemberAccess(MemberAccessExpr::new(
+                                obj.clone(),
+                                crate::symbol::Symbol::from("$extent"),
+                                method_span,
+                            ))),
+                            Box::new(index),
+                            method_span,
+                        ));
+                        return Type::Scalar(ElementType::I32);
                     }
                 }
 

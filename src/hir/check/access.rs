@@ -306,8 +306,9 @@ impl<'a> TypeChecker<'a> {
                 base: obj,
                 member,
                 struct_name: struct_name_field,
-                span: _,
+                span: ma_span,
             }) => {
+                let ma_span = *ma_span;
                 let old_skip = self.borrow.skip_borrow_check;
                 self.borrow.skip_borrow_check = true;
                 let obj_ty = self.check_expr_type_flag(obj, false);
@@ -455,8 +456,17 @@ impl<'a> TypeChecker<'a> {
                         self.errors
                             .push(format!("Module '{}' does not export '{}'", path, member));
                     }
-                } else if member.as_ref() == "shape" {
+                } else if member.as_ref() == "$extent" {
+                    // The form `t.extent(i)` is rewritten to; no source spells this member.
                     return Type::Tensor(ElementType::I32, vec![], None);
+                } else if member.as_ref() == "shape" && Self::tensor_operand_elem(&obj_ty).is_some()
+                {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E3024,
+                        "`.shape` is gone; write `extent(i)` for the run-time extent of dimension i"
+                            .to_string(),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(&ma_span)),
+                    );
                 } else {
                     self.errors
                         .push("Member access on non-struct type".to_string());

@@ -10,7 +10,6 @@
 // descriptor at run time.
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// XFAIL: *
 // CHECK: extent(2)
 // CHECK-SAME: rank 2
 

@@ -17,11 +17,11 @@
 // CHECK: arith.constant 0 : index
 // CHECK: return %{{.*}} : memref<?x?xf32>
 fn custom_matmul(a : DynTensor<f32>, b : DynTensor<f32>) -> DynTensor<f32> {
-  let mut result : DynTensor<f32> = DynTensor<f32>::uninit([a.shape[0], b.shape[1]]);
-  for i in 0..a.shape [0] {
-    for j in 0..b.shape [1] {
+  let mut result : DynTensor<f32> = DynTensor<f32>::uninit([a.extent(0), b.extent(1)]);
+  for i in 0..a.extent(0) {
+    for j in 0..b.extent(1) {
       result[i][j] = 0.0;
-      for k in 0..a.shape [1] {
+      for k in 0..a.extent(1) {
         result[i][j] += a[i][k] * b[k][j];
       }
     }

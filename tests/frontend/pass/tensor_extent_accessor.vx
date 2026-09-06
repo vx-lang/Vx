@@ -10,7 +10,6 @@
 // which answered on any value and typed its answer as a rank-0 tensor.
 //
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// XFAIL: *
 // CHECK-LABEL: func.func @size(
 // CHECK: memref.dim
 // CHECK: arith.index_cast %{{.*}} : index to i32

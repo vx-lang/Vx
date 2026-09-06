@@ -10,7 +10,6 @@
 // not bound to a value that does not exist until run time.
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// XFAIL: *
 // CHECK: 'N'
 // CHECK-SAME: run-time extent
 

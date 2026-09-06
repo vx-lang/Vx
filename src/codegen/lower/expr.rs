@@ -452,11 +452,11 @@ impl<'c> LowerToMelior<'c> for syntax::IndexAccessExpr {
         gen: &mut MeliorGenerator<'c>,
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Self::Output {
-        // `t.shape[k]`: the runtime extent of dimension k of a tensor -- `memref.dim`.
-        // The bare `.shape` member has no materialization (nothing lowers it, Vx#398);
-        // only the indexed form is a value, so it is recognized here as one construct.
+        // `t.extent(k)`, which the checker rewrote to this indexed-member form: the runtime
+        // extent of dimension k of a tensor -- `memref.dim`. The bare member has no
+        // materialization; only the indexed form is a value, so it is one construct here.
         if let syntax::Expr::MemberAccess(ma) = self.base.as_ref() {
-            if ma.member.as_ref() == "shape" {
+            if ma.member.as_ref() == "$extent" {
                 let (t_val, t_ty, block) = gen.generate_expr(&ma.base, block)?;
                 if t_ty.to_string().starts_with("memref<") {
                     let (i_val, i_ty, block) = gen.generate_expr(&self.index, block)?;

@@ -246,6 +246,12 @@ pub enum DiagnosticCode {
     /// handed an `f32` to a call expecting a memref. `Tensor<T, [..]>::fill(v)` is the spelling.
     /// The rank-0 wrap (`Tensor<f32, []> = 1.0`) is a different thing and stays legal.
     E3023,
+    /// `.shape[i]` on a tensor. It answered on any value, not only a tensor, and typed its
+    /// answer as a rank-0 tensor. `extent(i)` is the read of a run-time extent.
+    E3024,
+    /// `extent(i)` with an index that is not a literal below the tensor's rank. Rank is
+    /// static, so the index is checked here rather than read past the descriptor at run time.
+    E3025,
 
     // --- Borrow/Ownership Errors (E4xxx) ---
     /// Use of moved or consumed linear variable

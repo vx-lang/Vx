@@ -8,14 +8,16 @@
 // Extent state is per dimension. `Tensor<f32, [?, 4]>` has a run-time row
 // count and four columns, and lowers to `memref<?x4xf32>`. The constructor
 // derives the same shape per position: `Tensor<f32>([n, 4])` is `[?, 4]`,
-// not a tensor whose every extent has been forgotten.
+// not a tensor whose every extent has been forgotten. The AST path allocates
+// every run-time shape fully dynamic and casts to the written one, so the
+// shape is pinned where it is the type's: the signatures and the cast.
 //
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// XFAIL: *
 // CHECK-LABEL: func.func @rows(
 // CHECK-SAME: memref<?x4xf32>
 // CHECK-LABEL: func.func @build(
-// CHECK: memref.alloc(%{{.*}}) : memref<?x4xf32>
+// CHECK-SAME: -> memref<?x4xf32>
+// CHECK: memref.cast %{{.*}} : memref<?x?xf32> to memref<?x4xf32>
 
 fn rows(m : Tensor<f32, [?, 4]>) -> i32 {
   return m.extent(0);

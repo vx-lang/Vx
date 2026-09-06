@@ -10,7 +10,6 @@
 // refusal names it.
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// XFAIL: *
 // CHECK: `.shape`
 // CHECK-SAME: extent(
 
