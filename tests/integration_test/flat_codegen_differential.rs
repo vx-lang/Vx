@@ -1225,6 +1225,26 @@ fn flat_matches_ast_inline_mlir_as_an_if_branch() {
 }
 
 #[test]
+fn flat_matches_ast_match_over_integer_literals() {
+    // Literal arms over an `i32` subject, a wildcard default, and a fall-through arm body.
+    // 100 + 111 + 200 + 200 - 569.
+    assert_parity(
+        "fn pick(n : i32) -> i32 { let mut r = 0; match n { 0 => { r = 100; } 1 => { r = 111; } \
+           _ => { r = 200; } } return r; }\n\
+         fn main() -> i32 { return pick(0) + pick(1) + pick(7) + pick(0 - 1) - 569; }",
+        42,
+    );
+    // An identifier arm binds the subject as the default. Flat-only: the oracle has no
+    // lowering for a bare identifier pattern. 1 + 40 + 1.
+    assert_flat_exit(
+        "fn f(n : i32) -> i32 { let mut r = 0; match n { 3 => { r = 1; } k => { r = k * 2; } } \
+           return r; }\n\
+         fn main() -> i32 { return f(3) + f(20) + 1; }",
+        42,
+    );
+}
+
+#[test]
 fn flat_matches_ast_tensor_store_element_coercion() {
     // A default-`f32` float literal stored into a non-`f32` tensor is coerced to the element type at
     // the store (`bf16` -> `arith.truncf`), matching the AST's `coerce_type` before its `memref.store`

@@ -1659,11 +1659,39 @@ impl<'r> Lowerer<'r> {
         Ok(())
     }
 
+    /// One guarded arm of a statement `match`: branch on `cond` to the arm's body, which goes on
+    /// to `merge`, or to the next arm's test, which continues in the else block.
+    fn lower_guarded_arm(
+        &mut self,
+        cond: Register,
+        arm: &crate::syntax::MatchArm,
+        merge: u32,
+    ) -> Lowered<()> {
+        let body_b = self.new_block();
+        let next_b = self.new_block();
+        self.emit_effect(
+            Opcode::CondBr,
+            cond,
+            Register(0),
+            pack_targets(body_b, next_b),
+        );
+        self.emit_effect(Opcode::BlockStart, Register(0), Register(0), body_b as u64);
+        for s in &arm.body {
+            self.lower_stmt(s)?;
+        }
+        if !self.block_terminated() {
+            self.emit_effect(Opcode::Br, Register(0), Register(0), merge as u64);
+        }
+        self.emit_effect(Opcode::BlockStart, Register(0), Register(0), next_b as u64);
+        Ok(())
+    }
+
     /// Lower a *statement-form* `match <subject> { <arms> }` over a payload-free enum (#227). The
     /// subject is an `i32` discriminant; each `EnumVariant` arm becomes a `cmp subject == ordinal` +
     /// conditional branch to the arm body (taken) or the next arm's test (else) — the same eq-compare
-    /// chain the AST codegen emits. A `Wildcard` arm is the unconditional default. Data-carrying
-    /// patterns (payload bindings), literal/identifier patterns, and value-producing `match` decline.
+    /// chain the AST codegen emits; a literal arm over an integer subject is the same chain. A
+    /// `Wildcard` arm is the unconditional default, and so is an identifier arm, with the subject
+    /// bound under the name. Payload bindings and value-producing `match` decline.
     fn lower_match(&mut self, m: &crate::syntax::MatchExpr) -> Lowered<()> {
         // A data-carrying enum match (`match o { Option<i32>::Some(v) => .. None => .. }`, #242): the
         // subject is a `{ tag, payload }` aggregate, dispatched on its tag field. Detected from the
@@ -1731,23 +1759,24 @@ impl<'r> Lowerer<'r> {
                         ElementType::Bool,
                         rel_code(&RelationalOp::Eq),
                     );
-                    let body_b = self.new_block();
-                    let next_b = self.new_block();
-                    self.emit_effect(
-                        Opcode::CondBr,
-                        cond.reg,
-                        Register(0),
-                        pack_targets(body_b, next_b),
+                    self.lower_guarded_arm(cond.reg, arm, merge)?;
+                }
+                // A literal arm (`0 => ..`): the same chain, with the literal as the tag.
+                crate::syntax::Pattern::Literal(lit) => {
+                    let lit_v = self.lower_expr(lit)?;
+                    if !matches!(lit_v.ty, LoweredTy::Scalar(ElementType::I32)) {
+                        return Err(Decline::TypeNotModelled {
+                            what: "a literal match pattern that is not an i32",
+                        });
+                    }
+                    let cond = self.emit_value(
+                        Opcode::Cmp,
+                        subj.reg,
+                        lit_v.reg,
+                        ElementType::Bool,
+                        rel_code(&RelationalOp::Eq),
                     );
-                    self.emit_effect(Opcode::BlockStart, Register(0), Register(0), body_b as u64);
-                    for s in &arm.body {
-                        self.lower_stmt(s)?;
-                    }
-                    if !self.block_terminated() {
-                        self.emit_effect(Opcode::Br, Register(0), Register(0), merge as u64);
-                    }
-                    // Subsequent arm tests continue in the else block.
-                    self.emit_effect(Opcode::BlockStart, Register(0), Register(0), next_b as u64);
+                    self.lower_guarded_arm(cond.reg, arm, merge)?;
                 }
                 crate::syntax::Pattern::Wildcard => {
                     for s in &arm.body {
@@ -1759,11 +1788,17 @@ impl<'r> Lowerer<'r> {
                     // A wildcard is the default; any later arm is unreachable.
                     break;
                 }
-                _ => {
-                    return Err(Decline::Unsupported {
-                        what: "a literal or identifier match pattern",
-                    })
-                } // literal / identifier patterns not supported
+                // An identifier arm is the default with the subject bound under the name.
+                crate::syntax::Pattern::Identifier(name) => {
+                    self.scope.insert(name.clone(), Binding::Reg(subj.clone()));
+                    for s in &arm.body {
+                        self.lower_stmt(s)?;
+                    }
+                    if !self.block_terminated() {
+                        self.emit_effect(Opcode::Br, Register(0), Register(0), merge as u64);
+                    }
+                    break;
+                }
             }
         }
         // No wildcard matched: the final else block falls through to the merge.
