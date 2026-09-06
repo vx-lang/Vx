@@ -174,8 +174,24 @@ impl<'a> TypeChecker<'a> {
         let context = format!("variable '{}'", name);
         let binding_ty = if let Some(ann) = ty_ann {
             if !self.is_assignable(ann, &ty) {
-                self.errors
-                    .push(format!("Type mismatch in variable declaration '{}'", name));
+                let splat = matches!(
+                    (&*ann, &ty),
+                    (Type::Tensor(el, dims, _), Type::Scalar(s)) if !dims.is_empty() && el == s
+                );
+                if splat {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E3023,
+                        format!(
+                            "'{}' is a shaped tensor initialized from a scalar; write \
+                             `Tensor<..>::fill(v)` to fill every element with it",
+                            name
+                        ),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                    );
+                } else {
+                    self.errors
+                        .push(format!("Type mismatch in variable declaration '{}'", name));
+                }
             }
             // Capacity: a placed tensor annotation must fit its memory space.
             if !initializer_places_its_own {

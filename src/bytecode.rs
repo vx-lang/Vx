@@ -225,6 +225,10 @@ pub enum Opcode {
     /// fields are spoken for (`operand2` carries a memory-space dispatch id) and a register field
     /// pressed into service as a boolean is a decoding hazard, not a saving.
     TensorZero = 45,
+    /// Fill a freshly allocated tensor with a value (`Tensor<T, [..]>::fill(v)`, no result):
+    /// `operand1` is the buffer, `operand2` the value. Lowers to `linalg.fill`, the same fill
+    /// `TensorZero` emits, with the value the source wrote instead of a zero.
+    TensorFill = 46,
 }
 
 /// Reverse mode for `Opcode::AutoDiff`: the gradient, through `__enzyme_autodiff_grad_*`.

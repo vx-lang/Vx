@@ -238,6 +238,14 @@ pub enum DiagnosticCode {
     /// and passes something the callee never agreed to. Take a raw pointer and build the tensor
     /// in Vx (`DynTensor::from_ptr_2d`), which is what the corpus already does.
     E3022,
+    /// A shaped tensor initialized from a scalar.
+    ///
+    /// `let a : Tensor<f32, [128, 64]> = 1.0` allocated and filled a whole buffer from something
+    /// that reads as an assignment, and the two codegen paths disagreed about it: the AST path
+    /// emitted the allocation and a `linalg.fill`, the flat path kept the bare constant and
+    /// handed an `f32` to a call expecting a memref. `Tensor<T, [..]>::fill(v)` is the spelling.
+    /// The rank-0 wrap (`Tensor<f32, []> = 1.0`) is a different thing and stays legal.
+    E3023,
 
     // --- Borrow/Ownership Errors (E4xxx) ---
     /// Use of moved or consumed linear variable

@@ -489,7 +489,7 @@ impl<'a> Parser<'a> {
     fn parse_tensor_constructor(&mut self, ty: Type, span: Span) -> ParseResult<'a, Expr> {
         self.consume(&TokenType::DoubleColon, "Expected '::' after a tensor type")?;
         let ctor = self.expect_identifier("Expected a constructor after a tensor type")?;
-        if ctor != "new" && ctor != "uninit" {
+        if ctor != "new" && ctor != "uninit" && ctor != "fill" {
             return Err(self.error(
                 "A tensor type is built with `::new()` for zeroed storage or `::uninit()` for \
                  storage left as it was found",

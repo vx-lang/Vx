@@ -1,0 +1,33 @@
+//===- tensor_fill_constructor.vx - Vx Compiler -----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// `Tensor<T, [..]>::fill(v)` allocates and writes `v` into every element. It
+// replaces `let a : Tensor<f32, [2, 2]> = 1.0`, which said the same thing by
+// looking like an assignment and lowered two different ways on the two paths.
+//
+// Read back rather than pinned only as IR: a `linalg.fill` that emits and does
+// not write is the failure this is for.
+//
+// This tier runs the AST backend, which allocates the buffer dynamically and
+// casts to the written shape, the way `::new()` and `::uninit()` already do.
+// The flat path allocates it static; both fill the same way.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: %[[BUF:.*]] = memref.alloc(%{{.*}}, %{{.*}}) : memref<?x?xf32>
+// CHECK: %[[V:.*]] = arith.constant 7.000000e+00 : f32
+// CHECK: linalg.fill ins(%[[V]] : f32) outs(%[[BUF]] : memref<?x?xf32>)
+
+fn main() -> i32 {
+  let a = Tensor<f32, [2, 2]>::fill(7.0);
+  // Exit 0 only if the last element really carries the value: an allocation
+  // that emits the fill and does not write it reads back as something else.
+  if a[1][1] as i32 == 7 {
+    return 0;
+  }
+  return 1;
+}

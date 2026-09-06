@@ -138,7 +138,12 @@ impl ExtentSite {
 fn is_tensor_alloc_call(fc: &crate::syntax::FunctionCallExpr) -> bool {
     matches!(
         fc.name.as_ref(),
-        "Tensor" | "Tensor::new" | "Tensor::uninit" | "DynTensor::new" | "DynTensor::uninit"
+        "Tensor"
+            | "Tensor::new"
+            | "Tensor::uninit"
+            | "Tensor::fill"
+            | "DynTensor::new"
+            | "DynTensor::uninit"
     )
 }
 
@@ -2582,6 +2587,11 @@ impl<'r> Lowerer<'r> {
             // so the allocation is the same one either way and only the fill is conditional.
             if fc.name.as_ref().ends_with("::new") {
                 self.emit_effect(Opcode::TensorZero, buf.reg, Register(0), 0);
+            }
+            // `::fill(v)` writes `v` into every element, where `::new()` writes a zero.
+            if fc.name.as_ref() == "Tensor::fill" {
+                let v = self.lower_expr(fc.args.first()?).ok()?;
+                self.emit_effect(Opcode::TensorFill, buf.reg, v.reg, 0);
             }
             return Some(buf);
         }

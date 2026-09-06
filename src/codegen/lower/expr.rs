@@ -1855,6 +1855,23 @@ pub(super) fn emit_zero_fill<'c>(
         .add_attributes(&[(Identifier::new(gen.context, "value"), zero_attr)])
         .build()?;
     let zero_val: Value = block.append_operation(zero_op).result(0)?.into();
+    emit_value_fill(gen, block, dst_val, zero_val, el_ty_str)
+}
+
+/// Emit `linalg.fill(v)` over a whole buffer.
+///
+/// `::new()` fills with a zero it makes itself; `::fill(v)` fills with a value the caller already
+/// lowered. One fill either way, so a tensor gets its contents one way.
+pub(super) fn emit_value_fill<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    block: &melior::ir::BlockRef<'c, 'c>,
+    dst_val: Value<'c, 'c>,
+    fill_val: Value<'c, 'c>,
+    el_ty_str: &str,
+) -> Result<(), LowerError> {
+    let el_ty = Type::parse(gen.context, el_ty_str)
+        .ok_or_else(|| LowerError::ParseType(el_ty_str.to_string()))?;
+    let zero_val = fill_val;
 
     // linalg.fill: one block argument (the value), yielded straight out.
     let region_fill = Region::new();
@@ -2241,8 +2258,21 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
 
         if matches!(
             name.as_ref(),
-            "Tensor" | "Tensor::new" | "Tensor::uninit" | "DynTensor::new" | "DynTensor::uninit"
+            "Tensor"
+                | "Tensor::new"
+                | "Tensor::uninit"
+                | "Tensor::fill"
+                | "DynTensor::new"
+                | "DynTensor::uninit"
         ) {
+            // `Tensor<T, [d0, d1]>::fill(v)` takes its shape from the type like `::new()` does, so
+            // the call argument is the fill value rather than an extent. Captured before `args` is
+            // rebound to the normalised shape below.
+            let fill_expr: Option<Expr> = if name.as_ref() == "Tensor::fill" {
+                args.first().cloned()
+            } else {
+                None
+            };
             // `Tensor<T, [d0, d1]>::uninit()` writes its element and shape in the type; the older
             // `Tensor<T>([d0, d1])` splits them between the generic argument and the call
             // arguments. Normalising the first into the second's shape -- one array argument of
@@ -2339,6 +2369,11 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             // emits before it accumulates, so there is one answer to what zero is per element.
             if name.as_ref().ends_with("::new") {
                 emit_zero_fill(gen, &block, alloc_val, &mlir_ty_str)?;
+            }
+            if let Some(fe) = &fill_expr {
+                let (fill_val, _fill_ty, block) = gen.generate_expr(fe, block)?;
+                emit_value_fill(gen, &block, alloc_val, fill_val, &mlir_ty_str)?;
+                return Ok((alloc_val, tensor_ty, block));
             }
             return Ok((alloc_val, tensor_ty, block));
         }

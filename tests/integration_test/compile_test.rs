@@ -1355,7 +1355,7 @@ fn run_shell_tests(path: &Path) -> Result<(), String> {
 
 #[test]
 fn test_melior_matmul() -> Result<(), String> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/middle_end/pass/matmul.mlr");
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/middle_end/pass/matmul.vx");
     let mut loader = vxc::module_loader::ModuleLoader::new();
     loader
         .load_main(path.to_str().unwrap())

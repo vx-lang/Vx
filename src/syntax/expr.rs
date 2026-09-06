@@ -845,7 +845,11 @@ pub fn is_tensor_construction(e: &Expr) -> bool {
             let n = fc.name.as_ref();
             if matches!(
                 n,
-                "Tensor::new" | "Tensor::uninit" | "DynTensor::new" | "DynTensor::uninit"
+                "Tensor::new"
+                    | "Tensor::uninit"
+                    | "Tensor::fill"
+                    | "DynTensor::new"
+                    | "DynTensor::uninit"
             ) {
                 return true;
             }

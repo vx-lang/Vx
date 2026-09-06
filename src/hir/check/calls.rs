@@ -1205,7 +1205,11 @@ impl<'a> TypeChecker<'a> {
         // carry a placement at all -- there is nowhere in `Tensor<f32>([4, 4])` to put one.
         if matches!(
             resolved_name,
-            "Tensor::new" | "Tensor::uninit" | "DynTensor::new" | "DynTensor::uninit"
+            "Tensor::new"
+                | "Tensor::uninit"
+                | "Tensor::fill"
+                | "DynTensor::new"
+                | "DynTensor::uninit"
         ) {
             let Some(ty) = explicit_generic_args.first() else {
                 self.errors
@@ -1213,10 +1217,14 @@ impl<'a> TypeChecker<'a> {
                 return Some(Type::Unknown);
             };
             // A static shape lives in the type and a dynamic one in the argument, so each form
-            // takes exactly the arguments the other cannot.
-            let wanted = usize::from(matches!(ty, Type::DynTensor(..)));
+            // takes exactly the arguments the other cannot. `::fill(v)` adds one on top: the
+            // value, which no other constructor takes.
+            let fills = resolved_name == "Tensor::fill";
+            let wanted = usize::from(matches!(ty, Type::DynTensor(..))) + usize::from(fills);
             if args.len() != wanted {
-                let why = if wanted == 0 {
+                let why = if fills {
+                    "`::fill` takes the value to write into every element"
+                } else if wanted == 0 {
                     "a Tensor's shape is part of its type, so the constructor takes no arguments"
                 } else {
                     "a DynTensor's shape is not part of its type, so the constructor takes it: \

@@ -25,7 +25,7 @@ fn process_tensor(val: Tensor<f32, [128, 128]>) -> Tensor<f32, [256]> {
 // CHECK-NEXT: return %[[V]] : memref<256xf32>
 
 fn main() -> i32 {
-  let v : Tensor<f32, [ 128, 128 ]> = 1.0;
+  let v = Tensor<f32, [ 128, 128 ]>::fill(1.0);
   process_tensor(v);
   return 0;
 }

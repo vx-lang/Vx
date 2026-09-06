@@ -1860,7 +1860,11 @@ impl<'c> MeliorGenerator<'c> {
                 // nothing to recover -- hand it back as written.
                 if matches!(
                     name.as_str(),
-                    "Tensor::new" | "Tensor::uninit" | "DynTensor::new" | "DynTensor::uninit"
+                    "Tensor::new"
+                        | "Tensor::uninit"
+                        | "Tensor::fill"
+                        | "DynTensor::new"
+                        | "DynTensor::uninit"
                 ) {
                     return fc.type_args.as_ref().and_then(|a| a.first()).cloned();
                 }

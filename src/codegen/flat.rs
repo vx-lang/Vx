@@ -1689,6 +1689,8 @@ impl<'a> FnEmit<'a> {
             // Zero the buffer a preceding `TensorAlloc` produced (`::new()` rather than
             // `::uninit()`): `linalg.fill`, the same fill a matmul emits before accumulating.
             Opcode::TensorZero => self.op_tensor_zero(idx, ins),
+            // Fill the buffer a preceding `TensorAlloc` produced with a value (`::fill(v)`).
+            Opcode::TensorFill => self.op_tensor_fill(idx, ins),
             // Index a tensor along its outermost dimension. `operand1` is the base tensor (memref),
             // `operand2` the index (`arith.index_cast` to `index`). A scalar-element result
             // (`type_idx` is a scalar GID) is a value read (`imm = 0` → `memref.load`) or an element

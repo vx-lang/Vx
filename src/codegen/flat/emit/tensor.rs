@@ -94,6 +94,30 @@ impl FnEmit<'_> {
         Ok(())
     }
 
+    /// Fill a freshly allocated tensor with a value (`Tensor<T, [..]>::fill(v)`): `linalg.fill`
+    /// with the value the source wrote, where `TensorZero` supplies a zero of its own.
+    pub(crate) fn op_tensor_fill(&mut self, _idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let t = self
+            .names
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        let memty = self
+            .mem_of
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone()
+            .ok_or(crate::emitter_gap!())?;
+        let et = memref_element(&memty).ok_or(crate::emitter_gap!())?;
+        let v = self
+            .names
+            .get(ins.operand2.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        self.body += &format!("  linalg.fill ins({v} : {et}) outs({t} : {memty})\n");
+        Ok(())
+    }
+
     // The runtime extent of one dimension: `memref.dim %t, %k` (`t.shape[k]`). The index
     // operand arrives as a scalar and is cast to `index`; the result is cast back to `i32`,
     // the type the checker gives the expression.

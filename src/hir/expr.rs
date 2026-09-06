@@ -549,12 +549,15 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
-        // A scalar is assignable to a tensor of the *identical* element only: dims-less wraps
-        // it as a rank-0 tensor, shaped is a splat (the reshape corpus). The any-to-any arm
-        // went with the rest of implicit numeric conversion (#240, Vx#396).
-        if let Type::Tensor(t_target, _, _) = target {
+        // A scalar is assignable to a RANK-0 tensor of the identical element, which wraps it.
+        // A shaped tensor is not: that spelling was a splat, and it allocated and filled a whole
+        // buffer from something that reads as an assignment. The two codegen paths did not even
+        // agree on it -- one emitted the allocation and the fill, the other kept the bare
+        // constant. `Tensor<T, [..]>::fill(v)` says it instead. The any-to-any arm went with the
+        // rest of implicit numeric conversion (#240, Vx#396).
+        if let Type::Tensor(t_target, dims_target, _) = target {
             if let Type::Scalar(t_source) = &source {
-                return *t_target == *t_source;
+                return dims_target.is_empty() && *t_target == *t_source;
             }
         }
 
