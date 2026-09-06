@@ -1373,6 +1373,9 @@ impl<'r> Lowerer<'r> {
                 what: "a spawn expression whose region has no value",
             }),
             Expr::InlineMlir(im) => self.lower_inline_mlir(im),
+            Expr::MethodCall(mc) if matches!(mc.method_name.as_ref(), "reshape" | "transpose") => {
+                self.lower_tensor_reshape(mc)
+            }
             // The differentiated calls. All three go through one opcode; see `lower_autodiff`.
             Expr::Grad(g) => self.lower_autodiff(&g.target_fn, &g.args, false, None),
             Expr::Vjp(v) => self.lower_autodiff(&v.target_fn, &v.args, false, Some(&v.cotangent)),
@@ -2955,6 +2958,76 @@ impl<'r> Lowerer<'r> {
     /// An inline `mlir!` block: each named input lowered and passed as an `Arg`, then one
     /// `InlineMlir` whose `imm` indexes the function's block table and whose type is the block's
     /// declared result. A void block gets the placeholder a void call gets: a type never read.
+    /// `t.reshape([dims..])` and `t.transpose([perm..])` on a statically shaped tensor: a view
+    /// with the new sizes over the same buffer, or the axes permuted, which the emitter copies
+    /// into a fresh contiguous buffer, as the oracle does. The extents and the permutation are
+    /// literals; a `PadMode` argument is accepted and unused, as the oracle treats it.
+    fn lower_tensor_reshape(&mut self, mc: &crate::syntax::MethodCallExpr) -> Lowered<Val> {
+        let src = self.lower_expr(&mc.base)?;
+        let LoweredTy::Tensor { elem, shape } = &src.ty else {
+            return Err(Decline::TypeNotModelled {
+                what: "a reshape of something that is not a tensor",
+            });
+        };
+        if shape.iter().any(|d| d == DYN_DIM) {
+            return Err(Decline::TypeNotModelled {
+                what: "a reshape of a tensor with a run-time extent",
+            });
+        }
+        let Some(Expr::Array(arr)) = mc.args.first() else {
+            return Err(Decline::TypeNotModelled {
+                what: "a reshape whose shape is not an array literal",
+            });
+        };
+        let mut vals: Vec<usize> = Vec::with_capacity(arr.elements.len());
+        for el in &arr.elements {
+            let Expr::Number(n) = el else {
+                return Err(Decline::TypeNotModelled {
+                    what: "a reshape extent that is not a literal",
+                });
+            };
+            vals.push(
+                n.value
+                    .as_ref()
+                    .parse()
+                    .map_err(|_| Decline::TypeNotModelled {
+                        what: "a reshape extent that is not an integer",
+                    })?,
+            );
+        }
+        let (elem, shape) = (elem.clone(), shape.clone());
+        if mc.method_name.as_ref() != "transpose" {
+            let shape = vals.iter().map(|v| v.to_string()).collect();
+            let ty = LoweredTy::Tensor { elem, shape };
+            return Ok(self.emit_typed(Opcode::TensorReshape, src.reg, Register(0), ty, 0));
+        }
+        let rank = shape.len();
+        let mut seen = vec![false; rank];
+        for &p in &vals {
+            if p >= rank || seen[p] {
+                return Err(Decline::TypeNotModelled {
+                    what: "a transpose whose permutation does not fit the rank",
+                });
+            }
+            seen[p] = true;
+        }
+        if vals.len() != rank || rank > 16 {
+            return Err(Decline::TypeNotModelled {
+                what: "a transpose whose permutation does not fit the rank",
+            });
+        }
+        let permuted = vals.iter().map(|&p| shape[p].clone()).collect();
+        let imm = vals
+            .iter()
+            .enumerate()
+            .fold(0u64, |acc, (i, &p)| acc | ((p as u64) << (4 * i)));
+        let ty = LoweredTy::Tensor {
+            elem,
+            shape: permuted,
+        };
+        Ok(self.emit_typed(Opcode::TensorTranspose, src.reg, Register(0), ty, imm))
+    }
+
     fn lower_inline_mlir(&mut self, im: &crate::syntax::expr::InlineMlirExpr) -> Lowered<Val> {
         let mut regs = Vec::with_capacity(im.inputs.len());
         for (_, e, _) in &im.inputs {

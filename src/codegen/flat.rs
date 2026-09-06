@@ -1734,6 +1734,8 @@ impl<'a> FnEmit<'a> {
             // A rank-2 view over caller-owned memory: a memref descriptor built over the pointer.
             Opcode::TensorView => self.op_tensor_view(idx, ins),
             Opcode::InlineMlir => self.op_inline_mlir(idx, ins),
+            Opcode::TensorReshape => self.op_tensor_reshape(idx, ins),
+            Opcode::TensorTranspose => self.op_tensor_transpose(idx, ins),
             // Index a tensor along its outermost dimension. `operand1` is the base tensor (memref),
             // `operand2` the index (`arith.index_cast` to `index`). A scalar-element result
             // (`type_idx` is a scalar GID) is a value read (`imm = 0` → `memref.load`) or an element

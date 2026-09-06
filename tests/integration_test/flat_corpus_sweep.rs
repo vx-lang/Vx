@@ -38,13 +38,11 @@ const KNOWN_DECLINES: &[&str] = &[
     "middle_end/pass/fnval_indirect_call.vx",
     "middle_end/pass/implicit_transfer.vx",
     "middle_end/pass/pinned_annotation_struct_field.vx",
-    "middle_end/pass/reshape_pad.vx",
     // A parameter with run-time extents (Vx#409). It used to compile through the flat path
     // while the dims-less spelling let it read as rank-0: `topology.vx` got a `memref<f32>`
     // signature where the AST oracle gives `memref<?x?xf32>`, two ABIs for one function, plus
     // a dropped vx.transfer. Declining is the honest answer until the flat lowerer carries
     // run-time extents.
-    "middle_end/pass/reshape_transpose.vx",
     "middle_end/pass/topology_polymorphism.vx",
     "optimizations/pass/kernel_kind_matmul.vx",
     "warnings/pass/lowering_declined_for_dynamic_tile.vx",

@@ -100,6 +100,115 @@ impl FnEmit<'_> {
     /// the memref-to-LLVM conversion materializes one. A `?` extent is the `Arg` before this
     /// instruction; a static one is the type's. Nothing here checks the extents against the
     /// memory: that is the caller's claim, which is why the surface form needs `unsafe`.
+    // The result tensor of a view-producing op, and the source's name, memref type and static
+    // sizes; a source with a run-time extent or a strided layout is not reinterpreted here.
+    fn view_operands(&self, ins: &HirInstruction) -> Lowered<ViewSource> {
+        let gid = *self
+            .types
+            .get(ins.type_idx.0 as usize)
+            .ok_or(crate::emitter_gap!())?;
+        let (elem, shape) = self
+            .ctx
+            .tensors
+            .get(&gid)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        let s = ins.operand1.0 as usize;
+        let src = self.names.get(s).ok_or(crate::emitter_gap!())?.clone();
+        let src_mem = self
+            .mem_of
+            .get(s)
+            .cloned()
+            .flatten()
+            .ok_or(crate::emitter_gap!())?;
+        if src_mem.contains("strided") {
+            return Err(crate::emitter_gap!());
+        }
+        let sizes: Vec<i64> = src_mem
+            .trim_start_matches("memref<")
+            .split('x')
+            .map_while(|t| t.parse().ok())
+            .collect();
+        Ok(ViewSource {
+            elem,
+            shape,
+            src,
+            src_mem,
+            src_sizes: sizes,
+        })
+    }
+
+    // `TensorReshape`: the source buffer reinterpreted with the result's sizes and contiguous
+    // strides, the way the oracle lowers `reshape`.
+    pub(crate) fn op_tensor_reshape(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let ViewSource {
+            elem,
+            shape,
+            src,
+            src_mem,
+            ..
+        } = self.view_operands(ins)?;
+        let sizes: Vec<i64> = shape
+            .iter()
+            .map(|d| d.parse().map_err(|_| crate::emitter_gap!()))
+            .collect::<Lowered<_>>()?;
+        let memty = tensor_memref_ty(&elem, &shape).ok_or(crate::emitter_gap!())?;
+        let n = format!("%v{idx}");
+        self.body += &format!(
+            "  {n} = memref.reinterpret_cast {src} to offset: [0], sizes: [{}], strides: [{}] : {src_mem} to {memty}\n",
+            i64_list(&sizes),
+            i64_list(&contiguous_strides(&sizes))
+        );
+        self.names[idx] = n;
+        self.mem_of[idx] = Some(memty);
+        Ok(())
+    }
+
+    // `TensorTranspose`: a strided view with the axes permuted, copied into a fresh contiguous
+    // buffer of the result shape, the way the oracle lowers `transpose`.
+    pub(crate) fn op_tensor_transpose(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let ViewSource {
+            elem,
+            shape,
+            src,
+            src_mem,
+            src_sizes,
+        } = self.view_operands(ins)?;
+        let rank = shape.len();
+        if src_sizes.len() != rank {
+            return Err(crate::emitter_gap!());
+        }
+        let src_strides = contiguous_strides(&src_sizes);
+        let perm: Vec<usize> = (0..rank)
+            .map(|i| ((ins.imm >> (4 * i)) & 0xF) as usize)
+            .collect();
+        if perm.iter().any(|&p| p >= rank) {
+            return Err(crate::emitter_gap!());
+        }
+        let view_sizes: Vec<i64> = perm.iter().map(|&p| src_sizes[p]).collect();
+        let view_strides: Vec<i64> = perm.iter().map(|&p| src_strides[p]).collect();
+        let el = mlir_scalar(&elem).ok_or(crate::emitter_gap!())?;
+        let dims: Vec<String> = view_sizes.iter().map(|d| d.to_string()).collect();
+        let view_ty = format!(
+            "memref<{}x{el}, strided<[{}], offset: 0>>",
+            dims.join("x"),
+            i64_list(&view_strides)
+        );
+        let memty = tensor_memref_ty(&elem, &shape).ok_or(crate::emitter_gap!())?;
+        let v = format!("%tvw{idx}");
+        let n = format!("%v{idx}");
+        self.body += &format!(
+            "  {v} = memref.reinterpret_cast {src} to offset: [0], sizes: [{}], strides: [{}] : {src_mem} to {view_ty}\n",
+            i64_list(&view_sizes),
+            i64_list(&view_strides)
+        );
+        self.body += &format!("  {n} = memref.alloc() : {memty}\n");
+        self.body += &format!("  memref.copy {v}, {n} : {view_ty} to {memty}\n");
+        self.names[idx] = n;
+        self.mem_of[idx] = Some(memty);
+        Ok(())
+    }
+
     pub(crate) fn op_tensor_view(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
         let gid = *self
             .types
@@ -1014,4 +1123,30 @@ impl FnEmit<'_> {
         }
         Ok(())
     }
+}
+
+/// What a view-producing op reinterprets: the result tensor, and the source's name, memref type
+/// and static sizes.
+struct ViewSource {
+    elem: ElementType,
+    shape: Vec<String>,
+    src: String,
+    src_mem: String,
+    src_sizes: Vec<i64>,
+}
+
+/// Row-major strides for static sizes: the last axis is unit.
+fn contiguous_strides(sizes: &[i64]) -> Vec<i64> {
+    let mut strides = vec![1i64; sizes.len()];
+    for i in (0..sizes.len().saturating_sub(1)).rev() {
+        strides[i] = strides[i + 1] * sizes[i + 1];
+    }
+    strides
+}
+
+fn i64_list(v: &[i64]) -> String {
+    v.iter()
+        .map(|x| x.to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
 }

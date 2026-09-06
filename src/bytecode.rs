@@ -240,6 +240,13 @@ pub enum Opcode {
     /// An inline `mlir!` block: `imm` indexes the function's block table, the inputs are the
     /// `Arg`s before it, and the type is the block's declared result (a placeholder for void).
     InlineMlir = 48,
+    /// `t.reshape([..])`: `operand1` reinterpreted with the result type's sizes and contiguous
+    /// strides, over the same buffer.
+    TensorReshape = 49,
+    /// `t.transpose([..])`: `operand1` viewed with its axes permuted and copied into a fresh
+    /// buffer of the result type. `imm` packs the permutation, 4 bits per result axis, axis 0
+    /// lowest.
+    TensorTranspose = 50,
 }
 
 /// Reverse mode for `Opcode::AutoDiff`: the gradient, through `__enzyme_autodiff_grad_*`.
@@ -305,6 +312,8 @@ impl Opcode {
             46 => TensorFill,
             47 => TensorView,
             48 => InlineMlir,
+            49 => TensorReshape,
+            50 => TensorTranspose,
             _ => return None,
         })
     }

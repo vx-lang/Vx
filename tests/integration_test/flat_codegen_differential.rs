@@ -1245,6 +1245,25 @@ fn flat_matches_ast_match_over_integer_literals() {
 }
 
 #[test]
+fn flat_matches_ast_reshape_and_transpose() {
+    // A reshape reads the same buffer under new extents (t[1][2] is r[5]); a transpose copies
+    // the permuted view (u[1][0] is p[0][1]); a rank-3 transpose then reshape reads the copy
+    // (w[1][0][2] is q[2][1][0], flat index 10). The tensors are parameters: the oracle panics
+    // on a reshape of a mutable local. 5 + 40 + 100.
+    assert_parity(
+        "fn rs(t : Tensor<f32, [2, 3]>) -> f32 { let r = t.reshape([6]); return r[5]; }\n\
+         fn tr(u : Tensor<f32, [2, 3]>) -> f32 { let p = u.transpose([1, 0]); return p[0][1]; }\n\
+         fn tr3(w : Tensor<f32, [2, 2, 3]>) -> f32 { let q = w.transpose([2, 0, 1]); \
+           let s = q.reshape([12]); return s[10]; }\n\
+         fn main() -> i32 { let mut t = Tensor<f32, [2, 3]>::fill(0.0); t[1][2] = 5.0; \
+           let mut u = Tensor<f32, [2, 3]>::fill(0.0); u[1][0] = 4.0; \
+           let mut w = Tensor<f32, [2, 2, 3]>::fill(0.0); w[1][0][2] = 1.0; \
+           return (rs(t) + tr(u) * 10.0 + tr3(w) * 100.0) as i32; }",
+        145,
+    );
+}
+
+#[test]
 fn flat_matches_ast_tensor_store_element_coercion() {
     // A default-`f32` float literal stored into a non-`f32` tensor is coerced to the element type at
     // the store (`bf16` -> `arith.truncf`), matching the AST's `coerce_type` before its `memref.store`
