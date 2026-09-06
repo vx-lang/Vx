@@ -197,7 +197,8 @@ fn flat_llvm(src: &str) -> Option<String> {
     let mut lowered: Vec<LocalWorkerState> = Vec::new();
     for f in &mods[0].functions {
         let mut worker = LocalWorkerState::new(session.clone());
-        if lower_function_to_hir(f, &mut worker).is_err() {
+        if let Err(e) = lower_function_to_hir(f, &mut worker) {
+            eprintln!("flat path declined `{}`: {e:?}", f.name);
             return None;
         }
         lowered.push(worker);
@@ -295,7 +296,8 @@ fn flat_module_mlir(src: &str) -> Option<String> {
     let mut lowered: Vec<LocalWorkerState> = Vec::new();
     for f in &mods[0].functions {
         let mut worker = LocalWorkerState::new(session.clone());
-        if lower_function_to_hir(f, &mut worker).is_err() {
+        if let Err(e) = lower_function_to_hir(f, &mut worker) {
+            eprintln!("flat path declined `{}`: {e:?}", f.name);
             return None;
         }
         lowered.push(worker);
@@ -344,6 +346,7 @@ fn flat_module_mlir(src: &str) -> Option<String> {
         &[],
         vxc::config::Schedule::Parallel,
     )
+    .map_err(|e| eprintln!("flat path failed to emit: {e:?}"))
     .ok()
 }
 
@@ -1179,6 +1182,44 @@ fn flat_matches_ast_inline_mlir() {
            macro.yield }; }\n\
          fn main() -> i32 { let mut t = Tensor<f32, [2, 3]>::fill(0.0); fill(&mut t, 7.0); \
            return (t[1][2] as i32) * 6; }",
+        42,
+    );
+}
+
+#[test]
+fn flat_matches_ast_inline_mlir_as_an_if_branch() {
+    // A value-position `if` whose branches are `mlir!` blocks, the stdlib's topology-dispatched
+    // shape: the branch type is the block's declared result. |44 - 2| both ways. Flat-only: the
+    // oracle fails verification on this program (a block-argument type mismatch at the merge).
+    assert_flat_exit(
+        "fn dist(a : i32, b : i32) -> i32 { let r = if a > b { \
+           mlir!(inputs : (%x = a : i32, %y = b : i32), clobbers : [], returns : i32, \
+           dialects : [\"arith\"]) { %s = arith.subi %x, %y : i32 \n func.return %s : i32 } \
+         } else { \
+           mlir!(inputs : (%x = a : i32, %y = b : i32), clobbers : [], returns : i32, \
+           dialects : [\"arith\"]) { %s = arith.subi %y, %x : i32 \n func.return %s : i32 } \
+         }; return r; }\n\
+         fn main() -> i32 { return dist(44, 2) + dist(2, 44) - 42; }",
+        42,
+    );
+    // The `comptime` form the stdlib writes: the checker folds the `if` to its surviving branch,
+    // in either direction, and that branch alone is the value.
+    assert_parity(
+        "fn dist(a : i32, b : i32) -> i32 { let r = if comptime true { \
+           mlir!(inputs : (%x = a : i32, %y = b : i32), clobbers : [], returns : i32, \
+           dialects : [\"arith\"]) { %s = arith.subi %x, %y : i32 \n func.return %s : i32 } \
+         } else { \
+           mlir!(inputs : (%x = a : i32, %y = b : i32), clobbers : [], returns : i32, \
+           dialects : [\"arith\"]) { %s = arith.subi %y, %x : i32 \n func.return %s : i32 } \
+         }; return r; }\n\
+         fn dist2(a : i32, b : i32) -> i32 { let r = if comptime false { \
+           mlir!(inputs : (%x = a : i32, %y = b : i32), clobbers : [], returns : i32, \
+           dialects : [\"arith\"]) { %s = arith.subi %x, %y : i32 \n func.return %s : i32 } \
+         } else { \
+           mlir!(inputs : (%x = a : i32, %y = b : i32), clobbers : [], returns : i32, \
+           dialects : [\"arith\"]) { %s = arith.subi %y, %x : i32 \n func.return %s : i32 } \
+         }; return r; }\n\
+         fn main() -> i32 { return dist(44, 2) + dist2(2, 44) - 42; }",
         42,
     );
 }

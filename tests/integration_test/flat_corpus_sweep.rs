@@ -36,7 +36,6 @@ const KNOWN_DECLINES: &[&str] = &[
     "frontend/pass/tensor_methods.vx",
     "frontend/pass/trait_topologies.vx",
     "frontend/pass/transfer_cost_advanced_dijkstra.vx",
-    "frontend/pass/vector_algorithms.vx",
     "middle_end/pass/fnval_indirect_call.vx",
     "middle_end/pass/implicit_transfer.vx",
     "middle_end/pass/match_int_literal_arms.vx",

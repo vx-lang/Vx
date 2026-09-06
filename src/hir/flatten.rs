@@ -73,6 +73,19 @@ pub fn enum_instance_gid(base: &str, args: &[Type]) -> TypeId {
     TypeId::new(0, sym, 0, 0)
 }
 
+/// The block a `comptime` `if` folded to. The checker evaluates the condition and empties the
+/// branch that lost, so the survivor is the then-block when it still has statements, else the
+/// else-block (or nothing). `None` for a run-time `if`.
+fn comptime_survivor(e: &crate::syntax::IfExpr) -> Option<&[Statement]> {
+    if !e.is_comptime {
+        return None;
+    }
+    if !e.then_block.is_empty() {
+        return Some(&e.then_block);
+    }
+    Some(e.else_block.as_deref().unwrap_or(&[]))
+}
+
 /// An inline `mlir!` block as the emitter needs it: the named inputs with their declared MLIR
 /// types, the body text, and whether it yields nothing.
 #[derive(Debug, Clone, PartialEq)]
@@ -1307,11 +1320,11 @@ impl<'r> Lowerer<'r> {
             // load the result. (The annotated `let v: T = if ..` form uses its annotation directly in
             // `lower_stmt`, a more precise path that this does not replace.)
             Expr::If(if_expr) => {
-                let result_ty =
-                    self.infer_block_ty(&if_expr.then_block)
-                        .ok_or(Decline::TypeNotModelled {
-                            what: "an if branch whose type cannot be inferred",
-                        })?;
+                let result_ty = self
+                    .infer_block_ty(comptime_survivor(if_expr).unwrap_or(&if_expr.then_block))
+                    .ok_or(Decline::TypeNotModelled {
+                        what: "an if branch whose type cannot be inferred",
+                    })?;
                 let slot = self.emit_alloca(result_ty.clone());
                 self.lower_if_into_slot(if_expr, slot.reg)?;
                 Ok(self.emit_typed(Opcode::SlotLoad, slot.reg, Register(0), result_ty, 0))
@@ -1406,7 +1419,9 @@ impl<'r> Lowerer<'r> {
                 let sig = self.registry.fn_sigs.get(&fc.name)?;
                 lowered_ty(&sig.ret_ty, self.registry)
             }
-            Expr::If(iff) => self.infer_block_ty(&iff.then_block),
+            Expr::If(iff) => self.infer_block_ty(comptime_survivor(iff).unwrap_or(&iff.then_block)),
+            // An inline `mlir!` block's value is its declared result.
+            Expr::InlineMlir(im) => lowered_ty(im.returns.as_ref()?, self.registry),
             Expr::UnsafeBlock(ub) => self.infer_expr_ty(ub.ret.as_deref()?),
             Expr::ComptimeBlock(cb) => self.infer_expr_ty(cb.ret.as_deref()?),
             _ => None,
@@ -1920,6 +1935,10 @@ impl<'r> Lowerer<'r> {
     /// then the merge block continues (a following `SlotLoad` yields the result). A value `if` must be
     /// total, so an `else` is required. (#201)
     fn lower_if_into_slot(&mut self, e: &crate::syntax::IfExpr, slot: Register) -> Lowered<()> {
+        // A folded `comptime` `if` is its surviving block; the condition is not evaluated.
+        if let Some(block) = comptime_survivor(e) {
+            return self.lower_block_into_slot(block, slot);
+        }
         let else_stmts = e.else_block.as_ref().ok_or(Decline::Unsupported {
             what: "an if with no else in value position",
         })?;
@@ -3799,15 +3818,23 @@ impl<'r> Lowerer<'r> {
                 }
                 // A value-position `if` (`let v: T = if c { .. } else { .. }`): allocate a result slot,
                 // have each branch store its trailing value into it, and bind the local to the slot
-                // (the merge block loads it). The slot type comes from the `let`'s annotation (#201).
+                // (the merge block loads it). The slot type comes from the `let`'s annotation, else
+                // from the then-branch's trailing value.
                 if let Expr::If(if_expr) = &l.expr {
-                    let ty_ann = l.ty_ann.as_ref().ok_or(Decline::TypeNotModelled {
-                        what: "a let with no type annotation",
-                    })?;
-                    let result_ty =
-                        lowered_ty(ty_ann, self.registry).ok_or(Decline::TypeNotModelled {
-                            what: "a let whose annotated type is not modelled",
-                        })?;
+                    let result_ty = match l.ty_ann.as_ref() {
+                        Some(ann) => {
+                            lowered_ty(ann, self.registry).ok_or(Decline::TypeNotModelled {
+                                what: "a let whose annotated type is not modelled",
+                            })?
+                        }
+                        None => self
+                            .infer_block_ty(
+                                comptime_survivor(if_expr).unwrap_or(&if_expr.then_block),
+                            )
+                            .ok_or(Decline::TypeNotModelled {
+                                what: "a let with no type annotation",
+                            })?,
+                    };
                     let slot = self.emit_alloca(result_ty.clone());
                     self.lower_if_into_slot(if_expr, slot.reg)?;
                     self.scope.insert(
