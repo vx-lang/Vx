@@ -106,6 +106,42 @@ fn main() {
     // that does not contain the fix, with no sign of it anywhere -- and it
     // happened twice, because the first fix was written into whichever branch
     // was open at the time (#348).
+    println!("cargo:rerun-if-changed=runtime/vx_mlir_shims.c");
+
+    // The half-precision memref printers MLIR exports only in packed form. Built here rather than
+    // into vx_std_core, which has no MLIR dependency and should not gain one; see the source.
+    {
+        let out_dir = std::env::var("OUT_DIR").unwrap();
+        let shim_path = std::path::PathBuf::from(&out_dir).join(format!(
+            "{}vx_mlir_shims{}",
+            std::env::consts::DLL_PREFIX,
+            std::env::consts::DLL_SUFFIX
+        ));
+        let cc = std::env::var("CC").unwrap_or_else(|_| "clang".to_string());
+        let mut cmd = std::process::Command::new(&cc);
+        cmd.args(["-shared", "-fPIC", "runtime/vx_mlir_shims.c"]);
+        // The forwarded `_mlir_ciface_*` symbols resolve from MLIR's runner utils, which is loaded
+        // alongside this. ELF shared objects allow that by default; Mach-O has to be told.
+        if cfg!(target_os = "macos") {
+            cmd.args(["-undefined", "dynamic_lookup"]);
+        }
+        cmd.args(["-o", shim_path.to_str().unwrap()]);
+        match cmd.status() {
+            Ok(st) if st.success() => {
+                println!("cargo:rustc-env=VX_MLIR_SHIMS_PATH={}", shim_path.display())
+            }
+            // Not fatal: only half-precision printing depends on it, and a compiler that cannot
+            // build one shim should still build.
+            _ => {
+                println!("cargo:rustc-env=VX_MLIR_SHIMS_PATH=");
+                println!(
+                    "cargo:warning=Could not build runtime/vx_mlir_shims.c; printing a bf16 or f16 \
+                     tensor will fail to link."
+                );
+            }
+        }
+    }
+
     println!("cargo:rerun-if-changed=runtime/vx_remote_routing.h");
     println!("cargo:rerun-if-changed=runtime/vx_remote_client.h");
     println!("cargo:rerun-if-changed=runtime/vx_remote_region.h");

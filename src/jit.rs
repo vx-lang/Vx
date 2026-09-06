@@ -67,6 +67,11 @@ pub fn shared_library_paths() -> Result<Vec<String>, String> {
     if !npu.is_empty() && std::path::Path::new(&npu).exists() {
         libs.push(npu);
     }
+    // Supplies the plain `printMemrefBF16`/`printMemrefF16` MLIR exports only packed.
+    let shims = std::env!("VX_MLIR_SHIMS_PATH");
+    if !shims.is_empty() && std::path::Path::new(shims).exists() {
+        libs.push(shims.to_string());
+    }
     Ok(libs)
 }
 
@@ -265,6 +270,14 @@ pub fn execute_mlir(
         ),
         &runtime_library_path()?,
     ]);
+
+    // The plain half-precision printers MLIR exports only packed. Linked here as well as handed to
+    // the execution engine, because this path builds a native executable with clang rather than
+    // loading shared libraries into a JIT.
+    let shims = std::env!("VX_MLIR_SHIMS_PATH");
+    if !shims.is_empty() && std::path::Path::new(shims).exists() {
+        clang_cmd.arg(shims);
+    }
 
     // The dispatch runtime provides vx_plugin_dispatch_async, which any program
     // containing a non-CPU `spawn on` calls. macOS gets the ANE/AMX backend
