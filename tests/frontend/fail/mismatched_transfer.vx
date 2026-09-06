@@ -11,7 +11,7 @@
 //===----------------------------------------------------------------------===//
 // RUN: not vxc %s 2>&1 | FileCheck %s
 
-fn expects_host(t : DynTensor<f32>) -> DynTensor<f32> {
+fn expects_host(t : Tensor<f32, [?, ?]>) -> Tensor<f32, [?, ?]> {
   return t;
 }
 

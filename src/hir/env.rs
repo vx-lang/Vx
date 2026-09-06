@@ -627,7 +627,7 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// Unify a tensor pattern's element against a concrete one, binding a generic element
-    /// (`Tensor<T>` against `DynTensor<f32>`) into `mapping`.
+    /// (`Tensor<T>` against `Tensor<f32, [?, ?]>`) into `mapping`.
     fn unify_tensor_elem(
         e1: &ElementType,
         e2: &ElementType,

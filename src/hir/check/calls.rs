@@ -1208,7 +1208,7 @@ impl<'a> TypeChecker<'a> {
         if let Some(prim) = resolved_name.strip_prefix("raw::") {
             return Some(self.check_raw_primitive(prim, args, arg_types, call_span));
         }
-        // `Tensor<T, [..], P>::uninit()` and the `DynTensor` form: the type is written, so it is
+        // `Tensor<T, [..], P>::uninit()` and the run-time-extent form: the type is written, so it is
         // read off the call rather than rebuilt from the call's name and arguments. That
         // reconstruction is what the older spelling forces on three separate places, and it cannot
         // carry a placement at all -- there is nowhere in `Tensor<f32>([4, 4])` to put one.
@@ -1395,7 +1395,7 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
             }
-            // A view over a caller's buffer is a DynTensor, and filling exactly such a buffer is
+            // A view over a caller's buffer has run-time extents, and filling exactly such a buffer is
             // what this exists for -- so the operands need to be tensors, not statically shaped
             // ones (Vx#399).
             for t in arg_types.iter().take(3) {
@@ -1485,7 +1485,7 @@ impl<'a> TypeChecker<'a> {
             match elem {
                 // The extents are ordinary arguments, so the same rule the constructor gets
                 // applies: a view whose rows and cols evaluate at compile time is statically
-                // shaped, and one over run-time extents is a DynTensor (Vx#399).
+                // shaped, and one over run-time extents has `?` there (Vx#399).
                 Some(e) => {
                     let mut env = HashMap::new();
                     for scope in &self.consteval.env {

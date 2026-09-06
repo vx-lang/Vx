@@ -2255,12 +2255,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
 
         if matches!(
             name.as_ref(),
-            "Tensor"
-                | "Tensor::new"
-                | "Tensor::uninit"
-                | "Tensor::fill"
-                | "DynTensor::new"
-                | "DynTensor::uninit"
+            "Tensor" | "Tensor::new" | "Tensor::uninit" | "Tensor::fill"
         ) {
             // `Tensor<T, [d0, d1]>::fill(v)` takes its shape from the type like `::new()` does, so
             // the call argument is the fill value rather than an extent. Captured before `args` is

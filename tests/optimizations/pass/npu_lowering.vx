@@ -6,7 +6,7 @@ fn dummy(x : i32) on Topology::NPU[0] -> i32 {
   return x;
 }
 
-fn process(t : DynTensor<f32>) -> DynTensor<f32> {
+fn process(t : Tensor<f32, [?, ?]>) -> Tensor<f32, [?, ?]> {
   let mut res = Tensor<i32, [4, 4], Memory::NPU_HBM>::uninit();
   let val = spawn on(Topology::NPU[0]) {
     dummy(0)

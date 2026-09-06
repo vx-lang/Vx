@@ -843,14 +843,7 @@ pub fn is_tensor_construction(e: &Expr) -> bool {
     match e {
         Expr::FunctionCall(fc) => {
             let n = fc.name.as_ref();
-            if matches!(
-                n,
-                "Tensor::new"
-                    | "Tensor::uninit"
-                    | "Tensor::fill"
-                    | "DynTensor::new"
-                    | "DynTensor::uninit"
-            ) {
+            if matches!(n, "Tensor::new" | "Tensor::uninit" | "Tensor::fill") {
                 return true;
             }
             n.starts_with("Tensor") && !n.contains("::") && !n.contains('$') && !n.contains("__")

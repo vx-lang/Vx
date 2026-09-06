@@ -57,14 +57,14 @@ fn test_pipeline_architecture_hooks() -> Result<(), String> {
         &file2_path,
         r#"
         fn compute_heavy(
-            p1: &DynTensor<f32>, p2: &DynTensor<f32>, p3: &DynTensor<f32>, p4: &DynTensor<f32>,
-            p5: &DynTensor<f32>, p6: &DynTensor<f32>, p7: &DynTensor<f32>, p8: &DynTensor<f32>,
-            p9: &DynTensor<f32>, p10: &DynTensor<f32>, p11: &mut DynTensor<f32>
+            p1: &Tensor<f32, [?, ?]>, p2: &Tensor<f32, [?, ?]>, p3: &Tensor<f32, [?, ?]>, p4: &Tensor<f32, [?, ?]>,
+            p5: &Tensor<f32, [?, ?]>, p6: &Tensor<f32, [?, ?]>, p7: &Tensor<f32, [?, ?]>, p8: &Tensor<f32, [?, ?]>,
+            p9: &Tensor<f32, [?, ?]>, p10: &Tensor<f32, [?, ?]>, p11: &mut Tensor<f32, [?, ?]>
         ) -> f32 {
             return 1.0f32;
         }
 
-        fn run_module_b(t: DynTensor<f32>) -> DynTensor<f32> {
+        fn run_module_b(t: Tensor<f32, [?, ?]>) -> Tensor<f32, [?, ?]> {
             let mut result = t;
             let mut result2 = Tensor<f32>();
             compute_heavy(&result, &result, &result, &result, &result, &result, &result, &result, &result, &result, &mut result2);

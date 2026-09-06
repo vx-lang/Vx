@@ -8,11 +8,11 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 
 trait Dimension {
-  fn dim(self : DynTensor<f32>)->i32;
+  fn dim(self : Tensor<f32, [?, ?]>)->i32;
 }
 
-impl Dimension for DynTensor<f32> {
-  fn dim(self : DynTensor<f32>) -> i32 {
+impl Dimension for Tensor<f32, [?, ?]> {
+  fn dim(self : Tensor<f32, [?, ?]>) -> i32 {
     return 2;
   }
 }

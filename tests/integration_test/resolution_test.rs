@@ -745,8 +745,8 @@ fn a_built_in_space_and_its_device_are_the_same_type() {
         "builtins",
         "fn by_device(p : Tensor<f32, [4, 4], Topology::GPU>) -> i32 { return 0; }\n\
          fn by_space(p : Tensor<f32, [4, 4], Memory::GPU_HBM>) -> i32 { return 0; }\n\
-         fn dyn_by_space(p : DynTensor<f32, Memory::NPU_HBM>) -> i32 { return 0; }\n\
-         fn dyn_by_device(p : DynTensor<f32, Topology::NPU[0]>) -> i32 { return 0; }",
+         fn dyn_by_space(p : Tensor<f32, [?, ?], Memory::NPU_HBM>) -> i32 { return 0; }\n\
+         fn dyn_by_device(p : Tensor<f32, [?, ?], Topology::NPU[0]>) -> i32 { return 0; }",
     );
     let symbol_map = build_symbol_map(std::slice::from_ref(&m));
     m.resolve_names(&symbol_map, &[]);

@@ -11,7 +11,7 @@
 //===----------------------------------------------------------------------===//
 // RUN: not vxc %s 2>&1 | FileCheck %s
 
-fn use_ref(r: &mut DynTensor<f32>) -> i32 {
+fn use_ref(r: &mut Tensor<f32, [?, ?]>) -> i32 {
   return 0;
 }
 

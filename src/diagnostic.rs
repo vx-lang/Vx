@@ -233,10 +233,10 @@ pub enum DiagnosticCode {
     ///
     /// A tensor is a memref, and lowering expands a memref parameter into the seven scalars of
     /// its descriptor -- allocated pointer, aligned pointer, offset, and a size and stride per
-    /// rank. So `fn c_take(t : DynTensor<f32>) -> i32` declares a C symbol taking seven
+    /// rank. So `fn c_take(t : Tensor<f32, [?, ?]>) -> i32` declares a C symbol taking seven
     /// arguments, which is not a signature anyone writes on the C side; the call links by name
     /// and passes something the callee never agreed to. Take a raw pointer and build the tensor
-    /// in Vx (`DynTensor::from_ptr_2d`), which is what the corpus already does.
+    /// in Vx (`Tensor<f32, [?, ?]>::from_ptr_2d`), which is what the corpus already does.
     E3022,
     /// A shaped tensor initialized from a scalar.
     ///

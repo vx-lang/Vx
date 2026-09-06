@@ -1205,7 +1205,7 @@ mod tests {
             "struct Point { x: i32, y: i32 }\n\
              fn origin() -> Point { return Point { x: 0i32, y: 0i32 }; }\n\
              fn scale() -> f32 { return 2.0f32; }\n\
-             fn zeros() -> DynTensor<f32> { return zeros(); }\n\
+             fn zeros() -> Tensor<f32, [?, ?]> { return zeros(); }\n\
              fn pick(a: &Point, b: &Point) -> &i32 { return &b.x; }\n\
              impl Point { fn sum(self: Point) -> i32 { return self.x + self.y; } }\n\
              trait Sq { fn sq(self: Self) -> f32; }\n\

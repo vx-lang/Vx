@@ -401,39 +401,19 @@ impl<'a> Parser<'a> {
                     Ok(Type::Tensor(el_ty, dims, top))
                 }
             }
-            // `DynTensor<T>` is the old spelling of `Tensor<T, [?, ?]>`: every one in the tree
-            // is rank 2, so it reads as that while the corpus is rewritten.
+            // The old spelling of a rank-2 tensor with run-time extents. Refused with the
+            // replacement written out rather than aliased: rank is part of the type, and this
+            // name never stated one.
             "DynTensor" => {
-                let mut el_ty = ElementType::F32;
-                let mut top = None;
+                let mut el = String::from("T");
                 if self.match_token(&TokenType::LeftAngle) {
-                    let ty_ident = match self.advance().kind.clone() {
-                        TokenType::Identifier(s) => s,
-                        _ => return Err(self.error("Expected element type after '<'")),
-                    };
-                    el_ty = if let Ok(parsed_ty) = std::str::FromStr::from_str(ty_ident) {
-                        parsed_ty
-                    } else if self.generic_params.iter().any(|p| p.as_str() == ty_ident) {
-                        ElementType::Generic(ty_ident.into())
-                    } else {
-                        return Err(self.error(&format!("Unknown element type {}", ty_ident)));
-                    };
-                    if self.match_token(&TokenType::Comma) {
-                        if self.check(&TokenType::Topology) || self.check(&TokenType::Memory) {
-                            top = Some(self.parse_placement()?);
-                        } else {
-                            return Err(self.error(
-                                "DynTensor takes no dimensions; write Tensor<T, [..]> for a \
-                                 statically shaped tensor",
-                            ));
-                        }
+                    if let TokenType::Identifier(s) = &self.peek().kind {
+                        el = s.to_string();
                     }
-                    self.consume(
-                        &TokenType::RightAngle,
-                        "Expected '>' after DynTensor parameters",
-                    )?;
                 }
-                Ok(Type::Tensor(el_ty, vec![Dim::Dyn, Dim::Dyn], top))
+                Err(self.error(&format!(
+                    "`DynTensor<{el}>` is spelled `Tensor<{el}, [?, ?]>`; state the rank"
+                )))
             }
             "Matrix" => Ok(Type::Matrix),
             _ => {

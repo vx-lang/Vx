@@ -1230,7 +1230,7 @@ mod tests {
     use rstest::rstest;
 
     #[rstest]
-    #[case("fn main() -> DynTensor<f32> {}")]
+    #[case("fn main() -> Tensor<f32, [?, ?]> {}")]
     fn test_parse_empty_function(#[case] input: &str) {
         let mut lexer = Lexer::new(input);
         let tokens = lexer.tokenize();
@@ -1402,7 +1402,7 @@ fn ordinary(n: i32) -> i32 { return n; }
     #[test]
     fn test_parse_distributed_matmul() {
         let input = r#"
-fn distributed_matmul(a: Ref<DynTensor<f32>, Memory::CPU_DRAM>, b: Ref<DynTensor<f32>, Memory::CPU_DRAM>) -> Verified<DynTensor<f32>> {
+fn distributed_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>, b: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>) -> Verified<Tensor<f32, [?, ?]>> {
     spawn on(Topology::NPU[0]) {
         let local_a = transfer(a, Memory::NPU_HBM);
         let local_b = transfer(b, Memory::NPU_HBM);
@@ -1464,7 +1464,7 @@ fn distributed_matmul(a: Ref<DynTensor<f32>, Memory::CPU_DRAM>, b: Ref<DynTensor
     #[test]
     fn test_parse_let_mut_with_type() {
         let input =
-            "fn main() -> DynTensor<f32> { let mut x: DynTensor<f32> = Tensor<f32>([1, 2]); }";
+            "fn main() -> Tensor<f32, [?, ?]> { let mut x: Tensor<f32, [?, ?]> = Tensor<f32>([1, 2]); }";
         let tokens = Lexer::new(input).tokenize();
         let mut parser = Parser::new(&tokens, input);
         let program = parser.parse().unwrap();
@@ -1511,7 +1511,7 @@ fn distributed_matmul(a: Ref<DynTensor<f32>, Memory::CPU_DRAM>, b: Ref<DynTensor
 
     #[test]
     fn test_parse_for_loop() {
-        let input = "fn main() -> DynTensor<f32> { for i in 0..10 { x = 5; } }";
+        let input = "fn main() -> Tensor<f32, [?, ?]> { for i in 0..10 { x = 5; } }";
         let tokens = Lexer::new(input).tokenize();
         let mut parser = Parser::new(&tokens, input);
         let program = parser.parse().unwrap();
@@ -1572,7 +1572,7 @@ fn distributed_matmul(a: Ref<DynTensor<f32>, Memory::CPU_DRAM>, b: Ref<DynTensor
 
     #[test]
     fn test_parse_compound_assign() {
-        let input = "fn main() -> DynTensor<f32> { x[0] += y * z; }";
+        let input = "fn main() -> Tensor<f32, [?, ?]> { x[0] += y * z; }";
         let tokens = Lexer::new(input).tokenize();
         let mut parser = Parser::new(&tokens, input);
         let program = parser.parse().unwrap();
@@ -1634,7 +1634,7 @@ fn distributed_matmul(a: Ref<DynTensor<f32>, Memory::CPU_DRAM>, b: Ref<DynTensor
 
     #[test]
     fn test_parse_member_and_method() {
-        let input = "fn main() -> DynTensor<f32> { x.shape.scaled(Memory::NPU_HBM); }";
+        let input = "fn main() -> Tensor<f32, [?, ?]> { x.shape.scaled(Memory::NPU_HBM); }";
         let tokens = Lexer::new(input).tokenize();
         let mut parser = Parser::new(&tokens, input);
         let program = parser.parse().unwrap();
@@ -1681,9 +1681,9 @@ fn distributed_matmul(a: Ref<DynTensor<f32>, Memory::CPU_DRAM>, b: Ref<DynTensor
     #[test]
     fn test_parse_full_custom_matmul() {
         let input = r#"
-        fn custom_matmul(a: Ref<DynTensor<f32>, Memory::NPU_HBM>, b: Ref<DynTensor<f32>, Memory::NPU_HBM>) -> Verified<DynTensor<f32>> {
+        fn custom_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::NPU_HBM>, b: Ref<Tensor<f32, [?, ?]>, Memory::NPU_HBM>) -> Verified<Tensor<f32, [?, ?]>> {
             spawn on(Topology::NPU[0]) {
-                let mut result: DynTensor<f32> = DynTensor<f32, Memory::NPU_HBM>::uninit([a.shape[0], b.shape[1]]);
+                let mut result: Tensor<f32, [?, ?]> = Tensor<f32, [?, ?], Memory::NPU_HBM>::uninit([a.shape[0], b.shape[1]]);
                 for i in 0..a.shape[0] {
                     for j in 0..b.shape[1] {
                         result[i][j] = 0;
@@ -1723,8 +1723,8 @@ fn distributed_matmul(a: Ref<DynTensor<f32>, Memory::CPU_DRAM>, b: Ref<DynTensor
     fn test_parse_struct_and_pointers() {
         let input = r#"
         struct Config {
-            value: DynTensor<i32>,
-            threshold: DynTensor<f32>
+            value: Tensor<i32, [?, ?]>,
+            threshold: Tensor<f32, [?, ?]>
         }
 
         fn update_config(c: &mut Config) -> bool {
@@ -1788,7 +1788,7 @@ fn distributed_matmul(a: Ref<DynTensor<f32>, Memory::CPU_DRAM>, b: Ref<DynTensor
     fn test_parse_extern() {
         let input = r#"
         extern "C" {
-            fn malloc(size: DynTensor<i32>) -> *mut DynTensor<f32>;
+            fn malloc(size: Tensor<i32, [?, ?]>) -> *mut Tensor<f32, [?, ?]>;
         }
         "#;
         let tokens = Lexer::new(input).tokenize();

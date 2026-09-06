@@ -243,7 +243,7 @@ impl FnEmit<'_> {
             let et = mlir_scalar(elem).ok_or(crate::emitter_gap!())?;
             // A row of a dynamically shaped tensor: its extent is not a number here, so it is
             // read off the base with `memref.dim` and the offset is computed against that.
-            // Only the rank-1 row of a rank-2 base, which is the one shape a `DynTensor` has
+            // Only the rank-1 row of a rank-2 base, which is the one shape a `[?, ?]` tensor has
             // (Vx#404); anything deeper still needs a stride computation there is nothing to
             // compute with.
             if shape.iter().any(|d| d == DYN_DIM) {

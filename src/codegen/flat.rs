@@ -183,7 +183,7 @@ fn peel_wrappers(ty: &Type) -> &Type {
 }
 
 /// The memref spelling of a tensor type (rank-0 included), peeling wrappers first:
-/// `Tensor<f32, [2, 3]>` is `memref<2x3xf32>` and `DynTensor<f32>` is `memref<?x?xf32>`, the rank
+/// `Tensor<f32, [2, 3]>` is `memref<2x3xf32>` and `Tensor<f32, [?, ?]>` is `memref<?x?xf32>`, the rank
 /// the oracle assumes for a shape it does not know (Vx#404).
 ///
 /// `None` for a non-tensor, or for a `Tensor` dimension that is not a literal. A shaped value

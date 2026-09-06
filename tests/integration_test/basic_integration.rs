@@ -18,11 +18,11 @@ use vxc::parser::Parser;
 
 #[test]
 fn test_distributed_matmul_integration() -> Result<(), String> {
-    let input = r#"fn custom_matmul(a: Pinned<DynTensor<f32>, Topology::NPU[0]>, b: Pinned<DynTensor<f32>, Topology::NPU[0]>) on Topology::NPU[0] -> Pinned<DynTensor<f32>, Topology::NPU[0]> {
+    let input = r#"fn custom_matmul(a: Pinned<Tensor<f32, [?, ?]>, Topology::NPU[0]>, b: Pinned<Tensor<f32, [?, ?]>, Topology::NPU[0]>) on Topology::NPU[0] -> Pinned<Tensor<f32, [?, ?]>, Topology::NPU[0]> {
     return a;
 }
 
-fn distributed_matmul(a: DynTensor<f32>, b: DynTensor<f32>) -> Pinned<DynTensor<f32>, Topology::NPU[0]> {
+fn distributed_matmul(a: Tensor<f32, [?, ?]>, b: Tensor<f32, [?, ?]>) -> Pinned<Tensor<f32, [?, ?]>, Topology::NPU[0]> {
     let local_a = a.to_device();
     let local_b = b.to_device();
     spawn on(Topology::NPU[0]) {

@@ -7,7 +7,7 @@
 //===----------------------------------------------------------------------===//
 // The three replacements for the dims-less `Tensor` (Vx#399), each lowering to what it says:
 // a stated shape to that memref, an empty shape to rank 0, and a run-time shape to a fully
-// dynamic memref. `Tensor<f32, []>` and `DynTensor<f32>` are different types, which is the
+// dynamic memref. `Tensor<f32, []>` and `Tensor<f32, [?, ?]>` are different types, which is the
 // distinction the one spelling could not draw.
 //
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
@@ -23,7 +23,7 @@ fn rank0(t : Tensor<f32, []>) -> i32 {
 }
 
 // CHECK-LABEL: func.func @dynamic(%arg0: memref<?x?xf32>) -> i32
-fn dynamic(t : DynTensor<f32>) -> i32 {
+fn dynamic(t : Tensor<f32, [?, ?]>) -> i32 {
   return 0;
 }
 

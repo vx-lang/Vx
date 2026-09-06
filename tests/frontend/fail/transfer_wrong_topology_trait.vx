@@ -7,7 +7,7 @@ trait Relocatable {
 
 struct CustomHostData {
   id: i32,
-  host_tensor: Pinned<DynTensor<f32>, Topology::CPU>,
+  host_tensor: Pinned<Tensor<f32, [?, ?]>, Topology::CPU>,
 }
 
 impl Relocatable for CustomHostData {

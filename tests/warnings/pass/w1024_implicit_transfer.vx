@@ -9,7 +9,7 @@
 // WARN: implicit transfer of 'm_host'
 
 struct MyModel {
-  weights: DynTensor<f32>,
+  weights: Tensor<f32, [?, ?]>,
 }
 
 impl Relocatable for MyModel {

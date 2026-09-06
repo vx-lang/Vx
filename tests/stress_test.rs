@@ -130,8 +130,8 @@ fn test_stress_massive_struct_definitions() -> Result<(), String> {
 
     for i in 0..num_structs {
         let mut st = StructBuilder::new(&format!("ModelLayer{}", i));
-        st.add_field("weights", "DynTensor<f32>");
-        st.add_field("bias", "DynTensor<f32>");
+        st.add_field("weights", "Tensor<f32, [?, ?]>");
+        st.add_field("bias", "Tensor<f32, [?, ?]>");
         module.add_struct(st);
     }
 

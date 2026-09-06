@@ -313,7 +313,7 @@ impl FnEmit<'_> {
     }
 
     /// Forget a tensor's extents: `memref.cast %a : memref<2x3xf32> to memref<?x?xf32>`. Emitted
-    /// where a shaped value reaches a `DynTensor` position, which in MLIR is a different type
+    /// where a shaped value reaches a position with `?` extents, which in MLIR is a different type
     /// rather than a subtype. Identical types alias instead of emitting a no-op cast.
     fn cast_memref(
         &mut self,

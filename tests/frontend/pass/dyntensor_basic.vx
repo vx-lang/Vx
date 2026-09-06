@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
-// `DynTensor<T>` is the tensor whose shape is a run-time value (Vx#399). It
+// `Tensor<T, [?, ?]>` is the tensor whose shape is a run-time value (Vx#399). It
 // carries no extents, lowers to a dynamic memref, and accepts a statically
 // shaped tensor -- passing one forgets the shape, which is the whole point of
 // keeping the two spellings apart.
@@ -22,7 +22,7 @@
 // CHECK: call @takes_dyn(%[[DYN]]) : (memref<?x?xf32>) -> i32
 // CHECK-LABEL: func.func @takes_dyn(%arg0: memref<?x?xf32>) -> i32
 
-fn takes_dyn(t : DynTensor<f32>) -> i32 {
+fn takes_dyn(t : Tensor<f32, [?, ?]>) -> i32 {
   return 0;
 }
 

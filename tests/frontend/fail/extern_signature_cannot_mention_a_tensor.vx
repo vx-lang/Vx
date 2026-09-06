@@ -10,11 +10,11 @@
 // arguments -- a signature no C source writes. The call links by name and
 // passes something the callee never agreed to.
 //
-// This was accepted: `fn c_take(t : DynTensor<f32>) -> i32` emitted
+// This was accepted: `fn c_take(t : Tensor<f32, [?, ?]>) -> i32` emitted
 // `llvm.func @c_take(!llvm.ptr, !llvm.ptr, i64, i64, i64, i64, i64)`.
 //
 // A raw pointer stays legal, and is how the corpus does it: `vx_load_weights`
-// in std::llama returns `*mut f32`, and `DynTensor::from_ptr_2d` builds the
+// in std::llama returns `*mut f32`, and `Tensor<f32, [?, ?]>::from_ptr_2d` builds the
 // tensor on the Vx side.
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s
@@ -26,8 +26,8 @@
 
 extern {
   fn c_ok(p : *mut f32, n : i32) -> i32;
-  fn c_take(t : DynTensor<f32>) -> i32;
-  fn c_give(n : i32) -> DynTensor<f32>;
+  fn c_take(t : Tensor<f32, [?, ?]>) -> i32;
+  fn c_give(n : i32) -> Tensor<f32, [?, ?]>;
 }
 
 fn main() -> i32 {

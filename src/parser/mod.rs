@@ -679,7 +679,7 @@ mod tests {
             "an empty dimension list is rank 0"
         );
         assert_eq!(
-            parse_type("DynTensor<i64>"),
+            parse_type("Tensor<i64, [?, ?]>"),
             Type::Tensor(ElementType::I64, vec![Dim::Dyn, Dim::Dyn], None),
             "the old spelling reads as a rank-2 tensor with run-time extents"
         );

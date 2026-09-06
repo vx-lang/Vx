@@ -95,7 +95,7 @@ impl TypeChecker<'_> {
 }
 
 /// The tensor inside a type, through the wrappers that restate where a value lives, and through
-/// one level of pointer or borrow -- `*mut DynTensor<f32>` is a descriptor pointer, which is no
+/// one level of pointer or borrow -- `*mut Tensor<f32, [?, ?]>` is a descriptor pointer, which is no
 /// more spellable in C than the descriptor itself.
 fn tensor_within(ty: &crate::syntax::Type) -> Option<&crate::syntax::Type> {
     use crate::syntax::Type;

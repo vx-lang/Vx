@@ -7,7 +7,7 @@
 //
 //===----------------------------------------------------------------------===//
 // RUN: not vxc %s 2>&1 | FileCheck %s
-fn test_mutability(t : DynTensor<f32>) -> DynTensor<i32> {
+fn test_mutability(t : Tensor<f32, [?, ?]>) -> Tensor<i32, [?, ?]> {
   let imm_borrow = &t;
   let mut_ptr = imm_borrow.as_mut_ptr(); // ERROR: Cannot get mutable pointer
   // from immutable borrow

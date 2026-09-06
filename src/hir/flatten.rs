@@ -488,7 +488,7 @@ impl<'r> Lowerer<'r> {
         Ok(buf)
     }
 
-    /// A rank-0 tensor in scalar position reads as its element: `let t : DynTensor<el> = v`
+    /// A rank-0 tensor in scalar position reads as its element: `let t : Tensor<el, [?, ?]> = v`
     /// wraps a scalar, and arithmetic/comparisons operate on the value (Vx#396).
     fn read_rank0(&mut self, v: Val) -> Val {
         match &v.ty {
@@ -2539,7 +2539,7 @@ impl<'r> Lowerer<'r> {
     fn lower_tensor_alloc(&mut self, fc: &crate::syntax::FunctionCallExpr) -> Option<Val> {
         let written = fc.type_args.as_ref()?.first()?;
         // `Tensor<T, [d0, d1]>::uninit()` writes the element and shape in the type and takes no
-        // arguments, so there is nothing to recover from the call. A `DynTensor` has no static
+        // arguments, so there is nothing to recover from the call. A tensor with a `?` extent has no static
         // shape to size the buffer from and falls through to the decline below.
         if let crate::syntax::Type::Tensor(el, dims, placement) = written {
             if matches!(el, ElementType::Generic(_)) {
@@ -2970,7 +2970,7 @@ impl<'r> Lowerer<'r> {
         }
     }
 
-    /// A shaped tensor reaching a `DynTensor` parameter forgets its extents. MLIR spells that as a
+    /// A shaped tensor reaching a parameter with `?` extents forgets them. MLIR spells that as a
     /// cast between two memref types, so the argument needs one before the call — the value is not
     /// already of the parameter's type the way a subtype would be.
     ///
@@ -2987,7 +2987,7 @@ impl<'r> Lowerer<'r> {
         self.forget_extents(v, &want, ExtentSite::Argument)
     }
 
-    /// The same at the return: a shaped value leaving a function declared to return a `DynTensor`
+    /// The same at the return: a shaped value leaving a function declared to return `?` extents
     /// forgets its extents, so the `Ret` carries the type the signature announces.
     fn forget_extents_for_return(&mut self, v: Val) -> Lowered<Val> {
         let Some(want) = self.ret_ty.clone() else {
@@ -3482,7 +3482,7 @@ impl<'r> Lowerer<'r> {
                     return Ok(());
                 }
                 let v = self.lower_expr(&l.expr)?;
-                // `let t : DynTensor<el> = <scalar>` wraps the value as a rank-0 tensor: materialize
+                // `let t : Tensor<el, [?, ?]> = <scalar>` wraps the value as a rank-0 tensor: materialize
                 // the buffer (alloc + store) so tensor consumers (transfer, spawn) receive a real
                 // tensor. The checker admits identical elements only (Vx#396).
                 if let (Some(Type::Tensor(el, dims, _)), LoweredTy::Scalar(se)) =

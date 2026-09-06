@@ -203,7 +203,7 @@ impl<'a> TypeChecker<'a> {
     /// `&a @ &b` is the non-consuming spelling of `a @ b` -- both are matmuls
     /// over the same two tensors, and one reads its operands where the other
     /// moves them (#335). The wrappers are peeled in a loop rather than once,
-    /// so a borrow of a placed tensor (`&Ref<DynTensor<f32>, Memory::GPU_HBM>`,
+    /// so a borrow of a placed tensor (`&Ref<Tensor<f32, [?, ?]>, Memory::GPU_HBM>`,
     /// which is what a resident weight is) resolves too.
     pub(crate) fn as_tensor_operand(
         t: &Type,
@@ -264,7 +264,7 @@ impl<'a> TypeChecker<'a> {
     /// The element type of any tensor operand, static or dynamic, under the checker-level
     /// wrappers. `as_tensor_operand` answers only for a statically shaped tensor, because it
     /// hands back the dimensions; a caller that needs to know *whether* it has a tensor, or only
-    /// what it is made of, asks here and accepts a `DynTensor` too (Vx#399).
+    /// what it is made of, asks here and accepts run-time extents too (Vx#399).
     pub(crate) fn tensor_operand_elem(t: &Type) -> Option<&ElementType> {
         let mut inner = t;
         loop {
@@ -367,12 +367,12 @@ impl<'a> TypeChecker<'a> {
         match expr {
             Expr::Array(ArrayExpr { elements, span }) => {
                 // The array's element type is its first element's — an integer array literal
-                // (`[10, 20, 30]`) is `DynTensor<i32>`, not `DynTensor<f32>` (#240). Later elements are
+                // (`[10, 20, 30]`) is `Tensor<i32, [?, ?]>`, not `Tensor<f32, [?, ?]>` (#240). Later elements are
                 // checked expecting that type, so untyped literals adopt it.
                 let span = *span;
                 // An array literal lowers to `tensor.from_elements`, so its elements have to be
                 // scalars. A non-scalar first element used to leave `elem_ty` at its `f32`
-                // default and report `DynTensor<f32>` for something that is nothing of the sort,
+                // default and report `Tensor<f32, [?, ?]>` for something that is nothing of the sort,
                 // and codegen then died building `tensor<Nx tensor<...>>` — an internal error on
                 // a two-line program, where the checker had the type in its hand all along
                 // (Vx#354). Empty has no element type to report at all.
@@ -398,7 +398,7 @@ impl<'a> TypeChecker<'a> {
                         let first = self.check_expr_type(el);
                         match (first, nested) {
                             (Type::Scalar(e), false) => elem_ty = e,
-                            // A nested row reports `DynTensor<e>`; the initializer's element type
+                            // A nested row reports `Tensor<e, [?, ?]>`; the initializer's element type
                             // is that inner `e`, which is also more accurate than the `f32`
                             // default this arm used to fall through to.
                             (Type::Tensor(e, _, _), true) => elem_ty = e,

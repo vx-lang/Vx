@@ -2,7 +2,7 @@
 // A tensor constructor takes exactly the arguments its type does not already carry (Vx#429).
 //
 // `Tensor<f32, [2, 2]>` has its shape in the type, so the constructor takes nothing; passing one
-// anyway would be a second shape with no rule saying which wins. `DynTensor<f32>` has no shape in
+// anyway would be a second shape with no rule saying which wins. `Tensor<f32, [?, ?]>` has no shape in
 // its type at all -- that is what the variant is for -- so the constructor is where the shape
 // arrives, and omitting it leaves a tensor nothing can size.
 //

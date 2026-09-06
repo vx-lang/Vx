@@ -28,7 +28,7 @@
 // CHECK: vx.launch
 // CHECK-NOT: vx.kernel_kind
 
-fn copy_rows(a : DynTensor<f32>, c : DynTensor<f32>) -> i32 {
+fn copy_rows(a : Tensor<f32, [?, ?]>, c : Tensor<f32, [?, ?]>) -> i32 {
   spawn on(Topology::GPU) {
     for i in 0..2 {
       for j in 0..2 {

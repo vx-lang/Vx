@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
-// `DynTensor<T>` lowers to `memref<?x?xT>` for every element type, not just the
+// `Tensor<T, [?, ?]>` lowers to `memref<?x?xT>` for every element type, not just the
 // f32 the first test happened to use (Vx#399). The lowering routes every element
 // through one shared path, so a regression there would otherwise surface only on
 // whichever element some later test happened to pick.
@@ -19,43 +19,43 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 
 // CHECK: func.func @f32_t(%arg0: memref<?x?xf32>)
-fn f32_t(t : DynTensor<f32>) -> i32 {
+fn f32_t(t : Tensor<f32, [?, ?]>) -> i32 {
   return 0;
 }
 
 // CHECK: func.func @f64_t(%arg0: memref<?x?xf64>)
-fn f64_t(t : DynTensor<f64>) -> i32 {
+fn f64_t(t : Tensor<f64, [?, ?]>) -> i32 {
   return 0;
 }
 
 // CHECK: func.func @f16_t(%arg0: memref<?x?xf16>)
-fn f16_t(t : DynTensor<f16>) -> i32 {
+fn f16_t(t : Tensor<f16, [?, ?]>) -> i32 {
   return 0;
 }
 
 // CHECK: func.func @bf16_t(%arg0: memref<?x?xbf16>)
-fn bf16_t(t : DynTensor<bf16>) -> i32 {
+fn bf16_t(t : Tensor<bf16, [?, ?]>) -> i32 {
   return 0;
 }
 
 // CHECK: func.func @i32_t(%arg0: memref<?x?xi32>)
-fn i32_t(t : DynTensor<i32>) -> i32 {
+fn i32_t(t : Tensor<i32, [?, ?]>) -> i32 {
   return 0;
 }
 
 // CHECK: func.func @i64_t(%arg0: memref<?x?xi64>)
-fn i64_t(t : DynTensor<i64>) -> i32 {
+fn i64_t(t : Tensor<i64, [?, ?]>) -> i32 {
   return 0;
 }
 
 // CHECK: func.func @i8_t(%arg0: memref<?x?xi8>)
-fn i8_t(t : DynTensor<i8>) -> i32 {
+fn i8_t(t : Tensor<i8, [?, ?]>) -> i32 {
   return 0;
 }
 
 // A bool tensor's element is `i1`, the MLIR spelling of a one-bit integer.
 // CHECK: func.func @bool_t(%arg0: memref<?x?xi1>)
-fn bool_t(t : DynTensor<bool>) -> i32 {
+fn bool_t(t : Tensor<bool, [?, ?]>) -> i32 {
   return 0;
 }
 

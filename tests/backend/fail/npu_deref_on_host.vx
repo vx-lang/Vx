@@ -11,17 +11,17 @@
 // Expect execution trap/segfault when trying to run an NPU execution block on
 // host JIT The goal is to expose that our compiler JIT backend does not yet
 // sandbox NPU pointers, allowing undefined behavior.
-fn strip_pin_and_deref(t : DynTensor<f32>) -> DynTensor<f32> {
+fn strip_pin_and_deref(t : Tensor<f32, [?, ?]>) -> Tensor<f32, [?, ?]> {
   unsafe {
-    let ptr : *const DynTensor<f32> = t.as_ptr();
-    let val : DynTensor<f32> = *ptr; // Dereferencing an NPU pointer on CPU!
+    let ptr : *const Tensor<f32, [?, ?]> = t.as_ptr();
+    let val : Tensor<f32, [?, ?]> = *ptr; // Dereferencing an NPU pointer on CPU!
   }
   return t;
 }
 
-fn main() -> DynTensor<f32> {
+fn main() -> Tensor<f32, [?, ?]> {
   let t_host = Tensor([ 1, 1 ]);
-  let t_device : DynTensor<f32> = t_host.to_device();
+  let t_device : Tensor<f32, [?, ?]> = t_host.to_device();
 
   // Pass the NPU tensor to a Host function to strip the Pinned wrapper
   let result = strip_pin_and_deref(t_device);

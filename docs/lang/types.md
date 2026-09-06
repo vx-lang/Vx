@@ -260,7 +260,7 @@ let x = Tensor<f32, [8, 8], Memory::NPU_HBM>::new();
 let y = Tensor<f32, [8, 8], Memory::NPU_HBM>::uninit();
 
 // Runtime extents, so they stay an argument
-let z = DynTensor<f32, Memory::NPU_HBM>::new([rows, cols]);
+let z = Tensor<f32, [?, ?], Memory::NPU_HBM>::new([rows, cols]);
 ```
 
 Both allocation kinds are explicit, and neither is the unmarked default. `::uninit()` exists
@@ -271,7 +271,7 @@ reach for otherwise: a name that promises a valid value should deliver one, and 
 greppable when a garbage-value bug is being hunted.
 
 A `Tensor`'s extents are part of its type, so every one of them has to be known at compile time —
-a literal or a const generic. An extent that is a run-time value is refused, naming `DynTensor`,
+a literal or a const generic. An extent that is a run-time value is refused, naming the `?` spelling,
 because a type the source states is a claim and quietly answering with a different one is how a
 shape nobody can read comes to be trusted by a later check.
 

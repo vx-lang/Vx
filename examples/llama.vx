@@ -58,16 +58,16 @@ struct RunState {
   : *mut f32
 }
 
-fn ptr_to_tensor_1d(ptr: *mut f32, d1: i32) -> DynTensor<f32> {
-  let mut t = DynTensor<f32>::uninit([1, d1]);
+fn ptr_to_tensor_1d(ptr: *mut f32, d1: i32) -> Tensor<f32, [?, ?]> {
+  let mut t = Tensor<f32, [?, ?]>::uninit([1, d1]);
   for i in 0..d1 {
     unsafe { t[0][i] = ptr[i]; }
   }
   return t;
 }
 
-fn ptr_to_tensor_2d(ptr : *mut f32, d1 : i32, d2 : i32) -> DynTensor<f32> {
-  let mut t = DynTensor<f32>::uninit([d1, d2]);
+fn ptr_to_tensor_2d(ptr : *mut f32, d1 : i32, d2 : i32) -> Tensor<f32, [?, ?]> {
+  let mut t = Tensor<f32, [?, ?]>::uninit([d1, d2]);
   for i in 0..d1 {
     for j in 0..d2 {
       let idx : i32 = i * d2 + j;
@@ -189,9 +189,9 @@ w : &TransformerWeights) -> i32 {
       rmsnorm(s.xb, s.x, vx_advance_ptr(w.rms_att_weight, l * dim), dim);
 
       // 2.2 QKV Projections (using native Tensor matmul `@`)
-      let mut wq_l = DynTensor<f32>::uninit([dim, dim]);
-      let mut wk_l = DynTensor<f32>::uninit([dim, kv_dim]);
-      let mut wv_l = DynTensor<f32>::uninit([dim, kv_dim]);
+      let mut wq_l = Tensor<f32, [?, ?]>::uninit([dim, dim]);
+      let mut wk_l = Tensor<f32, [?, ?]>::uninit([dim, kv_dim]);
+      let mut wv_l = Tensor<f32, [?, ?]>::uninit([dim, kv_dim]);
       for row in 0..dim {
         for col in 0..dim {
           wq_l[row][col] = w.wq[(l * dim + row) * dim + col];
@@ -204,19 +204,19 @@ w : &TransformerWeights) -> i32 {
         }
       }
 
-      let mut t_xb_q = DynTensor<f32>::uninit([1, dim]);
+      let mut t_xb_q = Tensor<f32, [?, ?]>::uninit([1, dim]);
       for i in 0..dim {
         t_xb_q[0][i] = s.xb[i];
       }
       let t_q = t_xb_q @wq_l;
 
-      let mut t_xb_k = DynTensor<f32>::uninit([1, dim]);
+      let mut t_xb_k = Tensor<f32, [?, ?]>::uninit([1, dim]);
       for i in 0..dim {
         t_xb_k[0][i] = s.xb[i];
       }
       let t_k = t_xb_k @wk_l;
 
-      let mut t_xb_v = DynTensor<f32>::uninit([1, dim]);
+      let mut t_xb_v = Tensor<f32, [?, ?]>::uninit([1, dim]);
       for i in 0..dim {
         t_xb_v[0][i] = s.xb[i];
       }
@@ -323,14 +323,14 @@ w : &TransformerWeights) -> i32 {
       }
 
       // 2.6 Output Projection
-      let mut wo_l = DynTensor<f32>::uninit([dim, dim]);
+      let mut wo_l = Tensor<f32, [?, ?]>::uninit([dim, dim]);
       for row in 0..dim {
         for col in 0..dim {
           wo_l[row][col] = w.wo[(l * dim + row) * dim + col];
         }
       }
 
-      let mut t_xb_wo = DynTensor<f32>::uninit([1, dim]);
+      let mut t_xb_wo = Tensor<f32, [?, ?]>::uninit([1, dim]);
       for i in 0..dim {
         t_xb_wo[0][i] = s.xb[i];
       }
@@ -345,9 +345,9 @@ w : &TransformerWeights) -> i32 {
       rmsnorm(s.xb, s.x, vx_advance_ptr(w.rms_ffn_weight, l * dim), dim);
 
       // 2.8 FFN Projections
-      let mut w1_l = DynTensor<f32>::uninit([dim, hidden_dim]);
-      let mut w2_l = DynTensor<f32>::uninit([hidden_dim, dim]);
-      let mut w3_l = DynTensor<f32>::uninit([dim, hidden_dim]);
+      let mut w1_l = Tensor<f32, [?, ?]>::uninit([dim, hidden_dim]);
+      let mut w2_l = Tensor<f32, [?, ?]>::uninit([hidden_dim, dim]);
+      let mut w3_l = Tensor<f32, [?, ?]>::uninit([dim, hidden_dim]);
       for row in 0..dim {
         for col in 0..hidden_dim {
           w1_l[row][col] = w.w1[(l * dim + row) * hidden_dim + col];
@@ -360,13 +360,13 @@ w : &TransformerWeights) -> i32 {
         }
       }
 
-      let mut t_xb_w1 = DynTensor<f32>::uninit([1, dim]);
+      let mut t_xb_w1 = Tensor<f32, [?, ?]>::uninit([1, dim]);
       for i in 0..dim {
         t_xb_w1[0][i] = s.xb[i];
       }
       let t_hb = t_xb_w1 @w1_l;
 
-      let mut t_xb_w3 = DynTensor<f32>::uninit([1, dim]);
+      let mut t_xb_w3 = Tensor<f32, [?, ?]>::uninit([1, dim]);
       for i in 0..dim {
         t_xb_w3[0][i] = s.xb[i];
       }
@@ -380,7 +380,7 @@ w : &TransformerWeights) -> i32 {
         s.hb[i] = val;
       }
 
-      let mut t_hb_2d = DynTensor<f32>::uninit([1, hidden_dim]);
+      let mut t_hb_2d = Tensor<f32, [?, ?]>::uninit([1, hidden_dim]);
       for i in 0..hidden_dim {
         t_hb_2d[0][i] = s.hb[i];
       }
@@ -396,12 +396,12 @@ w : &TransformerWeights) -> i32 {
     rmsnorm(s.x, s.x, w.rms_final_weight, dim);
 
     // 4. Classifier into Logits
-    let mut t_x_2d = DynTensor<f32>::uninit([1, dim]);
+    let mut t_x_2d = Tensor<f32, [?, ?]>::uninit([1, dim]);
     for i in 0..dim {
       t_x_2d[0][i] = s.x[i];
     }
 
-    let mut t_wcls_T = DynTensor<f32>::uninit([dim, p.vocab_size]);
+    let mut t_wcls_T = Tensor<f32, [?, ?]>::uninit([dim, p.vocab_size]);
     for r in 0..p.vocab_size {
       for c in 0..dim {
         t_wcls_T[c][r] = w.wcls[r * dim + c];

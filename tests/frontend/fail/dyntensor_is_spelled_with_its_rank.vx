@@ -11,7 +11,6 @@
 // replacement written out, not aliased.
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// XFAIL: *
 // CHECK: `DynTensor<f32>` is spelled `Tensor<f32, [?, ?]>`
 // CHECK-SAME: state the rank
 
