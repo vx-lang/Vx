@@ -226,8 +226,8 @@ pub enum DiagnosticCode {
     /// A payload is stored into the variant's tagged-union slot with `llvm.insertvalue`, which
     /// takes primitive operands, and a tensor is a memref descriptor. The AST path dropped such a
     /// payload silently: the construction emitted the tag and nothing else, so a program carrying
-    /// a tensor through an enum compiled, ran, and lost it with no diagnostic. See Vx#356 for the
-    /// struct-field form of the same representational gap.
+    /// a tensor through an enum compiled, ran, and lost it with no diagnostic. A struct field
+    /// holding a tensor is the same representational gap in another position.
     E3021,
     /// An `extern` function whose signature mentions a tensor.
     ///

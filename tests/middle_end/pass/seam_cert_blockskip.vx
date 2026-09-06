@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s --action emit-mlir --emit-seam-certs 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir --emit-seam-certs --legacy-codegen 2>&1 | FileCheck %s
 // EMIT-SEAM-CERTS
 //
 // The causal block-skip: the host proves an upper-triangle relation

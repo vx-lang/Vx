@@ -18,7 +18,7 @@
 // omission is what scored -85.1% against an H100. Reachability still uses the built-in
 // CPU_DRAM -> NPU_HBM path (unaffected).
 //
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir --legacy-codegen 2>&1 | FileCheck %s
 
 Memory CPU_DRAM {
   bandwidth: 256 B/cyc

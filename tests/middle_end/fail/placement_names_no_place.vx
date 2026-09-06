@@ -26,9 +26,11 @@
 // different code: parameters and return types come from the function table, fields from the struct
 // table, and a `let` annotation from the statement walk, which no declaration table sees.
 //
-// The fail tiers match against the debug dump of the diagnostics rather than the rendered console
+// The fail tier matches against the debug dump of the diagnostics rather than the rendered console
 // output, so a code and its message are on separate lines and cannot be matched by one pattern.
-// CHECK-DAG: E6025,
+// The code is matched bare: the dump writes `E6025,` and the console `Error[E6025]:`, and the RUN
+// line above sees the second of those.
+// CHECK-DAG: E6025
 // CHECK-DAG: `Memory::Nowhere` in function 'as_a_parameter'
 // CHECK-DAG: `Topology::Nowhere` in function 'as_a_device'
 // CHECK-DAG: `Memory::Nowhere` in function 'as_a_return'

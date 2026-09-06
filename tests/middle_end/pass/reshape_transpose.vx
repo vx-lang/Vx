@@ -5,8 +5,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s -o %t.mlir
-// RUN: FileCheck %s < %t.mlir
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 
 fn process_tensor(val : Tensor<f32, [ 128, 128 ]>)
 -> Tensor<f32, [ 4, 64, 64 ]> {

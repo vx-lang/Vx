@@ -20,6 +20,8 @@
 //
 // The `for` clause is required, so this file is also the check that a lowering
 // naming a real machine that really declares the edge is accepted.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // CHECK: main
 
 Topology Ampere {

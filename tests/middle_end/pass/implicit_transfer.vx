@@ -27,5 +27,6 @@ fn process(m_host: MyModel) -> MyModel {
   };
 }
 
+// XFAIL-RUN: emit-mlir fails on the same defect: the struct's tensor field reaches `llvm.insertvalue`
 // XFAIL-LOWER: a struct with a tensor field lowers to `llvm.insertvalue` on a memref, which is not a primitive LLVM type (Vx#356)
 // CHECK: "func.call"

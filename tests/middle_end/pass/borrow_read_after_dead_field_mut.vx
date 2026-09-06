@@ -13,7 +13,7 @@
 // borrowed." The companion `borrow_use_after_mut.vx` (where the borrower is
 // still live) must still be rejected.
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir --legacy-codegen 2>&1 | FileCheck %s
 // CHECK-LABEL: func.func @main() -> i32
 // CHECK: llvm.mlir.undef : !llvm.struct<"Point", (i32, i32)>
 // CHECK: %[[V0:.*]] = arith.constant 1 : i32

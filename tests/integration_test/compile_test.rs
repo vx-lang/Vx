@@ -701,6 +701,76 @@ fn test_optimizations() -> Result<(), String> {
     Ok(())
 }
 
+/// Execute a fixture's `RUN:` lines the way lit would, in order.
+///
+/// The middle-end tiers generate and check MLIR in process, so the command a fixture documents
+/// was never run: 18 of 111 fixtures carried a RUN line that could not pass, and nothing noticed.
+/// This runs it in addition to the in-process checks rather than instead of them -- the two see
+/// different things, and the point is that they agree.
+///
+/// `// XFAIL-RUN:` marks a fixture whose RUN line cannot pass yet. Read in both directions, as
+/// `XFAIL-LOWER` is: a marked fixture whose RUN line starts passing fails too.
+fn run_the_run_lines(path: &Path) -> Result<(), String> {
+    let source = fs::read_to_string(path).map_err(|e| format!("{:?}: {}", path, e))?;
+    let runs: Vec<&str> = source
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("// RUN:"))
+        .map(|c| c.trim())
+        .collect();
+    let xfail_run = source
+        .lines()
+        .find(|l| l.trim().starts_with("// XFAIL-RUN:"))
+        .map(|l| l.split_once("XFAIL-RUN:").unwrap().1.trim().to_string());
+    if runs.is_empty() {
+        return Err(format!(
+            "{:?} has no RUN line, so nothing states what the compiler should do with it",
+            path
+        ));
+    }
+
+    let vxc = env!("CARGO_BIN_EXE_vxc");
+    let tmp_base = std::env::temp_dir().join(format!(
+        "vx-runline-{}-{}",
+        std::process::id(),
+        path.file_stem().unwrap().to_string_lossy()
+    ));
+    let mut failure: Option<String> = None;
+    for run in &runs {
+        let cmd = run
+            .replace("%s", &path.to_string_lossy())
+            .replace("%t", &tmp_base.to_string_lossy());
+        // `vxc` as a bare word is the binary under test, not whatever is on PATH.
+        let cmd = cmd.replacen("vxc ", &format!("{} ", vxc), 1);
+        let out = std::process::Command::new("bash")
+            .arg("-c")
+            .arg(&cmd)
+            .output()
+            .map_err(|e| format!("{:?}: could not run `{}`: {}", path, run, e))?;
+        if !out.status.success() {
+            failure = Some(format!(
+                "{:?}: RUN line failed: {}\n{}",
+                path,
+                run,
+                String::from_utf8_lossy(&out.stderr)
+                    .lines()
+                    .take(6)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ));
+            break;
+        }
+    }
+    let _ = std::fs::remove_file(&tmp_base);
+    match (failure, xfail_run) {
+        (Some(why), None) => Err(why),
+        (None, Some(reason)) => Err(format!(
+            "{:?} is marked `XFAIL-RUN: {}`, but its RUN line passes now. Remove the marker.",
+            path, reason
+        )),
+        _ => Ok(()),
+    }
+}
+
 #[test]
 fn test_middle_end() -> Result<(), String> {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/middle_end/pass");
@@ -712,6 +782,9 @@ fn test_middle_end() -> Result<(), String> {
                 let path = entry.path();
                 if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("vx") {
                     if let Err(e) = run_middle_end_test(&path) {
+                        return Some(e);
+                    }
+                    if let Err(e) = run_the_run_lines(&path) {
                         return Some(e);
                     }
                 }
@@ -932,7 +1005,9 @@ fn test_middle_end_fail() -> Result<(), String> {
                         why
                     )
                 }),
-            }
+            }?;
+            // And the command the fixture documents has to refuse it too, for the same reason.
+            run_the_run_lines(path)
         },
     )
 }

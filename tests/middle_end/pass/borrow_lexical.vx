@@ -1,4 +1,4 @@
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir --legacy-codegen 2>&1 | FileCheck %s
 // CHECK-LABEL: func.func @main() -> i32
 // CHECK: %[[M0:.*]] = memref.alloc() : memref<f32>
 // CHECK: %[[M1:.*]] = memref.alloca() : memref<memref<f32>>

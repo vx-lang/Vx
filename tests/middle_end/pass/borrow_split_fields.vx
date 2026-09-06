@@ -8,7 +8,7 @@
 // Split borrows: different fields of the same struct can be mutably borrowed
 // simultaneously because they occupy disjoint memory.
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir --legacy-codegen 2>&1 | FileCheck %s
 // CHECK-LABEL: func.func @main() -> i32
 // CHECK: llvm.mlir.undef : !llvm.struct<"Point", (i32, i32)>
 // CHECK: %[[V0:.*]] = arith.constant 1 : i32

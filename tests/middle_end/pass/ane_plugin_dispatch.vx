@@ -12,7 +12,7 @@
 // macOS where the Apple NPE plugin is registered.
 //
 // REQUIRES: macos
-// RUN: vxc %s --emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --emit-mlir --legacy-codegen 2>&1 | FileCheck %s
 
 fn main() -> i32 {
   spawn on(Topology::ANE) {

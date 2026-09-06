@@ -5,8 +5,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s -o %t.mlir
-// RUN: FileCheck %s < %t.mlir
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 
 enum PadMode {
   Pad,

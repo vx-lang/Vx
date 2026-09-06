@@ -21,7 +21,7 @@
 // A 64x64 f32 tile is 64*64*4 = 16384 B = exactly one 16 KB granule (slots = 1). `ta` is read
 // twice (these staged tiles are not linear).
 //
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir --legacy-codegen 2>&1 | FileCheck %s
 
 Memory GPU_HBM {
   capacity: 40 GiB, bandwidth: 3 TB/s
