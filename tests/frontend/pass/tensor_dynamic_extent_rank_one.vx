@@ -14,7 +14,7 @@
 // CHECK-LABEL: func.func @sum(
 // CHECK-SAME: memref<?xf32>
 // CHECK: memref.dim
-// CHECK-LABEL: func.func @main
+// CHECK-LABEL: func.func @build(
 // CHECK: memref.alloc(%{{.*}}) : memref<?xf32>
 // CHECK-NOT: memref<?x?xf32>
 
@@ -26,12 +26,17 @@ fn sum(t : Tensor<f32, [?]>) -> f32 {
   return s;
 }
 
-fn main() -> i32 {
-  let n = 3;
+// The extent is a parameter, so nothing folds it: this is a run-time shape.
+fn build(n : i32) -> Tensor<f32, [?]> {
   let mut a = Tensor<f32>([n]);
   a[0] = 1.0;
   a[1] = 2.0;
   a[2] = 3.0;
+  return a;
+}
+
+fn main() -> i32 {
+  let a = build(3);
   if sum(a) as i32 == 6 {
     return 0;
   }

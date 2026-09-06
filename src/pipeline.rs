@@ -576,7 +576,6 @@ fn nominal_gid(ty: &syntax::Type) -> Option<crate::gid::TypeId> {
         Type::Scalar(elem) => Some(crate::hir::flatten::scalar_gid(elem)),
         Type::Tensor(..) => crate::hir::flatten::tensor_gid_of(ty),
         // A dynamic tensor has no static shape, so it has no shape-derived identity to give.
-        Type::DynTensor(..) => None,
         Type::Ref(inner, _)
         | Type::Borrow { inner, .. }
         | Type::Pointer(inner, _, _)

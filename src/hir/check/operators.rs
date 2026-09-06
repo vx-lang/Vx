@@ -299,7 +299,7 @@ impl<'a> TypeChecker<'a> {
             Type::Scalar(e) => Some(e.clone()),
             // Comparing element to element does not read the shape, so both tensor spellings
             // answer here (Vx#399).
-            Type::Tensor(e, _, _) | Type::DynTensor(e, _) => Some(e.clone()),
+            Type::Tensor(e, _, _) => Some(e.clone()),
             Type::Pinned(inner, _) => Self::scalar_elem(inner),
             Type::Ref(inner, _) => Self::scalar_elem(inner),
             Type::Borrow { inner, .. } => Self::scalar_elem(inner),

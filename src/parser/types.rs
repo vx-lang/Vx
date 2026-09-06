@@ -15,8 +15,8 @@ use super::*;
 /// What to say when a `Tensor` is spelled without its shape. Each replacement is one of the
 /// meanings the dims-less spelling used to carry (Vx#399).
 const DIMS_REQUIRED: &str = "Tensor needs its shape: write `Tensor<f32, [2, 3]>` for a shape \
-     known at compile time, `Tensor<f32, []>` for a scalar, or `DynTensor<f32>` for a shape \
-     that is a run-time value";
+     known at compile time, `Tensor<f32, []>` for a scalar, or `Tensor<f32, [?, ?]>` for one \
+     whose extents are run-time values";
 
 /// Parse a type from its source spelling. Expression-position generic arguments are
 /// re-serialized into the call name (`Option<*mut i8>`), so reading them back needs the real
@@ -362,9 +362,13 @@ impl<'a> Parser<'a> {
                             while !self.check(&TokenType::RightBracket)
                                 && !self.check(&TokenType::Eof)
                             {
-                                let mut dim = self.parse_expr()?;
-                                super::expr::stamp_dim_literals(&mut dim);
-                                dims.push(Dim::Static(dim));
+                                if self.match_token(&TokenType::Question) {
+                                    dims.push(Dim::Dyn);
+                                } else {
+                                    let mut dim = self.parse_expr()?;
+                                    super::expr::stamp_dim_literals(&mut dim);
+                                    dims.push(Dim::Static(dim));
+                                }
                                 if !self.match_token(&TokenType::Comma) {
                                     break;
                                 }
@@ -397,9 +401,8 @@ impl<'a> Parser<'a> {
                     Ok(Type::Tensor(el_ty, dims, top))
                 }
             }
-            // `DynTensor<T>` / `DynTensor<T, Topology::X>`: a tensor whose shape is a run-time
-            // value. It takes no dimension list — carrying one would be the contradiction the
-            // split exists to remove (Vx#399).
+            // `DynTensor<T>` is the old spelling of `Tensor<T, [?, ?]>`: every one in the tree
+            // is rank 2, so it reads as that while the corpus is rewritten.
             "DynTensor" => {
                 let mut el_ty = ElementType::F32;
                 let mut top = None;
@@ -430,7 +433,7 @@ impl<'a> Parser<'a> {
                         "Expected '>' after DynTensor parameters",
                     )?;
                 }
-                Ok(Type::DynTensor(el_ty, top))
+                Ok(Type::Tensor(el_ty, vec![Dim::Dyn, Dim::Dyn], top))
             }
             "Matrix" => Ok(Type::Matrix),
             _ => {

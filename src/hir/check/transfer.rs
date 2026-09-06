@@ -1641,13 +1641,6 @@ impl<'a> TypeChecker<'a> {
                     Self::pinned_topology_for(target_mem),
                 )),
             ),
-            Type::DynTensor(el, _) => Type::DynTensor(
-                el,
-                Some(Placement::in_space(
-                    target_mem.clone(),
-                    Self::pinned_topology_for(target_mem),
-                )),
-            ),
             Type::Verified(_inner) => {
                 if let Expr::Transfer(t) = expr {
                     let inner_pinned = self.check_expr_type_flag(&mut t.expr, consume);

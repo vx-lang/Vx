@@ -16,7 +16,7 @@
 // written.
 //
 // CHECK-DAG: 'Tensor::uninit' expects 0 argument(s)
-// CHECK-DAG: 'DynTensor::new' expects 1 argument(s)
+// CHECK-DAG: 'Tensor::new' expects 1 argument(s)
 // CHECK-DAG: every extent has to be known at compile time
 
 fn shape_written_twice() -> i32 {
@@ -25,7 +25,7 @@ fn shape_written_twice() -> i32 {
 }
 
 fn shape_written_nowhere() -> i32 {
-  let t = DynTensor<f32>::new();
+  let t = Tensor<f32, [?, ?]>::new();
   return 0;
 }
 

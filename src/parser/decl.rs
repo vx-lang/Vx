@@ -1422,10 +1422,14 @@ fn distributed_matmul(a: Ref<DynTensor<f32>, Memory::CPU_DRAM>, b: Ref<DynTensor
         assert_eq!(func.params.len(), 2);
         assert_eq!(func.params[0].0.as_ref(), "a");
 
-        // Assert return type is Verified<DynTensor<f32>>
+        // Assert return type is Verified<Tensor<f32, [?, ?]>>
         assert_eq!(
             func.return_type,
-            Type::Verified(Box::new(Type::DynTensor(ElementType::F32, None)))
+            Type::Verified(Box::new(Type::Tensor(
+                ElementType::F32,
+                vec![Dim::Dyn, Dim::Dyn],
+                None
+            )))
         );
 
         // Assert body has one statement (spawn on)
@@ -1475,7 +1479,14 @@ fn distributed_matmul(a: Ref<DynTensor<f32>, Memory::CPU_DRAM>, b: Ref<DynTensor
         {
             assert_eq!(name.as_ref(), "x");
             assert!(is_mut);
-            assert_eq!(ty, &Some(Type::DynTensor(ElementType::F32, None)));
+            assert_eq!(
+                ty,
+                &Some(Type::Tensor(
+                    ElementType::F32,
+                    vec![Dim::Dyn, Dim::Dyn],
+                    None
+                ))
+            );
             if let Expr::FunctionCall(FunctionCallExpr {
                 name: func_name,
                 args,
@@ -1788,7 +1799,10 @@ fn distributed_matmul(a: Ref<DynTensor<f32>, Memory::CPU_DRAM>, b: Ref<DynTensor
         assert_eq!(program.externs[0].name.as_ref(), "malloc");
         assert_eq!(program.externs[0].params.len(), 1);
         if let Type::Pointer(inner, None, true) = &program.externs[0].return_type {
-            assert_eq!(**inner, Type::DynTensor(ElementType::F32, None));
+            assert_eq!(
+                **inner,
+                Type::Tensor(ElementType::F32, vec![Dim::Dyn, Dim::Dyn], None)
+            );
         } else {
             panic!("Expected pointer return type");
         }

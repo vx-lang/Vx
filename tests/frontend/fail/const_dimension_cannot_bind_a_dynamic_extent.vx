@@ -18,9 +18,12 @@ fn first<const N : i32>(t : Tensor<f32, [N]>) -> f32 {
   return t[0];
 }
 
-fn main() -> i32 {
-  let n = 3;
+fn f(n : i32) -> i32 {
   let mut a = Tensor<f32>([n]);
   a[0] = 1.0;
   return first(a) as i32 - 1;
+}
+
+fn main() -> i32 {
+  return f(3);
 }

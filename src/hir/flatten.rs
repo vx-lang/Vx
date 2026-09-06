@@ -84,15 +84,6 @@ pub fn tensor_gid_of(ty: &Type) -> Option<TypeId> {
 /// element, or a dim that isn't a literal/name). The shape is what the flat lowerer rank-reduces on
 /// indexing.
 fn tensor_elem_shape(ty: &Type) -> Option<(ElementType, Vec<String>)> {
-    // A `DynTensor` carries no extents. The oracle spells it as the rank-2 dynamic memref, so the
-    // flat path answers with the same two dynamic dimensions rather than declining. The rank is
-    // the oracle's assumption rather than anything the type says (Vx#404).
-    if let Type::DynTensor(elem, _) = ty {
-        if matches!(elem, ElementType::Generic(_)) {
-            return None;
-        }
-        return Some((elem.clone(), vec![DYN_DIM.to_string(), DYN_DIM.to_string()]));
-    }
     let Type::Tensor(elem, dims, _) = ty else {
         return None;
     };
@@ -138,12 +129,7 @@ impl ExtentSite {
 fn is_tensor_alloc_call(fc: &crate::syntax::FunctionCallExpr) -> bool {
     matches!(
         fc.name.as_ref(),
-        "Tensor"
-            | "Tensor::new"
-            | "Tensor::uninit"
-            | "Tensor::fill"
-            | "DynTensor::new"
-            | "DynTensor::uninit"
+        "Tensor" | "Tensor::new" | "Tensor::uninit" | "Tensor::fill"
     )
 }
 
@@ -3911,13 +3897,13 @@ fn lowered_ty(ty: &Type, registry: &ImmutableGlobalRegistry) -> Option<LoweredTy
     }
 }
 
-/// Whether a type is a `DynTensor` under the checker-level wrappers. Its extents are run-time
-/// values, and the flat lowerer carries shapes as static strings, so it has nothing to index with
-/// and declines (Vx#409). Named separately from the generic parameter/return bucket so the corpus
-/// sweep's histogram measures the gap.
+/// Whether a tensor type has a run-time extent, under the checker-level wrappers. The flat
+/// lowerer carries shapes as static strings, so it has nothing to index such a tensor with
+/// and declines (Vx#409). Named separately from the generic parameter/return bucket so the
+/// corpus sweep's histogram measures the gap.
 fn is_dyn_tensor(ty: &Type) -> bool {
     match ty {
-        Type::DynTensor(..) => true,
+        Type::Tensor(_, dims, _) => dims.iter().any(|d| matches!(d, Dim::Dyn)),
         Type::Verified(inner) | Type::Ref(inner, _) | Type::Pinned(inner, _) => {
             is_dyn_tensor(inner)
         }

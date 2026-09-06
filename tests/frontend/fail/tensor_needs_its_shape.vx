@@ -16,7 +16,7 @@
 // CHECK: Tensor needs its shape
 // CHECK-SAME: Tensor<f32, [2, 3]>
 // CHECK-SAME: Tensor<f32, []>
-// CHECK-SAME: DynTensor<f32>
+// CHECK-SAME: Tensor<f32, [?, ?]>
 fn erased(t : Tensor<f32>) -> i32 {
   return 0;
 }

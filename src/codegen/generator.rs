@@ -1336,12 +1336,7 @@ impl<'c> MeliorGenerator<'c> {
     ) -> Result<Type<'c>, crate::codegen::lower::LowerError> {
         let ty_str = match ty {
             syntax::Type::Tensor(el_ty, dims, top) => {
-                return self.lower_tensor_type(el_ty, dims, top, false);
-            }
-            // A dynamic tensor is the fully dynamic memref. It is the only thing that is now:
-            // an empty dimension list on a `Tensor` means rank 0, not unknown (Vx#399).
-            syntax::Type::DynTensor(el_ty, top) => {
-                return self.lower_tensor_type(el_ty, &[], top, true);
+                return self.lower_tensor_type(el_ty, dims, top);
             }
             syntax::Type::Scalar(el_ty) => {
                 return Ok(match el_ty {
@@ -1696,7 +1691,6 @@ impl<'c> MeliorGenerator<'c> {
         el_ty: &ElementType,
         dims: &[syntax::Dim],
         top: &Option<syntax::Placement>,
-        dynamic: bool,
     ) -> Result<Type<'c>, crate::codegen::lower::LowerError> {
         let ty_str = match el_ty {
             ElementType::F16 => "f16",
@@ -1726,15 +1720,11 @@ impl<'c> MeliorGenerator<'c> {
             }
         };
 
-        // `Tensor<f32, []>` is rank 0 -- `memref<f32>` -- and only a `DynTensor` is the
-        // rank-2 dynamic memref. The two used to share the empty dimension list, so a stated
-        // rank-0 parameter silently became `memref<?x?xf32>` (Vx#399).
+        // Rank is the list's length: `Tensor<f32, []>` is `memref<f32>`, and a `?` dimension
+        // is a `?` in the memref, so a rank-1 dynamic tensor is `memref<?xf32>` and not the
+        // rank 2 every run-time shape used to be assumed to have (Vx#404).
         let mut shape_str = String::new();
-        if dims.is_empty() {
-            if dynamic {
-                shape_str = "?x?".to_string();
-            }
-        } else {
+        if !dims.is_empty() {
             for (i, dim) in dims.iter().enumerate() {
                 if let syntax::Dim::Static(syntax::Expr::Number(NumberExpr {
                     value: n_str,

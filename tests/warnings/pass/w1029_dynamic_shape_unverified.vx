@@ -11,13 +11,12 @@
 // warns (W1029) and still compiles. Make the shape static, or
 // bound it (P1-1), to get the check back. This is P0-4 from the heterogeneous gap analysis.
 //
-// A runtime dimension now types as `DynTensor` (Vx#399), which carries no extents at all --
-// so the note reports that the shape is unknown rather than naming the dimension. Naming it
-// meant reading a shape off a value that does not have one yet.
+// A runtime dimension is a `?` in the type, per position, so the note can name the
+// dimension without reading an extent off a value that does not have one yet.
 //
 // WARN: W1029
 // WARN: not verified
-// WARN: the shape is not statically known
+// WARN: dimension 0 is a run-time extent
 
 Memory HBM {
   capacity: 32 GiB, bandwidth: 1200 GB/s

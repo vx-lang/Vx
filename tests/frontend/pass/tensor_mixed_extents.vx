@@ -14,16 +14,19 @@
 // XFAIL: *
 // CHECK-LABEL: func.func @rows(
 // CHECK-SAME: memref<?x4xf32>
-// CHECK-LABEL: func.func @main
+// CHECK-LABEL: func.func @build(
 // CHECK: memref.alloc(%{{.*}}) : memref<?x4xf32>
 
 fn rows(m : Tensor<f32, [?, 4]>) -> i32 {
   return m.extent(0);
 }
 
-fn main() -> i32 {
-  let n = 2;
+fn build(n : i32) -> Tensor<f32, [?, 4]> {
   let mut m = Tensor<f32>([n, 4]);
   m[0][0] = 1.0;
-  return rows(m) - 2;
+  return m;
+}
+
+fn main() -> i32 {
+  return rows(build(2)) - 2;
 }

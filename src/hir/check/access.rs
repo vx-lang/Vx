@@ -567,11 +567,6 @@ impl<'a> TypeChecker<'a> {
                     } else {
                         Type::Scalar(el_ty)
                     }
-                } else if let Type::DynTensor(el_ty, _) = base {
-                    // A dynamic tensor is indexable; its rank is what is unknown. Indexing
-                    // yields the element, which is what a dims-less tensor yielded before the
-                    // shape-unknown reading had its own type (Vx#399).
-                    Type::Scalar(el_ty)
                 } else if let Some(elem) = self.container_element_type(&base) {
                     // A user container (`Vec<T>`): its element type, resolved from the backing
                     // `data` pointer. `v[i]` on a `Vec<i32>` is `i32`, not the `f32` this used to

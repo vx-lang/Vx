@@ -17,7 +17,7 @@ use crate::gid::{deserialize_metadata_symbols, serialize_metadata_symbols, TypeI
 use crate::layout::{FieldLayout, FieldTy};
 use crate::registry::{FnBody, FnSig, ImmutableGlobalRegistry, StructFields, TypeDefinition};
 use crate::symbol::Symbol;
-use crate::syntax::{ElementType, Expr, MemorySpace, Placement, Topology, Type};
+use crate::syntax::{Dim, ElementType, Expr, MemorySpace, Placement, Topology, Type};
 use rustc_hash::FxHashMap;
 use std::fs;
 use std::io;
@@ -93,7 +93,7 @@ impl<'a> VxMetadata<'a> {
 const VXLIB_MAGIC: &[u8; 4] = b"VXLB";
 /// Format tag folded into an FNV-1a stamp (`src/hash.rs`) written after the magic. A codec change
 /// bumps this string, so a stale artifact is *detected* (version mismatch on load) rather than misread.
-const VXLIB_FORMAT_TAG: &str = "vxlib-interface-v7";
+const VXLIB_FORMAT_TAG: &str = "vxlib-interface-v8";
 
 /// Append-only little-endian byte writer for the interface codec.
 struct Writer {
@@ -540,20 +540,27 @@ fn write_type(w: &mut Writer, ty: &Type) -> Result<(), String> {
         }
         Matrix => w.u8(13),
         Unknown => w.u8(14),
+        // A dimension is `?` or a literal. A const-generic name or an arithmetic dimension
+        // belongs to a template, and a template is not an interface.
         Tensor(e, dims, top) => {
-            if !dims.is_empty() {
-                return Err(
-                    "vxlib: tensor type with dimension expressions not yet serializable".into(),
-                );
-            }
             w.u8(15);
             write_element_type(w, e);
             write_opt_placement(w, top)?;
-        }
-        DynTensor(e, top) => {
-            w.u8(16);
-            write_element_type(w, e);
-            write_opt_placement(w, top)?;
+            w.u64(dims.len() as u64);
+            for d in dims {
+                match d {
+                    Dim::Dyn => w.u8(0),
+                    Dim::Static(_) => {
+                        let Some(v) = d.literal() else {
+                            return Err("vxlib: tensor type with dimension expressions not \
+                                        serializable"
+                                .into());
+                        };
+                        w.u8(1);
+                        w.sym(v);
+                    }
+                }
+            }
         }
         Const(_) => return Err("vxlib: const-expression type not yet serializable".into()),
         Module(_, _) => return Err("vxlib: module type not serializable".into()),
@@ -627,9 +634,22 @@ fn read_type(r: &mut Reader) -> Result<Type, String> {
         14 => Unknown,
         15 => {
             let e = read_element_type(r)?;
-            Tensor(e, Vec::new(), read_opt_placement(r)?)
+            let top = read_opt_placement(r)?;
+            let n = r.u64()? as usize;
+            let mut dims = Vec::with_capacity(n);
+            for _ in 0..n {
+                dims.push(match r.u8()? {
+                    0 => Dim::Dyn,
+                    1 => Dim::Static(crate::syntax::Expr::Number(crate::syntax::NumberExpr::new(
+                        r.sym()?.as_ref().to_string(),
+                        Some(ElementType::I32),
+                        crate::syntax::Span::default(),
+                    ))),
+                    t => return Err(format!("vxlib: bad Dim tag {t}")),
+                });
+            }
+            Tensor(e, dims, top)
         }
-        16 => DynTensor(read_element_type(r)?, read_opt_placement(r)?),
         t => return Err(format!("vxlib: bad Type tag {t}")),
     })
 }
@@ -1382,12 +1402,12 @@ mod tests {
                 ret_prov: 0,
             },
         );
-        // A dimensioned tensor return is not yet serializable (`write_type` rejects it).
-        let dim = crate::syntax::Expr::Number(crate::syntax::NumberExpr::new(
-            "4".to_string(),
-            None,
-            crate::syntax::Span::default(),
-        ));
+        // A tensor return whose dimension is a name belongs to a template, and `write_type`
+        // rejects it; a literal or `?` would serialize.
+        let dim = crate::syntax::Expr::Identifier(crate::syntax::IdentifierExpr {
+            name: "N".into(),
+            span: crate::syntax::Span::default(),
+        });
         reg.fn_sigs.insert(
             Symbol::from("bad"),
             FnSig {

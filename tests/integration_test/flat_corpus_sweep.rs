@@ -45,6 +45,7 @@ const KNOWN_DECLINES: &[&str] = &[
     "frontend/pass/gen_tensor_math_pass.vx",
     "frontend/pass/generics.vx",
     "frontend/pass/if_comptime_and_topology.vx",
+    "frontend/pass/impl_most_specific_pattern_wins.vx",
     "frontend/pass/indirect_call.vx",
     "frontend/pass/inline_mlir_const_generics.vx",
     "frontend/pass/legal_acccore_transfer.vx",
@@ -64,13 +65,12 @@ const KNOWN_DECLINES: &[&str] = &[
     "middle_end/pass/match_int_literal_arms.vx",
     "middle_end/pass/pinned_annotation_struct_field.vx",
     "middle_end/pass/reshape_pad.vx",
-    // A DynTensor parameter (Vx#409) -- also `traits.vx` below. Both used to compile through the
-    // flat path while the dims-less spelling let it read them as rank-0: `topology.vx` got a
-    // `memref<f32>` signature where the AST oracle gives `memref<?x?xf32>`, two ABIs for one
-    // function, plus a dropped vx.transfer. Declining is the honest answer until the flat
-    // lowerer carries run-time extents.
+    // A parameter with run-time extents (Vx#409). It used to compile through the flat path
+    // while the dims-less spelling let it read as rank-0: `topology.vx` got a `memref<f32>`
+    // signature where the AST oracle gives `memref<?x?xf32>`, two ABIs for one function, plus
+    // a dropped vx.transfer. Declining is the honest answer until the flat lowerer carries
+    // run-time extents.
     "middle_end/pass/reshape_transpose.vx",
-    "middle_end/pass/traits.vx",
     "middle_end/pass/topology_polymorphism.vx",
     "optimizations/pass/cpu_lowering.vx",
     "optimizations/pass/kernel_kind_matmul.vx",

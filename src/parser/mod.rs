@@ -680,8 +680,8 @@ mod tests {
         );
         assert_eq!(
             parse_type("DynTensor<i64>"),
-            Type::DynTensor(ElementType::I64, None),
-            "a run-time shape is a DynTensor"
+            Type::Tensor(ElementType::I64, vec![Dim::Dyn, Dim::Dyn], None),
+            "the old spelling reads as a rank-2 tensor with run-time extents"
         );
         let shaped = parse_type("Tensor<f32, [2, 3]>");
         let Type::Tensor(el, dims, None) = shaped else {

@@ -659,44 +659,34 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             (Type::Tensor(e1, d1, t1), Type::Tensor(e2, d2, t2)) => {
+                // A pattern that names no place applies wherever the receiver lives; one that
+                // names a place applies only there.
                 let e1_match = Self::unify_tensor_elem(e1, e2, mapping);
-                if !e1_match || t1 != t2 {
+                if !e1_match || (t1.is_some() && t1 != t2) {
                     return false;
                 }
-                // A dims-less pattern is a shape wildcard. `impl Tensor<T>`'s methods are
-                // written rank-generically against `memref<?x?xT>` and apply at any shape, so a
-                // shaped receiver resolves them; likewise a `DynTensor<f32>` parameter accepts a
-                // shaped argument. A pattern that names its dimensions still has to match them,
-                // which is the loop below. (Vx#397)
-                if d1.is_empty() {
-                    return true;
-                }
+                // Rank is static, so the two lists have to be the same length. Per dimension:
+                // `?` in the pattern matches any extent; a name binds to a compile-time extent
+                // and refuses a run-time one, since a `const` parameter cannot stand for a
+                // value that does not exist until then; anything else matches itself.
                 if d1.len() != d2.len() {
                     return false;
                 }
                 for (dim1, dim2) in d1.iter().zip(d2.iter()) {
-                    if let Dim::Static(Expr::Identifier(id)) = dim1 {
-                        if let Dim::Static(Expr::Number(n)) = dim2 {
+                    match (dim1, dim2) {
+                        (Dim::Dyn, _) => {}
+                        (Dim::Static(Expr::Identifier(id)), Dim::Static(Expr::Number(n))) => {
                             mapping.insert(id.name.clone(), Type::Generic(n.value.clone(), None));
-                        } else if let Dim::Static(Expr::Identifier(id2)) = dim2 {
-                            mapping.insert(id.name.clone(), Type::Generic(id2.name.clone(), None));
-                        } else if dim1 != dim2 {
-                            return false;
                         }
-                    } else if dim1 != dim2 {
-                        return false;
+                        (Dim::Static(Expr::Identifier(id)), Dim::Static(Expr::Identifier(id2))) => {
+                            mapping.insert(id.name.clone(), Type::Generic(id2.name.clone(), None));
+                        }
+                        (Dim::Static(Expr::Identifier(_)), Dim::Dyn) => return false,
+                        _ if dim1 != dim2 => return false,
+                        _ => {}
                     }
                 }
                 true
-            }
-            // A `DynTensor<T>` pattern matches any tensor of that element, shaped or not: it is
-            // the wildcard reading a dims-less `Tensor` pattern carries today (Vx#399).
-            (Type::DynTensor(e1, t1), Type::DynTensor(e2, t2)) => {
-                Self::unify_tensor_elem(e1, e2, mapping) && t1 == t2
-            }
-            (Type::DynTensor(e1, _), Type::Tensor(e2, _, _))
-            | (Type::Tensor(e1, _, _), Type::DynTensor(e2, _)) => {
-                Self::unify_tensor_elem(e1, e2, mapping)
             }
             (Type::Pointer(t1, m1, mut1), Type::Pointer(t2, m2, mut2)) => {
                 m1 == m2 && mut1 == mut2 && self.unify_types_internal(t1, t2, mapping)

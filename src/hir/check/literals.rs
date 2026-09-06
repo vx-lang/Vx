@@ -229,7 +229,7 @@ impl<'a> TypeChecker<'a> {
         let mut inner = t;
         loop {
             match inner {
-                Type::Tensor(elem, _, _) | Type::DynTensor(elem, _) => return Some(elem),
+                Type::Tensor(elem, _, _) => return Some(elem),
                 Type::Borrow { inner: i, .. }
                 | Type::Pointer(i, _, _)
                 | Type::Pinned(i, _)
@@ -290,7 +290,7 @@ impl<'a> TypeChecker<'a> {
     /// without changing how it is represented.
     fn is_tensor_payload(t: &Type) -> bool {
         match t {
-            Type::Tensor(..) | Type::DynTensor(..) => true,
+            Type::Tensor(..) => true,
             Type::Verified(inner) | Type::Pinned(inner, _) | Type::Ref(inner, _) => {
                 Self::is_tensor_payload(inner)
             }
@@ -310,11 +310,6 @@ impl<'a> TypeChecker<'a> {
                 p.topology.display_name()
             ),
             Type::Tensor(e, _, _) => format!("a tensor of {e:?}"),
-            Type::DynTensor(e, Some(p)) => format!(
-                "a dynamic tensor of {e:?} placed on Topology::{}",
-                p.topology.display_name()
-            ),
-            Type::DynTensor(e, _) => format!("a dynamic tensor of {e:?}"),
             Type::Pinned(inner, top) => format!(
                 "{} placed on Topology::{}",
                 Self::short_type_name(inner),

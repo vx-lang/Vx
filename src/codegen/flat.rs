@@ -33,7 +33,7 @@ use crate::hir::flatten::{ptr_gid, scalar_gid, tensor_gid_of, DYN_DIM};
 use crate::mlir_ty::mlir_scalar;
 use crate::registry::ImmutableGlobalRegistry;
 use crate::syntax::scalar_of;
-use crate::syntax::{is_void_ty, ElementType, Function, Type};
+use crate::syntax::{is_void_ty, Dim, ElementType, Function, Type};
 use rayon::prelude::*;
 use std::collections::HashMap;
 
@@ -194,12 +194,12 @@ fn tensor_memref_of_type(ty: &Type) -> Option<String> {
         Type::Tensor(elem, dims, _) => {
             let mut shape = Vec::with_capacity(dims.len());
             for d in dims {
-                shape.push(d.literal()?.parse::<i64>().ok()?.to_string());
+                shape.push(match d {
+                    Dim::Dyn => DYN_DIM.to_string(),
+                    _ => d.literal()?.parse::<i64>().ok()?.to_string(),
+                });
             }
             tensor_memref_ty(elem, &shape)
-        }
-        Type::DynTensor(elem, _) => {
-            tensor_memref_ty(elem, &[DYN_DIM.to_string(), DYN_DIM.to_string()])
         }
         _ => None,
     }

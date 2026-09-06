@@ -65,7 +65,9 @@
 // PAYLOAD: \00kind=matmul\00roles=a:0,b:1,out:2\00outkind=slot\00
 
 fn gemm(a : DynTensor<f32>, b : DynTensor<f32>) -> DynTensor<f32> {
-  let mut c = Tensor<f32, [2, 3]>::uninit();
+  // `a @ b` over run-time extents has run-time extents, and a `[2, 3]` binding would be a
+  // narrowing nothing checks; the accumulator says what it is.
+  let mut c = Tensor<f32, [?, ?]>::uninit([2, 3]);
   spawn on(Topology::GPU) {
     c = a @b;
   }

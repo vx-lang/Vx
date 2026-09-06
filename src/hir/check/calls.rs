@@ -1205,11 +1205,7 @@ impl<'a> TypeChecker<'a> {
         // carry a placement at all -- there is nowhere in `Tensor<f32>([4, 4])` to put one.
         if matches!(
             resolved_name,
-            "Tensor::new"
-                | "Tensor::uninit"
-                | "Tensor::fill"
-                | "DynTensor::new"
-                | "DynTensor::uninit"
+            "Tensor::new" | "Tensor::uninit" | "Tensor::fill"
         ) {
             let Some(ty) = explicit_generic_args.first() else {
                 self.errors
@@ -1220,14 +1216,15 @@ impl<'a> TypeChecker<'a> {
             // takes exactly the arguments the other cannot. `::fill(v)` adds one on top: the
             // value, which no other constructor takes.
             let fills = resolved_name == "Tensor::fill";
-            let wanted = usize::from(matches!(ty, Type::DynTensor(..))) + usize::from(fills);
+            let dynamic = matches!(ty, Type::Tensor(_, dims, _) if dims.iter().any(|d| matches!(d, Dim::Dyn)));
+            let wanted = usize::from(dynamic) + usize::from(fills);
             if args.len() != wanted {
                 let why = if fills {
                     "`::fill` takes the value to write into every element"
                 } else if wanted == 0 {
                     "a Tensor's shape is part of its type, so the constructor takes no arguments"
                 } else {
-                    "a DynTensor's shape is not part of its type, so the constructor takes it: \
+                    "a run-time extent is not in the type, so the constructor takes the shape: \
                      `::new([n, m])`"
                 };
                 self.errors.push(format!(
@@ -1235,10 +1232,10 @@ impl<'a> TypeChecker<'a> {
                 ));
             }
             // A `Tensor`'s extents are part of its type, so an extent nothing can evaluate is not
-            // a static extent (Vx#399). Refused rather than quietly answered with a `DynTensor`:
+            // a static extent (Vx#399). Refused rather than quietly answered with a `?`:
             // the type was written down, and handing back a different one is how a shape nobody
             // can read comes to be trusted by a later check. A const generic does evaluate.
-            if let Type::Tensor(_, dims, _) = ty {
+            if let (false, Type::Tensor(_, dims, _)) = (dynamic, ty) {
                 let mut env = HashMap::new();
                 for scope in &self.consteval.env {
                     for (k, v) in scope {
@@ -1251,9 +1248,9 @@ impl<'a> TypeChecker<'a> {
                 }) {
                     self.errors.push(
                         "a Tensor's shape is part of its type, so every extent has to be known \
-                         at compile time; write `DynTensor<T>::uninit([..])` for a shape that is \
-                         not"
-                        .to_string(),
+                         at compile time; write `Tensor<T, [?, ?]>::uninit([..])` for a shape \
+                         that is not"
+                            .to_string(),
                     );
                 }
             }
@@ -1303,9 +1300,9 @@ impl<'a> TypeChecker<'a> {
                     dims = args.to_vec();
                 }
             }
-            // A dimension the compiler cannot evaluate is a run-time value, so the result is a
-            // `DynTensor`: recording `[n, n]` would let later checks read a shape that does not
-            // exist yet, which is what W1029 warns about today. A const-generic dimension does
+            // A dimension the compiler cannot evaluate is a run-time value, so that position is
+            // `?`: recording `[n, 3]` as static would let later checks read an extent that does
+            // not exist yet, which is what W1029 warns about. A const-generic dimension does
             // evaluate, so `Tensor<f32, [N, N]>` stays statically shaped. (Vx#399)
             let mut env = HashMap::new();
             for scope in &self.consteval.env {
@@ -1313,16 +1310,17 @@ impl<'a> TypeChecker<'a> {
                     env.insert(k.clone(), v.clone());
                 }
             }
-            let all_static = dims.iter().all(|d| self.eval_expr(d, &env).is_some());
-            if dims.is_empty() || all_static {
-                Some(Type::Tensor(
-                    el_ty,
-                    dims.into_iter().map(Dim::Static).collect(),
-                    None,
-                ))
-            } else {
-                Some(Type::DynTensor(el_ty, None))
-            }
+            let dims = dims
+                .into_iter()
+                .map(|d| {
+                    if self.eval_expr(&d, &env).is_some() {
+                        Dim::Static(d)
+                    } else {
+                        Dim::Dyn
+                    }
+                })
+                .collect();
+            Some(Type::Tensor(el_ty, dims, None))
         } else if resolved_name.starts_with("Math::") {
             if args.len() != 1 {
                 self.errors.push(format!(
@@ -1486,17 +1484,20 @@ impl<'a> TypeChecker<'a> {
                             env.insert(k.clone(), v.clone());
                         }
                     }
-                    let extents = args.get(1..3).filter(|e| {
-                        e.len() == 2 && e.iter().all(|a| self.eval_expr(a, &env).is_some())
-                    });
-                    match extents {
-                        Some(dims) => Some(Type::Tensor(
-                            e,
-                            dims.iter().cloned().map(Dim::Static).collect(),
-                            None,
-                        )),
-                        None => Some(Type::DynTensor(e, None)),
-                    }
+                    let dims = match args.get(1..3) {
+                        Some(ext) if ext.len() == 2 => ext
+                            .iter()
+                            .map(|a| {
+                                if self.eval_expr(a, &env).is_some() {
+                                    Dim::Static(a.clone())
+                                } else {
+                                    Dim::Dyn
+                                }
+                            })
+                            .collect(),
+                        _ => vec![Dim::Dyn, Dim::Dyn],
+                    };
+                    Some(Type::Tensor(e, dims, None))
                 }
                 None => {
                     if !self.speculating {
@@ -1886,7 +1887,7 @@ impl<'a> TypeChecker<'a> {
                     match &base_ty {
                         // Taking the address of the storage does not read the shape, so both
                         // tensor spellings answer here (Vx#399).
-                        Type::Tensor(..) | Type::DynTensor(..) => {
+                        Type::Tensor(..) => {
                             base_ty = Type::Pointer(Box::new(base_ty.clone()), None, is_mut);
                         }
                         Type::Borrow {
@@ -1912,10 +1913,7 @@ impl<'a> TypeChecker<'a> {
                     }
                 } else if _method.as_ref() == "len" {
                     match &base_ty {
-                        Type::Tensor(..)
-                        | Type::DynTensor(..)
-                        | Type::Borrow { .. }
-                        | Type::Pointer(_, _, _) => {
+                        Type::Tensor(..) | Type::Borrow { .. } | Type::Pointer(_, _, _) => {
                             // A count is a scalar. It answered a dims-less tensor, which is one
                             // of the four things that spelling meant (Vx#399).
                             base_ty = Type::Scalar(ElementType::I64);

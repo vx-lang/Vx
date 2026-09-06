@@ -100,7 +100,7 @@ impl TypeChecker<'_> {
 fn tensor_within(ty: &crate::syntax::Type) -> Option<&crate::syntax::Type> {
     use crate::syntax::Type;
     match ty {
-        Type::Tensor(..) | Type::DynTensor(..) => Some(ty),
+        Type::Tensor(..) => Some(ty),
         Type::Verified(inner) | Type::Pinned(inner, _) | Type::Ref(inner, _) => {
             tensor_within(inner)
         }

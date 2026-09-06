@@ -606,11 +606,6 @@ pub enum Type {
     /// different types and get different monomorphs (Vx#401); each is a [`Dim`], so a
     /// run-time extent is spelled per position rather than by a different type.
     Tensor(ElementType, Vec<Dim>, Option<Placement>),
-    /// A tensor whose shape is not known until run time — a model config's dimensions, a
-    /// shape-polymorphic library function. Carries no extents by construction, so nothing can
-    /// read a shape off it that a static check would then trust (Vx#399). The verified variant
-    /// (a declared upper bound, Vx#245) is a later addition to this variant.
-    DynTensor(ElementType, Option<Placement>),
     Matrix,
     Ref(Box<Type>, MemorySpace),
     Borrow {
@@ -700,21 +695,6 @@ impl Type {
                 let new_dims = dims.iter().map(|d| d.substitute(mapping)).collect();
                 Type::Tensor(new_el_ty, new_dims, top.clone())
             }
-            // Same element substitution as `Tensor`, with no dimensions to rewrite. Without this
-            // arm a `DynTensor<T>` kept its generic element through monomorphization and reached
-            // codegen uninstantiated (Vx#399).
-            Type::DynTensor(el_ty, top) => {
-                let new_el_ty = if let ElementType::Generic(ref name) = el_ty {
-                    if let Some(Type::Scalar(concrete_el)) = mapping.get(name) {
-                        concrete_el.clone()
-                    } else {
-                        el_ty.clone()
-                    }
-                } else {
-                    el_ty.clone()
-                };
-                Type::DynTensor(new_el_ty, top.clone())
-            }
             Type::Ref(inner, mem) => Type::Ref(Box::new(inner.substitute(mapping)), mem.clone()),
             Type::Verified(inner) => Type::Verified(Box::new(inner.substitute(mapping))),
             Type::Pinned(inner, top) => {
@@ -756,7 +736,7 @@ impl Type {
     /// Where this value lives, when its type says.
     pub fn placement(&self) -> Option<&Placement> {
         match self {
-            Type::Tensor(_, _, p) | Type::DynTensor(_, p) => p.as_ref(),
+            Type::Tensor(_, _, p) => p.as_ref(),
             _ => None,
         }
     }
@@ -1043,7 +1023,8 @@ impl Mangle for Type {
             // lower to different memrefs, so a generic instantiated at both needs two symbols
             // rather than one body serving both (Vx#401). Rank alone was too coarse to separate
             // them. Topology stays excluded. A dimension the canonical forms below cannot spell
-            // contributes `d`, which is why two such dimensions can still share a name.
+            // contributes `d`, which is why two such dimensions can still share a name. `?` is
+            // `_`, a character a symbol may carry.
             Type::Tensor(el, dims, _) => {
                 write!(w, "Tensor$")?;
                 el.mangle_to(w)?;
@@ -1057,12 +1038,6 @@ impl Mangle for Type {
                     }
                 }
                 Ok(())
-            }
-            // No extents to carry: a dynamic tensor's shape is not part of its identity because
-            // it has none until run time (Vx#399).
-            Type::DynTensor(el, _) => {
-                write!(w, "DynTensor$")?;
-                el.mangle_to(w)
             }
             Type::Matrix => write!(w, "Matrix"),
             Type::Struct(name, _) => write!(w, "{}", name),

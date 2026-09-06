@@ -12,11 +12,17 @@
 // receiver's symbol carries its extents.
 //
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// XFAIL: *
-// CHECK-LABEL: func.func @main
+// CHECK-LABEL: func.func @probe
 // CHECK: call @Tensor$f32$2x2$which
-// CHECK-NOT: call @Tensor$f32$2x2$which
-// CHECK: call @Tensor$f32${{.*}}which
+// CHECK: call @Tensor$f32$_x_$which
+
+// The static pattern is declared first so that the dynamic receiver resolving to the
+// `[?, ?]` impl is a choice by specificity and not by declaration order.
+impl<T : Float, const N : i32, const M : i32> Tensor<T, [N, M]> {
+  fn which(self : &Tensor<T, [N, M]>) -> i32 {
+    return 2;
+  }
+}
 
 impl<T : Float> Tensor<T, [?, ?]> {
   fn which(self : &Tensor<T, [?, ?]>) -> i32 {
@@ -24,15 +30,12 @@ impl<T : Float> Tensor<T, [?, ?]> {
   }
 }
 
-impl<T : Float, const N : i32, const M : i32> Tensor<T, [N, M]> {
-  fn which(self : &Tensor<T, [N, M]>) -> i32 {
-    return 2;
-  }
-}
-
-fn main() -> i32 {
-  let n = 2;
+fn probe(n : i32) -> i32 {
   let s = Tensor<f32, [2, 2]>::uninit();
   let d = Tensor<f32>([n, n]);
   return s.which() * 10 + d.which() - 21;
+}
+
+fn main() -> i32 {
+  return probe(2);
 }

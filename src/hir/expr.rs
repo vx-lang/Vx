@@ -266,9 +266,6 @@ impl<'a> TypeChecker<'a> {
             Type::Tensor(e, d, Some(p)) => {
                 Some((Type::Tensor(e.clone(), d.clone(), None), p.topology.clone()))
             }
-            Type::DynTensor(e, Some(p)) => {
-                Some((Type::DynTensor(e.clone(), None), p.topology.clone()))
-            }
             _ => None,
         }
     }
@@ -406,19 +403,26 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
 
+                // Rank is static and no cast changes it. Per dimension, a `?` in the target
+                // accepts any extent and a static extent accepts only itself: `[512, 8]` widens
+                // to `[?, 8]`, and `[?, 8]` does not narrow to `[512, 8]` without saying so.
                 if !dims_target.is_empty() && !dims_source.is_empty() {
                     if dims_target.len() != dims_source.len() {
                         return false;
                     }
                     let empty_env = std::collections::HashMap::new();
                     for (dt, ds) in dims_target.iter().zip(dims_source.iter()) {
-                        let vt = dt.as_static().and_then(|e| self.eval_expr(e, &empty_env));
-                        let vs = ds.as_static().and_then(|e| self.eval_expr(e, &empty_env));
+                        let Some(et) = dt.as_static() else { continue };
+                        let Some(es) = ds.as_static() else {
+                            return false;
+                        };
+                        let vt = self.eval_expr(et, &empty_env);
+                        let vs = self.eval_expr(es, &empty_env);
                         if vt.is_some() && vs.is_some() {
                             if vt != vs {
                                 return false;
                             }
-                        } else if dt != ds {
+                        } else if et != es {
                             return false;
                         }
                     }
@@ -490,62 +494,6 @@ impl<'a> TypeChecker<'a> {
                 // checking positions (`let`/`return`/assignment/operands/call args), so what reaches
                 // here mismatched is a genuine typed-value conversion — the programmer writes `as`.
                 return *t_target == *t_source;
-            }
-        }
-
-        // `DynTensor<T>` is the shape-unknown tensor: it accepts a statically shaped tensor of
-        // the same element (the shape is simply forgotten), and a shaped annotation accepts a
-        // dynamic value the way a dims-less source is accepted today. Placement still has to
-        // agree. (Vx#399)
-        {
-            let dyn_parts = |t: &Type| match t {
-                Type::DynTensor(e, top) => Some((e.clone(), top.clone())),
-                _ => None,
-            };
-            let tensor_elem = |t: &Type| match t {
-                Type::Tensor(e, _, top) => Some((e.clone(), top.clone())),
-                _ => None,
-            };
-            if let (Some((te, t_top)), Some((se, s_top))) = (dyn_parts(target), dyn_parts(source)) {
-                if te != se {
-                    return false;
-                }
-                // Same rule as for a shaped tensor: an annotation naming no place
-                // asks for host data, and a value on a device does not satisfy it.
-                // Dropping the placement here let a transferred `DynTensor` reach a
-                // parameter declared plain `DynTensor<f32>`.
-                if t_top.is_none() {
-                    if let Some(p) = s_top {
-                        return p.space == MemorySpace::CPUDRAM;
-                    }
-                }
-                return t_top.is_none() || t_top == s_top;
-            }
-            // A dynamic annotation forgets the shape, not the place: `t_top.is_none()`
-            // means "no place named", which asks for host data rather than "any
-            // place will do". Reading it as the latter let a transferred tensor
-            // satisfy a plain `DynTensor<f32>` parameter.
-            let placed_off_host =
-                |p: &Option<Placement>| p.as_ref().is_some_and(|p| p.space != MemorySpace::CPUDRAM);
-            if let (Some((te, t_top)), Some((se, s_top))) = (dyn_parts(target), tensor_elem(source))
-            {
-                if te != se {
-                    return false;
-                }
-                if t_top.is_none() {
-                    return !placed_off_host(&s_top);
-                }
-                return t_top == s_top;
-            }
-            if let (Some((te, t_top)), Some((se, s_top))) = (tensor_elem(target), dyn_parts(source))
-            {
-                if te != se {
-                    return false;
-                }
-                if t_top.is_none() {
-                    return !placed_off_host(&s_top);
-                }
-                return t_top == s_top;
             }
         }
 
@@ -641,10 +589,6 @@ impl<'a> TypeChecker<'a> {
     pub(crate) fn tensor_of(ty: &Type) -> Option<(&ElementType, &[Dim])> {
         match ty {
             Type::Tensor(e, d, _) => Some((e, d.as_slice())),
-            // A dynamic tensor is a tensor with no dimensions to report. Callers that size it
-            // get `None` from `static_tensor_bytes` and warn (W1029) instead of skipping, which
-            // is the same answer a runtime dimension produced before it had its own type.
-            Type::DynTensor(e, _) => Some((e, &[])),
             Type::Ref(inner, _) | Type::Pinned(inner, _) | Type::Verified(inner) => {
                 Self::tensor_of(inner)
             }

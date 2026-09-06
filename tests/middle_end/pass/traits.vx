@@ -23,24 +23,19 @@ fn process<T : Dimension>(val : T) -> i32 {
 }
 
 fn main() -> i32 {
-  let t : Tensor<f32, []> = 1.0;
+  let t = Tensor<f32, [2, 2]>::uninit();
   let res = process(t);
   return 0;
 }
 
-// dim() answers a rank, so it returns i32. The receiver is shape-generic, which is what
-// DynTensor spells (Vx#399); the trait method still monomorphizes per element type.
-// dim() answers a rank, so it returns i32, and its receiver is shape-generic, which is what
-// DynTensor spells. The rank-0 argument is a real memref<f32> now rather than a scalar cast
-// into a rank-2 memref (Vx#399).
-// CHECK-LABEL: func.func @Tensor$f32$dim(%arg0: memref<?x?xf32>) -> i32 {
-// CHECK: %[[R:.*]] = arith.constant 2 : i32
-// CHECK: return %[[R]] : i32
-// CHECK-LABEL: func.func @process$Tensor$f32(%arg0: memref<f32>) -> i32 {
-// CHECK: %[[V:.*]] = memref.load %arg0[] : memref<f32>
-// CHECK: %[[T:.*]] = builtin.unrealized_conversion_cast %[[V]] : f32 to memref<?x?xf32>
-// CHECK: call @Tensor$f32$dim(%[[T]]) : (memref<?x?xf32>) -> i32
-// CHECK-LABEL: func.func @main() -> i32 {
-// CHECK: %[[BUF:.*]] = memref.alloc() : memref<f32>
-// CHECK: linalg.fill ins(%{{.*}} : f32) outs(%[[BUF]] : memref<f32>)
-// CHECK: call @process$Tensor$f32(%[[BUF]]) : (memref<f32>) -> i32
+// dim() answers a rank, so it returns i32. The impl is for a rank-2 receiver with run-time
+// extents, so a `[2, 2]` argument widens to it; the trait method still monomorphizes per
+// element type. This used to pass a rank-0 tensor, which no impl covers: the checker let it
+// through and codegen bitcast an f32 into a rank-2 memref. Rank is static now, and a rank
+// no impl covers is refused at the call.
+// The two paths emit the functions in different orders, so these are DAG-matched.
+// CHECK-DAG: func.func @Tensor$f32$2x2$dim(%arg0: memref<?x?xf32>) -> i32
+// CHECK-DAG: func.func @process$Tensor$f32$2x2(%arg0: memref<2x2xf32>) -> i32
+// CHECK-DAG: memref.cast %arg0 : memref<2x2xf32> to memref<?x?xf32>
+// CHECK-DAG: call @Tensor$f32$2x2$dim(%{{.*}}) : (memref<?x?xf32>) -> i32
+// CHECK-DAG: call @process$Tensor$f32$2x2(%{{.*}}) : (memref<2x2xf32>) -> i32

@@ -2276,23 +2276,20 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             // extents -- keeps a single lowering rather than two that must agree.
             let written = type_args.as_ref().and_then(|t| t.first());
             let (elem, shape_args): (syntax::Type, Vec<Expr>) = match written {
+                // A shape with a run-time extent is not in the type, so it stays where it was
+                // written; a static one is rebuilt from the type as the one array argument.
+                Some(syntax::Type::Tensor(el, dims, _))
+                    if dims.iter().any(|d| matches!(d, syntax::Dim::Dyn)) =>
+                {
+                    (syntax::Type::Scalar(el.clone()), args.to_vec())
+                }
                 Some(syntax::Type::Tensor(el, dims, _)) => (
                     syntax::Type::Scalar(el.clone()),
                     vec![Expr::Array(syntax::ArrayExpr::new(
-                        dims.iter()
-                            .map(|d| {
-                                d.as_static()
-                                    .cloned()
-                                    .expect("a run-time extent has no static shape to allocate")
-                            })
-                            .collect(),
+                        dims.iter().filter_map(|d| d.as_static().cloned()).collect(),
                         syntax::Span::default(),
                     ))],
                 ),
-                // A `DynTensor`'s shape is not in its type, so it stays where it was written.
-                Some(syntax::Type::DynTensor(el, _)) => {
-                    (syntax::Type::Scalar(el.clone()), args.to_vec())
-                }
                 Some(scalar) => (scalar.clone(), args.to_vec()),
                 None => panic!("Tensor initialization requires an explicit generic type argument"),
             };

@@ -92,6 +92,7 @@ pub enum TokenTypeBase<S, C> {
     Ampersand,
     At,
     Dollar,
+    Question,
 
     // Logical & Relational
     EqEq,
@@ -191,6 +192,7 @@ impl<S: std::fmt::Display, C: std::fmt::Display> std::fmt::Display for TokenType
             TokenTypeBase::Ampersand => write!(f, "&"),
             TokenTypeBase::At => write!(f, "@"),
             TokenTypeBase::Dollar => write!(f, "$"),
+            TokenTypeBase::Question => write!(f, "?"),
 
             TokenTypeBase::EqEq => write!(f, "=="),
             TokenTypeBase::NotEq => write!(f, "!="),
@@ -618,6 +620,7 @@ impl<'a> Lexer<'a> {
             '*' => TokenTypeBase::Star,
             '@' => TokenTypeBase::At,
             '$' => TokenTypeBase::Dollar,
+            '?' => TokenTypeBase::Question,
             '/' => TokenTypeBase::Slash,
             '=' => {
                 if self.peek_char() == Some('=') {
@@ -793,6 +796,7 @@ impl<'a> Token<'a> {
             TokenTypeBase::DoubleDot => TokenTypeBase::DoubleDot,
             TokenTypeBase::Ampersand => TokenTypeBase::Ampersand,
             TokenTypeBase::At => TokenTypeBase::At,
+            TokenTypeBase::Question => TokenTypeBase::Question,
             TokenTypeBase::Dollar => TokenTypeBase::Dollar,
             TokenTypeBase::EqEq => TokenTypeBase::EqEq,
             TokenTypeBase::NotEq => TokenTypeBase::NotEq,
@@ -895,6 +899,7 @@ impl OwnedToken {
             TokenTypeBase::DoubleDot => TokenTypeBase::DoubleDot,
             TokenTypeBase::Ampersand => TokenTypeBase::Ampersand,
             TokenTypeBase::At => TokenTypeBase::At,
+            TokenTypeBase::Question => TokenTypeBase::Question,
             TokenTypeBase::Dollar => TokenTypeBase::Dollar,
             TokenTypeBase::EqEq => TokenTypeBase::EqEq,
             TokenTypeBase::NotEq => TokenTypeBase::NotEq,

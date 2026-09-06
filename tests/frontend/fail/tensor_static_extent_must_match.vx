@@ -11,7 +11,6 @@
 // `[?, 4]`, so this is the ordinary argument type mismatch.
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// XFAIL: *
 // CHECK: E3003
 // CHECK-SAME: 'g'
 
@@ -19,8 +18,11 @@ fn g(x : Tensor<f32, [?, 4]>) -> i32 {
   return 0;
 }
 
-fn main() -> i32 {
-  let n = 2;
+fn f(n : i32) -> i32 {
   let m = Tensor<f32>([n, 3]);
   return g(m);
+}
+
+fn main() -> i32 {
+  return f(2);
 }

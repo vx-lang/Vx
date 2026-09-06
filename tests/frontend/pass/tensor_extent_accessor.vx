@@ -21,9 +21,12 @@ fn size(m : Tensor<f32, [?, 3]>) -> i32 {
   return r * c;
 }
 
-fn main() -> i32 {
-  let n = 2;
+fn build(n : i32) -> Tensor<f32, [?, 3]> {
   let mut m = Tensor<f32>([n, 3]);
   m[0][0] = 1.0;
-  return size(m) - 6;
+  return m;
+}
+
+fn main() -> i32 {
+  return size(build(2)) - 6;
 }

@@ -495,10 +495,7 @@ impl<'a> Parser<'a> {
                  storage left as it was found",
             ));
         }
-        let head = match ty {
-            Type::DynTensor(..) => "DynTensor",
-            _ => "Tensor",
-        };
+        let head = "Tensor";
         self.consume(&TokenType::LeftParen, "Expected '(' after the constructor")?;
         let mut args = Vec::new();
         if !self.check(&TokenType::RightParen) {
