@@ -31,14 +31,15 @@ use std::process::Command;
 ///
 /// Checked in both directions: one that starts working fails this test too, so the
 /// list cannot quietly become a permanent exemption.
-const KNOWN_BROKEN: &[(&str, &str)] = &[
-    (
-        "matmul_bf16.vx",
-        "outlines an NPU kernel whose symbols the execution engine cannot materialize \
-         when emitting an object; also fails under --action run-jit",
-    ),
-    ("plugin_npe.vx", "same unresolved outlined-kernel symbols"),
-];
+const KNOWN_BROKEN: &[(&str, &str)] = &[(
+    "matmul_bf16.vx",
+    "calls printMemrefBF16, which MLIR exports only as _mlir_ciface_printMemrefBF16 -- the \
+     F32/F64/I32/I64 printers are exported both ways and the half-precision ones are not \
+     (confirmed with nm on MLIR 22). Neither spelling resolves: without llvm.emit_c_interface the \
+     plain name is missing, and with it MLIR emits a body wanting _mlir_printMemrefBF16 instead. \
+     Supplying the symbol from vx_std_core would make the standard library link against MLIR's \
+     runner utils, which is the wrong coupling. See Vx#326",
+)];
 
 #[test]
 fn the_backend_corpus_emits_object_files() {
