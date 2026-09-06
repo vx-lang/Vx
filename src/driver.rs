@@ -1248,6 +1248,10 @@ impl CompilerDriver {
             .iter()
             .map(|(_, w)| w.local_string_table.as_slice())
             .collect();
+        let inline_tables: Vec<&[crate::hir::flatten::InlineBlock]> = entries
+            .iter()
+            .map(|(_, w)| w.local_inline_blocks.as_slice())
+            .collect();
         let agg_layouts: Vec<_> = entries
             .iter()
             .flat_map(|(_, w)| w.local_agg_layouts.iter().cloned())
@@ -1263,6 +1267,7 @@ impl CompilerDriver {
             &session.registry,
             &tensor_types,
             &string_tables,
+            &inline_tables,
             &agg_layouts,
             &alias_tables,
             &subspaces,

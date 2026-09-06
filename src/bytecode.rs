@@ -237,6 +237,9 @@ pub enum Opcode {
     /// immediately before, one per `?` in order; a static one is the type's. Lowers to a memref
     /// descriptor built over the pointer, with row-major strides. The result is the view.
     TensorView = 47,
+    /// An inline `mlir!` block: `imm` indexes the function's block table, the inputs are the
+    /// `Arg`s before it, and the type is the block's declared result (a placeholder for void).
+    InlineMlir = 48,
 }
 
 /// Reverse mode for `Opcode::AutoDiff`: the gradient, through `__enzyme_autodiff_grad_*`.
@@ -301,6 +304,7 @@ impl Opcode {
             45 => TensorZero,
             46 => TensorFill,
             47 => TensorView,
+            48 => InlineMlir,
             _ => return None,
         })
     }

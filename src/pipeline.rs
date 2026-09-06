@@ -1673,6 +1673,10 @@ fn codegen_mlir_phase(
         .iter()
         .map(|(_, w, _)| w.local_string_table.as_slice())
         .collect();
+    let inline_tables: Vec<&[crate::hir::flatten::InlineBlock]> = entries
+        .iter()
+        .map(|(_, w, _)| w.local_inline_blocks.as_slice())
+        .collect();
     let alias_tables: Vec<&[(usize, usize, Vec<usize>)]> = entries
         .iter()
         .map(|(_, w, _)| w.local_place_alias_stores.as_slice())
@@ -1692,6 +1696,7 @@ fn codegen_mlir_phase(
         &global_session.registry,
         &tensor_types,
         &string_tables,
+        &inline_tables,
         &agg_layouts,
         &alias_tables,
         subspaces,

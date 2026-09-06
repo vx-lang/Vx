@@ -9,14 +9,14 @@
 // An inline MLIR block inside a generic impl. The block is source text, so the const generics
 // are substituted word by word -- and the wrapper's signature has to get the same treatment as
 // its body, or the two disagree about the shape they name (Vx#414).
-// CHECK-LABEL: func.func private @vx_macro_mlir_L{{[0-9]+}}_C{{[0-9]+}}_0(%arg0: memref<2x2xf32>, %arg1: memref<2x2xf32>) -> i1
+// CHECK-LABEL: func.func @Tensor$f32$2x2$compare$2$2$f32(%arg0: memref<2x2xf32>, %arg1: memref<2x2xf32>) -> i1
+// The instantiated method calls the wrapper the block was lifted into.
+// CHECK: call @vx_flat_mlir_{{[0-9]+}}(%arg0, %arg1) : (memref<2x2xf32>, memref<2x2xf32>) -> i1
+// CHECK-LABEL: func.func private @vx_flat_mlir_{{[0-9]+}}(%arg0: memref<2x2xf32>, %arg1: memref<2x2xf32>) -> i1
 // CHECK: %[[ACC:.*]] = memref.alloca() : memref<i1>
 // CHECK: linalg.generic {{.*}} ins(%arg0, %arg1 : memref<2x2xf32>, memref<2x2xf32>) outs(%[[ACC]] : memref<i1>)
 // CHECK: arith.cmpf oeq
 // CHECK: linalg.yield
-// The instantiated method calls the wrapper the block was lifted into.
-// CHECK-LABEL: func.func @Tensor$f32$2x2$compare$2$2$f32(%arg0: memref<2x2xf32>, %arg1: memref<2x2xf32>) -> i1
-// CHECK: call @vx_macro_mlir_L{{[0-9]+}}_C{{[0-9]+}}_0(%arg0, %arg1) : (memref<2x2xf32>, memref<2x2xf32>) -> i1
 impl<T : Float, const N : i32, const M : i32> Tensor<T, [N, M]> {
   fn compare(self : Tensor<T, [N, M]>, other : Tensor<T, [N, M]>) -> bool {
     let res = mlir!(inputs : (%lhs = self : memref<N x M x f32>,

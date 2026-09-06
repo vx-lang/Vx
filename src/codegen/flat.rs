@@ -955,6 +955,7 @@ pub fn emit_module_mlir(
     registry: &ImmutableGlobalRegistry,
     tensor_types: &[(TypeId, ElementType, Vec<String>)],
     string_tables: &[&[String]],
+    inline_tables: &[&[crate::hir::flatten::InlineBlock]],
     agg_layouts: &[(TypeId, Vec<u64>, Vec<String>)],
     alias_tables: &[&[(usize, usize, Vec<usize>)]],
     subspaces: &[SubspaceInfo],
@@ -1081,6 +1082,16 @@ pub fn emit_module_mlir(
         .collect();
 
     type FnEmission = (String, Vec<(String, Vec<String>, String)>, u16);
+    // An inline block's wrapper is named from a module-wide base, so two functions' do not collide.
+    let inline_bases: Vec<usize> = {
+        let mut bases = Vec::with_capacity(funcs.len());
+        let mut base = 0usize;
+        for fi in 0..funcs.len() {
+            bases.push(base);
+            base += inline_tables.get(fi).copied().unwrap_or(&[]).len();
+        }
+        bases
+    };
     let emit_one =
         |(fi, (func, hir, types)): (usize, &(&Function, &[HirInstruction], &[TypeId]))| {
             let mut calls = Vec::new();
@@ -1093,6 +1104,8 @@ pub fn emit_module_mlir(
                 &mut calls,
                 str_bases[fi],
                 string_tables.get(fi).copied().unwrap_or(&[]),
+                inline_bases[fi],
+                inline_tables.get(fi).copied().unwrap_or(&[]),
                 alias_tables.get(fi).copied().unwrap_or(&[]),
                 &mut distinct_ctr,
             )?;
@@ -1495,6 +1508,11 @@ pub(crate) struct FnEmit<'a> {
     /// `StringConst` reach their bytes through a module-level global; `Abort` needs the text
     /// itself, because `cf.assert` carries its message as an inline attribute.
     pub(crate) strings: &'a [String],
+    /// This function's inline `mlir!` blocks and the base their wrappers are numbered from.
+    pub(crate) inline_base: usize,
+    pub(crate) inline_blocks: &'a [crate::hir::flatten::InlineBlock],
+    /// The private wrapper functions the inline blocks became, emitted after this function.
+    pub(crate) wrappers: String,
     /// The function's scalar return element, when it has one — a `Ret` of a differently-typed
     /// value converts to this.
     pub(crate) ret_elem: Option<ElementType>,
@@ -1715,6 +1733,7 @@ impl<'a> FnEmit<'a> {
             Opcode::TensorFill => self.op_tensor_fill(idx, ins),
             // A rank-2 view over caller-owned memory: a memref descriptor built over the pointer.
             Opcode::TensorView => self.op_tensor_view(idx, ins),
+            Opcode::InlineMlir => self.op_inline_mlir(idx, ins),
             // Index a tensor along its outermost dimension. `operand1` is the base tensor (memref),
             // `operand2` the index (`arith.index_cast` to `index`). A scalar-element result
             // (`type_idx` is a scalar GID) is a value read (`imm = 0` → `memref.load`) or an element
@@ -1822,6 +1841,10 @@ pub fn emit_function_mlir(
     // `StringConst` reach their bytes through a module-level global; `Abort` needs the text
     // itself, because `cf.assert` carries its message as an inline attribute.
     strings: &[String],
+    // This function's inline `mlir!` blocks, and the module-wide base their wrappers are
+    // numbered from.
+    inline_base: usize,
+    inline_blocks: &[crate::hir::flatten::InlineBlock],
     alias_stores: &[(usize, usize, Vec<usize>)],
     distinct_ctr: &mut u32,
 ) -> Lowered<String> {
@@ -1907,6 +1930,9 @@ pub fn emit_function_mlir(
         ctx,
         str_base,
         strings,
+        inline_base,
+        inline_blocks,
+        wrappers: String::new(),
         ret_elem,
         alias_scope_of,
         calls,
@@ -1963,6 +1989,7 @@ pub fn emit_function_mlir(
     out += &em.entry;
     out += &em.body;
     out += "}\n";
+    out += &em.wrappers;
     Ok(out)
 }
 
@@ -2012,6 +2039,8 @@ mod tests {
             &mut Vec::new(),
             0,
             &w.local_string_table,
+            0,
+            &w.local_inline_blocks,
             &w.local_place_alias_stores,
             &mut 1,
         )
@@ -2085,6 +2114,10 @@ mod tests {
             .iter()
             .map(|w| w.local_string_table.as_slice())
             .collect();
+        let inline_tables: Vec<&[crate::hir::flatten::InlineBlock]> = lowered
+            .iter()
+            .map(|w| w.local_inline_blocks.as_slice())
+            .collect();
         let agg_layouts: Vec<_> = lowered
             .iter()
             .flat_map(|w| w.local_agg_layouts.iter().cloned())
@@ -2098,6 +2131,7 @@ mod tests {
             &session.registry,
             &tensor_types,
             &string_tables,
+            &inline_tables,
             &agg_layouts,
             &alias_tables,
             &[],

@@ -110,7 +110,17 @@ fn ast_llvm(src: &str) -> String {
     for f in &mut program.functions {
         checker.check_function(f);
     }
-    assert_eq!(checker.errors.error_count(), 0, "AST type-checks");
+    assert_eq!(
+        checker.errors.error_count(),
+        0,
+        "AST type-checks:\n{}",
+        checker
+            .errors
+            .iter()
+            .map(|d| d.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
     // Append the monomorphs the checker collected (method-call rewrites like `x.sq()` -> `f32$sq`,
     // generic instances) so their bodies emit and the rewritten calls resolve — as the driver does.
     for (f, _) in std::mem::take(&mut checker.mono.functions) {
@@ -212,6 +222,10 @@ fn flat_llvm(src: &str) -> Option<String> {
         .iter()
         .map(|w| w.local_string_table.as_slice())
         .collect();
+    let inline_tables: Vec<&[vxc::hir::flatten::InlineBlock]> = lowered
+        .iter()
+        .map(|w| w.local_inline_blocks.as_slice())
+        .collect();
     let agg_layouts: Vec<_> = lowered
         .iter()
         .flat_map(|w| w.local_agg_layouts.iter().cloned())
@@ -225,6 +239,7 @@ fn flat_llvm(src: &str) -> Option<String> {
         &session.registry,
         &tensor_types,
         &string_tables,
+        &inline_tables,
         &agg_layouts,
         &alias_tables,
         &[],
@@ -305,6 +320,10 @@ fn flat_module_mlir(src: &str) -> Option<String> {
         .iter()
         .map(|w| w.local_string_table.as_slice())
         .collect();
+    let inline_tables: Vec<&[vxc::hir::flatten::InlineBlock]> = lowered
+        .iter()
+        .map(|w| w.local_inline_blocks.as_slice())
+        .collect();
     let agg_layouts: Vec<_> = lowered
         .iter()
         .flat_map(|w| w.local_agg_layouts.iter().cloned())
@@ -318,6 +337,7 @@ fn flat_module_mlir(src: &str) -> Option<String> {
         &session.registry,
         &tensor_types,
         &string_tables,
+        &inline_tables,
         &agg_layouts,
         &alias_tables,
         &subspaces,
@@ -1119,6 +1139,51 @@ fn flat_matches_ast_vec_of_options() {
 }
 
 #[test]
+fn flat_matches_ast_inline_mlir() {
+    // Scalar inputs and a scalar result: the block becomes a private wrapper the function
+    // calls. Subtraction, so the operand order is observable. 44 - 2.
+    assert_parity(
+        "fn sub(a : i32, b : i32) -> i32 { let r = mlir!(inputs : (%x = a : i32, %y = b : i32), \
+           clobbers : [], returns : i32, dialects : [\"arith\"]) { \
+           %s = arith.subi %x, %y : i32 \n func.return %s : i32 }; return r; }\n\
+         fn main() -> i32 { return sub(44, 2); }",
+        42,
+    );
+    // Tensor inputs: the corpus shape, a reduction over two rank-2 memrefs into a bool. The
+    // tensors are linear and passed by value, so each call gets fresh ones.
+    assert_parity(
+        "fn same(a : Tensor<f32, [2, 2]>, b : Tensor<f32, [2, 2]>) -> i32 { \
+           let r = mlir!(inputs : (%lhs = a : memref<2x2xf32>, %rhs = b : memref<2x2xf32>), \
+           clobbers : [], returns : bool, dialects : [\"linalg\", \"arith\", \"memref\"]) { \
+           %t = arith.constant 1 : i1 \n %acc = memref.alloca() : memref<i1> \n \
+           memref.store %t, %acc[] : memref<i1> \n \
+           linalg.generic {indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>, \
+             affine_map<(d0, d1) -> (d0, d1)>, affine_map<(d0, d1) -> ()>], \
+             iterator_types = [\"reduction\", \"reduction\"]} \
+           ins(%lhs, %rhs : memref<2x2xf32>, memref<2x2xf32>) outs(%acc : memref<i1>) { \
+             ^bb0(%p : f32, %q : f32, %o : i1): \n %c = arith.cmpf oeq, %p, %q : f32 \n \
+             %n = arith.andi %o, %c : i1 \n linalg.yield %n : i1 } \n \
+           %v = memref.load %acc[] : memref<i1> \n func.return %v : i1 }; \
+           if r { return 1; } return 0; }\n\
+         fn main() -> i32 { let a = Tensor<f32, [2, 2]>::fill(1.0); \
+           let b = Tensor<f32, [2, 2]>::fill(1.0); let s = same(a, b); \
+           let c = Tensor<f32, [2, 2]>::fill(1.0); let mut d = Tensor<f32, [2, 2]>::fill(1.0); \
+           d[1][1] = 2.0; let t = same(c, d); return s * 10 + t; }",
+        10,
+    );
+    // A void block with a `clobbers` list: the stdlib's `fill` shape.
+    assert_parity(
+        "fn fill(t : &mut Tensor<f32, [?, ?]>, v : f32) -> void { \
+           mlir!(inputs : (%m = t : memref<?x?xf32>, %x = v : f32), clobbers : [t], \
+           dialects : [\"linalg\"]) { linalg.fill ins(%x : f32) outs(%m : memref<?x?xf32>) \n \
+           macro.yield }; }\n\
+         fn main() -> i32 { let mut t = Tensor<f32, [2, 3]>::fill(0.0); fill(&mut t, 7.0); \
+           return (t[1][2] as i32) * 6; }",
+        42,
+    );
+}
+
+#[test]
 fn flat_matches_ast_tensor_store_element_coercion() {
     // A default-`f32` float literal stored into a non-`f32` tensor is coerced to the element type at
     // the store (`bf16` -> `arith.truncf`), matching the AST's `coerce_type` before its `memref.store`
@@ -1596,6 +1661,7 @@ fn program_links_a_function_body_from_a_vxlib_artifact() {
     let mlir = vxc::codegen::flat::emit_module_mlir(
         &funcs,
         &session.registry,
+        &[],
         &[],
         &[],
         &[],

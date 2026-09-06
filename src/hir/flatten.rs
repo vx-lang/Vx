@@ -73,6 +73,15 @@ pub fn enum_instance_gid(base: &str, args: &[Type]) -> TypeId {
     TypeId::new(0, sym, 0, 0)
 }
 
+/// An inline `mlir!` block as the emitter needs it: the named inputs with their declared MLIR
+/// types, the body text, and whether it yields nothing.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InlineBlock {
+    pub inputs: Vec<(String, String)>,
+    pub body: String,
+    pub void: bool,
+}
+
 /// The stable per-instance GID of a monomorphized generic struct whose layout depends on its
 /// arguments (`Array<f32, 10>`): module 0 + a content hash of the base name and each argument's
 /// identity. A `const` argument contributes its value, so the same instance named from a
@@ -325,6 +334,8 @@ struct Lowerer<'r> {
     /// isn't in the frozen registry; synthesized here as an enum is constructed/matched and committed
     /// so codegen can address it (the tagged-union analogue of `tensor_types`). (#242)
     agg_layouts: Vec<(TypeId, Vec<u64>, Vec<String>)>,
+    /// This function's inline `mlir!` blocks, handed to the worker as `local_inline_blocks`.
+    inline_blocks: Vec<InlineBlock>,
     /// A generic struct whose layout depends on its arguments (`Array<T, const N> { val: T }`):
     /// its base layout in the registry is a stub, so each instance's is synthesized here, keyed by
     /// `struct_instance_gid`, and read through `layout_of` wherever a layout is read by GID. The
@@ -390,6 +401,7 @@ impl<'r> Lowerer<'r> {
             ast_types: HashMap::new(),
             owned_tensors: std::collections::HashSet::new(),
             agg_layouts: Vec::new(),
+            inline_blocks: Vec::new(),
             instance_layouts: HashMap::new(),
             ret_ty: None,
             materialized: HashSet::new(),
@@ -1347,6 +1359,7 @@ impl<'r> Lowerer<'r> {
             Expr::SpawnOn(sp) => self.lower_spawn(sp, true)?.ok_or(Decline::Unsupported {
                 what: "a spawn expression whose region has no value",
             }),
+            Expr::InlineMlir(im) => self.lower_inline_mlir(im),
             // The differentiated calls. All three go through one opcode; see `lower_autodiff`.
             Expr::Grad(g) => self.lower_autodiff(&g.target_fn, &g.args, false, None),
             Expr::Vjp(v) => self.lower_autodiff(&v.target_fn, &v.args, false, Some(&v.cotangent)),
@@ -2885,6 +2898,36 @@ impl<'r> Lowerer<'r> {
         Ok(self.emit_typed(Opcode::TensorView, ptr.reg, Register(0), ty, 0))
     }
 
+    /// An inline `mlir!` block: each named input lowered and passed as an `Arg`, then one
+    /// `InlineMlir` whose `imm` indexes the function's block table and whose type is the block's
+    /// declared result. A void block gets the placeholder a void call gets: a type never read.
+    fn lower_inline_mlir(&mut self, im: &crate::syntax::expr::InlineMlirExpr) -> Lowered<Val> {
+        let mut regs = Vec::with_capacity(im.inputs.len());
+        for (_, e, _) in &im.inputs {
+            regs.push(self.lower_expr(e)?.reg);
+        }
+        let ty = match &im.returns {
+            Some(t) => self.lower_ty_synth(t).ok_or(Decline::TypeNotModelled {
+                what: "an mlir! block's result type",
+            })?,
+            None => LoweredTy::Scalar(ElementType::I32),
+        };
+        for r in regs {
+            self.emit_effect(Opcode::Arg, r, Register(0), 0);
+        }
+        let imm = self.inline_blocks.len() as u64;
+        self.inline_blocks.push(InlineBlock {
+            inputs: im
+                .inputs
+                .iter()
+                .map(|(n, _, t)| (n.as_ref().to_string(), t.clone()))
+                .collect(),
+            body: im.block_str.clone(),
+            void: im.returns.is_none(),
+        });
+        Ok(self.emit_typed(Opcode::InlineMlir, Register(0), Register(0), ty, imm))
+    }
+
     /// A run-time extent for an allocation: the expression lowered to an integer register.
     fn lower_scalar_extent(&mut self, e: &Expr) -> Option<Register> {
         let v = self.lower_expr(e).ok()?;
@@ -4032,6 +4075,7 @@ impl<'r> Lowerer<'r> {
         // The string side table is indexed by each `PrintStr`'s `imm`; a fresh worker lowers exactly
         // one function, so the indices need no rebasing (they start at 0 per function).
         worker.local_string_table.extend(self.strings);
+        worker.local_inline_blocks.extend(self.inline_blocks);
         // Place-write alias table (M2b-2): reduce collected field stores to `(position, group, siblings)`.
         // Positions are stream-relative; a fresh worker lowers one function, so they need no rebasing.
         worker

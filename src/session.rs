@@ -116,6 +116,8 @@ pub struct LocalWorkerState {
     /// Print-position strings only for now (`print!("x=", v)`); general string *values* are follow-up
     /// work (#225).
     pub local_string_table: Vec<String>,
+    /// This function's inline `mlir!` blocks, indexed by an `InlineMlir` instruction's `imm`.
+    pub local_inline_blocks: Vec<crate::hir::flatten::InlineBlock>,
 
     /// Synthetic aggregate layouts for *monomorphized data-carrying enum instances* (`Option<i32>` ->
     /// `{ i32 tag, i32 payload }`), keyed by a per-instance GID, as `(gid, field byte offsets, field
@@ -147,6 +149,7 @@ impl LocalWorkerState {
             local_hir_stream: Vec::new(),
             local_tensor_types: Vec::new(),
             local_string_table: Vec::new(),
+            local_inline_blocks: Vec::new(),
             local_agg_layouts: Vec::new(),
             local_place_alias_stores: Vec::new(),
         }

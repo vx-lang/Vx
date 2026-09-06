@@ -127,6 +127,97 @@ impl FnEmit<'_> {
         Ok(())
     }
 
+    // An inline `mlir!` block: a call to a private wrapper whose parameters are the block's
+    // named inputs and whose body is its text, the way the oracle wraps one. The wrapper goes
+    // after this function's text. A memref input is cast to the declared type when the
+    // spellings differ (a `?` extent against a static one, a strided row against a plain one).
+    pub(crate) fn op_inline_mlir(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let blk = self
+            .inline_blocks
+            .get(ins.imm as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        let n = blk.inputs.len();
+        if self.pending_args.len() < n {
+            return Err(crate::emitter_gap!());
+        }
+        let args = self.pending_args.split_off(self.pending_args.len() - n);
+        let mut operands = Vec::with_capacity(n);
+        for (k, (a, (_, declared))) in args.iter().zip(&blk.inputs).enumerate() {
+            let r = *a as usize;
+            let name = self.names.get(r).ok_or(crate::emitter_gap!())?.clone();
+            let actual = if let Some(e) = self.elem_at(*a) {
+                mlir_scalar(&e).ok_or(crate::emitter_gap!())?.to_string()
+            } else if let Some(Some(m)) = self.mem_of.get(r) {
+                m.clone()
+            } else {
+                return Err(crate::emitter_gap!());
+            };
+            let same = actual.replace(' ', "") == declared.replace(' ', "");
+            if !same && actual.starts_with("memref<") {
+                let c = format!("%imc{idx}_{k}");
+                self.body += &format!("  {c} = memref.cast {name} : {actual} to {declared}\n");
+                operands.push(c);
+            } else {
+                operands.push(name);
+            }
+        }
+        let fname = format!("vx_flat_mlir_{}", self.inline_base + ins.imm as usize);
+        let tys: Vec<&str> = blk.inputs.iter().map(|(_, t)| t.as_str()).collect();
+        let params: Vec<String> = blk
+            .inputs
+            .iter()
+            .map(|(nm, t)| format!("{nm}: {t}"))
+            .collect();
+        let ret = if blk.void {
+            None
+        } else {
+            let gid = *self
+                .types
+                .get(ins.type_idx.0 as usize)
+                .ok_or(crate::emitter_gap!())?;
+            if let Some(e) = elem_of_gid(gid) {
+                let t = mlir_scalar(&e).ok_or(crate::emitter_gap!())?.to_string();
+                self.etypes[idx] = Some(e);
+                Some(t)
+            } else if let Some((e, shape)) = self.ctx.tensors.get(&gid) {
+                let t = tensor_memref_ty(e, shape).ok_or(crate::emitter_gap!())?;
+                self.mem_of[idx] = Some(t.clone());
+                Some(t)
+            } else if let Some(agg) = self.ctx.aggs.get(&gid) {
+                self.agg_val_of[idx] = Some(gid);
+                Some(agg.struct_ty.clone())
+            } else {
+                return Err(crate::emitter_gap!());
+            }
+        };
+        match &ret {
+            Some(rt) => {
+                let nm = format!("%v{idx}");
+                self.body += &format!(
+                    "  {nm} = func.call @{fname}({}) : ({}) -> {rt}\n",
+                    operands.join(", "),
+                    tys.join(", ")
+                );
+                self.names[idx] = nm;
+            }
+            None => {
+                self.body += &format!(
+                    "  func.call @{fname}({}) : ({}) -> ()\n",
+                    operands.join(", "),
+                    tys.join(", ")
+                );
+            }
+        }
+        let ret_sig = ret.map(|rt| format!(" -> {rt}")).unwrap_or_default();
+        self.wrappers += &format!(
+            "func.func private @{fname}({}){ret_sig} {{\n{}\n}}\n",
+            params.join(", "),
+            blk.body.replace("macro.yield", "return")
+        );
+        Ok(())
+    }
+
     // Materialize a function pointer for a named function: `type_idx` is the target's GID
     // (name via `ctx.callees`, signature via `ctx.func_sigs`). Emit `func.constant @name : sig`
     // then cast the `FunctionType` value to an opaque `!llvm.ptr` (the ABI of a fn pointer),
