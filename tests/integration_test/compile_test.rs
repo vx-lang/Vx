@@ -83,9 +83,14 @@ fn expect_matches(out: &str, expect: &str) -> bool {
 fn run_frontend_test(path: &Path, expect_pass: bool) -> Result<(), String> {
     let source = fs::read_to_string(path).expect("Failed to read test file");
 
+    // A `pass` fixture written ahead of the compiler -- `// XFAIL: *` -- may not parse or
+    // check yet. That is the state it claims, so it is not a failure here; the RUN-line
+    // runner below reports the day it starts passing, which is the other half of the claim.
+    let xfail = source.contains("// XFAIL: *");
+
     let mut loader = vxc::module_loader::ModuleLoader::new();
     if let Err(e) = loader.load_main(path.to_str().unwrap()) {
-        if !expect_pass {
+        if !expect_pass || xfail {
             return Ok(());
         }
         return Err(format!("Parse failed on {:?}: {}", path, e));
@@ -110,7 +115,7 @@ fn run_frontend_test(path: &Path, expect_pass: bool) -> Result<(), String> {
     let expander = vxc::parser::MacroExpander::new(&global_macros);
     for p in &mut program_arr {
         if let Err(e) = expander.expand_module(p) {
-            if !expect_pass {
+            if !expect_pass || xfail {
                 return Ok(());
             }
             return Err(format!(
@@ -120,7 +125,7 @@ fn run_frontend_test(path: &Path, expect_pass: bool) -> Result<(), String> {
         }
     }
     if let Err(e) = expander.expand_module(&mut program) {
-        if !expect_pass {
+        if !expect_pass || xfail {
             return Ok(());
         }
         return Err(format!("Macro expansion failed on {:?}: {}", path, e));
@@ -146,6 +151,9 @@ fn run_frontend_test(path: &Path, expect_pass: bool) -> Result<(), String> {
 
     if expect_pass {
         if !is_valid {
+            if xfail {
+                return Ok(());
+            }
             return Err(format!(
                 "Semantic analysis failed on {:?}:\n{:#?}",
                 path, checker.errors

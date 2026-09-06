@@ -1,0 +1,26 @@
+//===- tensor_static_extent_must_match.vx - Vx Compiler ---------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Widening is per dimension: a static extent may become `?`, and a static
+// extent may stay itself. It may not become a different static extent.
+// `Tensor<f32>([n, 3])` is `[?, 3]`, and `[?, 3]` is not assignable to
+// `[?, 4]`, so this is the ordinary argument type mismatch.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// XFAIL: *
+// CHECK: E3003
+// CHECK-SAME: 'g'
+
+fn g(x : Tensor<f32, [?, 4]>) -> i32 {
+  return 0;
+}
+
+fn main() -> i32 {
+  let n = 2;
+  let m = Tensor<f32>([n, 3]);
+  return g(m);
+}

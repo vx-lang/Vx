@@ -1,0 +1,29 @@
+//===- tensor_extent_accessor.vx - Vx Compiler ------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// `t.extent(i)` is the typed read of a run-time extent: an `i32`, from
+// `memref.dim`, for a literal `i` below the rank. It replaces `.shape[i]`,
+// which answered on any value and typed its answer as a rank-0 tensor.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// XFAIL: *
+// CHECK-LABEL: func.func @size(
+// CHECK: memref.dim
+// CHECK: arith.index_cast %{{.*}} : index to i32
+
+fn size(m : Tensor<f32, [?, 3]>) -> i32 {
+  let r : i32 = m.extent(0);
+  let c : i32 = m.extent(1);
+  return r * c;
+}
+
+fn main() -> i32 {
+  let n = 2;
+  let mut m = Tensor<f32>([n, 3]);
+  m[0][0] = 1.0;
+  return size(m) - 6;
+}

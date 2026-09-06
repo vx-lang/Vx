@@ -1,0 +1,38 @@
+//===- impl_most_specific_pattern_wins.vx - Vx Compiler ---------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// A `[2, 2]` receiver matches both `impl Tensor<T, [?, ?]>` and
+// `impl Tensor<T, [N, M]>`. The more specific pattern wins: a static or
+// `const` dimension is more specific than `?`. A `[?, ?]` receiver matches
+// only the first. Pinned by which symbol each call resolves to; the static
+// receiver's symbol carries its extents.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// XFAIL: *
+// CHECK-LABEL: func.func @main
+// CHECK: call @Tensor$f32$2x2$which
+// CHECK-NOT: call @Tensor$f32$2x2$which
+// CHECK: call @Tensor$f32${{.*}}which
+
+impl<T : Float> Tensor<T, [?, ?]> {
+  fn which(self : &Tensor<T, [?, ?]>) -> i32 {
+    return 1;
+  }
+}
+
+impl<T : Float, const N : i32, const M : i32> Tensor<T, [N, M]> {
+  fn which(self : &Tensor<T, [N, M]>) -> i32 {
+    return 2;
+  }
+}
+
+fn main() -> i32 {
+  let n = 2;
+  let s = Tensor<f32, [2, 2]>::uninit();
+  let d = Tensor<f32>([n, n]);
+  return s.which() * 10 + d.which() - 21;
+}

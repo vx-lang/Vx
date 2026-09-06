@@ -1,0 +1,29 @@
+//===- tensor_rank_is_never_coerced.vx - Vx Compiler ------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// A rank-1 value handed to a rank-2 parameter is a type error at the call.
+// It used to be accepted, because `DynTensor` carried no rank and both codegen
+// paths assumed 2: the value kept its real rank, the parameter did not, and
+// the module failed to verify on a `memref.cast` from `memref<?xf32>` to
+// `memref<?x?xf32>`. Rank is static, and no cast changes it.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// XFAIL: *
+// CHECK: rank 1
+// CHECK-SAME: rank 2
+// CHECK-NOT: memref.cast
+
+fn takes(t : Tensor<f32, [?, ?]>) -> i32 {
+  return 0;
+}
+
+fn main() -> i32 {
+  let n = 3;
+  let mut a = Tensor<f32>([n]);
+  a[0] = 1.0;
+  return takes(a);
+}

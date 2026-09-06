@@ -1,0 +1,23 @@
+//===- tensor_shape_is_spelled_extent.vx - Vx Compiler ----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// `.shape[i]` is gone. It answered on any value, not only a tensor, and typed
+// its answer as a rank-0 tensor. `extent(i)` is the replacement and the
+// refusal names it.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// XFAIL: *
+// CHECK: `.shape`
+// CHECK-SAME: extent(
+
+fn f(m : Tensor<f32, [2, 3]>) -> i32 {
+  return m.shape[0];
+}
+
+fn main() -> i32 {
+  return 0;
+}

@@ -236,6 +236,11 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         if source.contains("// REQUIRES:") {
             continue;
         }
+        // `// XFAIL: *` marks a RUN line that cannot pass yet. Some of those programs still
+        // compile (the RUN line fails on what the IR says), and those are swept like any other;
+        // one written ahead of the compiler reaches neither path, and that is the state it
+        // claims, so it is skipped until the marker comes off.
+        let xfail = source.contains("// XFAIL: *");
 
         match path_taken(&program) {
             Ok(CodegenPath::Flat) => flat_count += 1,
@@ -258,6 +263,7 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
                 declined.insert(name.clone());
                 fallback_broken.insert(name);
             }
+            Err(_) if xfail => continue,
             Err(why) => broken.push(format!("{name}: {why}")),
         }
     }

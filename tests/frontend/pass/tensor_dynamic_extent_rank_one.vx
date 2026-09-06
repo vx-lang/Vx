@@ -1,0 +1,39 @@
+//===- tensor_dynamic_extent_rank_one.vx - Vx Compiler ----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// A rank-1 tensor with a run-time extent, expressible for the first time:
+// `Tensor<f32, [?]>`. The rank is the length of the list, so the parameter
+// lowers to `memref<?xf32>` and nothing in the module assumes rank 2.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// XFAIL: *
+// CHECK-LABEL: func.func @sum(
+// CHECK-SAME: memref<?xf32>
+// CHECK: memref.dim
+// CHECK-LABEL: func.func @main
+// CHECK: memref.alloc(%{{.*}}) : memref<?xf32>
+// CHECK-NOT: memref<?x?xf32>
+
+fn sum(t : Tensor<f32, [?]>) -> f32 {
+  let mut s = 0.0;
+  for i in 0..t.extent(0) {
+    s = s + t[i];
+  }
+  return s;
+}
+
+fn main() -> i32 {
+  let n = 3;
+  let mut a = Tensor<f32>([n]);
+  a[0] = 1.0;
+  a[1] = 2.0;
+  a[2] = 3.0;
+  if sum(a) as i32 == 6 {
+    return 0;
+  }
+  return 1;
+}

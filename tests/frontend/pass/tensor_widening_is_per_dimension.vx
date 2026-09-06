@@ -1,0 +1,32 @@
+//===- tensor_widening_is_per_dimension.vx - Vx Compiler --------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// A static extent widens to `?` without a cast being written, at an argument
+// and at a return, and each is one `memref.cast` that keeps the dimensions
+// that stay static. This is what `Tensor` -> `DynTensor` did, made
+// per-dimension: `[512, 8]` -> `[?, 8]` forgets one extent, not both.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// XFAIL: *
+// CHECK-COUNT-2: memref.cast %{{.*}} : memref<512x8xf32> to memref<?x8xf32>
+// CHECK-NOT: memref<?x?xf32>
+
+fn make() -> Tensor<f32, [?, 8]> {
+  let a = Tensor<f32, [512, 8]>::uninit();
+  return a;
+}
+
+fn norm(x : Tensor<f32, [?, 8]>) -> i32 {
+  return x.extent(0);
+}
+
+fn main() -> i32 {
+  let a = Tensor<f32, [512, 8]>::uninit();
+  let r = norm(a);
+  let c = make();
+  return r + c.extent(0) - 1024;
+}

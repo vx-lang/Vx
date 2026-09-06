@@ -904,6 +904,21 @@ fn flat_matches_ast_placed_tensor() {
 }
 
 #[test]
+fn flat_matches_ast_two_tensors_differing_only_in_placement() {
+    // The flat path's tensor identity hashes the element and the shape and not the
+    // placement, which rides on the alloc instruction instead. So these two share a GID and
+    // a memref type, and the program has to come out the same on both paths anyway: the
+    // space is not a property the type carries into codegen, and this pins that it is not
+    // one the type needs to.
+    assert_output_parity(
+        "fn main() -> i32 { let mut h = Tensor<f32, [2]>::uninit(); \
+         let mut d = Tensor<f32, [2], Memory::NPU_HBM>::uninit(); \
+         h[0] = 1.0; h[1] = 2.0; d[0] = 3.0; d[1] = 4.0; \
+         print(h[1]); print(d[0]); return 0; }",
+    );
+}
+
+#[test]
 fn flat_matches_ast_tensor_store_element_coercion() {
     // A default-`f32` float literal stored into a non-`f32` tensor is coerced to the element type at
     // the store (`bf16` -> `arith.truncf`), matching the AST's `coerce_type` before its `memref.store`
