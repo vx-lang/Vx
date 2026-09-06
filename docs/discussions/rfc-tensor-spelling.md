@@ -1,6 +1,6 @@
 # RFC: One `Tensor` spelling with static rank (retire `DynTensor`)
 
-**Status:** Proposed
+**Status:** Landed on `main` — `830fc911` (`Dim`), `ae80cc0d` (`?` per dimension, `DynTensor` removed), `a08aa299` (`extent(i)`, `.shape` gone), `c327e04a` (corpus rewritten, `DynTensor` a fix-it). See "What landed" at the end.
 **Target:** Before the first public tag
 **Scope:** Surface syntax, type identity, lowering rank. No bounds, no proofs, no admission changes.
 **Builds on:** `rfc-unified-tensor-vx-review.md` (findings against `main` at `85342711`). File references below are to that commit and that review.
@@ -212,3 +212,34 @@ ______________________________________________________________________
 - `extent(i)`: in range, out of range (error), non-literal `i` (error).
 - Migration: a rank-1 value into a `[?, ?]` method is a type error (regression for Vx#404).
 - Section 6 gates.
+
+______________________________________________________________________
+
+## 10. What landed
+
+Sections 3.1–3.7 as written, with the decisions the review asked for:
+
+- A dimension is `Dim::Static(Expr)` or `Dim::Dyn` (review §1.1). `?` mangles as `_`.
+- Section 3.4's identity change was not made: the placement-twin test passes without it
+  (review §1.3), so the memory space stays out of `tensor_gid`.
+- Two impls matching one receiver resolve by specificity (review §1.4), pinned by
+  `tests/frontend/pass/impl_most_specific_pattern_wins.vx`; a `const` dimension refuses
+  a `?` argument.
+- The dims-list requirement was already the tree's behavior; Phase 1 was the `?` token
+  and the fix-it.
+
+Two deviations to know about:
+
+- A `[?, ?]` value does not narrow to a static binding implicitly. The RFC's `⊑` says so,
+  and the one corpus program that relied on it (`kernel_kind_matmul.vx`) now spells its
+  accumulator `[?, ?]`. Until the bounded-extents RFC adds `narrow`, the only spelling
+  for that narrowing is annotating the binding with `?`.
+- The checker still builds an empty dimension list internally for a shape it does not
+  know yet (a matmul result before its shape is settled, `operators.rs`), and
+  assignability keeps its old leniency for that case. Rank is otherwise never coerced.
+
+Migration step 2 found one latent miscompile, not zero: `traits.vx` passed a rank-0
+tensor to an impl for `[?, ?]`, and codegen bitcast an f32 into a rank-2 memref. Every
+corpus `DynTensor` was rank 2, as predicted. Writing the fixtures found a second,
+unrelated hazard: a user function named `sum` is dispatched as the AST path's slice
+reduction (Vx#457).
