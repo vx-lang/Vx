@@ -37,7 +37,6 @@ const KNOWN_DECLINES: &[&str] = &[
     "frontend/pass/transfer_cost_advanced_dijkstra.vx",
     "middle_end/pass/fnval_indirect_call.vx",
     "middle_end/pass/implicit_transfer.vx",
-    "middle_end/pass/pinned_annotation_struct_field.vx",
     // A parameter with run-time extents (Vx#409). It used to compile through the flat path
     // while the dims-less spelling let it read as rank-0: `topology.vx` got a `memref<f32>`
     // signature where the AST oracle gives `memref<?x?xf32>`, two ABIs for one function, plus
@@ -80,7 +79,6 @@ const KNOWN_BROKEN: &[&str] = &[
     "frontend/pass/memory_algebra_implicit.vx", // insertvalue of memref (Vx#356)
     "frontend/pass/transfer_cost_advanced_dijkstra.vx", // `.topology()` has no lowering
     "middle_end/pass/implicit_transfer.vx",   // insertvalue of memref (Vx#356)
-    "middle_end/pass/pinned_annotation_struct_field.vx", // insertvalue of memref (Vx#356)
     "warnings/pass/w1024_implicit_transfer.vx", // insertvalue of memref (Vx#356)
 ];
 

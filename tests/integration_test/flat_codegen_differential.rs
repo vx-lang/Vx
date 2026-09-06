@@ -1264,6 +1264,28 @@ fn flat_matches_ast_reshape_and_transpose() {
 }
 
 #[test]
+fn flat_runs_a_tensor_typed_struct_field() {
+    // A tensor field is its memref descriptor by value: constructed, passed with the struct,
+    // and read back as a memref. Flat-only: the AST path inserts the memref itself into the
+    // struct and fails verification. 4 * 10 + 2.
+    assert_flat_exit(
+        "struct Holder { t : Tensor<f32, [2, 2]>, k : i32 }\n\
+         fn get(h : Holder) -> f32 { return h.t[1][0]; }\n\
+         fn main() -> i32 { let mut a = Tensor<f32, [2, 2]>::fill(0.0); a[1][0] = 4.0; \
+           let h = Holder { t : a, k : 2 }; let k = h.k; return (get(h) * 10.0) as i32 + k; }",
+        42,
+    );
+    // A field with run-time extents: the descriptor carries the sizes the type does not.
+    assert_flat_exit(
+        "struct Dyn { w : Tensor<f32, [?, ?]> }\n\
+         fn build(n : i32, m : i32) -> Tensor<f32, [?, ?]> { \
+           let mut t = Tensor<f32, [?, ?]>::new([n, m]); t[1][2] = 7.0; return t; }\n\
+         fn main() -> i32 { let d = Dyn { w : build(2, 3) }; return (d.w[1][2] * 6.0) as i32; }",
+        42,
+    );
+}
+
+#[test]
 fn flat_matches_ast_tensor_store_element_coercion() {
     // A default-`f32` float literal stored into a non-`f32` tensor is coerced to the element type at
     // the store (`bf16` -> `arith.truncf`), matching the AST's `coerce_type` before its `memref.store`

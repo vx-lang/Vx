@@ -876,10 +876,17 @@ impl<'r> Lowerer<'r> {
                         what: "a field not in the modelled layout",
                     })?;
                 let offset = field.offset as u64;
-                let result_ty = match &field.ty {
-                    FieldTy::Scalar(e) => LoweredTy::Scalar(e.clone()),
+                let fty = field.ty.clone();
+                let result_ty = match fty {
+                    FieldTy::Scalar(e) => LoweredTy::Scalar(e),
                     FieldTy::Opaque => LoweredTy::Ptr,
-                    FieldTy::Nominal(nested_gid) => LoweredTy::Aggregate(*nested_gid),
+                    FieldTy::Nominal(nested_gid) => LoweredTy::Aggregate(nested_gid),
+                    // The layout holds the element and rank; the shape is in the declaration.
+                    FieldTy::Tensor(..) => self.declared_field_ty(&gid, m.member.as_ref()).ok_or(
+                        Decline::TypeNotModelled {
+                            what: "a tensor field whose declared type is not modelled",
+                        },
+                    )?,
                 };
                 Ok(self.emit_typed(Opcode::FieldLoad, base_reg, Register(0), result_ty, offset))
             }
@@ -2572,6 +2579,21 @@ impl<'r> Lowerer<'r> {
             e @ (LoweredTy::Scalar(_) | LoweredTy::Aggregate(_) | LoweredTy::Ptr) => Some(e),
             _ => None,
         }
+    }
+
+    /// The lowered type of a tensor field, from the struct's declaration: the layout carries
+    /// only the element and rank, the extents are in the declared field type.
+    fn declared_field_ty(&mut self, gid: &TypeId, member: &str) -> Option<LoweredTy> {
+        let ty = self
+            .registry
+            .structs
+            .get(gid)?
+            .fields
+            .iter()
+            .find(|(n, _)| n.as_ref() == member)?
+            .1
+            .clone();
+        self.lower_ty_synth(&ty)
     }
 
     /// A layout by GID: a synthesized struct instance's, else the frozen registry's.
@@ -6986,10 +7008,10 @@ mod tests {
 
     #[test]
     fn unmodelled_aggregate_param_is_declined() {
-        // `Buf` has a tensor field, so its layout is not modelled (the 0/0 stub); a function taking
+        // `Buf` has a vector field, so its layout is not modelled (the 0/0 stub); a function taking
         // it by value cannot be sized, so lowering is declined atomically (worker untouched).
         let (did, w) = lower_with_registry(
-            "struct Buf { data: Tensor<f32, [4]> }\nfn f(b: Buf) -> i32 { return 0; }",
+            "struct Buf { data: <4 x f32> }\nfn f(b: Buf) -> i32 { return 0; }",
             "f",
         );
         assert!(

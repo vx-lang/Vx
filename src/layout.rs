@@ -34,6 +34,10 @@ pub enum FieldTy {
     Scalar(ElementType),
     Nominal(TypeId),
     Opaque,
+    /// A tensor held by value: its memref descriptor (two pointers, an offset, and a size and a
+    /// stride per rank). The element and rank fix the descriptor's shape; the extents are in the
+    /// declared field type.
+    Tensor(ElementType, usize),
 }
 
 /// The byte offset, size, and type of a single struct field.
@@ -185,6 +189,18 @@ impl<'a> LayoutComputer<'a> {
             | Type::Borrow { .. }
             | Type::Function(..)
             | Type::Closure(..) => Some((8, 8, FieldTy::Opaque)),
+            // A tensor field is its memref descriptor by value, 8-aligned: two pointers, an
+            // offset, and a size and a stride per rank. A generic element has no descriptor yet.
+            Type::Tensor(elem, dims, _) => {
+                if matches!(elem, ElementType::Generic(_)) {
+                    return None;
+                }
+                Some((
+                    24 + 16 * dims.len(),
+                    8,
+                    FieldTy::Tensor(elem.clone(), dims.len()),
+                ))
+            }
             Type::Pinned(inner, _) | Type::Verified(inner) => self.field_info(inner),
             Type::Struct(_, Some(id)) | Type::Enum(_, Some(id)) => {
                 let layout = self.layout_of(*id)?;

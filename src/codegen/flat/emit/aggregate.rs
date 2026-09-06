@@ -36,14 +36,30 @@ impl FnEmit<'_> {
         let val = self
             .names
             .get(ins.operand2.0 as usize)
-            .ok_or(crate::emitter_gap!())?;
+            .ok_or(crate::emitter_gap!())?
+            .clone();
         let p = format!("%p{idx}");
         self.body += &format!(
             "  {p} = llvm.getelementptr {slot}[0, {field_idx}] : (!llvm.ptr) -> !llvm.ptr, {}\n",
             agg.struct_ty
         );
-        // A place-write store carries alias-scope metadata (M2b-2): it belongs to its own scope
-        // and does not alias its disjoint siblings' scopes. Direct field stores are unscoped.
+        // A tensor value goes in as its descriptor. A rank the field does not have (a rank-0
+        // `Tensor<f32>()` for a `[?, ?]` field, which the checker admits) has no descriptor the
+        // field can hold, and no pass folds the cast, so the function declines.
+        let val = match self.mem_of.get(ins.operand2.0 as usize).cloned().flatten() {
+            Some(memty) => {
+                if memref_rank(&memty) != descriptor_rank(&fty) {
+                    return Err(crate::emitter_gap!());
+                }
+                let d = format!("%fd{idx}");
+                self.body += &format!(
+                    "  {d} = builtin.unrealized_conversion_cast {val} : {memty} to {fty}\n"
+                );
+                d
+            }
+            None => val,
+        }; // A place-write store carries alias-scope metadata (M2b-2): it belongs to its own scope
+           // and does not alias its disjoint siblings' scopes. Direct field stores are unscoped.
         let attrs = self
             .alias_scope_of
             .get(&idx)
@@ -93,6 +109,18 @@ impl FnEmit<'_> {
         );
         self.body += &format!("  {n} = llvm.load {p} : !llvm.ptr -> {fty}\n");
         self.names[idx] = n;
+        // A tensor field comes out as its descriptor, cast back to the memref the result names.
+        let gid_res = self.types.get(ins.type_idx.0 as usize).copied();
+        if let Some((elem, shape)) = gid_res.and_then(|g| self.ctx.tensors.get(&g).cloned()) {
+            let memty = tensor_memref_ty(&elem, &shape).ok_or(crate::emitter_gap!())?;
+            let d = self.names[idx].clone();
+            let m = format!("%fm{idx}");
+            self.body +=
+                &format!("  {m} = builtin.unrealized_conversion_cast {d} : {fty} to {memty}\n");
+            self.names[idx] = m;
+            self.mem_of[idx] = Some(memty);
+            return Ok(());
+        }
         if fty == "!llvm.ptr" {
             self.ptr_of[idx] = true;
             self.agg_of[idx] = pointee;
@@ -238,5 +266,23 @@ impl FnEmit<'_> {
             .clone();
         self.body += &format!("  llvm.store {val}, {place} : {et}, !llvm.ptr\n");
         Ok(())
+    }
+}
+
+/// The rank a memref type spells: its `x`-separated extents before the element.
+fn memref_rank(memty: &str) -> Option<usize> {
+    let inner = memty.strip_prefix("memref<")?;
+    let inner = inner.split(',').next()?;
+    Some(inner.matches('x').count())
+}
+
+/// The rank a descriptor struct type spells: `array<N x i64>` for rank N, none for rank 0.
+fn descriptor_rank(fty: &str) -> Option<usize> {
+    if !fty.starts_with("!llvm.struct<(ptr, ptr, i64") {
+        return None;
+    }
+    match fty.split_once("array<") {
+        Some((_, rest)) => rest.split_once(' ')?.0.parse().ok(),
+        None => Some(0),
     }
 }

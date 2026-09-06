@@ -55,51 +55,50 @@ gap, not a representational one, and once the base was materialized the existing
 machinery from [#242](https://github.com/hiraditya/Vx/issues/242) carried the field with no further
 change.
 
-## 3. The open question: pointer, or descriptor
+## 3. Pointer, or descriptor: descriptor
 
-`&i32` needs no shape. A tensor reference does, and that is the whole of the remaining difficulty.
+`&i32` needs no shape. A tensor reference does, and that was the whole of the remaining difficulty.
 
-A `memref` value is a descriptor — allocated pointer, aligned pointer, offset, and a size and stride
-per rank — so storing "a pointer" discards the sizes and strides. Whether that loss matters depends
-on the field's declared type:
+A `memref` value is a descriptor: allocated pointer, aligned pointer, offset, and a size and stride
+per rank. Storing "a pointer" discards the sizes and strides, which a `Tensor<T, [static dims]>`
+field could rebuild from its type and a `Tensor<T, [?, ?]>` field could not. The fixture that
+motivated #356's headline, `tests/middle_end/pass/implicit_transfer.vx`, declares `weights: Tensor<f32, [?, ?]>`, the harder of the two.
 
-- **`Tensor<T, [static dims]>`** — the shape is in the type. A bare `!llvm.ptr` field is sufficient,
-  and the read side rebuilds the memref from the pointer plus the static extents.
-- **`DynTensor<T>`** — the shape exists only in the descriptor. A bare pointer loses it, and nothing
-  in the type recovers it. Either the field stores the descriptor, or it stores a pointer alongside
-  the extents.
+An earlier draft of this document recommended a pointer field for static shapes and a diagnostic
+for the rest, on the premise that a memref cannot sit inside an `!llvm.struct`. The premise was
+wrong: the verifier error in #356 is about the operand being a builtin `memref`, not about
+aggregates. `llvm.insertvalue` accepts a nested descriptor struct, and a
+`builtin.unrealized_conversion_cast` from the memref to
+`!llvm.struct<(ptr, ptr, i64, array<Nxi64>, array<Nxi64>)>` resolves to zero leftover casts under
+the passes `src/codegen/mod.rs` already runs (`expand-strided-metadata, finalize-memref-to-llvm, convert-func-to-llvm, reconcile-unrealized-casts`), checked with mlir-opt. Rank is static, so
+there is one descriptor shape per rank.
 
-The fixture that motivated #356's headline, `tests/middle_end/pass/implicit_transfer.vx`, declares
-`weights: DynTensor<f32>` — the harder of the two.
+So the field stores the descriptor by value. It is correct for both spellings, the struct stays an
+`!llvm.struct` whose fields are stored and loaded whole, and nothing is refused.
 
-Three ways to resolve it, in the order I would consider them:
+## 4. What landed, and what is left
 
-1. **Pointer field, static shapes only.** Extend `field_info` with a `Type::Tensor` arm returning
-   `(8, 8, FieldTy::Opaque)`, and refuse a `DynTensor` field in the checker with a diagnostic naming
-   the field. Smallest change, and it makes the refusal a Vx diagnostic instead of an MLIR verifier
-   message — which is what #354 chose for array literals of placed tensors, as E3018.
-1. **Descriptor field.** Store the memref by value. Correct for both spellings, and the largest
-   change: the struct stops being an `!llvm.struct` of primitives, and every consumer that assumes
-   insertable fields has to follow.
-1. **Pointer plus extents.** A `DynTensor` field lowers to a pointer and a rank-sized run of `i64`
-   extents. Keeps fields primitive, at the cost of a field layout that no longer matches the source
-   field count one-to-one.
+The flat path holds the descriptor:
 
-Option 1 is the recommendation. It unblocks the reachable surface, keeps the flat path in play
-rather than declining, and converts the remaining case from a verifier crash into a diagnostic. The
-`DynTensor` field can then be taken on evidence, when a program needs it.
+1. `FieldTy::Tensor(elem, rank)`: `field_info` sizes a tensor field as its descriptor (24 bytes
+   plus 16 per rank, 8-aligned). A struct with a tensor field has a layout, so the flat path no
+   longer declines it.
+1. The flat lowering of a field read takes the result type from the declared field type: the
+   layout carries the element and rank, the declaration the extents.
+1. The flat emitter spells the field as the descriptor struct, casts a memref value to it on a
+   `FieldStore`, and casts a loaded descriptor back to the memref the result names on a
+   `FieldLoad`. The casts reconcile after memref lowering.
 
-## 4. Order of work
+The AST path still inserts the memref itself into the struct and fails verification; it needs the
+same cast at construction and the reverse at a field read. Until then the differential tests for
+this shape are flat-only.
 
-1. `field_info` grows a `Type::Tensor` arm — the flat path stops declining these structs.
-1. AST construction converts a `memref` field value to `!llvm.ptr` before `llvm.insertvalue`. There
-   is an exact precedent three lines above it: the loop already special-cases an `index`/`i32`
-   mismatch between the field's type and the struct's slot.
-1. AST read rebuilds the memref from the pointer and the static extents.
-1. The checker refuses a `DynTensor` field with a diagnostic naming the field.
-
-Steps 1 and 2 are what `implicit_transfer.vx` needs to stop being quarantined. Step 3 has no caller
-until step 2 lands.
+Of the corpus programs that construct such a struct, `pinned_annotation_struct_field.vx` compiles
+through the flat path. The other three (`implicit_transfer.vx`, `w1024_implicit_transfer.vx`,
+`memory_algebra_implicit.vx`) initialize a `Tensor<f32, [?, ?]>` field with `Tensor<f32>()`, a
+rank-0 tensor the checker admits into a rank-2 field. A rank-0 descriptor is not a rank-2 one, and
+no pass folds a cast between them, so the flat emitter declines the store and the programs stay
+where they were until the checker refuses the mismatch.
 
 ## 5. Tests
 
@@ -111,9 +110,8 @@ Note that the fixture's own `RUN` line does not currently pass: `vxc --action em
 it, and the harness never runs the `RUN` line because `run_middle_end_test` drives `MeliorGenerator`
 directly. That is a harness gap of its own, not specific to this feature.
 
-What to add: a flat-vs-AST differential on construct-then-read of a statically-shaped tensor field,
-matching the shape of `flat_runs_a_reference_typed_struct_field`; and a checker test pinning the
-`DynTensor` field diagnostic.
+`flat_runs_a_tensor_typed_struct_field` covers construct-then-read of a static and of a `[?, ?]`
+field, flat-only until the AST path carries the descriptor too.
 
 ## 6. Related
 

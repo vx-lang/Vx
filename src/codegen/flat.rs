@@ -589,6 +589,12 @@ pub fn build_agg_map(registry: &ImmutableGlobalRegistry, sched: crate::config::S
                 // the nested aggregate's `!llvm.struct` (recursively resolved), stored/loaded whole. The
                 // nested layout must itself be fully modelled (all scalar/pointer/nested fields), else the
                 // whole enclosing struct declines. (#242)
+                // A tensor field is its memref descriptor by value, one shape per rank.
+                FieldTy::Tensor(_, rank) => {
+                    field_tys.push(memref_descriptor_ty(*rank));
+                    field_pointee.push(None);
+                    field_agg.push(None);
+                }
                 FieldTy::Nominal(nested_gid) => {
                     match agg_struct_ty_of(*nested_gid, registry, &mut Vec::new()) {
                         Ok(nested_ty) => {
@@ -653,6 +659,7 @@ fn agg_struct_ty_of(
         let ft = match &f.ty {
             FieldTy::Scalar(e) => mlir_scalar(e).ok_or(crate::emitter_gap!())?.to_string(),
             FieldTy::Opaque => "!llvm.ptr".to_string(),
+            FieldTy::Tensor(_, rank) => memref_descriptor_ty(*rank),
             FieldTy::Nominal(n) => agg_struct_ty_of(*n, registry, visiting)?,
         };
         field_tys.push(ft);
@@ -1477,6 +1484,16 @@ fn join_i64(xs: &[i64]) -> String {
 
 /// The static MLIR memref type string for a tensor type, e.g. `(i32, ["4"]) -> "memref<4xi32>"`. A
 /// non-numeric dim becomes `?` (dynamic). `None` for a non-scalar element.
+/// The LLVM form of a rank-`rank` memref descriptor: the allocated and aligned pointers, an
+/// offset, and a size and a stride per rank. `finalize-memref-to-llvm` gives a memref value this
+/// shape, so a `builtin.unrealized_conversion_cast` between the two reconciles to nothing.
+pub(crate) fn memref_descriptor_ty(rank: usize) -> String {
+    if rank == 0 {
+        return "!llvm.struct<(ptr, ptr, i64)>".to_string();
+    }
+    format!("!llvm.struct<(ptr, ptr, i64, array<{rank} x i64>, array<{rank} x i64>)>")
+}
+
 fn tensor_memref_ty(elem: &ElementType, shape: &[String]) -> Option<String> {
     let et = mlir_scalar(elem)?;
     let dims: String = shape
