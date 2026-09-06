@@ -116,6 +116,11 @@ fn ast_llvm(src: &str) -> String {
     for (f, _) in std::mem::take(&mut checker.mono.functions) {
         program.functions.push(f);
     }
+    // The structs the checker synthesized (a closure's `Closure_N` environment), as the driver
+    // adds them: a named `!llvm.struct` with no body does not parse.
+    program
+        .structs
+        .extend(std::mem::take(&mut checker.mono.generated_structs));
 
     let context = make_context();
     let mut codegen = MeliorGenerator::new(&context, "diff_ast".to_string());
@@ -150,20 +155,23 @@ fn flat_llvm(src: &str) -> Option<String> {
     // worker; the annotation lands on the AST, which the per-function lowering below then reads.
     let env_mods = mods.clone();
     let env = GlobalAstEnv::build(&env_mods);
-    let monos = {
+    let (monos, generated_structs) = {
         let mut scratch = LocalWorkerState::new(session.clone());
         let mut checker = TypeChecker::new(&env, &mut scratch);
         for f in &mut mods[0].functions {
             checker.check_function(f);
         }
-        checker.mono.functions
+        (checker.mono.functions, checker.mono.generated_structs)
     };
-    if !monos.is_empty() {
-        // Append the monomorph bodies, then re-resolve + rebuild the registry so they land in
-        // `fn_sigs` (a rewritten `f32$sq(x)` resolves its callee) — mirroring the driver's flat path.
+    if !monos.is_empty() || !generated_structs.is_empty() {
+        // Append the monomorph bodies and the structs the checker synthesized (a closure's
+        // `Closure_N` environment), then re-resolve + rebuild the registry so they land in
+        // `fn_sigs` and `layouts` (a rewritten `f32$sq(x)` resolves its callee) -- mirroring the
+        // driver's flat path.
         for (f, _) in monos {
             mods[0].functions.push(f);
         }
+        mods[0].structs.extend(generated_structs);
         let symbol_map = vxc::resolver::build_symbol_map(&mods);
         mods[0].resolve_names(&symbol_map, &[]);
     }
@@ -1038,6 +1046,24 @@ fn flat_matches_ast_elementwise_ops_beyond_rank_one() {
          fn main() -> i32 { let a = build(2, 3); let mut b = build(2, 3); b[0][1] = 5.0; \
            let c = b - a; return c[0][1] as i32; }",
         3,
+    );
+}
+
+#[test]
+fn flat_matches_ast_closure_capturing_nothing() {
+    // A closure that captures nothing has an environment struct with no fields. Its slot is
+    // still allocated -- as the empty `!llvm.struct<()>` -- and the call goes through the
+    // adapter like any closure's. 41 + 1.
+    assert_parity(
+        "fn main() -> i32 { let f = |x : i32| x + 1; return f(41); }",
+        42,
+    );
+    // The corpus shape: a closure over a borrowed struct returning a borrow of a field.
+    assert_parity(
+        "struct Map { slot : i32, present : i32 }\n\
+         fn good(m : &Map) -> &i32 { let f = |q : &Map| &q.slot; return f(m); }\n\
+         fn main() -> i32 { let x = Map { slot : 7, present : 1 }; return *good(&x); }",
+        7,
     );
 }
 

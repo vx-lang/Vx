@@ -525,8 +525,26 @@ pub fn build_agg_map(registry: &ImmutableGlobalRegistry, sched: crate::config::S
     // own GID, so the map is the same whatever order the entries are produced in. (See
     // `build_callee_map` for why this is worth parallelising.)
     let layout_of = |(gid, def): (&TypeId, &crate::registry::TypeDefinition)| {
-        if def.align_bytes == 0 || def.fields.is_empty() {
-            return None; // unmodelled stub, or an enum/field-less type (no struct body to emit)
+        if def.align_bytes == 0 {
+            return None; // an unmodelled stub
+        }
+        // A declared struct with no fields -- a closure that captures nothing -- is the empty
+        // `!llvm.struct<()>`, which its environment slot allocates like any other. An enum has no
+        // fields either and no struct body to emit; it is not in `structs`.
+        if def.fields.is_empty() {
+            if !registry.structs.contains_key(gid) {
+                return None;
+            }
+            return Some((
+                *gid,
+                AggLayout {
+                    struct_ty: "!llvm.struct<()>".to_string(),
+                    offsets: Vec::new(),
+                    field_tys: Vec::new(),
+                    field_pointee: Vec::new(),
+                    field_agg: Vec::new(),
+                },
+            ));
         }
         // The declared field types (with generic pointees intact) for pointee resolution; the frozen
         // `layouts` erase them to `Opaque`. GID-keyed since #291 — this loop iterates `layouts`, so
