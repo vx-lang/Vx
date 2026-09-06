@@ -2068,6 +2068,28 @@ fn flat_matches_ast_corpus_slice_reductions() {
 }
 
 #[test]
+fn flat_matches_ast_corpus_tensor_view_2d() {
+    // Two views over foreign memory, read by element and multiplied. The descriptor the flat
+    // path builds over the pointer has to address the same bytes the oracle's does.
+    assert_output_parity(&corpus("tensor_view_2d.vx"));
+    // A view with run-time extents: its `memref<?x?xf32>` reads its sizes out of the
+    // descriptor, so this is the one that checks them -- the row offset of `a[1][2]` is the
+    // column count, and `extent(1)` is it directly. (The descriptor's strides are read only
+    // by a consumer that takes the dynamic memref whole, which nothing on the flat path does
+    // yet; they are row-major, as the oracle's.)
+    assert_parity(
+        "extern \"C\" { fn vx_alloc_f32(n : i32) -> *mut f32; fn vx_free_f32(p : *mut f32, n : i32) -> void; }\n\
+         fn view(p : *mut f32, r : i32, c : i32) -> Tensor<f32, [?, ?]> { \
+           let v = unsafe { tensor_view_2d(p, r, c) }; return v; }\n\
+         fn main() -> i32 { let p : *mut f32 = unsafe { vx_alloc_f32(6) }; \
+           unsafe { for i in 0..6 { p[i] = (i + 1) as f32; } } \
+           let a = view(p, 2, 3); let x = a[1][2]; let w = a.extent(1); \
+           unsafe { vx_free_f32(p, 6); } return (x * 10.0) as i32 + w; }",
+        63,
+    );
+}
+
+#[test]
 fn flat_matches_ast_corpus_linear_attention() {
     // An attention-corpus program (no softmax/exp): tensor allocs, `for` loops,
     // and `print`. Its printed output must match the AST oracle through the flat

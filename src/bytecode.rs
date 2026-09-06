@@ -230,6 +230,11 @@ pub enum Opcode {
     /// `operand1` is the buffer, `operand2` the value. Lowers to `linalg.fill`, the same fill
     /// `TensorZero` emits, with the value the source wrote instead of a zero.
     TensorFill = 46,
+    /// A rank-2 view over memory the caller owns (`tensor_view_2d(ptr, rows, cols)`): `operand1`
+    /// is the pointer, `type_idx` the tensor type. A `?` extent is the `operand1` of an `Arg`
+    /// immediately before, one per `?` in order; a static one is the type's. Lowers to a memref
+    /// descriptor built over the pointer, with row-major strides. The result is the view.
+    TensorView = 47,
 }
 
 /// Reverse mode for `Opcode::AutoDiff`: the gradient, through `__enzyme_autodiff_grad_*`.
@@ -292,6 +297,8 @@ impl Opcode {
             43 => TensorLoad,
             44 => TensorDim,
             45 => TensorZero,
+            46 => TensorFill,
+            47 => TensorView,
             _ => return None,
         })
     }

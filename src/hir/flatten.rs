@@ -947,6 +947,10 @@ impl<'r> Lowerer<'r> {
                         what: "a tensor allocation the flat path does not model",
                     });
                 }
+                // `tensor_view_2d(ptr, rows, cols)`: a rank-2 view over memory the caller owns.
+                if fc.name.as_ref() == "tensor_view_2d" && fc.args.len() == 3 {
+                    return self.lower_tensor_view_2d(fc);
+                }
                 // `barrier()` (Vx#379): an effect, not a call -- there is no callee anywhere.
                 // The checker typed it i32, so hand back a constant for the value position
                 // nobody should be using it in.
@@ -2651,6 +2655,46 @@ impl<'r> Lowerer<'r> {
             self.emit_effect(Opcode::Arg, r, Register(0), 0);
         }
         Some(self.emit_typed(Opcode::TensorAlloc, Register(0), Register(0), ty, bytes))
+    }
+
+    /// `tensor_view_2d(ptr, rows, cols)`: the pointer is the view's `operand1`, a run-time extent
+    /// rides on an `Arg` the way an allocation's does, and a literal one is the type's. The
+    /// element is the pointer's pointee when its type is recorded, `f32` otherwise, which is
+    /// the oracle's default too.
+    fn lower_tensor_view_2d(&mut self, fc: &crate::syntax::FunctionCallExpr) -> Lowered<Val> {
+        let ptr = self.lower_expr(&fc.args[0])?;
+        if !matches!(ptr.ty, LoweredTy::Ptr) {
+            return Err(Decline::TypeNotModelled {
+                what: "a tensor view over something that is not a pointer",
+            });
+        }
+        let elem = match self.infer_ast_type(&fc.args[0]) {
+            Some(Type::Pointer(inner, _, _)) => match *inner {
+                Type::Scalar(e) => e,
+                _ => ElementType::F32,
+            },
+            _ => ElementType::F32,
+        };
+        let mut shape = Vec::with_capacity(2);
+        let mut extents: Vec<Register> = Vec::new();
+        for a in &fc.args[1..3] {
+            if let Expr::Number(n) = a {
+                shape.push(n.value.as_ref().to_string());
+            } else {
+                let r = self
+                    .lower_scalar_extent(a)
+                    .ok_or(Decline::TypeNotModelled {
+                        what: "a tensor view extent that is not an integer",
+                    })?;
+                extents.push(r);
+                shape.push(DYN_DIM.to_string());
+            }
+        }
+        let ty = LoweredTy::Tensor { elem, shape };
+        for r in extents {
+            self.emit_effect(Opcode::Arg, r, Register(0), 0);
+        }
+        Ok(self.emit_typed(Opcode::TensorView, ptr.reg, Register(0), ty, 0))
     }
 
     /// A run-time extent for an allocation: the expression lowered to an integer register.
@@ -6303,6 +6347,26 @@ mod tests {
             "only the `?` position is an extent"
         );
         assert_eq!(op_imm(&w, Opcode::TensorAlloc), Some(0));
+        verify_hir_stream(&w);
+    }
+
+    #[test]
+    fn a_tensor_view_rides_its_pointer_and_its_run_time_extents() {
+        // `tensor_view_2d(p, 2, n)`: the pointer is the view's operand, the literal row count
+        // is in the type, and the run-time column count is an `Arg` before the view.
+        let f = parse_fn(
+            "fn view(p: *mut f32, n: i32) -> Tensor<f32, [2, ?]> { \
+               let v = unsafe { tensor_view_2d(p, 2, n) }; return v; }",
+        );
+        let mut w = worker();
+        lower_function_to_hir(&f, &mut w).expect("a view lowers");
+        assert_eq!(count(&w, Opcode::TensorView), 1);
+        assert_eq!(count(&w, Opcode::Arg), 1, "one run-time extent");
+        assert_eq!(
+            count(&w, Opcode::TensorAlloc),
+            0,
+            "a view allocates nothing"
+        );
         verify_hir_stream(&w);
     }
 

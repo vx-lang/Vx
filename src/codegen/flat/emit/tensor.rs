@@ -94,6 +94,93 @@ impl FnEmit<'_> {
         Ok(())
     }
 
+    /// A rank-2 view over memory the caller owns (`tensor_view_2d(ptr, rows, cols)`): the memref
+    /// descriptor built by hand over `operand1`'s pointer -- both pointers at the storage, a zero
+    /// offset, the extents as sizes, row-major strides -- and cast into memref-typed IR the way
+    /// the memref-to-LLVM conversion materializes one. A `?` extent is the `Arg` before this
+    /// instruction; a static one is the type's. Nothing here checks the extents against the
+    /// memory: that is the caller's claim, which is why the surface form needs `unsafe`.
+    pub(crate) fn op_tensor_view(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let gid = *self
+            .types
+            .get(ins.type_idx.0 as usize)
+            .ok_or(crate::emitter_gap!())?;
+        let (elem, shape) = self
+            .ctx
+            .tensors
+            .get(&gid)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        if shape.len() != 2 {
+            return Err(crate::emitter_gap!());
+        }
+        let memty = tensor_memref_ty(&elem, &shape).ok_or(crate::emitter_gap!())?;
+        let p = ins.operand1.0 as usize;
+        if !self.ptr_of.get(p).copied().unwrap_or(false) {
+            return Err(crate::emitter_gap!());
+        }
+        let ptr = self.names.get(p).ok_or(crate::emitter_gap!())?.clone();
+        let dyn_count = shape.iter().filter(|d| *d == DYN_DIM).count();
+        if self.pending_args.len() < dyn_count {
+            return Err(crate::emitter_gap!());
+        }
+        let extents = self
+            .pending_args
+            .split_off(self.pending_args.len() - dyn_count);
+        let mut ext = extents.into_iter();
+        let mut dims_i64: Vec<String> = Vec::with_capacity(2);
+        for (k, d) in shape.iter().enumerate() {
+            let v = format!("%tv{idx}_{k}");
+            if d == DYN_DIM {
+                let r = ext.next().ok_or(crate::emitter_gap!())?;
+                let a = self
+                    .names
+                    .get(r as usize)
+                    .ok_or(crate::emitter_gap!())?
+                    .clone();
+                let at = mlir_scalar(&self.elem_at(r).ok_or(crate::emitter_gap!())?)
+                    .ok_or(crate::emitter_gap!())?;
+                if at == "i64" {
+                    dims_i64.push(a);
+                    continue;
+                }
+                self.body += &format!("  {v} = arith.extsi {a} : {at} to i64\n");
+            } else {
+                self.body += &format!("  {v} = arith.constant {d} : i64\n");
+            }
+            dims_i64.push(v);
+        }
+        let zero = format!("%tvz{idx}");
+        let one = format!("%tvo{idx}");
+        self.body += &format!("  {zero} = arith.constant 0 : i64\n");
+        self.body += &format!("  {one} = arith.constant 1 : i64\n");
+        let dty = "!llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)>";
+        let mut d = format!("%tvd{idx}_0");
+        self.body += &format!("  {d} = llvm.mlir.undef : {dty}\n");
+        // Fields in order: allocated, aligned, offset, sizes[0..1], strides[0..1]. Row-major, so
+        // the row stride is the column count and the column stride 1.
+        let fields: [(&str, &str); 7] = [
+            (&ptr, "0"),
+            (&ptr, "1"),
+            (&zero, "2"),
+            (&dims_i64[0], "3, 0"),
+            (&dims_i64[1], "3, 1"),
+            (&dims_i64[1], "4, 0"),
+            (&one, "4, 1"),
+        ];
+        for (k, (val, pos)) in fields.iter().enumerate() {
+            let nd = format!("%tvd{idx}_{}", k + 1);
+            self.body += &format!("  {nd} = llvm.insertvalue {val}, {d}[{pos}] : {dty}\n");
+            d = nd;
+        }
+        let n = format!("%v{idx}");
+        self.body +=
+            &format!("  {n} = builtin.unrealized_conversion_cast {d} : {dty} to {memty}\n");
+        self.names[idx] = n;
+        self.mem_of[idx] = Some(memty);
+        Ok(())
+    }
+
     /// Zero a freshly allocated tensor (`Tensor<T, [..]>::new()`): `linalg.fill` with a zero of
     /// the element type, which is the fill `MatmulInto` already emits before it accumulates.
     ///
