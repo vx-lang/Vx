@@ -247,6 +247,10 @@ pub enum Opcode {
     /// buffer of the result type. `imm` packs the permutation, 4 bits per result axis, axis 0
     /// lowest.
     TensorTranspose = 50,
+    /// `t.map(|v| ..)`: a fresh tensor of the result type, each element the closure applied to
+    /// `operand1`'s. `operand2` is the closure's environment slot; `imm` indexes the type table
+    /// at the closure adapter's GID.
+    TensorMap = 51,
 }
 
 /// Reverse mode for `Opcode::AutoDiff`: the gradient, through `__enzyme_autodiff_grad_*`.
@@ -314,6 +318,7 @@ impl Opcode {
             48 => InlineMlir,
             49 => TensorReshape,
             50 => TensorTranspose,
+            51 => TensorMap,
             _ => return None,
         })
     }

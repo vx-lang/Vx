@@ -1753,6 +1753,7 @@ impl<'a> FnEmit<'a> {
             Opcode::InlineMlir => self.op_inline_mlir(idx, ins),
             Opcode::TensorReshape => self.op_tensor_reshape(idx, ins),
             Opcode::TensorTranspose => self.op_tensor_transpose(idx, ins),
+            Opcode::TensorMap => self.op_tensor_map(idx, ins),
             // Index a tensor along its outermost dimension. `operand1` is the base tensor (memref),
             // `operand2` the index (`arith.index_cast` to `index`). A scalar-element result
             // (`type_idx` is a scalar GID) is a value read (`imm = 0` → `memref.load`) or an element

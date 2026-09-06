@@ -209,6 +209,80 @@ impl FnEmit<'_> {
         Ok(())
     }
 
+    // `TensorMap`: a fresh buffer of the source's shape, each element the closure adapter
+    // applied to the source's, as a `linalg.generic` over the two, the way the oracle lowers
+    // `map`. A `?` extent is read off the source.
+    pub(crate) fn op_tensor_map(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let gid = *self
+            .types
+            .get(ins.type_idx.0 as usize)
+            .ok_or(crate::emitter_gap!())?;
+        let (elem, shape) = self
+            .ctx
+            .tensors
+            .get(&gid)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        let memty = tensor_memref_ty(&elem, &shape).ok_or(crate::emitter_gap!())?;
+        let el = mlir_scalar(&elem).ok_or(crate::emitter_gap!())?;
+        let s = ins.operand1.0 as usize;
+        let src = self.names.get(s).ok_or(crate::emitter_gap!())?.clone();
+        let src_mem = self
+            .mem_of
+            .get(s)
+            .cloned()
+            .flatten()
+            .ok_or(crate::emitter_gap!())?;
+        let env = self
+            .names
+            .get(ins.operand2.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        let callee_gid = *self
+            .types
+            .get(ins.imm as usize)
+            .ok_or(crate::emitter_gap!())?;
+        let callee = self
+            .ctx
+            .callees
+            .get(&callee_gid)
+            .ok_or(crate::emitter_gap!())?;
+        let (params, ret) = self
+            .ctx
+            .func_sigs
+            .get(&callee_gid)
+            .ok_or(crate::emitter_gap!())?;
+        let (name, params, ret) = (callee.name.clone(), params.join(", "), ret.clone());
+        let mut sizes: Vec<String> = Vec::new();
+        for (k, d) in shape.iter().enumerate() {
+            if d == DYN_DIM {
+                let c = format!("%tmc{idx}_{k}");
+                let sz = format!("%tms{idx}_{k}");
+                self.body += &format!("  {c} = arith.constant {k} : index\n");
+                self.body += &format!("  {sz} = memref.dim {src}, {c} : {src_mem}\n");
+                sizes.push(sz);
+            }
+        }
+        let n = format!("%v{idx}");
+        self.body += &format!("  {n} = memref.alloc({}) : {memty}\n", sizes.join(", "));
+        let dims: Vec<String> = (0..shape.len()).map(|i| format!("d{i}")).collect();
+        let map = format!("affine_map<({0}) -> ({0})>", dims.join(", "));
+        let iters: Vec<&str> = shape.iter().map(|_| "\"parallel\"").collect();
+        self.body += &format!(
+            "  linalg.generic {{indexing_maps = [{map}, {map}], iterator_types = [{}]}} ins({src} : {src_mem}) outs({n} : {memty}) {{\n",
+            iters.join(", ")
+        );
+        self.body += &format!("  ^bb0(%tmi{idx}: {el}, %tmo{idx}: {el}):\n");
+        self.body += &format!(
+            "    %tmr{idx} = func.call {}({env}, %tmi{idx}) : ({params}) -> {ret}\n",
+            sym_ref(&name)
+        );
+        self.body += &format!("    linalg.yield %tmr{idx} : {el}\n  }}\n");
+        self.names[idx] = n;
+        self.mem_of[idx] = Some(memty);
+        Ok(())
+    }
+
     pub(crate) fn op_tensor_view(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
         let gid = *self
             .types

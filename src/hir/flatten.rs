@@ -1383,6 +1383,7 @@ impl<'r> Lowerer<'r> {
             Expr::MethodCall(mc) if matches!(mc.method_name.as_ref(), "reshape" | "transpose") => {
                 self.lower_tensor_reshape(mc)
             }
+            Expr::MethodCall(mc) if mc.method_name.as_ref() == "map" => self.lower_tensor_map(mc),
             // The differentiated calls. All three go through one opcode; see `lower_autodiff`.
             Expr::Grad(g) => self.lower_autodiff(&g.target_fn, &g.args, false, None),
             Expr::Vjp(v) => self.lower_autodiff(&v.target_fn, &v.args, false, Some(&v.cotangent)),
@@ -1575,6 +1576,13 @@ impl<'r> Lowerer<'r> {
         let v = self.lower_expr(base)?;
         match v.ty {
             LoweredTy::Ptr => Ok((v.reg, gid)),
+            // A construction (a closure literal the checker rewrote to `Closure_1 { k }`) already
+            // sits in a slot, whose address this is.
+            LoweredTy::Aggregate(value_gid)
+                if matches!(base, Expr::StructInit(_) | Expr::EnumVariant(_)) =>
+            {
+                Ok((v.reg, value_gid))
+            }
             // A by-value aggregate -- a struct-returning call used directly as a base
             // (`Vec::with_capacity(4).data`): spill it to a fresh slot so the field op has an
             // address to GEP. The emitter's Store already writes a struct value into a slot.
@@ -3048,6 +3056,48 @@ impl<'r> Lowerer<'r> {
             shape: permuted,
         };
         Ok(self.emit_typed(Opcode::TensorTranspose, src.reg, Register(0), ty, imm))
+    }
+
+    /// `t.map(|v| ..)`: a fresh tensor of the source's shape, each element the closure applied
+    /// to the source's. The closure lowers to its environment slot, and the body of the
+    /// emitter's `linalg.generic` calls the closure's generated adapter with it, as the oracle
+    /// does.
+    fn lower_tensor_map(&mut self, mc: &crate::syntax::MethodCallExpr) -> Lowered<Val> {
+        let src = self.lower_expr(&mc.base)?;
+        if !matches!(src.ty, LoweredTy::Tensor { .. }) {
+            return Err(Decline::TypeNotModelled {
+                what: "a map over something that is not a tensor",
+            });
+        }
+        let Some(arg) = mc.args.first() else {
+            return Err(Decline::TypeNotModelled {
+                what: "a map with no closure",
+            });
+        };
+        let cn_name = match self.infer_ast_type(arg) {
+            Some(Type::Struct(name, _)) if name.as_ref().starts_with("Closure_") => {
+                name.as_ref().to_string()
+            }
+            _ => {
+                return Err(Decline::TypeNotModelled {
+                    what: "a map whose argument is not a closure",
+                })
+            }
+        };
+        let (env_ptr, _) = self.lower_agg_base(arg)?;
+        let call_name = format!("{cn_name}_call");
+        let gid = self
+            .registry
+            .fn_sigs
+            .get(call_name.as_str())
+            .ok_or(Decline::TypeNotModelled {
+                what: "a closure adapter that is not a known function",
+            })?
+            .gid;
+        let imm = self.types.len() as u64;
+        self.types.push(gid);
+        let ty = src.ty.clone();
+        Ok(self.emit_typed(Opcode::TensorMap, src.reg, env_ptr, ty, imm))
     }
 
     fn lower_inline_mlir(&mut self, im: &crate::syntax::expr::InlineMlirExpr) -> Lowered<Val> {

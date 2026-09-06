@@ -1286,6 +1286,18 @@ fn flat_runs_a_tensor_typed_struct_field() {
 }
 
 #[test]
+fn flat_matches_ast_tensor_map() {
+    // `map` with a closure capturing a local: a fresh tensor, each element the closure's
+    // adapter applied to the source's. 12 * 3 + 3 * 2.
+    assert_parity(
+        "fn main() -> i32 { let mut x = Tensor<f32, [2, 3]>::fill(1.0); x[1][2] = 4.0; \
+           let k = 3.0; let y = x.map(|v| v * k); \
+           return (y[1][2] * 3.0 + y[0][0] * 2.0) as i32; }",
+        42,
+    );
+}
+
+#[test]
 fn flat_matches_ast_tensor_store_element_coercion() {
     // A default-`f32` float literal stored into a non-`f32` tensor is coerced to the element type at
     // the store (`bf16` -> `arith.truncf`), matching the AST's `coerce_type` before its `memref.store`

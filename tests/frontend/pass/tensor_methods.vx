@@ -12,4 +12,7 @@ fn main() -> i32 {
 // main calls each function in order; the assertion is that the chain survives to codegen
 // rather than being folded away.
 // CHECK-LABEL: func.func @main() -> i32
-// CHECK: call @Tensor$f32$10x10$fill$f32(%{{.*}}, %{{.*}}) : (memref<memref<?x?xf32>>, f32) -> ()
+// CHECK: call @Tensor$f32$10x10$fill$f32(%{{.*}}, %{{.*}}) : (memref<?x?xf32>, f32) -> ()
+// CHECK: linalg.generic {{.*}} ins(%{{.*}} : memref<10x10xf32>) outs(%{{.*}} : memref<10x10xf32>)
+// CHECK: %[[R:.*]] = func.call @Closure_1_call(%{{.*}}, %{{.*}}) : (!llvm.ptr, f32) -> f32
+// CHECK: linalg.yield %[[R]] : f32
