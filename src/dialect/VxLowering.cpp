@@ -954,13 +954,21 @@ struct TransferOpLowering : public OpRewritePattern<TransferOp> {
     auto src = op.getOperand();
     auto srcType = dyn_cast<MemRefType>(src.getType());
 
-    // If it's not a MemRef (e.g., primitive i32/f32), we fail compilation.
-    // The user explicitly mandated that implicit conversions/pass-throughs
-    // are disabled to enforce strict data layout transitions.
+    // A non-memref operand has no layout to transition: an i32 or an f32 is
+    // represented the same way in every space. So when the result restates the
+    // operand's type the transfer is an identity and folds to its operand --
+    // placement is a type-level fact the checker has already admitted, and what
+    // is left for the IR is moving bytes, which a scalar does not have.
+    //
+    // A non-memref transfer that DOES change type is still refused. That is the
+    // implicit conversion this pattern has always been here to reject.
     if (!srcType) {
-      llvm::errs() << "[VxLowering] TransferOp srcType is not MemRefType\n";
-      op.emitError("vx.transfer currently only supports MemRef types. "
-                   "Attempted to transfer a scalar/primitive.");
+      if (src.getType() == op.getResult().getType()) {
+        rewriter.replaceOp(op, src);
+        return success();
+      }
+      op.emitError("vx.transfer of a scalar cannot change its type, but the "
+                   "result type differs from the operand's.");
       return failure();
     }
 

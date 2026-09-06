@@ -27,4 +27,5 @@ fn process(m_host: MyModel) -> MyModel {
   };
 }
 
+// XFAIL-LOWER: a struct with a tensor field lowers to `llvm.insertvalue` on a memref, which is not a primitive LLVM type (Vx#356)
 // CHECK: "func.call"

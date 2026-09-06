@@ -325,7 +325,39 @@ fn run_middle_end_test(path: &Path) -> Result<(), String> {
     codegen
         .generate(&monomorphized_program, &module_syntaxes)
         .unwrap();
-    let mlir_str = codegen.into_module().as_operation().to_string();
+    let mut module = codegen.into_module();
+    let mlir_str = module.as_operation().to_string();
+
+    // Lower, as the compiler does. The harness used to stop at the MLIR text: a fixture could
+    // emit something that reads correctly, satisfy its CHECK lines, and be rejected by the real
+    // binary on the same input. Three fixtures were in exactly that state, each hiding a defect
+    // the suite reported as passing.
+    //
+    // `// XFAIL-LOWER:` marks one whose MLIR is what the fixture means to pin but which the
+    // lowering cannot yet accept. It is read in both directions, as the RUN-line XFAIL is: a
+    // marked fixture that starts lowering fails too, so the marker cannot outlive its bug.
+    let xfail_lower = source
+        .lines()
+        .find(|l| l.trim().starts_with("// XFAIL-LOWER:"))
+        .map(|l| l.split_once("XFAIL-LOWER:").unwrap().1.trim().to_string());
+    match (
+        vxc::codegen::lower_to_llvm(&context, &mut module),
+        &xfail_lower,
+    ) {
+        (Err(e), None) => {
+            return Err(format!(
+                "{:?} emits MLIR its own compiler cannot lower: {}",
+                path, e
+            ))
+        }
+        (Ok(_), Some(reason)) => {
+            return Err(format!(
+                "{:?} is marked `XFAIL-LOWER: {}`, but it lowers now. Remove the marker.",
+                path, reason
+            ))
+        }
+        _ => {}
+    }
 
     filecheck(&mlir_str, path, None)
 }
