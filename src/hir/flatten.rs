@@ -911,17 +911,15 @@ impl<'r> Lowerer<'r> {
                         Ok(self.emit_typed(Opcode::TensorIndex, base.reg, index.reg, result_ty, 0))
                     }
                     LoweredTy::Ptr => {
-                        let elem = pointer_elem_ty(
-                            &self
-                                .infer_ast_type(&ix.base)
-                                .ok_or(Decline::TypeNotModelled {
+                        let elem = self
+                            .pointer_elem_synth(&self.infer_ast_type(&ix.base).ok_or(
+                                Decline::TypeNotModelled {
                                     what: "an index base whose type cannot be inferred",
-                                })?,
-                            self.registry,
-                        )
-                        .ok_or(Decline::TypeNotModelled {
-                            what: "an index whose element type is not modelled",
-                        })?;
+                                },
+                            )?)
+                            .ok_or(Decline::TypeNotModelled {
+                                what: "an index whose element type is not modelled",
+                            })?;
                         let index = self.lower_expr(&ix.index)?;
                         if !matches!(index.ty, LoweredTy::Scalar(_)) {
                             return Err(Decline::TypeNotModelled {
@@ -1265,12 +1263,29 @@ impl<'r> Lowerer<'r> {
                     }
                 }
                 let v = self.lower_expr(&b.expr)?;
-                if matches!(v.ty, LoweredTy::Tensor { .. }) {
-                    Ok(v)
-                } else {
-                    Err(Decline::TypeNotModelled {
+                match v.ty {
+                    LoweredTy::Tensor { .. } => Ok(v),
+                    // An aggregate: a construction already sits in a slot, whose address this is.
+                    // A value with no slot of its own -- a call's by-value result, such as a
+                    // closure returned by a closure or the `Vec<i32>` a `get` hands back -- is
+                    // given one. The slot is the function's, so it outlives the borrow.
+                    LoweredTy::Aggregate(_) => {
+                        if matches!(*b.expr, Expr::StructInit(_) | Expr::EnumVariant(_)) {
+                            return Ok(Val {
+                                reg: v.reg,
+                                ty: LoweredTy::Ptr,
+                            });
+                        }
+                        let slot = self.emit_alloca(v.ty.clone());
+                        self.emit_effect(Opcode::Store, slot.reg, v.reg, 0);
+                        Ok(Val {
+                            reg: slot.reg,
+                            ty: LoweredTy::Ptr,
+                        })
+                    }
+                    _ => Err(Decline::TypeNotModelled {
                         what: "a borrow of something that is not a tensor",
-                    })
+                    }),
                 }
             }
             // A value-position `if` in expression context: nested (`if c { if d { .. } else { .. } }
@@ -2473,6 +2488,22 @@ impl<'r> Lowerer<'r> {
         lowered_ty(ty, self.registry)
     }
 
+    /// The element type behind a pointer, synthesizing an instance layout the free
+    /// `pointer_elem_ty` cannot: `*mut Option<i32>` is a `Vec<Option<i32>>`'s storage, and its
+    /// element is the enum instance's `{ tag, payload }`.
+    fn pointer_elem_synth(&mut self, ty: &Type) -> Option<LoweredTy> {
+        let inner = match ty {
+            Type::Pointer(inner, ..) | Type::Borrow { inner, .. } | Type::Ref(inner, ..) => {
+                inner.as_ref()
+            }
+            _ => return None,
+        };
+        match self.lower_ty_synth(inner)? {
+            e @ (LoweredTy::Scalar(_) | LoweredTy::Aggregate(_) | LoweredTy::Ptr) => Some(e),
+            _ => None,
+        }
+    }
+
     /// A layout by GID: a synthesized struct instance's, else the frozen registry's.
     fn layout_of(&self, gid: &TypeId) -> Option<&crate::registry::TypeDefinition> {
         self.instance_layouts
@@ -3330,6 +3361,17 @@ impl<'r> Lowerer<'r> {
                 Ok(v) => v,
                 Err(_) => self.lower_expr(arg)?,
             };
+            // A construction (`Option<i32>::Some(7)`, `Pair { .. }`) lowers to its slot, and the
+            // callee takes the aggregate by value: load it off the slot here, the load a nested
+            // construction gets in `lower_struct_init`.
+            let v = if matches!(arg, Expr::StructInit(_) | Expr::EnumVariant(_))
+                && matches!(v.ty, LoweredTy::Aggregate(_))
+            {
+                let ty = v.ty.clone();
+                self.emit_typed(Opcode::SlotLoad, v.reg, Register(0), ty, 0)
+            } else {
+                v
+            };
             let v = self.forget_extents_for_param(v, sig.params.get(n))?;
             arg_regs.push(v.reg);
         }
@@ -3401,17 +3443,15 @@ impl<'r> Lowerer<'r> {
         // A raw-pointer place (`self.data[i] = val`): a `PtrIndex` with `imm = 1` (an element
         // pointer), consumed by a `PtrStore`. The element type comes from the base's AST type (#242).
         if matches!(base.ty, LoweredTy::Ptr) {
-            let elem = pointer_elem_ty(
-                &self
-                    .infer_ast_type(&ix.base)
-                    .ok_or(Decline::TypeNotModelled {
+            let elem = self
+                .pointer_elem_synth(&self.infer_ast_type(&ix.base).ok_or(
+                    Decline::TypeNotModelled {
                         what: "an index base whose type cannot be inferred",
-                    })?,
-                self.registry,
-            )
-            .ok_or(Decline::TypeNotModelled {
-                what: "an index whose element type is not modelled",
-            })?;
+                    },
+                )?)
+                .ok_or(Decline::TypeNotModelled {
+                    what: "an index whose element type is not modelled",
+                })?;
             let index = self.lower_expr(&ix.index)?;
             if !matches!(index.ty, LoweredTy::Scalar(_)) {
                 return Err(Decline::TypeNotModelled {
@@ -3557,10 +3597,10 @@ impl<'r> Lowerer<'r> {
         // written by a `PtrStore` (#242). The base's AST type selects the store — a tensor local isn't
         // in `ast_types`, so it reads as non-pointer.
         if let Expr::IndexAccess(ix) = lhs {
-            let is_ptr = self
-                .infer_ast_type(&ix.base)
-                .and_then(|t| pointer_elem_ty(&t, self.registry))
-                .is_some();
+            let is_ptr = match self.infer_ast_type(&ix.base) {
+                Some(t) => self.pointer_elem_synth(&t).is_some(),
+                None => false,
+            };
             let place = self.lower_place(lhs)?;
             // The stored scalar already matches the place's element type (the checker types a literal
             // RHS to the element and rejects a genuine mismatch, #240).

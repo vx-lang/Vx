@@ -1085,6 +1085,40 @@ fn flat_matches_ast_const_generic_struct_instance() {
 }
 
 #[test]
+fn flat_matches_ast_borrow_of_a_call_result() {
+    // A closure returned by a closure is called directly: the returned environment is a
+    // by-value aggregate with no slot, and the call borrows it, so it is given one.
+    assert_parity(
+        "fn main() -> i32 { let get = || || 42; let a = (get())(); return a; }",
+        42,
+    );
+}
+
+#[test]
+fn flat_matches_ast_vec_of_options() {
+    // `Vec<Option<i32>>`: the storage pointer's element is a synthesized enum instance, on the
+    // write side (`push` takes the construction by value, loaded off its slot) and the read side
+    // (`get` returns it whole, and a `match` reads the payload). The corpus programs
+    // `vec_option_elem.vx` and `option_unwrap.vx` print the same on both paths through the CLI;
+    // this is the shape the harness can compile without the stdlib. 7 + 30.
+    assert_parity(
+        &format!(
+            "{VEC_MINI}\nenum Option<T> {{ Some(T), None }}\n\
+             fn main() -> i32 {{ let mut v: Vec<Option<i32>> = Vec<Option<i32>>::new(); \
+               v.push(Option<i32>::Some(7)); v.push(Option<i32>::None); v.push(Option<i32>::Some(30)); \
+               let mut r = 0; let a = v.get(0); \
+               match a {{ Option<i32>::Some(x) => {{ r = r + x; }} Option<i32>::None => {{ r = -100; }} }} \
+               let b = v.get(1); \
+               match b {{ Option<i32>::Some(x) => {{ r = r + x; }} Option<i32>::None => {{ r = r + 0; }} }} \
+               let c = v.get(2); \
+               match c {{ Option<i32>::Some(x) => {{ r = r + x; }} Option<i32>::None => {{ r = -100; }} }} \
+               return r; }}"
+        ),
+        37,
+    );
+}
+
+#[test]
 fn flat_matches_ast_tensor_store_element_coercion() {
     // A default-`f32` float literal stored into a non-`f32` tensor is coerced to the element type at
     // the store (`bf16` -> `arith.truncf`), matching the AST's `coerce_type` before its `memref.store`
