@@ -10,53 +10,33 @@
 // `elementwise_f64` used to be written `Tensor<f64>(10)`, a single bare extent, and that spelling
 // meant two different things at once: the checker and the flat path read it as a 10-element rank-1
 // tensor, while the AST emitter matched only the bracketed form and dropped the extent, allocating
-// rank 0. The CHECK lines below pinned the AST side, so the disagreement had a green test over it.
+// rank 0. The CHECK lines below pin the flat path, which compiles this now: rank 2 as a
+// named linalg op into a fresh buffer, rank 1 on the vector path.
 // Writing the shape in the type leaves nothing to match on, and the function is now the
 // elementwise multiply it always read as (Vx#429).
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK-LABEL: func.func @tensor_add()
-// CHECK: %[[V0:.*]] = arith.constant 4 : i32
-// CHECK: %[[V1:.*]] = arith.index_cast %[[V0]] : i32 to index
-// CHECK: %[[V2:.*]] = arith.constant 4 : i32
-// CHECK: arith.index_cast %[[V2]] : i32 to index
-// CHECK: %[[V3:.*]] = memref.alloc(%[[V1]], %{{.*}} : memref<?x?xf32>
-// CHECK: %[[V4:.*]] = arith.constant 4 : i32
-// CHECK: %[[V5:.*]] = arith.index_cast %[[V4]] : i32 to index
-// CHECK: %[[V6:.*]] = arith.constant 4 : i32
-// CHECK: arith.index_cast %[[V6]] : i32 to index
-// CHECK: memref.alloc(%[[V5]], %{{.*}} : memref<?x?xf32>
-// CHECK: %[[V7:.*]] = arith.constant 0 : index
-// CHECK: %[[V8:.*]] = memref.dim %[[V3]], %[[V7]] : memref<?x?xf32>
-// CHECK: %[[V9:.*]] = arith.constant 1 : index
-// CHECK: memref.dim %[[V3]], %[[V9]] : memref<?x?xf32>
-// CHECK: memref.alloc(%[[V8]], %{{.*}} : memref<?x?xf32>
-// CHECK-LABEL: func.func @matmul_basic()
-// CHECK: %[[V0:.*]] = arith.constant 2 : i32
-// CHECK: %[[V1:.*]] = arith.index_cast %[[V0]] : i32 to index
-// CHECK: %[[V2:.*]] = arith.constant 3 : i32
-// CHECK: arith.index_cast %[[V2]] : i32 to index
-// CHECK: %[[V3:.*]] = memref.alloc(%[[V1]], %{{.*}} : memref<?x?xf32>
-// CHECK: %[[V4:.*]] = arith.constant 3 : i32
-// CHECK: %[[V5:.*]] = arith.index_cast %[[V4]] : i32 to index
-// CHECK: %[[V6:.*]] = arith.constant 4 : i32
-// CHECK: arith.index_cast %[[V6]] : i32 to index
-// CHECK: %[[V7:.*]] = memref.alloc(%[[V5]], %{{.*}} : memref<?x?xf32>
-// CHECK: %[[V8:.*]] = arith.constant 0 : index
-// CHECK: %[[V9:.*]] = memref.dim %[[V3]], %[[V8]] : memref<?x?xf32>
-// CHECK: %[[V10:.*]] = arith.constant 1 : index
-// CHECK: memref.dim %[[V7]], %[[V10]] : memref<?x?xf32>
-// CHECK: memref.alloc(%[[V9]], %{{.*}} : memref<?x?xf32>
-// CHECK: arith.constant 0.000000e+00 : f32
-// CHECK-LABEL: func.func @elementwise_f64()
-// CHECK: %[[E0:.*]] = memref.alloc(%{{.*}}) : memref<?xf64>
-// CHECK: %[[E1:.*]] = memref.alloc(%{{.*}}) : memref<?xf64>
-// CHECK: linalg.mul ins(%[[E0]], %[[E1]] : memref<?xf64>, memref<?xf64>)
 // CHECK-LABEL: func.func @main() -> i32
 // CHECK: call @tensor_add() : () -> ()
 // CHECK: call @matmul_basic() : () -> ()
 // CHECK: call @elementwise_f64() : () -> ()
-import std::tensor;
+// CHECK-LABEL: func.func @tensor_add()
+// CHECK: %[[A:.*]] = memref.alloc() : memref<4x4xf32>
+// CHECK: %[[B:.*]] = memref.alloc() : memref<4x4xf32>
+// CHECK: %[[C:.*]] = memref.alloc() : memref<4x4xf32>
+// CHECK: linalg.add ins(%[[A]], %[[B]] : memref<4x4xf32>, memref<4x4xf32>) outs(%[[C]] : memref<4x4xf32>)
+// CHECK-LABEL: func.func @matmul_basic()
+// CHECK: %[[X:.*]] = memref.alloc() : memref<2x3xf32>
+// CHECK: %[[Y:.*]] = memref.alloc() : memref<3x4xf32>
+// CHECK: %[[Z:.*]] = memref.alloc() : memref<2x4xf32>
+// CHECK: linalg.fill ins(%{{.*}} : f32) outs(%[[Z]] : memref<2x4xf32>)
+// CHECK: linalg.matmul ins(%[[X]], %[[Y]] : memref<2x3xf32>, memref<3x4xf32>) outs(%[[Z]] : memref<2x4xf32>)
+// CHECK-LABEL: func.func @elementwise_f64()
+// CHECK: %[[E0:.*]] = memref.alloc() : memref<10xf64>
+// CHECK: %[[E1:.*]] = memref.alloc() : memref<10xf64>
+// CHECK: vector.load %[[E0]]
+// CHECK: vector.load %[[E1]]
+// CHECK: arith.mulf %{{.*}}, %{{.*}} : vector<10xf64>
 
 fn tensor_add() -> void {
   let a = Tensor<f32, [4, 4]>::uninit();

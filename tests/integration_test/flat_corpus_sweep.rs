@@ -37,7 +37,6 @@ const KNOWN_DECLINES: &[&str] = &[
     "frontend/pass/coverage_advanced_types_pass.vx",
     "frontend/pass/enum_match.vx",
     "frontend/pass/env_args.vx",
-    "frontend/pass/gen_tensor_math_pass.vx",
     "frontend/pass/generics.vx",
     "frontend/pass/if_comptime_and_topology.vx",
     "frontend/pass/indirect_call.vx",
@@ -45,7 +44,6 @@ const KNOWN_DECLINES: &[&str] = &[
     "frontend/pass/macro_vec_nested.vx",
     "frontend/pass/memory_algebra_implicit.vx",
     "frontend/pass/tensor_methods.vx",
-    "frontend/pass/tensor_operations.vx",
     "frontend/pass/trait_topologies.vx",
     "frontend/pass/transfer_cost_advanced_dijkstra.vx",
     "frontend/pass/vector_algorithms.vx",
@@ -63,7 +61,6 @@ const KNOWN_DECLINES: &[&str] = &[
     "middle_end/pass/reshape_transpose.vx",
     "middle_end/pass/topology_polymorphism.vx",
     "optimizations/pass/kernel_kind_matmul.vx",
-    "optimizations/pass/vectorize.vx",
     "warnings/pass/lowering_declined_for_dynamic_tile.vx",
     "warnings/pass/w1024_implicit_transfer.vx",
 ];

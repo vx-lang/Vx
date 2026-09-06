@@ -1020,6 +1020,28 @@ fn flat_matches_ast_spawn_regions_with_a_value_a_tail_and_nesting() {
 }
 
 #[test]
+fn flat_matches_ast_elementwise_ops_beyond_rank_one() {
+    // Rank 2, static: `a + b` and `c * e` as named linalg ops into fresh buffers, read back
+    // by element. Tensors are linear, so each operand is used once: 1 + 2 = 3, 3 * 3 = 9,
+    // and two elements of the product: 18.
+    assert_parity(
+        "fn main() -> i32 { let a = Tensor<f32, [4, 4]>::fill(1.0); \
+           let b = Tensor<f32, [4, 4]>::fill(2.0); let c = a + b; \
+           let e = Tensor<f32, [4, 4]>::fill(3.0); let d = c * e; \
+           return (d[1][1] + d[0][3]) as i32; }",
+        18,
+    );
+    // Rank 2 with run-time extents: the result buffer takes its sizes from the first operand.
+    assert_parity(
+        "fn build(n : i32, m : i32) -> Tensor<f32, [?, ?]> { \
+           let mut a = Tensor<f32, [?, ?]>::new([n, m]); a[0][1] = 2.0; return a; }\n\
+         fn main() -> i32 { let a = build(2, 3); let mut b = build(2, 3); b[0][1] = 5.0; \
+           let c = b - a; return c[0][1] as i32; }",
+        3,
+    );
+}
+
+#[test]
 fn flat_matches_ast_tensor_store_element_coercion() {
     // A default-`f32` float literal stored into a non-`f32` tensor is coerced to the element type at
     // the store (`bf16` -> `arith.truncf`), matching the AST's `coerce_type` before its `memref.store`

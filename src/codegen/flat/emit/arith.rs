@@ -70,13 +70,12 @@ impl FnEmit<'_> {
                 });
             }
             let et = mlir_scalar(elem).ok_or(crate::emitter_gap!())?;
-            // Rank 1 only. The operands are read with a single-index `vector.load`, which a
-            // rank-2 memref rejects ("requires 2 indices"), and flattening the shape to one
-            // vector would address it as if it were contiguous rank-1 storage.
+            // Rank 1 takes the vector path below: the operands are read with a single-index
+            // `vector.load`, which a rank-2 memref rejects ("requires 2 indices"). Anything
+            // deeper is a named linalg op over the operand memrefs.
             if shape.len() != 1 {
-                return Err(Decline::TypeNotModelled {
-                    what: "an elementwise op on a tensor that is not rank 1",
-                });
+                let (elem, shape) = (elem.clone(), shape.clone());
+                return self.elementwise_linalg(idx, ins, &elem, &shape);
             }
             let d: i64 = shape[0].parse::<i64>().map_err(|_| crate::emitter_gap!())?;
             let vecty = format!("vector<{d}x{et}>");
@@ -114,6 +113,58 @@ impl FnEmit<'_> {
             self.names[idx] = n;
             self.vec_of[idx] = Some(vecty);
         }
+        Ok(())
+    }
+
+    /// Elementwise arithmetic over a tensor of rank 2 or deeper: `linalg.{add,sub,mul,div}`
+    /// over the two operand memrefs into a fresh buffer of the result shape, which is what the
+    /// oracle emits and what `convert-linalg-to-loops` (or the vectorize pipeline's affine
+    /// route) already lowers. A `?` in the result shape is read off the first operand.
+    fn elementwise_linalg(
+        &mut self,
+        idx: usize,
+        ins: &HirInstruction,
+        elem: &ElementType,
+        shape: &[String],
+    ) -> Lowered<()> {
+        let memty = tensor_memref_ty(elem, shape).ok_or(crate::emitter_gap!())?;
+        let (ia, ib) = (ins.operand1.0 as usize, ins.operand2.0 as usize);
+        let a = self.names.get(ia).ok_or(crate::emitter_gap!())?.clone();
+        let b = self.names.get(ib).ok_or(crate::emitter_gap!())?.clone();
+        let ma = self
+            .mem_of
+            .get(ia)
+            .cloned()
+            .flatten()
+            .ok_or(crate::emitter_gap!())?;
+        let mb = self
+            .mem_of
+            .get(ib)
+            .cloned()
+            .flatten()
+            .ok_or(crate::emitter_gap!())?;
+        let op = match ins.opcode {
+            Opcode::Add => "linalg.add",
+            Opcode::Sub => "linalg.sub",
+            Opcode::Mul => "linalg.mul",
+            Opcode::Div => "linalg.div",
+            _ => return Err(crate::emitter_gap!()),
+        };
+        let mut sizes: Vec<String> = Vec::new();
+        for (k, d) in shape.iter().enumerate() {
+            if d == DYN_DIM {
+                let c = format!("%ewc{idx}_{k}");
+                let s = format!("%ews{idx}_{k}");
+                self.body += &format!("  {c} = arith.constant {k} : index\n");
+                self.body += &format!("  {s} = memref.dim {a}, {c} : {ma}\n");
+                sizes.push(s);
+            }
+        }
+        let n = format!("%v{idx}");
+        self.body += &format!("  {n} = memref.alloc({}) : {memty}\n", sizes.join(", "));
+        self.body += &format!("  {op} ins({a}, {b} : {ma}, {mb}) outs({n} : {memty})\n");
+        self.names[idx] = n;
+        self.mem_of[idx] = Some(memty);
         Ok(())
     }
 
