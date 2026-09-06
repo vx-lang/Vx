@@ -846,6 +846,50 @@ fn flat_matches_ast_println_string() {
     assert_output_parity("fn main() -> i32 { let v = 7; println!(\"count: \", v); return 0; }");
 }
 
+/// The text a printing program actually writes, through both lowerings, asserted to be equal to
+/// each other AND to what it should be.
+///
+/// Parity alone cannot see a formatting bug: the substitution is a desugaring both paths share, so
+/// a broken one leaves them agreeing on the same wrong text. The expected string is what makes
+/// these tests able to fail.
+fn assert_prints(src: &str, expected: &str) {
+    let flat = run_output(&flat_llvm(src).expect("flat path lowers this printing program"));
+    let ast = run_output(&ast_llvm(src));
+    assert_eq!(flat, ast, "flat and AST disagree for `{src}`");
+    assert_eq!(flat.trim_end(), expected, "wrong text for `{src}`");
+}
+
+/// `println!` substitutes its `{}` placeholders.
+///
+/// The format string used to be printed verbatim with the arguments appended after it, so
+/// `println!("value={}", x)` wrote `value={}7`.
+#[test]
+fn a_format_placeholder_is_substituted() {
+    assert_prints(
+        "fn main() -> i32 { let v = 7; println!(\"value={}\", v); return 0; }",
+        "value=7",
+    );
+    assert_prints(
+        "fn main() -> i32 { let a = 1; let b = 2; println!(\"a={} b={}\", a, b); return 0; }",
+        "a=1 b=2",
+    );
+}
+
+/// A brace escape reaches the output as one brace, and a string with no placeholders is a label
+/// printed ahead of its arguments -- the spelling the corpus already uses, which the substitution
+/// had to keep working.
+#[test]
+fn braces_escape_and_a_label_still_prints_its_arguments() {
+    assert_prints(
+        "fn main() -> i32 { println!(\"{{literal}}\"); return 0; }",
+        "{literal}",
+    );
+    assert_prints(
+        "fn main() -> i32 { let v = 7; println!(\"count: \", v); return 0; }",
+        "count: 7",
+    );
+}
+
 #[test]
 fn flat_matches_ast_placed_tensor() {
     // A tensor whose type names a space runs the same on both paths. It used to be spelled

@@ -32,6 +32,100 @@ fn take_expr(expr: &mut expr::Expr) -> expr::Expr {
         )),
     )
 }
+/// Split a `print!`/`println!` format string at its `{}` placeholders and interleave the
+/// arguments, so `println!("a={} b={}", x, y)` becomes the four pieces `"a="`, `x`, `" b="`, `y`.
+///
+/// Both lowering paths print a macro's arguments in sequence, so doing this here is the whole
+/// implementation of formatting -- and it fixes both paths at once. Without it the format string
+/// was printed verbatim, placeholders included, and the arguments were appended after it:
+/// `println!("value={}", x)` wrote `value={}1.5`.
+///
+/// `{{` and `}}` are the escapes for a literal brace, as in Rust. A format spec (`{:.3}`, `{name}`)
+/// is refused rather than silently printed, so the gap is visible where it is written.
+///
+/// A leading string with no `{}` at all is left alone: it is a label, and `println!("count: ", v)`
+/// -- print the arguments in sequence -- is how the corpus already spells that.
+fn interleave_format_args(
+    exprs: Vec<expr::Expr>,
+    macro_name: &str,
+) -> Result<Vec<expr::Expr>, String> {
+    // Only a leading string literal is a format string. `print!(x)` prints a value and has none.
+    let Some(expr::Expr::StringLiteral(fmt)) = exprs.first() else {
+        return Ok(exprs);
+    };
+    let (text, fmt_span) = (fmt.value.as_ref().to_string(), fmt.span);
+    let mut pieces: Vec<expr::Expr> = Vec::new();
+    let mut lit = String::new();
+    let mut args = exprs.iter().skip(1);
+    let mut used = 0usize;
+    let mut chars = text.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        match c {
+            '{' if chars.peek() == Some(&'{') => {
+                chars.next();
+                lit.push('{');
+            }
+            '}' if chars.peek() == Some(&'}') => {
+                chars.next();
+                lit.push('}');
+            }
+            '{' => {
+                if chars.peek() != Some(&'}') {
+                    return Err(format!(
+                        "{macro_name}: only `{{}}` is supported in a format string; write the value as its own argument"
+                    ));
+                }
+                chars.next();
+                let Some(arg) = args.next() else {
+                    return Err(format!(
+                        "{macro_name}: the format string has more `{{}}` than arguments"
+                    ));
+                };
+                used += 1;
+                if !lit.is_empty() {
+                    pieces.push(expr::Expr::StringLiteral(expr::StringLiteralExpr::new(
+                        std::mem::take(&mut lit),
+                        fmt_span,
+                    )));
+                }
+                pieces.push(arg.clone());
+            }
+            '}' => return Err(format!("{macro_name}: unmatched `}}` in the format string")),
+            _ => lit.push(c),
+        }
+    }
+    if !lit.is_empty() {
+        pieces.push(expr::Expr::StringLiteral(expr::StringLiteralExpr::new(
+            lit, fmt_span,
+        )));
+    }
+    let supplied = exprs.len() - 1;
+    // A leading string with no placeholders is a label, not a format string: Vx prints a macro's
+    // arguments in sequence, and `println!("count: ", v)` is the established spelling for that.
+    // Only a string that uses `{}` is held to matching its arguments.
+    if used == 0 {
+        // No placeholders: a label, printed with the arguments after it. Rebuild only when the
+        // escape pass actually changed the text, so `{{` still reaches the output as `{`.
+        let unescaped = match pieces.first() {
+            Some(expr::Expr::StringLiteral(p)) => p.value.as_ref() != text,
+            _ => false,
+        };
+        if unescaped {
+            let mut out = pieces;
+            out.extend(exprs.iter().skip(1).cloned());
+            return Ok(out);
+        }
+        return Ok(exprs);
+    }
+    if used != supplied {
+        return Err(format!(
+            "{macro_name}: the format string has {used} `{{}}` but {supplied} argument(s) were given"
+        ));
+    }
+    Ok(pieces)
+}
+
 impl<'a> MacroExpander<'a> {
     pub fn new(macros: &'a HashMap<crate::symbol::Symbol, Vec<MacroRule>>) -> Self {
         Self { macros }
@@ -546,7 +640,7 @@ impl<'a> MacroExpander<'a> {
         });
         let exprs = self.parse_expanded_exprs(&tokens)?;
         Ok(expr::Expr::Print(expr::PrintExpr {
-            args: exprs,
+            args: interleave_format_args(exprs, "print!")?,
             span: Span::default(),
         }))
     }
@@ -568,7 +662,7 @@ impl<'a> MacroExpander<'a> {
         });
         let exprs = self.parse_expanded_exprs(&tokens)?;
         Ok(expr::Expr::Println(expr::PrintlnExpr {
-            args: exprs,
+            args: interleave_format_args(exprs, "println!")?,
             span: Span::default(),
         }))
     }
