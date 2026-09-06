@@ -967,6 +967,24 @@ fn flat_lowers_rows_of_mixed_and_deeper_rank_dynamic_tensors() {
 }
 
 #[test]
+fn flat_lowers_a_row_of_a_row() {
+    // Three indices deep, static and dynamic: the second index takes a row of a strided row,
+    // whose own offset comes back through `memref.extract_strided_metadata`. `t[0][2][3]` is
+    // read back too: a lost base offset lands `t[1][2][3]` on it.
+    assert_flat_exit(
+        "fn main() -> i32 { let mut t = Tensor<f32, [2, 3, 4]>::new(); t[1][2][3] = 5.0; \
+           t[0][2][3] = 7.0; return (t[1][2][3] * 10.0 + t[0][2][3]) as i32; }",
+        57,
+    );
+    assert_flat_exit(
+        "fn build(n : i32) -> Tensor<f32, [?, ?, ?]> { let m = Tensor<f32>([n, 3, 4]); return m; }\n\
+         fn main() -> i32 { let mut m = build(2); m[1][2][3] = 5.0; m[0][2][3] = 7.0; \
+           return (m[1][2][3] * 10.0 + m[0][2][3]) as i32; }",
+        57,
+    );
+}
+
+#[test]
 fn flat_matches_ast_tensor_store_element_coercion() {
     // A default-`f32` float literal stored into a non-`f32` tensor is coerced to the element type at
     // the store (`bf16` -> `arith.truncf`), matching the AST's `coerce_type` before its `memref.store`

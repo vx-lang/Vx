@@ -261,8 +261,11 @@ impl FnEmit<'_> {
         } else {
             // Row sub-view: reinterpret the contiguous base as the row at flat offset
             // `index * product(row dims)`, with row-major strides over the remaining dims.
+            // A row of a row: the base is already a strided view, so its own offset, sizes and
+            // strides come back through `memref.extract_strided_metadata`, and the next row is
+            // that offset plus the index times the leading stride.
             if base_memty.contains("strided") {
-                return Err(crate::emitter_gap!()); // a sub-view of an already-strided row is deferred
+                return self.strided_row(idx, &base, &base_memty, &ic);
             }
             let (elem, shape) = self
                 .ctx
@@ -378,6 +381,71 @@ impl FnEmit<'_> {
             "  {n} = memref.reinterpret_cast {base} to offset: [{off}], sizes: [{}], strides: [{}] : {base_memty} to {result_ty}\n",
             sizes.join(", "),
             strides.join(", ")
+        );
+        self.names[idx] = n;
+        self.mem_of[idx] = Some(result_ty);
+        Ok(())
+    }
+
+    /// Index a strided row along its outermost dimension. The base type spells its sizes and
+    /// strides (`memref<AxBx..xet, strided<[s0, s1, ..], offset: ?>>`), so the result's are
+    /// those with the first dropped, a literal staying a literal and a `?` taking the value
+    /// `extract_strided_metadata` hands back; the offset is the base's plus `index * s0`.
+    fn strided_row(&mut self, idx: usize, base: &str, base_memty: &str, ic: &str) -> Lowered<()> {
+        let (dims_x, et) = memref_lead_dims_and_elem(base_memty).ok_or(crate::emitter_gap!())?;
+        let dims: Vec<&str> = dims_x.split('x').filter(|d| !d.is_empty()).collect();
+        let strides_txt = base_memty
+            .split("strided<[")
+            .nth(1)
+            .and_then(|s| s.split(']').next())
+            .ok_or(crate::emitter_gap!())?;
+        let strides: Vec<&str> = strides_txt.split(',').map(|s| s.trim()).collect();
+        let rank = dims.len();
+        if rank < 2 || strides.len() != rank {
+            return Err(crate::emitter_gap!());
+        }
+        let space_sfx = if base_memty.ends_with(", 3>") {
+            ", 3"
+        } else {
+            ""
+        };
+        let buf = format!("%srb{idx}");
+        let off = format!("%sro{idx}");
+        let sizes: Vec<String> = (0..rank).map(|k| format!("%srs{idx}_{k}")).collect();
+        let strs: Vec<String> = (0..rank).map(|k| format!("%srt{idx}_{k}")).collect();
+        let results = [vec![buf.clone(), off.clone()], sizes.clone(), strs.clone()]
+            .concat()
+            .join(", ");
+        let index_tys = vec!["index"; 1 + 2 * rank].join(", ");
+        self.body += &format!(
+            "  {results} = memref.extract_strided_metadata {base} : {base_memty} -> memref<{et}{space_sfx}>, {index_tys}\n"
+        );
+        let step = format!("%srm{idx}");
+        let new_off = format!("%srn{idx}");
+        self.body += &format!("  {step} = arith.muli {ic}, {} : index\n", strs[0]);
+        self.body += &format!("  {new_off} = arith.addi {off}, {step} : index\n");
+        let pick = |txt: &str, ssa: &String| {
+            if txt == "?" {
+                ssa.clone()
+            } else {
+                txt.to_string()
+            }
+        };
+        let size_ops: Vec<String> = (1..rank).map(|k| pick(dims[k], &sizes[k])).collect();
+        let stride_ops: Vec<String> = (1..rank).map(|k| pick(strides[k], &strs[k])).collect();
+        let result_ty = format!(
+            "memref<{}{et}, strided<[{}], offset: ?>{space_sfx}>",
+            dims[1..]
+                .iter()
+                .map(|d| format!("{d}x"))
+                .collect::<String>(),
+            strides[1..].join(", ")
+        );
+        let n = format!("%v{idx}");
+        self.body += &format!(
+            "  {n} = memref.reinterpret_cast {buf} to offset: [{new_off}], sizes: [{}], strides: [{}] : memref<{et}{space_sfx}> to {result_ty}\n",
+            size_ops.join(", "),
+            stride_ops.join(", ")
         );
         self.names[idx] = n;
         self.mem_of[idx] = Some(result_ty);
