@@ -910,6 +910,7 @@ pub fn build_frozen_registry_with(
                             ret_prov: crate::hir::provenance::encode_return_provenance(
                                 &crate::hir::provenance::compute_return_provenance(f),
                             ),
+                            is_unsafe: f.is_unsafe,
                         },
                     );
                 }
@@ -949,6 +950,7 @@ pub fn build_frozen_registry_with(
                             ret_prov: crate::hir::provenance::encode_return_provenance(
                                 &crate::hir::provenance::ReturnProvenance::AnyParam,
                             ),
+                            is_unsafe: !ext.is_safe,
                         },
                     );
                 }
@@ -996,6 +998,7 @@ pub fn build_frozen_registry_with(
                                 ret_prov: crate::hir::provenance::encode_return_provenance(
                                     &crate::hir::provenance::compute_return_provenance(m),
                                 ),
+                                is_unsafe: m.is_unsafe,
                             },
                         );
                     }

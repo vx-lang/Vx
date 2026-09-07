@@ -93,7 +93,7 @@ impl<'a> VxMetadata<'a> {
 const VXLIB_MAGIC: &[u8; 4] = b"VXLB";
 /// Format tag folded into an FNV-1a stamp (`src/hash.rs`) written after the magic. A codec change
 /// bumps this string, so a stale artifact is *detected* (version mismatch on load) rather than misread.
-const VXLIB_FORMAT_TAG: &str = "vxlib-interface-v9";
+const VXLIB_FORMAT_TAG: &str = "vxlib-interface-v10";
 
 /// Append-only little-endian byte writer for the interface codec.
 struct Writer {
@@ -763,6 +763,7 @@ fn encode_sig_record(sig: &FnSig) -> Result<Vec<u8>, String> {
     }
     write_type(&mut rec, &sig.ret_ty)?;
     rec.u8(sig.ret_prov);
+    rec.u8(u8::from(sig.is_unsafe));
     Ok(rec.buf)
 }
 
@@ -770,7 +771,7 @@ fn encode_sig_record(sig: &FnSig) -> Result<Vec<u8>, String> {
 /// caller reads the name/gid/receiver that precede it.
 fn read_sig_record(
     r: &mut Reader,
-) -> Result<(Vec<crate::syntax::Type>, crate::syntax::Type, u8), String> {
+) -> Result<(Vec<crate::syntax::Type>, crate::syntax::Type, u8, bool), String> {
     let n_params = r.u64()? as usize;
     let mut params = Vec::new();
     for _ in 0..n_params {
@@ -778,7 +779,8 @@ fn read_sig_record(
     }
     let ret_ty = read_type(r)?;
     let ret_prov = r.u8()?;
-    Ok((params, ret_ty, ret_prov))
+    let is_unsafe = r.u8()? != 0;
+    Ok((params, ret_ty, ret_prov, is_unsafe))
 }
 
 /// One table's encode/skip accounting for a `serialize_registry_interface` run (#292).
@@ -1056,7 +1058,7 @@ pub fn deserialize_registry_interface(bytes: &[u8]) -> Result<ImmutableGlobalReg
     for _ in 0..n_fns {
         let name = r.sym()?;
         let gid = r.typeid()?;
-        let (params, ret_ty, ret_prov) = read_sig_record(&mut r)?;
+        let (params, ret_ty, ret_prov, is_unsafe) = read_sig_record(&mut r)?;
         fn_sigs.insert(
             name,
             FnSig {
@@ -1064,6 +1066,7 @@ pub fn deserialize_registry_interface(bytes: &[u8]) -> Result<ImmutableGlobalReg
                 params,
                 ret_ty,
                 ret_prov,
+                is_unsafe,
             },
         );
     }
@@ -1074,7 +1077,7 @@ pub fn deserialize_registry_interface(bytes: &[u8]) -> Result<ImmutableGlobalReg
         let recv = r.typeid()?;
         let name = r.sym()?;
         let gid = r.typeid()?;
-        let (params, ret_ty, ret_prov) = read_sig_record(&mut r)?;
+        let (params, ret_ty, ret_prov, is_unsafe) = read_sig_record(&mut r)?;
         methods.insert(
             (recv, name),
             FnSig {
@@ -1082,6 +1085,7 @@ pub fn deserialize_registry_interface(bytes: &[u8]) -> Result<ImmutableGlobalReg
                 params,
                 ret_ty,
                 ret_prov,
+                is_unsafe,
             },
         );
     }
@@ -1216,6 +1220,7 @@ mod tests {
              fn scale() -> f32 { return 2.0f32; }\n\
              fn zeros() -> Tensor<f32, [?, ?]> { return zeros(); }\n\
              fn pick(a: &Point, b: &Point) -> &i32 { return &b.x; }\n\
+             unsafe fn peek(p: *mut i32) -> i32 { unsafe { return *p; } }\n\
              impl Point { fn sum(self: Point) -> i32 { return self.x + self.y; } }\n\
              trait Sq { fn sq(self: Self) -> f32; }\n\
              impl Sq for f32 { fn sq(self: f32) -> f32 { return self * self; } }\n",
@@ -1236,7 +1241,21 @@ mod tests {
             assert_eq!(got.ret_ty, sig.ret_ty, "fn return type parity for {name}");
             assert_eq!(got.params, sig.params, "fn param types parity for {name}");
             assert_eq!(got.ret_prov, sig.ret_prov, "fn ret_prov parity for {name}");
+            assert_eq!(
+                got.is_unsafe, sig.is_unsafe,
+                "fn unsafe-ness parity for {name}"
+            );
         }
+        // The unsafe flag carries a real value across the boundary, so an importing module can
+        // refuse a call from safe code without seeing the body.
+        assert!(
+            round.resolve_fn(&Symbol::from("peek")).unwrap().is_unsafe,
+            "`unsafe fn peek` comes back unsafe"
+        );
+        assert!(
+            !round.resolve_fn(&Symbol::from("scale")).unwrap().is_unsafe,
+            "a safe fn comes back safe"
+        );
         // The provenance code carries a real value across the boundary: `pick(a, b) -> &b.x` derives
         // from parameter slot 1, encoded as `2` (#265 step 7).
         assert_eq!(
@@ -1409,6 +1428,7 @@ mod tests {
                 params: Vec::new(),
                 ret_ty: Type::Scalar(ElementType::I32),
                 ret_prov: 0,
+                is_unsafe: false,
             },
         );
         // A tensor return whose dimension is a name belongs to a template, and `write_type`
@@ -1428,6 +1448,7 @@ mod tests {
                     None,
                 ),
                 ret_prov: 0,
+                is_unsafe: false,
             },
         );
 

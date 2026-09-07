@@ -1,0 +1,30 @@
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+//
+// `unsafe fn` on a user function: a call needs an unsafe context, and the body is not one, so
+// each unsafe operation inside marks itself. It lowers like any other function -- `unsafe` is a
+// rule the checker enforces, not something codegen sees.
+
+unsafe fn reads(ptr : *mut i32) -> i32 {
+  let mut v = 0;
+  unsafe { v = *ptr; }
+  return v;
+}
+
+unsafe fn forwards(ptr : *mut i32) -> i32 {
+  let mut v = 0;
+  // The call marks itself even here: an `unsafe fn` body is not an unsafe context.
+  unsafe { v = reads(ptr); }
+  return v;
+}
+
+fn main() -> i32 {
+  unsafe { let p = 0 as *mut i32; forwards(p); }
+  return 0;
+}
+
+// The two paths emit the functions in different orders, so the checks are order-neutral.
+// CHECK-DAG: func.func @reads
+// CHECK-DAG: func.func @forwards
+// CHECK-DAG: func.func @main() -> i32
+// CHECK-DAG: call @reads
+// CHECK-DAG: call @forwards

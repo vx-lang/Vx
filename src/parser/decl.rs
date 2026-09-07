@@ -83,7 +83,14 @@ impl<'a> Parser<'a> {
         Ok(generics)
     }
 
+    /// Whether a function declaration starts here: `fn`, or `unsafe fn`.
+    pub(crate) fn at_fn_start(&self) -> bool {
+        self.check(&TokenType::Fn)
+            || (self.check(&TokenType::Unsafe) && matches!(self.peek_n(1).kind, TokenType::Fn))
+    }
+
     pub fn parse_function(&mut self) -> ParseResult<'a, Function> {
+        let is_unsafe = self.match_token(&TokenType::Unsafe);
         self.consume(&TokenType::Fn, "Expected 'fn'")?;
 
         let name = self.expect_identifier("Expected function name")?;
@@ -181,6 +188,7 @@ impl<'a> Parser<'a> {
         }
 
         Ok(Function {
+            is_unsafe,
             name: name.into(),
             generics,
             params,
@@ -846,6 +854,9 @@ impl<'a> Parser<'a> {
 
         let mut methods = Vec::new();
         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
+            if self.check(&TokenType::Unsafe) {
+                return Err(self.error("`unsafe fn` on a trait method is not supported yet"));
+            }
             self.consume(&TokenType::Fn, "Expected 'fn' in trait")?;
             let method_name = self.expect_identifier("Expected method name")?;
             self.consume(&TokenType::LeftParen, "Expected '('")?;
@@ -1085,7 +1096,7 @@ impl<'a> Parser<'a> {
                 let mut e = self.parse_enum_decl()?;
                 e.doc_comment = doc_comment;
                 enums.push(e);
-            } else if self.check(&TokenType::Fn) {
+            } else if self.at_fn_start() {
                 let mut f = self.parse_function()?;
                 f.doc_comment = doc_comment;
                 functions.push(f);
@@ -1200,7 +1211,7 @@ impl<'a> Parser<'a> {
                 }
                 self.advance();
             }
-            if !self.check(&TokenType::Fn) {
+            if !self.at_fn_start() {
                 return Err(self.error(&format!(
                     "Expected 'fn' inside 'impl Transfer' (a lowering is functions only), got {:?}",
                     self.peek().kind

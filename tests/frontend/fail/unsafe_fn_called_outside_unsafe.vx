@@ -1,0 +1,19 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// An `unsafe fn` states a contract its caller must discharge, so a call needs an unsafe
+// context. Calling one from a safe function is the error the declaration exists to produce.
+
+unsafe fn reads(ptr : *mut i32) -> i32 {
+  let mut v = 0;
+  unsafe { v = *ptr; }
+  return v;
+}
+
+fn calls(ptr : *mut i32) -> i32 {
+  // CHECK: E5001{{.*}}'reads'
+  return reads(ptr);
+}
+
+fn main() -> i32 {
+  return 0;
+}

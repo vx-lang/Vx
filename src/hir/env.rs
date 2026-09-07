@@ -192,7 +192,7 @@ impl<'a> GlobalAstEnv<'a> {
                         func.name.clone(),
                         (
                             func.return_type.clone(),
-                            false, /* func.is_unsafe */
+                            func.is_unsafe,
                             param_types,
                             func.topology.clone(),
                             func.requires.clone(),
@@ -983,6 +983,7 @@ impl<'a> TypeChecker<'a> {
             .collect();
 
         Function {
+            is_unsafe: false,
             name: mangled_name.into(),
             generics: Vec::new(),
             params: new_params,

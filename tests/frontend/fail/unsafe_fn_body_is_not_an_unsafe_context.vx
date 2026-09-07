@@ -1,0 +1,14 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// Rust 2024: the body of an `unsafe fn` is not itself an unsafe context. The declaration states
+// a contract on the caller; an unsafe operation inside the body still marks itself.
+
+unsafe fn reads(ptr : *mut i32) -> i32 {
+  // CHECK: Dereference of raw pointer outside of unsafe block
+  let v = *ptr;
+  return v;
+}
+
+fn main() -> i32 {
+  return 0;
+}

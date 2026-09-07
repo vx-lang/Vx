@@ -41,6 +41,10 @@ pub struct Function {
     /// variables or concrete topologies) that must have a transfer path in the cost
     /// graph. Discharged at each generic call once the variables are bound.
     pub where_transfers: Vec<(Symbol, Symbol)>,
+    /// `unsafe fn`: the function states a contract its caller must discharge, so a call needs an
+    /// unsafe context. The body is not itself one (Rust 2024): an unsafe operation inside still
+    /// needs its own `unsafe` block.
+    pub is_unsafe: bool,
     pub body: Vec<Statement>,
     pub doc_comment: Option<String>,
 }
@@ -56,6 +60,7 @@ impl Function {
             requires: self.requires.clone(),
             ensures: self.ensures.clone(),
             where_transfers: self.where_transfers.clone(),
+            is_unsafe: self.is_unsafe,
             body: if preserve_body || !self.generics.is_empty() {
                 self.body.clone()
             } else {

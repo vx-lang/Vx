@@ -1929,6 +1929,7 @@ fn program_links_a_function_body_from_a_vxlib_artifact() {
         .expect("double's body came from the .vxlib artifact")
         .clone();
     let synth = Function {
+        is_unsafe: false,
         name: body.name.clone(),
         generics: vec![],
         params: body

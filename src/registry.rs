@@ -51,6 +51,10 @@ pub struct FnSig {
     /// top. Read at a cross-module call site in place of the AST-only `return_provenances` side table
     /// (empty for imports). A conservative refinement by construction, so it is never unsound (#265).
     pub ret_prov: u8,
+    /// `unsafe fn`: a call needs an unsafe context. Carried here, not in the GID, because marking a
+    /// function unsafe states a contract rather than changing what the function is -- the same
+    /// reason `ret_prov` lives here.
+    pub is_unsafe: bool,
 }
 
 /// The generic field-type information the flat path needs to resolve a member access *through a
@@ -652,6 +656,7 @@ mod tests {
             params: Vec::new(),
             ret_ty: crate::syntax::Type::Scalar(crate::syntax::types::ElementType::I32),
             ret_prov: 0,
+            is_unsafe: false,
         }
     }
 

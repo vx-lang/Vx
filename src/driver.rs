@@ -1200,6 +1200,7 @@ impl CompilerDriver {
                 continue;
             };
             let synth = crate::syntax::Function {
+                is_unsafe: false,
                 name: body.name.clone(),
                 generics: vec![],
                 params: body
