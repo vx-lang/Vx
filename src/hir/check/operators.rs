@@ -15,7 +15,82 @@
 
 use super::super::*;
 
+/// `x.topology()`, with no arguments: the placement query.
+fn is_placement_query(e: &Expr) -> bool {
+    matches!(e, Expr::MethodCall(mc) if mc.method_name.as_ref() == "topology" && mc.args.is_empty())
+}
+
 impl<'a> TypeChecker<'a> {
+    /// The answer to `x.topology() == Some(Topology::T)` (or `!= None`) when one side is a
+    /// placement query on a placed or placeable receiver. The receiver's type decides it, so
+    /// the other side must name a topology or `None`, and the operator must be `==` or `!=`.
+    fn fold_placement_query(
+        &mut self,
+        lhs: &mut Expr,
+        rhs: &mut Expr,
+        op: &RelationalOp,
+        span: Span,
+    ) -> Option<bool> {
+        let (query, other) = if is_placement_query(lhs) {
+            (lhs, rhs)
+        } else if is_placement_query(rhs) {
+            (rhs, lhs)
+        } else {
+            return None;
+        };
+        let Expr::MethodCall(mc) = query else {
+            return None;
+        };
+        let placed = match self.check_expr_type_flag(&mut mc.base, false) {
+            Type::Pinned(_, top) => Some(top),
+            Type::Tensor(_, _, Some(p)) => Some(p.topology),
+            Type::Tensor(_, _, None) => None,
+            _ => return None, // a user method that happens to be called `topology`
+        };
+        let expected = match other {
+            Expr::Identifier(id) if id.name.as_ref() == "None" => Some(None),
+            Expr::FunctionCall(fc)
+                if (fc.name.as_ref() == "Some" || fc.name.as_ref() == "Option::Some")
+                    && fc.args.len() == 1 =>
+            {
+                match &fc.args[0] {
+                    Expr::Topology(t) => Some(Some(t.top.clone())),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        let Some(expected) = expected else {
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E3026,
+                "a placement query is decided at compile time: compare `.topology()` with \
+                 `Some(Topology::..)` or `None`"
+                    .to_string(),
+                Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
+            );
+            return Some(false);
+        };
+        let same = match (&placed, &expected) {
+            (None, None) => true,
+            (Some(a), Some(b)) => {
+                crate::arch::topology_dispatch_id(a) == crate::arch::topology_dispatch_id(b)
+            }
+            _ => false,
+        };
+        match op {
+            RelationalOp::Eq => Some(same),
+            RelationalOp::NotEq => Some(!same),
+            _ => {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E3026,
+                    "a placement is compared with `==` or `!=`".to_string(),
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
+                );
+                Some(false)
+            }
+        }
+    }
+
     pub(crate) fn check_ascast_expr(&mut self, expr: &mut AsCastExpr, consume: bool) -> Type {
         let source_ty = self.check_expr_type_flag(&mut expr.expr, consume);
         let target_ty = expr.target_ty.clone();
@@ -308,6 +383,18 @@ impl<'a> TypeChecker<'a> {
     }
 
     pub(crate) fn check_relationalop_expr(&mut self, expr: &mut Expr) -> Type {
+        // A placement query compares at check time: `x.topology()` is a fact of `x`'s type,
+        // and nothing at run time holds one. The comparison becomes its answer.
+        if let Expr::RelationalOp(RelationalOpExpr { lhs, op, rhs, span }) = expr {
+            let span = *span;
+            if let Some(answer) = self.fold_placement_query(lhs, rhs, op, span) {
+                *expr = Expr::Identifier(IdentifierExpr::new(
+                    crate::symbol::Symbol::from(if answer { "true" } else { "false" }),
+                    span,
+                ));
+                return Type::Scalar(ElementType::Bool);
+            }
+        }
         match expr {
             Expr::RelationalOp(RelationalOpExpr {
                 lhs,

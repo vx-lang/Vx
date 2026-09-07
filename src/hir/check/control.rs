@@ -17,6 +17,17 @@ use super::super::*;
 use std::collections::HashMap;
 
 impl<'a> TypeChecker<'a> {
+    /// The constant environment as one map, the innermost scope winning.
+    pub(crate) fn consteval_snapshot(&self) -> HashMap<crate::symbol::Symbol, Value> {
+        let mut env = HashMap::new();
+        for scope in &self.consteval.env {
+            for (k, v) in scope {
+                env.insert(k.clone(), v.clone());
+            }
+        }
+        env
+    }
+
     pub(crate) fn check_comptimeblock_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
         match expr {
             Expr::ComptimeBlock(ComptimeBlockExpr {
@@ -30,6 +41,14 @@ impl<'a> TypeChecker<'a> {
                     ret_ty = self.check_expr_type(r);
                 }
                 self.pop_scope();
+                // An assertion the placement fold answered `true` is discharged here: nothing
+                // at run time holds a placement, so nothing is left to check. (A false one
+                // was reported by the assert check.) Asserts on anything else stay, as the
+                // program wrote them.
+                stmts.retain(|s| {
+                    !matches!(s, Statement::Assert(a)
+                        if matches!(&*a.expr, Expr::Identifier(id) if id.name.as_ref() == "true"))
+                });
                 ret_ty
             }
 
@@ -50,12 +69,7 @@ impl<'a> TypeChecker<'a> {
         }
 
         if if_expr.is_comptime {
-            let mut tmp_env = std::collections::HashMap::new();
-            for env in &self.consteval.env {
-                for (k, v) in env {
-                    tmp_env.insert(k.clone(), v.clone());
-                }
-            }
+            let tmp_env = self.consteval_snapshot();
             if let Some(Value::Bool(b)) = self.eval_expr(&if_expr.cond, &tmp_env) {
                 if b {
                     if_expr.else_block = None;

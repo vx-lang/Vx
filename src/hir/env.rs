@@ -1023,6 +1023,20 @@ impl<'a> TypeChecker<'a> {
                 func.return_type
             ));
         }
+        // A closure value points into the frame that made it; returning one hands the caller
+        // a dead frame. Passing it down is fine. Refused until a closure can own its
+        // environment.
+        if let Type::Closure(..) = func.return_type {
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E3027,
+                format!(
+                    "function '{}' returns a closure, which is not supported: a closure lives \
+                     in the frame that created it, so pass it down instead",
+                    func.name
+                ),
+                None,
+            );
+        }
 
         let prev_constraints = self.consteval.constraints.clone();
         let prev_ret_ty = self.current_return_type.clone();

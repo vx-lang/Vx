@@ -252,6 +252,12 @@ pub enum DiagnosticCode {
     /// `extent(i)` with an index that is not a literal below the tensor's rank. Rank is
     /// static, so the index is checked here rather than read past the descriptor at run time.
     E3025,
+    /// A placement query (`.topology()`) the checker cannot decide. Placement is a fact of the
+    /// receiver's type, compared with `Some(Topology::..)` or `None`; it has no run-time value.
+    E3026,
+    /// A function whose return type is a closure. A closure value points into the frame that
+    /// made it, so it cannot outlive that frame yet.
+    E3027,
 
     // --- Borrow/Ownership Errors (E4xxx) ---
     /// Use of moved or consumed linear variable

@@ -111,6 +111,7 @@ Vx supports deterministic ahead-of-time evaluation via `comptime` blocks.
 - Execution within a `comptime` block happens during the Semantic Analysis compiler pass.
 - Operations inside `comptime` are guaranteed to have zero runtime overhead.
 - Used predominantly for layout calculation, array sizing, and topological assertion (`assert(...)`).
+- An `assert` over a placement query (`x.topology() == Some(Topology::T)`, see the type system document) is decided by the checker: a true one is removed, a false one fails the compile (E8002).
 
 **Operational Rule:**
 If $E[\\text{comptime} { B }]$ evaluates to $v$, the AST is strictly replaced by the literal or reduced expression $v$ before lowering to the intermediate representation (MLIR).

@@ -1864,6 +1864,19 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
 
+                // A placement query no comparison folded: nothing at run time holds a
+                // placement, so it has no value here.
+                if _method.as_ref() == "topology"
+                    && matches!(base_ty, Type::Pinned(..) | Type::Tensor(..))
+                {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E3026,
+                        "a placement query is decided at compile time: compare `.topology()` \
+                         with `Some(Topology::..)` or `None`"
+                            .to_string(),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(&method_span)),
+                    );
+                }
                 if let Some((ty, replace_with_obj)) =
                     self.resolve_intrinsic_method(&base_ty, _method, args)
                 {

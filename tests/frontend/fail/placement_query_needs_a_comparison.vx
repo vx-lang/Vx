@@ -1,0 +1,13 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// `x.topology()` is a fact of x's type, decided by the checker inside `== Some(Topology::..)`
+// or `!= None`. Bound to a name it would need a run-time value, and nothing holds one.
+
+fn main() -> i32 {
+  let g = spawn on(Topology::GPU) {
+    1
+  };
+  let where_is_it = g.topology();
+  // CHECK: E3026{{.*}}compare `.topology()` with `Some(Topology::..)` or `None`
+  return 0;
+}

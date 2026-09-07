@@ -1482,6 +1482,17 @@ fn flat_matches_ast_transfer_of_a_scalar() {
 }
 
 #[test]
+fn flat_matches_ast_placement_query_folded_to_its_answer() {
+    // `x.topology()` is a fact of `x`'s type and the checker decides the comparison: neither
+    // path ever sees the query, only the `true` it became.
+    assert_parity(
+        "fn main() -> i32 { let g = spawn on(Topology::GPU) { 1 }; \
+           if g.topology() == Some(Topology::GPU) { return 42; } return 7; }",
+        42,
+    );
+}
+
+#[test]
 fn flat_matches_ast_tensor_store_element_coercion() {
     // A default-`f32` float literal stored into a non-`f32` tensor is coerced to the element type at
     // the store (`bf16` -> `arith.truncf`), matching the AST's `coerce_type` before its `memref.store`

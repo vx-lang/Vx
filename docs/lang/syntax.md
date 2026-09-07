@@ -388,3 +388,17 @@ in place from a flat array literal:
 let mut o = Tensor<f32>([[0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0]]);
 o[0] = [1.0, 2.0, 3.0, 4.0];   // writes row 0
 ```
+
+## 12. Closures
+
+A closure literal `|params| expr` captures the locals it names by value, at the point it is written:
+
+```rust
+let x = 10;
+let add = |y: i32| x + y;   // captures x = 10
+let r = add(5);             // 15
+```
+
+A call through the closure's own name is a direct call. A closure can also be cast to its closure type (`add as |i32|->i32`, or `f as ||->i32` for one without parameters): a fat pointer pairing the closure's environment with its code, which a callee taking that type can be handed any closure of that signature.
+
+**Lifetime.** A closure value lives in the frame that created it. Passing it down, to a callee that returns before the frame does, is fine. Returning it, so that it outlives its frame, is an error (E3027) until closures can own their environment.

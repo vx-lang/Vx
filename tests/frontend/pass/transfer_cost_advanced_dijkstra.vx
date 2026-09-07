@@ -1,10 +1,23 @@
-// RUN: vxc %s --action emit-mlir
-// XFAIL: *
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 //
-// The IR assertion this file used to carry could not run: the program does not compile on
-// the default path (Vx#398), so there is no module to match against. The XFAIL above
-// reports the day that changes, and the assertions go back. The semantic check below is
-// what this file verifies today.
+// Each route is the chain of `vx.transfer` hops the memory algebra chose, by target id:
+// NPU_HBM 100, Local_SRAM 200, NIC_RAM 800, Remote_HBM 900, CPU_DRAM 0. The functions are
+// checked in the order the emitter writes them. The `comptime` placement assert in the
+// 3-D routing function is decided by the checker and leaves nothing behind.
+//
+// CHECK-LABEL: func.func @test_3d_parallelism_routing
+// CHECK: "vx.transfer"(%{{.*}}) <{target_topology = 100 : i32}>
+// CHECK-NOT: cf.assert
+// CHECK: "vx.transfer"(%{{.*}}) <{target_topology = 800 : i32}>
+// CHECK: "vx.transfer"(%{{.*}}) <{target_topology = 900 : i32}>
+// CHECK-LABEL: func.func @test_sram_to_cpu_multi_hop
+// CHECK: "vx.transfer"(%{{.*}}) <{target_topology = 100 : i32}>
+// CHECK: "vx.transfer"(%{{.*}}) <{target_topology = 200 : i32}>
+// CHECK: "vx.transfer"(%{{.*}}) <{target_topology = 100 : i32}>
+// CHECK: "vx.transfer"(%{{.*}}) <{target_topology = 0 : i32}>
+// CHECK-LABEL: func.func @test_cpu_to_sram_multi_hop
+// CHECK: "vx.transfer"(%{{.*}}) <{target_topology = 100 : i32}>
+// CHECK: "vx.transfer"(%{{.*}}) <{target_topology = 200 : i32}>
 
 // Verify that a complex multi-hop transfer across topologies completes successfully
 // and is expanded into the precise intermediate `vx.transfer` operations

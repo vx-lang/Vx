@@ -1,0 +1,15 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A `comptime` assert over a placement query is decided by the checker: this one is false,
+// so the compile fails rather than a run-time check ever running.
+
+fn main() -> i32 {
+  let g = spawn on(Topology::GPU) {
+    1
+  };
+  comptime {
+    assert(g.topology() == Some(Topology::CPU));
+  }
+  // CHECK: E8002{{.*}}Comptime assertion failed
+  return 0;
+}

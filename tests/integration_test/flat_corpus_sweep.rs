@@ -27,7 +27,6 @@ const KNOWN_DECLINES: &[&str] = &[
     "frontend/pass/control_flow_rigorous.vx",
     "frontend/pass/memory_algebra_implicit.vx",
     "frontend/pass/trait_topologies.vx",
-    "frontend/pass/transfer_cost_advanced_dijkstra.vx",
     "middle_end/pass/implicit_transfer.vx",
     // A parameter with run-time extents (Vx#409). It used to compile through the flat path
     // while the dims-less spelling let it read as rank-0: `topology.vx` got a `memref<f32>`
@@ -65,7 +64,6 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
 const KNOWN_BROKEN: &[&str] = &[
     "frontend/pass/control_flow_rigorous.vx", // multi-payload variant binding (Vx#233)
     "frontend/pass/memory_algebra_implicit.vx", // insertvalue of memref (Vx#356)
-    "frontend/pass/transfer_cost_advanced_dijkstra.vx", // `.topology()` has no lowering
     "middle_end/pass/implicit_transfer.vx",   // insertvalue of memref (Vx#356)
     "warnings/pass/w1024_implicit_transfer.vx", // insertvalue of memref (Vx#356)
 ];

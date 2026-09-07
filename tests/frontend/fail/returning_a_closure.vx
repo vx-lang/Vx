@@ -1,0 +1,16 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A closure value points into the frame that made it. Passing one down is fine, the frame is
+// alive; returning one, so that it outlives its frame, is refused until a closure can own its
+// environment.
+
+fn make() -> ||->i32 {
+  let n = 42;
+  let c = || n;
+  return c as ||->i32;
+}
+// CHECK: E3027{{.*}}function 'make' returns a closure
+
+fn main() -> i32 {
+  return 0;
+}

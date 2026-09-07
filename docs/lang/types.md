@@ -113,6 +113,7 @@ let strict_task: Pinned<Tensor, Topology::NPU[0]> = matmul(A, B);
 
 - **Semantics:** The computation *must* execute on the specified topology.
 - **Routing:** If the target topology is unavailable or saturated, the program cannot proceed unless explicitly handled.
+- **Querying placement:** `x.topology()` is `Some(Topology::T)` for a placed value and `None` for an unplaced one. Placement is a fact of the type, so the query is decided at compile time: it appears only as `x.topology() == Some(Topology::T)` or `!= None`, a `comptime` `assert` over it is discharged by the checker (a false one fails the compile, E8002), and any other use is an error (E3026). Nothing at run time holds a placement.
 
 ### 3.3 Pinned Cross-Topology Access Rules
 
@@ -312,7 +313,7 @@ Vx provides a comprehensive set of primitive types:
 
 - **Arrays**: Fixed-size arrays are supported using the `[T; N]` syntax.
 - **Tensors and Matrices**: Built-in `Tensor<T, Shape>` and `Matrix` types are first-class constructs natively understood by the compiler for high-performance algebraic operations.
-- **SIMD Vectors**: Explicit SIMD types are available (e.g., `<4 x f32>`) for low-level vectorization control.
+- **Vectors**: `<N x T>` is N lanes of a scalar type `T` (`<4 x f32>`): one value, lowered to `vector<NxT>`. Arithmetic between two `<N x T>` values is lane-wise. A vector is loaded and stored through a pointer to the vector type (`*mut <4 x f32>`). There is no implicit conversion between `<N x T>` and `T`: an `f32` is not a `<1 x f32>`, and a `*mut f32` dereferences to one `f32`.
 
 ## 9. Linear (Affine) Types vs. Copyable Types
 
