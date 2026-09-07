@@ -1454,6 +1454,34 @@ fn flat_prints_a_string_value() {
 }
 
 #[test]
+fn flat_matches_ast_comptime_if_statement_with_a_reachability_predicate() {
+    // A statement-position `comptime` `if` on a `Reachable` predicate: the checker decides it
+    // and empties the losing branch, and only the survivor lowers; the predicate itself has no
+    // lowering on either path. Both branches give 42, so the answer does not depend on the
+    // machine's reachability.
+    assert_parity(
+        "fn main() -> i32 { let mut r = 0; \
+           if comptime Reachable<Topology::CPU, Topology::GPU> { r = 42; } else { r = 42; } \
+           return r; }",
+        42,
+    );
+}
+
+#[test]
+fn flat_matches_ast_transfer_of_a_scalar() {
+    // A scalar has no bytes to move between spaces, so its transfer is the value itself:
+    // both paths write the `vx.transfer` op, and lowering folds it to its operand. The value
+    // stays `Pinned`, so it is printed rather than computed with.
+    assert_output_parity(
+        "fn main() -> i32 { \
+           let g = spawn on(Topology::GPU) { 40 }; \
+           let h = transfer(g, Memory::CPU_DRAM); \
+           print(h); \
+           return 0; }",
+    );
+}
+
+#[test]
 fn flat_matches_ast_tensor_store_element_coercion() {
     // A default-`f32` float literal stored into a non-`f32` tensor is coerced to the element type at
     // the store (`bf16` -> `arith.truncf`), matching the AST's `coerce_type` before its `memref.store`

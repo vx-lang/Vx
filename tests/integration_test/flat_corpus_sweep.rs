@@ -34,7 +34,6 @@ const KNOWN_DECLINES: &[&str] = &[
     // signature where the AST oracle gives `memref<?x?xf32>`, two ABIs for one function, plus
     // a dropped vx.transfer. Declining is the honest answer until the flat lowerer carries
     // run-time extents.
-    "middle_end/pass/topology_polymorphism.vx",
     "warnings/pass/lowering_declined_for_dynamic_tile.vx",
     "warnings/pass/w1024_implicit_transfer.vx",
 ];

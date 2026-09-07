@@ -15,27 +15,36 @@ impl FnEmit<'_> {
     // `offset`/`slots`) the AST path emits — a device backend needs them to place the tile
     // into VMEM/TMEM, and they are dropped otherwise (B1/P0-1).
     pub(crate) fn op_transfer(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
-        let result_gid = *self
-            .types
-            .get(ins.type_idx.0 as usize)
-            .ok_or(crate::emitter_gap!())?;
-        let (elem, shape) = self
-            .ctx
-            .tensors
-            .get(&result_gid)
-            .ok_or(crate::emitter_gap!())?;
-        let dstty = tensor_memref_ty(elem, shape).ok_or(crate::emitter_gap!())?;
         let src = self
             .names
             .get(ins.operand1.0 as usize)
             .ok_or(crate::emitter_gap!())?
             .clone();
-        let srcty = self
-            .mem_of
-            .get(ins.operand1.0 as usize)
-            .ok_or(crate::emitter_gap!())?
-            .clone()
-            .ok_or(crate::emitter_gap!())?;
+        // A scalar operand: the op restates its type, and lowering folds it to the operand.
+        // A tensor: the result is the transferred tile's memref.
+        let (srcty, dstty, elem, shape) = if let Some(e) = self.elem_at(ins.operand1.0) {
+            let t = mlir_scalar(&e).ok_or(crate::emitter_gap!())?.to_string();
+            self.etypes[idx] = Some(e);
+            (t.clone(), t, None, None)
+        } else {
+            let result_gid = *self
+                .types
+                .get(ins.type_idx.0 as usize)
+                .ok_or(crate::emitter_gap!())?;
+            let (elem, shape) = self
+                .ctx
+                .tensors
+                .get(&result_gid)
+                .ok_or(crate::emitter_gap!())?;
+            let dstty = tensor_memref_ty(elem, shape).ok_or(crate::emitter_gap!())?;
+            let srcty = self
+                .mem_of
+                .get(ins.operand1.0 as usize)
+                .ok_or(crate::emitter_gap!())?
+                .clone()
+                .ok_or(crate::emitter_gap!())?;
+            (srcty, dstty, Some(elem.clone()), Some(shape.clone()))
+        };
         let n = format!("%v{idx}");
         let mut attrs = format!("target_topology = {} : i32", ins.imm);
         if let Some(desc) = self.ctx.subspaces.get(&ins.imm) {
@@ -59,7 +68,10 @@ impl FnEmit<'_> {
             }
             // SS2 bump allocation: a statically-shaped tile into a granule'd space claims the
             // next granule-rounded `offset`; `slots` is the granule count it occupies.
-            let tile_bytes = static_tile_bytes(elem, shape);
+            let tile_bytes = match (&elem, &shape) {
+                (Some(e), Some(s)) => static_tile_bytes(e, s),
+                _ => None,
+            };
             if let (Some(granule), Some(bytes)) = (desc.granule, tile_bytes) {
                 if granule > 0 {
                     let rounded = bytes.div_ceil(granule) * granule;
@@ -73,7 +85,9 @@ impl FnEmit<'_> {
         self.body +=
             &format!("  {n} = \"vx.transfer\"({src}) {{{attrs}}} : ({srcty}) -> {dstty}\n");
         self.names[idx] = n;
-        self.mem_of[idx] = Some(dstty);
+        if elem.is_some() {
+            self.mem_of[idx] = Some(dstty);
+        }
         Ok(())
     }
 

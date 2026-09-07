@@ -1060,14 +1060,19 @@ impl<'r> Lowerer<'r> {
                     });
                 }
                 let src = self.lower_expr(&t.expr)?;
-                let LoweredTy::Tensor { elem, shape } = &src.ty else {
-                    return Err(Decline::TypeNotModelled {
-                        what: "a transfer of something that is not a tensor",
-                    }); // only tensors transfer
-                };
-                let result_ty = LoweredTy::Tensor {
-                    elem: elem.clone(),
-                    shape: shape.clone(),
+                // A scalar transfers too: the op is an identity at lowering, and the result
+                // restates the operand's type.
+                let result_ty = match &src.ty {
+                    LoweredTy::Tensor { elem, shape } => LoweredTy::Tensor {
+                        elem: elem.clone(),
+                        shape: shape.clone(),
+                    },
+                    LoweredTy::Scalar(e) => LoweredTy::Scalar(e.clone()),
+                    _ => {
+                        return Err(Decline::TypeNotModelled {
+                            what: "a transfer of something that is not a tensor or a scalar",
+                        })
+                    }
                 };
                 let mem_id = crate::arch::memory_space_dispatch_id(&t.space) as u64;
                 Ok(self.emit_typed(Opcode::Transfer, src.reg, Register(0), result_ty, mem_id))
@@ -1759,6 +1764,14 @@ impl<'r> Lowerer<'r> {
     /// cross-block locals are already in slots). Early `return` in a branch is honored: the trailing
     /// `Br` to the merge is skipped when the branch already terminated.
     fn lower_if(&mut self, e: &crate::syntax::IfExpr) -> Lowered<()> {
+        // A folded `comptime` `if` is its surviving statements; the condition, which may be a
+        // predicate only the checker decides (`Reachable<..>`), is not lowered.
+        if let Some(block) = comptime_survivor(e) {
+            for s in block {
+                self.lower_stmt(s)?;
+            }
+            return Ok(());
+        }
         let cond = self.lower_expr(&e.cond)?;
         let then_b = self.new_block();
         let (else_b, merge_b) = match &e.else_block {

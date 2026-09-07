@@ -5,11 +5,14 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir --legacy-codegen 2>&1 | FileCheck %s
 //
 // One file for the whole topology-polymorphism surface (kept together so the test
 // suite links vxc once, not per case). The full emitted MLIR is checked; regenerate
 // the CHECK lines with `cargo run --bin update_mlir_test_checks -- <this file>`.
+// The path is pinned: the `source_topology` and `space` attributes on the transfer
+// and the `topology_name` on each spawn are facts of the AST path's emission; the
+// flat path, which lowers this program too, does not write them yet.
 //
 //   identity_on   -- signature-level `<D: Topology>` monomorphization
 //   run_on        -- body-level substitution (`spawn on(Topology::D)` in the body)
