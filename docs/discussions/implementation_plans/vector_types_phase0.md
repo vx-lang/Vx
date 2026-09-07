@@ -44,7 +44,7 @@ file:line.
    line 907 and the `Type::Pointer` arms near it. Since the parser never fills the space, also
    answer: is there any path that produces a `Pointer(.., Some(space), ..)` today (search
    `Some(MemorySpace` and `Pointer(` across `src/hir`)? Expected answer: no, and the check
-   does not consult it. That makes phase 5 (Vx#480) a spelling decision first.
+   does not consult it. That makes the placement phase (Vx#480) a spelling decision first.
 
 1. **The cast spelling.** Amendment A replaces `p.cast::<<N x T>>()` with `p as *mut <N x T>`.
    Confirm the type grammar already parses `*mut <4 x f32>` as a pointer to a `Simd` (write
@@ -85,7 +85,10 @@ Then edit the design's Section 2 in place: add the amendments as decisions 11–
 document is the single source of truth going forward. Set its status line to "Adopted".
 
 Post the report's summary (the decision lines and the amendments) as a comment on Vx#475 and
-tick the phase in Vx#482. Phase 1 is Vx#476; do not start it under this plan.
+tick the phase in Vx#482. Do not start the next phase under this plan.
+
+**Completed.** The report is Section 11 of the design document. The design was revised
+afterwards and the phases renumbered; the phase after this one is Vx#484 (`unsafe fn`).
 
 ## 5. Stop conditions
 
