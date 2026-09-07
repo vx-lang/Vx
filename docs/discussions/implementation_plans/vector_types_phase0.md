@@ -11,7 +11,7 @@ cargo run is in flight. Do not commit; the report is the deliverable.
 The design's Section 9 lists seven questions to answer before any code, with a checkpoint:
 "written report; confirm the decisions in Section 2 against it." Most of the seven were
 answered during review (Vx#472). This plan records those answers so they are not re-derived,
-names the three that still need a look, and says exactly what to write down.
+names the five that still need a look, and says exactly what to write down.
 
 A contradiction between the tree and a Section 2 decision is a stop-and-report, per the
 design's Section 0. None has been found so far; the amendments below are additions, not
