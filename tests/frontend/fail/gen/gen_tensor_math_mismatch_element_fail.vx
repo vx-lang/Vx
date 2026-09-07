@@ -1,7 +1,7 @@
 //===- gen_tensor_math_mismatch_element_fail.vx
 // RUN: not vxc %s 2>&1 | FileCheck %s
 //---------------------------------===//
-// CHECK: Type mismatch in binary operation: Tensor(F32, [Number(NumberExpr {
+// CHECK: Type mismatch in binary operation: Tensor<f32, [16, 16]> vs Tensor<i32, [16, 16]>
 // value: "16", ty: Some(I32), span: Span { line: 0, column: 0, length: 0 } }),
 // Number(NumberExpr { value: "16", ty: Some(I32), span: Span { line: 0, column:
 // 0, length: 0 } })], None) vs Tensor(I32, [Number(NumberExpr { value: "16",

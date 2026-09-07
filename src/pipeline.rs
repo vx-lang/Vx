@@ -554,7 +554,7 @@ fn emit_type_gid(ty: &syntax::Type, worker: &mut LocalWorkerState) {
         | Type::Pointer(inner, _, _)
         | Type::Verified(inner)
         | Type::Pinned(inner, _) => emit_type_gid(inner, worker),
-        Type::Function(args, ret) | Type::Closure(args, ret) => {
+        Type::Function(args, ret, _) | Type::Closure(args, ret) => {
             for a in args {
                 emit_type_gid(a, worker);
             }
@@ -621,7 +621,7 @@ fn nominal_gid(ty: &syntax::Type) -> Option<crate::gid::TypeId> {
             0,
             0,
         )),
-        Type::Function(args, ret) | Type::Closure(args, ret) => {
+        Type::Function(args, ret, _) | Type::Closure(args, ret) => {
             let mut ids: Vec<crate::gid::TypeId> =
                 args.iter().map(nominal_gid).collect::<Option<_>>()?;
             ids.push(nominal_gid(ret)?);

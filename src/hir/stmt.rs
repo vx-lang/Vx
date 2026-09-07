@@ -490,7 +490,7 @@ impl<'a> TypeChecker<'a> {
             self.errors.error_with_code(
                 crate::diagnostic::DiagnosticCode::E3002,
                 format!(
-                    "Type mismatch on return. Expected {:?}, got {:?}",
+                    "Type mismatch on return. Expected {}, got {}",
                     expected_ty, ty
                 ),
                 Some(crate::diagnostic::SourceSpan::from_ast_span(span)),

@@ -722,8 +722,8 @@ impl<'a> TypeChecker<'a> {
                 }
                 true
             }
-            (Type::Function(p1, r1), Type::Function(p2, r2)) => {
-                if p1.len() != p2.len() {
+            (Type::Function(p1, r1, u1), Type::Function(p2, r2, u2)) => {
+                if p1.len() != p2.len() || u1 != u2 {
                     return false;
                 }
                 if !self.unify_types_internal(r1, r2, mapping) {
@@ -1020,7 +1020,7 @@ impl<'a> TypeChecker<'a> {
         // than a silently-discarded value.
         if func.name.as_ref() == "main" && func.return_type != Type::Scalar(ElementType::I32) {
             self.errors.push(format!(
-                "`main` must return i32 (the process exit code), found {:?}",
+                "`main` must return i32 (the process exit code), found {}",
                 func.return_type
             ));
         }
@@ -1234,12 +1234,16 @@ impl<'a> TypeChecker<'a> {
             Type::Pinned(inner, top) => {
                 Type::Pinned(Box::new(self.resolve_parsed_type(*inner)), top)
             }
-            Type::Function(args, ret) => {
+            Type::Function(args, ret, unsafe_fn) => {
                 let resolved_args = args
                     .into_iter()
                     .map(|a| self.resolve_parsed_type(a))
                     .collect();
-                Type::Function(resolved_args, Box::new(self.resolve_parsed_type(*ret)))
+                Type::Function(
+                    resolved_args,
+                    Box::new(self.resolve_parsed_type(*ret)),
+                    unsafe_fn,
+                )
             }
             Type::Closure(args, ret) => {
                 let resolved_args = args

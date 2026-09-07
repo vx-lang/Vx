@@ -1640,7 +1640,7 @@ impl<'c> MeliorGenerator<'c> {
                 }
                 "i32".to_string()
             }
-            syntax::Type::Function(_, _) => {
+            syntax::Type::Function(..) => {
                 return Ok(self.ptr_ty);
             }
             syntax::Type::Closure(_, _) => {
@@ -1665,7 +1665,7 @@ impl<'c> MeliorGenerator<'c> {
         &self,
         ty: &syntax::Type,
     ) -> Result<String, crate::codegen::lower::LowerError> {
-        if let syntax::Type::Function(_, _) = ty {
+        if let syntax::Type::Function(..) = ty {
             return Ok("!llvm.ptr".to_string());
         }
         if let syntax::Type::Const(expr) = ty {
@@ -1805,6 +1805,7 @@ impl<'c> MeliorGenerator<'c> {
                     syntax::Type::Function(
                         f.params.iter().map(|(_, t)| t.clone()).collect(),
                         Box::new(f.return_type.clone()),
+                        f.is_unsafe,
                     )
                 })
             }),

@@ -1,5 +1,5 @@
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// CHECK: Type mismatch on return. Expected Scalar(I32), got Struct
+// CHECK: Type mismatch on return. Expected i32, got MyStruct
 // None)
 struct MyStruct {
   a : i32

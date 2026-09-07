@@ -232,7 +232,7 @@ impl<'a> Parser<'a> {
             )?;
             self.consume(&TokenType::Arrow, "Expected '->' after function parameters")?;
             let ret = self.parse_type()?;
-            Ok(Type::Function(params, Box::new(ret)))
+            Ok(Type::Function(params, Box::new(ret), false))
         } else if self.match_token(&TokenType::OrOr) {
             self.consume(&TokenType::Arrow, "Expected '->' after closure parameters")?;
             let ret = self.parse_type()?;

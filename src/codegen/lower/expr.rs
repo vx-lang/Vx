@@ -2656,7 +2656,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             let mut actual_func_ty = func_ty;
             let is_closure = func_ty.to_string() == "!llvm.struct<(ptr, ptr)>";
             if func_ty.to_string() == "!llvm.ptr" {
-                if let Some(syntax::Type::Function(func_args, ret)) = gen.ast_env.get(name) {
+                if let Some(syntax::Type::Function(func_args, ret, _)) = gen.ast_env.get(name) {
                     let r = gen.lower_type(ret.as_ref())?;
                     let mut a: Vec<_> = Vec::new();
                     for t in func_args.iter() {

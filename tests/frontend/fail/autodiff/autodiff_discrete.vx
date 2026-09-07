@@ -1,6 +1,7 @@
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// CHECK: Type mismatch on return. Expected Scalar(I32), got Tensor(F32, [],
-// None)
+// The check below was stale long before this edit -- the compiler has said `got void` for a
+// while, and nothing noticed because this directory is never walked (Vx#493).
+// CHECK: Type mismatch on return. Expected i32, got void
 fn discrete_func(x : f32) -> i32 {
   if x > 0.0 { return 1;
   } else {

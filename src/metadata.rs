@@ -93,7 +93,7 @@ impl<'a> VxMetadata<'a> {
 const VXLIB_MAGIC: &[u8; 4] = b"VXLB";
 /// Format tag folded into an FNV-1a stamp (`src/hash.rs`) written after the magic. A codec change
 /// bumps this string, so a stale artifact is *detected* (version mismatch on load) rather than misread.
-const VXLIB_FORMAT_TAG: &str = "vxlib-interface-v10";
+const VXLIB_FORMAT_TAG: &str = "vxlib-interface-v11";
 
 /// Append-only little-endian byte writer for the interface codec.
 struct Writer {
@@ -526,8 +526,9 @@ fn write_type(w: &mut Writer, ty: &Type) -> Result<(), String> {
                 write_type(w, a)?;
             }
         }
-        Function(params, ret) => {
+        Function(params, ret, unsafe_fn) => {
             w.u8(10);
+            w.u8(u8::from(*unsafe_fn));
             w.u64(params.len() as u64);
             for p in params {
                 write_type(w, p)?;
@@ -621,13 +622,14 @@ fn read_type(r: &mut Reader) -> Result<Type, String> {
             GenericInstance(base, args)
         }
         10 => {
+            let unsafe_fn = r.u8()? != 0;
             let n = r.u64()? as usize;
             let mut params = Vec::with_capacity(n);
             for _ in 0..n {
                 params.push(read_type(r)?);
             }
             let ret = Box::new(read_type(r)?);
-            Function(params, ret)
+            Function(params, ret, unsafe_fn)
         }
         11 => {
             let n = r.u64()? as usize;

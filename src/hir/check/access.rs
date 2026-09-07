@@ -75,15 +75,23 @@ impl<'a> TypeChecker<'a> {
                     // anything so it does not spawn cascade errors downstream.
                     return Type::Unknown;
                 } else if lookup_res.is_none() {
-                    if let Some((ret_ty, _, params, _, _, _)) =
+                    if let Some((ret_ty, is_unsafe, params, _, _, _)) =
                         self.env.functions.get(name.as_ref())
                     {
-                        return Type::Function(params.clone(), Box::new(ret_ty.clone()));
+                        return Type::Function(
+                            params.clone(),
+                            Box::new(ret_ty.clone()),
+                            *is_unsafe,
+                        );
                     }
                     for (func, _) in &self.mono.functions {
                         if func.name.as_ref() == name.as_ref() {
                             let params = func.params.iter().map(|(_, t)| t.clone()).collect();
-                            return Type::Function(params, Box::new(func.return_type.clone()));
+                            return Type::Function(
+                                params,
+                                Box::new(func.return_type.clone()),
+                                func.is_unsafe,
+                            );
                         }
                     }
 

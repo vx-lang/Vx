@@ -624,9 +624,12 @@ pub enum Type {
     GenericInstance(Box<Type>, Vec<Type>),       // e.g. Config<f32>
     Module(Symbol, std::collections::HashMap<Symbol, Type>), // (path, exported_symbols)
     Simd(ElementType, usize),                    // e.g. <4 x f32>
-    Function(Vec<Type>, Box<Type>),              // e.g. fn(i32, f32) -> f32
-    Closure(Vec<Type>, Box<Type>),               // Fat pointer closure type
-    Const(Box<syntax::expr::Expr>),              // E.g., generic const argument like `10`
+    /// `fn(i32, f32) -> f32`. The `bool` is unsafe-ness: a function's contract travels with its
+    /// type, so binding it to a name does not discard it. A safe function is usable where an
+    /// unsafe one is expected; the reverse is refused.
+    Function(Vec<Type>, Box<Type>, bool),
+    Closure(Vec<Type>, Box<Type>),  // Fat pointer closure type
+    Const(Box<syntax::expr::Expr>), // E.g., generic const argument like `10`
     Unknown,
 }
 
@@ -712,10 +715,10 @@ impl Type {
                 };
                 Type::Simd(new_el_ty, *n)
             }
-            Type::Function(params, ret) => {
+            Type::Function(params, ret, unsafe_fn) => {
                 let new_params = params.iter().map(|p| p.substitute(mapping)).collect();
                 let new_ret = Box::new(ret.substitute(mapping));
-                Type::Function(new_params, new_ret)
+                Type::Function(new_params, new_ret, *unsafe_fn)
             }
             Type::Closure(params, ret) => {
                 let new_params = params.iter().map(|p| p.substitute(mapping)).collect();
@@ -762,7 +765,7 @@ impl Type {
                     a.for_each_placement(f);
                 }
             }
-            Type::Function(params, ret) | Type::Closure(params, ret) => {
+            Type::Function(params, ret, _) | Type::Closure(params, ret) => {
                 for p in params {
                     p.for_each_placement(f);
                 }
@@ -973,7 +976,10 @@ impl std::fmt::Display for Type {
                 write!(f, ">")
             }
             Type::Unknown => write!(f, "?"),
-            Type::Function(params, ret) => {
+            Type::Function(params, ret, unsafe_fn) => {
+                if *unsafe_fn {
+                    write!(f, "unsafe ")?;
+                }
                 write!(f, "fn(")?;
                 for (i, p) in params.iter().enumerate() {
                     if i > 0 {
@@ -1051,7 +1057,7 @@ impl Mangle for Type {
                 }
                 Ok(())
             }
-            Type::Function(_, _) => write!(w, "fn"),
+            Type::Function(..) => write!(w, "fn"),
             Type::Closure(_, _) => write!(w, "closure"),
             Type::Verified(inner) => {
                 write!(w, "Verified$")?;
@@ -1162,6 +1168,7 @@ mod tests {
         let ty = Type::Function(
             vec![Type::Generic("T".into(), None)],
             Box::new(Type::Generic("T".into(), None)),
+            false,
         );
         let mut mapping = HashMap::new();
         mapping.insert("T".into(), Type::Scalar(ElementType::F64));
@@ -1171,6 +1178,7 @@ mod tests {
             Type::Function(
                 vec![Type::Scalar(ElementType::F64)],
                 Box::new(Type::Scalar(ElementType::F64)),
+                false,
             )
         );
     }
@@ -1201,7 +1209,7 @@ mod tests {
     fn test_type_is_linear_false_cases() {
         assert!(!Type::Scalar(ElementType::I32).is_linear());
         assert!(!Type::Unknown.is_linear());
-        assert!(!Type::Function(vec![], Box::new(Type::Unknown)).is_linear());
+        assert!(!Type::Function(vec![], Box::new(Type::Unknown), false).is_linear());
         assert!(!Type::Generic("T".into(), None).is_linear());
     }
 

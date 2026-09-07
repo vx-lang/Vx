@@ -1632,7 +1632,7 @@ impl<'r> Lowerer<'r> {
                 .get(fc.name.as_ref())
                 .map(|s| s.ret_ty.clone())
                 .or_else(|| match self.ast_types.get(&fc.name)? {
-                    Type::Function(_, ret) | Type::Closure(_, ret) => Some(ret.as_ref().clone()),
+                    Type::Function(_, ret, _) | Type::Closure(_, ret) => Some(ret.as_ref().clone()),
                     _ => None,
                 }),
             _ => None,
@@ -3570,7 +3570,7 @@ impl<'r> Lowerer<'r> {
             .ok_or(Decline::TypeNotModelled {
                 what: "an indirect callee with no recorded AST type",
             })? {
-            Type::Function(_, ret) | Type::Closure(_, ret) => match ret.as_ref() {
+            Type::Function(_, ret, _) | Type::Closure(_, ret) => match ret.as_ref() {
                 Type::Borrow { .. } | Type::Ref(..) | Type::Pointer(..) => LoweredTy::Ptr,
                 other => LoweredTy::Scalar(scalar_of(other).ok_or(Decline::TypeNotModelled {
                     what: "an indirect callee returning a non-scalar",
@@ -4110,7 +4110,11 @@ impl<'r> Lowerer<'r> {
                     // `let f = probe;`: a function used as a value has the function's type.
                     Expr::Identifier(id) if !self.scope.contains_key(&id.name) => {
                         self.registry.fn_sigs.get(id.name.as_ref()).map(|sig| {
-                            Type::Function(sig.params.clone(), Box::new(sig.ret_ty.clone()))
+                            Type::Function(
+                                sig.params.clone(),
+                                Box::new(sig.ret_ty.clone()),
+                                sig.is_unsafe,
+                            )
                         })
                     }
                     _ => None,

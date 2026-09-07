@@ -431,8 +431,14 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
-        if let Type::Function(p_target, r_target) = target {
-            if let Type::Function(p_source, r_source) = source {
+        if let Type::Function(p_target, r_target, target_unsafe) = target {
+            if let Type::Function(p_source, r_source, source_unsafe) = source {
+                // A safe function honours an unsafe function's contract vacuously, so it fits
+                // where one is expected. An unsafe function does not fit where a safe one is:
+                // that is how the obligation would be lost.
+                if *source_unsafe && !*target_unsafe {
+                    return false;
+                }
                 if p_target.len() == p_source.len() && self.is_assignable(r_target, r_source) {
                     let mut all_match = true;
                     for (pt, ps) in p_target.iter().zip(p_source.iter()) {

@@ -1,6 +1,6 @@
 //===- logical_ops_type.vx - Vx Compiler -------------------------*- Vx -*-===//
 // CHECK: Type mismatch on return.
-// CHECK-SAME: Scalar(Bool)
+// CHECK-SAME: got bool
 //
 // Part of the Vx Project, under the BSD 3-Clause License.
 // See LICENSE for license information.

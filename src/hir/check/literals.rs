@@ -539,7 +539,7 @@ impl<'a> TypeChecker<'a> {
                                 if !self.is_assignable(expected_type, &f_type) && !self.speculating
                                 {
                                     self.errors.push(format!(
-                                            "Type mismatch in struct initialization for field '{}'. Expected {:?}, got {:?}",
+                                            "Type mismatch in struct initialization for field '{}'. Expected {}, got {}",
                                             expected_name, expected_type, f_type
                                         ));
                                 }

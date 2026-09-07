@@ -184,7 +184,7 @@ impl Type {
                     ty.resolve_names(scope);
                 }
             }
-            Type::Function(arg_tys, ret_ty) => {
+            Type::Function(arg_tys, ret_ty, _) => {
                 for t in arg_tys {
                     t.resolve_names(scope);
                 }

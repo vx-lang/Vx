@@ -86,8 +86,10 @@ impl<'a> TypeChecker<'a> {
                             let arg_ty = &arg_types[i];
                             if !self.is_assignable(param_ty, arg_ty) && !self.speculating {
                                 self.errors.push(format!(
-                                    "Type mismatch in argument {} for closure. Expected {:?}, got {:?}",
-                                    i + 1, param_ty, arg_ty
+                                    "Type mismatch in argument {} for closure. Expected {}, got {}",
+                                    i + 1,
+                                    param_ty,
+                                    arg_ty
                                 ));
                             }
                         }
@@ -136,7 +138,7 @@ impl<'a> TypeChecker<'a> {
                     let arg_ty = &arg_types[i];
                     if !self.is_assignable(param_ty, arg_ty) && !self.speculating {
                         self.errors.push(format!(
-                            "Type mismatch in argument {} for closure fat pointer. Expected {:?}, got {:?}",
+                            "Type mismatch in argument {} for closure fat pointer. Expected {}, got {}",
                             i + 1, param_ty, arg_ty
                         ));
                     }
@@ -148,7 +150,7 @@ impl<'a> TypeChecker<'a> {
             }
 
             return *ret_ty.clone();
-        } else if let Type::Function(_, _) = callee_ty {
+        } else if let Type::Function(..) = callee_ty {
             if !self.speculating {
                 self.errors.push(
                     "Function pointers are not natively callable yet; use closure interfaces."
@@ -472,9 +474,22 @@ impl<'a> TypeChecker<'a> {
                     return intrinsic_ty;
                 }
 
-                if let Some((Type::Function(param_types, ret_ty), _)) =
+                if let Some((Type::Function(param_types, ret_ty, callee_unsafe), _)) =
                     self.lookup(&resolved_name).cloned()
                 {
+                    // The contract rides on the type, so a call through a name honours it just
+                    // as a call through the declaration does.
+                    if callee_unsafe && !self.in_unsafe_block && !self.speculating {
+                        self.errors.error_with_code(
+                            crate::diagnostic::DiagnosticCode::E5001,
+                            format!(
+                                "Call to unsafe function '{}' is unsafe and requires unsafe \
+                                 function or block",
+                                resolved_name
+                            ),
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                        );
+                    }
                     if args.len() != param_types.len() && !self.speculating {
                         self.errors.push(format!(
                             "Function pointer '{}' expects {} arguments, got {}",
@@ -487,7 +502,7 @@ impl<'a> TypeChecker<'a> {
                             let arg_ty = &arg_types[i];
                             if !self.is_assignable(param_ty, arg_ty) && !self.speculating {
                                 self.errors.push(format!(
-                                        "Type mismatch in argument {} for function pointer '{}'. Expected {:?}, got {:?}",
+                                        "Type mismatch in argument {} for function pointer '{}'. Expected {}, got {}",
                                         i + 1, resolved_name, param_ty, arg_ty
                                     ));
                             }
@@ -509,7 +524,7 @@ impl<'a> TypeChecker<'a> {
                             let arg_ty = &arg_types[i];
                             if !self.is_assignable(param_ty, arg_ty) && !self.speculating {
                                 self.errors.push(format!(
-                                        "Type mismatch in argument {} for closure '{}'. Expected {:?}, got {:?}",
+                                        "Type mismatch in argument {} for closure '{}'. Expected {}, got {}",
                                         i + 1, resolved_name, param_ty, arg_ty
                                     ));
                             }
@@ -548,7 +563,7 @@ impl<'a> TypeChecker<'a> {
                                     let arg_ty = &arg_types[i];
                                     if !self.is_assignable(param_ty, arg_ty) && !self.speculating {
                                         self.errors.push(format!(
-                                                "Type mismatch in argument {} for closure '{}'. Expected {:?}, got {:?}",
+                                                "Type mismatch in argument {} for closure '{}'. Expected {}, got {}",
                                                 i + 1, resolved_name, param_ty, arg_ty
                                             ));
                                     }
@@ -633,7 +648,7 @@ impl<'a> TypeChecker<'a> {
                                 self.errors.error_with_code(
                                     crate::diagnostic::DiagnosticCode::E3003,
                                     format!(
-                                        "Type mismatch in argument {} for function '{}'. Expected {:?}, got {:?}{}",
+                                        "Type mismatch in argument {} for function '{}'. Expected {}, got {}{}",
                                         i + 1, resolved_name, param_ty, arg_ty,
                                         Self::rank_note(param_ty, &arg_ty)
                                     ),
@@ -694,7 +709,7 @@ impl<'a> TypeChecker<'a> {
                                 self.errors.error_with_code(
                                     crate::diagnostic::DiagnosticCode::E3003,
                                     format!(
-                                        "Type mismatch in argument {} for function '{}'. Expected {:?}, got {:?}{}",
+                                        "Type mismatch in argument {} for function '{}'. Expected {}, got {}{}",
                                         i + 1, resolved_name, param_ty, arg_ty,
                                         Self::rank_note(param_ty, &arg_ty)
                                     ),
@@ -780,7 +795,7 @@ impl<'a> TypeChecker<'a> {
                                 self.errors.error_with_code(
                                     crate::diagnostic::DiagnosticCode::E3003,
                                     format!(
-                                        "Type mismatch in argument {} for function '{}'. Expected {:?}, got {:?}{}",
+                                        "Type mismatch in argument {} for function '{}'. Expected {}, got {}{}",
                                         i + 1, resolved_name, param_ty, arg_ty,
                                         Self::rank_note(param_ty, &arg_ty)
                                     ),
@@ -1037,7 +1052,7 @@ impl<'a> TypeChecker<'a> {
                 if !self.unify_types(param_ty, &arg_ty, &mut mapping) {
                     if !self.speculating {
                         self.errors.push(format!(
-                            "Failed to deduce types for generic function '{}': Expected {:?}, got {:?}{}",
+                            "Failed to deduce types for generic function '{}': Expected {}, got {}{}",
                             name,
                             param_ty,
                             arg_ty,
@@ -2013,7 +2028,7 @@ impl<'a> TypeChecker<'a> {
                         }
                         _ => {
                             self.errors
-                                .push(format!("Cannot call {} on {:?}", _method, base_ty));
+                                .push(format!("Cannot call {} on {}", _method, base_ty));
                         }
                     }
                 } else if _method.as_ref() == "len" {
@@ -2024,13 +2039,12 @@ impl<'a> TypeChecker<'a> {
                             base_ty = Type::Scalar(ElementType::I64);
                         }
                         _ => {
-                            self.errors
-                                .push(format!("Cannot call len on {:?}", base_ty));
+                            self.errors.push(format!("Cannot call len on {}", base_ty));
                         }
                     }
                 } else {
                     self.errors.push(format!(
-                        "Method '{}' not found on type {:?}",
+                        "Method '{}' not found on type {}",
                         _method, base_ty
                     ));
                 }
@@ -2060,7 +2074,7 @@ impl<'a> TypeChecker<'a> {
         &self,
         resolved_name: &str,
     ) -> Option<(Vec<Type>, Type)> {
-        if let Some((Type::Function(params, ret) | Type::Closure(params, ret), _)) =
+        if let Some((Type::Function(params, ret, _) | Type::Closure(params, ret), _)) =
             self.lookup(resolved_name)
         {
             return Some((params.clone(), (**ret).clone()));

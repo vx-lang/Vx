@@ -355,7 +355,7 @@ impl<'a> TypeChecker<'a> {
                     self.errors.error_with_code(
                         crate::diagnostic::DiagnosticCode::E3004,
                         format!(
-                            "Type mismatch in binary operation: {:?} vs {:?}",
+                            "Type mismatch in binary operation: {} vs {}",
                             lhs_ty, rhs_ty
                         ),
                         Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
@@ -415,7 +415,7 @@ impl<'a> TypeChecker<'a> {
                     self.errors.error_with_code(
                         crate::diagnostic::DiagnosticCode::E3005,
                         format!(
-                            "Type mismatch in relational operation: {:?} vs {:?}",
+                            "Type mismatch in relational operation: {} vs {}",
                             lhs_ty, rhs_ty
                         ),
                         Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
@@ -440,7 +440,7 @@ impl<'a> TypeChecker<'a> {
                     self.errors.error_with_code(
                         crate::diagnostic::DiagnosticCode::E3006,
                         format!(
-                            "Type mismatch in logical operation: {:?} vs {:?}",
+                            "Type mismatch in logical operation: {} vs {}",
                             lhs_ty, rhs_ty
                         ),
                         Some(crate::diagnostic::SourceSpan::from_ast_span(span)),

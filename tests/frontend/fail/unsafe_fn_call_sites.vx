@@ -6,9 +6,8 @@
 // `env.generic_functions`; a generic method through the instantiation rewrite. One of these was
 // enforced and the rest were not, which is why they are pinned together here.
 //
-// Not covered, and deliberately: a call through a function *value* (`let f = u; f();`). A
-// function type carries no unsafe-ness today, so there is nothing to check. See the tracking
-// issue.
+// A call through a function *value* is here too. It resolves through none of the paths above:
+// the contract rides on the type, so binding the function to a name keeps it.
 
 unsafe fn free_fn() -> i32 {
   return 1;
@@ -50,8 +49,12 @@ impl Peek for Holder {
 
 // A safe function: every call below needs an unsafe context and has none.
 fn from_safe_code() -> i32 {
-  let h = Holder { n : 1 };
-  let b = Boxed<i32> { v : 2 };
+  let h = Holder {
+    n : 1
+  };
+  let b = Boxed<i32> {
+    v : 2
+  };
   // CHECK-DAG: E5001{{.*}}'free_fn'
   let a = free_fn();
   // CHECK-DAG: E5001{{.*}}'generic_fn'
@@ -76,6 +79,25 @@ fn from_a_closure() -> i32 {
   // CHECK-DAG: E5001{{.*}}'free_fn'
   let c = || free_fn();
   return c();
+}
+
+// Through a function value: `free_fn` is bound to a name, then called. The type carries the
+// contract, so the call is refused exactly as the direct one is.
+fn through_a_value() -> i32 {
+  let g = free_fn;
+  // CHECK-DAG: E5001{{.*}}'g'
+  return g();
+}
+
+// And an unsafe function does not fit where a safe function type is expected, which is what
+// would otherwise launder the contract through any safe higher-order function.
+fn takes_a_safe_fn(h : fn() -> i32) -> i32 {
+  return h();
+}
+
+fn launder() -> i32 {
+  // CHECK-DAG: E3003{{.*}}'takes_a_safe_fn'
+  return takes_a_safe_fn(free_fn);
 }
 
 // `comptime` folds at check time, which does not discharge the contract either.
