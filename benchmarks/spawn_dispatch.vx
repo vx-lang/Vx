@@ -24,6 +24,7 @@ fn main() -> i32 {
   }
   let end : f32 = now();
   let elapsed : f32 = end - start;
-  bench_report("spawn_dispatch", "seconds", elapsed);
+  // `bench_report` takes C strings, so the call vouches for them; a literal always satisfies it.
+  unsafe { bench_report("spawn_dispatch", "seconds", elapsed); }
   return 0;
 }

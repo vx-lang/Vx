@@ -36,6 +36,6 @@ fn unix_timestamp() -> f64 {
 // literally and appends the arguments after it, so a Vx-side interpolation cannot
 // produce a parseable record. A program reports only what it can know -- its own
 // name, unit and number; the runner supplies the commit and the machine.
-fn bench_report(name : *const i8, unit : *const i8, value : f32) -> i32 {
+unsafe fn bench_report(name : *const i8, unit : *const i8, value : f32) -> i32 {
   return unsafe { vx_bench_report(name, unit, value) };
 }

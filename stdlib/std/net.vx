@@ -27,7 +27,7 @@ struct TcpStream {
 }
 
 impl TcpStream {
-  fn connect(addr : *const i8) -> TcpStream {
+  unsafe fn connect(addr : *const i8) -> TcpStream {
     let ptr = unsafe { vx_tcp_stream_connect(addr) };
     TcpStream {
       ptr:
@@ -35,18 +35,18 @@ impl TcpStream {
     }
   }
 
-  fn read(self : *mut TcpStream, buffer : *mut u8, len : i64)
+  unsafe fn read(self : *mut TcpStream, buffer : *mut u8, len : i64)
   -> i64 {
     unsafe { vx_tcp_stream_read(self.ptr, buffer, len) }
   }
 
-  fn write(self : *mut TcpStream, buffer : *const u8, len : i64)
+  unsafe fn write(self : *mut TcpStream, buffer : *const u8, len : i64)
   ->i64 {
     unsafe { vx_tcp_stream_write(self.ptr, buffer, len) }
   }
 }
 
-fn tcp_stream_drop(stream : *mut TcpStream) -> void {
+unsafe fn tcp_stream_drop(stream : *mut TcpStream) -> void {
   let _dropped = unsafe { vx_tcp_stream_drop(stream.ptr) };
 }
 
@@ -55,7 +55,7 @@ struct UdpSocket {
 }
 
 impl UdpSocket {
-  fn bind(addr : *const i8) -> UdpSocket {
+  unsafe fn bind(addr : *const i8) -> UdpSocket {
     let ptr = unsafe { vx_udp_socket_bind(addr) };
     UdpSocket {
       ptr:
@@ -63,19 +63,19 @@ impl UdpSocket {
     }
   }
 
-  fn recv(self : *mut UdpSocket, buffer : *mut u8, len : i64)
+  unsafe fn recv(self : *mut UdpSocket, buffer : *mut u8, len : i64)
   -> i64 {
     unsafe { vx_udp_socket_recv(self.ptr, buffer, len) }
   }
 
-  fn send_to(self : *mut UdpSocket, buffer : *const u8, len : i64,
+  unsafe fn send_to(self : *mut UdpSocket, buffer : *const u8, len : i64,
   addr : *const i8)
   ->i64 {
     unsafe { vx_udp_socket_send_to(self.ptr, buffer, len, addr) }
   }
 }
 
-fn udp_socket_drop(socket : *mut UdpSocket) -> void {
+unsafe fn udp_socket_drop(socket : *mut UdpSocket) -> void {
   let _dropped = unsafe { vx_udp_socket_drop(socket.ptr) };
 }
 
@@ -84,7 +84,7 @@ struct TcpListener {
 }
 
 impl TcpListener {
-  fn bind(addr : *const i8) -> TcpListener {
+  unsafe fn bind(addr : *const i8) -> TcpListener {
     let ptr = unsafe { vx_tcp_listener_bind(addr) };
     TcpListener {
       ptr:
@@ -101,6 +101,6 @@ impl TcpListener {
   }
 }
 
-fn tcp_listener_drop(listener : *mut TcpListener) -> void {
+unsafe fn tcp_listener_drop(listener : *mut TcpListener) -> void {
   let _dropped = unsafe { vx_tcp_listener_drop(listener.ptr) };
 }

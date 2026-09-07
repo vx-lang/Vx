@@ -29,7 +29,7 @@ impl String {
     }
   }
 
-  fn from_c_str(c_str : *const i8) -> String {
+  unsafe fn from_c_str(c_str : *const i8) -> String {
     let ptr = unsafe { vx_string_from_c_str(c_str) };
     String {
       ptr:
@@ -37,7 +37,7 @@ impl String {
     }
   }
 
-  fn push_c_str(self : *mut String, c_str : *const i8) -> i32 {
+  unsafe fn push_c_str(self : *mut String, c_str : *const i8) -> i32 {
     return unsafe { vx_string_push_c_str(self.ptr, c_str) };
   }
 
@@ -64,14 +64,14 @@ impl i32 {
 }
 
 // Returns the length of a null-terminated string
-fn string_length(s: *const i8) -> i32 {
+unsafe fn string_length(s: *const i8) -> i32 {
   let mut len: i32 = 0;
   unsafe { loop { if s[len] == 0 { break; } len = len + 1; } }
   return len;
 }
 
 // Compares two null-terminated strings
-fn string_compare(s1: *const i8, s2: *const i8) -> i32 {
+unsafe fn string_compare(s1: *const i8, s2: *const i8) -> i32 {
   let mut i: i32 = 0;
   let mut result: i32 = 0;
   unsafe {
@@ -87,7 +87,7 @@ fn string_compare(s1: *const i8, s2: *const i8) -> i32 {
 }
 
 // Parses a simple integer from a string slice
-fn parse_int(s: *const i8) -> i32 {
+unsafe fn parse_int(s: *const i8) -> i32 {
   let mut val: i32 = 0;
   let mut i: i32 = 0;
   unsafe {
