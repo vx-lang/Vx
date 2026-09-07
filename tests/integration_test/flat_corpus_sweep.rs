@@ -26,8 +26,6 @@ const KNOWN_DECLINES: &[&str] = &[
     "backend/pass/user_lowering_waste.vx",
     "frontend/pass/closure_fat_ptr.vx",
     "frontend/pass/control_flow_rigorous.vx",
-    "frontend/pass/coverage_advanced_types_pass.vx",
-    "frontend/pass/if_comptime_and_topology.vx",
     "frontend/pass/memory_algebra_implicit.vx",
     "frontend/pass/trait_topologies.vx",
     "frontend/pass/transfer_cost_advanced_dijkstra.vx",

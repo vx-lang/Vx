@@ -1347,6 +1347,28 @@ fn flat_matches_ast_spawn_with_no_value() {
 }
 
 #[test]
+fn flat_matches_ast_payload_free_enum_returned() {
+    // A payload-free enum is its `i32` discriminant at a call boundary as in a signature.
+    assert_parity(
+        "enum E { A, B }\n\
+         fn f() -> E { let e = E::B; return e; }\n\
+         fn main() -> i32 { let e = f(); match e { E::B => { return 42; } _ => { return 0; } } }",
+        42,
+    );
+}
+
+#[test]
+fn flat_matches_ast_topology_as_a_value() {
+    // A topology used as a value is its dispatch id, the `i32` the checker types it as: bound
+    // by an unannotated `let` through a folded `comptime` `if`, and compared.
+    assert_parity(
+        "fn main() -> i32 { let t = if comptime true { Topology::CPU } else { Topology::GPU }; \
+           if t == Topology::CPU { return 42; } return 0; }",
+        42,
+    );
+}
+
+#[test]
 fn flat_matches_ast_tensor_store_element_coercion() {
     // A default-`f32` float literal stored into a non-`f32` tensor is coerced to the element type at
     // the store (`bf16` -> `arith.truncf`), matching the AST's `coerce_type` before its `memref.store`

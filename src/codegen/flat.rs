@@ -472,7 +472,17 @@ pub fn build_callee_map(
                 name: name.to_string(),
                 // A `Pinned<i32, ..>` return is the scalar it wraps: the placement is a fact
                 // about the value, not its spelling, the same as for a tensor return.
-                ret: scalar_of(peel_wrappers(&sig.ret_ty)),
+                // A payload-free enum is its `i32` discriminant, as in a signature.
+                ret: scalar_of(peel_wrappers(&sig.ret_ty)).or_else(|| {
+                    match peel_wrappers(&sig.ret_ty) {
+                        Type::Enum(n, _) | Type::Struct(n, _)
+                            if registry.enum_variants.contains_key(n.as_ref()) =>
+                        {
+                            Some(ElementType::I32)
+                        }
+                        _ => None,
+                    }
+                }),
                 ret_agg: resolve_agg_gid(&sig.ret_ty, aggs, agg_names),
                 ret_ptr: is_ptr_ty(&sig.ret_ty),
                 ret_void: is_void_ty(&sig.ret_ty),

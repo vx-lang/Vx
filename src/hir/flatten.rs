@@ -227,7 +227,22 @@ fn expr_kind(e: &Expr) -> &'static str {
         Expr::StringLiteral(_) => "StringLiteral",
         Expr::MemorySpace(_) => "MemorySpace",
         Expr::Topology(_) => "Topology",
-        _ => "other-expr",
+        Expr::Identifier(_) => "Identifier",
+        Expr::Number(_) => "Number",
+        Expr::Transfer(_) => "Transfer",
+        Expr::FunctionCall(_) => "FunctionCall",
+        Expr::MemberAccess(_) => "MemberAccess",
+        Expr::IndexAccess(_) => "IndexAccess",
+        Expr::BinaryOp(_) => "BinaryOp",
+        Expr::RelationalOp(_) => "RelationalOp",
+        Expr::UnaryOp(_) => "UnaryOp",
+        Expr::UnsafeBlock(_) => "UnsafeBlock",
+        Expr::StructInit(_) => "StructInit",
+        Expr::AsCast(_) => "AsCast",
+        Expr::Print(_) => "Print",
+        Expr::Println(_) => "Println",
+        Expr::SizeOf(_) => "SizeOf",
+        Expr::InlineMlir(_) => "InlineMlir",
     }
 }
 
@@ -1434,6 +1449,7 @@ impl<'r> Lowerer<'r> {
             }
             Expr::UnaryOp(u) => self.infer_expr_ty(&u.expr),
             Expr::RelationalOp(_) => Some(LoweredTy::Scalar(ElementType::Bool)),
+            Expr::Topology(_) => Some(LoweredTy::Scalar(ElementType::I32)),
             Expr::AsCast(c) => Some(LoweredTy::Scalar(scalar_of(&c.target_ty)?)),
             Expr::FunctionCall(fc) => {
                 let sig = self.registry.fn_sigs.get(&fc.name)?;

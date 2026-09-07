@@ -1,22 +1,20 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: call @check_top() : () -> ()
+// CHECK: call @check_top2() : () -> ()
+// CHECK-LABEL: func.func @check_top2()
+// CHECK: arith.constant 500 : i32
+// CHECK: %[[T:.*]] = arith.constant 500 : i32
+// CHECK: arith.cmpi eq, %{{.*}}, %[[T]] : i32
 // CHECK-LABEL: func.func @check_top()
 // CHECK: arith.constant 1 : i32
 // CHECK: %[[V0:.*]] = arith.constant 100 : i32
 // CHECK: %[[V1:.*]] = arith.constant 100 : i32
 // CHECK: arith.constant 10 : i32
-// CHECK: memref.alloca() : memref<i32>
-// CHECK: arith.constant 0 : index
 // CHECK: %[[V2:.*]] = arith.constant 100 : i32
 // CHECK: arith.cmpi eq, %[[V0]], %[[V2]] : i32
 // CHECK: %[[V3:.*]] = arith.constant 100 : i32
 // CHECK: arith.cmpi eq, %[[V1]], %[[V3]] : i32
-// CHECK: arith.constant 0 : index
-// CHECK-LABEL: func.func @check_top2()
-// CHECK: %[[V0:.*]] = arith.constant 500 : i32
-// CHECK: %[[V1:.*]] = arith.constant 500 : i32
-// CHECK: arith.cmpi eq, %[[V0]], %[[V1]] : i32
-// CHECK: arith.constant 0 : index
-// CHECK-LABEL: func.func @main() -> i32
 fn check_top() on Topology::NPU[0] -> void {
   // If comptime returns an expression
   let a = if comptime true {
