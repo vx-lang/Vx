@@ -1404,6 +1404,22 @@ impl<'r> Lowerer<'r> {
                 )),
             },
             Expr::InlineMlir(im) => self.lower_inline_mlir(im),
+            // `let status = print!(..)`: the arguments print as in statement position, and the
+            // value is a placeholder `i32`; the status the AST path's helper returns is never
+            // read.
+            Expr::Print(p) => {
+                for arg in &p.args {
+                    self.lower_print_arg(arg)?;
+                }
+                Ok(self.emit_value(Opcode::Const, Register(0), Register(0), ElementType::I32, 0))
+            }
+            Expr::Println(p) => {
+                for arg in &p.args {
+                    self.lower_print_arg(arg)?;
+                }
+                self.emit_print_str("\n");
+                Ok(self.emit_value(Opcode::Const, Register(0), Register(0), ElementType::I32, 0))
+            }
             Expr::MethodCall(mc) if matches!(mc.method_name.as_ref(), "reshape" | "transpose") => {
                 self.lower_tensor_reshape(mc)
             }

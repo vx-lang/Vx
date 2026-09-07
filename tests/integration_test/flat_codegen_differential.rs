@@ -1369,6 +1369,16 @@ fn flat_matches_ast_topology_as_a_value() {
 }
 
 #[test]
+fn flat_matches_ast_print_in_value_position() {
+    // `let status = print!(..)` prints and binds a status nothing reads; the output is what
+    // both paths agree on.
+    assert_output_parity(
+        "fn main() -> i32 { let x = 7; let status : i32 = print!(\"x=\", x, \"|\"); \
+           let more : i32 = println!(\"done\"); return 0; }",
+    );
+}
+
+#[test]
 fn flat_matches_ast_tensor_store_element_coercion() {
     // A default-`f32` float literal stored into a non-`f32` tensor is coerced to the element type at
     // the store (`bf16` -> `arith.truncf`), matching the AST's `coerce_type` before its `memref.store`
