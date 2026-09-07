@@ -1422,6 +1422,38 @@ fn flat_matches_ast_construction_behind_an_unsafe_block() {
 }
 
 #[test]
+fn flat_matches_ast_reborrow_of_a_raw_pointer() {
+    // `&mut *ptr` on a raw pointer is the pointer itself, returned as a reference and read
+    // through: the `Vec::as_mut_slice` shape.
+    assert_parity(
+        "extern \"C\" { fn vx_vec_alloc(elem_size: i64, cap: i64) -> *mut i8; }\n\
+         struct Buf { data : *mut i32 }\n\
+         fn first(b : &mut Buf) -> &mut i32 { let ptr : *mut i32 = b.data; \
+           return unsafe { &mut *ptr }; }\n\
+         fn main() -> i32 { let p : *mut i32 = unsafe { vx_vec_alloc(4, 4) }; \
+           let mut b = Buf { data : p }; unsafe { b.data[0] = 42; } \
+           let r = first(&mut b); return *r; }",
+        42,
+    );
+}
+
+#[test]
+fn flat_prints_a_string_value() {
+    // A `String` value prints its C string through `print_str`. Flat-only: the AST path types
+    // a print argument by its MLIR spelling and has no case for the struct.
+    let flat = flat_llvm(
+        "extern \"C\" { fn vx_string_from_c_str(c_str : *const i8) -> *mut i8; \
+           fn vx_string_as_c_str(ptr : *mut i8) -> *const i8; \
+           fn vx_string_free_c_str(ptr : *const i8) -> i32; }\n\
+         struct String { ptr : *mut i8 }\n\
+         fn main() -> i32 { let s = String { ptr : unsafe { vx_string_from_c_str(\"hi|\") } }; \
+           print!(s); println!(\"\"); return 0; }",
+    )
+    .expect("flat path lowers this printing program");
+    assert_eq!(run_output(&flat), normalize("hi|\n"));
+}
+
+#[test]
 fn flat_matches_ast_tensor_store_element_coercion() {
     // A default-`f32` float literal stored into a non-`f32` tensor is coerced to the element type at
     // the store (`bf16` -> `arith.truncf`), matching the AST's `coerce_type` before its `memref.store`

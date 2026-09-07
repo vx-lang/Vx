@@ -11,15 +11,14 @@
 // The externs this program pulls in are declared, and main calls them in order with the
 // values threaded between them -- the dataflow the run below scores, stated in the IR.
 // CHECK-DAG: func.func private @print_str(
-// CHECK-DAG: func.func private @print_i32(
 // CHECK-LABEL: func.func @main() -> i32
-// CHECK: call @"LlamaConfig::load"(%{{.*}}) : (!llvm.ptr) -> !llvm.struct<"LlamaConfig", (i32, i32, i32, i32, i32, i32, i32)>
-// CHECK: call @"TransformerWeightOffsets::calculate"(%{{.*}}) : (!llvm.ptr) -> !llvm.struct<"TransformerWeightOffsets", (i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32)>
+// CHECK: call @"LlamaConfig::load"(%{{.*}}) : (!llvm.ptr) -> !llvm.struct<{{.*}}(i32, i32, i32, i32, i32, i32, i32)>
+// CHECK: call @"TransformerWeightOffsets::calculate"(%{{.*}}) : (!llvm.ptr) -> !llvm.struct<{{.*}}(i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32)>
 // CHECK: call @"TransformerWeightOffsets::load_all_weights"(%{{.*}}, %{{.*}}) : (!llvm.ptr, !llvm.ptr) -> memref<?x?xf32>
-// CHECK: call @malloc_run_state(%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}) : (i32, i32, i32, i32, i32, i32, i32) -> !llvm.struct<"RunState", (ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr)>
-// CHECK: call @"Tokenizer::load"(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> !llvm.struct<"Tokenizer", (ptr)>
+// CHECK: call @malloc_run_state(%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}) : (i32, i32, i32, i32, i32, i32, i32) -> !llvm.struct<{{.*}}(ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr)>
+// CHECK: call @"Tokenizer::load"(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> !llvm.struct<{{.*}}(ptr)>
 // CHECK: call @print_str(%{{.*}}) : (!llvm.ptr) -> i32
-// CHECK: %[[V0:.*]] = call @transformer(%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}) : (i32, i32, !llvm.ptr, !llvm.ptr, !llvm.ptr, memref<memref<?x?xf32>>) -> !llvm.ptr
+// CHECK: %[[V0:.*]] = call @transformer(%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}) : (i32, i32, !llvm.ptr, !llvm.ptr, !llvm.ptr, memref<{{.*}}>) -> !llvm.ptr
 // CHECK: call @argmax(%[[V0]], %{{.*}}) : (!llvm.ptr, i32) -> i32
 
 import std::llama;

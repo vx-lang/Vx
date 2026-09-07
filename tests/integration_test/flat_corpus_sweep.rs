@@ -19,7 +19,6 @@ use std::process::Command;
 /// A worklist, not an exemption list: shrinking it is Vx#383.
 const KNOWN_DECLINES: &[&str] = &[
     "backend/pass/custom_topology_user_lowering.vx",
-    "backend/pass/llama2_v2.vx",
     "backend/pass/matmul_assign_alias.vx",
     "backend/pass/user_lowering_name_collisions.vx",
     "backend/pass/user_lowering_uncountable.vx",

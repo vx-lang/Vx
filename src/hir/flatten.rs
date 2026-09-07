@@ -642,11 +642,64 @@ impl<'r> Lowerer<'r> {
     fn lower_print_arg(&mut self, arg: &Expr) -> Lowered<()> {
         if let Expr::StringLiteral(sl) = arg {
             self.emit_print_str(sl.value.as_ref());
-        } else {
-            let v = self.lower_expr(arg)?;
-            self.emit_print(v)?;
+            return Ok(());
         }
+        // A `String` value prints its bytes: the runtime hands out a C copy of the handle in
+        // the `ptr` field, `print_str` prints it, and the copy is freed. The runtime's entry
+        // points are the ones `std::string` declares, so a program that has not brought them
+        // into scope declines.
+        let is_string = self.infer_ast_type(arg).is_some_and(
+            |t| matches!(deref_to_pointee(&t), Type::Struct(n, _) if n.as_ref() == "String"),
+        );
+        if is_string {
+            let (base, gid) = self.lower_agg_base(arg)?;
+            let off = self
+                .layout_of(&gid)
+                .and_then(|d| d.fields.iter().find(|f| f.name.as_ref() == "ptr"))
+                .map(|f| f.offset as u64)
+                .ok_or(Decline::TypeNotModelled {
+                    what: "a String with no ptr field",
+                })?;
+            let handle = self.emit_typed(Opcode::FieldLoad, base, Register(0), LoweredTy::Ptr, off);
+            let missing = Decline::TypeNotModelled {
+                what: "a String print without std::string's runtime entry points in scope",
+            };
+            let c = self
+                .emit_runtime_call("vx_string_as_c_str", &[handle.reg], LoweredTy::Ptr)
+                .ok_or(missing.clone())?;
+            self.emit_print(c.clone())?;
+            self.emit_runtime_call(
+                "vx_string_free_c_str",
+                &[c.reg],
+                LoweredTy::Scalar(ElementType::I32),
+            )
+            .ok_or(missing)?;
+            return Ok(());
+        }
+        let v = self.lower_expr(arg)?;
+        self.emit_print(v)?;
         Ok(())
+    }
+
+    /// A call to a runtime entry point the registry knows by name (an `extern` a stdlib module
+    /// declares), the way `lower_call` emits one: the arguments as `Arg`s, the callee's GID in
+    /// the type table. `None` when the name is not in scope.
+    fn emit_runtime_call(&mut self, name: &str, args: &[Register], ret: LoweredTy) -> Option<Val> {
+        let gid = self.registry.fn_sigs.get(name)?.gid;
+        for &a in args {
+            self.emit_effect(Opcode::Arg, a, Register(0), 0);
+        }
+        let type_idx = TypeIdx(self.types.len() as u32);
+        self.types.push(gid);
+        let reg = Register(self.code.len() as u32);
+        self.code.push(HirInstruction::new(
+            Opcode::Call,
+            Register(0),
+            Register(0),
+            type_idx,
+            args.len() as u64,
+        ));
+        Some(Val { reg, ty: ret })
     }
 
     fn bind_local(&mut self, name: Symbol, v: Val) {
@@ -1299,6 +1352,17 @@ impl<'r> Lowerer<'r> {
                     if let Some(Binding::Slot { reg, .. }) = self.scope.get(&id.name).cloned() {
                         return Ok(Val {
                             reg,
+                            ty: LoweredTy::Ptr,
+                        });
+                    }
+                }
+                // `&*ptr` / `&mut *ptr`: a reborrow of a raw pointer is the pointer itself, the
+                // `Vec::as_mut_slice` shape.
+                if let Expr::Dereference(d) = &*b.expr {
+                    let p = self.lower_expr(&d.expr)?;
+                    if matches!(p.ty, LoweredTy::Ptr) {
+                        return Ok(Val {
+                            reg: p.reg,
                             ty: LoweredTy::Ptr,
                         });
                     }
