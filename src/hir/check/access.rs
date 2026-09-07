@@ -300,6 +300,20 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// A raw-pointer access needs an unsafe context: nothing here knows the address is valid,
+    /// or that anything lives at it. `*p`, `p[i]` and `p.field` are one operation with three
+    /// spellings, so they answer to one rule.
+    fn require_unsafe_raw_access(&mut self, what: &str, span: &Span) {
+        if self.in_unsafe_block || self.speculating {
+            return;
+        }
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E5002,
+            format!("{what} requires an unsafe block"),
+            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+        );
+    }
+
     pub(crate) fn check_memberaccess_expr(&mut self, expr: &mut Expr) -> Type {
         match expr {
             Expr::MemberAccess(MemberAccessExpr {
@@ -332,6 +346,14 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
                 let mut base_ty = obj_ty.clone();
+                if matches!(base_ty, Type::Pointer(..)) {
+                    let verb = if self.checking_assign_lhs {
+                        "Writing a field through a raw pointer"
+                    } else {
+                        "Reading a field through a raw pointer"
+                    };
+                    self.require_unsafe_raw_access(verb, &ma_span);
+                }
                 if let Type::Borrow { inner: t, .. } | Type::Pointer(t, _, _) = base_ty {
                     base_ty = *t;
                 }
@@ -568,6 +590,7 @@ impl<'a> TypeChecker<'a> {
                     other => other,
                 };
                 if let Type::Pointer(inner, _, _) = base {
+                    self.require_unsafe_raw_access("Indexing a raw pointer", &ix_span);
                     *inner
                 } else if let Type::Tensor(el_ty, dims, top) = base {
                     if dims.len() > 1 {

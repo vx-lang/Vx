@@ -1042,7 +1042,7 @@ impl<'a> Parser<'a> {
                         base: Box::new(expr),
                         member: ident.into(),
                         struct_name: None,
-                        span: Span::default(),
+                        span: name_span,
                     });
                 }
             } else if self.match_token(&TokenType::LeftParen) {
@@ -1062,13 +1062,20 @@ impl<'a> Parser<'a> {
                     target_func_ty: None,
                     span: Span::default(),
                 });
-            } else if self.match_token(&TokenType::LeftBracket) {
+            } else if self.check(&TokenType::LeftBracket) {
+                // The `[` token, so a diagnostic about the index points at it.
+                let ix_span = crate::syntax::Span {
+                    line: self.peek().line,
+                    column: self.peek().column,
+                    length: self.peek().length,
+                };
+                self.advance();
                 let index = self.parse_expr()?;
                 self.consume(&TokenType::RightBracket, "Expected ']'")?;
                 expr = Expr::IndexAccess(IndexAccessExpr {
                     base: Box::new(expr),
                     index: Box::new(index),
-                    span: Span::default(),
+                    span: ix_span,
                 });
             } else if self.match_token(&TokenType::As) {
                 let target_ty = self.parse_type()?;

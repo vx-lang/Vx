@@ -1,0 +1,39 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// `*p`, `p[i]` and `p.field` are one operation with three spellings: a read or a write through
+// an address the compiler cannot vouch for. Only the first used to require an unsafe block, so
+// the two that this repository actually writes were unguarded. All four directions are pinned
+// here -- index read and write, field read and write -- because the assignment target is a
+// separate path through the checker from the value position.
+
+struct S {
+  n : i32,
+}
+
+fn index_read(p : *mut i32) -> i32 {
+  // CHECK-DAG: E5002{{.*}}Indexing a raw pointer requires an unsafe block
+  let v = p[0];
+  return v;
+}
+
+fn index_write(p : *mut i32) -> i32 {
+  // CHECK-DAG: E5002{{.*}}Indexing a raw pointer requires an unsafe block
+  p[0] = 7;
+  return 0;
+}
+
+fn field_read(p : *mut S) -> i32 {
+  // CHECK-DAG: E5002{{.*}}Reading a field through a raw pointer requires an unsafe block
+  let v = p.n;
+  return v;
+}
+
+fn field_write(p : *mut S) -> i32 {
+  // CHECK-DAG: E5002{{.*}}Writing a field through a raw pointer requires an unsafe block
+  p.n = 7;
+  return 0;
+}
+
+fn main() -> i32 {
+  return 0;
+}
