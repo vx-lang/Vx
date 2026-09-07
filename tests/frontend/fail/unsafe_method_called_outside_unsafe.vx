@@ -1,0 +1,20 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// The rule reaches methods, not only free functions: an `unsafe fn` method resolved through an
+// impl needs an unsafe context at its call, and the diagnostic points at the method name.
+
+struct Holder {
+  n : i32,
+}
+
+impl Holder {
+  unsafe fn peek(self : Holder) -> i32 {
+    return self.n;
+  }
+}
+
+fn main() -> i32 {
+  let h = Holder { n : 7 };
+  // CHECK: E5001{{.*}}unsafe method 'peek'
+  return h.peek();
+}

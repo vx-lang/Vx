@@ -1992,6 +1992,85 @@ fn program_links_a_function_body_from_a_vxlib_artifact() {
 }
 
 /// Phase 2 (#265 step 7 / #219), runnable through the **real driver**: a consumer compiled with
+/// `unsafe fn` crosses a `--link-interface` boundary. The consumer never sees the library's body,
+/// so the refusal can only come from the signature in the artifact -- which is the whole reason the
+/// flag rides on `FnSig`. Two libraries are built, one `unsafe fn` and one not, and the same call
+/// is made against each: refused for the first, accepted for the second. Asserting only the refusal
+/// would pass equally if the check refused every imported call.
+#[test]
+fn driver_link_interface_refuses_an_unguarded_unsafe_import() {
+    use std::process::Command;
+    let dir = std::env::temp_dir().join(format!("vx_link_unsafe_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (lib, vxlib) = (dir.join("unsafelib.vx"), dir.join("unsafelib.vxlib"));
+    let (safelib, safevxlib) = (dir.join("safelib.vx"), dir.join("safelib.vxlib"));
+    let app = dir.join("app.vx");
+    std::fs::write(&lib, "unsafe fn double(x : i32) -> i32 { return x * 2; }\n").unwrap();
+    std::fs::write(&safelib, "fn double(x : i32) -> i32 { return x * 2; }\n").unwrap();
+    std::fs::write(&app, "fn main() -> i32 { return double(21); }\n").unwrap();
+
+    let vxc = env!("CARGO_BIN_EXE_vxc");
+    let emit = Command::new(vxc)
+        .args([
+            "--emit-interface",
+            lib.to_str().unwrap(),
+            "-o",
+            vxlib.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run vxc --emit-interface");
+    assert!(
+        emit.status.success(),
+        "emit-interface failed:\n{}",
+        String::from_utf8_lossy(&emit.stderr)
+    );
+
+    let emit_safe = Command::new(vxc)
+        .args([
+            "--emit-interface",
+            safelib.to_str().unwrap(),
+            "-o",
+            safevxlib.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run vxc --emit-interface");
+    assert!(
+        emit_safe.status.success(),
+        "emit-interface failed for the safe library"
+    );
+
+    let check_against = |artifact: &std::path::Path| -> String {
+        let out = Command::new(vxc)
+            .args([
+                "--link-interface",
+                artifact.to_str().unwrap(),
+                app.to_str().unwrap(),
+                "--action",
+                "print-ast",
+            ])
+            .stdout(std::process::Stdio::null())
+            .output()
+            .expect("run vxc --link-interface");
+        String::from_utf8_lossy(&out.stderr).into_owned()
+    };
+
+    let refused = check_against(&vxlib);
+    assert!(
+        refused.contains("E5001") && refused.contains("double"),
+        "an unguarded call to an imported `unsafe fn` must be refused from the artifact's \
+         signature alone, got:\n{refused}"
+    );
+
+    let accepted = check_against(&safevxlib);
+    assert!(
+        !accepted.contains("E5001"),
+        "the same call against a safe library must not be refused -- otherwise the check \
+         above proves only that imported calls are rejected, got:\n{accepted}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// `--link-interface` — the library source never passed on the command line — resolves the imported
 /// call from the merged registry (frontend) and links its flat-HIR body from the artifact (codegen),
 /// then JITs to the expected value. Productionizes the stage-4 mechanism above through `vxc` itself.

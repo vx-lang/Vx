@@ -1263,9 +1263,19 @@ impl<'r> Lowerer<'r> {
                 for s in &u.stmts {
                     self.lower_stmt(s)?;
                 }
-                self.lower_expr(u.ret.as_deref().ok_or(Decline::Unsupported {
-                    what: "a unary form with no operand",
-                })?)
+                match u.ret.as_deref() {
+                    Some(e) => self.lower_expr(e),
+                    // No trailing value: the block is an effect, which is what a nested
+                    // `unsafe { unsafe { .. } }` parses to. Hand back a constant for the value
+                    // position nobody should be using it in, as `barrier()` does.
+                    None => Ok(self.emit_value(
+                        Opcode::Const,
+                        Register(0),
+                        Register(0),
+                        ElementType::I32,
+                        0,
+                    )),
+                }
             }
             // A struct literal in value position (e.g. `return P { .. }`, #215): construct it in a slot
             // (the `let x = P { .. }` form is handled directly in `lower_stmt`). The `Val` is the slot,

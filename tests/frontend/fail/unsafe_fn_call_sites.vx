@@ -1,0 +1,92 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// Every way a call can reach an `unsafe fn`, in one file, because each resolves through a
+// different path in the checker and the rule has to be repeated at each. A free function goes
+// through `env.functions`; a method through the impl search; a generic through
+// `env.generic_functions`; a generic method through the instantiation rewrite. One of these was
+// enforced and the rest were not, which is why they are pinned together here.
+//
+// Not covered, and deliberately: a call through a function *value* (`let f = u; f();`). A
+// function type carries no unsafe-ness today, so there is nothing to check. See the tracking
+// issue.
+
+unsafe fn free_fn() -> i32 {
+  return 1;
+}
+
+unsafe fn generic_fn<T>(x : T) -> T {
+  return x;
+}
+
+struct Holder {
+  n : i32,
+}
+
+impl Holder {
+  unsafe fn method(self : Holder) -> i32 {
+    return self.n;
+  }
+}
+
+struct Boxed<T> {
+  v : T,
+}
+
+impl<T> Boxed<T> {
+  unsafe fn generic_method(self : Boxed<T>) -> T {
+    return self.v;
+  }
+}
+
+trait Peek {
+  fn peek(self : Self) -> i32;
+}
+
+impl Peek for Holder {
+  unsafe fn peek(self : Holder) -> i32 {
+    return self.n;
+  }
+}
+
+// A safe function: every call below needs an unsafe context and has none.
+fn from_safe_code() -> i32 {
+  let h = Holder { n : 1 };
+  let b = Boxed<i32> { v : 2 };
+  // CHECK-DAG: E5001{{.*}}'free_fn'
+  let a = free_fn();
+  // CHECK-DAG: E5001{{.*}}'generic_fn'
+  let c = generic_fn(3);
+  // CHECK-DAG: E5001{{.*}}'method'
+  let d = h.method();
+  // CHECK-DAG: E5001{{.*}}'generic_method'
+  let e = b.generic_method();
+  // CHECK-DAG: E5001{{.*}}'peek'
+  let f = h.peek();
+  return a + c + d + e + f;
+}
+
+// An `unsafe fn` body is not an unsafe context (Rust 2024), so a call inside one marks itself.
+unsafe fn from_an_unsafe_fn() -> i32 {
+  // CHECK-DAG: E5001{{.*}}'free_fn'
+  return free_fn();
+}
+
+// A closure body is ordinary code: it does not inherit an unsafe context it never had.
+fn from_a_closure() -> i32 {
+  // CHECK-DAG: E5001{{.*}}'free_fn'
+  let c = || free_fn();
+  return c();
+}
+
+// `comptime` folds at check time, which does not discharge the contract either.
+fn from_comptime() -> i32 {
+  comptime {
+    // CHECK-DAG: E5001{{.*}}'free_fn'
+    assert(free_fn() == 1);
+  }
+  return 0;
+}
+
+fn main() -> i32 {
+  return 0;
+}

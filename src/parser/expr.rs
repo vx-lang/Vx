@@ -1009,6 +1009,12 @@ impl<'a> Parser<'a> {
         // Postfix operators: .member, .method(), [index]
         loop {
             if self.match_token(&TokenType::Dot) {
+                // The method name's own token, so a diagnostic about the call points at it.
+                let name_span = crate::syntax::Span {
+                    line: self.peek().line,
+                    column: self.peek().column,
+                    length: self.peek().length,
+                };
                 let ident = match self.advance().kind.clone() {
                     TokenType::Identifier(s) => s.to_string(),
                     _ => return Err(self.error("Expected identifier after '.'")),
@@ -1029,7 +1035,7 @@ impl<'a> Parser<'a> {
                         method_name: ident.to_string().into(),
                         type_args: None,
                         args,
-                        span: Span::default(),
+                        span: name_span,
                     });
                 } else {
                     expr = Expr::MemberAccess(MemberAccessExpr {

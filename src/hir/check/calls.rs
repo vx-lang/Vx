@@ -707,6 +707,19 @@ impl<'a> TypeChecker<'a> {
                 } else if let Some((generic_func, origin_hash)) =
                     self.env.generic_functions.get(base_name.as_ref()).cloned()
                 {
+                    // A generic `unsafe fn` resolves here rather than through `env.functions`,
+                    // so the rule is repeated: being generic does not discharge a contract.
+                    if generic_func.is_unsafe && !self.in_unsafe_block && !self.speculating {
+                        self.errors.error_with_code(
+                            crate::diagnostic::DiagnosticCode::E5001,
+                            format!(
+                                "Call to unsafe function '{}' is unsafe and requires unsafe \
+                                 function or block",
+                                resolved_name
+                            ),
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                        );
+                    }
                     self.instantiate_generic_function_call(
                         generic_func,
                         origin_hash,
@@ -734,6 +747,20 @@ impl<'a> TypeChecker<'a> {
                     // `FnSig` — arg count + per-argument assignability against `params`, result type is
                     // `ret_ty`. The flat codegen links the body separately via `body_of`. In a normal
                     // compile the registry is empty, so this arm is inert and the call falls to E2002.
+                    // The signature carries the callee's unsafe-ness precisely so an importing
+                    // module can refuse the call without seeing the body. Read it here, or the
+                    // flag crosses the boundary and means nothing.
+                    if sig.is_unsafe && !self.in_unsafe_block && !self.speculating {
+                        self.errors.error_with_code(
+                            crate::diagnostic::DiagnosticCode::E5001,
+                            format!(
+                                "Call to unsafe function '{}' is unsafe and requires unsafe \
+                                 function or block",
+                                resolved_name
+                            ),
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                        );
+                    }
                     if args.len() != sig.params.len() && !self.speculating {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E3010,
@@ -1890,6 +1917,20 @@ impl<'a> TypeChecker<'a> {
                 let mut mapping = HashMap::new();
                 let found_method = self.resolve_method_in_impls(&base_ty, _method, &mut mapping);
                 if let Some((generic_method, _ib)) = found_method {
+                    // An `unsafe fn` method needs an unsafe context at its call, exactly as a
+                    // free function does. Only the resolution differs, so the rule is repeated
+                    // here rather than shared: a method never reaches `env.functions`.
+                    if generic_method.is_unsafe && !self.in_unsafe_block && !self.speculating {
+                        self.errors.error_with_code(
+                            crate::diagnostic::DiagnosticCode::E5001,
+                            format!(
+                                "Call to unsafe method '{}' is unsafe and requires unsafe \
+                                 function or block",
+                                _method
+                            ),
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(&method_span)),
+                        );
+                    }
                     let (ret_ty, func_call) = self.instantiate_method_call_rewrite(
                         generic_method,
                         mapping,

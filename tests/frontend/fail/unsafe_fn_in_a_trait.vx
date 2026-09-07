@@ -1,0 +1,14 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A trait method cannot be `unsafe fn` yet. The trait parser builds its method signatures
+// itself rather than through `parse_function`, so the keyword would be silently dropped;
+// refusing it with a message beats accepting a declaration that means nothing.
+
+trait Peek {
+  unsafe fn peek(self : Self) -> i32;
+}
+// CHECK: `unsafe fn` on a trait method is not supported yet
+
+fn main() -> i32 {
+  return 0;
+}
