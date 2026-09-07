@@ -86,6 +86,22 @@ fn comptime_survivor(e: &crate::syntax::IfExpr) -> Option<&[Statement]> {
     Some(e.else_block.as_deref().unwrap_or(&[]))
 }
 
+/// Whether an expression's value is a construction's slot: a struct or enum construction, or
+/// an `unsafe`/`comptime` block whose trailing value is one.
+fn construction_tail(e: &Expr) -> bool {
+    match e {
+        Expr::StructInit(_) | Expr::EnumVariant(_) => true,
+        Expr::UnsafeBlock(u) => u.ret.as_deref().is_some_and(construction_tail),
+        Expr::ComptimeBlock(c) => c.ret.as_deref().is_some_and(construction_tail),
+        _ => false,
+    }
+}
+
+/// Whether two extents agree: equal, or either a `?`, which agrees with anything.
+fn extents_agree(x: &str, y: &str) -> bool {
+    x == y || x == DYN_DIM || y == DYN_DIM
+}
+
 /// An inline `mlir!` block as the emitter needs it: the named inputs with their declared MLIR
 /// types, the body text, and whether it yields nothing.
 #[derive(Debug, Clone, PartialEq)]
@@ -793,14 +809,11 @@ impl<'r> Lowerer<'r> {
                             what: "a matmul operand that is not a tensor",
                         });
                     };
-                    let numeric = |d: &String| d.parse::<i64>().is_ok();
-                    if ls.len() != 2
-                        || rs.len() != 2
-                        || ls[1] != rs[0]
-                        || !ls.iter().chain(rs).all(numeric)
-                    {
+                    // Rank 2 each, with inner extents that agree where both are static; a `?`
+                    // agrees with anything, and the result carries one where an operand does.
+                    if ls.len() != 2 || rs.len() != 2 || !extents_agree(&ls[1], &rs[0]) {
                         return Err(Decline::TypeNotModelled {
-                            what: "a matmul whose operands are not two statically shaped matrices",
+                            what: "a matmul whose operands are not two matrices with agreeing inner extents",
                         });
                     }
                     LoweredTy::Tensor {
@@ -1317,7 +1330,7 @@ impl<'r> Lowerer<'r> {
                     // closure returned by a closure or the `Vec<i32>` a `get` hands back -- is
                     // given one. The slot is the function's, so it outlives the borrow.
                     LoweredTy::Aggregate(_) => {
-                        if matches!(*b.expr, Expr::StructInit(_) | Expr::EnumVariant(_)) {
+                        if construction_tail(&b.expr) {
                             return Ok(Val {
                                 reg: v.reg,
                                 ty: LoweredTy::Ptr,
@@ -1628,11 +1641,7 @@ impl<'r> Lowerer<'r> {
             LoweredTy::Ptr => Ok((v.reg, gid)),
             // A construction (a closure literal the checker rewrote to `Closure_1 { k }`) already
             // sits in a slot, whose address this is.
-            LoweredTy::Aggregate(value_gid)
-                if matches!(base, Expr::StructInit(_) | Expr::EnumVariant(_)) =>
-            {
-                Ok((v.reg, value_gid))
-            }
+            LoweredTy::Aggregate(value_gid) if construction_tail(base) => Ok((v.reg, value_gid)),
             // A by-value aggregate -- a struct-returning call used directly as a base
             // (`Vec::with_capacity(4).data`): spill it to a fresh slot so the field op has an
             // address to GEP. The emitter's Store already writes a struct value into a slot.
@@ -2885,9 +2894,7 @@ impl<'r> Lowerer<'r> {
             // *value*. Load it so the `FieldStore` stores the value, not the address (#277) — the same
             // fix `lower_assign` applies to an aggregate-construction RHS. First cut per §16.1 option 1;
             // constructing in place (option 2) is the destination-passing follow-up.
-            if matches!(init_expr, Expr::StructInit(_) | Expr::EnumVariant(_))
-                && matches!(v.ty, LoweredTy::Aggregate(_))
-            {
+            if construction_tail(init_expr) && matches!(v.ty, LoweredTy::Aggregate(_)) {
                 v = self.emit_typed(Opcode::SlotLoad, v.reg, Register(0), v.ty.clone(), 0);
             }
             self.emit_effect(Opcode::FieldStore, slot.reg, v.reg, offset);
@@ -3684,9 +3691,7 @@ impl<'r> Lowerer<'r> {
             // A construction (`Option<i32>::Some(7)`, `Pair { .. }`) lowers to its slot, and the
             // callee takes the aggregate by value: load it off the slot here, the load a nested
             // construction gets in `lower_struct_init`.
-            let v = if matches!(arg, Expr::StructInit(_) | Expr::EnumVariant(_))
-                && matches!(v.ty, LoweredTy::Aggregate(_))
-            {
+            let v = if construction_tail(arg) && matches!(v.ty, LoweredTy::Aggregate(_)) {
                 let ty = v.ty.clone();
                 self.emit_typed(Opcode::SlotLoad, v.reg, Register(0), ty, 0)
             } else {
@@ -3873,17 +3878,15 @@ impl<'r> Lowerer<'r> {
                 what: "a matmul assignment whose operands are not all tensors",
             });
         };
-        let numeric = |d: &String| d.parse::<i64>().is_ok();
         if ds.len() != 2
             || as_.len() != 2
             || bs.len() != 2
-            || !ds.iter().chain(as_).chain(bs).all(numeric)
-            || as_[1] != bs[0]
-            || ds[0] != as_[0]
-            || ds[1] != bs[1]
+            || !extents_agree(&as_[1], &bs[0])
+            || !extents_agree(&ds[0], &as_[0])
+            || !extents_agree(&ds[1], &bs[1])
         {
             return Err(Decline::Unsupported {
-                what: "a matmul assignment whose shapes are not two statically agreeing matrices",
+                what: "a matmul assignment whose shapes are not agreeing matrices",
             });
         }
         self.emit_effect(Opcode::MatmulInto, a.reg, b.reg, dst.reg.0 as u64);
@@ -4119,6 +4122,18 @@ impl<'r> Lowerer<'r> {
                     return Ok(());
                 }
                 let v = self.lower_expr(&l.expr)?;
+                // A construction reached through a block's tail (`let w = unsafe { .. W { .. } }`)
+                // already sits in a slot: bind the local to it, as the bare form above does.
+                if construction_tail(&l.expr) && matches!(v.ty, LoweredTy::Aggregate(_)) {
+                    self.scope.insert(
+                        l.name.clone(),
+                        Binding::Slot {
+                            reg: v.reg,
+                            ty: v.ty,
+                        },
+                    );
+                    return Ok(());
+                }
                 // `let t : Tensor<el, [?, ?]> = <scalar>` wraps the value as a rank-0 tensor: materialize
                 // the buffer (alloc + store) so tensor consumers (transfer, spawn) receive a real
                 // tensor. The checker admits identical elements only (Vx#396).

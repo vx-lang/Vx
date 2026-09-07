@@ -63,6 +63,15 @@ impl FnEmit<'_> {
             };
             let n = format!("%v{idx}");
             self.body += &format!("  {n} = func.call @{helper}({arg}) : ({et}) -> i32\n");
+        } else if self
+            .ptr_of
+            .get(ins.operand1.0 as usize)
+            .copied()
+            .unwrap_or(false)
+        {
+            // A pointer value is a C string: the `print_str` helper, as for a literal.
+            let n = format!("%v{idx}");
+            self.body += &format!("  {n} = func.call @print_str({arg}) : (!llvm.ptr) -> i32\n");
         } else {
             return Err(crate::emitter_gap!());
         }

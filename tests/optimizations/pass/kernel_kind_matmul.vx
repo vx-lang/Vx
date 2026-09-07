@@ -21,7 +21,10 @@
 //
 // The pass pipeline is pinned to the vx lowering alone: the attribute is created
 // there, and the later conversion to a dispatch call consumes it, so a default
-// pipeline would show nothing.
+// pipeline would show nothing. The path is pinned too: the label is a vx-dialect
+// fact, and the flat path, which lowers this program since it took on matmuls
+// over run-time extents, emits linalg directly and has no outlined kernel to
+// label.
 //
 // The runner matches CHECK lines as ordered substrings, so these follow the
 // emission order: the launch inside the function, then the outlined kernel at
@@ -42,7 +45,7 @@
 // numbers: they say which operand is A, B and the destination, and
 // tests/integration_test/gemm_plan_test.rs decodes the payload and checks it
 // describes the GEMM the program wrote.
-// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s
+// RUN: vxc %s --legacy-codegen --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s
 // CHECK: vx.launch @vx_npu_kernel_0
 // CHECK: vx.kernel_kind = "matmul"
 // CHECK: vx.kernel_out_kind = "slot"
@@ -61,7 +64,7 @@
 // The kernel name is left out of this check so it does not depend on the
 // global kernel counter; the NUL-separated entry is what matters.
 //
-// RUN: vxc %s --emit-llvm 2>&1 | FileCheck %s --check-prefix=PAYLOAD
+// RUN: vxc %s --legacy-codegen --emit-llvm 2>&1 | FileCheck %s --check-prefix=PAYLOAD
 // PAYLOAD: \00kind=matmul\00roles=a:0,b:1,out:2\00outkind=slot\00
 
 fn gemm(a : Tensor<f32, [?, ?]>, b : Tensor<f32, [?, ?]>) -> Tensor<f32, [?, ?]> {

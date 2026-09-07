@@ -858,22 +858,29 @@ impl FnEmit<'_> {
             .get(ins.type_idx.0 as usize)
             .ok_or(crate::emitter_gap!())?;
         let (elem, shape) = self.ctx.tensors.get(&gid).ok_or(crate::emitter_gap!())?;
-        let md = tensor_memref_ty(elem, shape).ok_or(crate::emitter_gap!())?;
-        // A dynamic extent would need its own `memref.dim` operands on the allocation, which the
-        // flattener already declines rather than emitting an allocation with none.
-        if md.contains('?') {
-            return Err(Decline::TypeNotModelled {
-                what: "a matmul result whose shape is not static",
-            });
-        }
+        let (elem, shape) = (elem.clone(), shape.clone());
+        let md = tensor_memref_ty(&elem, &shape).ok_or(crate::emitter_gap!())?;
         // Floats only, on the same terms as `MatmulInto`: linalg's integer semantics are not
         // improvised here.
-        let et = mlir_scalar(elem).ok_or(crate::emitter_gap!())?;
+        let et = mlir_scalar(&elem).ok_or(crate::emitter_gap!())?;
         if !matches!(et, "f32" | "f64" | "f16" | "bf16") {
             return Err(crate::emitter_gap!());
         }
+        // A `?` extent of the result is read off the operand it comes from: the rows of the
+        // left operand, the columns of the right.
+        let mut sizes: Vec<String> = Vec::new();
+        for (k, d) in shape.iter().enumerate() {
+            if d == DYN_DIM {
+                let (src, sm) = if k == 0 { (&a, &ma) } else { (&b, &mb) };
+                let c = format!("%mmc{idx}_{k}");
+                let sz = format!("%mms{idx}_{k}");
+                self.body += &format!("  {c} = arith.constant {k} : index\n");
+                self.body += &format!("  {sz} = memref.dim {src}, {c} : {sm}\n");
+                sizes.push(sz);
+            }
+        }
         let n = format!("%v{idx}");
-        self.body += &format!("  {n} = memref.alloc() : {md}\n");
+        self.body += &format!("  {n} = memref.alloc({}) : {md}\n", sizes.join(", "));
         self.body += &format!("  %mz{idx} = arith.constant 0.0 : {et}\n");
         self.body += &format!("  linalg.fill ins(%mz{idx} : {et}) outs({n} : {md})\n");
         self.body += &format!("  linalg.matmul ins({a}, {b} : {ma}, {mb}) outs({n} : {md})\n");

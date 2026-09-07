@@ -1379,6 +1379,49 @@ fn flat_matches_ast_print_in_value_position() {
 }
 
 #[test]
+fn flat_matches_ast_matmul_with_run_time_extents() {
+    // `a @ b` over `[?, ?]` operands: the result buffer takes its extents off the operands.
+    // Both the value form and the assignment into an owned destination; a matmul consumes its
+    // operands, so each gets its own identity. a = [[1, 2], [4, 2]]: c = a, then d = c, so
+    // c[1][0] * 10 + c[1][1] = 42, twice, minus 42.
+    assert_parity(
+        "fn build(n : i32, m : i32) -> Tensor<f32, [?, ?]> { \
+           let mut t = Tensor<f32, [?, ?]>::new([n, m]); \
+           t[0][0] = 0.0; t[0][1] = 0.0; t[1][0] = 0.0; t[1][1] = 0.0; return t; }\n\
+         fn main() -> i32 { let mut a = build(2, 2); a[0][0] = 1.0; a[0][1] = 2.0; \
+           a[1][0] = 4.0; a[1][1] = 2.0; \
+           let mut b = build(2, 2); b[0][0] = 1.0; b[1][1] = 1.0; \
+           let c = a @ b; let x = (c[1][0] * 10.0 + c[1][1]) as i32; \
+           let mut b2 = build(2, 2); b2[0][0] = 1.0; b2[1][1] = 1.0; \
+           let mut d = Tensor<f32, [?, ?]>::new([2, 2]); d = c @ b2; \
+           return x + (d[1][0] * 10.0 + d[1][1]) as i32 - 42; }",
+        42,
+    );
+}
+
+#[test]
+fn flat_matches_ast_print_of_a_string_local() {
+    // A string bound to a local is a pointer value; printing it goes through `print_str`, as
+    // a literal does.
+    assert_output_parity(
+        "fn main() -> i32 { let s = \"hi|\"; let st : i32 = print!(s); print!(s); \
+           println!(\"\"); return 0; }",
+    );
+}
+
+#[test]
+fn flat_matches_ast_construction_behind_an_unsafe_block() {
+    // A construction as the tail of an `unsafe` block already sits in a slot; the `let` binds
+    // that slot rather than spilling its address as a value. 40 + 2.
+    assert_parity(
+        "struct W { a : i32, b : i32 }\n\
+         fn mk() -> W { let w = unsafe { W { a : 40, b : 2 } }; return w; }\n\
+         fn main() -> i32 { let w = mk(); return w.a + w.b; }",
+        42,
+    );
+}
+
+#[test]
 fn flat_matches_ast_tensor_store_element_coercion() {
     // A default-`f32` float literal stored into a non-`f32` tensor is coerced to the element type at
     // the store (`bf16` -> `arith.truncf`), matching the AST's `coerce_type` before its `memref.store`

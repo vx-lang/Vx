@@ -30,17 +30,7 @@ use std::process::Command;
 /// This list is checked in BOTH directions: a file on it that starts compiling fails the
 /// test, so the list cannot quietly become a permanent exemption. Removing an entry is
 /// part of fixing the thing it names.
-const KNOWN_BROKEN: &[(&str, &str)] = &[
-    (
-        "benchmarks/llama2_100.vx",
-        "the flat emitter produces MLIR that does not parse, and the driver panics instead \
-         of declining; the same file compiles with --legacy-codegen",
-    ),
-    (
-        "benchmarks/llama2_scaling.vx",
-        "same flat-emitter panic as llama2_100.vx",
-    ),
-];
+const KNOWN_BROKEN: &[(&str, &str)] = &[];
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))

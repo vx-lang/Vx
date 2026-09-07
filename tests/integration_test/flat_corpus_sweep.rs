@@ -36,7 +36,6 @@ const KNOWN_DECLINES: &[&str] = &[
     // a dropped vx.transfer. Declining is the honest answer until the flat lowerer carries
     // run-time extents.
     "middle_end/pass/topology_polymorphism.vx",
-    "optimizations/pass/kernel_kind_matmul.vx",
     "warnings/pass/lowering_declined_for_dynamic_tile.vx",
     "warnings/pass/w1024_implicit_transfer.vx",
 ];
