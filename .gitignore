@@ -12,11 +12,20 @@ review/
 
 *.ll
 *.mlir
+
+# ...but never a test fixture. These globs are unanchored so they match at any depth, which
+# would silently drop a new `.mlir`/`.ll` fixture from the repo -- it would never be added,
+# never run, and nothing would say so.
+!tests/**/*.mlir
+!tests/**/*.ll
+!utils/**/*.mlir
+
 test_log.txt
 ast.txt
 config.local
 AGENTS.md
 .claude/settings.local.json
+.gemini/settings.local.json
 temp_hover.vx
 temp.vx
 
