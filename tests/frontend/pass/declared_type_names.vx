@@ -1,0 +1,37 @@
+// RUN: vxc %s --action print-ast 2>&1 | FileCheck %s
+//
+// The names that must NOT be reported by E3029. `void` and `none` are spelled as nominals but are
+// builtins; a generic parameter is a type variable, not a nominal; and a declared struct or enum
+// resolves normally. A compiler-synthesized closure type (`Closure_N`) is exempt for the same
+// reason -- nobody wrote it.
+//
+// CHECK-NOT: E3029
+
+struct Holder {
+  n : i32,
+}
+
+enum Colour {
+  Red,
+  Green,
+}
+
+fn takes_declared(h : Holder) -> i32 {
+  return h.n;
+}
+
+fn takes_enum(c : Colour) -> i32 {
+  return 0;
+}
+
+fn returns_void(x : i32) -> void {
+  let _y : i32 = x;
+}
+
+fn generic_param<T>(v : T) -> i32 {
+  return 0;
+}
+
+fn main() -> i32 {
+  return 0;
+}

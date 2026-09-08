@@ -1,0 +1,36 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// An unknown name in type position parses as a user-defined nominal type, and nothing downstream
+// asked whether such a type was ever declared. So a typo in an annotation compiled, did nothing,
+// and the only hint was a flat-path decline reading `a parameter type` -- which looks like an
+// ordinary coverage gap rather than a mistake in the source.
+//
+// It is also how an obsolete type constructor keeps "working" in documentation long after it is
+// removed: every example still compiles.
+
+// CHECK-DAG: E3029{{.*}}no type named 'Wibble' is declared or imported
+// CHECK-DAG: E3029{{.*}}no type named 'Frobnicate' is declared or imported
+fn invented(t : Wibble<Frobnicate>) -> i32 {
+  return 0;
+}
+
+// CHECK-DAG: E3029{{.*}}no type named 'CompletelyMadeUp' is declared or imported
+fn bare(t : CompletelyMadeUp) -> i32 {
+  return 0;
+}
+
+// A typo, which is the case that costs an afternoon: `Tesnor` is a nominal type named Tesnor.
+// CHECK-DAG: E3029{{.*}}no type named 'Tesnor' is declared or imported
+fn misspelled(t : Tesnor) -> i32 {
+  return 0;
+}
+
+// The return type is checked too, not only parameters.
+// CHECK-DAG: E3029{{.*}}no type named 'NoSuchResult' is declared or imported
+fn in_return_position(x : i32) -> NoSuchResult {
+  return 0;
+}
+
+fn main() -> i32 {
+  return 0;
+}

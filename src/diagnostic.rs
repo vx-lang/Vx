@@ -261,6 +261,10 @@ pub enum DiagnosticCode {
     /// here rather than left to codegen, where it surfaced as an MLIR verifier message naming an
     /// operation, with no source location.
     E3028,
+    /// A type name in a signature that names no declaration. An unknown name in type position
+    /// parses as a user nominal, so without this a typo -- or a type constructor removed from the
+    /// language -- compiled silently and did nothing.
+    E3029,
 
     // --- Borrow/Ownership Errors (E4xxx) ---
     /// Use of moved or consumed linear variable

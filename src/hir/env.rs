@@ -1022,6 +1022,59 @@ impl<'a> TypeChecker<'a> {
                 func.return_type
             ));
         }
+        // A nominal type in the signature that names no declaration. An unknown name in type
+        // position parses as a user nominal and nothing downstream asks whether it was ever
+        // declared, so `Wibble<Frobnicate>` compiled and did nothing -- and an obsolete
+        // constructor kept "working" in the documentation long after it was removed.
+        //
+        // `Struct(name, None)` is a legitimate state on its own: a cross-module generic carries an
+        // unresolved base that later code resolves by name. What is checked here is stronger --
+        // that no declaration of that name exists anywhere the checker can see.
+        {
+            fn walk(t: &Type, out: &mut Vec<String>) {
+                match t {
+                    Type::Struct(n, None) | Type::Enum(n, None) => out.push(n.to_string()),
+                    Type::Struct(_, _) | Type::Enum(_, _) => {}
+                    Type::Pointer(i, ..)
+                    | Type::Ref(i, _)
+                    | Type::Pinned(i, _)
+                    | Type::Verified(i)
+                    | Type::Borrow { inner: i, .. } => walk(i, out),
+                    Type::GenericInstance(b, args) => {
+                        walk(b, out);
+                        args.iter().for_each(|a| walk(a, out));
+                    }
+                    Type::Function(ps, r, _) | Type::Closure(ps, r) => {
+                        ps.iter().for_each(|a| walk(a, out));
+                        walk(r, out);
+                    }
+                    _ => {}
+                }
+            }
+            let mut names = Vec::new();
+            for (_, t) in &func.params {
+                walk(t, &mut names);
+            }
+            walk(&func.return_type, &mut names);
+            for n in names {
+                // `void`/`none` are spelled as nominals but are builtins, and a `Closure_N` is
+                // synthesized by the compiler rather than written by anyone.
+                if n == "void" || n == "none" || n.starts_with("Closure_") {
+                    continue;
+                }
+                let sym = crate::symbol::Symbol::from(n.as_str());
+                if !self.env.structs.contains_key(&sym) && !self.env.enums.contains_key(&sym) {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E3029,
+                        format!("no type named '{n}' is declared or imported"),
+                        func.body
+                            .first()
+                            .map(|st| crate::diagnostic::SourceSpan::from_ast_span(&st.span())),
+                    );
+                }
+            }
+        }
+
         // A non-void function whose body can complete without returning. Left to codegen this
         // surfaced as `block with no terminator` naming an arith op, with no source location and
         // no statement of what was wrong -- unreadable for the most ordinary mistake there is.
