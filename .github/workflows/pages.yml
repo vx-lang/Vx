@@ -1,0 +1,106 @@
+name: Deploy vxlang.org
+
+# The website: a hand-written landing page plus the book, built with mdBook from the markdown in
+# www/book/src and served under /docs/.
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'www/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time. Queued rather than cancelled, so a run that is already publishing
+# finishes rather than leaving the site half-updated.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      MDBOOK_VERSION: '0.5.4'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mdBook
+        run: |
+          set -euo pipefail
+          url="https://github.com/rust-lang/mdBook/releases/download/v${MDBOOK_VERSION}/mdbook-v${MDBOOK_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL "$url" | tar -xz -C "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Build the book
+        run: mdbook build www/book
+
+      - name: Assemble the site
+        run: |
+          set -euo pipefail
+          mkdir -p _site
+
+          # The landing page and its assets sit at the root.
+          cp www/index.html   _site/
+          cp www/style.css    _site/
+          cp www/favicon.svg  _site/
+          cp www/install.sh   _site/
+          cp www/CNAME        _site/
+
+          # The book is served under /docs/.
+          mkdir -p _site/docs
+          cp -R www/book/book/* _site/docs/
+
+          # A 404 that looks like the site rather than like GitHub.
+          cp www/index.html _site/404.html
+
+      - name: Check the install script is valid shell
+        run: sh -n _site/install.sh
+
+      - name: Check for broken internal links
+        run: |
+          set -euo pipefail
+          # Every root-relative href on the landing page should resolve to a file in the built
+          # site. Failures are collected to a file rather than a variable: the loop runs in a
+          # subshell, so an assignment inside it would not survive to the exit check.
+          grep -o 'href="/[^"]*"' _site/index.html \
+            | sed 's/href="//; s/"$//' \
+            | sort -u > /tmp/links.txt
+
+          : > /tmp/broken.txt
+          while read -r link; do
+            case "$link" in
+              */) target="_site${link}index.html" ;;
+              *)  target="_site${link}" ;;
+            esac
+            [ -e "$target" ] || echo "  $link  (expected $target)" >> /tmp/broken.txt
+          done < /tmp/links.txt
+
+          if [ -s /tmp/broken.txt ]; then
+            echo "Broken internal links on the landing page:"
+            cat /tmp/broken.txt
+            exit 1
+          fi
+          echo "All $(wc -l < /tmp/links.txt) internal links resolve."
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

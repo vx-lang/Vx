@@ -1,0 +1,215 @@
+name: Release toolchains
+
+# Builds the downloadable toolchains and attaches them to a GitHub release.
+#
+# Triggered by pushing a tag:  git tag v0.1.0 && git push origin v0.1.0
+#
+# Artifacts are published on GitHub Releases rather than on the website, because release assets
+# are served without bandwidth charges -- which matters when each one is a few hundred megabytes.
+on:
+  push:
+    tags: [ 'v*' ]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build, e.g. v0.1.0'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ubuntu-22.04 rather than latest, deliberately: the glibc a binary is built against
+          # sets the OLDEST distribution it will run on. 22.04 gives glibc 2.35, which covers
+          # every currently supported Ubuntu, Debian 12 and RHEL 9.
+          - os: ubuntu-22.04
+            name: Linux x86_64
+            target: x86_64-unknown-linux-gnu
+          - os: macos-14
+            name: macOS arm64
+            target: aarch64-apple-darwin
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Work out the version
+        id: version
+        shell: bash
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Free up disk space (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          # A release build of this project plus LLVM 22 does not comfortably fit in the
+          # default runner image alongside the preinstalled Android SDK and .NET.
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          df -h /
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install LLVM 22 and z3 (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          wget https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 22
+          sudo apt-get install -y \
+            llvm-22-dev libmlir-22-dev mlir-22-tools libpolly-22-dev libclang-22-dev \
+            ninja-build cmake z3 lld libffi-dev patchelf
+          echo "/usr/lib/llvm-22/bin" >> "$GITHUB_PATH"
+
+      - name: Install LLVM 22 and z3 (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          brew install llvm@22 z3 ninja cmake pkg-config || brew install llvm z3 ninja cmake pkg-config
+          prefix=$(brew --prefix llvm@22 2>/dev/null || brew --prefix llvm)
+          echo "$prefix/bin" >> "$GITHUB_PATH"
+
+      - name: Confirm the LLVM major version
+        shell: bash
+        run: |
+          set -euo pipefail
+          v=$(llvm-config --version)
+          echo "llvm-config reports $v"
+          case "$v" in
+            22.*) ;;
+            *) echo "error: expected LLVM 22, found $v" >&2; exit 1 ;;
+          esac
+
+      - name: Configure
+        shell: bash
+        run: ./setup.sh
+
+      - name: Build
+        shell: bash
+        run: |
+          set -euo pipefail
+          source config.local
+          cargo build --release --workspace
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          VX_SKIP_BUILD=1 ./scripts/release/package.sh "${{ steps.version.outputs.version }}"
+
+      # A tarball that has never been unpacked anywhere but its build directory is not evidence
+      # of anything. This unpacks it somewhere unrelated, points it at the LLVM on this runner
+      # exactly as the installer would, and compiles and runs a program from a directory that is
+      # not the checkout -- which is where the cwd-relative path bugs used to show up.
+      - name: Smoke-test the packaged toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ steps.version.outputs.version }}"
+          target="${{ matrix.target }}"
+          prefix="/tmp/vx-test/vx-${version}-${target}"
+
+          mkdir -p /tmp/vx-test
+          tar -xzf "dist/vx-${version}-${target}.tar.gz" -C /tmp/vx-test
+
+          mkdir -p "$prefix/etc"
+          printf 'VX_LLVM_BIN="%s"\n' "$(dirname "$(command -v llvm-config)")" \
+            > "$prefix/etc/llvm-env.sh"
+
+          mkdir -p /tmp/vx-work
+          cd /tmp/vx-work
+          cat > hello.vx <<'EOF'
+          fn main() -> i32 {
+              let x : i32 = 21;
+              return x * 2;
+          }
+          EOF
+
+          set +e
+          out=$("$prefix/bin/vxc" --run hello.vx 2>&1)
+          status=$?
+          set -e
+          echo "$out"
+
+          # --run propagates the program's exit code, and this program returns 42.
+          if [ "$status" -ne 42 ] && [ "$status" -ne 0 ]; then
+            echo "error: the packaged compiler failed to run a program (exit $status)" >&2
+            exit 1
+          fi
+          echo "$out" | grep -q "exited with code: 42" || {
+            echo "error: unexpected output from the packaged compiler" >&2
+            exit 1
+          }
+
+          # An import has to resolve from outside the checkout too -- that is the search path
+          # that used to silently drop stdlib/.
+          cat > uses_std.vx <<'EOF'
+          import std::vec;
+
+          fn main() -> i32 {
+              return 0;
+          }
+          EOF
+          "$prefix/bin/vxc" --parse-only uses_std.vx > /dev/null
+          echo "packaged toolchain works from outside the source tree"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vx-${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          retention-days: 7
+
+  release:
+    name: Publish the release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List what will be published
+        run: ls -lh artifacts/
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/*.tar.gz
+            artifacts/*.sha256
+          draft: true
+          generate_release_notes: true
+          body: |
+            ## Install
+
+            ```
+            curl -fsSL https://vxlang.org/install.sh | sh
+            ```
+
+            Requires LLVM 22 and, for `--verify-seams`, the `z3` binary. The installer checks for
+            both and prints the command to install them if they are missing. See
+            [the install guide](https://vxlang.org/docs/getting-started.html).
+
+            ## Platforms
+
+            | Platform | Artifact |
+            | --- | --- |
+            | macOS, Apple Silicon | `vx-<version>-aarch64-apple-darwin.tar.gz` |
+            | Linux x86_64, glibc 2.35+ | `vx-<version>-x86_64-unknown-linux-gnu.tar.gz` |
+
+            Verify a download against its `.sha256` before unpacking.

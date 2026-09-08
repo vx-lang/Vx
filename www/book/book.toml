@@ -1,0 +1,25 @@
+[book]
+title = "The Vx Book"
+authors = ["The Vx Project"]
+description = "Guides and reference for the Vx programming language."
+language = "en"
+src = "src"
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/vx-lang/Vx"
+edit-url-template = "https://github.com/vx-lang/Vx/edit/main/www/book/{path}"
+site-url = "/docs/"
+
+[output.html.print]
+enable = true
+
+[output.html.fold]
+enable = true
+level = 1
+
+[output.html.search]
+enable = true
+limit-results = 20
+use-boolean-and = true

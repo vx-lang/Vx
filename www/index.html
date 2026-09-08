@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vx — One Language, Every Core</title>
+<meta name="description" content="Vx is a systems programming language that puts heterogeneity in the type system. Dereferencing a device pointer from the host is a compile error, not a segfault.">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+
+<meta property="og:title" content="Vx — One Language, Every Core">
+<meta property="og:description" content="A systems language where CPU, GPU and NPU are types, not runtime configuration.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://vxlang.org/">
+<meta name="twitter:card" content="summary_large_image">
+
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="nav">
+  <a class="brand" href="/">
+    <span class="mark">Vx</span>
+  </a>
+  <nav>
+    <a href="/docs/getting-started.html">Install</a>
+    <a href="/docs/tour.html">Language tour</a>
+    <a href="/docs/">Docs</a>
+    <a href="https://github.com/vx-lang/Vx">GitHub</a>
+  </nav>
+</header>
+
+<main>
+
+<section class="hero">
+  <h1>One Language, <span class="grad">Every Core</span></h1>
+  <p class="lede">
+    Vx is a systems programming language for heterogeneous computing. CPU, GPU, NPU and
+    accelerator memory are part of the type system — so a host thread dereferencing a device
+    pointer is a <em>compile error</em>, not a segfault at three in the morning.
+  </p>
+
+  <div class="cta">
+    <a class="btn primary" href="/docs/getting-started.html">Get started</a>
+    <a class="btn" href="https://github.com/vx-lang/Vx">Source on GitHub</a>
+  </div>
+
+  <div class="install">
+    <code id="install-cmd">curl -fsSL https://vxlang.org/install.sh | sh</code>
+    <button id="copy" aria-label="Copy install command">Copy</button>
+  </div>
+  <p class="install-note">
+    macOS on Apple Silicon and Linux x86_64. <a href="/docs/getting-started.html">Other install options</a>.
+  </p>
+</section>
+
+<section class="thesis">
+  <p>
+    Heterogeneity belongs in the type system, not in the runtime.
+  </p>
+</section>
+
+<section class="pane">
+  <div class="pane-text">
+    <h2>Where data lives is part of its type</h2>
+    <p>
+      Most languages treat the accelerator as infrastructure: you write math, and a large opaque
+      runtime decides how to ship it. Vx treats it as semantics. A tensor pinned to NPU high-bandwidth
+      memory has a different type from one in host DRAM, and crossing between them takes an explicit
+      <code>transfer()</code> — <strong>even when the hardware boundary is free.</strong>
+    </p>
+    <p>
+      On Apple's unified memory that transfer compiles to almost nothing. It is still written down,
+      because data locality should be provable by reading the source rather than by profiling the
+      binary.
+    </p>
+  </div>
+  <div class="pane-code">
+<pre><code><span class="c">// Dispatch a matmul to an AI accelerator.</span>
+<span class="k">fn</span> <span class="f">custom_matmul</span>(a: <span class="t">Ref</span>&lt;<span class="t">Tensor</span>, <span class="t">Memory</span>::<span class="t">NPU_HBM</span>&gt;,
+                 b: <span class="t">Ref</span>&lt;<span class="t">Tensor</span>, <span class="t">Memory</span>::<span class="t">NPU_HBM</span>&gt;)
+    -&gt; <span class="t">Verified</span>&lt;<span class="t">Tensor</span>&gt; {
+
+    <span class="k">spawn on</span>(<span class="t">Topology</span>::<span class="t">NPU</span>[<span class="n">0</span>]) {
+        <span class="c">// Lowers natively to linalg.matmul.</span>
+        <span class="k">let</span> c = a * b;
+        <span class="k">return</span> <span class="t">Verified</span>(c);
+    }
+}</code></pre>
+  </div>
+</section>
+
+<section class="proves">
+  <h2>What the compiler rules out</h2>
+  <p class="section-lede">
+    Vx front-loads into type checking a class of bug that normally surfaces as a runtime crash,
+    silent corruption, or an out-of-memory at training step 1200.
+  </p>
+
+  <div class="grid">
+    <div class="card">
+      <h3>Address-space typing</h3>
+      <p>Dereferencing a device pointer from the host. A <code>Pinned&lt;T, NPU_SRAM&gt;</code> escaping into a host expression.</p>
+    </div>
+    <div class="card">
+      <h3>Capacity admission</h3>
+      <p>A placement whose working set cannot fit the memory space it targets — checked against the declared machine, before a binary exists.</p>
+    </div>
+    <div class="card">
+      <h3>Seam contracts</h3>
+      <p>Reading a buffer whose asynchronous <code>transfer</code> has not been made visible. Discharged by an SMT prover.</p>
+    </div>
+    <div class="card">
+      <h3>Linear types</h3>
+      <p>Use-after-move of a consumed buffer, alongside a borrow checker with variance and region tracking.</p>
+    </div>
+    <div class="card">
+      <h3>Topology reachability</h3>
+      <p>A transfer between two memory spaces with no declared path between them.</p>
+    </div>
+    <div class="card">
+      <h3>Autodiff</h3>
+      <p>Differentiating through a region whose adjoint is not defined.</p>
+    </div>
+  </div>
+</section>
+
+<section class="pane reverse">
+  <div class="pane-text">
+    <h2>The machine is declared, not assumed</h2>
+    <p>
+      Most compilers hard-code a cost model. Vx reads one. A <strong>machine file</strong> describes the
+      memory hierarchy and interconnect of a real part, and the compiler admits or rejects placements
+      against it.
+    </p>
+    <p>
+      Units are exact integer conversions, never floats: SI prefixes are decimal
+      (<code>GB</code> = 10<sup>9</sup>), IEC are binary (<code>GiB</code> = 2<sup>30</sup>). A figure
+      copied off a vendor sheet means what the sheet meant.
+    </p>
+    <p>
+      The repository ships machine files for H100, H200, B200, A100, MI300X, Apple M4 and multi-GPU
+      nodes — each citing its sources, and marking unverified figures as unverified.
+    </p>
+  </div>
+  <div class="pane-code">
+<pre><code><span class="k">Memory</span> <span class="t">HBM</span>  { capacity: <span class="n">80 GiB</span>, bandwidth: <span class="n">3.35 TB/s</span>,
+              managed: explicit, scope: device }
+
+<span class="k">Memory</span> <span class="t">L2</span>   { within: <span class="t">Memory</span>::<span class="t">HBM</span>, capacity: <span class="n">50 MiB</span>,
+              bandwidth: <span class="n">12 TB/s</span>, managed: cached }
+
+<span class="k">Memory</span> <span class="t">SMEM</span> { within: <span class="t">Memory</span>::<span class="t">L2</span>, capacity: <span class="n">228 KiB</span>,
+              bandwidth: <span class="n">128 B/cyc</span>, clock: <span class="n">1.98 GHz</span>,
+              replicas: <span class="n">132</span>, granule: <span class="n">1 KiB</span>, scope: sm }
+
+<span class="k">Topology</span> <span class="t">Device</span> {
+    arch: nvptx64,
+    memory: <span class="t">Memory</span>::<span class="t">HBM</span>,
+    <span class="k">transfer</span> <span class="t">Memory</span>::<span class="t">CPU_DRAM</span> -&gt; <span class="t">Memory</span>::<span class="t">HBM</span> : <span class="n">63 GB/s</span>,
+}</code></pre>
+  </div>
+</section>
+
+<section class="compiles">
+  <h2>How it compiles</h2>
+  <div class="two-col">
+    <div>
+      <h3>A data-oriented parallel frontend</h3>
+      <p>
+        Every symbol, nominal type and monomorphized variant is a flat 256-bit identifier. A nominal
+        type system plus mandatory boxing for recursive types decouples modules, so the pipeline runs
+        parallel across cores with no query engine and no lock contention. Compilation walks flat
+        arrays rather than pointer-chased trees.
+      </p>
+      <p>
+        The same source compiles to byte-identical MLIR whether it is built serially or in parallel.
+        That is asserted in the test suite rather than hoped for — at benchmark scale, at one thread,
+        at four, and with the thread pool taken off the path entirely, plus a corpus recompiled in
+        fresh processes so each run gets its own hash seed. The claim is about the MLIR the frontend
+        emits; everything downstream of it belongs to LLVM.
+      </p>
+    </div>
+    <div>
+      <h3>Backends</h3>
+      <table class="backends">
+        <tr><th>CPU (x86-64, arm64)</th><td>MLIR → LLVM IR → native, AOT or JIT</td></tr>
+        <tr><th>NVIDIA GPU</th><td>MLIR → NVVM → PTX → SASS</td></tr>
+        <tr><th>Apple AMX / ANE</th><td>CoreML primitive dispatch via plugin</td></tr>
+        <tr><th>Distributed</th><td>Manifest-driven remote regions over a wire protocol</td></tr>
+      </table>
+      <p class="small">
+        Vendors extend the compiler through MLIR pass plugins rather than by patching it.
+      </p>
+    </div>
+  </div>
+</section>
+
+<section class="honest">
+  <h2>Where Vx is the wrong tool</h2>
+  <p>
+    PyTorch users mutate architecture mid-loop, print a tensor shape, branch on it, and carry on.
+    In Vx — ahead-of-time, data-oriented, statically regioned — that same dynamism takes real work.
+  </p>
+  <p class="verdict">
+    Vx is the right language for the thing that must be correct and fast across ten kinds of silicon.
+    It is not the right language for the thing you are still figuring out.
+  </p>
+</section>
+
+<section class="final-cta">
+  <h2>Start here</h2>
+  <div class="links">
+    <a href="/docs/getting-started.html">
+      <strong>Getting started</strong>
+      <span>Install the toolchain and run your first program.</span>
+    </a>
+    <a href="/docs/tour.html">
+      <strong>A tour of Vx</strong>
+      <span>The language in one sitting: types, generics, ownership.</span>
+    </a>
+    <a href="/docs/heterogeneous.html">
+      <strong>Topologies and memory</strong>
+      <span>Placement, transfer, and what the checker enforces.</span>
+    </a>
+    <a href="/docs/machine-files.html">
+      <strong>Machine files</strong>
+      <span>Describe a real part; compile against its limits.</span>
+    </a>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="foot-inner">
+    <div>
+      <span class="mark small">Vx</span>
+      <p class="small">Apache License 2.0 with LLVM Exceptions.</p>
+    </div>
+    <nav class="foot-nav">
+      <a href="/docs/">Documentation</a>
+      <a href="https://github.com/vx-lang/Vx">GitHub</a>
+      <a href="https://github.com/vx-lang/Vx/issues">Issues</a>
+      <a href="https://github.com/vx-lang/Vx/releases">Releases</a>
+    </nav>
+  </div>
+</footer>
+
+<script>
+document.getElementById('copy').addEventListener('click', function () {
+  var text = document.getElementById('install-cmd').textContent;
+  navigator.clipboard.writeText(text).then(function () {
+    var b = document.getElementById('copy');
+    b.textContent = 'Copied';
+    setTimeout(function () { b.textContent = 'Copy'; }, 1600);
+  });
+});
+</script>
+
+</body>
+</html>

@@ -45,3 +45,6 @@ utils/memalg/session-*.tgz
 /affine_4.mlmodelc/
 /matmul_512x512_fp16.mlmodelc/
 /matmul_1024x1024_fp16.mlmodelc/
+
+# mdBook output for the website (www/book/book). Built by CI, never committed.
+www/book/book/
