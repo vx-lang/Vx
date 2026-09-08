@@ -1,5 +1,10 @@
 # Vx Architecture Specification: Heterogeneous Plugin System
 
+> **Status: architecture specification, partly unimplemented.** This describes the intended
+> plugin architecture. The code sketches use `spawn on` as an expression returning a future
+> and `.await` to join it; neither exists in the language today (`spawn on` is a statement,
+> and there is no `await` token). Read the sketches as intent, not as callable API.
+
 ## 1. Objective
 
 To provide a zero-overhead, plug-and-play architecture that allows hardware vendors (NPUs, GPUs, custom ASICs) to integrate their silicon into the Vx language. This architecture bypasses opaque runtime FFI calls in favor of **Compile-Time MLIR Pass Injection** and a **Minimal Runtime Dispatch C-ABI**.

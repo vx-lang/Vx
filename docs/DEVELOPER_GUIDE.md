@@ -25,7 +25,8 @@ This is the most complex part of the frontend. The `TypeChecker`:
 The `MlirGenerator` takes the fully monomorphized, type-checked AST and translates it into MLIR.
 
 - We utilize standard MLIR dialects like `func`, `arith`, `scf`, `cf`, and `memref`.
-- Tensors (`Tensor<f32>`) are lowered directly into MLIR `memref` types.
+- Tensors (`Tensor<f32, [4, 4]>`) are lowered directly into MLIR `memref` types. A shape is
+  part of the type and is never optional.
 - The codegen explicitly manages memory casting and runtime FFI hooks.
 
 ### 4. JIT Execution Engine (`src/jit.rs`)

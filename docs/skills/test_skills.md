@@ -95,7 +95,7 @@ For valid programs, place the file in a `pass/` directory (e.g.,
 // CHECK: module
 
 fn test_valid_operation() -> i32 {
-  let t : Tensor<f32> = 1.0;
+  let t : Tensor<f32, []> = 1.0;
   return 0;
 }
 ```
@@ -126,7 +126,7 @@ a `fail/` directory (e.g., `tests/frontend/fail/`).
 // RUN: not vxc %s 2>&1 | FileCheck %s
 
 fn main() -> i32 {
-  let t : Tensor<f32> = 1.0;
+  let t : Tensor<f32, []> = 1.0;
   let t_npu = transfer(t, Memory::NPU_HBM);
 
   spawn on(Topology::GPU) {

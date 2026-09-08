@@ -24,27 +24,45 @@ The language is governed by 7 core tenets:
 1. **Deterministic Memory Control**: No mandatory garbage collection. Programmers have control over memory layouts, lifetimes, and pointer arithmetic.
 1. **Zero-Cost Abstractions**: High-level constructs compile down to optimal machine code with no runtime overhead.
 1. **Direct Hardware Access**: CPU/SIMD intrinsics, and memory-mapped I/O through the standard library.
-1. **Strong System Interoperability**: Seamless C ABI interoperability and zero-overhead FFI to interact directly with existing OS kernels and C-ecosystem libraries.
+1. **Strong System Interoperability**: Zero-overhead FFI for *calling into* C — `extern "C"` declarations bind directly to OS and C-ecosystem libraries with no marshalling layer. Exporting Vx functions under the C ABI is not implemented yet.
 
 ## Quick Look
 
 In Vx, developers have explicit, type-safe control over where data lives and where code executes:
 
 ```rust
-// Declare a verified matrix multiplication
-fn custom_matmul(A: Ref<Tensor, Memory::NPU_HBM>,
-                 B: Ref<Tensor, Memory::NPU_HBM>) -> Verified<Tensor> {
-    // Explicitly dispatch computation to an AI Accelerator
+// Multiply two matrices that already live in NPU high-bandwidth memory.
+fn custom_matmul(a : Pinned<Tensor<f32, [4, 4]>, Topology::NPU[0]>,
+                 b : Pinned<Tensor<f32, [4, 4]>, Topology::NPU[0]>)
+    -> Verified<Tensor<f32, [4, 4], Memory::NPU_HBM>> {
+
+    let mut result = Tensor<f32, [4, 4], Memory::NPU_HBM>::uninit();
+
+    // Dispatch the computation to the accelerator.
     spawn on(Topology::NPU[0]) {
-        // Natively lowers to linalg.matmul
-        let C = A * B;
-        // Return a verified result
-        return Verified(C);
+        for i in 0..4 {
+            for j in 0..4 {
+                result[i][j] = 0.0;
+                for k in 0..4 {
+                    result[i][j] += a[i][k] * b[k][j];
+                }
+            }
+        }
     }
+
+    return Verified(result);
 }
 ```
 
-Crossing a memory domain requires an explicit `transfer()` **even when the hardware boundary is free** (Apple unified memory, for instance), so data locality is always provable from the source text. `spawn on` is an expression yielding `Future<Pinned<T, Topology>>`, so a single host thread can fan out across eight accelerators without blocking.
+A tensor's type carries its element type, its shape and the memory space it lives in. `Pinned<T, Topology>` says a value is resident on a particular device, and `Verified<T>` marks one whose proof
+obligations were discharged.
+
+Crossing a memory domain requires an explicit `transfer()` **even when the hardware boundary is free** (Apple unified memory, for instance), so data locality is always provable from the source text.
+
+> **Not implemented yet.** `spawn on` is a statement. The design intends it to become an expression
+> yielding a `Future`, so one host thread could fan work out across several accelerators and join
+> them later; there is no future type and no `await` in the language today. See
+> [`docs/spawn_on.md`](docs/spawn_on.md) for that design.
 
 ______________________________________________________________________
 
@@ -102,7 +120,7 @@ ______________________________________________________________________
 
 Every symbol, nominal type and monomorphized variant is a flat **256-bit GID** (`[u64; 4]`: module hash, symbol hash, generic context, flags). A nominal type system plus mandatory boxing for recursive types decouples modules, so the pipeline is parallel across cores with no query engine and no lock contention. Compilation walks flat arrays, not pointer-chased trees.
 
-The output is deterministic: the emitted MLIR is byte-identical regardless of thread count, which is asserted in the test suite rather than hoped for — over 1,000 modules and 16,000 functions, at one thread, at four, and with rayon taken off the path entirely.
+The same source compiles to byte-identical MLIR whether it is built serially or in parallel, which is asserted in the test suite rather than hoped for — over 1,000 modules and 16,000 functions, at one thread, at four, and with rayon taken off the path entirely, plus a corpus recompiled in fresh processes so each run gets its own hash seed. The claim is about the MLIR the frontend emits; everything downstream of `mlir-translate` belongs to LLVM.
 
 ### Backends
 
@@ -141,7 +159,7 @@ docs/                 design documents, plans, papers
 utils/memalg/         measurement instruments for validating the cost model
 vx-analyzer/          language server
 vscode-vx/            VS Code extension
-tests/                27 integration suites plus ~460 unit tests
+tests/                42 integration suites plus ~535 unit tests
 ```
 
 ______________________________________________________________________

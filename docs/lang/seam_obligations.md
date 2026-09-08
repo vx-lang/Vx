@@ -56,7 +56,7 @@ consumer requires of the produced buffer (matched by the `let` binding it feeds,
 e.g. `local_a`) is consulted as the contract's conclusion.
 
 ```vx
-fn f(a: Tensor<i32>) -> Pinned<Tensor<i32>, Topology::NPU[0]> {
+fn f(a: Tensor<i32, [4]>) -> Pinned<Tensor<i32, [4]>, Topology::NPU[0]> {
     let local_a = a.to_device_relaxed();   // seam checked here
     spawn on(Topology::NPU[0]) {
         assert(local_a == 42);             // recovered by the pre-scan

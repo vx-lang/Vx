@@ -75,16 +75,28 @@
     </p>
   </div>
   <div class="pane-code">
-<pre><code><span class="c">// Dispatch a matmul to an AI accelerator.</span>
-<span class="k">fn</span> <span class="f">custom_matmul</span>(a: <span class="t">Ref</span>&lt;<span class="t">Tensor</span>, <span class="t">Memory</span>::<span class="t">NPU_HBM</span>&gt;,
-                 b: <span class="t">Ref</span>&lt;<span class="t">Tensor</span>, <span class="t">Memory</span>::<span class="t">NPU_HBM</span>&gt;)
-    -&gt; <span class="t">Verified</span>&lt;<span class="t">Tensor</span>&gt; {
+<pre><code><span class="c">// Two matrices already resident in NPU memory.</span>
+<span class="k">fn</span> <span class="f">custom_matmul</span>(
+    a: <span class="t">Pinned</span>&lt;<span class="t">Tensor</span>&lt;<span class="t">f32</span>, [<span class="n">4</span>, <span class="n">4</span>]&gt;, <span class="t">Topology</span>::<span class="t">NPU</span>[<span class="n">0</span>]&gt;,
+    b: <span class="t">Pinned</span>&lt;<span class="t">Tensor</span>&lt;<span class="t">f32</span>, [<span class="n">4</span>, <span class="n">4</span>]&gt;, <span class="t">Topology</span>::<span class="t">NPU</span>[<span class="n">0</span>]&gt;)
+    -&gt; <span class="t">Verified</span>&lt;<span class="t">Tensor</span>&lt;<span class="t">f32</span>, [<span class="n">4</span>, <span class="n">4</span>], <span class="t">Memory</span>::<span class="t">NPU_HBM</span>&gt;&gt; {
 
+    <span class="k">let mut</span> result =
+        <span class="t">Tensor</span>&lt;<span class="t">f32</span>, [<span class="n">4</span>, <span class="n">4</span>], <span class="t">Memory</span>::<span class="t">NPU_HBM</span>&gt;::<span class="f">uninit</span>();
+
+    <span class="c">// Dispatch the computation to the accelerator.</span>
     <span class="k">spawn on</span>(<span class="t">Topology</span>::<span class="t">NPU</span>[<span class="n">0</span>]) {
-        <span class="c">// Lowers natively to linalg.matmul.</span>
-        <span class="k">let</span> c = a * b;
-        <span class="k">return</span> <span class="t">Verified</span>(c);
+        <span class="k">for</span> i <span class="k">in</span> <span class="n">0</span>..<span class="n">4</span> {
+            <span class="k">for</span> j <span class="k">in</span> <span class="n">0</span>..<span class="n">4</span> {
+                result[i][j] = <span class="n">0.0</span>;
+                <span class="k">for</span> k <span class="k">in</span> <span class="n">0</span>..<span class="n">4</span> {
+                    result[i][j] += a[i][k] * b[k][j];
+                }
+            }
+        }
     }
+
+    <span class="k">return</span> <span class="t">Verified</span>(result);
 }</code></pre>
   </div>
 </section>

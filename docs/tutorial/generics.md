@@ -7,11 +7,11 @@ Vx supports generic programming, allowing you to write highly reusable, statical
 In systems programming, you frequently write operations that are structurally identical but operate on different precision levels (e.g., `f32` vs `i32` tensors). Without generics, you would have to duplicate code:
 
 ```vx
-fn process_f32(val: Tensor<f32>) -> Tensor<f32> {
+fn process_f32(val: Tensor<f32, []>) -> Tensor<f32, []> {
     return val;
 }
 
-fn process_i32(val: Tensor<i32>) -> Tensor<i32> {
+fn process_i32(val: Tensor<i32, []>) -> Tensor<i32, []> {
     return val;
 }
 ```
@@ -32,15 +32,17 @@ fn process<T>(val: T) -> T {
 When calling a generic function, you **do not** need to explicitly specify the type. The Vx compiler is smart enough to deduce the type of `T` based on the arguments you pass in.
 
 ```vx
-fn main() {
-    let t1: Tensor<f32> = 1.0;
-    let t2: Tensor<i32> = 2;
+fn main() -> i32 {
+    let t1: Tensor<f32, []> = 1.0;
+    let t2: Tensor<i32, []> = 2;
 
-    // The compiler automatically infers T = Tensor<f32>
+    // The compiler automatically infers T = Tensor<f32, []>
     let res1 = process(t1);
 
-    // The compiler automatically infers T = Tensor<i32>
+    // The compiler automatically infers T = Tensor<i32, []>
     let res2 = process(t2);
+
+    return 0;
 }
 ```
 

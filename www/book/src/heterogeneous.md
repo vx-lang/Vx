@@ -46,36 +46,51 @@ Two things the compiler checks here:
 
 ```rust
 fn main() -> i32 {
-    let mut a_host : Tensor<f32, [4, 4]> = /* ... */;
-    let mut b_host : Tensor<f32, [4, 4]> = /* ... */;
-    let mut result_host : Tensor<f32, [4, 4]> = /* ... */;
+    let mut host : Tensor<f32, [4, 4]> = Tensor<f32, [4, 4]>::uninit();
+    for i in 0..4 {
+        for j in 0..4 {
+            host[i][j] = 1.0;
+        }
+    }
 
-    let a = transfer(a_host, Memory::NPU_HBM);
-    let b = transfer(b_host, Memory::NPU_HBM);
-    let mut result = transfer(result_host, Memory::NPU_HBM);
+    let mut device = transfer(host, Memory::NPU_HBM);
 
     spawn on(Topology::NPU[0]) {
         for i in 0..4 {
             for j in 0..4 {
-                for k in 0..4 {
-                    result[i][j] += a[i][k] * b[k][j];
-                }
+                device[i][j] += 1.0;
             }
         }
     }
 
-    print(result);
     return 0;
 }
 ```
+
+`Tensor<f32, [4, 4]>::uninit()` takes no arguments: the shape is already part of the type. Only the
+dynamic form needs extents passed — `Tensor<f32, [?, ?]>::uninit([rows, cols])`.
 
 The block is outlined into a kernel and handed to the dispatcher for that topology. On Apple Silicon
 that means CoreML and the neural engine; on an NVIDIA box it means PTX. The source does not change
 between the two — the machine file does.
 
 Every value the block touches must already live in a memory the target topology can address. That is
-why the three `transfer` calls come first. Skip one, and the error names the value and the space it
-is in rather than crashing inside a vendor runtime.
+why the `transfer` comes first. Skip it, and the error names the value and the space it is in rather
+than crashing inside a vendor runtime.
+
+The block also calls no helper function. A function declared without a topology belongs to the host,
+and calling it from inside a device region is a compile error:
+
+```
+Error[E6001]: Function 'f' requires topology 'CPU', but is called from 'ANE'
+```
+
+That is the address-space rule doing its job. Code meant for a device is written in the region, or
+in a function declared for that topology.
+
+> **Not implemented yet.** `spawn on` is a statement. The design intends it to become an expression
+> yielding a `Future`, so a host thread could fan work across several accelerators and join later.
+> There is no future type and no `await` in the language today.
 
 ## What gets rejected
 
@@ -102,14 +117,30 @@ function returning `Verified<Tensor>` is asserting that the placement, capacity 
 conditions on the path that produced it were all discharged, not merely unchecked.
 
 ```rust
-fn custom_matmul(a: Ref<Tensor, Memory::NPU_HBM>,
-                 b: Ref<Tensor, Memory::NPU_HBM>) -> Verified<Tensor> {
+fn custom_matmul(a : Pinned<Tensor<f32, [4, 4]>, Topology::NPU[0]>,
+                 b : Pinned<Tensor<f32, [4, 4]>, Topology::NPU[0]>)
+    -> Verified<Tensor<f32, [4, 4], Memory::NPU_HBM>> {
+
+    let mut result = Tensor<f32, [4, 4], Memory::NPU_HBM>::uninit();
+
     spawn on(Topology::NPU[0]) {
-        let c = a * b;
-        return Verified(c);
+        for i in 0..4 {
+            for j in 0..4 {
+                result[i][j] = 0.0;
+                for k in 0..4 {
+                    result[i][j] += a[i][k] * b[k][j];
+                }
+            }
+        }
     }
+
+    return Verified(result);
 }
 ```
+
+`Pinned<T, Topology>` says the value is resident on a particular device. Note the third type
+argument on `Tensor` — the memory space it lives in — and that `Verified(...)` wraps the result
+*after* the region, not inside it.
 
 ## Choosing a machine at compile time
 

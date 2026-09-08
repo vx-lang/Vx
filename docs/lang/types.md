@@ -141,7 +141,7 @@ A `Pinned<T, TopologyA>` value can only be accessed from topologies that have vi
 
 ```rust
 fn invalid_cross_access() -> i32 {
-    let t : Tensor<f32> = 1.0;
+    let t : Tensor<f32, []> = 1.0;
     let t_npu = transfer(t, Memory::NPU_HBM);
 
     spawn on(Topology::GPU) {
@@ -321,21 +321,30 @@ Vx uses a **linear type discipline** for resource-owning types. A linear value m
 
 ### Linear Types (consumed on use)
 
+A tensor's shape is part of its type and is never optional: `Tensor<f32, []>` is a scalar,
+`Tensor<f32, [2, 3]>` a fixed shape, `Tensor<f32, [?, ?]>` one whose extents are run-time values.
+Writing `Tensor<f32>` is a parse error.
+
 | Type | Example |
 |------|---------|
-| `Tensor<T, Shape>` | `let a : Tensor<f32> = 1.0;` |
+| `Tensor<T, Shape>` | `let a : Tensor<f32, []> = 1.0;` |
+| `Tensor<T, Shape, Memory>` | `let d = Tensor<f32, [4, 4], Memory::NPU_HBM>::uninit();` |
 | `Matrix` | `let m : Matrix = ...;` |
-| `Ref<T, Memory>` | `let r : Ref<Tensor, Memory::CPU_DRAM> = ...;` |
-| `Verified<T>` | `let v : Verified<Tensor> = ...;` |
-| `Pinned<T, Topology>` | `let p : Pinned<Tensor, NPU[0]> = ...;` |
+| `Verified<T>` | `let v : Verified<Tensor<f32, [4, 4]>> = ...;` |
+| `Pinned<T, Topology>` | `let p : Pinned<Tensor<f32, [4, 4]>, Topology::NPU[0]> = ...;` |
 | `struct` instances | `let cfg = Config { value: 1.0 };` |
 | `enum` instances | `let opt = Option::Some(42);` |
 
 ```rust
-let a : Tensor<f32> = 1.0;
+let a : Tensor<f32, []> = 1.0;
 let b = a;  // a is consumed here
-let c = a;  // COMPILE ERROR: Use of moved or consumed linear variable: a
+let c = a;  // Error[E4001]: Use of moved or consumed linear variable: a
 ```
+
+> **Obsolete.** Earlier drafts described a `Ref<T, Memory>` type for a value resident in a named
+> memory space. It was replaced by `Pinned<T, Topology>` and the memory parameter on `Tensor`.
+> `Ref` is no longer a type constructor; because any unknown name parses as a user-defined nominal
+> type, writing it produces no error and no effect.
 
 ### Copyable Types (reusable freely)
 

@@ -21,7 +21,7 @@ Allowing programmers to safely and mathematically verify computation boundaries.
 
 - `[x]` `Verified<T>` primitive wrapper in the type system
 - `[ ]` Hardware-aware Effect tracking in Semantic Analysis
-- `[ ]` Formal Pre-condition / Post-condition verification contracts
+- `[x]` Formal Pre-condition / Post-condition verification contracts
 - `[ ]` Dependent types (e.g., verifying matrix dimensions match at compile time)
 
 ## 3. Performance

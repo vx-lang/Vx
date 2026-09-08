@@ -1,3 +1,7 @@
+> **Status: design, not implemented.** `spawn on` is a statement today. There is no future type
+> and no `await` in the language — neither appears in the lexer or the parser. This document is the
+> intended design; nothing in it can be called from a Vx program at present.
+
 If `spawn on` is synchronous, it would recreate the worst performance bottleneck found in legacy ML frameworks: the host CPU stalling while waiting for the GPU/NPU to finish. A single CPU thread would be unable to orchestrate a cluster of 8 NPUs because it would block on `NPU[0]`.
 
 Here is the architectural rationale for why it must be a Future, how to represent it in the type system, and how to implement the execution semantics.

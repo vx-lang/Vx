@@ -7,11 +7,17 @@ This document outlines the core syntax of the **Vx** programming language. Vx us
 Vx programs are structured into modules, functions, and scopes.
 
 ```rust
-// A basic function
-fn compute_metrics(data: Tensor<f32>) -> Tensor<f32> {
+// A basic function. Parameter and return types are mandatory.
+fn scale(data : Tensor<f32, [4]>) -> f32 {
     // Variable declaration
-    let intermediate = data.map(|x| x * 2.0);
-    intermediate
+    let first = data[0];
+    first * 2.0
+}
+
+fn main() -> i32 {
+    let t : Tensor<f32, [4]> = [ 1.0, 2.0, 3.0, 4.0 ];
+    print(scale(t));
+    return 0;
 }
 ```
 
@@ -44,7 +50,7 @@ When a range expression is used inside the NPU index brackets, the parser constr
 fn parallel_forward_pass() -> i32 {
     // Spawn computation across NPUs 0 through 3
     spawn on(Topology::NPU[0..4]) {
-        let chunk : Tensor<f32> = 1.0;
+        let chunk : Tensor<f32, []> = 1.0;
         // All four NPUs execute this block
     }
     return 0;
@@ -62,7 +68,7 @@ Topology indices can be runtime expressions, including loop variables. This enab
 fn scatter_to_npus() -> i32 {
     for i in 0..4 {
         spawn on(Topology::NPU[i]) {
-            let local_data : Tensor<f32> = 1.0;
+            let local_data : Tensor<f32, []> = 1.0;
             // Each iteration spawns on a different NPU
         }
     }
@@ -83,11 +89,12 @@ fn dummy_kernel(x: i32) on Topology::NPU[0] -> i32 {
     return x;
 }
 
-fn process() {
+fn process() -> i32 {
     // Valid: calling the function from a matching topology scope
     spawn on (Topology::NPU[0]) {
         dummy_kernel(0);
     }
+    return 0;
 }
 ```
 
@@ -178,7 +185,7 @@ fn dispatch<D: Topology>(x: Pinned<i32, Topology::D>) -> i32 {
 Data cannot be implicitly moved across address spaces. Moving data requires the `transfer` primitive, which explicitly tracks ownership and liveness across boundaries.
 
 ```rust
-fn heterogeneous_pipeline(host_input: Tensor<f32, [1024], Memory::CPU_DRAM>) {
+fn heterogeneous_pipeline(host_input: Tensor<f32, [1024], Memory::CPU_DRAM>) -> i32 {
     spawn on(Topology::NPU[0]) {
         // Explicitly transfer data from Host DRAM to NPU HBM
         let local_data = transfer(host_input, Memory::NPU_HBM);
@@ -189,6 +196,7 @@ fn heterogeneous_pipeline(host_input: Tensor<f32, [1024], Memory::CPU_DRAM>) {
         // Transfer result back to Host DRAM
         let host_result = transfer(result, Memory::CPU_DRAM);
     }
+    return 0;
 }
 ```
 
@@ -324,32 +332,37 @@ fn optimize() {
 Vx supports formal verification through contract programming. Functions and loops can be annotated with preconditions, postconditions, and invariants to mathematically prove program correctness at compile time.
 
 ```rust
-// Preconditions (`requires`) must be true before the function executes
-// Postconditions (`ensures`) are proven to be true after the function returns
-fn safe_divide(x: i32, y: i32) -> i32
-    requires y != 0
-    ensures return <= x
+// `requires` must hold on entry. `ensures` is proven to hold of the return value.
+fn difference(x : i32, y : i32) -> i32
+    requires x >= y
+    ensures return >= 0
 {
-    return x / y;
+    return x - y;
 }
 
-fn compute_sum(n: i32) -> i32
-    requires n >= 0
+// A loop invariant must hold on entry and be preserved by the body. Note the
+// parentheses: `invariant(...)` takes them, `requires` and `ensures` do not.
+fn test_loop_increment(N : i32) -> i32
+    requires N == 0
+    ensures return == 0
 {
-    let mut sum = 0;
-    let mut i = 0;
-    // Loop invariants must hold before, during, and after loop execution
-    loop
-        invariant i <= n
-        invariant sum >= 0
-    {
-        if i >= n { break; }
-        sum += i;
-        i += 1;
+    for i in 0..10 invariant(N == 0) {
+        let x = N;
     }
-    return sum;
+    return N;
 }
 ```
+
+The prover rejects what it cannot establish. Weakening the postcondition above to `return > 0` is
+refused, because `x == y` satisfies the precondition and yields `0`:
+
+```
+Error[E8001]: Function 'difference' cannot prove postcondition (ensures)
+```
+
+Two limits worth knowing. The prover reasons over linear integer arithmetic, so contracts involving
+integer division are typically not provable even when they are true. And `--verify-seams`, which
+discharges asynchronous-transfer obligations, is a separate opt-in flag that shells out to `z3`.
 
 ## 10. Macros
 

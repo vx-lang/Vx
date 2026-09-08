@@ -31,7 +31,9 @@ fn add(a : i32, b : i32) -> i32 {
 }
 ```
 
-Parameter types and the return type are mandatory. Every function returns explicitly with `return`.
+Parameter types and the return type are both mandatory — there is no inference for either, and a
+function with no useful result is written `-> void`. A function may end with a bare expression
+instead of `return`, as in Rust.
 
 ## Control flow
 
@@ -72,8 +74,11 @@ struct Point {
     y: i32,
 }
 
-let p = Point { x: 3, y: 4 };
-let a = p.x;
+fn main() -> i32 {
+    let p = Point { x: 3, y: 4 };
+    let a = p.x;
+    return a;
+}
 ```
 
 Methods go in an `impl` block, and the receiver is written out in full — there is no implicit
@@ -85,12 +90,14 @@ impl Point {
         return self.x * self.x + self.y * self.y;
     }
 
-    fn translate(self: &mut Point, dx: i32, dy: i32) {
+    fn translate(self: &mut Point, dx: i32, dy: i32) -> void {
         self.x += dx;
         self.y += dy;
     }
 }
 ```
+
+A return type is never optional. A function that produces no useful result returns `void`.
 
 `&Point` borrows immutably, `&mut Point` mutably. A method with no `self` parameter is an associated
 function, called as `Point::make(...)`.
