@@ -8,7 +8,7 @@
 // RUN: not vxc %s 2>&1 | FileCheck %s
 
 // CHECK: Expected method name
-// CHECK:   fn (self: Tensor<f32>) -> Tensor<i32>;
+// CHECK:   fn (self: Tensor<f32, [?, ?]>) -> Tensor<i32, [?, ?]>;
 // CHECK:       ^^^^~~~~
 trait MissingMethodName {
   fn (self: Tensor<f32, [?, ?]>) -> Tensor<i32, [?, ?]>;

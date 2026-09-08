@@ -46,7 +46,9 @@ impl<'a> ParserError<'a> {
                     found.line,
                     found.column,
                     found.length.max(1),
-                    &format!("Unexpected token {:?}. Expected {}", found.kind, expected),
+                    // The caller's message already says what was expected -- all 149 of them
+                    // begin "Expected ..." -- so prefixing another one read "Expected Expected '}'".
+                    &format!("Unexpected token {:?}. {}", found.kind, expected),
                 )
             }
             ParserError::Custom { message, token } => crate::error::format_compiler_error(
@@ -57,7 +59,7 @@ impl<'a> ParserError<'a> {
                 message,
             ),
             ParserError::EndOfFile { expected } => {
-                format!("Unexpected end of file. Expected {}", expected)
+                format!("Unexpected end of file. {}", expected)
             }
         }
     }

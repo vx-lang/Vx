@@ -13,7 +13,7 @@ fn main() -> i32 {
 
   spawn on(Topology::AccCore[0]) {
     // AccCore can only see LocalSRAM, not CPU DRAM
-    // CHECK: Cross-topology access error
+    // CHECK: E6003{{.*}}'t_host' lives in CPU_DRAM but AccCore[0] sees only [Local_SRAM]
     let invalid = t_host;
   }
 

@@ -25,4 +25,4 @@ fn test_3() -> void {
   let x = Topology::Fake;
 }
 
-// CHECK: Error at 19:13: Expected 'Topology'
+// CHECK: Error at 18:12: {{.*}}Expected 'Topology'

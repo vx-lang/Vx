@@ -21,5 +21,5 @@ fn main() -> i32 {
   return 0;
 }
 
-// CHECK-DAG: Type error: Function 'require_gpu' requires topology 'GPU', but is called from 'CPU'
-// CHECK-DAG: Type error: Function 'require_npu' requires topology 'NPU
+// CHECK-DAG: Type error: Function 'require_gpu' requires topology 'GPU[0]', but is called from 'CPU'
+// CHECK-DAG: Type error: Function 'require_npu' requires topology 'NPU[0]

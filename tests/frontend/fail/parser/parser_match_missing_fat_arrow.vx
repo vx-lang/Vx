@@ -1,6 +1,6 @@
 //===- parser_match_missing_fat_arrow.vx - Vx Compiler -------------------*- Vx
 //-*-===//
-// CHECK: Error at 14:8: Expected '=>' after pattern
+// CHECK: Error at 15:7: {{.*}}Expected '=>' after pattern
 //
 // Part of the Vx Project, under the BSD 3-Clause License.
 // See LICENSE for license information.

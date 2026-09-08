@@ -8,7 +8,7 @@
 // RUN: not vxc %s 2>&1 | FileCheck %s
 
 // CHECK: Expected 'fn' in trait
-// CHECK:   dim(self: Tensor<f32>) -> Tensor<i32>;
+// CHECK:   dim(self: Tensor<f32, [?, ?]>) -> Tensor<i32, [?, ?]>;
 // CHECK:   ^^^~~~~
 trait MissingFn {
   dim(self: Tensor<f32, [?, ?]>) -> Tensor<i32, [?, ?]>;

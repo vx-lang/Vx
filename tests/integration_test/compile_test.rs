@@ -665,18 +665,14 @@ fn test_frontend_fail() -> Result<(), String> {
         .arg("--version")
         .output()
         .is_ok();
-    run_directory_tests(
+    let _ = has_z3;
+    // `formal_verification` and `unimplemented_smt` have runners of their own, which gate on z3.
+    // Everything else under here is walked, including the subdirectories that had no runner at
+    // all: 39 fixtures that never executed, and so drifted.
+    run_directory_tests_recursive(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/frontend/fail"),
-        |path| {
-            let path_str = path.to_string_lossy();
-            if !has_z3
-                && (path_str.contains("formal_verification")
-                    || path_str.contains("unimplemented_smt"))
-            {
-                return Err("z3 is not installed".to_string());
-            }
-            run_shell_tests(path)
-        },
+        &["formal_verification", "unimplemented_smt"],
+        run_shell_tests,
     )
 }
 
@@ -1311,7 +1307,54 @@ fn test_backend_fail() -> Result<(), String> {
 }
 
 // --- Test Runners ---
+/// Every `.vx` under `dir`, recursively, except inside a directory named in `skip`.
+///
+/// `skip` exists because a subdirectory can have a runner of its own that does something this
+/// one does not -- a z3 gate, or a different command entirely. Walking it here would run those
+/// fixtures the wrong way, so they are left to their own test.
+fn vx_files_under(dir: &Path, skip: &[&str], out: &mut Vec<std::path::PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    let mut entries: Vec<_> = entries.filter_map(|e| e.ok()).map(|e| e.path()).collect();
+    entries.sort();
+    for path in entries {
+        if path.is_dir() {
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if !skip.contains(&name) {
+                vx_files_under(&path, skip, out);
+            }
+        } else if path.extension().and_then(|s| s.to_str()) == Some("vx") {
+            out.push(path);
+        }
+    }
+}
+
 fn run_directory_tests<F>(dir: std::path::PathBuf, test_fn: F) -> Result<(), String>
+where
+    F: Fn(&std::path::Path) -> Result<(), String> + Sync + Send,
+{
+    run_directory_tests_inner(dir, &[], false, test_fn)
+}
+
+/// As [`run_directory_tests`], but walking subdirectories too, except those named in `skip`.
+fn run_directory_tests_recursive<F>(
+    dir: std::path::PathBuf,
+    skip: &[&str],
+    test_fn: F,
+) -> Result<(), String>
+where
+    F: Fn(&std::path::Path) -> Result<(), String> + Sync + Send,
+{
+    run_directory_tests_inner(dir, skip, true, test_fn)
+}
+
+fn run_directory_tests_inner<F>(
+    dir: std::path::PathBuf,
+    skip: &[&str],
+    recurse: bool,
+    test_fn: F,
+) -> Result<(), String>
 where
     F: Fn(&std::path::Path) -> Result<(), String> + Sync + Send,
 {
@@ -1319,11 +1362,19 @@ where
     let _guard = TEST_MUTEX.lock().unwrap();
 
     if dir.exists() {
-        let entries: Vec<_> = fs::read_dir(dir).unwrap().map(|e| e.unwrap()).collect();
+        let entries: Vec<std::path::PathBuf> = if recurse {
+            let mut v = Vec::new();
+            vx_files_under(&dir, skip, &mut v);
+            v
+        } else {
+            fs::read_dir(&dir)
+                .unwrap()
+                .map(|e| e.unwrap().path())
+                .collect()
+        };
         let errors: Vec<String> = entries
             .into_par_iter()
-            .filter_map(|entry| {
-                let path = entry.path();
+            .filter_map(|path| {
                 if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("vx") {
                     let result =
                         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| test_fn(&path)));

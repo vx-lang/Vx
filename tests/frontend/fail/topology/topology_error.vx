@@ -1,5 +1,5 @@
 //===- topology_error.vx - Vx Compiler ---------------------------*- Vx -*-===//
-// CHECK: Cross-topology access error: Variable 't_host' belongs to Host (type:
+// CHECK: E6003{{.*}}'t_host' lives in CPU_DRAM but NPU[0] sees only [NPU_HBM]
 // Tensor(F32, [], None)), but accessed from NPU(Number(NumberExpr { value: "0",
 // ty: Some(I32), span: Span { line: 0, column: 0, length: 0 } }))
 //

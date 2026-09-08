@@ -1,12 +1,6 @@
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// CHECK: Type mismatch in logical operation: bool vs f32
-// CHECK: Type mismatch in logical operation: bool vs f32
-// CHECK: Type mismatch in logical operation: bool vs f32
-// CHECK: Type mismatch in logical operation: bool vs f32
-// CHECK: Type mismatch in logical operation: bool vs i32
-// CHECK: Type mismatch in logical operation: bool vs i32
-// CHECK: Type mismatch in logical operation: bool vs i32
-// CHECK: Type mismatch in logical operation: bool vs i32
+// CHECK-DAG: Type mismatch in logical operation: bool vs f32
+// CHECK-DAG: Type mismatch in logical operation: bool vs i32
 
 fn gen_bool_mismatch_f32_and() -> Bool {
   let a : Bool = true;

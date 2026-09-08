@@ -1,5 +1,7 @@
 //===- tensor_topology_mismatch.vx - Vx Compiler -----------------*- Vx -*-===//
-// CHECK: Expected '>' after Tensor parameters
+// The subject is the topology on the tensor: an `ANE`-placed parameter given an `AMX`-placed
+// argument. This file used to fail to parse before reaching it, so it tested nothing.
+// CHECK: E3003{{.*}}Type mismatch in argument 1 for function 'requires_specific_topology'
 //
 // Part of the Vx Project, under the BSD 3-Clause License.
 // See LICENSE for license information.
@@ -8,9 +10,9 @@
 //===----------------------------------------------------------------------===//
 // RUN: not vxc %s 2>&1 | FileCheck %s
 
-fn requires_specific_topology(t : Tensor<f32, [ 128, 256 ], Topology::ANE>) {}
+fn requires_specific_topology(t : Tensor<f32, [ 128, 256 ], Topology::ANE>) -> void {}
 
-fn main() {
+fn main() -> i32 {
   let t : Tensor<f32, [ 128, 256 ], Topology::AMX> = 1.0;
   requires_specific_topology(t);
 }

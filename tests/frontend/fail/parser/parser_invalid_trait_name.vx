@@ -8,7 +8,7 @@
 // RUN: not vxc %s 2>&1 | FileCheck %s
 
 // CHECK: Expected trait name
-// CHECK:   fn dim(self: Tensor<f32>) -> Tensor<i32>;
+// CHECK:   fn dim(self: Tensor<f32, [?, ?]>) -> Tensor<i32, [?, ?]>;
 // CHECK:   ^^~~~~
 trait {
   fn dim(self: Tensor<f32, [?, ?]>) -> Tensor<i32, [?, ?]>;

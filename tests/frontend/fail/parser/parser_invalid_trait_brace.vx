@@ -8,7 +8,7 @@
 // RUN: not vxc %s 2>&1 | FileCheck %s
 
 // CHECK: Expected '{'
-// CHECK: fn dim(self: Tensor<f32>) -> Tensor<i32>;
+// CHECK: fn dim(self: Tensor<f32, [?, ?]>) -> Tensor<i32, [?, ?]>;
 // CHECK: ^^~~~~
 trait MissingBraces
 fn dim(self: Tensor<f32, [?, ?]>) -> Tensor<i32, [?, ?]>;
