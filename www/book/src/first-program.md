@@ -69,15 +69,13 @@ fn sum_to(n : i32) -> i32 {
 }
 
 fn classify(x : i32) -> i32 {
-    let mut res : i32 = 0;
     if x > 10 {
-        res = 1;
+        return 1;
     } else if x == 10 {
-        res = 2;
+        return 2;
     } else {
-        res = 3;
+        return 3;
     }
-    return res;
 }
 
 fn main() -> i32 {
@@ -89,23 +87,10 @@ fn main() -> i32 {
 }
 ```
 
-> **A rough edge to know about now.** Notice that `classify` assigns to a variable and returns once
-> at the end, rather than returning from inside each branch. That is currently required. A function
-> whose every path returns from inside an `if`/`else` is not yet recognised as returning, and fails
-> with `Error[E3002]: Type mismatch on return. Expected i32, got void`:
->
-> ```rust
-> fn f(x : i32) -> i32 {
->     if x > 0 {
->         return 1;
->     } else {
->         return 2;      // rejected today, even though every path returns
->     }
-> }
-> ```
->
-> Assign to a `mut` binding and return once at the end, as above. This is a gap in the compiler's
-> return analysis rather than a deliberate design choice, and it is expected to be fixed.
+> **If you forget a `return`, the error is not friendly yet.** A function that falls off the end
+> without returning is currently caught late, by the MLIR verifier, which reports something like
+> `block with no terminator, has %0 = "arith.addi"(...)` and no source location. It means a return
+> is missing. Check that every path through the function returns a value.
 
 ## Arrays and tensors
 

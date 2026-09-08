@@ -61,10 +61,6 @@ loop {
 
 `0..n` is a half-open range: it includes `0` and excludes `n`.
 
-Returning from inside every branch of an `if`/`else` does not yet satisfy the return checker — see
-[the note in Your first program](first-program.md). Until that is fixed, assign to a `mut` binding
-and return once at the end of the function.
-
 ## Structs
 
 ```rust
