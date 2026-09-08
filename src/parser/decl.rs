@@ -174,7 +174,7 @@ impl<'a> Parser<'a> {
             span,
         })) = body.last().cloned()
         {
-            if !has_semi {
+            if !has_semi && !crate::syntax::expr::diverges_on_every_path(&expr) {
                 let lsyntax_idx = body.len() - 1;
                 body[lsyntax_idx] = Statement::Return(ReturnStmt { expr, span });
             }

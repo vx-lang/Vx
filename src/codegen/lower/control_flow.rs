@@ -248,6 +248,14 @@ impl<'c> LowerToMelior<'c> for IfExpr {
             );
         }
 
+        // Both arms ended in a terminator, so nothing branches to the merge block -- but it still
+        // needs a terminator of its own, because a block without one fails the MLIR verifier. That
+        // is what a body ending in `if c { return a; } else { return b; }` produced: an empty block
+        // the verifier rejected, after the frontend had accepted the program.
+        if then_terminated && else_terminated {
+            merge_b.append_operation(OperationBuilder::new("llvm.unreachable", gen.loc()).build()?);
+        }
+
         if has_ret {
             let res = merge_b
                 .argument(0)

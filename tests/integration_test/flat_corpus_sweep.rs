@@ -18,6 +18,13 @@ use std::process::Command;
 /// Programs the flat path declines today, relative to `tests/backend/pass/`.
 /// A worklist, not an exemption list: shrinking it is Vx#383.
 const KNOWN_DECLINES: &[&str] = &[
+    // A function body ending in an `if` whose branches both return. The flat emitter declines any
+    // value-returning function whose final block has no terminator, and that guard is the only
+    // thing catching a function that simply forgot to return -- the checker does not reject one
+    // (Vx#502). Until it does, the emitter cannot tell "unreachable trailing block" from "missing
+    // return", so declining to the oracle is the honest answer rather than emitting an
+    // `llvm.unreachable` that would turn a caught mistake into undefined behaviour.
+    "backend/pass/if_both_branches_return.vx",
     "backend/pass/custom_topology_user_lowering.vx",
     "backend/pass/matmul_assign_alias.vx",
     "backend/pass/user_lowering_name_collisions.vx",

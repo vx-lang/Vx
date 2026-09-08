@@ -1162,7 +1162,15 @@ impl<'c> MeliorGenerator<'c> {
             Statement::LetDecl(s) => LowerToMelior::lower(s, self, block),
             Statement::Assign(s) => LowerToMelior::lower(s, self, block),
             Statement::CompoundAssign(s) => LowerToMelior::lower(s, self, block),
-            Statement::ExprStmt(s) => LowerToMelior::lower(s, self, block),
+            // An `if`/`match` whose every path returns is a statement that control does not
+            // leave. Lower it, then report termination: without this the enclosing block branches
+            // to a merge block nothing reaches, which the MLIR verifier rejects as a block with
+            // no terminator. The same predicate stops the parser rewriting it to `return <expr>`.
+            Statement::ExprStmt(s) => {
+                let diverges = crate::syntax::expr::diverges_on_every_path(&s.expr);
+                let out = LowerToMelior::lower(s, self, block)?;
+                Ok(if diverges { None } else { out })
+            }
             Statement::ForLoop(s) => LowerToMelior::lower(s, self, block),
             Statement::Assert(s) => {
                 // The condition is also a fact the host proves; record it so it can be

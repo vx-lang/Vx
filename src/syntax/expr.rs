@@ -555,6 +555,40 @@ impl JvpExpr {
     }
 }
 
+/// Whether an `if`/`match` returns on every path, and so is a statement rather than a value.
+///
+/// Two callers need the same answer. The parser rewrites a trailing semicolon-less expression to
+/// `return <expr>`, which is right for `if c { 1 } else { 2 }` and wrong for
+/// `if c { return 1; } else { return 2; }` -- the second yields nothing, and rewriting it produced
+/// `return <void>` and a type error naming a void the source never wrote. The emitter needs it to
+/// know that control does not reach past such a statement, so it does not branch to a merge block
+/// that nothing arrives at and no terminator closes.
+///
+/// Only the case where *every* path returns counts. A construct where one arm returns and another
+/// yields a value is still a value.
+pub fn diverges_on_every_path(expr: &Expr) -> bool {
+    fn block_returns(stmts: &[Statement]) -> bool {
+        match stmts.last() {
+            Some(Statement::Return(_)) => true,
+            Some(Statement::ExprStmt(ExprStmtStmt { expr, .. })) => diverges_on_every_path(expr),
+            _ => false,
+        }
+    }
+    match expr {
+        // An `if` with no `else` always has a path that falls through.
+        Expr::If(IfExpr {
+            then_block,
+            else_block: Some(else_block),
+            ..
+        }) => block_returns(then_block) && block_returns(else_block),
+        // Deliberately not `match`. A `match` whose arms all return already compiled correctly --
+        // the rewrite to `return <match>` is harmless there, because the arm blocks carry their own
+        // terminators and the chain never falls through to the merge block. Treating it as
+        // diverging broke that working case, so the rule covers only the construct that failed.
+        _ => false,
+    }
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub struct IfExpr {
     pub is_comptime: bool,
