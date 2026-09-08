@@ -24,9 +24,7 @@ unsafe fn generic_id<T>(x : T) -> T {
 fn main() -> i32 {
   unsafe { let p = 0 as *mut i32; forwards(p); }
   // A generic `unsafe fn`, and a nested block, are both ordinary inside an unsafe context.
-  unsafe {
-    unsafe { let g = generic_id(1); let _unused = g; }
-  }
+  unsafe { unsafe { let g = generic_id(1); let _unused = g; } }
   return 0;
 }
 

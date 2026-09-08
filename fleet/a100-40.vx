@@ -1,8 +1,8 @@
 //===- a100-40.vx - NVIDIA A100 SXM4 40 GB machine model --------*- Vx -*-===//
 //
-// Part of the Vx Project, under the BSD 3-Clause License.
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.
-// SPDX-License-Identifier: BSD-3-Clause
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 // One SKU's memory hierarchy, for `vxc --machine fleet/a100-40.vx prog.vx`.

@@ -1,8 +1,9 @@
 /*===- vx_mlir_shims.c - Vx Compiler ------------------------------*- C -*-===*\
 |*                                                                            *|
-|* Part of the Vx Project, under the BSD 3-Clause License.                    *|
+|* Part of the Vx Project, under the Apache License v2.0 with LLVM            *|
+|* Exceptions.                                                                *|
 |* See LICENSE for license information.                                       *|
-|* SPDX-License-Identifier: BSD-3-Clause                                      *|
+|* SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception                    *|
 |*                                                                            *|
 \*===----------------------------------------------------------------------===*/
 /* The half-precision memref printers MLIR does not export in the form emitted

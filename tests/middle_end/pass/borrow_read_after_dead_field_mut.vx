@@ -1,8 +1,8 @@
 //===- borrow_read_after_dead_field_mut.vx - Vx Compiler ---------*- Vx -*-===//
 //
-// Part of the Vx Project, under the BSD 3-Clause License.
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.
-// SPDX-License-Identifier: BSD-3-Clause
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 // Non-regression for #276: reading a field after its `&mut p.x` borrow is dead

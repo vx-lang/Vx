@@ -1,8 +1,8 @@
 //===- node-8gpu.vx - 8-GPU node (NVLink / PCIe / IB) -----------*- Vx -*-===//
 //
-// Part of the Vx Project, under the BSD 3-Clause License.
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.
-// SPDX-License-Identifier: BSD-3-Clause
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 // An 8-GPU HGX-class node: one GPU's local hierarchy plus the interconnect a

@@ -1,8 +1,8 @@
 //===- a_placed_tensor_is_not_readable_from_the_host.vx ---------*- Vx -*-===//
 //
-// Part of the Vx Project, under the BSD 3-Clause License.
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.
-// SPDX-License-Identifier: BSD-3-Clause
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 // The control for a_placed_tensor_is_readable_on_its_own_topology.vx.

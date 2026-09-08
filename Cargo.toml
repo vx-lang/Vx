@@ -1,8 +1,8 @@
 #===- Cargo.toml - Vx Compiler ----------------------------------*- TOML -*-===#
 #
-# Part of the Vx Project, under the BSD 3-Clause License.
+# Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 # See LICENSE for license information.
-# SPDX-License-Identifier: BSD-3-Clause
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 #
 #===----------------------------------------------------------------------===#
 [package]
@@ -11,8 +11,8 @@ version = "2.0.0"
 edition = "2021"
 description = "A high-performance systems programming language built from the ground up for heterogeneous computing."
 authors = ["Aditya"]
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/hiraditya/Vx"
+license = "Apache-2.0 WITH LLVM-exception"
+repository = "https://github.com/vx-lang/Vx"
 keywords = ["compiler", "heterogeneous", "mlir", "gpu", "npu"]
 categories = ["compilers", "development-tools"]
 

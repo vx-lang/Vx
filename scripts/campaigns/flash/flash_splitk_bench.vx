@@ -1,8 +1,8 @@
 //===- flash_splitk_bench.vx - split-K flash attention prefill --*- Vx -*-===//
 //
-// Part of the Vx Project, under the BSD 3-Clause License.
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.
-// SPDX-License-Identifier: BSD-3-Clause
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -103,7 +103,7 @@ fn main() -> i32 {
       let mut l1 : f32 = 0.0;
       for jj in 0..__VX_CH2__ {
         let s0 : f32 = dot(q[xc - (xc / __VX_SQ__) * __VX_SQ__],
-                           k[(xc / __VX_SQ__) + jj * __VX_C__]) * scale;
+        k[(xc / __VX_SQ__) + jj * __VX_C__]) * scale;
         let mn0 : f32 = if s0 > m0 {
           s0
         } else {
@@ -116,7 +116,7 @@ fn main() -> i32 {
         acc0[0] = acc0[0] + v[(xc / __VX_SQ__) + jj * __VX_C__] * p0;
         m0 = mn0;
         let s1 : f32 = dot(q[xc - (xc / __VX_SQ__) * __VX_SQ__],
-                           k[(xc / __VX_SQ__) + (jj + __VX_CH2__) * __VX_C__]) * scale;
+        k[(xc / __VX_SQ__) + (jj + __VX_CH2__) * __VX_C__]) * scale;
         let mn1 : f32 = if s1 > m1 {
           s1
         } else {

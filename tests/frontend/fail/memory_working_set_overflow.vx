@@ -1,8 +1,8 @@
 //===- memory_working_set_overflow.vx - Vx Compiler -------------*- Vx -*-===//
 //
-// Part of the Vx Project, under the BSD 3-Clause License.
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.
-// SPDX-License-Identifier: BSD-3-Clause
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 // The cumulative budget check (E6010): the *sum* of the tiles placed in a memory space must

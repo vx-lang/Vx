@@ -1,8 +1,8 @@
 //===- xeon-e5-2666v3.vx - Intel Xeon E5-2666 v3 host model -----*- Vx -*-===//
 //
-// Part of the Vx Project, under the BSD 3-Clause License.
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.
-// SPDX-License-Identifier: BSD-3-Clause
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 // The x86 column of the combo run (#319): a CPU host, admitted against the same

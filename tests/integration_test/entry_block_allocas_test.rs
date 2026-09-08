@@ -1,8 +1,8 @@
 //===- entry_block_allocas_test.rs - Vx Compiler ---------------*- Rust -*-===//
 //
-// Part of the Vx Project, under the BSD 3-Clause License.
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.
-// SPDX-License-Identifier: BSD-3-Clause
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 // Every stack slot is allocated in the entry block, never inside a loop.

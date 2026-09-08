@@ -1,8 +1,8 @@
 //===- 06_smem_under_fixed_over_declared/vx.vx - Vx Compiler ----*- Vx -*-===//
 //
-// Part of the Vx Project, under the BSD 3-Clause License.
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.
-// SPDX-License-Identifier: BSD-3-Clause
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 // A 64 KiB tile in SMEM, which the A100 has room for and CUDA will not declare.
