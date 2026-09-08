@@ -82,7 +82,7 @@ pub enum DiagnosticCode {
     W1023,
     /// Implicit cross-topology transfer inserted via a `Relocatable` impl (a real data
     /// movement happens silently at the use site; write the transfer explicitly to
-    /// silence). See docs/discussions/brainstorming/hardware_monad_topology.md.
+    /// silence).
     ///
     /// `Relocatable` answers "may this value move implicitly?" and is keyed on a user
     /// type. That is a different question from "what code moves bytes across this
@@ -106,8 +106,7 @@ pub enum DiagnosticCode {
     /// A tensor placed in a memory space that declares a `capacity` has a *dynamic* (non-
     /// literal) shape, so the capacity check (E6009/E6010) could not run — the placement is
     /// unverified. Silence by making the shape static, or bounding it (see P1-1). Emitted only
-    /// when the destination space actually declares a capacity. See P0-4 in
-    /// docs/discussions/heterogeneous_target_gap_analysis.md.
+    /// when the destination space actually declares a capacity.
     W1029,
     /// A topology's device index is not a compile-time constant (`GPU[i]` for a runtime `i`), so
     /// it cannot be resolved to a device instance and falls back to index 0. Every such spawn

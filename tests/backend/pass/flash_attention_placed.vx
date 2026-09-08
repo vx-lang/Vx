@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
-// FlashAttention, Phase 4 (see docs/discussions/implementation_plans/flash_attention.md):
+// FlashAttention, Phase 4:
 // the convergence of the algorithm with Vx's first-class memory model. This is where the
 // flash forward stops being a plain loop nest and becomes a *heterogeneous* program:
 //

@@ -56,9 +56,7 @@ hardware; CI gates only the hardware-free half.
 
 ## Paths that moved
 
-Dated campaign walkthroughs under `docs/discussions/` cite the old locations and
-are left as written — they record what was run on a date, and editing them to name
-paths that did not exist then would make them false. This table resolves them:
+Earlier campaign notes cite the old locations. This table resolves them:
 
 | Was | Is |
 |---|---|

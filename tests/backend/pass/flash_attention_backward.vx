@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
-// FlashAttention, Phase 5 (see docs/discussions/implementation_plans/flash_attention.md):
+// FlashAttention, Phase 5:
 // the backward pass. Given the output gradient dO, attention backprops as (paper §2.1):
 //
 //   dV = P^T . dO

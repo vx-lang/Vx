@@ -80,8 +80,6 @@ Memory SMEM {
 - *Scoped to granule'd sub-spaces.* Scheduling and granule-rounding apply only to spaces that declare a `granule` (the sub-scratchpads — TMEM/SMEM); device-global spaces (HBM/DRAM) are unaffected.
 - *One budget, two granularities.* The capacity check and the scheduler share a single notion of the working set; the granule-rounded sum is the allocation-accurate refinement of the raw sum, and `overcommit` relaxes both.
 
-> Full design: `docs/discussions/implementation_plans/first_class_memory_spaces.md` (declaring + checking) and `subspace_scheduling.md` (the metadata + scheduler).
->
 > Which spaces exist at all is decided by the machine and host models a compilation is given: see
 > [`hosts_and_machines.md`](hosts_and_machines.md). No host is assumed — a program that stages
 > through `Memory::CPU_DRAM` while a machine model is in force must name one (`E6014`), because

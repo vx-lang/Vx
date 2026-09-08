@@ -147,8 +147,7 @@ pub enum Word2Scope {
 
 /// The single interpretation of GID word 2. Every producer/consumer of word 2 goes through
 /// [`TypeId::classify_word2`] / [`TypeId::set_arena_index`] so its three meanings (fast-path
-/// lifetime bitfield, generic arena index, slow-path lifetime index) cannot re-diverge. See
-/// `docs/discussions/implementation_plans/gid_word2_codec.md` (#193).
+/// lifetime bitfield, generic arena index, slow-path lifetime index) cannot re-diverge.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Word2 {
     /// Escape-hatch bit clear: word 2 is an inline lifetime/variance bitfield (4×16-bit slots).

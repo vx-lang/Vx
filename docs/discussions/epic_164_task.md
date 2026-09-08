@@ -1,8 +1,0 @@
-- `[x]` Epic 164: Formalize Memory Algebra Graph
-  - `[x]` Explicit Transfer Parsing and Typechecking
-  - `[x]` `vx.transfer` lowering implementation
-  - `[x]` Implicit Transfer via Operator Overloading (Traits)
-  - `[x]` Cross-Topology Test Cases for typechecking failures
-- `[ ]` Epic 162: Custom vx MLIR dialect
-- `[ ]` Epic 163: Full AST-to-HIR Mapping
-- `[ ]` Epic 165: NLL Borrow Checker

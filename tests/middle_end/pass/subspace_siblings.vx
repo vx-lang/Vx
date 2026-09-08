@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
-// Sibling sub-spaces (docs/discussions/implementation_plans/subspace_scheduling.md §2.3): SMEM
+// Sibling sub-spaces: SMEM
 // and TMEM are B200's per-SM on-chip memories -- physically distinct peers, neither inside the
 // other -- so both are declared `within: Memory::GPU_HBM` (siblings, not nested). The example
 // stages a tile into each, then moves tiles *between* the sub-spaces:

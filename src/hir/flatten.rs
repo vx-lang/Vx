@@ -13,7 +13,6 @@
 //
 // SSA-by-position: the instruction at index `i` defines `Register(i)`; operands
 // name earlier instructions by index; `type_idx` indexes `local_type_stream`.
-// See docs/discussions/implementation_plans/hir_flattening.md.
 //
 //===----------------------------------------------------------------------===//
 use crate::bytecode::{

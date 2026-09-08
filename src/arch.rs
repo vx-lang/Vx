@@ -77,8 +77,7 @@ pub struct TransferCostGraph {
 ///   so under the explicit-seam policy the programmer must write `transfer(...)`.
 /// - `Unreachable`: no transfer path exists at all.
 ///
-/// See `docs/discussions/brainstorming/hardware_monad_topology.md` (the USE-DIRECT /
-/// USE-NEEDS-SEAM rules).
+/// The USE-DIRECT / USE-NEEDS-SEAM rules.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reachability {
     Visible,
@@ -94,8 +93,7 @@ pub enum Reachability {
 /// includes `default_space`). The built-ins come from `builtin_descriptors`; a user
 /// `Topology { ... }` declaration is carried on the AST (`TopologyDecl` on `Program.topologies`)
 /// and seeded into the per-compilation `TransferCostGraph` — the metadata is data, not `match`
-/// arms, and not a global registry (see `docs/discussions/brainstorming/hardware_monad_topology.md`,
-/// "registry behind the enum").
+/// arms, and not a global registry -- a registry behind the enum.
 /// A declared transfer edge (morphism): a hop `from -> to` with a `cost` grade and a
 /// consistency grade. `sync` = a synchronizing transfer (release/acquire) that preserves a
 /// boundary contract; `!sync` = a relaxed escape hatch whose visibility the seam engine

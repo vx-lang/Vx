@@ -1028,7 +1028,7 @@ fn method_receiver_gid(ty: &crate::syntax::Type) -> Option<crate::gid::TypeId> {
 /// Build a serialized `.vxlib` module interface for `modules`: the frozen registry (types, layouts,
 /// signatures) plus the flat-HIR bodies of the non-generic free functions that lower completely and
 /// portably. This is the artifact producer -- a downstream compile deserializes it and resolves + links
-/// the module with no AST (#220, `docs/discussions/implementation_plans/vxlib_bodies_and_loader.md`).
+/// the module with no AST.
 pub fn emit_module_interface(modules: &[VxModule]) -> Result<Vec<u8>, PipelineError> {
     emit_module_interface_reporting(modules).map(|(bytes, _)| bytes)
 }

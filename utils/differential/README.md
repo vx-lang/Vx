@@ -49,8 +49,7 @@ The Vx half is a compile-time refusal. It says the same thing on any machine, so
 compiler is and keep the output.
 
 The CUDA half needs a real GPU, because the claim is about run-time behaviour and has to be observed
-rather than argued. A rented pod is adequate — pod *timing* is indicative only (see
-`docs/discussions/walkthrough_gpu_campaign_m5_2026_08_10.md`), and nothing here is timed. A fault is
+rather than argued. A rented pod is adequate — pod *timing* is indicative only, and nothing here is timed. A fault is
 a fault.
 
 **On the GPU box, use `--cuda-only`.** `vxc` is built for whichever host built it, so a macOS arm64

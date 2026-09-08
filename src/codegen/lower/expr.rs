@@ -2227,8 +2227,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
         }
         // Slice reductions (S2): dot/sum/max/min over rank-1 f32 slices lower to
         // `vector.load` + (`arith.mulf` for dot) + `vector.reduction`, which the pipeline's
-        // convert-vector-to-llvm turns into real SIMD (`@llvm.vector.reduce.*`). See
-        // docs/discussions/implementation_plans/slice_operators.md.
+        // convert-vector-to-llvm turns into real SIMD (`@llvm.vector.reduce.*`).
         if matches!(name.as_ref(), "dot" | "sum" | "max" | "min") {
             return lower_slice_reduction(gen, name.as_ref(), args, block);
         }

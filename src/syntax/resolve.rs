@@ -20,7 +20,7 @@ use std::collections::HashMap;
 /// module's symbol table (local defs), the full cross-module symbol map, and this module's import
 /// index. Bundled into one reference so the recursive `resolve_names` walk threads a single value
 /// and cross-module lookup is centralized in [`ResolutionScope::resolve_nominal`] rather than
-/// bolted onto each AST arm. See #194 / `docs/discussions/parallel_pipeline_design_review.md` (H2).
+/// bolted onto each AST arm.
 pub struct ResolutionScope<'a> {
     current: Option<&'a SymbolTable>,
     /// The current module's path (`symbol_map` key for `current`). Lets a qualified reference to the

@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
-// SS3 (docs/discussions/implementation_plans/subspace_scheduling.md): the cumulative-capacity
+// SS3: the cumulative-capacity
 // check (E6010) is granule-aware. A sub-space allocated in fixed granules consumes the
 // *granule-rounded* size per tile -- a tile smaller than a granule still occupies a whole one --
 // so the working set that must fit is the sum of the rounded sizes, not the raw bytes.

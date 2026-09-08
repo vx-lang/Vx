@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
-// FlashAttention, Phase 2 (see docs/discussions/implementation_plans/flash_attention.md):
+// FlashAttention, Phase 2:
 // the tiled forward pass with *online softmax*. It never materializes the full N-by-M score
 // matrix -- for each query row it streams over K/V in blocks of Bc = 2, maintaining a running
 // max `m`, a running normalizer `l`, and a rescaled output accumulator `o`, rescaling the

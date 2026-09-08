@@ -4,8 +4,6 @@
 // See LICENSE for license information.
 // SPDX-License-Identifier: BSD-3-Clause
 //
-// For a comprehensive overview of how this module interacts with the Lexical Borrow Checker
-// in sema.rs, please read: `docs/discussions/borrow_checker_architecture.md`.
 //
 //===----------------------------------------------------------------------===//
 //

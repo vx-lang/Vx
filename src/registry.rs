@@ -87,7 +87,7 @@ pub struct EnumData {
 /// so the flat codegen needs one lookup, not a join: it carries the signature (`emit_function_mlir`
 /// reads `params` + `ret_ty` to emit the MLIR header) alongside the instruction + type streams. Only
 /// non-generic bodies -- whose `types` are already global content-hash GIDs -- are portable across a
-/// compile boundary; see `docs/discussions/implementation_plans/vxlib_bodies_and_loader.md` (#220).
+/// compile boundary.
 #[derive(Debug, Clone)]
 pub struct FnBody {
     /// The MLIR symbol / mangled emit name of the function.
@@ -110,14 +110,12 @@ pub struct ImmutableGlobalRegistry {
     pub fn_sigs: FxHashMap<crate::symbol::Symbol, FnSig>,
     /// Method signatures keyed by `(receiver type GID, method name)`, minted from `impl` blocks. This
     /// is the GID-keyed replacement for walking borrowed AST `ImplBlock`s in `GlobalAstEnv`: method
-    /// resolution (`x.exp()`) becomes a table lookup `(type-of-x GID, "exp") -> FnSig`. See
-    /// `docs/discussions/implementation_plans/stdlib_decoupling_protocol.md` (#218).
+    /// resolution (`x.exp()`) becomes a table lookup `(type-of-x GID, "exp") -> FnSig`.
     pub methods: FxHashMap<(TypeId, crate::symbol::Symbol), FnSig>,
     /// Precompiled flat-HIR bodies keyed by function GID -- the `body_of` backing. **Empty in a
     /// from-scratch compile** (the live pipeline keeps bodies in the per-worker streams); populated
     /// only when a registry is *deserialized from a `.vxlib` artifact*, so a downstream compile can
-    /// link an imported module's bodies without its AST (#220). See
-    /// `docs/discussions/implementation_plans/vxlib_bodies_and_loader.md`.
+    /// link an imported module's bodies without its AST.
     pub bodies: FxHashMap<TypeId, FnBody>,
     /// Payload-free (C-like) enums, keyed by name, mapping to their variant names *in declaration
     /// order* — so the flat lowerer resolves a variant to its discriminant ordinal (`Color::Green` ->
@@ -445,8 +443,7 @@ impl ImmutableGlobalRegistry {
 
 /// The query surface the frontend consults for anything defined *outside the current module* --
 /// backed entirely by the frozen registry, never the AST. This is the "protocol" of the
-/// stdlib<->compiler decoupling (`docs/discussions/implementation_plans/stdlib_decoupling_protocol.md`
-/// §4): resolution is identical whether the target module was just compiled (in-memory registry) or
+/// stdlib<->compiler decoupling: resolution is identical whether the target module was just compiled (in-memory registry) or
 /// loaded from a cached artifact (a deserialized registry). Pointing the type checker's
 /// imported-symbol resolution at this interface -- instead of `GlobalAstEnv`'s borrowed AST -- is what
 /// lets the stdlib grow without expanding the AST / type-checker surface (#219).

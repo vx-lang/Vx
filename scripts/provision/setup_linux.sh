@@ -9,8 +9,7 @@
 #
 # Provision an x86_64 Ubuntu box to build and test Vx. Written for the build
 # machine the GPU campaign uses (#321), where artifacts are built and then
-# copied to a rented GPU host -- see docs/discussions/implementation_plans/
-# gpu_disaggregated_inference.md for why sources do not travel.
+# copied to a rented GPU host; sources do not travel.
 #
 # Verified on Ubuntu 24.04 (noble). After this, run ./setup.sh to generate
 # config.local, then `source config.local`.

@@ -33,7 +33,7 @@ pub const REGION_MASK: u64 = 0x0FFF;
 /// is reserved: real depths are clamped to [`REGION_MAX`] so none ever equals the sentinel. Anyone
 /// narrowing this field (e.g. #265 shrinking slot 0 to 9 bits) must keep a reserved sentinel at the
 /// new field's maximum and clamp real depths below it — the numeric value must never be trusted as a
-/// region. See `docs/discussions/borrow_checker_architecture.md` §2.
+/// region.
 pub const REGION_UNSET: u64 = REGION_MASK;
 
 /// The largest assignable real region (scope depth): one below the [`REGION_UNSET`] sentinel, so a
@@ -101,7 +101,7 @@ pub struct Span {
 /// struct field at all (Vx#355). Annotating the one constructor would have fixed that program
 /// and left the class open, since the two conventions are still spread across the tree.
 ///
-/// This is also what `docs/discussions/brainstorming/hardware_monad_topology.md` asks for:
+/// This is also what the topology design asks for:
 /// "topology identity = (registered-kind, index-term), with index equality decided by the
 /// const-evaluator". Literals are decided here; anything else falls back to structural
 /// equality, which is what the derive did for every case.
@@ -155,7 +155,7 @@ fn topology_index_eq(a: &Expr, b: &Expr) -> bool {
 ///
 /// - A non-literal index is still compared structurally, so `GPU[i]` and `GPU[j]` are unequal
 ///   even when `i == j` at runtime. Deciding those needs the const-evaluator, which is what
-///   `docs/discussions/brainstorming/hardware_monad_topology.md` means by "index equality
+///   the topology design means by "index equality
 ///   decided by the const-evaluator / prover". Literals are the part that is decided today.
 /// - Two literals that are not both parseable integers fall back to comparing how they were
 ///   spelled, rather than guessing what they denote.

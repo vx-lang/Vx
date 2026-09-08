@@ -13,7 +13,6 @@
 # What gets copied there is an archive of build outputs and a handful of runtime
 # sources -- no git history, no compiler source -- and the directory is removed
 # when the run is done. See "Build & deployment discipline" in
-# docs/discussions/implementation_plans/gpu_disaggregated_inference.md.
 #
 # The bundle is:
 #

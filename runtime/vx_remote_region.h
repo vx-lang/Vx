@@ -9,8 +9,7 @@
 // A buffer that lives on a remote worker, named by something a program can do
 // pointer arithmetic on.
 //
-// See docs/discussions/implementation_plans/remote_dispatch_marshalling.md for
-// why it is shaped this way. The short version, because it is not obvious:
+// Why it is shaped this way, because it is not obvious:
 //
 //   * It cannot be an opaque token. `llama2.vx` stages each projection as one
 //     blob spanning every layer and slices it with `vx_advance_ptr(w.wq, off)`,

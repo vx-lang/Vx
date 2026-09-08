@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
-// S2 (docs/discussions/implementation_plans/slice_operators.md): slice reductions over the
+// S2: slice reductions over the
 // rank-1 row views from S1. `dot(a,b)`, `sum(a)`, `max(a)`, `min(a)` lower to `vector.load`
 // (+ `arith.mulf` for dot) + `vector.reduction`, which the pipeline's convert-vector-to-llvm
 // turns into `@llvm.intr.vector.reduce.*` -- SIMD by construction, not by hoping the

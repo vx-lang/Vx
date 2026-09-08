@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
-// SS2 (docs/discussions/implementation_plans/subspace_scheduling.md): the sub-space scheduler.
+// SS2: the sub-space scheduler.
 // Each tile transferred into a granule'd sub-space is assigned a granule-rounded `offset` (bytes)
 // and `slots` (granule count) by a per-function bump allocator, emitted on `vx.transfer` for a
 // later pass / device backend to place into TMEM/SMEM.

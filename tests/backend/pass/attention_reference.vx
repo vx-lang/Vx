@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
-// FlashAttention, Phase 1 (see docs/discussions/implementation_plans/flash_attention.md):
+// FlashAttention, Phase 1:
 // the *reference* (non-flash) attention that serves as the correctness oracle. It
 // materializes the full score matrix S = scale * Q * K^T, applies a real row-wise softmax
 // (max -> exp(.-max) -> sum -> divide), then O = P * V. This is the softmax the existing

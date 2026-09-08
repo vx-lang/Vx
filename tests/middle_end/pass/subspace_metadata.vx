@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
-// SS1 (docs/discussions/implementation_plans/subspace_scheduling.md): a `transfer` into a declared
+// SS1: a `transfer` into a declared
 // memory space carries that space's descriptor as IR metadata on `vx.transfer` -- the space name
 // plus its containment (`within`), `granule`, `capacity`, and `scope`. A later vx.* pass reads
 // this to schedule tiles into sub-spaces (TMEM/SMEM); it does not affect the lowering.

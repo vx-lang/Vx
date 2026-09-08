@@ -892,7 +892,7 @@ impl CompilerDriver {
                     "Cannot codegen '{}' with a linked module interface: it uses constructs outside \
                      the flat-codegen subset, and an imported body links only on the flat path (the \
                      AST codegen has no AST for it). The frontend check passed; this is a flat-coverage \
-                     limit — see docs/discussions/implementation_plans/cross_module_return_provenance.md.",
+                     limit.",
                     filename
                 ));
             }

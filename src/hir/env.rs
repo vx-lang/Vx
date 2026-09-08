@@ -13,8 +13,6 @@
 //
 // The Semantic Analyzer also includes the Lexical Borrow Checker, which handles local variable
 // lifetimes and Strict Aliasing (Shared XOR Mutable).
-// For a comprehensive overview of the Borrow Checker architecture (and how it interacts with
-// the FastPath in borrow.rs), see: `docs/discussions/borrow_checker_architecture.md`.
 //
 // DESIGN NOTE: Speculative checking is carried by the `speculating` field (see its doc on
 // `TypeChecker`), not a threaded `silent` parameter. It prevents duplicate compiler errors:

@@ -8,7 +8,6 @@
 //
 // The four messages a remote worker understands, and the bytes they are.
 //
-// See docs/discussions/implementation_plans/remote_dispatch_marshalling.md.
 // The design decisions that show up here as code:
 //
 //   * **The ABI header is the schema.** An argument's shape on the wire is

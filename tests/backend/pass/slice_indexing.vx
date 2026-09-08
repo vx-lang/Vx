@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
-// S1 (docs/discussions/implementation_plans/slice_operators.md): partial indexing of a
+// S1: partial indexing of a
 // rank-2 tensor yields a rank-1 *row view*. `q[i]` on a Tensor<f32,[N,D]> is a zero-copy,
 // rank-reduced view of row `i` (lowered to `memref.reinterpret_cast` -> a strided
 // `memref<Dxf32, strided<[1], offset: ?>>`), so element loads through the view read the

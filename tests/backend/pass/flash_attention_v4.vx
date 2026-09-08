@@ -7,7 +7,7 @@
 //===----------------------------------------------------------------------===//
 // FlashAttention-4 in Vx -- the flagship. This brings together every FA-4 innovation that
 // lives at the algorithm level (Zadouri et al., arXiv:2603.05451v1), fused into one placed
-// kernel. See docs/discussions/walkthrough/flash_attention.md.
+// kernel.
 //
 //   (1) Online softmax (§3.1.4): stream K/V in tiles, keep a running max m, normalizer l,
 //       and rescaled output accumulator O -- the score matrix is never materialized.
@@ -23,8 +23,8 @@
 //   (4) Heterogeneous placement: a declared memory hierarchy (GPU_HBM within CPU_DRAM, with
 //       capacity + bandwidth), Q/K/V/O `transfer`ed into GPU_HBM (each move capacity-checked
 //       and costed from bandwidth), and the whole kernel inside `spawn on(Topology::GPU)`.
-//   (5) Vectorized at the source with slice operators (S1-S3, see
-//       docs/discussions/implementation_plans/slice_operators.md): the head-dim score reduction
+//   (5) Vectorized at the source with slice operators (S1-S3):
+//       the head-dim score reduction
 //       is `dot(q[i], k[j])` (one `vector.reduction`, not a scalar `for d` loop), and the O
 //       rescale / accumulate / normalize are row-level `o[i] = o[i] * corr`,
 //       `o[i] = o[i] + p*v[j]`, `o[i] = o[i] / l` (`vector.store`s). SIMD by construction.

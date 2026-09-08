@@ -239,7 +239,7 @@ pub enum Scope {
 /// Carried on the AST (`Program.memories`) and indexed by `GlobalAstEnv` for semantic
 /// analysis; codegen reads it from the `Program`. Deliberately *not* registered in a
 /// process-global registry (unlike topologies), so declarations cannot leak between
-/// compilations. See `docs/discussions/implementation_plans/first_class_memory_spaces.md`.
+/// compilations.
 #[derive(Debug, PartialEq, Clone)]
 pub struct MemoryDecl {
     pub name: Symbol,

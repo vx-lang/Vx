@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
-// FlashAttention, Phase 3 (see docs/discussions/implementation_plans/flash_attention.md):
+// FlashAttention, Phase 3:
 // FA-4's *conditional softmax rescaling* (Zadouri et al., eq. 6). The online-softmax rescale
 // of the (l, O_acc) state by e^(m - m_new) is only needed when the running max actually grows
 // a lot; FA-4 skips it unless m_new - m > tau, with tau = log2(256) = 8. Skipping is exact --

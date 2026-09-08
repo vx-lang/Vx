@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
-// S3 (docs/discussions/implementation_plans/slice_operators.md): elementwise arithmetic on
+// S3: elementwise arithmetic on
 // the rank-1 row views from S1, with a store back into a writable row. `slice * scalar`,
 // `scalar * slice`, `slice + slice`, `slice / scalar` lower to `vector.load`/`vector.broadcast`
 // + `arith.{mulf,addf,divf}` -> `vector<Dxf32>`, and `o[i] = <slice>` becomes a `vector.store`
