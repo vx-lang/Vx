@@ -23,7 +23,7 @@ The language is governed by 7 core tenets:
 1. **High Performance**: Designed for Ahead-Of-Time (AOT) optimizations. The compiler lowers directly to MLIR and LLVM IR for optimal native machine code.
 1. **Deterministic Memory Control**: No mandatory garbage collection. Programmers have control over memory layouts, lifetimes, and pointer arithmetic.
 1. **Zero-Cost Abstractions**: High-level constructs compile down to optimal machine code with no runtime overhead.
-1. **Direct Hardware Access**: Native support for inline assembly, memory-mapped I/O, and CPU/SIMD intrinsics.
+1. **Direct Hardware Access**: CPU/SIMD intrinsics, and memory-mapped I/O through the standard library.
 1. **Strong System Interoperability**: Seamless C ABI interoperability and zero-overhead FFI to interact directly with existing OS kernels and C-ecosystem libraries.
 
 ## Quick Look

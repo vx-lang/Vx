@@ -4,13 +4,22 @@ This directory contains the first-party ecosystem packages for the Vx programmin
 
 While the core primitives (like `Tensor`, `Verified`, memory layout intrinsics) live in `stdlib/`, higher-level domain-specific code belongs here. These packages behave as standard third-party libraries, but are maintained natively in-house for the v3.0 release.
 
-## Available Packages
+## Packages
 
-- **`vx_nn`**: Core neural network layers (Conv2D, Linear, Transformers, Activations).
-- **`vx_optim`**: Common optimizers (Adam, SGD, RMSProp) and learning rate schedulers.
-- **`vx_linalg`**: Advanced matrix decompositions, solvers, and mathematical operations.
-- **`vx_vision`**: Tools for image loading, pre-processing, and augmentation.
-- **`vx_models`**: Fully implemented reference architectures (e.g. ResNet, LLaMA).
+This is the intended shape of the first-party ecosystem, not a description of what exists today.
+**Four of the five are placeholders**: the directory is there and the implementation is not. Do not
+plan against them yet.
+
+| Package | Intended scope | Status |
+| --- | --- | --- |
+| **`vx_linalg`** | Matrix decompositions, solvers, mathematical operations | Early implementation |
+| **`vx_nn`** | Neural network layers (Conv2D, Linear, Transformers, activations) | Placeholder, no implementation |
+| **`vx_optim`** | Optimizers (Adam, SGD, RMSProp) and learning-rate schedulers | Placeholder, no implementation |
+| **`vx_vision`** | Image loading, pre-processing and augmentation | Placeholder, no implementation |
+| **`vx_models`** | Reference architectures | Placeholder, no implementation |
+
+For a model that actually runs, see [`examples/llama.vx`](../examples/llama.vx) — a Llama 2
+inference port.
 
 ## Usage
 

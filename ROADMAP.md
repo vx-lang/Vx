@@ -30,7 +30,7 @@ Bypassing runtime overhead and relying entirely on heavy ahead-of-time (AOT) opt
 
 - `[x]` Direct lowering to MLIR and LLVM IR for execution
 - `[x]` High-performance heterogeneous JIT compilation via `lli` integration
-- `[ ]` Introduce custom `vx` MLIR dialect for specialized hardware topology modeling
+- `[x]` Introduce custom `vx` MLIR dialect for specialized hardware topology modeling
 - `[ ]` Core MLIR optimization passes (Loop Unrolling, LICM)
 - `[ ]` Auto-Vectorization passes
 - `[ ]` Dead Code Elimination (DCE)
@@ -49,9 +49,9 @@ Total programmatic control over memory lifetimes and representations; absolute a
 
 Code must run as efficiently as hand-written assembly; abstractions must vanish during compilation.
 
-- `[ ]` Monomorphized Generics
-- `[ ]` Traits / Interfaces utilizing purely static dispatch
-- `[ ]` Zero-cost Iterators mapped to loops
+- `[x]` Monomorphized Generics
+- `[x]` Traits / Interfaces utilizing purely static dispatch
+- `[x]` Zero-cost Iterators mapped to loops
 
 ## 6. Direct Hardware Access
 
@@ -59,7 +59,7 @@ Unimpeded access to the lowest levels of the underlying execution silicon.
 
 - `[ ]` Inline Assembly Blocks (`asm! { ... }`)
 - `[ ]` Volatile memory operations for Memory-Mapped I/O (MMIO)
-- `[ ]` Intrinsics for CPU registers and SIMD instructions
+- `[x]` Intrinsics for CPU registers and SIMD instructions
 - `[ ]` Hardware trap and Interrupt Handler integration
 
 ## 7. Strong System Interoperability
@@ -74,10 +74,10 @@ Clean interoperability with the pre-existing low-level world (Operating Systems,
 
 Establishing a robust native library to reduce reliance on raw C-FFI for common application needs.
 
-- `[ ]` Implement native File I/O library (wrapping underlying OS descriptors)
-- `[ ]` Implement robust String and text manipulation primitives
-- `[ ]` Core mathematical functions and constants
-- `[ ]` Native Topologically-Aware Tensors (`Tensor<f32, ANE_SRAM>`) backing to MLIR `memref`
+- `[x]` Implement native File I/O library (wrapping underlying OS descriptors)
+- `[x]` Implement robust String and text manipulation primitives
+- `[x]` Core mathematical functions and constants
+- `[x]` Native Topologically-Aware Tensors (`Tensor<f32, ANE_SRAM>`) backing to MLIR `memref`
 - `[ ]` Standardized collection types (Vectors, HashMaps)
 
 ## 9. Auto-diff
