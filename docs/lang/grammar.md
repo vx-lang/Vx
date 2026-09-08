@@ -178,7 +178,6 @@ The type system includes primitives, complex types like vectors and tensors, and
 type ::= 
     | "&" "mut"? type
     | "*" ( "mut" | "const" ) type
-    | "Ref" "<" type "," memory_space ">"
     | "Verified" "<" type ">"
     | "Pinned" "<" type "," topology ">"
     | "<" number ">" "x" element_type
@@ -186,11 +185,23 @@ type ::=
     | ( "|" ( type ","? )* "|" )? "->" type
     | named_type
 
+// The element type and the shape are BOTH required: a tensor's shape is part of its type, so
+// neither `Tensor` nor `Tensor<f32>` is a type. `[]` is the shape of a scalar and `?` marks an
+// extent that is a run-time value. The optional third argument is the placement, written either
+// as the memory space or as the topology that owns it; the compiler derives whichever was not
+// written (see types.md).
 named_type ::= 
-    | "Tensor" ( "<" element_type ( "," "[" ( expr ","? )* "]" )? ( "," topology )? ">" )?
+    | "Tensor" "<" element_type "," "[" ( shape_dim ","? )* "]" ( "," placement )? ">"
     | "Matrix"
     | element_type
     | identifier ( "<" type ( "," type )* ">" )?
+
+shape_dim ::= expr | "?"
+placement ::= memory_space | topology
+
+// NOTE: an identifier that names no declared type is currently accepted as a nominal type rather
+// than rejected, so a mistyped or obsolete type constructor parses and silently does nothing
+// (Vx#500). The production above describes the intended grammar, not that leniency.
 
 element_type ::=
     | "i4" | "i8" | "i16" | "i32" | "i64" | "i128"
