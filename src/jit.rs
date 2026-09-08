@@ -1,8 +1,8 @@
 //===- jit.rs - Vx Compiler ------------------------------------*- Rust -*-===//
 //
-// Part of the Vx Project, under the BSD 3-Clause License.
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.
-// SPDX-License-Identifier: BSD-3-Clause
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -68,34 +68,83 @@ pub fn shared_library_paths() -> Result<Vec<String>, String> {
         libs.push(npu);
     }
     // Supplies the plain `printMemrefBF16`/`printMemrefF16` MLIR exports only packed.
-    let shims = std::env!("VX_MLIR_SHIMS_PATH");
-    if !shims.is_empty() && std::path::Path::new(shims).exists() {
-        libs.push(shims.to_string());
+    //
+    // Overridable at run time for the same reason the dispatch backend is: the compile-time value
+    // is a path into the build machine's OUT_DIR, which an installed toolchain ships its own copy
+    // of somewhere else. Without an override the shims are simply never found, and half-precision
+    // memrefs print nothing, with no diagnostic to explain why.
+    let shims = std::env::var("VX_MLIR_SHIMS")
+        .unwrap_or_else(|_| std::env!("VX_MLIR_SHIMS_PATH").to_string());
+    if !shims.is_empty() && std::path::Path::new(&shims).exists() {
+        libs.push(shims);
     }
     Ok(libs)
 }
 
 /// linker without it and clang reports a missing file with no hint of which build produces it.
 pub fn runtime_library_path() -> Result<String, String> {
+    let file_name = format!(
+        "{}vx_std_core{}",
+        std::env::consts::DLL_PREFIX,
+        std::env::consts::DLL_SUFFIX
+    );
+
+    // Three places, most specific first. The last one is the source checkout, which is where
+    // this used to look and nowhere else -- a path relative to the process working directory,
+    // so an installed compiler run from a user's own project could never find its own runtime.
+    let mut tried = Vec::new();
+
+    // 1. Named outright. The escape hatch for a layout neither of the others describes.
+    if let Ok(dir) = std::env::var("VX_RUNTIME_LIB_DIR") {
+        let path = std::path::PathBuf::from(dir).join(&file_name);
+        if path.exists() {
+            return Ok(path.to_string_lossy().into_owned());
+        }
+        tried.push(path);
+    }
+
+    // 2. Next to the compiler, as an installed toolchain lays it out: `bin/vxc` and
+    // `lib/libvx_std_core.*` under one prefix. Found without any environment variable, so a
+    // downloaded toolchain works on the first run.
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(bin_dir) = exe.parent() {
+            for relative in ["../lib", "."] {
+                let path = bin_dir.join(relative).join(&file_name);
+                if path.exists() {
+                    return Ok(path.to_string_lossy().into_owned());
+                }
+                tried.push(path);
+            }
+        }
+    }
+
+    // 3. The cargo target directory of a source checkout, relative to the working directory.
     let profile_dir = if cfg!(debug_assertions) {
         "debug"
     } else {
         "release"
     };
     let current_dir = std::env::current_dir().map_err(|e| e.to_string())?;
-    let path = current_dir.join("target").join(profile_dir).join(format!(
-        "{}vx_std_core{}",
-        std::env::consts::DLL_PREFIX,
-        std::env::consts::DLL_SUFFIX
-    ));
-    if !path.exists() {
-        return Err(format!(
-            "the Vx runtime library is missing:\n  {}\nBuild it with `cargo build`, which now \
-             covers stdlib/rust_core. `cargo test` alone never produces it.",
-            path.display()
-        ));
+    let path = current_dir
+        .join("target")
+        .join(profile_dir)
+        .join(&file_name);
+    if path.exists() {
+        return Ok(path.to_string_lossy().into_owned());
     }
-    Ok(path.to_string_lossy().into_owned())
+    tried.push(path);
+
+    let looked = tried
+        .iter()
+        .map(|p| format!("  {}", p.display()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    Err(format!(
+        "the Vx runtime library is missing. Looked in:\n{looked}\nIn a source checkout, build it \
+         with `cargo build`, which now covers stdlib/rust_core. `cargo test` alone never produces \
+         it. In an installed toolchain, the library belongs in `lib/` beside the compiler's \
+         `bin/`, or point VX_RUNTIME_LIB_DIR at it."
+    ))
 }
 
 fn run_cmd(mut cmd: Command, desc: &str) -> Result<std::process::Output, String> {
@@ -109,12 +158,49 @@ fn run_cmd(mut cmd: Command, desc: &str) -> Result<std::process::Output, String>
     Ok(output)
 }
 
+/// What the compiled program wrote, with its two streams kept apart.
+///
+/// They used to be concatenated into one string before anyone saw them, which is lossy in a way
+/// that matters: `vxc --run` printed the whole thing to its own stdout, so a diagnostic the program
+/// wrote to stderr landed *after* everything it wrote to stdout, and a caller taking the last line
+/// of stdout got the diagnostic instead of the answer. That is what broke two `remote_client_test`
+/// cases on a Linux box with the CUDA toolkit and no device: the dispatch backend's "no CUDA
+/// device" notice trailed the real output.
+///
+/// The test harnesses do want both streams -- backend fixtures assert on `Hello Stderr!` and on
+/// panic text -- so the streams are returned rather than one being dropped. `execute_mlir` keeps
+/// the old concatenated form for those callers; the driver uses this and routes each stream to the
+/// matching one of its own.
+pub struct ProgramOutput {
+    pub stdout: String,
+    pub stderr: String,
+}
+
+/// Run a program and return its streams concatenated, stdout first.
+///
+/// Kept for callers that only want "what did it print" and do not care which stream it came from,
+/// notably the fixture harnesses whose EXPECT lines match against either.
 pub fn execute_mlir(
     mlir_src: &str,
     program_args: Vec<String>,
     opt_level: u8,
     disable_llvm_optimizations: bool,
 ) -> Result<String, String> {
+    let out = execute_mlir_streams(
+        mlir_src,
+        program_args,
+        opt_level,
+        disable_llvm_optimizations,
+    )?;
+    Ok(format!("{}{}", out.stdout, out.stderr))
+}
+
+pub fn execute_mlir_streams(
+    mlir_src: &str,
+    program_args: Vec<String>,
+    opt_level: u8,
+    disable_llvm_optimizations: bool,
+) -> Result<ProgramOutput, String> {
     let temp_dir = tempfile::tempdir().map_err(|e| e.to_string())?;
 
     let temp_mlir = temp_dir
@@ -283,7 +369,12 @@ pub fn execute_mlir(
     // containing a non-CPU `spawn on` calls. macOS gets the ANE/AMX backend
     // (runtime/npu_dispatch.mm); other platforms get the portable host shim
     // (runtime/host_dispatch.cpp). Both call outlined kernels through libffi.
-    if !lib_npu.is_empty() {
+    // Existence, not just non-emptiness. The default is an absolute path into the OUT_DIR of the
+    // machine that BUILT this compiler, so in an installed toolchain it names a file that was
+    // never shipped -- and handing clang a path that is not there fails the link outright with
+    // "no such file or directory", rather than falling back to host execution. The sibling
+    // resolution in `shared_library_paths` has always checked this; the link path had not.
+    if !lib_npu.is_empty() && std::path::Path::new(&lib_npu).exists() {
         clang_cmd.args([&lib_npu]);
         clang_cmd.arg("-lffi");
 
@@ -349,13 +440,10 @@ pub fn execute_mlir(
         });
     }
 
-    let output_str = format!(
-        "{}{}",
-        String::from_utf8_lossy(&exe_out.stdout),
-        String::from_utf8_lossy(&exe_out.stderr)
-    );
-
-    Ok(output_str)
+    Ok(ProgramOutput {
+        stdout: String::from_utf8_lossy(&exe_out.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&exe_out.stderr).into_owned(),
+    })
 }
 
 /// The signal that killed a run, in words, or `None` for an ordinary exit.

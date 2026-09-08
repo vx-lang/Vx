@@ -1,8 +1,8 @@
 //===- driver.rs - Vx Compiler -------------------------------------*- Rust -*-===//
 //
-// Part of the Vx Project, under the BSD 3-Clause License.
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.
-// SPDX-License-Identifier: BSD-3-Clause
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -295,14 +295,14 @@ impl CompilerDriver {
         if self.options.action == Action::RunJit {
             let mut args = vec![self.options.inputs[0].to_string_lossy().into_owned()];
             args.extend(self.options.program_args.clone());
-            let out = crate::jit::execute_mlir(
+            let out = crate::jit::execute_mlir_streams(
                 &mlir_src,
                 args,
                 self.options.opt_level,
                 self.options.disable_llvm_optimizations,
             )
             .map_err(|e| e.to_string())?;
-            println!("{}", out);
+            print_program_output(&out);
             return Ok(());
         }
 
@@ -996,14 +996,14 @@ impl CompilerDriver {
                 let mlir_str = format!("{}", module.as_operation());
                 let mut args = vec![self.options.inputs[0].to_string_lossy().into_owned()];
                 args.extend(self.options.program_args.clone());
-                let out = crate::jit::execute_mlir(
+                let out = crate::jit::execute_mlir_streams(
                     &mlir_str,
                     args,
                     self.options.opt_level,
                     self.options.disable_llvm_optimizations,
                 )
                 .map_err(|e| e.to_string())?;
-                println!("{}", out);
+                print_program_output(&out);
             }
             Action::EmitObj => {
                 // One resolution, shared with the JIT. This arm used to build its own list from
@@ -1419,6 +1419,21 @@ pub fn apply_mlir_opt(
 
     let out_str = std::fs::read_to_string(temp_out.path()).unwrap_or_default();
     Ok(out_str)
+}
+
+/// Print what the program wrote, each of its streams on the matching one of ours.
+///
+/// The two used to be concatenated and printed together on stdout, which put a diagnostic the
+/// program sent to stderr after everything it sent to stdout. Anything reading the last line of
+/// `vxc --run` then got the diagnostic rather than the program's answer -- the failure two
+/// `remote_client_test` cases hit on a Linux box whose CUDA backend finds no device and says so.
+fn print_program_output(out: &crate::jit::ProgramOutput) {
+    if !out.stdout.is_empty() {
+        println!("{}", out.stdout);
+    }
+    if !out.stderr.is_empty() {
+        eprint!("{}", out.stderr);
+    }
 }
 
 /// Run `mlir-translate --mlir-to-llvmir` over LLVM-dialect MLIR to get real `.ll`.

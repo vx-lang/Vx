@@ -1,8 +1,8 @@
 //===- module_loader.rs - Vx Compiler --------------------------*- Rust -*-===//
 //
-// Part of the Vx Project, under the BSD 3-Clause License.
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.
-// SPDX-License-Identifier: BSD-3-Clause
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -50,8 +50,23 @@ impl ModuleLoader {
     pub fn new() -> Self {
         let mut search_paths = Vec::new();
         if let Ok(env_path) = std::env::var("VX_STD_PATH") {
-            search_paths.push(PathBuf::from(env_path));
+            // Read as a PATH-style list rather than a single directory. Set to one directory it
+            // replaced BOTH roots below, so `import graph::traversal` stopped resolving -- which
+            // is exactly what an installed toolchain would have set it to.
+            search_paths.extend(std::env::split_paths(&env_path));
         } else {
+            // Beside the compiler, as an installed toolchain lays it out: `bin/vxc` and `stdlib/`
+            // under one prefix. Checked before the working directory so a downloaded toolchain
+            // resolves imports from any directory, with no environment variable set.
+            if let Ok(exe) = std::env::current_exe() {
+                if let Some(bin_dir) = exe.parent() {
+                    let prefix = bin_dir.join("..");
+                    if prefix.join("stdlib").join("std").is_dir() {
+                        search_paths.push(prefix.join("stdlib").join("std"));
+                        search_paths.push(prefix.join("stdlib"));
+                    }
+                }
+            }
             search_paths.push(PathBuf::from("stdlib/std"));
             // `stdlib` itself is a root so top-level libraries beyond `std` resolve, e.g.
             // `import graph::traversal` -> `stdlib/graph/traversal.vx`.
