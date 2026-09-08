@@ -36,6 +36,13 @@ impl FnEmit<'_> {
     }
 
     pub(crate) fn op_ret(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        // A bare `return;`: emitted as an effect, so it carries the no-type sentinel and there is
+        // no operand to name. Only a `void` function may write one, which the checker enforces.
+        if ins.type_idx.0 == u32::MAX {
+            self.body += "  func.return\n";
+            self.terminated = true;
+            return Ok(());
+        }
         let gid = *self
             .types
             .get(ins.type_idx.0 as usize)

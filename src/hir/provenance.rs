@@ -201,8 +201,10 @@ impl<'a> ProvWalk<'a> {
     fn walk_stmt(&mut self, stmt: &'a Statement) {
         match stmt {
             Statement::Return(r) => {
-                self.note_return(&r.expr);
-                self.walk_expr(&r.expr);
+                if let Some(e) = &r.expr {
+                    self.note_return(e);
+                    self.walk_expr(e);
+                }
             }
             Statement::LetDecl(l) => {
                 // Record a reference binding's provenance so a later `return name` resolves through

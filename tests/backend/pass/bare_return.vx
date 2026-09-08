@@ -1,0 +1,57 @@
+//===- bare_return.vx - Vx Compiler ------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+//
+// `return;` -- an early exit from a `void` function. The parser used to demand an expression
+// after `return` and reported `Expected expression, found Semicolon`, so a void function had no
+// way to leave before its last statement. It appears nowhere in the corpus, which is why it
+// survived: every void function ran to the end of its body.
+//
+// The guard must actually take effect, not merely compile, so `main` exits 0 only if the early
+// return happened.
+//
+// CHECK-DAG lines, not ordered ones: the two paths emit the functions in opposite orders.
+//
+// The void signature and the operandless terminator are the point -- a bare `return` must lower
+// to a terminator with nothing after it, in a function declared with no result type. The printer
+// renders `func.return` in its short form, so the text to match is a bare `return` at end of line.
+//
+// CHECK-DAG: func.func @push_if_positive
+// CHECK-DAG: {{^ *}}return{{$}}
+// CHECK-DAG: func.func @main() -> i32
+
+import std::vec;
+
+fn push_if_positive(v : &mut Vec<i32>, n : i32) -> void {
+  if n <= 0 {
+    return;
+  }
+  v.push(n);
+}
+
+fn main() -> i32 {
+  let mut v : Vec<i32> = Vec<i32>::new();
+
+  // n <= 0 takes the early return, so nothing is pushed.
+  push_if_positive(&mut v, 0);
+  if v.len() != 0 {
+    return 1;
+  }
+
+  // n > 0 runs past it.
+  push_if_positive(&mut v, 5);
+  if v.len() != 1 {
+    return 2;
+  }
+  if v.get(0) != 5 {
+    return 3;
+  }
+
+  v.free();
+  return 0;
+}

@@ -706,7 +706,9 @@ impl<'a> TypeChecker<'a> {
                     let mut return_publishes = false;
                     if let Some(Statement::Return(r)) = last {
                         let mut ret_scan = RawScan::default();
-                        scan_expr(&r.expr, false, &mut ret_scan);
+                        if let Some(e) = &r.expr {
+                            scan_expr(e, false, &mut ret_scan);
+                        }
                         return_publishes = ret_scan.publishes;
                         last = it.next();
                     }
@@ -748,7 +750,9 @@ impl<'a> TypeChecker<'a> {
             match s {
                 Statement::LetDecl(l) => self.discipline_expr(&l.expr, st, cx),
                 Statement::Return(r) => {
-                    self.discipline_expr(&r.expr, st, cx);
+                    if let Some(e) = &r.expr {
+                        self.discipline_expr(e, st, cx);
+                    }
                     cx.fn_exits.push(st.outstanding.clone());
                 }
                 Statement::ExprStmt(e) => self.discipline_expr(&e.expr, st, cx),
@@ -1124,7 +1128,9 @@ fn scan_stmts(stmts: &[Statement], in_closure: bool, out: &mut RawScan) {
             Statement::LetDecl(l) => scan_expr(&l.expr, in_closure, out),
             Statement::Return(r) => {
                 out.returns.push((s as *const Statement, r.span));
-                scan_expr(&r.expr, in_closure, out);
+                if let Some(e) = &r.expr {
+                    scan_expr(e, in_closure, out);
+                }
             }
             Statement::ExprStmt(e) => scan_expr(&e.expr, in_closure, out),
             Statement::Assign(a) => {
@@ -1459,7 +1465,10 @@ pub(crate) fn body_reassigns(body: &[Statement], name: &str) -> bool {
                     }
                 }
                 Statement::Return(r) => {
-                    if expr_blocks_reassign(&r.expr, name) {
+                    if r.expr
+                        .as_ref()
+                        .is_some_and(|e| expr_blocks_reassign(e, name))
+                    {
                         return true;
                     }
                 }
@@ -1661,7 +1670,9 @@ impl<'a> TypeChecker<'a> {
                     self.traffic_expr(&l.expr, mult, acc, exact, elem, src, dst, exts)?
                 }
                 Statement::Return(r) => {
-                    self.traffic_expr(&r.expr, mult, acc, exact, elem, src, dst, exts)?
+                    if let Some(e) = &r.expr {
+                        self.traffic_expr(e, mult, acc, exact, elem, src, dst, exts)?
+                    }
                 }
                 Statement::ExprStmt(e) => {
                     self.traffic_expr(&e.expr, mult, acc, exact, elem, src, dst, exts)?

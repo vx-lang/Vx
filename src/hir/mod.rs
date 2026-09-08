@@ -82,7 +82,7 @@ fn make() -> Point {
         let mut annotated = None;
         for stmt in &make.body {
             if let crate::syntax::Statement::Return(r) = stmt {
-                if let crate::syntax::Expr::StructInit(si) = &r.expr {
+                if let Some(crate::syntax::Expr::StructInit(si)) = &r.expr {
                     annotated = si.type_id;
                 }
             }

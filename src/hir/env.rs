@@ -429,7 +429,11 @@ impl<'a> TypeChecker<'a> {
     pub fn extract_uses_stmt(stmt: &Statement, uses: &mut std::collections::HashSet<String>) {
         match stmt {
             Statement::ExprStmt(e) => Self::extract_uses_expr(&e.expr, uses),
-            Statement::Return(r) => Self::extract_uses_expr(&r.expr, uses),
+            Statement::Return(r) => {
+                if let Some(e) = &r.expr {
+                    Self::extract_uses_expr(e, uses);
+                }
+            }
             Statement::Assign(a) => {
                 Self::extract_uses_expr(&a.lhs, uses);
                 Self::extract_uses_expr(&a.rhs, uses);
@@ -826,7 +830,11 @@ impl<'a> TypeChecker<'a> {
                 Self::subst_topo_in_expr(&mut l.expr, tm);
             }
             S::ExprStmt(e) => Self::subst_topo_in_expr(&mut e.expr, tm),
-            S::Return(r) => Self::subst_topo_in_expr(&mut r.expr, tm),
+            S::Return(r) => {
+                if let Some(e) = &mut r.expr {
+                    Self::subst_topo_in_expr(e, tm);
+                }
+            }
             S::Assign(a) => {
                 Self::subst_topo_in_expr(&mut a.lhs, tm);
                 Self::subst_topo_in_expr(&mut a.rhs, tm);

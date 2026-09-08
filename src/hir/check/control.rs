@@ -454,7 +454,7 @@ impl<'a> TypeChecker<'a> {
                 }
 
                 body_stmts.push(Statement::Return(ReturnStmt {
-                    expr: *b,
+                    expr: Some(*b),
                     span: e.span,
                 }));
 

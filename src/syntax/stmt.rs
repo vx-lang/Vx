@@ -35,11 +35,14 @@ impl LetDeclStmt {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct ReturnStmt {
-    pub expr: Expr,
+    /// `None` for a bare `return;`, which only a `void` function may write. Modelled as an
+    /// absence rather than a synthesized zero: a `void` function has no value to return, and
+    /// inventing one would have to be typed as something.
+    pub expr: Option<Expr>,
     pub span: Span,
 }
 impl ReturnStmt {
-    pub fn new(expr: Expr, span: Span) -> Self {
+    pub fn new(expr: Option<Expr>, span: Span) -> Self {
         Self { expr, span }
     }
 }
@@ -234,7 +237,7 @@ impl Statement {
                 span: e.span,
             }),
             Statement::Return(e) => Statement::Return(ReturnStmt {
-                expr: e.expr.substitute(mapping),
+                expr: e.expr.as_ref().map(|x| x.substitute(mapping)),
                 span: e.span,
             }),
             Statement::ExprStmt(e) => Statement::ExprStmt(ExprStmtStmt {

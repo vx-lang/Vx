@@ -475,6 +475,20 @@ impl<'a> TypeChecker<'a> {
     /// return-escape analysis (#243), and bind `return` for `ensures` constraints.
     fn check_return_stmt(&mut self, ret: &mut ReturnStmt, consume: bool, return_type: &Type) {
         let ReturnStmt { expr, span } = ret;
+
+        // `return;` -- valid only where there is no value to return. Everything below types a
+        // returned expression, so there is nothing left to do once the function type is checked.
+        let Some(expr) = expr else {
+            if !crate::syntax::is_void_ty(return_type) {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E3002,
+                    format!("this function returns {return_type}, so `return` needs a value"),
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                );
+            }
+            return;
+        };
+
         let prev_expected = self.expected_type.take();
         self.expected_type = Some(return_type.clone());
         let ty = self.check_expr_type_flag(expr, consume);
@@ -838,7 +852,9 @@ impl<'a> TypeChecker<'a> {
                 }
                 None
             }
-            Statement::Return(ReturnStmt { expr, span: _ }) => self.eval_expr(expr, env),
+            Statement::Return(ReturnStmt { expr, span: _ }) => {
+                expr.as_ref().and_then(|e| self.eval_expr(e, env))
+            }
             _ => None,
         }
     }

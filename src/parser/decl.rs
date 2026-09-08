@@ -187,7 +187,10 @@ impl<'a> Parser<'a> {
             );
             if !has_semi && !else_less_if && !crate::syntax::expr::diverges_on_every_path(&expr) {
                 let lsyntax_idx = body.len() - 1;
-                body[lsyntax_idx] = Statement::Return(ReturnStmt { expr, span });
+                body[lsyntax_idx] = Statement::Return(ReturnStmt {
+                    expr: Some(expr),
+                    span,
+                });
             }
         }
 
@@ -1458,12 +1461,12 @@ fn distributed_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>, b: Ref<Tens
         assert_eq!(func.body.len(), 1);
         if let Statement::Return(ReturnStmt {
             expr:
-                Expr::SpawnOn(SpawnOnExpr {
+                Some(Expr::SpawnOn(SpawnOnExpr {
                     top,
                     stmts,
                     ret: _,
                     span: _,
-                }),
+                })),
             span: _,
         }) = &func.body[0]
         {
@@ -1726,12 +1729,12 @@ fn distributed_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>, b: Ref<Tens
         assert_eq!(func.name.as_ref(), "custom_matmul");
         if let Statement::Return(ReturnStmt {
             expr:
-                Expr::SpawnOn(SpawnOnExpr {
+                Some(Expr::SpawnOn(SpawnOnExpr {
                     top: _,
                     stmts,
                     ret: _,
                     span: _,
-                }),
+                })),
             span: _,
         }) = &func.body[0]
         {
@@ -1850,12 +1853,12 @@ fn stderr_write(buffer: *const u8, len: i64) -> i64 {
         // stdout_write should have a Return statement (implicit return converted)
         let func1 = &program.functions[0];
         if let Statement::Return(ReturnStmt { expr, span: _ }) = &func1.body[0] {
-            if let Expr::FunctionCall(FunctionCallExpr {
+            if let Some(Expr::FunctionCall(FunctionCallExpr {
                 name,
                 args,
                 span: _,
                 type_args: _,
-            }) = expr
+            })) = expr
             {
                 assert_eq!(name.as_ref(), "vx_stdout_write");
                 assert_eq!(args.len(), 2);

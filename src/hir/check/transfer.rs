@@ -92,7 +92,11 @@ impl<'a> TypeChecker<'a> {
                 Statement::Assert(a) => Self::extract_eq_const(&a.expr, out),
                 Statement::LetDecl(l) => Self::scan_expr_for_asserts(&l.expr, out),
                 Statement::ExprStmt(e) => Self::scan_expr_for_asserts(&e.expr, out),
-                Statement::Return(r) => Self::scan_expr_for_asserts(&r.expr, out),
+                Statement::Return(r) => {
+                    if let Some(e) = &r.expr {
+                        Self::scan_expr_for_asserts(e, out);
+                    }
+                }
                 Statement::ForLoop(f) => Self::collect_assert_contracts(&f.body, out),
                 _ => {}
             }

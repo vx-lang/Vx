@@ -4292,7 +4292,7 @@ impl<'r> Lowerer<'r> {
                 // `Option::unwrap`): lower the match as a statement — each arm emits its own `Ret` — then
                 // give the fall-through merge block a terminator, a default (zero) return of the
                 // function's type, exactly as the AST codegen's merge block does. (#242)
-                if let Expr::Match(m) = &r.expr {
+                if let Some(Expr::Match(m)) = &r.expr {
                     // The zero below is a fall-through default, correct when nothing reaches the
                     // merge block carrying a value -- `Option::unwrap`'s `None` arm ends in an
                     // `assert`, falls through, and has no value to contribute. It is wrong when an
@@ -4330,7 +4330,12 @@ impl<'r> Lowerer<'r> {
                 }
                 // The returned value already carries the function's declared return type — the checker
                 // types a literal to it and rejects a genuine mismatch (#240).
-                let v = self.lower_expr(&r.expr)?;
+                // A bare `return;` in a `void` function: nothing to lower, just the terminator.
+                let Some(ret_expr) = &r.expr else {
+                    self.emit_effect(Opcode::Ret, Register(0), Register(0), 0);
+                    return Ok(());
+                };
+                let v = self.lower_expr(ret_expr)?;
                 // A transparent block can carry the return itself: `return comptime { ..;
                 // return x; }` is a synthesized closure body's shape, and its inner `return`
                 // already ended the block. A second Ret -- or any op after the first -- is
@@ -4705,7 +4710,7 @@ fn body_has_control_flow(stmts: &[Statement]) -> bool {
         // A value-position `if` (`let v = if .. { .. } else { .. }`, #201) lowers to blocks + a result
         // slot, which needs the memory model too — as does a short-circuit `&&`/`||` (#239).
         Statement::LetDecl(l) => expr_has_control_flow(&l.expr),
-        Statement::Return(r) => expr_has_control_flow(&r.expr),
+        Statement::Return(r) => r.expr.as_ref().is_some_and(expr_has_control_flow),
         Statement::Assign(a) => expr_has_control_flow(&a.rhs),
         // An assert's condition is an expression like any other; `assert(a && b, ..)` was the
         // one statement this scan skipped, so the logical op reached `lower_logical` in
@@ -4783,7 +4788,7 @@ fn body_constructs_struct(stmts: &[Statement]) -> bool {
     stmts.iter().any(|s| match s {
         Statement::LetDecl(l) => expr_constructs_struct(&l.expr),
         Statement::ExprStmt(e) => expr_constructs_struct(&e.expr),
-        Statement::Return(r) => expr_constructs_struct(&r.expr),
+        Statement::Return(r) => r.expr.as_ref().is_some_and(expr_constructs_struct),
         Statement::Assign(a) => expr_constructs_struct(&a.rhs),
         _ => false,
     })
@@ -4971,7 +4976,11 @@ impl BorrowScan {
                     }
                     self.expr(&l.expr);
                 }
-                Statement::Return(r) => self.expr(&r.expr),
+                Statement::Return(r) => {
+                    if let Some(e) = &r.expr {
+                        self.expr(e);
+                    }
+                }
                 Statement::ExprStmt(e) => self.expr(&e.expr),
                 Statement::Assign(a) => {
                     if let Expr::Identifier(id) = &a.lhs {
@@ -5124,7 +5133,11 @@ impl RefUseScan<'_> {
                     self.expr(&a.rhs);
                 }
                 Statement::LetDecl(l) => self.expr(&l.expr),
-                Statement::Return(r) => self.expr(&r.expr),
+                Statement::Return(r) => {
+                    if let Some(e) = &r.expr {
+                        self.expr(e);
+                    }
+                }
                 Statement::ExprStmt(e) => self.expr(&e.expr),
                 Statement::ForLoop(f) => {
                     self.expr(&f.iterable);

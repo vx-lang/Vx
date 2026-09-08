@@ -315,7 +315,11 @@ impl Statement {
                 }
                 e.expr.resolve_names(scope);
             }
-            Statement::Return(e) => e.expr.resolve_names(scope),
+            Statement::Return(e) => {
+                if let Some(x) = e.expr.as_mut() {
+                    x.resolve_names(scope);
+                }
+            }
             Statement::ExprStmt(e) => e.expr.resolve_names(scope),
             Statement::Assert(e) => e.expr.resolve_names(scope),
             Statement::ForLoop(e) => {

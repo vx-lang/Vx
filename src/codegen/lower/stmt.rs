@@ -15,6 +15,12 @@ impl<'c> LowerToMelior<'c> for ReturnStmt {
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Self::Output {
         let ReturnStmt { expr, span: _ } = self;
+        // A bare `return;` -- only a `void` function may write one, which the checker enforces.
+        // Nothing to compute and nothing to convert, so emit the terminator and stop.
+        let Some(expr) = expr else {
+            block.append_operation(OperationBuilder::new("func.return", gen.loc()).build()?);
+            return Ok(None);
+        };
         gen.expected_type = gen.current_return_type;
         let (mut val, expr_ty, block) = gen.generate_expr(expr, block)?;
         gen.expected_type = None;

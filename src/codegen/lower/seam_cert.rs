@@ -156,7 +156,11 @@ pub(crate) fn collect_stmt_idents(s: &Statement, out: &mut HashSet<String>) {
     match s {
         Statement::LetDecl(l) => collect_expr_idents(&l.expr, out),
         Statement::ExprStmt(e) => collect_expr_idents(&e.expr, out),
-        Statement::Return(r) => collect_expr_idents(&r.expr, out),
+        Statement::Return(r) => {
+            if let Some(e) = &r.expr {
+                collect_expr_idents(e, out);
+            }
+        }
         Statement::Assert(a) => collect_expr_idents(&a.expr, out),
         Statement::Assign(a) => {
             collect_expr_idents(&a.lhs, out);

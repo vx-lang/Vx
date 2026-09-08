@@ -152,11 +152,22 @@ impl<'a> Parser<'a> {
             }
             TokenType::Return => {
                 self.advance();
-                let expr = self.parse_expr()?;
+                // `return;` -- an early exit from a `void` function. Without this the parser
+                // demanded an expression and reported `Expected expression, found Semicolon`,
+                // so a void function had no way to return before its last statement.
+                let expr = if self.check(&TokenType::Semicolon) {
+                    None
+                } else {
+                    Some(self.parse_expr()?)
+                };
                 self.consume(&TokenType::Semicolon, "Expected ';'")?;
                 Ok(Statement::Return(ReturnStmt {
                     expr,
-                    span: Span::default(),
+                    span: Span {
+                        line: token_line,
+                        column: token_col,
+                        length: token_len,
+                    },
                 }))
             }
             TokenType::Loop => {

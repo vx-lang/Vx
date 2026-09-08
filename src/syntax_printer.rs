@@ -151,7 +151,9 @@ impl AstPrinter {
                 Statement::Return(ReturnStmt { expr, span: _ }) => {
                     indent.print(w)?;
                     writeln!(w, "{}Return", prefix)?;
-                    Self::print_expr(w, expr, &indent.child(is_last), true)?;
+                    if let Some(e) = expr {
+                        Self::print_expr(w, e, &indent.child(is_last), true)?;
+                    }
                 }
                 Statement::ExprStmt(ExprStmtStmt {
                     expr,

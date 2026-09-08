@@ -220,7 +220,9 @@ impl<'a> MacroExpander<'a> {
                 a.rhs = self.expand_expr(take_expr(&mut a.rhs))?;
             }
             stmt::Statement::Return(r) => {
-                r.expr = self.expand_expr(take_expr(&mut r.expr))?;
+                if let Some(e) = r.expr.as_mut() {
+                    r.expr = Some(self.expand_expr(take_expr(e))?);
+                }
             }
             stmt::Statement::Assert(a) => {
                 *a.expr = self.expand_expr(take_expr(&mut a.expr))?;

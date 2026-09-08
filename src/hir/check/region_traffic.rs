@@ -476,7 +476,9 @@ impl<'a> TypeChecker<'a> {
                     binds.insert(l.name.as_ref().to_string(), placed);
                 }
                 Statement::Return(r) => {
-                    self.region_expr(&r.expr, mult, acc, exact, outer, binds)?
+                    if let Some(e) = &r.expr {
+                        self.region_expr(e, mult, acc, exact, outer, binds)?
+                    }
                 }
                 Statement::ExprStmt(e) => {
                     self.region_expr(&e.expr, mult, acc, exact, outer, binds)?
