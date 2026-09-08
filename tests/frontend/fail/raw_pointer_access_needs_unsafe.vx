@@ -2,35 +2,51 @@
 //
 // `*p`, `p[i]` and `p.field` are one operation with three spellings: a read or a write through
 // an address the compiler cannot vouch for. Only the first used to require an unsafe block, so
-// the two that this repository actually writes were unguarded. All four directions are pinned
-// here -- index read and write, field read and write -- because the assignment target is a
+// the two that this repository actually writes were unguarded. All six directions are pinned
+// here -- deref, index and field, each read and write -- because the assignment target is a
 // separate path through the checker from the value position.
+//
+// The location is matched as a nonzero line, not a fixed one: what it asserts is that the
+// diagnostic carries the operator's span at all. Every one of these read 0:0 until the parser
+// recorded the token.
 
 struct S {
   n : i32,
 }
 
 fn index_read(p : *mut i32) -> i32 {
-  // CHECK-DAG: E5002{{.*}}Indexing a raw pointer requires an unsafe block
+  // CHECK-DAG: E5002] at {{[1-9][0-9]*}}:{{[0-9]+}}: Indexing a raw pointer requires an unsafe block
   let v = p[0];
   return v;
 }
 
 fn index_write(p : *mut i32) -> i32 {
-  // CHECK-DAG: E5002{{.*}}Indexing a raw pointer requires an unsafe block
+  // CHECK-DAG: E5002] at {{[1-9][0-9]*}}:{{[0-9]+}}: Indexing a raw pointer requires an unsafe block
   p[0] = 7;
   return 0;
 }
 
 fn field_read(p : *mut S) -> i32 {
-  // CHECK-DAG: E5002{{.*}}Reading a field through a raw pointer requires an unsafe block
+  // CHECK-DAG: E5002] at {{[1-9][0-9]*}}:{{[0-9]+}}: Reading a field through a raw pointer requires an unsafe block
   let v = p.n;
   return v;
 }
 
 fn field_write(p : *mut S) -> i32 {
-  // CHECK-DAG: E5002{{.*}}Writing a field through a raw pointer requires an unsafe block
+  // CHECK-DAG: E5002] at {{[1-9][0-9]*}}:{{[0-9]+}}: Writing a field through a raw pointer requires an unsafe block
   p.n = 7;
+  return 0;
+}
+
+fn deref_read(p : *mut i32) -> i32 {
+  // CHECK-DAG: E5002] at {{[1-9][0-9]*}}:{{[0-9]+}}: Dereferencing a raw pointer requires an unsafe block
+  let v = *p;
+  return v;
+}
+
+fn deref_write(p : *mut i32) -> i32 {
+  // CHECK-DAG: E5002] at {{[1-9][0-9]*}}:{{[0-9]+}}: Writing through a raw pointer requires an unsafe block
+  *p = 7;
   return 0;
 }
 

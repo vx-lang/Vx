@@ -590,12 +590,19 @@ impl<'a> Parser<'a> {
                 is_mut,
                 span: Span::default(),
             }));
-        } else if self.match_token(&TokenType::Star) {
+        } else if self.check(&TokenType::Star) {
+            // The `*` token, so a diagnostic about the dereference points at it.
+            let star_span = crate::syntax::Span {
+                line: self.peek().line,
+                column: self.peek().column,
+                length: self.peek().length,
+            };
+            self.advance();
             let inner = self.parse_primary_expr()?;
             return Ok(Expr::Dereference(DereferenceExpr {
                 expr: Box::new(inner),
                 ty: None,
-                span: Span::default(),
+                span: star_span,
             }));
         } else if self.match_token(&TokenType::Unsafe) {
             self.consume(&TokenType::LeftBrace, "Expected '{' after unsafe")?;

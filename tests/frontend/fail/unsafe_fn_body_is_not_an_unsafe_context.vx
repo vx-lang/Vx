@@ -4,7 +4,7 @@
 // a contract on the caller; an unsafe operation inside the body still marks itself.
 
 unsafe fn reads(ptr : *mut i32) -> i32 {
-  // CHECK: Dereference of raw pointer outside of unsafe block
+  // CHECK: E5002{{.*}}Dereferencing a raw pointer requires an unsafe block
   let v = *ptr;
   return v;
 }

@@ -935,14 +935,12 @@ impl<'a> TypeChecker<'a> {
                 let inner_ty = self.check_expr_type_flag(&mut e.expr, consume);
                 let resolved_ty = match inner_ty.clone() {
                     Type::Pointer(t, _, _) => {
-                        if !self.in_unsafe_block && !self.speculating {
-                            println!("DEREF ERROR! inner_ty is {:?}", inner_ty);
-                            let bt = std::backtrace::Backtrace::force_capture();
-                            println!("{}", bt);
-                            self.errors.push(
-                                "Dereference of raw pointer outside of unsafe block!".to_string(),
-                            );
-                        }
+                        let verb = if self.checking_assign_lhs {
+                            "Writing through a raw pointer"
+                        } else {
+                            "Dereferencing a raw pointer"
+                        };
+                        self.require_unsafe_raw_access(verb, &e.span);
                         *t
                     }
                     Type::Borrow { inner: t, .. } => *t,
