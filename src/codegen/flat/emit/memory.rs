@@ -37,6 +37,16 @@ impl FnEmit<'_> {
             // by-value struct arg): an `!llvm.struct` value, tracked so it can be spilled to a
             // slot / passed on by value. (#242)
             self.agg_val_of[idx] = Some(gid);
+        } else if let Some(Type::Simd(e, lanes)) = self
+            .func
+            .params
+            .get(ins.imm as usize)
+            .map(|(_, ty)| peel_wrappers(ty))
+        {
+            // A `<N x T>` parameter: a `vector<NxT>` block argument. The spelling comes off the
+            // declared type rather than a GID side table -- a vector carries no shape beyond its
+            // element and lane count, both of which the declaration already states.
+            self.vec_of[idx] = mlir_vector(e, *lanes);
         }
         Ok(())
     }

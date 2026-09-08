@@ -51,6 +51,16 @@ pub fn tensor_gid(elem: &ElementType, shape: &[String]) -> TypeId {
     TypeId::new(0, sym, 0, 0)
 }
 
+/// The stable GID of a vector type (`<N x T>`): module 0 (builtin) + a content hash of the element
+/// type and lane count, so `<4 x f32>` and `<8 x f32>` are distinct and a vector has the same
+/// identity in a signature and a lowered body. `N` participates as an integer argument, which is
+/// what makes the type a generic instantiation over `T` and `N` like any other.
+pub fn vector_gid(elem: &ElementType, lanes: usize) -> TypeId {
+    let sym =
+        crate::hash::DefPath::Named(&format!("$vec::{elem:?}::{lanes}")).compute_symbol_hash();
+    TypeId::new(0, sym, 0, 0)
+}
+
 /// The stable GID of a raw pointer type (`!llvm.ptr`): module 0 (builtin) + a content hash of a fixed
 /// name. Every pointer — a string value, a `*mut i8`/`*const u8` FFI argument or result — is the same
 /// opaque `!llvm.ptr`, so one GID identifies them all (matching MLIR's opaque pointer model). Kept
@@ -292,6 +302,11 @@ enum LoweredTy {
     /// pointers share one opaque type (matching MLIR), so no element is carried. Stored in a slot via
     /// `llvm.alloca` in memory mode; a value otherwise. (#231/#235)
     Ptr,
+    /// `<N x T>`, lowered to `vector<NxT>`. A register value: POD, no descriptor, no drop.
+    Vector {
+        elem: ElementType,
+        lanes: usize,
+    },
 }
 
 impl LoweredTy {
@@ -302,6 +317,7 @@ impl LoweredTy {
             LoweredTy::Aggregate(id) => *id,
             LoweredTy::Tensor { elem, shape } => tensor_gid(elem, shape),
             LoweredTy::Ptr => ptr_gid(),
+            LoweredTy::Vector { elem, lanes } => vector_gid(elem, *lanes),
         }
     }
 }
@@ -502,7 +518,10 @@ impl<'r> Lowerer<'r> {
             // A tensor is a reference (memref), not a stack value, so it is never `Alloca`'d — but
             // keep the match total; if one ever reaches here its size is left unencoded. A pointer
             // slot is a single `!llvm.ptr` cell, so its size is likewise implied by its type.
-            LoweredTy::Scalar(_) | LoweredTy::Tensor { .. } | LoweredTy::Ptr => 0,
+            LoweredTy::Scalar(_)
+            | LoweredTy::Tensor { .. }
+            | LoweredTy::Ptr
+            | LoweredTy::Vector { .. } => 0,
             LoweredTy::Aggregate(id) => {
                 self.layout_of(id).map(|d| d.size_bytes as u64).unwrap_or(0)
             }
@@ -962,6 +981,7 @@ impl<'r> Lowerer<'r> {
                     FieldTy::Scalar(e) => LoweredTy::Scalar(e),
                     FieldTy::Opaque => LoweredTy::Ptr,
                     FieldTy::Nominal(nested_gid) => LoweredTy::Aggregate(nested_gid),
+                    FieldTy::Vector(elem, lanes) => LoweredTy::Vector { elem, lanes },
                     // The layout holds the element and rank; the shape is in the declaration.
                     FieldTy::Tensor(..) => self.declared_field_ty(&gid, m.member.as_ref()).ok_or(
                         Decline::TypeNotModelled {
@@ -2303,7 +2323,10 @@ impl<'r> Lowerer<'r> {
         let elem = match &start.ty {
             LoweredTy::Scalar(e) => e.clone(),
             // ranges are over scalars
-            LoweredTy::Aggregate(_) | LoweredTy::Tensor { .. } | LoweredTy::Ptr => {
+            LoweredTy::Aggregate(_)
+            | LoweredTy::Tensor { .. }
+            | LoweredTy::Ptr
+            | LoweredTy::Vector { .. } => {
                 return Err(Decline::TypeNotModelled {
                     what: "a range over a non-scalar",
                 })
@@ -4587,6 +4610,14 @@ fn lowered_ty(ty: &Type, registry: &ImmutableGlobalRegistry) -> Option<LoweredTy
     }
     if let Some((elem, shape)) = tensor_elem_shape(ty) {
         return Some(LoweredTy::Tensor { elem, shape });
+    }
+    // `<N x T>` is a register value: `vector<NxT>`. Declines on an element with no MLIR spelling
+    // (fp8, a generic), the same condition that makes a scalar of it decline.
+    if let Type::Simd(elem, lanes) = ty {
+        return crate::mlir_ty::mlir_scalar(elem).map(|_| LoweredTy::Vector {
+            elem: elem.clone(),
+            lanes: *lanes,
+        });
     }
     // A borrowed tensor is the tensor: a memref is already a reference, and a call site hands over
     // the memref itself. Reading it as an opaque pointer gave a function body a parameter type its
@@ -7263,10 +7294,12 @@ mod tests {
 
     #[test]
     fn unmodelled_aggregate_param_is_declined() {
-        // `Buf` has a vector field, so its layout is not modelled (the 0/0 stub); a function taking
-        // it by value cannot be sized, so lowering is declined atomically (worker untouched).
+        // `Buf` holds a by-value generic instance, whose size depends on the instantiation, so the
+        // base layout stays the 0/0 stub; a function taking `Buf` by value cannot be sized, and
+        // lowering is declined atomically (worker untouched). This used to use a `<4 x f32>` field,
+        // which stopped being unmodelled once a vector got a layout.
         let (did, w) = lower_with_registry(
-            "struct Buf { data: <4 x f32> }\nfn f(b: Buf) -> i32 { return 0; }",
+            "struct Inner<T> { v: T }\nstruct Buf { data: Inner<i32> }\nfn f(b: Buf) -> i32 { return 0; }",
             "f",
         );
         assert!(

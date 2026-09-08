@@ -216,6 +216,14 @@ impl<'a> Parser<'a> {
                 &TokenType::RightAngle,
                 "Expected '>' after SIMD element type",
             )?;
+            // A power of two in the first cut. `<3 x f32>` is not merely unusual: LLVM gives it a
+            // store size of 16, where lane-count times element size says 12, so admitting it would
+            // put a following struct field at an offset the datalayout disagrees with.
+            if !n.is_power_of_two() {
+                return Err(self.error(&format!(
+                    "Expected a power of two for the lane count of a vector type, found {n}"
+                )));
+            }
             Ok(Type::Simd(el_ty, n))
         } else if self.match_token(&TokenType::Fn) {
             self.consume(&TokenType::LeftParen, "Expected '(' after 'fn'")?;

@@ -23,7 +23,7 @@
 // case that stays quiet.
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// CHECK: Type mismatch in variable declaration
+// CHECK: E3001{{.*}}'widened' is declared f32 but its initializer is f16
 fn main() -> i32 {
   let mut h = Tensor<f16, [2, 2]>::uninit();
   h[0][0] = 1.5;

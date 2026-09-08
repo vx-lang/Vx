@@ -93,7 +93,7 @@ impl<'a> VxMetadata<'a> {
 const VXLIB_MAGIC: &[u8; 4] = b"VXLB";
 /// Format tag folded into an FNV-1a stamp (`src/hash.rs`) written after the magic. A codec change
 /// bumps this string, so a stale artifact is *detected* (version mismatch on load) rather than misread.
-const VXLIB_FORMAT_TAG: &str = "vxlib-interface-v11";
+const VXLIB_FORMAT_TAG: &str = "vxlib-interface-v12";
 
 /// Append-only little-endian byte writer for the interface codec.
 struct Writer {
@@ -245,6 +245,11 @@ fn write_field_ty(w: &mut Writer, ty: &FieldTy) {
             write_element_type(w, e);
             w.u64(*rank as u64);
         }
+        FieldTy::Vector(e, lanes) => {
+            w.u8(4);
+            write_element_type(w, e);
+            w.u64(*lanes as u64);
+        }
     }
 }
 
@@ -256,6 +261,10 @@ fn read_field_ty(r: &mut Reader) -> Result<FieldTy, String> {
         3 => {
             let e = read_element_type(r)?;
             FieldTy::Tensor(e, r.u64()? as usize)
+        }
+        4 => {
+            let e = read_element_type(r)?;
+            FieldTy::Vector(e, r.u64()? as usize)
         }
         t => return Err(format!("vxlib: bad FieldTy tag {t}")),
     })

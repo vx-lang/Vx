@@ -38,6 +38,12 @@ pub fn mlir_scalar(elem: &ElementType) -> Option<&'static str> {
     })
 }
 
+/// The MLIR spelling of `<N x T>`: `vector<NxT>`. `None` when the element has no MLIR spelling
+/// (fp8, a generic), which is the same condition that makes a scalar of it decline.
+pub fn mlir_vector(elem: &ElementType, lanes: usize) -> Option<String> {
+    Some(format!("vector<{lanes}x{}>", mlir_scalar(elem)?))
+}
+
 /// The float element type an MLIR spelling names, for reading a vector type back apart.
 /// Floats only: the vectorized slice ops are the only place a spelling is re-parsed, and
 /// they are float-only.

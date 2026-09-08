@@ -1,6 +1,8 @@
 //===- type_mismatch.vx - Vx Compiler ----------------------------*- Vx -*-===//
 // CHECK: Type mismatch on return.
-// CHECK-SAME: Verified(
+// The wrapper is named in Vx's own syntax. This line used to read `Verified(` -- the Rust debug
+// form -- because `Type`'s Display had a `{:?}` fallback that five variants fell through.
+// CHECK-SAME: Verified<Tensor<f32, [10]>>
 //
 // Part of the Vx Project, under the BSD 3-Clause License.
 // See LICENSE for license information.

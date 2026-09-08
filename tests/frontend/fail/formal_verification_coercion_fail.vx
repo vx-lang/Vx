@@ -1,10 +1,10 @@
 //===- formal_verification_coercion_fail.vx -----------------------------===//
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// CHECK: Type mismatch in variable declaration 'v'
+// CHECK: E3001{{.*}}'v' is declared Verified<Tensor<f32, [16, 32]>> but its initializer is Tensor<f32, [16, 32]>
 
 fn main() -> i32 {
   let t : Tensor<f32, [ 16, 32 ]> = Tensor<f32, [16, 32]>::uninit();
-  // EXPECT: Type mismatch in variable declaration 'v'
+  // EXPECT: 'v' is declared Verified<Tensor<f32, [16, 32]>> but its initializer is Tensor<f32, [16, 32]>
   let v : Verified<Tensor<f32, [ 16, 32 ]>> = t;
   return 0;
 }

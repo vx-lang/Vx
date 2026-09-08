@@ -189,8 +189,11 @@ impl<'a> TypeChecker<'a> {
                         Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                     );
                 } else {
-                    self.errors
-                        .push(format!("Type mismatch in variable declaration '{}'", name));
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E3001,
+                        format!("'{name}' is declared {ann} but its initializer is {ty}"),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                    );
                 }
             }
             // Capacity: a placed tensor annotation must fit its memory space.

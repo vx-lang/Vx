@@ -1,5 +1,5 @@
 //===- tensor_errors.vx - Vx Compiler ------------------------------*- Vx -*-===//
-// CHECK: Type mismatch in variable declaration 't_host'
+// CHECK: E3001{{.*}}'t_host' is declared Tensor<f32, [?, ?]> but its initializer is bool
 // CHECK: Missing generic argument for Tensor initialization.
 // CHECK: Generic argument to Tensor must be a scalar type.
 // CHECK: reshape arithmetic mismatch: source has 16384 elements, target has 256

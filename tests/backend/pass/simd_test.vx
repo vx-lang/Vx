@@ -6,23 +6,39 @@
 //
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// The SIMD add stays a single f32 addition in the frontend module; vectorization is a later
-// pipeline's job, not the emitter's.
-// CHECK-LABEL: func.func @test_simd
-// CHECK: arith.addf
-// CHECK-LABEL: func.func @main() -> i32
-extern "C" {
-  fn vx_advance_ptr_f32(base : *mut f32, offset : i32) -> *mut f32;
+//
+// `<N x T>` is a value of its own: N lanes of T in one register, lowered to `vector<NxT>`.
+// It is not a T, and a T is not one lane of it -- the checker used to admit both directions
+// so that `let v : <4 x f32> = *p;` could stand in for a vector load, which is the
+// type-directed deref the design rejects. A load is spelled by the pointer's type, so this
+// fixture holds only what the type itself is; the load/add/store form returns when
+// `*mut align(4) <4 x f32>` exists.
+//
+// CHECK-DAG lines, not ordered ones: the two paths emit the functions in opposite orders, and
+// the point of this fixture is that both spell the type the same way.
+//
+// CHECK-DAG: func.func @identity(%arg0: vector<4xf32>) -> vector<4xf32>
+// CHECK-DAG: func.func @wider(%arg0: vector<8xf32>) -> vector<8xf32>
+// CHECK-DAG: func.func @half(%arg0: vector<4xf16>) -> vector<4xf16>
+// CHECK-DAG: func.func @ints(%arg0: vector<16xi8>) -> vector<16xi8>
+// CHECK-DAG: func.func @main() -> i32
+
+fn identity(v : <4 x f32>) -> <4 x f32> {
+  return v;
 }
 
-fn test_simd(p1 : *mut f32, p2 : *mut f32, p3 : *mut f32) -> i32 {
-  unsafe {
-    let v1 : <4 x f32> = *p1;
-    let v2 : <4 x f32> = *p2;
-    let v3 : <4 x f32> = v1 + v2;
-    *p3 = v3;
-  }
-  return 0;
+// A different lane count is a different type, so the two never share an identity.
+fn wider(v : <8 x f32>) -> <8 x f32> {
+  return v;
+}
+
+// A different element likewise.
+fn half(v : <4 x f16>) -> <4 x f16> {
+  return v;
+}
+
+fn ints(v : <16 x i8>) -> <16 x i8> {
+  return v;
 }
 
 fn main() -> i32 {

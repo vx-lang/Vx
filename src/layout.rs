@@ -38,6 +38,8 @@ pub enum FieldTy {
     /// stride per rank). The element and rank fix the descriptor's shape; the extents are in the
     /// declared field type.
     Tensor(ElementType, usize),
+    /// `<N x T>` held by value: N lanes of T in one register, no descriptor and no drop.
+    Vector(ElementType, usize),
 }
 
 /// The byte offset, size, and type of a single struct field.
@@ -75,6 +77,20 @@ pub fn scalar_size_align(et: &ElementType) -> Option<(usize, usize)> {
     // scalar's alignment equals its size here (natural alignment for the modelled widths). (P1-4a)
     let bytes = (et.bits()? as usize).div_ceil(8);
     Some((bytes, bytes))
+}
+
+/// Size and alignment of `<N x T>`, in bytes.
+///
+/// Lanes pack densely and the total rounds up to a whole byte, so `<8 x i4>` is 4 bytes, not 8.
+/// Alignment is the size rounded up to a power of two, which is what the LLVM datalayout assigns
+/// `vector<NxT>`: `<4 x f32>` is 16/16. A generic element has no width and declines.
+pub fn vector_size_align(el: &ElementType, lanes: usize) -> Option<(usize, usize)> {
+    if lanes == 0 {
+        return None;
+    }
+    let bits = el.bits()? as usize;
+    let size = (bits * lanes).div_ceil(8);
+    Some((size, size.next_power_of_two()))
 }
 
 /// Computes nominal-type layouts over a fixed set of struct/enum declarations,
@@ -201,6 +217,13 @@ impl<'a> LayoutComputer<'a> {
                     FieldTy::Tensor(elem.clone(), dims.len()),
                 ))
             }
+            // `<N x T>`: N lanes packed densely, then rounded to a whole byte, with the alignment
+            // the datalayout gives `vector<NxT>` -- the size rounded up to a power of two. The unit
+            // test below pins this against what LLVM reports, so the two cannot drift.
+            Type::Simd(el, n) => {
+                let (size, align) = vector_size_align(el, *n)?;
+                Some((size, align, FieldTy::Vector(el.clone(), *n)))
+            }
             Type::Pinned(inner, _) | Type::Verified(inner) => self.field_info(inner),
             Type::Struct(_, Some(id)) | Type::Enum(_, Some(id)) => {
                 let layout = self.layout_of(*id)?;
@@ -254,6 +277,24 @@ mod tests {
 
     fn scalar(et: ElementType) -> Type {
         Type::Scalar(et)
+    }
+
+    #[test]
+    fn vector_layout_matches_the_llvm_datalayout() {
+        // Read off LLVM itself, not derived from the rule under test: each of these is what
+        // `opt -S` prints for `alloca <N x T>` on the host target. If the rule and the
+        // datalayout ever diverge, a struct field the frontend places at one offset and LLVM
+        // places at another is the layout-versus-datalayout split reopening.
+        assert_eq!(vector_size_align(&ElementType::F32, 4), Some((16, 16)));
+        assert_eq!(vector_size_align(&ElementType::F64, 2), Some((16, 16)));
+        assert_eq!(vector_size_align(&ElementType::I8, 16), Some((16, 16)));
+        assert_eq!(vector_size_align(&ElementType::F16, 4), Some((8, 8)));
+        // Sub-byte lanes pack densely: 8 * 4 bits is 4 bytes, not 8 padded ones. This is the
+        // one place a vector disagrees with `scalar_size_align`, which pads `I4` to a byte.
+        assert_eq!(vector_size_align(&ElementType::I4, 8), Some((4, 4)));
+        // A generic element has no width, and a zero-lane vector is not a type.
+        assert_eq!(vector_size_align(&ElementType::Generic(sym("T")), 4), None);
+        assert_eq!(vector_size_align(&ElementType::F32, 0), None);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //===- verified_assignment.vx ---------------------------------*- Vx -*-===//
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// CHECK: Type mismatch in variable declaration 'x'
+// CHECK: E3001{{.*}}'x' is declared Verified<Tensor<f32, [10, 10]>> but its initializer is Tensor<f32, [10, 10]>
 
 fn test_unverified_to_verified() -> i32 {
   let unverified : Tensor<f32, [ 10, 10 ]> = Tensor<f32, [10, 10]>::uninit();

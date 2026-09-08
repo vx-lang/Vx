@@ -17,7 +17,7 @@ fn main() -> i32 {
   let mut b : Tensor<f32, [3, 4]> = Tensor<f32, [3, 4]>::uninit();
   a[0][0] = 1.0;
   b[0][0] = 1.0;
-  // CHECK: Type mismatch in variable declaration 'c'
+  // CHECK: E3001{{.*}}'c' is declared Tensor<f32, [9, 9]> but its initializer is Tensor<f32, [2, 4]>
   let c : Tensor<f32, [9, 9]> = a @ b;
   return 0;
 }

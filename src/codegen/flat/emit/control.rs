@@ -120,6 +120,15 @@ impl FnEmit<'_> {
             } else {
                 self.body += &format!("  func.return {a} : {}\n", agg.struct_ty);
             }
+        } else if let Some(vecty) = self
+            .vec_of
+            .get(ins.operand1.0 as usize)
+            .cloned()
+            .flatten()
+            .filter(|_| matches!(peel_wrappers(&self.func.return_type), Type::Simd(..)))
+        {
+            // A `<N x T>` return: the register already holds the vector value.
+            self.body += &format!("  func.return {a} : {vecty}\n");
         } else {
             return Err(crate::emitter_gap!());
         }

@@ -1,5 +1,5 @@
 //===- npu_deref_on_host.vx - Vx Compiler ------------------------*- Vx -*-===//
-// CHECK: Type mismatch in variable declaration 't_device'
+// CHECK: E3001{{.*}}'t_device' is declared Tensor<f32, [?, ?]> but its initializer is Tensor<f32, [1, 1], NPU, NPUHBM>
 //
 // Part of the Vx Project, under the BSD 3-Clause License.
 // See LICENSE for license information.

@@ -30,7 +30,7 @@ use crate::bytecode::{HirInstruction, Opcode};
 use crate::decline::{Decline, Lowered};
 use crate::gid::TypeId;
 use crate::hir::flatten::{ptr_gid, scalar_gid, tensor_gid_of, DYN_DIM};
-use crate::mlir_ty::mlir_scalar;
+use crate::mlir_ty::{mlir_scalar, mlir_vector};
 use crate::registry::ImmutableGlobalRegistry;
 use crate::syntax::scalar_of;
 use crate::syntax::{is_void_ty, Dim, ElementType, Function, Type};
@@ -589,6 +589,17 @@ pub fn build_agg_map(registry: &ImmutableGlobalRegistry, sched: crate::config::S
                         break;
                     }
                 },
+                FieldTy::Vector(e, lanes) => match mlir_vector(e, *lanes) {
+                    Some(mt) => {
+                        field_tys.push(mt);
+                        field_pointee.push(None);
+                        field_agg.push(None);
+                    }
+                    None => {
+                        modelled = false;
+                        break;
+                    }
+                },
                 // A pointer field (`*mut T`/`&T`, layout-erased to `Opaque`) is an opaque `!llvm.ptr`
                 // — the shape of `Vec`'s `data` field (#242). Recover its pointee aggregate (if any)
                 // from the declared field type so a chained field access through it resolves.
@@ -677,6 +688,7 @@ fn agg_struct_ty_of(
             FieldTy::Opaque => "!llvm.ptr".to_string(),
             FieldTy::Tensor(_, rank) => memref_descriptor_ty(*rank),
             FieldTy::Nominal(n) => agg_struct_ty_of(*n, registry, visiting)?,
+            FieldTy::Vector(e, lanes) => mlir_vector(e, *lanes).ok_or(crate::emitter_gap!())?,
         };
         field_tys.push(ft);
     }
@@ -944,6 +956,10 @@ fn ty_mlir(ty: &Type, ctx: &EmitCtx) -> Lowered<String> {
         Ok(et.to_string())
     } else if is_ptr_ty(ty) {
         Ok("!llvm.ptr".to_string())
+    } else if let Type::Simd(elem, lanes) = ty {
+        mlir_vector(elem, *lanes).ok_or(Decline::TypeNotModelled {
+            what: "a vector element with no MLIR spelling",
+        })
     } else if let Some(gid) = tensor_gid_of(ty) {
         let (elem, shape) = ctx.tensors.get(&gid).ok_or(Decline::TypeNotModelled {
             what: "a tensor with no recorded shape",
@@ -1921,6 +1937,10 @@ pub fn emit_function_mlir(
                 .struct_ty
                 .clone(),
         )
+    } else if let Type::Simd(elem, lanes) = peel_wrappers(&func.return_type) {
+        Some(mlir_vector(elem, *lanes).ok_or(Decline::TypeNotModelled {
+            what: "a vector element with no MLIR spelling",
+        })?)
     } else if let Some(mt) = tensor_memref_of_type(&func.return_type) {
         Some(mt) // a statically shaped tensor return, wrappers peeled (Vx#383)
     } else if crate::syntax::is_void_ty(&func.return_type) {

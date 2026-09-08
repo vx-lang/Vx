@@ -970,12 +970,16 @@ impl std::fmt::Display for Type {
                     }
                     write!(f, "]")?;
                 }
+                // The kind and space, not the whole `Placement`: printing the struct put a
+                // `NumberExpr { .. }` for the device index into every message naming a placed
+                // tensor. The index is not what a placement mismatch is ever about.
                 if let Some(p) = top {
-                    write!(f, ", {:?}", p)?;
+                    write!(f, ", {:?}, {:?}", p.topology.kind(), p.space)?;
                 }
                 write!(f, ">")
             }
             Type::Unknown => write!(f, "?"),
+            Type::Simd(el, n) => write!(f, "<{n} x {el}>"),
             Type::Function(params, ret, unsafe_fn) => {
                 if *unsafe_fn {
                     write!(f, "unsafe ")?;
@@ -999,7 +1003,11 @@ impl std::fmt::Display for Type {
                 }
                 write!(f, "| -> {}", ret)
             }
-            _ => write!(f, "{:?}", self), // Fallback for complex types
+            Type::Verified(inner) => write!(f, "Verified<{inner}>"),
+            Type::Ref(inner, space) => write!(f, "Ref<{inner}, {space:?}>"),
+            Type::Pinned(inner, topo) => write!(f, "Pinned<{inner}, {topo:?}>"),
+            Type::Matrix => write!(f, "Matrix"),
+            Type::Module(path, _) => write!(f, "module {path}"),
         }
     }
 }

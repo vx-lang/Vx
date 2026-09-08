@@ -1,0 +1,31 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// `<N x T>` and `T` were mutually assignable, in both directions, so that `let v : <4 x f32> =
+// *p;` could stand in for a vector load and `*p = v;` for a store. That is the type-directed
+// deref the design rejects: the operation a pointer performs is decided by the pointer's type,
+// not by what the result is bound to. Both directions are pinned because they were two separate
+// rules, and deleting one would have left the other.
+
+fn widening(x : f32) -> i32 {
+  // CHECK-DAG: E3001{{.*}}'v' is declared <4 x f32> but its initializer is f32
+  let v : <4 x f32> = x;
+  return 0;
+}
+
+fn narrowing(v : <4 x f32>) -> i32 {
+  // CHECK-DAG: E3001{{.*}}'s' is declared f32 but its initializer is <4 x f32>
+  let s : f32 = v;
+  return 0;
+}
+
+// A different lane count is a different type too -- the old rule went through the scalar, so this
+// pair was never assignable, but it is the case that fixes the type's identity.
+fn lanes(v : <4 x f32>) -> i32 {
+  // CHECK-DAG: E3001{{.*}}'w' is declared <8 x f32> but its initializer is <4 x f32>
+  let w : <8 x f32> = v;
+  return 0;
+}
+
+fn main() -> i32 {
+  return 0;
+}

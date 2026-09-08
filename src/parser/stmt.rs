@@ -82,11 +82,17 @@ impl<'a> Parser<'a> {
                 let expr = self.parse_expr()?;
                 self.consume(&TokenType::Semicolon, "Expected ';'")?;
                 Ok(Statement::LetDecl(LetDeclStmt {
+                    // The `let` keyword's own token: a diagnostic about the binding (a type
+                    // mismatch, an unused variable) points at the declaration, not at 0:0.
                     name: name.into(),
                     is_mut,
                     ty_ann: type_annotation,
                     expr,
-                    span: Span::default(),
+                    span: Span {
+                        line: token_line,
+                        column: token_col,
+                        length: token_len,
+                    },
                 }))
             }
             TokenType::Comptime => {

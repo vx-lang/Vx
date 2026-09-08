@@ -351,24 +351,6 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
-        // Allow assigning a scalar ElementType to a Simd type (for loading from pointer)
-        if let Type::Simd(el_target, _) = target {
-            if let Type::Scalar(el_source) = source {
-                if el_target == el_source {
-                    return true;
-                }
-            }
-        }
-
-        // Allow assigning a Simd type to a scalar ElementType (for storing to pointer)
-        if let Type::Scalar(el_target) = target {
-            if let Type::Simd(el_source, _) = source {
-                if el_target == el_source {
-                    return true;
-                }
-            }
-        }
-
         // Explicit Memory transfer enforcement:
         // We no longer allow implicit unwrapping of Ref<T> or Pinned<T> to T.
         // Users must use `transfer(expr, Memory::Space)` or `.to_host()` / `.to_device()`

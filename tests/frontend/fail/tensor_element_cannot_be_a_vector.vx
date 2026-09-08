@@ -1,0 +1,15 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A tensor's element is a scalar. `Tensor<<N x T>, ..>` is refused -- keeping the two distinct is
+// what lets a vector be a register value with no descriptor and no drop, and a tensor a buffer
+// with both. The refusal is the parser's: a tensor element is an identifier, so the `<` has
+// nowhere to go. Pinned here so it stays a refusal rather than becoming an accident.
+
+// CHECK: Expected element type after '<'
+fn f(t : Tensor<<4 x f32>, [8]>) -> i32 {
+  return 0;
+}
+
+fn main() -> i32 {
+  return 0;
+}

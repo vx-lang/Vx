@@ -1,0 +1,15 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// The lane count is a power of two in the first cut. `<3 x f32>` is not merely unusual: LLVM
+// gives it a store size of 16 where lane count times element size says 12, so admitting it would
+// place a following struct field at an offset the datalayout disagrees with -- the
+// layout-versus-datalayout split this design exists to keep closed.
+
+// CHECK: Expected a power of two for the lane count of a vector type, found 3
+fn f(v : <3 x f32>) -> i32 {
+  return 0;
+}
+
+fn main() -> i32 {
+  return 0;
+}
