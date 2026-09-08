@@ -1022,6 +1022,25 @@ impl<'a> TypeChecker<'a> {
                 func.return_type
             ));
         }
+        // A non-void function whose body can complete without returning. Left to codegen this
+        // surfaced as `block with no terminator` naming an arith op, with no source location and
+        // no statement of what was wrong -- unreadable for the most ordinary mistake there is.
+        if !crate::syntax::is_void_ty(&func.return_type)
+            && !crate::syntax::expr::block_always_exits(&func.body)
+        {
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E3028,
+                format!(
+                    "'{}' returns {} but its body can finish without returning a value",
+                    func.name, func.return_type
+                ),
+                // The last statement, which is where the missing `return` belongs. A `Function`
+                // carries no span of its own; an empty body has nothing to point at.
+                func.body
+                    .last()
+                    .map(|st| crate::diagnostic::SourceSpan::from_ast_span(&st.span())),
+            );
+        }
         // A closure value points into the frame that made it; returning one hands the caller
         // a dead frame. Passing it down is fine. Refused until a closure can own its
         // environment.

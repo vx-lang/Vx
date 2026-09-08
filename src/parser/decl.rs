@@ -174,7 +174,18 @@ impl<'a> Parser<'a> {
             span,
         })) = body.last().cloned()
         {
-            if !has_semi && !crate::syntax::expr::diverges_on_every_path(&expr) {
+            // An `if` with no `else` is never a value -- one path produces nothing -- so it is a
+            // statement even when it does not diverge. Rewriting it to `return <if>` reported a
+            // type mismatch against a void the source never wrote, where the real fault is a
+            // missing return (E3028).
+            let else_less_if = matches!(
+                &expr,
+                Expr::If(IfExpr {
+                    else_block: None,
+                    ..
+                })
+            );
+            if !has_semi && !else_less_if && !crate::syntax::expr::diverges_on_every_path(&expr) {
                 let lsyntax_idx = body.len() - 1;
                 body[lsyntax_idx] = Statement::Return(ReturnStmt { expr, span });
             }

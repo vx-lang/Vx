@@ -1,0 +1,50 @@
+// RUN: vxc %s --action print-ast 2>&1 | FileCheck %s
+//
+// The shapes that do reach a return on every path, and must not be reported by E3028. A `void`
+// function needs no return at all; `abort()` ends the process, so no path continues past it.
+//
+// CHECK-NOT: E3028
+
+fn trailing_return(x : i32) -> i32 {
+  return x + 1;
+}
+
+fn both_branches(x : i32) -> i32 {
+  if x > 0 {
+    return 1;
+  } else {
+    return 2;
+  }
+}
+
+fn every_arm(x : i32) -> i32 {
+  match x {
+    0 => {
+      return 7;
+    }, _ => {
+      return 9;
+    }
+  }
+}
+
+fn tail_expression(x : i32) -> i32 {
+  x + 1
+}
+
+// The semicolon matters: without it the parser rewrites the trailing call to `return abort()`, and
+// the analysis sees a return rather than the abort. Written with the semicolon, this is the shape
+// that actually exercises `abort()` counting as an exit.
+fn aborts(x : i32) -> i32 {
+  if x > 0 {
+    return 1;
+  }
+  abort();
+}
+
+fn no_return_needed(x : i32) -> void {
+  let _y : i32 = x;
+}
+
+fn main() -> i32 {
+  return 0;
+}

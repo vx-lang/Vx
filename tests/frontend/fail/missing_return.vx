@@ -1,0 +1,30 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A function that promises a value and can finish without producing one. This used to reach
+// codegen: the emitter left a block with no terminator and the MLIR verifier reported it as
+// `block with no terminator, has %1 = "arith.addi"(...)` -- an operation name, no source
+// location, and no statement of what was wrong. For what is probably the most common mistake a
+// newcomer makes.
+//
+// The location is the last statement, which is where the missing `return` belongs.
+//
+// CHECK-DAG: E3028] at {{[1-9][0-9]*}}:{{[0-9]+}}: 'falls_off_the_end' returns i32 but its body can finish without returning a value
+fn falls_off_the_end(x : i32) -> i32 {
+  let y : i32 = x + 1;
+}
+
+// CHECK-DAG: E3028{{.*}}'empty' returns i32 but its body can finish without returning a value
+fn empty(x : i32) -> i32 {
+}
+
+// One branch returning is not enough -- the other path reaches the end.
+// CHECK-DAG: E3028{{.*}}'only_one_branch' returns i32 but its body can finish without returning a value
+fn only_one_branch(x : i32) -> i32 {
+  if x > 0 {
+    return 1;
+  }
+}
+
+fn main() -> i32 {
+  return 0;
+}

@@ -578,6 +578,40 @@ pub fn match_yields_a_value(m: &MatchExpr) -> bool {
     })
 }
 
+/// Whether control can reach the end of `stmts`, or whether every path out of it returns.
+///
+/// A function with a non-void return type whose body can complete is missing a return. Today that
+/// is not a frontend error: it reaches codegen, the emitter leaves a block with no terminator, and
+/// the MLIR verifier reports it as `block with no terminator` naming an arith op -- with no source
+/// location and no statement of what is wrong.
+///
+/// `abort()` counts as an exit: it is a primitive that ends the process, so no path continues past
+/// it. `assert` deliberately does *not* -- it only aborts when its condition is false, so control
+/// reaches the next statement in general.
+pub fn block_always_exits(stmts: &[Statement]) -> bool {
+    stmts.iter().any(statement_always_exits)
+}
+
+/// Whether this single statement ends control flow on every path through it.
+pub fn statement_always_exits(stmt: &Statement) -> bool {
+    match stmt {
+        Statement::Return(_) => true,
+        Statement::ExprStmt(ExprStmtStmt { expr, .. }) => match expr {
+            Expr::If(IfExpr {
+                then_block,
+                else_block: Some(else_block),
+                ..
+            }) => block_always_exits(then_block) && block_always_exits(else_block),
+            Expr::Match(MatchExpr { arms, .. }) => {
+                !arms.is_empty() && arms.iter().all(|a| block_always_exits(&a.body))
+            }
+            Expr::FunctionCall(c) => c.name.as_ref() == "abort" && c.args.is_empty(),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 /// Whether an `if`/`match` returns on every path, and so is a statement rather than a value.
 ///
 /// Two callers need the same answer. The parser rewrites a trailing semicolon-less expression to

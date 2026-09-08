@@ -2022,13 +2022,16 @@ pub fn emit_function_mlir(
         em.step(idx, ins)?;
     }
 
-    // Every block must end in a terminator. A void function falls through to a bare `return`; a
-    // scalar-returning function whose final block isn't em.terminated is either ill-typed or has an
-    // unreachable trailing block (no value to return) — decline it, leaving the AST path the oracle.
+    // Every block must end in a terminator. A void function falls through to a bare `return`.
+    // A value-returning function reaching here has an unreachable trailing block -- an `if` whose
+    // branches all returned. It used to decline instead, because the block was *either* unreachable
+    // *or* the function simply never returned, and the emitter could not tell which. The checker
+    // settles it now: a body that can complete without returning is E3028, and the shape the
+    // parser rewrites past it is E3002. Neither reaches codegen, so what is left is unreachable.
     if !em.terminated {
         match &ret_mlir {
             None => em.body += "  func.return\n",
-            Some(_) => return Err(crate::emitter_gap!()),
+            Some(_) => em.body += "  llvm.unreachable\n",
         }
     }
 
