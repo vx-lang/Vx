@@ -612,6 +612,26 @@ pub fn statement_always_exits(stmt: &Statement) -> bool {
     }
 }
 
+/// Whether this expression cannot be a value, so a trailing one is a statement rather than the
+/// block's result.
+///
+/// The parser rewrites a trailing semicolon-less expression to `return <expr>`, which is right for
+/// `if c { 1 } else { 2 }` and wrong for anything that produces nothing: the rewrite then returns a
+/// void from a function that promised a value, reporting a type mismatch the source never wrote --
+/// or, in a `void` function, emitting `func.return %v : i32` and failing the MLIR verifier.
+///
+/// Two shapes qualify. An `if` with no `else` has a path that yields nothing. An `unsafe { .. }`
+/// with no trailing expression is a block of statements.
+pub fn yields_no_value(expr: &Expr) -> bool {
+    matches!(
+        expr,
+        Expr::If(IfExpr {
+            else_block: None,
+            ..
+        }) | Expr::UnsafeBlock(UnsafeBlockExpr { ret: None, .. })
+    )
+}
+
 /// Whether an `if`/`match` returns on every path, and so is a statement rather than a value.
 ///
 /// Two callers need the same answer. The parser rewrites a trailing semicolon-less expression to

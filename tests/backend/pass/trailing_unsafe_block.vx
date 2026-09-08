@@ -1,0 +1,53 @@
+//===- trailing_unsafe_block.vx - Vx Compiler --------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+//
+// A trailing `unsafe { .. }` with no value. The parser rewrites a trailing semicolon-less
+// expression into the block's return value, which for this shape produced `return <unsafe>` --
+// and a `void` function emitting `func.return %v : i32`, which the MLIR verifier rejects. It did
+// not report that: it panicked with `flat emitter produced invalid MLIR`, naming the emitter
+// rather than the source, on a shape that is ordinary in FFI and pointer code.
+//
+// Both directions matter, so both are here. A block with no trailing expression is a statement; a
+// block that ends in one is still a value and must keep being returned.
+//
+// The compiler prints the module before the verifier rejects it, and a panic goes to unbuffered
+// stderr, so it lands *ahead* of that text. A CHECK-NOT placed last would cover only what follows
+// the final match and would never see it -- the fixture passed with the fix removed until this
+// moved to the front.
+//
+// CHECK-NOT: Internal Error
+// CHECK-DAG: func.func @store_only(%arg0: !llvm.ptr)
+// CHECK-DAG: func.func @load_it(%arg0: !llvm.ptr) -> i32
+// CHECK-DAG: func.func @main() -> i32
+
+import std::vec;
+
+// No trailing expression: a statement. The function is void and returns nothing.
+fn store_only(p : *mut i32) -> void {
+  unsafe { p[0] = 99; }
+}
+
+// A trailing expression: still a value, still the function's result.
+fn load_it(p : *mut i32) -> i32 {
+  unsafe { p[0] }
+}
+
+fn main() -> i32 {
+  let mut v : Vec<i32> = Vec<i32>::new();
+  v.push(1);
+  let p : *mut i32 = v.as_mut_ptr();
+
+  store_only(p);
+  if load_it(p) != 99 {
+    return 1;
+  }
+
+  v.free();
+  return 0;
+}
