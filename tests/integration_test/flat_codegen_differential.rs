@@ -1244,6 +1244,49 @@ fn flat_matches_ast_match_over_integer_literals() {
     );
 }
 
+/// A `match` in *value* position: each arm ends in a tail expression, and the match evaluates to
+/// the selected arm's value.
+///
+/// Every other match test here uses statement position (`r = 100;`), which is why this went
+/// unnoticed: the flat path returned **0** for `match x { 0 => { 7 }, _ => { 9 } }` -- no error, no
+/// decline, just the wrong number. Its `return <match>` path was written for a match whose arms all
+/// return, where the merge block is unreachable and a zero return is a placeholder terminator; when
+/// the arms carry values instead, control reaches that block and the placeholder became the answer.
+///
+/// The flat path declines this today, so only the oracle is exercised. The flat side is checked
+/// when it lowers, so a future value form that gets it wrong fails here rather than silently.
+#[test]
+fn a_value_position_match_evaluates_to_its_arm() {
+    for (subject, want) in [(0, 7), (3, 9)] {
+        let src = format!(
+            "fn f(x : i32) -> i32 {{ match x {{ 0 => {{ 7 }}, _ => {{ 9 }} }} }}\n\
+             fn main() -> i32 {{ return f({subject}); }}"
+        );
+        assert_eq!(
+            ast_exit_code(&src),
+            want,
+            "the oracle must evaluate the match to its arm for f({subject})"
+        );
+        if let Some(flat) = flat_exit_code(&src) {
+            assert_eq!(
+                flat, want,
+                "flat codegen diverged from the arm's value for f({subject})"
+            );
+        }
+    }
+}
+
+/// The neighbouring shape that must keep lowering on the flat path: every arm returns, so the
+/// merge block really is unreachable and the placeholder terminator is correct.
+#[test]
+fn flat_lowers_a_match_whose_arms_all_return() {
+    assert_parity(
+        "fn f(x : i32) -> i32 { match x { 0 => { return 7; }, _ => { return 9; } } }\n\
+         fn main() -> i32 { return f(0) + f(3) + 26; }",
+        42,
+    );
+}
+
 #[test]
 fn flat_matches_ast_reshape_and_transpose() {
     // A reshape reads the same buffer under new extents (t[1][2] is r[5]); a transpose copies

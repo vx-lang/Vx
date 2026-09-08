@@ -4293,6 +4293,18 @@ impl<'r> Lowerer<'r> {
                 // give the fall-through merge block a terminator, a default (zero) return of the
                 // function's type, exactly as the AST codegen's merge block does. (#242)
                 if let Expr::Match(m) = &r.expr {
+                    // The zero below is a fall-through default, correct when nothing reaches the
+                    // merge block carrying a value -- `Option::unwrap`'s `None` arm ends in an
+                    // `assert`, falls through, and has no value to contribute. It is wrong when an
+                    // arm ends in a bare expression: `match x { 0 => { 7 }, _ => { 9 } }` computed
+                    // both arms and then returned the default, silently. There is no value form
+                    // here (`lower_match` yields nothing), so decline to the oracle, which lowers
+                    // it with a merge-block argument and gets it right.
+                    if crate::syntax::expr::match_yields_a_value(m) {
+                        return Err(Decline::TypeNotModelled {
+                            what: "a match in value position",
+                        });
+                    }
                     self.lower_match(m)?;
                     if !self.block_terminated() {
                         let rty = self.ret_ty.clone().ok_or(Decline::TypeNotModelled {

@@ -555,6 +555,29 @@ impl JvpExpr {
     }
 }
 
+/// Whether any arm of a `match` ends in a tail expression, making the match evaluate to a value.
+///
+/// This is the rule the AST lowering already uses to decide whether its merge block takes a block
+/// argument, and the flat emitter needs the same answer for the opposite reason: it has no value
+/// form for `match`, so it must decline rather than drop the value.
+///
+/// The question is *not* "does every arm return". `Option::unwrap`'s `None` arm ends in an
+/// `assert`, which aborts rather than returning, so control falls through to the merge block --
+/// and a default return there is correct, because nothing arrives carrying a value. What breaks is
+/// an arm ending in a bare expression: `match x { 0 => { 7 }, _ => { 9 } }` computed 7 and 9 and
+/// then returned the default, silently.
+pub fn match_yields_a_value(m: &MatchExpr) -> bool {
+    m.arms.iter().any(|a| {
+        matches!(
+            a.body.last(),
+            Some(Statement::ExprStmt(ExprStmtStmt {
+                has_semi: false,
+                ..
+            }))
+        )
+    })
+}
+
 /// Whether an `if`/`match` returns on every path, and so is a statement rather than a value.
 ///
 /// Two callers need the same answer. The parser rewrites a trailing semicolon-less expression to
