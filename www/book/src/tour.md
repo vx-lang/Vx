@@ -92,10 +92,8 @@ impl Point {
 }
 ```
 
-A return type is never optional. A function that produces no useful result returns `void`.
-
-Note that a `void` function cannot exit early: a bare `return;` does not parse. Structure such a
-function so control reaches the end.
+A return type is never optional. A function that produces no useful result returns `void`, and
+exits early with a bare `return;`.
 
 `&Point` borrows immutably, `&mut Point` mutably. A method with no `self` parameter is an associated
 function, called as `Point::make(...)`.
@@ -130,17 +128,13 @@ fn unwrap_or(r: Result, default: i32) -> i32 {
 
 A data-carrying enum is laid out as a tag plus a payload.
 
-> **Assign in the arms; do not use `match` as a value.** The form above — each arm assigning to a
-> `mut` binding, with a single `return` after — is correct. A `match` used directly as the value of
-> a function or a `let` currently produces the wrong answer with no error and no warning:
->
-> ```rust
-> fn pick(x : i32) -> i32 {
->     match x { 0 => { 7 }, _ => { 9 } }   // pick(0) evaluates to 0, not 7
-> }
-> ```
->
-> A `match` whose arms each `return` is fine. Only the value position is affected.
+A `match` can also be used as a value directly, with each arm evaluating to a result:
+
+```rust
+fn pick(x : i32) -> i32 {
+    match x { 0 => { 7 }, _ => { 9 } }
+}
+```
 
 ## Arrays and tensors
 

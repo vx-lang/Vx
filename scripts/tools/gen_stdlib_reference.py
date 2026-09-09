@@ -47,6 +47,10 @@ MODULE_BLURB = {
     "vec": "`Vec<T>`, a growable array.",
 }
 
+# These blocks list signatures, not programs: they have no bodies and cannot compile. The
+# documentation-example checker is told so explicitly rather than left to guess.
+SIGNATURE_SKIP = "<!-- vx-doctest: skip -- signature listing, not a program -->\n"
+
 HEADER = """# Standard library reference
 
 Every public type and function in the 21 `std` modules, taken from their signatures.
@@ -189,6 +193,7 @@ def render(modules):
         for owner, sigs in by_owner.items():
             total_fns += len(sigs)
             out.append(f"**{'Functions' if not owner else f'`{owner}` methods'}**\n")
+            out.append(SIGNATURE_SKIP)
             out.append("```rust")
             out.extend(sigs)
             out.append("```")
@@ -202,6 +207,7 @@ def render(modules):
                 else "**C bindings** *(the native functions this module is built on)*"
             )
             out.append(f"{label}\n")
+            out.append(SIGNATURE_SKIP)
             out.append("```rust")
             out.extend(externs)
             out.append("```")

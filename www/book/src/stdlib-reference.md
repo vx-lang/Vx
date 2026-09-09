@@ -51,6 +51,8 @@ Raw allocation and deallocation.
 
 **Functions** *(bound directly to C)*
 
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
 ```rust
 fn malloc(size : i64) -> *mut i8
 fn realloc(ptr : *mut i8, size : i64) -> *mut i8
@@ -66,6 +68,8 @@ fn free(ptr : *mut i8) -> i32
 - `struct Box<T>`
 
 **`Box<T>` methods**
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
 
 ```rust
 fn new(val : T) -> Box<T>
@@ -93,6 +97,8 @@ Files and directories.
 
 **`File` methods**
 
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
 ```rust
 unsafe fn open(path : *const i8, mode : i32) -> File
 unsafe fn read(self : *mut File, buffer : *mut u8, len : i64) -> i64
@@ -102,6 +108,8 @@ unsafe fn file_drop(file : *mut File) -> void
 ```
 
 **C bindings** *(the native functions this module is built on)*
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
 
 ```rust
 fn vx_file_open(c_path : *const i8, mode : i32) -> *mut i8
@@ -129,11 +137,15 @@ Assertions for tests written in Vx.
 
 **Functions**
 
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
 ```rust
 fn expect_eq(self : Self, expected : Self) -> i32
 ```
 
 **`GoogletestEq for f32` methods**
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
 
 ```rust
 fn expect_eq(self : f32, expected : f32) -> i32
@@ -141,12 +153,16 @@ fn expect_eq(self : f32, expected : f32) -> i32
 
 **`GoogletestEq for i32` methods**
 
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
 ```rust
 fn expect_eq(self : i32, expected : i32) -> i32
 fn expect_eq<T : GoogletestEq>(actual : T, expected : T) -> i32
 ```
 
 **C bindings** *(the native functions this module is built on)*
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
 
 ```rust
 fn vx_googletest_expect_eq_f32(actual : f32, expected : f32) -> i32
@@ -158,6 +174,8 @@ fn vx_googletest_expect_eq_i32(actual : i32, expected : i32) -> i32
 `HashMap<K, V>`.
 
 **Functions** *(bound directly to C)*
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
 
 ```rust
 fn vx_hash_map_new_i32_i32() -> *mut i8
@@ -180,6 +198,8 @@ fn vx_hash_map_drop_i32_f32(ptr : *mut i8) -> i32
 
 **Functions** *(bound directly to C)*
 
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
 ```rust
 fn vx_hash_set_new_i32() -> *mut i8
 fn vx_hash_set_insert_i32(ptr : *mut i8, val : i32) -> i32
@@ -194,6 +214,8 @@ Standard input, output and error.
 
 **Functions**
 
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
 ```rust
 unsafe fn stdout_write(buffer : *const u8, len : i64) -> i64
 unsafe fn stderr_write(buffer : *const u8, len : i64) -> i64
@@ -201,6 +223,8 @@ unsafe fn stdin_read(buffer : *mut u8, len : i64) -> i64
 ```
 
 **C bindings** *(the native functions this module is built on)*
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
 
 ```rust
 fn vx_stdout_write(buffer : *const u8, len : i64) -> i64
@@ -218,17 +242,23 @@ The `Iterator` trait and its adaptors, which `for` loops and `.map` build on.
 
 **Functions**
 
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
 ```rust
 fn next(self : &mut T) -> Option<Item>
 ```
 
 **`Iterator<Map<I, F, Item, NewItem>, NewItem> for Map<I, F, Item, NewItem>` methods**
 
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
 ```rust
 fn next(self : &mut Map<I, F, Item, NewItem>) -> Option<NewItem>
 ```
 
 **`Map<I, F, Item, NewItem>` methods**
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
 
 ```rust
 fn collect(self : &mut Map<I, F, Item, NewItem>) -> Vec<NewItem>
@@ -239,6 +269,8 @@ fn collect(self : &mut Map<I, F, Item, NewItem>) -> Vec<NewItem>
 Direct bindings to the C library.
 
 **Functions** *(bound directly to C)*
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
 
 ```rust
 fn open(path : *const i8, flags : i32) -> i32
@@ -258,11 +290,15 @@ Helpers used by the Llama 2 example.
 
 **`LlamaConfig` methods**
 
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
 ```rust
 fn load(filepath : *const i8) -> LlamaConfig
 ```
 
 **`TransformerWeightOffsets` methods**
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
 
 ```rust
 fn calculate(c : &LlamaConfig) -> TransformerWeightOffsets
@@ -271,12 +307,16 @@ fn load_all_weights(filepath : *const i8, c : &LlamaConfig) -> Tensor<f32, [?, ?
 
 **`Tokenizer` methods**
 
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
 ```rust
 fn load(filepath : *const i8, vocab_size : i32) -> Tokenizer
 fn decode(self : &Tokenizer, prev_token : i32, token : i32) -> String
 ```
 
 **C bindings** *(the native functions this module is built on)*
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
 
 ```rust
 fn vx_load_config(filepath : *const i8) -> *mut i32
@@ -298,6 +338,8 @@ Mathematical functions and constants.
 
 **Functions**
 
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
 ```rust
 fn sin(self : Self) -> Self
 fn cos(self : Self) -> Self
@@ -314,6 +356,8 @@ fn log10(self : Self) -> Self
 ```
 
 **`Math for f32` methods**
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
 
 ```rust
 fn sin(self : f32) -> f32
@@ -332,6 +376,8 @@ fn log10(self : f32) -> f32
 
 **`Math for f64` methods**
 
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
 ```rust
 fn sin(self : f64) -> f64
 fn cos(self : f64) -> f64
@@ -348,6 +394,8 @@ fn log10(self : f64) -> f64
 ```
 
 **C bindings** *(the native functions this module is built on)*
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
 
 ```rust
 fn sinf(x : f32) -> f32
@@ -382,6 +430,8 @@ Memory-mapped files.
 
 **Functions** *(bound directly to C)*
 
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
 ```rust
 fn mmap(addr : *mut i8, length : i64, prot : i32, flags : i32, fd : i32, offset : i64) -> *mut i8
 fn munmap(addr : *mut i8, length : i64) -> i32
@@ -399,6 +449,8 @@ TCP and UDP sockets.
 
 **`TcpStream` methods**
 
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
 ```rust
 unsafe fn connect(addr : *const i8) -> TcpStream
 unsafe fn read(self : *mut TcpStream, buffer : *mut u8, len : i64) -> i64
@@ -407,6 +459,8 @@ unsafe fn tcp_stream_drop(stream : *mut TcpStream) -> void
 ```
 
 **`UdpSocket` methods**
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
 
 ```rust
 unsafe fn bind(addr : *const i8) -> UdpSocket
@@ -417,6 +471,8 @@ unsafe fn udp_socket_drop(socket : *mut UdpSocket) -> void
 
 **`TcpListener` methods**
 
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
 ```rust
 unsafe fn bind(addr : *const i8) -> TcpListener
 fn accept(self : *mut TcpListener) -> TcpStream
@@ -424,6 +480,8 @@ unsafe fn tcp_listener_drop(listener : *mut TcpListener) -> void
 ```
 
 **C bindings** *(the native functions this module is built on)*
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
 
 ```rust
 fn vx_tcp_stream_connect(c_addr : *const i8) -> *mut i8
@@ -449,6 +507,8 @@ fn vx_tcp_listener_drop(ptr : *mut i8) -> i32
 
 **`Option<T>` methods**
 
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
 ```rust
 fn is_some(self : &Option<T>) -> Bool
 fn is_none(self : &Option<T>) -> Bool
@@ -460,6 +520,8 @@ fn unwrap(self : Option<T>) -> T
 `Result<T, E>`, for an operation that may fail.
 
 **Functions** *(bound directly to C)*
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
 
 ```rust
 fn vx_result_new_ok_i32_i32(val : i32) -> *mut i8
@@ -476,6 +538,8 @@ SIMD vector types and operations.
 
 **Functions**
 
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
 ```rust
 unsafe fn simd_add_f32x4(a : *const f32, b : *const f32, out : *mut f32) -> i32
 unsafe fn simd_sub_f32x4(a : *const f32, b : *const f32, out : *mut f32) -> i32
@@ -485,6 +549,8 @@ unsafe fn simd_fma_f32x4(a : *const f32, b : *const f32, c : *const f32, out : *
 ```
 
 **C bindings** *(the native functions this module is built on)*
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
 
 ```rust
 fn vx_simd_add_f32x4(a : *const f32, b : *const f32, out : *mut f32) -> i32
@@ -504,6 +570,8 @@ fn vx_simd_fma_f32x4(a : *const f32, b : *const f32, c : *const f32, out : *mut 
 
 **`String` methods**
 
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
 ```rust
 fn new() -> String
 unsafe fn from_c_str(c_str : *const i8) -> String
@@ -515,6 +583,8 @@ fn drop(self : *mut String) -> i32
 
 **`i32` methods**
 
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
 ```rust
 fn to_string(self : i32) -> String
 unsafe fn string_length(s : *const i8) -> i32
@@ -523,6 +593,8 @@ unsafe fn parse_int(s : *const i8) -> i32
 ```
 
 **C bindings** *(the native functions this module is built on)*
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
 
 ```rust
 fn vx_string_new() -> *mut i8
@@ -541,6 +613,8 @@ Operations on `Tensor`, including shape queries and elementwise maths.
 
 **`Tensor<T, [?, ?]>` methods**
 
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
 ```rust
 fn from_ptr_1d(ptr : *mut T, d1 : i32) -> Tensor<T, [?, ?]>
 fn from_ptr_2d(ptr : *mut T, d1 : i32, d2 : i32) -> Tensor<T, [?, ?]>
@@ -555,6 +629,8 @@ fn compare(self : &Tensor<T, [?, ?]>, other : &Tensor<T, [?, ?]>) -> bool
 
 **`Tensor<T, [N, M]>` methods**
 
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
 ```rust
 fn fill_static(self : &mut Tensor<T, [ N, M ]>, val : T) -> void
 ```
@@ -565,6 +641,8 @@ Clocks and durations.
 
 **Functions**
 
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
 ```rust
 fn now() -> f32
 fn sleep(seconds : f32) -> i32
@@ -573,6 +651,8 @@ unsafe fn bench_report(name : *const i8, unit : *const i8, value : f32) -> i32
 ```
 
 **C bindings** *(the native functions this module is built on)*
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
 
 ```rust
 fn vx_get_time() -> f32
@@ -593,6 +673,8 @@ fn vx_bench_report(name : *const i8, unit : *const i8, value : f32) -> i32
 
 **`Vec<T>` methods**
 
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
 ```rust
 fn new() -> Vec<T>
 fn with_capacity(capacity : i32) -> Vec<T>
@@ -609,11 +691,15 @@ fn iter(self : &Vec<T>) -> VecIter<T>
 
 **`Iterator<VecIter<T>, T> for VecIter<T>` methods**
 
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
 ```rust
 fn next(self : &mut VecIter<T>) -> Option<T>
 ```
 
 **`VecIter<T>` methods**
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
 
 ```rust
 fn map<NewItem>(self : VecIter<T>, f : Closure1<T, NewItem>) -> VecMap<T, NewItem>
@@ -621,17 +707,23 @@ fn map<NewItem>(self : VecIter<T>, f : Closure1<T, NewItem>) -> VecMap<T, NewIte
 
 **`Iterator<VecMap<T, NewItem>, NewItem> for VecMap<T, NewItem>` methods**
 
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
 ```rust
 fn next(self : &mut VecMap<T, NewItem>) -> Option<NewItem>
 ```
 
 **`VecMap<T, NewItem>` methods**
 
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
 ```rust
 fn collect(self : &mut VecMap<T, NewItem>) -> Vec<NewItem>
 ```
 
 **C bindings** *(the native functions this module is built on)*
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
 
 ```rust
 fn vx_vec_alloc(elem_size : i64, cap : i64) -> *mut i8

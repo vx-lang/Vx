@@ -199,9 +199,8 @@ named_type ::=
 shape_dim ::= expr | "?"
 placement ::= memory_space | topology
 
-// NOTE: an identifier that names no declared type is currently accepted as a nominal type rather
-// than rejected, so a mistyped or obsolete type constructor parses and silently does nothing
-// (Vx#500). The production above describes the intended grammar, not that leniency.
+// An `identifier` in type position must name a declaration. It parses as a nominal type and is
+// then resolved; a name that resolves to nothing is E3029 rather than being silently accepted.
 
 element_type ::=
     | "i4" | "i8" | "i16" | "i32" | "i64" | "i128"

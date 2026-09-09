@@ -345,8 +345,8 @@ let c = a;  // Error[E4001]: Use of moved or consumed linear variable: a
 
 > **Obsolete.** Earlier drafts described a `Ref<T, Memory>` type for a value resident in a named
 > memory space. It was replaced by `Pinned<T, Topology>` and the memory parameter on `Tensor`.
-> `Ref` is no longer a type constructor; because any unknown name parses as a user-defined nominal
-> type, writing it produces no error and no effect.
+> `Ref` is no longer a type constructor, and writing it is now an error
+> (`E3029: no type named 'Ref' is declared`) rather than being silently accepted as a nominal type.
 
 ### Copyable Types (reusable freely)
 

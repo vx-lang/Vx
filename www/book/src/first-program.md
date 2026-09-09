@@ -87,15 +87,10 @@ fn main() -> i32 {
 }
 ```
 
-> **If you forget a `return`, the error is not friendly yet.** A function that falls off the end
-> without returning is currently caught late, by the MLIR verifier, which reports something like
-> `block with no terminator, has %0 = "arith.addi"(...)` and no source location. It means a return
-> is missing. Check that every path through the function returns a value.
-
-Most diagnostics are better than that one. They carry a code and a source span:
+Diagnostics carry a code and a source span. Forget a `return` and the compiler says so directly:
 
 ```
-Error[E3002] at 4:12: Type mismatch on return. Expected i32, got void
+Error[E3028] at 2:3: 'add' returns i32 but its body can finish without returning a value
 ```
 
 Every code the compiler can emit is listed in the [diagnostic index](error-index.md), grouped by
