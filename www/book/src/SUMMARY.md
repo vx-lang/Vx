@@ -19,6 +19,11 @@
 - [Topologies and memory](heterogeneous.md)
 - [Machine files](machine-files.md)
 
+# Reference
+
+- [Standard library](stdlib-reference.md)
+- [Diagnostic index](error-index.md)
+
 # Tooling
 
 - [The compiler](tooling.md)

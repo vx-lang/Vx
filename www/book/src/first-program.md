@@ -92,6 +92,15 @@ fn main() -> i32 {
 > `block with no terminator, has %0 = "arith.addi"(...)` and no source location. It means a return
 > is missing. Check that every path through the function returns a value.
 
+Most diagnostics are better than that one. They carry a code and a source span:
+
+```
+Error[E3002] at 4:12: Type mismatch on return. Expected i32, got void
+```
+
+Every code the compiler can emit is listed in the [diagnostic index](error-index.md), grouped by
+the stage that raises it.
+
 ## Arrays and tensors
 
 An array literal is a tensor, and indexing reads an element back:

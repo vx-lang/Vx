@@ -96,6 +96,25 @@ jobs:
       - name: Build
         run: cargo build --release --workspace --verbose
 
+      # Documentation drifts silently, because nothing executes it. An audit found the README's
+      # own headline example did not parse, a tutorial teaching a topology syntax that was never
+      # implemented, and a grammar production admitting two types the parser rejects -- each of
+      # them correct when written. Compiling the examples makes that a build failure instead.
+      #
+      # Runs here rather than in its own job because it needs the compiler this job just built.
+      - name: Check documentation examples compile
+        run: python3 scripts/tools/check_doc_examples.py
+
+      # The standard-library and diagnostic references are generated from the sources they
+      # describe. Regenerating and diffing catches the case where someone adds a diagnostic or a
+      # stdlib function and the published reference silently stops being complete.
+      # mdformat is already on PATH from the markdown-formatting step above; the generators shell
+      # out to it so their output is in the shape that step would demand.
+      - name: Check generated references are current
+        run: |
+          python3 scripts/tools/gen_error_index.py --check
+          python3 scripts/tools/gen_stdlib_reference.py --check
+
       - name: Run tests
         run: cargo test --release --workspace --verbose
         env:

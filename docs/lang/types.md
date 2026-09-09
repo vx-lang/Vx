@@ -198,6 +198,8 @@ One limit worth knowing: an index that is not a literal is compared as written, 
 
 Because physical hardware may be saturated, failed, or unavailable, bridging `Verified<T>` to `Pinned<T, Topology>` is an inherently fallible operation. Vx represents this via the `HardwareState` enum, which acts like a monad.
 
+<!-- vx-doctest: skip -- HardwareState is a planned type; the enum below does not compile yet. -->
+
 ```rust
 enum HardwareState<T, Topo> {
     // The hardware is available and the computation is successfully pinned.

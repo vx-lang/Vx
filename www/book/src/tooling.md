@@ -69,7 +69,8 @@ vx-format src/*.vx
 
 ## The standard library
 
-21 modules, imported as `std::<name>`:
+21 modules, imported as `std::<name>`. Every type and function is listed in the
+[standard library reference](stdlib-reference.md), generated from the sources.
 
 | | |
 | --- | --- |
