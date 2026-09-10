@@ -1011,16 +1011,8 @@ impl CompilerDriver {
                 // `libmlir_runner_utils` in the repo root; and for the dispatch plugin under
                 // `target/jit/`, which the build never writes. Both failed by printing to stderr
                 // and producing no object.
-                let shared_libs = crate::jit::shared_library_paths()?;
-                let shared_libs_refs: Vec<&str> = shared_libs.iter().map(|s| s.as_ref()).collect();
-
-                let engine = melior::ExecutionEngine::new(
-                    &module,
-                    self.options.opt_level as usize,
-                    &shared_libs_refs,
-                    true,
-                    true,
-                );
+                let engine =
+                    crate::jit::ObjectEmitter::new(&module, self.options.opt_level as usize)?;
 
                 let output_path = self.options.output.clone().unwrap_or_else(|| {
                     let mut p = main_file.to_path_buf();
@@ -1037,7 +1029,7 @@ impl CompilerDriver {
                 let mtime_before = std::fs::metadata(&output_path)
                     .and_then(|m| m.modified())
                     .ok();
-                engine.dump_to_object_file(output_path.to_str().unwrap());
+                engine.dump_to_object_file(output_path.to_str().unwrap())?;
                 let wrote = match std::fs::metadata(&output_path) {
                     Ok(m) => m.len() > 0 && (!existed_before || m.modified().ok() != mtime_before),
                     Err(_) => false,
