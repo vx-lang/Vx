@@ -1,7 +1,7 @@
 <div align="center">
   <h1>Vx</h1>
   <p><b>One language, every core.</b></p>
-  <p>A systems programming language whose type system knows which memory a value lives in and which device can reach it.</p>
+  <p>A heterogeneous-systems programming language that puts placement and reachability in the type system.</p>
 </div>
 
 ______________________________________________________________________

@@ -43,13 +43,14 @@ the problem being smaller than people assume.
 
 ______________________________________________________________________
 
-## 2. Where this sits next to SYCL, Kokkos and Descend
+## 2. Where this sits next to SYCL, Kokkos, Descend and C++26 residency
 
-Four things a heterogeneous system could make static. Only the first is solved in the field:
+Five things a heterogeneous system could make static. Only the first is solved in the field:
 
 | what is typed | who has it |
 | --- | --- |
 | memory region **within** a device (registers, scratchpad, DRAM) | OpenCL, SYCL, Kokkos |
+| which memory **tier** a value resides in (DRAM, CXL, far memory) | a C++26 residency library, by annotation |
 | **which physical device** a value lives on | nobody, in C++ |
 | **where a function may run** | nobody — macros approximate it |
 | **cost of moving** between them | nobody |
@@ -73,9 +74,20 @@ Cross-topology access error: 'tile' (type: Pinned(Tensor(F32,[32,16]), Custom("S
 is unreachable from GPU(0): no transfer path exists
 ```
 
+Row 2 is the newest arrival and the clearest evidence that the problem is being felt. The CppCon
+2026 keynote argues that C++ has grown a vocabulary for ownership and lifetimes but has none for
+*residency* — which tier an object lives in, now that CXL pools, far memory and high-bandwidth flash
+have made tiers real — and answers with a library built on reflection and annotations.
+
+The diagnosis is the same one this document starts from. The remedy runs into the Kokkos ceiling
+again: annotations state a wish, and a library can act on it at allocation time, but it cannot make
+where a value lives part of that value's type, so nothing downstream is obliged to respect it. Vx
+declares a tier the same way it declares any other space — `Memory CXL { within: ..., capacity: ..., bandwidth: ... }` — which puts it in the type, gives it a capacity the admission check enforces, and
+prices the edges into and out of it.
+
 The nearest relative is **Descend** (PLDI 2024) — a language, memory spaces in reference types,
-dereference checked per execution context. It has rows 1 and 3 and **no capacities, no costs, no
-machine files, no admission**. Vx's claim is the whole stack: rows 1–4 plus refusal.
+dereference checked per execution context. It has rows 1 and 4 and **no capacities, no costs, no
+machine files, no admission**. Vx's claim is the whole stack: rows 1–5 plus refusal.
 
 ______________________________________________________________________
 
