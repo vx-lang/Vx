@@ -165,6 +165,25 @@ jobs:
           "$prefix/bin/vxc" --parse-only uses_std.vx > /dev/null
           echo "packaged toolchain works from outside the source tree"
 
+          # Ahead-of-time emission, which reaches MLIR by a different route from --run.
+          #
+          # `--run` hands the module to mlir-translate and links a native executable with clang.
+          # `--action emit-obj` builds an MLIR execution engine inside the compiler instead. Only
+          # the first was covered here, and that is how emit-obj stayed broken on Linux for
+          # months: every runtime-library path it gave MLIR was read past its end, so no library
+          # loaded and no object was written. macOS, a native Linux box and a container smoke
+          # test all passed throughout, because none of them asked for an object file.
+          #
+          # The file, not the exit status, is the assertion. `dump_to_object_file` returns
+          # nothing, so for a long time this arm reported success whatever happened.
+          rm -f hello.o
+          "$prefix/bin/vxc" hello.vx --action emit-obj -o hello.o
+          [ -s hello.o ] || {
+            echo "error: emit-obj exited 0 but wrote no object file" >&2
+            exit 1
+          }
+          echo "packaged toolchain emits object files ($(wc -c < hello.o) bytes)"
+
       - uses: actions/upload-artifact@v4
         with:
           name: vx-${{ matrix.target }}
