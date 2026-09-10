@@ -193,6 +193,36 @@ jobs:
           }
           echo "packaged toolchain emits object files ($(wc -c < hello.o) bytes)"
 
+          # A program with a `spawn on` region, which is the whole point of the language and the
+          # one thing none of the checks above touch. It links against the dispatch backend, and
+          # a toolchain that shipped without one fails here with undefined vx_plugin_* symbols
+          # rather than at a user's first real program. v0.0.1 went out in exactly that state:
+          # the packaging glob named the crate's old build directory, a clean runner had only the
+          # new one, and hello.vx never needed the library so nothing noticed.
+          cat > spawned.vx <<'EOF'
+          fn main() -> i32 {
+              let mut c = Tensor<f32, [4, 4], Memory::NPU_HBM>::uninit();
+              spawn on(Topology::NPU[0]) {
+                  c[0][0] = 1.0;
+              }
+              return 0;
+          }
+          EOF
+          set +e
+          spawn_out=$("$prefix/bin/vxc" --run spawned.vx 2>&1)
+          spawn_status=$?
+          set -e
+          case "$spawn_out" in
+            *"undefined reference to \`vx_plugin"*)
+              echo "error: the packaged toolchain has no dispatch backend" >&2
+              echo "$spawn_out" >&2
+              exit 1 ;;
+          esac
+          if [ "$spawn_status" -ne 0 ]; then
+            echo "note: spawn program exited $spawn_status; linking succeeded, which is what this checks"
+          fi
+          echo "packaged toolchain links a program containing 'spawn on'"
+
       - uses: actions/upload-artifact@v4
         with:
           name: vx-${{ matrix.target }}

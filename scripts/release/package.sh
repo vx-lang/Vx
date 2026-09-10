@@ -88,13 +88,32 @@ cp "$TARGET_DIR/libvx_std_core.${DLL}" "$STAGE/lib/"
 # which is exactly why this stayed hidden: a tarball unpacked on the build host works, and the same
 # tarball on any other machine hands clang a path to a file that was never shipped. Copy them in,
 # and let the wrappers point the compiler at these copies.
-for out_dir in "$TARGET_DIR"/build/Vx-*/out; do
+# Any build directory, not this package's by name. Cargo derives that directory from the package
+# name, so `build/Vx-*` stopped matching the moment the package was renamed to vxc -- and nothing
+# noticed, because a machine that had built under the old name still had stale Vx-* directories
+# lying around for the glob to find. A clean runner had only vxc-*, shipped no dispatch library,
+# and every program containing `spawn on` failed to link with undefined vx_plugin_* symbols.
+# The filenames below are specific enough to select on their own.
+for out_dir in "$TARGET_DIR"/build/*/out; do
     [ -d "$out_dir" ] || continue
     for lib in "$out_dir"/*dispatch."${DLL}" "$out_dir"/*dispatch.a "$out_dir"/libvx_mlir_shims."${DLL}"; do
         [ -f "$lib" ] && cp "$lib" "$STAGE/lib/"
     done
 done
 ls "$STAGE/lib/"
+
+# A toolchain without a dispatch backend links no program containing `spawn on`, which is the
+# language's headline feature. Better to fail the build than to publish that.
+# Tested by glob rather than by counting: `wc -l` pads its output, so a `case` against "0" never
+# matches and the guard silently passes. An unmatched glob leaves the pattern itself in $1, which
+# -e then rejects.
+set -- "$STAGE"/lib/*dispatch.*
+if [ ! -e "$1" ]; then
+    echo "error: no dispatch backend staged into lib/." >&2
+    echo "  Looked in $TARGET_DIR/build/*/out for *dispatch.$DLL and *dispatch.a." >&2
+    echo "  Without it every program using 'spawn on' fails to link." >&2
+    exit 1
+fi
 
 echo "==> Staging the standard library, machine files and examples"
 # Source only. The .vxlib interface format carries a version tag that the compiler rejects when
