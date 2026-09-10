@@ -6,7 +6,7 @@
 
 ______________________________________________________________________
 
-> **This is v0.1.** `vxc` is a cross compiler: the machine it targets is *declared*, not detected —
+> **This is v0.0.1.** `vxc` is a cross compiler: the machine it targets is *declared*, not detected —
 > `--host` for the CPU and `--machine fleet/<sku>.vx` for the accelerator — so A100 binaries can be
 > built on an x86 EC2 box and shipped to the GPU machine. It supports the architectures LLVM targets.
 > It has been tested most on a MacBook Air M4 (AArch64 + Apple ANE) and an NVIDIA A100 (x86_64 +

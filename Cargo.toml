@@ -7,7 +7,7 @@
 #===----------------------------------------------------------------------===#
 [package]
 name = "vxc"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2021"
 description = "A heterogeneous-systems programming language that puts placement and reachability in the type system."
 authors = ["Aditya"]

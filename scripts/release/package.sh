@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build a redistributable Vx toolchain tarball for the host platform.
 #
-#   ./scripts/release/package.sh v0.1.0
+#   ./scripts/release/package.sh v0.0.1
 #
 # Produces  dist/vx-<version>-<target>.tar.gz  and its .sha256.
 #
@@ -29,7 +29,7 @@ set -euo pipefail
 
 VERSION="${1:-}"
 if [ -z "$VERSION" ]; then
-    echo "usage: $0 <version>        e.g. $0 v0.1.0" >&2
+    echo "usage: $0 <version>        e.g. $0 v0.0.1" >&2
     exit 1
 fi
 
