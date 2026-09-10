@@ -43,17 +43,47 @@ accelerator, and half a dozen memory spaces with different capacities, different
 different rules about who is allowed to read them. Most languages treat all of that as
 infrastructure. Vx treats it as types.</p>
 
-<h2>The mistake this is about</h2>
+<h2>The machine has a shape</h2>
 
-<p>Allocate a buffer on a GPU, hand the pointer to host code, and read it. In C++ that compiles.
-Two <code>malloc_device</code> allocations on two different GPUs are both <code>float *</code>,
-freely assignable, and reading one from the other's queue is a runtime problem at best and a
-segfault at worst — at three in the morning, on a machine you are renting by the hour.</p>
+<p>A single node, drawn as the hardware actually arranges it:</p>
 
-<p>The information needed to reject that program exists at compile time. It is simply not in the
-type.</p>
+<pre><code>      CPU                            GPU
+ +---------------+           +-----------------------+
+ |               |   PCIe    |                       |
+ |   CPU_DRAM    | <=======> |        GPU_HBM        |
+ |    128 GiB    |  63 GB/s  |  80 GiB @ 3.35 TB/s   |
+ |               |           |                       |
+ +---------------+           |  +-----------------+  |
+                             |  |      SMEM       |  |
+                             |  |   228 KiB / SM  |  |
+                             |  |    128 B/cyc    |  |
+                             |  +-----------------+  |
+                             +-----------------------+</code></pre>
 
-<h2>What Vx does instead</h2>
+<p>Three memory spaces, three capacities, three very different bandwidths, and one edge between
+them that costs something to cross. SMEM is not a separate pool sitting beside HBM — it is a small,
+fast region <em>inside</em> it, private to one streaming multiprocessor, and there are a hundred and
+thirty-two of them. The ratios are what matter: SMEM is roughly four thousand times smaller than
+HBM, and the link to the host is fifty times slower than HBM itself.</p>
+
+<p>Every one of those numbers is in a vendor datasheet. None of them are in a type.</p>
+
+<p>In C++ all three spaces produce the same thing: <code>float *</code>. A pointer into HBM and a
+pointer into DRAM are the same type, freely assignable, and nothing stops host code from reading
+the first. SYCL inherits address spaces from OpenCL and Kokkos takes memory spaces as template
+parameters, so both can say <em>which region within a device</em> — but neither says <em>which
+device</em>. Two allocations on two different GPUs are indistinguishable to the type system.</p>
+
+<p>Kokkos shows how close a library can get before the language stops it.
+<code>SpaceAccessibility&lt;...&gt;::accessible</code> is a compile-time boolean, and the case where
+it is false — the case the compiler has <em>already proven</em> illegal — is specialised to call
+<code>Kokkos::abort</code> at run time. It cannot do better, because where code runs is not part of
+a C++ function's type. A library can only type what a template parameter can carry.</p>
+
+<p>So the structure above exists in the hardware, in the documentation, and in the programmer's
+head. The one place it does not exist is the program.</p>
+
+<h2>Putting it in the type</h2>
 
 <p>A tensor's type carries its element type, its shape, <em>and</em> its memory space. A
 <code>spawn on</code> block names the device it runs on. Reading a value the device cannot address
