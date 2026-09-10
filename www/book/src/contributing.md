@@ -15,10 +15,36 @@ Open an issue at [github.com/vx-lang/Vx/issues](https://github.com/vx-lang/Vx/is
 If the compiler produced MLIR, `--emit-mlir` output is often the fastest way to show what went
 wrong.
 
+## Your first change
+
+Issues labelled [**good first issue**](https://github.com/vx-lang/Vx/labels/good%20first%20issue)
+are self-contained and do not assume you know the compiler. Each one states the problem, shows the
+current behaviour, and says what the fix should look like.
+
+A sample of what is open:
+
+| Issue | What it is |
+| --- | --- |
+| [Vx#506](https://github.com/vx-lang/Vx/issues/506) | `while` is not a keyword, and a fixture appears to test it but does not |
+| [Vx#501](https://github.com/vx-lang/Vx/issues/501) | `invariant` demands parentheses; `requires` and `ensures` do not |
+| [Vx#494](https://github.com/vx-lang/Vx/issues/494) | The unused-variable warning fires on a variable used only through method calls |
+| [Vx#445](https://github.com/vx-lang/Vx/issues/445) | Twelve warning codes are declared but never emitted |
+| [Vx#423](https://github.com/vx-lang/Vx/issues/423) | Issue numbers in code comments, against a rule that forbids them |
+
+If one of these is unclear, say so on the issue. A first issue that cannot be picked up cold is a
+bug in the issue, not in you.
+
+[**help wanted**](https://github.com/vx-lang/Vx/labels/help%20wanted) holds larger pieces that are
+still well specified.
+
 ## Working on the compiler
 
 Start with [building from source](building.md). Once `cargo test` passes you have a working
 development setup.
+
+For how the compiler is put together — the phase pipeline, the two code generators, how to add a
+language feature, and how the test tiers work — read the
+[developer guide](https://github.com/vx-lang/Vx/blob/main/docs/DEVELOPER_GUIDE.md).
 
 The repository layout:
 

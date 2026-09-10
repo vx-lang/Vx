@@ -11,8 +11,13 @@
 # The language
 
 - [A tour of Vx](tour.md)
+- [Control flow](control-flow.md)
 - [Ownership and borrowing](ownership.md)
 - [Generics and traits](generics.md)
+- [Compile-time evaluation](comptime.md)
+- [Contracts and verification](contracts.md)
+- [Unsafe and FFI](unsafe-and-ffi.md)
+- [Automatic differentiation](autodiff.md)
 
 # Heterogeneous computing
 
