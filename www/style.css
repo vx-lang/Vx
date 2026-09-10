@@ -441,10 +441,31 @@ footer { border-top: 1px solid var(--border-soft); padding: 2.5rem 0 3.5rem; }
   margin: 0.6rem 0 0;
 }
 
+/* Section headings carry the accent, with a short rule in the margin so they read as dividers
+ * when the page is scanned rather than read. The rule is drawn rather than a border, so it does
+ * not move the text off the measure the paragraphs sit on.
+ */
 .post h2 {
   font-size: 1.35rem;
-  margin: 2.5rem 0 0.75rem;
+  margin: 3rem 0 0.85rem;
   letter-spacing: -0.015em;
+  color: var(--accent);
+  position: relative;
+}
+
+.post h2::before {
+  content: "";
+  position: absolute;
+  left: -1.25rem;
+  top: 0.55em;
+  width: 0.5rem;
+  height: 2px;
+  background: var(--accent-2);
+}
+
+/* The marker needs room; below that width it would sit off the edge of the screen. */
+@media (max-width: 52rem) {
+  .post h2::before { display: none; }
 }
 
 .post p,
@@ -475,8 +496,24 @@ footer { border-top: 1px solid var(--border-soft); padding: 2.5rem 0 3.5rem; }
 }
 
 .post th {
-  color: var(--fg-faint);
+  color: var(--accent-2);
   font-weight: 600;
+  font-size: 0.8rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+/* The left column names the thing being described, so it carries the emphasis and the right
+ * column stays quiet. Without this both columns compete and the table reads as a wall.
+ */
+.post td:first-child {
+  color: var(--fg);
+  font-weight: 500;
+  padding-right: 1.5rem;
+}
+
+.post td:last-child {
+  color: var(--fg-muted);
 }
 
 /* Wide output blocks scroll inside themselves rather than widening the page. */
