@@ -71,9 +71,10 @@ What produced that `24`, on the two machines it was run on for this release:
 **A Mac (Apple silicon).** The spawn region is dispatched through CoreML, which places an fp32 4×4
 matmul on the CPU. The placement is declared, checked and enforced; the arithmetic ran on the host.
 
-**Linux with an NVIDIA A100** (driver 580.126.16, CUDA 12.8). Change the placement to the device
-that is actually there — `Memory::GPU_HBM` and `Topology::GPU[0]` — and, with `VX_DISPATCH_VERBOSE=1`,
-the same program logs:
+**Linux with an NVIDIA A100** (80GB PCIe, driver 580.159.04, CUDA 12.8), using the CUDA toolchain —
+`x86_64-unknown-linux-gnu-cuda`, which the installer picks automatically on a machine with an NVIDIA
+driver. Change the placement to the device that is actually there — `Memory::GPU_HBM` and
+`Topology::GPU[0]` — and, with `VX_DISPATCH_VERBOSE=1`, the same program logs:
 
 ```
 [Vx CUDA] device 0 stage
@@ -92,6 +93,13 @@ multiply also runs on the A100 — the dispatcher recognises the region as a GEM
 operands itself — but its two `transfer`s do not touch device memory, because the CUDA backend owns
 the `GPU` topology and not `NPU`. The declaration is the placement; the compiler holds you to what
 you named, not to what is plugged in. No timings are quoted from either machine.
+
+Which toolchain you have decides whether that dispatch happens. `build.rs` selects a dispatch
+backend from what the *build* machine has, so the portable Linux tarball —
+`x86_64-unknown-linux-gnu`, built where there is no CUDA — contains the CPU backend and logs
+`[Vx x86] host execution` on the same A100. Both produce `24`; only the CUDA build reaches the GPU.
+The installer keys on `libcuda.so.1` and chooses for you, so this only matters if you install before
+the driver, pass `VX_NO_CUDA=1`, or fetch a tarball by hand.
 
 ## What the compiler checks today
 
