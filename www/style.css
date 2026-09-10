@@ -128,7 +128,15 @@ main { max-width: var(--measure); margin: 0 auto; padding: 0 1.5rem; }
   letter-spacing: -0.035em;
   font-weight: 700;
   margin: 0 0 1.5rem;
-  max-width: 16ch;
+  /* `ch` is the width of a zero, and this line is wide bold capitals, so 16ch measured
+     narrower than the 24 characters it holds and broke "Every Core" across two lines. */
+  max-width: 20ch;
+  text-wrap: balance;
+}
+
+/* The gradient half is one phrase: the line breaks after the comma, or not at all. */
+.hero h1 .grad {
+  white-space: nowrap;
 }
 
 .grad {
