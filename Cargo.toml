@@ -6,10 +6,10 @@
 #
 #===----------------------------------------------------------------------===#
 [package]
-name = "Vx"
-version = "2.0.0"
+name = "vxc"
+version = "0.1.0"
 edition = "2021"
-description = "A high-performance systems programming language built from the ground up for heterogeneous computing."
+description = "A heterogeneous-systems programming language that puts placement and reachability in the type system."
 authors = ["Aditya"]
 license = "Apache-2.0 WITH LLVM-exception"
 repository = "https://github.com/vx-lang/Vx"
@@ -30,7 +30,10 @@ once_cell = "1.19"
 mlir-sys = "220.0.2"
 rustc-hash = "2.0"
 petgraph = "0.6.5"
-vx_std_core = { path = "stdlib/rust_core" }
+# vx_std_core is deliberately NOT a dependency. No code here calls into it -- the compiler names
+# `libvx_std_core` as a path when it links a program, never as a Rust API. The edge only ever asked
+# for an rlib, while what every test needs is the cdylib, and that comes from `default-members`
+# below. Keeping it here would also block publishing: a path dependency with no version is refused.
 melior = "0.27.0"
 clap = { version = "4.4", features = ["derive"] }
 anyhow = "1.0"

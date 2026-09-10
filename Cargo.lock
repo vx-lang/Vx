@@ -3,27 +3,6 @@
 version = 4
 
 [[package]]
-name = "Vx"
-version = "2.0.0"
-dependencies = [
- "anyhow",
- "bytemuck",
- "clap",
- "id-arena",
- "melior",
- "mlir-sys",
- "once_cell",
- "petgraph",
- "proptest",
- "rayon",
- "regex",
- "rstest",
- "rustc-hash",
- "tempfile",
- "vx_std_core",
-]
-
-[[package]]
 name = "aho-corasick"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1557,7 +1536,6 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 name = "vx-analyzer"
 version = "0.1.0"
 dependencies = [
- "Vx",
  "crossbeam-channel",
  "env_logger",
  "log",
@@ -1565,6 +1543,7 @@ dependencies = [
  "lsp-types",
  "serde",
  "serde_json",
+ "vxc",
 ]
 
 [[package]]
@@ -1574,6 +1553,26 @@ dependencies = [
  "googletest",
  "libc",
  "paste",
+]
+
+[[package]]
+name = "vxc"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "clap",
+ "id-arena",
+ "melior",
+ "mlir-sys",
+ "once_cell",
+ "petgraph",
+ "proptest",
+ "rayon",
+ "regex",
+ "rstest",
+ "rustc-hash",
+ "tempfile",
 ]
 
 [[package]]

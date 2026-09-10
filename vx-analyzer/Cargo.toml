@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-Vx = { path = ".." }
+vxc = { path = ".." }
 lsp-server = "0.7.6"
 lsp-types = "0.95.1"
 serde = { version = "1.0", features = ["derive"] }
