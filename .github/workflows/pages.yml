@@ -57,6 +57,10 @@ jobs:
           mkdir -p _site/docs
           cp -R www/book/book/* _site/docs/
 
+          # The blog is hand-written HTML under /blog/, sharing the landing page's stylesheet.
+          # No generator: posts are infrequent, and a build step is a thing that can rot.
+          cp -R www/blog _site/blog
+
           # A 404 that looks like the site rather than like GitHub.
           cp www/index.html _site/404.html
 

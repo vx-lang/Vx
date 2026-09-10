@@ -383,3 +383,120 @@ footer { border-top: 1px solid var(--border-soft); padding: 2.5rem 0 3.5rem; }
   .honest { padding: 1.8rem 1.6rem; }
   .pane, .proves, .compiles, .honest, .final-cta { margin-bottom: 4rem; }
 }
+
+/* ---------------------------------------------------------------- blog ---
+ *
+ * The post list and the posts themselves. Narrower than the landing page on
+ * purpose: prose wants a measure around 70 characters, and --measure is set
+ * for a page of cards.
+ */
+
+.post-list,
+.post {
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: 3.5rem 0 2rem;
+}
+
+.post-list h1,
+.post h1 {
+  font-size: clamp(1.9rem, 4vw, 2.6rem);
+  line-height: 1.15;
+  letter-spacing: -0.025em;
+  margin: 0 0 0.75rem;
+  text-wrap: balance;
+}
+
+.posts {
+  list-style: none;
+  padding: 0;
+  margin: 2.5rem 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+}
+
+.posts li {
+  border-top: 1px solid var(--border-soft);
+  padding-top: 1.5rem;
+}
+
+.posts a {
+  font-size: 1.15rem;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.posts time,
+.post-meta {
+  display: block;
+  color: var(--fg-faint);
+  font-size: 0.875rem;
+  font-variant-numeric: tabular-nums;
+  margin-top: 0.35rem;
+}
+
+.posts p {
+  color: var(--fg-muted);
+  margin: 0.6rem 0 0;
+}
+
+.post h2 {
+  font-size: 1.35rem;
+  margin: 2.5rem 0 0.75rem;
+  letter-spacing: -0.015em;
+}
+
+.post p,
+.post li {
+  line-height: 1.7;
+}
+
+.post blockquote {
+  margin: 1.5rem 0;
+  padding-left: 1.1rem;
+  border-left: 2px solid var(--border);
+  color: var(--fg-muted);
+}
+
+.post table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.925rem;
+  margin: 1.5rem 0;
+}
+
+.post th,
+.post td {
+  text-align: left;
+  padding: 0.5rem 0.75rem 0.5rem 0;
+  border-bottom: 1px solid var(--border-soft);
+  vertical-align: top;
+}
+
+.post th {
+  color: var(--fg-faint);
+  font-weight: 600;
+}
+
+/* Wide output blocks scroll inside themselves rather than widening the page. */
+.post pre {
+  overflow-x: auto;
+}
+
+.post-foot {
+  margin-top: 3.5rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--border-soft);
+  color: var(--fg-muted);
+  font-size: 0.925rem;
+}
+
+/* The landing page paints <em> in the accent colour and removes the slant, which works for a
+ * one-word callout in a hero. In running prose it is indistinguishable from a link, so inside a
+ * post emphasis goes back to being italic and keeps the body colour.
+ */
+.post em {
+  font-style: italic;
+  color: inherit;
+}

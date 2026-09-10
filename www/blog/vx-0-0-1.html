@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vx 0.0.1: placement in the type system</title>
+<meta name="description" content="The first Vx release. What the compiler checks, what it runs on, and the parts that are honestly not built yet.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+
+<meta property="og:title" content="Vx 0.0.1: placement in the type system">
+<meta property="og:description" content="The first Vx release. What the compiler checks, what it runs on, and the parts that are honestly not built yet.">
+<meta property="og:type" content="article">
+<meta property="og:url" content="https://vxlang.org/blog/vx-0-0-1.html">
+<meta name="twitter:card" content="summary_large_image">
+
+<link rel="alternate" type="application/atom+xml" title="Vx" href="/blog/feed.xml">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header class="nav">
+  <a class="brand" href="/">
+    <span class="mark">Vx</span>
+  </a>
+  <nav>
+    <a href="/docs/getting-started.html">Install</a>
+    <a href="/docs/tour.html">Language tour</a>
+    <a href="/docs/">Docs</a>
+    <a href="/blog/">Blog</a>
+    <a href="https://github.com/vx-lang/Vx">GitHub</a>
+  </nav>
+</header>
+
+<main>
+
+<article class="post">
+
+<h1>Vx 0.0.1: placement in the type system</h1>
+<p class="post-meta">10 September 2026</p>
+
+<p class="lede">A machine is no longer one processor. It is a CPU, a GPU, sometimes a neural
+accelerator, and half a dozen memory spaces with different capacities, different bandwidths, and
+different rules about who is allowed to read them. Most languages treat all of that as
+infrastructure. Vx treats it as types.</p>
+
+<h2>The mistake this is about</h2>
+
+<p>Allocate a buffer on a GPU, hand the pointer to host code, and read it. In C++ that compiles.
+Two <code>malloc_device</code> allocations on two different GPUs are both <code>float *</code>,
+freely assignable, and reading one from the other's queue is a runtime problem at best and a
+segfault at worst — at three in the morning, on a machine you are renting by the hour.</p>
+
+<p>The information needed to reject that program exists at compile time. It is simply not in the
+type.</p>
+
+<h2>What Vx does instead</h2>
+
+<p>A tensor's type carries its element type, its shape, <em>and</em> its memory space. A
+<code>spawn on</code> block names the device it runs on. Reading a value the device cannot address
+is a type error:</p>
+
+<pre><code><span class="k">let</span> a_npu = <span class="f">transfer</span>(a, <span class="t">Memory</span>::<span class="t">NPU_HBM</span>);
+<span class="k">spawn on</span>(<span class="t">Topology</span>::<span class="t">NPU</span>[<span class="n">0</span>]) {
+    c = a_npu @ b_npu;
+}</code></pre>
+
+<p>Forget the <code>transfer</code> and the compiler says so, naming the space the value is in, the
+spaces the device can see, and the fix:</p>
+
+<pre><code>Error[E6003] at 13:9: 'a' lives in CPU_DRAM but NPU[0] sees only [NPU_HBM];
+insert an explicit transfer to NPU_HBM (cost 50 on the declared path)</code></pre>
+
+<p>That last clause — <em>cost 50 on the declared path</em> — is there because the compiler also
+knows what the move costs, over a machine you described to it.</p>
+
+<h2>What it checks today</h2>
+
+<p>These are implemented, have diagnostic codes, and are held by tests:</p>
+
+<table>
+<tr><th>Check</th><th>Rules out</th></tr>
+<tr><td>Address-space visibility (<code>E6003</code>)</td><td>A device reading a space it cannot address; a host reading device memory</td></tr>
+<tr><td>Capacity admission (<code>E6009</code>, <code>E6010</code>)</td><td>A tensor larger than its space; a working set that fits tile by tile and not together</td></tr>
+<tr><td>Transfer reachability (<code>E6002</code>)</td><td>A move between spaces with no declared path</td></tr>
+<tr><td>Borrow checking</td><td>Aliasing and lifetime errors, with region tracking</td></tr>
+<tr><td>Linear types</td><td>Use after move of a consumed buffer</td></tr>
+<tr><td>Seam contracts</td><td>Reading a buffer whose asynchronous transfer is not yet visible; discharged by z3</td></tr>
+</table>
+
+<p>The machine itself is a source file. <code>fleet/</code> holds twelve of them — A100 in both
+memory sizes, H100, H200, B200, MI300X, an Apple M4, multi-GPU nodes — each eight to twenty-four
+declaration lines, each citing its sources and marking unverified figures as unverified.</p>
+
+<h2>It is a cross compiler</h2>
+
+<p>The machine Vx targets is <em>declared</em>, not detected. <code>--host</code> names the CPU and
+<code>--machine fleet/&lt;sku&gt;.vx</code> names the accelerator, so the compiler is not limited to
+the box it is running on. A100 binaries get built on an x86 EC2 instance and shipped to the GPU
+machine.</p>
+
+<p>This matters more than it sounds. A previous <code>--target</code> flag was removed precisely
+because it stamped one triple across a whole module, including <code>main</code> — which produced
+modules that were wrong about the machine they named. Declaring the host and the device separately
+is what replaced it.</p>
+
+<h2>What is not built</h2>
+
+<p>This is 0.0.1, and the number is meant literally.</p>
+
+<ul>
+<li><strong>The standard library is thin.</strong> There is a <code>Vec</code>, a
+<code>HashMap</code>, iterators, some maths. There is no package manager and no ecosystem.</li>
+<li><strong>There is no <code>while</code> loop.</strong> <code>for</code> over a range, and
+recursion, are what exist.</li>
+<li><strong><code>grad()</code> is young.</strong> Automatic differentiation runs through Enzyme and
+works, but it currently accepts differentiation of a discrete-valued function, which is not a
+meaningful thing to ask for.</li>
+<li><strong>The calculus behind the placement checks is a design with tests, not a soundness
+theorem.</strong></li>
+<li><strong>Some documents in <code>docs/</code> describe designs rather than code</strong>, and say
+so where that is true.</li>
+</ul>
+
+<p>0.1 is being saved for the release that has a standard library worth the name. Until then the
+version stays in 0.0.x, where it can move as often as it needs to.</p>
+
+<h2>Trying it</h2>
+
+<pre><code>curl -fsSL https://vxlang.org/install.sh | sh</code></pre>
+
+<p>macOS on Apple Silicon and Linux x86_64. LLVM 22 has to be present — Vx lowers through MLIR and
+drives <code>mlir-translate</code>, <code>opt</code>, <code>llc</code> and <code>clang</code> from
+it, and a different major version will not do, because the MLIR C API changes between releases. The
+installer checks before it downloads anything and tells you the exact command if something is
+missing.</p>
+
+<p>The <a href="/docs/tour.html">language tour</a> is the fastest way to see whether the idea
+appeals. The <a href="/docs/">documentation</a> covers the type system, ownership, the heterogeneous
+model and machine files, and every code example in it is compiled by CI — a previous audit found a
+tutorial teaching syntax that had never been implemented, so now the build fails rather than the
+reader.</p>
+
+<p class="post-foot">Vx is Apache 2.0 with the LLVM exception. Bug reports are the most useful thing
+you can send: <a href="https://github.com/vx-lang/Vx/issues">github.com/vx-lang/Vx/issues</a>. If
+you want to work on the compiler, the issues labelled
+<a href="https://github.com/vx-lang/Vx/labels/good%20first%20issue">good first issue</a> each state
+the problem with a reproduction you can run.</p>
+
+</article>
+
+</main>
+
+<footer>
+  <p>Vx is Apache 2.0 with the LLVM exception. <a href="https://github.com/vx-lang/Vx">Source</a>.</p>
+</footer>
+
+</body>
+</html>

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Vx</title>
+  <subtitle>Notes on building Vx, a heterogeneous-systems programming language.</subtitle>
+  <link href="https://vxlang.org/blog/feed.xml" rel="self"/>
+  <link href="https://vxlang.org/blog/"/>
+  <id>https://vxlang.org/blog/</id>
+  <updated>2026-09-10T00:00:00Z</updated>
+  <author><name>Aditya</name></author>
+
+  <entry>
+    <title>Vx 0.0.1: placement in the type system</title>
+    <link href="https://vxlang.org/blog/vx-0-0-1.html"/>
+    <id>https://vxlang.org/blog/vx-0-0-1.html</id>
+    <updated>2026-09-10T00:00:00Z</updated>
+    <summary>The first Vx release. What the compiler checks, what it runs on, and the parts that are honestly not built yet.</summary>
+  </entry>
+</feed>
