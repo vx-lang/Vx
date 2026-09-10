@@ -716,6 +716,14 @@ fn test_optimizations() -> Result<(), String> {
 /// `XFAIL-LOWER` is: a marked fixture whose RUN line starts passing fails too.
 fn run_the_run_lines(path: &Path) -> Result<(), String> {
     let source = fs::read_to_string(path).map_err(|e| format!("{:?}: {}", path, e))?;
+
+    // The same gate the fixture runners apply. `run_middle_end_test` skipped a macOS-only file
+    // and this ran its RUN line anyway, so a CHECK for IR that only a macOS-registered plugin
+    // emits failed on Linux -- a test that does not apply, reported as a test that broke.
+    if source.contains("// REQUIRES: macos") && !cfg!(target_os = "macos") {
+        return Ok(());
+    }
+
     let runs: Vec<&str> = source
         .lines()
         .filter_map(|l| l.trim().strip_prefix("// RUN:"))
