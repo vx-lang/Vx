@@ -77,16 +77,9 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           set -euo pipefail
-          brew install llvm@22 z3 ninja cmake pkg-config zstd || brew install llvm z3 ninja cmake pkg-config zstd
+          brew install llvm@22 z3 ninja cmake pkg-config || brew install llvm z3 ninja cmake pkg-config
           prefix=$(brew --prefix llvm@22 2>/dev/null || brew --prefix llvm)
           echo "$prefix/bin" >> "$GITHUB_PATH"
-
-          # LLVM's own link flags include -lzstd, but the only -L the compiler passes is LLVM's
-          # Cellar directory. Homebrew keeps zstd's dylib in its top-level lib, which nothing on
-          # macOS searches by default, so the link failed with "library 'zstd' not found" while
-          # zstd was in fact installed as a dependency of llvm@22. rustc forwards LIBRARY_PATH to
-          # the linker, so naming the prefix here fixes it for every crate in the build.
-          echo "LIBRARY_PATH=$(brew --prefix)/lib${LIBRARY_PATH:+:$LIBRARY_PATH}" >> "$GITHUB_ENV"
 
       - name: Confirm the LLVM major version
         shell: bash
@@ -157,6 +150,11 @@ jobs:
           # the end of it, and the differential harness depends on that. This program returns 42,
           # so vxc exits 1 every time and a status check here only ever tested the assumption
           # that it would not.
+          #
+          # Match the stdout line, not the error. jit.rs prints "[JIT] Program exited with code:
+          # 42" on success-of-execution, while the error text reads "exited with NON-ZERO code:
+          # 42" and does not contain this substring. Anyone editing either message should keep
+          # that apart, or this check silently starts matching the wrong one.
           echo "$out" | grep -q "exited with code: 42" || {
             echo "error: the packaged compiler did not run the program (vxc exit $status)" >&2
             echo "--- output was:" >&2
