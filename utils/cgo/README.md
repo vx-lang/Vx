@@ -114,7 +114,7 @@ instance storage that is filesystem-cache behaviour inside the timed region, on 
 
 ## Known gap
 
-The synthetic corpus is not the 400-module corpus from `vx-review`, and the two do not agree — the
+The synthetic corpus is not the 400-module corpus used for the paper, and the two do not agree — the
 synthetic one does not reproduce that corpus's reported 4.57×@8. Both should be run before anything
 is written up; if they disagree on this hardware too, the difference between them is itself the
 finding, and the paper cannot quote one number as "the" speedup.

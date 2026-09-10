@@ -7,7 +7,7 @@
 #
 #===----------------------------------------------------------------------===#
 #
-# M1: measure every declared seam and compare against the FROZEN predictions (vx-review#15).
+# M1: measure every declared seam and compare against the FROZEN predictions.
 #
 #   ./run_m1.sh [--sku h100-sxm] [--predictions <dir>]
 #
@@ -26,7 +26,9 @@ cd "$(dirname "$0")/../.."
 ROOT=$(pwd)
 
 SKU=h100-sxm
-PRED="$ROOT/../vx-review/memory-algebra-paper/predictions"
+# No default path. The frozen predictions are held with the paper they belong to, not in this
+# repository, so where they live is the caller's to say: --predictions, or VX_MEMALG_PREDICTIONS.
+PRED="${VX_MEMALG_PREDICTIONS:-}"
 while [ $# -gt 0 ]; do
     case "$1" in
         --sku) SKU="$2"; shift 2 ;;
@@ -34,6 +36,13 @@ while [ $# -gt 0 ]; do
         *) echo "unknown arg: $1" >&2; exit 2 ;;
     esac
 done
+
+if [ -z "$PRED" ]; then
+    echo "FATAL: no predictions directory given." >&2
+    echo "Pass --predictions <dir> or set VX_MEMALG_PREDICTIONS. M1 scores against the freeze," >&2
+    echo "and must not regenerate it." >&2
+    exit 1
+fi
 
 if [ ! -d "$PRED" ]; then
     echo "FATAL: frozen predictions not found at $PRED" >&2

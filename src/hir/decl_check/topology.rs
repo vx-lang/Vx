@@ -131,7 +131,7 @@ impl TypeChecker<'_> {
                 }
             }
 
-            // S2 (vx-review#10): exactly one cost source per edge. An edge that declares a cost
+            // S2: exactly one cost source per edge. An edge that declares a cost
             // while its endpoints already supply a derivable one has two, and the compiler used
             // both -- routing by the declared number and reporting the derived one. Rejected at
             // declaration time rather than resolved by a precedence rule, because a precedence

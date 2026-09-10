@@ -1129,7 +1129,7 @@ There are currently **two** front-to-back paths, and they are different:
 
 Converging them (making `vxc` drive `compile_pipeline`, and codegen consume the flat streams) is the remaining integration work; §9.3's "scaffolding" rows are the concrete gaps on that path.
 
-**Decision (2026-07, [#197](https://github.com/hiraditya/Vx/issues/197)): converge.** The flat-array
+**Decision (2026-07, [#197](https://github.com/vx-lang/Vx/issues/197)): converge.** The flat-array
 pipeline will become the production path — that is the architecture's core claim. The staged,
 keep-green roadmap (the AST path stays the oracle until the flat path is at parity via differential
 testing) is [`discussions/implementation_plans/flat_pipeline_convergence.md`](./discussions/implementation_plans/flat_pipeline_convergence.md).
@@ -1150,7 +1150,7 @@ content-hash identity (no counters) and zero shared mutable state (no locks). It
   `flat_type_stream_order_is_deterministic_across_thread_counts` and
   `hir_stream_is_deterministic_across_thread_counts` (`pipeline.rs`) run the pipeline under a
   **1-thread and an 8-thread** `rayon` pool and compare the streams **byte-for-byte, in order** —
-  catching scheduling races that same-pool reruns mask. (Closed [#196](https://github.com/hiraditya/Vx/issues/196),
+  catching scheduling races that same-pool reruns mask. (Closed [#196](https://github.com/vx-lang/Vx/issues/196),
   which noted the old tests only compared the *set*.)
 - **Content-hash identity:** `parallel_gid_minting_is_deterministic_across_threads` +
   `gids_are_module_isolated_symbol_hashed_and_deterministic` (`resolver.rs`), and the

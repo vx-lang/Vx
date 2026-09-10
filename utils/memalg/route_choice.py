@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""M5: does the graph pick the faster route? (vx-review#19)
+"""M5: does the graph pick the faster route?
 
 When two routes connect the same pair of spaces, the graph picks one. This asks whether it picked
 the faster one, and whether the answer depends on transfer size.

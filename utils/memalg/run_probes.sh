@@ -7,13 +7,13 @@
 #
 #===----------------------------------------------------------------------===#
 #
-# Measure the full transfer-edge powerset (vx-review#15, #22).
+# Measure the full transfer-edge powerset (#22).
 #
 #   ./run_probes.sh
 #
 # These are DIAGNOSTICS, not scored cells: they measure hardware properties in order to decide
 # what the Phase-2 model extension should be. They do not join against the frozen predictions, so
-# no freeze and no vx-review checkout is needed -- unlike run_m1.sh, which must have the tag.
+# no freeze and no prediction checkout is needed -- unlike run_m1.sh, which must have the tag.
 #
 # Build first, and stop on failure. probe_edges.cu has NOT been compiled anywhere: the CUDA box
 # used to pre-verify the M1 instrument is gone, so this build is its first. That is deliberate --

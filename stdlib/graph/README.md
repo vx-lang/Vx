@@ -29,12 +29,12 @@ vxc --action run-jit   stdlib/graph/tests.vx           # runs all 10 unit tests
 ```
 
 `tests.vx` JIT-executes cleanly — every `expect_eq` passes. Getting here
-exercised three compiler fixes: [#203](https://github.com/hiraditya/Vx/issues/203)
+exercised three compiler fixes: [#203](https://github.com/vx-lang/Vx/issues/203)
 (cross-module *transitive* monomorphization — a generic like
 `Vec<i32>::with_capacity` reached only from an imported algorithm body),
-[#204](https://github.com/hiraditya/Vx/issues/204) (imported *generic* free
+[#204](https://github.com/vx-lang/Vx/issues/204) (imported *generic* free
 functions like `expect_eq` were dropped), and
-[#205](https://github.com/hiraditya/Vx/issues/205) (a struct field assigned
+[#205](https://github.com/vx-lang/Vx/issues/205) (a struct field assigned
 through `&mut self` on a monomorphized generic — e.g. `Vec::push`'s
 `self.len = self.len + 1` — was silently dropped, so the algorithms computed
 wrong results while appearing to compile).
@@ -44,5 +44,5 @@ wrong results while appearing to compile).
 `tests/integration_test/graph_workload_test.rs` runs the parallel resolution
 phases (`build_symbol_map` + `resolve_names`) over these modules and asserts the
 output is invariant to thread count and stable under contention — the intended
-ThreadSanitizer payload for [#202](https://github.com/hiraditya/Vx/issues/202)
+ThreadSanitizer payload for [#202](https://github.com/vx-lang/Vx/issues/202)
 (run those tests under `-Zsanitizer=thread`).

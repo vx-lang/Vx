@@ -5,7 +5,7 @@
   "publisher": "hiraditya",
   "repository": {
     "type": "git",
-    "url": "https://github.com/hiraditya/Vx"
+    "url": "https://github.com/vx-lang/Vx"
   },
   "version": "0.2.0",
   "engines": {

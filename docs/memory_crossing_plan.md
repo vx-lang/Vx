@@ -18,8 +18,6 @@ why the smaller worked example gives a different figure).
 Phase 1 is **done** (commit `3cc0c88f`). Phases 2 and 3 are not started, and Phase 2 needs a
 decision from a human because it changes numbers we have promised not to change quietly.
 
-Tracking issue: [vx-review#26](https://github.com/hiraditya/vx-review/issues/26).
-
 ______________________________________________________________________
 
 ## 1. The problem
@@ -315,8 +313,7 @@ after seeing the measurements.
    H100 SMEM is now safe from the flaw the review found: even once registers are declared, a walk
    that stages through them adds regardless of the attribute.
 1. Decide whether to re-take the freeze or to record a dated exception. This is a human decision,
-   not a code change. Tracked at
-   [vx-review#27](https://github.com/hiraditya/vx-review/issues/27).
+   not a code change.
 1. Edit each machine file, adding a `spec:` comment naming the evidence for the choice, the same way
    every other figure in those files carries its source. The comment must say whether the choice was
    **measured** on that part or **derived from the ISA** — they are different kinds of claim and only
@@ -395,15 +392,14 @@ ______________________________________________________________________
 - **Make the composite guard permanent.** `compose.py` already refuses to score a route whose
   measured cost beats its own slowest leg, because a composite cannot outrun a link it crosses. That
   check belongs in `compare_m1.py` too — it is what catches a mislabelled seam, and it found the
-  `HBM->L2` defect in vx-review#22 without being told to look.
+  `HBM->L2` defect without being told to look.
 
 ### Open questions
 
 - **α is missing, and it is the neighbour of `fill`.** The cost model has no fixed per-transfer term
   at all: every edge is `bytes/bandwidth`, a line through the origin. Phase 3's `fill` and a
   per-edge α are the same shape of quantity, and adding either without the other will absorb one
-  into the other. Tracked at
-  [vx-review#28](https://github.com/hiraditya/vx-review/issues/28).
+  into the other.
 - **AMD.** `fleet/mi300x.vx` describes a part nobody has measured. AMD GPUs have `buffer_load_dword lds`, which is a copy-engine-like path, so `streamed` may well be correct there — but nothing in
   this campaign has tested it.
 - **Mixed routes.** A walk currently gets one rule for the whole thing. The register rule in §2 is

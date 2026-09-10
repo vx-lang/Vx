@@ -9,7 +9,7 @@
 // on the `vx.transfer` op.
 //
 // A containment hop charges BOTH endpoints: the tile has to come out of CPU_DRAM as well as
-// into NPU_HBM (vx-review#22). A 64x64 f32 tile is 16384 bytes, so at CPU_DRAM's 256 B/cyc and
+// into NPU_HBM. A 64x64 f32 tile is 16384 bytes, so at CPU_DRAM's 256 B/cyc and
 // NPU_HBM's 128 B/cyc the move costs 16384/256 + 16384/128 = 64 + 128 = 192 cycles. The two
 // rates differ so that dropping either term changes the answer.
 //

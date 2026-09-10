@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// S3 (vx-review#11): the cost model's AXIOMS, as tests.
+// S3: the cost model's AXIOMS, as tests.
 //
 // These separate two failure modes that look alike in a measurement campaign and have completely
 // different responses:
@@ -16,7 +16,7 @@
 //
 // Additivity is the sharpest example, and it is the one that changed. "Path cost = sum of leg
 // costs" was asserted here as an axiom. It is now false in the model on purpose: a containment hop
-// charges both endpoints (vx-review#22), so staging through a space counts that space twice while
+// charges both endpoints, so staging through a space counts that space twice while
 // a direct walk streams through it once. What survives is the inequality -- staging is never
 // cheaper than streaming -- and that is what Axiom 1 now asserts.
 //
@@ -60,12 +60,12 @@ fn space(n: &str) -> MemorySpace {
 /// **Axiom 1 (revised): staging costs at least as much as streaming.**
 ///
 /// This was strict additivity — `cost(A->C) == cost(A->B) + cost(B->C)` — asserted as an axiom.
-/// It is now false, deliberately: since a containment hop charges both endpoints (vx-review#22),
+/// It is now false, deliberately: since a containment hop charges both endpoints,
 /// staging through B writes into B and then reads back out of it, so B is counted twice, while the
 /// direct walk streams through it once. The inequality is what survives.
 ///
 /// The hardware agrees, and by a wide margin in the same direction. Measured on an H100, a staged
-/// `HBM->L2->SMEM` costs 0.60x the sum of its legs (vx-review#16, measurements/EDGES.md) because
+/// `HBM->L2->SMEM` costs 0.60x the sum of its legs (measurements/EDGES.md) because
 /// copy engines and TMA overlap the legs. M2 pre-registered exactly this, so the old axiom failing
 /// is a confirmed prediction rather than a surprise — but note the model and the hardware disagree
 /// on *how much*: the model now says staging is dearer by the doubled intermediates, and the
@@ -244,7 +244,7 @@ fn large_transfers_still_have_a_cost() {
     // This test previously asserted the opposite -- the child's bandwidth alone -- and called the
     // enclosing space's rate a modelling choice. Hardware settled it: pricing the destination alone
     // scored -85.1% on the H100 `HBM->L2` seam, and charging both halves brought it to -31.7%
-    // (vx-review#15, measurements/EDGES.md). The enclosing space is on the critical path, and
+    // (measurements/EDGES.md). The enclosing space is on the critical path, and
     // leaving it out was under-pricing by omission.
     let c = h
         .derived_transfer_cost(&space("DRAM"), &space("HBM"), 64 << 30)

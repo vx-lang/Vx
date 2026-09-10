@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 // The Tier-0 machine: the development Mac, for the zero-cost protocol shakedown
-// (vx-review#13) before any cluster is rented. Its job is not to produce data
+// before any cluster is rented. Its job is not to produce data
 // about Apple silicon -- it is to run predict -> measure -> compare end to end so
 // the harness's own bugs surface here rather than on a metered box.
 //

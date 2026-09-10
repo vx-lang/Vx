@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Harvest every M-series prediction, one JSON per cell (vx-review#14).
+"""Harvest every M-series prediction, one JSON per cell.
 
 The pre-registration mechanism: predicted first, measured second, provably. After the tag these
 files can only change with a dated note saying why, so a measurement that disagrees with them is a

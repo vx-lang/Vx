@@ -67,7 +67,7 @@ pub struct StagingRoute {
     /// not say which is not a prediction. (The fleet's `HBM->L2` and `L2->SMEM` are exactly this
     /// pair.)
     pub derived_unit: Option<crate::syntax::RatePer>,
-    /// Which composition law priced a containment route: `sum` or `bottleneck` (vx-review#26).
+    /// Which composition law priced a containment route: `sum` or `bottleneck`.
     ///
     /// `None` for a link-rate hop, which has one leg and so composes nothing. Carried because the
     /// two laws differ by ~2x on a multi-hop walk and a harvested prediction that does not say

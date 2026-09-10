@@ -3,7 +3,7 @@
 `compare.sh` shows what the two forms *compile to*. This shows what they *cost*,
 which turned out to matter: the static numbers predicted a win that measurement
 did not find. See
-[#382 (comment)](https://github.com/hiraditya/Vx/issues/382#issuecomment-5366292395).
+[#382 (comment)](https://github.com/vx-lang/Vx/issues/382#issuecomment-5366292395).
 
 `bench.mlir` holds grid-strided versions of the same two kernels (one thread per
 row, many rows per thread — how the flat path actually launches). `driver.cu`

@@ -2,7 +2,7 @@
 
 > **Measured follow-up:** the register argument this example was built to
 > demonstrate does **not** survive `ptxas` — see [BENCH.md](BENCH.md) and
-> [#382 (comment)](https://github.com/hiraditya/Vx/issues/382#issuecomment-5366292395).
+> [#382 (comment)](https://github.com/vx-lang/Vx/issues/382#issuecomment-5366292395).
 > Physical allocation is 34 registers (wide) vs 44 (chunked), zero spill in both;
 > the 257 below is PTX *virtual* register numbering, not pressure. The
 > chain-depth and FMA differences are real, and worth ~1.09x at low occupancy
@@ -10,7 +10,7 @@
 > to see what the two lowerings differ in.
 
 A runnable, self-contained demonstration of the problem behind
-[#382](https://github.com/hiraditya/Vx/issues/382). No GPU required — it needs
+[#382](https://github.com/vx-lang/Vx/issues/382). No GPU required — it needs
 only `mlir-opt` (`source config.local`).
 
 ```

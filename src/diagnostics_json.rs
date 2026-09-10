@@ -563,7 +563,7 @@ mod tests {
         assert!(out.contains("\"traffic_exact\": true"), "{out}");
         assert!(out.contains("\"traffic_absent_reason\": null"), "{out}");
         // A containment route must say which law priced it: the two differ by ~2x on a multi-hop
-        // walk, so a harvested prediction that omits it cannot be re-scored (vx-review#26).
+        // walk, so a harvested prediction that omits it cannot be re-scored.
         assert!(out.contains("\"composition\": \"sum\""), "{out}");
         assert!(out.contains("\"verdict\": \"admitted\""), "{out}");
         assert!(out.contains("\"error_count\": 0"), "{out}");

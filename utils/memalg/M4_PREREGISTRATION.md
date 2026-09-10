@@ -78,7 +78,7 @@ outcome rather than a gap someone papers over with 1.4 GHz.
 Six of the ten points in the existing shakedown report memory traffic **above the M4's 120 GB/s
 hardware peak** — 1.22× to 1.79× — and they are exactly the points whose working set (2× the size,
 source plus destination) fits in the 16 MiB L2. Those rows measure cache, not DRAM. It is the same
-defect as the H100's `HBM->L2` cell (vx-review#22), the fifth of this shape in the campaign, and
+defect as the H100's `HBM->L2` cell, the fifth of this shape in the campaign, and
 the first found on the CPU side.
 
 Every buffer in `measure_m4.mm` must exceed the largest cache it could be served from by a margin,
@@ -95,7 +95,7 @@ above.
 
 ## P5 — contention: the aggregate is already saturated, so sharing is a straight division
 
-M3 (vx-review#17) is the most expensive item on the fleet list and has no predicted column: the
+M3 is the most expensive item on the fleet list and has no predicted column: the
 model has no contention term, so it says each of K concurrent transfers gets the whole edge. This
 machine can measure the sharing law for nothing.
 

@@ -85,7 +85,7 @@ Topology Node {
   // route selection and are NOT times, so nothing derived a cost from them: every one of
   // these edges reported `derived_cost: null`. The compiler would route a KV cache from
   // GPU0 to GPU7, or out through the NIC to another machine, and predict nothing about how
-  // long it took -- which left M7 (vx-review#21) with no predicted column to measure
+  // long it took -- which left M7 with no predicted column to measure
   // against. An unpriced edge cannot be validated by any amount of machine time.
   //
   // Worth recording: the old weights did not even encode the right ORDER. 450/63/50 GB/s

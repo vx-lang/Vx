@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Predict -> measure -> compare, end to end (vx-review#13).
+"""Predict -> measure -> compare, end to end.
 
 The Tier-0 dry run. Its output is an error table for one memory link on the machine we already
 own, and its purpose is to find bugs in OUR harness -- a wrong formula, a mislabeled column, a
@@ -13,7 +13,7 @@ Three steps, each of which can fail loudly:
   measure  run the C benchmark -> achieved copy time per size.
   compare  join on byte count, report signed relative error.
 
-The join is on `bytes`, which is why the extractor had to emit it (vx-review#12): without a byte
+The join is on `bytes`, which is why the extractor had to emit it: without a byte
 count in the prediction record there is nothing to join on and the two halves cannot be related at
 all.
 """

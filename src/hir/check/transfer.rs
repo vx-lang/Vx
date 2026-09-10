@@ -444,7 +444,7 @@ impl<'a> TypeChecker<'a> {
         // come out in a different order on every run: the same compiler on the same input emitted
         // `HBM` before `L2` once and after it the next time. That is a user-visible
         // nondeterminism in the machine-readable artifact downstream tools consume, and it broke
-        // byte-reproducibility of the frozen predictions (vx-review#14), which is where it was
+        // byte-reproducibility of the frozen predictions, which is where it was
         // found. Diagnostics are also emitted in this order, so it decided their order too.
         let mut placements: Vec<_> = placements.iter().collect();
         placements.sort_by_key(|(space, _)| space.name());
@@ -896,7 +896,7 @@ impl<'a> TypeChecker<'a> {
         // -- a host<->device hop whose endpoints do not nest.
         // How many bytes this transfer moves. Recorded, not just consumed: a harvested cost is
         // uninterpretable without the size it is a cost *of*, and S4's freeze artifact is this
-        // record (vx-review#12).
+        // record.
         let moved_bytes: Option<u64> = Self::tensor_of(&inner_ty)
             .and_then(|(e, d)| crate::hir::memory::static_tensor_bytes(e, d));
 

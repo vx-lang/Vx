@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""M1: join measured seams against the FROZEN predictions and emit the error table (vx-review#15).
+"""M1: join measured seams against the FROZEN predictions and emit the error table.
 
 Reads predictions only from the frozen directory, never by re-running the compiler. That is the
 point of the freeze: if this script could regenerate them it could also regenerate them *after*
@@ -44,7 +44,7 @@ def load_measurements(path):
     """({(seam, bytes, note): median}, [fact rows]) — note distinguishes pinned from pageable.
 
     `device/*` rows are not seams. They are the machine file's own declared numbers read back off
-    the hardware (vx-review#18) and they join against no prediction, so they are split out here
+    the hardware and they join against no prediction, so they are split out here
     rather than left to fall into the "no frozen prediction" list: there are ~15 of them, that
     list prints at most 8, and they would push out the one thing it exists to show -- a real seam
     that was measured and never predicted.
@@ -179,7 +179,7 @@ def main():
             "lines before citing anything."
         )
 
-    # M4 (vx-review#18): the declared numbers, read off the hardware. Nothing is scored here --
+    # M4: the declared numbers, read off the hardware. Nothing is scored here --
     # the frozen cells carry costs, not capacities, so there is no predicted side to subtract.
     # This is the table someone reads while turning a `spec:` line into a `measured:` one, and it
     # is printed rather than summarised because the transcription is the fragile step.

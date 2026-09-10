@@ -7,7 +7,7 @@
 #
 #===----------------------------------------------------------------------===#
 #
-# Provision a rented NVIDIA box for the M-series (vx-review#15..#21).
+# Provision a rented NVIDIA box for the M-series.
 #
 #   curl -sSL <this file> | bash     # or: ./setup_h100.sh
 #

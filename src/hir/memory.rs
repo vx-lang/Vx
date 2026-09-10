@@ -34,7 +34,7 @@ pub struct DerivedCost {
     pub per: RatePer,
 }
 
-/// One transfer, as an element of a set that is in flight together (vx-review#17).
+/// One transfer, as an element of a set that is in flight together.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Flow {
     pub src: MemorySpace,
@@ -94,7 +94,7 @@ const PICOS_PER_SEC: u64 = 1_000_000_000_000;
 /// each spelled `raw.div_ceil(g) * g` inline, so a change to the rounding rule could have been
 /// applied to one and not the other, and the two answers would have disagreed about the same tile.
 /// `None` or a zero granule means no rounding. Idempotent by construction, which S3 asserts
-/// (vx-review#11).
+///.
 pub fn granule_round(bytes: u64, granule: Option<u64>) -> u64 {
     match granule {
         Some(g) if g > 0 => bytes.div_ceil(g).saturating_mul(g),
@@ -271,13 +271,13 @@ impl<'a> MemoryHierarchy<'a> {
     /// comes from or goes to, and its delivery rate is squarely on the critical path. Excluding it
     /// prices only the destination's side of the edge and charges the source nothing.
     ///
-    /// Measured on an H100 (vx-review#15): `L2->SMEM` priced at SMEM's declared 128 B/cyc alone
+    /// Measured on an H100: `L2->SMEM` priced at SMEM's declared 128 B/cyc alone
     /// scored -91.3% against hardware. Charging both halves -- L2's measured read rate of
     /// 23.7 B/cyc per SM plus SMEM's measured write rate of 77.8 -- predicts 18.2 B/cyc against a
     /// measured 16.6, which is within 10%. The missing term was the whole error.
     ///
     /// Split out from `derived_transfer_cost` because the route is also what says which flows
-    /// contend: two transfers collide exactly where their routes share a space (vx-review#17).
+    /// contend: two transfers collide exactly where their routes share a space.
     pub fn route_spaces(&self, src: &MemorySpace, dst: &MemorySpace) -> Option<Vec<MemorySpace>> {
         if src == dst {
             return None;
@@ -307,7 +307,7 @@ impl<'a> MemoryHierarchy<'a> {
     ///
     /// What this does **not** do is model contention. `FlowCost::cost` is still the isolated
     /// roofline even for a flow that `FlowCost::sharing` reports as contended, because the model
-    /// has no sharing law and M3 (vx-review#17) has not been run. Inventing one before it is
+    /// has no sharing law and M3 has not been run. Inventing one before it is
     /// measured is precisely what the freeze exists to prevent. The value here is that the gap is
     /// now *visible and typed* -- a caller can see "this flow shares HBM with three others and was
     /// priced as though it were alone" -- instead of being invisible in a signature that could not
@@ -359,7 +359,7 @@ impl<'a> MemoryHierarchy<'a> {
     /// passes through, not a rate it is charged. An ancestor that *is* an endpoint is included:
     /// on a containment hop like `SMEM within L2` the parent is where the data physically comes
     /// from, and its delivery rate is on the critical path. Charging only the child is what scored
-    /// `L2->SMEM` at -91.3% against an H100, and `HBM->L2` at -85.1% (vx-review#15).
+    /// `L2->SMEM` at -91.3% against an H100, and `HBM->L2` at -85.1%.
     ///
     /// Returns `None` when the cost is not derivable: `src == dst`, no common ancestor, a path
     /// space lacks a `bandwidth`, or the path's bandwidths mix rate units (cycles vs seconds).
@@ -419,7 +419,7 @@ impl<'a> MemoryHierarchy<'a> {
             })
             .collect();
 
-        // How the legs combine, from the DESTINATION's declaration (vx-review#26).
+        // How the legs combine, from the DESTINATION's declaration.
         //
         // The destination decides because it is the destination's fill mechanism that determines
         // whether the walk is one hardware transaction or a chain of instructions. `crossing:
@@ -429,7 +429,7 @@ impl<'a> MemoryHierarchy<'a> {
         //
         // Defaults to `sequenced`, which is what the algebra has always done -- so a machine file
         // that says nothing gets exactly its previous cost and the frozen cells do not move.
-        // A register round-trip always adds, whatever `crossing:` says (vx-review#26).
+        // A register round-trip always adds, whatever `crossing:` says.
         //
         // A space passed THROUGH on the way, rather than one of the endpoints, is a staging point:
         // the data is loaded into it and then stored back out. When that space is the register file
@@ -935,7 +935,7 @@ mod tests {
     #[test]
     fn contended_flows_are_still_priced_as_exclusive() {
         // The deliberate gap, pinned so it cannot be closed by accident. Until M3 measures a
-        // sharing law (vx-review#17), a contended flow costs exactly what a lone one costs -- and
+        // sharing law, a contended flow costs exactly what a lone one costs -- and
         // the type says so out loud rather than the signature hiding the question.
         let decls = three_level();
         let h = MemoryHierarchy::build(&decls);
@@ -1146,7 +1146,7 @@ mod tests {
         // 16384/256 + 16384/128 = 64 + 128 = 192 cycles.
         //
         // This previously charged the child alone (128 cycles), which is the defect that scored
-        // -91.3% against an H100 on the L2->SMEM seam (vx-review#15): the source's delivery rate
+        // -91.3% against an H100 on the L2->SMEM seam: the source's delivery rate
         // was priced at zero.
         let decls = vec![
             mem_bw("Root", None, 256, RatePer::Cycle),
@@ -1188,7 +1188,7 @@ mod tests {
 
     #[test]
     fn containment_hop_matches_the_h100_measurement() {
-        // The measured H100 case, in per-SM B/cyc (vx-review#15, measurements/EDGES.md):
+        // The measured H100 case, in per-SM B/cyc (measurements/EDGES.md):
         // L2 delivers 23 B/cyc to one SM and SMEM absorbs 77, so a 16 KiB tile costs
         // ceil(16384/23) + ceil(16384/77) = 713 + 213 = 926 cycles -> 17.7 B/cyc effective.
         // Hardware measured 16.6 B/cyc on that seam. Pricing SMEM alone would have said

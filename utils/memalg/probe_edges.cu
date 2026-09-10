@@ -1,4 +1,4 @@
-// probe_edges.cu -- the full transfer-edge powerset for the memory algebra (vx-review#15, #22).
+// probe_edges.cu -- the full transfer-edge powerset for the memory algebra (#22).
 //
 // The algebra is a graph whose edges carry bandwidths, and most of those bandwidths are today
 // transcribed from whitepapers and marked UNVERIFIED. This walks EVERY ordered pair over
@@ -6,7 +6,7 @@
 //     { CPU_DRAM, HBM, L2, L1, SMEM, REG }
 //
 // and, for each, either measures it or says why it cannot be measured. NOT scored cells: these
-// measure hardware, so no freeze and no vx-review checkout is involved.
+// measure hardware, so no freeze and no prediction checkout is involved.
 //
 // THE POINT OF THE CLASSIFICATION. Not every pair is an edge. On an NVIDIA part:
 //   * L1 is filled THROUGH L2 -- there is no HBM->L1 path that skips L2, so that cell is a

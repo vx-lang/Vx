@@ -35,7 +35,7 @@ utils/memalg/measure_link
 # M1 device instrument, built on the rented box by run_m1.sh
 utils/memalg/measure_device
 
-# M1 run outputs. Measurements are paper evidence and belong in vx-review next to the predictions
+# M1 run outputs. Measurements are paper evidence and are kept with the paper, next to the predictions
 # they are scored against, copied there deliberately -- not swept into a Vx commit by `git add -A`.
 # Ignoring them also keeps run_m1.sh's own `dirty=` provenance count from counting its own output.
 utils/memalg/results/

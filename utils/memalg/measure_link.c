@@ -1,4 +1,4 @@
-// measure_link.c -- achieved copy bandwidth across a size sweep (vx-review#13, M1 protocol).
+// measure_link.c -- achieved copy bandwidth across a size sweep (M1 protocol).
 //
 // The measurement half of the shakedown. Emits one CSV row per (size, rep-median) so the compare
 // step joins it against the compiler's predictions by byte count.

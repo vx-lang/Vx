@@ -7,7 +7,7 @@
 #
 #===----------------------------------------------------------------------===#
 #
-# Tier-0 protocol shakedown (vx-review#13): predict -> measure -> compare, end to end, on the
+# Tier-0 protocol shakedown: predict -> measure -> compare, end to end, on the
 # machine we already own.
 #
 # The output is an error table for one memory link. Its purpose is NOT data about Apple silicon --

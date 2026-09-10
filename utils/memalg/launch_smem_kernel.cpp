@@ -238,7 +238,7 @@ int main(int argc, char **argv) {
          "host computes\n",
          R * C);
 
-  // The alpha falsifier (vx-review#28): cudaMemcpy H2D and cudaMemcpyPeer both
+  // The alpha falsifier: cudaMemcpy H2D and cudaMemcpyPeer both
   // showed a ~9.78us fixed cost per transfer on two different pods. If that
   // constant is per-DRIVER, a kernel-launch-based transfer shares it; if it is
   // per-MECHANISM, this number differs. The kernel moves 32 bytes total, so a

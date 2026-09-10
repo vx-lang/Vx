@@ -1,4 +1,4 @@
-// measure_m4.mm -- on-die seam instrument for an Apple GPU (vx-review#15, #16, #20).
+// measure_m4.mm -- on-die seam instrument for an Apple GPU (#16, #20).
 //
 // The Metal counterpart of measure_device.cu. It exists because fleet/m4-uma.vx is a HELD-OUT SKU
 // -- 30 frozen cells, never scored -- that also happens to be the development machine, so the whole
@@ -179,7 +179,7 @@ static double median_of(std::vector<double> &v, double *q1, double *q3) {
   return v[v.size() / 2];
 }
 
-/// One declared-number row (vx-review#18), same shape as measure_device.cu's.
+/// One declared-number row, same shape as measure_device.cu's.
 static void fact_row(const char *seam, size_t bytes, const char *unit, double value,
                      const char *note) {
   printf("%s,%zu,%s,%.3f,,,,1,%s\n", seam, bytes, unit, value, note);
@@ -268,7 +268,7 @@ int main() {
 
     printf("seam,bytes,unit,median,q1,q3,derived_rate_GBps,reps,note\n");
 
-    // ---- the declared numbers (vx-review#18) -------------------------------------------------
+    // ---- the declared numbers -------------------------------------------------
     fact_row("device/threadgroup_memory", 0, "B", (double)tg_max,
              "MTLDevice::maxThreadgroupMemoryLength -- the SMEM `capacity:` figure");
     fact_row("device/max_working_set", 0, "B", (double)dev.recommendedMaxWorkingSetSize,

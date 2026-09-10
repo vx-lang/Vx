@@ -405,7 +405,7 @@ mod tests {
         );
     }
 
-    /// The three edge-cost forms (vx-review#10). An edge carries exactly one cost source, so the
+    /// The three edge-cost forms. An edge carries exactly one cost source, so the
     /// grammar has to be able to express "no cost declared" — otherwise a hop whose cost is
     /// derivable from its endpoints' bandwidths has no legal spelling, and every `fleet/` file was
     /// forced to declare a second one (E6013).

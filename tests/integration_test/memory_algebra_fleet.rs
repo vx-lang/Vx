@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// S1 (vx-review#9): staging-synthesis correctness, over the WHOLE fleet rather than hand-picked
+// S1: staging-synthesis correctness, over the WHOLE fleet rather than hand-picked
 // pairs.
 //
 // The calibration study's predictions are per-hop costs along a synthesized route. If synthesis is

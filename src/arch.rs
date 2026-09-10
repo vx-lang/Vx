@@ -34,7 +34,7 @@ pub struct TransferCostGraph {
 
     /// Per-byte time, in attoseconds, for every edge whose cost the model can actually predict.
     ///
-    /// This is what route selection minimises (vx-review#19). An edge absent from this map has no
+    /// This is what route selection minimises. An edge absent from this map has no
     /// predictable cost -- a `Fixed` weight, or a containment hop denominated in cycles that
     /// nothing can compare against a link's seconds -- and routing falls back to preferring routes
     /// that avoid it, then to hop count, rather than inventing a number for it.
@@ -145,7 +145,7 @@ impl EdgeCost {
     ///
     /// No longer the primary routing key. It used to be, on the reasoning that "route choice
     /// happens before a byte count is known, so a size-dependent cost cannot decide it" -- which
-    /// M5 (vx-review#19) showed to be a false premise. Every edge costs `bytes / bandwidth`, a
+    /// M5 showed to be a false premise. Every edge costs `bytes / bandwidth`, a
     /// line through the origin, so the ratio between two routes does not depend on bytes and the
     /// cheapest route can be chosen once, for all sizes, from the per-byte rate alone. Minimising
     /// hops instead picked a route 3.57x slower than one the same graph already contained.
@@ -1088,7 +1088,7 @@ impl TransferCostGraph {
 
     /// The cheapest route from `source` to `target`, and the declared-weight sum along it.
     ///
-    /// Route selection minimises PREDICTED COST, not hop count (vx-review#19). The old objective
+    /// Route selection minimises PREDICTED COST, not hop count. The old objective
     /// was hop count, which is unrelated to time: on a partially-meshed box it took a one-hop SYS
     /// crawl over a two-hop NVLink relay the same graph already contained, 3.57x slower.
     ///
@@ -1117,7 +1117,7 @@ impl TransferCostGraph {
     /// Per-byte rather than for a concrete transfer, so the result is size-independent and a
     /// precomputed all-pairs matrix stays valid: every edge costs `bytes/bandwidth`, a line
     /// through the origin, so the ratio between two routes does not depend on bytes. Adding a
-    /// fixed per-transfer term would break that (vx-review#28).
+    /// fixed per-transfer term would break that.
     pub fn transfer_path(
         &self,
         source: &MemorySpace,
@@ -1261,7 +1261,7 @@ impl TransferCostGraph {
     /// The graph's node set is wider than any one machine file's `Memory` declarations, because
     /// the built-in topology seeds edges of its own. A reachability oracle that enumerates only
     /// the file's spaces is searching a subgraph and will "prove" routes non-minimal that are in
-    /// fact minimal through a space it never looked at (S1, vx-review#9).
+    /// fact minimal through a space it never looked at (S1).
     pub fn nodes(&self) -> Vec<MemorySpace> {
         let mut out: Vec<MemorySpace> = Vec::new();
         let mut keys: Vec<&MemorySpace> = self.transfer_edges.keys().collect();
@@ -1294,7 +1294,7 @@ impl TransferCostGraph {
     ///
     /// `can_transfer` consults the all-pairs matrix and so is true for multi-hop routes too;
     /// this is the single-hop question, which is what "every hop in a synthesized path is a
-    /// declared edge" needs in order to mean anything (S1, vx-review#9).
+    /// declared edge" needs in order to mean anything (S1).
     pub fn has_direct_edge(&self, from: &MemorySpace, to: &MemorySpace) -> bool {
         self.transfer_edges
             .get(from)
@@ -1704,7 +1704,7 @@ mod tests {
 
     #[test]
     fn routing_takes_the_faster_route_not_the_shorter_one() {
-        // M5 (vx-review#19). The shape of a partially-meshed box: A reaches C directly over a slow
+        // M5. The shape of a partially-meshed box: A reaches C directly over a slow
         // link, or in two hops over fast ones. Hop count picks the slow direct edge; cost picks the
         // relay, which is 3.57x faster end to end.
         let desc = TopologyDescriptor {

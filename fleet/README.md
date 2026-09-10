@@ -220,6 +220,6 @@ Known roundings and judgment calls:
 - Transfer costs (the unitless `: N` on an edge) are relative latencies, not measured numbers. They
   no longer decide routing on their own: route selection minimises **predicted cost** — the
   per-byte time from `bandwidth:` or from a link's own `: N GB/s` — and falls back to `: N` only
-  between spaces whose cost nothing can derive (vx-review#19). A route the model can price always
+  between spaces whose cost nothing can derive. A route the model can price always
   beats one it cannot, so an edge with only a `: N` is a gap to close rather than a tuning knob.
   The bandwidth-derived roofline (`bandwidth:`) is what carries physical meaning.

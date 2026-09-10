@@ -12,7 +12,7 @@ it appears:
    time except the device dispatch id baked into the emitted `vx.spawn`.
 
 1. **A first-class runtime value** (added in
-   [#206](https://github.com/hiraditya/Vx/issues/206)). A topology can be stored,
+   [#206](https://github.com/vx-lang/Vx/issues/206)). A topology can be stored,
    passed, compared, and dispatched on at run time — its value is a small integer
    **discriminant**. This is what makes `Vec<Topology>` and value-based device
    dispatch possible.
@@ -184,8 +184,8 @@ Making `Topology::X` a runtime value did **not** disturb placement, because:
 
 - **No nominal value type.** A `Topology` value is an `i32`; the type system does
   not distinguish `Topology` from `i32`. A dedicated nominal enum (unifying with
-  the ADT work in [#111](https://github.com/hiraditya/Vx/issues/111) /
-  [#98](https://github.com/hiraditya/Vx/issues/98)) would give type safety and
+  the ADT work in [#111](https://github.com/vx-lang/Vx/issues/111) /
+  [#98](https://github.com/vx-lang/Vx/issues/98)) would give type safety and
   exhaustiveness at the cost of new codegen.
 - **Parametrized variants: constant indices only.** `NPU[i]` / `AccCore[i]`
   encode a *constant* index into the id (`100 + i`, `200 + i`), so `NPU[0]` and
@@ -213,6 +213,6 @@ Making `Topology::X` a runtime value did **not** disturb placement, because:
 - [`hardware_topology_plan.md`](hardware_topology_plan.md) — placement/context engine
 - [`spawn_on.md`](spawn_on.md) — `spawn on` semantics
 - [`docs/lang/types.md`](lang/types.md) — the type system
-- Issue [#206](https://github.com/hiraditya/Vx/issues/206) — first-class runtime Topology
+- Issue [#206](https://github.com/vx-lang/Vx/issues/206) — first-class runtime Topology
 - Tests: [`tests/optimizations/pass/topology_dispatch.vx`](../tests/optimizations/pass/topology_dispatch.vx),
   [`tests/backend/pass/vec_topology.vx`](../tests/backend/pass/vec_topology.vx)

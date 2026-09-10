@@ -170,7 +170,7 @@ transfer Memory::CPU_DRAM -> Memory::HBM : 31.5 GB/s
 — so the edge had a rate while the endpoint had nothing. The compiler was costing a seam against a
 source it could not describe, and the last line above is the sharper version of the problem: an
 unknown placement *became* the host, silently. Not a wrong number so much as an unasked question,
-which is the class of defect [#329](https://github.com/hiraditya/Vx/issues/329) is about.
+which is the class of defect [#329](https://github.com/vx-lang/Vx/issues/329) is about.
 
 ______________________________________________________________________
 
@@ -321,10 +321,10 @@ ______________________________________________________________________
 ## Open
 
 - **Host-to-device is the only direction implemented.** The reverse still lowers to a host copy
-  ([#339](https://github.com/hiraditya/Vx/issues/339)).
-- **No arm64 host file** yet ([#341](https://github.com/hiraditya/Vx/issues/341)).
+  ([#339](https://github.com/vx-lang/Vx/issues/339)).
+- **No arm64 host file** yet ([#341](https://github.com/vx-lang/Vx/issues/341)).
 - **NUMA is not modelled.** `fleet/xeon-e5-2666v3.vx` flattens two 30 GiB domains into one space;
   `node-8gpu.vx` is the shape that models several memories with edges between them.
 - **The default placement remains.** `src/arch.rs` still resolves an unknown placement to
   `CPUDRAM` in four places. `--host` makes the host declarable; it does not yet make the *default*
-  go away ([#329](https://github.com/hiraditya/Vx/issues/329)).
+  go away ([#329](https://github.com/vx-lang/Vx/issues/329)).

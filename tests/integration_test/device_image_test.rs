@@ -192,11 +192,11 @@ fn a_custom_topology_with_a_declared_arch_gets_a_device_image() {
     );
     // What the image must NOT contain yet, pinned so the day it appears the change is
     // deliberate: no cp.async (nothing emits it -- the fact that falsified
-    // `crossing: streamed`, vx-review#27; raw::async_copy lowers synchronously until
+    // `crossing: streamed`; raw::async_copy lowers synchronously until
     // the nvgpu route exists).
     assert!(
         !image.contains("cp.async"),
-        "nothing emits cp.async today; if this appears, vx-review#26 wants re-scoring"
+        "nothing emits cp.async today; if this appears, the crossing model wants re-scoring"
     );
 }
 

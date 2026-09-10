@@ -188,7 +188,7 @@ pub enum Management {
 }
 
 /// How data physically crosses into a space from its parent, which decides how a multi-hop walk
-/// composes (vx-review#26).
+/// composes.
 ///
 /// Measured on two architectures, and the law tracks this property rather than the machine:
 ///
@@ -270,7 +270,7 @@ pub struct MemoryDecl {
     /// coexist, so the conservative sum should not block them.
     pub overcommit: bool,
     /// `crossing: streamed` -- how data enters this space from its parent, which decides whether a
-    /// walk through it sums its legs or takes the slowest (vx-review#26). Defaults to `sequenced`,
+    /// walk through it sums its legs or takes the slowest. Defaults to `sequenced`,
     /// which is the pre-existing behaviour.
     pub crossing: Crossing,
     pub doc_comment: Option<String>,

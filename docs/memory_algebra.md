@@ -4,9 +4,8 @@ This is the design document for Vx's model of data movement. It is written for s
 never seen the memory algebra before, and it is honest about the parts that turned out to be wrong,
 because most of what we know came from being wrong in a measurable way.
 
-Tracking: [vx-review#23](https://github.com/hiraditya/vx-review/issues/23) (the calibration),
-[Vx#352](https://github.com/hiraditya/Vx/issues/352) (making placement real in emitted code),
-[Vx#353](https://github.com/hiraditya/Vx/issues/353) (the transfer-lowering extension point and
+Tracking: [Vx#352](https://github.com/vx-lang/Vx/issues/352) (making placement real in emitted code),
+[Vx#353](https://github.com/vx-lang/Vx/issues/353) (the transfer-lowering extension point and
 derived traffic).
 
 ______________________________________________________________________
@@ -217,8 +216,8 @@ ______________________________________________________________________
 
 ## 7. Where the model is wrong, measured
 
-Everything here is a residual against a real machine. The instruments and results live in
-`utils/memalg/` and `vx-review/memory-algebra-paper/measurements/`.
+Everything here is a residual against a real machine. The instruments live in `utils/memalg/`. The
+measurements they produced are held with the paper they support, not in this repository.
 
 ### Layer 0: no α
 
@@ -228,7 +227,7 @@ most within ±2%. The compiler's `bytes/β` is off by −98.4% at 4 KiB and −0
 
 The error is entirely a missing constant. Adding it is not free: route selection currently
 minimises per-byte cost, which is only valid because every edge is a line through the origin. With
-α the cheapest route depends on transfer size. (vx-review#28)
+α the cheapest route depends on transfer size.
 
 ### Layer 1: the composition law is unsettled
 
@@ -293,7 +292,7 @@ all, with a reason recorded beside it**. Never a guess, and never a zero standin
 The same review found three miscompiles on the emission side, all reachable from `vxc` on programs
 the checker accepted with zero diagnostics. Details are in
 [`custom_transfer_contract.md`](custom_transfer_contract.md); the backlog it left open is
-[Vx#358](https://github.com/hiraditya/Vx/issues/358). The reason it found what the test suite did
+[Vx#358](https://github.com/vx-lang/Vx/issues/358). The reason it found what the test suite did
 not is that it ran against a different bar: not *does this pass*, but **is there a test that goes
 red if this behaviour is disabled**. Several guards had none, and one had been hard-disabled in the
 working tree while the suite stayed green.
@@ -355,7 +354,7 @@ Roughly in dependency order, what is left:
    and per `spawn` region, per space, per buffer — but as flat records, not as a graph. The
    missing half is the edges: which region produced the bytes another consumes. Without them a
    plan still cannot be named, priced or compared, and "optimisation" stays hand-waving.
-1. **Add α** (vx-review#28), and rework route selection for size-dependent choice.
+1. **Add α**, and rework route selection for size-dependent choice.
 1. **Settle the composition law** once a copy engine is actually exercised. Nothing in the tree
    drives one yet: `raw::async_copy` is declared and gated but lowers to a synchronous element
    copy, so the capability half of §5 is enforced while the choice half remains unexercised.
@@ -370,7 +369,7 @@ Roughly in dependency order, what is left:
    [`discussions/brainstorming/topology_identity_parallel_compilation.md`](discussions/brainstorming/topology_identity_parallel_compilation.md).
    The symbolic tier — `GPU[i]` compared against `GPU[j]` where `i == j` only at run time — is
    parked deliberately; it is a real gap and not the one blocking anything.
-1. **Close the coverage backlog** ([Vx#358](https://github.com/hiraditya/Vx/issues/358)). Several
+1. **Close the coverage backlog** ([Vx#358](https://github.com/vx-lang/Vx/issues/358)). Several
    shipped guards have no test that goes red when the guard is disabled, which is the condition
    under which one of them was found already disabled.
 

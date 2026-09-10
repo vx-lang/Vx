@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Score composition laws against the measured edge powerset (vx-review#16, #20).
+"""Score composition laws against the measured edge powerset (#20).
 
 The algebra composes a multi-hop route by SUMMING its legs. M2 already showed that overstates the
 cost of `HBM->SMEM` by 1/0.60. This asks the next question: what law does fit, scored over every
@@ -21,7 +21,7 @@ can separate them.
 is not passing through the intermediate the label claims, or one of the legs is measuring something
 else. Rows like that are reported as UNSCORABLE rather than scored, because the same arithmetic
 that would give them an error percentage would be comparing two different physical events -- the
-mistake vx-review#22 found in `HBM->L2`.
+mistake found in `HBM->L2`.
 
 Usage:
     python3 utils/memalg/compose.py --probes <path to probes.txt>
@@ -192,7 +192,7 @@ def main():
                 print(
                     "  Shared source side, global destinations: this is the store-issue port, and\n"
                     "  writes posted rather than completed. Fourth defect of this shape in\n"
-                    "  the campaign (see vx-review#22 for the first three)."
+                    "  the campaign."
                 )
 
     print(f"\n== aggregate column: {unit_b} ==")

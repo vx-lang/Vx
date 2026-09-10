@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// M5 (vx-review#19): a topology in which the shortest route and the fastest
+// M5: a topology in which the shortest route and the fastest
 // route are different routes, so the graph's choice can be scored.
 //
 //   python3 utils/memalg/route_choice.py --machine utils/memalg/m5_partial_nvlink.vx \

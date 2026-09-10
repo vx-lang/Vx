@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""M6: one full walk down the hierarchy, predicted per hop (vx-review#20).
+"""M6: one full walk down the hierarchy, predicted per hop.
 
 M1 prices one seam at a time against a log-spaced sweep of square tiles. This prices a whole walk
 -- CPU_DRAM -> HBM -> L2 -> SMEM -- for the tiles a real attention kernel actually moves, and
@@ -269,12 +269,12 @@ def main():
     #     [229,256] f32 = 234,496 B  model refuses, hardware refuses
     #
     # Verified against fleet/h100-sxm.vx on 2026-08-12 for the model's side. The hardware's side is
-    # `device/SMEM_per_block_optin` from measure_device (vx-review#18), which is why that row emits
+    # `device/SMEM_per_block_optin` from measure_device, which is why that row emits
     # both SMEM figures rather than the one the machine files quote. Until it runs this is a
     # prediction from a recalled CUDA constant, not a measurement, and is written down now so that
     # it is on the record before the number that settles it is read.
     print(
-        "\nPre-registered, settled by device/SMEM_per_block_optin (vx-review#18): the fleet files\n"
+        "\nPre-registered, settled by device/SMEM_per_block_optin: the fleet files\n"
         "declare SMEM at the per-SM figure, but `capacity:` is checked against a resident\n"
         "set that lives in one block, and a block cannot opt into the last granule. If that\n"
         "row comes back "
