@@ -10,9 +10,13 @@ import {
 let client: LanguageClient;
 
 export function activate(context: ExtensionContext) {
-	// Path to the vx-analyzer binary
-	// Assuming vx-analyzer is compiled and available in target/debug
-	const serverCommand = '/Users/adityak/go/Vx/target/debug/vx-analyzer';
+	// The vx-analyzer binary: an explicit setting if there is one, otherwise whatever is
+	// on PATH. This was an absolute path to one machine's debug build, so the extension
+	// could never have started the server anywhere else.
+	const configured = workspace.getConfiguration('vx').get<string>('analyzerPath');
+	const serverCommand = configured && configured.trim().length > 0
+		? configured
+		: 'vx-analyzer';
 
 	const serverOptions: ServerOptions = {
 		run: { command: serverCommand },

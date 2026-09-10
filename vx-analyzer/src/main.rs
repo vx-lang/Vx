@@ -8,14 +8,34 @@ use serde_json::Value;
 use std::error::Error;
 use vxc::ide::{AnalysisHost, IdeDiagnostic};
 
-fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
-    let mut log_file = std::fs::OpenOptions::new()
+/// Debug log sink, opt-in via `VX_ANALYZER_LOG=<path>`.
+///
+/// This used to be an unconditional `OpenOptions::open(<an absolute path>).unwrap()`.
+/// `create(true)` makes the file, never its parent directory, so on any machine without
+/// that directory the server panicked before reading its first message.
+fn log_sink() -> Option<std::fs::File> {
+    let path = std::env::var_os("VX_ANALYZER_LOG")?;
+    std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open("/Users/adityak/go/Vx/vx-analyzer/analyzer.log")
-        .unwrap();
-    use std::io::Write;
-    writeln!(log_file, "--- vx-analyzer started (lsp-server) ---").unwrap();
+        .open(path)
+        .ok()
+}
+
+/// Write a line to the sink if there is one. Never fatal: a language server that cannot
+/// write its log must still serve.
+macro_rules! log_line {
+    ($sink:expr, $($arg:tt)*) => {
+        if let Some(f) = $sink.as_mut() {
+            use std::io::Write;
+            let _ = writeln!(f, $($arg)*);
+        }
+    };
+}
+
+fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
+    let mut log_file = log_sink();
+    log_line!(log_file, "--- vx-analyzer started (lsp-server) ---");
 
     let (connection, io_threads) = Connection::stdio();
 
@@ -30,32 +50,28 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     .unwrap();
     let _initialization_params = connection.initialize(server_capabilities)?;
 
-    writeln!(log_file, "Initialized").unwrap();
+    log_line!(log_file, "Initialized");
 
     main_loop(connection)?;
     io_threads.join()?;
 
-    writeln!(log_file, "Shut down").unwrap();
+    log_line!(log_file, "Shut down");
     Ok(())
 }
 
 fn main_loop(connection: Connection) -> Result<(), Box<dyn Error + Sync + Send>> {
-    let mut log_file = std::fs::OpenOptions::new()
-        .append(true)
-        .open("/Users/adityak/go/Vx/vx-analyzer/analyzer.log")
-        .unwrap();
-    use std::io::Write;
+    let mut log_file = log_sink();
 
     let mut host = AnalysisHost::new();
 
     for msg in &connection.receiver {
-        writeln!(log_file, "Received msg: {:?}", msg).unwrap();
+        log_line!(log_file, "Received msg: {:?}", msg);
         match msg {
             Message::Request(req) => {
                 if connection.handle_shutdown(&req)? {
                     return Ok(());
                 }
-                writeln!(log_file, "got request: {:?}", req).unwrap();
+                log_line!(log_file, "got request: {:?}", req);
                 match req.method.as_str() {
                     "textDocument/hover" => {
                         let (id, params) = cast::<lsp_types::request::HoverRequest>(req)?;
@@ -92,7 +108,7 @@ fn main_loop(connection: Connection) -> Result<(), Box<dyn Error + Sync + Send>>
                             result: Some(result),
                             error: None,
                         };
-                        writeln!(log_file, "sending hover response: {:?}", resp).unwrap();
+                        log_line!(log_file, "sending hover response: {:?}", resp);
                         connection.sender.send(Message::Response(resp))?;
                     }
                     "textDocument/definition" => {
@@ -179,10 +195,10 @@ fn main_loop(connection: Connection) -> Result<(), Box<dyn Error + Sync + Send>>
                 }
             }
             Message::Response(_resp) => {
-                writeln!(log_file, "got response: {:?}", _resp).unwrap();
+                log_line!(log_file, "got response: {:?}", _resp);
             }
             Message::Notification(not) => {
-                writeln!(log_file, "got notification: {:?}", not).unwrap();
+                log_line!(log_file, "got notification: {:?}", not);
                 match not.method.as_str() {
                     "textDocument/didOpen" => {
                         let params: DidOpenTextDocumentParams = serde_json::from_value(not.params)?;
