@@ -6,10 +6,13 @@
 
 ______________________________________________________________________
 
-> **This is v0.1.** The language runs real programs, the placement checks are real and tested, and the
-> compiler has run kernels on NVIDIA and Apple hardware. It is also an early research compiler: the
-> syntax is not stable, the standard library is thin, there is no package manager, and several
-> features described in `docs/` are designs rather than code.
+> **This is v0.1.** `vxc` is a cross compiler: the machine it targets is *declared*, not detected —
+> `--host` for the CPU and `--machine fleet/<sku>.vx` for the accelerator — so A100 binaries are
+> built on an x86 EC2 box and shipped to the GPU machine. It reaches the architectures LLVM targets.
+> It has been tested most on a MacBook Air M4 (AArch64 + Apple ANE) and an NVIDIA A100 (x86_64 +
+> CUDA), and the placement and topology checks are well tested on both. It is also an early research
+> compiler: the syntax is not stable, the standard library is thin, there is no package manager, and
+> some features described in `docs/` are yet to be implemented.
 
 ## What Vx is
 
