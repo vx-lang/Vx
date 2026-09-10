@@ -1,74 +1,119 @@
 <div align="center">
-  <h1>Vx Language</h1>
-  <p><b>One Language, Every Core.</b></p>
-  <p>A high-performance systems programming language built from the ground up for heterogeneous computing.</p>
+  <h1>Vx</h1>
+  <p><b>One language, every core.</b></p>
+  <p>A systems programming language whose type system knows which memory a value lives in and which device can reach it.</p>
 </div>
 
 ______________________________________________________________________
 
-## ⚡ What is Vx?
+> **This is v0.1.** The language runs real programs, the placement checks are real and tested, and the
+> compiler has run kernels on NVIDIA and Apple hardware. It is also an early research compiler: the
+> syntax is not stable, the standard library is thin, there is no package manager, and several
+> features described in `docs/` are designs rather than code.
 
-**Vx** (pronounced *"vee-ex"*) is a general-purpose systems programming language designed to unify CPU, GPU, NPU, and accelerator workloads.
+## What Vx is
 
-Historically, leveraging heterogeneous hardware required disjointed toolchains, painful FFI boundaries, and complex vendor-specific frameworks (like CUDA, Metal, or OpenCL). **Vx treats hardware diversity not as a challenge, but as a first-class citizen.** It bridges execution topologies and memory domains under a single, verifiable syntax.
+Vx (pronounced "vee-ex") is a compiled, statically typed systems language for programs that span more
+than one kind of processor: a CPU, a GPU, an NPU, or a second machine. Its one idea is that *where a
+value lives* and *where code runs* belong in the types. A tensor's type carries its element type, its
+shape, and its memory space. A `spawn on(Topology::NPU[0]) { ... }` block runs on a declared device.
+Reading host memory from inside that block is a compile error, with a message naming the space the
+value is in, the spaces the device can see, and the `transfer` that fixes it.
 
-The thesis in one line: **heterogeneity belongs in the type system, not in the runtime.** A host CPU dereferencing an NPU pointer should be a type error, not a segfault.
+Certain machine descriptions are declared in a source file: memory spaces with capacities and bandwidths,
+devices with the spaces they can address, and transfer edges with costs. The compiler checks a
+program against that declaration before anything runs, so "this working set does not fit HBM" or
+"this device cannot see that buffer" is a type error rather than a crash after the hardware has been
+rented.
 
-## Core Philosophy
-
-The language is governed by 7 core tenets:
-
-1. **Heterogeneous Compute**: Address spaces and compute topologies (CPUs, GPUs, NPUs) are first-class primitives. Distributed and parallel computations are expressed natively (e.g., `spawn on(Topology::NPU[0])`).
-1. **Ease of Verified Computation**: Hardware-aware type systems, explicit topologies, and `Verified<T>` wrappers allow programmers to verify computation correctness and data locality.
-1. **High Performance**: Designed for Ahead-Of-Time (AOT) optimizations. The compiler lowers directly to MLIR and LLVM IR for optimal native machine code.
-1. **Deterministic Memory Control**: No mandatory garbage collection. Programmers have control over memory layouts, lifetimes, and pointer arithmetic.
-1. **Zero-Cost Abstractions**: High-level constructs compile down to optimal machine code with no runtime overhead.
-1. **Direct Hardware Access**: CPU/SIMD intrinsics, and memory-mapped I/O through the standard library.
-1. **Strong System Interoperability**: Zero-overhead FFI for *calling into* C — `extern "C"` declarations bind directly to OS and C-ecosystem libraries with no marshalling layer. Exporting Vx functions under the C ABI is not implemented yet.
-
-## Quick Look
-
-In Vx, developers have explicit, type-safe control over where data lives and where code executes:
+## Topology and data-placement simplifies heterogeneous programming
 
 ```rust
-// Multiply two matrices that already live in NPU high-bandwidth memory.
-fn custom_matmul(a : Pinned<Tensor<f32, [4, 4]>, Topology::NPU[0]>,
-                 b : Pinned<Tensor<f32, [4, 4]>, Topology::NPU[0]>)
-    -> Verified<Tensor<f32, [4, 4], Memory::NPU_HBM>> {
-
-    let mut result = Tensor<f32, [4, 4], Memory::NPU_HBM>::uninit();
-
-    // Dispatch the computation to the accelerator.
-    spawn on(Topology::NPU[0]) {
-        for i in 0..4 {
-            for j in 0..4 {
-                result[i][j] = 0.0;
-                for k in 0..4 {
-                    result[i][j] += a[i][k] * b[k][j];
-                }
-            }
-        }
+fn main() -> i32 {
+  let mut a = Tensor<f32, [4, 4]>::uninit();
+  let mut b = Tensor<f32, [4, 4]>::uninit();
+  let mut c = Tensor<f32, [4, 4], Memory::NPU_HBM>::uninit();
+  for i in 0..4 {
+    for j in 0..4 {
+      a[i][j] = 2.0;
+      b[i][j] = 3.0;
     }
-
-    return Verified(result);
+  }
+  let a_npu = transfer(a, Memory::NPU_HBM);
+  let b_npu = transfer(b, Memory::NPU_HBM);
+  spawn on(Topology::NPU[0]) {
+    c = a_npu @ b_npu;
+  }
+  let c_host = transfer(c, Memory::CPU_DRAM);
+  print(c_host[0][0]);
+  return 0;
 }
 ```
 
-A tensor's type carries its element type, its shape and the memory space it lives in. `Pinned<T, Topology>` says a value is resident on a particular device, and `Verified<T>` marks one whose proof
-obligations were discharged.
+```
+$ vxc matmul.vx
+24
+```
 
-Crossing a memory domain requires an explicit `transfer()` **even when the hardware boundary is free** (Apple unified memory, for instance), so data locality is always provable from the source text.
+If you forget to add the first `transfer` (`let a_npu = transfer(a, Memory::NPU_HBM);`), the compiler refuses the program with two errors; the first names
+the fix:
 
-> **Not implemented yet.** `spawn on` is a statement. The design intends it to become an expression
-> yielding a `Future`, so one host thread could fan work out across several accelerators and join
-> them later; there is no future type and no `await` in the language today. See
-> [`docs/spawn_on.md`](docs/spawn_on.md) for that design.
+```
+Error[E6003] at 13:9: 'a' lives in CPU_DRAM but NPU[0] sees only [NPU_HBM];
+insert an explicit transfer to NPU_HBM (cost 50 on the declared path)
+```
 
-______________________________________________________________________
+What produced that `24`, on the two machines it was run on for this release:
 
-## The Machine Is Declared, Not Assumed
+**A Mac (Apple silicon).** The spawn region is dispatched through CoreML, which places an fp32 4×4
+matmul on the CPU. The placement is declared, checked and enforced; the arithmetic ran on the host.
 
-Most compilers hard-code a cost model. Vx reads one. A **machine file** describes the memory hierarchy and interconnect of a real part, and the compiler admits or rejects placements against it:
+**Linux with an NVIDIA A100** (driver 580.126.16, CUDA 12.8). Change the placement to the device
+that is actually there — `Memory::GPU_HBM` and `Topology::GPU[0]` — and, with `VX_DISPATCH_VERBOSE=1`,
+the same program logs:
+
+```
+[Vx CUDA] device 0 stage
+[Vx CUDA] device 0 stage
+[Vx CUDA] device 0 dispatch
+[Vx CUDA] GEMM 4x4x4 f32 -> buffer
+[Vx CUDA] device 0 free
+[Vx CUDA] device 0 free
+24
+```
+
+Each `transfer` into `GPU_HBM` is a `cudaMalloc` and a host-to-device copy, the spawn is a device
+dispatch, the multiply runs as a cuBLAS GEMM on the A100, and the buffers are freed on the device.
+The program as written above, with `NPU_HBM` and `NPU[0]`, also prints `24` on that box and its
+multiply also runs on the A100 — the dispatcher recognises the region as a GEMM and cuBLAS stages the
+operands itself — but its two `transfer`s do not touch device memory, because the CUDA backend owns
+the `GPU` topology and not `NPU`. The declaration is the placement; the compiler holds you to what
+you named, not to what is plugged in. No timings are quoted from either machine.
+
+## What the compiler checks today
+
+These are implemented, have diagnostic codes, and are held by tests:
+
+| Check | Rules out |
+| --- | --- |
+| Address-space visibility (`E6003`) | A device reading a memory space it cannot address; a host reading device memory |
+| Capacity admission (`E6009`, `E6010`) | One tensor larger than its space; a working set that fits tile by tile and not together, with granule rounding |
+| Transfer reachability (`E6002`) | A move between spaces with no declared path |
+| Transfer routing and cost | The cheapest legal route over the declared edges, charged at both ends of a containment hop |
+| Borrow checking | Aliasing and lifetime errors, with region tracking on the default codegen path |
+| Linear types | Use after move of a consumed buffer |
+| Seam contracts | Reading a buffer whose asynchronous `transfer` has not been made visible; obligations are discharged by calling `z3` |
+| Generic calls | The visibility obligation runs after substitution, so a generic device parameter is checked at its instantiation, not its declaration |
+
+A differential suite of six paired programs exercises the visibility and capacity checks against
+CUDA on an A100: the same mistake written both ways, with Vx refusing at compile time what CUDA
+reports at synchronization, at `cudaMalloc`, or as a segmentation fault. A regression test asserts each pair still reaches its claimed verdict.
+
+Two limits on the list. The calculus behind these checks is a design with tests, not a
+soundness theorem. And `grad()` (autodiff through an Enzyme plugin, enabled by `ENZYME_LIB`) is
+present but young: it currently accepts differentiation of a discrete-valued function (#503).
+
+## The machine description of topology and memory
 
 ```rust
 Memory HBM  { capacity: 80 GiB, bandwidth: 3.35 TB/s, managed: explicit, scope: device }
@@ -83,164 +128,144 @@ Topology Device {
 }
 ```
 
-From this the compiler derives, before any binary exists:
+`fleet/` holds twelve such files — A100 (40 and 80 GB), H100, H200, B200, MI300X, an Apple M4, two
+2-GPU nodes, an 8-GPU node, an x86 Xeon as a compute target, and an x86 host — at 8 to 24
+declaration lines each. Each cites
+its sources and marks unverified figures as such. Units are exact integer conversions (`GB` is 10⁹,
+`GiB` is 2³⁰), so a number copied from a vendor sheet means what the sheet meant.
 
-- **Admission** — whether a tensor's working set fits the space it is placed in, with granule rounding. A rejection is as informative as a cost.
-- **Routing** — the cheapest legal path between two spaces, over the declared transfer graph.
-- **Transfer cost** — a roofline over the containment tree. A containment hop is charged at *both* endpoints, because data has to leave the parent as well as enter the child.
-- **Coherence** — `within:` is acyclic, a child never exceeds its parent's capacity, scope narrows going down, and each edge has exactly one cost source.
+The declared model has been checked against hardware for one field on one SKU. The other figures
+carry citations, not measurements. `utils/memalg/` has the instruments; see
+[`docs/memory_algebra.md`](docs/memory_algebra.md).
 
-Units are exact integer conversions, never floats: SI prefixes are decimal (`GB` = 10⁹) and IEC binary (`GiB` = 2³⁰), so a figure copied from a vendor sheet means what the sheet meant.
+## How it compiles
 
-`fleet/` ships 13 machine files — H100, H200, B200, A100, MI300X, Apple M4 UMA, multi-GPU nodes and hosts — each citing its sources and marking unverified figures as such. The model is validated against rented hardware rather than asserted; see [`docs/memory_algebra.md`](docs/memory_algebra.md) and `utils/memalg/` for the measurement instruments.
+**Frontend.** Every symbol, type and monomorphized instantiation is a 256-bit content-hashed
+identifier carried by value in flat arrays. Modules are parsed and type-checked in parallel; the
+generic instantiations that cannot be named by content alone are minted locally and reconciled once
+at a barrier. No lock primitive appears on the frontend path, and a CI lint keeps it that way. The
+emitted MLIR is byte-identical whether the compile runs on one thread, on four, or with the thread
+pool removed entirely; a test asserts this rather than assuming it.
 
-______________________________________________________________________
+**Two codegen paths.** The default lowers the type-checked program to a flat bytecode (a parallel frontend) and emits MLIR
+from that. An older path emits MLIR directly from the AST and is kept as an oracle
+(`--legacy-codegen`). Per function, the default path declines what it cannot yet lower and falls back
+to the oracle; 12 programs in the test corpus currently take that fallback, and 4 do not build on
+the default path at all. Both lists are asserted in a test so that a change in either direction is
+noticed.
 
-## What the Compiler Proves
+**Backends.**
 
-Vx front-loads into type checking a class of bug that normally surfaces as a runtime crash, silent corruption, or an OOM at step 1200:
+| Target | What exists | What has run |
+| --- | --- | --- |
+| CPU, x86-64 and arm64 | MLIR → LLVM IR → native, JIT or object file | Everything in the test suite |
+| NVIDIA GPU | MLIR → NVVM → PTX, shipped in the dispatch payload and loaded by the driver | Fused attention and a disaggregated prefill/decode split, on A100 and H100 |
+| Apple | CoreML dispatch from a native plugin | One f16 512×512 matmul on the Neural Engine, confirmed through the compute-plan API; every fp32 kernel is placed on the CPU by CoreML |
+| Remote | A wire protocol carrying memref descriptors and dispatch payloads to a worker on another machine | An arm64 laptop dispatching to an x86-64 worker over an SSH tunnel |
 
-| Check | What it rules out |
-| --- | --- |
-| **Address-space typing** | Dereferencing a device pointer from the host; a `Pinned<T, NPU_SRAM>` escaping to a host expression |
-| **Borrow checker** | Aliasing and lifetime errors, with variance and region tracking on the flat path |
-| **Linear types** | Use-after-move of a consumed buffer |
-| **Capacity admission** | A placement whose working set cannot fit the space it targets |
-| **Seam contracts** | Reading a buffer whose asynchronous `transfer` has not been made visible — discharged by an SMT prover |
-| **Topology reachability** | A transfer between spaces with no declared path |
-| **Autodiff** | Differentiating through a region whose adjoint is not defined |
+The JIT compiles at `-O0` by default; pass `-O` for `-O3`.
 
-`Verified<T>` marks a value whose computation carried its proof obligations to completion.
+## Known limitations
 
-______________________________________________________________________
+Things a new user will hit, with the issue that tracks each:
 
-## How It Compiles
+- There is no `while` loop. `for` over a range and recursion are what exist (#506).
+- `spawn on` is a statement. The design in [`docs/spawn_on.md`](docs/spawn_on.md) makes it an
+  expression yielding a future; there is no future type and no `await` today.
+- `Ref<T, Memory>` parses and type-checks but has no effect (#507).
+- `Vec` has no destructor; `free()` is manual (#495).
+- An installed toolchain cannot yet find its own runtime library or `mlir-translate` without the
+  source tree on `PATH` (#496, #498). Run from a checkout for now.
+- Item visibility (`pub`) is reserved in the identifier layout and absent from the language (#489).
+- Two standard library modules, `iter` and `tensor`, do not type-check on their own (#487).
+- Of the five directories under `packages/`, four are empty placeholders. `packages/README.md` says so.
+- The Apple backend is tested only on macOS; CI runs on Linux, so 20 tests are gated `REQUIRES: macos`
+  and do not run there.
 
-### A data-oriented parallel frontend
+The full list is the [issue tracker](https://github.com/vx-lang/Vx/issues).
 
-Every symbol, nominal type and monomorphized variant is a flat **256-bit GID** (`[u64; 4]`: module hash, symbol hash, generic context, flags). A nominal type system plus mandatory boxing for recursive types decouples modules, so the pipeline is parallel across cores with no query engine and no lock contention. Compilation walks flat arrays, not pointer-chased trees.
+## Building
 
-The same source compiles to byte-identical MLIR whether it is built serially or in parallel, which is asserted in the test suite rather than hoped for — over 1,000 modules and 16,000 functions, at one thread, at four, and with rayon taken off the path entirely, plus a corpus recompiled in fresh processes so each run gets its own hash seed. The claim is about the MLIR the frontend emits; everything downstream of `mlir-translate` belongs to LLVM.
+You need Rust, LLVM/MLIR 22 with the MLIR C API, `z3` on `PATH` for the seam prover, and `cmake`.
+On macOS, `brew install llvm z3 cmake`; on Debian-family Linux, LLVM 22 from apt.llvm.org and
+`apt install z3 lld`. `setup.sh` locates LLVM and writes `config.local`; the CI workflow in
+`.github/workflows/ci.yml` is the reference for a working Linux install.
 
-### Backends
+```bash
+./setup.sh            # once: finds LLVM, writes config.local
+source config.local   # every shell, before any cargo command
+cargo build --release
+```
 
-| Target | Path |
-| --- | --- |
-| **CPU (x86-64, arm64)** | MLIR → LLVM IR → native, AOT or JIT |
-| **NVIDIA GPU** | MLIR → NVVM → PTX → SASS |
-| **Apple AMX / ANE** | CoreML primitive dispatch via plugin |
-| **Distributed** | Manifest-driven remote regions over a wire protocol |
+## Running
 
-Vendors extend the compiler through **MLIR pass plugins** rather than by patching it; see `src/plugin/`.
+```bash
+# Compile and run under the JIT (the default action)
+./target/release/vxc program.vx
 
-______________________________________________________________________
+# Check and compile against a declared machine
+./target/release/vxc --host default --machine fleet/h100-sxm.vx program.vx -o program
 
-## Repository Layout
+# The admission and cost decisions, as JSON
+./target/release/vxc --host default --machine fleet/h100-sxm.vx program.vx --diagnostics-json out.json
+
+# Look at the MLIR
+./target/release/vxc program.vx --action emit-mlir
+```
+
+## Testing
+
+```bash
+source config.local
+cargo test
+```
+
+About 535 unit tests and 42 integration suites run on every commit through a pre-commit hook. The
+integration suites include the placement fixtures under `tests/frontend`, the codegen fixtures under
+`tests/backend` (FileCheck-style `RUN:` lines), the differential pairs, and the determinism gate.
+Setting `ENZYME_LIB` to a built Enzyme MLIR plugin enables the autodiff tests.
+
+## Repository layout
 
 ```
 src/                  the vxc compiler (Rust)
   lexer, parser/      source → AST
   syntax/             AST, types, topologies, declarations
-  hir/                lowering, type checking, borrow checking
-    check/            transfer, calls, access, autodiff, region traffic
-    memory.rs         the memory algebra: containment, capacity, derived cost
-    seam.rs, prover.rs  asynchronous-visibility contracts, SMT discharge
-    flatten.rs        the flat (AST-annihilated) path
-  codegen/, dialect/  MLIR emission, the Vx dialect and lowering (C++)
-  gid.rs, resolver.rs 256-bit global identifiers, parallel symbol resolution
-  plugin/             vendor MLIR pass plugins
-  jit.rs              JIT execution
-fleet/                machine files: real parts, declared and cited
-runtime/              dispatch and the distributed fleet runtime (C++)
-stdlib/               21 std modules: tensor, simd, io, net, fs, hash_map, …
-packages/             vx_nn, vx_linalg, vx_optim, vx_vision, vx_models
-examples/llama.vx     a full Llama2 inference port
-docs/                 design documents, plans, papers
-utils/memalg/         measurement instruments for validating the cost model
-vx-analyzer/          language server
+  hir/                type checking, borrow checking, the memory algebra, flattening
+  codegen/            MLIR emission for both paths
+  dialect/            the vx MLIR dialect and its two lowering passes (C++)
+  gid.rs              the 256-bit identifier
+  pipeline.rs         the parallel frontend
+  plugin/             vendor dispatch plugins
+  jit.rs              JIT and object emission
+runtime/              dispatch backends (host, CUDA, CoreML) and the remote worker (C++)
+fleet/                twelve machine files, cited
+stdlib/               21 modules: tensor, simd, vec, hash_map, io, fs, net, mmap, math, …
+examples/llama.vx     a Llama 2 forward pass; compiles under the test suite
+docs/                 design documents, some describing work not yet done
+utils/                measurement harnesses for the cost model and the parallel frontend
+vx-analyzer/          language server (diagnostics, hover, go-to-definition)
 vscode-vx/            VS Code extension
-tests/                42 integration suites plus ~535 unit tests
+tests/                the suites listed above
 ```
 
-______________________________________________________________________
-
-## Comparison
-
-| | **PyTorch** | **JAX + XLA** | **Triton** | **Mojo** | **Vx** |
-| --- | --- | --- | --- | --- | --- |
-| **What it is** | Eager tensor library in Python | Functional array language, traced and JIT'd | Python-embedded DSL for single GPU kernels | Python superset for systems + AI | General-purpose systems language |
-| **Scope** | Whole model | Whole program | One kernel — no host program | Whole program | Whole program *and* cluster |
-| **Execution** | Define-by-run; `torch.compile` opt-in | Trace → JAXpr → StableHLO → XLA | JIT per kernel → PTX | AOT/JIT, eager fallback | Strict AOT, regions static |
-| **Hardware model** | Opaque C++ runtime (ATen/CUDA); vendors write heavy FFI | HLO; XLA owns backend lowering | NVIDIA-first; block-level tiles, threads abstracted away | MLIR dialects and passes | **Topologies as types**; vendors ship MLIR pass plugins |
-| **Memory** | Implicit (GC + caching allocator) | Implicit (functional purity, compiler owns buffers) | Explicit *inside* a kernel only | Hybrid: ownership available, implicit allowed | **Explicit type-state**: `Pinned<T, NPU_HBM>` enforced at compile time |
-| **Machine model** | None — the runtime discovers the device | None | None | None | **Declared machine files**; capacity and cost checked at compile time |
-| **Multi-device** | RPC/NCCL libraries bolted on | SPMD first-class (`pmap`, `shard_map`) | Out of scope | Threading and SIMD; distribution not a language feature | `spawn on` and futures are language primitives |
-| **Debuggability** | **Best in class** — `print()`, breakpoints, real stack traces | Hard — tracer errors, opaque intermediates | Hard — kernel-level, limited introspection | Good — Python-familiar, some compile opacity | **Shift-left** — device and memory errors are compile errors |
-
-### Reading the table
-
-**Vx vs PyTorch/JAX** — a different layer entirely. Those treat hardware as *infrastructure*: you write math, and a large runtime figures out how to ship it. Vx treats hardware as *language semantics*. You would not write a research training loop in Vx; you would write the runtime underneath it.
-
-**Vx vs Triton** — Triton is the sharpest tool for one job: making a single fused GPU kernel fast, with thread-level scheduling automated away. It has no host program, no cross-device story, and no type-level memory model. Vx overlaps only at the innermost tile; the rest of Vx is the layer Triton assumes someone else wrote.
-
-**Vx vs Mojo** — the closest comparison. Both lower directly to MLIR and both want one language for CPU plus accelerator. They diverge on legacy: Mojo buys the Python ecosystem and pays for it in dynamic semantics, an object model, and syntax it must honor. Vx drops that entirely — nominal types, flat GID arrays, a lock-free data-oriented frontend. Mojo gives you pointers and SIMD registers to *write* fast code; Vx gives you a type system that makes wrong-device code *unrepresentable*. Mojo has the ecosystem; Vx has the stronger claim on cluster-level correctness.
-
-### Where Vx faces friction: the eager penalty
-
-PyTorch users mutate architecture mid-loop, print a tensor shape, branch on it, and continue. In Vx — AOT, data-oriented, statically regioned — that same dynamism takes real work. **Vx is the right language for the thing that must be correct and fast across ten kinds of silicon. It is not the right language for the thing you are still figuring out.**
-
-______________________________________________________________________
-
-## Usage & Tooling
-
-The Vx compiler (`vxc`) is written in Rust and uses LLVM/MLIR for lowering and execution.
-
-### Building
-
-```bash
-# Generate config.local (only needed once)
-./setup.sh
-
-# Load environment variables — required before any cargo command
-source config.local
-
-cargo build --release
-```
-
-### Running
-
-```bash
-# JIT a script
-cargo run --release --bin vxc -- --run source_file.vx
-
-# AOT compile against a declared machine
-cargo run --release --bin vxc -- --machine fleet/h100-sxm.vx program.vx -o program
-
-# Inspect the admission and cost decisions as JSON
-cargo run --release --bin vxc -- --machine fleet/h100-sxm.vx program.vx --diagnostics-json out.json
-```
-
-### Testing
-
-The suite exercises Apple Silicon AMX (NPU) dispatchers and Enzyme MLIR plugins:
-
-```bash
-source config.local
-export ENZYME_LIB="$(pwd)/.cargo/enzyme/LLVMEnzyme-22.dylib"
-
-cargo test
-```
-
-### Additional tools
+## Tools
 
 | Tool | Purpose |
 | --- | --- |
-| `vx-format` | Canonical source formatter |
-| `vx-opt` | MLIR pass driver for the Vx dialect |
-| `cargo vx-bench` | Benchmark suite that injects timing harnesses into the AST to measure true hardware execution time |
-| `vx-analyzer` | Language server |
-| `vscode-vx` | VS Code extension |
+| `vx-format` | Source formatter; CI checks that `tests/` and `stdlib/` are formatted |
+| `vx-opt` | `mlir-opt`-style driver for the vx dialect passes |
+| `cargo vx-bench` | Benchmark runner |
+| `vx-analyzer` | Language server. Set `VX_ANALYZER_LOG=<path>` for a debug log |
+| `vscode-vx` | VS Code client; set `vx.analyzerPath` if the server is not on `PATH` |
 
-## Roadmap
+## Where this is going
 
-The project is actively building out the language features, the type-checker, and the MLIR optimization pipeline. See [ROADMAP.md](./ROADMAP.md) for completed and upcoming milestones, and [`docs/`](docs/) for design documents.
+[ROADMAP.md](./ROADMAP.md) tracks features against the language's stated goals and marks each done or
+not. [`docs/`](docs/) holds the design documents; several describe things that do not exist yet, and
+they say so at the top when they do. The parallel frontend, the placement checker and the machine
+model are each written up in more depth under `docs/`.
+
+## License
+
+Apache License 2.0 with LLVM Exceptions. See [LICENSE](LICENSE).
