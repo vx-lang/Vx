@@ -19,11 +19,17 @@ not skipped by one of the rules below. To exempt a block deliberately, put
 
 on the line before its fence, ideally with a reason.
 
+The hand-written pages under `www/` are checked as well, through their `<pre><code>` blocks. The
+landing page carries the most-read Vx code on the site and was the only code on it that nothing
+compiled -- everything in the book is covered because the book is markdown. The same skip comment
+works there, on the line before the `<pre>`.
+
 Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 See LICENSE for license information.
 SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 """
 
+import html
 import os
 import re
 import subprocess
@@ -32,6 +38,14 @@ import tempfile
 from pathlib import Path
 
 FENCE = re.compile(r"(?:(<!--\s*vx-doctest:\s*skip.*?-->)\s*\n)?```(vx|rust)\n(.*?)```", re.S)
+
+# The same idea for the hand-written pages: a <pre><code> block, optionally preceded by the skip
+# comment. Their code carries syntax highlighting as <span> tags, which are stripped before the
+# body is compiled.
+HTML_BLOCK = re.compile(
+    r"(?:(<!--\s*vx-doctest:\s*skip.*?-->)\s*\n?\s*)?<pre><code>(.*?)</code></pre>", re.S
+)
+TAG = re.compile(r"<[^>]+>")
 
 # A block has to declare something to be a compilable unit. Bare statements are illustrative
 # fragments and are left alone.
@@ -55,6 +69,18 @@ ELIDED = re.compile(r"(^|\s)\.\.\.(\s|$)|/\*\s*\.\.\.\s*\*/|\$\{|<<")
 
 def blocks(path):
     text = path.read_text()
+
+    if path.suffix == ".html":
+        for m in HTML_BLOCK.finditer(text):
+            skip_marker, body = m.group(1), m.group(2)
+            # Highlighting spans first, then entities -- in that order, or an escaped &lt;span&gt;
+            # shown as literal text in a page about markup would be unescaped into a real tag and
+            # then stripped.
+            body = html.unescape(TAG.sub("", body))
+            line = text[: m.start()].count("\n") + 1
+            yield line, "vx", body, bool(skip_marker)
+        return
+
     for m in FENCE.finditer(text):
         skip_marker, lang, body = m.group(1), m.group(2), m.group(3)
         line = text[: m.start()].count("\n") + 1
@@ -86,7 +112,10 @@ def main():
         files = [Path(a) for a in args]
     else:
         out = subprocess.run(
-            ["git", "ls-files", "*.md"], capture_output=True, text=True, check=True
+            ["git", "ls-files", "*.md", "www/*.html", "www/blog/*.html"],
+            capture_output=True,
+            text=True,
+            check=True,
         ).stdout
         files = [Path(p) for p in out.split() if p]
 
