@@ -68,40 +68,66 @@ HBM, and the link to the host is fifty times slower than HBM itself.</p>
 
 <p>Every one of those numbers is in a vendor datasheet. None of them are in a type.</p>
 
-<p>In C++ all three spaces produce the same thing: <code>float *</code>. A pointer into HBM and a
-pointer into DRAM are the same type, freely assignable, and nothing stops host code from reading
-the first. SYCL inherits address spaces from OpenCL and Kokkos takes memory spaces as template
-parameters, so both can say <em>which region within a device</em> — but neither says <em>which
-device</em>. Two allocations on two different GPUs are indistinguishable to the type system.</p>
+<p>In C++ all three spaces produce the same thing: <code>float *</code>. SYCL and Kokkos type
+<em>which region within a device</em> — registers, scratchpad, DRAM — but neither types <em>which
+device</em>, so two allocations on two GPUs are indistinguishable to the type system.</p>
 
-<p>Kokkos shows how close a library can get before the language stops it.
-<code>SpaceAccessibility&lt;...&gt;::accessible</code> is a compile-time boolean, and the case where
-it is false — the case the compiler has <em>already proven</em> illegal — is specialised to call
-<code>Kokkos::abort</code> at run time. It cannot do better, because where code runs is not part of
-a C++ function's type. A library can only type what a template parameter can carry.</p>
+<p>That is a ceiling rather than an oversight: a library can only type what a template parameter
+carries, and where code runs is not part of a C++ function's type.</p>
 
 <p>So the structure above exists in the hardware, in the documentation, and in the programmer's
 head. The one place it does not exist is the program.</p>
 
 <h2>Putting it in the type</h2>
 
-<p>A tensor's type carries its element type, its shape, <em>and</em> its memory space. A
-<code>spawn on</code> block names the device it runs on. Reading a value the device cannot address
-is a type error:</p>
+<p>A tensor's type carries its element type, its shape, <em>and</em> the memory space it lives in.
+A <code>spawn on</code> block names the device it runs on. Here is a matmul on an accelerator,
+written out in full:</p>
 
-<pre><code><span class="k">let</span> a_npu = <span class="f">transfer</span>(a, <span class="t">Memory</span>::<span class="t">NPU_HBM</span>);
-<span class="k">spawn on</span>(<span class="t">Topology</span>::<span class="t">NPU</span>[<span class="n">0</span>]) {
-    c = a_npu @ b_npu;
+<pre><code><span class="c">// Two matrices already resident in NPU memory.</span>
+<span class="k">fn</span> <span class="f">custom_matmul</span>(
+    a: <span class="t">Pinned</span>&lt;<span class="t">Tensor</span>&lt;<span class="t">f32</span>, [<span class="n">4</span>, <span class="n">4</span>]&gt;, <span class="t">Topology</span>::<span class="t">NPU</span>[<span class="n">0</span>]&gt;,
+    b: <span class="t">Pinned</span>&lt;<span class="t">Tensor</span>&lt;<span class="t">f32</span>, [<span class="n">4</span>, <span class="n">4</span>]&gt;, <span class="t">Topology</span>::<span class="t">NPU</span>[<span class="n">0</span>]&gt;)
+    -&gt; <span class="t">Verified</span>&lt;<span class="t">Tensor</span>&lt;<span class="t">f32</span>, [<span class="n">4</span>, <span class="n">4</span>], <span class="t">Memory</span>::<span class="t">NPU_HBM</span>&gt;&gt; {
+
+    <span class="k">let mut</span> result =
+        <span class="t">Tensor</span>&lt;<span class="t">f32</span>, [<span class="n">4</span>, <span class="n">4</span>], <span class="t">Memory</span>::<span class="t">NPU_HBM</span>&gt;::<span class="f">uninit</span>();
+
+    <span class="c">// Dispatch the computation to the accelerator.</span>
+    <span class="k">spawn on</span>(<span class="t">Topology</span>::<span class="t">NPU</span>[<span class="n">0</span>]) {
+        <span class="k">for</span> i <span class="k">in</span> <span class="n">0</span>..<span class="n">4</span> {
+            <span class="k">for</span> j <span class="k">in</span> <span class="n">0</span>..<span class="n">4</span> {
+                result[i][j] = <span class="n">0.0</span>;
+                <span class="k">for</span> k <span class="k">in</span> <span class="n">0</span>..<span class="n">4</span> {
+                    result[i][j] += a[i][k] * b[k][j];
+                }
+            }
+        }
+    }
+
+    <span class="k">return</span> <span class="t">Verified</span>(result);
 }</code></pre>
 
-<p>Forget the <code>transfer</code> and the compiler says so, naming the space the value is in, the
-spaces the device can see, and the fix:</p>
+<p>Read the signature and the whole placement story is there. <code>Pinned&lt;T,
+Topology::NPU[0]&gt;</code> says both operands already live where the accelerator can reach them, so
+the function cannot be called with a host tensor by accident. The return type says the result is in
+<code>NPU_HBM</code>, so a caller that wants it on the host has to say so. And
+<code>Verified&lt;T&gt;</code> carries the fact that the value has been checked, in the type, rather
+than in a comment.</p>
+
+<p>None of that is a runtime check. It is the signature.</p>
+
+<h2>What happens when the placement is wrong</h2>
+
+<p>Take the same idea and forget one <code>transfer</code>. The compiler names the space the value
+is in, the spaces the device can see, and the fix:</p>
 
 <pre><code>Error[E6003] at 13:9: 'a' lives in CPU_DRAM but NPU[0] sees only [NPU_HBM];
 insert an explicit transfer to NPU_HBM (cost 50 on the declared path)</code></pre>
 
 <p>That last clause — <em>cost 50 on the declared path</em> — is there because the compiler also
-knows what the move costs, over a machine you described to it.</p>
+knows what the move costs, over the machine you described to it. The same declaration that makes
+the error possible is what prices the fix.</p>
 
 <h2>What it checks today</h2>
 
