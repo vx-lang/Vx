@@ -180,7 +180,7 @@ type ::=
     | "*" ( "mut" | "const" ) type
     | "Verified" "<" type ">"
     | "Pinned" "<" type "," topology ">"
-    | "<" number ">" "x" element_type
+    | "<" number "x" element_type ">"          // a SIMD vector, spelled as LLVM spells it
     | "fn" "(" ( type ","? )* ")" "->" type
     | ( "|" ( type ","? )* "|" )? "->" type
     | named_type
