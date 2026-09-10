@@ -250,6 +250,23 @@ impl CompilerDriver {
         if self.options.inputs.is_empty() {
             return Err("No input files provided".to_string());
         }
+        // Only the first input is ever compiled. Say so, rather than dropping the rest in silence
+        // and reporting success on half a program.
+        if self.options.inputs.len() > 1 {
+            let ignored: Vec<String> = self.options.inputs[1..]
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect();
+            return Err(format!(
+                "vxc compiles one file at a time, but {} were given.\n  \
+                 not compiled: {}\n  \
+                 note: modules are composed with `import`, not on the command line. Add an \
+                 `import` for each of them to '{}' and pass only that file.",
+                self.options.inputs.len(),
+                ignored.join(", "),
+                self.options.inputs[0].to_string_lossy(),
+            ));
+        }
 
         let main_file = &self.options.inputs[0];
         let filename = main_file.to_string_lossy().to_string();
