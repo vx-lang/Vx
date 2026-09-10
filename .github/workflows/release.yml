@@ -101,10 +101,16 @@ jobs:
           wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
           sudo dpkg -i cuda-keyring_1.1-1_all.deb
           sudo apt-get update -qq
-          sudo apt-get install -y -qq cuda-cudart-dev-12-6 libcublas-dev-12-6 cuda-driver-dev-12-6
+          # cuda-nvcc is needed for its headers, not for the compiler: cuda_runtime.h pulls in
+          # driver_types.h, which includes <crt/host_defines.h>, and the crt directory ships with
+          # nvcc rather than with cudart. Installing only cuda-cudart-dev gets far enough to find
+          # cuda_runtime.h and then fails compiling against it.
+          sudo apt-get install -y -qq \
+            cuda-cudart-dev-12-6 libcublas-dev-12-6 cuda-driver-dev-12-6 cuda-nvcc-12-6
           # build.rs looks under /usr/local/cuda first.
           test -f /usr/local/cuda/include/cuda_runtime.h || sudo ln -sfn /usr/local/cuda-12.6 /usr/local/cuda
-          ls -l /usr/local/cuda/include/cuda_runtime.h
+          # Both headers, because finding the first and not the second is exactly how this failed.
+          ls -l /usr/local/cuda/include/cuda_runtime.h /usr/local/cuda/include/crt/host_defines.h
 
       - name: Confirm the LLVM major version
         shell: bash
