@@ -7,11 +7,11 @@
 ______________________________________________________________________
 
 > **This is v0.1.** `vxc` is a cross compiler: the machine it targets is *declared*, not detected —
-> `--host` for the CPU and `--machine fleet/<sku>.vx` for the accelerator — so A100 binaries are
-> built on an x86 EC2 box and shipped to the GPU machine. It reaches the architectures LLVM targets.
+> `--host` for the CPU and `--machine fleet/<sku>.vx` for the accelerator — so A100 binaries can be
+> built on an x86 EC2 box and shipped to the GPU machine. It supports the architectures LLVM targets.
 > It has been tested most on a MacBook Air M4 (AArch64 + Apple ANE) and an NVIDIA A100 (x86_64 +
-> CUDA), and the placement and topology checks are well tested on both. It is also an early research
-> compiler: the syntax is not stable, the standard library is thin, there is no package manager, and
+> CUDA); the placement and topology checks are tested on both. It is also an early research
+> compiler: the syntax is mostly stable, the standard library is thin, there is no package manager, and
 > some features described in `docs/` are yet to be implemented.
 
 ## What Vx is
