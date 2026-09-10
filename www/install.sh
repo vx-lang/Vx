@@ -294,20 +294,23 @@ fn main() -> i32 {
 }
 EOF
 
-    if out=$("${VX_HOME}/bin/vxc" --run "$TMP/hello.vx" 2>&1); then
-        :
-    else
-        status=$?
-        # --run propagates the program's own exit code, and this program returns 42.
-        if [ "$status" -ne 42 ]; then
-            say "$out" >&2
-            die "the installed compiler could not run a hello-world program"
-        fi
-    fi
+    # The printed code is the assertion, not vxc's own exit status.
+    #
+    # `--run` returns a program's non-zero exit as a compiler error, so vxc exits non-zero itself
+    # whenever the program does. This program returns 42 deliberately -- it is how we check the
+    # arithmetic actually ran -- so vxc always exits non-zero here and a status check could only
+    # ever report a working install as a broken one.
+    #
+    # Match the line vxc prints on stdout, "exited with code: 42". The error text is worded
+    # "exited with NON-ZERO code: 42" and does not contain that substring, so the two stay apart.
+    out=$("${VX_HOME}/bin/vxc" --run "$TMP/hello.vx" 2>&1) || true
 
     case "$out" in
         *"exited with code: 42"*) say "    ${GRN}ok${R}  compiled and ran a test program" ;;
-        *) say "$out" >&2; die "the installed compiler produced unexpected output" ;;
+        *)
+            say "$out" >&2
+            die "the installed compiler could not run a hello-world program"
+            ;;
     esac
 }
 
