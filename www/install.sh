@@ -14,6 +14,7 @@
 #   VX_VERSION     version to install (default: the latest published release)
 #   VX_HOME        install prefix (default: $HOME/.vx)
 #   VX_NO_MODIFY_PATH=1   skip the shell-profile PATH suggestion
+#   VX_SKIP_CHECKSUM=1    install even if the release publishes no checksum to verify against
 #
 # Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 # See LICENSE for license information.
@@ -166,14 +167,32 @@ resolve_version() {
         return
     fi
     step "Resolving the latest release"
+
+    # stderr is discarded on purpose. This request is allowed to fail -- a repository with no
+    # published release answers 404 -- and curl would otherwise print its own
+    # "(22) The requested URL returned error: 404" before we get a chance to say what that means.
+    _releases_json=$(
+        $DOWNLOAD "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null
+    ) || _releases_json=""
+
     VERSION=$(
-        $DOWNLOAD "https://api.github.com/repos/${REPO}/releases/latest" \
+        printf '%s' "$_releases_json" \
             | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
             | head -1
-    ) || true
+    )
 
-    [ -n "$VERSION" ] || die "could not determine the latest release of ${REPO}.
-    Set VX_VERSION to install a specific one, e.g. VX_VERSION=v0.1.0"
+    [ -n "$VERSION" ] || die "no published release found for ${REPO}.
+
+    This usually means no binary release exists yet, rather than anything being wrong on
+    your machine. Two ways forward:
+
+      Build from source (works today):
+        https://github.com/${REPO}/blob/main/docs/INSTALL.md
+
+      Install a specific version, once one is published:
+        curl -fsSL https://vxlang.org/install.sh | VX_VERSION=v0.1.0 sh
+
+    Published releases are listed at https://github.com/${REPO}/releases"
 }
 
 setup_downloader() {
@@ -224,11 +243,22 @@ do_install() {
     Check that ${VERSION} publishes an artifact for ${TARGET}:
     https://github.com/${REPO}/releases"
 
+    # Every release publishes a .sha256 beside its archive, so a missing one means something is
+    # wrong with the release rather than with this machine. This script is run as `curl | sh`, so
+    # it fails closed rather than installing bytes it could not check.
     expected=$($DOWNLOAD "${BASE_URL}/${ARCHIVE}.sha256" 2>/dev/null | cut -d' ' -f1 || true)
     if [ -n "$expected" ]; then
         verify_checksum "$TMP/$ARCHIVE" "$expected"
+    elif [ -n "${VX_SKIP_CHECKSUM:-}" ]; then
+        warn "no published checksum for ${ARCHIVE}; continuing because VX_SKIP_CHECKSUM is set"
     else
-        warn "no published checksum for ${ARCHIVE}; continuing without verification"
+        die "no published checksum for ${ARCHIVE}.
+
+    Every Vx release publishes ${ARCHIVE}.sha256 next to the archive, so this download
+    could not be verified and has not been installed.
+
+    Check the release page: https://github.com/${REPO}/releases/tag/${VERSION}
+    To install anyway, knowing the archive is unverified: VX_SKIP_CHECKSUM=1"
     fi
 
     step "Unpacking into ${VX_HOME}"
