@@ -50,6 +50,27 @@ fi
 
 echo "LLVM found at: $LLVM_PATH"
 
+# Homebrew's LLVM reports the extra system libraries it needs -- ask it with
+# `llvm-config --system-libs` and it names things like -lzstd and -lxml2. Those libraries live in
+# Homebrew's own lib directory, and macOS does not look there by default. Any crate that hands
+# those flags to the linker then fails with "ld: library 'zstd' not found".
+#
+# Which libraries get named depends on how that particular LLVM was built, so this breaks on one
+# machine and not the next. LLVM 22.1.4 from the `llvm` formula names none; 22.1.8 from `llvm@22`
+# names three. A developer on the first version sees nothing wrong, and CI on the second cannot
+# link at all.
+#
+# Putting the directory on LIBRARY_PATH is enough to fix it, and it costs nothing when the
+# libraries were already findable. Linux packages install theirs where the linker already looks,
+# so there is nothing to add there.
+if [ "$(uname -s)" = "Darwin" ] && command -v brew >/dev/null 2>&1; then
+    BREW_LIB="$(brew --prefix)/lib"
+    LINK_PATH_EXPORT="export LIBRARY_PATH=\"$BREW_LIB\${LIBRARY_PATH:+:\$LIBRARY_PATH}\""
+    echo "Homebrew libraries at: $BREW_LIB"
+else
+    LINK_PATH_EXPORT="# Not a Homebrew machine, so nothing to add: the libraries LLVM asks for are already on the linker's default path."
+fi
+
 # Two separate questions, which this script used to answer as one.
 #
 # CARGO_HOME/RUSTUP_HOME say where cargo keeps its *state*: the registry cache,
@@ -95,6 +116,7 @@ sed -e "s|{{PROJECT_DIR}}|$PROJECT_DIR|g" \
     -e "s|{{RUSTUP_DIR}}|$RUSTUP_DIR|g" \
     -e "s|{{CARGO_BIN}}|$CARGO_BIN|g" \
     -e "s|{{LLVM_PATH}}|$LLVM_PATH|g" \
+    -e "s|{{LINK_PATH_EXPORT}}|$LINK_PATH_EXPORT|g" \
     config.template > config.local
 
 echo "config.local successfully generated! You can now source config.local to load the toolchain environment."

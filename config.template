@@ -14,3 +14,8 @@ export RUSTUP_HOME="{{RUSTUP_DIR}}"
 # rustup installed. Without this, sourcing this file on a machine whose shell rc
 # has not already done the job leaves `cargo` unresolvable.
 export PATH="{{LLVM_PATH}}:{{CARGO_BIN}}:$PATH"
+
+# Where the linker should look for the system libraries LLVM asks to be linked
+# against. On macOS these come from Homebrew, which is not a directory the
+# linker searches on its own. setup.sh explains what goes wrong without it.
+{{LINK_PATH_EXPORT}}
