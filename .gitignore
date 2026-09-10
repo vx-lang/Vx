@@ -57,3 +57,7 @@ utils/memalg/session-*.tgz
 
 # mdBook output for the website (www/book/book). Built by CI, never committed.
 www/book/book/
+
+# Release tarballs staged by scripts/release/package.sh. Build output, not source: a local
+# packaging run leaves a few hundred megabytes here and it must never reach a commit.
+dist/
