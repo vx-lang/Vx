@@ -77,9 +77,16 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           set -euo pipefail
-          brew install llvm@22 z3 ninja cmake pkg-config || brew install llvm z3 ninja cmake pkg-config
+          brew install llvm@22 z3 ninja cmake pkg-config zstd || brew install llvm z3 ninja cmake pkg-config zstd
           prefix=$(brew --prefix llvm@22 2>/dev/null || brew --prefix llvm)
           echo "$prefix/bin" >> "$GITHUB_PATH"
+
+          # LLVM's own link flags include -lzstd, but the only -L the compiler passes is LLVM's
+          # Cellar directory. Homebrew keeps zstd's dylib in its top-level lib, which nothing on
+          # macOS searches by default, so the link failed with "library 'zstd' not found" while
+          # zstd was in fact installed as a dependency of llvm@22. rustc forwards LIBRARY_PATH to
+          # the linker, so naming the prefix here fixes it for every crate in the build.
+          echo "LIBRARY_PATH=$(brew --prefix)/lib${LIBRARY_PATH:+:$LIBRARY_PATH}" >> "$GITHUB_ENV"
 
       - name: Confirm the LLVM major version
         shell: bash
@@ -143,13 +150,17 @@ jobs:
           set -e
           echo "$out"
 
-          # --run propagates the program's exit code, and this program returns 42.
-          if [ "$status" -ne 42 ] && [ "$status" -ne 0 ]; then
-            echo "error: the packaged compiler failed to run a program (exit $status)" >&2
-            exit 1
-          fi
+          # The printed code is the assertion, not vxc's own exit status.
+          #
+          # `--run` treats a program's non-zero exit as a compiler error and returns 1 itself.
+          # That is deliberate: the message wording is fixed because callers parse the code off
+          # the end of it, and the differential harness depends on that. This program returns 42,
+          # so vxc exits 1 every time and a status check here only ever tested the assumption
+          # that it would not.
           echo "$out" | grep -q "exited with code: 42" || {
-            echo "error: unexpected output from the packaged compiler" >&2
+            echo "error: the packaged compiler did not run the program (vxc exit $status)" >&2
+            echo "--- output was:" >&2
+            echo "$out" >&2
             exit 1
           }
 
