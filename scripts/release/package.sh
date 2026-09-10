@@ -46,6 +46,18 @@ case "$os/$arch" in
     *) echo "error: no release target defined for $os/$arch" >&2; exit 1 ;;
 esac
 
+# A CUDA build is a separate toolchain, not a variant of the portable one, and its name has to say
+# so. The dispatch backend links -lcudart, -lcublas and -lcuda and carries an rpath into the build
+# host's toolkit, so this tarball cannot even be loaded on a machine with no CUDA -- it is for
+# NVIDIA hosts and nothing else. The portable tarball keeps the plain triple and runs anywhere.
+#
+# Set by the release workflow on the job that installs the toolkit. Detecting CUDA here instead
+# would make the artifact's name depend on what happened to be installed on the builder, which is
+# how a toolchain ends up named for a machine it cannot run on.
+if [ -n "${VX_TARGET_SUFFIX:-}" ]; then
+    TARGET="${TARGET}${VX_TARGET_SUFFIX}"
+fi
+
 STAGE="$REPO_ROOT/dist/vx-${VERSION}-${TARGET}"
 echo "==> Packaging Vx ${VERSION} for ${TARGET}"
 

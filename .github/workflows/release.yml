@@ -36,6 +36,16 @@ jobs:
             name: macOS arm64
             target: aarch64-apple-darwin
 
+          # A second Linux toolchain, built with the CUDA toolkit present so build.rs produces the
+          # CUDA dispatch backend instead of the portable one. It is a separate download rather than
+          # a variant of the first: the backend links -lcudart, -lcublas and -lcuda, so this tarball
+          # will not load on a machine without CUDA. v0.0.1 shipped only the portable build, which
+          # is why a program declaring Topology::GPU[0] ran on the host even on an A100.
+          - os: ubuntu-22.04
+            name: Linux x86_64 (CUDA)
+            target: x86_64-unknown-linux-gnu-cuda
+            cuda: true
+
     steps:
       - uses: actions/checkout@v4
 
@@ -81,6 +91,21 @@ jobs:
           prefix=$(brew --prefix llvm@22 2>/dev/null || brew --prefix llvm)
           echo "$prefix/bin" >> "$GITHUB_PATH"
 
+      - name: Install the CUDA toolkit (CUDA job only)
+        if: matrix.cuda
+        run: |
+          set -euo pipefail
+          # Headers, libcudart and libcublas are all build.rs looks for; no GPU is involved and
+          # none is available on a runner. The backend decides at run time whether a device is
+          # present, so a toolkit-only build is the correct thing to ship.
+          wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i cuda-keyring_1.1-1_all.deb
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cuda-cudart-dev-12-6 libcublas-dev-12-6 cuda-driver-dev-12-6
+          # build.rs looks under /usr/local/cuda first.
+          test -f /usr/local/cuda/include/cuda_runtime.h || sudo ln -sfn /usr/local/cuda-12.6 /usr/local/cuda
+          ls -l /usr/local/cuda/include/cuda_runtime.h
+
       - name: Confirm the LLVM major version
         shell: bash
         run: |
@@ -107,6 +132,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # The suffix is passed rather than detected, so the artifact is named by the job that
+          # built it and not by whatever happens to be installed on the runner.
+          export VX_TARGET_SUFFIX="${{ matrix.cuda && '-cuda' || '' }}"
           VX_SKIP_BUILD=1 ./scripts/release/package.sh "${{ steps.version.outputs.version }}"
 
       # A tarball that has never been unpacked anywhere but its build directory is not evidence
@@ -222,6 +250,21 @@ jobs:
             echo "note: spawn program exited $spawn_status; linking succeeded, which is what this checks"
           fi
           echo "packaged toolchain links a program containing 'spawn on'"
+
+          # The CUDA job must actually contain the CUDA backend. build.rs falls back to the
+          # portable one whenever it cannot find a toolkit, and that fallback is a warning rather
+          # than an error -- so a failed toolkit install would publish a tarball named -cuda that
+          # dispatches on the host, which is the exact defect this job exists to fix.
+          if [ -n "${{ matrix.cuda && 'yes' || '' }}" ]; then
+            if ls "$prefix"/lib/*cuda_dispatch.* >/dev/null 2>&1; then
+              echo "CUDA toolchain contains $(basename "$(ls "$prefix"/lib/*cuda_dispatch.* | head -1)")"
+            else
+              echo "error: the CUDA toolchain has no CUDA dispatch backend." >&2
+              echo "  build.rs fell back to the portable shim, so the toolkit was not found." >&2
+              ls -l "$prefix"/lib/ >&2
+              exit 1
+            fi
+          fi
 
       - uses: actions/upload-artifact@v4
         with:

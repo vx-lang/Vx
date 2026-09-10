@@ -15,6 +15,7 @@
 #   VX_HOME        install prefix (default: $HOME/.vx)
 #   VX_NO_MODIFY_PATH=1   skip the shell-profile PATH suggestion
 #   VX_SKIP_CHECKSUM=1    install even if the release publishes no checksum to verify against
+#   VX_NO_CUDA=1          take the portable Linux build on a machine that has an NVIDIA driver
 #
 # Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 # See LICENSE for license information.
@@ -49,6 +50,21 @@ need_cmd() {
 
 # ---------------------------------------------------------------- platform --
 
+# Whether this machine has an NVIDIA driver, which is what the CUDA backend needs at run time.
+#
+# ldconfig is asked first because it answers the question that matters -- can a program link
+# against libcuda.so.1 -- rather than whether some NVIDIA software is installed. The explicit
+# paths cover containers whose ldconfig cache is stale or absent, which is common under Docker.
+has_nvidia_driver() {
+    if command -v ldconfig >/dev/null 2>&1 && ldconfig -p 2>/dev/null | grep -q 'libcuda\.so\.1'; then
+        return 0
+    fi
+    for d in /usr/lib/x86_64-linux-gnu /usr/lib64 /usr/lib; do
+        [ -e "$d/libcuda.so.1" ] && return 0
+    done
+    return 1
+}
+
 detect_platform() {
     os=$(uname -s)
     arch=$(uname -m)
@@ -61,6 +77,17 @@ detect_platform() {
         Linux/x86_64)
             TARGET="x86_64-unknown-linux-gnu"
             PLATFORM_NAME="Linux x86_64"
+            # An NVIDIA machine gets the CUDA toolchain, which is a separate build rather than a
+            # variant: its dispatch backend links against the CUDA runtime and will not load
+            # without it, so the portable tarball stays the default for everyone else.
+            #
+            # Keyed on the driver, not the toolkit. A machine with a GPU has libcuda.so.1 from the
+            # driver package; nvidia-smi is a weaker signal, since a GPU-image host without a
+            # device attached still has the binary. VX_NO_CUDA takes the portable build anyway.
+            if [ -z "${VX_NO_CUDA:-}" ] && has_nvidia_driver; then
+                TARGET="x86_64-unknown-linux-gnu-cuda"
+                PLATFORM_NAME="Linux x86_64 (NVIDIA)"
+            fi
             ;;
         Darwin/x86_64)
             die "Intel Macs are not supported.
