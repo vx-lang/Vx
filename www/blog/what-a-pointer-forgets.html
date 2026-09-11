@@ -47,6 +47,10 @@ a 'placement' bug becomes a compile error.</blockquote>
 to use that value safely was known inside the helper, one line before the <code>return</code>.
 Whether any of it survives the return is a property of the language.</p>
 
+<p>On a CPU with one flat address space, a pointer answers &ldquo;where&rdquo; completely: the value
+<em>is</em> the location. Add a second memory that the first cannot address, and the answer stops
+being in the value — and was never in the type.</p>
+
 <h2>The program, in C++</h2>
 
 <p>Here it is the way it is usually written — allocate on the device, copy the host data over,
