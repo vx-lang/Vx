@@ -1,0 +1,45 @@
+//===- 01_residency_across_a_call.vx - Vx Compiler --------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The relation: "this tensor lives in the GPU's memory, not the host's."
+// The boundary: a function return.
+//
+// In C++ both a host buffer and a device buffer are `float *`. The fact that
+// one of them is only addressable from the device is established inside the
+// producer and is gone the moment it returns -- the caller sees a pointer and
+// nothing else. Reading it from the host is a run-time fault, not a compile
+// error.
+//
+// In Vx the memory space is part of the type, so the producer's return type
+// carries the fact across the call, and the caller's read is refused with the
+// two spaces named.
+//
+// Run:
+//   vxc www/book/src/correlation/01_residency_across_a_call.vx
+//
+// Expected:
+//   Error[E6003]: 'kv' lives in GPU_HBM but CPU sees only [CPU_DRAM, NPU_HBM]
+//
+// The repair is one line: transfer it back before reading, which is the code
+// the C++ version also needed and did not get told about.
+//
+//===----------------------------------------------------------------------===//
+
+// The return type is where the relation crosses the boundary.
+fn stage_to_device() -> Tensor<f32, [4, 4], Memory::GPU_HBM> {
+  let host_data : Tensor<f32, [4, 4]> = Tensor<f32, [4, 4]>::new();
+  return transfer(host_data, Memory::GPU_HBM);
+}
+
+fn main() -> i32 {
+  let kv = stage_to_device();
+  // Refused: the host cannot address GPU_HBM. Add
+  //   let home = transfer(kv, Memory::CPU_DRAM);
+  // and read `home` instead.
+  print(kv[0][0]);
+  return 0;
+}

@@ -23,6 +23,7 @@
 
 - [Topologies and memory](heterogeneous.md)
 - [Machine files](machine-files.md)
+- [Carrying facts across boundaries](correlation.md)
 
 # Reference
 

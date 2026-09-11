@@ -1,0 +1,71 @@
+//===- 05_certificate_across_the_launch.vx - Vx Compiler --------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The relation: "this key block sits above the diagonal, so its contribution is
+// masked out." It holds between two of the kernel's arguments, and the host is
+// the only place it is known.
+//
+// A separately compiled kernel cannot be inlined into its caller, so this is
+// where correlation is not weakened but lost. No kernel-local analysis can
+// recover it, however hard it tries: one kernel body can be linked into a host
+// program where the relation holds and into one where it does not, the analysis
+// sees the same body in both, and the only verdict sound for both is "do not
+// optimize". The fact is not underdetermined, it is absent.
+//
+// What is left is to carry it. `--emit-seam-certs` re-materializes each
+// host-proven `assert` at the entry of the kernel body it constrains, as an
+// `llvm.intr.assume` that dominates the guard, so the device backend's -O3 can
+// fold on a relation it could not have derived.
+//
+// Only facts the host already proved are transported, and only into a kernel
+// that names every variable the fact mentions. Break the relation -- call
+// `launch(7, 9, 1.25)` -- and the `assert` aborts the program before the kernel
+// runs, so the assumption the device compiled against is never reached.
+//
+// Run:
+//   vxc www/book/src/correlation/05_certificate_across_the_launch.vx \
+//       --action emit-mlir --emit-seam-certs --legacy-codegen
+//
+// Inside the `vx.spawn` region: the relation's own `arith.cmpi`, the
+// `llvm.intr.assume` on it, then the guard it dominates.
+//
+// `run.sh` takes it further, through `mlir-translate` and `opt -O3`: without
+// the certificate the 256-trip FMA chain survives (fmul 2, fadd 2), with it
+// -O3 folds the guard and deletes the chain (fmul 0, fadd 0). Both versions
+// print the same answer.
+//
+//===----------------------------------------------------------------------===//
+
+fn launch(kblk_start: i32, qblk_end: i32, x: f32) -> f32 {
+  // The host's proof. This is the certificate; everything else is transport.
+  assert(kblk_start > qblk_end);
+
+  let mut out = Tensor<f32, [64]>::uninit();
+  spawn on(Topology::GPU) {
+    // Mask-as-data: the causal condition is no longer a loop constraint, it is
+    // a value. There is no iteration domain left to split.
+    let masked = kblk_start > qblk_end;
+    for i in 0..64 {
+      // Dead whenever `masked` holds, which the kernel alone cannot know.
+      let mut e: f32 = x;
+      for _k in 0..256 {
+        e = e * x + 1.5;
+      }
+      if masked {
+        out[i] = 0.0;
+      } else {
+        out[i] = e;
+      }
+    }
+  };
+  return out[0];
+}
+
+fn main() -> i32 {
+  print(launch(9, 7, 1.25));
+  return 0;
+}

@@ -1,0 +1,62 @@
+//===- 02_working_set_across_a_call.vx - Vx Compiler ------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The relation: "the caller is still holding its 3 MiB tile while the callee
+// places another one." Neither function overflows the 4 MiB space on its own.
+// Only the sum does, and the sum exists only across the call.
+//
+// This is the shape of fact a production interprocedural analysis drops. It is
+// recovered only by inlining, which works by deleting the boundary, so it stops
+// working past the inliner's budget and at recursion.
+//
+// Vx does not inline to get it. Each function exports a summary -- its own peak
+// per memory space, and per call site the bytes still live at that site -- and
+// one whole-program fold over the call graph composes them. Sequential calls
+// compose by max, a tile held across a call composes by +. The parallel
+// frontend is untouched: the summaries are produced per function, in parallel,
+// and folded once afterwards.
+//
+// Run:
+//   vxc www/book/src/correlation/02_working_set_across_a_call.vx
+//
+// Expected:
+//   Error[E6027]: the working set along call path 'main -> stage$i32' in memory
+//   space 'W' peaks at 6291456 bytes, over its 4194304 byte capacity
+//
+// The refusal names the path, not just the function, because the overflow is a
+// property of the path.
+//
+//===----------------------------------------------------------------------===//
+
+Memory CPU_DRAM {}
+Memory W {
+  within: Memory::CPU_DRAM, capacity: 4 MiB, managed: explicit
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::W,
+  visible: [Memory::W],
+  transfer Memory::CPU_DRAM -> Memory::W : 10
+  transfer Memory::W -> Memory::CPU_DRAM : 10
+}
+
+// 3 MiB in W. Fits on its own.
+fn stage<T>(_t: T) -> i32 {
+  let y = Tensor<f32, [1024, 768]>::uninit();
+  let _sy = transfer(y, Memory::W);
+  return 1;
+}
+
+fn main() -> i32 {
+  let x = Tensor<f32, [1024, 768]>::uninit();
+  // `sx` is read after the call, so its 3 MiB is still resident while `stage`
+  // runs. That liveness is what the summary records at the call site.
+  let sx = transfer(x, Memory::W);
+  let r = stage(7);
+  let _back = transfer(sx, Memory::CPU_DRAM);
+  return r;
+}

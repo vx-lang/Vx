@@ -1,0 +1,55 @@
+//===- 03_reachability_across_a_generic_call.vx - Vx Compiler ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The relation: "data can get from topology A to topology B." It holds between
+// two values, not of either one, so it is exactly the kind of fact a
+// non-relational analysis cannot record.
+//
+// The function below is generic over three devices and never names one. It
+// states the relations it needs in its signature -- `where Reachable<A, B>,
+// Reachable<B, C>` -- and each call site discharges them against the declared
+// transfer graph. The relation is written once and checked at every boundary
+// it crosses, instead of being re-derived (or lost) inside each instantiation.
+//
+// Here the second hop is the broken one: `Island` declares memory with no
+// transfer edge into it, so nothing can reach it.
+//
+// Run:
+//   vxc www/book/src/correlation/03_reachability_across_a_generic_call.vx
+//
+// Expected:
+//   Error: unsatisfied `where Reachable<B, C>` in call to 'pipeline':
+//   no transfer path from CPU to Custom("Island")
+//
+// The failing constraint is named. The first hop, GPU -> CPU, is fine and is
+// not reported.
+//
+//===----------------------------------------------------------------------===//
+
+// A device whose memory nothing can reach: no `transfer` edge is declared.
+Topology Island {
+  memory: Memory::IslandRAM
+}
+
+fn pipeline<A: Topology, B: Topology, C: Topology>(
+  a: Pinned<i32, Topology::A>,
+  b: Pinned<i32, Topology::B>,
+  c: Pinned<i32, Topology::C>
+) -> i32
+where Reachable<A, B>, Reachable<B, C>
+{
+  return 0;
+}
+
+fn main() -> i32 {
+  let ga = spawn on(Topology::GPU) { 1 };
+  let cb = spawn on(Topology::CPU) { 2 };
+  let ic = spawn on(Topology::Island) { 3 };
+  // A = GPU, B = CPU, C = Island. GPU -> CPU holds; CPU -> Island does not.
+  pipeline(ga, cb, ic);
+  return 0;
+}

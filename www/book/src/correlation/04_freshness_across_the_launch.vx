@@ -1,0 +1,51 @@
+//===- 04_freshness_across_the_launch.vx - Vx Compiler ----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The relation: "what the consumer reads on the device is what the producer
+// wrote on the host." It relates two values -- the buffer before the copy and
+// the buffer after it -- across a host->device launch, the one boundary no
+// amount of inlining can remove.
+//
+// A relaxed cross-device copy omits the release, so the device may observe a
+// stale buffer. Nothing in the kernel shows this: the parameter looks the same
+// either way. It is the classic heterogeneous-offload bug, and it is silent.
+//
+// Vx turns the consumer's requirement into a boundary obligation and discharges
+// it at the seam with z3. The `assert` inside the spawn is the contract; the
+// pre-scan carries it back to the transfer that produced the buffer, and the
+// solver is asked whether the post-copy state can violate it. `unsat` accepts,
+// `sat` rejects with the counterexample.
+//
+// Run (needs z3 on PATH; seam verification is off by default):
+//   vxc www/book/src/correlation/04_freshness_across_the_launch.vx --verify-seams
+//
+// Expected:
+//   Error[E6004]: relaxed transfer of 'a' across the CPUDRAM -> NPUHBM seam
+//   violates the boundary contract: the buffer carries no synchronizing
+//   release, so a consumer may read it stale
+//   note: z3 counterexample: ((tag_a #b11) (val_a #x0000000000000000))
+//
+// Change `.to_device_relaxed()` to `.to_device()` and the same obligation is
+// discharged `unsat` and the program is admitted.
+//
+//===----------------------------------------------------------------------===//
+
+fn stage(a: Tensor<i32, [4]>) -> i32 {
+  // The `_relaxed` variant is the escape hatch: it drops the release, and with
+  // it the visibility guarantee the consumer below depends on.
+  let local_a = a.to_device_relaxed();
+  spawn on(Topology::NPU[0]) {
+    // The contract. It is what the seam obligation is asked to preserve.
+    assert(local_a[0] == 42);
+  };
+  return 0;
+}
+
+fn main() -> i32 {
+  let t = Tensor<i32, [4]>::uninit();
+  return stage(t);
+}

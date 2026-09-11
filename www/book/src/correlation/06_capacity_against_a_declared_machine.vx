@@ -1,0 +1,40 @@
+//===- 06_capacity_against_a_declared_machine.vx - Vx Compiler --*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The relation: "these bytes fit that memory." It holds between the program and
+// a machine that is not being compiled on, and the boundary it crosses is the
+// one between a source file and a machine model.
+//
+// The usual way to learn this is to rent the GPU and watch the allocation fail.
+// Vx loads the machine as a peer module -- declarations the program never names
+// -- and decides before anything is rented. The program text does not mention
+// a SKU, so the same text answers for every SKU in the fleet.
+//
+// Run:
+//   vxc --host default --machine fleet/a100-40.vx \
+//       www/book/src/correlation/06_capacity_against_a_declared_machine.vx \
+//       --action emit-mlir -o /dev/null
+//
+// Expected:
+//   Error[E6009]: transferred tensor needs 53687091200 bytes but memory space
+//   'HBM' has capacity 42949672960 bytes
+//
+// Swap the flag to `fleet/a100-80.vx` and the same text is admitted. Two SKUs,
+// one program, one line of the command changed.
+//
+// A machine file states its provenance per figure (`spec:`, `measured:`,
+// `policy:`), so the verdict can be traced to what it was computed from and
+// checked against silicon afterwards. See fleet/README.md.
+//
+//===----------------------------------------------------------------------===//
+
+fn main() -> i32 {
+  // 50 GiB of f16: over the 40 GB part, under the 80 GB one.
+  let kv : Tensor<f16, [51200, 524288]> = Tensor<f16, [51200, 524288]>::uninit();
+  let _staged = transfer(kv, Memory::HBM);
+  return 0;
+}
