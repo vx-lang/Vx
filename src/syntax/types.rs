@@ -964,6 +964,11 @@ impl std::fmt::Display for Type {
                         }
                         match d {
                             Dim::Static(syntax::expr::Expr::Number(n)) => write!(f, "{}", n.value)?,
+                            // A named extent prints its name, so a message about a `const N`
+                            // parameter says `N` instead of an anonymous placeholder.
+                            Dim::Static(syntax::expr::Expr::Identifier(id)) => {
+                                write!(f, "{}", id.name)?
+                            }
                             Dim::Static(_) => write!(f, "{{..}}")?,
                             Dim::Dyn => write!(f, "?")?,
                         }

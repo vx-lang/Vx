@@ -1,0 +1,29 @@
+//===- shared_const_dimension_must_agree.vx - Vx Compiler -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `const` dimension named by two parameters says the two arguments have the
+// same extent. Deduction binds `N` from the first argument, and the second one
+// has to agree with that binding rather than silently replace it.
+//
+// The message names the conflict, not just the second argument: which argument
+// bound `N`, to what, and what this one asked for instead.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: Failed to deduce types for generic function 'same_len'
+// CHECK-SAME: 'N' is bound to 4 by argument 1, but argument 2 has extent 7
+
+fn same_len<const N : i32>(a : Tensor<f32, [N]>, b : Tensor<f32, [N]>) -> i32 {
+  return N;
+}
+
+fn main() -> i32 {
+  let x = Tensor<f32, [4]>::uninit();
+  let y = Tensor<f32, [7]>::uninit();
+  // No `N` satisfies both arguments, so there is no instance to call.
+  print(same_len(x, y));
+  return 0;
+}

@@ -645,6 +645,42 @@ impl<'a> TypeChecker<'a> {
         e1 == e2
     }
 
+    /// Bind a dimension name in a pattern (the `N` of `Tensor<f32, [N]>`) to the extent the
+    /// argument supplies. A name that is already bound has to agree: `N` shared by two
+    /// parameters says the two arguments have the same extent, so the second argument cannot
+    /// silently rebind it. This matches what `unify_tensor_elem` and the `Type::Generic` arm
+    /// already do for a shared element type and a shared type variable.
+    fn bind_dim(
+        name: &crate::symbol::Symbol,
+        extent: Type,
+        mapping: &mut std::collections::HashMap<crate::symbol::Symbol, Type>,
+    ) -> bool {
+        if let Some(existing) = mapping.get(name) {
+            return match (Self::extent_of(existing), Self::extent_of(&extent)) {
+                (Some(a), Some(b)) => a == b,
+                _ => *existing == extent,
+            };
+        }
+        mapping.insert(name.clone(), extent);
+        true
+    }
+
+    /// The extent a binding stands for, however it was spelled. Unification binds a dimension
+    /// as a `Type::Generic` holding the extent, while a call that spells the argument out
+    /// (`same_len<4>(x, y)`) binds a `Type::Const` holding the literal. Both mean the same
+    /// extent, so they have to compare equal.
+    pub(crate) fn extent_of(ty: &Type) -> Option<&str> {
+        match ty {
+            Type::Generic(name, _) => Some(name.as_ref()),
+            Type::Const(expr) => match expr.as_ref() {
+                Expr::Number(n) => Some(n.value.as_ref()),
+                Expr::Identifier(id) => Some(id.name.as_ref()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     fn unify_types_internal(
         &mut self,
         generic_ty: &Type,
@@ -678,10 +714,16 @@ impl<'a> TypeChecker<'a> {
                     match (dim1, dim2) {
                         (Dim::Dyn, _) => {}
                         (Dim::Static(Expr::Identifier(id)), Dim::Static(Expr::Number(n))) => {
-                            mapping.insert(id.name.clone(), Type::Generic(n.value.clone(), None));
+                            let extent = Type::Generic(n.value.clone(), None);
+                            if !Self::bind_dim(&id.name, extent, mapping) {
+                                return false;
+                            }
                         }
                         (Dim::Static(Expr::Identifier(id)), Dim::Static(Expr::Identifier(id2))) => {
-                            mapping.insert(id.name.clone(), Type::Generic(id2.name.clone(), None));
+                            let extent = Type::Generic(id2.name.clone(), None);
+                            if !Self::bind_dim(&id.name, extent, mapping) {
+                                return false;
+                            }
                         }
                         (Dim::Static(Expr::Identifier(_)), Dim::Dyn) => return false,
                         _ if dim1 != dim2 => return false,

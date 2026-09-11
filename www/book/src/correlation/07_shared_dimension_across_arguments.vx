@@ -1,0 +1,21 @@
+// A shared `const` dimension across two arguments.
+//
+// `S` named by both parameters is the relation "q and k agree on their sequence
+// length". Deduction binds `S` from the first argument, and the second one has to
+// agree with that binding; there is no `S` that is both 4 and 7, so there is no
+// instance of `scores` to call.
+//
+// Run it:  vxc www/book/src/correlation/07_shared_dimension_across_arguments.vx
+
+fn scores<const S : i32>(q : Tensor<f32, [S]>, k : Tensor<f32, [S]>) -> i32 {
+  return S;
+}
+
+fn main() -> i32 {
+  let q = Tensor<f32, [4]>::uninit();
+  // A different sequence length. Nothing in either type says so on its own -- only
+  // the two together, against the parameter list that names `S` twice.
+  let k = Tensor<f32, [7]>::uninit();
+  print(scores(q, k));
+  return 0;
+}

@@ -1,0 +1,35 @@
+//===- shared_const_dimension_agrees.vx - Vx Compiler -----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The other half of `shared_const_dimension_must_agree.vx`: requiring the two
+// arguments to agree must not reject the calls that do agree. Three ways of
+// arriving at the same binding are all accepted here -- two concrete arguments,
+// a caller forwarding its own `const` dimension, and a call that spells the
+// dimension out.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s
+// The three calls print their binding on one line.
+// CHECK: 444
+
+fn same_len<const N : i32>(a : Tensor<f32, [N]>, b : Tensor<f32, [N]>) -> i32 {
+  return N;
+}
+
+// `M` is not yet a number here. It reaches `same_len` as a name, and the two
+// arguments agree because they name the same one.
+fn forward<const M : i32>(p : Tensor<f32, [M]>, q : Tensor<f32, [M]>) -> i32 {
+  return same_len(p, q);
+}
+
+fn main() -> i32 {
+  let x = Tensor<f32, [4]>::uninit();
+  let y = Tensor<f32, [4]>::uninit();
+  print(same_len(x, y));
+  print(forward(x, y));
+  print(same_len<4>(x, y));
+  return 0;
+}

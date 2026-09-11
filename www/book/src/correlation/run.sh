@@ -107,6 +107,18 @@ else
   fail=1
 fi
 
+rule "07  a shared dimension across two arguments"
+"$VXC" "$HERE/07_shared_dimension_across_arguments.vx" >"$TMP/07" 2>&1
+expect "'S' is bound to 4 by argument 1, but argument 2 has extent 7" "$TMP/07"
+# The same text with both arguments at [4] is admitted, and prints the binding.
+sed 's/\[7\]/[4]/g' "$HERE/07_shared_dimension_across_arguments.vx" >"$TMP/07ok.vx"
+if "$VXC" "$TMP/07ok.vx" >"$TMP/07ok" 2>&1 && grep -q '^4$' "$TMP/07ok"; then
+  echo "  both arguments at [4]: admitted, S = 4"
+else
+  echo "  -> MISSING: two agreeing arguments should be admitted" >&2
+  fail=1
+fi
+
 echo
 if [ "$fail" -eq 0 ]; then
   echo "all examples behaved as documented"

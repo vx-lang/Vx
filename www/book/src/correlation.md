@@ -19,9 +19,9 @@ verdict, and the only verdict sound for both is "do not optimize". The fact is n
 underdetermined; it is absent.
 
 So the question is not how to re-derive a relation on the far side of a boundary. It is
-how to **carry** it. The six programs below are the ways Vx does that today. Each one is
-a program the compiler refuses, or compiles into code that carries the fact onward, and
-each names the boundary it is about.
+how to **carry** it. The seven programs below are the ways Vx does that today. Each one
+is a program the compiler refuses, or compiles into code that carries the fact onward,
+and each names the boundary it is about.
 
 | | Boundary | The relation | Elsewhere | In Vx |
 |---|---|---|---|---|
@@ -31,15 +31,16 @@ each names the boundary it is about.
 | 4 | a host→device launch | what the device reads is what the host wrote | a relaxed copy drops the release silently; the kernel looks identical | the consumer's `assert` becomes a seam obligation, discharged by z3 — `E6004` |
 | 5 | a host→device launch | this key block is above the diagonal, so its work is dead | no carrier: `-O3` keeps the chain, and provably cannot do otherwise | the host's proof is re-materialized in the kernel as `llvm.intr.assume`, and `-O3` folds |
 | 6 | source ↔ machine model | these bytes fit that memory | learned by renting the GPU and watching the allocation fail | the SKU loads as a peer module; one program text, a flag per SKU — `E6009` |
+| 7 | a generic call site | these two tensors agree on a dimension | discovered by a tracer at trace time and dropped at lowering | a `const` name used twice is one binding, and the second argument has to agree with it |
 
 ## The two kinds
 
-**Refusing** (1, 2, 3, 4, 6). The relation is the premise of a correctness check.
+**Refusing** (1, 2, 3, 4, 6, 7). The relation is the premise of a correctness check.
 Losing it does not make the program slower; it makes the compiler agree to something it
 cannot support: a host read of device memory, a working set that does not fit, a
 transfer with no path, a buffer that may be read stale, a tile that does not fit the
-part it will be rented on. Every one of these is refused on a laptop, before a machine
-is booked.
+part it will be rented on, a pair of tensors computed against different extents. Every
+one of these is refused on a laptop, before a machine is booked.
 
 **Licensing** (5). The relation is the premise of an optimization. Nothing is wrong
 with the program; there is work in it that is dead, and only the host knows so. The
@@ -234,26 +235,47 @@ kernel is ever reached, so the assumption the device compiled against is never l
 Nothing here re-derives a relation on the far side. The fact is proved once, where it is
 known, and moved forward.
 
-## Not yet carried
+## 7. A shared dimension across two arguments
 
-A shared dimension between two parameters — `fn scores<const S: i32>(q: Tensor<f32, [S, D]>,
-k: Tensor<f32, [S, D]>)` — reads as the relation "`q` and `k` agree on `S`", and today it is
-not checked: `S` binds from the first argument and is silently rebound by the second, so a
-`[4]` and a `[7]` are accepted together. Concrete extents are checked (`E3003`); it is the
-relation between two generic ones that is not. This is the same relation a framework tracer
-discovers at trace time and drops at lowering, and it belongs on this page once the
-checker keeps it.
+A `const` name used by two parameters is the relation "these two tensors agree on this
+dimension" — `q` and `k` on a sequence length, an operand pair on a contraction. It is
+the relation a framework tracer discovers at trace time and drops at lowering, and
+neither argument's own type says anything about it.
+
+```rust
+fn scores<const S: i32>(q: Tensor<f32, [S]>, k: Tensor<f32, [S]>) -> i32 {
+  return S;
+}
+
+fn main() -> i32 {
+  let q = Tensor<f32, [4]>::uninit();
+  let k = Tensor<f32, [7]>::uninit();   // a different sequence length
+  print(scores(q, k));
+  return 0;
+}
+```
+
+```
+Error: Failed to deduce types for generic function 'scores': Expected Tensor<f32, [S]>,
+got Tensor<f32, [7]>; 'S' is bound to 4 by argument 1, but argument 2 has extent 7
+```
+
+Deduction binds `S` once, from the first argument, and every later argument is checked
+against that binding rather than replacing it. So the refusal is about the call as a
+whole — there is no `S` that satisfies both — and the message names the conflict rather
+than one argument: which argument bound `S`, to what, and what this one asked for
+instead.
 
 ## Running them
 
-The six programs live next to this page, with a script that runs each one and checks its
-verdict:
+The seven programs live next to this page, with a script that runs each one and checks
+its verdict:
 
 ```bash
 ./www/book/src/correlation/run.sh
 ```
 
-A clean run is one where the compiler says "no" five times for five different reasons,
+A clean run is one where the compiler says "no" six times for six different reasons,
 and folds the FMA chain once. Example 4 needs `z3` and is skipped without it; the `-O3`
 comparison in example 5 needs `mlir-translate` and `opt` from the same LLVM as the
 build.

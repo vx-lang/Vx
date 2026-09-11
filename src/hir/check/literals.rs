@@ -261,6 +261,52 @@ impl<'a> TypeChecker<'a> {
         String::new()
     }
 
+    /// A note when a dimension name shared by two parameters met two different extents. The
+    /// useful message names the conflict rather than one argument, so it says which argument
+    /// bound the name and what this one asked for instead.
+    pub(crate) fn dim_conflict_note(
+        param: &Type,
+        arg: &Type,
+        mapping: &HashMap<crate::symbol::Symbol, Type>,
+        bound_by: &HashMap<crate::symbol::Symbol, usize>,
+        arg_index: usize,
+    ) -> String {
+        let (Some((_, pd, _)), Some((_, ad, _))) =
+            (Self::as_tensor_operand(param), Self::as_tensor_operand(arg))
+        else {
+            return String::new();
+        };
+        for (p, a) in pd.iter().zip(ad.iter()) {
+            let crate::syntax::Dim::Static(crate::syntax::Expr::Identifier(id)) = p else {
+                continue;
+            };
+            let Some(bound) = mapping.get(&id.name).and_then(Self::extent_of) else {
+                continue;
+            };
+            // What this argument puts in that position: an extent, or another dimension name.
+            let actual = match a {
+                crate::syntax::Dim::Static(crate::syntax::Expr::Number(n)) => n.value.clone(),
+                crate::syntax::Dim::Static(crate::syntax::Expr::Identifier(id2)) => {
+                    id2.name.clone()
+                }
+                _ => continue,
+            };
+            if bound == actual.as_ref() {
+                continue;
+            }
+            let bound_where = match bound_by.get(&id.name) {
+                Some(earlier) => format!("argument {earlier}"),
+                None => "an explicit generic argument".to_string(),
+            };
+            return format!(
+                "; '{}' is bound to {bound} by {bound_where}, but argument {arg_index} has \
+                 extent {actual}",
+                id.name
+            );
+        }
+        String::new()
+    }
+
     /// The element type of any tensor operand, static or dynamic, under the checker-level
     /// wrappers. `as_tensor_operand` answers only for a statically shaped tensor, because it
     /// hands back the dimensions; a caller that needs to know *whether* it has a tensor, or only

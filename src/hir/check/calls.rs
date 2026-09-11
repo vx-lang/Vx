@@ -1046,20 +1046,32 @@ impl<'a> TypeChecker<'a> {
                     mapping.insert(param.name().into(), explicit_generic_args[i].clone());
                 }
             }
+            // Which argument first bound each generic name, so a later conflict can say where
+            // the binding came from. Names the call spelled out explicitly stay out of the map,
+            // because no argument bound them.
+            let explicit: Vec<crate::symbol::Symbol> = mapping.keys().cloned().collect();
+            let mut bound_by: HashMap<crate::symbol::Symbol, usize> = HashMap::new();
             for (i, _arg) in args.iter().enumerate() {
                 let arg_ty = arg_types[i].clone();
                 let param_ty = &generic_func.params[i].1;
                 if !self.unify_types(param_ty, &arg_ty, &mut mapping) {
                     if !self.speculating {
                         self.errors.push(format!(
-                            "Failed to deduce types for generic function '{}': Expected {}, got {}{}",
+                            "Failed to deduce types for generic function '{}': Expected {}, got {}{}{}",
                             name,
                             param_ty,
                             arg_ty,
-                            Self::const_extent_note(param_ty, &arg_ty)
+                            Self::const_extent_note(param_ty, &arg_ty),
+                            Self::dim_conflict_note(param_ty, &arg_ty, &mapping, &bound_by, i + 1)
                         ));
                     }
                     success = false;
+                } else {
+                    for bound_name in mapping.keys() {
+                        if !bound_by.contains_key(bound_name) && !explicit.contains(bound_name) {
+                            bound_by.insert(bound_name.clone(), i + 1);
+                        }
+                    }
                 }
             }
             // Deduce return-only variables (a topology `D` in `-> Pinned<T, D>`, or a
