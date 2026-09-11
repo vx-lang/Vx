@@ -5,8 +5,16 @@
   <link href="https://vxlang.org/blog/feed.xml" rel="self"/>
   <link href="https://vxlang.org/blog/"/>
   <id>https://vxlang.org/blog/</id>
-  <updated>2026-09-10T00:00:00Z</updated>
+  <updated>2026-09-10T18:00:00Z</updated>
   <author><name>Aditya</name></author>
+
+  <entry>
+    <title>What a pointer forgets</title>
+    <link href="https://vxlang.org/blog/what-a-pointer-forgets.html"/>
+    <id>https://vxlang.org/blog/what-a-pointer-forgets.html</id>
+    <updated>2026-09-10T18:00:00Z</updated>
+    <summary>A function stages a tensor to the GPU and returns it. In C++ the return type is float * and the fact is gone at the boundary. In Vx the memory space is part of the type, so the return type carries it.</summary>
+  </entry>
 
   <entry>
     <title>Vx 0.0.1: placement in the type system</title>

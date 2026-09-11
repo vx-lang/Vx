@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>What a pointer forgets</title>
+<meta name="description" content="A function stages a tensor to the GPU and returns it. In C++ the return type is float* and the fact is gone. In Vx the memory space is in the type, so the boundary carries it.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+
+<meta property="og:title" content="What a pointer forgets">
+<meta property="og:description" content="A function stages a tensor to the GPU and returns it. In C++ the return type is float* and the fact is gone. In Vx the memory space is in the type.">
+<meta property="og:type" content="article">
+<meta property="og:url" content="https://vxlang.org/blog/what-a-pointer-forgets.html">
+<meta name="twitter:card" content="summary_large_image">
+
+<link rel="alternate" type="application/atom+xml" title="Vx" href="/blog/feed.xml">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header class="nav">
+  <a class="brand" href="/">
+    <span class="mark">Vx</span>
+  </a>
+  <nav>
+    <a href="/docs/getting-started.html">Install</a>
+    <a href="/docs/tour.html">Language tour</a>
+    <a href="/docs/">Docs</a>
+    <a href="/blog/">Blog</a>
+    <a href="https://github.com/vx-lang/Vx">GitHub</a>
+  </nav>
+</header>
+
+<main>
+
+<article class="post">
+
+<h1>What a pointer forgets</h1>
+<p class="post-meta">10 September 2026</p>
+
+<blockquote class="tldr"><strong>TL;DR</strong> — a <code>float *</code> cannot tell host memory
+from device memory. That is a hole in the type system, and no amount of
+analysis closes it across a compilation boundary. Vx puts the memory space <em>in the type</em>, so
+a 'placement' bug becomes a compile error.</blockquote>
+
+<p class="lede">A helper stages a tensor onto the GPU and hands it back. Everything the caller needs
+to use that value safely was known inside the helper, one line before the <code>return</code>.
+Whether any of it survives the return is a property of the language.</p>
+
+<h2>The program, in C++</h2>
+
+<p>Here it is the way it is usually written — allocate on the device, copy the host data over,
+return the pointer:</p>
+
+<pre><code><span class="t">float</span> *<span class="f">stage_to_device</span>() {
+    <span class="t">float</span> *host_data = <span class="k">new</span> <span class="t">float</span>[<span class="n">16</span>];
+    <span class="t">float</span> *d;
+    <span class="f">cudaMalloc</span>(&amp;d, <span class="n">16</span> * <span class="k">sizeof</span>(<span class="t">float</span>));
+    <span class="f">cudaMemcpy</span>(d, host_data, <span class="n">16</span> * <span class="k">sizeof</span>(<span class="t">float</span>), cudaMemcpyHostToDevice);
+    <span class="k">return</span> d;
+}
+
+<span class="t">int</span> <span class="f">main</span>() {
+    <span class="t">float</span> *kv = <span class="f">stage_to_device</span>();
+    <span class="f">printf</span>(<span class="n">"%f\n"</span>, kv[<span class="n">0</span>]);   <span class="c">// compiles. faults at run time.</span>
+}</code></pre>
+
+<p>That last line reads GPU memory from the host thread. It compiles clean, at any warning level,
+and faults when you run it. The question this post is about is whether anything could have stopped
+it.</p>
+
+<h2>The fact dies at the <code>return</code></h2>
+
+<p>Inside <code>stage_to_device</code> the compiler has everything you would want it to have:
+<code>d</code> came from <code>cudaMalloc</code>, it is device memory, it is not addressable from
+the host. At the <code>return</code> statement all of it is discarded, because the return type is
+<code>float *</code> and <code>float *</code> has room for exactly one fact — the element type.</p>
+
+<p>A host buffer and a device buffer are the same type. They are mutually assignable, and the read
+in <code>main</code> is a well-formed C++ expression.</p>
+
+<h2>Why a better analysis does not fix this</h2>
+
+<p>It is tempting to say an interprocedural pass should catch it. Here the fact is out of reach for
+a reason that survives any amount of analysis effort.</p>
+
+<p>One definition of <code>stage_to_device</code> can be linked into a program whose caller has a
+device context, and into one whose caller does not. Compile it separately — into a shared library,
+or behind a kernel launch — and the analysis sees one body and must return <strong>one verdict
+covering every caller</strong>. The only verdict sound for all of them is the conservative one.</p>
+
+<p>Inlining is the one mechanism that crosses a scope, and it works by deleting the boundary. It
+gives up in three places:</p>
+
+<ul>
+<li>at the inliner's budget;</li>
+<li>at an opaque framework op;</li>
+<li><strong>completely</strong>, at a separately compiled launch, which cannot be inlined at all.</li>
+</ul>
+
+<p>So the fact is not <em>underdetermined</em> at the boundary. It is <strong>absent</strong>.
+Recovering it is not the job. Carrying it is.</p>
+
+<h2>In Vx, the return type carries it</h2>
+
+<p>The same program, nine lines, with the whole point in the first one:</p>
+
+<pre><code><span class="k">fn</span> <span class="f">stage_to_device</span>() -&gt; <span class="t">Tensor</span>&lt;<span class="t">f32</span>, [<span class="n">4</span>, <span class="n">4</span>], <span class="t">Memory</span>::<span class="t">GPU_HBM</span>&gt; {
+  <span class="k">let</span> host_data : <span class="t">Tensor</span>&lt;<span class="t">f32</span>, [<span class="n">4</span>, <span class="n">4</span>]&gt; = <span class="t">Tensor</span>&lt;<span class="t">f32</span>, [<span class="n">4</span>, <span class="n">4</span>]&gt;::<span class="f">new</span>();
+  <span class="k">return</span> <span class="f">transfer</span>(host_data, <span class="t">Memory</span>::<span class="t">GPU_HBM</span>);
+}
+
+<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+  <span class="k">let</span> kv = <span class="f">stage_to_device</span>();
+  <span class="f">print</span>(kv[<span class="n">0</span>][<span class="n">0</span>]);
+  <span class="k">return</span> <span class="n">0</span>;
+}</code></pre>
+
+<p>The memory space sits in the type right next to the element type and the shape:</p>
+
+<pre><code><span class="t">Tensor</span>&lt;<span class="t">f32</span>, [<span class="n">4</span>, <span class="n">4</span>], <span class="t">Memory</span>::<span class="t">GPU_HBM</span>&gt;   &#8800;   <span class="t">Tensor</span>&lt;<span class="t">f32</span>, [<span class="n">4</span>, <span class="n">4</span>]&gt;</code></pre>
+
+<p>Two different types. The signature states residency as part of the contract, so the caller's read
+is refused:</p>
+
+<pre><code>Error[E6003] at 43:9: 'kv' lives in GPU_HBM but CPU sees only [CPU_DRAM, NPU_HBM];
+insert an explicit transfer to CPU_DRAM (cost 50 on the declared path)</code></pre>
+
+<p>The diagnostic names the space the value is in, the spaces the reader can address, and the
+repair. It arrives on a laptop with no GPU attached, because the machine Vx checks against is a
+declared file rather than the box the compiler happens to be running on.</p>
+
+<h2>The repair is one line</h2>
+
+<pre><code>  <span class="k">let</span> kv = <span class="f">stage_to_device</span>();
+  <span class="k">let</span> home = <span class="f">transfer</span>(kv, <span class="t">Memory</span>::<span class="t">CPU_DRAM</span>);
+  <span class="f">print</span>(home[<span class="n">0</span>][<span class="n">0</span>]);</code></pre>
+
+<p>That compiles, and the <code>transfer</code> survives into the emitted MLIR as a real operation
+rather than an assumption:</p>
+
+<pre><code>%0 = call @stage_to_device() : () -&gt; memref&lt;4x4xf32&gt;
+%1 = "vx.transfer"(%0) &lt;{target_topology = 0 : i32}&gt; : (memref&lt;4x4xf32&gt;) -&gt; memref&lt;4x4xf32&gt;</code></pre>
+
+<p>This is the copy the C++ version also needed. It did not get told about it, and it is the same
+line either way — the difference is which day you write it, and whether you are paying for a rented
+GPU while you work out why the numbers are wrong.</p>
+
+<p>One more thing the diagnostic knew:</p>
+
+<blockquote><code>cost 50 on the declared path</code></blockquote>
+
+<p>The same machine file that lets the compiler <em>refuse</em> the read is the file that
+<em>prices</em> the repair.</p>
+
+<h2>Six boundaries, five refusals</h2>
+
+<p>Residency across a function return is one case. The repository ships six, each about a different
+relation and a different place programs normally lose it:</p>
+
+<table>
+<tr><th>Boundary</th><th>The relation carried across it</th></tr>
+<tr><td>A function return</td><td>This tensor lives in the GPU's memory (<code>E6003</code>)</td></tr>
+<tr><td>A call</td><td>The caller still holds 3 MiB while the callee places its own (<code>E6027</code>)</td></tr>
+<tr><td>A generic call site</td><td>Data can get from device A to device B — <code>where Reachable&lt;A, B&gt;</code></td></tr>
+<tr><td>A host→device launch</td><td>What the device reads is what the host wrote (<code>E6004</code>, discharged by z3)</td></tr>
+<tr><td>A host→device launch</td><td>This block is above the diagonal, so its work is dead — and <code>-O3</code> can act on it</td></tr>
+<tr><td>Source ↔ machine model</td><td>These bytes fit that memory (<code>E6009</code>)</td></tr>
+</table>
+
+<p>Five of them are refusals. The fifth, the launch that carries a proof, is the other kind: nothing is wrong with the program, but
+the host has proved something the device compiler cannot see, so the proof is re-materialized inside
+the kernel as <code>llvm.intr.assume</code> and a 256-trip FMA chain that <code>-O3</code> otherwise
+has to keep disappears. Both versions print the same answer.</p>
+
+<p class="post-foot">All six are written up in
+<a href="/docs/correlation.html">Carrying facts across boundaries</a>, with the code, the verdict
+the compiler gives, and a script that runs them. Vx is Apache 2.0 with the LLVM exception —
+<a href="/docs/getting-started.html">install it</a>, or read the
+<a href="/docs/heterogeneous.html">heterogeneous model</a> for how placement and reachability are
+checked.</p>
+
+</article>
+
+</main>
+
+<footer>
+  <p>Vx is Apache 2.0 with the LLVM exception. <a href="https://github.com/vx-lang/Vx">Source</a>.</p>
+</footer>
+
+</body>
+</html>

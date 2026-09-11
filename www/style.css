@@ -480,6 +480,20 @@ footer { border-top: 1px solid var(--border-soft); padding: 2.5rem 0 3.5rem; }
   color: var(--fg-muted);
 }
 
+/* The summary box at the top of a post: a blockquote that carries the accent. */
+.post blockquote.tldr {
+  border-left-color: var(--accent);
+  color: var(--fg);
+  background: var(--bg-raised);
+  padding: 0.9rem 1.1rem;
+  border-radius: 0 4px 4px 0;
+}
+
+.post blockquote.tldr strong {
+  color: var(--accent);
+  letter-spacing: 0.04em;
+}
+
 .post table {
   width: 100%;
   border-collapse: collapse;
