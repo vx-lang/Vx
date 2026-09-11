@@ -373,6 +373,16 @@ footer { border-top: 1px solid var(--border-soft); padding: 2.5rem 0 3.5rem; }
 .foot-nav a { color: var(--fg-muted); }
 .foot-nav a:hover { color: var(--fg); text-decoration: none; }
 
+/* The blog pages put a single line in the footer with no .foot-inner wrapper.
+   footer itself sets no width, so without this the line sits flush against the
+   left edge of the viewport. The measure matches .post so the two line up. */
+footer > p {
+  width: min(46rem, 100% - 3rem);
+  margin-inline: auto;
+  font-size: 0.86rem;
+  color: var(--fg-faint);
+}
+
 /* ------------------------------------------------------------ responsive - */
 
 @media (max-width: 860px) {
