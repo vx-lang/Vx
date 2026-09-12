@@ -60,6 +60,23 @@
 // value is not emitted" instead of "this program was rejected". Hence the
 // transfer home below.
 //
+// And the RUN line below is not run as written. Files in THIS directory -- and
+// only this one -- get `--legacy-codegen` injected, because these fixtures pin
+// the AST codegen's MLIR structure (`run_optimization_test`, which is the sole
+// caller passing force_legacy; the backend and frontend runners pass false). So
+// what is checked here is the AST path, and `// REQUIRES: flat-codegen` is the
+// opt-out. A fixture elsewhere in tests/ is not overridden and should not pin a
+// path defensively as though it were.
+//
+// Which makes one wildcard above load-bearing in a way worth stating. The size
+// operand is an immediate on the default path, `i64 16`, and an SSA value on the
+// injected one, `i64 %20`. Written as the literal it plainly is, this fixture
+// would be green locally and red in CI. `i64 {{.*}}` spans both -- but a
+// wildcard that absorbs a real difference between paths looks exactly like one
+// that is merely tolerant, and which it is only becomes visible when the paths
+// diverge somewhere nobody was looking. The two operands this file is actually
+// about are literals for that reason.
+//
 // RUN: vxc %s --action emit-llvm 2>/dev/null | ${MLIR_TRANSLATE_PATH:-mlir-translate} --mlir-to-llvmir | FileCheck %s
 //
 // CHECK: declare ptr @vx_plugin_alloc_and_transfer(i64, ptr, i32, i32)
