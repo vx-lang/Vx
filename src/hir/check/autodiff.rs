@@ -14,11 +14,50 @@
 use super::super::*;
 
 impl<'a> TypeChecker<'a> {
+    /// The element type a differentiable value is made of. `None` for a type autodiff has no
+    /// shape for at all, such as a struct or a pointer.
+    fn differentiable_elem(ty: &Type) -> Option<&ElementType> {
+        match ty {
+            Type::Tensor(e, _, _) | Type::Scalar(e) | Type::Simd(e, _) => Some(e),
+            _ => None,
+        }
+    }
+
+    /// Whether values of this element type have a derivative. An integer or a bool takes
+    /// separated values, so between any two of them there is no limit to take. A generic
+    /// element is not decided here -- it is checked once it has been substituted.
+    fn is_continuous(e: &ElementType) -> bool {
+        e.is_float() || matches!(e, ElementType::Generic(_))
+    }
+
+    /// Whether `func` can be differentiated at all, checked at the `grad`/`vjp`/`jvp` call.
+    ///
+    /// A derivative needs both ends continuous: the result, and the value it is taken with
+    /// respect to. The value differentiated is the first parameter -- a later one is an
+    /// ordinary argument the function also takes, an index or a count, and it may be discrete.
     pub(crate) fn check_differentiability(&mut self, func: &Function) {
-        match &func.return_type {
-            Type::Tensor(_, _, _) | Type::Scalar(_) | Type::Simd(_, _) => {}
-            _ => {
+        match Self::differentiable_elem(&func.return_type) {
+            None => {
                 self.errors.push(format!("Function '{}' cannot be differentiated because it returns a non-continuous type: {:?}", func.name, func.return_type));
+            }
+            Some(e) if !Self::is_continuous(e) => {
+                self.errors.push(format!(
+                    "Function '{}' cannot be differentiated because it returns the discrete \
+                     type {}",
+                    func.name, e
+                ));
+            }
+            Some(_) => {}
+        }
+        if let Some((param_name, param_ty)) = func.params.first() {
+            if let Some(e) = Self::differentiable_elem(param_ty) {
+                if !Self::is_continuous(e) {
+                    self.errors.push(format!(
+                        "Function '{}' cannot be differentiated with respect to its first \
+                         parameter: '{}' is the discrete type {}",
+                        func.name, param_name, e
+                    ));
+                }
             }
         }
     }

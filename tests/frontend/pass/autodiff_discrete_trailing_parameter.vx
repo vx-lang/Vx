@@ -1,0 +1,27 @@
+//===- autodiff_discrete_trailing_parameter.vx - Vx Compiler ----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The other side of the discreteness rule: it is about the value the derivative
+// is taken with respect to, not about every parameter. `scaled` is differentiated
+// with respect to `x`, which is continuous; `n` is a count it also happens to
+// take, and a count is a perfectly ordinary thing for a differentiable function
+// to be given.
+//
+// Rejecting this would outlaw the common shape of a float-valued function that
+// also carries an index or a loop bound.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: func.func @scaled
+
+fn scaled(x : f32, n : i32) -> f32 {
+  return x * 2.0;
+}
+
+fn main() -> i32 {
+  let d = grad(scaled, 3.0, 4);
+  return 0;
+}

@@ -1,0 +1,31 @@
+//===- autodiff_discrete_return.vx - Vx Compiler ----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A function whose result is discrete has no derivative: between any two values
+// it takes there is no limit to take. Differentiating one is refused at the call.
+//
+// The shape of the function body does not matter here -- this one is a step, but
+// an `i32`-returning function that varies smoothly would be refused just the same,
+// because the refusal is about the type rather than the arithmetic.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: 'discrete_func' cannot be differentiated
+// CHECK-SAME: returns the discrete type i32
+
+fn discrete_func(x : f32) -> i32 {
+  if x > 0.0 {
+    return 1;
+  } else {
+    return 0;
+  }
+}
+
+fn main() -> i32 {
+  let x : f32 = 2.0;
+  let dx = grad(discrete_func, x);
+  return 0;
+}

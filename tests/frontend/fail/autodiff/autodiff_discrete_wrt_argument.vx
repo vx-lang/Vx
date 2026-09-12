@@ -1,0 +1,26 @@
+//===- autodiff_discrete_wrt_argument.vx - Vx Compiler ----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A derivative needs both ends continuous. The result of `step_count` is `f32`,
+// so the return side is fine, but the value the derivative is taken with respect
+// to is an `i32` -- there is no direction to move it in.
+//
+// The companion pass fixture shows the case this must NOT reject: a discrete
+// parameter that is not the one being differentiated.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: 'step_count' cannot be differentiated
+// CHECK-SAME: 'n' is the discrete type i32
+
+fn step_count(n : i32) -> f32 {
+  return 1.0;
+}
+
+fn main() -> i32 {
+  let dx = grad(step_count, 3);
+  return 0;
+}

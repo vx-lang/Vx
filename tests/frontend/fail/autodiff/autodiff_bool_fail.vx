@@ -1,5 +1,19 @@
 //===- autodiff_bool_fail.vx --------------------------------------------===//
+// A `bool`-returning function has no derivative, and differentiating one is
+// refused at the call.
+//
+// The file is named for that rule but did not test it: its only CHECK was the
+// E3001 on the `let`, which fires because a `bool` result cannot initialize an
+// `f32` and would fire whether or not autodiff said anything. The rule itself
+// was unimplemented -- `bool` is a scalar, and the old check asked only whether
+// the return type was a scalar shape, not whether its values are continuous.
+//
+// Both errors are asserted now, the autodiff one first, so the file cannot go
+// back to passing on the initializer alone.
+//
 // RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: 'compute_val' cannot be differentiated
+// CHECK-SAME: returns the discrete type bool
 // CHECK: E3001{{.*}}'df' is declared f32 but its initializer is bool
 
 fn compute_val(x : f32) -> bool {
@@ -9,8 +23,6 @@ fn compute_val(x : f32) -> bool {
 fn main() -> i32 {
   let x : f32 = 4.0;
 
-  // EXPECT: Function 'compute_val' cannot be differentiated because it returns
-  // a non-continuous type
   let df : f32 = grad(compute_val, x);
 
   return 0;

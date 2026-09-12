@@ -82,11 +82,19 @@ installing it.
 
 ## Limits worth knowing
 
-**A function must be differentiable to be differentiated.** Differentiating something with a
-discrete result — an integer comparison, a branch on equality — is not meaningful. Vx does not yet
-reject every such case: `grad` of a discrete-valued function is currently accepted rather than
-refused, which is [Vx#503](https://github.com/vx-lang/Vx/issues/503). Until that is fixed, the
-compiler will not stop you asking for a derivative that does not exist.
+**A function must be differentiable to be differentiated.** A derivative needs both ends
+continuous, and the compiler checks both at the call:
+
+- the **result**. An `i32`, a `bool`, a tensor of integers — these take separated values, so
+  between any two of them there is no limit to take.
+- the **value it is taken with respect to**, which is the first parameter, for the same reason.
+
+```
+Error: Function 'discrete_func' cannot be differentiated because it returns the discrete type i32
+```
+
+A *later* parameter may be discrete. A function of an `f32` that also takes an index or a loop
+count is an ordinary thing to differentiate, and only the first argument is the one being moved.
 
 ## Where to next
 
