@@ -279,10 +279,10 @@ $ scripts/provision/bootstrap_dev_pod.sh -h root@<pod> -p <port> -i ~/.ssh/<key>
 $ cd /root/bundle && ulimit -s 524288 && ./run_flash_bench.sh -q 8192 -d 64
 ```
 
-### The one mistake the laptop does not catch
+### The mistake this chapter's own machine model allows
 
-Everything else in this chapter fails on a laptop. This one does not, and it is worth the space
-because it is the exception to the chapter's whole claim.
+Everything else here fails on a laptop. This one does not, and it is worth the space because the
+reason is the declaration rather than the compiler.
 
 Drop the `let o_home = transfer(o, Memory::CPU_DRAM);` line and print `o` directly. On a machine
 with no device the program is fine: the fallback never moved `o` anywhere, so `print` reads host
@@ -303,17 +303,40 @@ Backtrace [
 Program was killed by signal 6
 ```
 
-`o` is a device handle, and `print` dereferences it on the host. This is the mirror image of the
-error the chapter praised earlier — a host reading device memory instead of a device reading host
-memory — and the compiler does not refuse it. It should: `E6003` exists for exactly this
-direction, and here the program gets a segfault at run time on the rented machine instead of a
-diagnostic on the laptop.
+`o` is a device handle, and `print` dereferences it on the host.
 
-So the claim this chapter makes needs one qualification. Placement errors *into* a region are
-compile errors. A placement error on the way *out* of one is not yet, which makes the host
-fallback an imperfect rehearsal: it cannot fail on a transfer it never performed. Until that gap
-closes, transfer device-resident results home before reading them, and treat a clean laptop run as
-evidence about the arithmetic rather than about the placement.
+The compiler has a rule for exactly this, and it did not fire. Add one attribute to the `GPU_HBM`
+declaration at the top of the program — `managed: explicit` — and the same mistake is refused
+before anything runs, by plain `vxc flash.vx` with no flags:
+
+```
+Error[E6003]: `print` reads its argument on CPU, which sees only [CPU_DRAM, NPU_HBM],
+but the value lives in GPU_HBM; bring it home first with `transfer(.., Memory::CPU_DRAM)`
+```
+
+`managed:` is what says whether the host may read a space. `explicit` means it may not, and the
+visibility rule applies. Left out, or written `cached`, the space is one the host is allowed to
+read, and the checker is right not to complain. The declaration in this chapter never claimed the
+host was locked out of `GPU_HBM`, so nothing was violated.
+
+What is wrong is underneath: the runtime never consults `managed` at all. A space stages to the
+device through `cudaMalloc` whichever way it was declared, so a space declared host-readable is
+allocated host-unreadable, and the segfault lives in that gap. The declaration is checked against
+the program and not against the backend.
+
+> This is not an exotic corner. `fleet/a100-80.vx` declares the A100's HBM `managed: explicit`,
+> which is correct. Every GPU program in this repository that actually *runs* — the benches in
+> `scripts/campaigns/flash/`, the placed tests, and this chapter — declares it host-readable
+> instead, because that is what lets the host fallback stand in for the device on a laptop. The
+> model that runs and the model that is accurate are not the same model, and this class of bug
+> lives in the difference.
+
+So: `managed: explicit` buys the compile-time refusal and costs the laptop rehearsal — with it,
+`vxc` will not compile this kernel on a machine with no CUDA backend, because falling back to the
+host would dereference device memory, and it says so rather than doing it. That refusal is the
+correct behaviour and it is the same rule, seen from the other side. Until the runtime honours
+`managed`, transfer device-resident results home before reading them, and treat a clean laptop run
+as evidence about the arithmetic rather than about the placement.
 
 ## Shared memory, and the two refusals
 

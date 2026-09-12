@@ -10,18 +10,22 @@
 # Times the fused flash-attention forward from flash_attention_bench.vx across
 # sequence lengths, and says plainly where it ran (#348, #251).
 #
-# The headline is not the time. It is that `spawn on(Topology::GPU)` places this
-# kernel, transfers Q/K/V/O into GPU_HBM, and then runs the arithmetic on the
-# host, because only `kind=matmul` routes to cuBLAS and a fused online-softmax
-# loop nest is not a GEMM. The script asserts that rather than assuming it: it
-# greps the trace for the refusal, and it counts GEMM dispatches, which must be
-# zero. A future kernel-emission path (#251) would change both, and the same
-# script would then be measuring a GPU.
+# The headline is not the time. It is where the kernel ran, which the script
+# asserts rather than assumes: it greps the trace, counts GEMM dispatches (which
+# must be zero, since only `kind=matmul` routes to cuBLAS and a fused
+# online-softmax nest is not a GEMM), and prints a verdict either way. That
+# verdict used to read "refused, running on the host". Since the emission path
+# (#251) landed it reads "ran from its own device image", and at SQ=8192 the
+# launch is 64 blocks x 128 threads.
 #
-# Cost per unit of work comes from the slope. Only the sequence length K varies,
-# so the work scales linearly in it while the output tensor -- and therefore the
-# printing, the compilation and the process startup -- stays fixed and lands in
-# the intercept.
+# DO NOT quote the slope below as a kernel time. Cost per unit of work comes
+# from how total wall time grows with K, which was the only instrument available
+# before there was a device image to time. It attributes all of that growth to
+# the kernel, and the host-side loops that fill K and V grow with K too -- at
+# -O0 they dominate. Measured against CUDA events on an A100 the slope was 25x
+# high: 46.9 GFLOP/s reported for a kernel the events put at 1154. Use
+# `VX_TIME_KERNEL=1` for a kernel number and read the slope as an upper bound on
+# the whole program.
 #
 # Usage, from the bundle directory on the pod:
 #   ./run_flash_bench.sh [-q rows] [-d head_dim] [-k "512 1024 2048 4096"]
@@ -231,12 +235,16 @@ awk -F, -v sq="$SQ" -v hd="$HD" -v where="$WHERE" '
     b = (sy - m*sx) / n
     printf "  fixed cost (compile, JIT, print): %.2f s\n", b
     printf "  per unit of K:                    %.4f ms\n", m*1000
-    printf "\n  %-8s %12s %14s\n", "K", "kernel (s)", "GFLOP/s"
+    printf "\n  %-8s %12s %14s\n", "K", "program (s)", "GFLOP/s"
     for (i = 1; i <= n; i++) {
       kern = m * x[i]
       gf = 4.0 * sq * x[i] * hd / 1e9
       printf "  %-8d %12.3f %14.2f\n", x[i], kern, (kern > 0 ? gf/kern : 0)
     }
+    printf "\n  These are PROGRAM times, not kernel times: the host-side loops that\n"
+    printf "  fill K and V grow with K as well, and at -O0 they dominate. On an A100\n"
+    printf "  this column read 46.9 GFLOP/s for a kernel CUDA events put at 1154.\n"
+    printf "  Re-run one shape with VX_TIME_KERNEL=1 for the kernel itself.\n"
     printf "\n  A resident cuBLAS SGEMM on this device reaches 16223 GFLOP/s.\n"
     if (where == "host")
       printf "  This kernel is not on the device at all, which is the gap #251 closes.\n"

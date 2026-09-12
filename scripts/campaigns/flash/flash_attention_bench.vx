@@ -19,14 +19,15 @@
 // emission path launches the compiler's own kernel image:
 //
 //   [Vx CUDA] device 0 stage      x4
-//   [Vx CUDA] vx_npu_kernel_0 ran on GPU 0 from its own image (28 params)
+//   [Vx CUDA] vx_npu_kernel_0 ran on GPU 0 from its own image
+//     (28 params, 64x128 threads)
 //
-// -- as one thread, because the outliner emits a serial loop nest and a wide
-// launch of it would race. So a GPU number from this file prices the emission
-// path working, not the device's parallelism; the distance to cuBLAS is now
-// parallelism, not placement. On a box with no device the same file is the
-// CPU baseline (host JIT at -O0, which the log states plainly), and the two
-// are directly comparable because the kernel body is identical.
+// -- and it goes wide: the frontend's disjointness proof is cashed in as
+// blocks x threads, so SQ=8192 launches 64 blocks of 128, three resident per
+// SM. Measured there at 3.72 ms by CUDA event timing. On a box with no device
+// the same file is the CPU baseline (host JIT at -O0, which the log states
+// plainly), and the two are directly comparable because the kernel body is
+// identical.
 //
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // CHECK: vx.transfer
