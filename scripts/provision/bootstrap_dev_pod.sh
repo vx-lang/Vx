@@ -140,9 +140,9 @@ say "building vxc and libvx_std_core"
 say "assembling the bench bundle"
 "${SSH[@]}" "set -e; cd '$REMOTE'
   ln -sfn '$TARGET' target
-  B='$REMOTE/../bundle'; mkdir -p \"\$B/scripts/templates\"
+  B='$REMOTE/../bundle'; mkdir -p \"\$B\"
   cp scripts/campaigns/flash/run_flash_bench.sh \"\$B/\"
-  cp scripts/campaigns/flash/flash_attention_bench.vx \"\$B/scripts/templates/\"
+  cp scripts/campaigns/flash/flash_attention_bench.vx \"\$B/\"
   ln -sfn '$REMOTE/stdlib' \"\$B/stdlib\"
   ln -sfn '$REMOTE/tests'  \"\$B/tests\"
   ln -sfn '$TARGET'        \"\$B/target\"
@@ -162,7 +162,7 @@ say "smoke test"
 "${SSH[@]}" "cd '$REMOTE/../bundle' && . ./env.sh && ulimit -s 524288
   sed -e 's/__VX_SQ__/128/g' -e 's/__VX_SK__/512/g' -e 's/__VX_HD__/64/g' \
       -e 's/__VX_TILE__/64/g' -e 's/__VX_NT__/8/g' -e 's/__VX_BENCH_NOTE__/bootstrap smoke/' \
-      scripts/campaigns/flash/flash_attention_bench.vx > /tmp/smoke.vx
+      flash_attention_bench.vx > /tmp/smoke.vx
   VX_DISPATCH_VERBOSE=1 ./vxc /tmp/smoke.vx --run 2>&1 \
     | grep -E 'Vx CUDA|SIGSEGV' | sed 's/^/  /'
   # 0.01*(512-1)/2 = 2.555, the closed form the bench checks at every size.

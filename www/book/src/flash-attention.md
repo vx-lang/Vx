@@ -4,11 +4,14 @@ This chapter writes a fused attention forward pass and runs it on an NVIDIA A100
 tiled, keeps a running softmax, and never materializes the score matrix — the FlashAttention
 shape.
 
-The point of the chapter is not the kernel. It is *where the mistakes happen*. Every error in the
-sections below is reported by `vxc` on a laptop, before any hardware is rented: a tile that does
-not fit on chip, a buffer the device cannot address, a shared-memory race that no barrier can
-order. Those are the failures that normally cost an afternoon of `cuda-memcheck` on a machine
-billed by the hour. Here they cost a rebuild.
+The point of the chapter is not the kernel. It is *where the mistakes happen*. Nearly every error
+below is reported by `vxc` on a laptop, before any hardware is rented: a tile that does not fit on
+chip, a buffer the device cannot address, a shared-memory race that no barrier can order. Those
+are the failures that normally cost an afternoon of `cuda-memcheck` on a machine billed by the
+hour. Here they cost a rebuild.
+
+One of them is not caught, and it gets a section of its own rather than a footnote, because an
+exception to this claim is more useful to a reader than the claim is.
 
 Only one section needs a GPU, and by the time it arrives the program is already known to compute
 the right answer.
@@ -182,16 +185,19 @@ fn main() -> i32 {
     }
   }
 
-  print(o);
+  let o_home = transfer(o, Memory::CPU_DRAM);
+  print(o_home);
   return 0;
 }
 ```
 
-Two things in that program are placement rather than arithmetic. The four `transfer` calls move
+Three things in that program are placement rather than arithmetic. The four `transfer` calls move
 the operands into `GPU_HBM`, and each one is checked against the space's capacity and charged a
 cost derived from its declared bandwidth. The `spawn on(Topology::GPU)` block is the region that
 will become a device kernel; reading `q_h` instead of `q` inside it is a compile error naming the
-space the value is in and the transfer that fixes it.
+space the value is in and the transfer that fixes it. And the last `transfer` brings the output
+back to `CPU_DRAM` so that `print` can read it — the section after next is about what happens
+when that line is missing.
 
 ### The mistake this section is really about
 
@@ -237,18 +243,27 @@ the dispatch payload for the driver to load. The default chip is `sm_80`, which 
 `VX_GPU_CHIP` overrides it.
 
 ```console
-$ VX_DISPATCH_VERBOSE=1 ./vxc flash.vx
-[Vx CUDA] device 0 stage
-[Vx CUDA] device 0 stage
-[Vx CUDA] device 0 stage
-[Vx CUDA] device 0 stage
-[Vx CUDA] vx_npu_kernel_0 ran on GPU 0 from its own image
+$ VX_DISPATCH_VERBOSE=1 ./vxc flash.vx --run
+[flat-codegen] emitted module via the flat path
 [[2.84482,   2.84482,   2.84482,   2.84482],
  [1.5,   1.5,   1.5,   1.5]]
+[Vx CUDA] device 0 stage
+[Vx CUDA] device 0 stage
+[Vx CUDA] device 0 stage
+[Vx CUDA] device 0 stage
+[Vx CUDA] device 0 dispatch
+[Vx CUDA] vx_npu_kernel_0 ran on GPU 0 from its own image (28 params, 1x2 threads)
+[Vx CUDA] device 0 fetch
+[Vx CUDA] device 0 free
+[Vx CUDA] device 0 free
+[Vx CUDA] device 0 free
+[Vx CUDA] device 0 free
 ```
 
-Four stages for the four operands, one launch of a kernel the compiler emitted, and the same two
-rows that printed on the laptop.
+Four stages for the four operands, one launch of a kernel the compiler emitted, a fetch for the
+transfer home, four frees, and the same two rows that printed on the laptop. The launch is two
+threads because this toy shape has two queries; at a real size the same kernel goes wide — the
+8192-query version of it launches as 64 blocks of 128 threads, three blocks resident per SM.
 
 > `spawn on` places a region; it does not promise the region reaches the device. A region the
 > backend cannot lower is refused and run on the host, which costs performance and never
@@ -256,12 +271,49 @@ rows that printed on the laptop.
 > and prints a verdict, because a CPU number and a GPU number look identical in a table.
 
 To run it at a real size on a rented machine, `scripts/provision/bootstrap_dev_pod.sh` ships the
-tree, builds the compiler, and runs the sweep:
+tree, builds the compiler, and assembles the bench bundle. On a fresh 255-core pod the whole
+toolchain install plus a release build took under four minutes:
 
 ```console
 $ scripts/provision/bootstrap_dev_pod.sh -h root@<pod> -p <port> -i ~/.ssh/<key>
-$ scripts/campaigns/flash/run_flash_bench.sh -q 8192 -d 64 -k "512 1024 2048 4096"
+$ cd /root/bundle && ulimit -s 524288 && ./run_flash_bench.sh -q 8192 -d 64
 ```
+
+### The one mistake the laptop does not catch
+
+Everything else in this chapter fails on a laptop. This one does not, and it is worth the space
+because it is the exception to the chapter's whole claim.
+
+Drop the `let o_home = transfer(o, Memory::CPU_DRAM);` line and print `o` directly. On a machine
+with no device the program is fine: the fallback never moved `o` anywhere, so `print` reads host
+memory and the right numbers appear. On the A100 the kernel runs correctly and then the program
+dies in the printer:
+
+```console
+$ VX_DISPATCH_VERBOSE=1 ./vxc flash.vx --run
+[flat-codegen] emitted module via the flat path
+Caught SIGSEGV: Segmentation Fault!
+Backtrace [
+    { fn: "vx_sigsegv_handler" },
+    { fn: "_ZN4impl17MemRefDataPrinterIfE5printERSoPflllPKlS5_" },
+    { fn: "printMemrefF32" },
+    { fn: "main" },
+]
+[Vx CUDA] vx_npu_kernel_0 ran on GPU 0 from its own image (28 params, 1x2 threads)
+Program was killed by signal 6
+```
+
+`o` is a device handle, and `print` dereferences it on the host. This is the mirror image of the
+error the chapter praised earlier — a host reading device memory instead of a device reading host
+memory — and the compiler does not refuse it. It should: `E6003` exists for exactly this
+direction, and here the program gets a segfault at run time on the rented machine instead of a
+diagnostic on the laptop.
+
+So the claim this chapter makes needs one qualification. Placement errors *into* a region are
+compile errors. A placement error on the way *out* of one is not yet, which makes the host
+fallback an imperfect rehearsal: it cannot fail on a transfer it never performed. Until that gap
+closes, transfer device-resident results home before reading them, and treat a clean laptop run as
+evidence about the arithmetic rather than about the placement.
 
 ## Shared memory, and the two refusals
 
@@ -295,16 +347,29 @@ and a thread loop that wrote one must be followed by a barrier.
 Attention on an A100 has a long ladder above it, and it is worth knowing which rung this chapter
 reaches. Measured at SQ=8192, SK=2048, HD=64:
 
-| | time | rate |
-| --- | --- | --- |
-| The fused kernel above, fp32 | 1.125 ms | 3.82 TF/s |
-| Unfused, two routed TF32 GEMMs | 0.486 ms | 8.84 TF/s |
-| Unfused, two routed f16 GEMMs | 0.374 ms | 11.5 TF/s |
-| `flash_attention_into`, routed to FlashAttention-2 | 0.066 ms | ~65 TF/s |
-| PyTorch SDPA on the same machine | 0.063 ms | |
+| | time | rate | |
+| --- | --- | --- | --- |
+| The kernel in this chapter, fp32 | 3.72 ms | 1.15 TF/s | measured |
+| A tuned split-K fp32 kernel | 1.125 ms | 3.82 TF/s | cited |
+| Unfused, two routed TF32 GEMMs | 0.486 ms | 8.84 TF/s | cited |
+| Unfused, two routed f16 GEMMs | 0.374 ms | 11.5 TF/s | cited |
+| `flash_attention_into`, routed to a vendor provider | 0.067 ms | ~64 TF/s | measured |
+| PyTorch SDPA on the same machine | 0.063 ms | | cited |
 
-The first row and the last are not the same workload: the kernel in this chapter is fp32, and the
-routed path is f16 on tensor cores. The gap is mostly that.
+The rows marked *measured* were taken on an A100-SXM4-80GB (driver 580.159.04, CUDA 12.8) with
+CUDA event timing, three runs each, nothing else on the device. The chapter's kernel came in at
+3.723, 3.725 and 3.743 ms; the routed path at 0.067, 0.068 and 0.075 ms.
+
+The first row and the second are the same algorithm at different amounts of tuning, and the first
+and the fifth are not the same workload at all: this chapter's kernel is fp32, and the routed path
+is f16 on tensor cores. A fifty-fold gap sounds like a verdict on the language, and most of it is
+those two facts.
+
+> Time the device, not the program. `run_flash_bench.sh` derives a kernel cost from how total wall
+> time grows with sequence length, which was the right instrument before the compiler could emit a
+> device image. It no longer is: the host-side loops that fill K and V grow with the sequence too,
+> and at `-O0` they dominate. On the run above it reported 46.9 GFLOP/s for a kernel that CUDA
+> events put at 1154. `VX_TIME_KERNEL=1` is the number to quote.
 
 The last rung is one call:
 
@@ -340,8 +405,18 @@ fn main() -> i32 {
 
 The compiler classifies that region as `kind=attention`, stamps the operand roles onto it, and the
 runtime `dlopen`s whatever provider `VX_FLASH_LIB` names — a FlashAttention-2 shim or cuDNN's
-fused SDPA, both behind one symbol. The 0.066 ms is NVIDIA's code, reached by one line of Vx.
-The call takes rank-2 `f16` tensors only.
+fused SDPA, both behind one symbol (`vx_flash_fwd_f16_hd64`). The 0.067 ms is NVIDIA's code,
+reached by one line of Vx. The call takes rank-2 `f16` tensors only.
+
+> Warm the shape before anyone is watching. The first call at a given shape pays for the provider's
+> setup, and the two providers differ by two orders of magnitude in what that costs: the cuDNN
+> provider spent **511 ms** building its plan for the shape above before settling at 0.067, while
+> the FlashAttention-2 shim's one-off `dlopen` and module load is about 4 ms. Both are per process,
+> and cuDNN's is per shape. A benchmark that reports its first region is measuring the plan
+> builder.
+
+Building the cuDNN provider needs one correction to the recipe in its own header comment: link
+`-lnvrtc` as well, or the library loads under `RTLD_LAZY` and the runtime's `RTLD_NOW` refuses it.
 
 Without the library, the same binary still answers: the compiler always emits the fallback nest
 alongside, and a provider that cannot be found costs performance rather than correctness. That is
