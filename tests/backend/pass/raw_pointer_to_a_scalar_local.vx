@@ -1,0 +1,53 @@
+//===- raw_pointer_to_a_scalar_local.vx - Vx Compiler -----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Taking the address of a scalar local and holding it in a raw pointer.
+//
+// A mutable scalar local lives in a slot, and `&mut` on one hands back that slot.
+// A local bound to the result holds a reference rather than a value of its own,
+// so reading the name must give the reference back, not load through it. Getting
+// that wrong passed the integer where a pointer was wanted, which reached LLVM
+// translation as a cast from i32 to a pointer and failed there.
+//
+// Three ways of holding the address are covered, because they took three
+// different routes through lowering: an annotated binding passed to a function,
+// a binding with no annotation, and a store written straight through the pointer.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s
+// CHECK: 7
+// CHECK: 99
+// CHECK: 42
+
+fn set(p : *mut i32, n : i32) -> void {
+  if n <= 0 {
+    return;
+  }
+  unsafe { p[0] = 99; };
+}
+
+fn main() -> i32 {
+  // `set` returns early, so the slot keeps its original value.
+  let mut a : i32 = 7;
+  let pa : *mut i32 = &mut a;
+  set(pa, 0);
+  print(a);
+
+  // No annotation: the binding's type is the borrow's own.
+  let mut b : i32 = 7;
+  let pb = &mut b;
+  set(pb, 5);
+  print(b);
+
+  // Written through the pointer here rather than in a callee.
+  let mut c : i32 = 1;
+  let pc : *mut i32 = &mut c;
+  unsafe { pc[0] = 42; };
+  print(c);
+
+  return 0;
+}

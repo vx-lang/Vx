@@ -10,6 +10,20 @@ use melior::ir::{
     Attribute, Identifier, Region, Type, Value,
 };
 
+/// Whether this name holds a reference rather than a value of its own.
+///
+/// A local bound to `&mut x` carries `x`'s scalar-`memref` descriptor, which is the same shape
+/// as the slot a mutable scalar local is stored in. The two are told apart by what reading them
+/// means: reading a slot loads the value out of it, and reading a reference hands the reference
+/// back. Without this, `let p : *mut i32 = &mut cell;` loaded `cell` and passed the integer
+/// where a pointer was wanted, which reached LLVM translation as a cast from `i32` to a pointer.
+fn holds_a_reference(gen: &MeliorGenerator<'_>, name: &crate::symbol::Symbol) -> bool {
+    matches!(
+        gen.ast_env.get(name),
+        Some(syntax::Type::Pointer(..) | syntax::Type::Borrow { .. } | syntax::Type::Ref(..))
+    )
+}
+
 impl<'c> LowerToMelior<'c> for IdentifierExpr {
     type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
     fn lower(
@@ -75,7 +89,10 @@ impl<'c> LowerToMelior<'c> for IdentifierExpr {
                     .build()?;
                 let load_ref = block.append_operation(load_op);
                 Ok((load_ref.result(0)?.into(), inner_ty, block))
-            } else if ty_str.starts_with("memref<") && !ty_str.contains("x") {
+            } else if ty_str.starts_with("memref<")
+                && !ty_str.contains("x")
+                && !holds_a_reference(gen, name)
+            {
                 let inner_ty_str = &ty_str[7..ty_str.len() - 1];
                 let inner_ty = Type::parse(gen.context, inner_ty_str).ok_or_else(|| {
                     crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string())

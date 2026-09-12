@@ -127,6 +127,20 @@ impl<'c> LowerToMelior<'c> for LetDeclStmt {
             gen.owned_tensors.insert(name.to_string().into());
         }
 
+        // A local declared `*mut T` holds a pointer, but `&mut x` on a scalar local lowers to
+        // `x`'s `memref` descriptor. Turn it into the raw pointer here, at the binding, so every
+        // later read of the name sees the same `!llvm.ptr` that a pointer *parameter* carries.
+        // Without this the descriptor reached each consumer instead, and each one got it wrong in
+        // its own way: a call argument loaded the pointee, and `p[0] = v` stored through a rank-0
+        // memref with an index.
+        let (val, ty) =
+            if matches!(ast_ty, Some(syntax::Type::Pointer(..))) && gen.is_scalar_memref(&ty) {
+                let ptr_ty = gen.ptr_ty;
+                (gen.coerce_type(&block, val, ty, ptr_ty)?, ptr_ty)
+            } else {
+                (val, ty)
+            };
+
         if *is_mut {
             let ty_str = ty.to_string();
             if ty_str.contains("!llvm.struct") || ty_str.contains("!llvm.ptr") {

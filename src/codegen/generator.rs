@@ -145,6 +145,16 @@ impl<'c> MeliorGenerator<'c> {
         ty_str.starts_with("memref<")
     }
 
+    /// A rank-0 `memref` over a single scalar (`memref<i32>`), which is how a mutable scalar
+    /// local's storage and a borrow of one are both spelled. Ranked memrefs (`memref<4xf32>`)
+    /// and nested ones (`memref<memref<i32>>`) are different shapes and are excluded.
+    pub fn is_scalar_memref(&self, ty: &Type<'c>) -> bool {
+        let ty_str = ty.to_string();
+        ty_str.starts_with("memref<")
+            && !ty_str.contains('x')
+            && !ty_str.starts_with("memref<memref<")
+    }
+
     pub fn is_llvm_ptr(&self, ty: &Type<'c>) -> bool {
         let ty_str = ty.to_string();
         ty_str.starts_with("!llvm.ptr") || ty_str.starts_with("!llvm.array")
@@ -1803,6 +1813,15 @@ impl<'c> MeliorGenerator<'c> {
             // to a type the checker already computed -- and a redundant annotation then decides
             // which code is generated. The flat path's inference already sees through it.
             Expr::UnsafeBlock(u) => self.infer_ast_type(u.ret.as_deref()?),
+            // `let p = &mut x` binds a reference. Recording that is what tells a later read of
+            // `p` to hand the reference back rather than load through it; an unannotated binding
+            // recorded nothing, so the read could not tell `p` from a scalar local of its own.
+            Expr::Borrow(b) => Some(syntax::Type::Borrow {
+                inner: Box::new(self.infer_ast_type(&b.expr)?),
+                mem_space: None,
+                is_mut: b.is_mut,
+                region_id: syntax::REGION_UNSET as usize,
+            }),
             Expr::Identifier(id) => self.ast_env.get(&id.name).cloned().or_else(|| {
                 // A bare function name used as a *value* (`let f = probe`) is a function pointer;
                 // recover its signature from the function registry so a later indirect call `f(..)`
