@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Measure what a NUMA hop costs on this machine, and compare it against what
-# fleet/xeon-e5-2666v3.vx predicts.
+# the machine model predicts. Point MACHINE= at the file describing the box you
+# are on; the default is the bare-metal part the experiment runs on.
 #
 #   ./utils/campaign/run_numa_probe.sh            # both kernels, 2 GiB, 5 reps
 #   MIB=4096 REPS=9 ./utils/campaign/run_numa_probe.sh
+#   MACHINE=fleet/xeon-e5-2666v3.vx ./utils/campaign/run_numa_probe.sh
 #
 # Needs a machine with at least two NUMA nodes, `numactl`, and a C compiler.
 # It will refuse rather than guess on anything else -- an Apple Silicon laptop
@@ -26,6 +28,9 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 MIB="${MIB:-2048}"
+# The model to compare against. Default is the part the experiment runs on;
+# fleet/xeon-e5-2666v3.vx is the same shape on a shape that cannot be measured.
+MACHINE="${MACHINE:-fleet/xeon-8275cl.vx}"
 REPS="${REPS:-5}"
 
 die() { echo "$*" >&2; exit 1; }
@@ -38,7 +43,8 @@ NODES=$(numactl -H | awk '/^available:/ {print $2}')
 [ -n "$NODES" ] || die "could not read the node count from numactl -H"
 if [ "$NODES" -lt 2 ]; then
   die "this machine reports $NODES NUMA node(s); there is no hop to measure.
-The experiment wants the two-socket build box (E5-2666 v3), not a laptop."
+The experiment wants a bare-metal two-socket box, not a laptop and not a
+virtualized instance."
 fi
 
 echo "== machine =="
@@ -175,7 +181,9 @@ if [ -z "$VXC" ] || [ ! -f "$FIX" ]; then
   exit 0
 fi
 
-PRED=$("$VXC" "$FIX" --host default --machine "$ROOT/fleet/xeon-e5-2666v3.vx" \
+case "$MACHINE" in /*) MACHINE_PATH="$MACHINE" ;; *) MACHINE_PATH="$ROOT/$MACHINE" ;; esac
+[ -f "$MACHINE_PATH" ] || die "no machine file at $MACHINE_PATH (set MACHINE=)"
+PRED=$("$VXC" "$FIX" --host default --machine "$MACHINE_PATH" \
         --action emit-mlir -o /dev/null --diagnostics-json 2>/dev/null |
   python3 -c '
 import json, sys
@@ -205,7 +213,7 @@ print(f"  the model is off by     : {err:+.1f}%")
 print()
 if abs(err) <= 25:
     print("  Within 25%. The declared QPI rate is the right order, and the")
-    print("  UNVERIFIED note on it in fleet/xeon-e5-2666v3.vx can be replaced by")
+    print("  UNVERIFIED note on the interconnect figure can be replaced by")
     print("  this measurement.")
 else:
     print("  Outside 25%. Before changing the fleet file, rule out the harness:")
