@@ -12,7 +12,28 @@
 // not against the machine compiling it (#341).
 //
 // This is the build box the campaign already uses, so every figure below can be
-// re-read from the hardware rather than transcribed.
+// re-read from the hardware rather than transcribed -- with one exception, which
+// is worth knowing before anyone tries.
+//
+// THE INTERCONNECT FIGURE CANNOT BE MEASURED ON THE EC2 INSTANCE. The part is
+// genuinely two sockets, and a c4.8xlarge reports two NUMA nodes whose CPU lists
+// match the `lscpu` quoted below exactly. The nodes are not backed by physical
+// locality. Measured on one, 2026-09-11:
+//
+//   - all four (cpu node, memory node) pairs read at 98 GB/s within 1%, and
+//     pointer-chase at 117-119 ns within 1.4%
+//   - binding to one node measures the same as interleaving across both
+//   - both are impossible if the nodes were real: one socket peaks at 68.3 GB/s
+//     and QPI at 38.4, so neither a 98 GB/s single-node read nor a 96.7 GB/s
+//     remote read can be what it claims to be
+//
+// `/proc/PID/numa_maps` confirms `--membind` puts every page on the bound node,
+// so the usual check passes while the thing it checks is not real: the guest is
+// reporting its own page accounting, not the hypervisor's placement.
+//
+// So the 38.4 GB/s below stays UNVERIFIED until someone runs
+// `utils/campaign/run_numa_probe.sh` on bare metal. The probe now refuses a
+// machine like this rather than reporting a ratio from it.
 //
 // A CPU is the *other* degenerate case, and more degenerate than m4-uma. There
 // the host and device share one physical memory; here the device is the host, so
