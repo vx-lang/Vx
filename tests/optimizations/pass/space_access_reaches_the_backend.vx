@@ -1,0 +1,96 @@
+//===- space_access_reaches_the_backend.vx - Vx Compiler --------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// What the model says about host access to a space travels to the backend.
+//
+// `managed:` decides whether the host may read a space, and the checker has
+// always honoured it. The runtime never saw it: `vx_plugin_alloc_and_transfer`
+// took only a size, a source and a topology, so a space declared host-readable
+// was staged with cudaMalloc anyway -- host-unreadable memory the checker had
+// been told the host could read. That gap is not observable until something
+// performs the host read, which is a SIGSEGV in the memref printer on a machine
+// with a device, and nothing at all on a machine without one.
+//
+// So the claim is carried down as a fourth argument and the backend that knows
+// whether a device is really present compares the two. The values are
+// `vx_space_access` in include/vx_hardware_runtime.h: 1 for a space the program
+// must transfer in and out of explicitly, 2 for one the program believes the
+// host can read.
+//
+// Both appear here, which is what makes this worth pinning. The staging
+// transfer targets GPU_HBM, declared `managed: explicit`, and carries 1. The
+// transfer home targets the host and carries 2. A renumbering of the enum, or a
+// lowering that stopped reading the attribute and passed a constant, moves one
+// of these and not the other.
+//
+// Checked after translation to LLVM IR, and that choice is the whole reason
+// this fixture is sound. At the LLVM *dialect* stage a constant is a separate
+// SSA definition, so `llvm.mlir.constant(2 : i32)` is satisfied by any
+// incidental 2 -- and a program with tensors and loops emits them for strides,
+// indices and bounds. The first version of this file checked exactly that and
+// stayed green under a lowering forced to emit a constant, because the check had
+// bound itself to an unrelated stride. Translated, the values are immediate
+// operands of the call, so one line carries the callee, the topology and the
+// mode together and there is nothing for an incidental constant to satisfy.
+// This is the first executable RUN line in the suite to use `mlir-translate`
+// -- ane_conv.vx and its neighbours mention it only inside commented-out
+// pipelines -- so it names the tool the way the project already learned to.
+// `MLIR_TRANSLATE_PATH` is what CI sets (to `mlir-translate-22`), because
+// resolving these tools by bare name is what Vx#496 is about; the fallback
+// keeps a plain checkout working. The RUN line goes through
+// `bash -c "set -o pipefail; ..."`, so the expansion applies and a missing tool
+// fails the line rather than feeding FileCheck an empty stream it would pass on.
+// There is no generic skip: the runner honours only `// REQUIRES: macos`, so on
+// a box without the tool this reddens rather than skipping, and the fault is
+// the environment rather than the compiler.
+//
+// Each line below therefore fails on its own account: forcing the lowering to
+// emit 2 unconditionally leaves the first unmatched, forcing 1 leaves the
+// second unmatched. The topology ids also tell the two calls apart without
+// relying on their order -- 500 is the GPU topology, 0 the host.
+//
+// One trap worth naming, because its answer looks wrong rather than broken: a
+// program that never transfers its result home is refused before emission, by
+// the E6003 this argument is the backstop for. Reaching for this check on a
+// program of that shape produces no matching lines at all, which reads as "the
+// value is not emitted" instead of "this program was rejected". Hence the
+// transfer home below.
+//
+// RUN: vxc %s --action emit-llvm 2>/dev/null | ${MLIR_TRANSLATE_PATH:-mlir-translate} --mlir-to-llvmir | FileCheck %s
+//
+// CHECK: declare ptr @vx_plugin_alloc_and_transfer(i64, ptr, i32, i32)
+//
+// Staging onto the device: `managed: explicit`, so 1.
+// CHECK: call ptr @vx_plugin_alloc_and_transfer(i64 {{.*}}, ptr {{.*}}, i32 500, i32 1)
+//
+// And home again, to a space the host can read, so 2.
+// CHECK: call ptr @vx_plugin_alloc_and_transfer(i64 {{.*}}, ptr {{.*}}, i32 0, i32 2)
+//
+//===----------------------------------------------------------------------===//
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: explicit
+}
+
+fn main() -> i32 {
+  let mut a_h = Tensor<f32, [2, 2]>::uninit();
+  for i in 0..2 {
+    for j in 0..2 {
+      a_h[i][j] = 1.0;
+    }
+  }
+  // Into the device space: the program is obliged to move data in and out, so
+  // device memory is what it expects.
+  let a = transfer(a_h, Memory::GPU_HBM);
+  // And back, so `print` reads a space the host can actually read. Without this
+  // the program is refused before it reaches emission, which is the compile-time
+  // check this argument is the backstop for.
+  let home = transfer(a, Memory::CPU_DRAM);
+  print(home);
+  return 0;
+}

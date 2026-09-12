@@ -1817,9 +1817,16 @@ struct TransferToPluginLowering : public OpRewritePattern<vx::TransferOp> {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(module.getBody());
       auto fnTy = LLVM::LLVMFunctionType::get(
-          llvmPtrType, {llvmI64Type, llvmPtrType, llvmI32Type}, false);
+          llvmPtrType,
+          {llvmI64Type, llvmPtrType, llvmI32Type, llvmI32Type}, false);
       rewriter.create<LLVM::LLVMFuncOp>(loc, allocName, fnTy);
     }
+    // What the model claims about host access to the target space, carried down
+    // so the backend that knows whether a device is really here can compare the
+    // two. `hostCanRead` has read this attribute all along; it had nowhere to
+    // send it. Values are `vx_space_access` in include/vx_hardware_runtime.h.
+    Value spaceAccess = rewriter.create<LLVM::ConstantOp>(
+        loc, llvmI32Type, rewriter.getI32IntegerAttr(hostCanRead(op) ? 2 : 1));
     Value devicePtr;
     if (comingHome) {
       // Host memory first, with no copy -- there is nothing here to copy from.
@@ -1831,7 +1838,7 @@ struct TransferToPluginLowering : public OpRewritePattern<vx::TransferOp> {
                       .create<LLVM::CallOp>(
                           loc, TypeRange{llvmPtrType},
                           SymbolRefAttr::get(rewriter.getContext(), allocName),
-                          ValueRange{bytes, nullSrc, hostTopo})
+                          ValueRange{bytes, nullSrc, hostTopo, spaceAccess})
                       .getResult();
 
       // Then the fetch, addressed to the topology the data is actually on --
@@ -1881,7 +1888,7 @@ struct TransferToPluginLowering : public OpRewritePattern<vx::TransferOp> {
                       .create<LLVM::CallOp>(
                           loc, TypeRange{llvmPtrType},
                           SymbolRefAttr::get(rewriter.getContext(), allocName),
-                          ValueRange{bytes, alignedPtr, topoVal})
+                          ValueRange{bytes, alignedPtr, topoVal, spaceAccess})
                       .getResult();
     }
 

@@ -40,8 +40,12 @@ extern {
   // Weights are read once per token. Staging them per dispatch would move the
   // whole matrix across the bus for every projection of every layer, which is
   // what makes a naive GPU port slower than the CPU it replaced.
+  // `space_access` reports what the program's machine model claimed about host
+  // access to the target space, so a backend can notice it is handing out
+  // memory the host cannot read. These calls are hand-written FFI with no
+  // declared space behind them, so they pass 0 -- "unknown", checked nowhere.
   fn vx_plugin_alloc_and_transfer(bytes : i64, host_ptr : *mut f32,
-  topology_id : i32) -> *mut f32;
+  topology_id : i32, space_access : i32) -> *mut f32;
 
   // The three calls a disaggregated run is made of (#347).
   //

@@ -203,8 +203,22 @@ void log_line(const char *fmt, ...) {
 /// TRANSFER: put the bytes where this worker's device can read them, and name
 /// the result.
 uint64_t serve_transfer(const vx_wire_transfer *t) {
+  // UNKNOWN, and not a guess: what the model said about host access to the
+  // target space is not carried on the wire, so this end cannot report it.
+  // Putting it there is a protocol change both ends have to agree on, which is
+  // why it is a follow-up rather than part of this.
+  //
+  // Said out loud once, because a remote run would otherwise look like a run
+  // that passed the check rather than one where the check was never carried.
+  static bool told = false;
+  if (!told) {
+    told = true;
+    log_line("[Vx worker] space-access mode is not carried on the wire; the "
+             "host-readable check is not performed for remote transfers\n");
+  }
   void *dev = vx_plugin_alloc_and_transfer(
-      (size_t)t->nbytes, (void *)(uintptr_t)t->bytes, (uint32_t)g_topology);
+      (size_t)t->nbytes, (void *)(uintptr_t)t->bytes, (uint32_t)g_topology,
+      VX_SPACE_ACCESS_UNKNOWN);
   if (!dev) {
     return 0;
   }

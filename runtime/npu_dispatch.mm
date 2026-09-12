@@ -514,8 +514,14 @@ extern "C" int vx_dispatch_ane_affine(float *out, float *x, float alpha,
 extern "C" {
 #include <dlfcn.h>
 
+// `space_access` is accepted and ignored: the Neural Engine's staging is host
+// memory this process can read, so a model claiming the host may read it is
+// telling the truth. Only a backend handing out memory the host cannot read has
+// anything to compare -- see cuda_dispatch.cpp.
 void *vx_plugin_alloc_and_transfer(size_t bytes, void *host_ptr,
-                                   uint32_t topology_id) {
+                                   uint32_t topology_id,
+                                   uint32_t space_access) {
+  (void)space_access;
   // Placement first, hardware second. Without this the whole fleet story is
   // absent from this backend: a program run on Apple silicon with a manifest
   // naming a worker allocated here instead, dispatched here, and said nothing.

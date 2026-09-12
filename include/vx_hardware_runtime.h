@@ -10,11 +10,38 @@
 extern "C" {
 #endif
 
+/// What the program's machine model claimed about host access to the space a
+/// transfer is staging into, passed as the `space_access` argument below.
+///
+/// The runtime cannot work this out for itself, and the compiler cannot decide
+/// it alone either. `managed:` describes the machine the program was *declared*
+/// against, while whether a device is actually present is known only here --
+/// the same staged program is meant to run on a box with one and a box without.
+/// So the model's claim travels down and the backend that knows which machine
+/// this is compares the two.
+typedef enum {
+  /// The caller does not know. Nothing is checked. The remote worker passes
+  /// this because the mode is not carried on the wire yet.
+  VX_SPACE_ACCESS_UNKNOWN = 0,
+  /// Declared `managed: explicit`: the model says movement in and out needs an
+  /// explicit transfer, so device memory is what the program expects.
+  VX_SPACE_ACCESS_EXPLICIT = 1,
+  /// Declared `managed: cached`, or declaring nothing. The model says the host
+  /// may read this space. Staging it as device memory contradicts that, and the
+  /// contradiction surfaces as a host load of a device pointer somewhere later.
+  VX_SPACE_ACCESS_HOST_READABLE = 2
+} vx_space_access;
+
 /// 1. Memory Transfer Operations
 /// Allocates memory in the target topology's address space and optionally
 /// copies data. Fulfills Vx `.to_device(Topology)` requests.
+///
+/// `space_access` is a `vx_space_access`. A backend that hands out memory the
+/// host cannot read must refuse, or at least complain, when it is told the
+/// program believes otherwise -- see the note in cuda_dispatch.cpp.
 void *vx_plugin_alloc_and_transfer(size_t bytes, void *host_ptr,
-                                   uint32_t topology_id);
+                                   uint32_t topology_id,
+                                   uint32_t space_access);
 
 /// Per-argument ABI tag layout, produced by abiTagForType/LaunchOpLowering in
 /// src/dialect/VxLowering.cpp.

@@ -648,8 +648,66 @@ bool run_attention(const vx_attention_plan &plan) {
 
 extern "C" {
 
+/// The model said the host may read this space, and we are about to hand out
+/// memory it cannot read.
+///
+/// Reported here rather than left to fail later, because later is a host load
+/// of a device pointer with nothing to connect it back to a declaration --
+/// which is how it was found: a correct kernel, then a SIGSEGV inside
+/// printMemrefF32, on a rented machine, with a program that compiles clean and
+/// runs correctly wherever there is no device to stage onto.
+///
+/// A warning and not an abort, and the reason is what this can see rather than
+/// how tidy the declarations are. It fires on a mismatch between the model and
+/// the machine; the hazard is a host *read* of the result. A program may
+/// declare a space host-readable, stage it here, and never read it from the
+/// host -- safe, and what most of this repository's GPU programs actually do.
+/// So this is a conservative over-approximation, and aborting on one kills
+/// working programs that never commit the error. Re-declaring every model would
+/// not change that.
+///
+/// The precise check is the compile-time one: E6003 at the host read, with a
+/// `print`-specific diagnostic. This is the backstop for models that never
+/// engaged it. Backstops warn; primary checks refuse. `VX_STRICT_SPACES=1` gets
+/// the abort for anyone who wants their own build to hold the stricter line.
+///
+/// Why a model gets to be quiet about this at all: `Management::Cached` is the
+/// `#[default]` in src/syntax/decl.rs, so a space that says nothing about
+/// `managed:` claims movement may be implicit, which the checker reads as
+/// host-reachable. The absence is not neutral, it is the permissive answer --
+/// which is how this was found. Closing the class means either obliging a
+/// device space to state `managed:` or flipping that default, neither of which
+/// belongs behind this warning.
+static void warn_space_access_contradiction(uint32_t topology_id,
+                                            size_t bytes) {
+  // Keyed by topology rather than a single latch: two spaces on two devices can
+  // each be wrong in their own way, and one of them should not silence the
+  // other.
+  static std::unordered_map<uint32_t, bool> announced;
+  const bool strict = getenv("VX_STRICT_SPACES") != nullptr;
+  if (announced[topology_id] && !strict) {
+    return;
+  }
+  announced[topology_id] = true;
+  fprintf(stderr,
+          "[Vx CUDA] staging %zu bytes onto topology %u as device memory, but "
+          "the program's machine model says the host may read that space "
+          "(`managed:` is absent or `cached`).\n"
+          "  Nothing here can honour that: this is cudaMalloc memory. A host "
+          "read of it -- `print` on the result, most likely -- will fault.\n"
+          "  Declare the space `managed: explicit` and the compiler will "
+          "require the transfer home, or keep the operands in a space the host "
+          "can read.\n",
+          bytes, topology_id);
+  if (strict) {
+    fprintf(stderr, "  VX_STRICT_SPACES is set; refusing to stage.\n");
+    abort();
+  }
+}
+
 void *vx_plugin_alloc_and_transfer(size_t bytes, void *host_ptr,
-                                   uint32_t topology_id) {
+                                   uint32_t topology_id,
+                                   uint32_t space_access) {
   /* Asked first, because a topology the manifest names is not this machine's
      to allocate in however capable this one is. */
   void *remote = nullptr;
@@ -681,6 +739,12 @@ void *vx_plugin_alloc_and_transfer(size_t bytes, void *host_ptr,
   // accidentally right while there was one GPU, and wrong in the first
   // configuration where the answer mattered (#346).
   select_device((int32_t)topology_id, "stage");
+
+  // Past this point the answer is real device memory, so this is the first
+  // moment the model's claim and the machine can be compared.
+  if (space_access == VX_SPACE_ACCESS_HOST_READABLE) {
+    warn_space_access_contradiction(topology_id, bytes);
+  }
 
   void *device_ptr = nullptr;
   VX_CUDA_CHECK(cudaMalloc(&device_ptr, bytes));

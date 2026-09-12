@@ -165,8 +165,16 @@ extern "C" {
 /// allocation -- but it goes through the same entry point a GPU backend
 /// implements with cudaMalloc, which is what lets `transfer` mean the same
 /// thing in a program compiled for either.
+///
+/// `space_access` is accepted and ignored, and that is the correct behaviour
+/// rather than an omission: what it reports is whether the program believes the
+/// host can read the result, and here the result is host memory, so the belief
+/// is true however the space was declared. Only a backend that hands out memory
+/// the host cannot read has anything to check.
 void *vx_plugin_alloc_and_transfer(size_t bytes, void *host_ptr,
-                                   uint32_t topology_id) {
+                                   uint32_t topology_id,
+                                   uint32_t space_access) {
+  (void)space_access;
   void *remote = nullptr;
   if (vx_routing_try_alloc(bytes, host_ptr, topology_id, &remote)) {
     return remote;

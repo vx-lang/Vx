@@ -174,13 +174,13 @@ seq_len : i32, vocab_size : i32, topology_id : i32) -> TransformerWeights {
     let w2_n : i64 = (n_layers * hidden_dim * dim) as i64;
     let w3_n : i64 = (n_layers * dim * hidden_dim) as i64;
 
-    let d_wq : *mut f32 = vx_plugin_alloc_and_transfer(wq_n * f32_bytes, p2, topology_id);
-    let d_wk : *mut f32 = vx_plugin_alloc_and_transfer(wk_n * f32_bytes, p3, topology_id);
-    let d_wv : *mut f32 = vx_plugin_alloc_and_transfer(wv_n * f32_bytes, p4, topology_id);
-    let d_wo : *mut f32 = vx_plugin_alloc_and_transfer(wo_n * f32_bytes, p5, topology_id);
-    let d_w1 : *mut f32 = vx_plugin_alloc_and_transfer(w1_n * f32_bytes, p7, topology_id);
-    let d_w2 : *mut f32 = vx_plugin_alloc_and_transfer(w2_n * f32_bytes, p8, topology_id);
-    let d_w3 : *mut f32 = vx_plugin_alloc_and_transfer(w3_n * f32_bytes, p9, topology_id);
+    let d_wq : *mut f32 = vx_plugin_alloc_and_transfer(wq_n * f32_bytes, p2, topology_id, 0);
+    let d_wk : *mut f32 = vx_plugin_alloc_and_transfer(wk_n * f32_bytes, p3, topology_id, 0);
+    let d_wv : *mut f32 = vx_plugin_alloc_and_transfer(wv_n * f32_bytes, p4, topology_id, 0);
+    let d_wo : *mut f32 = vx_plugin_alloc_and_transfer(wo_n * f32_bytes, p5, topology_id, 0);
+    let d_w1 : *mut f32 = vx_plugin_alloc_and_transfer(w1_n * f32_bytes, p7, topology_id, 0);
+    let d_w2 : *mut f32 = vx_plugin_alloc_and_transfer(w2_n * f32_bytes, p8, topology_id, 0);
+    let d_w3 : *mut f32 = vx_plugin_alloc_and_transfer(w3_n * f32_bytes, p9, topology_id, 0);
 
     TransformerWeights {
       token_embedding_table:
@@ -429,9 +429,9 @@ fn handoff_kv(src : &RunState, dst : &RunState, bytes : i64, src_topology : i32,
 dst_topology : i32) -> i32 {
   unsafe {
     let d_k_src : *mut f32 =
-    vx_plugin_alloc_and_transfer(bytes, src.key_cache, src_topology);
+    vx_plugin_alloc_and_transfer(bytes, src.key_cache, src_topology, 0);
     let d_v_src : *mut f32 =
-    vx_plugin_alloc_and_transfer(bytes, src.value_cache, src_topology);
+    vx_plugin_alloc_and_transfer(bytes, src.value_cache, src_topology, 0);
 
     let d_k_dst : *mut f32 =
     vx_plugin_transfer_peer(d_k_src, src_topology, dst_topology, bytes);
