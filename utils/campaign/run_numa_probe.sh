@@ -59,6 +59,19 @@ if ! "$CC" -O3 -march=native $OMP "$HERE/numa_probe.c" -o "$BIN" 2>/dev/null; th
     || die "could not build numa_probe.c"
 fi
 
+# How many CPUs one node has. Every cell is run with that many threads, bound to
+# cores, whichever nodes it uses -- otherwise the four cells are not comparable.
+# A cell left to pick its own thread count can differ between the local and
+# remote runs, and then the ratio those two produce is measuring the thread count
+# as much as the interconnect.
+NODE_CPUS=$(numactl -H | awk '/^node 0 cpus:/ {print NF - 3; exit}')
+[ -n "$NODE_CPUS" ] && [ "$NODE_CPUS" -gt 0 ] || NODE_CPUS=1
+export OMP_NUM_THREADS="$NODE_CPUS"
+export OMP_PROC_BIND=close
+export OMP_PLACES=cores
+echo "  using $OMP_NUM_THREADS threads per cell, bound to cores"
+echo
+
 # One cell of the matrix: threads on $1, memory on $2.
 cell() {
   local cpun="$1" memn="$2" kern="$3"
@@ -87,6 +100,48 @@ for kern in read copy; do
   done
   echo
 done
+
+# Is the topology this machine advertises backed by physical locality?
+#
+# A virtualized instance can report two NUMA nodes, honour --membind in its page
+# accounting, and still spread the pages across both sockets underneath. The
+# guest cannot see that directly: /proc/PID/numa_maps reports the guest's belief,
+# not the hypervisor's placement. What gives it away is bandwidth no single
+# socket could deliver -- so compare a one-node bind against interleaving across
+# both. Where locality is real the bind is confined to one socket's memory
+# controllers and interleaving beats it. If the two agree, the bind confined
+# nothing, and neither did anything else measured here.
+#
+# This check exists because a c4.8xlarge measured 97 GB/s bound to one node and
+# 97 GB/s interleaved, when one socket of that part peaks at 68 GB/s. Every
+# number in the matrix above was meaningless on that machine, and nothing in the
+# matrix itself said so.
+echo "== is the topology real? =="
+BIND_GBS=$(cell 0 0 read | gbs)
+INTER_GBS=$(numactl --cpunodebind=0 --interleave=all "$BIN" read "$MIB" "$REPS" 2>/dev/null | gbs)
+printf '  bound to one node : %s GB/s\n' "${BIND_GBS:-?}"
+printf '  interleaved       : %s GB/s\n' "${INTER_GBS:-?}"
+TOPO_REAL=$(python3 -c '
+import sys
+try:
+    b, i = float(sys.argv[1]), float(sys.argv[2])
+    print("no" if b and i and i < b * 1.10 else "yes")
+except Exception:
+    print("unknown")
+' "${BIND_GBS:-0}" "${INTER_GBS:-0}")
+if [ "$TOPO_REAL" = "no" ]; then
+  echo
+  echo "  STOP. Binding to one node is as fast as using both, so the pages are not"
+  echo "  physically confined to a socket and the nodes this machine reports are"
+  echo "  cosmetic. Everything above is measuring one undivided pool."
+  echo
+  echo "  That is what a virtualized instance does when the hypervisor synthesizes"
+  echo "  the NUMA tables. Use a bare-metal instance (*.metal on EC2), where there"
+  echo "  is nothing between the guest and the sockets."
+  exit 3
+fi
+echo "  interleaving beats a single-node bind, so the bind confines memory: real."
+echo
 
 # The measured ratio, averaged over both directions so a single asymmetric pair
 # cannot carry the result on its own.
