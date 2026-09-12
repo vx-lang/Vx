@@ -176,6 +176,7 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
             "optimizations/pass/codegen_error_diagnostics.vx", // expects failure by design (RUN: not vxc)
             "optimizations/pass/host_flag_scope.vx",           // needs --host
             "optimizations/pass/device_transfer_plugin.vx",    // needs --machine and a plugin
+            "optimizations/pass/numa_peer_node_is_priced.vx",  // needs --host and --machine
         ];
         if NOT_STANDALONE.contains(&name.as_str()) {
             continue;

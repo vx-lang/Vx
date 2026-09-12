@@ -57,13 +57,19 @@
 // MODEL: space = "HBM"
 //
 // The same text against a different machine, which is the property the whole
-// fleet arrangement exists for: only the flag changes. The x86 host declares 60
-// GiB rather than 80 GB, and its seam is a memcpy within one DRAM rather than a
-// PCIe crossing, so the capacity and the cost both change and nothing else does.
+// fleet arrangement exists for: only the flag changes. The x86 host's `HBM` is
+// one NUMA domain of a two-socket part -- 30 GiB, at one socket's memory
+// controllers rather than both -- and its seam is a memcpy within one DRAM
+// rather than a PCIe crossing, so the capacity and the cost both change and
+// nothing else does.
+//
+// Both numbers halved when the part stopped being modelled as one flat 60 GiB
+// space: a tile is resident in one node, so one node's size and one node's rate
+// are what a placement there should be measured against.
 //
 // RUN: vxc %s --host default --machine fleet/xeon-e5-2666v3.vx --emit-mlir 2>&1 | FileCheck %s --check-prefix=HOST
-// HOST: capacity = 64424509440
-// HOST: cost = 118
+// HOST: capacity = 32212254720
+// HOST: cost = 236
 // HOST: scope = "device"
 
 fn main() -> i32 {

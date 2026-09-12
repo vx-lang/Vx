@@ -1,0 +1,31 @@
+//===- numa_tile_larger_than_one_node.vx - Vx Compiler ----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A 40 GiB tile placed on a two-socket host that has 60 GiB in total and 30 GiB
+// per NUMA node.
+//
+// The box really does have the memory, so a model that reports one flat 60 GiB
+// space admits this -- and is wrong, because a tile is resident in one node and
+// no node holds 40 GiB. Part of it would live across the interconnect while the
+// program believed all of it was local. The refusal names the node's capacity
+// rather than the machine's, which is the number the placement is actually
+// measured against.
+//
+// The companion pass fixture shows the tile that does fit, and what the hop to
+// the other node costs.
+//
+// RUN: not vxc %s --host default --machine fleet/xeon-e5-2666v3.vx 2>&1 | FileCheck %s
+// CHECK: E6009
+// CHECK-SAME: needs 42949672960 bytes
+// CHECK-SAME: 'HBM' has capacity 32212254720 bytes
+
+fn main() -> i32 {
+  // 2621440 x 4096 x 4 B = 40 GiB.
+  let t : Tensor<f32, [2621440, 4096]> = Tensor<f32, [2621440, 4096]>::uninit();
+  let _staged = transfer(t, Memory::HBM);
+  return 0;
+}

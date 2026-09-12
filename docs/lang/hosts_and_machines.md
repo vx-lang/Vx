@@ -323,8 +323,12 @@ ______________________________________________________________________
 - **Host-to-device is the only direction implemented.** The reverse still lowers to a host copy
   ([#339](https://github.com/vx-lang/Vx/issues/339)).
 - **No arm64 host file** yet ([#341](https://github.com/vx-lang/Vx/issues/341)).
-- **NUMA is not modelled.** `fleet/xeon-e5-2666v3.vx` flattens two 30 GiB domains into one space;
-  `node-8gpu.vx` is the shape that models several memories with edges between them.
+- **NUMA is modelled, and not yet exploited.** `fleet/xeon-e5-2666v3.vx` declares its two
+  domains as `HBM` and `PEER_HBM` with priced interconnect edges, the same pair `node-8gpu.vx`
+  uses between two GPUs. So a tile larger than one node is refused, and a hop to the far node
+  is priced. What does *not* yet happen is at run time: `vx_plugin_alloc_and_transfer` receives
+  the placement's topology id and calls `aligned_alloc`, ignoring it, so the allocation lands
+  wherever first-touch puts it. Binding it to the declared node is the open half.
 - **The default placement remains.** `src/arch.rs` still resolves an unknown placement to
   `CPUDRAM` in four places. `--host` makes the host declarable; it does not yet make the *default*
   go away ([#329](https://github.com/vx-lang/Vx/issues/329)).

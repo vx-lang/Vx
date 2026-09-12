@@ -33,9 +33,22 @@
 //
 //===----------------------------------------------------------------------===//
 
+// ONE NUMA domain, not the whole box. This part is two sockets, and `lscpu`
+// reports node0 = CPUs 0-8,18-26 and node1 = 9-17,27-35, so the 60 GiB is two
+// 30 GiB domains with a real cost between them.
+//
+// `HBM` is node0's share, and `PEER_HBM` below is node1's. That is the same
+// pair node-8gpu.vx uses between two GPUs, and it is the same relation: a tile
+// is resident in one domain, and reaching it from the other crosses a link. The
+// fleet's names say which role a space plays rather than what it is made of, so
+// "the other domain of the same kind, across a link" is `PEER_HBM` here exactly
+// as it is there.
+//
 // spec: `/proc/meminfo` MemTotal = 61768396 kB (58.9 GiB) on the build box, and
 // the AWS C4 specification for the instance this part identifies (36 vCPU / 60
 // GiB; the E5-2666 v3 is the custom Haswell-EP part built for that family).
+// 30 GiB per node is that 60 GiB halved, which is what `numactl -H` reports as
+// the per-node size.
 //
 // 60 GiB is declared rather than the 58.9 GiB the kernel reports, per
 // fleet/README.md: declared capacity is the device, not the deployment budget.
@@ -44,11 +57,23 @@
 //
 // UNVERIFIED bandwidth, and derived rather than quoted: the E5-2600 v3 family
 // has 4 DDR4 channels per socket at up to 2133 MT/s, so
-//   4 channels x 2133 MT/s x 8 B = 68.3 GB/s per socket, 136.5 GB/s for two.
-// That is the memory controllers' peak, not an achievable copy rate. Nothing
-// rests on it until measured; see the seam note below.
+//   4 channels x 2133 MT/s x 8 B = 68.3 GB/s per socket.
+// That is one socket's memory controllers' peak, not an achievable copy rate,
+// and it is per node because a node is one socket. The previous 136 GB/s here
+// was both sockets' controllers quoted against a space that a single tile has to
+// fit in, which over-stated a single domain's rate by 2x as well as its size.
+// Nothing rests on it until measured; see the seam note below.
 Memory HBM {
-  capacity: 60 GiB, bandwidth: 136 GB/s, managed: explicit, scope: device
+  capacity: 30 GiB, bandwidth: 68 GB/s, managed: explicit, scope: device
+}
+
+// node1's share. A space of its own rather than more of `HBM`, because that is
+// the whole content of NUMA: the bytes are reachable, and reaching them costs
+// something that reaching local bytes does not.
+//
+// spec: as `HBM` above -- the two sockets are the same part.
+Memory PEER_HBM {
+  capacity: 30 GiB, bandwidth: 68 GB/s, managed: explicit, scope: device
 }
 
 // The last-level cache, which on this part is L3 rather than L2 -- the fleet's
@@ -99,24 +124,29 @@ Memory L2 {
 // device share one physical memory and a transfer is a memcpy; here the device
 // *is* the host, and `Memory::CPU_DRAM` and `Memory::HBM` name the same DRAM.
 //
-// UNVERIFIED, and declared at the same 136 GB/s peak deliberately, for the
-// reason m4-uma.vx records: a memcpy reads and writes, so it moves two bytes of
-// traffic per byte copied and cannot exceed half the peak even in principle.
-// The model should over-predict this edge by at least 2x, and if a measurement
-// says otherwise the harness is wrong rather than the hardware surprising.
+// UNVERIFIED, and declared at one node's 68 GB/s peak for the reason m4-uma.vx
+// records: a memcpy reads and writes, so it moves two bytes of traffic per byte
+// copied and cannot exceed half the peak even in principle. The model should
+// over-predict this edge by at least 2x, and if a measurement says otherwise the
+// harness is wrong rather than the hardware surprising.
 //
-// Two NUMA nodes is what this file does not yet model. `lscpu` reports node0 =
-// CPUs 0-8,18-26 and node1 = 9-17,27-35, so the 60 GiB is two 30 GiB domains
-// with a real cost between them, and `Memory::HBM` here flattens that to one
-// space. A tile larger than one node's share is admitted as though it were
-// local when part of it cannot be. node-8gpu.vx is the shape that models this
-// properly -- several memories with edges between them -- and applying it to a
-// two-socket host is the next step for this file, not a correction to it.
+// The QPI hop is the edge this file exists to make sayable. UNVERIFIED, and
+// derived rather than quoted: Haswell-EP carries QPI 1.1 at 9.6 GT/s, 2 bytes
+// per transfer, and this part has two links between the sockets, so
+//   9.6 GT/s x 2 B x 2 links = 38.4 GB/s per direction.
+//
+// Declared in both directions because they are separately measurable and there
+// is no reason yet to believe they agree. Against the 68 GB/s a node reaches its
+// own memory at, the model therefore predicts a remote access costs 1.8x a local
+// one -- which is a number to go and falsify, not a result. Measuring it is the
+// first NUMA experiment; nothing else in this file rests on it.
 Topology Device {
   // spec: Intel Haswell-EP, as a compute target rather than a host.
   arch: x86_64,
   memory: Memory::HBM,
-  visible: [Memory::HBM, Memory::L2],
-  transfer Memory::CPU_DRAM -> Memory::HBM : 136 GB/s,
-  transfer Memory::HBM -> Memory::L2
+  visible: [Memory::HBM, Memory::PEER_HBM, Memory::L2],
+  transfer Memory::CPU_DRAM -> Memory::HBM : 68 GB/s,
+  transfer Memory::HBM -> Memory::L2,
+  transfer Memory::HBM -> Memory::PEER_HBM : 38 GB/s,
+  transfer Memory::PEER_HBM -> Memory::HBM : 38 GB/s
 }

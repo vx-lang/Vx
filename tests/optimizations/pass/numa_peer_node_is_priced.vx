@@ -1,0 +1,52 @@
+//===- numa_peer_node_is_priced.vx - Vx Compiler ----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The other half of `numa_tile_larger_than_one_node.vx`: a tile that fits one
+// NUMA node is admitted, and the hop to the other node is priced rather than
+// merely permitted.
+//
+// 8 GiB staged into node0 and then moved to node1. Both routes resolve, and the
+// second is the more expensive one -- 68 GB/s to reach a node's own memory
+// against 38 GB/s across the interconnect, so the model predicts the remote hop
+// costs about 1.8x the local one for the same bytes.
+//
+// That ratio is the point of the file. A capacity check alone would say the far
+// node is just more room; what makes it a *different* space is that reaching it
+// costs something reaching local memory does not, and a number that says so is
+// what an experiment can go and falsify. Both figures are UNVERIFIED -- see
+// fleet/xeon-e5-2666v3.vx, which derives them and says so.
+//
+// The costs are asserted in picoseconds against 8 GiB, so they move if either
+// declared rate does. That is deliberate: this file should fail the day a
+// measurement replaces a derivation, and the new number should be written here.
+//
+// The last two checks are about the other end. Each node's placement carries its
+// own `target_topology` id into the emitted module, so the backend can tell the
+// two apart -- which is what a runtime would need to bind an allocation to the
+// right node. Nothing decodes these yet; the ids being distinct is the part that
+// has to be true before anything can.
+//
+// RUN: vxc %s --host default --machine fleet/xeon-e5-2666v3.vx --action emit-mlir -o /dev/null --diagnostics-json 2>/dev/null | FileCheck %s
+// CHECK: "verdict": "admitted"
+// CHECK: "path": ["CPU_DRAM", "HBM"]
+// CHECK-SAME: "derived_cost": 126322567530
+// CHECK: "path": ["HBM", "PEER_HBM"]
+// CHECK-SAME: "derived_cost": 226050910316
+// CHECK: vx.transfer
+// CHECK-SAME: target_topology = 1855308478
+// CHECK-SAME: space = "HBM"
+// CHECK: vx.transfer
+// CHECK-SAME: target_topology = 489426827
+// CHECK-SAME: space = "PEER_HBM"
+
+fn main() -> i32 {
+  // 2097152 x 1024 x 4 B = 8 GiB, which fits either 30 GiB node.
+  let t : Tensor<f32, [2097152, 1024]> = Tensor<f32, [2097152, 1024]>::uninit();
+  let local = transfer(t, Memory::HBM);
+  let _remote = transfer(local, Memory::PEER_HBM);
+  return 0;
+}
