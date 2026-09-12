@@ -32,6 +32,7 @@ die() { echo "$*" >&2; exit 1; }
 
 command -v numactl >/dev/null 2>&1 || die "no numactl: install numactl (Debian/Ubuntu: apt install numactl)"
 command -v lscpu   >/dev/null 2>&1 || die "no lscpu: this script wants a Linux host"
+command -v python3 >/dev/null 2>&1 || die "no python3: the script reads its own JSON and the compiler's with it"
 
 NODES=$(numactl -H | awk '/^available:/ {print $2}')
 [ -n "$NODES" ] || die "could not read the node count from numactl -H"
