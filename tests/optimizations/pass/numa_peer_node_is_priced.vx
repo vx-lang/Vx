@@ -30,7 +30,24 @@
 // right node. Nothing decodes these yet; the ids being distinct is the part that
 // has to be true before anything can.
 //
+// Both codegen paths are pinned, and deliberately rather than by accident.
+//
+// This directory's runner injects `--legacy-codegen` into any RUN line starting
+// with `vxc`, unless the file carries `// REQUIRES: flat-codegen`
+// (compile_test.rs:934-944). Without that marker the line below would run on the
+// AST path while reading as though it pinned the default one, and the ids the
+// flat path emits -- the ones that actually ship -- would be asserted nowhere.
+// The marker is here to disable the injection, not because anything in this file
+// is flat-only. The rule is scoped to tests/optimizations/; a fixture elsewhere
+// is not overridden and should not pin a path defensively as though it were.
+//
+// The two paths agree on the ids today. The second RUN line is what would notice
+// if they stopped agreeing, which is the whole reason to assert both rather than
+// assume one stands for the other.
+//
+// REQUIRES: flat-codegen
 // RUN: vxc %s --host default --machine fleet/xeon-e5-2666v3.vx --action emit-mlir -o /dev/null --diagnostics-json 2>/dev/null | FileCheck %s
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/xeon-e5-2666v3.vx --action emit-mlir -o /dev/null --diagnostics-json 2>/dev/null | FileCheck %s
 // CHECK: "verdict": "admitted"
 // CHECK: "path": ["CPU_DRAM", "HBM"]
 // CHECK-SAME: "derived_cost": 126322567530
