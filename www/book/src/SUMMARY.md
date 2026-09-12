@@ -24,6 +24,7 @@
 - [Topologies and memory](heterogeneous.md)
 - [Machine files](machine-files.md)
 - [Carrying facts across boundaries](correlation.md)
+- [Writing a flash attention kernel](flash-attention.md)
 
 # Reference
 
