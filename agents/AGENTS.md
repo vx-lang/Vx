@@ -13,7 +13,11 @@ These keep commands clean and avoid unnecessary permission prompts:
 
 ## Git
 
-- **CRITICAL** You are not allowed to `git push`
+- **CRITICAL** Never push to `main`, and never force-push anything. Push a feature branch
+  and open a pull request; `main` moves through review. This replaced a blanket ban on
+  pushing, which protected `main` by making every machine a dead end: work committed on one
+  could only reach another by hand. Branch protection on GitHub is what actually enforces
+  this — the rule here is so you do not have to discover it by being refused.
 - **CRITICAL** You are not allowed to edit .git/config
 - Commit changes whenever you make a meaningful change and it builds cleanly.
 - Always write detailed commit messages with a commit message body. If the change fixes a bug, indicate that this bug is fixed by the commit using 'Fixes: #<BUG-ID>' in the commit message body.
