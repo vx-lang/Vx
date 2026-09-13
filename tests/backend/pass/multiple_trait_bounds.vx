@@ -1,0 +1,76 @@
+//===- multiple_trait_bounds.vx - Vx Compiler ---------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `T : A + B`. A type parameter used to carry at most one bound, so a function needing
+// two behaviours from its parameter could not say so, and `fn sort<T : Ord + Copy>` --
+// the shape most of the core library is written in -- was a parse error at the `+`.
+//
+// What this file establishes is narrower than it first looks, and the narrowness is
+// worth stating. A bound does not gate the body: a generic `T` with no bounds at all can
+// already call any method the concrete type turns out to have, because the body is
+// checked after monomorphization against that type. So none of these functions would
+// stop compiling if their bounds were dropped. The bounds are checked at the *call*
+// site, and multiple_trait_bounds_all_hold.vx is where that enforcement is pinned.
+//
+// So this file says two things: `A + B` and `A + B + C` parse, and a call whose argument
+// satisfies every bound is accepted rather than spuriously rejected. `one` is the
+// regression case -- the loop that reads `A + B` also has to read a lone `A`.
+//
+// There is deliberately no directive about emitted IR: what changed is a check, not a
+// lowering, so a directive would only pin whichever code generator happened to run.
+trait Doubles {
+  fn twice(self : Self) -> i32;
+}
+
+trait Tags {
+  fn tag(self : Self) -> i32;
+}
+
+trait Signs {
+  fn sign(self : Self) -> i32;
+}
+
+impl Doubles for i32 {
+  fn twice(self : i32) -> i32 {
+    return self * 2;
+  }
+}
+
+impl Tags for i32 {
+  fn tag(self : i32) -> i32 {
+    return 100;
+  }
+}
+
+impl Signs for i32 {
+  fn sign(self : i32) -> i32 {
+    return 7;
+  }
+}
+
+fn one<T : Doubles>(x : T) -> i32 {
+  return x.twice();
+}
+
+fn two<T : Doubles + Tags>(x : T) -> i32 {
+  return x.twice() + x.tag();
+}
+
+fn three<T : Doubles + Tags + Signs>(x : T) -> i32 {
+  return x.twice() + x.tag() + x.sign();
+}
+
+fn main() -> i32 {
+  print(one(5));
+  print!(" ");
+  print(two(5));
+  print!(" ");
+  print(three(5));
+  return 0;
+}
+
+// EXPECT: 10 110 117

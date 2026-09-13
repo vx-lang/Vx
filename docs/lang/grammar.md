@@ -49,7 +49,8 @@ where_clause ::= "where" reachable_constraint ( "," reachable_constraint )*
 reachable_constraint ::= "Reachable" "<" identifier "," identifier ">"
 
 generic_params ::= "<" ( generic_param ","? )* ">"
-generic_param ::= "const" identifier ":" type | identifier ( ":" ( "Topology" | identifier ) )?
+generic_param ::= "const" identifier ":" type | identifier ( ":" bound ( "+" bound )* )?
+bound         ::= "Topology" | identifier
 
 param_list ::= ( identifier ":" type ","? )*
 

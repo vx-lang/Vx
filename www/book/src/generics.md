@@ -54,13 +54,26 @@ When several impls could apply, the most specific one wins.
 
 ## Bounds
 
-Constrain a parameter with `:`:
+Constrain a parameter with `:`, and write several with `+`:
 
 ```rust
 impl<T : Float> Tensor<T, [?, ?]> {
     // ...
 }
 ```
+
+<!-- vx-doctest: skip -- a signature, not a program -->
+
+```rust
+fn describe<T : Doubles + Tags>(x : T) -> i32 {
+    return x.twice() + x.tag();
+}
+```
+
+Every bound has to hold at the call site, and each one that does not is reported. Note
+that a bound constrains *callers*, not the body: a generic body is checked after
+monomorphization against the concrete type, so it can call any method that type has,
+whether or not a bound named it.
 
 ## Traits
 

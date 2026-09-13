@@ -57,18 +57,24 @@ impl<'a> Parser<'a> {
                 } else {
                     let name = self.expect_identifier("Expected generic parameter name")?;
                     self.generic_params.push(name.clone());
-                    let mut bound = None;
+                    let mut bounds = Vec::new();
                     if self.match_token(&TokenType::Colon) {
-                        bound = match self.advance().kind.clone() {
-                            TokenType::Identifier(s) => Some(s.to_string()),
-                            // `<D: Topology>` -- `Topology` is a keyword, not an identifier.
-                            TokenType::Topology => Some("Topology".to_string()),
-                            _ => return Err(self.error("Expected trait bound identifier")),
-                        };
+                        loop {
+                            let bound = match self.advance().kind.clone() {
+                                TokenType::Identifier(s) => s.to_string(),
+                                // `<D: Topology>` -- `Topology` is a keyword, not an identifier.
+                                TokenType::Topology => "Topology".to_string(),
+                                _ => return Err(self.error("Expected trait bound identifier")),
+                            };
+                            bounds.push(bound.into());
+                            if !self.match_token(&TokenType::Plus) {
+                                break;
+                            }
+                        }
                     }
                     generics.push(GenericParam::Type {
                         name: name.into(),
-                        bound: bound.map(|s| s.into()),
+                        bounds,
                     });
                 }
                 if !self.match_token(&TokenType::Comma) {

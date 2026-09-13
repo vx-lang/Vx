@@ -15,8 +15,16 @@ use crate::symbol::Symbol;
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum GenericParam {
-    Type { name: Symbol, bound: Option<Symbol> },
-    Const { name: Symbol, ty: Type },
+    /// A type parameter and the traits it is constrained by. Several are written
+    /// `T : A + B`, and all of them have to hold; an unconstrained parameter has none.
+    Type {
+        name: Symbol,
+        bounds: Vec<Symbol>,
+    },
+    Const {
+        name: Symbol,
+        ty: Type,
+    },
 }
 
 impl GenericParam {
