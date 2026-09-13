@@ -1,0 +1,27 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// `%` is defined on one number at a time, and the checker says so rather than leaving
+// it to codegen. A shaped tensor has no named `linalg` remainder to lower to, so the
+// flat emitter would decline and fall back to a path that cannot lower it either. A
+// `bool` operand is worse than that: `arith.remsi` on an `i1` verifies, and answers
+// nothing.
+
+fn tensors() -> i32 {
+  let a = Tensor<f32, [4]>::uninit();
+  let b = Tensor<f32, [4]>::uninit();
+  let c = a % b;
+  return 0;
+}
+// CHECK: Error[E3030]{{.*}}`%` takes two numbers, got Tensor<f32, [4]> and Tensor<f32, [4]>
+
+fn bools() -> i32 {
+  let p = true;
+  let q = false;
+  let r = p % q;
+  return 0;
+}
+// CHECK: Error[E3030]{{.*}}`%` takes two numbers, got bool and bool
+
+fn main() -> i32 {
+  return 0;
+}

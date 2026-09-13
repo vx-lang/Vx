@@ -351,6 +351,23 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
 
+                // `%` is defined on one number at a time. A shaped tensor has no named
+                // `linalg` remainder to lower to, and a `bool` operand would otherwise reach
+                // `arith.remsi` on an `i1` -- which verifies, and answers nothing.
+                if *op == BinaryOp::Rem {
+                    let numeric = |t: &Type| {
+                        !matches!(Self::single_value_elem(t), None | Some(ElementType::Bool))
+                    };
+                    if !numeric(&lhs_ty) || !numeric(&rhs_ty) {
+                        self.errors.error_with_code(
+                            crate::diagnostic::DiagnosticCode::E3030,
+                            format!("`%` takes two numbers, got {} and {}", lhs_ty, rhs_ty),
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                        );
+                        return lhs_ty;
+                    }
+                }
+
                 if !self.is_assignable(&lhs_ty, &rhs_ty) {
                     self.errors.error_with_code(
                         crate::diagnostic::DiagnosticCode::E3004,
@@ -378,6 +395,21 @@ impl<'a> TypeChecker<'a> {
             Type::Pinned(inner, _) => Self::scalar_elem(inner),
             Type::Ref(inner, _) => Self::scalar_elem(inner),
             Type::Borrow { inner, .. } => Self::scalar_elem(inner),
+            _ => None,
+        }
+    }
+
+    /// The element type of an operand that holds a single value, seen through the value-carrying
+    /// wrappers. `None` for a *shaped* tensor, which is what separates this from `scalar_elem`:
+    /// the integer operators have no elementwise lowering, so a shaped operand has to be refused
+    /// by the checker rather than declined by the emitter.
+    pub(crate) fn single_value_elem(ty: &Type) -> Option<ElementType> {
+        match ty {
+            Type::Scalar(e) => Some(e.clone()),
+            Type::Tensor(e, dims, _) if dims.is_empty() => Some(e.clone()),
+            Type::Pinned(inner, _) => Self::single_value_elem(inner),
+            Type::Ref(inner, _) => Self::single_value_elem(inner),
+            Type::Borrow { inner, .. } => Self::single_value_elem(inner),
             _ => None,
         }
     }

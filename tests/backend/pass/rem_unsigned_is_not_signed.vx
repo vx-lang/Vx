@@ -1,0 +1,30 @@
+//===- rem_unsigned_is_not_signed.vx - Vx Compiler ----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// An MLIR integer is signless, so `%` on a `u32` and `%` on an `i32` are the same
+// operands and the same printed type. Only the Vx element type separates them, and
+// only the flat path still has it at the point the op is chosen -- hence the marker.
+// Forcing this file onto the AST path would test a lowering that deliberately does not
+// exist there: that path is handed the printed type and emits the signed op for every
+// integer, as it already does for unsigned `/`.
+//
+// 4000000000 % 7 is 3 read unsigned and -1 if the same bits are read as signed, so
+// picking the wrong op here is a wrong answer rather than a cosmetic difference.
+// REQUIRES: flat-codegen
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: arith.remui
+// CHECK-NOT: arith.remsi
+fn main() -> i32 {
+  let u : u32 = 4000000000;
+  let v : u32 = 7;
+  // Printed rather than returned: the run-time half of this file is compiled through
+  // the AST path by the harness whatever the marker says, and an exit code carrying
+  // that path's -1 would fail the run before the directives above were ever read.
+  print((u % v) as i32);
+  return 0;
+}

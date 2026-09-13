@@ -687,6 +687,9 @@ impl<'a> TypeChecker<'a> {
                     (Value::Number(a), Value::Number(b), BinaryOp::Div) => {
                         Some(Value::Number(a / b))
                     }
+                    (Value::Number(a), Value::Number(b), BinaryOp::Rem) => {
+                        (b != 0.0).then(|| Value::Number(a % b))
+                    }
                     _ => None,
                 }
             }

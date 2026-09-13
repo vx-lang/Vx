@@ -251,6 +251,11 @@ pub enum Opcode {
     /// `operand1`'s. `operand2` is the closure's environment slot; `imm` indexes the type table
     /// at the closure adapter's GID.
     TensorMap = 51,
+    /// `a % b`: the remainder, with the sign of the dividend for signed integers. Numbered after
+    /// the tensor opcodes rather than beside `Div` because the discriminant is what a serialized
+    /// flat HIR body carries, and renumbering the ones above it would silently reinterpret every
+    /// artifact already written.
+    Rem = 52,
 }
 
 /// Reverse mode for `Opcode::AutoDiff`: the gradient, through `__enzyme_autodiff_grad_*`.
@@ -275,6 +280,7 @@ impl Opcode {
             5 => Sub,
             6 => Mul,
             7 => Div,
+            52 => Rem,
             8 => Call,
             9 => Ret,
             10 => Matmul,

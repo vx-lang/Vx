@@ -5482,6 +5482,7 @@ fn binop_opcode(op: &BinaryOp) -> Option<Opcode> {
         BinaryOp::Sub => Opcode::Sub,
         BinaryOp::Mul => Opcode::Mul,
         BinaryOp::Div => Opcode::Div,
+        BinaryOp::Rem => Opcode::Rem,
         BinaryOp::MatMul => Opcode::Matmul,
     })
 }
@@ -5568,6 +5569,7 @@ pub fn verify_hir_stream(worker: &LocalWorkerState) {
             | Opcode::Sub
             | Opcode::Mul
             | Opcode::Div
+            | Opcode::Rem
             | Opcode::Matmul
             | Opcode::Cmp
             | Opcode::Store

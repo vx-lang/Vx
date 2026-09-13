@@ -87,6 +87,7 @@ pub enum TokenTypeBase<S, C> {
     Minus,
     Star,
     Slash,
+    Percent,
     Dot,
     DoubleDot,
     Ampersand,
@@ -187,6 +188,7 @@ impl<S: std::fmt::Display, C: std::fmt::Display> std::fmt::Display for TokenType
             TokenTypeBase::Minus => write!(f, "-"),
             TokenTypeBase::Star => write!(f, "*"),
             TokenTypeBase::Slash => write!(f, "/"),
+            TokenTypeBase::Percent => write!(f, "%"),
             TokenTypeBase::Dot => write!(f, "."),
             TokenTypeBase::DoubleDot => write!(f, ".."),
             TokenTypeBase::Ampersand => write!(f, "&"),
@@ -622,6 +624,7 @@ impl<'a> Lexer<'a> {
             '$' => TokenTypeBase::Dollar,
             '?' => TokenTypeBase::Question,
             '/' => TokenTypeBase::Slash,
+            '%' => TokenTypeBase::Percent,
             '=' => {
                 if self.peek_char() == Some('=') {
                     self.advance();
@@ -792,6 +795,7 @@ impl<'a> Token<'a> {
             TokenTypeBase::Minus => TokenTypeBase::Minus,
             TokenTypeBase::Star => TokenTypeBase::Star,
             TokenTypeBase::Slash => TokenTypeBase::Slash,
+            TokenTypeBase::Percent => TokenTypeBase::Percent,
             TokenTypeBase::Dot => TokenTypeBase::Dot,
             TokenTypeBase::DoubleDot => TokenTypeBase::DoubleDot,
             TokenTypeBase::Ampersand => TokenTypeBase::Ampersand,
@@ -895,6 +899,7 @@ impl OwnedToken {
             TokenTypeBase::Minus => TokenTypeBase::Minus,
             TokenTypeBase::Star => TokenTypeBase::Star,
             TokenTypeBase::Slash => TokenTypeBase::Slash,
+            TokenTypeBase::Percent => TokenTypeBase::Percent,
             TokenTypeBase::Dot => TokenTypeBase::Dot,
             TokenTypeBase::DoubleDot => TokenTypeBase::DoubleDot,
             TokenTypeBase::Ampersand => TokenTypeBase::Ampersand,
@@ -972,6 +977,7 @@ mod tests {
         assert_eq!(lex_first("-"), TokenTypeBase::Minus);
         assert_eq!(lex_first("*"), TokenTypeBase::Star);
         assert_eq!(lex_first("/"), TokenTypeBase::Slash);
+        assert_eq!(lex_first("%"), TokenTypeBase::Percent);
         assert_eq!(lex_first("@"), TokenTypeBase::At);
         assert_eq!(lex_first("("), TokenTypeBase::LeftParen);
         assert_eq!(lex_first(")"), TokenTypeBase::RightParen);

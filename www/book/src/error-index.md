@@ -120,6 +120,7 @@ Raised by the type checker. Vx performs no implicit numeric conversion, so many 
 | `E3027` | A function whose return type is a closure. A closure value points into the frame that made it, so it cannot outlive that frame yet. |
 | `E3028` | A function with a non-void return type whose body can complete without returning. Reported here rather than left to codegen, where it surfaced as an MLIR verifier message naming an operation, with no source location. |
 | `E3029` | A type name in a signature that names no declaration. An unknown name in type position parses as a user nominal, so without this a typo -- or a type constructor removed from the language -- compiled silently and did nothing. |
+| `E3030` | An operator applied to operand types it is not defined on -- `%` on a shaped tensor or on a `bool`. Refused here because the alternative is worse in both directions: the flat emitter would decline and fall back to a path that cannot lower it either, and an `i1` operand would reach `arith.remsi` and verify. |
 
 ## Borrow/Ownership Errors
 

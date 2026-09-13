@@ -216,6 +216,15 @@ impl<'a> Parser<'a> {
                         span: Span::default(),
                     });
                 }
+                TokenType::Percent => {
+                    let right = self.parse_binary_expr(op_prec + 1)?;
+                    left = Expr::BinaryOp(BinaryOpExpr {
+                        lhs: Box::new(left),
+                        op: BinaryOp::Rem,
+                        rhs: Box::new(right),
+                        span: Span::default(),
+                    });
+                }
                 TokenType::DoubleDot => {
                     let right = self.parse_binary_expr(op_prec + 1)?;
                     left = Expr::Range(RangeExpr {
@@ -242,7 +251,7 @@ impl<'a> Parser<'a> {
             | TokenType::RightAngle => Some(40),
             TokenType::DoubleDot => Some(45),
             TokenType::Plus | TokenType::Minus => Some(50),
-            TokenType::Star | TokenType::Slash | TokenType::At => Some(60),
+            TokenType::Star | TokenType::Slash | TokenType::Percent | TokenType::At => Some(60),
             _ => None,
         }
     }
