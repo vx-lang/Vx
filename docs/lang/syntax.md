@@ -179,6 +179,11 @@ fn dispatch<D: Topology>(x: Pinned<i32, Topology::D>) -> i32 {
   - `%` is the remainder, on one number at a time: a shaped tensor or a `bool` operand is
     refused (E3030). For signed integers the sign follows the dividend, as in Rust and C.
     It binds like `*` and `/`.
+- Bitwise: `&`, `|`, `^`, on integers and on `bool`. A float or a shaped tensor operand is
+  refused (E3030) -- the mirror image of `%`, which takes any number and refuses `bool`.
+  Precedence follows Rust: `&` binds tightest, then `^`, then `|`, and all three sit
+  between the comparisons and `+`. A prefix `&` is still a borrow; only an infix one is
+  this operator.
 - Relational Operators: `==`, `!=`, `<`, `>`, `<=`, `>=` (Returns a Boolean evaluation)
 - Logical Operators: `&&`, `||`, `!` (Requires Boolean operands)
 - Range: `..` (e.g. `0..4`, and inside a topology index such as `NPU[0..4]`)

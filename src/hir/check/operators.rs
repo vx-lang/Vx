@@ -15,6 +15,21 @@
 
 use super::super::*;
 
+/// How an operator is written, for a diagnostic that has to name it.
+fn binary_op_symbol(op: &BinaryOp) -> &'static str {
+    match op {
+        BinaryOp::Add => "+",
+        BinaryOp::Sub => "-",
+        BinaryOp::Mul => "*",
+        BinaryOp::MatMul => "@",
+        BinaryOp::Div => "/",
+        BinaryOp::Rem => "%",
+        BinaryOp::BitAnd => "&",
+        BinaryOp::BitOr => "|",
+        BinaryOp::BitXor => "^",
+    }
+}
+
 /// `x.topology()`, with no arguments: the placement query.
 fn is_placement_query(e: &Expr) -> bool {
     matches!(e, Expr::MethodCall(mc) if mc.method_name.as_ref() == "topology" && mc.args.is_empty())
@@ -351,17 +366,37 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
 
-                // `%` is defined on one number at a time. A shaped tensor has no named
-                // `linalg` remainder to lower to, and a `bool` operand would otherwise reach
-                // `arith.remsi` on an `i1` -- which verifies, and answers nothing.
-                if *op == BinaryOp::Rem {
-                    let numeric = |t: &Type| {
-                        !matches!(Self::single_value_elem(t), None | Some(ElementType::Bool))
+                // `%` and the bitwise operators take one value at a time, and not every
+                // element type. A shaped tensor is refused for all of them: there is no
+                // named `linalg` form to lower to, so the flat emitter would decline and
+                // fall back to a path that cannot lower it either. Beyond that they differ.
+                // `%` is arithmetic, so it takes any number and refuses `bool` -- which
+                // would otherwise reach `arith.remsi` on an `i1`, an operation that
+                // verifies and answers nothing. The bitwise operators are the other way
+                // round: they are defined on bit patterns, so `bool` is fine and a float
+                // is not.
+                let bitwise = matches!(op, BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor);
+                if *op == BinaryOp::Rem || bitwise {
+                    let admissible = |t: &Type| match Self::single_value_elem(t) {
+                        None => false,
+                        Some(ElementType::Bool) => bitwise,
+                        Some(e) => !(bitwise && e.is_float()),
                     };
-                    if !numeric(&lhs_ty) || !numeric(&rhs_ty) {
+                    if !admissible(&lhs_ty) || !admissible(&rhs_ty) {
+                        let wanted = if bitwise {
+                            "two integers or bools"
+                        } else {
+                            "two numbers"
+                        };
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E3030,
-                            format!("`%` takes two numbers, got {} and {}", lhs_ty, rhs_ty),
+                            format!(
+                                "`{}` takes {}, got {} and {}",
+                                binary_op_symbol(op),
+                                wanted,
+                                lhs_ty,
+                                rhs_ty
+                            ),
                             Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                         );
                         return lhs_ty;

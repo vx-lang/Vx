@@ -690,6 +690,17 @@ impl<'a> TypeChecker<'a> {
                     (Value::Number(a), Value::Number(b), BinaryOp::Rem) => {
                         (b != 0.0).then(|| Value::Number(a % b))
                     }
+                    (
+                        Value::Number(_),
+                        Value::Number(_),
+                        BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor,
+                    ) => {
+                        // This interpreter holds every number as an `f64`, and a bit
+                        // pattern read out of one would not be the bit pattern the
+                        // program is talking about. Left unfolded rather than folded
+                        // wrongly.
+                        None
+                    }
                     _ => None,
                 }
             }

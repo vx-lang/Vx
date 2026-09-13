@@ -147,6 +147,9 @@ fn const_dim(e: &Expr) -> Option<u64> {
                 crate::syntax::BinaryOp::Mul => l.checked_mul(r),
                 crate::syntax::BinaryOp::Div => (r != 0).then_some(l / r),
                 crate::syntax::BinaryOp::Rem => (r != 0).then_some(l % r),
+                crate::syntax::BinaryOp::BitAnd => Some(l & r),
+                crate::syntax::BinaryOp::BitOr => Some(l | r),
+                crate::syntax::BinaryOp::BitXor => Some(l ^ r),
                 crate::syntax::BinaryOp::MatMul => None,
             }
         }

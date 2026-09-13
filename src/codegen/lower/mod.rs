@@ -83,6 +83,11 @@ impl MeliorOpInfo for BinaryOp {
                     "arith.remsi"
                 }
             }
+            // One name each: these are bit patterns, so neither signedness nor floatness
+            // enters into the choice. A float operand is refused by the checker (E3030).
+            BinaryOp::BitAnd => "arith.andi",
+            BinaryOp::BitOr => "arith.ori",
+            BinaryOp::BitXor => "arith.xori",
         }
     }
 

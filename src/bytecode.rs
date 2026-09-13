@@ -256,6 +256,12 @@ pub enum Opcode {
     /// flat HIR body carries, and renumbering the ones above it would silently reinterpret every
     /// artifact already written.
     Rem = 52,
+    /// `a & b`, bitwise, on integers and `bool`.
+    BitAnd = 53,
+    /// `a | b`, bitwise, on integers and `bool`.
+    BitOr = 54,
+    /// `a ^ b`, bitwise, on integers and `bool`.
+    BitXor = 55,
 }
 
 /// Reverse mode for `Opcode::AutoDiff`: the gradient, through `__enzyme_autodiff_grad_*`.
@@ -281,6 +287,9 @@ impl Opcode {
             6 => Mul,
             7 => Div,
             52 => Rem,
+            53 => BitAnd,
+            54 => BitOr,
+            55 => BitXor,
             8 => Call,
             9 => Ret,
             10 => Matmul,

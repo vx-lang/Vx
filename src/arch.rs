@@ -341,6 +341,9 @@ pub fn const_topology_index(expr: &crate::syntax::Expr) -> Option<i32> {
                 crate::syntax::BinaryOp::Mul => l.checked_mul(r),
                 crate::syntax::BinaryOp::Div => (r != 0).then(|| l / r),
                 crate::syntax::BinaryOp::Rem => (r != 0).then(|| l % r),
+                crate::syntax::BinaryOp::BitAnd => Some(l & r),
+                crate::syntax::BinaryOp::BitOr => Some(l | r),
+                crate::syntax::BinaryOp::BitXor => Some(l ^ r),
                 crate::syntax::BinaryOp::MatMul => None,
             }
         }

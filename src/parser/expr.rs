@@ -225,6 +225,33 @@ impl<'a> Parser<'a> {
                         span: Span::default(),
                     });
                 }
+                TokenType::Ampersand => {
+                    let right = self.parse_binary_expr(op_prec + 1)?;
+                    left = Expr::BinaryOp(BinaryOpExpr {
+                        lhs: Box::new(left),
+                        op: BinaryOp::BitAnd,
+                        rhs: Box::new(right),
+                        span: Span::default(),
+                    });
+                }
+                TokenType::Pipe => {
+                    let right = self.parse_binary_expr(op_prec + 1)?;
+                    left = Expr::BinaryOp(BinaryOpExpr {
+                        lhs: Box::new(left),
+                        op: BinaryOp::BitOr,
+                        rhs: Box::new(right),
+                        span: Span::default(),
+                    });
+                }
+                TokenType::Caret => {
+                    let right = self.parse_binary_expr(op_prec + 1)?;
+                    left = Expr::BinaryOp(BinaryOpExpr {
+                        lhs: Box::new(left),
+                        op: BinaryOp::BitXor,
+                        rhs: Box::new(right),
+                        span: Span::default(),
+                    });
+                }
                 TokenType::DoubleDot => {
                     let right = self.parse_binary_expr(op_prec + 1)?;
                     left = Expr::Range(RangeExpr {
@@ -250,8 +277,15 @@ impl<'a> Parser<'a> {
             | TokenType::LeftAngle
             | TokenType::RightAngle => Some(40),
             TokenType::DoubleDot => Some(45),
-            TokenType::Plus | TokenType::Minus => Some(50),
-            TokenType::Star | TokenType::Slash | TokenType::Percent | TokenType::At => Some(60),
+            // The bitwise levels sit between the comparisons and `+`, in Rust's order:
+            // `|` loosest, then `^`, then `&`. The numbers are spaced so a level can be
+            // added between two of them without renumbering the rest; nothing outside
+            // this function reads them.
+            TokenType::Pipe => Some(50),
+            TokenType::Caret => Some(55),
+            TokenType::Ampersand => Some(60),
+            TokenType::Plus | TokenType::Minus => Some(70),
+            TokenType::Star | TokenType::Slash | TokenType::Percent | TokenType::At => Some(80),
             _ => None,
         }
     }

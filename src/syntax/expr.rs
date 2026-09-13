@@ -22,6 +22,9 @@ pub enum BinaryOp {
     MatMul,
     Div,
     Rem,
+    BitAnd,
+    BitOr,
+    BitXor,
 }
 
 #[derive(Debug, PartialEq, Clone)]
