@@ -1,0 +1,77 @@
+//===- item_position_macros.vx - Vx Compiler ----------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `macro_rules` call may stand where an item goes, not only inside a function body.
+// Expansion parses what it produced with the same code that parses an item written by
+// hand, so a macro can produce an `impl`, a `fn`, or anything else at the top level.
+//
+// This is what `core::num` is waiting on. `Ord` wants an impl for each of ten integer
+// widths, and the `checked_*`, `wrapping_*` and `saturating_*` families want one per
+// operation per width. Rust's own `core::num` is written this way; without it that module
+// is thousands of hand-written lines rather than hundreds.
+//
+// Four things are separated here, because a macro that only ever produced one kind of
+// item would pass a smaller file:
+//
+//   `stamp_zero`   produces an impl, and is called twice for two different types, so the
+//                  expansion cannot be a single shared copy
+//   `stamp_const`  produces a plain function, so items other than impls reach the parser
+//   `outer`        calls `stamp_const` from inside its own expansion, so an item macro
+//                  may produce another item macro call rather than only finished items
+//
+// `stamp_const`'s matcher writes `$name : ident $v : expr` with nothing between them, and
+// that is the point rather than a style choice: `ident` takes exactly one token while
+// `expr` takes every token up to the next one the matcher names. With a separator the two
+// behave alike and the file would not notice `ident` losing its meaning; with none, an
+// `ident` that took more would swallow the value as well as the name.
+//
+// `$t : ty` is the kind for the type being stamped. `expr` would capture it too, since
+// those two are not told apart today, but nothing here is a type except by being used as
+// one, so the kind is the only place that intent is written down.
+trait Zero {
+  fn zero(self : Self) -> i32;
+}
+
+macro_rules stamp_zero {
+  ($t : ty) => {
+    impl Zero for $t {
+      fn zero(self : $t) -> i32 {
+        return 0;
+      }
+    }
+  };
+}
+
+macro_rules stamp_const {
+  ($name : ident $v : expr) => {
+    fn $name() -> i32 {
+      return $v;
+    }
+  };
+}
+
+macro_rules outer {
+  ($v : expr) => {
+    stamp_const!(from_outer $v);
+  };
+}
+
+stamp_zero!(i32);
+stamp_zero!(f32);
+stamp_const!(forty 40);
+outer!(2);
+
+fn main() -> i32 {
+  let a : i32 = 5;
+  let b : f32 = 1.5;
+  print(a.zero() + b.zero());
+  print!(" ");
+  print(forty() + from_outer());
+  return 0;
+}
+
+// EXPECT: 0 42

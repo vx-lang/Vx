@@ -49,6 +49,7 @@ use vxc::syntax::VxModule;
 #[test]
 fn test_ak_module_add_function() -> Result<(), String> {
     let mut module = VxModule {
+        item_macros: Vec::new(),
         imports: Vec::new(),
         module_path: "core::test".into(),
         externs: vec![],

@@ -7,12 +7,17 @@ This document provides a complete, formal description of the syntax and grammati
 A Vx program consists of a sequence of module-level declarations.
 
 ```ebnf
-program ::= ( import_decl | macro_def | extern_block | trait_decl | impl_block | transfer_impl_decl | struct_decl | enum_decl | topology_decl | memory_decl | function_decl )*
+program ::= ( import_decl | macro_def | item_macro_call | extern_block | trait_decl | impl_block | transfer_impl_decl | struct_decl | enum_decl | topology_decl | memory_decl | function_decl )*
 
 import_decl ::= "import" identifier ( "::" identifier )* ";"
 
 macro_def ::= "macro_rules!" identifier "{" macro_rule* "}"
 macro_rule ::= "(" token_tree* ")" "=>" "{" token_tree* "}" ";"?
+fragment   ::= "$" identifier ":" ( "expr" | "ty" | "ident" )
+
+// A macro call where an item goes. What it expands to is parsed as items, so a macro may
+// produce an impl, a fn, a struct -- anything `program` lists, including another such call.
+item_macro_call ::= identifier "!" token_tree ";"?
 ```
 
 ## 2. Declarations

@@ -1073,6 +1073,43 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// An identifier immediately followed by `!`, where an item is expected. Adjacency is
+    /// what a macro call is: `foo !()` is not one, the same rule the statement parser applies.
+    fn at_item_macro_call(&self) -> bool {
+        let name = self.peek();
+        let bang = self.peek_n(1);
+        matches!(name.kind, TokenType::Identifier(_))
+            && matches!(bang.kind, TokenType::Bang)
+            && bang.line == name.line
+            && bang.column == name.column + name.length
+    }
+
+    /// `stamp_impl!(i32);` in item position. The call is recorded whole -- the arguments stay
+    /// an unparsed token tree -- because what it expands to is decided by the macro's rules,
+    /// not by this parser.
+    fn parse_item_macro_call(&mut self) -> ParseResult<'a, crate::syntax::stmt::MacroCallStmt> {
+        let name = match &self.advance().kind {
+            TokenType::Identifier(s) => s.to_string(),
+            other => {
+                return Err(self.error(&format!("Expected a macro name, found {:?}", other)));
+            }
+        };
+        self.advance(); // the `!`
+        let token_tree = self.parse_token_tree()?;
+        let mut block_tree = None;
+        if self.check(&TokenType::LeftBrace) {
+            block_tree = Some(self.parse_token_tree()?);
+        }
+        let has_semi = self.match_token(&TokenType::Semicolon);
+        Ok(crate::syntax::stmt::MacroCallStmt {
+            name: name.into(),
+            token_tree,
+            block_tree,
+            has_semi,
+            span: Span::default(),
+        })
+    }
+
     pub fn parse(&mut self) -> ParseResult<'a, Program> {
         let mut imports = Vec::new();
         let mut externs = Vec::new();
@@ -1085,6 +1122,7 @@ impl<'a> Parser<'a> {
         let mut functions = Vec::new();
         let mut macros = Vec::new();
         let mut transfer_impls = Vec::new();
+        let mut item_macros = Vec::new();
         while !self.check(&TokenType::Eof) {
             let mut doc_comment: Option<String> = None;
             while let TokenType::DocComment(c) = &self.peek().kind {
@@ -1150,6 +1188,10 @@ impl<'a> Parser<'a> {
                 let mut m = self.parse_memory_decl()?;
                 m.doc_comment = doc_comment;
                 memories.push(m);
+            } else if self.at_item_macro_call() {
+                // `stamp_impl!(i32);` where an item goes. What it expands to is not known until
+                // macro expansion runs, so it is recorded and replaced there.
+                item_macros.push(self.parse_item_macro_call()?);
             } else {
                 return Err(self.error(&format!(
                     "Unexpected token at top level: {:?}",
@@ -1159,6 +1201,7 @@ impl<'a> Parser<'a> {
         }
         Ok(Program {
             module_path: self.source.to_string().into(), // Default fallback, should be overridden by pipeline
+            item_macros,
             imports,
             macros,
             externs,

@@ -431,6 +431,7 @@ impl CompilerDriver {
         if self.options.host.as_deref() == Some("default") {
             program_arr.push(crate::syntax::Program {
                 module_path: crate::symbol::Symbol::from("<native-host>"),
+                item_macros: Vec::new(),
                 memories: vec![crate::syntax::MemoryDecl {
                     name: crate::symbol::Symbol::from("CPU_DRAM"),
                     parent: None,
