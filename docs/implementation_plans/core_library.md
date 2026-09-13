@@ -223,6 +223,15 @@ The P1 set is A1–A7 and A14. Of those, A4, A5 and A7 are parser-and-lowering w
 each; A1, A2, A3 and A14 are the substantive ones and are where the type checker and both code
 generators are touched. A6 needs a decision (§8.2) before it needs code.
 
+**Progress.** A5 is done, in four commits — one per operator family, plus the compound
+assignments. A4 is done. Both turned up something the table did not predict, which is recorded
+here because it changes what the remaining items are worth: `%` was the only way to spell an MLIR
+value name, so making it an operator stopped every module with an inline `mlir!` block from
+parsing; and a bound constrains *callers* only. A generic body is checked after monomorphization
+against the concrete type, so an unbounded `T` can already call any method that type has. That
+last point narrows A1: what fails there is method resolution inside a generic `impl` block, which
+may have nothing to do with the bound written on it. Confirm that before sizing the work.
+
 ______________________________________________________________________
 
 ## 5. Track B: the modules, phase by phase
