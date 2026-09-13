@@ -107,18 +107,7 @@ impl ModuleLoader {
     }
 
     pub fn into_programs(self) -> Vec<Program> {
-        let mut programs: Vec<Program> = self.loaded_modules.into_values().collect();
-        // Give each impl of a trait the default method bodies it did not write, here rather
-        // than in one of the drivers, because there are three places that take these modules
-        // and build a pipeline from them -- the compiler's two and the test harness -- and a
-        // fourth would miss it. From here on an impl holds every method it should have.
-        //
-        // A trait and an impl of it need not be in the same module, which is why this runs
-        // once over all of them rather than per module as they are parsed. When macros can
-        // produce items, this has to move after their expansion so a generated impl inherits
-        // too; today a macro cannot produce one.
-        crate::resolver::fill_trait_defaults(&mut programs);
-        programs
+        self.loaded_modules.into_values().collect()
     }
 
     /// Resolve an import path against the search paths, trying the given file extension. Shared by

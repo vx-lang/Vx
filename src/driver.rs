@@ -490,7 +490,8 @@ impl CompilerDriver {
                 global_macros.insert(mac.name.clone(), mac.rules.clone());
             }
         }
-        let expander = MacroExpander::new(&global_macros);
+        let trait_defaults = crate::resolver::collect_trait_defaults(program_arr.iter());
+        let expander = MacroExpander::new(&global_macros, &trait_defaults);
         for m in &mut program_arr {
             if let Err(e) = expander.expand_module(m) {
                 return Err(format!("Macro expansion failed: {}", e));

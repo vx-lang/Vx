@@ -1,0 +1,50 @@
+//===- macro_impl_inherits_trait_defaults.vx - Vx Compiler --------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// An impl produced by a macro gets the trait's default methods, like one written by hand.
+//
+// These two features arrived separately and did not meet. Default bodies were filled in
+// where the modules are first loaded, which is before macro expansion runs -- so a
+// macro-produced impl did not exist yet when the filling happened, and `doubled` below
+// was reported as not found on `i32`. The filling now happens at the end of expansion
+// instead, which is the first point at which every impl exists.
+//
+// This is the shape `core::num` is meant to be written in: one macro stamping an impl per
+// integer width, against a trait that provides most of its surface. A stamped impl that
+// silently lacked the provided methods would be worse than the parse error it replaced,
+// because it would only be noticed at the call.
+//
+// `stamped` writes `value` itself and inherits `doubled`, so the answer separates the two:
+// 42 is the default running over the stamped method, and neither 21 nor a missing symbol.
+trait Counts {
+  fn value(self : Self) -> i32;
+  fn doubled(self : Self) -> i32 {
+    return self.value() * 2;
+  }
+}
+
+macro_rules stamp {
+  ($t : ty) => {
+    impl Counts for $t {
+      fn value(self : $t) -> i32 {
+        return 21;
+      }
+    }
+  };
+}
+
+stamp!(i32);
+
+fn main() -> i32 {
+  let a : i32 = 1;
+  print(a.value());
+  print!(" ");
+  print(a.doubled());
+  return 0;
+}
+
+// EXPECT: 21 42

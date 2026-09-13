@@ -1477,7 +1477,8 @@ impl Transfer<Memory::L2, Memory::SMEM> for Topology::Dev {
         for mac in &program.macros {
             rules.insert(mac.name.clone(), mac.rules.clone());
         }
-        let expander = crate::parser::MacroExpander::new(&rules);
+        let defaults = crate::resolver::collect_trait_defaults(std::iter::once(&program));
+        let expander = crate::parser::MacroExpander::new(&rules, &defaults);
         expander.expand_module(&mut program).unwrap();
         let body = format!("{:?}", program.transfer_impls[0].methods[0].body);
         assert!(

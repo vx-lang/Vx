@@ -430,7 +430,10 @@ fn macro_expansion_phase(
     // mutable state, so its methods took `&mut self` without ever being able to use it; now that
     // they take `&self`, one expander is shared across the parallel-for and the borrow checker
     // proves the isolation rather than a comment asserting it.
-    let expander = MacroExpander::new(&global_macros);
+    // Collected here for the same reason the macro table is: both have to be complete before
+    // any module is expanded, because a trait and an impl of it need not share a module.
+    let trait_defaults = crate::resolver::collect_trait_defaults(parsed_modules.iter());
+    let expander = MacroExpander::new(&global_macros, &trait_defaults);
     let expand = |m: &mut VxModule| expander.expand_module(m).map_err(PipelineError::Parse);
     if sched.is_seq() {
         parsed_modules.iter_mut().try_for_each(expand)

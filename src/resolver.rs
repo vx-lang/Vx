@@ -109,11 +109,18 @@ fn substitute_self(ty: &crate::syntax::Type, target: &crate::syntax::Type) -> cr
 ///
 /// A trait's defaults are collected across every module first, because the trait and the
 /// impl need not be in the same one.
-pub fn fill_trait_defaults(programs: &mut [crate::syntax::Program]) {
-    use std::collections::HashMap;
-    let mut defaults: HashMap<crate::symbol::Symbol, Vec<crate::syntax::MethodSignature>> =
-        HashMap::new();
-    for program in programs.iter() {
+pub type TraitDefaults =
+    std::collections::HashMap<crate::symbol::Symbol, Vec<crate::syntax::MethodSignature>>;
+
+/// The trait methods that carry a default body, across every module.
+///
+/// Global on purpose: an impl and the trait it implements need not share a module, and an
+/// impl a macro produces is as entitled to the defaults as one written by hand.
+pub fn collect_trait_defaults<'p>(
+    programs: impl IntoIterator<Item = &'p crate::syntax::Program>,
+) -> TraitDefaults {
+    let mut defaults = TraitDefaults::new();
+    for program in programs {
         for decl in &program.traits {
             let with_bodies: Vec<crate::syntax::MethodSignature> = decl
                 .methods
@@ -126,47 +133,49 @@ pub fn fill_trait_defaults(programs: &mut [crate::syntax::Program]) {
             }
         }
     }
+    defaults
+}
+
+pub fn fill_trait_defaults_in(program: &mut crate::syntax::Program, defaults: &TraitDefaults) {
     if defaults.is_empty() {
         return;
     }
-    for program in programs.iter_mut() {
-        for block in &mut program.impls {
-            let Some(trait_name) = block.trait_name.clone() else {
+    for block in &mut program.impls {
+        let Some(trait_name) = block.trait_name.clone() else {
+            continue;
+        };
+        let Some(trait_methods) = defaults.get(&trait_name) else {
+            continue;
+        };
+        for signature in trait_methods {
+            if block
+                .methods
+                .iter()
+                .any(|m| m.name.as_ref() == signature.name.as_ref())
+            {
                 continue;
-            };
-            let Some(trait_methods) = defaults.get(&trait_name) else {
-                continue;
-            };
-            for signature in trait_methods {
-                if block
-                    .methods
-                    .iter()
-                    .any(|m| m.name.as_ref() == signature.name.as_ref())
-                {
-                    continue;
-                }
-                let body = signature
-                    .default_body
-                    .clone()
-                    .expect("only methods with a default body are collected");
-                block.methods.push(crate::syntax::Function {
-                    name: signature.name.clone(),
-                    generics: Vec::new(),
-                    params: signature
-                        .params
-                        .iter()
-                        .map(|(n, t)| (n.clone(), substitute_self(t, &block.target_type)))
-                        .collect(),
-                    topology: crate::syntax::Topology::CPU,
-                    return_type: substitute_self(&signature.return_type, &block.target_type),
-                    requires: Vec::new(),
-                    ensures: Vec::new(),
-                    where_transfers: Vec::new(),
-                    is_unsafe: false,
-                    body,
-                    doc_comment: None,
-                });
             }
+            let body = signature
+                .default_body
+                .clone()
+                .expect("only methods with a default body are collected");
+            block.methods.push(crate::syntax::Function {
+                name: signature.name.clone(),
+                generics: Vec::new(),
+                params: signature
+                    .params
+                    .iter()
+                    .map(|(n, t)| (n.clone(), substitute_self(t, &block.target_type)))
+                    .collect(),
+                topology: crate::syntax::Topology::CPU,
+                return_type: substitute_self(&signature.return_type, &block.target_type),
+                requires: Vec::new(),
+                ensures: Vec::new(),
+                where_transfers: Vec::new(),
+                is_unsafe: false,
+                body,
+                doc_comment: None,
+            });
         }
     }
 }

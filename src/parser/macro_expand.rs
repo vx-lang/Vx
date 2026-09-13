@@ -20,6 +20,11 @@ use std::collections::HashMap;
 
 pub struct MacroExpander<'a> {
     pub macros: &'a HashMap<crate::symbol::Symbol, Vec<MacroRule>>,
+    /// The trait methods that carry a default body, across every module. Held here because
+    /// filling them in is the last thing expansion does, and it has to be the last thing:
+    /// an impl a macro produced is entitled to the defaults, and nothing before expansion
+    /// can see it.
+    pub trait_defaults: &'a crate::resolver::TraitDefaults,
 }
 
 fn take_expr(expr: &mut expr::Expr) -> expr::Expr {
@@ -127,8 +132,14 @@ fn interleave_format_args(
 }
 
 impl<'a> MacroExpander<'a> {
-    pub fn new(macros: &'a HashMap<crate::symbol::Symbol, Vec<MacroRule>>) -> Self {
-        Self { macros }
+    pub fn new(
+        macros: &'a HashMap<crate::symbol::Symbol, Vec<MacroRule>>,
+        trait_defaults: &'a crate::resolver::TraitDefaults,
+    ) -> Self {
+        Self {
+            macros,
+            trait_defaults,
+        }
     }
 
     fn parse_expanded_expr(
@@ -263,6 +274,12 @@ impl<'a> MacroExpander<'a> {
             }
             pending = next;
         }
+
+        // Every impl the module now has, including the ones the macros above produced, gets
+        // the default method bodies it did not write. This is why it happens here and not
+        // where the modules are first loaded: before expansion a macro-produced impl does
+        // not exist yet, and filling defaults then left it without them.
+        crate::resolver::fill_trait_defaults_in(module, self.trait_defaults);
 
         // Expand top level decls
         for func in &mut module.functions {
