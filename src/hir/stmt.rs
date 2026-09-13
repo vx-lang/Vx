@@ -693,7 +693,11 @@ impl<'a> TypeChecker<'a> {
                     (
                         Value::Number(_),
                         Value::Number(_),
-                        BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor,
+                        BinaryOp::BitAnd
+                        | BinaryOp::BitOr
+                        | BinaryOp::BitXor
+                        | BinaryOp::Shl
+                        | BinaryOp::Shr,
                     ) => {
                         // This interpreter holds every number as an `f64`, and a bit
                         // pattern read out of one would not be the bit pattern the

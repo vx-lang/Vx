@@ -344,6 +344,14 @@ pub fn const_topology_index(expr: &crate::syntax::Expr) -> Option<i32> {
                 crate::syntax::BinaryOp::BitAnd => Some(l & r),
                 crate::syntax::BinaryOp::BitOr => Some(l | r),
                 crate::syntax::BinaryOp::BitXor => Some(l ^ r),
+                // A count that is negative or at least the operand's width is undefined,
+                // so it is left unfolded rather than folded to something invented.
+                crate::syntax::BinaryOp::Shl => {
+                    u32::try_from(r).ok().and_then(|s| l.checked_shl(s))
+                }
+                crate::syntax::BinaryOp::Shr => {
+                    u32::try_from(r).ok().and_then(|s| l.checked_shr(s))
+                }
                 crate::syntax::BinaryOp::MatMul => None,
             }
         }

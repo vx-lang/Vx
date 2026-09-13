@@ -88,6 +88,11 @@ impl MeliorOpInfo for BinaryOp {
             BinaryOp::BitAnd => "arith.andi",
             BinaryOp::BitOr => "arith.ori",
             BinaryOp::BitXor => "arith.xori",
+            BinaryOp::Shl => "arith.shli",
+            // Signed, for the same reason `Rem` is: this path is handed the printed MLIR
+            // type, which is signless. The flat path keeps the element type and picks
+            // `shrui` for an unsigned operand.
+            BinaryOp::Shr => "arith.shrsi",
         }
     }
 

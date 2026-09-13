@@ -310,6 +310,16 @@ fn arith_op(op: Opcode, e: &ElementType) -> Option<&'static str> {
         Opcode::BitAnd => "arith.andi",
         Opcode::BitOr => "arith.ori",
         Opcode::BitXor => "arith.xori",
+        Opcode::Shl => "arith.shli",
+        // Arithmetic for a signed operand and logical for an unsigned one: the sign bit
+        // is copied only when there is a sign bit to copy.
+        Opcode::Shr => {
+            if is_signed(e) {
+                "arith.shrsi"
+            } else {
+                "arith.shrui"
+            }
+        }
         _ => return None,
     })
 }
@@ -1739,7 +1749,9 @@ impl<'a> FnEmit<'a> {
             | Opcode::Rem
             | Opcode::BitAnd
             | Opcode::BitOr
-            | Opcode::BitXor => self.op_binary(idx, ins),
+            | Opcode::BitXor
+            | Opcode::Shl
+            | Opcode::Shr => self.op_binary(idx, ins),
             // Scalar comparison → `i1`; the relation is in `imm`, the operand type comes from the
             // first operand's tracked type (this instruction's own type is `bool`, the result).
             Opcode::Cmp => self.op_cmp(idx, ins),

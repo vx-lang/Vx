@@ -184,6 +184,15 @@ fn dispatch<D: Topology>(x: Pinned<i32, Topology::D>) -> i32 {
   Precedence follows Rust: `&` binds tightest, then `^`, then `|`, and all three sit
   between the comparisons and `+`. A prefix `&` is still a borrow; only an infix one is
   this operator.
+- Shifts: `<<` and `>>`, on integers only -- not on `bool` and not on a float (E3030).
+  `>>` is arithmetic on a signed operand and logical on an unsigned one. They bind
+  tighter than `&` and looser than `+`, which is Rust's order.
+  - The two brackets must be written with nothing between them. `a > > b` is a syntax
+    error, not a shift. This is what lets `>>` keep its other meaning: closing two
+    generics at once, as in `Pair<Pair<i32>>`.
+  - Both operands have the same type, as for every other binary operator, so the shift
+    count is not a separate width. Shifting by at least the operand's width is undefined
+    and nothing checks it, as with division by zero.
 - Relational Operators: `==`, `!=`, `<`, `>`, `<=`, `>=` (Returns a Boolean evaluation)
 - Logical Operators: `&&`, `||`, `!` (Requires Boolean operands)
 - Range: `..` (e.g. `0..4`, and inside a topology index such as `NPU[0..4]`)

@@ -127,6 +127,8 @@ binary_expr ::=
     | binary_expr "*" binary_expr
     | binary_expr "/" binary_expr
     | binary_expr "%" binary_expr
+    | binary_expr "<<" binary_expr
+    | binary_expr ">>" binary_expr
     | binary_expr "&" binary_expr
     | binary_expr "^" binary_expr
     | binary_expr "|" binary_expr

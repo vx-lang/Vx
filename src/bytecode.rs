@@ -262,6 +262,12 @@ pub enum Opcode {
     BitOr = 54,
     /// `a ^ b`, bitwise, on integers and `bool`.
     BitXor = 55,
+    /// `a << b`, on integers. Shifting by at least the operand's width is
+    /// undefined, as it is in C and in LLVM; nothing checks it.
+    Shl = 56,
+    /// `a >> b`, on integers: arithmetic for a signed operand, logical for an
+    /// unsigned one.
+    Shr = 57,
 }
 
 /// Reverse mode for `Opcode::AutoDiff`: the gradient, through `__enzyme_autodiff_grad_*`.
@@ -290,6 +296,8 @@ impl Opcode {
             53 => BitAnd,
             54 => BitOr,
             55 => BitXor,
+            56 => Shl,
+            57 => Shr,
             8 => Call,
             9 => Ret,
             10 => Matmul,

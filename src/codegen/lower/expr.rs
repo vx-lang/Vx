@@ -741,7 +741,9 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
                     | BinaryOp::Rem
                     | BinaryOp::BitAnd
                     | BinaryOp::BitOr
-                    | BinaryOp::BitXor => unreachable!(),
+                    | BinaryOp::BitXor
+                    | BinaryOp::Shl
+                    | BinaryOp::Shr => unreachable!(),
                 };
                 let arith_op = OperationBuilder::new(op_name, gen.loc())
                     .add_operands(&[va, vb])
@@ -1085,7 +1087,12 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
                 BinaryOp::Div => "linalg.div",
                 // The checker refuses a tensor operand to `%` (E3030): there is no named
                 // `linalg` remainder to lower it to.
-                BinaryOp::Rem | BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor => {
+                BinaryOp::Rem
+                | BinaryOp::BitAnd
+                | BinaryOp::BitOr
+                | BinaryOp::BitXor
+                | BinaryOp::Shl
+                | BinaryOp::Shr => {
                     panic!("this operator on tensors must have been refused by the checker")
                 }
             };

@@ -25,6 +25,8 @@ pub enum BinaryOp {
     BitAnd,
     BitOr,
     BitXor,
+    Shl,
+    Shr,
 }
 
 #[derive(Debug, PartialEq, Clone)]

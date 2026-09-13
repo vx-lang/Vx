@@ -27,6 +27,8 @@ fn binary_op_symbol(op: &BinaryOp) -> &'static str {
         BinaryOp::BitAnd => "&",
         BinaryOp::BitOr => "|",
         BinaryOp::BitXor => "^",
+        BinaryOp::Shl => "<<",
+        BinaryOp::Shr => ">>",
     }
 }
 
@@ -375,15 +377,20 @@ impl<'a> TypeChecker<'a> {
                 // verifies and answers nothing. The bitwise operators are the other way
                 // round: they are defined on bit patterns, so `bool` is fine and a float
                 // is not.
+                // A shift is narrower still: `bool` holds one bit and there is nothing
+                // useful to shift it by, so Rust does not define one and neither does this.
                 let bitwise = matches!(op, BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor);
-                if *op == BinaryOp::Rem || bitwise {
+                let shift = matches!(op, BinaryOp::Shl | BinaryOp::Shr);
+                if *op == BinaryOp::Rem || bitwise || shift {
                     let admissible = |t: &Type| match Self::single_value_elem(t) {
                         None => false,
                         Some(ElementType::Bool) => bitwise,
-                        Some(e) => !(bitwise && e.is_float()),
+                        Some(e) => !((bitwise || shift) && e.is_float()),
                     };
                     if !admissible(&lhs_ty) || !admissible(&rhs_ty) {
-                        let wanted = if bitwise {
+                        let wanted = if shift {
+                            "two integers"
+                        } else if bitwise {
                             "two integers or bools"
                         } else {
                             "two numbers"

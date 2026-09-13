@@ -85,17 +85,70 @@ pub(crate) fn stamp_dim_literals(expr: &mut Expr) {
         _ => {}
     }
 }
+/// Where `<<` and `>>` sit in the precedence ladder: tighter than `&` (60) and looser
+/// than `+` (70), which is Rust's order. It is a constant rather than an entry in
+/// `get_operator_precedence` because that function is handed a single token and a shift
+/// is written as two.
+const SHIFT_PRECEDENCE: u8 = 65;
+
 impl<'a> Parser<'a> {
     pub(crate) fn parse_expr(&mut self) -> ParseResult<'a, Expr> {
         self.parse_binary_expr(0)
     }
 
+    /// Two angle brackets written with nothing between them: `<<` or `>>`.
+    ///
+    /// The lexer deliberately does not join them into one token. `Vec<Vec<i32>>` ends
+    /// with two closing brackets, the type parser closes one generic per token, and an
+    /// inline `mlir!` block is full of types like `memref<memref<?x?xf32>>` that are
+    /// reassembled from the token stream. Joining them in the lexer would break all
+    /// three. A shift is recognized here instead, in operator position, where a closing
+    /// generic bracket can never appear.
+    ///
+    /// Adjacency is what separates `a >> b` from `a > > b`: the second stays the syntax
+    /// error it already was, rather than quietly becoming a shift.
+    fn shift_at(&self) -> Option<BinaryOp> {
+        let first = self.peek();
+        let second = self.peek_n(1);
+        if second.line != first.line || second.column != first.column + first.length {
+            return None;
+        }
+        match (&first.kind, &second.kind) {
+            (TokenType::LeftAngle, TokenType::LeftAngle) => Some(BinaryOp::Shl),
+            (TokenType::RightAngle, TokenType::RightAngle) => Some(BinaryOp::Shr),
+            _ => None,
+        }
+    }
+
     pub(crate) fn parse_binary_expr(&mut self, precedence: u8) -> ParseResult<'a, Expr> {
         let mut left = self.parse_primary_expr()?;
 
-        while let Some(op_prec) = self.get_operator_precedence(&self.peek().kind) {
+        loop {
+            // A shift is checked first: on its own, the leading `<` or `>` would read as
+            // a comparison, which binds looser and would take the second bracket as the
+            // start of its right operand.
+            let shift = self.shift_at();
+            let op_prec = match shift {
+                Some(_) => SHIFT_PRECEDENCE,
+                None => match self.get_operator_precedence(&self.peek().kind) {
+                    Some(p) => p,
+                    None => break,
+                },
+            };
             if op_prec < precedence {
                 break;
+            }
+            if let Some(op) = shift {
+                self.advance();
+                self.advance();
+                let right = self.parse_binary_expr(op_prec + 1)?;
+                left = Expr::BinaryOp(BinaryOpExpr {
+                    lhs: Box::new(left),
+                    op,
+                    rhs: Box::new(right),
+                    span: Span::default(),
+                });
+                continue;
             }
             let token = self.advance().clone();
             match token.kind {
@@ -282,6 +335,9 @@ impl<'a> Parser<'a> {
             // added between two of them without renumbering the rest; nothing outside
             // this function reads them.
             TokenType::Pipe => Some(50),
+            // `<<` and `>>` are two tokens and are handled by `shift_at`, at
+            // `SHIFT_PRECEDENCE` -- which belongs in this ladder at 65, between `&` and
+            // `+`, even though it cannot be listed here.
             TokenType::Caret => Some(55),
             TokenType::Ampersand => Some(60),
             TokenType::Plus | TokenType::Minus => Some(70),
