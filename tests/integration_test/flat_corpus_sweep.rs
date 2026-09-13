@@ -20,6 +20,11 @@ use std::process::Command;
 const KNOWN_DECLINES: &[&str] = &[
     "backend/pass/custom_topology_user_lowering.vx",
     "backend/pass/matmul_assign_alias.vx",
+    // A generic enum returned from a match whose arms each return. The flat path declines it
+    // as "a non-scalar default return" -- the same shape the AST path used to mis-lower, and
+    // the reason that file exists. Its answers come from the AST path, and it states no
+    // directive about emitted IR for that reason.
+    "backend/pass/generic_enum_returned_from_match.vx",
     "backend/pass/user_lowering_name_collisions.vx",
     "backend/pass/user_lowering_uncountable.vx",
     "backend/pass/user_lowering_waste.vx",

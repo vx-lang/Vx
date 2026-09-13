@@ -1425,10 +1425,14 @@ impl<'c> MeliorGenerator<'c> {
             }
             syntax::Type::Struct(name, _) => {
                 if let Some(enum_def) = self.enums.get(name) {
-                    if name.starts_with("Option<") {
+                    // Any instantiated generic enum, and whichever of its variants carries
+                    // the payload -- not a type called `Option` with a variant called `Some`.
+                    // The layout has one payload slot, so the first variant that has one
+                    // decides its type; a variant without one leaves the slot unread.
+                    if name.contains('<') {
                         let mut payload_ty_str = "none".to_string();
-                        for (v_name, payload) in enum_def {
-                            if **v_name == *"Some" {
+                        for (_v_name, payload) in enum_def {
+                            if payload_ty_str == "none" {
                                 if let Some(types) = payload {
                                     if !types.is_empty() {
                                         let mut lowered = self.lower_type_str(&types[0])?;
@@ -1539,8 +1543,8 @@ impl<'c> MeliorGenerator<'c> {
                             ))
                         })?;
                         let mut payload_ty_str = "none".to_string();
-                        for (v_name, payload) in enum_def {
-                            if v_name == "Some".into() {
+                        for (_v_name, payload) in enum_def {
+                            if payload_ty_str == "none" {
                                 if let Some(types) = payload {
                                     if !types.is_empty() {
                                         let mut mapping: std::collections::HashMap<
@@ -1632,10 +1636,14 @@ impl<'c> MeliorGenerator<'c> {
             }
             syntax::Type::Enum(name, _) => {
                 if let Some(enum_def) = self.enums.get(name) {
-                    if name.starts_with("Option<") {
+                    // Any instantiated generic enum, and whichever of its variants carries
+                    // the payload -- not a type called `Option` with a variant called `Some`.
+                    // The layout has one payload slot, so the first variant that has one
+                    // decides its type; a variant without one leaves the slot unread.
+                    if name.contains('<') {
                         let mut payload_ty_str = "none".to_string();
-                        for (v_name, payload) in enum_def {
-                            if **v_name == *"Some" {
+                        for (_v_name, payload) in enum_def {
+                            if payload_ty_str == "none" {
                                 if let Some(types) = payload {
                                     if !types.is_empty() {
                                         let mut lowered = self.lower_type_str(&types[0])?;
