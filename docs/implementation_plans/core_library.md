@@ -672,29 +672,42 @@ ______________________________________________________________________
    today and is what `std::iter` does; it leaks into every user bound as `I : Iterator<I, T>`.
    Recommendation: phase 1 uses the encoding so `cmp`/`option`/`result` are not blocked on an L
    item; A10 lands at the start of phase 2, and `iter` is written against it from the first line.
-1. **`Copy` semantics (A6).** Rust: a type is `Copy` if declared so and all its fields are. Vx
-   today: scalars copy, every struct/enum moves (though §9 D1 shows the checker does not flag a
-   moved enum of scalars, so the rule is not currently enforced either). Recommendation: adopt
-   Rust's rule exactly, enforced in the linear checker, with `Copy` a marker trait in
-   `core::marker`. The alternative, structural auto-Copy for all-scalar aggregates, makes
-   `Ordering` and `Option<i32>` copyable without a declaration but means adding a pointer field to
-   a struct silently changes its move semantics.
+
+1. **`Copy` semantics (A6). Decided: Rust's rule.** A type is `Copy` if it is declared so and all
+   its fields are, enforced in the linear checker, with `Copy` a marker trait in `core::marker`.
+   The alternative that was rejected is structural auto-Copy for all-scalar aggregates: it makes
+   `Ordering` and `Option<i32>` copyable with no declaration, and it means adding a pointer field
+   to a struct silently changes its move semantics.
+
+   Being opt-in is what keeps it away from placement. A tensor, a `Pinned<T, Topology>` and a
+   device buffer are linear because moving them is the whole discipline, and none of them can
+   declare itself `Copy` -- so they stay linear without a special case. A user struct holding one
+   cannot be `Copy` either, because the field is not. Duplicating placed data stays an explicit
+   `transfer`, and a copy-like trait of one's own can call `transfer` in its body.
+
+   Vx today: scalars copy and every struct and enum moves, though §9 D1 shows the checker does not
+   flag a moved enum of scalars, so the rule is not evenly enforced now either.
+
 1. **The index/length type.** Rust uses `usize`. Vx has none; `Vec::len` returns `i32`, `Slice`
    above uses `i64`, `sizeof` returns `i64`. Recommendation: `i64` everywhere in `core`, since it
    is what `memref.dim` and `sizeof` produce and it removes a class of overflow; `Vec` changes to
    match in phase 4. Adding `usize` as an alias for the target pointer width is a later language
    item.
+
 1. **Panic on a device.** `assert`/`cf.assert` traps. On a GPU or the ANE there is no message
    channel back. Recommendation: `core` panics are `cf.assert` with the message, the host prints
    it, a device traps silently, and `panic::set_hook` is `std`-only. Document it; do not design
    around it now.
+
 1. **Is `Tensor` Vx's array?** `[1, 2, 3]` is a `Tensor<i32, [3]>`. If yes, `core::array` is
    excluded permanently and `Tensor` gets `Index`, `IntoIterator`, `Default` impls in `std`. If no,
    A18 plus a real `[T; N]` type is an L language item. Recommendation: yes for now; revisit when
    A17 slices exist and the cost of a second array-like type is visible.
+
 1. **Two layers or three?** Rust's `alloc` exists so that `no_std` programs with a heap can have
    `Vec`. Vx's device regions have tensor allocation but no heap, so the same split is real here.
    Recommendation: three, with `alloc` created in phase 4, not before.
+
 1. **Where does this document live, and does ROADMAP §8 point at it?** `agents/Proposals.md` says
    `docs/implementation_plans/`, which is where it is. A one-line link from ROADMAP §8 would help a
    reader find it.
