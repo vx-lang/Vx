@@ -119,6 +119,7 @@ Raised by the type checker. Vx performs no implicit numeric conversion, so many 
 | `E3026` | A placement query (`.topology()`) the checker cannot decide. Placement is a fact of the receiver's type, compared with `Some(Topology::..)` or `None`; it has no run-time value. |
 | `E3027` | A function whose return type is a closure. A closure value points into the frame that made it, so it cannot outlive that frame yet. |
 | `E3028` | A function with a non-void return type whose body can complete without returning. Reported here rather than left to codegen, where it surfaced as an MLIR verifier message naming an operation, with no source location. |
+| `E3031` | `impl Copy for X` where one of `X`'s fields is a type that moves. `Copy` promises a value survives being assigned elsewhere, and a field that does not survive it breaks that promise for the whole type -- which would be a way to duplicate a tensor, or any other placed value, without saying so. |
 | `E3029` | A type name in a signature that names no declaration. An unknown name in type position parses as a user nominal, so without this a typo -- or a type constructor removed from the language -- compiled silently and did nothing. |
 
 ## Borrow/Ownership Errors

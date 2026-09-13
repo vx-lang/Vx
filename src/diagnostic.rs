@@ -265,6 +265,11 @@ pub enum DiagnosticCode {
     /// parses as a user nominal, so without this a typo -- or a type constructor removed from the
     /// language -- compiled silently and did nothing.
     E3029,
+    /// `impl Copy for X` where one of `X`'s fields is a type that moves. `Copy` promises a
+    /// value survives being assigned elsewhere, and a field that does not survive it breaks
+    /// that promise for the whole type -- which would be a way to duplicate a tensor, or any
+    /// other placed value, without saying so.
+    E3031,
 
     // --- Borrow/Ownership Errors (E4xxx) ---
     /// Use of moved or consumed linear variable

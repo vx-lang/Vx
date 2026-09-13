@@ -1,0 +1,48 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A type may declare itself `Copy` only if everything it holds is `Copy` too. `Copy`
+// promises a value survives being assigned somewhere else, and a field that does not
+// survive it breaks that promise for the whole type.
+//
+// The tensor cases are why the rule exists rather than being a tidiness measure. A
+// tensor is linear because moving it is what the placement discipline is made of, and
+// duplicating one is an explicit `transfer`. A struct holding a tensor that was allowed
+// to be `Copy` would be a way to duplicate that tensor without saying so -- and the same
+// through an enum payload, which is the second case.
+//
+// The third holds no tensor at all: `Plain` is an ordinary struct that has not declared
+// `Copy`, so it moves, so a `Copy` type cannot hold one either. That case is here because
+// the rule is about what moves, not about tensors.
+
+trait Copy {}
+
+struct HoldsTensor {
+  t : Tensor<f32, [4]>,
+  n : i32,
+}
+
+impl Copy for HoldsTensor {}
+// CHECK: Error[E3031]{{.*}}'HoldsTensor' cannot be `Copy`: its field 't' has type Tensor<f32, [4]>
+
+enum CarriesTensor {
+  Plain,
+  WithTensor(Tensor<f32, [4]>),
+}
+
+impl Copy for CarriesTensor {}
+// CHECK: Error[E3031]{{.*}}'CarriesTensor' cannot be `Copy`: its variant 'WithTensor' has type Tensor<f32, [4]>
+
+struct Plain {
+  a : i32,
+}
+
+struct HoldsPlain {
+  p : Plain,
+}
+
+impl Copy for HoldsPlain {}
+// CHECK: Error[E3031]{{.*}}'HoldsPlain' cannot be `Copy`: its field 'p' has type Plain
+
+fn main() -> i32 {
+  return 0;
+}

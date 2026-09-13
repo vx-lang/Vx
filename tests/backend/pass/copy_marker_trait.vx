@@ -1,0 +1,84 @@
+//===- copy_marker_trait.vx - Vx Compiler -------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `Copy` is an ordinary marker trait -- a trait with no methods -- and implementing it is
+// how a type says it survives being assigned somewhere else. Before this, every struct
+// and enum moved, so `let b = a;` consumed `a` and `Ordering`, `Option<i32>` and every
+// other piece of plain data in the core library were unusable twice.
+//
+// Each value below is read after it has been assigned to something else, which is the
+// whole of what `Copy` buys. Without it each of those second reads is E4001.
+//
+// `Outer` holds `Inner`, which is itself `Copy`. That is the case that says the rule
+// composes rather than stopping at one level.
+//
+// What is deliberately absent is any mention of a tensor. A type holding one cannot be
+// `Copy` -- copy_needs_copy_fields.vx is where that is refused -- and a type that has not
+// declared `Copy` still moves, which is in copy_is_opt_in.vx. Being opt-in is what keeps
+// this away from placement: nothing here can make a placed value duplicate itself.
+trait Copy {}
+
+enum Ordering {
+  Less,
+  Equal,
+  Greater,
+}
+
+impl Copy for Ordering {}
+
+struct Inner {
+  a : i32,
+}
+
+impl Copy for Inner {}
+
+struct Outer {
+  i : Inner,
+}
+
+impl Copy for Outer {}
+
+fn main() -> i32 {
+  let o = Ordering::Less();
+  let also_o = o;
+  match also_o {
+    Ordering::Less() => {
+      print(1);
+    },
+    Ordering::Equal() => {
+      print(2);
+    },
+    Ordering::Greater() => {
+      print(3);
+    },
+  }
+  print!(" ");
+  // `o` again, after it was assigned to `also_o`.
+  match o {
+    Ordering::Less() => {
+      print(1);
+    },
+    Ordering::Equal() => {
+      print(2);
+    },
+    Ordering::Greater() => {
+      print(3);
+    },
+  }
+  print!(" ");
+  let outer = Outer {
+    i : Inner {
+      a : 3,
+    },
+  };
+  let first = outer;
+  let second = outer;
+  print(first.i.a + second.i.a);
+  return 0;
+}
+
+// EXPECT: 1 1 6

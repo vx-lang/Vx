@@ -1,0 +1,37 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A type that has not implemented `Copy` still moves. This is the other half of
+// copy_marker_trait.vx, and the more important half: `Copy` had to be opt-in, and a
+// change that made every struct copyable would pass that file while quietly removing
+// the rule that the whole placement discipline rests on.
+//
+// `Plain` here is as simple as a struct gets -- one `i32` field -- so nothing about it
+// explains the refusal except that it never said `Copy`. Two `Copy` types are declared
+// alongside it so the trait exists and is implemented for something; the move checker
+// still has to answer separately for a type that is not in that list.
+
+trait Copy {}
+
+struct Marked {
+  a : i32,
+}
+
+impl Copy for Marked {}
+
+struct Plain {
+  a : i32,
+}
+
+fn main() -> i32 {
+  let m = Marked {
+    a : 1,
+  };
+  let _also_m = m;
+  let _m_again = m;
+  let p = Plain {
+    a : 2,
+  };
+  let _moved = p;
+  return p.a;
+}
+// CHECK: Error[E4001]{{.*}}Use of moved or consumed linear variable: p
