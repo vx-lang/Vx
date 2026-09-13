@@ -102,6 +102,10 @@ pub struct MethodSignature {
     pub name: Symbol,
     pub params: Vec<(Symbol, Type)>,
     pub return_type: Type,
+    /// The default body, when the trait writes one instead of a `;`. An impl that does not
+    /// provide the method gets a copy of this, with `Self` replaced by the type it is
+    /// implemented for. `None` means the method is required.
+    pub default_body: Option<Vec<crate::syntax::Statement>>,
 }
 
 #[derive(Debug, PartialEq, Clone)]

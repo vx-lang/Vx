@@ -56,6 +56,121 @@ pub fn collect_topologies(modules: &[VxModule]) -> Vec<crate::arch::TopologyDecl
         .collect()
 }
 
+/// Replace `Self` in a trait method's signature with the type the impl is for. A trait
+/// writes `fn eq(self : Self, other : Self) -> bool`; the copy handed to `impl Eq for i32`
+/// has to say `i32`, because from here on it is an ordinary method and nothing downstream
+/// knows what `Self` was.
+fn substitute_self(ty: &crate::syntax::Type, target: &crate::syntax::Type) -> crate::syntax::Type {
+    use crate::syntax::Type;
+    let is_self = |name: &crate::symbol::Symbol| name.as_ref() == "Self";
+    match ty {
+        Type::Struct(name, _) | Type::Generic(name, _) if is_self(name) => target.clone(),
+        Type::Ref(inner, space) => {
+            Type::Ref(Box::new(substitute_self(inner, target)), space.clone())
+        }
+        Type::Borrow {
+            inner,
+            mem_space,
+            is_mut,
+            region_id,
+        } => Type::Borrow {
+            inner: Box::new(substitute_self(inner, target)),
+            mem_space: mem_space.clone(),
+            is_mut: *is_mut,
+            region_id: *region_id,
+        },
+        Type::Pointer(inner, space, is_mut) => Type::Pointer(
+            Box::new(substitute_self(inner, target)),
+            space.clone(),
+            *is_mut,
+        ),
+        Type::Verified(inner) => Type::Verified(Box::new(substitute_self(inner, target))),
+        Type::Pinned(inner, topo) => {
+            Type::Pinned(Box::new(substitute_self(inner, target)), topo.clone())
+        }
+        Type::GenericInstance(base, args) => Type::GenericInstance(
+            Box::new(substitute_self(base, target)),
+            args.iter().map(|a| substitute_self(a, target)).collect(),
+        ),
+        // Nothing else can hold a `Self`: a scalar, a tensor and a function type are built
+        // from element types and shapes rather than from nominal names.
+        other => other.clone(),
+    }
+}
+
+/// Give every impl of a trait the trait's default method bodies, for the methods it does
+/// not write itself.
+///
+/// This runs over the parsed modules before anything reads them, so from here on an impl
+/// block holds every method it is supposed to have and nothing downstream -- name
+/// resolution, the checker, either code generator -- needs to know that defaults exist.
+/// That is also why it is a rewrite rather than a fallback at method-lookup time: the
+/// lookup is not the only reader, and codegen walks the impl's methods directly.
+///
+/// A trait's defaults are collected across every module first, because the trait and the
+/// impl need not be in the same one.
+pub fn fill_trait_defaults(programs: &mut [crate::syntax::Program]) {
+    use std::collections::HashMap;
+    let mut defaults: HashMap<crate::symbol::Symbol, Vec<crate::syntax::MethodSignature>> =
+        HashMap::new();
+    for program in programs.iter() {
+        for decl in &program.traits {
+            let with_bodies: Vec<crate::syntax::MethodSignature> = decl
+                .methods
+                .iter()
+                .filter(|m| m.default_body.is_some())
+                .cloned()
+                .collect();
+            if !with_bodies.is_empty() {
+                defaults.insert(decl.name.clone(), with_bodies);
+            }
+        }
+    }
+    if defaults.is_empty() {
+        return;
+    }
+    for program in programs.iter_mut() {
+        for block in &mut program.impls {
+            let Some(trait_name) = block.trait_name.clone() else {
+                continue;
+            };
+            let Some(trait_methods) = defaults.get(&trait_name) else {
+                continue;
+            };
+            for signature in trait_methods {
+                if block
+                    .methods
+                    .iter()
+                    .any(|m| m.name.as_ref() == signature.name.as_ref())
+                {
+                    continue;
+                }
+                let body = signature
+                    .default_body
+                    .clone()
+                    .expect("only methods with a default body are collected");
+                block.methods.push(crate::syntax::Function {
+                    name: signature.name.clone(),
+                    generics: Vec::new(),
+                    params: signature
+                        .params
+                        .iter()
+                        .map(|(n, t)| (n.clone(), substitute_self(t, &block.target_type)))
+                        .collect(),
+                    topology: crate::syntax::Topology::CPU,
+                    return_type: substitute_self(&signature.return_type, &block.target_type),
+                    requires: Vec::new(),
+                    ensures: Vec::new(),
+                    where_transfers: Vec::new(),
+                    is_unsafe: false,
+                    body,
+                    doc_comment: None,
+                });
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

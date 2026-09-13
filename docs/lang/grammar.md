@@ -24,7 +24,7 @@ extern_block ::= "extern" string_literal? "{" extern_fn* "}"
 extern_fn ::= "safe"? "fn" identifier "(" param_list? ")" "->" type ";"
 
 trait_decl ::= "trait" identifier generic_params? "{" trait_method* "}"
-trait_method ::= "fn" identifier "(" param_list? ")" "->" type ";"
+trait_method  ::= "fn" identifier "(" param_list? ")" "->" type ( ";" | "{" statement* "}" )
 
 impl_block ::= "impl" generic_params? ( type "for" )? type "{" function_decl* "}"
 

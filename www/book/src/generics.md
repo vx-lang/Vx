@@ -64,6 +64,22 @@ impl<T : Float> Tensor<T, [?, ?]> {
 
 ## Traits
 
+A trait method may carry a body. An impl that does not write that method inherits it:
+
+<!-- vx-doctest: skip -- a fragment, not a program -->
+
+```rust
+trait Counts {
+    fn value(self : Self) -> i32;
+    fn doubled(self : Self) -> i32 {
+        return self.value() * 2;
+    }
+}
+```
+
+`self.value()` inside the default dispatches to whichever impl inherited it, so one body
+serves every implementor. An impl that writes `doubled` itself keeps its own.
+
 Traits describe shared behaviour, and are implemented with `impl ... for`:
 
 ```rust

@@ -895,11 +895,30 @@ impl<'a> Parser<'a> {
             self.consume(&TokenType::RightParen, "Expected ')'")?;
             self.consume(&TokenType::Arrow, "Expected '->'")?;
             let return_type = self.parse_type()?;
-            self.consume(&TokenType::Semicolon, "Expected ';'")?;
+            // A trait method is either a requirement, ending in `;`, or a default, whose body
+            // an impl inherits unless it writes its own.
+            let default_body = if self.match_token(&TokenType::LeftBrace) {
+                let mut body = Vec::new();
+                while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
+                    body.push(self.parse_statement()?);
+                }
+                self.consume(
+                    &TokenType::RightBrace,
+                    "Expected '}' after trait method body",
+                )?;
+                Some(body)
+            } else {
+                self.consume(
+                    &TokenType::Semicolon,
+                    "Expected ';' or a default body after a trait method signature",
+                )?;
+                None
+            };
             methods.push(MethodSignature {
                 name: method_name.into(),
                 params,
                 return_type,
+                default_body,
             });
         }
         self.consume(&TokenType::RightBrace, "Expected '}'")?;
