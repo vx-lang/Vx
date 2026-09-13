@@ -980,6 +980,24 @@ impl<'a> Parser<'a> {
 
             let mut method = self.parse_function()?;
             method.doc_comment = doc_comment;
+            // A method of a generic impl block has the block's parameters in scope, so the
+            // method is generic too even when it declares none of its own. Saying so here is
+            // what makes the declaration-time body check skip it, exactly as it already skips
+            // a generic free function: `T` has no methods until the impl is instantiated, and
+            // the instantiated copy is what gets checked. A parameter the method declares
+            // itself shadows the block's.
+            let own: Vec<String> = method
+                .generics
+                .iter()
+                .map(|g| g.name().to_string())
+                .collect();
+            let mut in_scope: Vec<GenericParam> = generics
+                .iter()
+                .filter(|g| !own.iter().any(|n| n == g.name()))
+                .cloned()
+                .collect();
+            in_scope.append(&mut method.generics);
+            method.generics = in_scope;
             methods.push(method);
         }
         self.consume(&TokenType::RightBrace, "Expected '}'")?;
