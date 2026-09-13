@@ -377,37 +377,8 @@ impl<'a> TypeChecker<'a> {
                 // verifies and answers nothing. The bitwise operators are the other way
                 // round: they are defined on bit patterns, so `bool` is fine and a float
                 // is not.
-                // A shift is narrower still: `bool` holds one bit and there is nothing
-                // useful to shift it by, so Rust does not define one and neither does this.
-                let bitwise = matches!(op, BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor);
-                let shift = matches!(op, BinaryOp::Shl | BinaryOp::Shr);
-                if *op == BinaryOp::Rem || bitwise || shift {
-                    let admissible = |t: &Type| match Self::single_value_elem(t) {
-                        None => false,
-                        Some(ElementType::Bool) => bitwise,
-                        Some(e) => !((bitwise || shift) && e.is_float()),
-                    };
-                    if !admissible(&lhs_ty) || !admissible(&rhs_ty) {
-                        let wanted = if shift {
-                            "two integers"
-                        } else if bitwise {
-                            "two integers or bools"
-                        } else {
-                            "two numbers"
-                        };
-                        self.errors.error_with_code(
-                            crate::diagnostic::DiagnosticCode::E3030,
-                            format!(
-                                "`{}` takes {}, got {} and {}",
-                                binary_op_symbol(op),
-                                wanted,
-                                lhs_ty,
-                                rhs_ty
-                            ),
-                            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
-                        );
-                        return lhs_ty;
-                    }
+                if !self.check_restricted_operands(op, &lhs_ty, &rhs_ty, span) {
+                    return lhs_ty;
                 }
 
                 if !self.is_assignable(&lhs_ty, &rhs_ty) {
@@ -439,6 +410,64 @@ impl<'a> TypeChecker<'a> {
             Type::Borrow { inner, .. } => Self::scalar_elem(inner),
             _ => None,
         }
+    }
+
+    /// The operand rule for `%`, the bitwise operators and the shifts: the three that have
+    /// no elementwise lowering and are not defined on every element type. Returns false,
+    /// having reported E3030, when the operands are outside what the operator accepts.
+    ///
+    /// Shared by `a % b` and `a %= b` so the two cannot drift apart. Before this was
+    /// shared, the compound form was checked by the plain assignment rule, which does not
+    /// look at the operator at all -- so `t %= u` on two tensors type-checked and then
+    /// reached codegen, where nothing can lower it.
+    ///
+    /// A shaped tensor is refused for all three: there is no named `linalg` form, so the
+    /// flat emitter would decline and fall back to a path that cannot lower it either.
+    /// Beyond that the three differ. `%` is arithmetic, so it takes any number and refuses
+    /// `bool`, which would otherwise reach `arith.remsi` on an `i1` -- an operation that
+    /// verifies and answers nothing. The bitwise operators are the other way round: they
+    /// are defined on bit patterns, so `bool` is fine and a float is not. A shift refuses
+    /// both, because `bool` holds one bit and there is nothing useful to shift it by;
+    /// Rust draws the same line.
+    pub(crate) fn check_restricted_operands(
+        &mut self,
+        op: &BinaryOp,
+        lhs_ty: &Type,
+        rhs_ty: &Type,
+        span: &Span,
+    ) -> bool {
+        let bitwise = matches!(op, BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor);
+        let shift = matches!(op, BinaryOp::Shl | BinaryOp::Shr);
+        if *op != BinaryOp::Rem && !bitwise && !shift {
+            return true;
+        }
+        let admissible = |t: &Type| match Self::single_value_elem(t) {
+            None => false,
+            Some(ElementType::Bool) => bitwise,
+            Some(e) => !((bitwise || shift) && e.is_float()),
+        };
+        if admissible(lhs_ty) && admissible(rhs_ty) {
+            return true;
+        }
+        let wanted = if shift {
+            "two integers"
+        } else if bitwise {
+            "two integers or bools"
+        } else {
+            "two numbers"
+        };
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E3030,
+            format!(
+                "`{}` takes {}, got {} and {}",
+                binary_op_symbol(op),
+                wanted,
+                lhs_ty,
+                rhs_ty
+            ),
+            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+        );
+        false
     }
 
     /// The element type of an operand that holds a single value, seen through the value-carrying

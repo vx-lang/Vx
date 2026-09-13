@@ -236,7 +236,14 @@ topology_kind ::=
 > **Reserved but not yet parsed.** The lexer reserves `unroll`, `across`, and `HardwareState`
 > as keywords, but the parser does not yet accept them (see the "unimplemented" notes in
 > `syntax.md` / `types.md`). `safe` (on `extern` functions) and the `..` range operator are
-> parsed and implemented. Only `+=` compound assignment is supported (`*=` is not).
+> parsed and implemented. Every compound assignment is supported: `+=`, `-=`, `*=`, `/=`,
+> `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`.
+>
+> **Two tokens, not one.** `<<`, `>>`, `<<=` and `>>=` are each written as two adjacent
+> tokens rather than lexed as one, so that `>>` can go on closing a nested generic such as
+> `Pair<Pair<i32>>` and so that an inline `mlir!` block keeps its `memref<memref<...>>`
+> types. The parser recognizes them in operator position, and requires the two to be
+> adjacent: `a > > b` is a syntax error, not a shift.
 
 ## 6. ABI Mangling
 

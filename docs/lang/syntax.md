@@ -174,7 +174,10 @@ fn dispatch<D: Topology>(x: Pinned<i32, Topology::D>) -> i32 {
 
 ## 4. Logical and Relational Operators
 
-- Compound assignment: `+=` (currently the only compound-assignment operator; `*=`, `-=`, `/=` are not yet parsed)
+- Compound assignment: `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`. Each
+  means the binary operator of the same name applied to the two sides, and obeys that
+  operator's rule about operand types -- `t %= u` on two tensors is refused exactly as
+  `t % u` is.
 - Arithmetic: `+`, `-`, `*`, `/`, `%`, and `@` (matrix multiply)
   - `%` is the remainder, on one number at a time: a shaped tensor or a `bool` operand is
     refused (E3030). For signed integers the sign follows the dividend, as in Rust and C.

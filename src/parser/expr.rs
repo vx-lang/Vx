@@ -120,10 +120,34 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// A shift-assignment written as two tokens: `<` then `<=`, or `>` then `>=`. The
+    /// reason is the one behind `shift_at` -- the lexer leaves angle brackets alone so a
+    /// nested generic keeps working -- and the adjacency rule is the same, so `a > >= b`
+    /// is not one.
+    pub(crate) fn shift_assign_at(&self) -> Option<BinaryOp> {
+        let first = self.peek();
+        let second = self.peek_n(1);
+        if second.line != first.line || second.column != first.column + first.length {
+            return None;
+        }
+        match (&first.kind, &second.kind) {
+            (TokenType::LeftAngle, TokenType::LessEq) => Some(BinaryOp::Shl),
+            (TokenType::RightAngle, TokenType::GreaterEq) => Some(BinaryOp::Shr),
+            _ => None,
+        }
+    }
+
     pub(crate) fn parse_binary_expr(&mut self, precedence: u8) -> ParseResult<'a, Expr> {
         let mut left = self.parse_primary_expr()?;
 
         loop {
+            // A shift-assignment ends the expression. `x <<= 5` opens with the same `<`
+            // that starts a comparison, and without this the loop would take it as one
+            // and then fail on the `<=` behind it, before the statement parser ever saw
+            // that this was an assignment.
+            if self.shift_assign_at().is_some() {
+                break;
+            }
             // A shift is checked first: on its own, the leading `<` or `>` would read as
             // a comparison, which binds looser and would take the second bracket as the
             // start of its right operand.
