@@ -377,6 +377,30 @@ static bool vx_numa_pin_to_node(int node) {
 
 extern "C" {
 
+/// Which worker is running this kernel, and how many there are.
+///
+/// A kernel the frontend proved has disjoint iterations is compiled so its
+/// outermost loop covers only `[id*chunk, (id+1)*chunk)` of the range, with
+/// `chunk` derived from these two answers. The compiler emits calls to these
+/// rather than adding kernel parameters, so the C interface of every outlined
+/// kernel keeps the shape its other callers already know.
+///
+/// Answering 0 and 1 gives one worker owning the whole range, and the split
+/// arithmetic then degenerates to the original bounds exactly -- the serial
+/// loop the host has always run. That is what this backend answers today; the
+/// thread pool that makes the count larger is the next piece of work, and until
+/// it exists nothing about host execution changes.
+///
+/// Thread-local because the pool will call one kernel from several threads at
+/// once and each has to read its own index. Nothing writes them yet, so every
+/// thread sees the initial pair.
+static __thread int64_t vx_host_worker_index = 0;
+static __thread int64_t vx_host_worker_total = 1;
+
+int64_t vx_host_worker_id(void) { return vx_host_worker_index; }
+
+int64_t vx_host_worker_count(void) { return vx_host_worker_total; }
+
 /// Allocate in this backend's memory and copy into it.
 ///
 /// A CPU backend's "device memory" is host memory, so this is an aligned
