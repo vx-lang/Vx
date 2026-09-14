@@ -34,13 +34,15 @@ ARG Z3_VERSION=4.8.12-3.1build1
 ENV DEBIAN_FRONTEND=noninteractive \
     PATH=/usr/lib/llvm-${LLVM_VERSION}/bin:$PATH
 
-# vxc's *runtime* dependencies only: clang, mlir-translate, z3.
+# vxc's runtime dependencies: clang; LLVM's opt, llc and llvm-config;
+# MLIR's mlir-translate and runner-utils; and z3.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates gnupg wget lsb-release software-properties-common \
     && wget -O /tmp/llvm.sh https://apt.llvm.org/llvm.sh \
     && chmod +x /tmp/llvm.sh && /tmp/llvm.sh ${LLVM_VERSION} \
     && apt-get update && apt-get install -y --no-install-recommends \
-        clang-${LLVM_VERSION} llvm-${LLVM_VERSION}-tools \
+        clang-${LLVM_VERSION} llvm-${LLVM_VERSION} llvm-${LLVM_VERSION}-tools \
+        mlir-${LLVM_VERSION}-tools libmlir-${LLVM_VERSION}-dev \
         z3=${Z3_VERSION} libz3-dev=${Z3_VERSION} \
     && rm -rf /var/lib/apt/lists/* /tmp/llvm.sh \
     && z3 --version
