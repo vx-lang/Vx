@@ -18,11 +18,13 @@ fn main() -> i32 {
 The toolchain also ships a `graph` library outside `std`, imported as `graph::traversal` and
 friends.
 
-> This page is generated from `stdlib/std/*.vx` by `scripts/tools/gen_stdlib_reference.py`.
-> Signatures are exactly what the source declares.
+> This page is generated from `stdlib/core/*.vx` and `stdlib/std/*.vx` by
+> `scripts/tools/gen_stdlib_reference.py`. Signatures are exactly what the source declares.
 
 ## Contents
 
+- [`core::num`](#corenum) — The integer methods, on `i32`.
+- [`core::option`](#coreoption) — `Option<T>`, for a value that may be absent.
 - [`std::alloc`](#stdalloc) — Raw allocation and deallocation.
 - [`std::box`](#stdbox) — `Box<T>`, a single-owner heap allocation. Required for recursive types.
 - [`std::closure`](#stdclosure) — The closure types the compiler lowers `|x| ...` into.
@@ -37,13 +39,74 @@ friends.
 - [`std::math`](#stdmath) — Mathematical functions and constants.
 - [`std::mmap`](#stdmmap) — Memory-mapped files.
 - [`std::net`](#stdnet) — TCP and UDP sockets.
-- [`std::option`](#stdoption) — `Option<T>`, for a value that may be absent.
 - [`std::result`](#stdresult) — `Result<T, E>`, for an operation that may fail.
 - [`std::simd`](#stdsimd) — SIMD vector types and operations.
 - [`std::string`](#stdstring) — `String` and text manipulation.
 - [`std::tensor`](#stdtensor) — Operations on `Tensor`, including shape queries and elementwise maths.
 - [`std::time`](#stdtime) — Clocks and durations.
 - [`std::vec`](#stdvec) — `Vec<T>`, a growable array.
+
+## `core::num`
+
+The integer methods, on `i32`.
+
+**Functions**
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
+```rust
+fn i32_min() -> i32
+fn i32_max() -> i32
+fn i32_bits() -> i32
+```
+
+**`i32` methods**
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
+```rust
+fn count_ones(self : i32) -> i32
+fn count_zeros(self : i32) -> i32
+fn leading_zeros(self : i32) -> i32
+fn trailing_zeros(self : i32) -> i32
+fn is_power_of_two(self : i32) -> bool
+fn is_positive(self : i32) -> bool
+fn is_negative(self : i32) -> bool
+fn abs(self : i32) -> i32
+fn signum(self : i32) -> i32
+fn min(self : i32, other : i32) -> i32
+fn max(self : i32, other : i32) -> i32
+fn clamp(self : i32, lo : i32, hi : i32) -> i32
+fn abs_diff(self : i32, other : i32) -> i32
+fn pow(self : i32, exp : i32) -> i32
+fn rem_euclid(self : i32, rhs : i32) -> i32
+fn div_euclid(self : i32, rhs : i32) -> i32
+fn ilog2(self : i32) -> i32
+fn next_power_of_two(self : i32) -> i32
+fn rotate_left(self : i32, n : i32) -> i32
+fn rotate_right(self : i32, n : i32) -> i32
+fn swap_bytes(self : i32) -> i32
+fn reverse_bits(self : i32) -> i32
+```
+
+## `core::option`
+
+`Option<T>`, for a value that may be absent.
+
+**Types**
+
+- `enum Option<T>`
+
+**`Option<T>` methods**
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
+```rust
+fn is_some(self : &Option<T>) -> Bool
+fn is_none(self : &Option<T>) -> Bool
+fn unwrap(self : Option<T>) -> T
+fn unwrap_or(self : Option<T>, default : T) -> T
+```
 
 ## `std::alloc`
 
@@ -497,24 +560,6 @@ fn vx_tcp_listener_accept(ptr : *mut i8) -> *mut i8
 fn vx_tcp_listener_drop(ptr : *mut i8) -> i32
 ```
 
-## `std::option`
-
-`Option<T>`, for a value that may be absent.
-
-**Types**
-
-- `enum Option<T>`
-
-**`Option<T>` methods**
-
-<!-- vx-doctest: skip -- signature listing, not a program -->
-
-```rust
-fn is_some(self : &Option<T>) -> Bool
-fn is_none(self : &Option<T>) -> Bool
-fn unwrap(self : Option<T>) -> T
-```
-
 ## `std::result`
 
 `Result<T, E>`, for an operation that may fail.
@@ -734,4 +779,4 @@ fn vx_vec_bounds_check(index : i64, len : i64) -> i32
 
 ______________________________________________________________________
 
-228 functions across 21 modules.
+254 functions across 22 modules.
