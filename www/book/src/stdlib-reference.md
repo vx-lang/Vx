@@ -23,6 +23,7 @@ friends.
 
 ## Contents
 
+- [`core::cmp`](#corecmp) —
 - [`core::num`](#corenum) — The integer methods, on `i32`.
 - [`core::ops`](#coreops) —
 - [`core::option`](#coreoption) — `Option<T>`, for a value that may be absent.
@@ -46,6 +47,55 @@ friends.
 - [`std::time`](#stdtime) — Clocks and durations.
 - [`std::vec`](#stdvec) — `Vec<T>`, a growable array.
 
+## `core::cmp`
+
+**Types**
+
+- `enum Ordering`
+- `trait PartialEq`
+- `trait Ord`
+
+**`Ordering` methods**
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
+```rust
+fn is_lt(self : Ordering) -> bool
+fn is_gt(self : Ordering) -> bool
+fn is_eq(self : Ordering) -> bool
+fn is_ne(self : Ordering) -> bool
+fn is_le(self : Ordering) -> bool
+fn is_ge(self : Ordering) -> bool
+fn reverse(self : Ordering) -> Ordering
+fn then(self : Ordering, other : Ordering) -> Ordering
+fn eq(self : &Self, other : &Self) -> bool
+fn ne(self : &Self, other : &Self) -> bool
+fn cmp(self : &Self, other : &Self) -> Ordering
+fn lt(self : &Self, other : &Self) -> bool
+fn le(self : &Self, other : &Self) -> bool
+fn gt(self : &Self, other : &Self) -> bool
+fn ge(self : &Self, other : &Self) -> bool
+fn max(self : Self, other : Self) -> Self
+fn min(self : Self, other : Self) -> Self
+fn clamp(self : Self, lo : Self, hi : Self) -> Self
+```
+
+**`PartialEq for $t` methods**
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
+```rust
+fn eq(self : &$t, other : &$t) -> bool
+```
+
+**`Ord for $t` methods**
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
+```rust
+fn cmp(self : &$t, other : &$t) -> Ordering
+```
+
 ## `core::num`
 
 The integer methods, on `i32`.
@@ -67,9 +117,6 @@ fn is_positive(self : $t) -> bool
 fn is_negative(self : $t) -> bool
 fn abs(self : $t) -> $t
 fn signum(self : $t) -> $t
-fn min(self : $t, other : $t) -> $t
-fn max(self : $t, other : $t) -> $t
-fn clamp(self : $t, lo : $t, hi : $t) -> $t
 fn abs_diff(self : $t, other : $t) -> $t
 fn pow(self : $t, exp : $t) -> $t
 fn rem_euclid(self : $t, rhs : $t) -> $t
@@ -787,4 +834,4 @@ fn vx_vec_bounds_check(index : i64, len : i64) -> i32
 
 ______________________________________________________________________
 
-271 functions across 22 modules.
+288 functions across 23 modules.
