@@ -213,6 +213,22 @@ needed to run.
 
 ______________________________________________________________________
 
+## Building with Docker
+
+A `vx-build` image provides the pinned toolchain (LLVM/MLIR 22, z3, Rust) without
+requiring a manual `setup.sh` run on the host. Mount a checkout and build against it:
+
+```bash
+docker build -f docker/Dockerfile.build --build-arg LLVM_VERSION=22 -t vx-build:llvm22 .
+docker run --rm -v "$(pwd)":/workspace -w /workspace vx-build:llvm22 \
+  bash -c "./setup.sh && . ./config.local && cargo build --release && cargo build --release -p vx_std_core"
+```
+
+Note: this image has been verified on `linux/amd64`. Building on `linux/arm64` requires passing `--platform linux/amd64` 
+to `docker build`.
+
+______________________________________________________________________
+
 ## Troubleshooting
 
 **`llvm-config: command not found`, or `cargo: command not found`**
