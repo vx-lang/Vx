@@ -312,26 +312,15 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
     }
 }
 
-/// Run every backend fixture that states an expected answer through the FLAT path, and
-/// check it produced that answer (Vx#566).
+/// Run the backend corpus through the FLAT path and check the answers (Vx#566).
 ///
-/// `test_backend` already runs this corpus and checks these same `// EXPECT:` lines, but it
-/// builds the module with `MeliorGenerator` -- the LEGACY AST path. So every answer in
-/// tests/backend/pass was an assertion about a code generator that a bare `vxc file.vx` does
-/// not use. The flat path is the default, and nothing executed it and looked at the result.
+/// `flat_codegen_differential` already executes the flat path against the AST oracle, but
+/// reaches only 5 corpus programs by name. `test_backend` checks all 84 `// EXPECT:` lines
+/// and builds them with `MeliorGenerator`, the legacy path. The sweep above compiles the
+/// corpus on the flat path but records only which path each program took. So most of the
+/// corpus had its answers checked on one code generator and its path choice on the other.
 ///
-/// The sweep above is not that check either: it records which path each program TAKES and
-/// never runs one. It catches a program the flat path declines; it cannot catch one the flat
-/// path miscompiles.
-///
-/// This is the second execution. Nothing new is asserted -- the corpus and the expectations
-/// already exist, and the claim is only that both code generators compute the same answers
-/// for them.
-///
-/// Found while adding the host thread pool (Vx#550): a fixture placed in tests/backend/pass
-/// to prove the pool covered its loop exactly passed while testing nothing at all, because
-/// the legacy path emits none of the markers the pool reads, so the kernel ran serially and
-/// the total came out right however broken the split was.
+/// This runs the same expectations on the flat path -- 68 programs, no new assertions.
 #[test]
 fn flat_path_answers_match_the_backend_expectations() {
     let tests = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
