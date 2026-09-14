@@ -880,8 +880,11 @@ impl<'a> MacroExpander<'a> {
                         .map_err(|e| e.format(""))?;
                     if !parser.check(&crate::lexer::TokenType::RightParen) {
                         loop {
+                            // An MLIR value name: `%arg`. Until `%` was the remainder
+                            // operator nothing else in the language spelled it, so it arrived
+                            // here as `Unknown('%')`; it is an ordinary token now.
                             let is_percent = match parser.peek().kind {
-                                crate::lexer::TokenType::Unknown('%') => {
+                                crate::lexer::TokenType::Percent => {
                                     parser.advance();
                                     true
                                 }

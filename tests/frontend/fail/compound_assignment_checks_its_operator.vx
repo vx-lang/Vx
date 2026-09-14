@@ -1,0 +1,40 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// `a %= b` has to obey the same rule as `a % b`, and it did not before the two shared
+// one implementation. A compound assignment was checked by the plain assignment rule,
+// which looks at the two sides and not at the operator between them -- so `a %= b` on
+// two tensors type-checked, and then reached codegen, where nothing can lower it.
+//
+// One case per restriction, since the three are different: `%` refuses a shaped tensor,
+// the bitwise operators refuse a float, and a shift refuses a `bool`.
+//
+// These carry a real line and column, unlike the same diagnostics reported from `a % b`
+// -- an assignment statement records a span and a binary expression does not yet.
+
+fn tensors() -> i32 {
+  let mut a = Tensor<f32, [4]>::uninit();
+  let b = Tensor<f32, [4]>::uninit();
+  a %= b;
+  return 0;
+}
+// CHECK: Error[E3030] at 17:3: `%` takes two numbers, got Tensor<f32, [4]> and Tensor<f32, [4]>
+
+fn floats() -> i32 {
+  let mut x : f32 = 1.5;
+  let y : f32 = 2.5;
+  x &= y;
+  return 0;
+}
+// CHECK: Error[E3030] at 25:3: `&` takes two integers or bools, got f32 and f32
+
+fn bools() -> i32 {
+  let mut p = true;
+  let q = false;
+  p <<= q;
+  return 0;
+}
+// CHECK: Error[E3030] at 33:3: `<<` takes two integers, got bool and bool
+
+fn main() -> i32 {
+  return 0;
+}

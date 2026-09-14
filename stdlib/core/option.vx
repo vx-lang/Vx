@@ -1,0 +1,123 @@
+//===- option.vx - Vx Standard Library ----------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `Option<T>`, for a value that may be absent.
+//
+// Moved here from `std::option`, unchanged apart from the extra methods below and the
+// removal of an `import std::alloc` that nothing in the file used. It belongs in `core`
+// because it needs no allocator and no operating system: it is one enum and a handful of
+// matches, and the rest of `core` is written against it -- `Iterator::next` returns one,
+// and so will every `checked_` method in `core::num`.
+//
+// What is still missing is the family with a type parameter of its own -- `map`,
+// `and_then`, `ok_or`, `filter` -- where the answer is an `Option<U>` rather than an
+// `Option<T>`, or where a closure has to be spelled. Those want a generic method, which
+// is item A14 of the core library plan.
+
+enum Option<T> {
+  Some(T),
+  None,
+}
+
+impl<T> Option<T> {
+  /// Is there a value?
+  fn is_some(self : &Option<T>) -> Bool {
+    let mut ret = false;
+    match *self {
+      Option<T>::Some(v) => {
+        ret = true;
+      }
+      Option<T>::None() => {
+        ret = false;
+      }
+    }
+    return ret;
+  }
+
+  /// Is there no value?
+  fn is_none(self : &Option<T>) -> Bool {
+    let mut ret = true;
+    match *self {
+      Option<T>::Some(v) => {
+        ret = false;
+      }
+      Option<T>::None() => {
+        ret = true;
+      }
+    }
+    return ret;
+  }
+
+  /// The value, or a stop. Reach for `unwrap_or` where there is a sensible answer for
+  /// the absent case; this one ends the program.
+  fn unwrap(self : Option<T>) -> T {
+    match self {
+      Option<T>::Some(v) => {
+        return v;
+      }
+      Option<T>::None() => {
+        let is_some = self.is_some();
+        assert(is_some, "unwrap called on None");
+      }
+    }
+  }
+
+  /// The value, or the given one. `default` is evaluated by the caller either way, so
+  /// keep it cheap; Rust's `unwrap_or_else` is the form that does not, and it takes a
+  /// closure whose type parameter this cannot yet spell.
+  fn unwrap_or(self : Option<T>, default : T) -> T {
+    match self {
+      Option<T>::Some(v) => {
+        return v;
+      }
+      Option<T>::None() => {
+        return default;
+      }
+    }
+  }
+
+  /// This one if it holds a value, otherwise the other. Both sides are the same type,
+  /// which is why this fits while `and_then` does not.
+  fn or(self : Option<T>, other : Option<T>) -> Option<T> {
+    match self {
+      Option<T>::Some(v) => {
+        return Option<T>::Some(v);
+      }
+      Option<T>::None() => {
+        return other;
+      }
+    }
+  }
+
+  /// The other one if this holds a value, otherwise nothing.
+  fn and(self : Option<T>, other : Option<T>) -> Option<T> {
+    match self {
+      Option<T>::Some(v) => {
+        return other;
+      }
+      Option<T>::None() => {
+        return Option<T>::None();
+      }
+    }
+  }
+
+  /// Whichever one holds a value, and nothing when both do or neither does.
+  fn xor(self : Option<T>, other : Option<T>) -> Option<T> {
+    let left = self.is_some();
+    let right = other.is_some();
+    if left && right {
+      return Option<T>::None();
+    }
+    if left {
+      return self;
+    }
+    if right {
+      return other;
+    }
+    return Option<T>::None();
+  }
+}

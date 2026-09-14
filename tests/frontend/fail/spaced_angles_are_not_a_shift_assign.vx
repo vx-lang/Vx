@@ -1,0 +1,17 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// The companion to spaced_angles_are_not_a_shift.vx, for `>>=`. It is written as two
+// tokens as well -- a `>` followed by a `>=` -- and the same adjacency rule decides it,
+// so a space between them leaves a comparison against something that cannot start an
+// expression, rather than a shift-assignment.
+//
+// Two files rather than one because a parse error stops the compile, so a second case
+// in the same file would never be reached.
+
+fn main() -> i32 {
+  let mut a : i32 = 8;
+  let b : i32 = 2;
+  a > >= b;
+  return a;
+}
+// CHECK: Expected expression, found GreaterEq

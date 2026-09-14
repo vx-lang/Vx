@@ -6,7 +6,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-import std::option;
+import core::option;
 import std::vec;
 
 trait Iterator<T, Item> {

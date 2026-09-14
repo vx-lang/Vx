@@ -1,0 +1,65 @@
+//===- compound_assignment.vx - Vx Compiler -----------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The nine compound assignments beside `+=`, which was the only one the parser knew.
+//
+// Each is the binary operator of the same name applied to the two sides, so there is no
+// separate lowering to test: the statement carries a `BinaryOp` and reaches the same
+// emitter as `a = a OP b`. What is worth testing is that each spelling reaches the
+// operator it names, which is what the running values below establish -- every one of
+// them would be wrong under any other mapping.
+//
+// `<<=` and `>>=` are the two that are not a single token. They are `<` then `<=`, and
+// `>` then `>=`, for the reason `<<` and `>>` are two tokens: the lexer leaves angle
+// brackets alone so a nested generic keeps closing. That makes them the awkward case
+// for the expression parser rather than for the statement parser -- reading `s <<= 5`
+// left to right, the `<` looks like the start of a comparison, and the expression has
+// to stop before it. So the statement being reached at all is the assertion here.
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK-DAG: arith.remsi
+// CHECK-DAG: arith.andi
+// CHECK-DAG: arith.ori
+// CHECK-DAG: arith.xori
+// CHECK-DAG: arith.shli
+// CHECK-DAG: arith.shrsi
+fn main() -> i32 {
+  let mut x : i32 = 20;
+  x += 5;
+  print(x);
+  print!(" ");
+  x -= 3;
+  print(x);
+  print!(" ");
+  x *= 2;
+  print(x);
+  print!(" ");
+  x /= 4;
+  print(x);
+  print!(" ");
+  x %= 7;
+  print(x);
+  print!(" ");
+  let mut b : i32 = 12;
+  b &= 10;
+  print(b);
+  print!(" ");
+  b |= 5;
+  print(b);
+  print!(" ");
+  b ^= 3;
+  print(b);
+  print!(" ");
+  let mut s : i32 = 1;
+  s <<= 5;
+  print(s);
+  print!(" ");
+  s >>= 2;
+  print(s);
+  return 0;
+}
+
+// EXPECT: 25 22 44 11 4 8 13 14 32 8
