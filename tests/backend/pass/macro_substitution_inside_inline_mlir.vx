@@ -5,25 +5,17 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// A macro parameter used inside an `mlir!` block, which is how `core::num` intends to
-// stamp the intrinsic-backed methods across the integer widths.
+// A macro parameter used inside an `mlir!` block, which is how `core::num` stamps its
+// intrinsic-backed methods across the integer widths.
 //
-// An `mlir!` block is not parsed as Vx. It is rebuilt into text by writing each of its
-// tokens at that token's own line and column, so that the block a backend sees keeps the
-// shape it was written in. A substituted token used to arrive still carrying the position
-// it had at the *call* site, several lines below the macro's body, and the rebuilt text
-// put it there: `math.ctpop %a : $t` came out as an operation with its type on some later
-// line, and MLIR rejected an operation with no type.
-//
-// So the failure this pins is not a wrong answer but an unparseable block, and the test
-// for it has to reach the backend. Checking that the file parses would prove nothing,
-// because it always parsed.
+// An `mlir!` block is rebuilt into text from its tokens' positions. A substituted token
+// used to keep the position it had at the call site, so its type landed lines away and
+// MLIR saw an operation with none. The failure is an unparseable block rather than a
+// wrong answer, so the test has to reach the backend; the file always parsed.
 //
 // Two widths, because one would not show a macro that expanded to a single shared copy.
-// They are both signed on purpose: a Vx `i16` is an MLIR `i16`, while a `u32` is an MLIR
-// `i32`, so an unsigned width cannot use `$t` in both positions and needs the MLIR type
-// passed as a second parameter. That is a property of the two type systems rather than of
-// macros, and it is not what this file is about.
+// Both signed: a Vx `u32` is an MLIR `i32`, so an unsigned width needs the MLIR type as a
+// second parameter, which is a property of the two type systems and not of macros.
 macro_rules stamp_bits {
   ($t : ident) => {
     impl $t {
