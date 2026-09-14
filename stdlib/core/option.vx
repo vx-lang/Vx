@@ -13,16 +13,10 @@
 // matches, and the rest of `core` is written against it -- `Iterator::next` returns one,
 // and so will every `checked_` method in `core::num`.
 //
-// Every method here answers with a `T` or a `bool`, and that is the whole of what can be
-// written today rather than a choice. A method on `Option<T>` that *returns* an
-// `Option<T>` does not lower: the monomorphizer leaves the return type as the parameter
-// and codegen stops with "generic type reached codegen". That is true even of one that
-// builds nothing and simply hands back whichever argument it was given, so it is not
-// about constructing a value.
-//
-// So `or`, `and`, `xor`, `filter`, `take` and `replace` are all out, alongside `map`,
-// `and_then` and `ok_or`, which additionally want a type parameter of their own. Roughly
-// half of Rust's `Option` surface waits on that one compiler gap.
+// What is still missing is the family with a type parameter of its own -- `map`,
+// `and_then`, `ok_or`, `filter` -- where the answer is an `Option<U>` rather than an
+// `Option<T>`, or where a closure has to be spelled. Those want a generic method, which
+// is item A14 of the core library plan.
 
 enum Option<T> {
   Some(T),
@@ -86,4 +80,44 @@ impl<T> Option<T> {
     }
   }
 
+  /// This one if it holds a value, otherwise the other. Both sides are the same type,
+  /// which is why this fits while `and_then` does not.
+  fn or(self : Option<T>, other : Option<T>) -> Option<T> {
+    match self {
+      Option<T>::Some(v) => {
+        return Option<T>::Some(v);
+      }
+      Option<T>::None() => {
+        return other;
+      }
+    }
+  }
+
+  /// The other one if this holds a value, otherwise nothing.
+  fn and(self : Option<T>, other : Option<T>) -> Option<T> {
+    match self {
+      Option<T>::Some(v) => {
+        return other;
+      }
+      Option<T>::None() => {
+        return Option<T>::None();
+      }
+    }
+  }
+
+  /// Whichever one holds a value, and nothing when both do or neither does.
+  fn xor(self : Option<T>, other : Option<T>) -> Option<T> {
+    let left = self.is_some();
+    let right = other.is_some();
+    if left && right {
+      return Option<T>::None();
+    }
+    if left {
+      return self;
+    }
+    if right {
+      return other;
+    }
+    return Option<T>::None();
+  }
 }

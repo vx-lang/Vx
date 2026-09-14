@@ -114,6 +114,9 @@ fn is_some(self : &Option<T>) -> Bool
 fn is_none(self : &Option<T>) -> Bool
 fn unwrap(self : Option<T>) -> T
 fn unwrap_or(self : Option<T>, default : T) -> T
+fn or(self : Option<T>, other : Option<T>) -> Option<T>
+fn and(self : Option<T>, other : Option<T>) -> Option<T>
+fn xor(self : Option<T>, other : Option<T>) -> Option<T>
 ```
 
 ## `std::alloc`
@@ -787,4 +790,4 @@ fn vx_vec_bounds_check(index : i64, len : i64) -> i32
 
 ______________________________________________________________________
 
-262 functions across 22 modules.
+265 functions across 22 modules.

@@ -20,6 +20,11 @@ use std::process::Command;
 const KNOWN_DECLINES: &[&str] = &[
     "backend/pass/custom_topology_user_lowering.vx",
     "backend/pass/matmul_assign_alias.vx",
+    // `Option::or` and its neighbours, which answer with an `Option<T>`. The flat path
+    // declines them as "a non-scalar default return" -- the same shape as the file below,
+    // and the AST path handles both. The module's other methods answer with a `T` or a
+    // `bool` and compile through the flat path; adding these three is what moved the file.
+    "backend/pass/core_option.vx",
     // A generic enum returned from a match whose arms each return. The flat path declines it
     // as "a non-scalar default return" -- the same shape the AST path used to mis-lower, and
     // the reason that file exists. Its answers come from the AST path, and it states no
