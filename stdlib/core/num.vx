@@ -1,0 +1,250 @@
+//===- num.vx - Vx Standard Library -------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The integer methods, on `i32`.
+//
+// These are inherent methods in Rust too -- `i32::count_ones` is not a trait method --
+// so this module needs no trait machinery at all, which is why it is the first piece of
+// `core` that can be written.
+//
+// `core` contains no `extern` block, and this file keeps that rule. Where Rust's `core`
+// reaches for `core::intrinsics`, this reaches for `mlir!`, which every backend lowers.
+// That is what lets these be called from inside a `spawn on(..)` region on a device with
+// no libc.
+//
+// Only `i32` for now. Each width needs its own copy until `macro_rules` can produce
+// items, which is how Rust's own `core::num` stamps them out.
+//
+// Two things are missing and are waiting on the language rather than on anyone's time.
+// The `checked_*` family returns `Option<T>`, which belongs in `core::option` -- it
+// lives in `std::option` today, and moving it is its own change. And the limits are
+// functions rather than constants because Vx has no `const` item.
+
+/// The smallest `i32`. Written as a subtraction because the literal 2147483648 does not
+/// fit in an `i32`, so the negation of it cannot be written directly.
+fn i32_min() -> i32 {
+  return -2147483647 - 1;
+}
+
+/// The largest `i32`.
+fn i32_max() -> i32 {
+  return 2147483647;
+}
+
+/// How many bits an `i32` has. Rust spells this `i32::BITS`.
+fn i32_bits() -> i32 {
+  return 32;
+}
+
+impl i32 {
+  /// How many bits are set. Counted by the hardware instruction rather than by a loop,
+  /// which also means a negative operand is counted correctly: a loop shifting right
+  /// would sign-extend forever.
+  fn count_ones(self : i32) -> i32 {
+    return mlir!( inputs : (%a = self : i32), returns : i32, dialects : ["math"]) {
+      %r = math.ctpop %a : i32
+      macro.yield %r : i32
+    };
+  }
+
+  /// How many bits are clear.
+  fn count_zeros(self : i32) -> i32 {
+    return i32_bits() - self.count_ones();
+  }
+
+  /// How many zero bits sit above the highest set bit. 32 for zero.
+  fn leading_zeros(self : i32) -> i32 {
+    return mlir!( inputs : (%a = self : i32), returns : i32, dialects : ["math"]) {
+      %r = math.ctlz %a : i32
+      macro.yield %r : i32
+    };
+  }
+
+  /// How many zero bits sit below the lowest set bit. 32 for zero.
+  fn trailing_zeros(self : i32) -> i32 {
+    return mlir!( inputs : (%a = self : i32), returns : i32, dialects : ["math"]) {
+      %r = math.cttz %a : i32
+      macro.yield %r : i32
+    };
+  }
+
+  /// Is this a power of two? Zero and the negatives are not.
+  fn is_power_of_two(self : i32) -> bool {
+    return self > 0 && (self & (self - 1)) == 0;
+  }
+
+  fn is_positive(self : i32) -> bool {
+    return self > 0;
+  }
+
+  fn is_negative(self : i32) -> bool {
+    return self < 0;
+  }
+
+  /// The absolute value. There is no `i32` for the absolute value of the smallest one,
+  /// so that case is refused rather than wrapped to itself, which is what the bare
+  /// negation would do.
+  fn abs(self : i32) -> i32 {
+    assert(self != i32_min(), "abs of the smallest i32 has no i32 answer");
+    if self < 0 {
+      return -self;
+    }
+    return self;
+  }
+
+  /// -1, 0 or 1, by sign.
+  fn signum(self : i32) -> i32 {
+    if self < 0 {
+      return -1;
+    }
+    if self > 0 {
+      return 1;
+    }
+    return 0;
+  }
+
+  /// The smaller of the two.
+  fn min(self : i32, other : i32) -> i32 {
+    if self < other {
+      return self;
+    }
+    return other;
+  }
+
+  /// The larger of the two.
+  fn max(self : i32, other : i32) -> i32 {
+    if self > other {
+      return self;
+    }
+    return other;
+  }
+
+  /// Held between two bounds, which must be the right way round.
+  fn clamp(self : i32, lo : i32, hi : i32) -> i32 {
+    assert(lo <= hi, "clamp needs lo <= hi");
+    if self < lo {
+      return lo;
+    }
+    if self > hi {
+      return hi;
+    }
+    return self;
+  }
+
+  /// The distance between two values, as a non-negative number.
+  fn abs_diff(self : i32, other : i32) -> i32 {
+    if self < other {
+      return other - self;
+    }
+    return self - other;
+  }
+
+  /// Raised to a non-negative power, by squaring. Overflow wraps, as every other
+  /// arithmetic operator in the language does.
+  fn pow(self : i32, exp : i32) -> i32 {
+    assert(exp >= 0, "pow takes a non-negative exponent");
+    let mut result = 1;
+    let mut base = self;
+    let mut e = exp;
+    loop {
+      if e == 0 {
+        break;
+      }
+      if (e & 1) == 1 {
+        result = result * base;
+      }
+      base = base * base;
+      e = e >> 1;
+    }
+    return result;
+  }
+
+  /// Euclidean remainder: never negative, whatever the signs are. `%` alone takes its
+  /// sign from the dividend, so -7 % 4 is -3 where this is 1.
+  fn rem_euclid(self : i32, rhs : i32) -> i32 {
+    let r = self % rhs;
+    if r < 0 {
+      if rhs < 0 {
+        return r - rhs;
+      }
+      return r + rhs;
+    }
+    return r;
+  }
+
+  /// The quotient that pairs with `rem_euclid`, rounded so the remainder stays
+  /// non-negative.
+  fn div_euclid(self : i32, rhs : i32) -> i32 {
+    let q = self / rhs;
+    if self % rhs < 0 {
+      if rhs > 0 {
+        return q - 1;
+      }
+      return q + 1;
+    }
+    return q;
+  }
+
+  /// The base-2 logarithm, rounded down. Undefined at zero and below, so refused there.
+  fn ilog2(self : i32) -> i32 {
+    assert(self > 0, "ilog2 needs a positive value");
+    return i32_bits() - 1 - self.leading_zeros();
+  }
+
+  /// The smallest power of two at or above this value. One for anything at or below one.
+  fn next_power_of_two(self : i32) -> i32 {
+    if self <= 1 {
+      return 1;
+    }
+    return 1 << (i32_bits() - (self - 1).leading_zeros());
+  }
+
+  /// The bits rotated left, wrapping round rather than falling off the end. The right
+  /// half is masked because `>>` on a signed value copies the sign bit.
+  fn rotate_left(self : i32, n : i32) -> i32 {
+    let k = n % i32_bits();
+    if k == 0 {
+      return self;
+    }
+    let low = (self >> (i32_bits() - k)) & ((1 << k) - 1);
+    return (self << k) | low;
+  }
+
+  /// The bits rotated right.
+  fn rotate_right(self : i32, n : i32) -> i32 {
+    let k = n % i32_bits();
+    if k == 0 {
+      return self;
+    }
+    return self.rotate_left(i32_bits() - k);
+  }
+
+  /// The four bytes in the opposite order. Each byte is masked after shifting, again
+  /// because `>>` copies the sign bit.
+  fn swap_bytes(self : i32) -> i32 {
+    let b0 = (self >> 24) & 255;
+    let b1 = (self >> 8) & 65280;
+    let b2 = (self << 8) & 16711680;
+    let b3 = self << 24;
+    return b0 | b1 | b2 | b3;
+  }
+
+  /// The bits in the opposite order.
+  fn reverse_bits(self : i32) -> i32 {
+    let mut out = 0;
+    let mut i = 0;
+    loop {
+      if i == i32_bits() {
+        break;
+      }
+      let bit = (self >> i) & 1;
+      out = out | (bit << (i32_bits() - 1 - i));
+      i += 1;
+    }
+    return out;
+  }
+}
