@@ -452,23 +452,65 @@ impl<'a> TypeChecker<'a> {
             );
         }
 
-        if let Expr::Identifier(IdentifierExpr { name, span: _ }) = lhs {
-            let mut tmp_env = HashMap::new();
-            for env in &self.consteval.env {
-                for (k, v) in env {
-                    tmp_env.insert(k.clone(), v.clone());
+        // Keep the compile-time value of the assigned variable in step with the assignment.
+        // An assignment the evaluator cannot compute makes the variable unknown rather than
+        // leaving the previous value behind, which later reads would report as a certainty.
+        match lhs {
+            Expr::Identifier(IdentifierExpr { name, span: _ }) => {
+                let tmp_env = self.consteval_snapshot();
+                let new_val = self.eval_expr(rhs, &tmp_env);
+                if let Some(scope) = self.consteval_scope_of(name) {
+                    let env = &mut self.consteval.env[scope];
+                    match new_val {
+                        Some(val) => env.insert(name.to_string().into(), val),
+                        None => env.remove(name.as_ref()),
+                    };
                 }
             }
-            if let Some(val) = self.eval_expr(rhs, &tmp_env) {
-                // find the scope that has the variable
-                for env in self.consteval.env.iter_mut().rev() {
-                    if env.contains_key(name.as_ref()) {
-                        env.insert(name.to_string().into(), val);
-                        break;
+            // `a[i] = v`: replace that one element. Anything unknown -- the index, the new
+            // value, or the array -- drops the whole array instead of leaving it stale.
+            Expr::IndexAccess(IndexAccessExpr {
+                base,
+                index,
+                span: _,
+            }) => {
+                if let Expr::Identifier(IdentifierExpr { name, span: _ }) = &**base {
+                    let tmp_env = self.consteval_snapshot();
+                    let index_val = self.eval_expr(index, &tmp_env);
+                    let new_val = self.eval_expr(rhs, &tmp_env);
+                    if let Some(scope) = self.consteval_scope_of(name) {
+                        let env = &mut self.consteval.env[scope];
+                        let stored = match (index_val, new_val) {
+                            (Some(index_val), Some(val)) => match env.get_mut(name.as_ref()) {
+                                Some(Value::Array(items)) => {
+                                    match Self::array_index(&index_val, items.len()) {
+                                        Some(i) => {
+                                            items[i] = val;
+                                            true
+                                        }
+                                        None => false,
+                                    }
+                                }
+                                _ => false,
+                            },
+                            _ => false,
+                        };
+                        if !stored {
+                            env.remove(name.as_ref());
+                        }
                     }
                 }
             }
+            _ => {}
         }
+    }
+
+    /// The innermost constant scope holding `name`, if any.
+    fn consteval_scope_of(&self, name: &crate::symbol::Symbol) -> Option<usize> {
+        self.consteval
+            .env
+            .iter()
+            .rposition(|env| env.contains_key(name.as_ref()))
     }
 
     /// Check a `return`: type the returned expression against the declared return type, run the
@@ -755,6 +797,29 @@ impl<'a> TypeChecker<'a> {
                     None
                 }
             }
+            // `[ a, b, c ]`. Every element has to be known, or the whole array is unknown:
+            // a half-built array would let a later index read a value that was never there.
+            Expr::Array(ArrayExpr { elements, span: _ }) => {
+                let mut items = Vec::with_capacity(elements.len());
+                for element in elements {
+                    items.push(self.eval_expr(element, env)?);
+                }
+                Some(Value::Array(items))
+            }
+            // `a[i]`, where both the array and the index are known at compile time. An index
+            // past the end gives no value here; `check_indexaccess_expr` reports it.
+            Expr::IndexAccess(IndexAccessExpr {
+                base,
+                index,
+                span: _,
+            }) => {
+                let Value::Array(items) = self.eval_expr(base, env)? else {
+                    return None;
+                };
+                let index_val = self.eval_expr(index, env)?;
+                let i = Self::array_index(&index_val, items.len())?;
+                Some(items[i].clone())
+            }
             Expr::FunctionCall(FunctionCallExpr {
                 name,
                 type_args: None,
@@ -824,6 +889,42 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// A compile-time array index. `None` for a fraction, a negative number, or an index
+    /// at or past the end, so none of those can silently read the wrong element.
+    pub(crate) fn array_index(value: &Value, len: usize) -> Option<usize> {
+        let Value::Number(n) = value else {
+            return None;
+        };
+        if n.fract() != 0.0 || *n < 0.0 {
+            return None;
+        }
+        let i = *n as usize;
+        if i < len {
+            Some(i)
+        } else {
+            None
+        }
+    }
+
+    /// Write one element of a compile-time array. `None` when the index, the new value, or
+    /// the array itself is not known; the caller then drops the whole array.
+    fn eval_array_store(
+        &self,
+        name: &crate::symbol::Symbol,
+        index: &Expr,
+        rhs: &Expr,
+        env: &mut HashMap<crate::symbol::Symbol, Value>,
+    ) -> Option<()> {
+        let index_val = self.eval_expr(index, env)?;
+        let value = self.eval_expr(rhs, env)?;
+        let Some(Value::Array(items)) = env.get_mut(name.as_ref()) else {
+            return None;
+        };
+        let i = Self::array_index(&index_val, items.len())?;
+        items[i] = value;
+        Some(())
+    }
+
     pub(crate) fn eval_statement(
         &self,
         stmt: &Statement,
@@ -837,9 +938,12 @@ impl<'a> TypeChecker<'a> {
                 expr,
                 span: _,
             }) => {
-                if let Some(val) = self.eval_expr(expr, env) {
-                    env.insert(name.clone(), val);
-                }
+                // A binding the evaluator cannot compute has to become unknown. Leaving an
+                // older binding of the same name in place would answer later reads with it.
+                match self.eval_expr(expr, env) {
+                    Some(val) => env.insert(name.clone(), val),
+                    None => env.remove(name.as_ref()),
+                };
                 None
             }
             Statement::Assign(AssignStmt {
@@ -847,8 +951,28 @@ impl<'a> TypeChecker<'a> {
                 rhs,
                 span: _,
             }) => {
-                if let Some(val) = self.eval_expr(rhs, env) {
-                    env.insert(name.clone(), val);
+                match self.eval_expr(rhs, env) {
+                    Some(val) => env.insert(name.clone(), val),
+                    None => env.remove(name.as_ref()),
+                };
+                None
+            }
+            // `a[i] = v`. If any part of the store is unknown the whole array is dropped:
+            // keeping the old contents would report a stale element as a certainty.
+            Statement::Assign(AssignStmt {
+                lhs:
+                    Expr::IndexAccess(IndexAccessExpr {
+                        base,
+                        index,
+                        span: _,
+                    }),
+                rhs,
+                span: _,
+            }) => {
+                if let Expr::Identifier(IdentifierExpr { name, span: _ }) = &**base {
+                    if self.eval_array_store(name, index, rhs, env).is_none() {
+                        env.remove(name.as_ref());
+                    }
                 }
                 None
             }

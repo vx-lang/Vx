@@ -36,6 +36,38 @@ full and then possibly folded by the optimiser; `if comptime` decides before cod
 the untaken branch does not have to compile at all. That matters when a branch is only valid for
 some types or some hardware.
 
+## Fixed-size arrays
+
+Compile-time code can build a fixed-size array of scalars, read its elements, and write them
+back. The length is fixed when the array is built:
+
+```rust
+fn main() -> i32 {
+    comptime {
+        let mut a : Tensor<i64, [3]> = [ 3i64, 1i64, 2i64 ];
+        a[0] = 9i64;
+        assert(a[0] == 9, "the write happened during compilation");
+    }
+    return 0;
+}
+```
+
+Because both the array and the index are known while compiling, an index past the end is a
+compile error rather than a bad read at run time:
+
+```rust
+let a : Tensor<i64, [3]> = [ 3i64, 1i64, 2i64 ];
+let x = a[5];   // error[E8003]: index 5 is out of range: this array has 3 elements
+```
+
+An index the compiler cannot work out — a loop variable, say — leaves it unable to follow the
+write. When that happens the array stops having a compile-time value entirely, rather than
+keeping the value it had before the write. A later `assert` on that array is then neither
+proved nor disproved, and is checked at run time like any other assert.
+
+Only scalars can go in such an array today. Structs, arrays of arrays, and anything that grows
+are not compile-time values yet.
+
 ## Const generic parameters
 
 A generic parameter can be a value rather than a type, written with `const`:

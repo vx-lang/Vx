@@ -1,0 +1,21 @@
+//===- comptime_array_element.vx - Vx Compiler -------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The evaluator reads an element of a compile-time array, so an assert that contradicts
+// the element stops the build. This is what pass/comptime_array.vx cannot show on its
+// own: an assert the evaluator never ran would leave the build passing.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: Comptime assert failed: the first element is 3, not 5
+
+fn main() -> i32 {
+  comptime {
+    let a : Tensor<i64, [3]> = [ 3i64, 1i64, 2i64 ];
+    assert(a[0] == 5, "the first element is 3, not 5");
+  }
+  return 0;
+}

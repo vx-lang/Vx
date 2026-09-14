@@ -429,6 +429,8 @@ pub enum DiagnosticCode {
     E8001,
     /// Comptime assert failed
     E8002,
+    /// Compile-time index out of range
+    E8003,
 }
 
 impl std::fmt::Display for DiagnosticCode {
