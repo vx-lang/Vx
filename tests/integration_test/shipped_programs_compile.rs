@@ -179,6 +179,10 @@ fn every_stdlib_module_checks_on_its_own() {
     let root = repo_root();
     let mut files = Vec::new();
     vx_files(&root.join("stdlib/std"), &mut files);
+    // `core` is held to the same rule, and to a stricter one below: nothing in it is
+    // allowed onto KNOWN_BROKEN_STDLIB, because a core module that does not check on its
+    // own has no business shipping.
+    vx_files(&root.join("stdlib/core"), &mut files);
     assert!(
         files.len() >= 15,
         "expected to find the standard library, found {} modules -- has the walk broken?",
@@ -220,5 +224,50 @@ fn every_stdlib_module_checks_on_its_own() {
         "these check now -- remove them from KNOWN_BROKEN_STDLIB so the list keeps meaning \
          something:\n{}",
         unexpected_successes.join("\n")
+    );
+}
+
+/// `stdlib/core` contains no `extern` block and imports nothing from `std`.
+///
+/// That single rule is what makes `core` usable inside a `spawn on(..)` region on a
+/// device that has no libc: where Rust's `core` reaches for `core::intrinsics`, Vx's
+/// reaches for `mlir!`, which every backend lowers. An `extern` would tie a module to a
+/// host symbol, and an `import std::` would drag one in indirectly.
+///
+/// This is a text scan on purpose. The rule is about what the source says, so the check
+/// is the one a contributor can also run in their head.
+#[test]
+fn core_depends_on_no_host_symbols() {
+    let root = repo_root();
+    let mut files = Vec::new();
+    vx_files(&root.join("stdlib/core"), &mut files);
+    assert!(
+        !files.is_empty(),
+        "expected to find stdlib/core -- has the walk broken?"
+    );
+
+    let mut offenders = Vec::new();
+    for file in &files {
+        let rel = file
+            .strip_prefix(&root)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let text = std::fs::read_to_string(file).expect("cannot read a core module");
+        for (n, line) in text.lines().enumerate() {
+            let code = line.split("//").next().unwrap_or("").trim();
+            if code.starts_with("extern") {
+                offenders.push(format!("  {rel}:{}  an extern block", n + 1));
+            }
+            if code.starts_with("import std::") {
+                offenders.push(format!("  {rel}:{}  an import of std", n + 1));
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "stdlib/core must not depend on host symbols:\n{}",
+        offenders.join("\n")
     );
 }
