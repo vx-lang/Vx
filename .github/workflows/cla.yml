@@ -60,17 +60,8 @@ jobs:
             It is short, and you only do this once -- later pull requests will not ask again.
 
             Please read it, then post a new comment on this pull request containing exactly:
-          # The action's default is to lock a pull request once it closes, to stop someone
-          # deleting the comment their signature was recorded from. Turned off, for two reasons.
-          # It locks on any close, not only a merge, despite the name -- so an abandoned branch
-          # ends up with its discussion shut. And a locked pull request refuses comments, which
-          # the bot needs to post to finish recording a signature, so a pull request that closes
-          # before its signature lands can never record one.
-          #
-          # Little is given up: a signature is a commit on the cla-signatures branch, so deleting
-          # the comment afterwards does not remove the record.
-          # Quoted: the action compares this against the string 'true', and every other input
-          # here is a string too.
+          # Locks on any close, not only a merge, and a locked pull request refuses the comment
+          # the bot needs in order to record a signature.
           lock-pullrequest-aftermerge: 'false'
           create-file-commit-message: 'cla: start the signature record'
           # Only $contributorName, $owner and $repo are substituted. The action also documents
