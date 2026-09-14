@@ -722,7 +722,38 @@ impl<'a> MacroExpander<'a> {
                 let name_tok = &transcriber_tokens[j + 1];
                 if let OwnedTokenType::Identifier(name) = &name_tok.kind {
                     if let Some(captured) = captures.get(name) {
-                        tokens.extend(captured.clone());
+                        // Move the captured tokens to where the `$name` stood, keeping
+                        // their spacing relative to each other.
+                        //
+                        // Only one consumer reads these positions, and for it the
+                        // difference is the difference between working and not: an
+                        // `mlir!` block is rebuilt into text by laying its tokens out at
+                        // their own line and column. A capture that arrived still carrying
+                        // the call site's line was written that many lines below the rest
+                        // of the block, so `math.ctpop %a : $t` became an operation with
+                        // its type on some later line, which MLIR rejects.
+                        //
+                        // The offsets within the capture have to survive the move. A
+                        // capture can be several tokens, and whether two of them touch is
+                        // meaningful: a nested `add_one!(x)` is only a macro call because
+                        // the `!` sits immediately after the name, and spacing them evenly
+                        // stops it being one.
+                        let anchor = captured.first().map(|t| (t.line, t.column));
+                        for tok in captured {
+                            let mut placed = tok.clone();
+                            if let Some((base_line, base_col)) = anchor {
+                                // A synthesized token carries no position and is left alone.
+                                if placed.line != 0 {
+                                    let line_off = placed.line.saturating_sub(base_line);
+                                    placed.line = m_tok.line + line_off;
+                                    if line_off == 0 {
+                                        placed.column =
+                                            m_tok.column + placed.column.saturating_sub(base_col);
+                                    }
+                                }
+                            }
+                            tokens.push(placed);
+                        }
                         j += 2;
                         continue;
                     }
