@@ -49,7 +49,7 @@ fn ane_models_available() -> bool {
 // the literal segments around the holes must appear in order in `out`. Without a hole this
 // is a plain substring check. (Lets tests use `{{[0-9]+}}` for non-deterministic values like
 // a JIT kernel counter without pulling in a regex engine.)
-fn expect_matches(out: &str, expect: &str) -> bool {
+pub(crate) fn expect_matches(out: &str, expect: &str) -> bool {
     if !expect.contains("{{") {
         return out.contains(expect);
     }
