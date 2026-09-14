@@ -14,7 +14,7 @@ and so on. A `W` prefix is a warning rather than an error.
 - [Warnings](#warnings) — `W1001`–`W1031` (23 codes)
 - [Parser Errors](#parser-errors) — `E1001`–`E1013` (13 codes)
 - [Name Resolution Errors](#name-resolution-errors) — `E2001`–`E2007` (7 codes)
-- [Type Errors](#type-errors) — `E3001`–`E3029` (29 codes)
+- [Type Errors](#type-errors) — `E3001`–`E3030` (30 codes)
 - [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4005` (5 codes)
 - [Safety Errors](#safety-errors) — `E5001`–`E5002` (2 codes)
 - [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6028` (28 codes)
@@ -200,4 +200,4 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 
 ______________________________________________________________________
 
-113 diagnostics.
+114 diagnostics.
