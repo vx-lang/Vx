@@ -3244,6 +3244,8 @@ impl<'c> LowerToMelior<'c> for MatchExpr {
         gen: &mut MeliorGenerator<'c>,
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Self::Output {
+        // Read before the scrutinee is generated, which may set it for its own operands.
+        let outer_expected = gen.expected_type;
         let (match_val, match_ty, block) = gen.generate_expr(&self.expr, block)?;
 
         // The match yields a value exactly when an arm ends in a tail expression -- the same
@@ -3301,7 +3303,29 @@ impl<'c> LowerToMelior<'c> for MatchExpr {
             return Ok((block.argument(0)?.into(), ty, block));
         }
 
-        // Statement position: nothing reads the result, so a placeholder is the whole story.
+        // No arm ends in a tail expression, so the match produces nothing of its own. There
+        // are two ways to arrive here and they need different answers.
+        //
+        // A match written as a statement is the ordinary one: nothing reads the result, and a
+        // placeholder is the whole story.
+        //
+        // The other is a match whose arms each `return`. The parser turns a trailing match into
+        // `return match ...`, so the caller is waiting for a value of the function's return
+        // type -- and the merge block it would come from is unreachable, because every arm has
+        // already left. An `i32` placeholder handed back there was coerced to whatever the
+        // caller wanted, which for an aggregate meant an unrealized conversion cast that no
+        // backend can translate. An undef of the awaited type says the same thing and says it
+        // in a type the caller can return: this edge is not taken.
+        // A `void` function's return type lowers to MLIR's `none`, which is not a value any
+        // operation can produce -- and a void caller has nothing to receive anyway, so the
+        // placeholder below is the right answer there.
+        if let Some(ty) = outer_expected.filter(|t| t.to_string() != "none") {
+            let op = OperationBuilder::new("llvm.mlir.undef", gen.loc())
+                .add_results(&[ty])
+                .build()?;
+            let op_ref = block.append_operation(op);
+            return Ok((op_ref.result(0)?.into(), ty, block));
+        }
         let ty = melior::ir::r#type::IntegerType::new(gen.context, 32).into();
         let op = OperationBuilder::new("arith.constant", gen.loc())
             .add_results(&[ty])
@@ -3346,9 +3370,16 @@ impl<'c> LowerToMelior<'c> for EnumVariantExpr {
                     break;
                 }
             }
-            if enum_name.starts_with("Option<") {
-                // The turbofish arguments arrive re-serialized into the name, so the payload
-                // type comes back out through the type parser (Vx#415).
+            // An instantiated generic enum lowers to a `{tag, payload}` struct, and is told
+            // apart by its name carrying the arguments it was instantiated with. This used to
+            // read `starts_with("Option<")` -- recognising one enum by name. Every other
+            // generic enum fell through to the bare-tag branch below and lost its payload; the
+            // `i32` then reached whatever wanted the struct, which coerced it with an
+            // unrealized conversion cast: valid MLIR that no backend can translate.
+            //
+            // The turbofish arguments arrive re-serialized into the name, so the payload type
+            // comes back out through the type parser.
+            if enum_name.contains('<') {
                 if let Some(t) = crate::parser::types::parse_type_text(enum_name) {
                     enum_ty_str = gen.lower_type_str(&t)?;
                 }

@@ -1,0 +1,23 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// An item-position macro may produce another item-position macro call, which is what
+// lets one macro be written in terms of another. A macro that produces a call to itself
+// therefore never finishes, and the expander counts rounds rather than recursing until
+// the compiler runs out of stack.
+//
+// The number in the message is the limit, not the depth reached, and the message names
+// the usual cause because that is what a reader needs: the alternative is a compiler that
+// appears to hang.
+
+macro_rules loops {
+  ($v : expr) => {
+    loops!($v);
+  };
+}
+
+loops!(1);
+
+fn main() -> i32 {
+  return 0;
+}
+// CHECK: macro expansion in item position did not settle after 64 rounds

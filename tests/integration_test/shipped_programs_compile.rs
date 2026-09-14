@@ -44,16 +44,7 @@ const KNOWN_BROKEN: &[(&str, &str)] = &[];
 
 /// Standard-library modules that do not check on their own yet, each with the reason. Read in
 /// both directions, exactly like [`KNOWN_BROKEN`].
-const KNOWN_BROKEN_STDLIB: &[(&str, &str)] = &[
-    (
-        "stdlib/std/iter.vx",
-        "`Map`/`Filter` resolve to no struct when the module is the entry point",
-    ),
-    (
-        "stdlib/std/tensor.vx",
-        "its generic parameter reaches `Tensor<T, ..>`, which requires a scalar element",
-    ),
-];
+const KNOWN_BROKEN_STDLIB: &[(&str, &str)] = &[];
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))

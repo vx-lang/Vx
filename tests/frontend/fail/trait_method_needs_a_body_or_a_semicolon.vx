@@ -1,0 +1,15 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A trait method is either a requirement or a default: it ends in `;`, or it carries a
+// body. Neither is a parse error, and the message says both options rather than only the
+// semicolon it used to expect -- a reader who has just written a body and mistyped a
+// brace is better served by being told a body is allowed at all.
+
+trait Bad {
+  fn value(self : Self) -> i32
+}
+// CHECK: Expected ';' or a default body after a trait method signature
+
+fn main() -> i32 {
+  return 0;
+}

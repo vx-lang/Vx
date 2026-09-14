@@ -20,6 +20,11 @@ use std::process::Command;
 const KNOWN_DECLINES: &[&str] = &[
     "backend/pass/custom_topology_user_lowering.vx",
     "backend/pass/matmul_assign_alias.vx",
+    // A generic enum returned from a match whose arms each return. The flat path declines it
+    // as "a non-scalar default return" -- the same shape the AST path used to mis-lower, and
+    // the reason that file exists. Its answers come from the AST path, and it states no
+    // directive about emitted IR for that reason.
+    "backend/pass/generic_enum_returned_from_match.vx",
     // A generic struct, which the flat path declines as "a struct with no GID". The file
     // exists to pin that `>>` still closes two generics now that it is also the right
     // shift, and that question is settled in the parser, so the decline costs it nothing.
@@ -176,7 +181,6 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         // Programs that cannot compile as a bare `vxc file.vx` for reasons that are not the
         // flat path's business. Each names why; shrinking this list is separate work.
         const NOT_STANDALONE: &[&str] = &[
-            "frontend/pass/const_generics_methods.vx", // checker rejects standalone (E2001 on N)
             "optimizations/pass/array_literal_nested.vx", // expects failure by design (RUN: not vxc)
             "optimizations/pass/codegen_error_diagnostics.vx", // expects failure by design (RUN: not vxc)
             "optimizations/pass/host_flag_scope.vx",           // needs --host
