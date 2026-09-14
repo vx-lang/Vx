@@ -50,51 +50,44 @@ friends.
 
 The integer methods, on `i32`.
 
-**Functions**
+**`$t` methods**
 
 <!-- vx-doctest: skip -- signature listing, not a program -->
 
 ```rust
-fn i32_min() -> i32
-fn i32_max() -> i32
-fn i32_bits() -> i32
-```
-
-**`i32` methods**
-
-<!-- vx-doctest: skip -- signature listing, not a program -->
-
-```rust
-fn count_ones(self : i32) -> i32
-fn count_zeros(self : i32) -> i32
-fn leading_zeros(self : i32) -> i32
-fn trailing_zeros(self : i32) -> i32
-fn is_power_of_two(self : i32) -> bool
-fn is_positive(self : i32) -> bool
-fn is_negative(self : i32) -> bool
-fn abs(self : i32) -> i32
-fn signum(self : i32) -> i32
-fn min(self : i32, other : i32) -> i32
-fn max(self : i32, other : i32) -> i32
-fn clamp(self : i32, lo : i32, hi : i32) -> i32
-fn abs_diff(self : i32, other : i32) -> i32
-fn pow(self : i32, exp : i32) -> i32
-fn rem_euclid(self : i32, rhs : i32) -> i32
-fn div_euclid(self : i32, rhs : i32) -> i32
-fn ilog2(self : i32) -> i32
-fn next_power_of_two(self : i32) -> i32
-fn rotate_left(self : i32, n : i32) -> i32
-fn rotate_right(self : i32, n : i32) -> i32
-fn swap_bytes(self : i32) -> i32
-fn reverse_bits(self : i32) -> i32
-fn checked_add(self : i32, rhs : i32) -> Option<i32>
-fn checked_sub(self : i32, rhs : i32) -> Option<i32>
-fn checked_mul(self : i32, rhs : i32) -> Option<i32>
-fn checked_div(self : i32, rhs : i32) -> Option<i32>
-fn checked_rem(self : i32, rhs : i32) -> Option<i32>
-fn checked_neg(self : i32) -> Option<i32>
-fn saturating_add(self : i32, rhs : i32) -> i32
-fn saturating_sub(self : i32, rhs : i32) -> i32
+fn min_value(self : $t) -> $t
+fn max_value(self : $t) -> $t
+fn bits(self : $t) -> $t
+fn count_ones(self : $t) -> $t
+fn count_zeros(self : $t) -> $t
+fn leading_zeros(self : $t) -> $t
+fn trailing_zeros(self : $t) -> $t
+fn is_power_of_two(self : $t) -> bool
+fn is_positive(self : $t) -> bool
+fn is_negative(self : $t) -> bool
+fn abs(self : $t) -> $t
+fn signum(self : $t) -> $t
+fn min(self : $t, other : $t) -> $t
+fn max(self : $t, other : $t) -> $t
+fn clamp(self : $t, lo : $t, hi : $t) -> $t
+fn abs_diff(self : $t, other : $t) -> $t
+fn pow(self : $t, exp : $t) -> $t
+fn rem_euclid(self : $t, rhs : $t) -> $t
+fn div_euclid(self : $t, rhs : $t) -> $t
+fn ilog2(self : $t) -> $t
+fn next_power_of_two(self : $t) -> $t
+fn rotate_left(self : $t, n : $t) -> $t
+fn rotate_right(self : $t, n : $t) -> $t
+fn swap_bytes(self : $t) -> $t
+fn reverse_bits(self : $t) -> $t
+fn checked_add(self : $t, rhs : $t) -> Option<$t>
+fn checked_sub(self : $t, rhs : $t) -> Option<$t>
+fn checked_mul(self : $t, rhs : $t) -> Option<$t>
+fn checked_div(self : $t, rhs : $t) -> Option<$t>
+fn checked_rem(self : $t, rhs : $t) -> Option<$t>
+fn checked_neg(self : $t) -> Option<$t>
+fn saturating_add(self : $t, rhs : $t) -> $t
+fn saturating_sub(self : $t, rhs : $t) -> $t
 ```
 
 ## `core::option`

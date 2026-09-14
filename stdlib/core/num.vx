@@ -5,346 +5,395 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// The integer methods, on `i32`.
+// The integer methods, on every signed width.
 //
-// These are inherent methods in Rust too -- `i32::count_ones` is not a trait method --
-// so this module needs no trait machinery at all, which is why it is the first piece of
-// `core` that can be written.
+// These are inherent methods in Rust too -- `i32::count_ones` is not a trait method -- so
+// this module needs no trait machinery at all.
+//
+// One macro stamps the whole set, which is how Rust's own `core::num` is written. Without
+// it this is the same thirty methods copied four times, and the copies drift.
 //
 // `core` contains no `extern` block, and this file keeps that rule. Where Rust's `core`
 // reaches for `core::intrinsics`, this reaches for `mlir!`, which every backend lowers.
 // That is what lets these be called from inside a `spawn on(..)` region on a device with
 // no libc.
 //
-// Only `i32` for now. Each width needs its own copy until `macro_rules` can produce
-// items, which is how Rust's own `core::num` stamps them out.
+// Only the signed widths. An unsigned one needs a second macro rather than another line:
+// a Vx `u32` is an MLIR `i32`, so it cannot use one parameter for both the Vx type and
+// the MLIR type, and several methods here mean nothing without a sign -- `abs`, `signum`,
+// `checked_neg` -- while `>>` means something different.
 //
-// The limits are functions rather than constants because Vx has no `const` item. That is
-// the one place this reads worse than Rust, which writes them `i32::MAX`.
+// The limits are methods -- `x.max_value()` rather than `i32::MAX` -- for two reasons that
+// both come from the language. Vx has no `const` item and no associated item, so there is
+// nowhere to hang a constant; and a macro cannot build the name `i32_max` out of the
+// parameter `i32`, so a free function per width could not be stamped. Rust spelled them
+// this same way before it had associated constants.
 //
-// The `checked_` family answers with an `Option<i32>`, and works only because this impl
-// is on a concrete type. The same methods on a generic `impl<T>` would not lower (#549),
-// which is what keeps `core::option` itself down to four methods.
+// They also have to be methods for a duller reason: a bare literal is born `i32`, and
+// mixing one with an `i8` is a type error rather than a widening. Returning the limit from
+// a method declared `-> $t` is what gives it the right width.
+//
+// The `checked_` family answers with an `Option` and works because this impl is on a
+// concrete type. The same methods on a generic `impl<T>` are a different matter, and
+// `core::option` says so.
 import core::option;
 
-/// The smallest `i32`. Written as a subtraction because the literal 2147483648 does not
-/// fit in an `i32`, so the negation of it cannot be written directly.
-fn i32_min() -> i32 {
-  return -2147483647 - 1;
+/// Stamps the integer methods for one signed width.
+///
+/// `$t` is both the Vx type and the MLIR type, which holds for the signed widths and is
+/// exactly what does not hold for the unsigned ones.
+///
+/// `$bits`, `$min` and `$max` are passed rather than looked up, because a macro cannot
+/// build the name `i32_max` from the parameter `i32`. The free functions above are the
+/// same values under a name a caller can write.
+macro_rules stamp_signed_int {
+  ($t : ident , $bits : expr , $min : expr , $max : expr , $byte_mask : expr) => {
+    impl $t {
+      /// The smallest value of this width.
+      fn min_value(self : $t) -> $t {
+        return $min;
+      }
+
+      /// The largest value of this width.
+      fn max_value(self : $t) -> $t {
+        return $max;
+      }
+
+      /// How many bits this width has. Rust spells this `i32::BITS`.
+      fn bits(self : $t) -> $t {
+        return $bits;
+      }
+
+      /// How many bits are set. Counted by the hardware instruction rather than by a
+      /// loop, which also means a negative operand is counted correctly: a loop shifting
+      /// right would copy the sign bit and never finish.
+      fn count_ones(self : $t) -> $t {
+        return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
+          %r = math.ctpop %a : $t
+          macro.yield %r : $t
+        };
+      }
+
+      /// How many bits are clear.
+      fn count_zeros(self : $t) -> $t {
+        return self.bits() - self.count_ones();
+      }
+
+      /// How many zero bits sit above the highest set bit. All of them, for zero.
+      fn leading_zeros(self : $t) -> $t {
+        return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
+          %r = math.ctlz %a : $t
+          macro.yield %r : $t
+        };
+      }
+
+      /// How many zero bits sit below the lowest set bit. All of them, for zero.
+      fn trailing_zeros(self : $t) -> $t {
+        return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
+          %r = math.cttz %a : $t
+          macro.yield %r : $t
+        };
+      }
+
+      /// Is this a power of two? Zero and the negatives are not.
+      fn is_power_of_two(self : $t) -> bool {
+        return self > (0 as $t) && (self & (self - 1)) == (0 as $t);
+      }
+
+      fn is_positive(self : $t) -> bool {
+        return self > (0 as $t);
+      }
+
+      fn is_negative(self : $t) -> bool {
+        return self < (0 as $t);
+      }
+
+      /// The absolute value. The smallest value of each width has no counterpart, so that
+      /// case is refused rather than wrapped back to itself, which is what the bare
+      /// negation would do.
+      fn abs(self : $t) -> $t {
+        assert(self != self.min_value(), "abs of the smallest value has no answer at this width");
+        if self < (0 as $t) {
+          return -self;
+        }
+        return self;
+      }
+
+      /// -1, 0 or 1, by sign.
+      fn signum(self : $t) -> $t {
+        if self < (0 as $t) {
+          return -1;
+        }
+        if self > (0 as $t) {
+          return 1;
+        }
+        return 0;
+      }
+
+      /// The smaller of the two.
+      fn min(self : $t, other : $t) -> $t {
+        if self < other {
+          return self;
+        }
+        return other;
+      }
+
+      /// The larger of the two.
+      fn max(self : $t, other : $t) -> $t {
+        if self > other {
+          return self;
+        }
+        return other;
+      }
+
+      /// Held between two bounds, which must be the right way round.
+      fn clamp(self : $t, lo : $t, hi : $t) -> $t {
+        assert(lo <= hi, "clamp needs lo <= hi");
+        if self < lo {
+          return lo;
+        }
+        if self > hi {
+          return hi;
+        }
+        return self;
+      }
+
+      /// The distance between two values, as a non-negative number.
+      fn abs_diff(self : $t, other : $t) -> $t {
+        if self < other {
+          return other - self;
+        }
+        return self - other;
+      }
+
+      /// Raised to a non-negative power, by squaring. Overflow wraps, as every other
+      /// arithmetic operator in the language does.
+      fn pow(self : $t, exp : $t) -> $t {
+        assert(exp >= (0 as $t), "pow takes a non-negative exponent");
+        let mut result : $t = 1;
+        let mut base : $t = self;
+        let mut e : $t = exp;
+        loop {
+          if e == (0 as $t) {
+            break;
+          }
+          if (e & 1) == (1 as $t) {
+            result = result * base;
+          }
+          base = base * base;
+          e = e >> (1 as $t);
+        }
+        return result;
+      }
+
+      /// Euclidean remainder: never negative, whatever the signs are. `%` alone takes its
+      /// sign from the dividend, so -7 % 4 is -3 where this is 1.
+      fn rem_euclid(self : $t, rhs : $t) -> $t {
+        let r = self % rhs;
+        if r < (0 as $t) {
+          if rhs < (0 as $t) {
+            return r - rhs;
+          }
+          return r + rhs;
+        }
+        return r;
+      }
+
+      /// The quotient that pairs with `rem_euclid`, rounded so the remainder stays
+      /// non-negative.
+      fn div_euclid(self : $t, rhs : $t) -> $t {
+        let q = self / rhs;
+        if self % rhs < (0 as $t) {
+          if rhs > (0 as $t) {
+            return q - 1;
+          }
+          return q + 1;
+        }
+        return q;
+      }
+
+      /// The base-2 logarithm, rounded down. Undefined at zero and below, so refused.
+      fn ilog2(self : $t) -> $t {
+        assert(self > (0 as $t), "ilog2 needs a positive value");
+        return self.bits() - 1 - self.leading_zeros();
+      }
+
+      /// The smallest power of two at or above this value. One for anything at or below
+      /// one. The top power of two does not fit in a signed width -- the bit above it is
+      /// the sign -- so a value beyond it is refused rather than answered with a negative
+      /// number.
+      fn next_power_of_two(self : $t) -> $t {
+        if self <= (1 as $t) {
+          return 1;
+        }
+        let one : $t = 1;
+        let shift = self.bits() - (self - one).leading_zeros();
+        assert(shift < self.bits() - one, "next power of two does not fit at this width");
+        return one << shift;
+      }
+
+      /// The bits rotated left, wrapping round rather than falling off the end. The right
+      /// half is masked because `>>` on a signed value copies the sign bit.
+      fn rotate_left(self : $t, n : $t) -> $t {
+        let k = n % self.bits();
+        if k == (0 as $t) {
+          return self;
+        }
+        let one : $t = 1;
+        let low = (self >> (self.bits() - k)) & ((one << k) - one);
+        return (self << k) | low;
+      }
+
+      /// The bits rotated right.
+      fn rotate_right(self : $t, n : $t) -> $t {
+        let k = n % self.bits();
+        if k == (0 as $t) {
+          return self;
+        }
+        return self.rotate_left(self.bits() - k);
+      }
+
+      /// The bytes in the opposite order. Each byte is masked after shifting, because
+      /// `>>` on a signed value copies the sign bit down into the bits being kept.
+      ///
+      /// The mask is a parameter rather than the literal 255, because 255 does not fit in
+      /// an `i8`. Writing it there is currently accepted and wraps to -1, which is by luck
+      /// the right mask, but a language that refuses an out-of-range literal would be
+      /// right to and this would break. At one byte wide the loop runs once with no shift,
+      /// which is the identity, and that is the correct answer.
+      fn swap_bytes(self : $t) -> $t {
+        let eight : $t = 8;
+        let mask : $t = $byte_mask;
+        let mut out : $t = 0;
+        let mut i : $t = 0;
+        loop {
+          if i == self.bits() {
+            break;
+          }
+          let byte = (self >> i) & mask;
+          out = out | (byte << (self.bits() - eight - i));
+          i += eight;
+        }
+        return out;
+      }
+
+      /// The bits in the opposite order.
+      fn reverse_bits(self : $t) -> $t {
+        let one : $t = 1;
+        let mut out : $t = 0;
+        let mut i : $t = 0;
+        loop {
+          if i == self.bits() {
+            break;
+          }
+          let bit = (self >> i) & one;
+          out = out | (bit << (self.bits() - one - i));
+          i += one;
+        }
+        return out;
+      }
+
+      /// The sum, or nothing if it would not fit. The bound is rearranged so the check
+      /// itself cannot overflow: comparing against `self.max_value() - rhs` is safe where computing
+      /// `self + rhs` first is exactly the thing being tested.
+      fn checked_add(self : $t, rhs : $t) -> Option<$t> {
+        if rhs > (0 as $t) && self > self.max_value() - rhs {
+          return Option<$t>::None();
+        }
+        if rhs < (0 as $t) && self < self.min_value() - rhs {
+          return Option<$t>::None();
+        }
+        return Option<$t>::Some(self + rhs);
+      }
+
+      /// The difference, or nothing if it would not fit.
+      fn checked_sub(self : $t, rhs : $t) -> Option<$t> {
+        if rhs < (0 as $t) && self > self.max_value() + rhs {
+          return Option<$t>::None();
+        }
+        if rhs > (0 as $t) && self < self.min_value() + rhs {
+          return Option<$t>::None();
+        }
+        return Option<$t>::Some(self - rhs);
+      }
+
+      /// The product, or nothing if it would not fit. Checked after the fact by dividing
+      /// back out, which is exact whenever the product did fit. The two cases where that
+      /// division would itself overflow are ruled out first.
+      fn checked_mul(self : $t, rhs : $t) -> Option<$t> {
+        if self == (0 as $t) || rhs == (0 as $t) {
+          return Option<$t>::Some(0 as $t);
+        }
+        if self == self.min_value() && rhs == (-1 as $t) {
+          return Option<$t>::None();
+        }
+        if rhs == self.min_value() && self == (-1 as $t) {
+          return Option<$t>::None();
+        }
+        let product = self * rhs;
+        if product / rhs != self {
+          return Option<$t>::None();
+        }
+        return Option<$t>::Some(product);
+      }
+
+      /// The quotient, or nothing on division by zero -- and on the one division that
+      /// overflows, the smallest value divided by -1.
+      fn checked_div(self : $t, rhs : $t) -> Option<$t> {
+        if rhs == (0 as $t) {
+          return Option<$t>::None();
+        }
+        if self == self.min_value() && rhs == (-1 as $t) {
+          return Option<$t>::None();
+        }
+        return Option<$t>::Some(self / rhs);
+      }
+
+      /// The remainder, refused in the same two cases as `checked_div`.
+      fn checked_rem(self : $t, rhs : $t) -> Option<$t> {
+        if rhs == (0 as $t) {
+          return Option<$t>::None();
+        }
+        if self == self.min_value() && rhs == (-1 as $t) {
+          return Option<$t>::None();
+        }
+        return Option<$t>::Some(self % rhs);
+      }
+
+      /// The negation, or nothing for the smallest value, which has no counterpart.
+      fn checked_neg(self : $t) -> Option<$t> {
+        if self == self.min_value() {
+          return Option<$t>::None();
+        }
+        return Option<$t>::Some(-self);
+      }
+
+      /// The sum, held at the end of the range instead of wrapping past it.
+      fn saturating_add(self : $t, rhs : $t) -> $t {
+        if rhs > (0 as $t) && self > self.max_value() - rhs {
+          return self.max_value();
+        }
+        if rhs < (0 as $t) && self < self.min_value() - rhs {
+          return self.min_value();
+        }
+        return self + rhs;
+      }
+
+      /// The difference, held at the end of the range instead of wrapping past it.
+      fn saturating_sub(self : $t, rhs : $t) -> $t {
+        if rhs < (0 as $t) && self > self.max_value() + rhs {
+          return self.max_value();
+        }
+        if rhs > (0 as $t) && self < self.min_value() + rhs {
+          return self.min_value();
+        }
+        return self - rhs;
+      }
+    }
+  };
 }
 
-/// The largest `i32`.
-fn i32_max() -> i32 {
-  return 2147483647;
-}
-
-/// How many bits an `i32` has. Rust spells this `i32::BITS`.
-fn i32_bits() -> i32 {
-  return 32;
-}
-
-impl i32 {
-  /// How many bits are set. Counted by the hardware instruction rather than by a loop,
-  /// which also means a negative operand is counted correctly: a loop shifting right
-  /// would sign-extend forever.
-  fn count_ones(self : i32) -> i32 {
-    return mlir!( inputs : (%a = self : i32), returns : i32, dialects : ["math"]) {
-      %r = math.ctpop %a : i32
-      macro.yield %r : i32
-    };
-  }
-
-  /// How many bits are clear.
-  fn count_zeros(self : i32) -> i32 {
-    return i32_bits() - self.count_ones();
-  }
-
-  /// How many zero bits sit above the highest set bit. 32 for zero.
-  fn leading_zeros(self : i32) -> i32 {
-    return mlir!( inputs : (%a = self : i32), returns : i32, dialects : ["math"]) {
-      %r = math.ctlz %a : i32
-      macro.yield %r : i32
-    };
-  }
-
-  /// How many zero bits sit below the lowest set bit. 32 for zero.
-  fn trailing_zeros(self : i32) -> i32 {
-    return mlir!( inputs : (%a = self : i32), returns : i32, dialects : ["math"]) {
-      %r = math.cttz %a : i32
-      macro.yield %r : i32
-    };
-  }
-
-  /// Is this a power of two? Zero and the negatives are not.
-  fn is_power_of_two(self : i32) -> bool {
-    return self > 0 && (self & (self - 1)) == 0;
-  }
-
-  fn is_positive(self : i32) -> bool {
-    return self > 0;
-  }
-
-  fn is_negative(self : i32) -> bool {
-    return self < 0;
-  }
-
-  /// The absolute value. There is no `i32` for the absolute value of the smallest one,
-  /// so that case is refused rather than wrapped to itself, which is what the bare
-  /// negation would do.
-  fn abs(self : i32) -> i32 {
-    assert(self != i32_min(), "abs of the smallest i32 has no i32 answer");
-    if self < 0 {
-      return -self;
-    }
-    return self;
-  }
-
-  /// -1, 0 or 1, by sign.
-  fn signum(self : i32) -> i32 {
-    if self < 0 {
-      return -1;
-    }
-    if self > 0 {
-      return 1;
-    }
-    return 0;
-  }
-
-  /// The smaller of the two.
-  fn min(self : i32, other : i32) -> i32 {
-    if self < other {
-      return self;
-    }
-    return other;
-  }
-
-  /// The larger of the two.
-  fn max(self : i32, other : i32) -> i32 {
-    if self > other {
-      return self;
-    }
-    return other;
-  }
-
-  /// Held between two bounds, which must be the right way round.
-  fn clamp(self : i32, lo : i32, hi : i32) -> i32 {
-    assert(lo <= hi, "clamp needs lo <= hi");
-    if self < lo {
-      return lo;
-    }
-    if self > hi {
-      return hi;
-    }
-    return self;
-  }
-
-  /// The distance between two values, as a non-negative number.
-  fn abs_diff(self : i32, other : i32) -> i32 {
-    if self < other {
-      return other - self;
-    }
-    return self - other;
-  }
-
-  /// Raised to a non-negative power, by squaring. Overflow wraps, as every other
-  /// arithmetic operator in the language does.
-  fn pow(self : i32, exp : i32) -> i32 {
-    assert(exp >= 0, "pow takes a non-negative exponent");
-    let mut result = 1;
-    let mut base = self;
-    let mut e = exp;
-    loop {
-      if e == 0 {
-        break;
-      }
-      if (e & 1) == 1 {
-        result = result * base;
-      }
-      base = base * base;
-      e = e >> 1;
-    }
-    return result;
-  }
-
-  /// Euclidean remainder: never negative, whatever the signs are. `%` alone takes its
-  /// sign from the dividend, so -7 % 4 is -3 where this is 1.
-  fn rem_euclid(self : i32, rhs : i32) -> i32 {
-    let r = self % rhs;
-    if r < 0 {
-      if rhs < 0 {
-        return r - rhs;
-      }
-      return r + rhs;
-    }
-    return r;
-  }
-
-  /// The quotient that pairs with `rem_euclid`, rounded so the remainder stays
-  /// non-negative.
-  fn div_euclid(self : i32, rhs : i32) -> i32 {
-    let q = self / rhs;
-    if self % rhs < 0 {
-      if rhs > 0 {
-        return q - 1;
-      }
-      return q + 1;
-    }
-    return q;
-  }
-
-  /// The base-2 logarithm, rounded down. Undefined at zero and below, so refused there.
-  fn ilog2(self : i32) -> i32 {
-    assert(self > 0, "ilog2 needs a positive value");
-    return i32_bits() - 1 - self.leading_zeros();
-  }
-
-  /// The smallest power of two at or above this value. One for anything at or below one.
-  fn next_power_of_two(self : i32) -> i32 {
-    if self <= 1 {
-      return 1;
-    }
-    return 1 << (i32_bits() - (self - 1).leading_zeros());
-  }
-
-  /// The bits rotated left, wrapping round rather than falling off the end. The right
-  /// half is masked because `>>` on a signed value copies the sign bit.
-  fn rotate_left(self : i32, n : i32) -> i32 {
-    let k = n % i32_bits();
-    if k == 0 {
-      return self;
-    }
-    let low = (self >> (i32_bits() - k)) & ((1 << k) - 1);
-    return (self << k) | low;
-  }
-
-  /// The bits rotated right.
-  fn rotate_right(self : i32, n : i32) -> i32 {
-    let k = n % i32_bits();
-    if k == 0 {
-      return self;
-    }
-    return self.rotate_left(i32_bits() - k);
-  }
-
-  /// The four bytes in the opposite order. Each byte is masked after shifting, again
-  /// because `>>` copies the sign bit.
-  fn swap_bytes(self : i32) -> i32 {
-    let b0 = (self >> 24) & 255;
-    let b1 = (self >> 8) & 65280;
-    let b2 = (self << 8) & 16711680;
-    let b3 = self << 24;
-    return b0 | b1 | b2 | b3;
-  }
-
-  /// The bits in the opposite order.
-  fn reverse_bits(self : i32) -> i32 {
-    let mut out = 0;
-    let mut i = 0;
-    loop {
-      if i == i32_bits() {
-        break;
-      }
-      let bit = (self >> i) & 1;
-      out = out | (bit << (i32_bits() - 1 - i));
-      i += 1;
-    }
-    return out;
-  }
-
-  /// The sum, or nothing if it would not fit. The bound is rearranged so the check
-  /// itself cannot overflow: comparing against `i32_max() - rhs` is safe where computing
-  /// `self + rhs` first is exactly the thing being tested.
-  fn checked_add(self : i32, rhs : i32) -> Option<i32> {
-    if rhs > 0 && self > i32_max() - rhs {
-      return Option<i32>::None();
-    }
-    if rhs < 0 && self < i32_min() - rhs {
-      return Option<i32>::None();
-    }
-    return Option<i32>::Some(self + rhs);
-  }
-
-  /// The difference, or nothing if it would not fit.
-  fn checked_sub(self : i32, rhs : i32) -> Option<i32> {
-    if rhs < 0 && self > i32_max() + rhs {
-      return Option<i32>::None();
-    }
-    if rhs > 0 && self < i32_min() + rhs {
-      return Option<i32>::None();
-    }
-    return Option<i32>::Some(self - rhs);
-  }
-
-  /// The product, or nothing if it would not fit. Checked after the fact by dividing
-  /// back out, which is exact whenever the product did fit. The two cases where that
-  /// division would itself overflow are ruled out first.
-  fn checked_mul(self : i32, rhs : i32) -> Option<i32> {
-    if self == 0 || rhs == 0 {
-      return Option<i32>::Some(0);
-    }
-    if self == i32_min() && rhs == -1 {
-      return Option<i32>::None();
-    }
-    if rhs == i32_min() && self == -1 {
-      return Option<i32>::None();
-    }
-    let product = self * rhs;
-    if product / rhs != self {
-      return Option<i32>::None();
-    }
-    return Option<i32>::Some(product);
-  }
-
-  /// The quotient, or nothing on division by zero -- and on the one division that
-  /// overflows, the smallest `i32` divided by -1.
-  fn checked_div(self : i32, rhs : i32) -> Option<i32> {
-    if rhs == 0 {
-      return Option<i32>::None();
-    }
-    if self == i32_min() && rhs == -1 {
-      return Option<i32>::None();
-    }
-    return Option<i32>::Some(self / rhs);
-  }
-
-  /// The remainder, refused in the same two cases as `checked_div`.
-  fn checked_rem(self : i32, rhs : i32) -> Option<i32> {
-    if rhs == 0 {
-      return Option<i32>::None();
-    }
-    if self == i32_min() && rhs == -1 {
-      return Option<i32>::None();
-    }
-    return Option<i32>::Some(self % rhs);
-  }
-
-  /// The negation, or nothing for the smallest `i32`, which has no positive counterpart.
-  fn checked_neg(self : i32) -> Option<i32> {
-    if self == i32_min() {
-      return Option<i32>::None();
-    }
-    return Option<i32>::Some(-self);
-  }
-
-  /// The sum, held at the end of the range instead of wrapping past it.
-  fn saturating_add(self : i32, rhs : i32) -> i32 {
-    if rhs > 0 && self > i32_max() - rhs {
-      return i32_max();
-    }
-    if rhs < 0 && self < i32_min() - rhs {
-      return i32_min();
-    }
-    return self + rhs;
-  }
-
-  /// The difference, held at the end of the range instead of wrapping past it.
-  fn saturating_sub(self : i32, rhs : i32) -> i32 {
-    if rhs < 0 && self > i32_max() + rhs {
-      return i32_max();
-    }
-    if rhs > 0 && self < i32_min() + rhs {
-      return i32_min();
-    }
-    return self - rhs;
-  }
-}
+stamp_signed_int!(i8 , 8 , -127 - 1 , 127 , -1);
+stamp_signed_int!(i16 , 16 , -32767 - 1 , 32767 , 255);
+stamp_signed_int!(i32 , 32 , -2147483647 - 1 , 2147483647 , 255);
+stamp_signed_int!(i64 , 64 , -9223372036854775807 - 1 , 9223372036854775807 , 255);

@@ -1,0 +1,110 @@
+//===- core_num_widths.vx - Vx Compiler ---------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `core::num` at `i8`, `i16` and `i64`. The `i32` copy is covered by core_num_i32.vx and
+// core_num_checked.vx, which are unchanged by the module becoming macro-stamped and are
+// the evidence that stamping it did not change what it answers.
+//
+// This file asks only the methods whose answers depend on the width, because those are
+// the ones a stamped copy can get wrong: anything reading the bit count, the smallest
+// value or the largest. `min`, `max`, `clamp` and `abs_diff` are the same code at every
+// width and are not repeated here.
+//
+// The values are chosen so a copy that kept another width's numbers would be caught.
+// `leading_zeros(1)` is 7, 15 and 63 -- one per width and no two alike. `reverse_bits(1)`
+// is the smallest value of each width, which is the bit pattern that only fits there.
+// `swap_bytes(1)` is 1 at one byte, 256 at two and 1 << 56 at eight.
+//
+// `swap_bytes` at `i8` is the identity, and that is the case worth having: the loop runs
+// once with no shift, and the byte mask handed to the macro is -1 rather than 255 because
+// 255 does not fit.
+import core::num;
+import core::option;
+
+fn show(flag : bool) -> i32 {
+  if flag {
+    print(1);
+  } else {
+    print(0);
+  }
+  return 0;
+}
+
+fn main() -> i32 {
+  let a8 : i8 = 12;
+  let one8 : i8 = 1;
+  let lo8 : i8 = -127 - 1;
+  let hi8 : i8 = 127;
+  print(a8.count_ones() as i32);
+  print!(" ");
+  print(a8.count_zeros() as i32);
+  print!(" ");
+  print(one8.leading_zeros() as i32);
+  print!(" ");
+  print(a8.trailing_zeros() as i32);
+  print!(" ");
+  print(one8.bits() as i32);
+  print!(" ");
+  print(hi8.max_value() as i32);
+  print!(" ");
+  print(lo8.min_value() as i32);
+  print!(" ");
+  print(a8.swap_bytes() as i32);
+  print!(" ");
+  print(one8.reverse_bits() as i32);
+  print!(" ");
+  print(lo8.rotate_left(one8) as i32);
+  print!(" ");
+  show(hi8.checked_add(one8).is_none());
+  print!(" ");
+  print(hi8.saturating_add(one8) as i32);
+  print!(" ");
+  show(lo8.checked_neg().is_none());
+  print!(" ");
+
+  let one16 : i16 = 1;
+  let hi16 : i16 = 32767;
+  let lo16 : i16 = -32767 - 1;
+  let k16 : i16 = 1024;
+  print(one16.leading_zeros() as i32);
+  print!(" ");
+  print(one16.bits() as i32);
+  print!(" ");
+  print(one16.swap_bytes() as i32);
+  print!(" ");
+  print(one16.reverse_bits() as i32);
+  print!(" ");
+  print(k16.ilog2() as i32);
+  print!(" ");
+  print(lo16.rotate_left(one16) as i32);
+  print!(" ");
+  show(hi16.checked_add(one16).is_none());
+  print!(" ");
+  print(lo16.saturating_sub(one16) as i32);
+  print!(" ");
+
+  let one64 : i64 = 1;
+  let neg64 : i64 = -1;
+  let hi64 : i64 = 9223372036854775807;
+  let k64 : i64 = 1024;
+  print(one64.leading_zeros());
+  print!(" ");
+  print(neg64.count_ones());
+  print!(" ");
+  print(one64.bits());
+  print!(" ");
+  print(one64.swap_bytes());
+  print!(" ");
+  print(k64.ilog2());
+  print!(" ");
+  show(hi64.checked_add(one64).is_none());
+  print!(" ");
+  print(hi64.saturating_add(one64));
+  return 0;
+}
+
+// EXPECT: 2 6 7 2 8 127 -128 12 -128 1 1 127 1 15 16 256 -32768 10 1 1 -32768 63 64 64 72057594037927936 10 1 9223372036854775807
