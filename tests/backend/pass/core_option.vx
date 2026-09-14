@@ -1,0 +1,49 @@
+//===- core_option.vx - Vx Compiler -------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `core::option`, after the move out of `std`.
+//
+// Four methods, which is all of `Option` that lowers today: anything answering with
+// another `Option` stops in codegen, so this file cannot exercise `or`, `and`, `map` or
+// their neighbours. The module header says why.
+//
+// Each of the four gets both of its cases. One case alone does not tell a working
+// method from a broken one -- an `is_some` that always answered true, and an
+// `unwrap_or` that ignored either the value or the default, each pass a test that only
+// ever asks one side.
+//
+// Every value is built where it is used rather than bound first. An `Option` is an enum,
+// so it is a linear value, and `unwrap` takes it by value.
+import core::option;
+
+fn show(flag : bool) -> i32 {
+  if flag {
+    print(1);
+  } else {
+    print(0);
+  }
+  return 0;
+}
+
+fn main() -> i32 {
+  show(Option<i32>::Some(5).is_some());
+  print!(" ");
+  show(Option<i32>::None().is_some());
+  print!(" ");
+  show(Option<i32>::Some(5).is_none());
+  print!(" ");
+  show(Option<i32>::None().is_none());
+  print!(" ");
+  print(Option<i32>::Some(5).unwrap());
+  print!(" ");
+  print(Option<i32>::Some(5).unwrap_or(9));
+  print!(" ");
+  print(Option<i32>::None().unwrap_or(9));
+  return 0;
+}
+
+// EXPECT: 1 0 0 1 5 5 9
