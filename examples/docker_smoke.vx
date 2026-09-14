@@ -4,3 +4,4 @@ fn main() -> i32 {
   print(x * y);
   return 0;
 }
+
