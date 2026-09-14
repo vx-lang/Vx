@@ -16,8 +16,8 @@
 //
 //===----------------------------------------------------------------------===//
 use crate::bytecode::{
-    HirInstruction, Opcode, Register, TypeIdx, IMM_BLOCK_INIT, IMM_BLOCK_STEP, IMM_PARALLEL_INIT,
-    IMM_PARALLEL_STEP, IMM_THREAD_INIT, IMM_THREAD_STEP,
+    HirInstruction, Opcode, Register, TypeIdx, IMM_BLOCK_BOUND, IMM_BLOCK_INIT, IMM_BLOCK_STEP,
+    IMM_PARALLEL_BOUND, IMM_PARALLEL_INIT, IMM_PARALLEL_STEP, IMM_THREAD_INIT, IMM_THREAD_STEP,
 };
 use crate::decline::{Decline, Lowered};
 use crate::gid::TypeId;
@@ -2333,14 +2333,20 @@ impl<'r> Lowerer<'r> {
         };
         // Induction variable `i` and the loop bound both need to survive across blocks -> slots.
         let i_slot = self.emit_alloca(LoweredTy::Scalar(elem.clone()));
-        let (init_imm, step_imm) = match plan_kind {
-            Some(pair) => pair,
-            None if stride => (IMM_PARALLEL_INIT, IMM_PARALLEL_STEP),
-            None => (0, 0),
+        // The bound tag rides alongside the init/step pair, but only for the two loop kinds a
+        // host worker can own whole: the single-level stridable loop, and the block loop of a
+        // two-level region. A thread-mapped loop gets none -- see `IMM_BLOCK_BOUND`.
+        let (init_imm, step_imm, bound_imm) = match plan_kind {
+            Some((IMM_BLOCK_INIT, IMM_BLOCK_STEP)) => {
+                (IMM_BLOCK_INIT, IMM_BLOCK_STEP, IMM_BLOCK_BOUND)
+            }
+            Some((init, step)) => (init, step, 0),
+            None if stride => (IMM_PARALLEL_INIT, IMM_PARALLEL_STEP, IMM_PARALLEL_BOUND),
+            None => (0, 0, 0),
         };
         self.emit_effect(Opcode::Store, i_slot.reg, start.reg, init_imm);
         let end_slot = self.emit_alloca(LoweredTy::Scalar(elem.clone()));
-        self.emit_effect(Opcode::Store, end_slot.reg, end.reg, 0);
+        self.emit_effect(Opcode::Store, end_slot.reg, end.reg, bound_imm);
         self.scope.insert(
             f.iter.as_str().into(),
             Binding::Slot {
