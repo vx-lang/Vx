@@ -87,6 +87,14 @@ fn rotate_left(self : i32, n : i32) -> i32
 fn rotate_right(self : i32, n : i32) -> i32
 fn swap_bytes(self : i32) -> i32
 fn reverse_bits(self : i32) -> i32
+fn checked_add(self : i32, rhs : i32) -> Option<i32>
+fn checked_sub(self : i32, rhs : i32) -> Option<i32>
+fn checked_mul(self : i32, rhs : i32) -> Option<i32>
+fn checked_div(self : i32, rhs : i32) -> Option<i32>
+fn checked_rem(self : i32, rhs : i32) -> Option<i32>
+fn checked_neg(self : i32) -> Option<i32>
+fn saturating_add(self : i32, rhs : i32) -> i32
+fn saturating_sub(self : i32, rhs : i32) -> i32
 ```
 
 ## `core::option`
@@ -779,4 +787,4 @@ fn vx_vec_bounds_check(index : i64, len : i64) -> i32
 
 ______________________________________________________________________
 
-254 functions across 22 modules.
+262 functions across 22 modules.
