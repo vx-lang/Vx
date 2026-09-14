@@ -3,7 +3,7 @@
 // CHECK: %[[C0:.*]] = arith.cmpi eq, %{{.*}}, %{{.*}} : i32
 // CHECK: cf.cond_br %[[C0]], ^{{.*}}, ^{{.*}}
 import std::vec;
-import std::closure;
+import core::ops;
 
 macro_rules is_equal { ($x : expr) => {
     $x == 10

@@ -8,7 +8,7 @@
 // CHECK-LABEL: func.func @ref$mut$Vec$f32$push$f32(%arg0: !llvm.ptr {llvm.noalias}, %arg1: f32) -> i32
 // CHECK: call @vx_vec_grow(%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, i64, i64, i64) -> !llvm.ptr
 import std::vec;
-import std::closure;
+import core::ops;
 fn main() -> i32 {
   let mut v = vec![ 1.0, 2.5, 3.14 ];
   return 0;
