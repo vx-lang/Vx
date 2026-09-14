@@ -4,3 +4,6 @@ venv/
 build/
 .git/
 *.mlmodelc/
+.cargo/
+.rustup/
+
