@@ -224,7 +224,7 @@ docker run --rm -v "$(pwd)":/workspace -w /workspace vx-build:llvm22 \
   bash -c "./setup.sh && . ./config.local && cargo build --release && cargo build --release -p vx_std_core"
 ```
 
-Note: this image has been verified on `linux/amd64`. Building on `linux/arm64` requires passing `--platform linux/amd64` 
+Note: this image has been verified on `linux/amd64`. Building on `linux/arm64` requires passing `--platform linux/amd64`
 to `docker build`.
 
 ______________________________________________________________________
