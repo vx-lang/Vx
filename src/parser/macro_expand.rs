@@ -722,22 +722,12 @@ impl<'a> MacroExpander<'a> {
                 let name_tok = &transcriber_tokens[j + 1];
                 if let OwnedTokenType::Identifier(name) = &name_tok.kind {
                     if let Some(captured) = captures.get(name) {
-                        // Move the captured tokens to where the `$name` stood, keeping
-                        // their spacing relative to each other.
-                        //
-                        // Only one consumer reads these positions, and for it the
-                        // difference is the difference between working and not: an
-                        // `mlir!` block is rebuilt into text by laying its tokens out at
-                        // their own line and column. A capture that arrived still carrying
-                        // the call site's line was written that many lines below the rest
-                        // of the block, so `math.ctpop %a : $t` became an operation with
-                        // its type on some later line, which MLIR rejects.
-                        //
-                        // The offsets within the capture have to survive the move. A
-                        // capture can be several tokens, and whether two of them touch is
-                        // meaningful: a nested `add_one!(x)` is only a macro call because
-                        // the `!` sits immediately after the name, and spacing them evenly
-                        // stops it being one.
+                        // Move the capture to where `$name` stood, keeping the tokens'
+                        // offsets from each other. An `mlir!` block is rebuilt from token
+                        // positions, so a capture still carrying the call site's line
+                        // lands away from the rest of the block; and adjacency within the
+                        // capture matters, since a nested `add_one!(x)` is a call only
+                        // when the `!` touches the name.
                         let anchor = captured.first().map(|t| (t.line, t.column));
                         for tok in captured {
                             let mut placed = tok.clone();
