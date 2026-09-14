@@ -735,7 +735,15 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
                     BinaryOp::Sub => "arith.subf",
                     BinaryOp::Mul => "arith.mulf",
                     BinaryOp::Div => "arith.divf",
-                    BinaryOp::MatMul => unreachable!(),
+                    // Both are excluded by the `matches!` guard above: `@` is a matmul, and
+                    // `%` has no vectorized slice form.
+                    BinaryOp::MatMul
+                    | BinaryOp::Rem
+                    | BinaryOp::BitAnd
+                    | BinaryOp::BitOr
+                    | BinaryOp::BitXor
+                    | BinaryOp::Shl
+                    | BinaryOp::Shr => unreachable!(),
                 };
                 let arith_op = OperationBuilder::new(op_name, gen.loc())
                     .add_operands(&[va, vb])
@@ -1077,6 +1085,16 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
                 BinaryOp::Mul => "linalg.mul",
                 BinaryOp::MatMul => panic!("MatMul must have been handled by is_matmul branch"),
                 BinaryOp::Div => "linalg.div",
+                // The checker refuses a tensor operand to `%` (E3030): there is no named
+                // `linalg` remainder to lower it to.
+                BinaryOp::Rem
+                | BinaryOp::BitAnd
+                | BinaryOp::BitOr
+                | BinaryOp::BitXor
+                | BinaryOp::Shl
+                | BinaryOp::Shr => {
+                    panic!("this operator on tensors must have been refused by the checker")
+                }
             };
 
             let is_float = el_ty_str.contains("f32")

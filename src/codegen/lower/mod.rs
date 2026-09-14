@@ -72,6 +72,27 @@ impl MeliorOpInfo for BinaryOp {
                     "arith.divsi"
                 }
             }
+            // Signed, like `Div` above, because an MLIR integer is signless and the Vx element
+            // type has been lost by this point -- all this path is handed is the printed MLIR
+            // type. The flat path keeps the element type and picks `remui` for an unsigned
+            // operand; only `--legacy-codegen` reaches this arm.
+            BinaryOp::Rem => {
+                if is_float {
+                    "arith.remf"
+                } else {
+                    "arith.remsi"
+                }
+            }
+            // One name each: these are bit patterns, so neither signedness nor floatness
+            // enters into the choice. A float operand is refused by the checker (E3030).
+            BinaryOp::BitAnd => "arith.andi",
+            BinaryOp::BitOr => "arith.ori",
+            BinaryOp::BitXor => "arith.xori",
+            BinaryOp::Shl => "arith.shli",
+            // Signed, for the same reason `Rem` is: this path is handed the printed MLIR
+            // type, which is signless. The flat path keeps the element type and picks
+            // `shrui` for an unsigned operand.
+            BinaryOp::Shr => "arith.shrsi",
         }
     }
 

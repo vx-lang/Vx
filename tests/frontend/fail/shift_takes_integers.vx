@@ -1,0 +1,30 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A shift takes two integers. It is the narrowest of the three restrictions sharing
+// E3030: `%` takes any number and refuses `bool`, the bitwise operators take integers
+// and `bool` and refuse floats, and a shift refuses both -- `bool` holds one bit and
+// there is nothing useful to shift it by, which is why Rust does not define one either.
+//
+// Both cases here are semantic. The syntactic half of the shift story -- that a spaced
+// `a > > b` is not one -- is in spaced_angles_are_not_a_shift.vx, and has to be its own
+// file: a parse error stops the compile before either check below could be reached.
+
+fn floats() -> i32 {
+  let a : f32 = 8.0;
+  let b : f32 = 2.0;
+  let c = a << b;
+  return 0;
+}
+// CHECK: Error[E3030]{{.*}}`<<` takes two integers, got f32 and f32
+
+fn bools() -> i32 {
+  let p = true;
+  let q = false;
+  let r = p >> q;
+  return 0;
+}
+// CHECK: Error[E3030]{{.*}}`>>` takes two integers, got bool and bool
+
+fn main() -> i32 {
+  return 0;
+}
