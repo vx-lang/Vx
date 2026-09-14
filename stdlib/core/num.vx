@@ -19,10 +19,13 @@
 // Only `i32` for now. Each width needs its own copy until `macro_rules` can produce
 // items, which is how Rust's own `core::num` stamps them out.
 //
-// Two things are missing and are waiting on the language rather than on anyone's time.
-// The `checked_*` family returns `Option<T>`, which belongs in `core::option` -- it
-// lives in `std::option` today, and moving it is its own change. And the limits are
-// functions rather than constants because Vx has no `const` item.
+// The limits are functions rather than constants because Vx has no `const` item. That is
+// the one place this reads worse than Rust, which writes them `i32::MAX`.
+//
+// The `checked_` family answers with an `Option<i32>`, and works only because this impl
+// is on a concrete type. The same methods on a generic `impl<T>` would not lower (#549),
+// which is what keeps `core::option` itself down to four methods.
+import core::option;
 
 /// The smallest `i32`. Written as a subtraction because the literal 2147483648 does not
 /// fit in an `i32`, so the negation of it cannot be written directly.
@@ -246,5 +249,102 @@ impl i32 {
       i += 1;
     }
     return out;
+  }
+
+  /// The sum, or nothing if it would not fit. The bound is rearranged so the check
+  /// itself cannot overflow: comparing against `i32_max() - rhs` is safe where computing
+  /// `self + rhs` first is exactly the thing being tested.
+  fn checked_add(self : i32, rhs : i32) -> Option<i32> {
+    if rhs > 0 && self > i32_max() - rhs {
+      return Option<i32>::None();
+    }
+    if rhs < 0 && self < i32_min() - rhs {
+      return Option<i32>::None();
+    }
+    return Option<i32>::Some(self + rhs);
+  }
+
+  /// The difference, or nothing if it would not fit.
+  fn checked_sub(self : i32, rhs : i32) -> Option<i32> {
+    if rhs < 0 && self > i32_max() + rhs {
+      return Option<i32>::None();
+    }
+    if rhs > 0 && self < i32_min() + rhs {
+      return Option<i32>::None();
+    }
+    return Option<i32>::Some(self - rhs);
+  }
+
+  /// The product, or nothing if it would not fit. Checked after the fact by dividing
+  /// back out, which is exact whenever the product did fit. The two cases where that
+  /// division would itself overflow are ruled out first.
+  fn checked_mul(self : i32, rhs : i32) -> Option<i32> {
+    if self == 0 || rhs == 0 {
+      return Option<i32>::Some(0);
+    }
+    if self == i32_min() && rhs == -1 {
+      return Option<i32>::None();
+    }
+    if rhs == i32_min() && self == -1 {
+      return Option<i32>::None();
+    }
+    let product = self * rhs;
+    if product / rhs != self {
+      return Option<i32>::None();
+    }
+    return Option<i32>::Some(product);
+  }
+
+  /// The quotient, or nothing on division by zero -- and on the one division that
+  /// overflows, the smallest `i32` divided by -1.
+  fn checked_div(self : i32, rhs : i32) -> Option<i32> {
+    if rhs == 0 {
+      return Option<i32>::None();
+    }
+    if self == i32_min() && rhs == -1 {
+      return Option<i32>::None();
+    }
+    return Option<i32>::Some(self / rhs);
+  }
+
+  /// The remainder, refused in the same two cases as `checked_div`.
+  fn checked_rem(self : i32, rhs : i32) -> Option<i32> {
+    if rhs == 0 {
+      return Option<i32>::None();
+    }
+    if self == i32_min() && rhs == -1 {
+      return Option<i32>::None();
+    }
+    return Option<i32>::Some(self % rhs);
+  }
+
+  /// The negation, or nothing for the smallest `i32`, which has no positive counterpart.
+  fn checked_neg(self : i32) -> Option<i32> {
+    if self == i32_min() {
+      return Option<i32>::None();
+    }
+    return Option<i32>::Some(-self);
+  }
+
+  /// The sum, held at the end of the range instead of wrapping past it.
+  fn saturating_add(self : i32, rhs : i32) -> i32 {
+    if rhs > 0 && self > i32_max() - rhs {
+      return i32_max();
+    }
+    if rhs < 0 && self < i32_min() - rhs {
+      return i32_min();
+    }
+    return self + rhs;
+  }
+
+  /// The difference, held at the end of the range instead of wrapping past it.
+  fn saturating_sub(self : i32, rhs : i32) -> i32 {
+    if rhs < 0 && self > i32_max() + rhs {
+      return i32_max();
+    }
+    if rhs > 0 && self < i32_min() + rhs {
+      return i32_min();
+    }
+    return self - rhs;
   }
 }
