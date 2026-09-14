@@ -37,6 +37,17 @@ bug in the issue, not in you.
 [**help wanted**](https://github.com/vx-lang/Vx/labels/help%20wanted) holds larger pieces that are
 still well specified.
 
+## Signing the CLA
+
+Your first pull request needs a signed
+[Contributor License Agreement](https://github.com/vx-lang/Vx/blob/main/docs/CLA.md). It grants
+the project permission to keep distributing your work under Apache 2.0 with LLVM Exceptions. You
+keep the copyright to everything you write.
+
+You do not have to do anything in advance. Open the pull request, and a bot will comment with the
+one sentence to reply with. It asks once; later pull requests from the same account go straight
+through.
+
 ## Working on the compiler
 
 Start with [building from source](building.md). Once `cargo test` passes you have a working
