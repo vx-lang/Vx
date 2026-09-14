@@ -431,6 +431,7 @@ impl CompilerDriver {
         if self.options.host.as_deref() == Some("default") {
             program_arr.push(crate::syntax::Program {
                 module_path: crate::symbol::Symbol::from("<native-host>"),
+                item_macros: Vec::new(),
                 memories: vec![crate::syntax::MemoryDecl {
                     name: crate::symbol::Symbol::from("CPU_DRAM"),
                     parent: None,
@@ -489,7 +490,8 @@ impl CompilerDriver {
                 global_macros.insert(mac.name.clone(), mac.rules.clone());
             }
         }
-        let expander = MacroExpander::new(&global_macros);
+        let trait_defaults = crate::resolver::collect_trait_defaults(program_arr.iter());
+        let expander = MacroExpander::new(&global_macros, &trait_defaults);
         for m in &mut program_arr {
             if let Err(e) = expander.expand_module(m) {
                 return Err(format!("Macro expansion failed: {}", e));

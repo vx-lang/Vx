@@ -57,18 +57,24 @@ impl<'a> Parser<'a> {
                 } else {
                     let name = self.expect_identifier("Expected generic parameter name")?;
                     self.generic_params.push(name.clone());
-                    let mut bound = None;
+                    let mut bounds = Vec::new();
                     if self.match_token(&TokenType::Colon) {
-                        bound = match self.advance().kind.clone() {
-                            TokenType::Identifier(s) => Some(s.to_string()),
-                            // `<D: Topology>` -- `Topology` is a keyword, not an identifier.
-                            TokenType::Topology => Some("Topology".to_string()),
-                            _ => return Err(self.error("Expected trait bound identifier")),
-                        };
+                        loop {
+                            let bound = match self.advance().kind.clone() {
+                                TokenType::Identifier(s) => s.to_string(),
+                                // `<D: Topology>` -- `Topology` is a keyword, not an identifier.
+                                TokenType::Topology => "Topology".to_string(),
+                                _ => return Err(self.error("Expected trait bound identifier")),
+                            };
+                            bounds.push(bound.into());
+                            if !self.match_token(&TokenType::Plus) {
+                                break;
+                            }
+                        }
                     }
                     generics.push(GenericParam::Type {
                         name: name.into(),
-                        bound: bound.map(|s| s.into()),
+                        bounds,
                     });
                 }
                 if !self.match_token(&TokenType::Comma) {
@@ -895,11 +901,30 @@ impl<'a> Parser<'a> {
             self.consume(&TokenType::RightParen, "Expected ')'")?;
             self.consume(&TokenType::Arrow, "Expected '->'")?;
             let return_type = self.parse_type()?;
-            self.consume(&TokenType::Semicolon, "Expected ';'")?;
+            // A trait method is either a requirement, ending in `;`, or a default, whose body
+            // an impl inherits unless it writes its own.
+            let default_body = if self.match_token(&TokenType::LeftBrace) {
+                let mut body = Vec::new();
+                while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
+                    body.push(self.parse_statement()?);
+                }
+                self.consume(
+                    &TokenType::RightBrace,
+                    "Expected '}' after trait method body",
+                )?;
+                Some(body)
+            } else {
+                self.consume(
+                    &TokenType::Semicolon,
+                    "Expected ';' or a default body after a trait method signature",
+                )?;
+                None
+            };
             methods.push(MethodSignature {
                 name: method_name.into(),
                 params,
                 return_type,
+                default_body,
             });
         }
         self.consume(&TokenType::RightBrace, "Expected '}'")?;
@@ -980,6 +1005,24 @@ impl<'a> Parser<'a> {
 
             let mut method = self.parse_function()?;
             method.doc_comment = doc_comment;
+            // A method of a generic impl block has the block's parameters in scope, so the
+            // method is generic too even when it declares none of its own. Saying so here is
+            // what makes the declaration-time body check skip it, exactly as it already skips
+            // a generic free function: `T` has no methods until the impl is instantiated, and
+            // the instantiated copy is what gets checked. A parameter the method declares
+            // itself shadows the block's.
+            let own: Vec<String> = method
+                .generics
+                .iter()
+                .map(|g| g.name().to_string())
+                .collect();
+            let mut in_scope: Vec<GenericParam> = generics
+                .iter()
+                .filter(|g| !own.iter().any(|n| n == g.name()))
+                .cloned()
+                .collect();
+            in_scope.append(&mut method.generics);
+            method.generics = in_scope;
             methods.push(method);
         }
         self.consume(&TokenType::RightBrace, "Expected '}'")?;
@@ -1067,6 +1110,43 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// An identifier immediately followed by `!`, where an item is expected. Adjacency is
+    /// what a macro call is: `foo !()` is not one, the same rule the statement parser applies.
+    fn at_item_macro_call(&self) -> bool {
+        let name = self.peek();
+        let bang = self.peek_n(1);
+        matches!(name.kind, TokenType::Identifier(_))
+            && matches!(bang.kind, TokenType::Bang)
+            && bang.line == name.line
+            && bang.column == name.column + name.length
+    }
+
+    /// `stamp_impl!(i32);` in item position. The call is recorded whole -- the arguments stay
+    /// an unparsed token tree -- because what it expands to is decided by the macro's rules,
+    /// not by this parser.
+    fn parse_item_macro_call(&mut self) -> ParseResult<'a, crate::syntax::stmt::MacroCallStmt> {
+        let name = match &self.advance().kind {
+            TokenType::Identifier(s) => s.to_string(),
+            other => {
+                return Err(self.error(&format!("Expected a macro name, found {:?}", other)));
+            }
+        };
+        self.advance(); // the `!`
+        let token_tree = self.parse_token_tree()?;
+        let mut block_tree = None;
+        if self.check(&TokenType::LeftBrace) {
+            block_tree = Some(self.parse_token_tree()?);
+        }
+        let has_semi = self.match_token(&TokenType::Semicolon);
+        Ok(crate::syntax::stmt::MacroCallStmt {
+            name: name.into(),
+            token_tree,
+            block_tree,
+            has_semi,
+            span: Span::default(),
+        })
+    }
+
     pub fn parse(&mut self) -> ParseResult<'a, Program> {
         let mut imports = Vec::new();
         let mut externs = Vec::new();
@@ -1079,6 +1159,7 @@ impl<'a> Parser<'a> {
         let mut functions = Vec::new();
         let mut macros = Vec::new();
         let mut transfer_impls = Vec::new();
+        let mut item_macros = Vec::new();
         while !self.check(&TokenType::Eof) {
             let mut doc_comment: Option<String> = None;
             while let TokenType::DocComment(c) = &self.peek().kind {
@@ -1144,6 +1225,10 @@ impl<'a> Parser<'a> {
                 let mut m = self.parse_memory_decl()?;
                 m.doc_comment = doc_comment;
                 memories.push(m);
+            } else if self.at_item_macro_call() {
+                // `stamp_impl!(i32);` where an item goes. What it expands to is not known until
+                // macro expansion runs, so it is recorded and replaced there.
+                item_macros.push(self.parse_item_macro_call()?);
             } else {
                 return Err(self.error(&format!(
                     "Unexpected token at top level: {:?}",
@@ -1153,6 +1238,7 @@ impl<'a> Parser<'a> {
         }
         Ok(Program {
             module_path: self.source.to_string().into(), // Default fallback, should be overridden by pipeline
+            item_macros,
             imports,
             macros,
             externs,
@@ -1391,7 +1477,8 @@ impl Transfer<Memory::L2, Memory::SMEM> for Topology::Dev {
         for mac in &program.macros {
             rules.insert(mac.name.clone(), mac.rules.clone());
         }
-        let expander = crate::parser::MacroExpander::new(&rules);
+        let defaults = crate::resolver::collect_trait_defaults(std::iter::once(&program));
+        let expander = crate::parser::MacroExpander::new(&rules, &defaults);
         expander.expand_module(&mut program).unwrap();
         let body = format!("{:?}", program.transfer_impls[0].methods[0].body);
         assert!(

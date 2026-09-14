@@ -15,8 +15,16 @@ use crate::symbol::Symbol;
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum GenericParam {
-    Type { name: Symbol, bound: Option<Symbol> },
-    Const { name: Symbol, ty: Type },
+    /// A type parameter and the traits it is constrained by. Several are written
+    /// `T : A + B`, and all of them have to hold; an unconstrained parameter has none.
+    Type {
+        name: Symbol,
+        bounds: Vec<Symbol>,
+    },
+    Const {
+        name: Symbol,
+        ty: Type,
+    },
 }
 
 impl GenericParam {
@@ -102,6 +110,10 @@ pub struct MethodSignature {
     pub name: Symbol,
     pub params: Vec<(Symbol, Type)>,
     pub return_type: Type,
+    /// The default body, when the trait writes one instead of a `;`. An impl that does not
+    /// provide the method gets a copy of this, with `Self` replaced by the type it is
+    /// implemented for. `None` means the method is required.
+    pub default_body: Option<Vec<crate::syntax::Statement>>,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -323,6 +335,10 @@ pub struct TransferImplDecl {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct Program {
+    /// Macro calls written where an item goes, rather than inside a function body. They are
+    /// held here between parsing and macro expansion, which replaces each one with the items
+    /// it produced and empties this list.
+    pub item_macros: Vec<crate::syntax::stmt::MacroCallStmt>,
     pub module_path: Symbol,
     pub imports: Vec<ImportDecl>,
     pub macros: Vec<MacroDefDecl>,
@@ -358,6 +374,9 @@ impl Program {
     pub fn clone_signature(&self) -> Self {
         Self {
             module_path: self.module_path.clone(),
+            // Not carried: a signature-only copy is taken after expansion, when the list is
+            // already empty, and carrying it would expand the same call a second time.
+            item_macros: Vec::new(),
             imports: self.imports.clone(),
             macros: self.macros.clone(),
             externs: self.externs.clone(),

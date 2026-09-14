@@ -1,10 +1,22 @@
-// RUN: vxc %s --action emit-mlir
-// XFAIL: *
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 //
-// The IR assertions this file carried could not run: it does not compile as a standalone
-// program (the checker rejects it on N), which is why the corpus sweep also excludes it.
-// The XFAIL above reports the day that changes, and the assertions go back.
-
+// A const generic parameter declared on an impl block, read from inside one of its
+// methods. This did not compile as a standalone program until a method of a generic
+// impl block started counting as generic itself, so it carried an XFAIL and its IR
+// assertions were commented out. They are restored below.
+//
+// What the assertions establish is that `N` is not merely accepted but bound: the
+// method monomorphizes per value of `N`, and the body's `return N` becomes the literal
+// 25 rather than a load of anything.
+//
+// The mangled name is matched loosely on purpose. A const generic argument is currently
+// spelled into the symbol as the debug form of its syntax tree, spans and all, so the
+// real name of this method runs to about 130 characters. Pinning it here would mean
+// rewriting this file when that is fixed, and the name is not what this test is about.
+// CHECK-LABEL: func.func @test_const_generics_methods()
+// CHECK: func.func @Buffer$f32$const${{.*}}$get_size${{.*}}(
+// CHECK: %[[SIZE:.*]] = arith.constant 25 : i32
+// CHECK: return %[[SIZE]] : i32
 
 struct Buffer<T, const N : i32> {
   val : T

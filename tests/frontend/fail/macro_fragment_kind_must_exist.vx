@@ -1,0 +1,25 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A fragment kind that does not exist used to fall through to matching the matcher's
+// tokens literally, so `$t : tpe` failed with a token mismatch naming `$` -- which points
+// at the call rather than at the typo in the rule. The three kinds that exist are named
+// in the message.
+//
+// `expr` and `ty` capture identically today, both taking every token up to the next one
+// the matcher names; `ident` takes exactly one. Nothing parses a capture to check it is
+// really a type, so a wrong kind surfaces where the capture is used rather than here.
+
+macro_rules stamp {
+  ($t : tpe) => {
+    fn made() -> i32 {
+      return 1;
+    }
+  };
+}
+
+stamp!(i32);
+
+fn main() -> i32 {
+  return 0;
+}
+// CHECK: unknown macro fragment kind 'tpe'

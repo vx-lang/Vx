@@ -1,0 +1,70 @@
+//===- generic_enum_returned_from_match.vx - Vx Compiler ----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A generic enum built inside a `match` whose arms each `return`. This is the shape
+// `Option::map` has, and every combinator like it -- `and_then`, `ok_or`, `Result::map`
+// -- so `core::option` cannot be written without it.
+//
+// It used to reach LLVM translation as a `builtin.unrealized_conversion_cast` from `i32`
+// to the enum's struct: valid MLIR that no backend can translate. Two separate faults
+// produced that one cast, and both had to go.
+//
+// The first was an enum's payload being decided by its *name*: only a type called
+// `Option` was built as a `{tag, payload}` struct, and every other generic enum was built
+// as a bare tag. `Holder` here is deliberately not called `Option`, and carries a payload
+// that is read back, so a bare tag would lose the 9.
+//
+// The second was the match itself. The parser turns a trailing `match` into
+// `return match ...`, so the caller waits for a value of the function's return type --
+// but when every arm has already returned, the block that value would come from is never
+// reached. The placeholder handed back there was an `i32`, which the caller then coerced
+// to whatever it wanted. `widen` is written in exactly that shape: no arm ends in a tail
+// expression, both `return`, and the function returns an aggregate.
+//
+// `or_default` reads the payload back out, so the answers below distinguish a payload
+// that survived from a tag that was cast into a struct-shaped hole.
+enum Holder<T> {
+  Full(T),
+  Empty,
+}
+
+impl<T> Holder<T> {
+  fn widen<U>(self : Holder<T>, r : U) -> Holder<U> {
+    match self {
+      Holder<T>::Full(v) => {
+        return Holder<U>::Full(r);
+      },
+      Holder<T>::Empty() => {
+        return Holder<U>::Empty();
+      },
+    }
+  }
+
+  fn or_default(self : Holder<T>, d : T) -> T {
+    match self {
+      Holder<T>::Full(v) => {
+        return v;
+      },
+      Holder<T>::Empty() => {
+        return d;
+      },
+    }
+  }
+}
+
+fn main() -> i32 {
+  let full = Holder<i32>::Full(5);
+  let widened = full.widen(9);
+  print(widened.or_default(0));
+  print!(" ");
+  let empty = Holder<i32>::Empty();
+  let still_empty = empty.widen(9);
+  print(still_empty.or_default(7));
+  return 0;
+}
+
+// EXPECT: 9 7

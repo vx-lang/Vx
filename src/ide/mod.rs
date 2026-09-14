@@ -126,7 +126,8 @@ impl Analysis {
                 global_macros.insert(mac.name.clone(), mac.rules.clone());
             }
         }
-        let expander = MacroExpander::new(&global_macros);
+        let trait_defaults = crate::resolver::collect_trait_defaults(modules.iter());
+        let expander = MacroExpander::new(&global_macros, &trait_defaults);
         for m in modules.iter_mut() {
             let _ = expander.expand_module(m); // Ignore expansion errors for IDE
         }

@@ -20,6 +20,11 @@ use std::collections::HashMap;
 
 pub struct MacroExpander<'a> {
     pub macros: &'a HashMap<crate::symbol::Symbol, Vec<MacroRule>>,
+    /// The trait methods that carry a default body, across every module. Held here because
+    /// filling them in is the last thing expansion does, and it has to be the last thing:
+    /// an impl a macro produced is entitled to the defaults, and nothing before expansion
+    /// can see it.
+    pub trait_defaults: &'a crate::resolver::TraitDefaults,
 }
 
 fn take_expr(expr: &mut expr::Expr) -> expr::Expr {
@@ -127,8 +132,14 @@ fn interleave_format_args(
 }
 
 impl<'a> MacroExpander<'a> {
-    pub fn new(macros: &'a HashMap<crate::symbol::Symbol, Vec<MacroRule>>) -> Self {
-        Self { macros }
+    pub fn new(
+        macros: &'a HashMap<crate::symbol::Symbol, Vec<MacroRule>>,
+        trait_defaults: &'a crate::resolver::TraitDefaults,
+    ) -> Self {
+        Self {
+            macros,
+            trait_defaults,
+        }
     }
 
     fn parse_expanded_expr(
@@ -156,7 +167,120 @@ impl<'a> MacroExpander<'a> {
         Ok(exprs)
     }
 
+    /// Refuse a rule whose matcher names a fragment kind that does not exist.
+    ///
+    /// Checked before any rule is tried, rather than while matching, because a rule that
+    /// fails to match is not an error -- the next rule is tried, and only when all of them
+    /// fail is anything reported. An unknown kind raised there came out as "no matching rule
+    /// found", which points at the call rather than at the typo in the rule.
+    fn validate_matcher(&self, name: &str, matcher: &[TokenTree]) -> Result<(), String> {
+        let mut tokens = Vec::new();
+        for tt in matcher {
+            tokens.extend(self.flatten_tt(tt));
+        }
+        for (i, tok) in tokens.iter().enumerate() {
+            if tok.kind != OwnedTokenType::Dollar || i + 3 >= tokens.len() {
+                continue;
+            }
+            if tokens[i + 2].kind != OwnedTokenType::Colon {
+                continue;
+            }
+            if let OwnedTokenType::Identifier(kind) = &tokens[i + 3].kind {
+                if !matches!(kind.as_ref(), "expr" | "ty" | "ident") {
+                    return Err(format!(
+                        "unknown macro fragment kind '{}' in macro {}: the kinds that exist \
+                         are `expr`, `ty` and `ident`",
+                        kind, name
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Transcribe one item-position macro call and parse what came out as items.
+    ///
+    /// The transcribed tokens are handed to a fresh parser's whole-program entry point, so a
+    /// macro may produce anything that can be written at the top level -- an `impl`, a `fn`,
+    /// a `struct` -- and each is parsed by the same code that parses one written by hand.
+    fn expand_item_macro(
+        &self,
+        call: &stmt::MacroCallStmt,
+    ) -> Result<crate::syntax::Program, String> {
+        let rules = self
+            .macros
+            .get(call.name.as_ref())
+            .ok_or_else(|| format!("Macro {} not found", call.name))?;
+        for rule in rules {
+            self.validate_matcher(call.name.as_ref(), &rule.matcher)?;
+        }
+        let input_tokens = match &call.token_tree {
+            TokenTree::Delimited(_, inner) => {
+                let mut tokens = Vec::new();
+                for i in inner {
+                    tokens.extend(self.flatten_tt(i));
+                }
+                tokens
+            }
+            other => self.flatten_tt(other),
+        };
+        for rule in rules {
+            if let Ok(captures) = self.match_rule(&rule.matcher, &input_tokens) {
+                let mut transcribed = self.transcribe(&rule.transcriber, &captures)?;
+                transcribed.push(crate::lexer::OwnedToken {
+                    kind: OwnedTokenType::Eof,
+                    line: 0,
+                    column: 0,
+                    length: 0,
+                });
+                let lexed: Vec<_> = transcribed.iter().map(|t| t.as_token()).collect();
+                let mut parser = crate::parser::Parser::new(&lexed, "");
+                return parser
+                    .parse()
+                    .map_err(|e| format!("macro {} did not expand to items: {:?}", call.name, e));
+            }
+        }
+        Err(format!("No matching rule found for macro {}", call.name))
+    }
+
     pub fn expand_module(&self, module: &mut VxModule) -> Result<(), String> {
+        // Item-position macro calls first, so the items they produce are expanded below like
+        // any other. A produced item may call another item macro, so this drains a worklist
+        // rather than walking the list once; the depth limit is what a macro that expands to
+        // itself runs into, instead of the compiler running out of stack.
+        let mut pending = std::mem::take(&mut module.item_macros);
+        let mut rounds = 0;
+        while !pending.is_empty() {
+            rounds += 1;
+            if rounds > 64 {
+                return Err(format!(
+                    "macro expansion in item position did not settle after {} rounds; a macro \
+                     that expands to a call of itself is the usual cause",
+                    rounds - 1
+                ));
+            }
+            let mut next = Vec::new();
+            for call in pending {
+                let produced = self.expand_item_macro(&call)?;
+                module.structs.extend(produced.structs);
+                module.enums.extend(produced.enums);
+                module.traits.extend(produced.traits);
+                module.impls.extend(produced.impls);
+                module.functions.extend(produced.functions);
+                module.externs.extend(produced.externs);
+                module.macros.extend(produced.macros);
+                module.transfer_impls.extend(produced.transfer_impls);
+                next.extend(produced.item_macros);
+            }
+            pending = next;
+        }
+
+        // Every impl the module now has, including the ones the macros above produced, gets
+        // the default method bodies it did not write. This is why it happens here and not
+        // where the modules are first loaded: before expansion a macro-produced impl does
+        // not exist yet, and filling defaults then left it without them.
+        crate::resolver::fill_trait_defaults_in(module, self.trait_defaults);
+
         // Expand top level decls
         for func in &mut module.functions {
             self.expand_function(func)?;
@@ -425,6 +549,9 @@ impl<'a> MacroExpander<'a> {
             .macros
             .get(name)
             .ok_or_else(|| format!("Macro {} not found", name))?;
+        for rule in rules {
+            self.validate_matcher(name, &rule.matcher)?;
+        }
 
         let input_tokens = match tt {
             TokenTree::Delimited(_, inner) => {
@@ -518,9 +645,22 @@ impl<'a> MacroExpander<'a> {
                     if colon_tok.kind == OwnedTokenType::Colon && j + 3 < matcher_tokens.len() {
                         let kind_tok = &matcher_tokens[j + 3];
                         if let OwnedTokenType::Identifier(kind) = &kind_tok.kind {
-                            // Match a meta-variable
-                            if kind.as_ref() == "expr" {
-                                // Simplified: just grab tokens until the next matcher token is found or EOF
+                            // Match a meta-variable. `ident` takes exactly one token; `expr`
+                            // and `ty` take everything up to the next token the matcher names,
+                            // which is what lets `$t : ty` capture `Tensor<f32, [4]>` as well
+                            // as `i32`. They are not told apart beyond that: nothing here
+                            // parses the capture to check it really is a type or an
+                            // expression, and the error surfaces where the capture is used.
+                            if kind.as_ref() == "ident" {
+                                if i >= input.len() {
+                                    return Err("Input ended unexpectedly".to_string());
+                                }
+                                captures.insert(name.clone(), vec![input[i].clone()]);
+                                i += 1;
+                                j += 4;
+                                continue;
+                            }
+                            if kind.as_ref() == "expr" || kind.as_ref() == "ty" {
                                 let mut captured = Vec::new();
                                 if j + 4 < matcher_tokens.len() {
                                     let next_m_tok = &matcher_tokens[j + 4];

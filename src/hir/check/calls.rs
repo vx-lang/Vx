@@ -965,7 +965,7 @@ impl<'a> TypeChecker<'a> {
                 .keys()
                 .map(|k| decl::GenericParam::Type {
                     name: k.clone().into(),
-                    bound: None,
+                    bounds: Vec::new(),
                 })
                 .collect();
 
@@ -1022,10 +1022,11 @@ impl<'a> TypeChecker<'a> {
             .generics
             .iter()
             .filter_map(|g| match g {
-                decl::GenericParam::Type {
-                    name,
-                    bound: Some(b),
-                } if b.as_ref() == "Topology" => Some(name.clone()),
+                decl::GenericParam::Type { name, bounds }
+                    if bounds.iter().any(|b| b.as_ref() == "Topology") =>
+                {
+                    Some(name.clone())
+                }
                 _ => None,
             })
             .collect();
@@ -1087,11 +1088,13 @@ impl<'a> TypeChecker<'a> {
         if success {
             for param in &generic_func.generics {
                 let g_name = param.name();
-                let bound_opt = match param {
-                    decl::GenericParam::Type { bound, .. } => bound.clone(),
-                    _ => None,
+                let bounds = match param {
+                    decl::GenericParam::Type { bounds, .. } => bounds.clone(),
+                    _ => Vec::new(),
                 };
-                if let Some(bound_name) = bound_opt {
+                // Every bound has to hold, and every failing one is reported: told about
+                // only the first, a caller fixes it and is handed the next.
+                for bound_name in bounds {
                     if let Some(concrete_ty) = mapping.get(g_name) {
                         let mut implements_trait = false;
                         if let Some(impl_blocks) = self.env.impls.get(bound_name.as_ref()) {
@@ -1109,7 +1112,7 @@ impl<'a> TypeChecker<'a> {
                         if !implements_trait {
                             if !self.speculating {
                                 self.errors.push(format!(
-                                    "Type '{:?}' does not implement trait '{}' required by parameter '{}'",
+                                    "Type '{}' does not implement trait '{}' required by parameter '{}'",
                                     concrete_ty, bound_name, g_name
                                 ));
                             }
@@ -1742,7 +1745,7 @@ impl<'a> TypeChecker<'a> {
             .keys()
             .map(|k| decl::GenericParam::Type {
                 name: k.clone(),
-                bound: None,
+                bounds: Vec::new(),
             })
             .collect();
         let mut method_func =

@@ -1,0 +1,40 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// Every bound on a type parameter has to hold, not just the first one written, and each
+// one that does not is reported. Told about only the first, a caller fixes it and is
+// handed the next -- and with `T : A + B + C` that is three compiles to learn three
+// facts the checker already knew.
+//
+// `f32` here implements `Doubles` and neither of the other two, so the first bound is
+// satisfied and the two behind it are not. That ordering is the point: a check that
+// stopped at the first unsatisfied bound would still pass a file whose failing bound
+// came first.
+
+trait Doubles {
+  fn twice(self : Self) -> i32;
+}
+
+trait Tags {
+  fn tag(self : Self) -> i32;
+}
+
+trait Signs {
+  fn sign(self : Self) -> i32;
+}
+
+impl Doubles for f32 {
+  fn twice(self : f32) -> i32 {
+    return 2;
+  }
+}
+
+fn three<T : Doubles + Tags + Signs>(x : T) -> i32 {
+  return x.twice();
+}
+
+fn main() -> i32 {
+  let y : f32 = 1.5;
+  return three(y);
+}
+// CHECK: Type 'f32' does not implement trait 'Tags' required by parameter 'T'
+// CHECK: Type 'f32' does not implement trait 'Signs' required by parameter 'T'

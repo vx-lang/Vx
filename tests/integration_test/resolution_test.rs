@@ -377,6 +377,7 @@ fn enum_payload_cross_module_reference_resolves() {
 #[test]
 fn test_local_name_resolution() -> Result<(), String> {
     let mut module = VxModule {
+        item_macros: Vec::new(),
         imports: Vec::new(),
         module_path: "core::math".into(),
         topologies: vec![],
@@ -443,6 +444,7 @@ use vxc::syntax::{Expr, LetDeclStmt, MemorySpace, NumberExpr, Statement};
 #[test]
 fn test_unresolved_symbol_remains_none() -> Result<(), String> {
     let mut module = VxModule {
+        item_macros: Vec::new(),
         imports: Vec::new(),
         module_path: "core::bad".into(),
         topologies: vec![],
@@ -489,6 +491,7 @@ fn test_unresolved_symbol_remains_none() -> Result<(), String> {
 #[test]
 fn test_nested_type_resolution() -> Result<(), String> {
     let mut module = VxModule {
+        item_macros: Vec::new(),
         imports: Vec::new(),
         module_path: "core::math".into(),
         topologies: vec![],
@@ -553,6 +556,7 @@ fn test_nested_type_resolution() -> Result<(), String> {
 #[test]
 fn test_expr_and_stmt_resolution() -> Result<(), String> {
     let mut module = VxModule {
+        item_macros: Vec::new(),
         imports: Vec::new(),
         module_path: "core::app".into(),
         topologies: vec![],
