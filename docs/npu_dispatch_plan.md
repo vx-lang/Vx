@@ -70,6 +70,8 @@ Unlike MPS, the ANE is accessed via Core ML which expects pre-compiled model gra
 - Create a Python script (`scripts/legacy/build_ane_matmul.py`) using `coremltools` to generate a generic `matmul.mlpackage` with flexible shapes using `RangeDim`.
 - Compile it via Xcode's `coremlcompiler` to yield `matmul.mlmodelc` in the workspace.
 
+> As built, this is `scripts/tools/generate_ane_primitives.py` driven by `build.rs`, which compiles a fixed set of shapes into `ane-primitives/`. The single flexible-shape `matmul.mlmodelc` described here was never wired up and no longer exists.
+
 ### 2. Objective-C++ Runtime (`npu_dispatch.mm`)
 
 - Implement `extern "C" int vx_dispatch_ane(float* xout, float* x, float* w, int n, int d)`.
