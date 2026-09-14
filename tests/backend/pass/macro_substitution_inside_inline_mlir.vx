@@ -1,0 +1,63 @@
+//===- macro_substitution_inside_inline_mlir.vx - Vx Compiler -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A macro parameter used inside an `mlir!` block, which is how `core::num` intends to
+// stamp the intrinsic-backed methods across the integer widths.
+//
+// An `mlir!` block is not parsed as Vx. It is rebuilt into text by writing each of its
+// tokens at that token's own line and column, so that the block a backend sees keeps the
+// shape it was written in. A substituted token used to arrive still carrying the position
+// it had at the *call* site, several lines below the macro's body, and the rebuilt text
+// put it there: `math.ctpop %a : $t` came out as an operation with its type on some later
+// line, and MLIR rejected an operation with no type.
+//
+// So the failure this pins is not a wrong answer but an unparseable block, and the test
+// for it has to reach the backend. Checking that the file parses would prove nothing,
+// because it always parsed.
+//
+// Two widths, because one would not show a macro that expanded to a single shared copy.
+// They are both signed on purpose: a Vx `i16` is an MLIR `i16`, while a `u32` is an MLIR
+// `i32`, so an unsigned width cannot use `$t` in both positions and needs the MLIR type
+// passed as a second parameter. That is a property of the two type systems rather than of
+// macros, and it is not what this file is about.
+macro_rules stamp_bits {
+  ($t : ident) => {
+    impl $t {
+      fn ones(self : $t) -> $t {
+        return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
+          %r = math.ctpop %a : $t
+          macro.yield %r : $t
+        };
+      }
+
+      fn zeros_above(self : $t) -> $t {
+        return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
+          %r = math.ctlz %a : $t
+          macro.yield %r : $t
+        };
+      }
+    }
+  };
+}
+
+stamp_bits!(i32);
+stamp_bits!(i16);
+
+fn main() -> i32 {
+  let a : i32 = 12;
+  print(a.ones());
+  print!(" ");
+  print(a.zeros_above());
+  print!(" ");
+  let b : i16 = 6;
+  print(b.ones());
+  print!(" ");
+  print(b.zeros_above());
+  return 0;
+}
+
+// EXPECT: 2 28 2 13
