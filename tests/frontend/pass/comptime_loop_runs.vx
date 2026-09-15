@@ -1,0 +1,81 @@
+//===- comptime_loop_runs.vx - Vx Compiler -----------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A loop inside a `comptime` block is run, and the value after it is the value the
+// program really produces.
+//
+// Every assert here states the exact answer rather than merely a true fact about it.
+// That distinction is the whole point of the file: the evaluator used to walk the body
+// once and believe the result, so `total != 0` would have passed while the value was
+// wrong. Only an assert naming the exact value tells a loop that ran from a loop that
+// ran once. The refusals that pair with these are in
+// fail/comptime_loop_single_pass_value.vx.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK-LABEL: func.func @main() -> i32
+
+fn main() -> i32 {
+  comptime {
+    // Three iterations of `+ 2`, not one. A single pass would leave 2.
+    let mut counted = 0;
+    for i in 0..3 {
+      counted = counted + 2;
+    }
+    assert(counted == 6, "three iterations of adding 2 give 6");
+
+    // The induction variable carries its value into the body. A single pass would leave
+    // this at the pre-loop 7, because `i` had no compile-time value at all before.
+    let mut last = 7;
+    for i in 0..3 {
+      last = i;
+    }
+    assert(last == 2, "the last iteration binds i to 2");
+
+    // `+=` inside the loop, which the evaluator runs as `total = total + i`.
+    let mut total : i64 = 0i64;
+    for i in 0i64..5 {
+      total += i;
+    }
+    assert(total == 10i64, "0 + 1 + 2 + 3 + 4 is 10");
+
+    // `loop` ends at its `break`, and `continue` skips the rest of an iteration.
+    let mut spun = 0;
+    loop {
+      spun = spun + 1;
+      if spun == 5 {
+        break;
+      }
+    }
+    assert(spun == 5, "the loop breaks on the fifth turn");
+
+    let mut odd = 0;
+    for i in 0..6 {
+      if i == 0 || i == 2 || i == 4 {
+        continue;
+      }
+      odd = odd + 1;
+    }
+    assert(odd == 3, "continue skips the three even values");
+
+    // The induction variable is the loop's own. An outer binding of the same name is
+    // still there afterwards, holding what it held before.
+    let outer = 42;
+    for outer in 0..3 {
+      last = outer;
+    }
+    assert(outer == 42, "the loop variable shadows, and the outer value comes back");
+
+    // Element writes through the loop land on the array.
+    let mut filled : Tensor<i64, [4]> = [ 0i64, 0i64, 0i64, 0i64 ];
+    for i in 0..4 {
+      filled[i] = 9i64;
+    }
+    assert(filled[0] == 9i64, "the first element was written by the loop");
+    assert(filled[3] == 9i64, "the last element was written by the loop");
+  }
+  return 0;
+}

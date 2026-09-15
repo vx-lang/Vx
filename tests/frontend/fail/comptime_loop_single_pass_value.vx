@@ -1,0 +1,40 @@
+//===- comptime_loop_single_pass_value.vx - Vx Compiler ----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The value after one walk of a loop body is refused, because it is not the value the
+// program produces.
+//
+// This is the pair of pass/comptime_loop_runs.vx, and it is the half that catches a
+// regression. The evaluator used to fold the checker's single walk of the body into the
+// constant environment and treat it as fact: `counted` was 2 rather than 6, `stale` kept
+// its pre-loop 7 because `i` had no value to assign. A regression to that behaviour makes
+// both asserts below *true*, so the file compiles and the test goes red here.
+//
+// Asserting the right answer instead would not catch it. `counted == 6` is refused under
+// the old behaviour too -- for the wrong reason, the one-pass value -- so a fixture built
+// that way passes whether or not the loop runs.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+fn main() -> i32 {
+  comptime {
+    let mut counted = 0;
+    for i in 0..3 {
+      counted = counted + 2;
+    }
+    // CHECK: Error[E8002]{{.*}}the value after a single walk of the body
+    assert(counted == 2, "the value after a single walk of the body");
+
+    let mut stale = 7;
+    for i in 0..3 {
+      stale = i;
+    }
+    // CHECK: Error[E8002]{{.*}}the value from before the loop
+    assert(stale == 7, "the value from before the loop");
+  }
+  return 0;
+}

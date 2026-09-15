@@ -16,6 +16,24 @@ use super::*;
 
 use crate::hir;
 use crate::syntax;
+
+/// What running a statement did to the block it sits in.
+///
+/// The evaluator used to answer `Option<Value>`, which said "a return produced this" and
+/// could not say "a return produced nothing the evaluator could compute", nor anything at
+/// all about `break` and `continue`. Running a loop needs all four answers.
+pub(crate) enum EvalFlow {
+    /// Carry on with the next statement.
+    Normal,
+    /// A `return` ran. `None` when the evaluator could not compute what it returned -- the
+    /// body still ends there, so the statements after it must not run.
+    Return(Option<Value>),
+    /// Leave the innermost loop.
+    Break,
+    /// Start the innermost loop's next iteration.
+    Continue,
+}
+
 impl<'a> TypeChecker<'a> {
     /// Performs semantic analysis on a block of statements.
     ///
@@ -262,8 +280,9 @@ impl<'a> TypeChecker<'a> {
             iterable,
             invariants,
             body,
-            span: _,
+            span: loop_span,
         } = floop;
+        let loop_span = *loop_span;
         let iterable_ty = self.check_expr_type_flag(iterable, consume);
         self.push_releasing_scope();
 
@@ -377,6 +396,12 @@ impl<'a> TypeChecker<'a> {
             self.consteval.constraints.push(inv.clone());
         }
 
+        // What is known before the body is walked, and where each name lives. Both are
+        // needed after: the walk folds one iteration's worth of assignments into the
+        // environment, and settling that up requires the state it started from.
+        let before = self.consteval_snapshot();
+        let scopes = self.consteval_scopes();
+
         self.check_block(body, return_type);
 
         // Check invariants hold after the loop iteration (we don't strictly prove induction here, just checking at end of block)
@@ -387,6 +412,13 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
+        let mut after = before.clone();
+        let ran = self.run_loop_for_consteval(&mut after, |checker, env| {
+            checker.eval_for_loop(iter, iterable, body, env)
+        });
+        self.settle_loop_consteval(&before, &scopes, ran, &after);
+        self.report_steps_exceeded(&loop_span);
+
         self.consteval.constraints.truncate(prev_constraints_len);
         self.pop_scope();
     }
@@ -396,9 +428,10 @@ impl<'a> TypeChecker<'a> {
     fn check_loop_stmt(&mut self, lp: &mut LoopStmt, return_type: &Type) {
         let LoopStmt {
             body,
-            span: _,
+            span: loop_span,
             invariants,
         } = lp;
+        let loop_span = *loop_span;
         self.push_releasing_scope();
 
         let prev_constraints_len = self.consteval.constraints.len();
@@ -410,6 +443,11 @@ impl<'a> TypeChecker<'a> {
             self.consteval.constraints.push(inv.clone());
         }
 
+        // See `check_for_loop_stmt`: the single pass the checker makes over the body is not
+        // what the program does, so what it folded is settled up once the loop has been run.
+        let before = self.consteval_snapshot();
+        let scopes = self.consteval_scopes();
+
         self.check_block(body, return_type);
 
         for inv in invariants.iter() {
@@ -418,6 +456,12 @@ impl<'a> TypeChecker<'a> {
                     .push("Loop invariant cannot be proven to hold across iterations".to_string());
             }
         }
+
+        let mut after = before.clone();
+        let ran =
+            self.run_loop_for_consteval(&mut after, |checker, env| checker.eval_loop(body, env));
+        self.settle_loop_consteval(&before, &scopes, ran, &after);
+        self.report_steps_exceeded(&loop_span);
 
         self.consteval.constraints.truncate(prev_constraints_len);
         self.pop_scope();
@@ -541,6 +585,112 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Which constant scope each known name currently lives in, innermost winning.
+    ///
+    /// Taken before a loop body is type checked, so that a variable the single pass drops
+    /// can still be put back afterwards. `consteval_scope_of` could not find it by then:
+    /// the name is gone from every scope, which is exactly the case that matters.
+    fn consteval_scopes(&self) -> HashMap<crate::symbol::Symbol, usize> {
+        let mut scopes = HashMap::new();
+        for (index, scope) in self.consteval.env.iter().enumerate() {
+            for name in scope.keys() {
+                scopes.insert(name.clone(), index);
+            }
+        }
+        scopes
+    }
+
+    /// Settle what the constant environment knows about the variables a loop body writes.
+    ///
+    /// Type checking walks the body once and folds whatever it can, so afterwards the
+    /// environment holds the value after a single iteration. That is not what the program
+    /// does. Every name that single pass changed is replaced here with the value the loop
+    /// really produces, or dropped when the evaluator could not run the loop -- because the
+    /// alternative is reporting the one-iteration value as a certainty, which is how a
+    /// correct program comes to be rejected.
+    fn settle_loop_consteval(
+        &mut self,
+        before: &HashMap<crate::symbol::Symbol, Value>,
+        scopes: &HashMap<crate::symbol::Symbol, usize>,
+        ran: bool,
+        after: &HashMap<crate::symbol::Symbol, Value>,
+    ) {
+        // Whatever the single pass changed, added or dropped is what it touched. Comparing
+        // the environment against itself this way needs no list of the statement forms that
+        // can write to a variable -- a list that would silently go stale.
+        let folded = self.consteval_snapshot();
+        let mut touched: Vec<crate::symbol::Symbol> = Vec::new();
+        for (name, value) in before {
+            if folded.get(name.as_ref()) != Some(value) {
+                touched.push(name.clone());
+            }
+        }
+        for name in folded.keys() {
+            if !before.contains_key(name.as_ref()) {
+                touched.push(name.clone());
+            }
+        }
+
+        for name in touched {
+            let Some(&scope) = scopes.get(name.as_ref()) else {
+                // Declared inside the body. Its scope is about to be popped, so there is
+                // nothing outside the loop that could read it.
+                continue;
+            };
+            match after.get(name.as_ref()).filter(|_| ran) {
+                Some(value) => self.consteval.env[scope].insert(name.clone(), value.clone()),
+                None => self.consteval.env[scope].remove(name.as_ref()),
+            };
+        }
+    }
+
+    /// Run a loop for its compile-time value, and say whether the answer can be trusted.
+    ///
+    /// Only inside a `comptime` block. Elsewhere the value is not wanted, and walking a
+    /// run-time loop's trip count would spend the compiler's time to learn nothing -- one
+    /// benchmark in the corpus loops a million times, and evaluating it cost a second and
+    /// an E8005 about a loop that was never meant to be evaluated.
+    fn run_loop_for_consteval(
+        &mut self,
+        env: &mut HashMap<crate::symbol::Symbol, Value>,
+        run: impl FnOnce(&Self, &mut HashMap<crate::symbol::Symbol, Value>) -> EvalFlow,
+    ) -> bool {
+        if self.consteval.comptime_depth == 0 {
+            return false;
+        }
+        let outer_unsupported = self.consteval.unsupported_stmt.replace(false);
+        let flow = run(self, env);
+        // A `return` out of the loop leaves the rest of the function unreached, which the
+        // checker goes on walking anyway; treating it as run would hand those statements a
+        // state the program never arrives in.
+        let ran = !self.consteval.unsupported_stmt.get()
+            && !self.consteval.steps_exceeded.get()
+            && matches!(flow, EvalFlow::Normal);
+        self.consteval.unsupported_stmt.set(outer_unsupported);
+        ran
+    }
+
+    /// Report an evaluation stopped by the loop budget, and clear the flag so the next one
+    /// starts fresh. Called where a value was asked for and a diagnostic can be raised.
+    fn report_steps_exceeded(&mut self, span: &Span) {
+        if !self.consteval.steps_exceeded.replace(false) {
+            return;
+        }
+        self.consteval.loop_steps.set(0);
+        if self.speculating {
+            return;
+        }
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E8005,
+            format!(
+                "compile-time evaluation ran more than {} loop iterations and was stopped. A \
+                 loop whose end condition is never reached is the usual cause.",
+                crate::hir::check_state::MAX_LOOP_STEPS
+            ),
+            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+        );
+    }
+
     /// The innermost constant scope holding `name`, if any.
     fn consteval_scope_of(&self, name: &str) -> Option<usize> {
         self.consteval
@@ -660,6 +810,7 @@ impl<'a> TypeChecker<'a> {
         }
         let eval_res = self.eval_expr(expr, &tmp_env);
         self.report_depth_exceeded(span);
+        self.report_steps_exceeded(span);
 
         if let Some(Value::Bool(b)) = eval_res {
             if !b {
@@ -926,11 +1077,8 @@ impl<'a> TypeChecker<'a> {
                 self.enter_call()?;
                 let outer_unsupported = self.consteval.unsupported_stmt.replace(false);
                 let mut result = None;
-                for stmt in &func.body {
-                    if let Some(ret_val) = self.eval_statement(stmt, &mut local_env) {
-                        result = Some(ret_val);
-                        break;
-                    }
+                if let EvalFlow::Return(ret_val) = self.eval_block(&func.body, &mut local_env) {
+                    result = ret_val;
                 }
                 // A body holding a statement the evaluator cannot run has not been run.
                 // Answering with what the statements it could run left behind would be a
@@ -977,10 +1125,10 @@ impl<'a> TypeChecker<'a> {
                             if !*has_semi {
                                 ret = val;
                             }
-                        } else {
-                            if let Some(val) = self.eval_statement(stmt, &mut local_env) {
-                                ret = Some(val);
-                            }
+                        } else if let EvalFlow::Return(val) =
+                            self.eval_statement(stmt, &mut local_env)
+                        {
+                            ret = val;
                         }
                     }
                     ret
@@ -1090,11 +1238,120 @@ impl<'a> TypeChecker<'a> {
         Some(())
     }
 
+    /// Run every statement of a block, stopping at whatever leaves it early.
+    pub(crate) fn eval_block(
+        &self,
+        stmts: &[Statement],
+        env: &mut HashMap<crate::symbol::Symbol, Value>,
+    ) -> EvalFlow {
+        for stmt in stmts {
+            match self.eval_statement(stmt, env) {
+                EvalFlow::Normal => {}
+                leaves => return leaves,
+            }
+        }
+        EvalFlow::Normal
+    }
+
+    /// Count one loop iteration, or refuse. `None` stops the evaluation; whoever asked for
+    /// the value reports it, since the evaluator cannot reach the diagnostics from `&self`.
+    fn step_loop(&self) -> Option<()> {
+        let steps = self.consteval.loop_steps.get();
+        if steps >= crate::hir::check_state::MAX_LOOP_STEPS {
+            self.consteval.steps_exceeded.set(true);
+            return None;
+        }
+        self.consteval.loop_steps.set(steps + 1);
+        Some(())
+    }
+
+    /// Run `for <iter> in <iterable> { body }`.
+    ///
+    /// Only a range over two known integers is run. Anything else -- a tensor, an iterator,
+    /// a bound the evaluator cannot compute -- is not something it can walk, so it says so
+    /// rather than running some other number of iterations.
+    fn eval_for_loop(
+        &self,
+        iter: &str,
+        iterable: &Expr,
+        body: &[Statement],
+        env: &mut HashMap<crate::symbol::Symbol, Value>,
+    ) -> EvalFlow {
+        let Expr::Range(range) = iterable else {
+            self.consteval.unsupported_stmt.set(true);
+            return EvalFlow::Normal;
+        };
+        let (Some(Value::Int(start)), Some(Value::Int(end))) = (
+            self.eval_expr(&range.start, env),
+            self.eval_expr(&range.end, env),
+        ) else {
+            self.consteval.unsupported_stmt.set(true);
+            return EvalFlow::Normal;
+        };
+
+        // The induction variable shadows any outer binding of the same name, and the outer
+        // one is live again after the loop. Put back rather than dropped: dropping it would
+        // make a variable the loop never touched unknown from here on.
+        let name: crate::symbol::Symbol = iter.to_string().into();
+        let shadowed = env.get(name.as_ref()).cloned();
+        let mut left = EvalFlow::Normal;
+
+        let mut i = start;
+        while i < end {
+            if self.step_loop().is_none() {
+                break;
+            }
+            env.insert(name.clone(), Value::Int(i));
+            match self.eval_block(body, env) {
+                EvalFlow::Normal | EvalFlow::Continue => {}
+                EvalFlow::Break => break,
+                ret @ EvalFlow::Return(_) => {
+                    left = ret;
+                    break;
+                }
+            }
+            // A body holding a statement the evaluator cannot run has not been run, so the
+            // iterations after this one would be built on a state that never existed.
+            if self.consteval.unsupported_stmt.get() {
+                break;
+            }
+            i += 1;
+        }
+
+        match shadowed {
+            Some(val) => env.insert(name, val),
+            None => env.remove(name.as_ref()),
+        };
+        left
+    }
+
+    /// Run `loop { body }`, which ends at a `break` or a `return` and otherwise runs until
+    /// the iteration budget stops it.
+    fn eval_loop(
+        &self,
+        body: &[Statement],
+        env: &mut HashMap<crate::symbol::Symbol, Value>,
+    ) -> EvalFlow {
+        loop {
+            if self.step_loop().is_none() {
+                return EvalFlow::Normal;
+            }
+            match self.eval_block(body, env) {
+                EvalFlow::Normal | EvalFlow::Continue => {}
+                EvalFlow::Break => return EvalFlow::Normal,
+                ret @ EvalFlow::Return(_) => return ret,
+            }
+            if self.consteval.unsupported_stmt.get() {
+                return EvalFlow::Normal;
+            }
+        }
+    }
+
     pub(crate) fn eval_statement(
         &self,
         stmt: &Statement,
         env: &mut HashMap<crate::symbol::Symbol, Value>,
-    ) -> Option<Value> {
+    ) -> EvalFlow {
         match stmt {
             Statement::LetDecl(LetDeclStmt {
                 name,
@@ -1109,7 +1366,7 @@ impl<'a> TypeChecker<'a> {
                     Some(val) => env.insert(name.clone(), val),
                     None => env.remove(name.as_ref()),
                 };
-                None
+                EvalFlow::Normal
             }
             Statement::Assign(AssignStmt {
                 lhs: Expr::Identifier(IdentifierExpr { name, span: _ }),
@@ -1120,7 +1377,25 @@ impl<'a> TypeChecker<'a> {
                     Some(val) => env.insert(name.clone(), val),
                     None => env.remove(name.as_ref()),
                 };
-                None
+                EvalFlow::Normal
+            }
+            // `x op= v` is `x = x op v`. Run as that, so the arithmetic and the overflow
+            // rules are the ones `eval_expr` already applies rather than a second copy.
+            Statement::CompoundAssign(CompoundAssignStmt { lhs, op, rhs, span }) => {
+                let folded = Expr::BinaryOp(BinaryOpExpr {
+                    lhs: Box::new(lhs.clone()),
+                    op: op.clone(),
+                    rhs: Box::new(rhs.clone()),
+                    span: *span,
+                });
+                self.eval_statement(
+                    &Statement::Assign(AssignStmt {
+                        lhs: lhs.clone(),
+                        rhs: folded,
+                        span: *span,
+                    }),
+                    env,
+                )
             }
             // `a[i] = v`. If any part of the store is unknown the whole array is dropped:
             // keeping the old contents would report a stale element as a certainty.
@@ -1143,16 +1418,61 @@ impl<'a> TypeChecker<'a> {
                         env.remove(root.as_ref());
                     }
                 }
-                None
+                EvalFlow::Normal
             }
+            // A `return` ends the body whether or not its value could be computed. Carrying
+            // on to the next statement would run code the program does not reach.
             Statement::Return(ReturnStmt { expr, span: _ }) => {
-                expr.as_ref().and_then(|e| self.eval_expr(e, env))
+                EvalFlow::Return(expr.as_ref().and_then(|e| self.eval_expr(e, env)))
             }
-            // A loop, a compound assignment, anything else: not run. Say so, so the call
-            // this body belongs to gives no value rather than a half-executed one.
+            Statement::ForLoop(ForLoopStmt {
+                iter,
+                iterable,
+                invariants: _,
+                body,
+                span: _,
+            }) => self.eval_for_loop(iter, iterable, body, env),
+            Statement::Loop(LoopStmt {
+                body,
+                invariants: _,
+                span: _,
+            }) => self.eval_loop(body, env),
+            Statement::Break(_) => EvalFlow::Break,
+            Statement::Continue(_) => EvalFlow::Continue,
+            // An `if` written as a statement, which is how a loop body decides anything.
+            // The chosen block runs against this environment rather than a copy, so what
+            // it writes is still there afterwards, and a `break` inside it reaches the
+            // loop. `eval_expr` has its own arm for an `if` used as a *value*, which
+            // cannot do either: it answers with a value and keeps its writes to itself.
+            Statement::ExprStmt(ExprStmtStmt {
+                expr:
+                    Expr::If(IfExpr {
+                        cond,
+                        then_block,
+                        else_block,
+                        is_comptime: _,
+                        span: _,
+                    }),
+                has_semi: _,
+                span: _,
+            }) => {
+                let Some(Value::Bool(taken)) = self.eval_expr(cond, env) else {
+                    self.consteval.unsupported_stmt.set(true);
+                    return EvalFlow::Normal;
+                };
+                if taken {
+                    self.eval_block(then_block, env)
+                } else if let Some(otherwise) = else_block {
+                    self.eval_block(otherwise, env)
+                } else {
+                    EvalFlow::Normal
+                }
+            }
+            // Anything else: not run. Say so, so the call this body belongs to gives no
+            // value rather than a half-executed one.
             _ => {
                 self.consteval.unsupported_stmt.set(true);
-                None
+                EvalFlow::Normal
             }
         }
     }

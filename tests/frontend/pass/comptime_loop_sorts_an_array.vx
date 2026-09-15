@@ -1,0 +1,44 @@
+//===- comptime_loop_sorts_an_array.vx - Vx Compiler -------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A sort written the ordinary way is run at compile time.
+//
+// Nested loops, a comparison, an `if` deciding whether to act, and element writes through
+// an index that changes every turn. Nothing here is written for the evaluator's benefit --
+// it is a bubble sort -- which is the point: the pieces added one at a time now hold
+// together well enough to run a real algorithm.
+//
+// Every element is asserted, not just the first. A sort that placed one element correctly
+// and left the rest alone would pass a fixture that only checked `w[0]`, and each assert
+// here was confirmed to go red on its own.
+//
+// The spelling this does *not* cover is the one that matters for the tracking issue: a
+// generic `sort<4>(input)` in a function of its own. A call carrying type arguments is
+// still not evaluated, so that program compiles while proving nothing.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK-LABEL: func.func @main() -> i32
+
+fn main() -> i32 {
+  comptime {
+    let mut w : Tensor<i64, [4]> = [ 3i64, 1i64, 4i64, 2i64 ];
+    for i in 0..4 {
+      for j in 0..3 {
+        if w[j] > w[j + 1] {
+          let t : i64 = w[j];
+          w[j] = w[j + 1];
+          w[j + 1] = t;
+        }
+      }
+    }
+    assert(w[0] == 1i64, "the smallest value sorted to the front");
+    assert(w[1] == 2i64, "the second smallest sorted into place");
+    assert(w[2] == 3i64, "the third smallest sorted into place");
+    assert(w[3] == 4i64, "the largest value sorted to the back");
+  }
+  return 0;
+}

@@ -7,10 +7,15 @@
 //===----------------------------------------------------------------------===//
 // A called body holding a statement the evaluator cannot run gives no value at all.
 //
-// `sum_to` totals its loop to 10. The evaluator does not run loops, and the statements it
-// can run leave `total` at 0. Answering 0 would reject this correct program with a
-// diagnostic stating the opposite, which is what used to happen for a callee in an
-// imported module.
+// `pick` returns 5. The evaluator does not run a bare call statement, and the statements
+// it can run leave `total` at 0. Answering 0 would reject a correct program with a
+// diagnostic stating the opposite, so the call has to answer nothing instead.
+//
+// The unrunnable statement used to be a loop, and briefly an `if`. Both are run now, so
+// each version in turn tested the opposite of what it said: the call answered and the
+// file stopped compiling. Whatever teaches the evaluator to run a call statement will
+// have to move this file onto something it still cannot run, or delete it along with the
+// rule.
 //
 // The two asserts contradict each other, so this file only compiles while the evaluator
 // has no value for the call. Their messages differ so a failure says which way it broke.
@@ -22,11 +27,14 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // CHECK-LABEL: func.func @main() -> i32
 
-fn sum_to(n : i64) -> i64 {
+fn noop() -> void {
+  return;
+}
+
+fn pick() -> i64 {
   let mut total : i64 = 0;
-  for i in 0i64..n {
-    total += i;
-  }
+  noop();
+  total = 5;
   return total;
 }
 
@@ -40,8 +48,8 @@ fn countdown(n : i64) -> i64 {
 
 fn main() -> i32 {
   comptime {
-    assert(sum_to(5) == 10, "the call answered, and not with the loop's total");
-    assert(sum_to(5) != 10, "the call answered with the loop's total, so loops now run");
+    assert(pick() == 5, "the call answered, and not with the 5 it assigns");
+    assert(pick() != 5, "the call answered with 5, so call statements now run");
 
     assert(countdown(200) == 200, "a recursion under the limit still evaluates");
   }

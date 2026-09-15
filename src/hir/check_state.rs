@@ -44,16 +44,34 @@ pub struct ConstEvalState {
     /// Set when evaluation stopped because it ran past `MAX_CALL_DEPTH`. Whoever asked for
     /// the value reports it, since the evaluator itself cannot reach the diagnostics.
     pub depth_exceeded: std::cell::Cell<bool>,
-    /// Set when a called body held a statement the evaluator cannot run -- a loop, say.
-    /// The call then has no value, rather than whatever the statements it *could* run
-    /// happened to leave behind.
+    /// Set when a called body held a statement the evaluator cannot run. The call then has
+    /// no value, rather than whatever the statements it *could* run happened to leave behind.
     pub unsupported_stmt: std::cell::Cell<bool>,
+    /// How many loop iterations the current evaluation has run. A `Cell` because evaluation
+    /// runs behind `&self`, and the count has to rise as the loops turn.
+    pub loop_steps: std::cell::Cell<u64>,
+    /// Set when evaluation stopped because it ran past `MAX_LOOP_STEPS`. Whoever asked for
+    /// the value reports it, since the evaluator itself cannot reach the diagnostics.
+    pub steps_exceeded: std::cell::Cell<bool>,
+    /// How many `comptime` blocks are open around the statement being checked.
+    ///
+    /// Loops are run only inside one. A run-time loop has nothing to gain from being run at
+    /// compile time -- its result is not wanted -- and running it would spend the compiler's
+    /// time walking a trip count that belongs to the program. What still happens everywhere
+    /// is the settling up: see `settle_loop_consteval`.
+    pub comptime_depth: u32,
 }
 
 /// How many nested calls compile-time evaluation will follow. A recursion that does not
 /// terminate used to take the compiler's stack down with it; this turns that into a
 /// diagnostic. High enough that ordinary compile-time work never reaches it.
 pub const MAX_CALL_DEPTH: u32 = 256;
+
+/// How many loop iterations compile-time evaluation will run, counted across every loop in
+/// one evaluation rather than per loop. A loop whose end is never reached would otherwise
+/// hang the compiler with no file, no line and no message; this turns that into a
+/// diagnostic. High enough that ordinary compile-time work never reaches it.
+pub const MAX_LOOP_STEPS: u64 = 1_000_000;
 
 impl Default for ConstEvalState {
     fn default() -> Self {
@@ -66,6 +84,9 @@ impl Default for ConstEvalState {
             call_depth: std::cell::Cell::new(0),
             depth_exceeded: std::cell::Cell::new(false),
             unsupported_stmt: std::cell::Cell::new(false),
+            loop_steps: std::cell::Cell::new(0),
+            steps_exceeded: std::cell::Cell::new(false),
+            comptime_depth: 0,
         }
     }
 }

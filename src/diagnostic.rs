@@ -448,6 +448,9 @@ pub enum DiagnosticCode {
     E8003,
     /// Compile-time evaluation exceeded the call-depth limit
     E8004,
+    /// Compile-time evaluation ran more loop iterations than the budget allows. A loop whose
+    /// end condition is never reached is the usual cause; without this it hung the compiler.
+    E8005,
 }
 
 impl std::fmt::Display for DiagnosticCode {

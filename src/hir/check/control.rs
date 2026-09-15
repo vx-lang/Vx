@@ -36,10 +36,12 @@ impl<'a> TypeChecker<'a> {
                 span: _,
             }) => {
                 self.push_scope();
+                self.consteval.comptime_depth += 1;
                 let mut ret_ty = self.check_expr_block(stmts, consume);
                 if let Some(r) = ret {
                     ret_ty = self.check_expr_type(r);
                 }
+                self.consteval.comptime_depth -= 1;
                 self.pop_scope();
                 // An assertion the placement fold answered `true` is discharged here: nothing
                 // at run time holds a placement, so nothing is left to check. (A false one

@@ -7,9 +7,16 @@
 //===----------------------------------------------------------------------===//
 // A store the evaluator cannot apply makes the whole array unknown.
 //
-// The loop variable has no compile-time value, so `a[i] = 7` cannot be carried out. The
-// array must stop having a compile-time value at that point. Keeping the old contents
-// would let a later read report a value the program never holds.
+// `a[unknown_index()] = 7` cannot be carried out, because the index has no compile-time
+// value. The array must stop having a compile-time value at that point. Keeping the old
+// contents would let a later read report a value the program never holds.
+//
+// The index is unknown because `unknown_index` holds a bare call statement, which the
+// evaluator does not run, so the call gives no value at all. This file used to get its
+// unknown index from a loop variable instead. Loops are run now, so that index is known
+// and the store lands -- which is the right answer, and no longer tests this rule. A
+// change that teaches the evaluator to run a call statement will need the same
+// treatment: find something it still cannot run, or the rule stops being tested.
 //
 // The two asserts below contradict each other, so this file only compiles while the
 // evaluator has no value for `a[0]`. If the array kept its old contents the second fails;
@@ -18,12 +25,21 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // CHECK-LABEL: func.func @main() -> i32
 
+fn noop() -> void {
+  return;
+}
+
+fn unknown_index() -> i64 {
+  let mut k : i64 = 0i64;
+  noop();
+  k = 1i64;
+  return k;
+}
+
 fn main() -> i32 {
   comptime {
     let mut a : Tensor<i64, [3]> = [ 3i64, 1i64, 2i64 ];
-    for i in 0..3 {
-      a[i] = 7i64;
-    }
+    a[unknown_index()] = 7i64;
     // The two messages differ so a failure says which way the rule broke.
     assert(a[0] == 3, "the store was applied with an index that is not known");
     assert(a[0] != 3, "the array kept its old contents after an unknown store");
