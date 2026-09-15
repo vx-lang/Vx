@@ -1,0 +1,100 @@
+//===- host_kernel_splits_across_workers.vx - Vx Compiler -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The host clone of a proved-parallel kernel covers one worker's slice of the
+// loop, not the whole of it.
+//
+// The device clone of the same loop is grid-strided -- thread `t` walks
+// `lb + t`, `lb + t + stride`, and so on -- because on a GPU threads that run
+// together should read addresses next to each other. A CPU wants the opposite.
+// Eight workers striding through eight-byte elements means every cache line is
+// fetched by all eight, and a write puts that line into a ping-pong between
+// cores. So each host worker takes a contiguous range instead.
+//
+// The range comes from two runtime queries rather than from extra kernel
+// parameters, which keeps the C interface of every outlined kernel the shape
+// its other callers already know (scripts/launch_emitted_kernel.cpp, the remote
+// worker). The checks pin that both queries are asked.
+//
+// The arithmetic is checked in the order it has to happen, because the ORDER is
+// the claim:
+//
+//   trip  = ub - lb
+//   chunk = (trip + workers - 1) / workers     -- rounded UP
+//   start = min(id * chunk, trip)              -- clamped
+//   end   = min((id + 1) * chunk, trip)
+//
+// Rounding up is what leaves no iteration unowned: with 4 iterations over 3
+// workers, rounding down gives a chunk of 1 and covers 3. That is the kind of
+// wrong that still produces a plausible number, so `arith.divsi` of a sum is
+// checked rather than a bare divide. Clamping is what makes a worker past the
+// end harmless -- it gets start == end and runs nothing, rather than a range
+// walking off the data.
+//
+// The degeneracy is the safety property and it is worth stating even though
+// FileCheck cannot evaluate it: at one worker, chunk is the whole trip, start
+// is 0 and end is trip, so the loop is exactly the serial one. That is why this
+// change alters no results while the runtime still answers "1 worker", which
+// the backend tests in tests/backend/pass confirm by running programs.
+//
+// The two stores keep their markers after the rewrite, which is what the last
+// two checks pin. A rewrite that moved the start and left the bound alone would
+// stride rather than split, and would silently recompute the tail of the range
+// in every worker.
+//
+// REQUIRES: flat-codegen
+// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard,vx-to-llvm)" 2>&1 | FileCheck %s
+
+// The queries are declared once, privately, at module scope.
+// CHECK-DAG: func.func private @vx_host_worker_id() -> i64
+// CHECK-DAG: func.func private @vx_host_worker_count() -> i64
+
+// The host kernel keeps its original signature -- no worker parameters added.
+// CHECK: func.func @vx_npu_kernel_0(%arg0: memref<4x8xf32>) attributes {llvm.emit_c_interface}
+
+// Both queries are asked, and narrowed to the induction variable's width.
+// CHECK: %[[IDW:.*]] = call @vx_host_worker_id() : () -> i64
+// CHECK: %[[ID:.*]] = arith.trunci %[[IDW]] : i64 to i32
+// CHECK: %[[CNTW:.*]] = call @vx_host_worker_count() : () -> i64
+// CHECK: %[[CNT:.*]] = arith.trunci %[[CNTW]] : i64 to i32
+
+// trip = ub - lb, then chunk = (trip + count - 1) / count. The divide takes the
+// SUM, which is what makes it round up.
+// CHECK: %[[TRIP:.*]] = arith.subi %c4_i32, %c0_i32 : i32
+// CHECK: %[[CM1:.*]] = arith.subi %[[CNT]], %{{.*}} : i32
+// CHECK: %[[NUM:.*]] = arith.addi %[[TRIP]], %[[CM1]] : i32
+// CHECK: %[[CHUNK:.*]] = arith.divsi %[[NUM]], %[[CNT]] : i32
+
+// Both ends are clamped to the trip, against the SAME chunk.
+// CHECK: %[[SOFF:.*]] = arith.muli %[[ID]], %[[CHUNK]] : i32
+// CHECK: %[[IDP1:.*]] = arith.addi %[[ID]], %{{.*}} : i32
+// CHECK: %[[EOFF:.*]] = arith.muli %[[IDP1]], %[[CHUNK]] : i32
+// CHECK: %[[SCL:.*]] = arith.minsi %[[SOFF]], %[[TRIP]] : i32
+// CHECK: %[[ECL:.*]] = arith.minsi %[[EOFF]], %[[TRIP]] : i32
+
+// Both ends move, and each lands on the store that carries its own marker.
+// CHECK: %[[LB:.*]] = arith.addi %c0_i32, %[[SCL]] : i32
+// CHECK: %[[UB:.*]] = arith.addi %c0_i32, %[[ECL]] : i32
+// CHECK: memref.store %[[LB]], %{{.*}}[] {vx.parallel_init}
+// CHECK: memref.store %[[UB]], %{{.*}}[] {vx.parallel_bound}
+
+fn probe() -> f32 {
+  let mut o = Tensor<f32, [4, 8]>::uninit();
+  spawn on(Topology::GPU) {
+    for i in 0..4 {
+      for j in 0..8 {
+        o[i][j] = i as f32;
+      }
+    }
+  }
+  return o[0][0];
+}
+
+fn main() -> i32 {
+  print(probe());
+  return 0;
+}

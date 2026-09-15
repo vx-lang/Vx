@@ -1,0 +1,80 @@
+//===- host_workers_cover_the_loop_once.vx - Vx Compiler --------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Every iteration of a proved-parallel loop runs exactly once when the host
+// spreads it across workers.
+//
+// The host used to run an outlined kernel on one thread. It now splits the
+// loop, giving worker w the contiguous range [w*chunk, (w+1)*chunk). This runs
+// the program and checks the answer, which is the only way to find out whether
+// the split covers the iteration space exactly -- no iteration left to no
+// worker, and none handed to two.
+//
+// THE BODY ACCUMULATES RATHER THAN ASSIGNS, and that is the whole reason this
+// fixture is shaped the way it is. With `o[i][j] = value`, running a slice
+// twice writes the same number twice and the total is unchanged, so a split
+// that double-booked a range would pass. Adding makes both failures visible in
+// one number: a range nobody ran leaves its rows at zero and the total falls, a
+// range run twice counts twice and it rises.
+//
+// That is also why the tensor is zeroed in an ordinary loop first. Accumulating
+// into `uninit()` would make the expected total depend on whatever the
+// allocator left behind.
+//
+// THE WORKER COUNTS ARE PINNED rather than left to the machine. The chunk is
+// `ceil(trip / workers)`, and rounding it down instead would leave the tail of
+// the range to nobody -- but only when the worker count does not divide the
+// trip. An earlier version of this fixture ran at the default count, which on
+// the 16-CPU machine it was written on divided 64 iterations evenly, so both
+// roundings gave a chunk of 4 and it passed with the rounding deliberately
+// broken. 3, 5 and 8 none of them divide 67, so each RUN line below fails if
+// the rounding is wrong, on any machine.
+//
+// 1 worker is checked too, and is the load-bearing one: it is the degeneracy
+// the whole change rests on, where chunk is the whole trip and the loop is
+// exactly the serial one this path ran before.
+//
+// 67 rows of 8, so the total is the sum of 0..535.
+//
+// Flat path only. The legacy AST codegen emits none of the markers the split
+// reads, so there it stays serial -- correct, and not what this is testing.
+//
+// REQUIRES: flat-codegen
+// RUN: env VX_HOST_THREADS=1 vxc %s 2>/dev/null | FileCheck %s
+// RUN: env VX_HOST_THREADS=3 vxc %s 2>/dev/null | FileCheck %s
+// RUN: env VX_HOST_THREADS=5 vxc %s 2>/dev/null | FileCheck %s
+// RUN: env VX_HOST_THREADS=8 vxc %s 2>/dev/null | FileCheck %s
+// RUN: env VX_HOST_THREADS=67 vxc %s 2>/dev/null | FileCheck %s
+// CHECK: 143380
+
+fn probe() -> f32 {
+  let mut o = Tensor<f32, [67, 8]>::uninit();
+  for i in 0..67 {
+    for j in 0..8 {
+      o[i][j] = 0.0;
+    }
+  }
+  spawn on(Topology::GPU) {
+    for i in 0..67 {
+      for j in 0..8 {
+        o[i][j] = o[i][j] + ((i * 8 + j) as f32);
+      }
+    }
+  }
+  let mut acc = 0.0;
+  for i in 0..67 {
+    for j in 0..8 {
+      acc = acc + o[i][j];
+    }
+  }
+  return acc;
+}
+
+fn main() -> i32 {
+  print(probe());
+  return 0;
+}

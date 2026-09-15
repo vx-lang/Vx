@@ -23,6 +23,10 @@ test_log.txt
 ast.txt
 config.local
 .claude/settings.local.json
+# Git worktrees made by an agent session. Each is a checkout of this repository, so
+# committing one nests a repository inside itself: git stores only the gitlink, and a
+# clone gets a path it cannot fill.
+.claude/worktrees/
 .gemini/settings.local.json
 temp_hover.vx
 temp.vx
