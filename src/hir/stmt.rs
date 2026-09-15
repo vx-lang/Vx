@@ -459,7 +459,7 @@ impl<'a> TypeChecker<'a> {
             Expr::Identifier(IdentifierExpr { name, span: _ }) => {
                 let tmp_env = self.consteval_snapshot();
                 let new_val = self.eval_expr(rhs, &tmp_env);
-                if let Some(scope) = self.consteval_scope_of(name) {
+                if let Some(scope) = self.consteval_scope_of(name.as_ref()) {
                     let env = &mut self.consteval.env[scope];
                     match new_val {
                         Some(val) => env.insert(name.to_string().into(), val),
@@ -474,14 +474,28 @@ impl<'a> TypeChecker<'a> {
                 index,
                 span: _,
             }) => {
-                if let Expr::Identifier(IdentifierExpr { name, span: _ }) = &**base {
+                if let Some(root) = Self::place_root(base) {
+                    // Only a write straight into a variable is carried out. A nested place
+                    // like `a[i][j]` is not, so the array it belongs to becomes unknown.
+                    // No compiling program reaches this today, because a nested array
+                    // literal is refused by code generation; it guards the evaluator from
+                    // reporting a stale element if that ever changes.
+                    let direct = matches!(&**base, Expr::Identifier(_));
                     let tmp_env = self.consteval_snapshot();
-                    let index_val = self.eval_expr(index, &tmp_env);
-                    let new_val = self.eval_expr(rhs, &tmp_env);
-                    if let Some(scope) = self.consteval_scope_of(name) {
+                    let index_val = if direct {
+                        self.eval_expr(index, &tmp_env)
+                    } else {
+                        None
+                    };
+                    let new_val = if direct {
+                        self.eval_expr(rhs, &tmp_env)
+                    } else {
+                        None
+                    };
+                    if let Some(scope) = self.consteval_scope_of(root.as_ref()) {
                         let env = &mut self.consteval.env[scope];
                         let stored = match (index_val, new_val) {
-                            (Some(index_val), Some(val)) => match env.get_mut(name.as_ref()) {
+                            (Some(index_val), Some(val)) => match env.get_mut(root.as_ref()) {
                                 Some(Value::Array(items)) => {
                                     match Self::array_index(&index_val, items.len()) {
                                         Some(i) => {
@@ -496,7 +510,7 @@ impl<'a> TypeChecker<'a> {
                             _ => false,
                         };
                         if !stored {
-                            env.remove(name.as_ref());
+                            env.remove(root.as_ref());
                         }
                     }
                 }
@@ -506,11 +520,28 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// The innermost constant scope holding `name`, if any.
-    fn consteval_scope_of(&self, name: &crate::symbol::Symbol) -> Option<usize> {
+    fn consteval_scope_of(&self, name: &str) -> Option<usize> {
         self.consteval
             .env
             .iter()
-            .rposition(|env| env.contains_key(name.as_ref()))
+            .rposition(|env| env.contains_key(name))
+    }
+
+    /// Drop a variable's compile-time value. Used where something happened that the
+    /// evaluator cannot follow, so that it stops claiming to know what the variable holds.
+    pub(crate) fn consteval_forget(&mut self, name: &str) {
+        if let Some(scope) = self.consteval_scope_of(name) {
+            self.consteval.env[scope].remove(name);
+        }
+    }
+
+    /// The variable a place expression writes through: `a` for `a`, `a[i]` and `a[i][j]`.
+    fn place_root(expr: &Expr) -> Option<&crate::symbol::Symbol> {
+        match expr {
+            Expr::Identifier(IdentifierExpr { name, span: _ }) => Some(name),
+            Expr::IndexAccess(IndexAccessExpr { base, .. }) => Self::place_root(base),
+            _ => None,
+        }
     }
 
     /// Check a `return`: type the returned expression against the declared return type, run the
@@ -961,7 +992,7 @@ impl<'a> TypeChecker<'a> {
             // keeping the old contents would report a stale element as a certainty.
             Statement::Assign(AssignStmt {
                 lhs:
-                    Expr::IndexAccess(IndexAccessExpr {
+                    lhs @ Expr::IndexAccess(IndexAccessExpr {
                         base,
                         index,
                         span: _,
@@ -969,9 +1000,13 @@ impl<'a> TypeChecker<'a> {
                 rhs,
                 span: _,
             }) => {
-                if let Expr::Identifier(IdentifierExpr { name, span: _ }) = &**base {
-                    if self.eval_array_store(name, index, rhs, env).is_none() {
-                        env.remove(name.as_ref());
+                if let Some(root) = Self::place_root(lhs) {
+                    // Only a write straight into a variable is carried out. A nested place
+                    // like `a[i][j]` is not, so the array it belongs to becomes unknown.
+                    let direct = matches!(&**base, Expr::Identifier(_));
+                    let stored = direct && self.eval_array_store(root, index, rhs, env).is_some();
+                    if !stored {
+                        env.remove(root.as_ref());
                     }
                 }
                 None

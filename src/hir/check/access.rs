@@ -739,6 +739,12 @@ impl<'a> TypeChecker<'a> {
                                 path,
                             },
                         );
+                        // Whoever holds a mutable borrow can write through it, and the
+                        // evaluator does not follow that. The variable stops having a
+                        // compile-time value rather than keeping the one it had.
+                        if *is_mut {
+                            self.consteval_forget(&name);
+                        }
                     }
                 }
 
