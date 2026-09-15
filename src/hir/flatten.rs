@@ -1336,6 +1336,13 @@ impl<'r> Lowerer<'r> {
             // it mis-sizes). Any other unmodelled non-scalar (a tensor, `i128`) still falls back to
             // `8`, matching the oracle where it isn't demonstrably broken. (#242)
             Expr::SizeOf(s) => {
+                // The checker refuses a call that leaves a type parameter unbound, so one here
+                // is an instance that slipped through; its size has no right answer.
+                assert!(
+                    !matches!(s.target_ty, Type::Generic(..)),
+                    "sizeof<{}>() reached lowering with its type parameter unbound",
+                    s.target_ty
+                );
                 let size = sizeof_bytes(&s.target_ty)
                     .or_else(|| {
                         agg_gid_of_ty(&s.target_ty, self.registry)

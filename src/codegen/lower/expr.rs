@@ -3804,6 +3804,15 @@ impl<'c> LowerToMelior<'c> for syntax::expr::SizeOfExpr {
                 .type_size_align(ty, 0)
                 .map(|(s, _)| s as i64)
                 .unwrap_or(8),
+            // An unbound type parameter has no size, and the checker refuses the call that
+            // would bring one here, so this is an internal error rather than a case for 8.
+            ty @ syntax::Type::Generic(..) => {
+                return Err(LowerError::from(format!(
+                    "internal: sizeof of a generic type reached codegen (should have been \
+                     monomorphized): {:?}",
+                    ty
+                )));
+            }
             _ => 8,
         };
 
