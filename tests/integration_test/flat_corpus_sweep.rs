@@ -40,16 +40,13 @@ const KNOWN_DECLINES: &[&str] = &[
     "backend/pass/user_lowering_waste.vx",
     "frontend/pass/closure_fat_ptr.vx",
     "frontend/pass/control_flow_rigorous.vx",
-    "frontend/pass/memory_algebra_implicit.vx",
     "frontend/pass/trait_topologies.vx",
-    "middle_end/pass/implicit_transfer.vx",
     // A parameter with run-time extents (Vx#409). It used to compile through the flat path
     // while the dims-less spelling let it read as rank-0: `topology.vx` got a `memref<f32>`
     // signature where the AST oracle gives `memref<?x?xf32>`, two ABIs for one function, plus
     // a dropped vx.transfer. Declining is the honest answer until the flat lowerer carries
     // run-time extents.
     "warnings/pass/lowering_declined_for_dynamic_tile.vx",
-    "warnings/pass/w1024_implicit_transfer.vx",
 ];
 
 /// Every `.vx` file under `dir`, recursively, sorted for a stable report.
@@ -78,9 +75,6 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
 /// compiler defect; the list exists so the set can only shrink, never silently grow.
 const KNOWN_BROKEN: &[&str] = &[
     "frontend/pass/control_flow_rigorous.vx", // multi-payload variant binding (Vx#233)
-    "frontend/pass/memory_algebra_implicit.vx", // insertvalue of memref (Vx#356)
-    "middle_end/pass/implicit_transfer.vx",   // insertvalue of memref (Vx#356)
-    "warnings/pass/w1024_implicit_transfer.vx", // insertvalue of memref (Vx#356)
 ];
 
 /// Which codegen path the compiler took for one program, and -- when it fell back -- the reasons

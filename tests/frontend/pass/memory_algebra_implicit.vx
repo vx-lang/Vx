@@ -21,7 +21,7 @@ impl Relocatable for CustomHostData {
 fn main() -> i32 {
   let host_data = CustomHostData {
     id: 1,
-    host_tensor: Tensor<f32>(),
+    host_tensor: Tensor<f32>([1, 1]),
   };
 
   spawn on(Topology::NPU[0]) {
