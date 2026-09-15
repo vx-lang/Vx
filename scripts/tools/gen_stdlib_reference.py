@@ -18,7 +18,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-STD_DIR = Path("stdlib/std")
+# Each shipped library, in the order a reader should meet them: `core` is the layer
+# `std` is written on top of.
+LIBRARIES = [("core", Path("stdlib/core")), ("std", Path("stdlib/std"))]
 OUTPUT = Path("www/book/src/stdlib-reference.md")
 
 # What each module is for. The sources carry implementation notes rather than a summary, and a
@@ -38,6 +40,7 @@ MODULE_BLURB = {
     "math": "Mathematical functions and constants.",
     "mmap": "Memory-mapped files.",
     "net": "TCP and UDP sockets.",
+    "num": "The integer methods, on `i32`.",
     "option": "`Option<T>`, for a value that may be absent.",
     "result": "`Result<T, E>`, for an operation that may fail.",
     "simd": "SIMD vector types and operations.",
@@ -71,8 +74,8 @@ fn main() -> i32 {
 The toolchain also ships a `graph` library outside `std`, imported as `graph::traversal` and
 friends.
 
-> This page is generated from `stdlib/std/*.vx` by `scripts/tools/gen_stdlib_reference.py`.
-> Signatures are exactly what the source declares.
+> This page is generated from `stdlib/core/*.vx` and `stdlib/std/*.vx` by
+> `scripts/tools/gen_stdlib_reference.py`. Signatures are exactly what the source declares.
 
 """
 
@@ -169,13 +172,13 @@ def parse_module(path):
 
 def render(modules):
     out = [HEADER, "## Contents\n"]
-    for name, _types, _funcs, _externs in modules:
-        out.append(f"- [`std::{name}`](#std{name}) — {MODULE_BLURB.get(name, '')}")
+    for lib, name, _types, _funcs, _externs in modules:
+        out.append(f"- [`{lib}::{name}`](#{lib}{name}) — {MODULE_BLURB.get(name, '')}")
     out.append("")
 
     total_fns = 0
-    for name, types, funcs, externs in modules:
-        out.append(f"## `std::{name}`\n")
+    for lib, name, types, funcs, externs in modules:
+        out.append(f"## `{lib}::{name}`\n")
         blurb = MODULE_BLURB.get(name)
         if blurb:
             out.append(f"{blurb}\n")
@@ -219,15 +222,18 @@ def render(modules):
 
 
 def main():
-    if not STD_DIR.is_dir():
-        print(f"error: {STD_DIR} not found; run from the repository root", file=sys.stderr)
-        return 1
-
     modules = []
-    for path in sorted(STD_DIR.glob("*.vx")):
-        types, funcs, externs = parse_module(path)
-        if types or funcs or externs:
-            modules.append((path.stem, types, funcs, externs))
+    for lib, directory in LIBRARIES:
+        if not directory.is_dir():
+            print(
+                f"error: {directory} not found; run from the repository root",
+                file=sys.stderr,
+            )
+            return 1
+        for path in sorted(directory.glob("*.vx")):
+            types, funcs, externs = parse_module(path)
+            if types or funcs or externs:
+                modules.append((lib, path.stem, types, funcs, externs))
 
     if not modules:
         print("error: no modules parsed", file=sys.stderr)

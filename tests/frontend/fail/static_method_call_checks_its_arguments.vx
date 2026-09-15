@@ -1,0 +1,43 @@
+//===- static_method_call_checks_its_arguments.vx - Vx Compiler ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A method named through its type, `Holder<i32>::len(..)`, resolves on a path of its own in
+// the checker, and that path used to return the method's type without looking at the
+// arguments at all. A call with the receiver missing type-checked clean and died in MLIR's
+// verifier with a message naming neither the call nor the function. Both checks the other
+// call paths make are pinned here for this one: the count, and each argument's type.
+
+struct Holder<T> {
+  v : T,
+}
+
+impl<T> Holder<T> {
+  fn len(self : &Holder<T>) -> i32 {
+    return 1;
+  }
+
+  fn set(self : &mut Holder<T>, x : T) -> i32 {
+    self.v = x;
+    return 0;
+  }
+}
+
+fn main() -> i32 {
+  let mut h = Holder<i32> {
+    v : 0,
+  };
+  // The receiver is a parameter like any other; leaving it out is a count mismatch.
+  // CHECK-DAG: E3010{{.*}}'Holder<i32>::len'{{.*}}expects 1 arguments, got 0
+  let n = Holder<i32>::len();
+  // The argument's type is checked against the instantiated parameter, `T` already `i32`.
+  let f : f32 = 2.5;
+  // CHECK-DAG: E3003{{.*}}'Holder<i32>::set'{{.*}}Expected i32, got f32
+  let m = Holder<i32>::set(&mut h, f);
+  return n + m;
+}

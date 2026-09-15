@@ -84,7 +84,7 @@ if __name__ == "__main__":
     build_matmul(args.out_dir, args.dim)
     build_affine(args.out_dir, args.dim)
     # The ones the Neural Engine will actually take. The 4x4 fp32 pair above is
-    # kept because the affine path and the existing tests are written to it.
+    # kept because the dispatcher's fp32 matmul and affine routes load it.
     for d in [int(x) for x in args.ane_dims.split(",") if x.strip()]:
         build_matmul(args.out_dir, d, precision="fp16")
     print("Done!")

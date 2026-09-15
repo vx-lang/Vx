@@ -1,0 +1,18 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// Two closing angle brackets are a `>>` only when they are written with nothing between
+// them. The lexer keeps them as separate tokens, because a nested generic such as
+// `Pair<Pair<i32>>` ends with two of them and the type parser closes one per token, so
+// it is the parser that decides -- and it decides on adjacency, not merely on one
+// following the other.
+//
+// Without that, this line would silently become a shift and return 4. It was a syntax
+// error before shifts existed and it still is. shift_operators.vx holds the other side:
+// the adjacent spelling shifting, and the generic spelling closing two generics.
+
+fn main() -> i32 {
+  let a : i32 = 8;
+  let b : i32 = 2;
+  return a > > b;
+}
+// CHECK: Expected expression, found RightAngle

@@ -166,15 +166,21 @@ impl<'a> TypeChecker<'a> {
     pub(crate) fn const_value_of(&self, name: &str) -> Option<u64> {
         let sym = crate::symbol::Symbol::from(name);
         for env in self.consteval.env.iter().rev() {
-            if let Some(crate::hir::env::Value::Number(n)) = env.get(&sym) {
-                // A non-negative integer the value field (seam::VAL_BITS = 64) can pin. The
-                // source is an f64, so cap at 2^53 where every integer is still exact rather
-                // than risk pinning a rounded value.
-                const F64_EXACT_INT_MAX: f64 = (1u64 << 53) as f64;
-                if n.fract() == 0.0 && *n >= 0.0 && *n <= F64_EXACT_INT_MAX {
-                    return Some(*n as u64);
+            match env.get(&sym) {
+                // An integer is already exact, so it pins the value field directly.
+                Some(crate::hir::env::Value::Int(i)) => {
+                    return if *i >= 0 { Some(*i as u64) } else { None };
                 }
-                return None;
+                // A float has to be a whole number, and only up to 2^53, past which it may
+                // already be a rounded stand-in for the value the program wrote.
+                Some(crate::hir::env::Value::Number(n)) => {
+                    const F64_EXACT_INT_MAX: f64 = (1u64 << 53) as f64;
+                    if n.fract() == 0.0 && *n >= 0.0 && *n <= F64_EXACT_INT_MAX {
+                        return Some(*n as u64);
+                    }
+                    return None;
+                }
+                _ => {}
             }
         }
         None

@@ -5,6 +5,12 @@
 
 use super::super::*;
 
+/// Is this field a plain scalar, rather than a pointer or a memref descriptor? Only a
+/// scalar slot may be written and read at a type other than the one it was declared with.
+fn is_scalar_field(fty: &str) -> bool {
+    !fty.starts_with("!llvm.") && !fty.starts_with("memref<")
+}
+
 impl FnEmit<'_> {
     // Store a scalar into a struct field (no result). `operand1` is the struct slot pointer,
     // `operand2` the value, `imm` the field's byte offset. GEP to the field, then `llvm.store`;
@@ -65,7 +71,16 @@ impl FnEmit<'_> {
             .get(&idx)
             .map(|(own, sibs)| alias_store_attrs(*own, sibs))
             .unwrap_or_default();
-        self.body += &format!("  llvm.store {val}, {p}{attrs} : {fty}, !llvm.ptr\n");
+        // The value's own scalar type, not the slot's. They differ only for an enum payload,
+        // whose slot is sized for the widest variant and holds whichever one was built
+        // (Vx#570); a pointer is left to the declared type, which is what carries it.
+        let store_ty = match self.etypes.get(ins.operand2.0 as usize).cloned().flatten() {
+            Some(e) if is_scalar_field(&fty) => {
+                crate::mlir_ty::mlir_scalar(&e).unwrap_or(&fty).to_string()
+            }
+            _ => fty.clone(),
+        };
+        self.body += &format!("  llvm.store {val}, {p}{attrs} : {store_ty}, !llvm.ptr\n");
         Ok(())
     }
 
@@ -107,7 +122,21 @@ impl FnEmit<'_> {
             "  {p} = llvm.getelementptr {slot}[0, {field_idx}] : (!llvm.ptr) -> !llvm.ptr, {}\n",
             agg.struct_ty
         );
-        self.body += &format!("  {n} = llvm.load {p} : !llvm.ptr -> {fty}\n");
+        // Read back at the type this instruction says it produces, for the same reason the
+        // store writes at the value's: an enum payload slot holds whichever variant was
+        // built, not the one the layout is named after.
+        let load_ty = match self
+            .types
+            .get(ins.type_idx.0 as usize)
+            .copied()
+            .and_then(elem_of_gid)
+        {
+            Some(e) if is_scalar_field(&fty) => {
+                crate::mlir_ty::mlir_scalar(&e).unwrap_or(&fty).to_string()
+            }
+            _ => fty.clone(),
+        };
+        self.body += &format!("  {n} = llvm.load {p} : !llvm.ptr -> {load_ty}\n");
         self.names[idx] = n;
         // A tensor field comes out as its descriptor, cast back to the memref the result names.
         let gid_res = self.types.get(ins.type_idx.0 as usize).copied();

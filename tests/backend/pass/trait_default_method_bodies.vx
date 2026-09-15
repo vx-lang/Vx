@@ -1,0 +1,68 @@
+//===- trait_default_method_bodies.vx - Vx Compiler ---------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A trait method may carry a body, and an impl that does not write that method gets a
+// copy of it. Before this, a trait method could only be a signature, so every impl had
+// to repeat every method -- which is why `Iterator`, whose Rust counterpart provides
+// about seventy-five methods over one required `next`, could not be written.
+//
+// Four answers, and each rules out a different way of getting this wrong.
+//
+//   i32::doubled   10   the default runs, and `self.value()` inside it dispatches to the
+//                       i32 impl rather than to some fixed one
+//   i32::plus_ten  15   a second default on the same trait is not shadowed by the first
+//   f32::doubled    7   an impl that writes the method keeps its own body; the default
+//                       does not overwrite it, and would have answered 200 here
+//   f32::plus_ten 110   the same trait, the same impl, still inherits what it did not
+//                       write -- so inheriting and overriding are per method, not per impl
+//
+// The two impls return different values from `value()` on purpose. A default body that
+// resolved `self.value()` once, at the trait, would answer 10 and 200 rather than 10 and
+// 110, and the f32 column is what says it did not.
+//
+// Nothing here states anything about emitted IR. An inherited method is a copy of the
+// default made before name resolution, so by the time anything lowers it there is no
+// such thing as a default left to see.
+trait Counts {
+  fn value(self : Self) -> i32;
+  fn doubled(self : Self) -> i32 {
+    return self.value() * 2;
+  }
+  fn plus_ten(self : Self) -> i32 {
+    return self.value() + 10;
+  }
+}
+
+impl Counts for i32 {
+  fn value(self : i32) -> i32 {
+    return self;
+  }
+}
+
+impl Counts for f32 {
+  fn value(self : f32) -> i32 {
+    return 100;
+  }
+  fn doubled(self : f32) -> i32 {
+    return 7;
+  }
+}
+
+fn main() -> i32 {
+  let a : i32 = 5;
+  print(a.doubled());
+  print!(" ");
+  print(a.plus_ten());
+  print!(" ");
+  let b : f32 = 1.0;
+  print(b.doubled());
+  print!(" ");
+  print(b.plus_ten());
+  return 0;
+}
+
+// EXPECT: 10 15 7 110

@@ -1,0 +1,36 @@
+//===- generic_visibility_after_substitution.vx - Vx Compiler ----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// E6003 when the spawn device is known only after topology substitution: `D` binds to
+// AccCore[0] at the call site, and AccCore sees Local_SRAM, not CPU_DRAM. Every other E6003
+// test names its device literally, so none of them cover this. Each check below was verified
+// by breaking the code under it on its own.
+//
+// CHECK: E6003
+// CHECK-SAME: 'host' lives in CPU_DRAM
+// CHECK-SAME: AccCore[0] sees only [Local_SRAM]
+
+fn run_on<D: Topology>(x : Pinned<i32, Topology::D>, host : Pinned<i32, Topology::CPU>) -> i32 {
+  // Legal only if D turns out to see CPU_DRAM, so this is checkable once D is bound.
+  spawn on(Topology::D) {
+    let y = host;
+  }
+  return 0;
+}
+
+fn main() -> i32 {
+  // D binds to AccCore[0] from this argument's topology.
+  let a = spawn on(Topology::AccCore[0]) {
+    5
+  };
+  let h = spawn on(Topology::CPU) {
+    7
+  };
+  return run_on(a, h);
+}

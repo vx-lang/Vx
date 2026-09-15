@@ -29,7 +29,25 @@ use std::collections::HashMap;
 pub enum Value {
     Bool(bool),
     Number(f64),
+    /// An integer, kept as one. Sending it through `Number` would lose every value past
+    /// 2^53 and would compute `3 / 2` as 1.5, which is not what the program does.
+    Int(i64),
     Topology(Topology),
+    /// A fixed-size array of scalars, known at compile time. The length is set when the
+    /// array is built and never changes, so an index past the end is a compile error.
+    Array(Vec<Value>),
+}
+
+impl Value {
+    /// This value as a float, whichever kind of number it is. For a caller that wants a
+    /// magnitude and does not care how it was stored, such as a tensor dimension.
+    pub fn as_f64(&self) -> Option<f64> {
+        match self {
+            Value::Int(i) => Some(*i as f64),
+            Value::Number(n) => Some(*n),
+            _ => None,
+        }
+    }
 }
 
 /// One `Memory`/`Topology` name declared by two modules with *different* declarations — see
@@ -53,6 +71,14 @@ pub struct GlobalAstEnv<'a> {
     pub functions:
         HashMap<crate::symbol::Symbol, (Type, bool, Vec<Type>, Topology, Vec<Expr>, Vec<Expr>)>,
     pub syntax_functions: HashMap<crate::symbol::Symbol, &'a Function>,
+    /// Bodies the compile-time evaluator can run, owned rather than borrowed.
+    ///
+    /// The resolution env is built from signature-stripped modules, so a non-generic function
+    /// defined in the module being compiled has an empty body in `syntax_functions` and the
+    /// evaluator walks nothing. These are refilled from the full modules, which cannot be
+    /// borrowed from because they are type-checked in place. Only functions a compile-time
+    /// context could reach are copied, so this is not a second copy of the program.
+    pub comptime_bodies: HashMap<crate::symbol::Symbol, Function>,
     pub generic_functions: HashMap<crate::symbol::Symbol, (&'a Function, u64)>, // (func, origin_module_hash)
     /// User-defined memory spaces (`Memory <Name> { ... }`), indexed by name. Populated from
     /// `Program.memories` — the per-compilation home for memory descriptors (no global registry).
@@ -109,6 +135,7 @@ impl<'a> GlobalAstEnv<'a> {
             impls: HashMap::new(),
             functions: HashMap::new(),
             syntax_functions: HashMap::new(),
+            comptime_bodies: HashMap::new(),
             generic_functions: HashMap::new(),
             memories: HashMap::new(),
             topologies: HashMap::new(),
@@ -254,6 +281,49 @@ impl<'a> GlobalAstEnv<'a> {
                     );
                 }
             }
+        }
+    }
+
+    /// Fill [`GlobalAstEnv::comptime_bodies`] from modules that still carry bodies.
+    ///
+    /// Only what compile-time evaluation could reach is copied: the names mentioned in an
+    /// `assert` or inside a `comptime` block, then whatever those functions call, and so on.
+    /// A program that does no compile-time work copies nothing. Idempotent.
+    pub fn annotate_comptime_bodies(&mut self, modules: &[Program]) {
+        let mut with_bodies: HashMap<&str, &Function> = HashMap::new();
+        for module in modules {
+            for func in &module.functions {
+                if !func.body.is_empty() {
+                    with_bodies.insert(func.name.as_ref(), func);
+                }
+            }
+        }
+
+        let mut pending: Vec<String> = Vec::new();
+        for module in modules {
+            for func in &module.functions {
+                for stmt in &func.body {
+                    collect_comptime_seeds(stmt, &mut pending);
+                }
+            }
+        }
+
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        while let Some(name) = pending.pop() {
+            if !seen.insert(name.clone()) {
+                continue;
+            }
+            let Some(func) = with_bodies.get(name.as_str()) else {
+                continue;
+            };
+            // Whatever this one calls can be reached from a compile-time context too.
+            let mut uses = std::collections::HashSet::new();
+            for stmt in &func.body {
+                TypeChecker::extract_uses_stmt(stmt, &mut uses);
+            }
+            pending.extend(uses);
+            self.comptime_bodies
+                .insert(func.name.clone(), (*func).clone());
         }
     }
 
@@ -1375,6 +1445,101 @@ impl<'a> TypeChecker<'a> {
             _ => ty,
         }
     }
+}
+
+/// Names mentioned where compile-time evaluation can start: an `assert` condition, and
+/// anything inside a `comptime` block or an `if comptime` condition. Ordinary control flow in
+/// between is walked through to reach them.
+fn collect_comptime_seeds(stmt: &Statement, out: &mut Vec<String>) {
+    match stmt {
+        Statement::Assert(a) => push_uses_expr(&a.expr, out),
+        Statement::LetDecl(l) => seeds_in_expr(&l.expr, out),
+        Statement::Assign(a) => {
+            seeds_in_expr(&a.lhs, out);
+            seeds_in_expr(&a.rhs, out);
+        }
+        Statement::CompoundAssign(a) => {
+            seeds_in_expr(&a.lhs, out);
+            seeds_in_expr(&a.rhs, out);
+        }
+        Statement::Return(r) => {
+            if let Some(e) = &r.expr {
+                seeds_in_expr(e, out);
+            }
+        }
+        Statement::ExprStmt(e) => seeds_in_expr(&e.expr, out),
+        Statement::ForLoop(f) => {
+            for s in &f.body {
+                collect_comptime_seeds(s, out);
+            }
+        }
+        Statement::Loop(l) => {
+            for s in &l.body {
+                collect_comptime_seeds(s, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The same walk over an expression. A `comptime` block seeds every name it mentions; an
+/// ordinary block is only descended into, since nothing in it is evaluated on its own.
+fn seeds_in_expr(expr: &Expr, out: &mut Vec<String>) {
+    match expr {
+        Expr::ComptimeBlock(c) => {
+            for s in &c.stmts {
+                push_uses_stmt(s, out);
+            }
+            if let Some(r) = &c.ret {
+                push_uses_expr(r, out);
+            }
+        }
+        Expr::If(i) => {
+            if i.is_comptime {
+                push_uses_expr(&i.cond, out);
+            } else {
+                seeds_in_expr(&i.cond, out);
+            }
+            for s in &i.then_block {
+                collect_comptime_seeds(s, out);
+            }
+            if let Some(else_block) = &i.else_block {
+                for s in else_block {
+                    collect_comptime_seeds(s, out);
+                }
+            }
+        }
+        Expr::UnsafeBlock(u) => {
+            for s in &u.stmts {
+                collect_comptime_seeds(s, out);
+            }
+        }
+        Expr::SpawnOn(s) => {
+            for stmt in &s.stmts {
+                collect_comptime_seeds(stmt, out);
+            }
+        }
+        Expr::Match(m) => {
+            for arm in &m.arms {
+                for s in &arm.body {
+                    collect_comptime_seeds(s, out);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn push_uses_expr(expr: &Expr, out: &mut Vec<String>) {
+    let mut uses = std::collections::HashSet::new();
+    TypeChecker::extract_uses_expr(expr, &mut uses);
+    out.extend(uses);
+}
+
+fn push_uses_stmt(stmt: &Statement, out: &mut Vec<String>) {
+    let mut uses = std::collections::HashSet::new();
+    TypeChecker::extract_uses_stmt(stmt, &mut uses);
+    out.extend(uses);
 }
 
 #[cfg(test)]

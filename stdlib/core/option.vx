@@ -1,0 +1,209 @@
+//===- option.vx - Vx Standard Library ----------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `Option<T>`, for a value that may be absent.
+//
+// Moved here from `std::option`, unchanged apart from the extra methods below and the
+// removal of an `import std::alloc` that nothing in the file used. It belongs in `core`
+// because it needs no allocator and no operating system: it is one enum and a handful of
+// matches, and the rest of `core` is written against it -- `Iterator::next` returns one,
+// and so will every `checked_` method in `core::num`.
+//
+// `ok_or` and `transpose` wait on `core::result`, and `zip` on a pair type. Nothing else
+// of Rust's `Option` is missing.
+//
+// A closure is called by hand -- `let p = f.func; p(f.env, v)` -- since there is no call
+// syntax for one yet.
+
+import core::ops;
+
+enum Option<T> {
+  Some(T),
+  None,
+}
+
+impl<T> Option<T> {
+  /// Is there a value?
+  fn is_some(self : &Option<T>) -> Bool {
+    let mut ret = false;
+    match *self {
+      Option<T>::Some(v) => {
+        ret = true;
+      }
+      Option<T>::None() => {
+        ret = false;
+      }
+    }
+    return ret;
+  }
+
+  /// Is there no value?
+  fn is_none(self : &Option<T>) -> Bool {
+    let mut ret = true;
+    match *self {
+      Option<T>::Some(v) => {
+        ret = false;
+      }
+      Option<T>::None() => {
+        ret = true;
+      }
+    }
+    return ret;
+  }
+
+  /// The value, or a stop. Reach for `unwrap_or` where there is a sensible answer for
+  /// the absent case; this one ends the program.
+  fn unwrap(self : Option<T>) -> T {
+    match self {
+      Option<T>::Some(v) => {
+        return v;
+      }
+      Option<T>::None() => {
+        let is_some = self.is_some();
+        assert(is_some, "unwrap called on None");
+      }
+    }
+  }
+
+  /// The value, or the given one. `default` is evaluated by the caller either way, so
+  /// keep it cheap; Rust's `unwrap_or_else` is the form that does not, and it takes a
+  /// closure whose type parameter this cannot yet spell.
+  fn unwrap_or(self : Option<T>, default : T) -> T {
+    match self {
+      Option<T>::Some(v) => {
+        return v;
+      }
+      Option<T>::None() => {
+        return default;
+      }
+    }
+  }
+
+  /// This one if it holds a value, otherwise the other. Both sides are the same type,
+  /// which is why this fits while `and_then` does not.
+  fn or(self : Option<T>, other : Option<T>) -> Option<T> {
+    match self {
+      Option<T>::Some(v) => {
+        return Option<T>::Some(v);
+      }
+      Option<T>::None() => {
+        return other;
+      }
+    }
+  }
+
+  /// The other one if this holds a value, otherwise nothing.
+  fn and(self : Option<T>, other : Option<T>) -> Option<T> {
+    match self {
+      Option<T>::Some(v) => {
+        return other;
+      }
+      Option<T>::None() => {
+        return Option<T>::None();
+      }
+    }
+  }
+
+  /// Whichever one holds a value, and nothing when both do or neither does.
+  fn xor(self : Option<T>, other : Option<T>) -> Option<T> {
+    let left = self.is_some();
+    let right = other.is_some();
+    if left && right {
+      return Option<T>::None();
+    }
+    if left {
+      return self;
+    }
+    if right {
+      return other;
+    }
+    return Option<T>::None();
+  }
+
+  /// The value with `f` applied, if there is one.
+  fn map<U>(self : Option<T>, f : Closure1<T, U>) -> Option<U> {
+    match self {
+      Option<T>::Some(v) => {
+        let p = f.func;
+        return Option<U>::Some(p(f.env, v));
+      }
+      Option<T>::None() => {
+        return Option<U>::None();
+      }
+    }
+  }
+
+  /// `map` for an `f` that answers with an `Option` of its own, without the nesting.
+  fn and_then<U>(self : Option<T>, f : Closure1<T, Option<U>>) -> Option<U> {
+    match self {
+      Option<T>::Some(v) => {
+        let p = f.func;
+        return p(f.env, v);
+      }
+      Option<T>::None() => {
+        return Option<U>::None();
+      }
+    }
+  }
+
+  /// The value if it is there and `p` accepts it, otherwise nothing.
+  fn filter(self : Option<T>, p : Closure1<T, bool>) -> Option<T> {
+    match self {
+      Option<T>::Some(v) => {
+        let f = p.func;
+        if f(p.env, v) {
+          return Option<T>::Some(v);
+        }
+        return Option<T>::None();
+      }
+      Option<T>::None() => {
+        return Option<T>::None();
+      }
+    }
+  }
+
+  /// `f` applied to the value, or the given answer when there is none. Both are the same
+  /// type, which is what separates this from `map`.
+  fn map_or<U>(self : Option<T>, default : U, f : Closure1<T, U>) -> U {
+    match self {
+      Option<T>::Some(v) => {
+        let p = f.func;
+        return p(f.env, v);
+      }
+      Option<T>::None() => {
+        return default;
+      }
+    }
+  }
+
+  /// The value, or the answer `f` gives. Unlike `unwrap_or`, nothing is computed when
+  /// there is a value.
+  fn unwrap_or_else(self : Option<T>, f : Closure0<T>) -> T {
+    match self {
+      Option<T>::Some(v) => {
+        return v;
+      }
+      Option<T>::None() => {
+        let p = f.func;
+        return p(f.env);
+      }
+    }
+  }
+
+  /// Is there a value, and does `p` accept it?
+  fn is_some_and(self : Option<T>, p : Closure1<T, bool>) -> bool {
+    match self {
+      Option<T>::Some(v) => {
+        let f = p.func;
+        return f(p.env, v);
+      }
+      Option<T>::None() => {
+        return false;
+      }
+    }
+  }
+}

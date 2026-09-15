@@ -1,0 +1,70 @@
+name: CLA
+
+# Every contributor signs the Contributor License Agreement once, and the signature is recorded
+# before their first pull request can merge.
+#
+# Why a bot rather than a paper trail: most contributors arrive as a GitHub account and nothing
+# else. The agreement is what puts the copyright and patent grant on the record, so the project
+# does not have to know who someone is beyond what they signed. A maintainer reviewing a pull
+# request should not have to go and check.
+#
+# How a contributor signs: the bot comments on their first pull request with a link to
+# docs/CLA.md and the exact sentence to reply with. Replying records the signature on the
+# `cla-signatures` branch and turns this check green. Every later pull request from the same
+# account passes without a comment.
+#
+# Note on `pull_request_target`: this trigger runs with a write token, unlike `pull_request`.
+# That is needed to comment and to store the signature, and it is only safe because this job
+# never checks out or runs the pull request's code. Do not add a checkout step here.
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_target:
+    types: [opened, closed, synchronize]
+
+permissions:
+  actions: write
+  contents: write
+  pull-requests: write
+  statuses: write
+
+# Two signatures arriving at once would otherwise both write signatures.json from the same
+# starting point and one would be lost. Queued rather than cancelled, so no signature is dropped.
+concurrency:
+  group: cla-signatures
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Check CLA signature
+    runs-on: ubuntu-latest
+    steps:
+      # Pinned to the commit behind v2.6.1 rather than the tag. A tag can be moved to point at
+      # different code; this workflow runs with `contents: write`, so what it runs has to be fixed.
+      - name: CLA assistant
+        uses: contributor-assistant/github-action@ca4a40a7d1004f18d9960b404b97e5f30a505a08
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          path-to-document: 'https://github.com/vx-lang/Vx/blob/main/docs/CLA.md'
+          path-to-signatures: 'signatures/version1/cla.json'
+          branch: 'cla-signatures'
+          # Bots only. Maintainers sign the same agreement as everyone else -- an exemption for
+          # the people who write most of the code is the one gap that would matter.
+          allowlist: 'dependabot[bot],github-actions[bot],renovate[bot]'
+          custom-pr-sign-comment: 'I have read the Vx Contributor License Agreement and I hereby sign it.'
+          custom-notsigned-prcomment: |
+            Thanks for the pull request. Before it can be merged, every contributor to it needs to
+            sign the [Vx Contributor License Agreement](https://github.com/vx-lang/Vx/blob/main/docs/CLA.md).
+            It is short, and you only do this once -- later pull requests will not ask again.
+
+            Please read it, then post a new comment on this pull request containing exactly:
+          # Locks on any close, not only a merge, and a locked pull request refuses the comment
+          # the bot needs in order to record a signature.
+          lock-pullrequest-aftermerge: 'false'
+          create-file-commit-message: 'cla: start the signature record'
+          # Only $contributorName, $owner and $repo are substituted. The action also documents
+          # $pullRequestNo, but that substitution is commented out in its source, so using it
+          # would leave the literal text in the commit message.
+          signed-commit-message: 'cla: record signature from $contributorName in $owner/$repo'

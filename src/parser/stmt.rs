@@ -13,6 +13,33 @@
 use super::*;
 
 impl<'a> Parser<'a> {
+    /// The compound assignment at the cursor, consumed, or `None`. Each one means the
+    /// binary operator of the same name applied to the two sides, so the statement they
+    /// build is checked and lowered by the same rules as `a = a OP b` -- there is no
+    /// second implementation of what `%` or `>>` does.
+    fn compound_assign_op(&mut self) -> Option<BinaryOp> {
+        // Two tokens, so it has to be tried before the single-token spellings: `>>=`
+        // begins with a `>` that nothing else here would claim, but `>=` would.
+        if let Some(op) = self.shift_assign_at() {
+            self.advance();
+            self.advance();
+            return Some(op);
+        }
+        let op = match self.peek().kind {
+            TokenType::PlusEquals => BinaryOp::Add,
+            TokenType::MinusEquals => BinaryOp::Sub,
+            TokenType::StarEquals => BinaryOp::Mul,
+            TokenType::SlashEquals => BinaryOp::Div,
+            TokenType::PercentEquals => BinaryOp::Rem,
+            TokenType::AmpersandEquals => BinaryOp::BitAnd,
+            TokenType::PipeEquals => BinaryOp::BitOr,
+            TokenType::CaretEquals => BinaryOp::BitXor,
+            _ => return None,
+        };
+        self.advance();
+        Some(op)
+    }
+
     fn parse_expr_or_assign_stmt(&mut self, expr: Expr) -> ParseResult<'a, Statement> {
         if self.match_token(&TokenType::Equals) {
             let rhs = self.parse_expr()?;
@@ -22,12 +49,12 @@ impl<'a> Parser<'a> {
                 rhs,
                 span: Span::default(),
             }))
-        } else if self.match_token(&TokenType::PlusEquals) {
+        } else if let Some(op) = self.compound_assign_op() {
             let rhs = self.parse_expr()?;
             self.consume(&TokenType::Semicolon, "Expected ';'")?;
             Ok(Statement::CompoundAssign(CompoundAssignStmt {
                 lhs: expr,
-                op: BinaryOp::Add,
+                op,
                 rhs,
                 span: Span::default(),
             }))

@@ -1,0 +1,338 @@
+//===- num.vx - Vx Standard Library -------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The integer methods, stamped over the signed widths.
+//
+// These are inherent methods in Rust too, so no trait machinery is needed. One macro
+// stamps the set, as Rust's own `core::num` does.
+//
+// `core` uses `mlir!` where Rust's uses `core::intrinsics`, and declares no `extern`, so
+// these work inside a `spawn on(..)` region on a device with no libc.
+//
+// Unsigned widths need a second macro: a Vx `u32` is an MLIR `i32`, and `abs`, `signum`
+// and `checked_neg` have no meaning without a sign.
+//
+// `min`, `max` and `clamp` are not here: they belong to `Ord` in `core::cmp`, as they do
+// in Rust, and a type gets them by implementing `cmp`.
+//
+// The limits are methods because Vx has no `const` item, and because a bare literal is
+// born `i32` -- returning one from a method declared `-> $t` is what gives it the width.
+import core::option;
+
+/// Stamps the integer methods for one signed width.
+///
+/// `$t` is both the Vx type and the MLIR type, which holds for the signed widths and is
+/// exactly what does not hold for the unsigned ones.
+///
+/// `$bits`, `$min` and `$max` are passed rather than looked up, because a macro cannot
+/// build the name `i32_max` from the parameter `i32`. The free functions above are the
+/// same values under a name a caller can write.
+macro_rules stamp_signed_int {
+  ($t : ident , $bits : expr , $min : expr , $max : expr , $byte_mask : expr) => {
+    impl $t {
+      /// The smallest value of this width.
+      fn min_value(self : $t) -> $t {
+        return $min;
+      }
+
+      /// The largest value of this width.
+      fn max_value(self : $t) -> $t {
+        return $max;
+      }
+
+      /// How many bits this width has.
+      fn bits(self : $t) -> $t {
+        return $bits;
+      }
+
+      /// How many bits are set. The hardware instruction, so a negative operand is
+      /// counted right; a loop shifting right would copy the sign bit forever.
+      fn count_ones(self : $t) -> $t {
+        return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
+          %r = math.ctpop %a : $t
+          macro.yield %r : $t
+        };
+      }
+
+      /// How many bits are clear.
+      fn count_zeros(self : $t) -> $t {
+        return self.bits() - self.count_ones();
+      }
+
+      /// Zero bits above the highest set bit. All of them, for zero.
+      fn leading_zeros(self : $t) -> $t {
+        return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
+          %r = math.ctlz %a : $t
+          macro.yield %r : $t
+        };
+      }
+
+      /// Zero bits below the lowest set bit. All of them, for zero.
+      fn trailing_zeros(self : $t) -> $t {
+        return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
+          %r = math.cttz %a : $t
+          macro.yield %r : $t
+        };
+      }
+
+      /// Zero and the negatives are not.
+      fn is_power_of_two(self : $t) -> bool {
+        return self > (0 as $t) && (self & (self - 1)) == (0 as $t);
+      }
+
+      fn is_positive(self : $t) -> bool {
+        return self > (0 as $t);
+      }
+
+      fn is_negative(self : $t) -> bool {
+        return self < (0 as $t);
+      }
+
+      /// Refused at the smallest value, which has no positive counterpart.
+      fn abs(self : $t) -> $t {
+        assert(self != self.min_value(), "abs of the smallest value has no answer at this width");
+        if self < (0 as $t) {
+          return -self;
+        }
+        return self;
+      }
+
+      /// -1, 0 or 1, by sign.
+      fn signum(self : $t) -> $t {
+        if self < (0 as $t) {
+          return -1;
+        }
+        if self > (0 as $t) {
+          return 1;
+        }
+        return 0;
+      }
+
+      /// The distance between two values.
+      fn abs_diff(self : $t, other : $t) -> $t {
+        if self < other {
+          return other - self;
+        }
+        return self - other;
+      }
+
+      /// By squaring. Overflow wraps, as every arithmetic operator here does.
+      fn pow(self : $t, exp : $t) -> $t {
+        assert(exp >= (0 as $t), "pow takes a non-negative exponent");
+        let mut result : $t = 1;
+        let mut base : $t = self;
+        let mut e : $t = exp;
+        loop {
+          if e == (0 as $t) {
+            break;
+          }
+          if (e & 1) == (1 as $t) {
+            result = result * base;
+          }
+          base = base * base;
+          e = e >> (1 as $t);
+        }
+        return result;
+      }
+
+      /// Never negative, whatever the signs: -7 % 4 is -3 where this is 1.
+      fn rem_euclid(self : $t, rhs : $t) -> $t {
+        let r = self % rhs;
+        if r < (0 as $t) {
+          if rhs < (0 as $t) {
+            return r - rhs;
+          }
+          return r + rhs;
+        }
+        return r;
+      }
+
+      /// The quotient pairing with `rem_euclid`.
+      fn div_euclid(self : $t, rhs : $t) -> $t {
+        let q = self / rhs;
+        if self % rhs < (0 as $t) {
+          if rhs > (0 as $t) {
+            return q - 1;
+          }
+          return q + 1;
+        }
+        return q;
+      }
+
+      /// Rounded down. Refused at zero and below.
+      fn ilog2(self : $t) -> $t {
+        assert(self > (0 as $t), "ilog2 needs a positive value");
+        return self.bits() - 1 - self.leading_zeros();
+      }
+
+      /// One for anything at or below one. The top power of two does not fit in a
+      /// signed width, so a value beyond it is refused.
+      fn next_power_of_two(self : $t) -> $t {
+        if self <= (1 as $t) {
+          return 1;
+        }
+        let one : $t = 1;
+        let shift = self.bits() - (self - one).leading_zeros();
+        assert(shift < self.bits() - one, "next power of two does not fit at this width");
+        return one << shift;
+      }
+
+      /// Wrapping round. The right half is masked because `>>` copies the sign bit.
+      fn rotate_left(self : $t, n : $t) -> $t {
+        let k = n % self.bits();
+        if k == (0 as $t) {
+          return self;
+        }
+        let one : $t = 1;
+        let low = (self >> (self.bits() - k)) & ((one << k) - one);
+        return (self << k) | low;
+      }
+
+      /// The bits rotated right.
+      fn rotate_right(self : $t, n : $t) -> $t {
+        let k = n % self.bits();
+        if k == (0 as $t) {
+          return self;
+        }
+        return self.rotate_left(self.bits() - k);
+      }
+
+      /// The bytes reversed. The mask is a parameter because 255 does not fit in an
+      /// `i8`; it is accepted there and wraps to -1, which is right by luck.
+      fn swap_bytes(self : $t) -> $t {
+        let eight : $t = 8;
+        let mask : $t = $byte_mask;
+        let mut out : $t = 0;
+        let mut i : $t = 0;
+        loop {
+          if i == self.bits() {
+            break;
+          }
+          let byte = (self >> i) & mask;
+          out = out | (byte << (self.bits() - eight - i));
+          i += eight;
+        }
+        return out;
+      }
+
+      /// The bits reversed.
+      fn reverse_bits(self : $t) -> $t {
+        let one : $t = 1;
+        let mut out : $t = 0;
+        let mut i : $t = 0;
+        loop {
+          if i == self.bits() {
+            break;
+          }
+          let bit = (self >> i) & one;
+          out = out | (bit << (self.bits() - one - i));
+          i += one;
+        }
+        return out;
+      }
+
+      /// Nothing if it would not fit. The bound is rearranged so the check itself
+      /// cannot overflow.
+      fn checked_add(self : $t, rhs : $t) -> Option<$t> {
+        if rhs > (0 as $t) && self > self.max_value() - rhs {
+          return Option<$t>::None();
+        }
+        if rhs < (0 as $t) && self < self.min_value() - rhs {
+          return Option<$t>::None();
+        }
+        return Option<$t>::Some(self + rhs);
+      }
+
+      /// Nothing if it would not fit.
+      fn checked_sub(self : $t, rhs : $t) -> Option<$t> {
+        if rhs < (0 as $t) && self > self.max_value() + rhs {
+          return Option<$t>::None();
+        }
+        if rhs > (0 as $t) && self < self.min_value() + rhs {
+          return Option<$t>::None();
+        }
+        return Option<$t>::Some(self - rhs);
+      }
+
+      /// Checked by dividing back out, exact when the product fit. The two divisions
+      /// that would themselves overflow are ruled out first.
+      fn checked_mul(self : $t, rhs : $t) -> Option<$t> {
+        if self == (0 as $t) || rhs == (0 as $t) {
+          return Option<$t>::Some(0 as $t);
+        }
+        if self == self.min_value() && rhs == (-1 as $t) {
+          return Option<$t>::None();
+        }
+        if rhs == self.min_value() && self == (-1 as $t) {
+          return Option<$t>::None();
+        }
+        let product = self * rhs;
+        if product / rhs != self {
+          return Option<$t>::None();
+        }
+        return Option<$t>::Some(product);
+      }
+
+      /// Nothing on division by zero, or on the one division that overflows.
+      fn checked_div(self : $t, rhs : $t) -> Option<$t> {
+        if rhs == (0 as $t) {
+          return Option<$t>::None();
+        }
+        if self == self.min_value() && rhs == (-1 as $t) {
+          return Option<$t>::None();
+        }
+        return Option<$t>::Some(self / rhs);
+      }
+
+      /// Refused in the same two cases as `checked_div`.
+      fn checked_rem(self : $t, rhs : $t) -> Option<$t> {
+        if rhs == (0 as $t) {
+          return Option<$t>::None();
+        }
+        if self == self.min_value() && rhs == (-1 as $t) {
+          return Option<$t>::None();
+        }
+        return Option<$t>::Some(self % rhs);
+      }
+
+      /// Nothing for the smallest value.
+      fn checked_neg(self : $t) -> Option<$t> {
+        if self == self.min_value() {
+          return Option<$t>::None();
+        }
+        return Option<$t>::Some(-self);
+      }
+
+      /// Held at the end of the range instead of wrapping past it.
+      fn saturating_add(self : $t, rhs : $t) -> $t {
+        if rhs > (0 as $t) && self > self.max_value() - rhs {
+          return self.max_value();
+        }
+        if rhs < (0 as $t) && self < self.min_value() - rhs {
+          return self.min_value();
+        }
+        return self + rhs;
+      }
+
+      /// Held at the end of the range instead of wrapping past it.
+      fn saturating_sub(self : $t, rhs : $t) -> $t {
+        if rhs < (0 as $t) && self > self.max_value() + rhs {
+          return self.max_value();
+        }
+        if rhs > (0 as $t) && self < self.min_value() + rhs {
+          return self.min_value();
+        }
+        return self - rhs;
+      }
+    }
+  };
+}
+
+stamp_signed_int!(i8 , 8 , -127 - 1 , 127 , -1);
+stamp_signed_int!(i16 , 16 , -32767 - 1 , 32767 , 255);
+stamp_signed_int!(i32 , 32 , -2147483647 - 1 , 2147483647 , 255);
+stamp_signed_int!(i64 , 64 , -9223372036854775807 - 1 , 9223372036854775807 , 255);

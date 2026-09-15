@@ -554,6 +554,8 @@ To prevent the backend from wasting cycles compiling duplicate generic variants 
 1. Localized Monomorphic Generation: The unique keys remaining in the bucket represent the exact concrete variations that the specific module must expose. The thread fetches the module's generic blueprint layout and emits the concrete Intermediate Representation (IR) chunks sequentially.
 1. Cross-Crate Boundary Fallback (Architectural Fix): If `Word 0` belongs to an external, pre-compiled crate (which is not participating in the current parallel backend session), the bucketing algorithm intercepts the request. The responsibility to monomorphize the upstream blueprint (e.g., `ExternalList<MyType>`) falls back to the downstream crate that instantiated it, ensuring IR is emitted locally without attempting to route to a frozen upstream bucket.
 
+**Epoch-2 signatures (Vx#578).** A monomorph does not exist when the registry is frozen, so no body is lowered to flat HIR until the barrier has routed and deduplicated the monomorphs; the check phase contributes only a function's signature GIDs to the type stream. Codegen then mints an epoch-2 registry -- the frozen tables plus one signature per surviving monomorph, under module 0 because a monomorph's identity is its mangled name alone -- and lowers every body, declared or monomorphized, against it in one parallel pass. The emitter receives the same registry, since its callee map is a fold over `fn_sigs`, so a caller's `Call` GID and the emitter's symbol for it come from one table.
+
 ______________________________________________________________________
 
 ### Phase 8: Zero-Copy Metadata Serialization Architecture

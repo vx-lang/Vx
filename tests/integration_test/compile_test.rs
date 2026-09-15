@@ -37,10 +37,11 @@ use vxc::hir::TypeChecker;
 use vxc::jit::execute_mlir;
 
 // Whether the ANE/CoreML backend is actually available: the CoreML primitive models are
-// built by build.rs (needs coremltools + `xcrun coremlc`) into the project root. When they
+// built by build.rs (needs coremltools + `xcrun coremlc`) into `ane-primitives/`. When they
 // are absent the dispatcher falls back to CPU, so tests asserting ANE execution are skipped.
 fn ane_models_available() -> bool {
     Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("ane-primitives")
         .join("matmul_4x4.mlmodelc")
         .exists()
 }
@@ -49,7 +50,7 @@ fn ane_models_available() -> bool {
 // the literal segments around the holes must appear in order in `out`. Without a hole this
 // is a plain substring check. (Lets tests use `{{[0-9]+}}` for non-deterministic values like
 // a JIT kernel counter without pulling in a regex engine.)
-fn expect_matches(out: &str, expect: &str) -> bool {
+pub(crate) fn expect_matches(out: &str, expect: &str) -> bool {
     if !expect.contains("{{") {
         return out.contains(expect);
     }
@@ -112,7 +113,11 @@ fn run_frontend_test(path: &Path, expect_pass: bool) -> Result<(), String> {
     for mac in &program.macros {
         global_macros.insert(mac.name.clone(), mac.rules.clone());
     }
-    let expander = vxc::parser::MacroExpander::new(&global_macros);
+    // The main module is held apart from its imports here, exactly as it is for the macro
+    // table above, so the trait a default belongs to may be in either.
+    let trait_defaults =
+        vxc::resolver::collect_trait_defaults(program_arr.iter().chain(std::iter::once(&program)));
+    let expander = vxc::parser::MacroExpander::new(&global_macros, &trait_defaults);
     for p in &mut program_arr {
         if let Err(e) = expander.expand_module(p) {
             if !expect_pass || xfail {
@@ -251,7 +256,11 @@ fn run_middle_end_test(path: &Path) -> Result<(), String> {
     for mac in &program.macros {
         global_macros.insert(mac.name.clone(), mac.rules.clone());
     }
-    let expander = vxc::parser::MacroExpander::new(&global_macros);
+    // The main module is held apart from its imports here, exactly as it is for the macro
+    // table above, so the trait a default belongs to may be in either.
+    let trait_defaults =
+        vxc::resolver::collect_trait_defaults(program_arr.iter().chain(std::iter::once(&program)));
+    let expander = vxc::parser::MacroExpander::new(&global_macros, &trait_defaults);
     for p in &mut program_arr {
         if let Err(e) = expander.expand_module(p) {
             return Err(format!(
@@ -407,7 +416,11 @@ fn run_warning_test(path: &Path) -> Result<(), String> {
     for mac in &program.macros {
         global_macros.insert(mac.name.clone(), mac.rules.clone());
     }
-    let expander = vxc::parser::MacroExpander::new(&global_macros);
+    // The main module is held apart from its imports here, exactly as it is for the macro
+    // table above, so the trait a default belongs to may be in either.
+    let trait_defaults =
+        vxc::resolver::collect_trait_defaults(program_arr.iter().chain(std::iter::once(&program)));
+    let expander = vxc::parser::MacroExpander::new(&global_macros, &trait_defaults);
     for p in &mut program_arr {
         expander
             .expand_module(p)
@@ -500,7 +513,11 @@ fn run_backend_test(path: &Path) -> Result<(), String> {
     for mac in &program.macros {
         global_macros.insert(mac.name.clone(), mac.rules.clone());
     }
-    let expander = vxc::parser::MacroExpander::new(&global_macros);
+    // The main module is held apart from its imports here, exactly as it is for the macro
+    // table above, so the trait a default belongs to may be in either.
+    let trait_defaults =
+        vxc::resolver::collect_trait_defaults(program_arr.iter().chain(std::iter::once(&program)));
+    let expander = vxc::parser::MacroExpander::new(&global_macros, &trait_defaults);
     for p in &mut program_arr {
         if let Err(e) = expander.expand_module(p) {
             return Err(format!(
@@ -1179,7 +1196,11 @@ fn run_backend_autodiff_test(path: &Path) -> Result<(), String> {
     for mac in &program.macros {
         global_macros.insert(mac.name.clone(), mac.rules.clone());
     }
-    let expander = vxc::parser::MacroExpander::new(&global_macros);
+    // The main module is held apart from its imports here, exactly as it is for the macro
+    // table above, so the trait a default belongs to may be in either.
+    let trait_defaults =
+        vxc::resolver::collect_trait_defaults(program_arr.iter().chain(std::iter::once(&program)));
+    let expander = vxc::parser::MacroExpander::new(&global_macros, &trait_defaults);
     for p in &mut program_arr {
         if let Err(e) = expander.expand_module(p) {
             return Err(format!(
@@ -1439,7 +1460,11 @@ fn test_melior_matmul() -> Result<(), String> {
     for mac in &program.macros {
         global_macros.insert(mac.name.clone(), mac.rules.clone());
     }
-    let expander = vxc::parser::MacroExpander::new(&global_macros);
+    // The main module is held apart from its imports here, exactly as it is for the macro
+    // table above, so the trait a default belongs to may be in either.
+    let trait_defaults =
+        vxc::resolver::collect_trait_defaults(program_arr.iter().chain(std::iter::once(&program)));
+    let expander = vxc::parser::MacroExpander::new(&global_macros, &trait_defaults);
     if let Err(e) = expander.expand_module(&mut program) {
         return Err(format!("Macro expansion failed on {:?}: {}", path, e));
     }

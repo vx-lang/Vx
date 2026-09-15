@@ -130,6 +130,20 @@ pub(crate) fn strip_memref_space(s: &str) -> Option<String> {
     Some(format!("memref<{head}>"))
 }
 
+/// The width in bits of a scalar MLIR type, so `i8` gives 8. `None` for anything with no
+/// width of its own, such as a pointer or an aggregate.
+fn scalar_type_bits(ty_text: &str) -> Option<u32> {
+    if let Some(bits) = ty_text.strip_prefix('i').and_then(|r| r.parse().ok()) {
+        return Some(bits);
+    }
+    match ty_text {
+        "f16" | "bf16" => Some(16),
+        "f32" => Some(32),
+        "f64" => Some(64),
+        _ => None,
+    }
+}
+
 impl<'c> MeliorGenerator<'c> {
     pub fn loc(&self) -> melior::ir::Location<'c> {
         melior::ir::Location::new(
@@ -1348,6 +1362,46 @@ impl<'c> MeliorGenerator<'c> {
         }
     }
 
+    ///
+    /// The type of an enum's single payload slot.
+    ///
+    /// One slot holds every variant, so it is sized for the widest of them. Taking the
+    /// first variant that had a payload made the slot too narrow for all the others, and
+    /// the value was cut down to fit. `mapping` substitutes the enum's type parameters
+    /// when the caller has them.
+    ///
+    /// A payload with no width of its own -- a pointer, or a nested aggregate -- keeps
+    /// the old rule and takes the slot only if nothing else has claimed it.
+    fn enum_payload_slot_ty(
+        &self,
+        enum_def: &[(crate::symbol::Symbol, Option<Vec<syntax::Type>>)],
+        mapping: Option<&std::collections::HashMap<crate::symbol::Symbol, syntax::Type>>,
+    ) -> Result<String, LowerError> {
+        let mut payload_ty_str = "none".to_string();
+        let mut widest = 0u32;
+        for (_v_name, payload) in enum_def {
+            let Some(types) = payload else { continue };
+            let Some(first) = types.first() else { continue };
+            let first = match mapping {
+                Some(m) => first.substitute(m),
+                None => first.clone(),
+            };
+            let mut lowered = self.lower_type_str(&first)?;
+            if lowered.starts_with("memref<") {
+                lowered = "!llvm.ptr".to_string();
+            }
+            match scalar_type_bits(&lowered) {
+                Some(b) if b > widest => {
+                    widest = b;
+                    payload_ty_str = lowered;
+                }
+                None if payload_ty_str == "none" => payload_ty_str = lowered,
+                _ => {}
+            }
+        }
+        Ok(payload_ty_str)
+    }
+
     pub(crate) fn lower_type(
         &self,
         ty: &syntax::Type,
@@ -1425,21 +1479,10 @@ impl<'c> MeliorGenerator<'c> {
             }
             syntax::Type::Struct(name, _) => {
                 if let Some(enum_def) = self.enums.get(name) {
-                    if name.starts_with("Option<") {
-                        let mut payload_ty_str = "none".to_string();
-                        for (v_name, payload) in enum_def {
-                            if **v_name == *"Some" {
-                                if let Some(types) = payload {
-                                    if !types.is_empty() {
-                                        let mut lowered = self.lower_type_str(&types[0])?;
-                                        if lowered.starts_with("memref<") {
-                                            lowered = "!llvm.ptr".to_string();
-                                        }
-                                        payload_ty_str = lowered;
-                                    }
-                                }
-                            }
-                        }
+                    // Any instantiated generic enum, and whichever of its variants carries
+                    // the payload -- not a type called `Option` with a variant called `Some`.
+                    if name.contains('<') {
+                        let payload_ty_str = self.enum_payload_slot_ty(enum_def, None)?;
                         return Type::parse(
                             self.context,
                             &format!("!llvm.struct<\"{}\", (i32, {})>", name, payload_ty_str),
@@ -1538,26 +1581,13 @@ impl<'c> MeliorGenerator<'c> {
                                 name
                             ))
                         })?;
-                        let mut payload_ty_str = "none".to_string();
-                        for (v_name, payload) in enum_def {
-                            if v_name == "Some".into() {
-                                if let Some(types) = payload {
-                                    if !types.is_empty() {
-                                        let mut mapping: std::collections::HashMap<
-                                            crate::symbol::Symbol,
-                                            syntax::Type,
-                                        > = std::collections::HashMap::new();
-                                        mapping.insert("T".into(), ty_arg.clone());
-                                        let sub_ty = types[0].substitute(&mapping);
-                                        let mut lowered = self.lower_type_str(&sub_ty)?;
-                                        if lowered.starts_with("memref<") {
-                                            lowered = "!llvm.ptr".to_string();
-                                        }
-                                        payload_ty_str = lowered;
-                                    }
-                                }
-                            }
-                        }
+                        let mut mapping: std::collections::HashMap<
+                            crate::symbol::Symbol,
+                            syntax::Type,
+                        > = std::collections::HashMap::new();
+                        mapping.insert("T".into(), ty_arg.clone());
+                        let payload_ty_str =
+                            self.enum_payload_slot_ty(&enum_def, Some(&mapping))?;
 
                         let args_str: Vec<String> = args
                             .iter()
@@ -1632,21 +1662,10 @@ impl<'c> MeliorGenerator<'c> {
             }
             syntax::Type::Enum(name, _) => {
                 if let Some(enum_def) = self.enums.get(name) {
-                    if name.starts_with("Option<") {
-                        let mut payload_ty_str = "none".to_string();
-                        for (v_name, payload) in enum_def {
-                            if **v_name == *"Some" {
-                                if let Some(types) = payload {
-                                    if !types.is_empty() {
-                                        let mut lowered = self.lower_type_str(&types[0])?;
-                                        if lowered.starts_with("memref<") {
-                                            lowered = "!llvm.ptr".to_string();
-                                        }
-                                        payload_ty_str = lowered;
-                                    }
-                                }
-                            }
-                        }
+                    // Any instantiated generic enum, and whichever of its variants carries
+                    // the payload -- not a type called `Option` with a variant called `Some`.
+                    if name.contains('<') {
+                        let payload_ty_str = self.enum_payload_slot_ty(enum_def, None)?;
                         return Type::parse(
                             self.context,
                             &format!("!llvm.struct<\"{}\", (i32, {})>", name, payload_ty_str),

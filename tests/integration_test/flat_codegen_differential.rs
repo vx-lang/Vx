@@ -45,7 +45,8 @@ fn parse(src: &str) -> Program {
     for mac in &program.macros {
         global_macros.insert(mac.name.clone(), mac.rules.clone());
     }
-    let expander = vxc::parser::MacroExpander::new(&global_macros);
+    let trait_defaults = vxc::resolver::collect_trait_defaults(std::iter::once(&program));
+    let expander = vxc::parser::MacroExpander::new(&global_macros, &trait_defaults);
     expander
         .expand_module(&mut program)
         .expect("macro expansion failed");
@@ -3138,6 +3139,73 @@ fn pipeline_emits_mlir_that_matches_the_ast_oracle() {
     // tri(5) = 0+1+2+3+4 = 10; twice -> 20; add(20, 4) = 24.
     assert_eq!(exit_code(&module.as_operation().to_string()), 24);
     assert_eq!(ast_exit_code(&format!("{a}{b}")), 24, "oracle agrees");
+}
+
+/// Compile `files` through the parallel pipeline and lower the result to the LLVM dialect, or
+/// `None` when the pipeline declines. `tag` keeps concurrent tests' scratch directories apart.
+fn pipeline_llvm(tag: &str, files: &[(&str, &str)]) -> Option<String> {
+    use std::io::Write;
+
+    let dir = std::env::temp_dir().join(format!("vx_pipe_{tag}_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut paths = Vec::new();
+    for (name, src) in files {
+        let p = dir.join(name);
+        std::fs::File::create(&p)
+            .unwrap()
+            .write_all(src.as_bytes())
+            .unwrap();
+        paths.push(p.to_string_lossy().to_string());
+    }
+    let text = vxc::pipeline::compile_pipeline_mlir(&paths).expect("pipeline");
+    let _ = std::fs::remove_dir_all(&dir);
+    let text = text?;
+
+    let context = make_context();
+    let mut module = melior::ir::Module::parse(&context, &text)
+        .unwrap_or_else(|| panic!("pipeline MLIR does not parse:\n{text}"));
+    lower_to_llvm(&context, &mut module).expect("pipeline lower_to_llvm");
+    Some(module.as_operation().to_string())
+}
+
+/// Vx#578: the checker resolves `h.bump(40)` into a monomorph, `Holder$i32$bump$i32`, that did
+/// not exist when the registry was frozen. Lowered against that frozen table, `main` found no
+/// signature for its callee and the whole compile declined. The generic lives in one module and
+/// is instantiated from another, so the monomorph is routed to a module that is not its caller's.
+#[test]
+fn pipeline_emits_mlir_for_a_call_to_a_generic_method() {
+    let a = "struct Holder<T> { v : T, }\n\
+             impl<T> Holder<T> {\n\
+               fn bump(self : &mut Holder<T>, x : T) -> i32 { self.v = x; return 1; }\n\
+               fn get(self : &Holder<T>) -> T { return self.v; }\n\
+             }\n";
+    let b = "fn main() -> i32 {\n\
+               let mut h = Holder<i32> { v : 0, };\n\
+               let n = h.bump(40);\n\
+               return h.get() + n + 1;\n\
+             }\n";
+    let llvm = pipeline_llvm("generic_method", &[("a.vx", a), ("b.vx", b)])
+        .expect("the pipeline emits a program that calls a method on a generic type");
+    assert_eq!(exit_code(&llvm), 42);
+    assert_eq!(ast_exit_code(&format!("{a}{b}")), 42, "oracle agrees");
+}
+
+/// A monomorph's body needs the merged signature table as much as its callers do: `twice` is a
+/// monomorph whose body calls another monomorph, `get`. A fix that handed only the declared
+/// functions the table would emit `main` and decline `Holder$i32$twice`.
+#[test]
+fn pipeline_emits_mlir_when_a_monomorph_calls_a_monomorph() {
+    let src = "struct Holder<T> { v : T, }\n\
+               impl<T> Holder<T> {\n\
+                 fn get(self : &Holder<T>) -> T { return self.v; }\n\
+                 fn twice(self : &Holder<T>) -> T { return self.get() + self.get(); }\n\
+               }\n\
+               fn main() -> i32 { let h = Holder<i32> { v : 21, }; return h.twice(); }\n";
+    let llvm = pipeline_llvm("mono_calls_mono", &[("m.vx", src)])
+        .expect("the pipeline emits a monomorph that calls a monomorph");
+    assert_eq!(exit_code(&llvm), 42);
+    assert_eq!(ast_exit_code(src), 42, "oracle agrees");
 }
 
 /// Vx#395: `closure as ||->T` panicked the checker's GID recheck (`env.functions` stores a

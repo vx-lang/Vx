@@ -240,8 +240,9 @@ fn main() {
                 // Compile the .mlpackage into .mlmodelc
                 // The fp16 512x512 is the one the Neural Engine will actually take:
                 // CoreML prefers the CPU for every fp32 matmul at every size, and
-                // for fp16 below 512. The 4x4 pair stays for the affine path and
-                // the tests written to it.
+                // for fp16 below 512. The 4x4 pair stays because the dispatcher's
+                // fp32 matmul and affine routes are written against it; no test
+                // covers the affine route.
                 for model_name in &[
                     "matmul_4x4",
                     "affine_4",
@@ -279,11 +280,22 @@ fn main() {
 
                     if let Ok(c_status) = coremlc_status {
                         if c_status.success() {
-                            // Copy to project root so tests/runtime can easily find them
+                            // One directory for every primitive, rather than five
+                            // bundles loose in the checkout root. The dispatcher
+                            // looks here; see vx_find_ane_model in
+                            // runtime/npu_dispatch.mm for the full search order.
                             let root_dir = env::current_dir().unwrap();
-                            let target_modelc = root_dir.join(format!("{}.mlmodelc", model_name));
+                            let dest_dir = root_dir.join("ane-primitives");
+                            let _ = std::fs::create_dir_all(&dest_dir);
+                            let target_modelc = dest_dir.join(format!("{}.mlmodelc", model_name));
                             // Delete old one if exists
                             let _ = std::fs::remove_dir_all(&target_modelc);
+                            // A copy left in the root by an older build would
+                            // still be found by the search path's last candidate,
+                            // so a stale bundle could answer for a fresh one.
+                            let _ = std::fs::remove_dir_all(
+                                root_dir.join(format!("{}.mlmodelc", model_name)),
+                            );
                             let cp_status = Command::new("cp")
                                 .args([
                                     "-R",

@@ -194,7 +194,12 @@ pub enum DiagnosticCode {
     E3014,
     /// Trait not implemented
     E3015,
-    /// Generic type deduction failure
+    /// A generic call that leaves one of the callee's type parameters unbound: no argument
+    /// fixes it, and no type declared for the result does either. Left alone, the parameter
+    /// travelled into the instance's symbol name as its bare letter and `sizeof<T>()` folded
+    /// to 8, so a buffer was sized for an element type that was never chosen. Spell the type
+    /// argument out, as `Vec<i32>::new()`, or give the result a type, as
+    /// `let v : Vec<i32> = Vec::new();`.
     E3016,
     /// Closure argument count or type mismatch
     E3017,
@@ -265,6 +270,11 @@ pub enum DiagnosticCode {
     /// parses as a user nominal, so without this a typo -- or a type constructor removed from the
     /// language -- compiled silently and did nothing.
     E3029,
+    /// An operator applied to operand types it is not defined on -- `%` on a shaped tensor or on
+    /// a `bool`. Refused here because the alternative is worse in both directions: the flat
+    /// emitter would decline and fall back to a path that cannot lower it either, and an `i1`
+    /// operand would reach `arith.remsi` and verify.
+    E3030,
     /// `impl Copy for X` where one of `X`'s fields is a type that moves. `Copy` promises a
     /// value survives being assigned elsewhere, and a field that does not survive it breaks
     /// that promise for the whole type -- which would be a way to duplicate a tensor, or any
@@ -434,6 +444,10 @@ pub enum DiagnosticCode {
     E8001,
     /// Comptime assert failed
     E8002,
+    /// Compile-time index out of range
+    E8003,
+    /// Compile-time evaluation exceeded the call-depth limit
+    E8004,
 }
 
 impl std::fmt::Display for DiagnosticCode {

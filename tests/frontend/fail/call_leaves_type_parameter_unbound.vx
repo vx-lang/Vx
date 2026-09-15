@@ -1,0 +1,40 @@
+//===- call_leaves_type_parameter_unbound.vx - Vx Compiler ------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A generic call that binds none of its type parameters is refused in the frontend. Before,
+// nothing refused it: the unbound `T` travelled into the instance's symbol name as the letter
+// T, and `sizeof<T>()` inside it folded to 8, so a buffer was sized for an element type that
+// was never chosen. Both call shapes that build such an instance are pinned: a method named
+// through its type, and a generic free function.
+
+struct Holder<T> {
+  v : T,
+}
+
+impl<T> Holder<T> {
+  fn width() -> i64 {
+    return sizeof<T>();
+  }
+}
+
+fn free_width<T>() -> i64 {
+  return sizeof<T>();
+}
+
+fn main() -> i32 {
+  // No argument mentions `T`, and the declared result type `i64` does not either. Each call
+  // is reported once: the binding does not go on to complain that its initializer has no type.
+  // CHECK-DAG: E3016{{.*}}Type parameter 'T' of 'Holder::width' is not determined by this call
+  let a : i64 = Holder::width();
+  // CHECK-NOT: E3001
+  // CHECK-DAG: E3016{{.*}}Type parameter 'T' of 'free_width' is not determined by this call
+  let b : i64 = free_width();
+  // CHECK-NOT: E3001
+  return (a + b) as i32;
+}

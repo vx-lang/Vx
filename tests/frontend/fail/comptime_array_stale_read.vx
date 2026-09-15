@@ -1,0 +1,23 @@
+//===- comptime_array_stale_read.vx - Vx Compiler ----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A write to one element is really carried out, so reading that element back gives the
+// new value and an assert naming the old one stops the build. Without this fixture a
+// write that quietly did nothing would still pass pass/comptime_array.vx, because the
+// array would keep the value that file asserts for its other elements.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: Comptime assert failed: the first element is 9 after the write, not 3
+
+fn main() -> i32 {
+  comptime {
+    let mut a : Tensor<i64, [3]> = [ 3i64, 1i64, 2i64 ];
+    a[0] = 9i64;
+    assert(a[0] == 3, "the first element is 9 after the write, not 3");
+  }
+  return 0;
+}

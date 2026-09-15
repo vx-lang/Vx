@@ -1,0 +1,195 @@
+//===- cmp.vx - Vx Standard Library -------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Ordering and equality.
+//
+// This is the first module written as a trait tower rather than a set of inherent
+// methods: one required method per trait and the rest as defaults, which is the shape
+// Rust's `core::cmp` has. It works because default method bodies landed.
+//
+// `min`, `max` and `clamp` belong to `Ord` rather than to `core::num`, again as in Rust.
+// A type gets them by implementing `cmp` and nothing else.
+//
+// A trait method carries no doc comment: the parser wants `fn` and does not skip one.
+// What each default does is in its name and its one line of body.
+//
+// `PartialOrd` is not here. Without it `Ord` is total, which is what the integer widths
+// want; a float needs the partial version and `f32` has no impl yet.
+
+enum Ordering {
+  Less,
+  Equal,
+  Greater,
+}
+
+impl Ordering {
+  fn is_lt(self : Ordering) -> bool {
+    match self {
+      Ordering::Less() => {
+        return true;
+      }
+      Ordering::Equal() => {
+        return false;
+      }
+      Ordering::Greater() => {
+        return false;
+      }
+    }
+  }
+
+  fn is_gt(self : Ordering) -> bool {
+    match self {
+      Ordering::Less() => {
+        return false;
+      }
+      Ordering::Equal() => {
+        return false;
+      }
+      Ordering::Greater() => {
+        return true;
+      }
+    }
+  }
+
+  fn is_eq(self : Ordering) -> bool {
+    match self {
+      Ordering::Less() => {
+        return false;
+      }
+      Ordering::Equal() => {
+        return true;
+      }
+      Ordering::Greater() => {
+        return false;
+      }
+    }
+  }
+
+  fn is_ne(self : Ordering) -> bool {
+    return !self.is_eq();
+  }
+
+  fn is_le(self : Ordering) -> bool {
+    return !self.is_gt();
+  }
+
+  fn is_ge(self : Ordering) -> bool {
+    return !self.is_lt();
+  }
+
+  /// Less becomes Greater and back; Equal stays.
+  fn reverse(self : Ordering) -> Ordering {
+    match self {
+      Ordering::Less() => {
+        return Ordering::Greater();
+      }
+      Ordering::Equal() => {
+        return Ordering::Equal();
+      }
+      Ordering::Greater() => {
+        return Ordering::Less();
+      }
+    }
+  }
+
+  /// This one unless it is Equal, in which case the other. Chains comparisons: order by
+  /// the first field, and on a tie by the second.
+  fn then(self : Ordering, other : Ordering) -> Ordering {
+    match self {
+      Ordering::Less() => {
+        return Ordering::Less();
+      }
+      Ordering::Equal() => {
+        return other;
+      }
+      Ordering::Greater() => {
+        return Ordering::Greater();
+      }
+    }
+  }
+}
+
+trait PartialEq {
+  fn eq(self : &Self, other : &Self) -> bool;
+
+  fn ne(self : &Self, other : &Self) -> bool {
+    return !self.eq(other);
+  }
+}
+
+trait Ord {
+  fn cmp(self : &Self, other : &Self) -> Ordering;
+
+  fn lt(self : &Self, other : &Self) -> bool {
+    return self.cmp(other).is_lt();
+  }
+
+  fn le(self : &Self, other : &Self) -> bool {
+    return self.cmp(other).is_le();
+  }
+
+  fn gt(self : &Self, other : &Self) -> bool {
+    return self.cmp(other).is_gt();
+  }
+
+  fn ge(self : &Self, other : &Self) -> bool {
+    return self.cmp(other).is_ge();
+  }
+
+  fn max(self : Self, other : Self) -> Self {
+    if self.lt(&other) {
+      return other;
+    }
+    return self;
+  }
+
+  fn min(self : Self, other : Self) -> Self {
+    if self.lt(&other) {
+      return self;
+    }
+    return other;
+  }
+
+  fn clamp(self : Self, lo : Self, hi : Self) -> Self {
+    assert(lo.le(&hi), "clamp needs lo <= hi");
+    if self.lt(&lo) {
+      return lo;
+    }
+    if self.gt(&hi) {
+      return hi;
+    }
+    return self;
+  }
+}
+
+/// One required method per trait; everything else is a default.
+macro_rules stamp_cmp {
+  ($t : ident) => {
+    impl PartialEq for $t {
+      fn eq(self : &$t, other : &$t) -> bool {
+        return *self == *other;
+      }
+    }
+
+    impl Ord for $t {
+      fn cmp(self : &$t, other : &$t) -> Ordering {
+        if *self < *other {
+          return Ordering::Less();
+        }
+        if *self > *other {
+          return Ordering::Greater();
+        }
+        return Ordering::Equal();
+      }
+    }
+  };
+}
+
+stamp_cmp!(i8);
+stamp_cmp!(i16);
+stamp_cmp!(i32);
+stamp_cmp!(i64);

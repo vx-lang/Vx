@@ -1,0 +1,43 @@
+//===- nested_generic_arg_carries_a_comma.vx - Vx Compiler ------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A generic argument that is itself a two-parameter instance: Hold<Two<i32, i32>>.
+//
+// The instance name reaches the flat lowering as a string and is split back into
+// arguments. That split must ignore the comma inside Two<i32, i32>, which belongs
+// to the inner instance rather than to Hold argument list. Splitting on every
+// comma yields Two<i32 and i32>, and the first becomes the struct type
+// !llvm.struct<"Two<i32"> -- a parse failure, not a wrong answer.
+//
+// nested_generics_close_with_two_angles.vx covers the nesting itself, but its
+// inner instance has one parameter and so no comma to mishandle.
+//
+// Flat path only: the legacy AST codegen splits the same name in its own place
+// and still mishandles this. That is a separate defect, not this one.
+//
+// REQUIRES: flat-codegen
+// RUN: vxc %s 2>/dev/null | FileCheck %s
+// CHECK: 7
+
+struct Two<A, B> {
+  a : A,
+  b : B,
+}
+struct Hold<T> {
+  v : T,
+}
+fn main() -> i32 {
+  let inner = Two<i32, i32> {
+    a : 3,
+    b : 4,
+  };
+  let outer : Hold<Two<i32, i32>> = Hold<Two<i32, i32>> {
+    v : inner,
+  };
+  print(outer.v.a + outer.v.b);
+  return 0;
+}

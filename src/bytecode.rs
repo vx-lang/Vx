@@ -28,7 +28,8 @@ pub enum Opcode {
     /// `imm` is normally 0. `IMM_PARALLEL_INIT` marks the one store `lower_for` emits to
     /// initialize the induction variable of a loop `parallel_outer_for` proved disjoint — codegen
     /// renders it with a `vx.parallel_init` attribute so the device clone can offset it by the
-    /// global thread id (#251). Inert everywhere else.
+    /// global thread id (#251). `IMM_PARALLEL_BOUND` marks the store of that loop's upper bound,
+    /// which the host clone moves so each worker owns a contiguous range. Inert everywhere else.
     Store = 3,
     /// `imm` is normally 0. `IMM_PARALLEL_STEP` marks the latch increment of the same loop —
     /// rendered with `vx.parallel_step` so the device clone can widen the step to the grid stride
@@ -251,6 +252,23 @@ pub enum Opcode {
     /// `operand1`'s. `operand2` is the closure's environment slot; `imm` indexes the type table
     /// at the closure adapter's GID.
     TensorMap = 51,
+    /// `a % b`: the remainder, with the sign of the dividend for signed integers. Numbered after
+    /// the tensor opcodes rather than beside `Div` because the discriminant is what a serialized
+    /// flat HIR body carries, and renumbering the ones above it would silently reinterpret every
+    /// artifact already written.
+    Rem = 52,
+    /// `a & b`, bitwise, on integers and `bool`.
+    BitAnd = 53,
+    /// `a | b`, bitwise, on integers and `bool`.
+    BitOr = 54,
+    /// `a ^ b`, bitwise, on integers and `bool`.
+    BitXor = 55,
+    /// `a << b`, on integers. Shifting by at least the operand's width is
+    /// undefined, as it is in C and in LLVM; nothing checks it.
+    Shl = 56,
+    /// `a >> b`, on integers: arithmetic for a signed operand, logical for an
+    /// unsigned one.
+    Shr = 57,
 }
 
 /// Reverse mode for `Opcode::AutoDiff`: the gradient, through `__enzyme_autodiff_grad_*`.
@@ -275,6 +293,12 @@ impl Opcode {
             5 => Sub,
             6 => Mul,
             7 => Div,
+            52 => Rem,
+            53 => BitAnd,
+            54 => BitOr,
+            55 => BitXor,
+            56 => Shl,
+            57 => Shr,
             8 => Call,
             9 => Ret,
             10 => Matmul,
@@ -382,3 +406,21 @@ pub const IMM_BLOCK_STEP: u64 = 2;
 /// EXPECT degeneracy and the host path exact.
 pub const IMM_THREAD_INIT: u64 = 3;
 pub const IMM_THREAD_STEP: u64 = 3;
+
+/// `imm` tag on the loop-bound `Store` of a stridable loop -- the slot the header compares the
+/// induction variable against.
+///
+/// The init and step tags alone are enough for a GPU, which wants each thread to walk a STRIDE
+/// through the iteration space so that neighbouring threads touch neighbouring addresses. A CPU
+/// wants the opposite: each worker should own a CONTIGUOUS range, or every cache line is fetched
+/// by every worker and written back under false sharing. A contiguous range needs the upper bound
+/// moved as well as the lower, so the host clone needs this third marker.
+///
+/// These need values of their own rather than reusing `IMM_PARALLEL_INIT`. The existing tags are
+/// told apart by OPCODE -- an init is a `Store`, a step is an `Add` -- which is why both are 1. A
+/// bound is also a `Store`, so sharing the value would make it indistinguishable from the init.
+pub const IMM_PARALLEL_BOUND: u64 = 4;
+/// The same tag for the BLOCK-mapped loop of a two-level region (Vx#379). A thread-mapped loop has
+/// no bound tag: on the host a block's thread loops run serially inside one worker, which is the
+/// schedule the erased barriers already assume.
+pub const IMM_BLOCK_BOUND: u64 = 5;

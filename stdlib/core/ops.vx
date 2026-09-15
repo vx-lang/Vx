@@ -4,7 +4,14 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
-
+// The callable types. A closure literal lowers into one of these: a pair of an
+// environment pointer and a function pointer taking it.
+//
+// They are Vx's `Fn` traits in effect, and they live in `core` because a closure needs no
+// allocator and no operating system. Called by hand -- `let p = f.func; p(f.env, x)` --
+// since there is no call syntax for one yet.
+//
+// The operator traits the plan puts in this module will join them here.
 struct Closure0<Ret> {
   env : *mut i8, func : fn(*mut i8)->Ret,
 }

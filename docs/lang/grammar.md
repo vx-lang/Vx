@@ -7,12 +7,17 @@ This document provides a complete, formal description of the syntax and grammati
 A Vx program consists of a sequence of module-level declarations.
 
 ```ebnf
-program ::= ( import_decl | macro_def | extern_block | trait_decl | impl_block | transfer_impl_decl | struct_decl | enum_decl | topology_decl | memory_decl | function_decl )*
+program ::= ( import_decl | macro_def | item_macro_call | extern_block | trait_decl | impl_block | transfer_impl_decl | struct_decl | enum_decl | topology_decl | memory_decl | function_decl )*
 
 import_decl ::= "import" identifier ( "::" identifier )* ";"
 
 macro_def ::= "macro_rules!" identifier "{" macro_rule* "}"
 macro_rule ::= "(" token_tree* ")" "=>" "{" token_tree* "}" ";"?
+fragment   ::= "$" identifier ":" ( "expr" | "ty" | "ident" )
+
+// A macro call where an item goes. What it expands to is parsed as items, so a macro may
+// produce an impl, a fn, a struct -- anything `program` lists, including another such call.
+item_macro_call ::= identifier "!" token_tree ";"?
 ```
 
 ## 2. Declarations
@@ -24,7 +29,7 @@ extern_block ::= "extern" string_literal? "{" extern_fn* "}"
 extern_fn ::= "safe"? "fn" identifier "(" param_list? ")" "->" type ";"
 
 trait_decl ::= "trait" identifier generic_params? "{" trait_method* "}"
-trait_method ::= "fn" identifier "(" param_list? ")" "->" type ";"
+trait_method  ::= "fn" identifier "(" param_list? ")" "->" type ( ";" | "{" statement* "}" )
 
 impl_block ::= "impl" generic_params? ( type "for" )? type "{" function_decl* "}"
 
@@ -127,6 +132,12 @@ binary_expr ::=
     | binary_expr "-" binary_expr
     | binary_expr "*" binary_expr
     | binary_expr "/" binary_expr
+    | binary_expr "%" binary_expr
+    | binary_expr "<<" binary_expr
+    | binary_expr ">>" binary_expr
+    | binary_expr "&" binary_expr
+    | binary_expr "^" binary_expr
+    | binary_expr "|" binary_expr
     | binary_expr "@" binary_expr
     | binary_expr ".." binary_expr
     | primary_expr
@@ -231,7 +242,14 @@ topology_kind ::=
 > **Reserved but not yet parsed.** The lexer reserves `unroll`, `across`, and `HardwareState`
 > as keywords, but the parser does not yet accept them (see the "unimplemented" notes in
 > `syntax.md` / `types.md`). `safe` (on `extern` functions) and the `..` range operator are
-> parsed and implemented. Only `+=` compound assignment is supported (`*=` is not).
+> parsed and implemented. Every compound assignment is supported: `+=`, `-=`, `*=`, `/=`,
+> `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`.
+>
+> **Two tokens, not one.** `<<`, `>>`, `<<=` and `>>=` are each written as two adjacent
+> tokens rather than lexed as one, so that `>>` can go on closing a nested generic such as
+> `Pair<Pair<i32>>` and so that an inline `mlir!` block keeps its `memref<memref<...>>`
+> types. The parser recognizes them in operator position, and requires the two to be
+> adjacent: `a > > b` is a syntax error, not a shift.
 
 ## 6. ABI Mangling
 

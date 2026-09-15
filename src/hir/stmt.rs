@@ -105,13 +105,18 @@ impl<'a> TypeChecker<'a> {
             Statement::Loop(lp) => self.check_loop_stmt(lp, return_type),
             Statement::Break(_) => {}
             Statement::Continue(_) => {}
-            Statement::Assign(AssignStmt { lhs, rhs, span: _ })
-            | Statement::CompoundAssign(CompoundAssignStmt {
+            Statement::Assign(AssignStmt { lhs, rhs, span: _ }) => {
+                self.check_assign_stmt(lhs, None, rhs, consume)
+            }
+            Statement::CompoundAssign(CompoundAssignStmt {
                 lhs,
-                op: _,
+                op,
                 rhs,
                 span: _,
-            }) => self.check_assign_stmt(lhs, rhs, consume),
+            }) => {
+                let op = op.clone();
+                self.check_assign_stmt(lhs, Some(&op), rhs, consume)
+            }
             Statement::Return(ret) => self.check_return_stmt(ret, consume, return_type),
             Statement::ExprStmt(ExprStmtStmt {
                 expr,
@@ -173,7 +178,9 @@ impl<'a> TypeChecker<'a> {
         let initializer_places_its_own = matches!(expr, Expr::Transfer(_));
         let context = format!("variable '{}'", name);
         let binding_ty = if let Some(ann) = ty_ann {
-            if !self.is_assignable(ann, &ty) {
+            // `Unknown` is the poison type of an already-reported failure (an unresolved call, a
+            // type parameter nothing binds); a mismatch against it would report that twice.
+            if ty != Type::Unknown && !self.is_assignable(ann, &ty) {
                 let splat = matches!(
                     (&*ann, &ty),
                     (Type::Tensor(el, dims, _), Type::Scalar(s)) if !dims.is_empty() && el == s
@@ -418,7 +425,16 @@ impl<'a> TypeChecker<'a> {
 
     /// Check an assignment / compound assignment: type the LHS, then the RHS expecting the LHS
     /// type (#240), verify assignability, and fold a const RHS into the eval environment.
-    fn check_assign_stmt(&mut self, lhs: &mut Expr, rhs: &mut Expr, consume: bool) {
+    /// `op` is `Some` for a compound assignment, and carries the operator that sits between
+    /// the two sides. It has to be checked here as well as in `check_binaryop_expr`: `a %= b`
+    /// never builds a `BinaryOp` expression for that rule to see.
+    fn check_assign_stmt(
+        &mut self,
+        lhs: &mut Expr,
+        op: Option<&BinaryOp>,
+        rhs: &mut Expr,
+        consume: bool,
+    ) {
         self.checking_assign_lhs = true;
         let lhs_ty = self.check_expr_type_flag(lhs, false);
         self.checking_assign_lhs = false;
@@ -437,6 +453,12 @@ impl<'a> TypeChecker<'a> {
         // defaulting and mismatching (#240).
         let rhs_ty = self.check_expr_expecting(rhs, Some(lhs_ty.clone()), consume);
         self.current_assignment_target = None;
+        if let Some(op) = op {
+            let span = lhs.span();
+            if !self.check_restricted_operands(op, &lhs_ty, &rhs_ty, &span) {
+                return;
+            }
+        }
         if !self.is_assignable(&lhs_ty, &rhs_ty) {
             // Named types and a location, like every other type error: this fires on a
             // narrowing store into half storage, where the fix is to write the `as` the
@@ -452,22 +474,95 @@ impl<'a> TypeChecker<'a> {
             );
         }
 
-        if let Expr::Identifier(IdentifierExpr { name, span: _ }) = lhs {
-            let mut tmp_env = HashMap::new();
-            for env in &self.consteval.env {
-                for (k, v) in env {
-                    tmp_env.insert(k.clone(), v.clone());
+        // Keep the compile-time value of the assigned variable in step with the assignment.
+        // An assignment the evaluator cannot compute makes the variable unknown rather than
+        // leaving the previous value behind, which later reads would report as a certainty.
+        match lhs {
+            Expr::Identifier(IdentifierExpr { name, span: _ }) => {
+                let tmp_env = self.consteval_snapshot();
+                let new_val = self.eval_expr(rhs, &tmp_env);
+                if let Some(scope) = self.consteval_scope_of(name.as_ref()) {
+                    let env = &mut self.consteval.env[scope];
+                    match new_val {
+                        Some(val) => env.insert(name.to_string().into(), val),
+                        None => env.remove(name.as_ref()),
+                    };
                 }
             }
-            if let Some(val) = self.eval_expr(rhs, &tmp_env) {
-                // find the scope that has the variable
-                for env in self.consteval.env.iter_mut().rev() {
-                    if env.contains_key(name.as_ref()) {
-                        env.insert(name.to_string().into(), val);
-                        break;
+            // `a[i] = v`: replace that one element. Anything unknown -- the index, the new
+            // value, or the array -- drops the whole array instead of leaving it stale.
+            Expr::IndexAccess(IndexAccessExpr {
+                base,
+                index,
+                span: _,
+            }) => {
+                if let Some(root) = Self::place_root(base) {
+                    // Only a write straight into a variable is carried out. A nested place
+                    // like `a[i][j]` is not, so the array it belongs to becomes unknown.
+                    // No compiling program reaches this today, because a nested array
+                    // literal is refused by code generation; it guards the evaluator from
+                    // reporting a stale element if that ever changes.
+                    let direct = matches!(&**base, Expr::Identifier(_));
+                    let tmp_env = self.consteval_snapshot();
+                    let index_val = if direct {
+                        self.eval_expr(index, &tmp_env)
+                    } else {
+                        None
+                    };
+                    let new_val = if direct {
+                        self.eval_expr(rhs, &tmp_env)
+                    } else {
+                        None
+                    };
+                    if let Some(scope) = self.consteval_scope_of(root.as_ref()) {
+                        let env = &mut self.consteval.env[scope];
+                        let stored = match (index_val, new_val) {
+                            (Some(index_val), Some(val)) => match env.get_mut(root.as_ref()) {
+                                Some(Value::Array(items)) => {
+                                    match Self::array_index(&index_val, items.len()) {
+                                        Some(i) => {
+                                            items[i] = val;
+                                            true
+                                        }
+                                        None => false,
+                                    }
+                                }
+                                _ => false,
+                            },
+                            _ => false,
+                        };
+                        if !stored {
+                            env.remove(root.as_ref());
+                        }
                     }
                 }
             }
+            _ => {}
+        }
+    }
+
+    /// The innermost constant scope holding `name`, if any.
+    fn consteval_scope_of(&self, name: &str) -> Option<usize> {
+        self.consteval
+            .env
+            .iter()
+            .rposition(|env| env.contains_key(name))
+    }
+
+    /// Drop a variable's compile-time value. Used where something happened that the
+    /// evaluator cannot follow, so that it stops claiming to know what the variable holds.
+    pub(crate) fn consteval_forget(&mut self, name: &str) {
+        if let Some(scope) = self.consteval_scope_of(name) {
+            self.consteval.env[scope].remove(name);
+        }
+    }
+
+    /// The variable a place expression writes through: `a` for `a`, `a[i]` and `a[i][j]`.
+    fn place_root(expr: &Expr) -> Option<&crate::symbol::Symbol> {
+        match expr {
+            Expr::Identifier(IdentifierExpr { name, span: _ }) => Some(name),
+            Expr::IndexAccess(IndexAccessExpr { base, .. }) => Self::place_root(base),
+            _ => None,
         }
     }
 
@@ -564,6 +659,7 @@ impl<'a> TypeChecker<'a> {
             }
         }
         let eval_res = self.eval_expr(expr, &tmp_env);
+        self.report_depth_exceeded(span);
 
         if let Some(Value::Bool(b)) = eval_res {
             if !b {
@@ -634,14 +730,22 @@ impl<'a> TypeChecker<'a> {
         match expr {
             Expr::Number(NumberExpr {
                 value: n_str,
-                ty: _,
+                ty,
                 span: _,
             }) => {
-                if let Ok(n) = n_str.parse::<f64>() {
-                    Some(Value::Number(n))
-                } else {
-                    None
+                // An integer literal stays an integer. The suffix decides when there is one;
+                // without a suffix the spelling does, since a whole number written without a
+                // point is an integer everywhere else in the language.
+                let is_float = match ty {
+                    Some(t) => t.is_float(),
+                    None => n_str.contains('.') || n_str.contains('e') || n_str.contains('E'),
+                };
+                if !is_float {
+                    if let Ok(i) = n_str.parse::<i64>() {
+                        return Some(Value::Int(i));
+                    }
                 }
+                n_str.parse::<f64>().ok().map(Value::Number)
             }
             // `Reachable<A, B>`: true iff a transfer path exists in the cost graph. Topology
             // variables have already been substituted during monomorphization.
@@ -670,24 +774,48 @@ impl<'a> TypeChecker<'a> {
             }) => {
                 let l = self.eval_expr(lhs, env)?;
                 let r = self.eval_expr(rhs, env)?;
-                match (l, r, op) {
-                    (Value::Number(a), Value::Number(b), BinaryOp::Add) => {
-                        Some(Value::Number(a + b))
-                    }
-                    (Value::Number(a), Value::Number(b), BinaryOp::Sub) => {
-                        Some(Value::Number(a - b))
-                    }
-                    (Value::Number(a), Value::Number(b), BinaryOp::Mul) => {
-                        Some(Value::Number(a * b))
-                    }
-                    (Value::Number(_), Value::Number(_), BinaryOp::MatMul) => {
-                        // MatMul not supported for pure numbers at compile time
-                        None
-                    }
-                    (Value::Number(a), Value::Number(b), BinaryOp::Div) => {
-                        Some(Value::Number(a / b))
-                    }
-                    _ => None,
+                // Two integers stay integers, so `/` truncates the way the emitted code does
+                // and a large value keeps every bit. A result that overflows has no value
+                // rather than a wrapped one, which would be baked into the program unnoticed.
+                if let (Value::Int(a), Value::Int(b)) = (&l, &r) {
+                    let (a, b) = (*a, *b);
+                    return match op {
+                        BinaryOp::Add => a.checked_add(b).map(Value::Int),
+                        BinaryOp::Sub => a.checked_sub(b).map(Value::Int),
+                        BinaryOp::Mul => a.checked_mul(b).map(Value::Int),
+                        // The checked forms answer None for a zero divisor, and for the one
+                        // signed division that overflows.
+                        BinaryOp::Div => a.checked_div(b).map(Value::Int),
+                        BinaryOp::Rem => a.checked_rem(b).map(Value::Int),
+                        // The bit pattern is exact now, but `>>` reads it one way for a
+                        // signed type and another for an unsigned one, and this value does
+                        // not record which it came from. Left unfolded until it does.
+                        BinaryOp::BitAnd
+                        | BinaryOp::BitOr
+                        | BinaryOp::BitXor
+                        | BinaryOp::Shl
+                        | BinaryOp::Shr => None,
+                        BinaryOp::MatMul => None,
+                    };
+                }
+                // Anything else numeric is float arithmetic, an integer mixed with a float
+                // included.
+                let (a, b) = (l.as_f64()?, r.as_f64()?);
+                match op {
+                    BinaryOp::Add => Some(Value::Number(a + b)),
+                    BinaryOp::Sub => Some(Value::Number(a - b)),
+                    BinaryOp::Mul => Some(Value::Number(a * b)),
+                    BinaryOp::Div => Some(Value::Number(a / b)),
+                    BinaryOp::Rem => (b != 0.0).then(|| Value::Number(a % b)),
+                    // A bit pattern read out of an `f64` would not be the bit pattern the
+                    // program is talking about. Left unfolded rather than folded wrongly.
+                    BinaryOp::BitAnd
+                    | BinaryOp::BitOr
+                    | BinaryOp::BitXor
+                    | BinaryOp::Shl
+                    | BinaryOp::Shr => None,
+                    // MatMul not supported for pure numbers at compile time
+                    BinaryOp::MatMul => None,
                 }
             }
             Expr::RelationalOp(RelationalOpExpr {
@@ -698,25 +826,30 @@ impl<'a> TypeChecker<'a> {
             }) => {
                 let l = self.eval_expr(lhs, env)?;
                 let r = self.eval_expr(rhs, env)?;
+                // Two integers compare as integers. Comparing them as floats makes every
+                // pair past 2^53 look equal.
+                if let (Value::Int(a), Value::Int(b)) = (&l, &r) {
+                    let (a, b) = (*a, *b);
+                    return Some(Value::Bool(match op {
+                        RelationalOp::Eq => a == b,
+                        RelationalOp::NotEq => a != b,
+                        RelationalOp::Lt => a < b,
+                        RelationalOp::Gt => a > b,
+                        RelationalOp::Le => a <= b,
+                        RelationalOp::Ge => a >= b,
+                    }));
+                }
+                if let (Some(a), Some(b)) = (l.as_f64(), r.as_f64()) {
+                    return Some(Value::Bool(match op {
+                        RelationalOp::Eq => a == b,
+                        RelationalOp::NotEq => a != b,
+                        RelationalOp::Lt => a < b,
+                        RelationalOp::Gt => a > b,
+                        RelationalOp::Le => a <= b,
+                        RelationalOp::Ge => a >= b,
+                    }));
+                }
                 match (l, r, op) {
-                    (Value::Number(a), Value::Number(b), RelationalOp::Eq) => {
-                        Some(Value::Bool(a == b))
-                    }
-                    (Value::Number(a), Value::Number(b), RelationalOp::NotEq) => {
-                        Some(Value::Bool(a != b))
-                    }
-                    (Value::Number(a), Value::Number(b), RelationalOp::Lt) => {
-                        Some(Value::Bool(a < b))
-                    }
-                    (Value::Number(a), Value::Number(b), RelationalOp::Gt) => {
-                        Some(Value::Bool(a > b))
-                    }
-                    (Value::Number(a), Value::Number(b), RelationalOp::Le) => {
-                        Some(Value::Bool(a <= b))
-                    }
-                    (Value::Number(a), Value::Number(b), RelationalOp::Ge) => {
-                        Some(Value::Bool(a >= b))
-                    }
                     (Value::Bool(a), Value::Bool(b), RelationalOp::Eq) => Some(Value::Bool(a == b)),
                     (Value::Bool(a), Value::Bool(b), RelationalOp::NotEq) => {
                         Some(Value::Bool(a != b))
@@ -755,24 +888,59 @@ impl<'a> TypeChecker<'a> {
                     None
                 }
             }
+            // `[ a, b, c ]`. Every element has to be known, or the whole array is unknown:
+            // a half-built array would let a later index read a value that was never there.
+            Expr::Array(ArrayExpr { elements, span: _ }) => {
+                let mut items = Vec::with_capacity(elements.len());
+                for element in elements {
+                    items.push(self.eval_expr(element, env)?);
+                }
+                Some(Value::Array(items))
+            }
+            // `a[i]`, where both the array and the index are known at compile time. An index
+            // past the end gives no value here; `check_indexaccess_expr` reports it.
+            Expr::IndexAccess(IndexAccessExpr {
+                base,
+                index,
+                span: _,
+            }) => {
+                let Value::Array(items) = self.eval_expr(base, env)? else {
+                    return None;
+                };
+                let index_val = self.eval_expr(index, env)?;
+                let i = Self::array_index(&index_val, items.len())?;
+                Some(items[i].clone())
+            }
             Expr::FunctionCall(FunctionCallExpr {
                 name,
                 type_args: None,
                 args,
                 span: _,
             }) => {
-                let func = self.env.syntax_functions.get(name.as_ref())?;
+                let func = self.callee_body(name.as_ref())?;
                 let mut local_env = HashMap::new();
                 for (i, arg_expr) in args.iter().enumerate() {
                     let arg_val = self.eval_expr(arg_expr, env)?;
                     local_env.insert(func.params[i].0.clone(), arg_val);
                 }
+                self.enter_call()?;
+                let outer_unsupported = self.consteval.unsupported_stmt.replace(false);
+                let mut result = None;
                 for stmt in &func.body {
                     if let Some(ret_val) = self.eval_statement(stmt, &mut local_env) {
-                        return Some(ret_val);
+                        result = Some(ret_val);
+                        break;
                     }
                 }
-                None
+                // A body holding a statement the evaluator cannot run has not been run.
+                // Answering with what the statements it could run left behind would be a
+                // guess, and a guess here is reported as a certainty.
+                if self.consteval.unsupported_stmt.get() {
+                    result = None;
+                }
+                self.consteval.unsupported_stmt.set(outer_unsupported);
+                self.leave_call();
+                result
             }
             Expr::Topology(TopologyExpr { top, span: _ }) => {
                 if matches!(top, Topology::Current) {
@@ -824,6 +992,104 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// The callee's body for compile-time evaluation.
+    ///
+    /// The module being compiled goes into the resolution env with its non-generic bodies
+    /// stripped, so a function defined alongside the caller has nothing to walk there and is
+    /// looked up in the bodies kept for compile-time evaluation instead.
+    fn callee_body(&self, name: &str) -> Option<&'a Function> {
+        if let Some(func) = self.env.syntax_functions.get(name) {
+            if !func.body.is_empty() {
+                return Some(func);
+            }
+        }
+        self.env.comptime_bodies.get(name)
+    }
+
+    /// Step one call deeper, or refuse. `None` stops the evaluation; whoever asked for the
+    /// value reports it, since the evaluator cannot reach the diagnostics from `&self`.
+    fn enter_call(&self) -> Option<()> {
+        let depth = self.consteval.call_depth.get();
+        if depth >= crate::hir::check_state::MAX_CALL_DEPTH {
+            self.consteval.depth_exceeded.set(true);
+            return None;
+        }
+        self.consteval.call_depth.set(depth + 1);
+        Some(())
+    }
+
+    fn leave_call(&self) {
+        let depth = self.consteval.call_depth.get();
+        self.consteval.call_depth.set(depth.saturating_sub(1));
+    }
+
+    /// Report an evaluation that ran past the call limit, and clear the flag so the next one
+    /// starts fresh. Called where a value was asked for and a diagnostic can be raised.
+    fn report_depth_exceeded(&mut self, span: &Span) {
+        if !self.consteval.depth_exceeded.replace(false) {
+            return;
+        }
+        self.consteval.call_depth.set(0);
+        if self.speculating {
+            return;
+        }
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E8004,
+            format!(
+                "compile-time evaluation went more than {} calls deep and was stopped. A \
+                 recursive function whose base case is never reached is the usual cause.",
+                crate::hir::check_state::MAX_CALL_DEPTH
+            ),
+            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+        );
+    }
+
+    /// A compile-time array index. `None` for a fraction, a negative number, or an index
+    /// at or past the end, so none of those can silently read the wrong element.
+    pub(crate) fn array_index(value: &Value, len: usize) -> Option<usize> {
+        let i = match value {
+            Value::Int(i) => {
+                if *i < 0 {
+                    return None;
+                }
+                *i as usize
+            }
+            // A float index is only an index when it is a whole number. Rounding one onto a
+            // neighbouring element would read a value the program never asked for.
+            Value::Number(n) => {
+                if n.fract() != 0.0 || *n < 0.0 {
+                    return None;
+                }
+                *n as usize
+            }
+            _ => return None,
+        };
+        if i < len {
+            Some(i)
+        } else {
+            None
+        }
+    }
+
+    /// Write one element of a compile-time array. `None` when the index, the new value, or
+    /// the array itself is not known; the caller then drops the whole array.
+    fn eval_array_store(
+        &self,
+        name: &crate::symbol::Symbol,
+        index: &Expr,
+        rhs: &Expr,
+        env: &mut HashMap<crate::symbol::Symbol, Value>,
+    ) -> Option<()> {
+        let index_val = self.eval_expr(index, env)?;
+        let value = self.eval_expr(rhs, env)?;
+        let Some(Value::Array(items)) = env.get_mut(name.as_ref()) else {
+            return None;
+        };
+        let i = Self::array_index(&index_val, items.len())?;
+        items[i] = value;
+        Some(())
+    }
+
     pub(crate) fn eval_statement(
         &self,
         stmt: &Statement,
@@ -837,9 +1103,12 @@ impl<'a> TypeChecker<'a> {
                 expr,
                 span: _,
             }) => {
-                if let Some(val) = self.eval_expr(expr, env) {
-                    env.insert(name.clone(), val);
-                }
+                // A binding the evaluator cannot compute has to become unknown. Leaving an
+                // older binding of the same name in place would answer later reads with it.
+                match self.eval_expr(expr, env) {
+                    Some(val) => env.insert(name.clone(), val),
+                    None => env.remove(name.as_ref()),
+                };
                 None
             }
             Statement::Assign(AssignStmt {
@@ -847,15 +1116,44 @@ impl<'a> TypeChecker<'a> {
                 rhs,
                 span: _,
             }) => {
-                if let Some(val) = self.eval_expr(rhs, env) {
-                    env.insert(name.clone(), val);
+                match self.eval_expr(rhs, env) {
+                    Some(val) => env.insert(name.clone(), val),
+                    None => env.remove(name.as_ref()),
+                };
+                None
+            }
+            // `a[i] = v`. If any part of the store is unknown the whole array is dropped:
+            // keeping the old contents would report a stale element as a certainty.
+            Statement::Assign(AssignStmt {
+                lhs:
+                    lhs @ Expr::IndexAccess(IndexAccessExpr {
+                        base,
+                        index,
+                        span: _,
+                    }),
+                rhs,
+                span: _,
+            }) => {
+                if let Some(root) = Self::place_root(lhs) {
+                    // Only a write straight into a variable is carried out. A nested place
+                    // like `a[i][j]` is not, so the array it belongs to becomes unknown.
+                    let direct = matches!(&**base, Expr::Identifier(_));
+                    let stored = direct && self.eval_array_store(root, index, rhs, env).is_some();
+                    if !stored {
+                        env.remove(root.as_ref());
+                    }
                 }
                 None
             }
             Statement::Return(ReturnStmt { expr, span: _ }) => {
                 expr.as_ref().and_then(|e| self.eval_expr(e, env))
             }
-            _ => None,
+            // A loop, a compound assignment, anything else: not run. Say so, so the call
+            // this body belongs to gives no value rather than a half-executed one.
+            _ => {
+                self.consteval.unsupported_stmt.set(true);
+                None
+            }
         }
     }
 

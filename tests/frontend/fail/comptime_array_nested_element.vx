@@ -1,0 +1,27 @@
+//===- comptime_array_nested_element.vx - Vx Compiler ------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Reading through two levels of index works, because a compile-time array holds
+// compile-time values and one of those can be another array. An assert that
+// contradicts the element stops the build, which is how we know the read ran.
+//
+// This has to be a `fail` fixture. A nested array literal does not reach code
+// generation at all -- "an array literal's elements must be scalars" -- so a program
+// using one cannot be a `pass` fixture, whatever it asserts. That is also why the
+// matching write rule has no fixture: a nested store makes the array unknown, but no
+// compiling program can observe it.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: Comptime assert failed: row 1 column 0 is 3, not 9
+
+fn main() -> i32 {
+  comptime {
+    let a : Tensor<i64, [2, 2]> = [ [ 1i64, 2i64 ], [ 3i64, 4i64 ] ];
+    assert(a[1][0] == 9, "row 1 column 0 is 3, not 9");
+  }
+  return 0;
+}

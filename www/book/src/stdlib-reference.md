@@ -18,14 +18,17 @@ fn main() -> i32 {
 The toolchain also ships a `graph` library outside `std`, imported as `graph::traversal` and
 friends.
 
-> This page is generated from `stdlib/std/*.vx` by `scripts/tools/gen_stdlib_reference.py`.
-> Signatures are exactly what the source declares.
+> This page is generated from `stdlib/core/*.vx` and `stdlib/std/*.vx` by
+> `scripts/tools/gen_stdlib_reference.py`. Signatures are exactly what the source declares.
 
 ## Contents
 
+- [`core::cmp`](#corecmp) —
+- [`core::num`](#corenum) — The integer methods, on `i32`.
+- [`core::ops`](#coreops) —
+- [`core::option`](#coreoption) — `Option<T>`, for a value that may be absent.
 - [`std::alloc`](#stdalloc) — Raw allocation and deallocation.
 - [`std::box`](#stdbox) — `Box<T>`, a single-owner heap allocation. Required for recursive types.
-- [`std::closure`](#stdclosure) — The closure types the compiler lowers `|x| ...` into.
 - [`std::fs`](#stdfs) — Files and directories.
 - [`std::googletest`](#stdgoogletest) — Assertions for tests written in Vx.
 - [`std::hash_map`](#stdhash_map) — `HashMap<K, V>`.
@@ -37,13 +40,139 @@ friends.
 - [`std::math`](#stdmath) — Mathematical functions and constants.
 - [`std::mmap`](#stdmmap) — Memory-mapped files.
 - [`std::net`](#stdnet) — TCP and UDP sockets.
-- [`std::option`](#stdoption) — `Option<T>`, for a value that may be absent.
 - [`std::result`](#stdresult) — `Result<T, E>`, for an operation that may fail.
 - [`std::simd`](#stdsimd) — SIMD vector types and operations.
 - [`std::string`](#stdstring) — `String` and text manipulation.
 - [`std::tensor`](#stdtensor) — Operations on `Tensor`, including shape queries and elementwise maths.
 - [`std::time`](#stdtime) — Clocks and durations.
 - [`std::vec`](#stdvec) — `Vec<T>`, a growable array.
+
+## `core::cmp`
+
+**Types**
+
+- `enum Ordering`
+- `trait PartialEq`
+- `trait Ord`
+
+**`Ordering` methods**
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
+```rust
+fn is_lt(self : Ordering) -> bool
+fn is_gt(self : Ordering) -> bool
+fn is_eq(self : Ordering) -> bool
+fn is_ne(self : Ordering) -> bool
+fn is_le(self : Ordering) -> bool
+fn is_ge(self : Ordering) -> bool
+fn reverse(self : Ordering) -> Ordering
+fn then(self : Ordering, other : Ordering) -> Ordering
+fn eq(self : &Self, other : &Self) -> bool
+fn ne(self : &Self, other : &Self) -> bool
+fn cmp(self : &Self, other : &Self) -> Ordering
+fn lt(self : &Self, other : &Self) -> bool
+fn le(self : &Self, other : &Self) -> bool
+fn gt(self : &Self, other : &Self) -> bool
+fn ge(self : &Self, other : &Self) -> bool
+fn max(self : Self, other : Self) -> Self
+fn min(self : Self, other : Self) -> Self
+fn clamp(self : Self, lo : Self, hi : Self) -> Self
+```
+
+**`PartialEq for $t` methods**
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
+```rust
+fn eq(self : &$t, other : &$t) -> bool
+```
+
+**`Ord for $t` methods**
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
+```rust
+fn cmp(self : &$t, other : &$t) -> Ordering
+```
+
+## `core::num`
+
+The integer methods, on `i32`.
+
+**`$t` methods**
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
+```rust
+fn min_value(self : $t) -> $t
+fn max_value(self : $t) -> $t
+fn bits(self : $t) -> $t
+fn count_ones(self : $t) -> $t
+fn count_zeros(self : $t) -> $t
+fn leading_zeros(self : $t) -> $t
+fn trailing_zeros(self : $t) -> $t
+fn is_power_of_two(self : $t) -> bool
+fn is_positive(self : $t) -> bool
+fn is_negative(self : $t) -> bool
+fn abs(self : $t) -> $t
+fn signum(self : $t) -> $t
+fn abs_diff(self : $t, other : $t) -> $t
+fn pow(self : $t, exp : $t) -> $t
+fn rem_euclid(self : $t, rhs : $t) -> $t
+fn div_euclid(self : $t, rhs : $t) -> $t
+fn ilog2(self : $t) -> $t
+fn next_power_of_two(self : $t) -> $t
+fn rotate_left(self : $t, n : $t) -> $t
+fn rotate_right(self : $t, n : $t) -> $t
+fn swap_bytes(self : $t) -> $t
+fn reverse_bits(self : $t) -> $t
+fn checked_add(self : $t, rhs : $t) -> Option<$t>
+fn checked_sub(self : $t, rhs : $t) -> Option<$t>
+fn checked_mul(self : $t, rhs : $t) -> Option<$t>
+fn checked_div(self : $t, rhs : $t) -> Option<$t>
+fn checked_rem(self : $t, rhs : $t) -> Option<$t>
+fn checked_neg(self : $t) -> Option<$t>
+fn saturating_add(self : $t, rhs : $t) -> $t
+fn saturating_sub(self : $t, rhs : $t) -> $t
+```
+
+## `core::ops`
+
+**Types**
+
+- `struct Closure0<Ret>`
+- `struct Closure1<Arg, Ret>`
+- `struct Closure2<Arg1, Arg2, Ret>`
+- `struct Closure3<Arg1, Arg2, Arg3, Ret>`
+
+## `core::option`
+
+`Option<T>`, for a value that may be absent.
+
+**Types**
+
+- `enum Option<T>`
+
+**`Option<T>` methods**
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
+```rust
+fn is_some(self : &Option<T>) -> Bool
+fn is_none(self : &Option<T>) -> Bool
+fn unwrap(self : Option<T>) -> T
+fn unwrap_or(self : Option<T>, default : T) -> T
+fn or(self : Option<T>, other : Option<T>) -> Option<T>
+fn and(self : Option<T>, other : Option<T>) -> Option<T>
+fn xor(self : Option<T>, other : Option<T>) -> Option<T>
+fn map<U>(self : Option<T>, f : Closure1<T, U>) -> Option<U>
+fn and_then<U>(self : Option<T>, f : Closure1<T, Option<U>>) -> Option<U>
+fn filter(self : Option<T>, p : Closure1<T, bool>) -> Option<T>
+fn map_or<U>(self : Option<T>, default : U, f : Closure1<T, U>) -> U
+fn unwrap_or_else(self : Option<T>, f : Closure0<T>) -> T
+fn is_some_and(self : Option<T>, p : Closure1<T, bool>) -> bool
+```
 
 ## `std::alloc`
 
@@ -75,17 +204,6 @@ fn free(ptr : *mut i8) -> i32
 fn new(val : T) -> Box<T>
 fn free(self : &mut Box<T>) -> i32
 ```
-
-## `std::closure`
-
-The closure types the compiler lowers `|x| ...` into.
-
-**Types**
-
-- `struct Closure0<Ret>`
-- `struct Closure1<Arg, Ret>`
-- `struct Closure2<Arg1, Arg2, Ret>`
-- `struct Closure3<Arg1, Arg2, Arg3, Ret>`
 
 ## `std::fs`
 
@@ -497,24 +615,6 @@ fn vx_tcp_listener_accept(ptr : *mut i8) -> *mut i8
 fn vx_tcp_listener_drop(ptr : *mut i8) -> i32
 ```
 
-## `std::option`
-
-`Option<T>`, for a value that may be absent.
-
-**Types**
-
-- `enum Option<T>`
-
-**`Option<T>` methods**
-
-<!-- vx-doctest: skip -- signature listing, not a program -->
-
-```rust
-fn is_some(self : &Option<T>) -> Bool
-fn is_none(self : &Option<T>) -> Bool
-fn unwrap(self : Option<T>) -> T
-```
-
 ## `std::result`
 
 `Result<T, E>`, for an operation that may fail.
@@ -734,4 +834,4 @@ fn vx_vec_bounds_check(index : i64, len : i64) -> i32
 
 ______________________________________________________________________
 
-228 functions across 21 modules.
+288 functions across 23 modules.

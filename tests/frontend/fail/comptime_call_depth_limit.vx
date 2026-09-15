@@ -1,0 +1,26 @@
+//===- comptime_call_depth_limit.vx - Vx Compiler ----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A recursion that never reaches a base case is a diagnostic, not a crashed compiler.
+//
+// Without the limit this took the compiler's stack down: "fatal runtime error: stack
+// overflow", SIGABRT, no file, no line, and nothing naming the function responsible.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: E8004
+// CHECK-SAME: compile-time evaluation went more than 256 calls deep
+
+fn spin(n : i64) -> i64 {
+  return spin(n + 1);
+}
+
+fn main() -> i32 {
+  comptime {
+    assert(spin(0) == 1, "never terminates");
+  }
+  return 0;
+}

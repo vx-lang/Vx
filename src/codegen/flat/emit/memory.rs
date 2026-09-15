@@ -123,12 +123,15 @@ impl FnEmit<'_> {
             .ok_or(crate::emitter_gap!())?
             .clone();
         // The induction-variable init of a stridable loop carries its tag into the MLIR
-        // text as a discardable attribute -- inert on the host path, the marker the
-        // device clone offsets by an id (#251 flat grid-stride; Vx#379 block/thread).
+        // text as a discardable attribute -- the marker the device clone offsets by an id
+        // (#251 flat grid-stride; Vx#379 block/thread), and the loop bound alongside it,
+        // which the host clone moves to give each worker a contiguous range.
         let attr = match ins.imm {
             crate::bytecode::IMM_PARALLEL_INIT => " {vx.parallel_init}",
             crate::bytecode::IMM_BLOCK_INIT => " {vx.parallel_binit}",
             crate::bytecode::IMM_THREAD_INIT => " {vx.parallel_tinit}",
+            crate::bytecode::IMM_PARALLEL_BOUND => " {vx.parallel_bound}",
+            crate::bytecode::IMM_BLOCK_BOUND => " {vx.parallel_bbound}",
             _ => "",
         };
         if let Some(&Some(agg_gid)) = self.agg_of.get(ins.operand1.0 as usize) {

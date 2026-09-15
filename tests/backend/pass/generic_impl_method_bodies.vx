@@ -1,0 +1,90 @@
+//===- generic_impl_method_bodies.vx - Vx Compiler ----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A method of a generic impl block, calling a method on a value of the block's type
+// parameter. Every one of these used to be rejected with "Method 'eq2' not found on
+// type T", whether or not the block carried a bound, because the body was checked once
+// with `T` still abstract -- and no method resolves on an abstract `T`. A generic free
+// function with the same body was never checked that way: it is skipped at declaration
+// and checked once per instantiation, where `T` is a real type.
+//
+// The three cases differ in where `T` comes from and are worth separating:
+//
+//   `same`     reaches `T` through a field of the receiver
+//   `takes_t`  reaches `T` through an ordinary parameter
+//   `pair`     has a method-level generic of its own alongside the block's
+//
+// `shadowed` is the fourth case: a method may redeclare the block's parameter name. It
+// returns its argument, so it answers 9 rather than the 4 held in the receiver. Read
+// that as a regression guard on shadowing being legal at all, and no more -- the parser
+// drops the block's parameter when the method redeclares it, and this file still passes
+// when that de-duplication is removed, so it does not establish that half.
+//
+// This file states nothing about emitted IR. What changed is which bodies get checked
+// and when, not how any of them lower.
+trait Eq2 {
+  fn eq2(self : Self, other : Self) -> bool;
+}
+
+impl Eq2 for i32 {
+  fn eq2(self : i32, other : i32) -> bool {
+    return self == other;
+  }
+}
+
+struct Wrap<T> {
+  v : T,
+}
+
+impl<T> Wrap<T> {
+  fn same(self : Wrap<T>, other : Wrap<T>) -> bool {
+    return self.v.eq2(other.v);
+  }
+
+  fn takes_t(self : Wrap<T>, x : T, y : T) -> bool {
+    return x.eq2(y);
+  }
+
+  fn pair<U>(self : Wrap<T>, x : U, y : U) -> bool {
+    return x.eq2(y);
+  }
+
+  fn shadowed<T>(self : Wrap<T>, x : T) -> T {
+    return x;
+  }
+}
+
+fn main() -> i32 {
+  let a = Wrap<i32> {
+    v : 4,
+  };
+  let b = Wrap<i32> {
+    v : 4,
+  };
+  if a.same(b) {
+    print(1);
+  } else {
+    print(0);
+  }
+  print!(" ");
+  if a.takes_t(5, 6) {
+    print(1);
+  } else {
+    print(0);
+  }
+  print!(" ");
+  if a.pair(7, 7) {
+    print(1);
+  } else {
+    print(0);
+  }
+  print!(" ");
+  print(a.shadowed(9));
+  return 0;
+}
+
+// EXPECT: 1 0 1 9

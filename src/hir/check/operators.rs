@@ -15,6 +15,23 @@
 
 use super::super::*;
 
+/// How an operator is written, for a diagnostic that has to name it.
+fn binary_op_symbol(op: &BinaryOp) -> &'static str {
+    match op {
+        BinaryOp::Add => "+",
+        BinaryOp::Sub => "-",
+        BinaryOp::Mul => "*",
+        BinaryOp::MatMul => "@",
+        BinaryOp::Div => "/",
+        BinaryOp::Rem => "%",
+        BinaryOp::BitAnd => "&",
+        BinaryOp::BitOr => "|",
+        BinaryOp::BitXor => "^",
+        BinaryOp::Shl => "<<",
+        BinaryOp::Shr => ">>",
+    }
+}
+
 /// `x.topology()`, with no arguments: the placement query.
 fn is_placement_query(e: &Expr) -> bool {
     matches!(e, Expr::MethodCall(mc) if mc.method_name.as_ref() == "topology" && mc.args.is_empty())
@@ -255,10 +272,8 @@ impl<'a> TypeChecker<'a> {
                         // compare until it carries a shape.
                         if l_len == 2 && r_len == 2 {
                             let empty_env = std::collections::HashMap::new();
-                            let dim_of = |v: Option<crate::hir::env::Value>| match v {
-                                Some(crate::hir::env::Value::Number(n)) => Some(n),
-                                _ => None,
-                            };
+                            let dim_of =
+                                |v: Option<crate::hir::env::Value>| v.and_then(|v| v.as_f64());
                             let kl = dim_of(
                                 dims_l[1]
                                     .as_static()
@@ -351,6 +366,19 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
 
+                // `%` and the bitwise operators take one value at a time, and not every
+                // element type. A shaped tensor is refused for all of them: there is no
+                // named `linalg` form to lower to, so the flat emitter would decline and
+                // fall back to a path that cannot lower it either. Beyond that they differ.
+                // `%` is arithmetic, so it takes any number and refuses `bool` -- which
+                // would otherwise reach `arith.remsi` on an `i1`, an operation that
+                // verifies and answers nothing. The bitwise operators are the other way
+                // round: they are defined on bit patterns, so `bool` is fine and a float
+                // is not.
+                if !self.check_restricted_operands(op, &lhs_ty, &rhs_ty, span) {
+                    return lhs_ty;
+                }
+
                 if !self.is_assignable(&lhs_ty, &rhs_ty) {
                     self.errors.error_with_code(
                         crate::diagnostic::DiagnosticCode::E3004,
@@ -378,6 +406,79 @@ impl<'a> TypeChecker<'a> {
             Type::Pinned(inner, _) => Self::scalar_elem(inner),
             Type::Ref(inner, _) => Self::scalar_elem(inner),
             Type::Borrow { inner, .. } => Self::scalar_elem(inner),
+            _ => None,
+        }
+    }
+
+    /// The operand rule for `%`, the bitwise operators and the shifts: the three that have
+    /// no elementwise lowering and are not defined on every element type. Returns false,
+    /// having reported E3030, when the operands are outside what the operator accepts.
+    ///
+    /// Shared by `a % b` and `a %= b` so the two cannot drift apart. Before this was
+    /// shared, the compound form was checked by the plain assignment rule, which does not
+    /// look at the operator at all -- so `t %= u` on two tensors type-checked and then
+    /// reached codegen, where nothing can lower it.
+    ///
+    /// A shaped tensor is refused for all three: there is no named `linalg` form, so the
+    /// flat emitter would decline and fall back to a path that cannot lower it either.
+    /// Beyond that the three differ. `%` is arithmetic, so it takes any number and refuses
+    /// `bool`, which would otherwise reach `arith.remsi` on an `i1` -- an operation that
+    /// verifies and answers nothing. The bitwise operators are the other way round: they
+    /// are defined on bit patterns, so `bool` is fine and a float is not. A shift refuses
+    /// both, because `bool` holds one bit and there is nothing useful to shift it by;
+    /// Rust draws the same line.
+    pub(crate) fn check_restricted_operands(
+        &mut self,
+        op: &BinaryOp,
+        lhs_ty: &Type,
+        rhs_ty: &Type,
+        span: &Span,
+    ) -> bool {
+        let bitwise = matches!(op, BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor);
+        let shift = matches!(op, BinaryOp::Shl | BinaryOp::Shr);
+        if *op != BinaryOp::Rem && !bitwise && !shift {
+            return true;
+        }
+        let admissible = |t: &Type| match Self::single_value_elem(t) {
+            None => false,
+            Some(ElementType::Bool) => bitwise,
+            Some(e) => !((bitwise || shift) && e.is_float()),
+        };
+        if admissible(lhs_ty) && admissible(rhs_ty) {
+            return true;
+        }
+        let wanted = if shift {
+            "two integers"
+        } else if bitwise {
+            "two integers or bools"
+        } else {
+            "two numbers"
+        };
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E3030,
+            format!(
+                "`{}` takes {}, got {} and {}",
+                binary_op_symbol(op),
+                wanted,
+                lhs_ty,
+                rhs_ty
+            ),
+            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+        );
+        false
+    }
+
+    /// The element type of an operand that holds a single value, seen through the value-carrying
+    /// wrappers. `None` for a *shaped* tensor, which is what separates this from `scalar_elem`:
+    /// the integer operators have no elementwise lowering, so a shaped operand has to be refused
+    /// by the checker rather than declined by the emitter.
+    pub(crate) fn single_value_elem(ty: &Type) -> Option<ElementType> {
+        match ty {
+            Type::Scalar(e) => Some(e.clone()),
+            Type::Tensor(e, dims, _) if dims.is_empty() => Some(e.clone()),
+            Type::Pinned(inner, _) => Self::single_value_elem(inner),
+            Type::Ref(inner, _) => Self::single_value_elem(inner),
+            Type::Borrow { inner, .. } => Self::single_value_elem(inner),
             _ => None,
         }
     }

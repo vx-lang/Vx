@@ -296,6 +296,30 @@ fn arith_op(op: Opcode, e: &ElementType) -> Option<&'static str> {
                 "arith.divui"
             }
         }
+        Opcode::Rem => {
+            if f {
+                "arith.remf"
+            } else if is_signed(e) {
+                "arith.remsi"
+            } else {
+                "arith.remui"
+            }
+        }
+        // No float form, and none needed: the checker refuses a float operand (E3030).
+        // Signedness does not enter into it -- these are bit patterns.
+        Opcode::BitAnd => "arith.andi",
+        Opcode::BitOr => "arith.ori",
+        Opcode::BitXor => "arith.xori",
+        Opcode::Shl => "arith.shli",
+        // Arithmetic for a signed operand and logical for an unsigned one: the sign bit
+        // is copied only when there is a sign bit to copy.
+        Opcode::Shr => {
+            if is_signed(e) {
+                "arith.shrsi"
+            } else {
+                "arith.shrui"
+            }
+        }
         _ => return None,
     })
 }
@@ -1094,7 +1118,7 @@ pub fn emit_module_mlir(
     // `max(group) + 1` over its own alias table, both known before anything is emitted. Turning them
     // into prefix sums makes the emit a `par_iter` and leaves the output byte-identical, because the
     // numbering is a function of position, never of arrival order (#311).
-    crate::intern_mode::record("  codegen:setup", setup.elapsed());
+    crate::intern_mode::record(crate::intern_mode::CODEGEN_SETUP, setup.elapsed());
     let emit_start = std::time::Instant::now();
     let mut str_bases: Vec<usize> = Vec::with_capacity(funcs.len());
     let mut distinct_bases: Vec<u32> = Vec::with_capacity(funcs.len());
@@ -1170,7 +1194,7 @@ pub fn emit_module_mlir(
     } else {
         funcs.par_iter().enumerate().map(emit_one).collect()
     };
-    crate::intern_mode::record("  codegen:emit", emit_start.elapsed());
+    crate::intern_mode::record(crate::intern_mode::CODEGEN_EMIT, emit_start.elapsed());
 
     // Reassembly is serial by necessity -- the output is ordered -- so it is the one part of codegen
     // that cannot be parallelised, and it is therefore the one part whose constant factor matters
@@ -1718,7 +1742,16 @@ impl<'a> FnEmit<'a> {
             // tensor-GID result). The scalar form is `arith.{addi,mulf,…}`; the elementwise form
             // coerces each operand to a `vector<Nxf32>` (`vector.load`/`broadcast`), applies
             // `arith.{addf,subf,mulf,divf}`, and yields a vector that a row `TensorStore` writes back.
-            Opcode::Add | Opcode::Sub | Opcode::Mul | Opcode::Div => self.op_binary(idx, ins),
+            Opcode::Add
+            | Opcode::Sub
+            | Opcode::Mul
+            | Opcode::Div
+            | Opcode::Rem
+            | Opcode::BitAnd
+            | Opcode::BitOr
+            | Opcode::BitXor
+            | Opcode::Shl
+            | Opcode::Shr => self.op_binary(idx, ins),
             // Scalar comparison → `i1`; the relation is in `imm`, the operand type comes from the
             // first operand's tracked type (this instruction's own type is `bool`, the result).
             Opcode::Cmp => self.op_cmp(idx, ins),

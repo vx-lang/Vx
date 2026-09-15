@@ -431,6 +431,7 @@ impl CompilerDriver {
         if self.options.host.as_deref() == Some("default") {
             program_arr.push(crate::syntax::Program {
                 module_path: crate::symbol::Symbol::from("<native-host>"),
+                item_macros: Vec::new(),
                 memories: vec![crate::syntax::MemoryDecl {
                     name: crate::symbol::Symbol::from("CPU_DRAM"),
                     parent: None,
@@ -489,7 +490,8 @@ impl CompilerDriver {
                 global_macros.insert(mac.name.clone(), mac.rules.clone());
             }
         }
-        let expander = MacroExpander::new(&global_macros);
+        let trait_defaults = crate::resolver::collect_trait_defaults(program_arr.iter());
+        let expander = MacroExpander::new(&global_macros, &trait_defaults);
         for m in &mut program_arr {
             if let Err(e) = expander.expand_module(m) {
                 return Err(format!("Macro expansion failed: {}", e));
@@ -656,6 +658,10 @@ impl CompilerDriver {
         // from the full module so intra-module calls get per-parameter precision (#243). The
         // imported `other_asts` were pushed with bodies, so `build` already summarized them.
         env.annotate_return_provenances(std::slice::from_ref(ast));
+        // Same reason, for the bodies compile-time evaluation runs: a function defined in the
+        // entry module has no body in the env, so an `assert` calling one was left unevaluated
+        // and quietly became a run-time check.
+        env.annotate_comptime_bodies(std::slice::from_ref(ast));
 
         let mut worker = LocalWorkerState::new(global_session.clone());
         let mut checker = TypeChecker::new(&env, &mut worker);

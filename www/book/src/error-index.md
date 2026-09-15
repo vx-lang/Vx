@@ -14,12 +14,12 @@ and so on. A `W` prefix is a warning rather than an error.
 - [Warnings](#warnings) — `W1001`–`W1031` (23 codes)
 - [Parser Errors](#parser-errors) — `E1001`–`E1013` (13 codes)
 - [Name Resolution Errors](#name-resolution-errors) — `E2001`–`E2007` (7 codes)
-- [Type Errors](#type-errors) — `E3001`–`E3029` (29 codes)
+- [Type Errors](#type-errors) — `E3001`–`E3031` (31 codes)
 - [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4005` (5 codes)
 - [Safety Errors](#safety-errors) — `E5001`–`E5002` (2 codes)
 - [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6028` (28 codes)
 - [Tensor/Math Errors](#tensormath-errors) — `E7001`–`E7004` (4 codes)
-- [Contract/Verification Errors](#contractverification-errors) — `E8001`–`E8002` (2 codes)
+- [Contract/Verification Errors](#contractverification-errors) — `E8001`–`E8004` (4 codes)
 
 ## Warnings
 
@@ -106,7 +106,7 @@ Raised by the type checker. Vx performs no implicit numeric conversion, so many 
 | `E3013` | Missing struct field in initialization |
 | `E3014` | Range type mismatch |
 | `E3015` | Trait not implemented |
-| `E3016` | Generic type deduction failure |
+| `E3016` | A generic call that leaves one of the callee's type parameters unbound: no argument fixes it, and no type declared for the result does either. Left alone, the parameter travelled into the instance's symbol name as its bare letter and `sizeof<T>()` folded to 8, so a buffer was sized for an element type that was never chosen. Spell the type argument out, as `Vec<i32>::new()`, or give the result a type, as `let v : Vec<i32> = Vec::new();`. |
 | `E3017` | Closure argument count or type mismatch |
 | `E3018` | An array literal whose elements are not scalars, or which is empty. An array literal lowers to `tensor.from_elements`, whose element type must be a scalar, so `[a, b]` for tensors -- placed or not -- has nothing to lower to, and an empty literal has no element type to give it. Both used to be accepted by the checker (the element type silently stayed at its `f32` default) and then crash codegen with an internal error rather than a diagnostic. See Vx#354. |
 | `E3019` | A `match` arm whose integer literal cannot be represented in the scrutinee's type. The arm can never be selected, so the program does not mean what it says. Codegen used to parse the literal with a zero fallback, which turned an unrepresentable arm into a comparison against 0 -- so the arm fired for scrutinee 0, the most common value there is, with no diagnostic. |
@@ -119,8 +119,9 @@ Raised by the type checker. Vx performs no implicit numeric conversion, so many 
 | `E3026` | A placement query (`.topology()`) the checker cannot decide. Placement is a fact of the receiver's type, compared with `Some(Topology::..)` or `None`; it has no run-time value. |
 | `E3027` | A function whose return type is a closure. A closure value points into the frame that made it, so it cannot outlive that frame yet. |
 | `E3028` | A function with a non-void return type whose body can complete without returning. Reported here rather than left to codegen, where it surfaced as an MLIR verifier message naming an operation, with no source location. |
-| `E3031` | `impl Copy for X` where one of `X`'s fields is a type that moves. `Copy` promises a value survives being assigned elsewhere, and a field that does not survive it breaks that promise for the whole type -- which would be a way to duplicate a tensor, or any other placed value, without saying so. |
 | `E3029` | A type name in a signature that names no declaration. An unknown name in type position parses as a user nominal, so without this a typo -- or a type constructor removed from the language -- compiled silently and did nothing. |
+| `E3030` | An operator applied to operand types it is not defined on -- `%` on a shaped tensor or on a `bool`. Refused here because the alternative is worse in both directions: the flat emitter would decline and fall back to a path that cannot lower it either, and an `i1` operand would reach `arith.remsi` and verify. |
+| `E3031` | `impl Copy for X` where one of `X`'s fields is a type that moves. `Copy` promises a value survives being assigned elsewhere, and a field that does not survive it breaks that promise for the whole type -- which would be a way to duplicate a tensor, or any other placed value, without saying so. |
 
 ## Borrow/Ownership Errors
 
@@ -197,7 +198,9 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 | --- | --- |
 | `E8001` | Cannot prove postcondition |
 | `E8002` | Comptime assert failed |
+| `E8003` | Compile-time index out of range |
+| `E8004` | Compile-time evaluation exceeded the call-depth limit |
 
 ______________________________________________________________________
 
-113 diagnostics.
+117 diagnostics.

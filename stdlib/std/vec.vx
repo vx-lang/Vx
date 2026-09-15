@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-import std::closure;
+import core::ops;
 import std::iter;
 
 // Memory management is delegated to the type-erased byte allocator in

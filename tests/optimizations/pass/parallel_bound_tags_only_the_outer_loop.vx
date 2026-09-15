@@ -1,0 +1,72 @@
+//===- parallel_bound_tags_only_the_outer_loop.vx - Vx Compiler --*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The loop bound of a stridable region carries a marker, and only the loop that
+// was proved disjoint carries it.
+//
+// A GPU wants each thread to walk a STRIDE through the iteration space, so
+// neighbouring threads touch neighbouring addresses. Offsetting the start and
+// widening the step is enough for that, which is why `vx.parallel_init` and
+// `vx.parallel_step` were all the device clone ever needed.
+//
+// A CPU worker wants the opposite -- a CONTIGUOUS range, or every cache line is
+// fetched by every worker and written back under false sharing. A contiguous
+// range means moving the upper bound as well as the lower, so the host clone
+// needs the bound marked too. That is `vx.parallel_bound`.
+//
+// The marker has to be SELECTIVE, and that is the half worth pinning. Only the
+// outermost loop was proved to have disjoint iterations. An inner loop walks
+// one row of the work the outer iteration owns, and partitioning it across
+// workers would hand each worker a fraction of every row -- numbers that come
+// out plausible and wrong. So the checks assert both directions: the outer
+// loop's bound store carries the attribute, and the inner loop's bound store is
+// a bare `memref.store` with no attribute dictionary at all.
+//
+// The two loops are given different trip counts (4 outside, 8 inside) so the
+// constant in each check names which loop it is talking about. With equal trips
+// the checks would still pass if the tag landed on the wrong one.
+//
+// Flat path only: the tags are emitted in `hir/flatten.rs` and rendered in
+// `codegen/flat/emit/memory.rs`, and the legacy AST path has never had them.
+//
+// REQUIRES: flat-codegen
+// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s
+
+// The host kernel, which is the clone the worker split rewrites.
+// CHECK: vx.kernel @vx_npu_kernel_0
+
+// The outer loop: start and bound both marked, and the latch increment with
+// them. All three are the assertion -- a bound marked on a loop whose start was
+// not would move one end of a range and not the other.
+// CHECK: memref.store %c0_i32, %{{.*}}[] {vx.parallel_init}
+// CHECK: memref.store %c4_i32, %{{.*}}[] {vx.parallel_bound}
+
+// The inner loop: neither store marked. Written as the bare store rather than
+// as a CHECK-NOT so the check fails when a tag appears, instead of passing
+// because a pattern happened not to match.
+// CHECK: memref.store %c0_i32, %{{.*}}[] : memref<i32>
+// CHECK: memref.store %c8_i32, %{{.*}}[] : memref<i32>
+
+// The latch, still marked, after both loops have been set up.
+// CHECK: arith.addi %{{.*}}, %c1_i32 {vx.parallel_step}
+
+fn probe() -> f32 {
+  let mut o = Tensor<f32, [4, 8]>::uninit();
+  spawn on(Topology::GPU) {
+    for i in 0..4 {
+      for j in 0..8 {
+        o[i][j] = i as f32;
+      }
+    }
+  }
+  return o[0][0];
+}
+
+fn main() -> i32 {
+  print(probe());
+  return 0;
+}

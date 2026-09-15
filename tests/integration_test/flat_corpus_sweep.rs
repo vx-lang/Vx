@@ -20,21 +20,32 @@ use std::process::Command;
 const KNOWN_DECLINES: &[&str] = &[
     "backend/pass/custom_topology_user_lowering.vx",
     "backend/pass/matmul_assign_alias.vx",
+    // `Option::or` and its neighbours, which answer with an `Option<T>`. The flat path
+    // declines them as "a non-scalar default return" -- the same shape as the file below,
+    // and the AST path handles both. The module's other methods answer with a `T` or a
+    // `bool` and compile through the flat path; adding these three is what moved the file.
+    "backend/pass/core_option.vx",
+    // A generic enum returned from a match whose arms each return. The flat path declines it
+    // as "a non-scalar default return" -- the same shape the AST path used to mis-lower, and
+    // the reason that file exists. Its answers come from the AST path, and it states no
+    // directive about emitted IR for that reason.
+    "backend/pass/generic_enum_returned_from_match.vx",
+    // A generic struct, which the flat path declines as "a struct with no GID". The file
+    // exists to pin that `>>` still closes two generics now that it is also the right
+    // shift, and that question is settled in the parser, so the decline costs it nothing.
+    // It states no directive about emitted IR, precisely because it is on the AST path.
     "backend/pass/user_lowering_name_collisions.vx",
     "backend/pass/user_lowering_uncountable.vx",
     "backend/pass/user_lowering_waste.vx",
     "frontend/pass/closure_fat_ptr.vx",
     "frontend/pass/control_flow_rigorous.vx",
-    "frontend/pass/memory_algebra_implicit.vx",
     "frontend/pass/trait_topologies.vx",
-    "middle_end/pass/implicit_transfer.vx",
     // A parameter with run-time extents (Vx#409). It used to compile through the flat path
     // while the dims-less spelling let it read as rank-0: `topology.vx` got a `memref<f32>`
     // signature where the AST oracle gives `memref<?x?xf32>`, two ABIs for one function, plus
     // a dropped vx.transfer. Declining is the honest answer until the flat lowerer carries
     // run-time extents.
     "warnings/pass/lowering_declined_for_dynamic_tile.vx",
-    "warnings/pass/w1024_implicit_transfer.vx",
 ];
 
 /// Every `.vx` file under `dir`, recursively, sorted for a stable report.
@@ -63,9 +74,6 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
 /// compiler defect; the list exists so the set can only shrink, never silently grow.
 const KNOWN_BROKEN: &[&str] = &[
     "frontend/pass/control_flow_rigorous.vx", // multi-payload variant binding (Vx#233)
-    "frontend/pass/memory_algebra_implicit.vx", // insertvalue of memref (Vx#356)
-    "middle_end/pass/implicit_transfer.vx",   // insertvalue of memref (Vx#356)
-    "warnings/pass/w1024_implicit_transfer.vx", // insertvalue of memref (Vx#356)
 ];
 
 /// Which codegen path the compiler took for one program, and -- when it fell back -- the reasons
@@ -171,7 +179,6 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         // Programs that cannot compile as a bare `vxc file.vx` for reasons that are not the
         // flat path's business. Each names why; shrinking this list is separate work.
         const NOT_STANDALONE: &[&str] = &[
-            "frontend/pass/const_generics_methods.vx", // checker rejects standalone (E2001 on N)
             "optimizations/pass/array_literal_nested.vx", // expects failure by design (RUN: not vxc)
             "optimizations/pass/codegen_error_diagnostics.vx", // expects failure by design (RUN: not vxc)
             "optimizations/pass/host_flag_scope.vx",           // needs --host
@@ -306,4 +313,132 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
     for (reason, count) in ranked {
         println!("flat decline: {count:3} {reason}");
     }
+}
+
+/// Run the backend corpus through the FLAT path and check the answers (Vx#566).
+///
+/// `flat_codegen_differential` already executes the flat path against the AST oracle, but
+/// reaches only 5 corpus programs by name. `test_backend` checks all 84 `// EXPECT:` lines
+/// and builds them with `MeliorGenerator`, the legacy path. The sweep above compiles the
+/// corpus on the flat path but records only which path each program took. So most of the
+/// corpus had its answers checked on one code generator and its path choice on the other.
+///
+/// This runs the same expectations on the flat path -- 68 programs, no new assertions.
+#[test]
+fn flat_path_answers_match_the_backend_expectations() {
+    let tests = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+    let declines: BTreeSet<&str> = KNOWN_DECLINES.iter().copied().collect();
+
+    // The freshly built vxc leads; the rest of PATH carries the MLIR tools the JIT shells
+    // out to (mlir-translate, llc, the linker).
+    let bin_dir = Path::new(env!("CARGO_BIN_EXE_vxc")).parent().unwrap();
+    let path_var = format!(
+        "{}:{}",
+        bin_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    let mut checked = 0usize;
+    let mut failures: Vec<String> = Vec::new();
+
+    // `read_dir` rather than the recursive `corpus_programs` above, because this must be
+    // the SAME corpus `run_backend_test` runs, and that walks the directory without
+    // descending. Subdirectories like backend/pass/autodiff/ are reached by their own RUN
+    // lines instead, and their `// EXPECT:` lines assert on emitted IR rather than on what
+    // the program printed -- recursing would quietly test a different thing against
+    // assertions that were never about program output.
+    let backend_dir = tests.join("backend/pass");
+    let mut programs: Vec<PathBuf> = std::fs::read_dir(&backend_dir)
+        .expect("tests/backend/pass is missing")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("vx"))
+        .collect();
+    programs.sort();
+
+    for program in programs {
+        let rel = program
+            .strip_prefix(&tests)
+            .unwrap_or(&program)
+            .to_string_lossy()
+            .to_string();
+        if declines.contains(rel.as_str()) {
+            continue;
+        }
+        let source = std::fs::read_to_string(&program).unwrap_or_default();
+
+        // The same two host gates `run_backend_test` applies. Every other `// REQUIRES:` is
+        // about which codegen path a program takes, which is this file's other test, not a
+        // reason to skip running one.
+        if source.contains("// REQUIRES: macos") && !cfg!(target_os = "macos") {
+            continue;
+        }
+        if source.contains("// REQUIRES: ane") {
+            continue;
+        }
+
+        let expects: Vec<String> = source
+            .lines()
+            .filter(|l| l.trim().starts_with("// EXPECT:"))
+            .map(|l| l.split_once("EXPECT:").unwrap().1.trim().to_string())
+            .collect();
+        if expects.is_empty() {
+            continue;
+        }
+
+        let output = match Command::new(env!("CARGO_BIN_EXE_vxc"))
+            .arg(&program)
+            .env("PATH", &path_var)
+            .output()
+        {
+            Ok(o) => o,
+            Err(e) => {
+                failures.push(format!("{rel}: could not run vxc: {e}"));
+                continue;
+            }
+        };
+        let log = String::from_utf8_lossy(&output.stderr);
+
+        // Refuse to pass on a program that quietly took the AST path. Without this the test
+        // decays into `test_backend` the moment the flat path declines something new -- which
+        // is precisely the failure this test exists because of, so it is checked rather than
+        // assumed.
+        if !log.contains("emitted module via the flat path") {
+            failures.push(format!(
+                "{rel}: states EXPECT lines but did not compile through the flat path, so \
+                 this test asserted nothing about it. Either the flat path started declining \
+                 it -- add it to KNOWN_DECLINES with a reason -- or it failed to compile."
+            ));
+            continue;
+        }
+
+        // Both streams, because a fixture's expected output is not always on stdout --
+        // ffi_stdio.vx writes deliberately to stderr, and an unwind message goes there too.
+        // `run_backend_test` sees one combined string from the in-process JIT, so checking
+        // only stdout here would fail programs the legacy path passes for no real reason.
+        let out = format!("{}{}", String::from_utf8_lossy(&output.stdout), log);
+        for expect in &expects {
+            if !crate::integration_test::compile_test::expect_matches(&out, expect) {
+                failures.push(format!(
+                    "{rel}: flat path did not produce the expected answer.\n  \
+                     expected to find: {expect}\n  actual stdout:\n{out}"
+                ));
+            }
+        }
+        checked += 1;
+    }
+
+    // A corpus that silently emptied would make every assertion above vacuous. The count is
+    // a floor, not the exact number, so adding fixtures does not edit this line.
+    assert!(
+        checked >= 60,
+        "only {checked} backend fixtures ran through the flat path; the corpus or the \
+         skip rules above have changed enough that this test covers far less than it did"
+    );
+    assert!(
+        failures.is_empty(),
+        "{} of {} flat-path executions disagreed with the backend expectations:\n\n{}",
+        failures.len(),
+        checked,
+        failures.join("\n\n")
+    );
 }

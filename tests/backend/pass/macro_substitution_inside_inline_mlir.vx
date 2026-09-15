@@ -1,0 +1,55 @@
+//===- macro_substitution_inside_inline_mlir.vx - Vx Compiler -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A macro parameter used inside an `mlir!` block, which is how `core::num` stamps its
+// intrinsic-backed methods across the integer widths.
+//
+// An `mlir!` block is rebuilt into text from its tokens' positions. A substituted token
+// used to keep the position it had at the call site, so its type landed lines away and
+// MLIR saw an operation with none. The failure is an unparseable block rather than a
+// wrong answer, so the test has to reach the backend; the file always parsed.
+//
+// Two widths, because one would not show a macro that expanded to a single shared copy.
+// Both signed: a Vx `u32` is an MLIR `i32`, so an unsigned width needs the MLIR type as a
+// second parameter, which is a property of the two type systems and not of macros.
+macro_rules stamp_bits {
+  ($t : ident) => {
+    impl $t {
+      fn ones(self : $t) -> $t {
+        return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
+          %r = math.ctpop %a : $t
+          macro.yield %r : $t
+        };
+      }
+
+      fn zeros_above(self : $t) -> $t {
+        return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
+          %r = math.ctlz %a : $t
+          macro.yield %r : $t
+        };
+      }
+    }
+  };
+}
+
+stamp_bits!(i32);
+stamp_bits!(i16);
+
+fn main() -> i32 {
+  let a : i32 = 12;
+  print(a.ones());
+  print!(" ");
+  print(a.zeros_above());
+  print!(" ");
+  let b : i16 = 6;
+  print(b.ones());
+  print!(" ");
+  print(b.zeros_above());
+  return 0;
+}
+
+// EXPECT: 2 28 2 13

@@ -81,15 +81,24 @@ pub enum TokenTypeBase<S, C> {
     Comma,
     Equals,
     PlusEquals,
+    MinusEquals,
+    StarEquals,
+    SlashEquals,
+    PercentEquals,
+    AmpersandEquals,
+    PipeEquals,
+    CaretEquals,
     Arrow,
     FatArrow,
     Plus,
     Minus,
     Star,
     Slash,
+    Percent,
     Dot,
     DoubleDot,
     Ampersand,
+    Caret,
     At,
     Dollar,
     Question,
@@ -181,15 +190,24 @@ impl<S: std::fmt::Display, C: std::fmt::Display> std::fmt::Display for TokenType
             TokenTypeBase::Comma => write!(f, ","),
             TokenTypeBase::Equals => write!(f, "="),
             TokenTypeBase::PlusEquals => write!(f, "+="),
+            TokenTypeBase::MinusEquals => write!(f, "-="),
+            TokenTypeBase::StarEquals => write!(f, "*="),
+            TokenTypeBase::SlashEquals => write!(f, "/="),
+            TokenTypeBase::PercentEquals => write!(f, "%="),
+            TokenTypeBase::AmpersandEquals => write!(f, "&="),
+            TokenTypeBase::PipeEquals => write!(f, "|="),
+            TokenTypeBase::CaretEquals => write!(f, "^="),
             TokenTypeBase::Arrow => write!(f, "->"),
             TokenTypeBase::FatArrow => write!(f, "=>"),
             TokenTypeBase::Plus => write!(f, "+"),
             TokenTypeBase::Minus => write!(f, "-"),
             TokenTypeBase::Star => write!(f, "*"),
             TokenTypeBase::Slash => write!(f, "/"),
+            TokenTypeBase::Percent => write!(f, "%"),
             TokenTypeBase::Dot => write!(f, "."),
             TokenTypeBase::DoubleDot => write!(f, ".."),
             TokenTypeBase::Ampersand => write!(f, "&"),
+            TokenTypeBase::Caret => write!(f, "^"),
             TokenTypeBase::At => write!(f, "@"),
             TokenTypeBase::Dollar => write!(f, "$"),
             TokenTypeBase::Question => write!(f, "?"),
@@ -617,11 +635,41 @@ impl<'a> Lexer<'a> {
                     TokenTypeBase::Plus
                 }
             }
-            '*' => TokenTypeBase::Star,
+            '*' => {
+                if self.peek_char() == Some('=') {
+                    self.advance();
+                    TokenTypeBase::StarEquals
+                } else {
+                    TokenTypeBase::Star
+                }
+            }
             '@' => TokenTypeBase::At,
             '$' => TokenTypeBase::Dollar,
             '?' => TokenTypeBase::Question,
-            '/' => TokenTypeBase::Slash,
+            '/' => {
+                if self.peek_char() == Some('=') {
+                    self.advance();
+                    TokenTypeBase::SlashEquals
+                } else {
+                    TokenTypeBase::Slash
+                }
+            }
+            '%' => {
+                if self.peek_char() == Some('=') {
+                    self.advance();
+                    TokenTypeBase::PercentEquals
+                } else {
+                    TokenTypeBase::Percent
+                }
+            }
+            '^' => {
+                if self.peek_char() == Some('=') {
+                    self.advance();
+                    TokenTypeBase::CaretEquals
+                } else {
+                    TokenTypeBase::Caret
+                }
+            }
             '=' => {
                 if self.peek_char() == Some('=') {
                     self.advance();
@@ -661,6 +709,9 @@ impl<'a> Lexer<'a> {
                 if self.peek_char() == Some('&') {
                     self.advance();
                     TokenTypeBase::AndAnd
+                } else if self.peek_char() == Some('=') {
+                    self.advance();
+                    TokenTypeBase::AmpersandEquals
                 } else {
                     TokenTypeBase::Ampersand
                 }
@@ -669,6 +720,9 @@ impl<'a> Lexer<'a> {
                 if self.peek_char() == Some('|') {
                     self.advance();
                     TokenTypeBase::OrOr
+                } else if self.peek_char() == Some('=') {
+                    self.advance();
+                    TokenTypeBase::PipeEquals
                 } else {
                     TokenTypeBase::Pipe
                 }
@@ -685,6 +739,9 @@ impl<'a> Lexer<'a> {
                 if self.peek_char() == Some('>') {
                     self.advance();
                     TokenTypeBase::Arrow
+                } else if self.peek_char() == Some('=') {
+                    self.advance();
+                    TokenTypeBase::MinusEquals
                 } else {
                     TokenTypeBase::Minus
                 }
@@ -786,15 +843,24 @@ impl<'a> Token<'a> {
             TokenTypeBase::Comma => TokenTypeBase::Comma,
             TokenTypeBase::Equals => TokenTypeBase::Equals,
             TokenTypeBase::PlusEquals => TokenTypeBase::PlusEquals,
+            TokenTypeBase::MinusEquals => TokenTypeBase::MinusEquals,
+            TokenTypeBase::StarEquals => TokenTypeBase::StarEquals,
+            TokenTypeBase::SlashEquals => TokenTypeBase::SlashEquals,
+            TokenTypeBase::PercentEquals => TokenTypeBase::PercentEquals,
+            TokenTypeBase::AmpersandEquals => TokenTypeBase::AmpersandEquals,
+            TokenTypeBase::PipeEquals => TokenTypeBase::PipeEquals,
+            TokenTypeBase::CaretEquals => TokenTypeBase::CaretEquals,
             TokenTypeBase::Arrow => TokenTypeBase::Arrow,
             TokenTypeBase::FatArrow => TokenTypeBase::FatArrow,
             TokenTypeBase::Plus => TokenTypeBase::Plus,
             TokenTypeBase::Minus => TokenTypeBase::Minus,
             TokenTypeBase::Star => TokenTypeBase::Star,
             TokenTypeBase::Slash => TokenTypeBase::Slash,
+            TokenTypeBase::Percent => TokenTypeBase::Percent,
             TokenTypeBase::Dot => TokenTypeBase::Dot,
             TokenTypeBase::DoubleDot => TokenTypeBase::DoubleDot,
             TokenTypeBase::Ampersand => TokenTypeBase::Ampersand,
+            TokenTypeBase::Caret => TokenTypeBase::Caret,
             TokenTypeBase::At => TokenTypeBase::At,
             TokenTypeBase::Question => TokenTypeBase::Question,
             TokenTypeBase::Dollar => TokenTypeBase::Dollar,
@@ -889,15 +955,24 @@ impl OwnedToken {
             TokenTypeBase::Comma => TokenTypeBase::Comma,
             TokenTypeBase::Equals => TokenTypeBase::Equals,
             TokenTypeBase::PlusEquals => TokenTypeBase::PlusEquals,
+            TokenTypeBase::MinusEquals => TokenTypeBase::MinusEquals,
+            TokenTypeBase::StarEquals => TokenTypeBase::StarEquals,
+            TokenTypeBase::SlashEquals => TokenTypeBase::SlashEquals,
+            TokenTypeBase::PercentEquals => TokenTypeBase::PercentEquals,
+            TokenTypeBase::AmpersandEquals => TokenTypeBase::AmpersandEquals,
+            TokenTypeBase::PipeEquals => TokenTypeBase::PipeEquals,
+            TokenTypeBase::CaretEquals => TokenTypeBase::CaretEquals,
             TokenTypeBase::Arrow => TokenTypeBase::Arrow,
             TokenTypeBase::FatArrow => TokenTypeBase::FatArrow,
             TokenTypeBase::Plus => TokenTypeBase::Plus,
             TokenTypeBase::Minus => TokenTypeBase::Minus,
             TokenTypeBase::Star => TokenTypeBase::Star,
             TokenTypeBase::Slash => TokenTypeBase::Slash,
+            TokenTypeBase::Percent => TokenTypeBase::Percent,
             TokenTypeBase::Dot => TokenTypeBase::Dot,
             TokenTypeBase::DoubleDot => TokenTypeBase::DoubleDot,
             TokenTypeBase::Ampersand => TokenTypeBase::Ampersand,
+            TokenTypeBase::Caret => TokenTypeBase::Caret,
             TokenTypeBase::At => TokenTypeBase::At,
             TokenTypeBase::Question => TokenTypeBase::Question,
             TokenTypeBase::Dollar => TokenTypeBase::Dollar,
@@ -972,6 +1047,8 @@ mod tests {
         assert_eq!(lex_first("-"), TokenTypeBase::Minus);
         assert_eq!(lex_first("*"), TokenTypeBase::Star);
         assert_eq!(lex_first("/"), TokenTypeBase::Slash);
+        assert_eq!(lex_first("%"), TokenTypeBase::Percent);
+        assert_eq!(lex_first("^"), TokenTypeBase::Caret);
         assert_eq!(lex_first("@"), TokenTypeBase::At);
         assert_eq!(lex_first("("), TokenTypeBase::LeftParen);
         assert_eq!(lex_first(")"), TokenTypeBase::RightParen);
@@ -1000,6 +1077,13 @@ mod tests {
         assert_eq!(lex_first("->"), TokenTypeBase::Arrow);
         assert_eq!(lex_first("=>"), TokenTypeBase::FatArrow);
         assert_eq!(lex_first("+="), TokenTypeBase::PlusEquals);
+        assert_eq!(lex_first("-="), TokenTypeBase::MinusEquals);
+        assert_eq!(lex_first("*="), TokenTypeBase::StarEquals);
+        assert_eq!(lex_first("/="), TokenTypeBase::SlashEquals);
+        assert_eq!(lex_first("%="), TokenTypeBase::PercentEquals);
+        assert_eq!(lex_first("&="), TokenTypeBase::AmpersandEquals);
+        assert_eq!(lex_first("|="), TokenTypeBase::PipeEquals);
+        assert_eq!(lex_first("^="), TokenTypeBase::CaretEquals);
     }
 
     #[test]

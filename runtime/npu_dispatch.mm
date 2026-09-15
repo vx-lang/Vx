@@ -41,6 +41,44 @@ static bool vx_npu_verbose() {
     }                                                                          \
   } while (0)
 
+/// Where a compiled CoreML primitive is looked for.
+///
+/// These bundles are build output: build.rs compiles them with `coremlc` into
+/// `ane-primitives/`. Each load site used to name one with a bare relative
+/// path, which resolves against the working directory, so the whole CoreML
+/// route quietly became "only when run from the checkout root" -- and for an
+/// installed binary, never.
+///
+/// Most specific first: an explicit setting, then the directory the running
+/// binary sits in, then the build output, then the working directory as it
+/// behaved before. Returns nil when no candidate has the bundle, which is the
+/// caller's signal to fall back to the CPU.
+static NSURL *vx_find_ane_model(NSString *name) {
+  NSMutableArray<NSString *> *dirs = [NSMutableArray array];
+
+  const char *configured = getenv("VX_ANE_MODEL_DIR");
+  if (configured && configured[0] != '\0') {
+    [dirs addObject:@(configured)];
+  }
+  NSString *exe = [[NSBundle mainBundle] executablePath];
+  if (exe) {
+    [dirs addObject:[exe stringByDeletingLastPathComponent]];
+  }
+  [dirs addObject:@"ane-primitives"];
+  [dirs addObject:@"."];
+
+  NSFileManager *fm = [NSFileManager defaultManager];
+  for (NSString *dir in dirs) {
+    NSString *candidate = [dir stringByAppendingPathComponent:name];
+    if ([fm fileExistsAtPath:candidate]) {
+      return [NSURL fileURLWithPath:candidate];
+    }
+  }
+  VX_NPU_LOG("[Vx Dispatcher] no %s on the model search path\n",
+             [name UTF8String]);
+  return nil;
+}
+
 /// Which device CoreML will actually use for a model, asked rather than assumed.
 ///
 /// `computeUnits = MLComputeUnitsAll` lets CoreML choose among the CPU, the GPU
@@ -258,7 +296,10 @@ extern "C" int vx_dispatch_ane_f16(void *xout, const void *x, const void *w,
     if (!model) {
       NSString *name =
           [NSString stringWithFormat:@"matmul_%dx%d_fp16.mlmodelc", d, n];
-      NSURL *modelURL = [NSURL fileURLWithPath:name];
+      NSURL *modelURL = vx_find_ane_model(name);
+      if (!modelURL) {
+        return 0;
+      }
       MLModelConfiguration *config = [[MLModelConfiguration alloc] init];
       config.computeUnits = MLComputeUnitsAll;
       model = [MLModel modelWithContentsOfURL:modelURL
@@ -352,7 +393,13 @@ extern "C" int vx_dispatch_ane(float *xout, float *x, float *w, int n, int d) {
     static MLModel *model = nil;
     NSError *error = nil;
     if (!model) {
-      NSURL *modelURL = [NSURL fileURLWithPath:@"matmul_4x4.mlmodelc"];
+      NSURL *modelURL = vx_find_ane_model(@"matmul_4x4.mlmodelc");
+      if (!modelURL) {
+        std::cerr << "[Vx Dispatcher] WARNING: no matmul_4x4.mlmodelc on the "
+                     "model search path. Falling back to CPU."
+                  << std::endl;
+        return 0;
+      }
       MLModelConfiguration *config = [[MLModelConfiguration alloc] init];
       config.computeUnits = MLComputeUnitsAll;
       model = [MLModel modelWithContentsOfURL:modelURL
@@ -437,7 +484,13 @@ extern "C" int vx_dispatch_ane_affine(float *out, float *x, float alpha,
     static MLModel *affineModel = nil;
     NSError *error = nil;
     if (!affineModel) {
-      NSURL *modelURL = [NSURL fileURLWithPath:@"affine_4.mlmodelc"];
+      NSURL *modelURL = vx_find_ane_model(@"affine_4.mlmodelc");
+      if (!modelURL) {
+        std::cerr << "[Vx Dispatcher] WARNING: no affine_4.mlmodelc on the "
+                     "model search path. Falling back to CPU."
+                  << std::endl;
+        return 0;
+      }
       MLModelConfiguration *config = [[MLModelConfiguration alloc] init];
       config.computeUnits = MLComputeUnitsAll;
       affineModel = [MLModel modelWithContentsOfURL:modelURL

@@ -1,0 +1,41 @@
+//===- static_method_call_with_receiver_and_deduction.vx - Vx Compiler --*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The two shapes of a method named through its type that must keep working now that such a
+// call checks its arguments. `Holder<i32>::get(&h)` passes the receiver explicitly, so the
+// borrowed argument has to fit the `self` parameter. `Holder::make(7i32)` names no type
+// argument at all: `T` is deduced from the argument, the way a generic free function's call
+// deduces it, and the result is a `Holder<i32>` the next call can take.
+
+struct Holder<T> {
+  v : T,
+}
+
+impl<T> Holder<T> {
+  fn make(x : T) -> Holder<T> {
+    return Holder<T> {
+      v : x,
+    };
+  }
+
+  fn get(self : &Holder<T>) -> T {
+    return self.v;
+  }
+}
+
+fn main() -> i32 {
+  let h = Holder<i32> {
+    v : 4,
+  };
+  print(Holder<i32>::get(&h));
+  print!(" ");
+  let m = Holder::make(7i32);
+  print(Holder<i32>::get(&m));
+  return 0;
+}
+
+// EXPECT: 4 7

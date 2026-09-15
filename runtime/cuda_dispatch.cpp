@@ -1141,7 +1141,9 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
             kernel_name);
     abort();
   }
-  if (!vx_host_call_kernel(kernel, device_args, arg_tags, num_args)) {
+  if (!vx_host_call_kernel(kernel, device_args, arg_tags, num_args,
+                           vx_host_worker_count_for(binary_payload,
+                                                    payload_size))) {
     fprintf(stderr, "[Vx CUDA] FATAL: could not build a call for %s\n",
             kernel_name);
     abort();
