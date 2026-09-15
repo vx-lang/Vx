@@ -4,7 +4,7 @@ set -e
 PROJECT_DIR=$(pwd)
 
 # The LLVM major version mlir-sys is pinned against -- `mlir-sys = "220.x"` means LLVM 22.
-# Keep in sync with Cargo.toml and scripts/setup_linux.sh.
+# Keep in sync with Cargo.toml and scripts/provision/setup_linux.sh.
 LLVM_VERSION="${LLVM_VERSION:-22}"
 
 echo "Locating LLVM installation..."
@@ -17,9 +17,23 @@ echo "Locating LLVM installation..."
 # had llvm-18 and llvm-22 side by side; an unsuffixed `llvm-config` pointing at 18 would have
 # produced a config.local that links against the wrong major version, which surfaces much later as
 # undefined MLIR C-API symbols.
-if command -v brew >/dev/null 2>&1 && brew --prefix llvm >/dev/null 2>&1; then
-    LLVM_PREFIX=$(brew --prefix llvm)
-    LLVM_PATH="$LLVM_PREFIX/bin"
+# Homebrew keeps older LLVM majors in versioned formulae such as llvm@22. Ask
+# for the pinned formula first, and verify the executable exists: `brew --prefix
+# llvm` can print its conventional path even when the unversioned formula is not
+# installed, which otherwise produces a broken config.local.
+LLVM_PATH=""
+if command -v brew >/dev/null 2>&1; then
+    for LLVM_FORMULA in "llvm@${LLVM_VERSION}" llvm; do
+        LLVM_PREFIX="$(brew --prefix "$LLVM_FORMULA" 2>/dev/null || true)"
+        if [ -x "$LLVM_PREFIX/bin/llvm-config" ]; then
+            LLVM_PATH="$LLVM_PREFIX/bin"
+            break
+        fi
+    done
+fi
+
+if [ -n "$LLVM_PATH" ]; then
+    : # Homebrew LLVM found above.
 elif command -v "llvm-config-${LLVM_VERSION}" >/dev/null 2>&1; then
     # --bindir, not dirname: /usr/bin/llvm-config-22 is a shim, and the directory that holds the
     # UNSUFFIXED clang++/mlir-translate is /usr/lib/llvm-22/bin. config.template puts this first on
@@ -80,13 +94,10 @@ fi
 #
 # PATH says where the `cargo` *binary* is, which is a different directory and
 # frequently a different tree -- the in-repo .cargo/bin holds cargo-format and
-# cargo-fuzz but no cargo, because rustup's shims live wherever rustup was
-# installed. config.template never set it at all, so sourcing config.local
-# exported CARGO_HOME and left `cargo` unresolvable. On a developer machine
-# nobody noticed, because the shell rc had already put it on PATH. On a box
-# freshly provisioned by scripts/setup_linux.sh -- which installs to rustup's
-# default $HOME/.cargo -- `source config.local && cargo build` fails with
-# "cargo: command not found".
+# cargo-fuzz but no cargo. Rustup puts its shims in $HOME/.cargo/bin, while a
+# Homebrew Rust installation puts cargo in Homebrew's bin directory. Neither
+# location follows from CARGO_HOME alone, so config.template must add the
+# discovered driver directory to PATH.
 if [ -d "$PROJECT_DIR/.cargo" ] && [ -d "$PROJECT_DIR/.rustup" ]; then
     CARGO_DIR="$PROJECT_DIR/.cargo"
     RUSTUP_DIR="$PROJECT_DIR/.rustup"
@@ -95,15 +106,18 @@ else
     RUSTUP_DIR="$HOME/.rustup"
 fi
 
-# Whichever of the two trees actually holds the driver. Both go on PATH so the
-# repository's own subcommands stay reachable when the driver comes from $HOME.
+# Prefer an explicitly installed rustup driver, then use any executable cargo
+# already available on PATH (for example Homebrew's /opt/homebrew/bin/cargo).
+# Keep the repository's subcommands reachable in every case.
 if [ -x "$PROJECT_DIR/.cargo/bin/cargo" ]; then
     CARGO_BIN="$PROJECT_DIR/.cargo/bin"
 elif [ -x "$HOME/.cargo/bin/cargo" ]; then
     CARGO_BIN="$HOME/.cargo/bin:$PROJECT_DIR/.cargo/bin"
+elif CARGO_COMMAND="$(command -v cargo 2>/dev/null)" && [ -n "$CARGO_COMMAND" ] && [ -x "$CARGO_COMMAND" ]; then
+    CARGO_BIN="$(dirname "$CARGO_COMMAND"):$PROJECT_DIR/.cargo/bin"
 else
-    echo "Could not find a cargo binary in $PROJECT_DIR/.cargo/bin or $HOME/.cargo/bin." >&2
-    echo "Install Rust -- scripts/setup_linux.sh does this -- and re-run." >&2
+    echo "Could not find a cargo binary in $PROJECT_DIR/.cargo/bin, $HOME/.cargo/bin, or PATH." >&2
+    echo "Install Rust (scripts/provision/setup_linux.sh does this on Linux) and re-run." >&2
     exit 1
 fi
 
