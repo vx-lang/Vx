@@ -1684,7 +1684,9 @@ fn codegen_mlir_phase(
         funcs: to_emit,
         workers,
         shadowed,
-    } = lower_bodies_phase(parsed_modules, &monos, &session2, sched);
+    } = crate::intern_mode::timed(crate::intern_mode::CODEGEN_LOWER, || {
+        lower_bodies_phase(parsed_modules, &monos, &session2, sched)
+    });
     for (func, (_, lowered)) in to_emit.iter().zip(&workers) {
         if let Err(why) = lowered {
             if std::env::var("VX_FLAT_DBG").is_ok() {

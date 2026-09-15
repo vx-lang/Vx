@@ -104,6 +104,22 @@ pub struct CorpusParams {
     /// per-compilation rather than per-module, so two modules spelling `Topology Dev` differently
     /// would collide by design and the corpus would measure a diagnostic instead of a compile.
     pub memalg_frac: f64,
+    /// Fraction of modules that also call a method on a generic type, which is the thing that makes
+    /// the checker mint a monomorph. `0.0` emits none, and is the default, so every corpus measured
+    /// before this knob existed is byte-identical to the same flags today.
+    ///
+    /// It exists because a generic *parameter type* never becomes a monomorph. The functions the
+    /// density knob decorates are never called -- that is the isolation the knob needs -- so a
+    /// corpus at any density reaches codegen with nothing to monomorphize at all. Vx#578 (every
+    /// call to a generic method declined codegen, because the checker minted the monomorph after
+    /// the registry froze) was therefore invisible to the ladder and to the scale test, and would
+    /// have stayed invisible after the fix: the epoch-2 registry the fix introduced was empty in
+    /// every measured run.
+    ///
+    /// Each drawn module declares its own carrier, named after its index for the reason the machine
+    /// declarations are, and calls the method from *two* functions, so two workers mint the same
+    /// monomorph and the barrier's dedup has something to merge.
+    pub generic_call_frac: f64,
     pub seed: u64,
 }
 
@@ -120,6 +136,7 @@ impl Default for CorpusParams {
             files_per_layer: 0,
             deps_per_module: 2,
             memalg_frac: 0.0,
+            generic_call_frac: 0.0,
             seed: 0x5EED,
         }
     }
@@ -143,7 +160,7 @@ const CARRIERS_PER_MODULE: usize = 2;
 /// hypothetical: the first version of this generator named its parameters `p0..p3`, which tripped
 /// W1009 and printed a warning line per parameter from inside the timed region; renaming them to
 /// `_p0..` changed no parameter, so the fix appeared to do nothing until this constant existed.
-const GENERATOR_VERSION: u32 = 4;
+const GENERATOR_VERSION: u32 = 5;
 
 fn splitmix64(state: &mut u64) -> u64 {
     *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
@@ -175,7 +192,7 @@ impl CorpusParams {
     fn canonical_string(&self) -> String {
         format!(
             "v={GENERATOR_VERSION} n={} m={} d={:.4} a={} s={:.4} p={} l={} fpl={} dep={} \
-             mem={:.4} seed={}",
+             mem={:.4} gcall={:.4} seed={}",
             self.modules,
             self.fns_per_module,
             self.density,
@@ -186,6 +203,7 @@ impl CorpusParams {
             self.files_per_layer,
             self.deps_per_module,
             self.memalg_frac,
+            self.generic_call_frac,
             self.seed
         )
     }
@@ -320,6 +338,8 @@ fn module_source(p: &CorpusParams, m: usize) -> (String, Vec<Vec<String>>) {
     // is checked against that placement, and the region counter walks it. All of it is per-module
     // state that the parallel schedule builds on one worker and must not leak to another.
     let machine = p.memalg_frac > 0.0 && (m as f64) < (p.modules as f64) * p.memalg_frac;
+    let generic_calls =
+        p.generic_call_frac > 0.0 && (m as f64) < (p.modules as f64) * p.generic_call_frac;
     if machine {
         s.push_str(&format!(
             "Memory CPU_DRAM {{}}\n\
@@ -453,6 +473,35 @@ fn module_source(p: &CorpusParams, m: usize) -> (String, Vec<Vec<String>>) {
     // so the per-function knobs (density, arity, params) keep meaning exactly what they meant
     // before this knob existed -- a memalg corpus is the arithmetic corpus PLUS this, never the
     // arithmetic corpus with a function taken away.
+    // The generic half, when this module drew one. A method on a generic type is what makes the
+    // checker mint a monomorph: `h.bump(a)` is rewritten to a call to `C{m}$i32$bump$i32`, which
+    // exists nowhere in the source and did not exist when the registry froze.
+    //
+    // What this reaches that the rest of the corpus cannot: the barrier routes and dedups the
+    // monomorphs, the epoch-2 registry mints a signature for each survivor, and every body is
+    // lowered against that registry rather than the frozen one (Vx#578). Two callers rather than
+    // one because they are checked by different workers, so the same monomorph is minted twice and
+    // the dedup is doing work rather than passing a single element through.
+    if generic_calls {
+        s.push_str(&format!(
+            "struct C{m}<T> {{\n  v: T,\n}}\n\n\
+             impl<T> C{m}<T> {{\n\
+             \x20 fn bump(self: &mut C{m}<T>, x: T) -> i32 {{\n\
+             \x20   self.v = x;\n\
+             \x20   return 1;\n\
+             \x20 }}\n\
+             }}\n\n\
+             fn m{m}_gcall_a(a: i32) -> i32 {{\n\
+             \x20 let mut h = C{m}<i32> {{ v: 0, }};\n\
+             \x20 return h.bump(a);\n\
+             }}\n\n\
+             fn m{m}_gcall_b(a: i32) -> i32 {{\n\
+             \x20 let mut h = C{m}<i32> {{ v: 1, }};\n\
+             \x20 return h.bump(a) + 1;\n\
+             }}\n\n"
+        ));
+    }
+
     if machine {
         s.push_str(&format!(
             "fn m{m}_move() -> i32 {{\n\
@@ -554,6 +603,7 @@ pub fn params_from_args(args: &[String], modules: usize, fns_per_module: usize) 
         files_per_layer: arg(args, "--files-per-layer", d.files_per_layer),
         deps_per_module: arg(args, "--deps", d.deps_per_module),
         memalg_frac: arg(args, "--memalg", d.memalg_frac),
+        generic_call_frac: arg(args, "--generic-calls", d.generic_call_frac),
         seed: arg(args, "--seed", d.seed),
     }
 }
@@ -637,6 +687,46 @@ mod tests {
         );
     }
 
+    /// A generic-call corpus contains a call to a method on a generic type, and a plain one
+    /// contains none of it.
+    ///
+    /// Same blind spot as the memory-algebra guard above, one campaign later: for as long as the
+    /// generator emitted generics only as *parameter types* on functions nothing calls, no corpus
+    /// it produced ever made a monomorph, so the ladder and the scale test measured a compiler
+    /// whose generic-method path (Vx#578) was broken and then fixed without either number moving.
+    #[test]
+    fn a_generic_call_corpus_contains_the_constructs_it_is_named_for() {
+        let mut p = CorpusParams {
+            modules: 4,
+            fns_per_module: 2,
+            generic_call_frac: 1.0,
+            ..CorpusParams::default()
+        };
+        let (src, _) = module_source(&p, 0);
+        for construct in ["struct C0<T>", "impl<T> C0<T>", "h.bump(a)", "C0<i32> {"] {
+            assert!(
+                src.contains(construct),
+                "a corpus generated with --generic-calls 1.0 must contain `{construct}`, or \
+                 nothing it measures ever mints a monomorph:\n{src}"
+            );
+        }
+        // Two callers, so two workers mint the same monomorph and the barrier dedups it.
+        assert!(
+            src.contains("fn m0_gcall_a(") && src.contains("fn m0_gcall_b("),
+            "both callers must be present, or the dedup has a single element to merge:\n{src}"
+        );
+
+        p.generic_call_frac = 0.0;
+        let (plain, _) = module_source(&p, 0);
+        for construct in ["struct C0<T>", "impl<T>", "h.bump("] {
+            assert!(
+                !plain.contains(construct),
+                "the default corpus must stay exactly what it was before this knob existed, so \
+                 numbers measured before it remain comparable; found `{construct}`"
+            );
+        }
+    }
+
     /// The generator version is part of the corpus id, so changing the emitted text cannot leave a
     /// cached directory looking current.
     #[test]
@@ -649,6 +739,15 @@ mod tests {
         assert_ne!(
             plain.id(),
             memalg.id(),
+            "two corpora with different text must not share a directory"
+        );
+        let generic_calls = CorpusParams {
+            generic_call_frac: 1.0,
+            ..CorpusParams::default()
+        };
+        assert_ne!(
+            plain.id(),
+            generic_calls.id(),
             "two corpora with different text must not share a directory"
         );
     }

@@ -152,9 +152,20 @@ fn calibrate(pool: Option<&rayon::ThreadPool>, items: usize, iters: u64) -> Dura
         x
     };
     let t = Instant::now();
+    // Wrapping, like every step of `burn` itself: this is a calibration workload whose only job
+    // is to take time, and its total is fed straight to `black_box`. A plain `sum()` overflows
+    // `u64` and panics in a debug build, which took the whole harness down before it measured
+    // anything.
     let total: u64 = match pool {
-        Some(p) => p.install(|| (0..items).into_par_iter().map(|i| burn(i as u64)).sum()),
-        None => (0..items).map(|i| burn(i as u64)).sum(),
+        Some(p) => p.install(|| {
+            (0..items)
+                .into_par_iter()
+                .map(|i| burn(i as u64))
+                .reduce(|| 0u64, u64::wrapping_add)
+        }),
+        None => (0..items)
+            .map(|i| burn(i as u64))
+            .fold(0u64, u64::wrapping_add),
     };
     std::hint::black_box(total);
     t.elapsed()
