@@ -178,7 +178,9 @@ impl<'a> TypeChecker<'a> {
         let initializer_places_its_own = matches!(expr, Expr::Transfer(_));
         let context = format!("variable '{}'", name);
         let binding_ty = if let Some(ann) = ty_ann {
-            if !self.is_assignable(ann, &ty) {
+            // `Unknown` is the poison type of an already-reported failure (an unresolved call, a
+            // type parameter nothing binds); a mismatch against it would report that twice.
+            if ty != Type::Unknown && !self.is_assignable(ann, &ty) {
                 let splat = matches!(
                     (&*ann, &ty),
                     (Type::Tensor(el, dims, _), Type::Scalar(s)) if !dims.is_empty() && el == s
