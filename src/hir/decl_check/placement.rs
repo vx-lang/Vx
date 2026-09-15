@@ -28,22 +28,36 @@ impl TypeChecker<'_> {
     /// Name resolution is where the derivation happens and would be the earliest place to catch
     /// this, but it has no diagnostic channel -- an unresolved struct name is carried forward
     /// unreported there too, for the checker to find.
+    ///
+    /// Only a type that mentions a tensor can state a location, so that is asked first, before
+    /// a clone, a string or a sort. This runs on the serial spine once per compile, and on a
+    /// 16,000-function program with no placements at all it was 90 ms of it: building and
+    /// sorting 27,000 sites, then walking 90,000 types and finding nothing in any of them.
     pub fn check_placements_name_a_place(&mut self) {
         // Sorted, because both tables are HashMaps and this reports per declaration: an unsorted
         // walk would emit the same diagnostics in a different order on every run.
         let mut sites: Vec<(String, Vec<crate::syntax::Type>)> = Vec::new();
         for (name, f) in &self.env.syntax_functions {
-            let mut tys: Vec<crate::syntax::Type> =
-                f.params.iter().map(|(_, t)| t.clone()).collect();
-            tys.push(f.return_type.clone());
-            sites.push((format!("function '{name}'"), tys));
+            let tys: Vec<crate::syntax::Type> = f
+                .params
+                .iter()
+                .map(|(_, t)| t)
+                .chain(std::iter::once(&f.return_type))
+                .filter(|t| t.mentions_tensor())
+                .cloned()
+                .collect();
+            if !tys.is_empty() {
+                sites.push((format!("function '{name}'"), tys));
+            }
         }
         for (name, s) in &self.env.structs {
             for (field, ty) in &s.fields {
-                sites.push((
-                    format!("field '{field}' of struct '{name}'"),
-                    vec![ty.clone()],
-                ));
+                if ty.mentions_tensor() {
+                    sites.push((
+                        format!("field '{field}' of struct '{name}'"),
+                        vec![ty.clone()],
+                    ));
+                }
             }
         }
         sites.sort_by(|a, b| a.0.cmp(&b.0));

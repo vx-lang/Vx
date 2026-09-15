@@ -744,6 +744,37 @@ impl Type {
         }
     }
 
+    /// Whether a tensor occurs anywhere inside this type. Only a tensor can carry a placement,
+    /// and only a tensor can be given a location by a wrapper (`Ref<Tensor<..>, Memory::X>`,
+    /// `Pinned<Tensor<..>, Topology::X>`), so a type with no tensor in it has nothing for a
+    /// placement check to look at. Exhaustive over the variants, so a new one that holds a
+    /// type is walked rather than skipped.
+    pub fn mentions_tensor(&self) -> bool {
+        match self {
+            Type::Tensor(..) => true,
+            Type::Ref(inner, _)
+            | Type::Borrow { inner, .. }
+            | Type::Pointer(inner, _, _)
+            | Type::Verified(inner)
+            | Type::Pinned(inner, _) => inner.mentions_tensor(),
+            Type::GenericInstance(base, args) => {
+                base.mentions_tensor() || args.iter().any(Type::mentions_tensor)
+            }
+            Type::Function(params, ret, _) | Type::Closure(params, ret) => {
+                params.iter().any(Type::mentions_tensor) || ret.mentions_tensor()
+            }
+            Type::Module(_, exports) => exports.values().any(Type::mentions_tensor),
+            Type::Matrix
+            | Type::Scalar(_)
+            | Type::Struct(..)
+            | Type::Enum(..)
+            | Type::Generic(..)
+            | Type::Simd(..)
+            | Type::Const(_)
+            | Type::Unknown => false,
+        }
+    }
+
     /// Every placement written anywhere inside this type, outermost first.
     ///
     /// A placed tensor is reachable through the wrapper types as well as at the top -- a
@@ -1107,6 +1138,55 @@ impl Mangle for ElementType {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    /// `mentions_tensor` is the gate in front of the placement checks, so it has to be true
+    /// wherever a placement or a location-stating wrapper could sit: a tensor at the top, under
+    /// a wrapper, as a generic argument, in a function type's parameters or return. Each
+    /// position is its own assertion, because a missing arm fails only the position it drops.
+    #[test]
+    fn mentions_tensor_finds_a_tensor_in_every_position() {
+        let tensor = || {
+            Type::Tensor(
+                ElementType::F32,
+                vec![Dim::Static(Expr::Number(NumberExpr {
+                    value: "4".into(),
+                    ty: None,
+                    span: Span::default(),
+                }))],
+                None,
+            )
+        };
+        let i32_ty = || Type::Scalar(ElementType::I32);
+        let holder = || Type::Struct("Holder".into(), None);
+
+        assert!(tensor().mentions_tensor(), "a bare tensor");
+        assert!(!i32_ty().mentions_tensor(), "a scalar");
+        assert!(!holder().mentions_tensor(), "a nominal with no arguments");
+        assert!(
+            Type::Pinned(Box::new(tensor()), Topology::Current).mentions_tensor(),
+            "under a wrapper"
+        );
+        assert!(
+            !Type::Ref(Box::new(holder()), MemorySpace::CPUDRAM).mentions_tensor(),
+            "a wrapper around a nominal"
+        );
+        assert!(
+            Type::GenericInstance(Box::new(holder()), vec![i32_ty(), tensor()]).mentions_tensor(),
+            "as a generic argument"
+        );
+        assert!(
+            !Type::GenericInstance(Box::new(holder()), vec![i32_ty()]).mentions_tensor(),
+            "a generic instance with no tensor argument"
+        );
+        assert!(
+            Type::Function(vec![i32_ty(), tensor()], Box::new(i32_ty()), false).mentions_tensor(),
+            "as a function parameter"
+        );
+        assert!(
+            Type::Closure(vec![i32_ty()], Box::new(tensor())).mentions_tensor(),
+            "as a closure return"
+        );
+    }
 
     #[test]
     fn test_type_substitute_generic_simple() {
