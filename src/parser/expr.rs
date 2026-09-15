@@ -384,10 +384,8 @@ impl<'a> Parser<'a> {
                 let mut enum_name = s.to_string();
                 self.advance();
                 if self.check(&TokenType::LeftAngle) {
-                    self.advance(); // consume '<'
-                    // A list, not one argument: `Result<T, E>::Ok(v)` is a pattern over a
-                    // two-parameter enum, and reading only the first left the comma to be
-                    // mistaken for the closing bracket.
+                    // A list, not one argument: `Result<T, E>::Ok(v)` has two.
+                    self.advance();
                     let mut args = Vec::new();
                     loop {
                         match &self.advance().kind {
