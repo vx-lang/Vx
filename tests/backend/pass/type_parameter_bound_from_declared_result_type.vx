@@ -1,0 +1,46 @@
+//===- type_parameter_bound_from_declared_result_type.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The spellings that do determine a type parameter for a method named through its type, now
+// that a call leaving one unbound is refused. `Holder<i32>::width()` names it, and the bound
+// parameter is what `sizeof<T>()` sizes, so `i32` and `f64` give different widths. `Vec::new()`
+// names nothing and takes no argument, but the type declared for its result binds `T`: from
+// the function's return type in `fresh`, and from the `let` annotation in `main`.
+
+import std::vec;
+
+struct Holder<T> {
+  v : T,
+}
+
+impl<T> Holder<T> {
+  fn width() -> i64 {
+    return sizeof<T>();
+  }
+}
+
+fn fresh() -> Vec<i32> {
+  return Vec::new();
+}
+
+fn main() -> i32 {
+  print(Holder<i32>::width());
+  print!(" ");
+  print(Holder<f64>::width());
+  print!(" ");
+  let mut v = fresh();
+  v.push(7);
+  v.push(8);
+  print(v.len());
+  print!(" ");
+  let mut w : Vec<i64> = Vec::new();
+  w.push(5i64);
+  print(w.len());
+  return 0;
+}
+
+// EXPECT: 4 8 2 1

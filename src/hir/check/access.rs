@@ -587,6 +587,32 @@ impl<'a> TypeChecker<'a> {
                 }
 
                 self.check_expr_type(idx);
+
+                // When the array and the index are both known at compile time, the range
+                // can be checked now instead of being left to a read at run time.
+                if !self.speculating {
+                    let tmp_env = self.consteval_snapshot();
+                    if let (Some(Value::Array(items)), Some(index_val)) =
+                        (self.eval_expr(obj, &tmp_env), self.eval_expr(idx, &tmp_env))
+                    {
+                        if Self::array_index(&index_val, items.len()).is_none() {
+                            let shown = match &index_val {
+                                Value::Number(n) => n.to_string(),
+                                other => format!("{:?}", other),
+                            };
+                            self.errors.error_with_code(
+                                crate::diagnostic::DiagnosticCode::E8003,
+                                format!(
+                                    "index {} is out of range: this array has {} elements",
+                                    shown,
+                                    items.len()
+                                ),
+                                Some(crate::diagnostic::SourceSpan::from_ast_span(&ix_span)),
+                            );
+                        }
+                    }
+                }
+
                 // Look through a Pinned/Ref device wrapper to the underlying tensor so that
                 // indexing a transferred tensor follows the same rule as a local one.
                 let base = match obj_ty {
@@ -713,6 +739,12 @@ impl<'a> TypeChecker<'a> {
                                 path,
                             },
                         );
+                        // Whoever holds a mutable borrow can write through it, and the
+                        // evaluator does not follow that. The variable stops having a
+                        // compile-time value rather than keeping the one it had.
+                        if *is_mut {
+                            self.consteval_forget(&name);
+                        }
                     }
                 }
 

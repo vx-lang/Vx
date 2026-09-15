@@ -23,7 +23,7 @@ fn process(m_host: MyModel) -> MyModel {
     let m_device = m_host;
   }
   return MyModel {
-    weights: Tensor<f32>()
+    weights: Tensor<f32>([1, 1])
   };
 }
 

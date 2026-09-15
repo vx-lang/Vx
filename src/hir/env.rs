@@ -30,6 +30,9 @@ pub enum Value {
     Bool(bool),
     Number(f64),
     Topology(Topology),
+    /// A fixed-size array of scalars, known at compile time. The length is set when the
+    /// array is built and never changes, so an index past the end is a compile error.
+    Array(Vec<Value>),
 }
 
 /// One `Memory`/`Topology` name declared by two modules with *different* declarations — see

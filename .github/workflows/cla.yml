@@ -60,6 +60,9 @@ jobs:
             It is short, and you only do this once -- later pull requests will not ask again.
 
             Please read it, then post a new comment on this pull request containing exactly:
+          # Locks on any close, not only a merge, and a locked pull request refuses the comment
+          # the bot needs in order to record a signature.
+          lock-pullrequest-aftermerge: 'false'
           create-file-commit-message: 'cla: start the signature record'
           # Only $contributorName, $owner and $repo are substituted. The action also documents
           # $pullRequestNo, but that substitution is commented out in its source, so using it

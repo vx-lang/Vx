@@ -1,0 +1,46 @@
+FROM ubuntu:24.04
+
+ARG LLVM_VERSION=22
+ARG Z3_VERSION=4.8.12-3.1build1
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    LLVM_VERSION=${LLVM_VERSION} \
+    CARGO_HOME=/opt/cargo \
+    RUSTUP_HOME=/opt/rustup \
+    PATH=/opt/cargo/bin:/usr/lib/llvm-${LLVM_VERSION}/bin:$PATH
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        z3=${Z3_VERSION} libz3-dev=${Z3_VERSION} \
+    && rm -rf /var/lib/apt/lists/*
+
+# Base toolchain + the package set confirmed on the build box (issue #369).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential ninja-build cmake pkg-config git curl ca-certificates gnupg \
+        libffi-dev zlib1g-dev libzstd-dev libedit-dev libxml2-dev \
+        lsb-release software-properties-common wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# LLVM/MLIR ${LLVM_VERSION} from apt.llvm.org — Ubuntu's own repos lag the
+# pinned mlir-sys version (see #365), so this is wired up explicitly rather
+# than left to the distro package set.
+RUN wget -O /tmp/llvm.sh https://apt.llvm.org/llvm.sh \
+    && chmod +x /tmp/llvm.sh \
+    && /tmp/llvm.sh ${LLVM_VERSION} \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        llvm-${LLVM_VERSION} llvm-${LLVM_VERSION}-dev llvm-${LLVM_VERSION}-tools \
+        clang-${LLVM_VERSION} lld-${LLVM_VERSION} \
+        libmlir-${LLVM_VERSION}-dev mlir-${LLVM_VERSION}-tools libpolly-${LLVM_VERSION}-dev \
+    && rm -rf /var/lib/apt/lists/* /tmp/llvm.sh
+# Note: libmlir-${LLVM_VERSION}-dev ships the MLIR C API `melior` links
+# against and is not pulled in by llvm-${LLVM_VERSION}-dev alone (#369).
+
+# Rust toolchain.
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+        sh -s -- -y --profile minimal --default-toolchain stable \
+    && rustup component add rustfmt clippy \
+    && ln -s /opt/cargo /root/.cargo \
+    && ln -s /opt/rustup /root/.rustup
+
+WORKDIR /workspace
+
+CMD ["bash"]

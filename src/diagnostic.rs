@@ -194,7 +194,12 @@ pub enum DiagnosticCode {
     E3014,
     /// Trait not implemented
     E3015,
-    /// Generic type deduction failure
+    /// A generic call that leaves one of the callee's type parameters unbound: no argument
+    /// fixes it, and no type declared for the result does either. Left alone, the parameter
+    /// travelled into the instance's symbol name as its bare letter and `sizeof<T>()` folded
+    /// to 8, so a buffer was sized for an element type that was never chosen. Spell the type
+    /// argument out, as `Vec<i32>::new()`, or give the result a type, as
+    /// `let v : Vec<i32> = Vec::new();`.
     E3016,
     /// Closure argument count or type mismatch
     E3017,
@@ -434,6 +439,8 @@ pub enum DiagnosticCode {
     E8001,
     /// Comptime assert failed
     E8002,
+    /// Compile-time index out of range
+    E8003,
 }
 
 impl std::fmt::Display for DiagnosticCode {

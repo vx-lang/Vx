@@ -1,0 +1,34 @@
+//===- comptime_array_mut_borrow.vx - Vx Compiler ----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A mutable borrow ends the array's compile-time value.
+//
+// `touch` writes through the borrow, and the evaluator does not follow a call into
+// a function in this file. Without this rule it would go on reporting the values the
+// array held before the call, which here means claiming `a[0]` is 1 when the program
+// has set it to 9.
+//
+// The two asserts contradict each other, so this file only compiles while the
+// evaluator has no value for `a[0]`. Their messages differ so a failure says which
+// way the rule broke.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK-LABEL: func.func @main() -> i32
+
+fn touch(p : &mut Tensor<i64, [3]>) -> void {
+  p[0] = 9i64;
+}
+
+fn main() -> i32 {
+  comptime {
+    let mut a : Tensor<i64, [3]> = [ 1i64, 2i64, 3i64 ];
+    touch(&mut a);
+    assert(a[0] == 1, "the array kept its value across a mutable borrow");
+    assert(a[0] != 1, "the evaluator followed the write through the borrow");
+  }
+  return 0;
+}
