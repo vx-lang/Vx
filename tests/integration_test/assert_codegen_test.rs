@@ -238,3 +238,59 @@ fn main() -> i32 {
         }
     }
 }
+
+/// A narrow enum payload read as a wider number comes back as itself, on the AST path.
+///
+/// One payload slot holds every variant, sized for the widest, so `Narrow`'s `i8` is
+/// extended going in. The match used to bind it at the slot's width, which left the
+/// extension showing: -3 read back as 253.
+///
+/// This lives here rather than in a `pass` directory because the flat path cannot build
+/// the program at all (Vx#581), and every program in those directories has to compile as
+/// a bare `vxc file.vx`. The AST path is the one being asked, so only that path is run.
+#[test]
+fn ast_path_reads_a_narrow_enum_payload_as_its_own_type() {
+    let src = r#"
+enum Pick<T> {
+  Narrow(i8),
+  Wide(T),
+}
+
+impl<T> Pick<T> {
+  fn narrow_or(self : Pick<T>, d : i64) -> i64 {
+    match self {
+      Pick<T>::Narrow(n) => {
+        return n as i64;
+      }
+      Pick<T>::Wide(w) => {
+        return d;
+      }
+    }
+  }
+}
+
+fn main() -> i32 {
+  print(Pick<i64>::Narrow(-3 as i8).narrow_or(0));
+  return 0;
+}
+"#;
+    let probe = write_probe("narrow_enum_payload", src);
+
+    let run = Command::new(env!("CARGO_BIN_EXE_vxc"))
+        .arg(&probe)
+        .arg("--legacy-codegen")
+        .output()
+        .expect("run vxc");
+    let out = String::from_utf8_lossy(&run.stdout).to_string();
+    let err = String::from_utf8_lossy(&run.stderr).to_string();
+
+    assert!(
+        run.status.success(),
+        "the AST path must build a mixed-width enum:\n{out}{err}"
+    );
+    // 253 is the failure this pins: the `i8` widened into the slot and never cut back.
+    assert!(
+        out.contains("-3") && !out.contains("253"),
+        "expected -3, not the extended 253:\n{out}{err}"
+    );
+}

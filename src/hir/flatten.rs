@@ -2048,6 +2048,14 @@ impl<'r> Lowerer<'r> {
                 what: "an enum with no registered data",
             })?
             .clone();
+        // The instance's arguments, so a variant's declared payload can be read at the type
+        // this instance gives it. The layout's own types describe the slot, which is sized
+        // for the widest variant and named after none of them (Vx#570).
+        let (_, inst_args) = parse_enum_instance(enum_name);
+        let mut subst = HashMap::new();
+        for (g, a) in data.generics.iter().zip(inst_args.iter()) {
+            subst.insert(g.clone(), a.clone());
+        }
         let merge = self.new_block();
         for arm in &m.arms {
             match &arm.pattern {
@@ -2096,10 +2104,18 @@ impl<'r> Lowerer<'r> {
                                 let poff = *offsets.get(i + 1).ok_or(Decline::TypeNotModelled {
                                     what: "an enum payload offset that is not laid out",
                                 })?;
+                                // This variant's payload type, not the slot's.
+                                let vtys: Vec<Type> = data
+                                    .variants
+                                    .get(ordinal as usize)
+                                    .map(|(_, p)| p.iter().map(|t| t.substitute(&subst)).collect())
+                                    .unwrap_or_default();
                                 let lty = lowered_ty(
-                                    payload_types.get(i).ok_or(Decline::TypeNotModelled {
-                                        what: "an enum payload type that is not laid out",
-                                    })?,
+                                    vtys.get(i).or_else(|| payload_types.get(i)).ok_or(
+                                        Decline::TypeNotModelled {
+                                            what: "an enum payload type that is not laid out",
+                                        },
+                                    )?,
                                     self.registry,
                                 )
                                 .ok_or(
@@ -2927,14 +2943,34 @@ impl<'r> Lowerer<'r> {
         for (g, a) in data.generics.iter().zip(args) {
             mapping.insert(g.clone(), a.clone());
         }
-        let payload: Vec<Type> = data
-            .variants
-            .iter()
-            .find(|(_, p)| !p.is_empty())?
-            .1
-            .iter()
-            .map(|t| t.substitute(&mapping))
-            .collect();
+        // One payload slot per position, wide enough for whichever variant needs the most
+        // room. Taking the first variant's types instead gave `Result<T, E>` an `Err` slot
+        // shaped like `Ok` (Vx#570): the store then wrote the wrong width, or the right
+        // width under the wrong name, and the emitted MLIR did not parse.
+        //
+        // Variants may disagree about the type at a position as well as the width, so the
+        // slot is a place to put bits rather than a typed field. The store and the load
+        // each name the type they are actually moving.
+        let arity = data.variants.iter().map(|(_, p)| p.len()).max()?;
+        let mut payload: Vec<Type> = Vec::with_capacity(arity);
+        for i in 0..arity {
+            let mut widest: Option<(u64, u64, Type)> = None;
+            for (_, p) in &data.variants {
+                let Some(t) = p.get(i) else { continue };
+                let t = t.substitute(&mapping);
+                let Some((sz, al, _)) = enum_payload_field(&t) else {
+                    continue;
+                };
+                let better = match &widest {
+                    None => true,
+                    Some((bsz, bal, _)) => (sz, al) > (*bsz, *bal),
+                };
+                if better {
+                    widest = Some((sz, al, t));
+                }
+            }
+            payload.push(widest?.2);
+        }
         let mut offsets = vec![0u64];
         let mut field_tys = vec!["i32".to_string()]; // the discriminant tag
         let mut off = 4u64;
@@ -2942,6 +2978,12 @@ impl<'r> Lowerer<'r> {
             let (sz, al, mlir) = enum_payload_field(pt)?;
             off = crate::layout::align_up(off as usize, al as usize) as u64;
             offsets.push(off);
+            // A payload slot holds bits, so it is declared as an integer of the right
+            // width rather than as whichever variant's type happened to be widest. The
+            // struct is loaded and passed whole, and a float field does not carry integer
+            // bits through that: 7 stored as an `i32` and copied through an `f32` field is
+            // a denormal, which the copy is free to flush to zero (Vx#570). A pointer
+            // keeps its own type, which is what carries it.
             field_tys.push(mlir);
             off += sz;
         }
@@ -5488,6 +5530,12 @@ fn binop_opcode(op: &BinaryOp) -> Option<Opcode> {
         BinaryOp::Sub => Opcode::Sub,
         BinaryOp::Mul => Opcode::Mul,
         BinaryOp::Div => Opcode::Div,
+        BinaryOp::Rem => Opcode::Rem,
+        BinaryOp::BitAnd => Opcode::BitAnd,
+        BinaryOp::BitOr => Opcode::BitOr,
+        BinaryOp::BitXor => Opcode::BitXor,
+        BinaryOp::Shl => Opcode::Shl,
+        BinaryOp::Shr => Opcode::Shr,
         BinaryOp::MatMul => Opcode::Matmul,
     })
 }
@@ -5574,6 +5622,12 @@ pub fn verify_hir_stream(worker: &LocalWorkerState) {
             | Opcode::Sub
             | Opcode::Mul
             | Opcode::Div
+            | Opcode::Rem
+            | Opcode::BitAnd
+            | Opcode::BitOr
+            | Opcode::BitXor
+            | Opcode::Shl
+            | Opcode::Shr
             | Opcode::Matmul
             | Opcode::Cmp
             | Opcode::Store

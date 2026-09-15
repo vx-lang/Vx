@@ -156,7 +156,7 @@ fn the_dispatcher_reports_the_device_coreml_chose() {
     // primitive present, a route that does not fire is the regression this test is
     // for -- so the model on disk decides which of the two this is, rather than the
     // absence of a log line skipping the check either way.
-    let primitive = root.join("matmul_512x512_fp16.mlmodelc");
+    let primitive = root.join("ane-primitives/matmul_512x512_fp16.mlmodelc");
     let fired = log.contains("Recognised GEMM 512x512x512 f16");
     if !fired && !primitive.is_dir() {
         eprintln!(

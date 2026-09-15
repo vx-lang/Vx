@@ -1,0 +1,56 @@
+# docker/Dockerfile.runtime — vx: vx-build with the compiler baked in.
+#
+# Multi-stage. Stage 1 reuses vx-build:llvm22, copies source in, builds vxc,
+# and proves it can run a real .vx program before the image is considered
+# valid.
+# Stage 2 is the runtime layer: vxc shells out to `clang`,
+# `mlir-translate` and `z3` at run time, so this can't be a scratch/
+# distroless single-binary copy — LLVM 22 has to be present.
+#
+# Build vx-build:llvm22 first:
+#   docker build -f docker/Dockerfile.build --build-arg LLVM_VERSION=22 -t vx-build:llvm22 .
+# Then:
+#   docker build -f docker/Dockerfile.runtime -t vx:llvm22 .
+
+# ---- Stage 1: build ----
+FROM vx-build:llvm22 AS builder
+
+COPY . /workspace
+WORKDIR /workspace
+
+RUN --mount=type=cache,target=/opt/cargo/registry \
+    ./setup.sh && . ./config.local \
+    && cargo build --release \
+    && cargo build --release -p vx_std_core \
+    && . ./config.local \
+    && ./target/release/vxc examples/docker_smoke.vx | grep -qx 24
+
+# ---- Stage 2: runtime ----
+FROM ubuntu:24.04 AS runtime
+
+ARG LLVM_VERSION=22
+ARG Z3_VERSION=4.8.12-3.1build1
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PATH=/usr/lib/llvm-${LLVM_VERSION}/bin:$PATH
+
+# vxc's runtime dependencies: clang; LLVM's opt, llc and llvm-config;
+# MLIR's mlir-translate and runner-utils; and z3.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates gnupg wget lsb-release software-properties-common \
+    && wget -O /tmp/llvm.sh https://apt.llvm.org/llvm.sh \
+    && chmod +x /tmp/llvm.sh && /tmp/llvm.sh ${LLVM_VERSION} \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        clang-${LLVM_VERSION} llvm-${LLVM_VERSION} llvm-${LLVM_VERSION}-tools \
+        mlir-${LLVM_VERSION}-tools libmlir-${LLVM_VERSION}-dev \
+        z3=${Z3_VERSION} libz3-dev=${Z3_VERSION} \
+    && rm -rf /var/lib/apt/lists/* /tmp/llvm.sh \
+    && z3 --version
+
+WORKDIR /workspace
+
+COPY --from=builder /workspace /workspace
+
+ENV PATH=/workspace/target/release:$PATH
+
+ENTRYPOINT ["vxc"]

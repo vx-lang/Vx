@@ -1,0 +1,86 @@
+//===- enum_payload_narrower_variant.vx - Vx Compiler -------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// An enum whose variants carry integers of different widths, on the AST path.
+//
+// This runner forces `--legacy-codegen`, which is the point: the AST path sized the
+// payload slot from the first variant and then inserted each payload straight into it.
+// `Narrow` is declared first, so the slot held one byte and the `i64` was cut down to it.
+// With the slot sized for the widest variant instead, the narrow payload is the one that
+// no longer fits, and it is extended going in and cut back coming out.
+//
+// Two things are asked here:
+//
+//   `wide_or` reads the largest `i64`. A slot sized from the first variant held one byte
+//   and cut the value down to it, so any such slot shows.
+//
+//   `narrow_at_own_width` hands the payload back at its own type. A match bound it at the
+//   slot's width, so an `i64` arrived where an `i8` was wanted and MLIR refused the
+//   module. -3 and -1 are used because their high bits are set, so a cut at the wrong
+//   width changes them.
+//
+// A third case is missing on purpose. Reading the narrow payload *as a wider number* is
+// what shows the extension leaking -- extended into the slot and read back uncut, -3 is
+// 253 -- but the flat path cannot build that program at all (Vx#581), and this file has
+// to stay within what a bare `vxc file.vx` can compile. So the extension is pinned only
+// by `narrow_at_own_width` failing to compile without it, not by a wrong value.
+//
+// Both variants are asked of every method, since a slot sized or typed for one of them is
+// exactly what worked before.
+//
+// The enum is generic only because a method on a plain `enum P { .. }` does not resolve
+// today -- "Method 'get' not found on type P".
+//
+// A float payload is a separate problem, left alone here: the slot would be a float, and
+// an integer bitcast into one is a denormal that a copy may flush to zero.
+// `enum_payload_per_variant.vx` records that case, and covers the flat path.
+// RUN: vxc %s --run 2>&1 | FileCheck %s
+// CHECK: 9223372036854775807 -3 7 11 -1
+enum Pick<T> {
+  Narrow(i8),
+  Wide(T),
+}
+
+impl<T> Pick<T> {
+  fn wide_or(self : Pick<T>, d : T) -> T {
+    match self {
+      Pick<T>::Narrow(n) => {
+        return d;
+      }
+      Pick<T>::Wide(w) => {
+        return w;
+      }
+    }
+  }
+
+  fn narrow_at_own_width(self : Pick<T>, d : i8) -> i8 {
+    match self {
+      Pick<T>::Narrow(n) => {
+        return n;
+      }
+      Pick<T>::Wide(w) => {
+        return d;
+      }
+    }
+  }
+}
+
+fn main() -> i32 {
+  // A bare literal is born `i32`, so the widest `i64` needs a typed binding to keep its
+  // value -- written inline it wraps to -1.
+  let big : i64 = 9223372036854775807;
+  print(Pick<i64>::Wide(big).wide_or(0));
+  print!(" ");
+  print(Pick<i64>::Narrow(-3 as i8).narrow_at_own_width(0 as i8));
+  print!(" ");
+  print(Pick<i64>::Wide(big).narrow_at_own_width(7 as i8));
+  print!(" ");
+  print(Pick<i64>::Narrow(-3 as i8).wide_or(11));
+  print!(" ");
+  print(Pick<i64>::Narrow(-1 as i8).narrow_at_own_width(0 as i8));
+  return 0;
+}

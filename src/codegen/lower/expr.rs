@@ -735,7 +735,15 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
                     BinaryOp::Sub => "arith.subf",
                     BinaryOp::Mul => "arith.mulf",
                     BinaryOp::Div => "arith.divf",
-                    BinaryOp::MatMul => unreachable!(),
+                    // Both are excluded by the `matches!` guard above: `@` is a matmul, and
+                    // `%` has no vectorized slice form.
+                    BinaryOp::MatMul
+                    | BinaryOp::Rem
+                    | BinaryOp::BitAnd
+                    | BinaryOp::BitOr
+                    | BinaryOp::BitXor
+                    | BinaryOp::Shl
+                    | BinaryOp::Shr => unreachable!(),
                 };
                 let arith_op = OperationBuilder::new(op_name, gen.loc())
                     .add_operands(&[va, vb])
@@ -1077,6 +1085,16 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
                 BinaryOp::Mul => "linalg.mul",
                 BinaryOp::MatMul => panic!("MatMul must have been handled by is_matmul branch"),
                 BinaryOp::Div => "linalg.div",
+                // The checker refuses a tensor operand to `%` (E3030): there is no named
+                // `linalg` remainder to lower it to.
+                BinaryOp::Rem
+                | BinaryOp::BitAnd
+                | BinaryOp::BitOr
+                | BinaryOp::BitXor
+                | BinaryOp::Shl
+                | BinaryOp::Shr => {
+                    panic!("this operator on tensors must have been refused by the checker")
+                }
             };
 
             let is_float = el_ty_str.contains("f32")
@@ -3321,6 +3339,62 @@ impl<'c> LowerToMelior<'c> for MatchExpr {
     }
 }
 
+/// Whether `want` is a strictly narrower integer type than `slot`, so a value read out of
+/// the slot has to be truncated to it. Floats are left out: reinterpreting one is the
+/// denormal hazard `enum_payload_per_variant.vx` records.
+pub(crate) fn is_narrower_int(slot: &str, want: &str) -> bool {
+    let bits = |t: &str| t.strip_prefix('i').and_then(|r| r.parse::<u32>().ok());
+    matches!((bits(slot), bits(want)), (Some(s), Some(w)) if w < s)
+}
+
+/// The text of an enum's payload slot: field 1 of `struct<"Name", (i32, T)>`.
+pub(crate) fn enum_payload_slot_text(struct_ty_text: &str) -> Option<String> {
+    let start = struct_ty_text.find("(i32, ")? + 6;
+    let end = struct_ty_text.rfind(')')?;
+    Some(struct_ty_text[start..end].to_string())
+}
+
+/// Resizes an enum payload to the width of the slot that holds it.
+///
+/// A slot is sized for the widest variant, so a narrower variant is zero-extended into
+/// it. The AST path then binds a matched payload at the slot type rather than at its own
+/// variant's type, so the value coming back is too wide and is truncated here. Either
+/// direction round-trips the bits, so the signedness this path no longer knows does not
+/// matter. A genuinely too-wide value cannot reach this point: E3008 rejects it.
+pub(crate) fn fit_payload_to_slot<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+    payload_val: Value<'c, 'c>,
+    payload_ty: &Type<'c>,
+    struct_ty_text: &str,
+) -> Result<Value<'c, 'c>, LowerError> {
+    let Some(slot_text) = enum_payload_slot_text(struct_ty_text) else {
+        return Ok(payload_val);
+    };
+    // Integers only. Reinterpreting an integer into a float slot would make a denormal
+    // that a copy may flush to zero, which is the hazard
+    // `tests/optimizations/pass/enum_payload_per_variant.vx` records.
+    let int_bits = |t: &str| t.strip_prefix('i').and_then(|r| r.parse::<u32>().ok());
+    let (Some(have), Some(want)) = (int_bits(&payload_ty.to_string()), int_bits(&slot_text)) else {
+        return Ok(payload_val);
+    };
+    if have == want {
+        return Ok(payload_val);
+    }
+    let slot_ty = Type::parse(gen.context, &slot_text)
+        .ok_or_else(|| LowerError::ParseType("Type::parse failed".to_string()))?;
+    let op = if have < want {
+        "arith.extui"
+    } else {
+        "arith.trunci"
+    };
+    let cast = OperationBuilder::new(op, gen.loc())
+        .add_operands(&[payload_val])
+        .add_results(&[slot_ty])
+        .build()?;
+    Ok(block.append_operation(cast).result(0)?.into())
+}
+
 impl<'c> LowerToMelior<'c> for EnumVariantExpr {
     type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
     fn lower(
@@ -3404,8 +3478,15 @@ impl<'c> LowerToMelior<'c> for EnumVariantExpr {
 
         if let Some(payload_exprs) = payload {
             if !payload_exprs.is_empty() {
-                let (payload_val, _payload_ty, block) =
+                let (payload_val, payload_val_ty, block) =
                     gen.generate_expr(&payload_exprs[0], block)?;
+                let payload_val = fit_payload_to_slot(
+                    gen,
+                    block,
+                    payload_val,
+                    &payload_val_ty,
+                    &struct_ty.to_string(),
+                )?;
                 let insert_payload_op = OperationBuilder::new("llvm.insertvalue", gen.loc())
                     .add_operands(&[struct_val, payload_val])
                     .add_results(&[struct_ty])

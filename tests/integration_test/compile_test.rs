@@ -37,10 +37,11 @@ use vxc::hir::TypeChecker;
 use vxc::jit::execute_mlir;
 
 // Whether the ANE/CoreML backend is actually available: the CoreML primitive models are
-// built by build.rs (needs coremltools + `xcrun coremlc`) into the project root. When they
+// built by build.rs (needs coremltools + `xcrun coremlc`) into `ane-primitives/`. When they
 // are absent the dispatcher falls back to CPU, so tests asserting ANE execution are skipped.
 fn ane_models_available() -> bool {
     Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("ane-primitives")
         .join("matmul_4x4.mlmodelc")
         .exists()
 }
