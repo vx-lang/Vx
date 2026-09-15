@@ -1,0 +1,28 @@
+//===- comptime_same_file_call.vx - Vx Compiler ------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A call to a function defined in this same file is evaluated while compiling.
+//
+// It used to not be. The module being compiled goes into the resolution env with its
+// non-generic bodies stripped, so the evaluator walked an empty body, gave up, and the
+// assert quietly became a run-time check -- a build that passed while proving nothing.
+// A false assert is the only way to tell those two apart, which is why this is a fail
+// fixture and not a pass one.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: Comptime assert failed: ident(3) is 3, not 99
+
+fn ident(n : i64) -> i64 {
+  return n;
+}
+
+fn main() -> i32 {
+  comptime {
+    assert(ident(3) == 99, "ident(3) is 3, not 99");
+  }
+  return 0;
+}
