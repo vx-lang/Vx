@@ -1,0 +1,83 @@
+//===- core_num_checked.vx - Vx Compiler --------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The `checked_` and `saturating_` methods of `core::num`, which answer with an
+// `Option<i32>` and so could not be written until `Option` moved into `core`.
+//
+// Each method gets both the case that fits and the case that does not. One alone proves
+// nothing: a `checked_add` that always answered `None` and one that never did each pass
+// a test that only asks one side.
+//
+// The awkward cases are the point and are here on purpose. Multiplication is checked by
+// dividing back out, so the two products whose division would itself overflow are asked
+// for directly. Division and remainder refuse the smallest `i32` over -1 as well as the
+// division by zero, because that single quotient does not fit. And negation refuses the
+// smallest `i32`, which has no positive counterpart.
+//
+// The saturating pair is asked at both ends of the range, and once in the middle where
+// it must not clamp at all.
+import core::num;
+import core::option;
+
+fn show(flag : bool) -> i32 {
+  if flag {
+    print(1);
+  } else {
+    print(0);
+  }
+  return 0;
+}
+
+fn main() -> i32 {
+  let hi : i32 = 2147483647;
+  let lo : i32 = -2147483647 - 1;
+  let one : i32 = 1;
+  let two : i32 = 2;
+
+  show(hi.checked_add(one).is_none());
+  print!(" ");
+  print(two.checked_add(one).unwrap_or(-99));
+  print!(" ");
+  show(lo.checked_sub(one).is_none());
+  print!(" ");
+  print(two.checked_sub(one).unwrap_or(-99));
+  print!(" ");
+
+  show(hi.checked_mul(two).is_none());
+  print!(" ");
+  print(two.checked_mul(two).unwrap_or(-99));
+  print!(" ");
+  show(lo.checked_mul(-1).is_none());
+  print!(" ");
+
+  show(two.checked_div(0).is_none());
+  print!(" ");
+  show(lo.checked_div(-1).is_none());
+  print!(" ");
+  print(two.checked_div(two).unwrap_or(-99));
+  print!(" ");
+  show(lo.checked_rem(-1).is_none());
+  print!(" ");
+  print(two.checked_rem(two).unwrap_or(-99));
+  print!(" ");
+
+  show(lo.checked_neg().is_none());
+  print!(" ");
+  print(two.checked_neg().unwrap_or(-99));
+  print!(" ");
+
+  print(hi.saturating_add(one));
+  print!(" ");
+  print(lo.saturating_sub(one));
+  print!(" ");
+  print(two.saturating_add(one));
+  print!(" ");
+  print(two.saturating_sub(one));
+  return 0;
+}
+
+// EXPECT: 1 3 1 1 1 4 1 1 1 1 1 0 1 -2 2147483647 -2147483648 3 1

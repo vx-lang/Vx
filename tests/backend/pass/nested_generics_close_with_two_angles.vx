@@ -1,0 +1,42 @@
+//===- nested_generics_close_with_two_angles.vx - Vx Compiler -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `Pair<Pair<i32>>` ends with two closing angle brackets, and since `>>` became the
+// right shift they are also how a shift is written. They stay two separate tokens in
+// the lexer so that the type parser can go on closing one generic per token, and the
+// shift is recognized later, by the parser, in operator position -- where a closing
+// generic bracket cannot appear. An inline `mlir!` block depends on the same decision,
+// since it is reassembled from the token stream and is full of types like
+// `memref<memref<?x?xf32>>`.
+//
+// This file is what fails if that decision is ever revisited by joining the two
+// brackets in the lexer. It carries no directives about emitted IR on purpose: a
+// generic struct declines the flat path, so any such directive here would be pinning
+// the AST path's output while appearing to pin the compiler's.
+//
+// shift_operators.vx holds the other meaning, and
+// tests/frontend/fail/spaced_angles_are_not_a_shift.vx holds the case that is neither.
+struct Pair<T> {
+  a : T,
+  b : T,
+}
+
+fn main() -> i32 {
+  let inner = Pair<i32> {
+    a : 3,
+    b : 4,
+  };
+  let outer : Pair<Pair<i32>> = Pair<Pair<i32>> {
+    a : inner,
+    b : inner,
+  };
+  let got = outer.a;
+  print(got.a + got.b);
+  return 0;
+}
+
+// EXPECT: 7

@@ -1,0 +1,49 @@
+//===- rem_operator.vx - Vx Compiler ------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `a % b`, the remainder. Three things worth pinning rather than assuming.
+//
+// The sign of a signed remainder follows the dividend, as in Rust and C.
+//
+// `%` binds like `*` and `/`: left-associative, at their precedence, and tighter than
+// `+`. Three spellings are needed to say that, because each one alone leaves a reading
+// open. 10 + 7 % 3 would be 2 if `%` bound looser than `+`. 7 % 3 * 2 would be 1 if it
+// grouped to the right. Neither of those separates "same precedence as `*`" from
+// "tighter than `*`", because both readings agree on them -- 2 * 6 % 4 is the one that
+// does: 0 sharing a precedence and grouping left, and 4 if `%` bound tighter.
+//
+// The unsigned dividend is deliberately small, so that both code generators agree on
+// the answer: only the flat path reads the element type and picks the unsigned op, and
+// rem_unsigned_is_not_signed.vx is where that is pinned.
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK-DAG: arith.remsi
+// CHECK-DAG: arith.remf
+fn main() -> i32 {
+  let a : i32 = 17;
+  let b : i32 = 5;
+  print(a % b);
+  print!(" ");
+  let n : i32 = -17;
+  print(n % b);
+  print!(" ");
+  let u : u32 = 17;
+  let v : u32 = 5;
+  print((u % v) as i32);
+  print!(" ");
+  let f : f32 = 17.5;
+  let g : f32 = 5.0;
+  print(f % g);
+  print!(" ");
+  print(7 % 3 * 2);
+  print!(" ");
+  print(10 + 7 % 3);
+  print!(" ");
+  print(2 * 6 % 4);
+  return 0;
+}
+
+// EXPECT: 2 -2 2 2.5 2 11 0

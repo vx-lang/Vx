@@ -26,10 +26,14 @@ fn main() -> i32 {
     // error before the evaluator ever sees it.
     assert(3.0 / 2.0 == 1.5, "float division keeps the fraction");
 
+    assert(7 % 2 == 1, "integer remainder");
+
     // Past 2^53 an f64 can no longer tell neighbouring integers apart. An integer can.
     let big : i64 = 9007199254740993i64;
     assert(big != 9007199254740992, "2^53 + 1 is not 2^53");
     assert(big - 1 == 9007199254740992, "arithmetic stays exact up here");
+    // 2^53 + 1 is odd. Rounded down to 2^53 it would look even.
+    assert(big % 2 == 1, "remainder stays exact up here");
   }
   return 0;
 }

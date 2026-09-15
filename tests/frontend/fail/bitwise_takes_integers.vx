@@ -1,0 +1,38 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// The bitwise operators are defined on bit patterns, so they take integers and `bool`
+// and refuse a float. Note that this is the opposite restriction from `%`, which is
+// arithmetic: `%` takes any number and refuses `bool` (rem_takes_numbers.vx). The two
+// share a diagnostic code and neither one's rule implies the other's.
+//
+// A shaped tensor is refused for the same reason `%` refuses one: there is no named
+// `linalg` form to lower an elementwise `&` to, so leaving it to the emitter means a
+// decline and then a fall back to a path that cannot lower it either.
+
+fn floats() -> i32 {
+  let a : f32 = 1.5;
+  let b : f32 = 2.5;
+  let c = a & b;
+  return 0;
+}
+// CHECK: Error[E3030]{{.*}}`&` takes two integers or bools, got f32 and f32
+
+fn also_floats() -> i32 {
+  let a : f64 = 1.5;
+  let b : f64 = 2.5;
+  let c = a ^ b;
+  return 0;
+}
+// CHECK: Error[E3030]{{.*}}`^` takes two integers or bools, got f64 and f64
+
+fn tensors() -> i32 {
+  let a = Tensor<f32, [4]>::uninit();
+  let b = Tensor<f32, [4]>::uninit();
+  let c = a | b;
+  return 0;
+}
+// CHECK: Error[E3030]{{.*}}`|` takes two integers or bools, got Tensor<f32, [4]> and Tensor<f32, [4]>
+
+fn main() -> i32 {
+  return 0;
+}

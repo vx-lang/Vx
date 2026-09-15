@@ -1,0 +1,28 @@
+//===- shift_right_unsigned_is_logical.vx - Vx Compiler -----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `>>` on an unsigned operand shifts zeros in; on a signed one it copies the sign bit.
+// An MLIR integer is signless, so the two are the same operands and the same printed
+// type, and only the Vx element type separates them. Only the flat path still has it at
+// the point the op is chosen -- hence the marker, exactly as for the unsigned `%`.
+//
+// 4000000000 >> 2 is 1000000000 shifted logically. The same bits read as signed are
+// -294967296, which shifted arithmetically give -73741824, so choosing the wrong op
+// here is a wrong answer rather than a cosmetic difference.
+// REQUIRES: flat-codegen
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: arith.shrui
+// CHECK-NOT: arith.shrsi
+fn main() -> i32 {
+  let u : u32 = 4000000000;
+  // Printed rather than returned: the run-time half of this file is compiled through
+  // the AST path by the harness whatever the marker says, and that path emits the
+  // signed op for every integer.
+  print((u >> 2) as i32);
+  return 0;
+}
