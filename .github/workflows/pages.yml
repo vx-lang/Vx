@@ -94,12 +94,15 @@ jobs:
           echo "All $(wc -l < /tmp/links.txt) internal links resolve."
 
       - uses: actions/configure-pages@v5
+        if: ${{ github.repository == 'vx-lang/Vx' }}
 
       - uses: actions/upload-pages-artifact@v3
+        if: ${{ github.repository == 'vx-lang/Vx' }}
         with:
           path: _site
 
   deploy:
+    if: ${{ github.repository == 'vx-lang/Vx' }}
     needs: build
     runs-on: ubuntu-latest
     environment:

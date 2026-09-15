@@ -384,13 +384,24 @@ impl<'a> Parser<'a> {
                 let mut enum_name = s.to_string();
                 self.advance();
                 if self.check(&TokenType::LeftAngle) {
-                    self.advance(); // consume '<'
-                    let ty_ident = match &self.advance().kind {
-                        TokenType::Identifier(s) => s.to_string(),
-                        _ => return Err(self.error("Expected type identifier in generic pattern")),
-                    };
+                    // A list, not one argument: `Result<T, E>::Ok(v)` has two.
+                    self.advance();
+                    let mut args = Vec::new();
+                    loop {
+                        match &self.advance().kind {
+                            TokenType::Identifier(s) => args.push(s.to_string()),
+                            _ => {
+                                return Err(
+                                    self.error("Expected type identifier in generic pattern")
+                                )
+                            }
+                        }
+                        if !self.match_token(&TokenType::Comma) {
+                            break;
+                        }
+                    }
                     self.consume(&TokenType::RightAngle, "Expected '>' in generic pattern")?;
-                    enum_name = format!("{}<{}>", enum_name, ty_ident);
+                    enum_name = format!("{}<{}>", enum_name, args.join(", "));
                 }
                 if self.match_token(&TokenType::DoubleColon) {
                     let variant_name = match self.advance().kind.clone() {

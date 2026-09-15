@@ -1,0 +1,88 @@
+//===- pattern_over_two_generic_args.vx - Vx Compiler -------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `match` pattern naming an enum with two generic arguments. The pattern parser read
+// only the first, so the comma was mistaken for the closing bracket and
+// `Result<T, E>::Ok(v)` would not parse -- which is what `core::result` is written from.
+//
+// Both variants are matched and both arguments are used, so a parser that kept only one
+// of the two would be caught by the types rather than only by the parse.
+//
+// The enum is instantiated at one type for both arguments, which is all that lowers
+// today: a generic enum takes its payload layout from the first argument, so a second
+// variant whose payload is any other type does not reach a backend. That is a codegen
+// limit rather than a parsing one, and it is what this file cannot test. The patterns
+// themselves still name two arguments, which is the thing being fixed.
+//
+// A frontend test, not a backend one, for a second reason: the AST path cannot lower a
+// two-parameter generic impl at all, and that is the path the run-time harness uses. What
+// is being fixed is the parser, so parsing and type-checking is the whole assertion.
+enum Either<A, B> {
+  Left(A),
+  Right(B),
+}
+
+impl<A, B> Either<A, B> {
+  fn is_left(self : &Either<A, B>) -> bool {
+    let mut r = false;
+    match *self {
+      Either<A, B>::Left(v) => {
+        r = true;
+      }
+      Either<A, B>::Right(v) => {
+        r = false;
+      }
+    }
+    return r;
+  }
+
+  fn left_or(self : Either<A, B>, d : A) -> A {
+    match self {
+      Either<A, B>::Left(v) => {
+        return v;
+      }
+      Either<A, B>::Right(v) => {
+        return d;
+      }
+    }
+  }
+
+  fn right_or(self : Either<A, B>, d : B) -> B {
+    match self {
+      Either<A, B>::Left(v) => {
+        return d;
+      }
+      Either<A, B>::Right(v) => {
+        return v;
+      }
+    }
+  }
+}
+
+fn show(flag : bool) -> i32 {
+  if flag {
+    print(1);
+  } else {
+    print(0);
+  }
+  return 0;
+}
+
+fn main() -> i32 {
+  let a = Either<i32, i32>::Left(7);
+  let b = Either<i32, i32>::Right(9);
+  show(a.is_left());
+  print!(" ");
+  show(b.is_left());
+  print!(" ");
+  print(a.left_or(0));
+  print!(" ");
+  print(b.left_or(-1));
+  print!(" ");
+  print(b.right_or(5));
+  return 0;
+}

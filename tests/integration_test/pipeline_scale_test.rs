@@ -47,6 +47,10 @@ fn pipeline_emits_identical_mlir_at_benchmark_scale() {
     // A corpus with no machine declarations left a serial phase unmeasured for two
     // weeks once. Keep some here so the memory-algebra surface is covered as well.
     params.memalg_frac = 0.25;
+    // And some modules that call a method on a generic type, so the compile has monomorphs to
+    // route, dedup, sign and lower. Without these the corpus mints none at all, and everything
+    // Vx#578 touched is exercised only by two small programs elsewhere.
+    params.generic_call_frac = 0.25;
 
     let generated = corpus::generate(&params, None);
     let paths = generated.paths.clone();
@@ -69,6 +73,13 @@ fn pipeline_emits_identical_mlir_at_benchmark_scale() {
     };
 
     let one_thread = compile(1, Schedule::Parallel);
+    // The monomorph reached MLIR, not merely the functions that call it. Vx#578 was a compile that
+    // declined every generic method call, and a determinism check cannot tell a healthy compile
+    // from one that emits nothing of the kind: both are stable across thread counts.
+    assert!(
+        one_thread.contains("C0$i32$bump$i32"),
+        "no monomorph in the emitted MLIR; the corpus stopped exercising the generic-method path"
+    );
     let many_threads = compile(4, Schedule::Parallel);
     // Not "one rayon thread": the sequential schedule takes rayon off the path entirely,
     // which is the baseline the scaling number is quoted against.

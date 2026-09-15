@@ -16,8 +16,8 @@
 //
 //===----------------------------------------------------------------------===//
 use crate::bytecode::{
-    HirInstruction, Opcode, Register, TypeIdx, IMM_BLOCK_INIT, IMM_BLOCK_STEP, IMM_PARALLEL_INIT,
-    IMM_PARALLEL_STEP, IMM_THREAD_INIT, IMM_THREAD_STEP,
+    HirInstruction, Opcode, Register, TypeIdx, IMM_BLOCK_BOUND, IMM_BLOCK_INIT, IMM_BLOCK_STEP,
+    IMM_PARALLEL_BOUND, IMM_PARALLEL_INIT, IMM_PARALLEL_STEP, IMM_THREAD_INIT, IMM_THREAD_STEP,
 };
 use crate::decline::{Decline, Lowered};
 use crate::gid::TypeId;
@@ -1336,6 +1336,13 @@ impl<'r> Lowerer<'r> {
             // it mis-sizes). Any other unmodelled non-scalar (a tensor, `i128`) still falls back to
             // `8`, matching the oracle where it isn't demonstrably broken. (#242)
             Expr::SizeOf(s) => {
+                // The checker refuses a call that leaves a type parameter unbound, so one here
+                // is an instance that slipped through; its size has no right answer.
+                assert!(
+                    !matches!(s.target_ty, Type::Generic(..)),
+                    "sizeof<{}>() reached lowering with its type parameter unbound",
+                    s.target_ty
+                );
                 let size = sizeof_bytes(&s.target_ty)
                     .or_else(|| {
                         agg_gid_of_ty(&s.target_ty, self.registry)
@@ -2048,6 +2055,14 @@ impl<'r> Lowerer<'r> {
                 what: "an enum with no registered data",
             })?
             .clone();
+        // The instance's arguments, so a variant's declared payload can be read at the type
+        // this instance gives it. The layout's own types describe the slot, which is sized
+        // for the widest variant and named after none of them (Vx#570).
+        let (_, inst_args) = parse_enum_instance(enum_name);
+        let mut subst = HashMap::new();
+        for (g, a) in data.generics.iter().zip(inst_args.iter()) {
+            subst.insert(g.clone(), a.clone());
+        }
         let merge = self.new_block();
         for arm in &m.arms {
             match &arm.pattern {
@@ -2096,10 +2111,18 @@ impl<'r> Lowerer<'r> {
                                 let poff = *offsets.get(i + 1).ok_or(Decline::TypeNotModelled {
                                     what: "an enum payload offset that is not laid out",
                                 })?;
+                                // This variant's payload type, not the slot's.
+                                let vtys: Vec<Type> = data
+                                    .variants
+                                    .get(ordinal as usize)
+                                    .map(|(_, p)| p.iter().map(|t| t.substitute(&subst)).collect())
+                                    .unwrap_or_default();
                                 let lty = lowered_ty(
-                                    payload_types.get(i).ok_or(Decline::TypeNotModelled {
-                                        what: "an enum payload type that is not laid out",
-                                    })?,
+                                    vtys.get(i).or_else(|| payload_types.get(i)).ok_or(
+                                        Decline::TypeNotModelled {
+                                            what: "an enum payload type that is not laid out",
+                                        },
+                                    )?,
                                     self.registry,
                                 )
                                 .ok_or(
@@ -2333,14 +2356,20 @@ impl<'r> Lowerer<'r> {
         };
         // Induction variable `i` and the loop bound both need to survive across blocks -> slots.
         let i_slot = self.emit_alloca(LoweredTy::Scalar(elem.clone()));
-        let (init_imm, step_imm) = match plan_kind {
-            Some(pair) => pair,
-            None if stride => (IMM_PARALLEL_INIT, IMM_PARALLEL_STEP),
-            None => (0, 0),
+        // The bound tag rides alongside the init/step pair, but only for the two loop kinds a
+        // host worker can own whole: the single-level stridable loop, and the block loop of a
+        // two-level region. A thread-mapped loop gets none -- see `IMM_BLOCK_BOUND`.
+        let (init_imm, step_imm, bound_imm) = match plan_kind {
+            Some((IMM_BLOCK_INIT, IMM_BLOCK_STEP)) => {
+                (IMM_BLOCK_INIT, IMM_BLOCK_STEP, IMM_BLOCK_BOUND)
+            }
+            Some((init, step)) => (init, step, 0),
+            None if stride => (IMM_PARALLEL_INIT, IMM_PARALLEL_STEP, IMM_PARALLEL_BOUND),
+            None => (0, 0, 0),
         };
         self.emit_effect(Opcode::Store, i_slot.reg, start.reg, init_imm);
         let end_slot = self.emit_alloca(LoweredTy::Scalar(elem.clone()));
-        self.emit_effect(Opcode::Store, end_slot.reg, end.reg, 0);
+        self.emit_effect(Opcode::Store, end_slot.reg, end.reg, bound_imm);
         self.scope.insert(
             f.iter.as_str().into(),
             Binding::Slot {
@@ -2921,14 +2950,34 @@ impl<'r> Lowerer<'r> {
         for (g, a) in data.generics.iter().zip(args) {
             mapping.insert(g.clone(), a.clone());
         }
-        let payload: Vec<Type> = data
-            .variants
-            .iter()
-            .find(|(_, p)| !p.is_empty())?
-            .1
-            .iter()
-            .map(|t| t.substitute(&mapping))
-            .collect();
+        // One payload slot per position, wide enough for whichever variant needs the most
+        // room. Taking the first variant's types instead gave `Result<T, E>` an `Err` slot
+        // shaped like `Ok` (Vx#570): the store then wrote the wrong width, or the right
+        // width under the wrong name, and the emitted MLIR did not parse.
+        //
+        // Variants may disagree about the type at a position as well as the width, so the
+        // slot is a place to put bits rather than a typed field. The store and the load
+        // each name the type they are actually moving.
+        let arity = data.variants.iter().map(|(_, p)| p.len()).max()?;
+        let mut payload: Vec<Type> = Vec::with_capacity(arity);
+        for i in 0..arity {
+            let mut widest: Option<(u64, u64, Type)> = None;
+            for (_, p) in &data.variants {
+                let Some(t) = p.get(i) else { continue };
+                let t = t.substitute(&mapping);
+                let Some((sz, al, _)) = enum_payload_field(&t) else {
+                    continue;
+                };
+                let better = match &widest {
+                    None => true,
+                    Some((bsz, bal, _)) => (sz, al) > (*bsz, *bal),
+                };
+                if better {
+                    widest = Some((sz, al, t));
+                }
+            }
+            payload.push(widest?.2);
+        }
         let mut offsets = vec![0u64];
         let mut field_tys = vec!["i32".to_string()]; // the discriminant tag
         let mut off = 4u64;
@@ -2936,6 +2985,12 @@ impl<'r> Lowerer<'r> {
             let (sz, al, mlir) = enum_payload_field(pt)?;
             off = crate::layout::align_up(off as usize, al as usize) as u64;
             offsets.push(off);
+            // A payload slot holds bits, so it is declared as an integer of the right
+            // width rather than as whichever variant's type happened to be widest. The
+            // struct is loaded and passed whole, and a float field does not carry integer
+            // bits through that: 7 stored as an `i32` and copied through an `f32` field is
+            // a denormal, which the copy is free to flush to zero (Vx#570). A pointer
+            // keeps its own type, which is what carries it.
             field_tys.push(mlir);
             off += sz;
         }
@@ -5270,12 +5325,34 @@ fn parse_enum_instance(name: &str) -> (String, Vec<Type>) {
     };
     let base = name[..lt].to_string();
     let inner = &name[lt + 1..name.rfind('>').unwrap_or(name.len())];
-    let args = inner
-        .split(',')
-        .filter(|s| !s.trim().is_empty())
-        .map(|s| parse_scalar_type_arg(s.trim()))
+    let args = split_type_args(inner)
+        .into_iter()
+        .map(parse_scalar_type_arg)
         .collect();
     (base, args)
+}
+
+/// Split a type-argument list on the commas that separate ARGUMENTS, ignoring those inside a
+/// nested instance. A plain `split(',')` cuts `Pair<i32, f32>` in half when it is one argument
+/// of `Holder<Pair<i32, f32>>`, and both halves then parse as nonsense struct names.
+fn split_type_args(inner: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    for (i, c) in inner.char_indices() {
+        match c {
+            '<' => depth += 1,
+            '>' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                out.push(inner[start..i].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(inner[start..].trim());
+    out.retain(|s| !s.is_empty());
+    out
 }
 
 /// Parse a type-argument string to a `Type`: a scalar spelling to its `ElementType`, anything else to
@@ -5311,6 +5388,14 @@ fn parse_scalar_type_arg(s: &str) -> Type {
         "f32" => F32,
         "f64" => F64,
         "bool" | "Bool" => Bool,
+        // A nested instance (`Pair<Pair<i32>>` names `Pair<i32>` as its argument). Parsed into a
+        // real `GenericInstance` rather than a struct whose NAME happens to contain the
+        // spelling: the layout synthesizer already lays out an instance-typed field, and has no
+        // way to resolve a nominal name carrying angle brackets.
+        other if other.contains('<') => {
+            let (base, args) = parse_enum_instance(other);
+            return Type::GenericInstance(Box::new(Type::Struct(base.into(), None)), args);
+        }
         other => return Type::Struct(other.to_string().into(), None),
     };
     Type::Scalar(e)

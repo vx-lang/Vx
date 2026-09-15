@@ -308,6 +308,82 @@ fn lower_match_arm_body<'c>(
     Ok(())
 }
 
+/// The lowered type a matched variant actually declares for its payload.
+///
+/// The slot is sized for the widest variant, so a match that bound its payload at the
+/// slot type handed back a value too wide: an `i8` -3 extended into an `i64` slot reads
+/// as 253 unless it is cut back to the width the variant declares.
+///
+/// The pattern carries the enum's parameter names (`Result<T, E>`) and the lowered struct
+/// carries the arguments in its mangled name (`Result_i64_i8`), which together give the
+/// substitution. That name is split on `_`, so the mapping is used only when the pieces
+/// come out as the expected number of plain scalar types. Anything else -- a nested
+/// generic, a struct whose own name has an underscore -- returns `None`, and the caller
+/// keeps the slot type it used before.
+fn declared_payload_ty(
+    gen: &MeliorGenerator<'_>,
+    pattern_enum: &str,
+    variant: &str,
+    match_ty_text: &str,
+) -> Option<String> {
+    let (base, params) = match pattern_enum.split_once('<') {
+        Some((b, rest)) => (
+            b,
+            rest.trim_end_matches('>')
+                .split(',')
+                .map(|p| p.trim().to_string())
+                .collect::<Vec<_>>(),
+        ),
+        None => (pattern_enum, Vec::new()),
+    };
+
+    let declared = gen
+        .enums
+        .get(&crate::symbol::Symbol::from(base))?
+        .iter()
+        .find(|(v, _)| v.as_ref() == variant)?
+        .1
+        .as_ref()?
+        .first()?
+        .clone();
+
+    let mut mapping = std::collections::HashMap::new();
+    if !params.is_empty() {
+        let quoted = match_ty_text.split('"').nth(1)?;
+        let args: Vec<&str> = quoted
+            .strip_prefix(&format!("{}_", base))?
+            .split('_')
+            .collect();
+        if args.len() != params.len() || !args.iter().all(|a| is_plain_scalar(a)) {
+            return None;
+        }
+        for (p, a) in params.iter().zip(args) {
+            mapping.insert(
+                crate::symbol::Symbol::from(p.as_str()),
+                parse_scalar_type(a)?,
+            );
+        }
+    }
+
+    gen.lower_type_str(&declared.substitute(&mapping)).ok()
+}
+
+/// A scalar type spelled plainly, so a mangled name can be split on `_` without guessing.
+fn is_plain_scalar(text: &str) -> bool {
+    parse_scalar_type(text).is_some()
+}
+
+/// The syntax type a plain scalar name stands for.
+fn parse_scalar_type(text: &str) -> Option<syntax::Type> {
+    let mut lexer = crate::lexer::Lexer::new(text);
+    let tokens = lexer.tokenize();
+    let mut parser = crate::parser::Parser::new(&tokens, text);
+    match parser.parse_type() {
+        Ok(t @ syntax::Type::Scalar(_)) => Some(t),
+        _ => None,
+    }
+}
+
 pub fn generate_match_chain<'c>(
     gen: &mut MeliorGenerator<'c>,
     arms: &[MatchArm],
@@ -458,7 +534,7 @@ pub fn generate_match_chain<'c>(
             .build()?,
     );
 
-    if let Pattern::EnumVariant(_, _, Some(payloads)) = &arm.pattern {
+    if let Pattern::EnumVariant(en, vn, Some(payloads)) = &arm.pattern {
         if payloads.len() == 1 {
             if let Pattern::Identifier(name) = &payloads[0] {
                 let opt_ty_str = _match_ty.to_string();
@@ -491,10 +567,32 @@ pub fn generate_match_chain<'c>(
                             .into(),
                     )])
                     .build()?;
-                let payload_val = then_block
+                let payload_val: melior::ir::Value = then_block
                     .append_operation(extract_payload_op)
                     .result(0)?
                     .into();
+
+                // The slot may be wider than this variant declares, so cut the value back
+                // to its own type before the arm body sees it.
+                let narrower = declared_payload_ty(gen, en.as_ref(), vn.as_ref(), &opt_ty_str)
+                    .filter(|text| {
+                        crate::codegen::lower::expr::is_narrower_int(&payload_ty_str, text)
+                    });
+                let (payload_val, payload_ty) = match narrower {
+                    Some(text) => {
+                        let ty = melior::ir::Type::parse(gen.context, &text).ok_or_else(|| {
+                            crate::codegen::lower::LowerError::ParseType(
+                                "Type::parse failed".to_string(),
+                            )
+                        })?;
+                        let trunc = OperationBuilder::new("arith.trunci", gen.loc())
+                            .add_operands(&[payload_val])
+                            .add_results(&[ty])
+                            .build()?;
+                        (then_block.append_operation(trunc).result(0)?.into(), ty)
+                    }
+                    None => (payload_val, payload_ty),
+                };
                 gen.env
                     .insert(name.to_string().into(), (payload_val, payload_ty));
             }

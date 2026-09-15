@@ -140,12 +140,24 @@ pub fn quiet() -> bool {
 
 /// The pipeline's phases, in the order they run. Fixed at compile time so the timer can be a plain
 /// array of atomics indexed by position -- no map, no allocation, no lock.
-/// `codegen` is split into its serial prologue and its parallel emit because a phase that is 59% of
-/// a compile deserves to be attributed at finer grain than "codegen". The prologue builds the emit
-/// context from the frozen registry and then walks every function's signature -- work proportional
-/// to the whole program, on the critical path, inside what the phase table otherwise presents as a
-/// parallel-for. Its cost is included in `codegen`, so the three do not sum independently.
-pub const PHASES: [&str; 16] = [
+/// `codegen` is split into the lowering of every body, its serial prologue and its parallel emit,
+/// because a phase that is 59% of a compile deserves to be attributed at finer grain than
+/// "codegen". The prologue builds the emit context from the frozen registry and then walks every
+/// function's signature -- work proportional to the whole program, on the critical path, inside
+/// what the phase table otherwise presents as a parallel-for. `codegen:lower` is where every
+/// function body becomes flat HIR; it used to sit inside `type_check`, fused with the check that
+/// produced it, and moved here when bodies started being lowered against the epoch-2 registry that
+/// knows the monomorphs (Vx#578). Their costs are included in `codegen`, so the four do not sum
+/// independently.
+/// The three sub-phases of `codegen`, named once and shared with the sites that instrument them.
+/// `record` drops a name it does not recognise, so a literal spelled with one space too few at an
+/// instrumentation site reports 0.0 for the phase and attributes its time to nothing, silently.
+/// These make that a compile error instead.
+pub const CODEGEN_LOWER: &str = "  codegen:lower";
+pub const CODEGEN_SETUP: &str = "  codegen:setup";
+pub const CODEGEN_EMIT: &str = "  codegen:emit";
+
+pub const PHASES: [&str; 17] = [
     "parse",
     "macro_expand",
     "name_resolution",
@@ -159,8 +171,9 @@ pub const PHASES: [&str; 16] = [
     "stream_extract",
     "simd_patch",
     "codegen",
-    "  codegen:setup",
-    "  codegen:emit",
+    CODEGEN_LOWER,
+    CODEGEN_SETUP,
+    CODEGEN_EMIT,
     "teardown",
 ];
 
@@ -233,6 +246,14 @@ mod tests {
         assert_eq!(phase_index("type_check"), Some(8));
         assert_eq!(phase_index("not_a_phase"), None);
         // Every name the pipeline instruments must be declared, or its time vanishes.
-        assert_eq!(PHASES.len(), 16);
+        assert_eq!(PHASES.len(), 17);
+        // The sub-phase constants are the names their instrumentation sites pass, so a lookup
+        // that misses here is a row that would have read 0.0 in every report.
+        for name in [CODEGEN_LOWER, CODEGEN_SETUP, CODEGEN_EMIT] {
+            assert!(
+                phase_index(name).is_some(),
+                "{name} is not a declared phase"
+            );
+        }
     }
 }

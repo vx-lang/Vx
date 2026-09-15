@@ -81,13 +81,15 @@ struct Frontend {
     checks: Vec<FunctionCheck>,
     /// Per-check patched type streams, index-aligned with `checks`.
     type_streams: Vec<(usize, Vec<crate::gid::TypeId>)>,
-    /// The reconciled global arenas from the barrier: `(slow path, generics, generics offsets)`.
-    merged_arenas: (
-        Vec<crate::gid::UnboundedFunctionMetadata>,
-        Vec<crate::gid::TypeId>,
-        Vec<(usize, usize)>,
-    ),
+    merged_arenas: MergedArenas,
 }
+
+/// The reconciled global arenas from the barrier: `(slow path, generics, generics offsets)`.
+type MergedArenas = (
+    Vec<crate::gid::UnboundedFunctionMetadata>,
+    Vec<crate::gid::TypeId>,
+    Vec<(usize, usize)>,
+);
 
 fn run_frontend(
     file_paths: &[String],
@@ -302,10 +304,10 @@ pub fn compile_pipeline_mlir_in(
         codegen_mlir_phase(
             &modules,
             &mut checks,
-            &type_streams,
             &subspaces,
             &topo_archs,
             &session,
+            merged_arenas,
             sched,
         )
     });
@@ -319,12 +321,12 @@ pub fn compile_pipeline_mlir_in(
     crate::intern_mode::timed("teardown", move || {
         // Free on the threads that allocated, rather than all of it on this one (#315).
         //
-        // These three hold essentially the whole compile: ~1,600 `LocalWorkerState`s with their HIR
-        // streams, type streams and side tables, every module's AST, and the per-function GID
-        // streams. All of it was allocated across the worker threads. Releasing it on a single
-        // thread makes almost every free a *remote* free -- the block returns to another thread's
-        // list instead of the freeing thread's cache -- which is why teardown was the one phase that
-        // got slower as workers were added.
+        // These three hold essentially the whole compile: ~1,600 `LocalWorkerState`s with their
+        // type streams and side tables, every module's AST, and the per-function GID streams. All
+        // of it was allocated across the worker threads. Releasing it on a single thread makes
+        // almost every free a *remote* free -- the block returns to another thread's list instead
+        // of the freeing thread's cache -- which is why teardown was the one phase that got slower
+        // as workers were added.
         //
         // `for_each(drop)` hands each element back to a worker to destroy. rayon gives no guarantee
         // that an element lands on the thread that built it, so this is not a proof of locality; it
@@ -339,7 +341,6 @@ pub fn compile_pipeline_mlir_in(
             modules.into_par_iter().for_each(drop);
             type_streams.into_par_iter().for_each(drop);
         }
-        drop(merged_arenas);
         drop(subspaces);
         drop(topo_archs);
         drop(session);
@@ -483,27 +484,9 @@ struct FunctionCheck {
     worker: LocalWorkerState,
     module_idx: usize,
     generated_structs: Vec<syntax::StructDecl>,
-    name: crate::symbol::Symbol,
-    lowered: bool,
     /// Capacity summaries this worker produced (the function, plus any generic it was first
     /// to instantiate) -- the cross-call fold's input, collected after the parallel phase.
     capacity_summaries: Vec<crate::hir::check::capacity_fold::FnCapacitySummary>,
-}
-
-/// The order in which [`type_check_phase`] visits a module's functions -- its free functions, then
-/// each impl block's methods -- paired with whether the item is a free function.
-///
-/// Codegen replays this walk to pair each [`FunctionCheck`] back to its function, so there is one
-/// definition of the order and both sides read it rather than each spelling it out. The flag exists
-/// because codegen wants only the free functions: an impl method reaches MLIR as the mangled
-/// monomorph the checker rewrote its call sites to, exactly as on `vxc`'s own flat path.
-fn functions_in_check_order(module: &VxModule) -> impl Iterator<Item = (&syntax::Function, bool)> {
-    module.functions.iter().map(|f| (f, true)).chain(
-        module
-            .impls
-            .iter()
-            .flat_map(|i| i.methods.iter().map(|m| (m, false))),
-    )
 }
 
 // ---- Phase 3: lowering AST types to the flat GID stream ------------------------------------
@@ -890,32 +873,13 @@ pub fn build_frozen_registry_with(
     for module in modules {
         let module_hash = crate::hash::compute_module_hash(&module.module_path);
         for f in &module.functions {
-            let gid = crate::gid::TypeId::new(
-                module_hash,
-                crate::hash::DefPath::Named(f.name.as_ref()).compute_symbol_hash(),
-                0,
-                0,
-            );
+            let sig = fn_sig_of(module_hash, f);
             match registry.fn_sigs.get(&f.name) {
-                Some(existing) if existing.gid != gid => {
+                Some(existing) if existing.gid != sig.gid => {
                     ambiguous_fns.insert(f.name.clone());
                 }
                 _ => {
-                    registry.fn_sigs.insert(
-                        f.name.clone(),
-                        crate::registry::FnSig {
-                            gid,
-                            params: f.params.iter().map(|(_, t)| t.clone()).collect(),
-                            ret_ty: f.return_type.clone(),
-                            // Precompute the return-provenance code from the AST body now (it is
-                            // present here), so a downstream compile that only has this interface can
-                            // still refine the reborrow decision for a call to `f` (#265 step 7).
-                            ret_prov: crate::hir::provenance::encode_return_provenance(
-                                &crate::hir::provenance::compute_return_provenance(f),
-                            ),
-                            is_unsafe: f.is_unsafe,
-                        },
-                    );
+                    registry.fn_sigs.insert(f.name.clone(), sig);
                 }
             }
         }
@@ -1016,6 +980,59 @@ pub fn build_frozen_registry_with(
     Ok(registry)
 }
 
+/// The one formula for a function's registry signature, shared by the freeze point (a module's
+/// declared functions, under the module's hash) and the epoch-2 barrier (the monomorphs the check
+/// phase produced, under module 0). One formula, so the GID a lowered call stores and the GID the
+/// emitter's callee map computes for the same function cannot disagree.
+pub fn fn_sig_of(module_hash: u64, f: &syntax::Function) -> crate::registry::FnSig {
+    crate::registry::FnSig {
+        gid: crate::gid::TypeId::new(
+            module_hash,
+            crate::hash::DefPath::Named(f.name.as_ref()).compute_symbol_hash(),
+            0,
+            0,
+        ),
+        params: f.params.iter().map(|(_, t)| t.clone()).collect(),
+        ret_ty: f.return_type.clone(),
+        // Precomputed from the AST body while it is present, so a downstream compile that only
+        // has this interface can still refine the reborrow decision for a call to `f`.
+        ret_prov: crate::hir::provenance::encode_return_provenance(
+            &crate::hir::provenance::compute_return_provenance(f),
+        ),
+        is_unsafe: f.is_unsafe,
+    }
+}
+
+/// The epoch-2 registry: the frozen epoch-1 tables plus a signature for every monomorph the check
+/// phase produced, so a body lowered against it resolves a call to `Holder$i32$bump$i32` the way
+/// it resolves a call to a declared function. A monomorph's identity is its mangled name alone
+/// (module 0, as for an `extern`): it is deduped by name and emitted once whichever module
+/// instantiated it. Two monomorphs sharing a name with different signatures are dropped, never
+/// first-wins, the freeze point's own policy.
+fn epoch_2_registry(
+    base: &crate::registry::ImmutableGlobalRegistry,
+    monomorphs: &[syntax::Function],
+) -> crate::registry::ImmutableGlobalRegistry {
+    let mut registry = base.clone();
+    let mut ambiguous = std::collections::HashSet::new();
+    for m in monomorphs {
+        let sig = fn_sig_of(0, m);
+        match registry.fn_sigs.get(&m.name) {
+            Some(existing) if *existing != sig => {
+                ambiguous.insert(m.name.clone());
+            }
+            Some(_) => {}
+            None => {
+                registry.fn_sigs.insert(m.name.clone(), sig);
+            }
+        }
+    }
+    for name in ambiguous {
+        registry.fn_sigs.remove(&name);
+    }
+    registry
+}
+
 /// The receiver GID for an `impl` target type, for the registry method table: a scalar's content-hash
 /// GID or a resolved nominal's GID. Generic/tensor/unresolved receivers are `None` (deferred).
 fn method_receiver_gid(ty: &crate::syntax::Type) -> Option<crate::gid::TypeId> {
@@ -1056,10 +1073,8 @@ fn harvest_bodies(
     registry: &mut crate::registry::ImmutableGlobalRegistry,
     modules: &[VxModule],
 ) -> Result<(), PipelineError> {
-    // A separate, deterministic registry build backs the lowering session (identical GIDs); the frozen
-    // registry we attach bodies to is not `Clone`.
-    let session_reg = build_frozen_registry(modules)?;
-    let session = std::sync::Arc::new(GlobalSession::with_registry(1, session_reg));
+    // The lowering session reads the same tables the bodies are attached to.
+    let session = std::sync::Arc::new(GlobalSession::with_registry(1, registry.clone()));
     for module in modules {
         for func in &module.functions {
             if !func.generics.is_empty() {
@@ -1107,7 +1122,9 @@ fn by_value_nominal_gid(ty: &syntax::Type) -> Option<crate::gid::TypeId> {
     }
 }
 
-/// Check one function and lower it — the unit of work the check phase distributes.
+/// Check one function and lower its signature's type references — the unit of work the check
+/// phase distributes. The body is lowered later, in [`codegen_mlir_phase`], against the epoch-2
+/// registry that also knows the monomorphs this check produced.
 ///
 /// Named rather than inlined because it is what must stay identical across four traversals: free
 /// functions and impl methods, each in a parallel and a sequential form. It used to be two verbatim
@@ -1134,11 +1151,6 @@ fn check_one_function(
 
     // Lower this function's type references to the flat GID stream (Phase 3).
     emit_function_type_gids(func, &mut worker);
-    // Lower the body to flat HIR bytecode; atomic — a no-op for functions outside the supported
-    // subset.
-    let lowered = crate::hir::flatten::lower_function_to_hir(func, &mut worker).is_ok();
-    #[cfg(debug_assertions)]
-    crate::hir::flatten::verify_hir_stream(&worker);
 
     FunctionCheck {
         diagnostics: errors,
@@ -1146,8 +1158,6 @@ fn check_one_function(
         worker,
         module_idx,
         generated_structs: gen_structs,
-        name: func.name.clone(),
-        lowered,
         capacity_summaries,
     }
 }
@@ -1555,22 +1565,98 @@ fn route_monomorphs(
     (module_buckets, module_struct_buckets)
 }
 
+/// The epoch-2 session: the epoch-2 registry over the barrier's reconciled arenas, carrying the
+/// compile's interning strategy. Every body is lowered against it.
+fn epoch_2_session(
+    epoch_1: &std::sync::Arc<GlobalSession>,
+    merged_arenas: MergedArenas,
+    monomorphs: &[syntax::Function],
+) -> std::sync::Arc<GlobalSession> {
+    let (merged_slow, merged_gen, merged_off) = merged_arenas;
+    std::sync::Arc::new(GlobalSession {
+        epoch: 2,
+        intern_mode: epoch_1.intern_mode,
+        registry: std::sync::Arc::new(epoch_2_registry(&epoch_1.registry, monomorphs)),
+        slow_path_arena: std::sync::Arc::new(merged_slow),
+        generics_arena: std::sync::Arc::new(merged_gen),
+        generics_offsets: std::sync::Arc::new(merged_off),
+    })
+}
+
+/// What codegen emits, with each body's flat HIR.
+struct LoweredBodies<'a> {
+    /// Each module's free non-generic functions in module order, then the monomorphs, each name
+    /// once. A generic function has no code of its own; its monomorphs carry it.
+    funcs: Vec<&'a syntax::Function>,
+    /// Index-aligned with `funcs`: the worker that lowered each body, and whether it did.
+    workers: Vec<(LocalWorkerState, crate::decline::Lowered<()>)>,
+    /// Names dropped because an earlier module already defined them.
+    shadowed: usize,
+}
+
+/// Lower every body codegen will emit, in one parallel pass against the epoch-2 session. Each body
+/// gets a fresh worker: the lowerer's GIDs are content hashes, so its type stream needs no pass
+/// through the barrier's patch.
+fn lower_bodies_phase<'a>(
+    parsed_modules: &'a [VxModule],
+    monomorphs: &'a [syntax::Function],
+    session: &std::sync::Arc<GlobalSession>,
+    sched: Schedule,
+) -> LoweredBodies<'a> {
+    let mut funcs: Vec<&'a syntax::Function> = Vec::new();
+    let mut seen_names: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut shadowed = 0usize;
+    for func in parsed_modules
+        .iter()
+        .flat_map(|m| m.functions.iter())
+        .filter(|f| f.generics.is_empty())
+        .chain(monomorphs.iter())
+    {
+        if seen_names.insert(func.name.as_ref()) {
+            funcs.push(func);
+        } else {
+            shadowed += 1;
+        }
+    }
+
+    let lower = |f: &&'a syntax::Function| {
+        let mut worker = LocalWorkerState::new(session.clone());
+        let lowered = crate::hir::flatten::lower_function_to_hir(f, &mut worker);
+        #[cfg(debug_assertions)]
+        crate::hir::flatten::verify_hir_stream(&worker);
+        (worker, lowered)
+    };
+    let workers = if sched.is_seq() {
+        funcs.iter().map(lower).collect()
+    } else {
+        funcs.par_iter().map(lower).collect()
+    };
+    LoweredBodies {
+        funcs,
+        workers,
+        shadowed,
+    }
+}
+
 /// Phase 7: generate the compile's MLIR (#311).
 ///
-/// Everything [`crate::codegen::flat::emit_module_mlir`] needs was already produced per function by
-/// the parallel check phase and is sitting in the workers — flat HIR, the type stream, the tensor,
-/// string, aggregate-layout and alias side tables. What this phase adds is the three things the
-/// frontend does not produce:
+/// The check phase left every function checked, its signature's type references in the GID
+/// stream, and the monomorphs it produced. What this phase adds:
 ///
-/// 1. **Monomorphs have no HIR.** They did not exist when the check phase ran; they *are* its
-///    output. They are routed to their owning modules, deduped by name, and lowered here — in
-///    parallel, like everything else.
-/// 2. **Sub-space descriptors**, harvested from the env by the frontend — the frozen registry
-///    carries no memory declarations, so without them a `vx.transfer` loses its attributes.
-/// 3. **The decline policy.** `lower_function_to_hir` is atomic, so a function outside the flat
+/// 1. **Route and dedup the monomorphs**, as `codegen_and_metadata_phase` does.
+/// 2. **Mint epoch 2.** A monomorph did not exist when the registry was frozen, so a body lowered
+///    against epoch 1 finds no signature for `Holder$i32$bump$i32` and declines, and a monomorph's
+///    own body calls other monomorphs. So every body is lowered against the epoch-2 registry --
+///    the frozen tables plus one signature per surviving monomorph -- and the emitter receives that
+///    same registry, since its callee map is a fold over `fn_sigs`.
+/// 3. **Lower every body once**, declared functions and monomorphs in one parallel pass
+///    ([`lower_bodies_phase`]).
+/// 4. **The decline policy.** `lower_function_to_hir` is atomic, so a function outside the flat
 ///    subset leaves an empty HIR stream rather than an error; emitting that would produce a
 ///    silently empty `func.func`. If any function to be emitted was not lowered, the whole compile
 ///    declines, matching what `vxc`'s `build_flat_module` does before falling back to the AST walk.
+/// 5. **Sub-space descriptors**, harvested from the env by the frontend — the frozen registry
+///    carries no memory declarations, so without them a `vx.transfer` loses its attributes.
 ///
 /// Only free functions are emitted. An impl method reaches MLIR as the mangled monomorph the
 /// checker rewrote its call sites to, which is also how `vxc`'s flat path sees it.
@@ -1579,127 +1665,84 @@ fn route_monomorphs(
 /// emit the same `func.func` twice. First definition in module order wins, deterministically, and
 /// the count of shadowed names is reported — the same first-wins rule `build_flat_module` applies
 /// across the main module and its imports.
+///
+/// Epoch 2 lives and dies here: the session holding it and the workers that lowered against it are
+/// released before this returns.
 fn codegen_mlir_phase(
     parsed_modules: &[VxModule],
     check_results: &mut [FunctionCheck],
-    all_type_streams: &[(usize, Vec<crate::gid::TypeId>)],
     subspaces: &[crate::codegen::flat::SubspaceInfo],
     topo_archs: &[(i64, String)],
     global_session: &std::sync::Arc<GlobalSession>,
+    merged_arenas: MergedArenas,
     sched: Schedule,
 ) -> Option<String> {
-    // Monomorphs, routed and deduped exactly as `codegen_and_metadata_phase` routes them, then
-    // lowered. Flattened to one list first so the lowering is a single flat iteration rather than
-    // a nested one whose outer level is as short as the module count.
     let (module_buckets, _struct_buckets) = route_monomorphs(parsed_modules, check_results, sched);
-    let flat_monos: Vec<syntax::Function> = module_buckets.into_iter().flatten().collect();
-    let lower_mono = |f: syntax::Function| {
-        let mut worker = LocalWorkerState::new(global_session.clone());
-        let lowered = crate::hir::flatten::lower_function_to_hir(&f, &mut worker).is_ok();
-        (f, worker, lowered)
-    };
-    let monos: Vec<(syntax::Function, LocalWorkerState, bool)> = if sched.is_seq() {
-        flat_monos.into_iter().map(lower_mono).collect()
-    } else {
-        flat_monos.into_par_iter().map(lower_mono).collect()
-    };
-
-    // Pair each check result back to its function by replaying the check-phase walk. The *patched*
-    // stream is the type side table, not the worker's own: `extract_type_streams` moved it out, and
-    // more to the point Phase 6 rewrote its worker-local arena indices to global ones. Instruction
-    // `type_idx`es index it correctly either way — `commit` rebased them past the signature GIDs
-    // `emit_function_type_gids` pushed ahead of the body types.
-    let mut entries: Vec<(&syntax::Function, &LocalWorkerState, &[crate::gid::TypeId])> =
-        Vec::with_capacity(check_results.len() + monos.len());
-    let mut seen_names: std::collections::HashSet<&str> = std::collections::HashSet::new();
-    let mut shadowed = 0usize;
-    let mut check_idx = 0usize;
-    for module in parsed_modules {
-        for (func, is_free_fn) in functions_in_check_order(module) {
-            let check = &check_results[check_idx];
-            debug_assert_eq!(
-                check.name, func.name,
-                "codegen walked the module in a different order than type_check_phase did"
-            );
-            check_idx += 1;
-            // A generic function has no code of its own; its monomorphs carry it.
-            if !is_free_fn || !func.generics.is_empty() {
-                continue;
-            }
-            if !check.lowered {
-                if std::env::var("VX_FLAT_DBG").is_ok() {
-                    eprintln!("[flat-dbg] pipeline: HIR lowering declined: {}", func.name);
-                }
-                return None;
-            }
-            if !seen_names.insert(func.name.as_ref()) {
-                shadowed += 1;
-                continue;
-            }
-            entries.push((
-                func,
-                &check.worker,
-                all_type_streams[check_idx - 1].1.as_slice(),
-            ));
-        }
-    }
-    debug_assert_eq!(
-        check_idx,
-        check_results.len(),
-        "check results and module functions are out of step"
-    );
-    for (func, worker, lowered) in &monos {
-        if !lowered {
+    let monos: Vec<syntax::Function> = module_buckets.into_iter().flatten().collect();
+    let session2 = epoch_2_session(global_session, merged_arenas, &monos);
+    let LoweredBodies {
+        funcs: to_emit,
+        workers,
+        shadowed,
+    } = crate::intern_mode::timed(crate::intern_mode::CODEGEN_LOWER, || {
+        lower_bodies_phase(parsed_modules, &monos, &session2, sched)
+    });
+    for (func, (_, lowered)) in to_emit.iter().zip(&workers) {
+        if let Err(why) = lowered {
             if std::env::var("VX_FLAT_DBG").is_ok() {
                 eprintln!(
-                    "[flat-dbg] pipeline: HIR lowering declined for monomorph: {}",
+                    "[flat-dbg] pipeline: HIR lowering declined: {} ({why})",
                     func.name
                 );
             }
             return None;
         }
-        if !seen_names.insert(func.name.as_ref()) {
-            shadowed += 1;
-            continue;
-        }
-        entries.push((func, worker, worker.local_type_stream.as_slice()));
     }
 
+    // Each entry's type table is its own lowering worker's stream: the lowerer's GIDs are content
+    // hashes, so nothing in them waits on the barrier's patch.
     let funcs: Vec<(
         &syntax::Function,
         &[crate::bytecode::HirInstruction],
         &[crate::gid::TypeId],
-    )> = entries
+    )> = to_emit
         .iter()
-        .map(|(f, w, types)| (*f, w.local_hir_stream.as_slice(), *types))
+        .zip(&workers)
+        .map(|(f, (w, _))| {
+            (
+                *f,
+                w.local_hir_stream.as_slice(),
+                w.local_type_stream.as_slice(),
+            )
+        })
         .collect();
     // Index-aligned with `funcs`: each `PrintStr`'s `imm` indexes its own function's table, and each
     // alias entry's position is relative to its own function's stream.
-    let string_tables: Vec<&[String]> = entries
+    let string_tables: Vec<&[String]> = workers
         .iter()
-        .map(|(_, w, _)| w.local_string_table.as_slice())
+        .map(|(w, _)| w.local_string_table.as_slice())
         .collect();
-    let inline_tables: Vec<&[crate::hir::flatten::InlineBlock]> = entries
+    let inline_tables: Vec<&[crate::hir::flatten::InlineBlock]> = workers
         .iter()
-        .map(|(_, w, _)| w.local_inline_blocks.as_slice())
+        .map(|(w, _)| w.local_inline_blocks.as_slice())
         .collect();
-    let alias_tables: Vec<&[(usize, usize, Vec<usize>)]> = entries
+    let alias_tables: Vec<&[(usize, usize, Vec<usize>)]> = workers
         .iter()
-        .map(|(_, w, _)| w.local_place_alias_stores.as_slice())
+        .map(|(w, _)| w.local_place_alias_stores.as_slice())
         .collect();
     // Keyed by GID, so these merge rather than align.
-    let tensor_types: Vec<_> = entries
+    let tensor_types: Vec<_> = workers
         .iter()
-        .flat_map(|(_, w, _)| w.local_tensor_types.iter().cloned())
+        .flat_map(|(w, _)| w.local_tensor_types.iter().cloned())
         .collect();
-    let agg_layouts: Vec<_> = entries
+    let agg_layouts: Vec<_> = workers
         .iter()
-        .flat_map(|(_, w, _)| w.local_agg_layouts.iter().cloned())
+        .flat_map(|(w, _)| w.local_agg_layouts.iter().cloned())
         .collect();
 
     let text = crate::codegen::flat::emit_module_mlir(
         &funcs,
-        &global_session.registry,
+        &session2.registry,
         &tensor_types,
         &string_tables,
         &inline_tables,
@@ -1808,8 +1851,6 @@ mod gid_stream_tests {
                 module_idx: 0,
                 generated_structs: Vec::new(),
                 capacity_summaries: Vec::new(),
-                name: crate::symbol::Symbol::from("f"),
-                lowered: true,
             }];
             let (_s, arena, offsets, slow, gen) = deduplication_phase(&results, &session);
             let mut streams = extract_type_streams(&mut results);
@@ -2370,11 +2411,25 @@ mod gid_stream_tests {
         }
     }
 
-    /// The real parallel `type_check_phase` lowers a scalar function body into its worker's
-    /// `local_hir_stream` (not just the direct unit-test path). Proves the wiring end-to-end, with
-    /// the debug `verify_hir_stream` hook active.
+    /// The barrier and the lowering pass as codegen runs them, for a program the check phase has
+    /// already checked: the workers that lowered each emitted body, in emission order.
+    fn lower_checked(
+        modules: &[VxModule],
+        results: &mut [FunctionCheck],
+        session: &Arc<GlobalSession>,
+    ) -> Vec<(LocalWorkerState, crate::decline::Lowered<()>)> {
+        let (slow, gen, off, _, _) = deduplication_phase(results, session);
+        let (buckets, _) = route_monomorphs(modules, results, Schedule::Parallel);
+        let monos: Vec<syntax::Function> = buckets.into_iter().flatten().collect();
+        let session2 = epoch_2_session(session, (slow, gen, off), &monos);
+        lower_bodies_phase(modules, &monos, &session2, Schedule::Parallel).workers
+    }
+
+    /// The real lowering pass lowers a scalar function body into its worker's `local_hir_stream`
+    /// (not just the direct unit-test path). Proves the wiring end-to-end, with the debug
+    /// `verify_hir_stream` hook active.
     #[test]
-    fn type_check_phase_lowers_scalar_body_to_hir() {
+    fn lower_bodies_phase_lowers_scalar_body_to_hir() {
         use crate::bytecode::Opcode;
         let mut modules = vec![parse_only(
             "m",
@@ -2386,10 +2441,15 @@ mod gid_stream_tests {
         let env_mods: Vec<VxModule> = modules.iter().map(|m| m.clone_signature()).collect();
         let env = GlobalAstEnv::build(&env_mods);
 
-        let results = type_check_phase(&mut modules, &session, &env, Schedule::Parallel)
+        let mut results = type_check_phase(&mut modules, &session, &env, Schedule::Parallel)
             .expect("type check ok");
-        let worker = &results[0].worker;
-        let ops: Vec<Opcode> = worker.local_hir_stream.iter().map(|i| i.opcode).collect();
+        let lowered = lower_checked(&modules, &mut results, &session);
+        let ops: Vec<Opcode> = lowered[0]
+            .0
+            .local_hir_stream
+            .iter()
+            .map(|i| i.opcode)
+            .collect();
         assert_eq!(
             ops,
             vec![Opcode::Load, Opcode::Load, Opcode::Add, Opcode::Ret],
@@ -2483,10 +2543,12 @@ fn main() -> i32 { return 0; }
     }
 
     /// Order-sensitive determinism (#196): the flat GID stream must be byte-identical **in order**,
-    /// and identical **across thread counts** — codegen indexes it by position (`type_idx`),
-    /// so a scheduling-dependent race or an order-dependent phase is a correctness bug even when the
-    /// *set* of GIDs matches. Running the whole pipeline under a 1-thread and an 8-thread rayon pool
-    /// catches races the earlier same-pool set-comparison could not.
+    /// and identical **across thread counts** — the barrier's patch and the metadata dictionary
+    /// read it by position, so a scheduling-dependent race or an order-dependent phase is a
+    /// correctness bug even when the *set* of GIDs matches. Running the whole pipeline under a
+    /// 1-thread and an 8-thread rayon pool catches races the earlier same-pool set-comparison
+    /// could not. A nominal in a signature is what puts a GID in this stream: bodies are lowered
+    /// after the barrier, so scalar signatures alone contribute nothing here.
     #[test]
     fn flat_type_stream_order_is_deterministic_across_thread_counts() {
         use std::io::Write;
@@ -2496,7 +2558,8 @@ fn main() -> i32 { return 0; }
         let srcs = [
             (
                 "a.vx",
-                "fn add(a: i32, b: i32) -> i32 { return a + b; }\n\
+                "struct Pair { a: i32, b: i32 }\n\
+                 fn mk(a: i32, b: i32) -> Pair { return Pair { a: a, b: b }; }\n\
                  fn mul(a: i32, b: i32) -> i32 { return a * b; }",
             ),
             (
@@ -3021,13 +3084,13 @@ fn main() -> i32 { return 0; }
                 let session = Arc::new(GlobalSession::with_registry(1, registry));
                 let env_mods: Vec<VxModule> = modules.iter().map(|m| m.clone_signature()).collect();
                 let env = GlobalAstEnv::build(&env_mods);
-                let results = type_check_phase(&mut modules, &session, &env, Schedule::Parallel)
-                    .expect("type check");
-                results
+                let mut results =
+                    type_check_phase(&mut modules, &session, &env, Schedule::Parallel)
+                        .expect("type check");
+                lower_checked(&modules, &mut results, &session)
                     .iter()
-                    .flat_map(|c| {
-                        c.worker
-                            .local_hir_stream
+                    .flat_map(|(w, _)| {
+                        w.local_hir_stream
                             .iter()
                             .map(|i| (i.opcode, i.operand1.0, i.operand2.0, i.imm))
                     })

@@ -722,7 +722,28 @@ impl<'a> MacroExpander<'a> {
                 let name_tok = &transcriber_tokens[j + 1];
                 if let OwnedTokenType::Identifier(name) = &name_tok.kind {
                     if let Some(captured) = captures.get(name) {
-                        tokens.extend(captured.clone());
+                        // Move the capture to where `$name` stood, keeping the tokens'
+                        // offsets from each other. An `mlir!` block is rebuilt from token
+                        // positions, so a capture still carrying the call site's line
+                        // lands away from the rest of the block; and adjacency within the
+                        // capture matters, since a nested `add_one!(x)` is a call only
+                        // when the `!` touches the name.
+                        let anchor = captured.first().map(|t| (t.line, t.column));
+                        for tok in captured {
+                            let mut placed = tok.clone();
+                            if let Some((base_line, base_col)) = anchor {
+                                // A synthesized token carries no position and is left alone.
+                                if placed.line != 0 {
+                                    let line_off = placed.line.saturating_sub(base_line);
+                                    placed.line = m_tok.line + line_off;
+                                    if line_off == 0 {
+                                        placed.column =
+                                            m_tok.column + placed.column.saturating_sub(base_col);
+                                    }
+                                }
+                            }
+                            tokens.push(placed);
+                        }
                         j += 2;
                         continue;
                     }

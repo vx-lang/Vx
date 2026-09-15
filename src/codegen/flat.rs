@@ -1118,7 +1118,7 @@ pub fn emit_module_mlir(
     // `max(group) + 1` over its own alias table, both known before anything is emitted. Turning them
     // into prefix sums makes the emit a `par_iter` and leaves the output byte-identical, because the
     // numbering is a function of position, never of arrival order (#311).
-    crate::intern_mode::record("  codegen:setup", setup.elapsed());
+    crate::intern_mode::record(crate::intern_mode::CODEGEN_SETUP, setup.elapsed());
     let emit_start = std::time::Instant::now();
     let mut str_bases: Vec<usize> = Vec::with_capacity(funcs.len());
     let mut distinct_bases: Vec<u32> = Vec::with_capacity(funcs.len());
@@ -1194,7 +1194,7 @@ pub fn emit_module_mlir(
     } else {
         funcs.par_iter().enumerate().map(emit_one).collect()
     };
-    crate::intern_mode::record("  codegen:emit", emit_start.elapsed());
+    crate::intern_mode::record(crate::intern_mode::CODEGEN_EMIT, emit_start.elapsed());
 
     // Reassembly is serial by necessity -- the output is ordered -- so it is the one part of codegen
     // that cannot be parallelised, and it is therefore the one part whose constant factor matters

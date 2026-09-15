@@ -2349,6 +2349,133 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
   }
 };
 
+/// Give each host worker a contiguous slice of a proved-parallel loop.
+///
+/// The device clone of the same loop is grid-strided: thread `t` walks
+/// `lb + t`, `lb + t + stride`, and so on, so that threads running together
+/// read addresses next to each other. On a CPU that is close to the worst
+/// arrangement -- with eight-byte elements and eight workers every cache line
+/// is fetched by every worker, and any write puts the line into a
+/// ping-pong. So the host splits the range instead, and worker `w` owns
+/// `[lb + w*chunk, lb + (w+1)*chunk)` with nothing shared but the ends.
+///
+/// Moving both ends is what makes it a split rather than a stride, which is why
+/// the loop's bound carries a marker of its own alongside its start.
+///
+/// The worker's identity arrives through two calls rather than through extra
+/// parameters on the kernel. Appending parameters would change the C interface
+/// of every outlined kernel, and there are callers outside this pipeline that
+/// know the current shape (scripts/launch_emitted_kernel.cpp, the remote
+/// worker). A call costs one indirect branch per dispatch, not per iteration.
+///
+/// The degeneracy is the safety property, and it is the same one the device
+/// clone relies on: at one worker, `chunk` is the whole trip, the offsets are 0
+/// and `trip`, and the loop is exactly the serial one this function was handed.
+/// A runtime that has no thread pool answers 0 and 1 and gets today's behaviour
+/// with no special case anywhere.
+///
+/// Anything unexpected leaves the loop serial rather than half-split: a missing
+/// marker, several of either, a bound that is not an integer, or an end whose
+/// definition does not reach the start's store. Correctness does not depend on
+/// this firing.
+static void splitOuterLoopAcrossWorkers(func::FuncOp fn,
+                                        PatternRewriter &rewriter) {
+  SmallVector<Operation *> inits, bounds;
+  fn.walk([&](Operation *o) {
+    if (o->hasAttr("vx.parallel_init"))
+      inits.push_back(o);
+    if (o->hasAttr("vx.parallel_bound"))
+      bounds.push_back(o);
+  });
+  if (inits.size() != 1 || bounds.size() != 1)
+    return;
+
+  Operation *initStore = inits.front();
+  Operation *boundStore = bounds.front();
+  Value lb = initStore->getOperand(0);
+  Value ub = boundStore->getOperand(0);
+  Type ivTy = lb.getType();
+  if (!ivTy.isSignlessInteger() || ub.getType() != ivTy)
+    return;
+
+  // The arithmetic goes in front of the start's store, so both ends have to be
+  // available there. A block argument always is; a computed value has to have
+  // been computed earlier in the same block. `parallel_outer_for` only proves a
+  // loop whose bounds are literals, so in practice these are constants hoisted
+  // to the top of the entry block -- this is the check that says so rather than
+  // assuming it.
+  auto reaches = [&](Value v) {
+    Operation *def = v.getDefiningOp();
+    if (!def)
+      return true; // a block argument
+    return def->getBlock() == initStore->getBlock() &&
+           def->isBeforeInBlock(initStore);
+  };
+  if (!reaches(lb) || !reaches(ub))
+    return;
+
+  ModuleOp module = fn->getParentOfType<ModuleOp>();
+  Location loc = initStore->getLoc();
+  Type i64Ty = rewriter.getI64Type();
+
+  // Declare the two runtime queries once per module.
+  auto queryFor = [&](StringRef name) -> func::FuncOp {
+    if (auto existing = module.lookupSymbol<func::FuncOp>(name))
+      return existing;
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPointToStart(module.getBody());
+    auto decl = rewriter.create<func::FuncOp>(
+        loc, name, rewriter.getFunctionType({}, {i64Ty}));
+    decl.setPrivate();
+    return decl;
+  };
+  func::FuncOp idFn = queryFor("vx_host_worker_id");
+  func::FuncOp countFn = queryFor("vx_host_worker_count");
+
+  OpBuilder::InsertionGuard guard(rewriter);
+  rewriter.setInsertionPoint(initStore);
+
+  // Both queries answer in i64; narrow them to whatever the induction variable
+  // is. A worker count wider than the induction variable cannot arise -- it is
+  // bounded by the trip, which fits by construction.
+  auto toIv = [&](Value v) -> Value {
+    unsigned width = ivTy.getIntOrFloatBitWidth();
+    if (width == 64)
+      return v;
+    if (width < 64)
+      return rewriter.create<arith::TruncIOp>(loc, ivTy, v);
+    return rewriter.create<arith::ExtSIOp>(loc, ivTy, v);
+  };
+  Value wid = toIv(rewriter.create<func::CallOp>(loc, idFn).getResult(0));
+  Value wcount = toIv(rewriter.create<func::CallOp>(loc, countFn).getResult(0));
+
+  Value one = rewriter.create<arith::ConstantOp>(
+      loc, ivTy, rewriter.getIntegerAttr(ivTy, 1));
+  Value trip = rewriter.create<arith::SubIOp>(loc, ub, lb);
+  // chunk = ceil(trip / workers), so the last worker takes the short slice and
+  // no iteration is left unowned. Rounding down would drop up to workers-1
+  // iterations off the end, which is the kind of wrong that still looks right.
+  Value wminus1 = rewriter.create<arith::SubIOp>(loc, wcount, one);
+  Value numer = rewriter.create<arith::AddIOp>(loc, trip, wminus1);
+  Value chunk = rewriter.create<arith::DivSIOp>(loc, numer, wcount);
+
+  // Clamping to the trip is what makes a worker past the end harmless: it gets
+  // start == end and runs nothing, instead of a range beyond the data.
+  Value startOff = rewriter.create<arith::MulIOp>(loc, wid, chunk);
+  Value widPlus1 = rewriter.create<arith::AddIOp>(loc, wid, one);
+  Value endOff = rewriter.create<arith::MulIOp>(loc, widPlus1, chunk);
+  Value startClamped = rewriter.create<arith::MinSIOp>(loc, startOff, trip);
+  Value endClamped = rewriter.create<arith::MinSIOp>(loc, endOff, trip);
+
+  Value newLb = rewriter.create<arith::AddIOp>(loc, lb, startClamped);
+  Value newUb = rewriter.create<arith::AddIOp>(loc, lb, endClamped);
+
+  rewriter.modifyOpInPlace(initStore,
+                           [&]() { initStore->setOperand(0, newLb); });
+  rewriter.modifyOpInPlace(boundStore,
+                           [&]() { boundStore->setOperand(0, newUb); });
+}
+
 struct KernelOpLowering : public OpRewritePattern<vx::KernelOp> {
   using OpRewritePattern<vx::KernelOp>::OpRewritePattern;
 
@@ -2360,6 +2487,14 @@ struct KernelOpLowering : public OpRewritePattern<vx::KernelOp> {
 
     // Move the region over
     rewriter.inlineRegionBefore(op.getBody(), funcOp.getBody(), funcOp.end());
+
+    // A region the frontend proved has disjoint iterations can be shared out
+    // across host workers. Single-level only for now: a two-level region
+    // (Vx#379) maps blocks and threads onto a launch shape, and what a host
+    // worker should own there is a separate question from this one.
+    if (op->hasAttr("vx_parallel_trip") &&
+        !op->hasAttr("vx_parallel_two_level"))
+      splitOuterLoopAcrossWorkers(funcOp, rewriter);
 
     rewriter.eraseOp(op);
     return success();

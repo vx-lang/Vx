@@ -100,7 +100,7 @@ pub struct FnBody {
 }
 
 /// The globally frozen type registry for parallel compilation phases.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ImmutableGlobalRegistry {
     pub layouts: FxHashMap<TypeId, TypeDefinition>,
     pub module_indices: FxHashMap<u64, FxHashMap<crate::symbol::Symbol, TypeId>>,
@@ -149,7 +149,7 @@ pub struct ImmutableGlobalRegistry {
 /// See [`ImmutableGlobalRegistry::merge_state`]. The `poisoned_*` tombstones are read back through
 /// [`ImmutableGlobalRegistry::poisoned_reason`], so a diagnostic can distinguish "never defined"
 /// from "defined twice and deliberately tombstoned" (#294).
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct MergeState {
     pub imported_fns: FxHashSet<crate::symbol::Symbol>,
     pub poisoned_fns: FxHashSet<crate::symbol::Symbol>,
