@@ -1,0 +1,65 @@
+//===- comptime_in_place_sort.vx - Vx Compiler -------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A sort that works in place, across two functions, run at compile time.
+//
+// This is the shape the corpus actually writes: a tensor filled through a mutable
+// borrow rather than passed and returned by value. `main` lends the array to `sort`,
+// `sort` lends it on to `swap_pass`, and the writes at the bottom have to reach the
+// array `main` declared, two calls up.
+//
+// Nothing here is written for the evaluator's benefit. It is a bubble sort with its
+// inner pass lifted into a function of its own, which is the point: the pieces added
+// one at a time -- arrays, exact integers, loops, `if`, calls in the same file, and
+// now borrows -- hold together well enough to run an ordinary algorithm.
+//
+// Every element is asserted, not just the first. A sort that placed one element and
+// left the rest would pass a fixture that only checked `a[0]`, and each assert here
+// was confirmed to go red on its own.
+//
+// What this cannot catch is the evaluator giving up: an assert it does not run is
+// silently accepted, so this file would still compile. That half is caught by
+// fail/comptime_mut_borrow_stale_value.vx.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK-LABEL: func.func @main() -> i32
+
+fn swap_pass(w : &mut Tensor<i64, [8]>) -> void {
+  for j in 0..7 {
+    if w[j] > w[j + 1] {
+      let t : i64 = w[j];
+      w[j] = w[j + 1];
+      w[j + 1] = t;
+    }
+  }
+  return;
+}
+
+fn sort(w : &mut Tensor<i64, [8]>) -> void {
+  // Eight passes over eight elements is enough to sort any of them, so the loop runs a
+  // fixed count rather than stopping early on a pass that swapped nothing.
+  for pass in 0..8 {
+    swap_pass(w);
+  }
+  return;
+}
+
+fn main() -> i32 {
+  comptime {
+    let mut a : Tensor<i64, [8]> = [ 5i64, 3i64, 8i64, 1i64, 9i64, 2i64, 7i64, 4i64 ];
+    sort(&mut a);
+    assert(a[0] == 1i64, "sorted element 0");
+    assert(a[1] == 2i64, "sorted element 1");
+    assert(a[2] == 3i64, "sorted element 2");
+    assert(a[3] == 4i64, "sorted element 3");
+    assert(a[4] == 5i64, "sorted element 4");
+    assert(a[5] == 7i64, "sorted element 5");
+    assert(a[6] == 8i64, "sorted element 6");
+    assert(a[7] == 9i64, "sorted element 7");
+  }
+  return 0;
+}
