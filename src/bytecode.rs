@@ -251,6 +251,23 @@ pub enum Opcode {
     /// `operand1`'s. `operand2` is the closure's environment slot; `imm` indexes the type table
     /// at the closure adapter's GID.
     TensorMap = 51,
+    /// `a % b`: the remainder, with the sign of the dividend for signed integers. Numbered after
+    /// the tensor opcodes rather than beside `Div` because the discriminant is what a serialized
+    /// flat HIR body carries, and renumbering the ones above it would silently reinterpret every
+    /// artifact already written.
+    Rem = 52,
+    /// `a & b`, bitwise, on integers and `bool`.
+    BitAnd = 53,
+    /// `a | b`, bitwise, on integers and `bool`.
+    BitOr = 54,
+    /// `a ^ b`, bitwise, on integers and `bool`.
+    BitXor = 55,
+    /// `a << b`, on integers. Shifting by at least the operand's width is
+    /// undefined, as it is in C and in LLVM; nothing checks it.
+    Shl = 56,
+    /// `a >> b`, on integers: arithmetic for a signed operand, logical for an
+    /// unsigned one.
+    Shr = 57,
 }
 
 /// Reverse mode for `Opcode::AutoDiff`: the gradient, through `__enzyme_autodiff_grad_*`.
@@ -275,6 +292,12 @@ impl Opcode {
             5 => Sub,
             6 => Mul,
             7 => Div,
+            52 => Rem,
+            53 => BitAnd,
+            54 => BitOr,
+            55 => BitXor,
+            56 => Shl,
+            57 => Shr,
             8 => Call,
             9 => Ret,
             10 => Matmul,

@@ -1,0 +1,117 @@
+//===- core_num_i32.vx - Vx Compiler ------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `core::num`, the integer methods on `i32`. Every method in the module is called here
+// with an answer that is wrong under any plausible mistake, rather than with a value
+// that happens to be right either way.
+//
+// The negative cases carry most of the weight, because they are where a signed right
+// shift differs from a logical one. `count_ones(-1)` is 32 only if the hardware
+// instruction is used; a loop shifting right would sign-extend and never finish.
+// `swap_bytes` and `rotate_left` mask each shifted piece for the same reason, and their
+// entries here start from values whose top bit is set.
+//
+// `rem_euclid(-7, 4)` is 1 where `-7 % 4` is -3: that pair is the whole reason the
+// method exists, so both appear.
+//
+// There are no directives about emitted IR. The module is a library, and what matters
+// is the answers, not which code generator produced them.
+import core::num;
+
+fn show(flag : bool) -> i32 {
+  if flag {
+    print(1);
+  } else {
+    print(0);
+  }
+  return 0;
+}
+
+fn main() -> i32 {
+  let twelve : i32 = 12;
+  let minus_one : i32 = -1;
+  let one : i32 = 1;
+  let zero : i32 = 0;
+
+  print(twelve.count_ones());
+  print!(" ");
+  print(minus_one.count_ones());
+  print!(" ");
+  print(twelve.count_zeros());
+  print!(" ");
+  print(one.leading_zeros());
+  print!(" ");
+  print(zero.leading_zeros());
+  print!(" ");
+  print(twelve.trailing_zeros());
+  print!(" ");
+
+  let sixteen : i32 = 16;
+  show(sixteen.is_power_of_two());
+  print!(" ");
+  show(twelve.is_power_of_two());
+  print!(" ");
+  show(zero.is_power_of_two());
+  print!(" ");
+  show(twelve.is_positive());
+  print!(" ");
+  show(minus_one.is_negative());
+  print!(" ");
+
+  let minus_five : i32 = -5;
+  print(minus_five.abs());
+  print!(" ");
+  print(minus_five.signum());
+  print!(" ");
+
+  let three : i32 = 3;
+  let nine : i32 = 9;
+  print(three.min(nine));
+  print!(" ");
+  print(three.max(nine));
+  print!(" ");
+  print(three.abs_diff(nine));
+  print!(" ");
+  let fifteen : i32 = 15;
+  print(fifteen.clamp(0, 10));
+  print!(" ");
+
+  let two : i32 = 2;
+  print(two.pow(10));
+  print!(" ");
+
+  let minus_seven : i32 = -7;
+  let four : i32 = 4;
+  print(minus_seven % four);
+  print!(" ");
+  print(minus_seven.rem_euclid(four));
+  print!(" ");
+  print(minus_seven.div_euclid(four));
+  print!(" ");
+
+  let big : i32 = 1024;
+  print(big.ilog2());
+  print!(" ");
+  let hundred : i32 = 100;
+  print(hundred.next_power_of_two());
+  print!(" ");
+  let one_two_eight : i32 = 128;
+  print(one_two_eight.next_power_of_two());
+  print!(" ");
+
+  let lowest : i32 = -2147483647 - 1;
+  print(lowest.rotate_left(1));
+  print!(" ");
+  print(one.rotate_right(1));
+  print!(" ");
+  print(one.swap_bytes());
+  print!(" ");
+  print(one.reverse_bits());
+  return 0;
+}
+
+// EXPECT: 2 32 30 31 32 2 1 0 0 1 1 5 -1 3 9 6 10 1024 -3 1 -2 10 128 128 1 -2147483648 16777216 -2147483648

@@ -105,13 +105,18 @@ impl<'a> TypeChecker<'a> {
             Statement::Loop(lp) => self.check_loop_stmt(lp, return_type),
             Statement::Break(_) => {}
             Statement::Continue(_) => {}
-            Statement::Assign(AssignStmt { lhs, rhs, span: _ })
-            | Statement::CompoundAssign(CompoundAssignStmt {
+            Statement::Assign(AssignStmt { lhs, rhs, span: _ }) => {
+                self.check_assign_stmt(lhs, None, rhs, consume)
+            }
+            Statement::CompoundAssign(CompoundAssignStmt {
                 lhs,
-                op: _,
+                op,
                 rhs,
                 span: _,
-            }) => self.check_assign_stmt(lhs, rhs, consume),
+            }) => {
+                let op = op.clone();
+                self.check_assign_stmt(lhs, Some(&op), rhs, consume)
+            }
             Statement::Return(ret) => self.check_return_stmt(ret, consume, return_type),
             Statement::ExprStmt(ExprStmtStmt {
                 expr,
@@ -418,7 +423,16 @@ impl<'a> TypeChecker<'a> {
 
     /// Check an assignment / compound assignment: type the LHS, then the RHS expecting the LHS
     /// type (#240), verify assignability, and fold a const RHS into the eval environment.
-    fn check_assign_stmt(&mut self, lhs: &mut Expr, rhs: &mut Expr, consume: bool) {
+    /// `op` is `Some` for a compound assignment, and carries the operator that sits between
+    /// the two sides. It has to be checked here as well as in `check_binaryop_expr`: `a %= b`
+    /// never builds a `BinaryOp` expression for that rule to see.
+    fn check_assign_stmt(
+        &mut self,
+        lhs: &mut Expr,
+        op: Option<&BinaryOp>,
+        rhs: &mut Expr,
+        consume: bool,
+    ) {
         self.checking_assign_lhs = true;
         let lhs_ty = self.check_expr_type_flag(lhs, false);
         self.checking_assign_lhs = false;
@@ -437,6 +451,12 @@ impl<'a> TypeChecker<'a> {
         // defaulting and mismatching (#240).
         let rhs_ty = self.check_expr_expecting(rhs, Some(lhs_ty.clone()), consume);
         self.current_assignment_target = None;
+        if let Some(op) = op {
+            let span = lhs.span();
+            if !self.check_restricted_operands(op, &lhs_ty, &rhs_ty, &span) {
+                return;
+            }
+        }
         if !self.is_assignable(&lhs_ty, &rhs_ty) {
             // Named types and a location, like every other type error: this fires on a
             // narrowing store into half storage, where the fix is to write the `as` the
@@ -759,6 +779,24 @@ impl<'a> TypeChecker<'a> {
                     }
                     (Value::Number(a), Value::Number(b), BinaryOp::Div) => {
                         Some(Value::Number(a / b))
+                    }
+                    (Value::Number(a), Value::Number(b), BinaryOp::Rem) => {
+                        (b != 0.0).then(|| Value::Number(a % b))
+                    }
+                    (
+                        Value::Number(_),
+                        Value::Number(_),
+                        BinaryOp::BitAnd
+                        | BinaryOp::BitOr
+                        | BinaryOp::BitXor
+                        | BinaryOp::Shl
+                        | BinaryOp::Shr,
+                    ) => {
+                        // This interpreter holds every number as an `f64`, and a bit
+                        // pattern read out of one would not be the bit pattern the
+                        // program is talking about. Left unfolded rather than folded
+                        // wrongly.
+                        None
                     }
                     _ => None,
                 }

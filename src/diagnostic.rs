@@ -265,6 +265,11 @@ pub enum DiagnosticCode {
     /// parses as a user nominal, so without this a typo -- or a type constructor removed from the
     /// language -- compiled silently and did nothing.
     E3029,
+    /// An operator applied to operand types it is not defined on -- `%` on a shaped tensor or on
+    /// a `bool`. Refused here because the alternative is worse in both directions: the flat
+    /// emitter would decline and fall back to a path that cannot lower it either, and an `i1`
+    /// operand would reach `arith.remsi` and verify.
+    E3030,
 
     // --- Borrow/Ownership Errors (E4xxx) ---
     /// Use of moved or consumed linear variable
