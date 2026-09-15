@@ -34,7 +34,6 @@ const KNOWN_DECLINES: &[&str] = &[
     // exists to pin that `>>` still closes two generics now that it is also the right
     // shift, and that question is settled in the parser, so the decline costs it nothing.
     // It states no directive about emitted IR, precisely because it is on the AST path.
-    "backend/pass/nested_generics_close_with_two_angles.vx",
     "backend/pass/user_lowering_name_collisions.vx",
     "backend/pass/user_lowering_uncountable.vx",
     "backend/pass/user_lowering_waste.vx",
