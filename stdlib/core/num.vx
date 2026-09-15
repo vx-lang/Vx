@@ -112,9 +112,6 @@ macro_rules stamp_signed_int {
         return 0;
       }
 
-
-
-
       /// The distance between two values.
       fn abs_diff(self : $t, other : $t) -> $t {
         if self < other {
