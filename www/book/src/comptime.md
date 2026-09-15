@@ -18,6 +18,12 @@ fn main() -> i32 {
 Everything inside has to be knowable at compile time. A `comptime` block cannot read a run-time
 value, call into C, or touch a device.
 
+Arithmetic gives the same answers it would at run time. Two integers divide as integers, so
+`7 / 2` is `3`, and an integer keeps every one of its bits however large it is. A computation
+that overflows produces no compile-time value at all, rather than a wrapped one: an `assert`
+about it is then left to run time instead of being decided on a number the program never
+computes.
+
 ## comptime conditions
 
 `if comptime` chooses a branch at compile time. The branch not taken is not compiled.

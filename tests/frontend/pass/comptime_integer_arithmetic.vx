@@ -1,0 +1,35 @@
+//===- comptime_integer_arithmetic.vx - Vx Compiler --------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Compile-time integers are integers, not floats that happen to hold whole numbers.
+//
+// Each assert here stops the build on its own if the evaluator gets that case wrong,
+// so this file is red-capable without a matching fail fixture. The two fail fixtures
+// comptime_integer_division_truncates.vx and comptime_integer_exact.vx pin the two
+// cases that were wrong before, where a passing build proved nothing.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK-LABEL: func.func @main() -> i32
+
+fn main() -> i32 {
+  comptime {
+    // Dividing two integers truncates, the same as the emitted code does.
+    assert(7 / 2 == 3, "integer division truncates");
+    assert(3 / 2 == 1, "integer division truncates");
+
+    // Dividing two floats keeps the fraction. Mixing the two is not written here
+    // because the language has no implicit scalar conversion: `3 / 2.0` is a type
+    // error before the evaluator ever sees it.
+    assert(3.0 / 2.0 == 1.5, "float division keeps the fraction");
+
+    // Past 2^53 an f64 can no longer tell neighbouring integers apart. An integer can.
+    let big : i64 = 9007199254740993i64;
+    assert(big != 9007199254740992, "2^53 + 1 is not 2^53");
+    assert(big - 1 == 9007199254740992, "arithmetic stays exact up here");
+  }
+  return 0;
+}

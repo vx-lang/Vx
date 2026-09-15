@@ -597,6 +597,7 @@ impl<'a> TypeChecker<'a> {
                     {
                         if Self::array_index(&index_val, items.len()).is_none() {
                             let shown = match &index_val {
+                                Value::Int(i) => i.to_string(),
                                 Value::Number(n) => n.to_string(),
                                 other => format!("{:?}", other),
                             };

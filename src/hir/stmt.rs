@@ -707,14 +707,22 @@ impl<'a> TypeChecker<'a> {
         match expr {
             Expr::Number(NumberExpr {
                 value: n_str,
-                ty: _,
+                ty,
                 span: _,
             }) => {
-                if let Ok(n) = n_str.parse::<f64>() {
-                    Some(Value::Number(n))
-                } else {
-                    None
+                // An integer literal stays an integer. The suffix decides when there is one;
+                // without a suffix the spelling does, since a whole number written without a
+                // point is an integer everywhere else in the language.
+                let is_float = match ty {
+                    Some(t) => t.is_float(),
+                    None => n_str.contains('.') || n_str.contains('e') || n_str.contains('E'),
+                };
+                if !is_float {
+                    if let Ok(i) = n_str.parse::<i64>() {
+                        return Some(Value::Int(i));
+                    }
                 }
+                n_str.parse::<f64>().ok().map(Value::Number)
             }
             // `Reachable<A, B>`: true iff a transfer path exists in the cost graph. Topology
             // variables have already been substituted during monomorphization.
@@ -743,24 +751,31 @@ impl<'a> TypeChecker<'a> {
             }) => {
                 let l = self.eval_expr(lhs, env)?;
                 let r = self.eval_expr(rhs, env)?;
-                match (l, r, op) {
-                    (Value::Number(a), Value::Number(b), BinaryOp::Add) => {
-                        Some(Value::Number(a + b))
-                    }
-                    (Value::Number(a), Value::Number(b), BinaryOp::Sub) => {
-                        Some(Value::Number(a - b))
-                    }
-                    (Value::Number(a), Value::Number(b), BinaryOp::Mul) => {
-                        Some(Value::Number(a * b))
-                    }
-                    (Value::Number(_), Value::Number(_), BinaryOp::MatMul) => {
-                        // MatMul not supported for pure numbers at compile time
-                        None
-                    }
-                    (Value::Number(a), Value::Number(b), BinaryOp::Div) => {
-                        Some(Value::Number(a / b))
-                    }
-                    _ => None,
+                // Two integers stay integers, so `/` truncates the way the emitted code does
+                // and a large value keeps every bit. A result that overflows has no value
+                // rather than a wrapped one, which would be baked into the program unnoticed.
+                if let (Value::Int(a), Value::Int(b)) = (&l, &r) {
+                    let (a, b) = (*a, *b);
+                    return match op {
+                        BinaryOp::Add => a.checked_add(b).map(Value::Int),
+                        BinaryOp::Sub => a.checked_sub(b).map(Value::Int),
+                        BinaryOp::Mul => a.checked_mul(b).map(Value::Int),
+                        // `checked_div` answers None for a zero divisor and for the one
+                        // signed division that overflows.
+                        BinaryOp::Div => a.checked_div(b).map(Value::Int),
+                        BinaryOp::MatMul => None,
+                    };
+                }
+                // Anything else numeric is float arithmetic, an integer mixed with a float
+                // included.
+                let (a, b) = (l.as_f64()?, r.as_f64()?);
+                match op {
+                    BinaryOp::Add => Some(Value::Number(a + b)),
+                    BinaryOp::Sub => Some(Value::Number(a - b)),
+                    BinaryOp::Mul => Some(Value::Number(a * b)),
+                    BinaryOp::Div => Some(Value::Number(a / b)),
+                    // MatMul not supported for pure numbers at compile time
+                    BinaryOp::MatMul => None,
                 }
             }
             Expr::RelationalOp(RelationalOpExpr {
@@ -771,25 +786,30 @@ impl<'a> TypeChecker<'a> {
             }) => {
                 let l = self.eval_expr(lhs, env)?;
                 let r = self.eval_expr(rhs, env)?;
+                // Two integers compare as integers. Comparing them as floats makes every
+                // pair past 2^53 look equal.
+                if let (Value::Int(a), Value::Int(b)) = (&l, &r) {
+                    let (a, b) = (*a, *b);
+                    return Some(Value::Bool(match op {
+                        RelationalOp::Eq => a == b,
+                        RelationalOp::NotEq => a != b,
+                        RelationalOp::Lt => a < b,
+                        RelationalOp::Gt => a > b,
+                        RelationalOp::Le => a <= b,
+                        RelationalOp::Ge => a >= b,
+                    }));
+                }
+                if let (Some(a), Some(b)) = (l.as_f64(), r.as_f64()) {
+                    return Some(Value::Bool(match op {
+                        RelationalOp::Eq => a == b,
+                        RelationalOp::NotEq => a != b,
+                        RelationalOp::Lt => a < b,
+                        RelationalOp::Gt => a > b,
+                        RelationalOp::Le => a <= b,
+                        RelationalOp::Ge => a >= b,
+                    }));
+                }
                 match (l, r, op) {
-                    (Value::Number(a), Value::Number(b), RelationalOp::Eq) => {
-                        Some(Value::Bool(a == b))
-                    }
-                    (Value::Number(a), Value::Number(b), RelationalOp::NotEq) => {
-                        Some(Value::Bool(a != b))
-                    }
-                    (Value::Number(a), Value::Number(b), RelationalOp::Lt) => {
-                        Some(Value::Bool(a < b))
-                    }
-                    (Value::Number(a), Value::Number(b), RelationalOp::Gt) => {
-                        Some(Value::Bool(a > b))
-                    }
-                    (Value::Number(a), Value::Number(b), RelationalOp::Le) => {
-                        Some(Value::Bool(a <= b))
-                    }
-                    (Value::Number(a), Value::Number(b), RelationalOp::Ge) => {
-                        Some(Value::Bool(a >= b))
-                    }
                     (Value::Bool(a), Value::Bool(b), RelationalOp::Eq) => Some(Value::Bool(a == b)),
                     (Value::Bool(a), Value::Bool(b), RelationalOp::NotEq) => {
                         Some(Value::Bool(a != b))
@@ -923,13 +943,23 @@ impl<'a> TypeChecker<'a> {
     /// A compile-time array index. `None` for a fraction, a negative number, or an index
     /// at or past the end, so none of those can silently read the wrong element.
     pub(crate) fn array_index(value: &Value, len: usize) -> Option<usize> {
-        let Value::Number(n) = value else {
-            return None;
+        let i = match value {
+            Value::Int(i) => {
+                if *i < 0 {
+                    return None;
+                }
+                *i as usize
+            }
+            // A float index is only an index when it is a whole number. Rounding one onto a
+            // neighbouring element would read a value the program never asked for.
+            Value::Number(n) => {
+                if n.fract() != 0.0 || *n < 0.0 {
+                    return None;
+                }
+                *n as usize
+            }
+            _ => return None,
         };
-        if n.fract() != 0.0 || *n < 0.0 {
-            return None;
-        }
-        let i = *n as usize;
         if i < len {
             Some(i)
         } else {

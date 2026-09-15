@@ -29,10 +29,25 @@ use std::collections::HashMap;
 pub enum Value {
     Bool(bool),
     Number(f64),
+    /// An integer, kept as one. Sending it through `Number` would lose every value past
+    /// 2^53 and would compute `3 / 2` as 1.5, which is not what the program does.
+    Int(i64),
     Topology(Topology),
     /// A fixed-size array of scalars, known at compile time. The length is set when the
     /// array is built and never changes, so an index past the end is a compile error.
     Array(Vec<Value>),
+}
+
+impl Value {
+    /// This value as a float, whichever kind of number it is. For a caller that wants a
+    /// magnitude and does not care how it was stored, such as a tensor dimension.
+    pub fn as_f64(&self) -> Option<f64> {
+        match self {
+            Value::Int(i) => Some(*i as f64),
+            Value::Number(n) => Some(*n),
+            _ => None,
+        }
+    }
 }
 
 /// One `Memory`/`Topology` name declared by two modules with *different* declarations — see

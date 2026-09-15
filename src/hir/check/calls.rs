@@ -2232,8 +2232,10 @@ impl<'a> TypeChecker<'a> {
                     let empty_env = HashMap::new();
                     let mut src_elements = 1.0;
                     for d in dims {
-                        if let Some(Value::Number(v)) =
-                            d.as_static().and_then(|e| self.eval_expr(e, &empty_env))
+                        if let Some(v) = d
+                            .as_static()
+                            .and_then(|e| self.eval_expr(e, &empty_env))
+                            .and_then(|v| v.as_f64())
                         {
                             src_elements *= v;
                         } else {
@@ -2247,7 +2249,7 @@ impl<'a> TypeChecker<'a> {
 
                     let mut target_elements = 1.0;
                     for d in new_dims {
-                        if let Some(Value::Number(v)) = self.eval_expr(d, &empty_env) {
+                        if let Some(v) = self.eval_expr(d, &empty_env).and_then(|v| v.as_f64()) {
                             target_elements *= v;
                         } else {
                             self.errors.push(
@@ -2333,7 +2335,7 @@ impl<'a> TypeChecker<'a> {
                     }
                     let mut seen = vec![false; dims.len()];
                     for (i, p) in perm.iter().enumerate() {
-                        if let Some(Value::Number(v)) = self.eval_expr(p, &empty_env) {
+                        if let Some(v) = self.eval_expr(p, &empty_env).and_then(|v| v.as_f64()) {
                             let v = v as usize;
                             if v >= dims.len() {
                                 self.errors
