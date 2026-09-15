@@ -144,11 +144,45 @@ pub struct ImmutableGlobalRegistry {
     /// import-vs-import conflict (the name then resolves in *neither* artifact, whatever order
     /// they merged in). Merge-session state only — never serialized (#291).
     pub merge_state: MergeState,
-    /// Base name -> layout GID, built from `layouts` on the first lookup; see
-    /// [`Self::layout_gid_by_base_name`]. `Some(gid)`: exactly one non-stub layout has the name.
-    /// `None`: two distinct ones do, so the name is ambiguous. Absent: no non-stub layout has it.
-    /// Paired with the `layouts` length it was built from, so a lookup can refuse a stale index.
-    pub(crate) layout_by_base_name: std::sync::OnceLock<(usize, FxHashMap<String, Option<TypeId>>)>,
+    /// Base name -> layout GID, for [`Self::layout_gid_by_base_name`]. Built wherever `layouts`
+    /// is: at the freeze, after a merge, and when an interface is deserialized. Eager rather than
+    /// on first use, because the registry is shared read-only across every worker and a compiler
+    /// with no shared mutable state has nowhere to build one lazily.
+    pub(crate) layout_by_base_name: LayoutNameIndex,
+}
+
+/// The base-name index over a registry's layouts: `Some(gid)` for a name exactly one non-stub
+/// layout has, `None` (present) for a name two distinct ones share, absent when no non-stub
+/// layout has it. Carries the length of the table it was built from, so a lookup can refuse an
+/// index the table has outgrown.
+#[derive(Debug, Clone, Default)]
+pub struct LayoutNameIndex {
+    built_from: usize,
+    by_base_name: FxHashMap<String, Option<TypeId>>,
+}
+
+impl LayoutNameIndex {
+    pub fn build(layouts: &FxHashMap<TypeId, TypeDefinition>) -> Self {
+        let mut by_base_name: FxHashMap<String, Option<TypeId>> = FxHashMap::default();
+        for def in layouts.values() {
+            if def.align_bytes == 0 {
+                continue;
+            }
+            match by_base_name.get(&def.name) {
+                Some(Some(existing)) if *existing != def.id => {
+                    by_base_name.insert(def.name.clone(), None);
+                }
+                Some(_) => {}
+                None => {
+                    by_base_name.insert(def.name.clone(), Some(def.id));
+                }
+            }
+        }
+        Self {
+            built_from: layouts.len(),
+            by_base_name,
+        }
+    }
 }
 
 /// See [`ImmutableGlobalRegistry::merge_state`]. The `poisoned_*` tombstones are read back through
@@ -290,6 +324,7 @@ impl ImmutableGlobalRegistry {
             return Err("Infinite-sized recursive layout detected.".to_string());
         }
 
+        let layout_by_base_name = LayoutNameIndex::build(&layouts);
         Ok(Self {
             layouts,
             module_indices,
@@ -300,7 +335,7 @@ impl ImmutableGlobalRegistry {
             structs: FxHashMap::default(),
             enum_data: FxHashMap::default(),
             merge_state: MergeState::default(),
-            layout_by_base_name: std::sync::OnceLock::new(),
+            layout_by_base_name,
         })
     }
 
@@ -311,35 +346,20 @@ impl ImmutableGlobalRegistry {
     ///
     /// One hash probe. This used to walk every layout comparing names, once per nominal-typed
     /// parameter the lowerer met, and on a 1,000-module corpus that scan was 80% of the compile.
-    /// The index is built on the first call and checked on every call, because `layouts` is public
-    /// and `merge_from` grows it: a lookup made before a merge would otherwise answer from a table
-    /// that no longer exists.
+    /// The index is checked on every call, because `layouts` is a public field: a table grown
+    /// behind the index would otherwise answer from a table that no longer exists.
     pub fn layout_gid_by_base_name(&self, name: &str) -> Option<TypeId> {
         let base = name.split('<').next().unwrap_or(name);
-        let (built_from, index) = self.layout_by_base_name.get_or_init(|| {
-            let mut index: FxHashMap<String, Option<TypeId>> = FxHashMap::default();
-            for def in self.layouts.values() {
-                if def.align_bytes == 0 {
-                    continue;
-                }
-                match index.get(&def.name) {
-                    Some(Some(existing)) if *existing != def.id => {
-                        index.insert(def.name.clone(), None);
-                    }
-                    Some(_) => {}
-                    None => {
-                        index.insert(def.name.clone(), Some(def.id));
-                    }
-                }
-            }
-            (self.layouts.len(), index)
-        });
         assert_eq!(
-            *built_from,
+            self.layout_by_base_name.built_from,
             self.layouts.len(),
             "layouts changed after the name index was built; a lookup would answer from a stale table"
         );
-        index.get(base).copied().flatten()
+        self.layout_by_base_name
+            .by_base_name
+            .get(base)
+            .copied()
+            .flatten()
     }
 
     /// Resolve a method `recv.method(..)` to its signature by `(receiver GID, method name)` -- the
@@ -391,6 +411,8 @@ impl ImmutableGlobalRegistry {
         for (id, def) in other.layouts {
             self.layouts.entry(id).or_insert(def);
         }
+        // The merge is the one path that grows `layouts` after the freeze, so the index follows it.
+        self.layout_by_base_name = LayoutNameIndex::build(&self.layouts);
         for (module_hash, by_name) in other.module_indices {
             let dst = self.module_indices.entry(module_hash).or_default();
             for (name, gid) in by_name {
@@ -573,8 +595,45 @@ mod tests {
         assert_eq!(reg.layout_gid_by_base_name("Nope"), None);
     }
 
-    /// `layouts` is public and `merge_from` grows it, so an index built before a merge describes a
-    /// table that no longer exists. The lookup refuses rather than answering from it.
+    /// A merge grows `layouts`, and the index has to follow it: a name that was unique before
+    /// the merge and is shared after it answers ambiguous, and a name the merge brought in
+    /// resolves.
+    #[test]
+    fn layout_name_index_follows_a_merge() {
+        let mut a = ImmutableGlobalRegistry::build_and_validate(vec![
+            make_def("Point", 1, 100, vec![]),
+            make_def("Only", 1, 200, vec![]),
+        ])
+        .unwrap();
+        let b = ImmutableGlobalRegistry::build_and_validate(vec![
+            make_def("Point", 2, 100, vec![]),
+            make_def("Other", 2, 300, vec![]),
+        ])
+        .unwrap();
+        assert_eq!(
+            a.layout_gid_by_base_name("Point"),
+            Some(TypeId::new(1, 100, 0, 0))
+        );
+        a.merge_from(b);
+        assert_eq!(
+            a.layout_gid_by_base_name("Point"),
+            None,
+            "shared after the merge"
+        );
+        assert_eq!(
+            a.layout_gid_by_base_name("Other"),
+            Some(TypeId::new(2, 300, 0, 0)),
+            "brought in by the merge"
+        );
+        assert_eq!(
+            a.layout_gid_by_base_name("Only"),
+            Some(TypeId::new(1, 200, 0, 0)),
+            "untouched by the merge"
+        );
+    }
+
+    /// `layouts` is a public field, so a table grown behind the index describes a table that no
+    /// longer exists. The lookup refuses rather than answering from it.
     #[test]
     #[should_panic(expected = "layouts changed after the name index was built")]
     fn layout_name_index_refuses_a_table_that_grew_under_it() {

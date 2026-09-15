@@ -15,7 +15,9 @@
 use crate::bytecode::{HirInstruction, Opcode, Register, TypeIdx};
 use crate::gid::{deserialize_metadata_symbols, serialize_metadata_symbols, TypeId};
 use crate::layout::{FieldLayout, FieldTy};
-use crate::registry::{FnBody, FnSig, ImmutableGlobalRegistry, StructFields, TypeDefinition};
+use crate::registry::{
+    FnBody, FnSig, ImmutableGlobalRegistry, LayoutNameIndex, StructFields, TypeDefinition,
+};
 use crate::symbol::Symbol;
 use crate::syntax::{Dim, ElementType, Expr, MemorySpace, Placement, Topology, Type};
 use rustc_hash::FxHashMap;
@@ -1129,6 +1131,7 @@ pub fn deserialize_registry_interface(bytes: &[u8]) -> Result<ImmutableGlobalReg
         structs.insert(gid, StructFields { generics, fields });
     }
 
+    let layout_by_base_name = LayoutNameIndex::build(&layouts);
     Ok(ImmutableGlobalRegistry {
         layouts,
         module_indices,
@@ -1143,7 +1146,7 @@ pub fn deserialize_registry_interface(bytes: &[u8]) -> Result<ImmutableGlobalReg
         // monomorphized imported enum then falls back to the AST path (#242).
         enum_data: FxHashMap::default(),
         merge_state: Default::default(),
-        layout_by_base_name: std::sync::OnceLock::new(),
+        layout_by_base_name,
     })
 }
 
