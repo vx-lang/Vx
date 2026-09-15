@@ -143,6 +143,10 @@ fn run_frontend(
     // parallel check reads it. The map is frozen after this point — the per-function checkers only
     // read it, preserving the lock-free `type_check_phase`.
     timed("return_prov", || env.annotate_return_provenances(&modules));
+    // The bodies compile-time evaluation runs, for the same reason: `clone_signature` above
+    // strips them, so an `assert` calling a function in the same module had nothing to walk.
+    // Only what a `comptime` block or an `assert` can reach is copied.
+    timed("comptime_bodies", || env.annotate_comptime_bodies(&modules));
 
     // Before any body: a body checked against an ambiguous declaration table has been checked
     // against a coin flip.

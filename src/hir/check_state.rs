@@ -38,7 +38,22 @@ pub struct ConstEvalState {
     pub constraints: Vec<Expr>,
     /// Constraints a `return` must satisfy.
     pub return_constraints: Vec<Expr>,
+    /// How many calls deep the evaluator currently is. A `Cell` because evaluation runs
+    /// behind `&self`, and the count has to rise and fall as it descends.
+    pub call_depth: std::cell::Cell<u32>,
+    /// Set when evaluation stopped because it ran past `MAX_CALL_DEPTH`. Whoever asked for
+    /// the value reports it, since the evaluator itself cannot reach the diagnostics.
+    pub depth_exceeded: std::cell::Cell<bool>,
+    /// Set when a called body held a statement the evaluator cannot run -- a loop, say.
+    /// The call then has no value, rather than whatever the statements it *could* run
+    /// happened to leave behind.
+    pub unsupported_stmt: std::cell::Cell<bool>,
 }
+
+/// How many nested calls compile-time evaluation will follow. A recursion that does not
+/// terminate used to take the compiler's stack down with it; this turns that into a
+/// diagnostic. High enough that ordinary compile-time work never reaches it.
+pub const MAX_CALL_DEPTH: u32 = 256;
 
 impl Default for ConstEvalState {
     fn default() -> Self {
@@ -48,6 +63,9 @@ impl Default for ConstEvalState {
             env: vec![HashMap::new()],
             constraints: Vec::new(),
             return_constraints: Vec::new(),
+            call_depth: std::cell::Cell::new(0),
+            depth_exceeded: std::cell::Cell::new(false),
+            unsupported_stmt: std::cell::Cell::new(false),
         }
     }
 }

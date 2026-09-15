@@ -657,6 +657,7 @@ impl<'a> TypeChecker<'a> {
             }
         }
         let eval_res = self.eval_expr(expr, &tmp_env);
+        self.report_depth_exceeded(span);
 
         if let Some(Value::Bool(b)) = eval_res {
             if !b {
@@ -914,18 +915,30 @@ impl<'a> TypeChecker<'a> {
                 args,
                 span: _,
             }) => {
-                let func = self.env.syntax_functions.get(name.as_ref())?;
+                let func = self.callee_body(name.as_ref())?;
                 let mut local_env = HashMap::new();
                 for (i, arg_expr) in args.iter().enumerate() {
                     let arg_val = self.eval_expr(arg_expr, env)?;
                     local_env.insert(func.params[i].0.clone(), arg_val);
                 }
+                self.enter_call()?;
+                let outer_unsupported = self.consteval.unsupported_stmt.replace(false);
+                let mut result = None;
                 for stmt in &func.body {
                     if let Some(ret_val) = self.eval_statement(stmt, &mut local_env) {
-                        return Some(ret_val);
+                        result = Some(ret_val);
+                        break;
                     }
                 }
-                None
+                // A body holding a statement the evaluator cannot run has not been run.
+                // Answering with what the statements it could run left behind would be a
+                // guess, and a guess here is reported as a certainty.
+                if self.consteval.unsupported_stmt.get() {
+                    result = None;
+                }
+                self.consteval.unsupported_stmt.set(outer_unsupported);
+                self.leave_call();
+                result
             }
             Expr::Topology(TopologyExpr { top, span: _ }) => {
                 if matches!(top, Topology::Current) {
@@ -975,6 +988,58 @@ impl<'a> TypeChecker<'a> {
             }
             _ => None,
         }
+    }
+
+    /// The callee's body for compile-time evaluation.
+    ///
+    /// The module being compiled goes into the resolution env with its non-generic bodies
+    /// stripped, so a function defined alongside the caller has nothing to walk there and is
+    /// looked up in the bodies kept for compile-time evaluation instead.
+    fn callee_body(&self, name: &str) -> Option<&'a Function> {
+        if let Some(func) = self.env.syntax_functions.get(name) {
+            if !func.body.is_empty() {
+                return Some(func);
+            }
+        }
+        self.env.comptime_bodies.get(name)
+    }
+
+    /// Step one call deeper, or refuse. `None` stops the evaluation; whoever asked for the
+    /// value reports it, since the evaluator cannot reach the diagnostics from `&self`.
+    fn enter_call(&self) -> Option<()> {
+        let depth = self.consteval.call_depth.get();
+        if depth >= crate::hir::check_state::MAX_CALL_DEPTH {
+            self.consteval.depth_exceeded.set(true);
+            return None;
+        }
+        self.consteval.call_depth.set(depth + 1);
+        Some(())
+    }
+
+    fn leave_call(&self) {
+        let depth = self.consteval.call_depth.get();
+        self.consteval.call_depth.set(depth.saturating_sub(1));
+    }
+
+    /// Report an evaluation that ran past the call limit, and clear the flag so the next one
+    /// starts fresh. Called where a value was asked for and a diagnostic can be raised.
+    fn report_depth_exceeded(&mut self, span: &Span) {
+        if !self.consteval.depth_exceeded.replace(false) {
+            return;
+        }
+        self.consteval.call_depth.set(0);
+        if self.speculating {
+            return;
+        }
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E8004,
+            format!(
+                "compile-time evaluation went more than {} calls deep and was stopped. A \
+                 recursive function whose base case is never reached is the usual cause.",
+                crate::hir::check_state::MAX_CALL_DEPTH
+            ),
+            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+        );
     }
 
     /// A compile-time array index. `None` for a fraction, a negative number, or an index
@@ -1081,7 +1146,12 @@ impl<'a> TypeChecker<'a> {
             Statement::Return(ReturnStmt { expr, span: _ }) => {
                 expr.as_ref().and_then(|e| self.eval_expr(e, env))
             }
-            _ => None,
+            // A loop, a compound assignment, anything else: not run. Say so, so the call
+            // this body belongs to gives no value rather than a half-executed one.
+            _ => {
+                self.consteval.unsupported_stmt.set(true);
+                None
+            }
         }
     }
 
