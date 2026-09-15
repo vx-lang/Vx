@@ -1,0 +1,67 @@
+//===- move_in_a_returning_branch.vx - Vx Compiler ---------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A branch that returns does not move anything for the path that carries on.
+//
+// An early-return guard is the base case of every recursive function over a linear
+// value, and it used to make the value unusable for the rest of the function: the only
+// path that reaches the code after the `if` is the one where the branch was not taken,
+// and on that path nothing has touched `w`.
+//
+// The refusals this must not disturb are in fail/move_in_a_branch_that_continues.vx,
+// and they are the more important half. A branch that does *not* return, and one that
+// ends in `break`, both still move the value for the code that follows -- because both
+// of those rejoin it, and a value moved on the way there is just as moved when it
+// arrives. This file would pass just as well if branches stopped being tracked at all.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK-LABEL: func.func @main() -> i32
+
+fn sink(a : Tensor<i64, [4]>) -> i64 {
+  return a[0];
+}
+
+// The guard shape: return the value, then carry on using it below.
+fn guarded(a : Tensor<i64, [4]>, flag : i64) -> Tensor<i64, [4]> {
+  let mut w : Tensor<i64, [4]> = a;
+  if flag > 0i64 {
+    return w;
+  }
+  w[0] = 7i64;
+  return w;
+}
+
+// The branch consumes without returning it, and still returns. Same rule: the path that
+// continues never saw the call.
+fn consumed_then_returned(a : Tensor<i64, [4]>, flag : i64) -> i64 {
+  let mut w : Tensor<i64, [4]> = a;
+  if flag > 0i64 {
+    return sink(w);
+  }
+  return w[0];
+}
+
+// An `else` that returns behaves the same way as a `then` that does.
+fn returning_else(a : Tensor<i64, [4]>, flag : i64) -> i64 {
+  let mut w : Tensor<i64, [4]> = a;
+  if flag > 0i64 {
+    let untouched : i64 = 0i64;
+  } else {
+    return sink(w);
+  }
+  return w[0];
+}
+
+fn main() -> i32 {
+  let first : Tensor<i64, [4]> = [ 1i64, 2i64, 3i64, 4i64 ];
+  let out : Tensor<i64, [4]> = guarded(first, 0i64);
+  let second : Tensor<i64, [4]> = [ 1i64, 2i64, 3i64, 4i64 ];
+  let n : i64 = consumed_then_returned(second, 0i64);
+  let third : Tensor<i64, [4]> = [ 1i64, 2i64, 3i64, 4i64 ];
+  let m : i64 = returning_else(third, 1i64);
+  return 0;
+}

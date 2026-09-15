@@ -58,6 +58,21 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Whether a block leaves the function, so that nothing after the `if` it belongs to is
+    /// reached along this path.
+    ///
+    /// Only `return` counts. `break` and `continue` also stop the code right after the `if`
+    /// from running, but they go somewhere else in the same function -- the statement after
+    /// the loop, or its next turn -- and a value moved on the way there is just as moved when
+    /// it arrives. Treating them like `return` would drop a mark that is still true.
+    ///
+    /// A block that ends some other way is answered `false`, including one whose last
+    /// statement is an `if` both of whose arms return. That is the conservative direction:
+    /// the mark is kept and the program refused, rather than a moved value let through.
+    fn block_returns(stmts: &[Statement]) -> bool {
+        stmts.iter().any(|s| matches!(s, Statement::Return(_)))
+    }
+
     pub(crate) fn check_if_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
         let if_expr = match expr {
             Expr::If(e) => e,
@@ -84,21 +99,29 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
+        let marks_before_then = self.moved_snapshot();
         self.push_releasing_scope();
         let mut then_ty = Type::Struct("void".into(), None);
         if !self.speculating && !if_expr.then_block.is_empty() {
             then_ty = self.check_expr_block(&mut if_expr.then_block, consume);
         }
         self.pop_scope();
+        if Self::block_returns(&if_expr.then_block) {
+            self.restore_moved(marks_before_then);
+        }
 
         let mut else_ty = Type::Struct("void".into(), None);
         if let Some(else_b) = if_expr.else_block.as_mut() {
             if !else_b.is_empty() {
+                let marks_before_else = self.moved_snapshot();
                 self.push_releasing_scope();
                 if !self.speculating {
                     else_ty = self.check_expr_block(else_b, consume);
                 }
                 self.pop_scope();
+                if Self::block_returns(else_b) {
+                    self.restore_moved(marks_before_else);
+                }
 
                 if !if_expr.is_comptime && then_ty != else_ty {
                     self.errors.error_with_code(

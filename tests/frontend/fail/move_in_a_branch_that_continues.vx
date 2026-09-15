@@ -1,0 +1,57 @@
+//===- move_in_a_branch_that_continues.vx - Vx Compiler ----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A branch that rejoins the code after it still moves the value for that code.
+//
+// This is the half that holds the rule, and the distinction it draws is the whole
+// content of the change: only `return` means the path does not carry on.
+//
+//   - A branch with no terminator falls through, so the value may or may not have been
+//     moved. Refusing a maybe-moved value is the conservative answer.
+//   - A branch ending in `break` does stop the code right after the `if` from running,
+//     but it goes to the statement after the loop, in the same function. The value it
+//     moved on the way there is just as moved when it arrives, so the mark has to stand.
+//     Treating `break` like `return` is the mistake this file exists to catch.
+//
+// pass/move_in_a_returning_branch.vx has the cases that are now allowed, and it would
+// keep passing if branches stopped being tracked entirely.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+fn sink(a : Tensor<i64, [4]>) -> i64 {
+  return a[0];
+}
+
+// No terminator: the branch falls through to the code below.
+fn falls_through(a : Tensor<i64, [4]>, flag : i64) -> i64 {
+  let mut w : Tensor<i64, [4]> = a;
+  let mut taken : i64 = 0i64;
+  if flag > 0i64 {
+    taken = sink(w);
+  }
+  // CHECK: Error[E4001]{{.*}}moved or consumed linear variable: w
+  return w[0] + taken;
+}
+
+// `break` leaves the loop, not the function, so the move reaches the code after it.
+fn breaks_out(a : Tensor<i64, [4]>, flag : i64) -> i64 {
+  let mut w : Tensor<i64, [4]> = a;
+  let mut taken : i64 = 0i64;
+  loop {
+    if flag > 0i64 {
+      taken = sink(w);
+      break;
+    }
+    break;
+  }
+  // CHECK: Error[E4001]{{.*}}moved or consumed linear variable: w
+  return w[0] + taken;
+}
+
+fn main() -> i32 {
+  return 0;
+}
