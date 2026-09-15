@@ -2108,15 +2108,14 @@ impl<'r> Lowerer<'r> {
                                 let vtys: Vec<Type> = data
                                     .variants
                                     .get(ordinal as usize)
-                                    .map(|(_, p)| {
-                                        p.iter().map(|t| t.substitute(&subst)).collect()
-                                    })
+                                    .map(|(_, p)| p.iter().map(|t| t.substitute(&subst)).collect())
                                     .unwrap_or_default();
                                 let lty = lowered_ty(
                                     vtys.get(i).or_else(|| payload_types.get(i)).ok_or(
                                         Decline::TypeNotModelled {
-                                        what: "an enum payload type that is not laid out",
-                                    })?,
+                                            what: "an enum payload type that is not laid out",
+                                        },
+                                    )?,
                                     self.registry,
                                 )
                                 .ok_or(
