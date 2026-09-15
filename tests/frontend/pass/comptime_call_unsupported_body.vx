@@ -1,0 +1,49 @@
+//===- comptime_call_unsupported_body.vx - Vx Compiler -----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A called body holding a statement the evaluator cannot run gives no value at all.
+//
+// `sum_to` totals its loop to 10. The evaluator does not run loops, and the statements it
+// can run leave `total` at 0. Answering 0 would reject this correct program with a
+// diagnostic stating the opposite, which is what used to happen for a callee in an
+// imported module.
+//
+// The two asserts contradict each other, so this file only compiles while the evaluator
+// has no value for the call. Their messages differ so a failure says which way it broke.
+//
+// A deep recursion is in here too, at 200 calls: under the limit, so it must still be
+// evaluated. That is the other half of the depth rule, whose refusing half is in
+// fail/comptime_call_depth_limit.vx.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK-LABEL: func.func @main() -> i32
+
+fn sum_to(n : i64) -> i64 {
+  let mut total : i64 = 0;
+  for i in 0i64..n {
+    total += i;
+  }
+  return total;
+}
+
+fn countdown(n : i64) -> i64 {
+  return if n <= 0 {
+    0
+  } else {
+    countdown(n - 1) + 1
+  };
+}
+
+fn main() -> i32 {
+  comptime {
+    assert(sum_to(5) == 10, "the call answered, and not with the loop's total");
+    assert(sum_to(5) != 10, "the call answered with the loop's total, so loops now run");
+
+    assert(countdown(200) == 200, "a recursion under the limit still evaluates");
+  }
+  return 0;
+}

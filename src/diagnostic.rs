@@ -441,6 +441,8 @@ pub enum DiagnosticCode {
     E8002,
     /// Compile-time index out of range
     E8003,
+    /// Compile-time evaluation exceeded the call-depth limit
+    E8004,
 }
 
 impl std::fmt::Display for DiagnosticCode {

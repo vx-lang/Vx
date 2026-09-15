@@ -19,7 +19,7 @@ and so on. A `W` prefix is a warning rather than an error.
 - [Safety Errors](#safety-errors) — `E5001`–`E5002` (2 codes)
 - [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6028` (28 codes)
 - [Tensor/Math Errors](#tensormath-errors) — `E7001`–`E7004` (4 codes)
-- [Contract/Verification Errors](#contractverification-errors) — `E8001`–`E8003` (3 codes)
+- [Contract/Verification Errors](#contractverification-errors) — `E8001`–`E8004` (4 codes)
 
 ## Warnings
 
@@ -198,7 +198,8 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 | `E8001` | Cannot prove postcondition |
 | `E8002` | Comptime assert failed |
 | `E8003` | Compile-time index out of range |
+| `E8004` | Compile-time evaluation exceeded the call-depth limit |
 
 ______________________________________________________________________
 
-115 diagnostics.
+116 diagnostics.

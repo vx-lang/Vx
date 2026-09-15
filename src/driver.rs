@@ -658,6 +658,10 @@ impl CompilerDriver {
         // from the full module so intra-module calls get per-parameter precision (#243). The
         // imported `other_asts` were pushed with bodies, so `build` already summarized them.
         env.annotate_return_provenances(std::slice::from_ref(ast));
+        // Same reason, for the bodies compile-time evaluation runs: a function defined in the
+        // entry module has no body in the env, so an `assert` calling one was left unevaluated
+        // and quietly became a run-time check.
+        env.annotate_comptime_bodies(std::slice::from_ref(ast));
 
         let mut worker = LocalWorkerState::new(global_session.clone());
         let mut checker = TypeChecker::new(&env, &mut worker);
