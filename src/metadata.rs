@@ -1143,6 +1143,7 @@ pub fn deserialize_registry_interface(bytes: &[u8]) -> Result<ImmutableGlobalReg
         // monomorphized imported enum then falls back to the AST path (#242).
         enum_data: FxHashMap::default(),
         merge_state: Default::default(),
+        layout_by_base_name: std::sync::OnceLock::new(),
     })
 }
 

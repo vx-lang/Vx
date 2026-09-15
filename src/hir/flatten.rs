@@ -2773,7 +2773,7 @@ impl<'r> Lowerer<'r> {
                 // A generic struct whose layout depends on its arguments: the base layout is a
                 // stub, so the instance's is synthesized.
                 if matches!(base.as_ref(), Type::Struct(..))
-                    && struct_layout_gid_by_name(self.registry, n.as_ref()).is_none()
+                    && self.registry.layout_gid_by_base_name(n.as_ref()).is_none()
                 {
                     if let Some(gid) = self.struct_instance_layout_of(n.as_ref(), args) {
                         return Some(LoweredTy::Aggregate(gid));
@@ -3071,7 +3071,7 @@ impl<'r> Lowerer<'r> {
     /// *base* nominal's modelled layout (the display name a monomorphized instance renders under);
     /// declines if the name is ambiguous (two distinct GIDs) so a wrong layout is never chosen. (#242)
     fn struct_gid_by_name(&self, name: &Symbol) -> Option<TypeId> {
-        struct_layout_gid_by_name(self.registry, name.as_ref())
+        self.registry.layout_gid_by_base_name(name.as_ref())
     }
 
     /// Lower a tensor allocation `Tensor<T>([d0, d1, ...])` (or `Tensor<T>(d0, d1)`): a `TensorAlloc`
@@ -3552,11 +3552,12 @@ impl<'r> Lowerer<'r> {
                 what: "a closure callee that is not a function constant",
             })?;
         // Target `ClosureK` layout `{ env: ptr, func: ptr }` — structurally identical for every arity.
-        let ck_gid = struct_layout_gid_by_name(self.registry, "Closure1").ok_or(
-            Decline::TypeNotModelled {
-                what: "the Closure1 layout",
-            },
-        )?;
+        let ck_gid =
+            self.registry
+                .layout_gid_by_base_name("Closure1")
+                .ok_or(Decline::TypeNotModelled {
+                    what: "the Closure1 layout",
+                })?;
         let (env_off, func_off) = {
             let fields = &self
                 .layout_of(&ck_gid)
@@ -4723,7 +4724,7 @@ fn lowered_ty(ty: &Type, registry: &ImmutableGlobalRegistry) -> Option<LoweredTy
             // monomorphized cross-module signature may carry an unresolved base (`Struct("Vec", None)`).
             let gid = id
                 .filter(|g| registry.layouts.get(g).is_some_and(|d| d.align_bytes != 0))
-                .or_else(|| struct_layout_gid_by_name(registry, name.as_ref()))?;
+                .or_else(|| registry.layout_gid_by_base_name(name.as_ref()))?;
             Some(LoweredTy::Aggregate(gid))
         }
         // A monomorphized generic struct instance (`Vec<i32>`): its layout is the base nominal's when
@@ -5481,25 +5482,6 @@ fn pointer_elem_ty(ty: &Type, registry: &ImmutableGlobalRegistry) -> Option<Lowe
     }
 }
 
-/// The modelled layout GID of a struct/enum by its base name — the fallback for when name resolution
-/// left a *monomorphized cross-module* instance's base GID unattached (`Struct("Vec", None)`, as a
-/// mono's substituted signature carries). Searches the frozen layouts for a non-stub definition of
-/// that base name (`Vec<i32>` -> `Vec`); declines on an ambiguous name (two distinct GIDs) so a wrong
-/// layout is never chosen. (#242)
-fn struct_layout_gid_by_name(registry: &ImmutableGlobalRegistry, name: &str) -> Option<TypeId> {
-    let base = name.split('<').next().unwrap_or(name);
-    let mut found: Option<TypeId> = None;
-    for def in registry.layouts.values() {
-        if def.name == base && def.align_bytes != 0 {
-            if found.is_some_and(|g| g != def.id) {
-                return None; // ambiguous name across modules — decline, keep the AST oracle
-            }
-            found = Some(def.id);
-        }
-    }
-    found
-}
-
 /// The layout GID of the aggregate a (borrow/pointer-to-)nominal type names, resolving a
 /// monomorphized generic instance to its base nominal (`&mut Vec<i32>` / `Vec<i32>` -> the `Vec`
 /// layout GID). Uses the attached GID when name resolution modelled it, else resolves by name (a
@@ -5531,7 +5513,7 @@ fn agg_gid_of_ty(ty: &Type, registry: &ImmutableGlobalRegistry) -> Option<TypeId
     };
     gid_opt
         .filter(|id| registry.layouts.get(id).is_some_and(|d| d.align_bytes != 0))
-        .or_else(|| struct_layout_gid_by_name(registry, name))
+        .or_else(|| registry.layout_gid_by_base_name(name))
 }
 
 /// Whether a parameter type is a pointer/borrow to a modelled aggregate (`self : &mut Vec<i32>`) —
