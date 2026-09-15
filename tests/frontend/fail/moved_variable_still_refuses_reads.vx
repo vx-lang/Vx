@@ -1,0 +1,82 @@
+//===- moved_variable_still_refuses_reads.vx - Vx Compiler -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Everything about a moved variable that is not a plain assignment stays refused.
+//
+// This is the half that holds the rule. pass/moved_variable_can_be_assigned_again.vx
+// establishes that `w = v` works after a move, and it would go on passing if moves
+// stopped being tracked at all. Here each refusal is named, so a change that let
+// assignment clear too much shows up as an error going missing.
+//
+// Three shapes, and the distinction between them is the point:
+//
+//   - reading it is a use, and there is nothing there to read;
+//   - `w[0] = 5` writes *through* a value the name no longer owns, so it is refused even
+//     though it looks like an assignment;
+//   - `w += ..` reads `w` before it writes it, so it is a use as well.
+//
+// Only a whole-variable `w = v` gives the name a value again.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+fn sink(a : Tensor<i64, [4]>) -> i64 {
+  return a[0];
+}
+
+fn reads_after_move(a : Tensor<i64, [4]>) -> i64 {
+  let mut w : Tensor<i64, [4]> = a;
+  let taken : i64 = sink(w);
+  // CHECK: Error[E4001]{{.*}}moved or consumed linear variable: w
+  return w[0] + taken;
+}
+
+fn writes_through_move(a : Tensor<i64, [4]>) -> i64 {
+  let mut w : Tensor<i64, [4]> = a;
+  let taken : i64 = sink(w);
+  // CHECK: Error[E4001]{{.*}}moved or consumed linear variable: w
+  w[0] = 5i64;
+  return taken;
+}
+
+fn moves_twice(a : Tensor<i64, [4]>) -> i64 {
+  let mut w : Tensor<i64, [4]> = a;
+  let once : i64 = sink(w);
+  // CHECK: Error[E4001]{{.*}}moved or consumed linear variable: w
+  let twice : i64 = sink(w);
+  return once + twice;
+}
+
+// `op=` reads before it writes, so it is a use and not a fresh value. The whole variable
+// on the left is what makes this different from `writes_through_move` above: the plain
+// `w = v` spelling is allowed, and this one still is not.
+fn compound_assign_after_move(a : Tensor<i64, [4]>, b : Tensor<i64, [4]>) -> i64 {
+  let mut w : Tensor<i64, [4]> = a;
+  let taken : i64 = sink(w);
+  // CHECK: Error[E4001]{{.*}}moved or consumed linear variable: w
+  w += b;
+  return taken;
+}
+
+// The move happens inside a block, and the use is after that block has closed. This is
+// the case that pins *where* the move is recorded: the mark belongs in the scope that
+// owns the binding, and recording it in the innermost scope instead loses it the moment
+// the block is popped -- leaving a moved variable that reads as perfectly good.
+//
+// The branch here does not return, so refusing is the conservative answer and the right
+// one. The case where the branch *does* return is #607, and is still refused too.
+fn move_inside_a_block(a : Tensor<i64, [4]>, flag : i64) -> i64 {
+  let mut w : Tensor<i64, [4]> = a;
+  if flag > 0i64 {
+    let taken : i64 = sink(w);
+  }
+  // CHECK: Error[E4001]{{.*}}moved or consumed linear variable: w
+  return w[0];
+}
+
+fn main() -> i32 {
+  return 0;
+}

@@ -1,0 +1,73 @@
+//===- moved_variable_can_be_assigned_again.vx - Vx Compiler -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A linear variable that has been moved can be given a new value.
+//
+// Assigning to a name does not read what it held, so a move is no longer in the way.
+// Until this worked there was no way to thread a linear value through a transformation
+// without a mutable borrow: `w = transform(w)` was refused, and so was putting the
+// result back under any name that had ever been moved out of.
+//
+// The move checker used to record this by deleting the binding. Nothing was then left to
+// assign to, which is why the fix is to mark the variable instead and clear the mark here.
+//
+// What must *not* change is in fail/moved_variable_still_refuses_reads.vx: a read of a
+// moved variable, a write through one, and `op=` all stay refused. This file would pass
+// just as well if moves stopped being tracked at all, so that file is the one holding the
+// rule.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK-LABEL: func.func @main() -> i32
+
+fn sink(a : Tensor<i64, [4]>) -> i64 {
+  return a[0];
+}
+
+fn bump(a : Tensor<i64, [4]>) -> Tensor<i64, [4]> {
+  let mut w : Tensor<i64, [4]> = a;
+  w[0] = 1i64;
+  return w;
+}
+
+// The result goes back under the same name, and the call that produced it consumed that
+// very name on the way in.
+fn through(a : Tensor<i64, [4]>) -> Tensor<i64, [4]> {
+  let mut w : Tensor<i64, [4]> = a;
+  w = bump(w);
+  return w;
+}
+
+// The same thing with the result parked in a temporary first, which is the shape that
+// shows the assignment is what matters rather than anything about the call.
+fn through_temp(a : Tensor<i64, [4]>) -> Tensor<i64, [4]> {
+  let mut w : Tensor<i64, [4]> = a;
+  let v : Tensor<i64, [4]> = bump(w);
+  w = v;
+  return w;
+}
+
+// An inner binding of the same name is its own variable, and the outer one's move says
+// nothing about it. This pins that the mark is read from the scope that owns the binding
+// rather than from every scope at once -- the looser reading refuses this correct program.
+fn shadowed_after_move(a : Tensor<i64, [4]>, b : Tensor<i64, [4]>, flag : i64) -> i64 {
+  let mut w : Tensor<i64, [4]> = a;
+  let taken : i64 = sink(w);
+  let mut inner : i64 = 0i64;
+  if flag > 0i64 {
+    let mut w : Tensor<i64, [4]> = b;
+    inner = sink(w);
+  }
+  return taken + inner;
+}
+
+fn main() -> i32 {
+  let first : Tensor<i64, [4]> = [ 0i64, 0i64, 0i64, 0i64 ];
+  let out : Tensor<i64, [4]> = through(first);
+  let second : Tensor<i64, [4]> = [ 0i64, 0i64, 0i64, 0i64 ];
+  let out2 : Tensor<i64, [4]> = through_temp(second);
+  return 0;
+}

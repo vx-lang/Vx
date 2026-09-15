@@ -479,6 +479,18 @@ impl<'a> TypeChecker<'a> {
         rhs: &mut Expr,
         consume: bool,
     ) {
+        // Assigning to a moved variable gives it a value again. A write does not read what
+        // was there, so the move stops being in the way -- and the mark has to go before the
+        // left-hand side is checked, which is what would otherwise report it as a use.
+        //
+        // Only a plain `x = v`. `x op= v` reads `x` first, and `a[i] = v` writes *through* a
+        // value the name no longer owns; both stay refused.
+        if op.is_none() {
+            if let Expr::Identifier(id) = lhs {
+                self.unconsume(id.name.as_ref());
+            }
+        }
+
         self.checking_assign_lhs = true;
         let lhs_ty = self.check_expr_type_flag(lhs, false);
         self.checking_assign_lhs = false;
@@ -497,6 +509,15 @@ impl<'a> TypeChecker<'a> {
         // defaulting and mismatching (#240).
         let rhs_ty = self.check_expr_expecting(rhs, Some(lhs_ty.clone()), consume);
         self.current_assignment_target = None;
+
+        // Again, because the right-hand side may have moved the very variable being
+        // assigned: in `w = transform(w)` the call consumes `w` and the result is then put
+        // back under the same name, which leaves it perfectly usable.
+        if op.is_none() {
+            if let Expr::Identifier(id) = lhs {
+                self.unconsume(id.name.as_ref());
+            }
+        }
         if let Some(op) = op {
             let span = lhs.span();
             if !self.check_restricted_operands(op, &lhs_ty, &rhs_ty, &span) {

@@ -643,26 +643,51 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Record that a linear variable has been moved out of.
+    ///
+    /// The binding stays. Marking rather than deleting is what lets the variable be given a
+    /// new value afterwards -- an assignment is a write, so whatever the name held before is
+    /// beside the point, and there has to be something left to write to.
+    ///
+    /// The mark goes in the same scope as the binding, so the two live and die together.
+    /// Putting it in the innermost scope instead made them come apart: the deletion reached
+    /// an outer scope and stayed, while the mark was thrown away the moment the block
+    /// closed. What was left was a name that was neither defined nor moved, reported as an
+    /// undefined variable two lines after its own declaration.
     pub fn consume(&mut self, name: &str) {
-        // Find the most recent block where it's defined
-        for scope in self.scopes.iter_mut().rev() {
-            if scope.contains_key(name) {
-                scope.remove(name);
-                if let Some(last) = self.borrow.moved_vars.last_mut() {
-                    last.insert(name.to_string());
-                }
-                return;
-            }
+        let Some(scope) = self.scope_of(name) else {
+            return;
+        };
+        if let Some(moved) = self.borrow.moved_vars.get_mut(scope) {
+            moved.insert(name.to_string());
         }
     }
 
-    pub fn is_moved(&self, name: &str) -> bool {
-        for moved in self.borrow.moved_vars.iter().rev() {
-            if moved.contains(name) {
-                return true;
-            }
+    /// Undo a move, because the variable has been given a value again.
+    pub fn unconsume(&mut self, name: &str) {
+        let Some(scope) = self.scope_of(name) else {
+            return;
+        };
+        if let Some(moved) = self.borrow.moved_vars.get_mut(scope) {
+            moved.remove(name);
         }
-        false
+    }
+
+    /// The innermost scope binding `name`. `moved_vars` is pushed and popped alongside
+    /// `scopes`, so the index means the same thing in both.
+    fn scope_of(&self, name: &str) -> Option<usize> {
+        self.scopes
+            .iter()
+            .rposition(|scope| scope.contains_key(name))
+    }
+
+    pub fn is_moved(&self, name: &str) -> bool {
+        // Only the binding that is actually in scope. A `let` of the same name in an inner
+        // block is a different variable, and an outer one's mark says nothing about it.
+        match self.scope_of(name) {
+            Some(scope) => self.borrow.moved_vars[scope].contains(name),
+            None => false,
+        }
     }
 
     pub fn lookup(&self, name: &str) -> Option<&(Type, Topology)> {

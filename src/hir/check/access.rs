@@ -94,7 +94,9 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                 }
-                if lookup_res.is_none() && self.is_moved(name.as_ref()) {
+                // The moved check comes first now. A moved variable keeps its binding, so
+                // the lookup succeeds and testing that first would let the use through.
+                if self.is_moved(name.as_ref()) {
                     if !self.speculating {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E4001,
