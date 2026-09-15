@@ -629,34 +629,13 @@ impl<'a> TypeChecker<'a> {
                             Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                         );
                     }
-                    if args.len() != param_types.len() && !self.speculating {
-                        self.errors.error_with_code(
-                            crate::diagnostic::DiagnosticCode::E3010,
-                            format!(
-                                "Function '{}' expects {} arguments, got {}",
-                                resolved_name,
-                                param_types.len(),
-                                args.len()
-                            ),
-                            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
-                        );
-                    } else {
-                        for (i, param_ty) in param_types.iter().enumerate() {
-                            let arg_ty =
-                                self.refine_literal_arg(&mut args[i], param_ty, &arg_types[i]);
-                            if !self.is_assignable(param_ty, &arg_ty) && !self.speculating {
-                                self.errors.error_with_code(
-                                    crate::diagnostic::DiagnosticCode::E3003,
-                                    format!(
-                                        "Type mismatch in argument {} for function '{}'. Expected {}, got {}{}",
-                                        i + 1, resolved_name, param_ty, arg_ty,
-                                        Self::rank_note(param_ty, &arg_ty)
-                                    ),
-                                    Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
-                                );
-                            }
-                        }
-                    }
+                    self.check_call_args(
+                        resolved_name.as_ref(),
+                        param_types,
+                        args,
+                        &arg_types,
+                        span,
+                    );
                     ret_ty.clone()
                 } else if let Some((mono_topology, param_types, mono_ret)) = self
                     .mono
@@ -688,36 +667,13 @@ impl<'a> TypeChecker<'a> {
                             Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                         );
                     }
-                    if args.len() != param_types.len() {
-                        if !self.speculating {
-                            self.errors.error_with_code(
-                                crate::diagnostic::DiagnosticCode::E3010,
-                                format!(
-                                    "Function '{}' expects {} arguments, got {}",
-                                    resolved_name,
-                                    param_types.len(),
-                                    args.len()
-                                ),
-                                Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
-                            );
-                        }
-                    } else {
-                        for (i, param_ty) in param_types.iter().enumerate() {
-                            let arg_ty =
-                                self.refine_literal_arg(&mut args[i], param_ty, &arg_types[i]);
-                            if !self.is_assignable(param_ty, &arg_ty) && !self.speculating {
-                                self.errors.error_with_code(
-                                    crate::diagnostic::DiagnosticCode::E3003,
-                                    format!(
-                                        "Type mismatch in argument {} for function '{}'. Expected {}, got {}{}",
-                                        i + 1, resolved_name, param_ty, arg_ty,
-                                        Self::rank_note(param_ty, &arg_ty)
-                                    ),
-                                    Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
-                                );
-                            }
-                        }
-                    }
+                    self.check_call_args(
+                        resolved_name.as_ref(),
+                        &param_types,
+                        args,
+                        &arg_types,
+                        span,
+                    );
                     mono_ret
                 } else if let Some((generic_func, origin_hash)) =
                     self.env.generic_functions.get(base_name.as_ref()).cloned()
@@ -747,7 +703,7 @@ impl<'a> TypeChecker<'a> {
                     )
                     .unwrap_or(Type::Unknown)
                 } else if resolved_name.contains("::") {
-                    self.check_static_method_call(&resolved_name, name, span)
+                    self.check_static_method_call(&resolved_name, name, args, &arg_types, span)
                 } else if let Some(sig) = self
                     .worker
                     .global
@@ -776,34 +732,13 @@ impl<'a> TypeChecker<'a> {
                             Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                         );
                     }
-                    if args.len() != sig.params.len() && !self.speculating {
-                        self.errors.error_with_code(
-                            crate::diagnostic::DiagnosticCode::E3010,
-                            format!(
-                                "Function '{}' expects {} arguments, got {}",
-                                resolved_name,
-                                sig.params.len(),
-                                args.len()
-                            ),
-                            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
-                        );
-                    } else {
-                        for (i, param_ty) in sig.params.iter().enumerate() {
-                            let arg_ty =
-                                self.refine_literal_arg(&mut args[i], param_ty, &arg_types[i]);
-                            if !self.is_assignable(param_ty, &arg_ty) && !self.speculating {
-                                self.errors.error_with_code(
-                                    crate::diagnostic::DiagnosticCode::E3003,
-                                    format!(
-                                        "Type mismatch in argument {} for function '{}'. Expected {}, got {}{}",
-                                        i + 1, resolved_name, param_ty, arg_ty,
-                                        Self::rank_note(param_ty, &arg_ty)
-                                    ),
-                                    Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
-                                );
-                            }
-                        }
-                    }
+                    self.check_call_args(
+                        resolved_name.as_ref(),
+                        &sig.params,
+                        args,
+                        &arg_types,
+                        span,
+                    );
                     sig.ret_ty.clone()
                 } else if self
                     .worker
@@ -849,16 +784,65 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Check a call's arguments against the callee's parameter list: the count first (E3010),
+    /// then each argument's type against its parameter (E3003). A literal argument is refined to
+    /// the parameter's type before the comparison, so `f(7)` fits an `i64` parameter. Every
+    /// resolution path in `check_functioncall_expr` runs this same check, so it lives here once.
+    pub(crate) fn check_call_args(
+        &mut self,
+        callee: &str,
+        params: &[Type],
+        args: &mut [Expr],
+        arg_types: &[Type],
+        span: &crate::syntax::Span,
+    ) {
+        if args.len() != params.len() {
+            if !self.speculating {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E3010,
+                    format!(
+                        "Function '{}' expects {} arguments, got {}",
+                        callee,
+                        params.len(),
+                        args.len()
+                    ),
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                );
+            }
+            return;
+        }
+        for (i, param_ty) in params.iter().enumerate() {
+            let arg_ty = self.refine_literal_arg(&mut args[i], param_ty, &arg_types[i]);
+            if !self.is_assignable(param_ty, &arg_ty) && !self.speculating {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E3003,
+                    format!(
+                        "Type mismatch in argument {} for function '{}'. Expected {}, got {}{}",
+                        i + 1,
+                        callee,
+                        param_ty,
+                        arg_ty,
+                        Self::rank_note(param_ty, &arg_ty)
+                    ),
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                );
+            }
+        }
+    }
+
     /// Resolve and instantiate a `Struct::method(...)` static call (an inherent-impl method
     /// named through its type). Parses any explicit type args on the struct or method, finds the
-    /// matching `_inherent` impl method, instantiates it, rewrites `name` to the mangled instance
-    /// and checks that instance once. Returns the instance return type, or an `f32` placeholder
-    /// after E-undefined if no such method exists. Split out of `check_functioncall_expr`
+    /// matching `_inherent` impl method, deduces what those left open from the arguments,
+    /// instantiates it, checks the arguments against the instance, rewrites `name` to the mangled
+    /// instance and checks that instance once. Returns the instance return type, or `Unknown`
+    /// after an undefined-method error. Split out of `check_functioncall_expr`
     /// (frontend_refactoring_borrow_checker.md R4, #279).
     fn check_static_method_call(
         &mut self,
         resolved_name: &crate::symbol::Symbol,
         name: &mut crate::symbol::Symbol,
+        args: &mut [Expr],
+        arg_types: &[Type],
         span: &crate::syntax::Span,
     ) -> Type {
         let idx = resolved_name.find("::").expect("caller guards on `::`");
@@ -886,7 +870,7 @@ impl<'a> TypeChecker<'a> {
         }
 
         let mut found_generic_func = None;
-        let mut found_mapping = HashMap::new();
+        let mut found_mapping: HashMap<crate::symbol::Symbol, Type> = HashMap::new();
 
         if let Some(impl_blocks) = self.env.impls.get("_inherent") {
             for ib in impl_blocks {
@@ -944,7 +928,7 @@ impl<'a> TypeChecker<'a> {
                                 for (i, parsed_ty) in explicit_args.into_iter().enumerate() {
                                     if i < ib.generics.len() {
                                         found_mapping
-                                            .insert(ib.generics[i].name().to_string(), parsed_ty);
+                                            .insert(ib.generics[i].name().into(), parsed_ty);
                                     }
                                 }
                             }
@@ -959,29 +943,35 @@ impl<'a> TypeChecker<'a> {
         }
 
         if let Some(generic_func) = found_generic_func {
+            // Whatever the explicit type arguments left open, the arguments may fix, the way a
+            // generic free function's call does: `Holder::make(7i32)` binds `T` without `<i32>`.
+            // Walk only as far as both lists reach; a count mismatch is reported below.
+            for ((_, param_ty), arg_ty) in generic_func.params.iter().zip(arg_types.iter()) {
+                self.unify_types(param_ty, arg_ty, &mut found_mapping);
+            }
+
             let mut modified_func = generic_func.clone();
             modified_func.name = format!("{}::{}", struct_name, method_name).into();
             modified_func.generics = found_mapping
                 .keys()
                 .map(|k| decl::GenericParam::Type {
-                    name: k.clone().into(),
+                    name: k.clone(),
                     bounds: Vec::new(),
                 })
                 .collect();
 
             let mut inst_func = self.instantiate_function(
                 &modified_func,
-                &found_mapping
-                    .into_iter()
-                    .map(|(k, v)| (k.into(), v))
-                    .collect(),
+                &found_mapping,
                 &std::collections::HashMap::new(),
             );
             let inst_ret = inst_func.return_type.clone();
             let inst_name = inst_func.name.clone();
+            let inst_params: Vec<Type> = inst_func.params.iter().map(|(_, t)| t.clone()).collect();
 
             *name = inst_name.clone();
             self.record_call_edge(inst_name.as_ref(), span);
+            self.check_call_args(resolved_name.as_ref(), &inst_params, args, arg_types, span);
 
             if !self.env.functions.contains_key(inst_name.as_ref())
                 && !self.mono.functions.iter().any(|(f, _)| f.name == inst_name)
