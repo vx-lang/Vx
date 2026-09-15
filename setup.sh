@@ -25,7 +25,7 @@ LLVM_PATH=""
 if command -v brew >/dev/null 2>&1; then
     for LLVM_FORMULA in "llvm@${LLVM_VERSION}" llvm; do
         LLVM_PREFIX="$(brew --prefix "$LLVM_FORMULA" 2>/dev/null || true)"
-        if [ -x "$LLVM_PREFIX/bin/llvm-config" ]; then
+        if [ -n "$LLVM_PREFIX" ] && [ -x "$LLVM_PREFIX/bin/llvm-config" ]; then
             LLVM_PATH="$LLVM_PREFIX/bin"
             break
         fi
@@ -47,8 +47,8 @@ elif [ -d "/opt/homebrew/opt/llvm/bin" ]; then
     LLVM_PATH="/opt/homebrew/opt/llvm/bin"
 else
     echo "Could not automatically locate LLVM ${LLVM_VERSION}."
-    echo "  macOS: brew install llvm"
-    echo "  Linux: ./scripts/setup_linux.sh"
+    echo "  macOS: brew install llvm@${LLVM_VERSION}"
+    echo "  Linux: ./scripts/provision/setup_linux.sh"
     echo "Or create config.local by hand from config.template."
     exit 1
 fi
