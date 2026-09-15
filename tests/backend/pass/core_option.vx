@@ -7,6 +7,10 @@
 //===----------------------------------------------------------------------===//
 // `core::option`, after the move out of `std`.
 //
+// Each method gets both of its cases, and the closure-taking ones get the case where the
+// closure decides as well -- `filter` that accepts and rejects, `is_some_and` that is
+// asked of a value it likes and one it does not.
+//
 // Each method gets both of its cases. One case alone does not tell a working method from
 // a broken one -- an `is_some` that always answered true, and an `unwrap_or` that
 // ignored either the value or the default, each pass a test that only ever asks one
@@ -45,6 +49,32 @@ fn main() -> i32 {
   print(Option<i32>::None().unwrap_or(9));
   print!(" ");
 
+  let k : i32 = 1;
+  print(Option<i32>::Some(20).map(| x : i32 | x + k).unwrap_or(0));
+  print!(" ");
+  print(Option<i32>::None().map(| x : i32 | x + k).unwrap_or(-1));
+  print!(" ");
+  print(Option<i32>::Some(5).and_then(| x : i32 | Option<i32>::Some(x * 2)).unwrap_or(0));
+  print!(" ");
+  print(Option<i32>::Some(5).and_then(| x : i32 | Option<i32>::None()).unwrap_or(-1));
+  print!(" ");
+  print(Option<i32>::Some(5).filter(| x : i32 | x > 3).unwrap_or(-1));
+  print!(" ");
+  print(Option<i32>::Some(2).filter(| x : i32 | x > 3).unwrap_or(-1));
+  print!(" ");
+  print(Option<i32>::Some(5).map_or(-1, | x : i32 | x * 3));
+  print!(" ");
+  print(Option<i32>::None().map_or(-1, | x : i32 | x * 3));
+  print!(" ");
+  print(Option<i32>::None().unwrap_or_else(|| 77));
+  print!(" ");
+  print(Option<i32>::Some(5).unwrap_or_else(|| 77));
+  print!(" ");
+  show(Option<i32>::Some(5).is_some_and(| x : i32 | x > 3));
+  print!(" ");
+  show(Option<i32>::Some(2).is_some_and(| x : i32 | x > 3));
+  print!(" ");
+
   print(Option<i32>::Some(5).or(Option<i32>::Some(7)).unwrap());
   print!(" ");
   print(Option<i32>::None().or(Option<i32>::Some(7)).unwrap());
@@ -63,4 +93,4 @@ fn main() -> i32 {
   return 0;
 }
 
-// EXPECT: 1 0 0 1 5 5 9 5 7 7 1 5 7 1 1
+// EXPECT: 1 0 0 1 5 5 9 21 -1 10 -1 5 -1 15 -1 77 5 1 0 5 7 7 1 5 7 1 1

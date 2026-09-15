@@ -10,7 +10,7 @@
 // CHECK: %[[V2:.*]] = llvm.load %[[V1]] : !llvm.ptr -> i32
 // CHECK: return %[[V2]] : i32
 import std::vec;
-import std::closure;
+import core::ops;
 
 struct Point {
   x : i32, y : i32

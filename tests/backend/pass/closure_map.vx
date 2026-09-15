@@ -67,7 +67,7 @@
 // signature (unify), and passing it needs the `Closure_N` -> `Closure1` fat-struct
 // adapter in codegen. Exercises both a non-capturing and a capturing closure.
 import std::vec;
-import std::closure;
+import core::ops;
 
 fn main() -> i32 {
   let mut v = Vec<i32>::new();

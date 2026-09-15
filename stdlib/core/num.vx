@@ -16,6 +16,9 @@
 // Unsigned widths need a second macro: a Vx `u32` is an MLIR `i32`, and `abs`, `signum`
 // and `checked_neg` have no meaning without a sign.
 //
+// `min`, `max` and `clamp` are not here: they belong to `Ord` in `core::cmp`, as they do
+// in Rust, and a type gets them by implementing `cmp`.
+//
 // The limits are methods because Vx has no `const` item, and because a bare literal is
 // born `i32` -- returning one from a method declared `-> $t` is what gives it the width.
 import core::option;
@@ -107,34 +110,6 @@ macro_rules stamp_signed_int {
           return 1;
         }
         return 0;
-      }
-
-      /// The smaller of the two.
-      fn min(self : $t, other : $t) -> $t {
-        if self < other {
-          return self;
-        }
-        return other;
-      }
-
-      /// The larger of the two.
-      fn max(self : $t, other : $t) -> $t {
-        if self > other {
-          return self;
-        }
-        return other;
-      }
-
-      /// The bounds must be the right way round.
-      fn clamp(self : $t, lo : $t, hi : $t) -> $t {
-        assert(lo <= hi, "clamp needs lo <= hi");
-        if self < lo {
-          return lo;
-        }
-        if self > hi {
-          return hi;
-        }
-        return self;
       }
 
       /// The distance between two values.

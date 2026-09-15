@@ -1,0 +1,23 @@
+//===- comptime_integer_division_truncates.vx - Vx Compiler ------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `7 / 2` on integers is 3. Asserting 4 stops the build, which is how we know the
+// evaluator truncates rather than rounding or keeping a fraction.
+//
+// Before compile-time integers were integers this division produced 3.5, so `== 4` was
+// false here too -- for the wrong reason. The pass fixture next door is what separates
+// the two: it asserts `7 / 2 == 3`, which only holds for truncation.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: Comptime assert failed: 7 / 2 is 3, not 4
+
+fn main() -> i32 {
+  comptime {
+    assert(7 / 2 == 4, "7 / 2 is 3, not 4");
+  }
+  return 0;
+}

@@ -17,6 +17,38 @@ use super::super::*;
 use std::collections::HashMap;
 
 impl<'a> TypeChecker<'a> {
+    /// Whether a type opts out of being moved by implementing `Copy`.
+    ///
+    /// `Copy` is an ordinary marker trait -- a trait with no methods -- rather than
+    /// anything the compiler knows by name beyond this lookup, so `impl Copy for Ordering {}`
+    /// is the whole declaration. That it is opt-in is what keeps it away from placement: a
+    /// tensor, a `Pinned<T, Topology>` and a device buffer are linear because moving them is
+    /// the discipline, and none of them can declare itself `Copy`, so they stay linear with
+    /// no special case. Duplicating placed data is still an explicit `transfer`.
+    pub(crate) fn is_copy(&mut self, ty: &Type) -> bool {
+        let Some(impls) = self.env.impls.get("Copy") else {
+            return false;
+        };
+        let targets: Vec<Type> = impls.iter().map(|ib| ib.target_type.clone()).collect();
+        // Compared by nominal name rather than by unifying the two types. `impl Copy for
+        // Ordering` records its target as a *struct*, because when the impl header is parsed
+        // there is nothing yet to say whether `Ordering` names a struct or an enum, and
+        // unification keeps those apart. Every other way of reaching a declaration has the
+        // same shape, so the name is the part that is reliable here.
+        let nominal = |t: &Type| match t {
+            Type::Struct(name, _) | Type::Enum(name, _) => Some(name.clone()),
+            _ => None,
+        };
+        if let Some(name) = nominal(ty) {
+            return targets
+                .iter()
+                .any(|target| nominal(target).is_some_and(|t| t == name));
+        }
+        targets
+            .iter()
+            .any(|target| self.unify_types(target, ty, &mut HashMap::new()))
+    }
+
     pub(crate) fn check_identifier_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
         match expr {
             Expr::Identifier(id) => {
@@ -290,7 +322,7 @@ impl<'a> TypeChecker<'a> {
                                 }
                             }
                         }
-                        if consume && ty.is_linear() && !self.speculating {
+                        if consume && ty.is_linear() && !self.is_copy(&ty) && !self.speculating {
                             self.consume(name.as_ref());
                         }
                         ty.clone()
@@ -597,6 +629,7 @@ impl<'a> TypeChecker<'a> {
                     {
                         if Self::array_index(&index_val, items.len()).is_none() {
                             let shown = match &index_val {
+                                Value::Int(i) => i.to_string(),
                                 Value::Number(n) => n.to_string(),
                                 other => format!("{:?}", other),
                             };

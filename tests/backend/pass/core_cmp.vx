@@ -1,0 +1,103 @@
+//===- core_cmp.vx - Vx Compiler ----------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `core::cmp`, the first module written as a trait tower rather than inherent methods.
+//
+// Each trait has one required method and the rest are defaults, so what is really being
+// tested is that a default reaches the impl's `eq` or `cmp`. Every default is called at
+// least once, and the ones that can disagree are called on both sides: `lt` on a pair
+// that is less and a pair that is not.
+//
+// `then` gets Equal and Less as its receiver, which are the two cases it distinguishes.
+//
+// `eq`, `ne`, `lt`, `le`, `gt` and `ge` are each asked both ways, for the same reason: a
+// default that ignored `cmp` and answered a constant passes any test that only asks the
+// side it happens to match.
+//
+// `min` and `max` are each asked twice, once where the answer is the receiver and once
+// where it is the argument. Asked only one way, a `max` that always returned its argument
+// would pass.
+//
+// The last two lines are `i8`, since the impls are stamped and one width would not show
+// a macro that expanded to a single shared copy.
+import core::cmp;
+
+fn show(flag : bool) -> i32 {
+  if flag {
+    print(1);
+  } else {
+    print(0);
+  }
+  return 0;
+}
+
+fn main() -> i32 {
+  let a : i32 = 3;
+  let b : i32 = 9;
+
+  show(a.eq(&b));
+  print!(" ");
+  show(a.eq(&a));
+  print!(" ");
+  show(a.ne(&b));
+  print!(" ");
+  show(a.ne(&a));
+  print!(" ");
+
+  show(a.lt(&b));
+  print!(" ");
+  show(b.lt(&a));
+  print!(" ");
+  show(a.le(&a));
+  print!(" ");
+  show(b.le(&a));
+  print!(" ");
+  show(b.gt(&a));
+  print!(" ");
+  show(a.ge(&a));
+  print!(" ");
+  show(a.ge(&b));
+  print!(" ");
+
+  print(a.min(b));
+  print!(" ");
+  print(a.max(b));
+  print!(" ");
+  print(b.max(a));
+  print!(" ");
+  print(b.min(a));
+  print!(" ");
+  let big : i32 = 15;
+  print(big.clamp(0, 10));
+  print!(" ");
+  print(a.clamp(0, 10));
+  print!(" ");
+
+  show(a.cmp(&b).is_lt());
+  print!(" ");
+  show(a.cmp(&a).is_eq());
+  print!(" ");
+  show(b.cmp(&a).is_gt());
+  print!(" ");
+  show(a.cmp(&b).is_ne());
+  print!(" ");
+  show(a.cmp(&b).reverse().is_gt());
+  print!(" ");
+  show(a.cmp(&a).then(b.cmp(&a)).is_gt());
+  print!(" ");
+  show(a.cmp(&b).then(b.cmp(&a)).is_lt());
+  print!(" ");
+
+  let x : i8 = -5;
+  let y : i8 = 2;
+  show(x.lt(&y));
+  print!(" ");
+  print(x.max(y) as i32);
+  return 0;
+}
+
+// EXPECT: 0 1 1 0 1 0 1 0 1 1 0 3 9 9 3 10 3 1 1 1 1 1 1 1 1 2

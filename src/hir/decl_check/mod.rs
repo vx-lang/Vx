@@ -14,6 +14,7 @@
 use super::*;
 
 mod conflicts;
+mod copy_impls;
 mod memory;
 mod placement;
 mod topology;
@@ -33,6 +34,8 @@ impl TypeChecker<'_> {
     pub fn check_whole_program_declarations(&mut self) {
         // A name declared by two inputs (e.g. a `--machine` file and the program) is ambiguous.
         self.check_declaration_conflicts();
+        // `impl Copy for X` where one of X's fields moves rather than copies.
+        self.check_copy_impls();
         // Structural validity of transfer lowerings: duplicate edge, empty body.
         self.check_transfer_impls();
         // Declared topologies, read from the env rather than one program: a topology arriving via

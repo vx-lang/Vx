@@ -23,11 +23,12 @@ friends.
 
 ## Contents
 
+- [`core::cmp`](#corecmp) —
 - [`core::num`](#corenum) — The integer methods, on `i32`.
+- [`core::ops`](#coreops) —
 - [`core::option`](#coreoption) — `Option<T>`, for a value that may be absent.
 - [`std::alloc`](#stdalloc) — Raw allocation and deallocation.
 - [`std::box`](#stdbox) — `Box<T>`, a single-owner heap allocation. Required for recursive types.
-- [`std::closure`](#stdclosure) — The closure types the compiler lowers `|x| ...` into.
 - [`std::fs`](#stdfs) — Files and directories.
 - [`std::googletest`](#stdgoogletest) — Assertions for tests written in Vx.
 - [`std::hash_map`](#stdhash_map) — `HashMap<K, V>`.
@@ -45,6 +46,55 @@ friends.
 - [`std::tensor`](#stdtensor) — Operations on `Tensor`, including shape queries and elementwise maths.
 - [`std::time`](#stdtime) — Clocks and durations.
 - [`std::vec`](#stdvec) — `Vec<T>`, a growable array.
+
+## `core::cmp`
+
+**Types**
+
+- `enum Ordering`
+- `trait PartialEq`
+- `trait Ord`
+
+**`Ordering` methods**
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
+```rust
+fn is_lt(self : Ordering) -> bool
+fn is_gt(self : Ordering) -> bool
+fn is_eq(self : Ordering) -> bool
+fn is_ne(self : Ordering) -> bool
+fn is_le(self : Ordering) -> bool
+fn is_ge(self : Ordering) -> bool
+fn reverse(self : Ordering) -> Ordering
+fn then(self : Ordering, other : Ordering) -> Ordering
+fn eq(self : &Self, other : &Self) -> bool
+fn ne(self : &Self, other : &Self) -> bool
+fn cmp(self : &Self, other : &Self) -> Ordering
+fn lt(self : &Self, other : &Self) -> bool
+fn le(self : &Self, other : &Self) -> bool
+fn gt(self : &Self, other : &Self) -> bool
+fn ge(self : &Self, other : &Self) -> bool
+fn max(self : Self, other : Self) -> Self
+fn min(self : Self, other : Self) -> Self
+fn clamp(self : Self, lo : Self, hi : Self) -> Self
+```
+
+**`PartialEq for $t` methods**
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
+```rust
+fn eq(self : &$t, other : &$t) -> bool
+```
+
+**`Ord for $t` methods**
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
+```rust
+fn cmp(self : &$t, other : &$t) -> Ordering
+```
 
 ## `core::num`
 
@@ -67,9 +117,6 @@ fn is_positive(self : $t) -> bool
 fn is_negative(self : $t) -> bool
 fn abs(self : $t) -> $t
 fn signum(self : $t) -> $t
-fn min(self : $t, other : $t) -> $t
-fn max(self : $t, other : $t) -> $t
-fn clamp(self : $t, lo : $t, hi : $t) -> $t
 fn abs_diff(self : $t, other : $t) -> $t
 fn pow(self : $t, exp : $t) -> $t
 fn rem_euclid(self : $t, rhs : $t) -> $t
@@ -89,6 +136,15 @@ fn checked_neg(self : $t) -> Option<$t>
 fn saturating_add(self : $t, rhs : $t) -> $t
 fn saturating_sub(self : $t, rhs : $t) -> $t
 ```
+
+## `core::ops`
+
+**Types**
+
+- `struct Closure0<Ret>`
+- `struct Closure1<Arg, Ret>`
+- `struct Closure2<Arg1, Arg2, Ret>`
+- `struct Closure3<Arg1, Arg2, Arg3, Ret>`
 
 ## `core::option`
 
@@ -110,6 +166,12 @@ fn unwrap_or(self : Option<T>, default : T) -> T
 fn or(self : Option<T>, other : Option<T>) -> Option<T>
 fn and(self : Option<T>, other : Option<T>) -> Option<T>
 fn xor(self : Option<T>, other : Option<T>) -> Option<T>
+fn map<U>(self : Option<T>, f : Closure1<T, U>) -> Option<U>
+fn and_then<U>(self : Option<T>, f : Closure1<T, Option<U>>) -> Option<U>
+fn filter(self : Option<T>, p : Closure1<T, bool>) -> Option<T>
+fn map_or<U>(self : Option<T>, default : U, f : Closure1<T, U>) -> U
+fn unwrap_or_else(self : Option<T>, f : Closure0<T>) -> T
+fn is_some_and(self : Option<T>, p : Closure1<T, bool>) -> bool
 ```
 
 ## `std::alloc`
@@ -142,17 +204,6 @@ fn free(ptr : *mut i8) -> i32
 fn new(val : T) -> Box<T>
 fn free(self : &mut Box<T>) -> i32
 ```
-
-## `std::closure`
-
-The closure types the compiler lowers `|x| ...` into.
-
-**Types**
-
-- `struct Closure0<Ret>`
-- `struct Closure1<Arg, Ret>`
-- `struct Closure2<Arg1, Arg2, Ret>`
-- `struct Closure3<Arg1, Arg2, Arg3, Ret>`
 
 ## `std::fs`
 
@@ -783,4 +834,4 @@ fn vx_vec_bounds_check(index : i64, len : i64) -> i32
 
 ______________________________________________________________________
 
-265 functions across 22 modules.
+288 functions across 23 modules.

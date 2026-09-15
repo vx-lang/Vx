@@ -14,12 +14,12 @@ and so on. A `W` prefix is a warning rather than an error.
 - [Warnings](#warnings) — `W1001`–`W1031` (23 codes)
 - [Parser Errors](#parser-errors) — `E1001`–`E1013` (13 codes)
 - [Name Resolution Errors](#name-resolution-errors) — `E2001`–`E2007` (7 codes)
-- [Type Errors](#type-errors) — `E3001`–`E3030` (30 codes)
+- [Type Errors](#type-errors) — `E3001`–`E3031` (31 codes)
 - [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4005` (5 codes)
 - [Safety Errors](#safety-errors) — `E5001`–`E5002` (2 codes)
 - [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6028` (28 codes)
 - [Tensor/Math Errors](#tensormath-errors) — `E7001`–`E7004` (4 codes)
-- [Contract/Verification Errors](#contractverification-errors) — `E8001`–`E8003` (3 codes)
+- [Contract/Verification Errors](#contractverification-errors) — `E8001`–`E8004` (4 codes)
 
 ## Warnings
 
@@ -121,6 +121,7 @@ Raised by the type checker. Vx performs no implicit numeric conversion, so many 
 | `E3028` | A function with a non-void return type whose body can complete without returning. Reported here rather than left to codegen, where it surfaced as an MLIR verifier message naming an operation, with no source location. |
 | `E3029` | A type name in a signature that names no declaration. An unknown name in type position parses as a user nominal, so without this a typo -- or a type constructor removed from the language -- compiled silently and did nothing. |
 | `E3030` | An operator applied to operand types it is not defined on -- `%` on a shaped tensor or on a `bool`. Refused here because the alternative is worse in both directions: the flat emitter would decline and fall back to a path that cannot lower it either, and an `i1` operand would reach `arith.remsi` and verify. |
+| `E3031` | `impl Copy for X` where one of `X`'s fields is a type that moves. `Copy` promises a value survives being assigned elsewhere, and a field that does not survive it breaks that promise for the whole type -- which would be a way to duplicate a tensor, or any other placed value, without saying so. |
 
 ## Borrow/Ownership Errors
 
@@ -198,7 +199,8 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 | `E8001` | Cannot prove postcondition |
 | `E8002` | Comptime assert failed |
 | `E8003` | Compile-time index out of range |
+| `E8004` | Compile-time evaluation exceeded the call-depth limit |
 
 ______________________________________________________________________
 
-115 diagnostics.
+117 diagnostics.

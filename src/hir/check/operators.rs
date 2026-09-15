@@ -272,10 +272,8 @@ impl<'a> TypeChecker<'a> {
                         // compare until it carries a shape.
                         if l_len == 2 && r_len == 2 {
                             let empty_env = std::collections::HashMap::new();
-                            let dim_of = |v: Option<crate::hir::env::Value>| match v {
-                                Some(crate::hir::env::Value::Number(n)) => Some(n),
-                                _ => None,
-                            };
+                            let dim_of =
+                                |v: Option<crate::hir::env::Value>| v.and_then(|v| v.as_f64());
                             let kl = dim_of(
                                 dims_l[1]
                                     .as_static()

@@ -18,8 +18,12 @@
 // `rem_euclid(-7, 4)` is 1 where `-7 % 4` is -3: that pair is the whole reason the
 // method exists, so both appear.
 //
+// `min`, `max` and `clamp` come from `Ord` in `core::cmp`, not from this module, which
+// is why that import is here.
+//
 // There are no directives about emitted IR. The module is a library, and what matters
 // is the answers, not which code generator produced them.
+import core::cmp;
 import core::num;
 
 fn show(flag : bool) -> i32 {

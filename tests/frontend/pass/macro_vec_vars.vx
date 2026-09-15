@@ -8,7 +8,7 @@
 // CHECK-LABEL: func.func @ref$mut$Vec$i32$push$i32(%arg0: !llvm.ptr {llvm.noalias}, %arg1: i32) -> i32
 // CHECK: call @vx_vec_grow(%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, i64, i64, i64) -> !llvm.ptr
 import std::vec;
-import std::closure;
+import core::ops;
 fn main() -> i32 {
   let x = 10;
   let y = 20;
