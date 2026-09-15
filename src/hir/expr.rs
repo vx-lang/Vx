@@ -71,9 +71,14 @@ impl<'a> TypeChecker<'a> {
                 span: _,
             }) = s
             {
+                // See the same call in `check_statement`: the values a mutable borrow is
+                // about to drop have to be read before the arguments are checked.
+                let before = self.consteval_snapshot();
+                let scopes = self.consteval_scopes();
                 let saved_borrows = self.borrow.snapshot();
                 ret_ty = self.check_expr_type_flag(expr, consume);
                 self.borrow.restore(saved_borrows);
+                self.settle_mut_borrow_call(expr, &before, &scopes);
             } else {
                 let expected_ret = self.current_return_type.clone().unwrap_or(Type::Tensor(
                     ElementType::F32,

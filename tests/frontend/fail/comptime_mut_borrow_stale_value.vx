@@ -1,0 +1,32 @@
+//===- comptime_mut_borrow_stale_value.vx - Vx Compiler ----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The value an array held before a mutable borrow is refused afterwards.
+//
+// This is the half that a pass fixture cannot cover. An assert the evaluator does not
+// run is silently accepted, so pass/comptime_array_mut_borrow.vx keeps compiling if the
+// evaluator stops following the write -- or stops evaluating at all. Here the error
+// disappearing is the failure, which is what catches that.
+//
+// `touch` sets element 0 to 9. Asserting it is still 1 is asking for the value from
+// before the call, and that has to be refused.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+fn touch(p : &mut Tensor<i64, [3]>) -> void {
+  p[0] = 9i64;
+}
+
+fn main() -> i32 {
+  comptime {
+    let mut a : Tensor<i64, [3]> = [ 1i64, 2i64, 3i64 ];
+    touch(&mut a);
+    // CHECK: Error[E8002]{{.*}}the value from before the borrow
+    assert(a[0] == 1i64, "the value from before the borrow");
+  }
+  return 0;
+}

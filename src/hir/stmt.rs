@@ -141,9 +141,15 @@ impl<'a> TypeChecker<'a> {
                 has_semi: _,
                 span: _,
             }) => {
+                // Taken before the arguments are checked: checking `&mut a` is what drops
+                // `a`'s compile-time value, so afterwards there is nothing left to run the
+                // call against.
+                let before = self.consteval_snapshot();
+                let scopes = self.consteval_scopes();
                 let saved_borrows = self.borrow.snapshot();
                 self.check_expr_type_flag(expr, consume);
                 self.borrow.restore(saved_borrows);
+                self.settle_mut_borrow_call(expr, &before, &scopes);
             }
             Statement::Assert(assert) => self.check_assert_stmt(assert, consume, return_type),
             Statement::MacroCall(_) => {
@@ -590,7 +596,7 @@ impl<'a> TypeChecker<'a> {
     /// Taken before a loop body is type checked, so that a variable the single pass drops
     /// can still be put back afterwards. `consteval_scope_of` could not find it by then:
     /// the name is gone from every scope, which is exactly the case that matters.
-    fn consteval_scopes(&self) -> HashMap<crate::symbol::Symbol, usize> {
+    pub(crate) fn consteval_scopes(&self) -> HashMap<crate::symbol::Symbol, usize> {
         let mut scopes = HashMap::new();
         for (index, scope) in self.consteval.env.iter().enumerate() {
             for name in scope.keys() {
@@ -668,6 +674,37 @@ impl<'a> TypeChecker<'a> {
             && matches!(flow, EvalFlow::Normal);
         self.consteval.unsupported_stmt.set(outer_unsupported);
         ran
+    }
+
+    /// Follow what a call written as a statement wrote through its mutable borrows.
+    ///
+    /// Taking `&mut a` drops `a`'s compile-time value, because whoever holds the borrow can
+    /// write through it. The write can be followed now: the call runs with the borrowed
+    /// argument bound to the value `a` held, and what the body leaves there is put back.
+    /// When the body cannot be run the value stays dropped, which is the old behaviour and
+    /// the safe one -- the callee has by now overwritten what the caller was holding.
+    pub(crate) fn settle_mut_borrow_call(
+        &mut self,
+        expr: &Expr,
+        before: &HashMap<crate::symbol::Symbol, Value>,
+        scopes: &HashMap<crate::symbol::Symbol, usize>,
+    ) {
+        if self.consteval.comptime_depth == 0 {
+            return;
+        }
+        let Expr::FunctionCall(call) = expr else {
+            return;
+        };
+        let Some(written) = self.eval_call_effects(call, before) else {
+            return;
+        };
+        for (place, value) in written {
+            // The name was dropped when the borrow was taken, so its scope has to come
+            // from the reading made before that happened.
+            if let Some(&scope) = scopes.get(place.as_ref()) {
+                self.consteval.env[scope].insert(place, value);
+            }
+        }
     }
 
     /// Report an evaluation stopped by the loop budget, and clear the flag so the next one
@@ -1140,6 +1177,92 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// The caller-side variable each argument passed by mutable borrow writes through.
+    ///
+    /// Two spellings reach the same place. `f(&mut a)` takes the borrow at the call, and
+    /// `partition(w, ..)` passes on a borrow the caller already holds. Both are answered
+    /// here as the name whose value the callee can change.
+    fn mut_borrow_args(func: &Function, args: &[Expr]) -> Vec<(usize, crate::symbol::Symbol)> {
+        let mut borrowed = Vec::new();
+        for (i, arg) in args.iter().enumerate() {
+            let Some((_, param_ty)) = func.params.get(i) else {
+                continue;
+            };
+            if !matches!(param_ty, Type::Borrow { is_mut: true, .. }) {
+                continue;
+            }
+            let place = match arg {
+                Expr::Borrow(BorrowExpr {
+                    expr,
+                    is_mut: true,
+                    span: _,
+                }) => &**expr,
+                other => other,
+            };
+            if let Expr::Identifier(IdentifierExpr { name, span: _ }) = place {
+                borrowed.push((i, name.clone()));
+            }
+        }
+        borrowed
+    }
+
+    /// Run a call for what it writes through its mutable borrows, rather than for a value.
+    ///
+    /// Answers the new value of each borrowed argument, or `None` when the body could not
+    /// be run -- in which case the caller must drop those values rather than keep the ones
+    /// from before the call, which the callee has by now overwritten.
+    pub(crate) fn eval_call_effects(
+        &self,
+        call: &FunctionCallExpr,
+        env: &HashMap<crate::symbol::Symbol, Value>,
+    ) -> Option<Vec<(crate::symbol::Symbol, Value)>> {
+        let FunctionCallExpr {
+            name,
+            type_args: None,
+            args,
+            span: _,
+        } = call
+        else {
+            return None;
+        };
+        let func = self.callee_body(name.as_ref())?;
+        let borrowed = Self::mut_borrow_args(func, args);
+        if borrowed.is_empty() {
+            return None;
+        }
+
+        // A borrowed argument is bound to the value it names, so the body's writes land on
+        // it. Every other argument is passed the ordinary way, by value.
+        let mut local_env = HashMap::new();
+        for (i, arg_expr) in args.iter().enumerate() {
+            let param = func.params.get(i)?.0.clone();
+            let arg_val = match borrowed.iter().find(|(at, _)| *at == i) {
+                Some((_, place)) => env.get(place.as_ref())?.clone(),
+                None => self.eval_expr(arg_expr, env)?,
+            };
+            local_env.insert(param, arg_val);
+        }
+
+        self.enter_call()?;
+        let outer_unsupported = self.consteval.unsupported_stmt.replace(false);
+        self.eval_block(&func.body, &mut local_env);
+        let ran = !self.consteval.unsupported_stmt.get();
+        self.consteval.unsupported_stmt.set(outer_unsupported);
+        self.leave_call();
+        if !ran {
+            return None;
+        }
+
+        let mut written = Vec::new();
+        for (i, place) in borrowed {
+            let param = func.params.get(i)?.0.as_ref();
+            // The body may itself have dropped the value -- an unknown index, say. Then
+            // there is nothing to write back and the caller's copy has to go too.
+            written.push((place, local_env.get(param)?.clone()));
+        }
+        Some(written)
+    }
+
     /// The callee's body for compile-time evaluation.
     ///
     /// The module being compiled goes into the resolution env with its non-generic bodies
@@ -1439,6 +1562,38 @@ impl<'a> TypeChecker<'a> {
             }) => self.eval_loop(body, env),
             Statement::Break(_) => EvalFlow::Break,
             Statement::Continue(_) => EvalFlow::Continue,
+            // A call written as a statement. It is run only when it writes through a
+            // mutable borrow -- that is the whole reason to run something for no value.
+            // Anything it borrowed must be dropped when it could not be run, because the
+            // callee has by now overwritten what the caller was holding.
+            Statement::ExprStmt(ExprStmtStmt {
+                expr: Expr::FunctionCall(call),
+                has_semi: _,
+                span: _,
+            }) => {
+                let borrowed = match self.callee_body(call.name.as_ref()) {
+                    Some(func) => Self::mut_borrow_args(func, &call.args),
+                    None => Vec::new(),
+                };
+                if borrowed.is_empty() {
+                    self.consteval.unsupported_stmt.set(true);
+                    return EvalFlow::Normal;
+                }
+                match self.eval_call_effects(call, env) {
+                    Some(written) => {
+                        for (place, value) in written {
+                            env.insert(place, value);
+                        }
+                    }
+                    None => {
+                        for (_, place) in borrowed {
+                            env.remove(place.as_ref());
+                        }
+                        self.consteval.unsupported_stmt.set(true);
+                    }
+                }
+                EvalFlow::Normal
+            }
             // An `if` written as a statement, which is how a loop body decides anything.
             // The chosen block runs against this environment rather than a copy, so what
             // it writes is still there afterwards, and a `break` inside it reaches the

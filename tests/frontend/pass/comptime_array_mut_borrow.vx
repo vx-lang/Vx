@@ -5,30 +5,75 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// A mutable borrow ends the array's compile-time value.
+// A write through a mutable borrow is followed, and a borrow that cannot be followed
+// still ends the array's compile-time value.
 //
-// `touch` writes through the borrow, and the evaluator does not follow a call into
-// a function in this file. Without this rule it would go on reporting the values the
-// array held before the call, which here means claiming `a[0]` is 1 when the program
-// has set it to 9.
+// This file used to say the opposite: taking `&mut a` always ended the value, because
+// the evaluator could not run the call and keeping the old contents would have reported
+// elements the program had already overwritten. It can run the call now, so the value
+// survives -- as the value the callee left, not the one it started with.
 //
-// The two asserts contradict each other, so this file only compiles while the
-// evaluator has no value for `a[0]`. Their messages differ so a failure says which
-// way the rule broke.
+// The two rules below are separate, and the second is what keeps the first honest. A
+// change that followed *every* borrow, including one it cannot actually see through,
+// would pass the first section and break the other two.
+//
+// Note what the first section cannot catch: if the evaluator stopped evaluating
+// altogether, `a[0]` would have no value, the assert would not run, and this file would
+// compile anyway. fail/comptime_mut_borrow_stale_value.vx is where that is caught.
 //
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // CHECK-LABEL: func.func @main() -> i32
+
+fn noop() -> void {
+  return;
+}
 
 fn touch(p : &mut Tensor<i64, [3]>) -> void {
   p[0] = 9i64;
 }
 
+fn fill(p : &mut Tensor<i64, [3]>, with : i64) -> void {
+  for i in 0..3 {
+    p[i] = with;
+  }
+  return;
+}
+
+fn cannot_run(p : &mut Tensor<i64, [3]>) -> void {
+  // A bare call statement is not something the evaluator runs, so this body has not been
+  // run and nothing may be concluded about what it left in `p`.
+  noop();
+  p[0] = 9i64;
+}
+
 fn main() -> i32 {
   comptime {
+    // The write through the borrow lands on the caller's array.
     let mut a : Tensor<i64, [3]> = [ 1i64, 2i64, 3i64 ];
     touch(&mut a);
-    assert(a[0] == 1, "the array kept its value across a mutable borrow");
-    assert(a[0] != 1, "the evaluator followed the write through the borrow");
+    assert(a[0] == 9i64, "the write through the borrow reached the caller's array");
+    assert(a[1] == 2i64, "an element the callee did not write is unchanged");
+
+    // A loop inside the callee writes through the borrow too.
+    let mut b : Tensor<i64, [3]> = [ 0i64, 0i64, 0i64 ];
+    fill(&mut b, 7i64);
+    assert(b[0] == 7i64, "the callee's loop wrote the first element");
+    assert(b[2] == 7i64, "the callee's loop wrote the last element");
+
+    // A callee the evaluator cannot run ends the value. The two asserts contradict each
+    // other, so this section only compiles while `c[0]` has no value at all.
+    let mut c : Tensor<i64, [3]> = [ 1i64, 2i64, 3i64 ];
+    cannot_run(&mut c);
+    assert(c[0] == 1i64, "a body that was not run left the old contents in place");
+    assert(c[0] != 1i64, "a body that was not run was treated as having written");
+
+    // A borrow taken and never passed to a call ends the value as well: the evaluator
+    // cannot see what is written through it. Same contradiction, same reason.
+    let mut d : Tensor<i64, [3]> = [ 1i64, 2i64, 3i64 ];
+    let r : &mut Tensor<i64, [3]> = &mut d;
+    r[0] = 9i64;
+    assert(d[0] == 1i64, "a loose borrow left the old contents in place");
+    assert(d[0] != 1i64, "a loose borrow was treated as not writing");
   }
   return 0;
 }
