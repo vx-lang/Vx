@@ -1,0 +1,24 @@
+//===- jobs_loads_imports_in_waves.vx - Vx Compiler --------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `-j` loads imports wave by wave: this file names `jobs_wave_a`, which names `jobs_wave_b`,
+// which this file never mentions. Both reach the output, and `main` runs to the value only
+// the deepest module can produce: wave_a(20) = wave_b(20) + 1 = 41, which the JIT reports.
+//
+// RUN: vxc -j 4 --emit-mlir %s 2>&1 | FileCheck %s
+// RUN: (vxc -j 4 --run %s 2>&1; echo "exit=$?") | FileCheck --check-prefix=JIT %s
+
+import tests::modules::jobs_wave_a;
+
+fn main() -> i32 {
+  return wave_a(20);
+}
+
+// CHECK-DAG: func.func @wave_a
+// CHECK-DAG: func.func @wave_b
+// CHECK-DAG: func.func @main
+// JIT: Program exited with code: 41

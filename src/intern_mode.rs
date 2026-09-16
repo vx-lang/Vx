@@ -123,8 +123,9 @@ where
 ///
 /// Tri-state atomic rather than a one-shot lazy cell: 0 = not yet read, 1 = quiet, 2 = loud. A benign
 /// race just re-reads the environment and stores the same answer.
+static QUIET: AtomicU8 = AtomicU8::new(0); // vx-lint: allow-atomic (eval-only log gate)
+
 pub fn quiet() -> bool {
-    static QUIET: AtomicU8 = AtomicU8::new(0); // vx-lint: allow-atomic (eval-only log gate)
     match QUIET.load(Ordering::Relaxed) {
         1 => true,
         2 => false,
@@ -134,6 +135,12 @@ pub fn quiet() -> bool {
             q
         }
     }
+}
+
+/// Decide the gate without reading the environment. `vxc -j` runs the pipeline as a compiler,
+/// where progress chatter on stdout would land in the middle of the MLIR it prints.
+pub fn set_quiet(quiet: bool) {
+    QUIET.store(if quiet { 1 } else { 2 }, Ordering::Relaxed);
 }
 
 // ---- Per-phase timing (#297) ------------------------------------------------------------------
@@ -157,7 +164,7 @@ pub const CODEGEN_LOWER: &str = "  codegen:lower";
 pub const CODEGEN_SETUP: &str = "  codegen:setup";
 pub const CODEGEN_EMIT: &str = "  codegen:emit";
 
-pub const PHASES: [&str; 17] = [
+pub const PHASES: [&str; 21] = [
     "parse",
     "macro_expand",
     "name_resolution",
@@ -175,6 +182,13 @@ pub const PHASES: [&str; 17] = [
     CODEGEN_SETUP,
     CODEGEN_EMIT,
     "teardown",
+    // The driver's backend, once the frontend has produced MLIR text: parsing that text back
+    // into a module, verifying it, running the pass pipeline, and printing. Recorded by `vxc`
+    // alone, so a `-j` ladder shows what the frontend's speed-up is worth in a whole compile.
+    "mlir_parse",
+    "mlir_verify",
+    "mlir_passes",
+    "mlir_print",
 ];
 
 // Accumulated FROM inside the parallel regions being timed, so there is no per-worker place to
@@ -246,7 +260,7 @@ mod tests {
         assert_eq!(phase_index("type_check"), Some(8));
         assert_eq!(phase_index("not_a_phase"), None);
         // Every name the pipeline instruments must be declared, or its time vanishes.
-        assert_eq!(PHASES.len(), 17);
+        assert_eq!(PHASES.len(), 21);
         // The sub-phase constants are the names their instrumentation sites pass, so a lookup
         // that misses here is a row that would have read 0.0 in every report.
         for name in [CODEGEN_LOWER, CODEGEN_SETUP, CODEGEN_EMIT] {

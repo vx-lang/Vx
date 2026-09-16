@@ -18,7 +18,9 @@ use codegen::MeliorGenerator;
 use melior::ir::operation::OperationLike;
 use std::path::PathBuf;
 
+use crate::config::Schedule;
 use crate::hir::{GlobalAstEnv, TypeChecker};
+use crate::intern_mode::InternMode;
 use crate::module_loader::ModuleLoader;
 use crate::session::{GlobalSession, LocalWorkerState};
 
@@ -144,6 +146,14 @@ pub struct DriverOptions {
     #[arg(long = "intern-mode", value_name = "MODE", default_value = "deferred")]
     pub intern_mode: String,
 
+    /// Compile through the parallel frontend on N threads. `-j 1` runs its phases with the
+    /// parallel machinery off. Without `-j` the sequential driver runs; the two differ in that
+    /// the driver lowers only what the entry module reaches, where the parallel frontend lowers
+    /// every loaded module whole. Applies to the actions that compile: parse-only, print-ast and
+    /// emit-interface run as without it.
+    #[arg(short = 'j', long = "jobs", value_name = "N", value_parser = clap::value_parser!(u64).range(1..))]
+    pub jobs: Option<u64>,
+
     /// Emit MLIR/LLVM backend diagnostics
     #[arg(long = "emit-backend-diagnostics")]
     pub emit_backend_diagnostics: bool,
@@ -213,11 +223,10 @@ impl CompilerDriver {
         // (Vx#381); the strategy now travels as a parameter to the pipeline entry points and is
         // frozen on the session.
         //
-        // Validated and not used: `vxc`'s own path never mints a deferred generic --
-        // `emit_function_type_gids` is reached only from the pipeline's `check_one_function`, and
-        // this driver does not run the pipeline frontend. The flag is still rejected when
-        // misspelled rather than defaulted, because a benchmark that silently measured `deferred`
-        // while its command line said otherwise would produce a wrong number that looks right.
+        // Used by `-j`, which runs the pipeline frontend; the sequential path never mints a
+        // deferred generic. Rejected when misspelled rather than defaulted, because a benchmark
+        // that silently measured `deferred` while its command line said otherwise would produce a
+        // wrong number that looks right.
         match options.intern_mode.as_str() {
             "deferred" | "content" => {}
             other => {
@@ -331,7 +340,152 @@ impl CompilerDriver {
             return self.execute_mlir_pipeline(main_file, &mlir_args);
         }
 
+        // `-j` applies to the actions that compile. The parallel frontend hands back `None` for a
+        // program it cannot take, having said why, and the sequential driver takes over.
+        if let Some(jobs) = self.options.jobs {
+            let jobs = jobs as usize;
+            let compiles = matches!(
+                self.options.action,
+                Action::EmitMlir | Action::EmitLlvm | Action::EmitObj | Action::RunJit
+            );
+            if compiles
+                && self
+                    .execute_parallel(main_file, &filename, &mlir_args, jobs)?
+                    .is_some()
+            {
+                return Ok(());
+            }
+        }
+
         self.execute_vx_pipeline(main_file, &filename, &mlir_args)
+    }
+
+    /// `-j N`: the parallel frontend, then the same backend as the sequential path.
+    ///
+    /// Returns `Ok(None)` when the parallel frontend cannot take the program, after saying why on
+    /// stderr; the caller then runs the sequential driver, which takes everything. A flag whose
+    /// meaning the parallel frontend does not implement is refused instead: a compile that
+    /// silently dropped `--diagnostics-json` would report success and write nothing.
+    fn execute_parallel(
+        &self,
+        main_file: &std::path::Path,
+        filename: &str,
+        mlir_args: &[String],
+        jobs: usize,
+    ) -> Result<Option<()>, String> {
+        let unsupported = [
+            (self.options.legacy_codegen, "--legacy-codegen"),
+            (self.options.link_interface.is_some(), "--link-interface"),
+            (
+                self.options.diagnostics_json.is_some(),
+                "--diagnostics-json",
+            ),
+            (self.options.verify_seams, "--verify-seams"),
+            (self.options.emit_seam_certs, "--emit-seam-certs"),
+        ];
+        if let Some((_, flag)) = unsupported.iter().find(|(given, _)| *given) {
+            return Err(format!(
+                "-j does not support {flag} yet; drop one of the two"
+            ));
+        }
+
+        // `-j 1` is the same phases with rayon off the path entirely, not a pool of one: the
+        // difference between the two is the parallel machinery's own cost, which a ladder
+        // starting at `-j 1` is meant to show rather than hide.
+        let sched = if jobs == 1 {
+            Schedule::Sequential
+        } else {
+            Schedule::Parallel
+        };
+        let intern_mode = match self.options.intern_mode.as_str() {
+            "content" => InternMode::Content,
+            _ => InternMode::Deferred,
+        };
+        // The pipeline's progress chatter goes to stdout, where this action prints MLIR.
+        crate::intern_mode::set_quiet(true);
+
+        let compile = || -> Result<Option<(String, Option<String>)>, String> {
+            let (programs, interfaces) = self.load_modules(filename, sched)?;
+            if !interfaces.is_empty() {
+                eprintln!(
+                    "[parallel-frontend] an import resolved to a .vxlib interface, which the \
+                     parallel frontend does not link yet; using the sequential driver"
+                );
+                return Ok(None);
+            }
+            let host_arch = Self::host_arch_of(programs.iter());
+            let text = crate::pipeline::compile_modules_mlir_in(programs, sched, intern_mode)
+                .map_err(|e| e.to_string())?;
+            let Some(text) = text else {
+                eprintln!(
+                    "[parallel-frontend] program outside the flat subset; using the sequential \
+                     driver"
+                );
+                return Ok(None);
+            };
+            Ok(Some((text, host_arch)))
+        };
+        let compiled = if jobs == 1 {
+            compile()
+        } else {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(jobs)
+                .build()
+                .map_err(|e| format!("could not start {jobs} compiler threads: {e}"))?;
+            pool.install(compile)
+        };
+        let Some((text, host_arch)) = compiled? else {
+            Self::report_phases();
+            return Ok(None);
+        };
+        eprintln!("[parallel-frontend] emitted module with -j {jobs}");
+        let emitted = self.emit_from_mlir_text(&text, host_arch, filename, main_file, mlir_args);
+        Self::report_phases();
+        emitted.map(Some)
+    }
+
+    /// Under `VX_PIPELINE_PHASES`, the per-phase wall clock of this compile, one line per phase
+    /// on stderr, frontend and backend both, so a measurement reads the shipping binary rather
+    /// than a harness.
+    fn report_phases() {
+        if std::env::var_os("VX_PIPELINE_PHASES").is_some() {
+            eprint!("{}", crate::intern_mode::phases_csv());
+        }
+    }
+
+    /// Load the entry module and everything it imports, `--machine` and `--host` first as peer
+    /// modules, with each wave of imports parsed in parallel under `sched`. The `-j` twin of
+    /// `load_and_expand`, without the macro expansion, which the parallel frontend does itself.
+    /// The parse is timed under the pipeline's `parse` phase so its phase table stays complete.
+    fn load_modules(
+        &self,
+        filename: &str,
+        sched: Schedule,
+    ) -> Result<(Vec<crate::syntax::Program>, Vec<Vec<u8>>), String> {
+        let mut roots: Vec<String> = Vec::new();
+        if let Some(machine) = &self.options.machine {
+            roots.push(machine.to_string_lossy().to_string());
+        }
+        if let Some(host) = &self.options.host {
+            if host != "default" {
+                roots.push(host.clone());
+            }
+        }
+        roots.push(filename.to_string());
+
+        let mut loader = ModuleLoader::new();
+        let mut programs = crate::intern_mode::timed("parse", || loader.load_all(&roots, sched))
+            .map_err(|e| format!("Frontend failed to parse '{}': {}", filename, e))?;
+        let mut auto: Vec<(crate::symbol::Symbol, Vec<u8>)> =
+            std::mem::take(&mut loader.loaded_interfaces)
+                .into_iter()
+                .collect();
+        auto.sort_by(|a, b| a.0.cmp(&b.0));
+        let auto_interfaces: Vec<Vec<u8>> = auto.into_iter().map(|(_, b)| b).collect();
+        if self.options.host.as_deref() == Some("default") {
+            programs.push(Self::native_host_program());
+        }
+        Ok((programs, auto_interfaces))
     }
 
     fn execute_mlir_pipeline(
@@ -462,69 +616,8 @@ impl CompilerDriver {
         let auto_interfaces: Vec<Vec<u8>> = auto.into_iter().map(|(_, b)| b).collect();
         let mut program_arr = loader.into_programs();
 
-        // `--host default`: the machine compiling the program, declared rather
-        // than assumed. Synthesised instead of read from a file because there is
-        // no file to read -- the point is that the host is *stated*, and for a
-        // native build the statement is "this one".
-        //
-        // No capacity, for the reason the flag documents: host memory is virtual
-        // and a hard limit would reject programs that page rather than fail. It
-        // declares that a host exists and that its memory is `Memory::CPU_DRAM`,
-        // which is what a program staging through it needs there to be.
         if self.options.host.as_deref() == Some("default") {
-            program_arr.push(crate::syntax::Program {
-                module_path: crate::symbol::Symbol::from("<native-host>"),
-                item_macros: Vec::new(),
-                memories: vec![crate::syntax::MemoryDecl {
-                    name: crate::symbol::Symbol::from("CPU_DRAM"),
-                    parent: None,
-                    capacity: None,
-                    bandwidth: None,
-                    // Neither is knowable for "the machine this was compiled
-                    // on", and both are absent for the same reason the capacity
-                    // is: an invented figure would be indistinguishable from a
-                    // declared one. Absent means a path through here is refused
-                    // rather than priced, which is the honest answer -- and no
-                    // bandwidth is declared either, so it was already refused.
-                    clock_hz: None,
-                    replicas: None,
-                    managed: crate::syntax::Management::Explicit,
-                    granule: None,
-                    scope: None,
-                    overcommit: false,
-                    crossing: crate::syntax::Crossing::default(),
-                    // `--host default` describes the machine compiling this, and which NUMA
-                    // node its DRAM sits on is not a property of that machine -- it is a
-                    // property of an allocation nobody has made yet. A host file that wants
-                    // to name its domains declares them itself.
-                    numa_node: None,
-                    doc_comment: Some(
-                        "the machine this was compiled on (--host default)".to_string(),
-                    ),
-                }],
-                // The compiling machine's own architecture, so `--host default`
-                // is a declaration like any other and the triple is derived the
-                // same way for it as for a host file (#342).
-                transfer_impls: Vec::new(),
-                topologies: vec![crate::arch::TopologyDecl {
-                    name: crate::symbol::Symbol::from("Host"),
-                    descriptor: crate::arch::TopologyDescriptor {
-                        arch: Some(crate::symbol::Symbol::from(std::env::consts::ARCH)),
-                        default_space: crate::syntax::MemorySpace::CPUDRAM,
-                        visibility: vec![crate::syntax::MemorySpace::CPUDRAM],
-                        transfers: Vec::new(),
-                        dtypes: None,
-                    },
-                }],
-                imports: Vec::new(),
-                macros: Vec::new(),
-                externs: Vec::new(),
-                structs: Vec::new(),
-                enums: Vec::new(),
-                traits: Vec::new(),
-                impls: Vec::new(),
-                functions: Vec::new(),
-            });
+            program_arr.push(Self::native_host_program());
         }
 
         let mut global_macros = std::collections::HashMap::new();
@@ -541,6 +634,69 @@ impl CompilerDriver {
             }
         }
         Ok((program_arr, auto_interfaces))
+    }
+
+    /// `--host default`: the machine compiling the program, declared rather
+    /// than assumed. Synthesised instead of read from a file because there is
+    /// no file to read -- the point is that the host is *stated*, and for a
+    /// native build the statement is "this one".
+    ///
+    /// No capacity, for the reason the flag documents: host memory is virtual
+    /// and a hard limit would reject programs that page rather than fail. It
+    /// declares that a host exists and that its memory is `Memory::CPU_DRAM`,
+    /// which is what a program staging through it needs there to be.
+    fn native_host_program() -> crate::syntax::Program {
+        crate::syntax::Program {
+            module_path: crate::symbol::Symbol::from("<native-host>"),
+            item_macros: Vec::new(),
+            memories: vec![crate::syntax::MemoryDecl {
+                name: crate::symbol::Symbol::from("CPU_DRAM"),
+                parent: None,
+                capacity: None,
+                bandwidth: None,
+                // Neither is knowable for "the machine this was compiled
+                // on", and both are absent for the same reason the capacity
+                // is: an invented figure would be indistinguishable from a
+                // declared one. Absent means a path through here is refused
+                // rather than priced, which is the honest answer -- and no
+                // bandwidth is declared either, so it was already refused.
+                clock_hz: None,
+                replicas: None,
+                managed: crate::syntax::Management::Explicit,
+                granule: None,
+                scope: None,
+                overcommit: false,
+                crossing: crate::syntax::Crossing::default(),
+                // `--host default` describes the machine compiling this, and which NUMA
+                // node its DRAM sits on is not a property of that machine -- it is a
+                // property of an allocation nobody has made yet. A host file that wants
+                // to name its domains declares them itself.
+                numa_node: None,
+                doc_comment: Some("the machine this was compiled on (--host default)".to_string()),
+            }],
+            // The compiling machine's own architecture, so `--host default`
+            // is a declaration like any other and the triple is derived the
+            // same way for it as for a host file (#342).
+            transfer_impls: Vec::new(),
+            topologies: vec![crate::arch::TopologyDecl {
+                name: crate::symbol::Symbol::from("Host"),
+                descriptor: crate::arch::TopologyDescriptor {
+                    arch: Some(crate::symbol::Symbol::from(std::env::consts::ARCH)),
+                    default_space: crate::syntax::MemorySpace::CPUDRAM,
+                    visibility: vec![crate::syntax::MemorySpace::CPUDRAM],
+                    transfers: Vec::new(),
+                    dtypes: None,
+                },
+            }],
+            imports: Vec::new(),
+            macros: Vec::new(),
+            externs: Vec::new(),
+            structs: Vec::new(),
+            enums: Vec::new(),
+            traits: Vec::new(),
+            impls: Vec::new(),
+            functions: Vec::new(),
+        }
     }
 
     /// Every module interface to merge into this compile's registry: those auto-loaded from imports
@@ -883,31 +1039,26 @@ impl CompilerDriver {
         Ok(())
     }
 
-    fn run_codegen(
-        &self,
-        monomorphized_ast: crate::syntax::Program,
-        module_syntaxes: std::collections::HashMap<crate::symbol::Symbol, crate::syntax::Program>,
-        filename: &str,
-        main_file: &std::path::Path,
-        mlir_args: &[String],
-        interfaces: &[Vec<u8>],
-    ) -> Result<(), String> {
-        codegen::register_vx_passes();
-
-        // The architecture the module's code is for, taken from the host's declaration.
-        //
-        // Identified by what it *is* rather than by which file it came from: the host is the
-        // topology whose memory is host memory. That holds for a `--host` file and for the
-        // `--host default` declaration synthesised from the compiling machine, so there is
-        // one rule and no special case.
-        let host_arch: Option<String> = module_syntaxes
-            .values()
-            .chain(std::iter::once(&monomorphized_ast))
+    /// The architecture the module's code is for, taken from the host's declaration.
+    ///
+    /// Identified by what it *is* rather than by which file it came from: the host is the
+    /// topology whose memory is host memory. That holds for a `--host` file and for the
+    /// `--host default` declaration synthesised from the compiling machine, so there is
+    /// one rule and no special case.
+    fn host_arch_of<'a>(
+        programs: impl Iterator<Item = &'a crate::syntax::Program>,
+    ) -> Option<String> {
+        programs
             .flat_map(|p| p.topologies.iter())
             .find(|t| t.descriptor.default_space == crate::syntax::MemorySpace::CPUDRAM)
             .and_then(|t| t.descriptor.arch.as_ref())
-            .map(|a| a.to_string());
+            .map(|a| a.to_string())
+    }
 
+    /// An MLIR context with every dialect, every pass and the Vx dialect registered, and a
+    /// diagnostic handler attached. Shared by the sequential driver and `-j`.
+    fn backend_context(&self) -> melior::Context {
+        codegen::register_vx_passes();
         let registry = melior::dialect::DialectRegistry::new();
         melior::utility::register_all_dialects(&registry);
         melior::utility::register_all_passes();
@@ -937,6 +1088,45 @@ impl CompilerDriver {
         context.append_dialect_registry(&registry);
         context.load_all_available_dialects();
         codegen::register_vx_dialect(&context);
+        context
+    }
+
+    /// The backend, from the MLIR text the parallel frontend emitted.
+    fn emit_from_mlir_text(
+        &self,
+        text: &str,
+        host_arch: Option<String>,
+        filename: &str,
+        main_file: &std::path::Path,
+        mlir_args: &[String],
+    ) -> Result<(), String> {
+        let context = self.backend_context();
+        let parsed =
+            crate::intern_mode::timed("mlir_parse", || melior::ir::Module::parse(&context, text));
+        let module = parsed.ok_or_else(|| {
+            format!(
+                "the parallel frontend emitted MLIR for '{filename}' that does not parse; this \
+                 is a compiler bug"
+            )
+        })?;
+        self.lower_and_emit(&context, module, host_arch, filename, main_file, mlir_args)
+    }
+
+    fn run_codegen(
+        &self,
+        monomorphized_ast: crate::syntax::Program,
+        module_syntaxes: std::collections::HashMap<crate::symbol::Symbol, crate::syntax::Program>,
+        filename: &str,
+        main_file: &std::path::Path,
+        mlir_args: &[String],
+        interfaces: &[Vec<u8>],
+    ) -> Result<(), String> {
+        let host_arch = Self::host_arch_of(
+            module_syntaxes
+                .values()
+                .chain(std::iter::once(&monomorphized_ast)),
+        );
+        let context = self.backend_context();
 
         // The flat-array codegen path is the default: produce the module from `local_hir_stream` via
         // `flat::emit_module_mlir` instead of the AST walk. It declines (falls back) for anything
@@ -948,7 +1138,7 @@ impl CompilerDriver {
             Self::build_flat_module(&context, &monomorphized_ast, &module_syntaxes, interfaces)
         };
 
-        let mut module = match flat_module {
+        let module = match flat_module {
             Some(m) => {
                 eprintln!("[flat-codegen] emitted module via the flat path");
                 m
@@ -981,7 +1171,22 @@ impl CompilerDriver {
             }
         };
 
-        if !module.as_operation().verify() {
+        self.lower_and_emit(&context, module, host_arch, filename, main_file, mlir_args)
+    }
+
+    /// The backend from an MLIR module to the action's output: verification, the pass pipeline,
+    /// then print, JIT or object file. Shared by the sequential driver and `-j`.
+    fn lower_and_emit<'c>(
+        &self,
+        context: &'c melior::Context,
+        mut module: melior::ir::Module<'c>,
+        host_arch: Option<String>,
+        filename: &str,
+        main_file: &std::path::Path,
+        mlir_args: &[String],
+    ) -> Result<(), String> {
+        let verified = crate::intern_mode::timed("mlir_verify", || module.as_operation().verify());
+        if !verified {
             return Err(format!("MLIR verification failed for {}", filename));
         }
 
@@ -995,7 +1200,7 @@ impl CompilerDriver {
             self.options.disable_mlir_optimizations,
         );
 
-        let pass_manager = melior::pass::PassManager::new(&context);
+        let pass_manager = melior::pass::PassManager::new(context);
         pass_manager.enable_verifier(true);
         if let Err(e) = melior::utility::parse_pass_pipeline(
             pass_manager.as_operation_pass_manager(),
@@ -1016,7 +1221,8 @@ impl CompilerDriver {
             }
         }
 
-        if let Err(e) = pass_manager.run(&mut module) {
+        let ran = crate::intern_mode::timed("mlir_passes", || pass_manager.run(&mut module));
+        if let Err(e) = ran {
             return Err(format!("MLIR passes failed for {}: {}", filename, e));
         }
 
@@ -1052,16 +1258,15 @@ impl CompilerDriver {
                         use melior::ir::operation::OperationMutLike;
                         module.as_operation_mut().set_attribute(
                             "llvm.target_triple",
-                            melior::ir::attribute::StringAttribute::new(&context, triple).into(),
+                            melior::ir::attribute::StringAttribute::new(context, triple).into(),
                         );
                         module.as_operation_mut().set_attribute(
                             "llvm.data_layout",
-                            melior::ir::attribute::StringAttribute::new(&context, datalayout)
-                                .into(),
+                            melior::ir::attribute::StringAttribute::new(context, datalayout).into(),
                         );
                     }
                 }
-                println!("{}", module.as_operation());
+                crate::intern_mode::timed("mlir_print", || println!("{}", module.as_operation()));
             }
             Action::RunJit => {
                 let mlir_str = format!("{}", module.as_operation());

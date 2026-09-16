@@ -12,12 +12,15 @@
 // module registry.
 //
 //===----------------------------------------------------------------------===//
+use crate::config::Schedule;
 use crate::lexer::Lexer;
 use crate::parser::Parser;
+use crate::symbol::Symbol;
 use crate::syntax::Program;
-use std::collections::HashMap;
+use rayon::prelude::*;
+use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug)]
 pub enum ModuleError {
@@ -34,6 +37,14 @@ impl std::fmt::Display for ModuleError {
             ModuleError::Resolution(err) => write!(f, "Resolution error: {}", err),
         }
     }
+}
+
+/// What an import resolved to, for [`ModuleLoader::load_all`].
+enum Resolved {
+    /// A `.vx` file, to be parsed in the next wave.
+    Source(PathBuf),
+    /// The serialized interface of a precompiled `.vxlib`, never parsed.
+    Interface(Vec<u8>),
 }
 
 pub struct ModuleLoader {
@@ -83,17 +94,7 @@ impl ModuleLoader {
     }
 
     pub fn load_main(&mut self, filename: &str) -> Result<(), ModuleError> {
-        let source =
-            fs::read_to_string(filename).map_err(|e| ModuleError::IO(filename.to_string(), e))?;
-
-        let mut lexer = Lexer::new(&source);
-        let tokens = lexer.tokenize();
-        let mut parser = Parser::new(&tokens, &source);
-
-        let mut main_program = parser.parse().map_err(|e| {
-            ModuleError::Parse(filename.to_string(), crate::error::Error(e.format(&source)))
-        })?;
-        main_program.module_path = filename.to_string().into();
+        let main_program = Self::parse_file(Path::new(filename), filename.into())?;
 
         let imports = main_program.imports.clone();
         self.loaded_modules
@@ -106,8 +107,118 @@ impl ModuleLoader {
         Ok(())
     }
 
+    /// Load `roots` and every module they import, transitively, and return the programs in the
+    /// order they were discovered: the roots first, then each wave of imports.
+    ///
+    /// The files of one wave do not depend on each other, so a wave is parsed in parallel under a
+    /// parallel schedule; this is `vxc -j`'s loader. Resolving the next wave's import names is
+    /// parallel too: each is a handful of path probes, which is nothing until there are a
+    /// thousand of them, when done one after another they cost more than parsing the files did.
+    /// The order comes from the source, never from the threads, so every schedule loads the same
+    /// modules in the same order.
+    ///
+    /// A root is known by its file name and an import by its import path, as in `load_main`. An
+    /// import that resolves to a `.vxlib` interface lands in `loaded_interfaces` and is not parsed.
+    pub fn load_all(
+        &mut self,
+        roots: &[String],
+        sched: Schedule,
+    ) -> Result<Vec<Program>, ModuleError> {
+        let mut programs: Vec<Program> = Vec::new();
+        let mut seen: HashSet<Symbol> = HashSet::new();
+        let mut wave: Vec<(Symbol, PathBuf)> = Vec::new();
+        for root in roots {
+            if seen.insert(root.as_str().into()) {
+                wave.push((root.as_str().into(), PathBuf::from(root)));
+            }
+        }
+        while !wave.is_empty() {
+            let parse = |(module_path, path): &(Symbol, PathBuf)| {
+                Self::parse_file(path, module_path.clone())
+            };
+            let parsed: Vec<Result<Program, ModuleError>> = if sched.is_seq() {
+                wave.iter().map(parse).collect()
+            } else {
+                wave.par_iter().map(parse).collect()
+            };
+            // The next wave's imports, in source order, each once.
+            let mut pending: Vec<(Symbol, Vec<Symbol>)> = Vec::new();
+            for result in parsed {
+                let program = result?;
+                for import in &program.imports {
+                    let module_name = Self::module_name(&import.path);
+                    if seen.insert(module_name.clone()) {
+                        pending.push((module_name, import.path.clone()));
+                    }
+                }
+                programs.push(program);
+            }
+            let resolve = |(_, path): &(Symbol, Vec<Symbol>)| self.resolve_import(path);
+            let resolved: Vec<Result<Resolved, ModuleError>> = if sched.is_seq() {
+                pending.iter().map(resolve).collect()
+            } else {
+                pending.par_iter().map(resolve).collect()
+            };
+            wave = Vec::new();
+            for ((module_name, _), found) in pending.into_iter().zip(resolved) {
+                match found? {
+                    Resolved::Source(path) => wave.push((module_name, path)),
+                    Resolved::Interface(bytes) => {
+                        self.loaded_interfaces.insert(module_name, bytes);
+                    }
+                }
+            }
+        }
+        Ok(programs)
+    }
+
+    /// Where an import leads: a source file to parse, or a precompiled interface, which is
+    /// preferred when both sit where the source would (#219) and is read here so nothing about
+    /// resolution is left for the caller to do serially.
+    fn resolve_import(&self, path: &[Symbol]) -> Result<Resolved, ModuleError> {
+        if let Some(artifact) = self.resolve_artifact_path(path) {
+            let buf = fs::read(&artifact)
+                .map_err(|e| ModuleError::IO(artifact.to_string_lossy().into_owned(), e))?;
+            let meta = crate::metadata::VxMetadata::load_from_buffer(&buf);
+            return Ok(Resolved::Interface(meta.interface_data.to_vec()));
+        }
+        match self.resolve_module_path(path) {
+            Some(p) => Ok(Resolved::Source(p)),
+            None => Err(ModuleError::Resolution(format!(
+                "Could not resolve import '{}'",
+                Self::module_name(path)
+            ))),
+        }
+    }
+
     pub fn into_programs(self) -> Vec<Program> {
         self.loaded_modules.into_values().collect()
+    }
+
+    /// The name a module is known by: its import path joined with `::`.
+    fn module_name(path: &[Symbol]) -> Symbol {
+        path.iter()
+            .map(|s| s.as_ref())
+            .collect::<Vec<_>>()
+            .join("::")
+            .as_str()
+            .into()
+    }
+
+    /// Read and parse one file as the module `module_path`.
+    fn parse_file(path: &Path, module_path: Symbol) -> Result<Program, ModuleError> {
+        let name = path.to_string_lossy().into_owned();
+        let source = fs::read_to_string(path).map_err(|e| ModuleError::IO(name.clone(), e))?;
+
+        let mut lexer = Lexer::new(&source);
+        let tokens = lexer.tokenize();
+        let mut parser = Parser::new(&tokens, &source);
+
+        let mut program = parser
+            .parse()
+            .map_err(|e| ModuleError::Parse(name, crate::error::Error(e.format(&source))))?;
+        program.module_path = module_path;
+        Ok(program)
     }
 
     /// Resolve an import path against the search paths, trying the given file extension. Shared by
@@ -143,14 +254,10 @@ impl ModuleLoader {
         self.resolve_with_ext(path, "vxlib")
     }
 
-    fn load_import(&mut self, path: &[crate::symbol::Symbol]) -> Result<(), ModuleError> {
-        let module_name = path
-            .iter()
-            .map(|s| s.as_ref())
-            .collect::<Vec<_>>()
-            .join("::");
-        if self.loaded_modules.contains_key(&*module_name)
-            || self.loaded_interfaces.contains_key(&*module_name)
+    fn load_import(&mut self, path: &[Symbol]) -> Result<(), ModuleError> {
+        let module_name = Self::module_name(path);
+        if self.loaded_modules.contains_key(&module_name)
+            || self.loaded_interfaces.contains_key(&module_name)
         {
             return Ok(());
         }
@@ -164,7 +271,7 @@ impl ModuleLoader {
                 .map_err(|e| ModuleError::IO(artifact.to_string_lossy().into_owned(), e))?;
             let meta = crate::metadata::VxMetadata::load_from_buffer(&buf);
             self.loaded_interfaces
-                .insert(module_name.as_str().into(), meta.interface_data.to_vec());
+                .insert(module_name, meta.interface_data.to_vec());
             return Ok(());
         }
 
@@ -178,30 +285,10 @@ impl ModuleLoader {
             }
         };
 
-        let source = fs::read_to_string(&resolved_path)
-            .map_err(|e| ModuleError::IO(resolved_path.to_string_lossy().into_owned(), e))?;
-
-        // Need to keep the source string alive, we might leak it or use a string interner.
-        // For now, since AST holds string slices to source, `ModuleLoader` should probably return Strings too?
-        // Wait! `Parser` takes `&'a str`. `syntax::Program` borrows from source? No, `syntax::Program` clones strings. Let's check `parser.rs`.
-        // `Parser::new(&tokens, source)` takes `&'a str`.
-        // Does `Program` contain lifetimes? No. `Program` uses `String`.
-
-        let mut lexer = Lexer::new(&source);
-        let tokens = lexer.tokenize();
-        let mut parser = Parser::new(&tokens, &source);
-
-        let mut program = parser.parse().map_err(|e| {
-            ModuleError::Parse(
-                resolved_path.to_string_lossy().into_owned(),
-                crate::error::Error(e.format(&source)),
-            )
-        })?;
-        program.module_path = module_name.clone().into();
+        let program = Self::parse_file(&resolved_path, module_name.clone())?;
 
         let imports = program.imports.clone();
-        self.loaded_modules
-            .insert(module_name.clone().into(), program);
+        self.loaded_modules.insert(module_name, program);
 
         for import in imports {
             self.load_import(&import.path)?;

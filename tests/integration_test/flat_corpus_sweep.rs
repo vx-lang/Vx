@@ -39,6 +39,10 @@ const KNOWN_DECLINES: &[&str] = &[
     "backend/pass/user_lowering_waste.vx",
     "frontend/pass/closure_fat_ptr.vx",
     "frontend/pass/control_flow_rigorous.vx",
+    // The `vxc -j` fallback fixture: a program the flat path declines, chosen so the parallel
+    // frontend has something to hand back to the sequential driver. Same shape as
+    // generic_enum_returned_from_match.vx, and it declines for the same reason.
+    "frontend/pass/jobs_falls_back_outside_the_flat_subset.vx",
     "frontend/pass/trait_topologies.vx",
     // A parameter with run-time extents (Vx#409). It used to compile through the flat path
     // while the dims-less spelling let it read as rank-0: `topology.vx` got a `memref<f32>`

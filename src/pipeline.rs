@@ -98,8 +98,19 @@ fn run_frontend(
 ) -> Result<Frontend, PipelineError> {
     // Phase timing (#297), so a sweep can attribute wall clock to serial vs parallel work rather
     // than inferring it from a plateau.
+    let modules = crate::intern_mode::timed("parse", || parse_phase(file_paths, sched))?;
+    run_frontend_on(modules, sched, intern_mode)
+}
+
+/// The frontend from macro expansion on, for modules a caller has already parsed. The file-path
+/// entry above parses exactly the files it is given; `vxc -j` loads modules through
+/// `ModuleLoader`, which follows imports. Both then run this.
+fn run_frontend_on(
+    mut modules: Vec<VxModule>,
+    sched: Schedule,
+    intern_mode: crate::intern_mode::InternMode,
+) -> Result<Frontend, PipelineError> {
     use crate::intern_mode::timed;
-    let mut modules = timed("parse", || parse_phase(file_paths, sched))?;
     timed("macro_expand", || {
         macro_expansion_phase(&mut modules, sched)
     })?;
@@ -295,6 +306,18 @@ pub fn compile_pipeline_mlir_in(
     sched: Schedule,
     intern_mode: crate::intern_mode::InternMode,
 ) -> Result<Option<String>, PipelineError> {
+    let modules = crate::intern_mode::timed("parse", || parse_phase(file_paths, sched))?;
+    compile_modules_mlir_in(modules, sched, intern_mode)
+}
+
+/// [`compile_pipeline_mlir_in`] for modules a caller has already parsed and not yet expanded:
+/// what `vxc -j` hands over once its loader has followed the imports. The parse is the caller's
+/// to time under the `parse` phase; everything after it is timed here.
+pub fn compile_modules_mlir_in(
+    modules: Vec<VxModule>,
+    sched: Schedule,
+    intern_mode: crate::intern_mode::InternMode,
+) -> Result<Option<String>, PipelineError> {
     let Frontend {
         modules,
         session,
@@ -303,7 +326,7 @@ pub fn compile_pipeline_mlir_in(
         mut checks,
         type_streams,
         merged_arenas,
-    } = run_frontend(file_paths, sched, intern_mode)?;
+    } = run_frontend_on(modules, sched, intern_mode)?;
     let text = crate::intern_mode::timed("codegen", || {
         codegen_mlir_phase(
             &modules,
@@ -1181,21 +1204,28 @@ fn declaration_check_phase(
     let mut checker = TypeChecker::new(global_env, &mut worker);
     checker.check_whole_program_declarations();
 
-    let mut errors = 0;
-    for diag in checker.errors.iter() {
-        if diag.level == DiagnosticLevel::Error {
-            errors += 1;
-            println!("Error: {}", diag.message);
-        } else if diag.level == DiagnosticLevel::Warning {
-            println!("Warning: {}", diag.message);
-        }
-    }
+    let errors = report_diagnostics(checker.errors.iter().collect());
     if errors > 0 {
         return Err(PipelineError::Semantic(format!(
             "Compilation failed with {errors} declaration errors"
         )));
     }
     Ok(())
+}
+
+/// Report a phase's diagnostics the way the sequential driver does: warnings first, then errors,
+/// each rendered with its code and location, on stderr, so stdout stays free for the MLIR.
+/// Returns the error count.
+fn report_diagnostics(diags: Vec<&crate::diagnostic::Diagnostic>) -> usize {
+    for diag in diags.iter().filter(|d| d.level == DiagnosticLevel::Warning) {
+        eprintln!("{diag}");
+    }
+    let mut errors = 0;
+    for diag in diags.iter().filter(|d| d.level == DiagnosticLevel::Error) {
+        errors += 1;
+        eprintln!("{diag}");
+    }
+    errors
 }
 
 /// Per-function checks. The whole-program declaration checks run once in
@@ -1300,17 +1330,12 @@ fn type_check_phase(
             .collect()
     };
 
-    let mut total_errors = 0;
-    for check in &check_results {
-        for diag in check.diagnostics.iter() {
-            if diag.level == DiagnosticLevel::Error {
-                total_errors += 1;
-                println!("Error: {}", diag.message);
-            } else if diag.level == DiagnosticLevel::Warning {
-                println!("Warning: {}", diag.message);
-            }
-        }
-    }
+    let mut total_errors = report_diagnostics(
+        check_results
+            .iter()
+            .flat_map(|c| c.diagnostics.iter())
+            .collect(),
+    );
 
     // The cross-call capacity fold: the one whole-program step, after the parallel phase and
     // reading only what it exported. Same core as the sequential driver, so the two frontends
@@ -1326,14 +1351,7 @@ fn type_check_phase(
             global_env,
             &mut fold_diags,
         );
-        for diag in fold_diags.iter() {
-            if diag.level == DiagnosticLevel::Error {
-                total_errors += 1;
-                println!("Error: {}", diag.message);
-            } else if diag.level == DiagnosticLevel::Warning {
-                println!("Warning: {}", diag.message);
-            }
-        }
+        total_errors += report_diagnostics(fold_diags.iter().collect());
     }
 
     let total_monomorphized: usize = check_results.iter().map(|c| c.monomorphs.len()).sum();

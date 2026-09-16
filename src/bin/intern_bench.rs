@@ -37,7 +37,8 @@ fn median_iqr(mut xs: Vec<f64>) -> (f64, f64, f64) {
     (q(0.5), q(0.25), q(0.75))
 }
 
-/// Phase medians for one cell, in the order the pipeline runs them.
+/// Phase medians for one cell, in the order the pipeline runs them. A phase no rep recorded is
+/// left out: the table names the driver's backend phases too, which only `vxc` runs.
 fn phase_report(samples: Vec<Vec<(&'static str, Duration)>>) -> Vec<(&'static str, f64)> {
     let mut names: Vec<&'static str> = Vec::new();
     for s in &samples {
@@ -49,7 +50,7 @@ fn phase_report(samples: Vec<Vec<(&'static str, Duration)>>) -> Vec<(&'static st
     }
     names
         .into_iter()
-        .map(|n| {
+        .filter_map(|n| {
             let xs: Vec<f64> = samples
                 .iter()
                 .map(|s| {
@@ -59,7 +60,7 @@ fn phase_report(samples: Vec<Vec<(&'static str, Duration)>>) -> Vec<(&'static st
                         .sum::<f64>()
                 })
                 .collect();
-            (n, median_iqr(xs).0)
+            xs.iter().any(|x| *x > 0.0).then(|| (n, median_iqr(xs).0))
         })
         .collect()
 }

@@ -1,0 +1,22 @@
+//===- jobs_reports_errors_on_stderr.vx - Vx Compiler ------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A diagnostic from the parallel frontend is rendered with its code on stderr, as the
+// sequential driver renders it, and nothing about it reaches stdout, which carries the MLIR.
+//
+// RUN: (vxc -j 2 --emit-mlir %s 2>&1 >/dev/null; echo "exit=$?") | FileCheck %s
+// RUN: (vxc -j 2 --emit-mlir %s 2>/dev/null; echo "exit=$?") | FileCheck --check-prefix=STDOUT %s
+
+fn main() -> i32 {
+  let x: i32 = true;
+  return x;
+}
+
+// CHECK: Error[E{{[0-9]+}}]
+// CHECK: exit=1
+// STDOUT-NOT: Error
+// STDOUT: exit=1
