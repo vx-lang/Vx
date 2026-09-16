@@ -27,6 +27,7 @@ friends.
 - [`core::num`](#corenum) — The integer methods, on `i32`.
 - [`core::ops`](#coreops) —
 - [`core::option`](#coreoption) — `Option<T>`, for a value that may be absent.
+- [`core::result`](#coreresult) — `Result<T, E>`, for an operation that may fail.
 - [`std::alloc`](#stdalloc) — Raw allocation and deallocation.
 - [`std::box`](#stdbox) — `Box<T>`, a single-owner heap allocation. Required for recursive types.
 - [`std::fs`](#stdfs) — Files and directories.
@@ -40,7 +41,6 @@ friends.
 - [`std::math`](#stdmath) — Mathematical functions and constants.
 - [`std::mmap`](#stdmmap) — Memory-mapped files.
 - [`std::net`](#stdnet) — TCP and UDP sockets.
-- [`std::result`](#stdresult) — `Result<T, E>`, for an operation that may fail.
 - [`std::simd`](#stdsimd) — SIMD vector types and operations.
 - [`std::string`](#stdstring) — `String` and text manipulation.
 - [`std::tensor`](#stdtensor) — Operations on `Tensor`, including shape queries and elementwise maths.
@@ -172,6 +172,31 @@ fn filter(self : Option<T>, p : Closure1<T, bool>) -> Option<T>
 fn map_or<U>(self : Option<T>, default : U, f : Closure1<T, U>) -> U
 fn unwrap_or_else(self : Option<T>, f : Closure0<T>) -> T
 fn is_some_and(self : Option<T>, p : Closure1<T, bool>) -> bool
+```
+
+## `core::result`
+
+`Result<T, E>`, for an operation that may fail.
+
+**Types**
+
+- `enum Result<T, E>`
+
+**`Result<T, E>` methods**
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
+```rust
+fn is_ok(self : &Result<T, E>) -> bool
+fn is_err(self : &Result<T, E>) -> bool
+fn unwrap(self : Result<T, E>) -> T
+fn unwrap_or(self : Result<T, E>, default : T) -> T
+fn ok(self : Result<T, E>) -> Option<T>
+fn err(self : Result<T, E>) -> Option<E>
+fn map<U>(self : Result<T, E>, f : Closure1<T, U>) -> Result<U, E>
+fn map_err<F>(self : Result<T, E>, f : Closure1<E, F>) -> Result<T, F>
+fn and_then<U>(self : Result<T, E>, f : Closure1<T, Result<U, E>>) -> Result<U, E>
+fn unwrap_or_else(self : Result<T, E>, f : Closure1<E, T>) -> T
 ```
 
 ## `std::alloc`
@@ -615,23 +640,6 @@ fn vx_tcp_listener_accept(ptr : *mut i8) -> *mut i8
 fn vx_tcp_listener_drop(ptr : *mut i8) -> i32
 ```
 
-## `std::result`
-
-`Result<T, E>`, for an operation that may fail.
-
-**Functions** *(bound directly to C)*
-
-<!-- vx-doctest: skip -- signature listing, not a program -->
-
-```rust
-fn vx_result_new_ok_i32_i32(val : i32) -> *mut i8
-fn vx_result_new_err_i32_i32(err : i32) -> *mut i8
-fn vx_result_is_ok_i32_i32(ptr : *mut i8) -> Bool
-fn vx_result_is_err_i32_i32(ptr : *mut i8) -> Bool
-fn vx_result_unwrap_i32_i32(ptr : *mut i8) -> i32
-fn vx_result_drop_i32_i32(ptr : *mut i8) -> i32
-```
-
 ## `std::simd`
 
 SIMD vector types and operations.
@@ -834,4 +842,4 @@ fn vx_vec_bounds_check(index : i64, len : i64) -> i32
 
 ______________________________________________________________________
 
-288 functions across 23 modules.
+292 functions across 23 modules.

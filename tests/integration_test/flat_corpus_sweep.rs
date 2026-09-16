@@ -25,6 +25,11 @@ const KNOWN_DECLINES: &[&str] = &[
     // and the AST path handles both. The module's other methods answer with a `T` or a
     // `bool` and compile through the flat path; adding these three is what moved the file.
     "backend/pass/core_option.vx",
+    // `ok`, `err`, `map`, `map_err` and `and_then` all answer with an `Option` or a
+    // `Result`, which the flat path declines as "a non-scalar default return" -- the same
+    // shape as the file above. The AST path handles them, and that is where the answers
+    // come from.
+    "backend/pass/core_result.vx",
     // `right_opt` and `left_opt` answer with an `Option<T>`, which the flat path declines
     // as "a non-scalar default return" -- the same shape as the file above. Those two
     // methods are the point of the file: a parameter only reaches the code that binds it
