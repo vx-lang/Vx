@@ -114,6 +114,41 @@ Vx supports deterministic ahead-of-time evaluation via `comptime` blocks.
 **Operational Rule:**
 If $E[\\text{comptime} { B }]$ evaluates to $v$, the AST is strictly replaced by the literal or reduced expression $v$ before lowering to the intermediate representation (MLIR).
 
+A block in statement position produces no value and is removed outright. Neither back end
+ever sees a `comptime` block, because the replacement happens in the checker.
+
+**The block must be able to run, and must leave nothing behind.** These follow from the rule
+above rather than adding to it, and each is refused rather than quietly lowered as run-time
+code, which is what used to happen:
+
+- A block the evaluator cannot finish is an error (E3033). There is no half-running it: a
+  block that was emitted as ordinary code instead is how a loop or a call the evaluator
+  skipped stayed invisible, and a build could pass while proving nothing.
+- A block that writes to a variable declared outside it is an error (E3033). The block
+  disappears, so the write would disappear with it.
+- A block inside another block is an error (E3034). The outer block already runs while
+  compiling, so the inner one asks for nothing more.
+
+**Comptime lambdas.** `comptime { .. }` is also Vx's block-expression form, so it is how a
+closure with more than one statement is written. Such a lambda is a function that runs while
+compiling — nearer C++'s `consteval` than its `constexpr`:
+
+- Its body is **not** folded where the lambda is written. Its parameters have no values yet.
+- Every **call** to it must fold. A call whose arguments are not all known while compiling is
+  an error; there is no falling back to a run-time call, which is where this is stricter than
+  `constexpr`.
+- Once every call has folded, nothing refers to the lambda, so its binding and its generated
+  body are both dropped and it leaves no trace. A lambda nobody calls is an ordinary unused
+  variable.
+
+A closure body starts a fresh compile-time context, so a lambda whose body is a `comptime`
+block, written inside another such block, is two functions rather than a nested block.
+
+The lineage is Zig's `comptime` rather than C++'s `constexpr`. A `constexpr` function only
+*may* be evaluated while compiling and silently becomes an ordinary call when it cannot be,
+which is the reason C++ later grew `consteval`. Vx refuses instead, so a block that did not
+run while compiling can never be mistaken for one that did.
+
 ______________________________________________________________________
 
 ## 5. Automatic Differentiation

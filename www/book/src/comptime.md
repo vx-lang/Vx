@@ -108,6 +108,50 @@ Because the shape is in the type, a matrix multiply whose dimensions do not line
 error rather than a run-time crash — the same argument as [contracts](contracts.md), applied to
 dimensions.
 
+## A comptime block must run
+
+A `comptime` block is not a hint. It runs while compiling and leaves nothing behind, and the
+compiler holds you to both halves:
+
+- If the evaluator cannot finish the block, that is an error, not a quiet fall back to running the
+  code at run time.
+- A block may not write to anything declared outside it. The block disappears, so the write would
+  have to disappear with it.
+- A block may not sit inside another one. The outer block already runs while compiling.
+
+This is the same choice Zig makes with its `comptime`, and it is why C++ grew `consteval` alongside
+`constexpr`: a `constexpr` function only *may* be evaluated while compiling, and when it cannot be,
+it silently becomes an ordinary call. You find out by reading the disassembly. Here you find out by
+the compiler refusing.
+
+## Lambdas that run while compiling
+
+A closure whose body is a `comptime` block is a function that runs while compiling:
+
+```rust
+fn main() -> i32 {
+    let base = 10;
+    let twice = || comptime {
+        let k = 2;
+        base * k
+    };
+    return twice();
+}
+```
+
+The body is not worked out where the lambda is written — its parameters have no values yet. It is
+worked out when it is called, so `twice()` is `20`, and the multiplication never reaches the
+generated code.
+
+A lambda that takes its arguments and captures nothing is dropped entirely once its calls have
+folded, leaving a single constant. One that captures a variable, as `twice` captures `base` above,
+still has its call emitted today; only its body has folded. Removing that call as well is not done
+yet.
+
+The consequence is worth stating plainly. A lambda like this cannot be called with a value that is
+only known at run time — that call is an error rather than a run-time call. If you want a closure
+that runs at run time, do not give it a `comptime` body.
+
 ## Where to next
 
 - [Generics and traits](generics.md) — the rest of the generic system
