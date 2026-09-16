@@ -1988,6 +1988,47 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
 
+                // `t.len()`: the extent of the outermost axis, the same read as `t.extent(0)`,
+                // so `for i in 0..t.len() { t[i] }` visits exactly the positions `t[i]` accepts.
+                // Typed `i32` like `extent` and like `Vec::len`. A rank-0 tensor holds one value
+                // and has no axis to count, so it is refused rather than answered.
+                if _method.as_ref() == "len" {
+                    if let Some((_, dims, _)) = Self::as_tensor_operand(&base_ty) {
+                        if !args.is_empty() {
+                            self.errors.error_with_code(
+                                crate::diagnostic::DiagnosticCode::E3025,
+                                "`len()` takes no arguments; `extent(i)` reads one axis"
+                                    .to_string(),
+                                Some(crate::diagnostic::SourceSpan::from_ast_span(&method_span)),
+                            );
+                            return Type::Scalar(ElementType::I32);
+                        }
+                        if dims.is_empty() {
+                            self.errors.error_with_code(
+                                crate::diagnostic::DiagnosticCode::E3025,
+                                "`len()` on a rank-0 tensor: a scalar has no outermost axis to count"
+                                    .to_string(),
+                                Some(crate::diagnostic::SourceSpan::from_ast_span(&method_span)),
+                            );
+                            return Type::Scalar(ElementType::I32);
+                        }
+                        *expr = Expr::IndexAccess(IndexAccessExpr::new(
+                            Box::new(Expr::MemberAccess(MemberAccessExpr::new(
+                                obj.clone(),
+                                crate::symbol::Symbol::from("$extent"),
+                                method_span,
+                            ))),
+                            Box::new(Expr::Number(NumberExpr::new(
+                                "0".to_string(),
+                                None,
+                                method_span,
+                            ))),
+                            method_span,
+                        ));
+                        return Type::Scalar(ElementType::I32);
+                    }
+                }
+
                 // A placement query no comparison folded: nothing at run time holds a
                 // placement, so it has no value here.
                 if _method.as_ref() == "topology"
@@ -2115,9 +2156,9 @@ impl<'a> TypeChecker<'a> {
                     }
                 } else if _method.as_ref() == "len" {
                     match &base_ty {
-                        Type::Tensor(..) | Type::Borrow { .. } | Type::Pointer(_, _, _) => {
-                            // A count is a scalar. It answered a dims-less tensor, which is one
-                            // of the four things that spelling meant (Vx#399).
+                        // A tensor's `len()` was rewritten to `extent(0)` above, so only a
+                        // borrow or pointer of something else still lands here.
+                        Type::Borrow { .. } | Type::Pointer(_, _, _) => {
                             base_ty = Type::Scalar(ElementType::I64);
                         }
                         _ => {
