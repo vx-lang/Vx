@@ -20,6 +20,7 @@ permissions:
 
 jobs:
   build:
+    if: ${{ github.repository == 'vx-lang/Vx' }}
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     strategy:
