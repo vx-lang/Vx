@@ -1122,10 +1122,26 @@ impl<'a> TypeChecker<'a> {
             }
             Expr::FunctionCall(FunctionCallExpr {
                 name,
-                type_args: None,
+                type_args,
                 args,
                 span: _,
             }) => {
+                // The type arguments are read but not used, and that is the whole of what
+                // changed here: the arm used to match only `type_args: None`, so
+                // `sort<4>(input)` was skipped and an assert about its result quietly
+                // became a run-time check.
+                //
+                // Nothing needs doing with them. By the time the evaluator sees this call
+                // the checker has instantiated it and rewritten the name to the instance,
+                // and the instance has `4` substituted into its body already -- so there is
+                // no `N` left to bind. Looking that instance up is the actual work, and it
+                // happens in `callee_body`.
+                //
+                // If a body ever did arrive here with its generics unbound, `N` would have
+                // no value, the range in `0..N` would not evaluate, and the call would
+                // answer nothing. That is the same rule that covers every other thing the
+                // evaluator cannot work out, so it needs no guard of its own.
+                let _ = type_args;
                 let func = self.callee_body(name.as_ref())?;
                 let mut local_env = HashMap::new();
                 for (i, arg_expr) in args.iter().enumerate() {
@@ -1289,13 +1305,26 @@ impl<'a> TypeChecker<'a> {
     /// The module being compiled goes into the resolution env with its non-generic bodies
     /// stripped, so a function defined alongside the caller has nothing to walk there and is
     /// looked up in the bodies kept for compile-time evaluation instead.
-    fn callee_body(&self, name: &str) -> Option<&'a Function> {
+    fn callee_body(&self, name: &str) -> Option<&Function> {
         if let Some(func) = self.env.syntax_functions.get(name) {
             if !func.body.is_empty() {
                 return Some(func);
             }
         }
-        self.env.comptime_bodies.get(name)
+        if let Some(func) = self.env.comptime_bodies.get(name) {
+            return Some(func);
+        }
+        // An instance of a generic function, made while checking the very call being
+        // evaluated. `sort<4>(..)` is rewritten to its instance and the instance is put
+        // here, so neither table above has ever heard of the name. Without this the call
+        // was not evaluated and the assert about it quietly became a run-time check.
+        // At most one match: the mangled name encodes the arguments, so `sort<4>` and
+        // `sort<8>` are different names rather than two entries under one.
+        self.mono
+            .functions
+            .iter()
+            .find(|(func, _)| func.name.as_ref() == name)
+            .map(|(func, _)| func)
     }
 
     /// Step one call deeper, or refuse. `None` stops the evaluation; whoever asked for the
