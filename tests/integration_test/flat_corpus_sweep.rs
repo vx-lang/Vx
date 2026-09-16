@@ -34,6 +34,14 @@ const KNOWN_DECLINES: &[&str] = &[
     // exists to pin that `>>` still closes two generics now that it is also the right
     // shift, and that question is settled in the parser, so the decline costs it nothing.
     // It states no directive about emitted IR, precisely because it is on the AST path.
+    // Indexing the result of a rank-1 elementwise operator. The rank-1 lowering
+    // reads both operands as one `vector.load` and writes the result with one
+    // arithmetic op, and records no memref type for the value it produced, so
+    // `op_tensor_index` has nothing to load from and declines. The operator
+    // itself lowers fine; only reading an element back does not. Rank 2 keeps
+    // its buffer and is unaffected, which is why the rank-2 half of these
+    // checks lives in `tensor_arithmetic_run.vx` and still runs here.
+    "backend/pass/tensor_arithmetic_rank1_run.vx",
     "backend/pass/user_lowering_name_collisions.vx",
     "backend/pass/user_lowering_uncountable.vx",
     "backend/pass/user_lowering_waste.vx",

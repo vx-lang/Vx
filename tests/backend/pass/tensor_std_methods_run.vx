@@ -1,0 +1,149 @@
+//===- tensor_std_methods_run.vx - Vx Compiler ------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The methods `std::tensor` provides, run and compared against their answers.
+//
+// `tensor_methods.vx` checks that `fill` and `map` reach codegen as a call and
+// a `linalg.generic`. Nothing checked what they leave in the buffer. Most of
+// these methods are `mlir!` blocks written against `memref<?x?xf32>` by hand,
+// which is exactly the kind of code no later pass validates: a `linalg.fill`
+// with its operands the wrong way round, or a `linalg.generic` whose indexing
+// map drops an axis, verifies and emits and is wrong.
+//
+// Every tensor read here holds a different value at every position, so a method
+// that broadcast one element, transposed its result, or touched only the first
+// row answers with a number that is not the one expected.
+//
+// `compare` is checked in both directions in the same run. One that always
+// answered true would pass a test that only ever hands it equal tensors, and
+// that is the shape a comparison bug usually takes.
+//
+// EXPECT: fill12=2.5;
+// EXPECT: assign01=1.25;
+// EXPECT: copy01=2;
+// EXPECT: copy10=3;
+// EXPECT: same=yes;
+// EXPECT: differ=no;
+// EXPECT: map01=8;
+// EXPECT: map12=24;
+// EXPECT: cut0=3;
+// EXPECT: cut2=5;
+// EXPECT: cutlen=3;
+// EXPECT: block00=7;
+// EXPECT: block12=12;
+
+import std::tensor;
+
+fn say(answer : bool) -> i32 {
+  if answer {
+    print!("yes; ");
+  } else {
+    print!("no; ");
+  }
+  return 0;
+}
+
+fn main() -> i32 {
+  // `fill` writes the whole buffer. The position read is the last one, which
+  // a fill that covered only the first row or only the diagonal would miss.
+  let mut x = Tensor<f32, [2, 3]>::uninit();
+  x.fill(2.5);
+  print!("fill12=");
+  print(x[1][2]);
+  print!("; ");
+
+  // `assign` is the same write under another name.
+  let mut c = Tensor<f32, [2, 2]>::uninit();
+  c.assign(1.25);
+  print!("assign01=");
+  print(c[0][1]);
+  print!("; ");
+
+  // `copy` moves the source element by element into the destination. The
+  // source is 1, 2, 3, 4, so a copy that transposed or broadcast would show.
+  let mut src = Tensor<f32, [2, 2]>::uninit();
+  for i in 0..2 {
+    for j in 0..2 {
+      src[i][j] = (i * 2 + j + 1) as f32;
+    }
+  }
+  let mut dst = Tensor<f32, [2, 2]>::uninit();
+  dst.fill(0.0);
+  dst.copy(&src);
+  print!("copy01=");
+  print(dst[0][1]);
+  print!("; ");
+  print!("copy10=");
+  print(dst[1][0]);
+  print!("; ");
+
+  // Equal after the copy.
+  print!("same=");
+  say(dst.compare(&src));
+
+  // One element apart. Position [1][0] is off the diagonal, so a comparison
+  // that walked only the diagonal would still call these equal.
+  let mut moved = Tensor<f32, [2, 2]>::uninit();
+  for i in 0..2 {
+    for j in 0..2 {
+      moved[i][j] = (i * 2 + j + 1) as f32;
+    }
+  }
+  moved[1][0] = 99.0;
+  print!("differ=");
+  say(moved.compare(&src));
+
+  // `map` applies the closure to every element and keeps it where it was.
+  // The source is 1..6 in row order, so x4 gives 4, 8, 12, 16, 20, 24.
+  let mut m = Tensor<f32, [2, 3]>::uninit();
+  for i in 0..2 {
+    for j in 0..3 {
+      m[i][j] = (i * 3 + j + 1) as f32;
+    }
+  }
+  let scaled = m.map(| v | v * 4.0);
+  print!("map01=");
+  print(scaled[0][1]);
+  print!("; ");
+  print!("map12=");
+  print(scaled[1][2]);
+  print!("; ");
+
+  // `slice_1d(start, n)` takes n elements of the single row, from `start`.
+  // The row is 1..6, so starting at 2 gives 3, 4, 5.
+  let mut row = Tensor<f32, [1, 6]>::uninit();
+  for i in 0..6 {
+    row[0][i] = (i + 1) as f32;
+  }
+  let cut = row.slice_1d(2, 3);
+  print!("cut0=");
+  print(cut[0][0]);
+  print!("; ");
+  print!("cut2=");
+  print(cut[0][2]);
+  print!("; ");
+  print!("cutlen=");
+  print(cut.extent(1));
+  print!("; ");
+
+  // `slice_2d(row, d1, d2)` reads one row and lays it out as d1 by d2.
+  // Row 1 of a 2x6 of 1..12 is 7..12, which as a 2x3 is [[7,8,9],[10,11,12]].
+  let mut grid = Tensor<f32, [2, 6]>::uninit();
+  for i in 0..2 {
+    for j in 0..6 {
+      grid[i][j] = (i * 6 + j + 1) as f32;
+    }
+  }
+  let block = grid.slice_2d(1, 2, 3);
+  print!("block00=");
+  print(block[0][0]);
+  print!("; ");
+  print!("block12=");
+  print(block[1][2]);
+  print!("; ");
+  return 0;
+}

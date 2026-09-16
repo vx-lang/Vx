@@ -1,0 +1,67 @@
+//===- tensor_arithmetic_rank1_run.vx - Vx Compiler -------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Elementwise arithmetic on rank-1 tensors, with the results read back.
+//
+// Rank 1 is a different lowering from rank 2: the flat path emits a
+// `vector.load` of the whole tensor and one arithmetic op, where rank 2 emits a
+// named `linalg` op. `tensor_operations.vx` pins that IR and stops there,
+// leaving the numbers unchecked, which is what this file adds.
+//
+// It is apart from `tensor_arithmetic_run.vx` because the flat path declines
+// the moment one of these results is indexed: the vector lowering records no
+// memref type for the value it produced, so `op_tensor_index` has nothing to
+// load from and the whole module falls back to the AST path. Keeping the two
+// files separate means the rank-2 and matmul checks next door still run on
+// both paths. This one is listed in `KNOWN_DECLINES`; when the gap closes, the
+// entry goes and these checks start running on the flat path too, unchanged.
+//
+// EXPECT: add2=33;
+// EXPECT: sub1=18;
+// EXPECT: mul3=160;
+// EXPECT: div1=20;
+
+// [a, b, c, d] as a rank-1 tensor. Each expression builds its own, because an
+// operator consumes both its operands.
+fn v4(a : f32, b : f32, c : f32, d : f32) -> Tensor<f32, [4]> {
+  let mut v = Tensor<f32, [4]>::uninit();
+  v[0] = a;
+  v[1] = b;
+  v[2] = c;
+  v[3] = d;
+  return v;
+}
+
+fn main() -> i32 {
+  // [1,2,3,4] + [10,20,30,40] = [11,22,33,44]
+  let add = v4(1.0, 2.0, 3.0, 4.0) + v4(10.0, 20.0, 30.0, 40.0);
+  print!("add2=");
+  print(add[2]);
+  print!("; ");
+
+  // [10,20,30,40] - [1,2,3,4] = [9,18,27,36]. Subtraction is the operator
+  // that notices operands in the wrong order.
+  let sub = v4(10.0, 20.0, 30.0, 40.0) - v4(1.0, 2.0, 3.0, 4.0);
+  print!("sub1=");
+  print(sub[1]);
+  print!("; ");
+
+  // [1,2,3,4] * [10,20,30,40] = [10,40,90,160]
+  let mul = v4(1.0, 2.0, 3.0, 4.0) * v4(10.0, 20.0, 30.0, 40.0);
+  print!("mul3=");
+  print(mul[3]);
+  print!("; ");
+
+  // [10,40,90,160] / [1,2,3,4] = [10,20,30,40]. Position 1 rather than 0:
+  // dividing by 1 gives the same answer as multiplying by it, so reading
+  // position 0 would pass just as happily against a multiply.
+  let div = v4(10.0, 40.0, 90.0, 160.0) / v4(1.0, 2.0, 3.0, 4.0);
+  print!("div1=");
+  print(div[1]);
+  print!("; ");
+  return 0;
+}
