@@ -5089,6 +5089,10 @@ impl BorrowScan {
             Expr::UnaryOp(un) => self.expr(&un.expr),
             Expr::AsCast(c) => self.expr(&c.expr),
             Expr::FunctionCall(fc) => fc.args.iter().for_each(|a| self.expr(a)),
+            Expr::IndirectCall(ic) => {
+                self.expr(&ic.callee);
+                ic.args.iter().for_each(|arg| self.expr(arg));
+            }
             Expr::MethodCall(mc) => {
                 self.expr(&mc.base);
                 mc.args.iter().for_each(|a| self.expr(a));
@@ -5237,6 +5241,10 @@ impl RefUseScan<'_> {
             Expr::UnaryOp(un) => self.expr(&un.expr),
             Expr::AsCast(c) => self.expr(&c.expr),
             Expr::FunctionCall(fc) => fc.args.iter().for_each(|a| self.expr(a)),
+            Expr::IndirectCall(ic) => {
+                self.expr(&ic.callee);
+                ic.args.iter().for_each(|arg| self.expr(arg));
+            }
             Expr::MethodCall(mc) => {
                 self.expr(&mc.base);
                 mc.args.iter().for_each(|a| self.expr(a));
@@ -6768,6 +6776,43 @@ mod tests {
             assert_eq!(count(&w, Opcode::Mul), muls, "{call}: seed multiply");
             verify_hir_stream(&w);
         }
+    }
+
+    #[test]
+    fn indirect_call_borrow_materializes_its_argument() {
+        let function =
+            parse_fn("fn f() -> i32 { let x = 10; let read = |p : &i32| *p; return (read)(&x); }");
+        let Statement::Return(return_stmt) = function.body.last().expect("return statement") else {
+            panic!("function ends with a return statement");
+        };
+        let Expr::IndirectCall(call) = return_stmt.expr.as_ref().expect("return value") else {
+            panic!("parenthesized callee parses as an indirect call");
+        };
+        assert!(
+            matches!(call.args.as_slice(), [Expr::Borrow(_)]),
+            "the indirect call has one borrowed argument"
+        );
+
+        let uses = analyze_local_uses(&function.body);
+
+        assert!(
+            uses.materialized.contains("x"),
+            "an indirect call passing &x must materialize x"
+        );
+    }
+
+    #[test]
+    fn indirect_call_reference_argument_escapes_its_place_binding() {
+        let function = parse_fn(
+            "fn f() -> i32 { let x = 10; let r = &x; let read = |p : &i32| *p; return (read)(r); }",
+        );
+
+        let uses = analyze_local_uses(&function.body);
+
+        assert!(
+            !uses.place_bindings.contains("r"),
+            "a reference passed to an indirect call escapes its place binding"
+        );
     }
 
     #[test]
