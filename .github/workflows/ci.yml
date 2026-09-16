@@ -31,7 +31,7 @@ jobs:
           chmod +x llvm.sh
           sudo ./llvm.sh 22
           sudo apt-get install -y llvm-22-dev libmlir-22-dev mlir-22-tools libpolly-22-dev libclang-22-dev ninja-build cmake z3 lld
-          echo "/usr/lib/llvm-22/bin" >> $GITHUB_PATH
+          echo "/usr/lib/llvm-22/bin" >> "$GITHUB_PATH"
 
       - name: Check for locking primitives
         run: |
@@ -81,8 +81,8 @@ jobs:
         run: |
           chmod +x scripts/provision/install_enzyme.sh
           ./scripts/provision/install_enzyme.sh
-          ENZYME_LIB=$(find $(pwd)/.cargo/enzyme -name 'LLVMEnzyme*.so' | head -n 1)
-          echo "ENZYME_LIB=$ENZYME_LIB" >> $GITHUB_ENV
+          ENZYME_LIB=$(find "$(pwd)/.cargo/enzyme" -name 'LLVMEnzyme*.so' | head -n 1)
+          echo "ENZYME_LIB=$ENZYME_LIB" >> "$GITHUB_ENV"
 
       # Clippy has gated commits through scripts/pre-commit.sh for a long time but never gated
       # CI, so a lint only failed for whoever had the hook installed. Same flags as the hook, so
@@ -138,7 +138,7 @@ jobs:
           run_gate () {
             local target="$1" name="$2"
             echo "== $name"
-            if ! out=$(cargo test --release $target -- --exact "$name" --nocapture 2>&1); then
+            if ! out=$(cargo test --release "$target" -- --exact "$name" --nocapture 2>&1); then
               echo "$out"
               echo "GATE FAILED: $name"
               exit 1
@@ -220,14 +220,14 @@ jobs:
           chmod +x llvm.sh
           sudo ./llvm.sh 22
           sudo apt-get install -y llvm-22-dev libmlir-22-dev mlir-22-tools libpolly-22-dev libclang-22-dev ninja-build cmake z3 lld
-          echo "/usr/lib/llvm-22/bin" >> $GITHUB_PATH
+          echo "/usr/lib/llvm-22/bin" >> "$GITHUB_PATH"
 
       - name: Install Enzyme
         run: |
           chmod +x scripts/provision/install_enzyme.sh
           ./scripts/provision/install_enzyme.sh
-          ENZYME_LIB=$(find $(pwd)/.cargo/enzyme -name 'LLVMEnzyme*.so' | head -n 1)
-          echo "ENZYME_LIB=$ENZYME_LIB" >> $GITHUB_ENV
+          ENZYME_LIB=$(find "$(pwd)/.cargo/enzyme" -name 'LLVMEnzyme*.so' | head -n 1)
+          echo "ENZYME_LIB=$ENZYME_LIB" >> "$GITHUB_ENV"
 
       # Every test that runs a program links stdlib/rust_core's cdylib at run time, and
       # `cargo test` never emits it: a dependency edge only ever asks for an rlib. The release

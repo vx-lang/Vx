@@ -184,8 +184,9 @@ jobs:
           # way: built from source on an A100 80GB, `spawn on(Topology::GPU[0])` logged
           # "[Vx CUDA] device 0 dispatch" and "GEMM 4x4x4 f32", and printed the right answer.
           if [ -n "${{ matrix.cuda && 'yes' || '' }}" ]; then
-            if ls "$prefix"/lib/*cuda_dispatch.* >/dev/null 2>&1; then
-              echo "CUDA toolchain contains $(basename "$(ls "$prefix"/lib/*cuda_dispatch.* | head -1)")"
+            cuda_lib=$(find "$prefix/lib" -maxdepth 1 -name '*cuda_dispatch.*' -print -quit 2>/dev/null)
+            if [ -n "$cuda_lib" ]; then
+              echo "CUDA toolchain contains $(basename "$cuda_lib")"
             else
               echo "error: the CUDA toolchain has no CUDA dispatch backend." >&2
               echo "  build.rs fell back to the portable shim, so the toolkit was not found." >&2
