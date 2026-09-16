@@ -7,14 +7,9 @@
 //===----------------------------------------------------------------------===//
 // The same generic sort as pass/comptime_generic_sort.vx, asked for a wrong answer.
 //
-// This is the measure the tracking issue asked for, and it is the only one of the two
-// files that can fail the right way. A pass fixture keeps compiling if the evaluator
-// stops running the call, because an assert it does not run is silently accepted -- that
-// is exactly the state this whole area was in. Here the error going missing is the
-// failure.
-//
-// Both spellings are checked, for the same reason they are in the pass file: `sort<4>`
-// and the deduced `sort` reach the same instance by different routes.
+// Only this file can fail the right way. The pass fixture keeps compiling if the
+// evaluator stops running the call, because an assert it does not run is accepted in
+// silence. Here the error going missing is the failure.
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s
 

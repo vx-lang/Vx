@@ -5,26 +5,15 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// One sort, written once, generic over the length, called with a literal, evaluated
-// while compiling.
+// A sort generic over its length, called with a literal, evaluated while compiling.
 //
-// A call carrying type arguments used to be skipped: the evaluator's call arm matched
-// only a call without them, so `sort<4>(input)` was never run and an assert about its
-// result quietly became a run-time check. A build passed while proving nothing.
+// A call carrying type arguments used to be skipped, so an assert about its result
+// quietly became a run-time check. Both spellings are here: the length written out, and
+// the length deduced from the argument. They reach the same instance by different
+// routes, so a change handling only one would pass half this file.
 //
-// The reason it was skipped is worth writing down, because it is not the obvious one.
-// By the time the evaluator sees this call the checker has already instantiated it and
-// rewritten the name to the instance -- so the name is a mangled one that neither table
-// of bodies has heard of, and the instance carries no generics because the arguments
-// were substituted into it when it was made. Looking the instance up is most of the fix.
-//
-// Both spellings are here. `sort<4>` gives the length explicitly and `sort` leaves it to
-// be deduced from the argument; both end up at the same instance, and a change that
-// handled only the explicit one would pass half this file.
-//
-// Every element is asserted, and each was confirmed to go red on its own. What this file
-// cannot catch is the evaluator giving up -- an assert it does not run is silently
-// accepted -- so fail/comptime_generic_sort_wrong.vx is what holds that.
+// An assert the evaluator does not run is silently accepted, so this file still compiles
+// if evaluation stops. fail/comptime_generic_sort_wrong.vx is what catches that.
 //
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // CHECK-LABEL: func.func @main() -> i32
