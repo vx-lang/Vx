@@ -1,0 +1,117 @@
+//===- enum_binds_every_type_parameter.vx - Vx Compiler -----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A generic enum with two type parameters, used at two different widths.
+//
+// The payload slot is sized by looking at every variant, so lowering `Pair<i64, i8>` has
+// to substitute both parameters. It bound only a parameter literally named `T`, so `E`
+// stayed generic and reached codegen as itself:
+//
+//   generic type reached codegen (should have been monomorphized): Generic("E", None)
+//
+// Nothing caught it because the slot used to be taken from the first variant alone, which
+// for `Left(T)` never touches `E`. Sizing the slot from the widest variant is what made
+// the second parameter reachable.
+//
+// Both orders are asked -- `Pair<i64, i8>` has the wider payload first, `Pair<i8, i64>`
+// second -- so two different monomorphisations are covered. That does not pin which
+// parameter binds to which argument: the slot is the widest variant, and a max over the
+// same two types is the same either way. Pairing them in reverse changes no answer here.
+//
+// The parameter has to be handed to *another* generic type for this to bite -- returning
+// a bare `E` never reaches the code that binds the parameters. `right_opt` returning
+// `Option<E>` is the shape `core::result`'s `err` has, and is what caught it.
+//
+// Each payload is only returned, never used in an expression: the flat path cannot do the
+// latter for a variant narrower than the slot (Vx#581), and this file has to build as a
+// bare `vxc file.vx`.
+import core::option;
+
+enum Pair<T, E> {
+  Left(T),
+  Right(E),
+}
+
+impl<T, E> Pair<T, E> {
+  fn left_or(self : Pair<T, E>, d : T) -> T {
+    match self {
+      Pair<T, E>::Left(v) => {
+        return v;
+      }
+      Pair<T, E>::Right(e) => {
+        return d;
+      }
+    }
+  }
+
+  /// The second parameter handed to another generic type.
+  fn right_opt(self : Pair<T, E>) -> Option<E> {
+    match self {
+      Pair<T, E>::Left(v) => {
+        return Option<E>::None();
+      }
+      Pair<T, E>::Right(e) => {
+        return Option<E>::Some(e);
+      }
+    }
+  }
+
+  /// The first parameter, the same way.
+  fn left_opt(self : Pair<T, E>) -> Option<T> {
+    match self {
+      Pair<T, E>::Left(v) => {
+        return Option<T>::Some(v);
+      }
+      Pair<T, E>::Right(e) => {
+        return Option<T>::None();
+      }
+    }
+  }
+
+  fn right_or(self : Pair<T, E>, d : E) -> E {
+    match self {
+      Pair<T, E>::Left(v) => {
+        return d;
+      }
+      Pair<T, E>::Right(e) => {
+        return e;
+      }
+    }
+  }
+}
+
+fn main() -> i32 {
+  let big : i64 = 9223372036854775807;
+
+  // Wider parameter first.
+  print(Pair<i64, i8>::Left(big).left_or(0));
+  print!(" ");
+  print(Pair<i64, i8>::Right(-3 as i8).right_or(0 as i8));
+  print!(" ");
+  print(Pair<i64, i8>::Right(-3 as i8).left_or(11));
+  print!(" ");
+
+  // Wider parameter second, so the two are not interchangeable.
+  print(Pair<i8, i64>::Right(big).right_or(0));
+  print!(" ");
+  print(Pair<i8, i64>::Left(-3 as i8).left_or(0 as i8));
+  print!(" ");
+  print(Pair<i8, i64>::Left(-3 as i8).right_or(11));
+  print!(" ");
+
+  // The parameters handed to another generic type, both orders.
+  print(Pair<i64, i8>::Right(-3 as i8).right_opt().unwrap());
+  print!(" ");
+  print(Pair<i64, i8>::Left(big).left_opt().unwrap());
+  print!(" ");
+  print(Pair<i8, i64>::Right(big).right_opt().unwrap());
+  print!(" ");
+  print(Pair<i8, i64>::Left(-3 as i8).left_opt().unwrap());
+  return 0;
+}
+
+// EXPECT: 9223372036854775807 -3 11 9223372036854775807 -3 11 -3 9223372036854775807 9223372036854775807 -3

@@ -25,6 +25,11 @@ const KNOWN_DECLINES: &[&str] = &[
     // and the AST path handles both. The module's other methods answer with a `T` or a
     // `bool` and compile through the flat path; adding these three is what moved the file.
     "backend/pass/core_option.vx",
+    // `right_opt` and `left_opt` answer with an `Option<T>`, which the flat path declines
+    // as "a non-scalar default return" -- the same shape as the file above. Those two
+    // methods are the point of the file: a parameter only reaches the code that binds it
+    // when it is handed to another generic type, so the AST path is where it is asked.
+    "backend/pass/enum_binds_every_type_parameter.vx",
     // A generic enum returned from a match whose arms each return. The flat path declines it
     // as "a non-scalar default return" -- the same shape the AST path used to mis-lower, and
     // the reason that file exists. Its answers come from the AST path, and it states no
