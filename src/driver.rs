@@ -42,7 +42,7 @@ pub enum Action {
     EmitInterface,
 }
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None)]
 pub struct DriverOptions {
     /// Action to perform
@@ -50,7 +50,7 @@ pub struct DriverOptions {
     #[arg(overrides_with_all = ["compile", "parse_only", "print_ast", "emit_mlir", "emit_llvm", "run_jit", "emit_interface"])]
     pub action: Action,
 
-    /// Output file
+    /// Output file. With several inputs, a directory that receives one output per input
     #[arg(short = 'o', long = "output")]
     pub output: Option<PathBuf>,
 
@@ -250,24 +250,67 @@ impl CompilerDriver {
         if self.options.inputs.is_empty() {
             return Err("No input files provided".to_string());
         }
-        // Only the first input is ever compiled. Say so, rather than dropping the rest in silence
-        // and reporting success on half a program.
-        if self.options.inputs.len() > 1 {
-            let ignored: Vec<String> = self.options.inputs[1..]
-                .iter()
-                .map(|p| p.to_string_lossy().into_owned())
-                .collect();
-            return Err(format!(
-                "vxc compiles one file at a time, but {} were given.\n  \
-                 not compiled: {}\n  \
-                 note: modules are composed with `import`, not on the command line. Add an \
-                 `import` for each of them to '{}' and pass only that file.",
-                self.options.inputs.len(),
-                ignored.join(", "),
-                self.options.inputs[0].to_string_lossy(),
-            ));
+        if self.options.inputs.len() == 1 {
+            return self.execute_one();
         }
 
+        // Several inputs: each is its own translation unit, compiled in turn exactly as it would
+        // be alone, the way `cc a.c b.c` works. Inputs are not composed; modules compose with
+        // `import`, so a module that is both given here and imported by another input is
+        // compiled twice, once as each unit. Every input is compiled even when an earlier one
+        // fails: one run reports every error, and the exit status says how many inputs failed.
+        let output = self.output_dir_for_several_inputs()?;
+        let mut failed: Vec<String> = Vec::new();
+        for input in &self.options.inputs {
+            let mut options = self.options.clone();
+            options.inputs = vec![input.clone()];
+            options.output = output.as_ref().map(|(dir, extension)| {
+                dir.join(input.file_name().unwrap_or_default())
+                    .with_extension(extension)
+            });
+            if let Err(e) = (CompilerDriver { options }).execute_one() {
+                eprintln!("{e}");
+                failed.push(input.to_string_lossy().into_owned());
+            }
+        }
+        if failed.is_empty() {
+            return Ok(());
+        }
+        Err(format!(
+            "{} of {} inputs failed to compile: {}",
+            failed.len(),
+            self.options.inputs.len(),
+            failed.join(", ")
+        ))
+    }
+
+    /// With several inputs, `-o` names a directory for the actions that write a file, and each
+    /// input's output goes there under the input's own name with the action's extension. One
+    /// file path cannot hold two outputs, so it is refused. The actions that print ignore `-o`,
+    /// as they do with one input.
+    fn output_dir_for_several_inputs(&self) -> Result<Option<(PathBuf, &'static str)>, String> {
+        let Some(out) = &self.options.output else {
+            return Ok(None);
+        };
+        let extension = match self.options.action {
+            Action::EmitObj => "o",
+            Action::EmitInterface => "vxlib",
+            _ => return Ok(None),
+        };
+        if !out.is_dir() {
+            return Err(format!(
+                "-o '{}' names one file, but {} inputs were given and each writes its own .{}; \
+                 give a directory and each input's output is written there under its own name",
+                out.display(),
+                self.options.inputs.len(),
+                extension
+            ));
+        }
+        Ok(Some((out.clone(), extension)))
+    }
+
+    /// Compile the one input in `options`: the path every run ends in, once per input.
+    fn execute_one(&self) -> Result<(), String> {
         let main_file = &self.options.inputs[0];
         let filename = main_file.to_string_lossy().to_string();
 

@@ -1130,10 +1130,14 @@ impl<'a> TypeChecker<'a> {
             }
             Expr::FunctionCall(FunctionCallExpr {
                 name,
-                type_args: None,
+                type_args,
                 args,
                 span: _,
             }) => {
+                // Ignored on purpose: the checker has already instantiated the call and
+                // substituted the arguments into the body, so `sort<4>` arrives with its
+                // `N` gone. Matching on `None` here was what skipped such a call.
+                let _ = type_args;
                 let func = match self.callee_body(name.as_ref()) {
                     Some(func) => func,
                     // A closure held in a variable: `add(41)` names the variable, and the
@@ -1344,7 +1348,8 @@ impl<'a> TypeChecker<'a> {
             return Some(func);
         }
         // A function made while checking: a generic instance, or the `Closure_N_call` a
-        // closure literal generates. Neither table above has ever heard of the name.
+        // closure literal generates. Neither table above has ever heard of the name, and a
+        // generic instance's mangled name encodes its arguments, so at most one matches.
         self.mono
             .functions
             .iter()
