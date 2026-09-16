@@ -14,7 +14,19 @@
 //===----------------------------------------------------------------------===//
 
 use super::super::*;
+use crate::hir::stmt::EvalFlow;
 use std::collections::HashMap;
+
+/// What running a `comptime` block produced.
+enum ComptimeFold {
+    /// A value, which replaces the block. Boxed because it dwarfs the other two.
+    Folded(Box<Expr>),
+    /// It ran and left no value, so the block goes away entirely.
+    NoValue,
+    /// It could not be run. Reported already, unless this is a closure body -- which is not
+    /// asked to fold where it is written.
+    Refused,
+}
 
 impl<'a> TypeChecker<'a> {
     /// The constant environment as one map, the innermost scope winning.
@@ -28,13 +40,149 @@ impl<'a> TypeChecker<'a> {
         env
     }
 
+    /// Run a `comptime` block and answer the constant it produced, if it has one.
+    ///
+    /// A block that cannot be run is reported here. It exists to run during compilation and
+    /// leave nothing behind, so there is no such thing as one that half-ran: until now those
+    /// were emitted as ordinary run-time code, which is how a loop or a call the evaluator
+    /// skipped stayed invisible.
+    fn fold_comptime_block(
+        &mut self,
+        stmts: &[Statement],
+        ret: Option<&Expr>,
+        before: &HashMap<crate::symbol::Symbol, Value>,
+    ) -> ComptimeFold {
+        let mut env = before.clone();
+        let outer_unsupported = self.consteval.unsupported_stmt.replace(false);
+        let flow = self.eval_block(stmts, &mut env);
+        let ran = !self.consteval.unsupported_stmt.get();
+        self.consteval.unsupported_stmt.set(outer_unsupported);
+
+        let span = ret.map(|r| r.span()).unwrap_or_default();
+        if !ran {
+            self.report_comptime_block_failure(
+                "it holds a statement the evaluator cannot run",
+                &span,
+            );
+            return ComptimeFold::Refused;
+        }
+        // A `return` inside the block, where the block is a closure or function body, is
+        // that body's value -- `|| comptime { ..; return x; }` is how the closure fixtures
+        // are written. Answer with it, the same as a trailing expression.
+        if let EvalFlow::Return(returned) = flow {
+            return self.fold_value(returned, &span);
+        }
+        let Some(ret) = ret else {
+            return ComptimeFold::NoValue;
+        };
+        let value = self.eval_expr(ret, &env);
+        self.fold_value(value, &span)
+    }
+
+    fn fold_value(&mut self, value: Option<Value>, span: &Span) -> ComptimeFold {
+        let Some(value) = value else {
+            self.report_comptime_block_failure("its value cannot be worked out", span);
+            return ComptimeFold::Refused;
+        };
+        match Self::value_to_expr(&value, span) {
+            Some(expr) => ComptimeFold::Folded(Box::new(expr)),
+            None => {
+                self.report_comptime_block_failure(
+                    "its value is not one that can be written as a constant",
+                    span,
+                );
+                ComptimeFold::Refused
+            }
+        }
+    }
+
+    fn report_comptime_block_failure(&mut self, why: &str, span: &Span) {
+        // A closure body is not asked to fold where it is written -- its parameters have no
+        // values yet. The call is what has to fold, and that is reported at the call.
+        if self.speculating || self.consteval.closure_body_depth > 0 {
+            return;
+        }
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E3033,
+            format!("this `comptime` block cannot be evaluated: {}", why),
+            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+        );
+    }
+
+    /// Whether a statement binds a lambda whose body is a `comptime` block.
+    ///
+    /// Every call to one has folded by now, so nothing is left to call and the binding is
+    /// dropped. Keeping it would emit the closure and its generated body, which is exactly
+    /// the run-time code a `comptime` block must not leave behind.
+    pub(crate) fn binds_a_comptime_lambda(stmt: &Statement) -> bool {
+        let Statement::LetDecl(decl) = stmt else {
+            return false;
+        };
+        let Expr::Closure(closure) = &decl.expr else {
+            return false;
+        };
+        matches!(&*closure.body, Expr::ComptimeBlock(_))
+    }
+
+    /// Write a computed value back as a constant expression.
+    ///
+    /// Only immutable values: numbers, booleans and arrays of them. Anything else has no
+    /// spelling that survives to run time on its own.
+    pub(crate) fn value_to_expr(value: &Value, span: &Span) -> Option<Expr> {
+        match value {
+            Value::Int(i) => Some(Expr::Number(NumberExpr {
+                value: i.to_string().into(),
+                ty: None,
+                span: *span,
+            })),
+            Value::Number(n) => Some(Expr::Number(NumberExpr {
+                value: n.to_string().into(),
+                ty: None,
+                span: *span,
+            })),
+            Value::Bool(b) => Some(Expr::Identifier(IdentifierExpr {
+                name: if *b { "true".into() } else { "false".into() },
+                span: *span,
+            })),
+            Value::Array(items) => {
+                let mut elements = Vec::with_capacity(items.len());
+                for item in items {
+                    elements.push(Self::value_to_expr(item, span)?);
+                }
+                Some(Expr::Array(ArrayExpr {
+                    elements,
+                    span: *span,
+                }))
+            }
+            _ => None,
+        }
+    }
+
     pub(crate) fn check_comptimeblock_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
         match expr {
             Expr::ComptimeBlock(ComptimeBlockExpr {
                 stmts,
                 ret,
-                span: _,
+                span: block_span,
             }) => {
+                let block_span = *block_span;
+                // What is known before the block runs. Its own `let`s live in the scope
+                // pushed below and are gone by the time the fold needs them, so the block
+                // is run again from here rather than read out of the checker's environment.
+                // One `comptime` inside another asks for nothing the outer one does not
+                // already do, and it is what put a closure's body out of the evaluator's
+                // reach: the inner block's value needed a call to a closure declared in the
+                // outer block.
+                if self.consteval.comptime_depth > 0 && !self.speculating {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E3034,
+                        "a `comptime` block inside another one: the outer block already runs \
+                         while compiling, so remove the inner `comptime`"
+                            .to_string(),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(&block_span)),
+                    );
+                }
+                let before = self.consteval_snapshot();
                 self.push_scope();
                 self.consteval.comptime_depth += 1;
                 let mut ret_ty = self.check_expr_block(stmts, consume);
@@ -43,6 +191,7 @@ impl<'a> TypeChecker<'a> {
                 }
                 self.consteval.comptime_depth -= 1;
                 self.pop_scope();
+                let folded = self.fold_comptime_block(stmts, ret.as_deref(), &before);
                 // An assertion the placement fold answered `true` is discharged here: nothing
                 // at run time holds a placement, so nothing is left to check. (A false one
                 // was reported by the assert check.) Asserts on anything else stay, as the
@@ -51,6 +200,25 @@ impl<'a> TypeChecker<'a> {
                     !matches!(s, Statement::Assert(a)
                         if matches!(&*a.expr, Expr::Identifier(id) if id.name.as_ref() == "true"))
                 });
+                stmts.retain(|s| !Self::binds_a_comptime_lambda(s));
+                // The block ran while compiling and must leave nothing behind, so what it
+                // worked out replaces it. A block with no value becomes an empty one, which
+                // the statement walk then drops.
+                match folded {
+                    // The value it worked out replaces it.
+                    ComptimeFold::Folded(value) => *expr = *value,
+                    // It ran and produced nothing, so nothing is left to emit.
+                    ComptimeFold::NoValue => {
+                        *expr = Expr::ComptimeBlock(ComptimeBlockExpr {
+                            stmts: Vec::new(),
+                            ret: None,
+                            span: block_span,
+                        })
+                    }
+                    // Left as written: either the error above stops the build, or this is a
+                    // closure body, which folds at its call rather than here.
+                    ComptimeFold::Refused => {}
+                }
                 ret_ty
             }
 
@@ -407,7 +575,15 @@ impl<'a> TypeChecker<'a> {
                     self.insert(name.to_string(), ty.clone());
                 }
                 let mut b = e.body.clone();
+                // A closure is a function, so its body starts a fresh compile-time context.
+                // `comptime` directly inside `comptime` is the thing being refused; a lambda
+                // whose body is a `comptime` block, written inside another one, is two
+                // separate functions and is ordinary.
+                let outer_comptime = std::mem::take(&mut self.consteval.comptime_depth);
+                self.consteval.closure_body_depth += 1;
                 let expr_ret_ty = self.check_expr_type(&mut b);
+                self.consteval.closure_body_depth -= 1;
+                self.consteval.comptime_depth = outer_comptime;
 
                 let mut ret_ty = expr_ret_ty;
                 if let Some(inferred) = &self.current_return_type {

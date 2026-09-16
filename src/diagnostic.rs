@@ -280,6 +280,17 @@ pub enum DiagnosticCode {
     /// that promise for the whole type -- which would be a way to duplicate a tensor, or any
     /// other placed value, without saying so.
     E3031,
+    /// A `comptime` block the evaluator could not finish. The block runs during compilation
+    /// and leaves nothing behind, so one that cannot be run has no meaning -- and used to be
+    /// emitted as ordinary run-time code, which hid the fact entirely.
+    ///
+    /// E3032 is taken by the runaway-instantiation check on another branch; whichever of the
+    /// two lands second keeps its own number.
+    E3033,
+    /// A `comptime` block inside another one. The outer block already runs at compile time,
+    /// so the inner one asks for nothing extra, and nesting them is what made a block's
+    /// value depend on evaluating a closure defined inside another block.
+    E3034,
 
     // --- Borrow/Ownership Errors (E4xxx) ---
     /// Use of moved or consumed linear variable

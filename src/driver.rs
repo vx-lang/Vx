@@ -831,8 +831,13 @@ impl CompilerDriver {
         let mut orig_functions = ast.functions.clone();
         orig_functions.retain(|f| f.generics.is_empty());
 
-        let mut new_functions: Vec<_> =
-            checker.mono.functions.into_iter().map(|(f, _)| f).collect();
+        let mut new_functions: Vec<_> = checker
+            .mono
+            .functions
+            .into_iter()
+            .map(|(f, _)| f)
+            .filter(|f| !crate::hir::TypeChecker::is_comptime_lambda_body(f))
+            .collect();
         new_functions.extend(orig_functions);
         ast.functions = new_functions;
         ast.structs.extend(checker.mono.generated_structs);
