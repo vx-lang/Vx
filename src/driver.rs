@@ -403,6 +403,9 @@ impl CompilerDriver {
         };
         // The pipeline's progress chatter goes to stdout, where this action prints MLIR.
         crate::intern_mode::set_quiet(true);
+        if jobs > 1 {
+            Self::widen_heap_growth();
+        }
 
         let compile = || -> Result<Option<(String, Option<String>)>, String> {
             let (programs, interfaces) = self.load_modules(filename, sched)?;
@@ -450,6 +453,30 @@ impl CompilerDriver {
     fn report_phases() {
         if std::env::var_os("VX_PIPELINE_PHASES").is_some() {
             eprint!("{}", crate::intern_mode::phases_csv());
+        }
+    }
+
+    /// Let each thread's heap grow in large steps.
+    ///
+    /// glibc grows a thread's arena 128 KB at a time, and every step is an `mprotect` taken
+    /// under the process-wide memory-map lock. Forty-eight workers parsing a thousand files
+    /// into a cold heap made 100,000 of them, one after another: the first parse of a `vxc`
+    /// process took 185 ms where the same parse in a warm harness took 10, and no phase timer
+    /// could see why. A 64 MB step makes it 154 calls and the parse 13 ms. Untouched pages
+    /// cost nothing, so the step is address space, not memory.
+    fn widen_heap_growth() {
+        #[cfg(all(target_os = "linux", target_env = "gnu"))]
+        {
+            use std::os::raw::c_int;
+            extern "C" {
+                fn mallopt(param: c_int, value: c_int) -> c_int;
+            }
+            const M_TOP_PAD: c_int = -2;
+            // SAFETY: `mallopt` takes two integers and changes only the allocator's own
+            // tunables; it is called before any worker thread exists.
+            unsafe {
+                mallopt(M_TOP_PAD, 64 << 20);
+            }
         }
     }
 
