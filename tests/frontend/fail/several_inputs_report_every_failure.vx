@@ -1,0 +1,24 @@
+//===- several_inputs_report_every_failure.vx - Vx Compiler -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A failing input does not stop the ones after it, and the run still fails. The first input
+// here is not Vx at all, and this valid file comes second: the parser's error for the first
+// is printed, this file's function is still emitted, and the run ends with a count of what
+// failed and a nonzero exit status.
+//
+// RUN: mkdir -p %t.d
+// RUN: printf 'this is not valid vx syntax at all @@@\n' > %t.d/not_vx.vx
+// RUN: (vxc %t.d/not_vx.vx %s --action emit-mlir 2>&1; echo "exit=$?") | FileCheck %s
+
+fn alpha(a: i32) -> i32 {
+  return a + 1;
+}
+
+// CHECK: Frontend failed to parse '{{.*}}not_vx.vx'
+// CHECK: func.func @alpha
+// CHECK: 1 of 2 inputs failed to compile: {{.*}}not_vx.vx
+// CHECK: exit=1

@@ -1,0 +1,25 @@
+//===- several_inputs_write_into_an_output_directory.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// With several inputs, `-o` names a directory, and each input's artifact is written there
+// under the input's own name with the action's extension. emit-interface is the action used
+// because it writes a file and needs no backend.
+//
+// RUN: mkdir -p %t.d/out
+// RUN: printf 'fn beta(b: i32) -> i32 {\n  return b * 2;\n}\n' > %t.d/second.vx
+// RUN: (vxc %s %t.d/second.vx --action emit-interface -o %t.d/out 2>&1; echo "exit=$?") | FileCheck %s
+// RUN: ls %t.d/out | FileCheck %s --check-prefix=FILES
+
+fn alpha(a: i32) -> i32 {
+  return a + 1;
+}
+
+// CHECK: Wrote module interface ({{[0-9]+}} bytes) to {{.*}}/out/several_inputs_write_into_an_output_directory.vxlib
+// CHECK: Wrote module interface ({{[0-9]+}} bytes) to {{.*}}/out/second.vxlib
+// CHECK: exit=0
+// FILES: second.vxlib
+// FILES: several_inputs_write_into_an_output_directory.vxlib

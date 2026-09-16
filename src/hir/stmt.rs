@@ -1122,10 +1122,14 @@ impl<'a> TypeChecker<'a> {
             }
             Expr::FunctionCall(FunctionCallExpr {
                 name,
-                type_args: None,
+                type_args,
                 args,
                 span: _,
             }) => {
+                // Ignored on purpose: the checker has already instantiated the call and
+                // substituted the arguments into the body, so `sort<4>` arrives with its
+                // `N` gone. Matching on `None` here was what skipped such a call.
+                let _ = type_args;
                 let func = self.callee_body(name.as_ref())?;
                 let mut local_env = HashMap::new();
                 for (i, arg_expr) in args.iter().enumerate() {
@@ -1289,13 +1293,22 @@ impl<'a> TypeChecker<'a> {
     /// The module being compiled goes into the resolution env with its non-generic bodies
     /// stripped, so a function defined alongside the caller has nothing to walk there and is
     /// looked up in the bodies kept for compile-time evaluation instead.
-    fn callee_body(&self, name: &str) -> Option<&'a Function> {
+    fn callee_body(&self, name: &str) -> Option<&Function> {
         if let Some(func) = self.env.syntax_functions.get(name) {
             if !func.body.is_empty() {
                 return Some(func);
             }
         }
-        self.env.comptime_bodies.get(name)
+        if let Some(func) = self.env.comptime_bodies.get(name) {
+            return Some(func);
+        }
+        // A generic instance, made while checking this very call. Its mangled name is in
+        // neither table above, and encodes the arguments, so at most one entry matches.
+        self.mono
+            .functions
+            .iter()
+            .find(|(func, _)| func.name.as_ref() == name)
+            .map(|(func, _)| func)
     }
 
     /// Step one call deeper, or refuse. `None` stops the evaluation; whoever asked for the

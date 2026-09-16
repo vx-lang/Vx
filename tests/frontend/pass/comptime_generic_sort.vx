@@ -1,0 +1,52 @@
+//===- comptime_generic_sort.vx - Vx Compiler --------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A sort generic over its length, called with a literal, evaluated while compiling.
+//
+// A call carrying type arguments used to be skipped, so an assert about its result
+// quietly became a run-time check. Both spellings are here: the length written out, and
+// the length deduced from the argument. They reach the same instance by different
+// routes, so a change handling only one would pass half this file.
+//
+// An assert the evaluator does not run is silently accepted, so this file still compiles
+// if evaluation stops. fail/comptime_generic_sort_wrong.vx is what catches that.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK-LABEL: func.func @main() -> i32
+
+fn sort<const N : i32>(a : Tensor<i64, [N]>) -> Tensor<i64, [N]> {
+  let mut w : Tensor<i64, [N]> = a;
+  for i in 0..N {
+    for j in 0..N - 1 {
+      if w[j] > w[j + 1] {
+        let t : i64 = w[j];
+        w[j] = w[j + 1];
+        w[j + 1] = t;
+      }
+    }
+  }
+  return w;
+}
+
+fn main() -> i32 {
+  comptime {
+    // The length written out.
+    let input : Tensor<i64, [4]> = [ 3i64, 1i64, 4i64, 2i64 ];
+    let out : Tensor<i64, [4]> = sort<4>(input);
+    assert(out[0] == 1i64, "explicit length, element 0");
+    assert(out[1] == 2i64, "explicit length, element 1");
+    assert(out[2] == 3i64, "explicit length, element 2");
+    assert(out[3] == 4i64, "explicit length, element 3");
+
+    // The same function with the length deduced from the argument.
+    let other : Tensor<i64, [4]> = [ 9i64, 7i64, 8i64, 6i64 ];
+    let sorted : Tensor<i64, [4]> = sort(other);
+    assert(sorted[0] == 6i64, "deduced length, element 0");
+    assert(sorted[3] == 9i64, "deduced length, element 3");
+  }
+  return 0;
+}

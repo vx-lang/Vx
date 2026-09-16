@@ -1,0 +1,23 @@
+//===- several_inputs_refuse_one_output_file.vx - Vx Compiler ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// With several inputs, `-o` naming one file is refused: each input writes its own artifact,
+// and one path cannot hold two. emit-interface is the action used because it writes a file
+// and needs no backend. Nothing is written, and the run fails before compiling anything.
+//
+// RUN: mkdir -p %t.d
+// RUN: printf 'fn beta(b: i32) -> i32 {\n  return b * 2;\n}\n' > %t.d/second.vx
+// RUN: (vxc %s %t.d/second.vx --action emit-interface -o %t.d/one.vxlib 2>&1; echo "exit=$?") | FileCheck %s
+// RUN: test ! -e %t.d/one.vxlib
+
+fn alpha(a: i32) -> i32 {
+  return a + 1;
+}
+
+// CHECK: -o '{{.*}}one.vxlib' names one file, but 2 inputs were given
+// CHECK-NOT: Wrote module interface
+// CHECK: exit=1
