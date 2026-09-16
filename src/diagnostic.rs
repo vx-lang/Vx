@@ -280,6 +280,10 @@ pub enum DiagnosticCode {
     /// that promise for the whole type -- which would be a way to duplicate a tensor, or any
     /// other placed value, without saying so.
     E3031,
+    /// A chain of generic instantiations that does not end -- `f<N - 1>()` whose base case
+    /// is never reached. Reported here rather than left to run out of stack, which gave no
+    /// file, no line and no message.
+    E3032,
 
     // --- Borrow/Ownership Errors (E4xxx) ---
     /// Use of moved or consumed linear variable

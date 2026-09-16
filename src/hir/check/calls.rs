@@ -437,6 +437,7 @@ impl<'a> TypeChecker<'a> {
                 } else if let Some(idx) = resolved_name.find('<') {
                     base_name = resolved_name[..idx].to_string().into();
                 }
+                self.fold_const_generic_args(&mut explicit_generic_args);
 
                 // Mocking built-ins
                 let mut arg_types = Vec::new();
@@ -871,6 +872,39 @@ impl<'a> TypeChecker<'a> {
         all_bound
     }
 
+    /// Reduce each constant generic argument to the number it works out to.
+    ///
+    /// `countdown<N - 1>()` inside `countdown<3>` has to become `countdown<2>`, not
+    /// `countdown<3 - 1>`. The instance is named after its arguments, so an unfolded one
+    /// names a different instance every time round and the recursion never meets a base
+    /// case -- it took the compiler's stack down rather than terminating.
+    ///
+    /// An argument the evaluator cannot work out is left as written, which is what it did
+    /// before this.
+    fn fold_const_generic_args(&mut self, args: &mut [Type]) {
+        for arg in args.iter_mut() {
+            let Type::Const(expr) = arg else {
+                continue;
+            };
+            if matches!(&**expr, Expr::Number(_)) {
+                continue;
+            }
+            let env = self.consteval_snapshot();
+            let Some(value) = self.eval_expr(expr, &env).and_then(|v| match v {
+                Value::Int(i) => Some(i.to_string()),
+                Value::Number(n) if n.fract() == 0.0 => Some((n as i64).to_string()),
+                _ => None,
+            }) else {
+                continue;
+            };
+            **expr = Expr::Number(NumberExpr {
+                value: value.into(),
+                ty: None,
+                span: Span::default(),
+            });
+        }
+    }
+
     /// Resolve and instantiate a `Struct::method(...)` static call (an inherent-impl method
     /// named through its type). Parses any explicit type args on the struct or method, finds the
     /// matching `_inherent` impl method, deduces what those left open from the arguments and
@@ -1060,6 +1094,52 @@ impl<'a> TypeChecker<'a> {
 
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn instantiate_generic_function_call(
+        &mut self,
+        generic_func: &Function,
+        origin_hash: u64,
+        resolved_name: &str,
+        name: &mut crate::symbol::Symbol,
+        args: &[Expr],
+        arg_types: &[Type],
+        explicit_generic_args: &[Type],
+        span: &crate::syntax::Span,
+    ) -> Option<Type> {
+        // A recursion through the generic arguments themselves makes a fresh instance every
+        // time round, each checked inside the last. Stop, and say so, rather than running
+        // out of stack.
+        if self.mono.instantiation_depth >= crate::hir::check_state::MAX_INSTANTIATION_DEPTH {
+            if !self.speculating {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E3032,
+                    format!(
+                        "instantiating '{}' went more than {} generic calls deep and was \
+                         stopped. A recursive generic whose base case is never reached is the \
+                         usual cause.",
+                        resolved_name,
+                        crate::hir::check_state::MAX_INSTANTIATION_DEPTH
+                    ),
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                );
+            }
+            return None;
+        }
+        self.mono.instantiation_depth += 1;
+        let result = self.instantiate_generic_function_call_inner(
+            generic_func,
+            origin_hash,
+            resolved_name,
+            name,
+            args,
+            arg_types,
+            explicit_generic_args,
+            span,
+        );
+        self.mono.instantiation_depth -= 1;
+        result
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn instantiate_generic_function_call_inner(
         &mut self,
         generic_func: &Function,
         origin_hash: u64,
