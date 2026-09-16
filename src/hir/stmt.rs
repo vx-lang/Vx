@@ -774,7 +774,7 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// The variable a place expression writes through: `a` for `a`, `a[i]` and `a[i][j]`.
-    fn place_root(expr: &Expr) -> Option<&crate::symbol::Symbol> {
+    pub(crate) fn place_root(expr: &Expr) -> Option<&crate::symbol::Symbol> {
         match expr {
             Expr::Identifier(IdentifierExpr { name, span: _ }) => Some(name),
             Expr::IndexAccess(IndexAccessExpr { base, .. }) => Self::place_root(base),

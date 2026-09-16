@@ -33,5 +33,14 @@ fn main() -> i32 {
     let v : i64 = held();
     v
   };
+
+  // A block that writes to something declared outside it. The block disappears, so the
+  // write would have to disappear with it -- which is how this shape used to turn a
+  // program that printed 4 into one that printed 0, quietly.
+  let mut outside : i64 = 0i64;
+  // CHECK: Error[E3033]{{.*}}writes to 'outside'
+  comptime {
+    outside = 4i64;
+  }
   return 0;
 }

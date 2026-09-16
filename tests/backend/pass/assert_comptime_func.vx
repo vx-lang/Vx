@@ -6,17 +6,18 @@
 //
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// main calls each function in order; the assertion is that the chain survives to codegen
-// rather than being folded away.
+// Every call here is inside a `comptime` block, so none of them survive to codegen. The
+// file used to check the opposite -- that the chain was still emitted -- which is what a
+// `comptime` block is supposed to prevent: the compiler had already worked each assert out
+// and then emitted the calls for the program to make again.
+//
+// A wrong assert stops the build, and so does a block the evaluator cannot finish, so this
+// file compiling at all says the asserts really were checked.
 // CHECK-LABEL: func.func @main() -> i32
-// CHECK: call @foo() : () -> i64
-// CHECK: call @bar() : () -> i64
-// CHECK: call @foo() : () -> i64
-// CHECK: call @baz() : () -> i64
-// CHECK: call @foo() : () -> i64
-// CHECK: call @baz() : () -> i64
-// CHECK: call @foo() : () -> i64
-// CHECK: call @baz() : () -> i64
+// CHECK-NOT: call @foo()
+// CHECK-NOT: call @bar()
+// CHECK-NOT: call @baz()
+// CHECK: return
 fn foo() -> i64 {
   let a : i64 = 10;
   return a;

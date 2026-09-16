@@ -2,19 +2,23 @@
 // CHECK-LABEL: func.func @main() -> i32
 // CHECK: call @check_top() : () -> ()
 // CHECK: call @check_top2() : () -> ()
+// `if comptime` picks its branch while compiling, and the topology each branch names folds
+// to the number for that topology: 500 for GPU, 100 for NPU[0].
+//
+// The `comptime` blocks that assert those topologies leave nothing behind, so no comparison
+// is emitted for the program to make again. That is the part that changed -- each assert
+// used to be spliced in as a constant and an `arith.cmpi`, after the compiler had already
+// decided the answer. A false one stops the build, so no comparison reaching codegen does
+// not mean the assert went unchecked.
 // CHECK-LABEL: func.func @check_top2()
 // CHECK: arith.constant 500 : i32
-// CHECK: %[[T:.*]] = arith.constant 500 : i32
-// CHECK: arith.cmpi eq, %{{.*}}, %[[T]] : i32
+// CHECK-NOT: arith.cmpi
+// CHECK: return
 // CHECK-LABEL: func.func @check_top()
 // CHECK: arith.constant 1 : i32
-// CHECK: %[[V0:.*]] = arith.constant 100 : i32
-// CHECK: %[[V1:.*]] = arith.constant 100 : i32
-// CHECK: arith.constant 10 : i32
-// CHECK: %[[V2:.*]] = arith.constant 100 : i32
-// CHECK: arith.cmpi eq, %[[V0]], %[[V2]] : i32
-// CHECK: %[[V3:.*]] = arith.constant 100 : i32
-// CHECK: arith.cmpi eq, %[[V1]], %[[V3]] : i32
+// CHECK: arith.constant 100 : i32
+// CHECK-NOT: arith.cmpi
+// CHECK: return
 fn check_top() on Topology::NPU[0] -> void {
   // If comptime returns an expression
   let a = if comptime true {
