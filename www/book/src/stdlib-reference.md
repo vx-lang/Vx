@@ -24,6 +24,7 @@ friends.
 ## Contents
 
 - [`core::cmp`](#corecmp) —
+- [`core::iter`](#coreiter) — The `Iterator` trait and its adaptors, which `for` loops and `.map` build on.
 - [`core::num`](#corenum) — The integer methods, on `i32`.
 - [`core::ops`](#coreops) —
 - [`core::option`](#coreoption) — `Option<T>`, for a value that may be absent.
@@ -94,6 +95,80 @@ fn eq(self : &$t, other : &$t) -> bool
 
 ```rust
 fn cmp(self : &$t, other : &$t) -> Ordering
+```
+
+## `core::iter`
+
+The `Iterator` trait and its adaptors, which `for` loops and `.map` build on.
+
+**Types**
+
+- `trait Iterator<Item>`
+- `struct Range`
+- `struct Map<I, Item, U>`
+- `struct Filter<I, Item>`
+- `struct Take<I, Item>`
+- `struct Skip<I, Item>`
+
+**Functions**
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
+```rust
+fn next(self : &mut Self) -> Option<Item>
+fn count(self : &mut Self) -> i64
+fn last(self : &mut Self) -> Option<Item>
+fn nth(self : &mut Self, n : i64) -> Option<Item>
+fn any(self : &mut Self, f : Closure1<Item, bool>) -> bool
+fn all(self : &mut Self, f : Closure1<Item, bool>) -> bool
+fn find(self : &mut Self, f : Closure1<Item, bool>) -> Option<Item>
+fn position(self : &mut Self, f : Closure1<Item, bool>) -> Option<i64>
+fn for_each(self : &mut Self, f : Closure1<Item, i32>) -> i32
+```
+
+**`Iterator<i64> for Range` methods**
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
+```rust
+fn next(self : &mut Range) -> Option<i64>
+```
+
+**`Iterator<U> for Map<I, Item, U>` methods**
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
+```rust
+fn next(self : &mut Map<I, Item, U>) -> Option<U>
+```
+
+**`Iterator<Item> for Filter<I, Item>` methods**
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
+```rust
+fn next(self : &mut Filter<I, Item>) -> Option<Item>
+```
+
+**`Iterator<Item> for Take<I, Item>` methods**
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
+```rust
+fn next(self : &mut Take<I, Item>) -> Option<Item>
+```
+
+**`Iterator<Item> for Skip<I, Item>` methods**
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
+```rust
+fn next(self : &mut Skip<I, Item>) -> Option<Item>
+fn map<I, Item, U>(inner : I, f : Closure1<Item, U>) -> Map<I, Item, U>
+fn filter<I, Item>(inner : I, keep : Closure1<Item, bool>) -> Filter<I, Item>
+fn take<I, Item>(inner : I, left : i64) -> Take<I, Item>
+fn skip<I, Item>(inner : I, drop : i64) -> Skip<I, Item>
+fn range(at : i64, end : i64) -> Range
 ```
 
 ## `core::num`
@@ -842,4 +917,4 @@ fn vx_vec_bounds_check(index : i64, len : i64) -> i32
 
 ______________________________________________________________________
 
-292 functions across 23 modules.
+311 functions across 24 modules.

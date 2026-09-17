@@ -25,6 +25,9 @@ const KNOWN_DECLINES: &[&str] = &[
     // and the AST path handles both. The module's other methods answer with a `T` or a
     // `bool` and compile through the flat path; adding these three is what moved the file.
     "backend/pass/core_option.vx",
+    // The flat path declines `main` here as "a callee return type": the adaptors it
+    // builds answer with a generic struct. Its answers come from the AST path.
+    "backend/pass/core_iter.vx",
     // `ok`, `err`, `map`, `map_err` and `and_then` all answer with an `Option` or a
     // `Result`, which the flat path declines as "a non-scalar default return" -- the same
     // shape as the file above. The AST path handles them, and that is where the answers
