@@ -129,6 +129,9 @@ pub struct TraitDecl {
 pub struct ImplBlock {
     pub generics: Vec<GenericParam>,
     pub trait_name: Option<Symbol>,
+    /// The trait's own type arguments: `[i64]` for `impl Iterator<i64> for Range`. Needed
+    /// to substitute the trait's parameters into a default body's signature.
+    pub trait_args: Vec<Type>,
     pub target_type: Type,
     pub methods: Vec<Function>,
 }
@@ -138,6 +141,7 @@ impl ImplBlock {
         Self {
             generics: self.generics.clone(),
             trait_name: self.trait_name.clone(),
+            trait_args: self.trait_args.clone(),
             target_type: self.target_type.clone(),
             // Always preserve method bodies: methods only exist in impl blocks, so
             // method-call monomorphization clones the body from the type-check env

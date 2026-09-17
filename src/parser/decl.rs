@@ -971,6 +971,7 @@ impl<'a> Parser<'a> {
 
         // Either `impl Trait for Type` or `impl Type`
         let mut trait_name = None;
+        let mut trait_args: Vec<Type> = Vec::new();
 
         // Since we don't have lookahead to distinguish `impl Trait for Type` from `impl Type`,
         // if we see `Identifier` followed by `for`, it's a trait. Otherwise it's a type.
@@ -981,9 +982,10 @@ impl<'a> Parser<'a> {
             self.advance(); // consume 'for'
             if let Type::Struct(name, _) = parsed_type {
                 trait_name = Some(name);
-            } else if let Type::GenericInstance(inner, _) = parsed_type {
+            } else if let Type::GenericInstance(inner, args) = parsed_type {
                 if let Type::Struct(name, _) = *inner {
                     trait_name = Some(name);
+                    trait_args = args;
                 } else {
                     return Err(self.error("Expected trait name before 'for'"));
                 }
@@ -1041,6 +1043,7 @@ impl<'a> Parser<'a> {
         Ok(ImplBlock {
             generics,
             trait_name,
+            trait_args,
             target_type,
             methods,
         })
