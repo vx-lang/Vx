@@ -20,6 +20,7 @@ permissions:
 
 jobs:
   build:
+    if: ${{ github.repository == 'vx-lang/Vx' }}
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -183,12 +184,18 @@ jobs:
           # way: built from source on an A100 80GB, `spawn on(Topology::GPU[0])` logged
           # "[Vx CUDA] device 0 dispatch" and "GEMM 4x4x4 f32", and printed the right answer.
           if [ -n "${{ matrix.cuda && 'yes' || '' }}" ]; then
-            if ls "$prefix"/lib/*cuda_dispatch.* >/dev/null 2>&1; then
-              echo "CUDA toolchain contains $(basename "$(ls "$prefix"/lib/*cuda_dispatch.* | head -1)")"
+            if cuda_lib=$(find "$prefix/lib" -maxdepth 1 -name '*cuda_dispatch.*' -print -quit 2>/dev/null); then
+              if [ -n "$cuda_lib" ]; then
+                echo "CUDA toolchain contains $(basename "$cuda_lib")"
+              else
+                echo "error: the CUDA toolchain has no CUDA dispatch backend." >&2
+                echo "  build.rs fell back to the portable shim, so the toolkit was not found." >&2
+                ls -l "$prefix"/lib/ >&2
+                exit 1
+              fi
             else
-              echo "error: the CUDA toolchain has no CUDA dispatch backend." >&2
-              echo "  build.rs fell back to the portable shim, so the toolkit was not found." >&2
-              ls -l "$prefix"/lib/ >&2
+              echo "error: could not inspect the CUDA toolchain; its tarball layout is unexpected." >&2
+              ls -l "$prefix" >&2
               exit 1
             fi
             "$prefix/bin/vxc" --parse-only hello.vx > /dev/null
@@ -214,7 +221,7 @@ jobs:
           # 42" on success-of-execution, while the error text reads "exited with NON-ZERO code:
           # 42" and does not contain this substring. Anyone editing either message should keep
           # that apart, or this check silently starts matching the wrong one.
-          echo "$out" | grep -q "exited with code: 42" || {
+          grep -q "exited with code: 42" <<<"$out" || {
             echo "error: the packaged compiler did not run the program (vxc exit $status)" >&2
             echo "--- output was:" >&2
             echo "$out" >&2
@@ -295,7 +302,7 @@ jobs:
     name: Publish the release
     needs: build
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
+    if: github.repository == 'vx-lang/Vx' && startsWith(github.ref, 'refs/tags/')
     steps:
       - uses: actions/download-artifact@v4
         with:
