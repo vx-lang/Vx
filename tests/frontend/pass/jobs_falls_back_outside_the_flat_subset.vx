@@ -41,7 +41,10 @@ fn main() -> i32 {
   return 0;
 }
 
-// CHECK: [parallel-frontend] program outside the flat subset; using the sequential driver
+// `flat_corpus_sweep` decides which codegen path a program took by looking for the flat emitter's
+// own decline line, so no other decline may be worded to contain it.
+// CHECK-NOT: [parallel-frontend] program outside the flat subset
+// CHECK: [parallel-frontend] the flat emitter did not take this program; using the sequential driver
 // CHECK: func.func @main
 // CHECK: exit=0
 

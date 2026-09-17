@@ -438,9 +438,13 @@ impl CompilerDriver {
                 crate::pipeline::compile_modules_mlir_in(programs, sched, intern_mode, reported)
                     .map_err(|e| e.to_string())?;
             let Some(text) = text else {
+                // Worded so it cannot be mistaken for the flat emitter's own decline, which
+                // `flat_corpus_sweep` classifies a program by: the two say different things
+                // about which path a program took, and a sweep that ran with `-j` would read
+                // this line as the other one and report the wrong set of declines.
                 eprintln!(
-                    "[parallel-frontend] program outside the flat subset; using the sequential \
-                     driver"
+                    "[parallel-frontend] the flat emitter did not take this program; using the \
+                     sequential driver"
                 );
                 return Ok(None);
             };
