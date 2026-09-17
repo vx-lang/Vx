@@ -183,7 +183,7 @@ pub const CODEGEN_LOWER: &str = "  codegen:lower";
 pub const CODEGEN_SETUP: &str = "  codegen:setup";
 pub const CODEGEN_EMIT: &str = "  codegen:emit";
 
-pub const PHASES: [&str; 21] = [
+pub const PHASES: [&str; 22] = [
     "parse",
     "macro_expand",
     "name_resolution",
@@ -191,6 +191,7 @@ pub const PHASES: [&str; 21] = [
     "sig_clone",
     "env_build",
     "return_prov",
+    "comptime_bodies",
     "decl_check",
     "type_check",
     "dedup_barrier",
@@ -276,10 +277,10 @@ mod tests {
     fn timed_passes_values_through_and_only_knows_declared_phases() {
         assert_eq!(timed("parse", || 41 + 1), 42);
         assert_eq!(timed("not_a_phase", || "ok"), "ok");
-        assert_eq!(phase_index("type_check"), Some(8));
+        assert_eq!(phase_index("type_check"), Some(9));
         assert_eq!(phase_index("not_a_phase"), None);
         // Every name the pipeline instruments must be declared, or its time vanishes.
-        assert_eq!(PHASES.len(), 21);
+        assert_eq!(PHASES.len(), 22);
         // The sub-phase constants are the names their instrumentation sites pass, so a lookup
         // that misses here is a row that would have read 0.0 in every report.
         for name in [CODEGEN_LOWER, CODEGEN_SETUP, CODEGEN_EMIT] {
@@ -288,6 +289,35 @@ mod tests {
                 "{name} is not a declared phase"
             );
         }
+    }
+
+    /// Every phase name the compiler hands to `timed` has to be declared here, or `record` drops
+    /// it: the phase's wall clock then lands in the report's `unaccounted` remainder rather than
+    /// under a name, and nothing says so.
+    ///
+    /// Checked against the source rather than against a list kept by hand, because a list kept by
+    /// hand is the thing that was already wrong. `comptime_bodies` was instrumented one line above
+    /// phases that were declared, and went unreported for exactly as long as nobody compared the
+    /// two by eye.
+    #[test]
+    fn every_phase_the_compiler_times_is_declared() {
+        let mut missing: Vec<(&str, &str)> = Vec::new();
+        for (file, src) in [
+            ("pipeline.rs", include_str!("pipeline.rs")),
+            ("driver.rs", include_str!("driver.rs")),
+        ] {
+            for (at, marker) in src.match_indices("timed(\"") {
+                let rest = &src[at + marker.len()..];
+                let name = rest.split('"').next().unwrap_or("");
+                if phase_index(name).is_none() {
+                    missing.push((file, name));
+                }
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "these phases are timed but not declared in PHASES, so their time is dropped: {missing:?}"
+        );
     }
 
     /// The gate a compile sets must not outlive it, or a `-j` compile silences a later compile in
