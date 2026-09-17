@@ -113,6 +113,12 @@ where
 
 // ---- Progress chatter (#306) ------------------------------------------------------------------
 
+/// Tri-state rather than a one-shot lazy cell: 0 = not yet read, 1 = quiet, 2 = loud. A benign
+/// race on the first read just re-reads the environment and stores the same answer.
+/// `quiet_during_compile` is the only writer whose value does not come from the environment, and
+/// it puts back what it found.
+static QUIET: AtomicU8 = AtomicU8::new(0); // vx-lint: allow-atomic (eval-only log gate)
+
 /// Suppress the pipeline's progress output, via `VX_PIPELINE_QUIET=1`.
 ///
 /// `parse_phase` opens its per-module closure with a `println!`, *inside* a rayon parallel-for.
@@ -120,11 +126,6 @@ where
 /// a measurement that is fatal twice over: it puts a lock in the middle of the region whose scaling
 /// is being measured, and a lock profile then reports contention on stdout rather than on anything
 /// in the compiler. At a 512-module corpus it is 512 lock acquisitions per run.
-///
-/// Tri-state atomic rather than a one-shot lazy cell: 0 = not yet read, 1 = quiet, 2 = loud. A benign
-/// race just re-reads the environment and stores the same answer.
-static QUIET: AtomicU8 = AtomicU8::new(0); // vx-lint: allow-atomic (eval-only log gate)
-
 pub fn quiet() -> bool {
     match QUIET.load(Ordering::Relaxed) {
         1 => true,
@@ -137,10 +138,28 @@ pub fn quiet() -> bool {
     }
 }
 
-/// Decide the gate without reading the environment. `vxc -j` runs the pipeline as a compiler,
-/// where progress chatter on stdout would land in the middle of the MLIR it prints.
-pub fn set_quiet(quiet: bool) {
-    QUIET.store(if quiet { 1 } else { 2 }, Ordering::Relaxed);
+/// Set the gate for one compile, putting back what it was when the guard drops.
+///
+/// `vxc -j` runs the pipeline as a compiler, where progress chatter on stdout would land in the
+/// middle of the MLIR it prints. The restore is what keeps that decision inside the compile that
+/// made it. A plain store would leave the gate set for every later compile in the same process,
+/// so a `-j` compile would silence a compile after it that asked for chatter.
+///
+/// This holds for compiles that run one at a time, which is how the driver runs them. Two
+/// compiles at once in one process still share the one static, and the first to finish would put
+/// back a value the other is still relying on.
+#[must_use = "the gate is restored as soon as the guard drops"]
+pub fn quiet_during_compile(quiet: bool) -> QuietGuard {
+    QuietGuard(QUIET.swap(if quiet { 1 } else { 2 }, Ordering::Relaxed))
+}
+
+/// Restores the gate that [`quiet_during_compile`] replaced.
+pub struct QuietGuard(u8);
+
+impl Drop for QuietGuard {
+    fn drop(&mut self) {
+        QUIET.store(self.0, Ordering::Relaxed);
+    }
 }
 
 // ---- Per-phase timing (#297) ------------------------------------------------------------------
@@ -269,5 +288,21 @@ mod tests {
                 "{name} is not a declared phase"
             );
         }
+    }
+
+    /// The gate a compile sets must not outlive it, or a `-j` compile silences a later compile in
+    /// the same process that asked for chatter.
+    ///
+    /// Reads the gate first so the tri-state is already resolved, then flips it to whatever it is
+    /// not. That way the test asserts the guard's own behaviour and never depends on whether
+    /// `VX_PIPELINE_QUIET` is set in the environment running it.
+    #[test]
+    fn the_quiet_gate_goes_back_when_the_compile_ends() {
+        let before = quiet();
+        {
+            let _gate = quiet_during_compile(!before);
+            assert_eq!(quiet(), !before, "the guard did not set the gate");
+        }
+        assert_eq!(quiet(), before, "the guard did not put the gate back");
     }
 }

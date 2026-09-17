@@ -401,8 +401,10 @@ impl CompilerDriver {
             "content" => InternMode::Content,
             _ => InternMode::Deferred,
         };
-        // The pipeline's progress chatter goes to stdout, where this action prints MLIR.
-        crate::intern_mode::set_quiet(true);
+        // The pipeline's progress chatter goes to stdout, where this action prints MLIR. The
+        // guard lives to the end of this function, so the gate goes back to what it was before
+        // anything else in this process compiles.
+        let _quiet_gate = crate::intern_mode::quiet_during_compile(true);
         if jobs > 1 {
             Self::widen_heap_growth();
         }
