@@ -1,0 +1,97 @@
+//===- trait_generic_method.vx - Vx Compiler ----------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A trait method with type parameters of its own. Declaring one used to be a parse error
+// at the `<`, which is what kept `core::iter` from being written.
+//
+// Every generic method is called at two different types, since one call proves only that
+// something compiled, not that the parameter is bound per call site.
+//
+// `Counter` inherits the generic default, `Other` overrides it, and `Folder` has a
+// parameter of its own so the trait's and the method's are not the same thing.
+//
+// `via` carries a bound. That is the part an inherited default gets wrong most quietly:
+// drop the bound when the default is copied into the impl and the body cannot resolve
+// `u.ok()` at all, so the method is unusable rather than merely unchecked.
+trait Marker {
+  fn ok(self : Self) -> i32;
+}
+
+trait Folder<T> {
+  fn seed(self : Self) -> T;
+
+  fn fold<B>(self : Self, init : B, over : T) -> B {
+    return init;
+  }
+
+  fn via<U : Marker>(self : Self, u : U) -> i32 {
+    return u.ok();
+  }
+}
+
+struct Counter {
+  n : i32,
+}
+
+impl Marker for Counter {
+  fn ok(self : Counter) -> i32 {
+    return self.n * 10;
+  }
+}
+
+impl Folder<i32> for Counter {
+  fn seed(self : Counter) -> i32 {
+    return self.n;
+  }
+}
+
+struct Other {
+  n : i32,
+}
+
+impl Folder<i32> for Other {
+  fn seed(self : Other) -> i32 {
+    return self.n;
+  }
+
+  fn fold<B>(self : Other, init : B, over : i32) -> B {
+    return init;
+  }
+}
+
+fn main() -> i32 {
+  let c : Counter = Counter {
+    n : 5
+  };
+  let o : Other = Other {
+    n : 6
+  };
+  let big : i64 = 9223372036854775807;
+
+  print(c.seed());
+  print!(" ");
+  print(o.seed());
+  print!(" ");
+
+  // The inherited default, at i32 and at i64.
+  print(c.fold(9, 1));
+  print!(" ");
+  print(c.fold(big, 1));
+  print!(" ");
+
+  // The override, at the same two widths.
+  print(o.fold(8, 1));
+  print!(" ");
+  print(o.fold(big, 1));
+  print!(" ");
+
+  // The bounded default, reaching the bound's method.
+  print(c.via(c));
+  return 0;
+}
+
+// EXPECT: 5 6 9 9223372036854775807 8 9223372036854775807 50

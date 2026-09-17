@@ -284,6 +284,14 @@ pub enum DiagnosticCode {
     /// is never reached. Reported here rather than left to run out of stack, which gave no
     /// file, no line and no message.
     E3032,
+    /// A `comptime` block the evaluator could not finish. The block runs during compilation
+    /// and leaves nothing behind, so one that cannot be run has no meaning -- and used to be
+    /// emitted as ordinary run-time code, which hid the fact entirely.
+    E3033,
+    /// A `comptime` block inside another one. The outer block already runs at compile time,
+    /// so the inner one asks for nothing extra, and nesting them is what made a block's
+    /// value depend on evaluating a closure defined inside another block.
+    E3034,
 
     // --- Borrow/Ownership Errors (E4xxx) ---
     /// Use of moved or consumed linear variable

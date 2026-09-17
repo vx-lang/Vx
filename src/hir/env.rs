@@ -1320,6 +1320,7 @@ impl<'a> TypeChecker<'a> {
         }
 
         self.check_block(&mut func.body, &func.return_type.clone());
+        Self::drop_spent_comptime_lambdas(&mut func.body);
 
         self.seam.contracts = prev_contracts;
 

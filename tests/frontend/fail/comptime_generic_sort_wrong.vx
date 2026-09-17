@@ -1,0 +1,43 @@
+//===- comptime_generic_sort_wrong.vx - Vx Compiler --------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The same generic sort as pass/comptime_generic_sort.vx, asked for a wrong answer.
+//
+// Only this file can fail the right way. The pass fixture keeps compiling if the
+// evaluator stops running the call, because an assert it does not run is accepted in
+// silence. Here the error going missing is the failure.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+fn sort<const N : i32>(a : Tensor<i64, [N]>) -> Tensor<i64, [N]> {
+  let mut w : Tensor<i64, [N]> = a;
+  for i in 0..N {
+    for j in 0..N - 1 {
+      if w[j] > w[j + 1] {
+        let t : i64 = w[j];
+        w[j] = w[j + 1];
+        w[j + 1] = t;
+      }
+    }
+  }
+  return w;
+}
+
+fn main() -> i32 {
+  comptime {
+    let input : Tensor<i64, [4]> = [ 3i64, 1i64, 4i64, 2i64 ];
+    let out : Tensor<i64, [4]> = sort<4>(input);
+    // CHECK: Error[E8002]{{.*}}the smallest value is 1, not 99
+    assert(out[0] == 99i64, "the smallest value is 1, not 99");
+
+    let other : Tensor<i64, [4]> = [ 9i64, 7i64, 8i64, 6i64 ];
+    let sorted : Tensor<i64, [4]> = sort(other);
+    // CHECK: Error[E8002]{{.*}}the largest value is 9, not 99
+    assert(sorted[3] == 99i64, "the largest value is 9, not 99");
+  }
+  return 0;
+}

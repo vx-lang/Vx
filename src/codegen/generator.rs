@@ -55,6 +55,9 @@ pub struct MeliorGenerator<'c> {
     #[allow(clippy::type_complexity)]
     pub(crate) enums:
         HashMap<crate::symbol::Symbol, Vec<(crate::symbol::Symbol, Option<Vec<syntax::Type>>)>>,
+    /// Each generic enum's type parameter names, in order, so a use like `Pair<i64, i8>`
+    /// can bind every one of them. `enums` keeps only the variants.
+    pub(crate) enum_generics: HashMap<crate::symbol::Symbol, Vec<crate::symbol::Symbol>>,
     pub(crate) functions: HashMap<crate::symbol::Symbol, (Type<'c>, Vec<Type<'c>>)>,
     pub(crate) syntax_functions: HashMap<crate::symbol::Symbol, syntax::Function>,
     pub(crate) enzyme_decls: std::collections::HashSet<String>,
@@ -617,6 +620,7 @@ impl<'c> MeliorGenerator<'c> {
             subspace_offsets: HashMap::new(),
             structs: HashMap::new(),
             enums: HashMap::new(),
+            enum_generics: HashMap::new(),
             functions: HashMap::new(),
             syntax_functions: HashMap::new(),
             enzyme_decls: std::collections::HashSet::new(),
@@ -714,6 +718,10 @@ impl<'c> MeliorGenerator<'c> {
         }
         for e in &program.enums {
             self.enums.insert(e.name.clone(), e.variants.clone());
+            self.enum_generics.insert(
+                e.name.clone(),
+                e.generics.iter().map(|g| g.name().into()).collect(),
+            );
         }
         for m in &program.memories {
             self.memories
@@ -740,6 +748,10 @@ impl<'c> MeliorGenerator<'c> {
             }
             for e in &module.enums {
                 self.enums.insert(e.name.clone(), e.variants.clone());
+                self.enum_generics.insert(
+                    e.name.clone(),
+                    e.generics.iter().map(|g| g.name().into()).collect(),
+                );
             }
             // Memories and topologies too. `--machine` loads the SKU as a peer
             // *module* (driver.rs), so taking these from the main program alone
@@ -1581,11 +1593,26 @@ impl<'c> MeliorGenerator<'c> {
                                 name
                             ))
                         })?;
+                        // Every parameter the declaration names, paired with the argument
+                        // in the same position. Binding only a parameter literally called
+                        // `T` left `Pair<T, E>`'s second one generic, and the payload of
+                        // whichever variant carried it reached codegen unsubstituted.
                         let mut mapping: std::collections::HashMap<
                             crate::symbol::Symbol,
                             syntax::Type,
                         > = std::collections::HashMap::new();
-                        mapping.insert("T".into(), ty_arg.clone());
+                        match self.enum_generics.get(name) {
+                            Some(params) if !params.is_empty() => {
+                                for (p, a) in params.iter().zip(args.iter()) {
+                                    mapping.insert(p.clone(), a.clone());
+                                }
+                            }
+                            // A declaration this generator never saw: the old guess is
+                            // still better than nothing for the common one-parameter enum.
+                            _ => {
+                                mapping.insert("T".into(), ty_arg.clone());
+                            }
+                        }
                         let payload_ty_str =
                             self.enum_payload_slot_ty(&enum_def, Some(&mapping))?;
 

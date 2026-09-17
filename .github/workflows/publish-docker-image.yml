@@ -6,6 +6,7 @@ on:
 
 jobs:
   publish:
+    if: github.repository == 'vx-lang/Vx'
     runs-on: ubuntu-latest
     permissions:
       contents: read

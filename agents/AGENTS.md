@@ -55,6 +55,12 @@ Use the virtualenv created inside venv. Stop you dont find a venv virtual enviro
 - Remove trailing whitespaces
 - Remove redundant files/scripts that you create for making code changes
 - Prefer assert to escape hatches. This is a compiler, we better crash then fail silently.
+- Keep comments in proportion to the code. A paragraph explaining a one-line change is
+  worse than nothing: it buries the line and goes stale first. Say the non-obvious thing
+  once, in a sentence or two, and stop. The same goes for commit messages, PR bodies and
+  test file headers -- a fixture header should not be longer than the fixture.
+  If the reasoning really needs several paragraphs, it belongs in the issue or in
+  docs/discussions/, with the code pointing at it.
 
 ## Testing
 

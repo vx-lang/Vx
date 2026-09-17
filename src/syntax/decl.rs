@@ -108,6 +108,8 @@ pub struct ExternDecl {
 #[derive(Debug, PartialEq, Clone)]
 pub struct MethodSignature {
     pub name: Symbol,
+    /// The method's own type parameters, as in `fn fold<B>(..)`. Separate from the trait's.
+    pub generics: Vec<GenericParam>,
     pub params: Vec<(Symbol, Type)>,
     pub return_type: Type,
     /// The default body, when the trait writes one instead of a `;`. An impl that does not

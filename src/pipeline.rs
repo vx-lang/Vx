@@ -1149,7 +1149,15 @@ fn check_one_function(
     checker.check_function(func);
 
     let errors = checker.errors;
-    let monos = checker.mono.functions;
+    // A comptime lambda's generated body is not emitted: every call to it folded, so
+    // nothing refers to it and leaving it in would be the run-time code a `comptime` block
+    // must not leave behind.
+    let monos: Vec<_> = checker
+        .mono
+        .functions
+        .into_iter()
+        .filter(|(f, _)| !crate::hir::TypeChecker::is_comptime_lambda_body(f))
+        .collect();
     let gen_structs = checker.mono.generated_structs;
     let capacity_summaries = std::mem::take(&mut checker.traffic.capacity_summaries);
 

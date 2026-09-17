@@ -53,6 +53,13 @@ pub struct ConstEvalState {
     /// Set when evaluation stopped because it ran past `MAX_LOOP_STEPS`. Whoever asked for
     /// the value reports it, since the evaluator itself cannot reach the diagnostics.
     pub steps_exceeded: std::cell::Cell<bool>,
+    /// How many closure bodies are open around the statement being checked.
+    ///
+    /// A `comptime` block that is a closure's body is that closure's body, not a request to
+    /// compute something now: `| y | comptime { y + 1 }` cannot fold, because `y` is not
+    /// known until someone calls it. It is a `constexpr` function, and what has to fold is
+    /// the call. An uncalled one is just an unused variable.
+    pub closure_body_depth: u32,
     /// How many `comptime` blocks are open around the statement being checked.
     ///
     /// Loops are run only inside one. A run-time loop has nothing to gain from being run at
@@ -87,6 +94,7 @@ impl Default for ConstEvalState {
             loop_steps: std::cell::Cell::new(0),
             steps_exceeded: std::cell::Cell::new(false),
             comptime_depth: 0,
+            closure_body_depth: 0,
         }
     }
 }
