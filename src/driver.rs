@@ -419,8 +419,12 @@ impl CompilerDriver {
                 return Ok(None);
             }
             let host_arch = Self::host_arch_of(programs.iter());
-            let text = crate::pipeline::compile_modules_mlir_in(programs, sched, intern_mode)
-                .map_err(|e| e.to_string())?;
+            // Only the file the user named reports its diagnostics, matching what the
+            // sequential driver keeps from its own import pass.
+            let reported = crate::pipeline::Reported::OnlyEntry(filename.into());
+            let text =
+                crate::pipeline::compile_modules_mlir_in(programs, sched, intern_mode, reported)
+                    .map_err(|e| e.to_string())?;
             let Some(text) = text else {
                 eprintln!(
                     "[parallel-frontend] program outside the flat subset; using the sequential \

@@ -60,6 +60,22 @@ macro_rules! chatter {
     };
 }
 
+/// Whose diagnostics reach the user.
+///
+/// A compile reports what is wrong with the program it was asked to build, not with the libraries
+/// that program imports. Those are checked when they are compiled on their own, and a consumer who
+/// cannot edit them can do nothing with the report. The sequential driver draws the same line, by
+/// throwing away whatever its import pass found, so the parallel frontend has to draw it too --
+/// otherwise `-j` refuses programs that build without it.
+#[derive(Clone)]
+pub enum Reported {
+    /// Every module handed over: the file-path entry points, whose caller named each file itself.
+    EveryModule,
+    /// One module, under the name the loader stored it by, which is the raw file name for an entry
+    /// module. This is `vxc -j`, where every other module arrived by following an import.
+    OnlyEntry(crate::symbol::Symbol),
+}
+
 /// The parallel frontend run to completion — through the reconciliation barrier and the Phase 6
 /// SIMD patch — with every artefact codegen needs still in hand.
 ///
@@ -99,7 +115,8 @@ fn run_frontend(
     // Phase timing (#297), so a sweep can attribute wall clock to serial vs parallel work rather
     // than inferring it from a plateau.
     let modules = crate::intern_mode::timed("parse", || parse_phase(file_paths, sched))?;
-    run_frontend_on(modules, sched, intern_mode)
+    // Every file here was named by the caller, so every file's diagnostics are its concern.
+    run_frontend_on(modules, sched, intern_mode, Reported::EveryModule)
 }
 
 /// The frontend from macro expansion on, for modules a caller has already parsed. The file-path
@@ -109,6 +126,7 @@ fn run_frontend_on(
     mut modules: Vec<VxModule>,
     sched: Schedule,
     intern_mode: crate::intern_mode::InternMode,
+    reported: Reported,
 ) -> Result<Frontend, PipelineError> {
     use crate::intern_mode::timed;
     timed("macro_expand", || {
@@ -166,7 +184,7 @@ fn run_frontend_on(
     timed("decl_check", || declaration_check_phase(&session, &env))?;
 
     let mut checks = timed("type_check", || {
-        type_check_phase(&mut modules, &session, &env, sched)
+        type_check_phase(&mut modules, &session, &env, sched, &reported)
     })?;
     let (merged_slow, merged_gen, merged_off, slow_mappings, gen_mappings) =
         timed("dedup_barrier", || deduplication_phase(&checks, &session));
@@ -307,7 +325,7 @@ pub fn compile_pipeline_mlir_in(
     intern_mode: crate::intern_mode::InternMode,
 ) -> Result<Option<String>, PipelineError> {
     let modules = crate::intern_mode::timed("parse", || parse_phase(file_paths, sched))?;
-    compile_modules_mlir_in(modules, sched, intern_mode)
+    compile_modules_mlir_in(modules, sched, intern_mode, Reported::EveryModule)
 }
 
 /// [`compile_pipeline_mlir_in`] for modules a caller has already parsed and not yet expanded:
@@ -317,6 +335,7 @@ pub fn compile_modules_mlir_in(
     modules: Vec<VxModule>,
     sched: Schedule,
     intern_mode: crate::intern_mode::InternMode,
+    reported: Reported,
 ) -> Result<Option<String>, PipelineError> {
     let Frontend {
         modules,
@@ -326,7 +345,7 @@ pub fn compile_modules_mlir_in(
         mut checks,
         type_streams,
         merged_arenas,
-    } = run_frontend_on(modules, sched, intern_mode)?;
+    } = run_frontend_on(modules, sched, intern_mode, reported)?;
     let text = crate::intern_mode::timed("codegen", || {
         codegen_mlir_phase(
             &modules,
@@ -1235,7 +1254,20 @@ fn type_check_phase(
     global_session: &std::sync::Arc<GlobalSession>,
     global_env: &GlobalAstEnv,
     sched: Schedule,
+    reported: &Reported,
 ) -> Result<Vec<FunctionCheck>, PipelineError> {
+    // Resolved before the checks run, while the modules can still be read by name.
+    let reported_module: Option<usize> = match reported {
+        Reported::EveryModule => None,
+        Reported::OnlyEntry(name) => {
+            let found = parsed_modules.iter().position(|m| m.module_path == *name);
+            assert!(
+                found.is_some(),
+                "the entry module '{name}' is not among the modules being checked"
+            );
+            found
+        }
+    };
     // The two branches are the same walk in the same order — a module's free functions, then its
     // impl methods, modules outermost — differing only in `iter_mut` versus `par_iter_mut`. They are
     // written out rather than abstracted because rayon's iterators share no trait with std's, and an
@@ -1330,9 +1362,16 @@ fn type_check_phase(
             .collect()
     };
 
+    // An imported module's body diagnostics are dropped, not counted: they cannot fail this
+    // compile any more than they can be printed by it. The whole-program fold below is separate --
+    // it is about this program's call graph, so it always reports.
     let mut total_errors = report_diagnostics(
         check_results
             .iter()
+            .filter(|c| match reported_module {
+                None => true,
+                Some(entry) => c.module_idx == entry,
+            })
             .flat_map(|c| c.diagnostics.iter())
             .collect(),
     );
@@ -2463,8 +2502,14 @@ mod gid_stream_tests {
         let env_mods: Vec<VxModule> = modules.iter().map(|m| m.clone_signature()).collect();
         let env = GlobalAstEnv::build(&env_mods);
 
-        let mut results = type_check_phase(&mut modules, &session, &env, Schedule::Parallel)
-            .expect("type check ok");
+        let mut results = type_check_phase(
+            &mut modules,
+            &session,
+            &env,
+            Schedule::Parallel,
+            &Reported::EveryModule,
+        )
+        .expect("type check ok");
         let lowered = lower_checked(&modules, &mut results, &session);
         let ops: Vec<Opcode> = lowered[0]
             .0
@@ -2502,7 +2547,8 @@ fn main() -> i32 { return 0; }
                 let session = Arc::new(GlobalSession::with_registry(1, registry));
                 let env_mods: Vec<VxModule> = modules.iter().map(|m| m.clone_signature()).collect();
                 let env = GlobalAstEnv::build(&env_mods);
-                let result = type_check_phase(&mut modules, &session, &env, sched);
+                let result =
+                    type_check_phase(&mut modules, &session, &env, sched, &Reported::EveryModule);
                 let outcome = match &result {
                     Ok(_) => "Ok".to_string(),
                     Err(e) => format!("{e:?}"),
@@ -3106,9 +3152,14 @@ fn main() -> i32 { return 0; }
                 let session = Arc::new(GlobalSession::with_registry(1, registry));
                 let env_mods: Vec<VxModule> = modules.iter().map(|m| m.clone_signature()).collect();
                 let env = GlobalAstEnv::build(&env_mods);
-                let mut results =
-                    type_check_phase(&mut modules, &session, &env, Schedule::Parallel)
-                        .expect("type check");
+                let mut results = type_check_phase(
+                    &mut modules,
+                    &session,
+                    &env,
+                    Schedule::Parallel,
+                    &Reported::EveryModule,
+                )
+                .expect("type check");
                 lower_checked(&modules, &mut results, &session)
                     .iter()
                     .flat_map(|(w, _)| {
