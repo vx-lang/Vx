@@ -10,7 +10,12 @@
 // type parameter of its own, returning a generic enum out of a `match`, is outside the flat
 // subset today.
 //
+// The phase table is the second claim here: it describes the compile that produced the output.
+// Draining it when the parallel frontend declined printed the half that was thrown away, and
+// the sequential compile that emitted the program went unreported.
+//
 // RUN: (vxc -j 2 --emit-mlir %s 2>&1; echo "exit=$?") | FileCheck %s
+// RUN: (VX_PIPELINE_PHASES=1 vxc -j 2 --emit-mlir %s 2>&1 >/dev/null) | FileCheck --check-prefix=PHASES %s
 
 enum Holder<T> {
   Full(T),
@@ -39,3 +44,10 @@ fn main() -> i32 {
 // CHECK: [parallel-frontend] program outside the flat subset; using the sequential driver
 // CHECK: func.func @main
 // CHECK: exit=0
+
+// Nothing is drained before the compile that produces the output, so a table printed at the
+// decline -- whether instead of the real one or as well as it -- is caught here.
+// PHASES-NOT: phase,mlir_verify
+// PHASES: [flat-codegen] program outside the flat subset
+// And the compile that emitted the program is the one the table describes.
+// PHASES: phase,mlir_verify

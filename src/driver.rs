@@ -352,12 +352,20 @@ impl CompilerDriver {
                 self.options.action,
                 Action::EmitMlir | Action::EmitLlvm | Action::EmitObj | Action::RunJit
             );
-            if compiles
-                && self
+            if compiles {
+                if self
                     .execute_parallel(main_file, &filename, &mlir_args, jobs)?
                     .is_some()
-            {
-                return Ok(());
+                {
+                    Self::report_phases();
+                    return Ok(());
+                }
+                // The parallel frontend declined. Its phases stay in the counters and the table
+                // is drained after the sequential compile instead, so what it reports is the
+                // whole invocation rather than the half that was thrown away.
+                let emitted = self.execute_vx_pipeline(main_file, &filename, &mlir_args);
+                Self::report_phases();
+                return emitted;
             }
         }
 
@@ -448,18 +456,20 @@ impl CompilerDriver {
             pool.install(compile)
         };
         let Some((text, host_arch)) = compiled? else {
-            Self::report_phases();
             return Ok(None);
         };
         eprintln!("[parallel-frontend] emitted module with -j {jobs}");
-        let emitted = self.emit_from_mlir_text(&text, host_arch, filename, main_file, mlir_args);
-        Self::report_phases();
-        emitted
+        self.emit_from_mlir_text(&text, host_arch, filename, main_file, mlir_args)
     }
 
     /// Under `VX_PIPELINE_PHASES`, the per-phase wall clock of this compile, one line per phase
     /// on stderr, frontend and backend both, so a measurement reads the shipping binary rather
     /// than a harness.
+    ///
+    /// Called once, after whatever produced the output. Draining resets the counters, so a call
+    /// between the two frontends of a fallback compile reported the one that was thrown away and
+    /// left the one that emitted the program with nothing to report. A fallback compile really
+    /// does run both, and the table says so by counting both.
     fn report_phases() {
         if std::env::var_os("VX_PIPELINE_PHASES").is_some() {
             eprint!("{}", crate::intern_mode::phases_csv());
