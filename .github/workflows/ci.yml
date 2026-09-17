@@ -145,7 +145,7 @@ jobs:
               echo "GATE FAILED: $name"
               exit 1
             fi
-            echo "$out" | grep -q "1 passed" || {
+            grep -q "1 passed" <<<"$out" || {
               echo "$out"
               echo "GATE MISSING: $name did not run (silenced or renamed?)"
               exit 1
