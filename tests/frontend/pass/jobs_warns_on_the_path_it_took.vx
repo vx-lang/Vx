@@ -1,0 +1,24 @@
+//===- jobs_warns_on_the_path_it_took.vx - Vx Compiler -----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The parallel frontend holds its warnings until it knows its output will be used, so that a
+// program it declines does not have them printed twice. This program is inside the flat subset,
+// so nothing else compiles it and nothing else would print them: if the held warnings were
+// dropped rather than printed, the compile would go quiet about a binding the programmer left
+// unused.
+//
+// RUN: (vxc -j 2 --emit-mlir %s 2>&1; echo "exit=$?") | FileCheck %s
+
+fn main() -> i32 {
+  let unused_here = 5;
+  return 0;
+}
+
+// CHECK: W1001
+// CHECK-NOT: W1001
+// CHECK: [parallel-frontend] emitted module with -j 2
+// CHECK: exit=0

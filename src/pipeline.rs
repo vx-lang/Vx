@@ -95,6 +95,8 @@ struct Frontend {
     /// (Vx#352), extracted from the env because the env cannot leave the frontend.
     topo_archs: Vec<(i64, String)>,
     checks: Vec<FunctionCheck>,
+    /// Warnings the checks found, held rather than printed. See [`report_warnings`].
+    warnings: Vec<crate::diagnostic::Diagnostic>,
     /// Per-check patched type streams, index-aligned with `checks`.
     type_streams: Vec<(usize, Vec<crate::gid::TypeId>)>,
     merged_arenas: MergedArenas,
@@ -116,7 +118,10 @@ fn run_frontend(
     // than inferring it from a plateau.
     let modules = crate::intern_mode::timed("parse", || parse_phase(file_paths, sched))?;
     // Every file here was named by the caller, so every file's diagnostics are its concern.
-    run_frontend_on(modules, sched, intern_mode, Reported::EveryModule)
+    let frontend = run_frontend_on(modules, sched, intern_mode, Reported::EveryModule)?;
+    // Nothing declines on this path, so there is no second compile to print them again.
+    report_warnings(&frontend.warnings);
+    Ok(frontend)
 }
 
 /// The frontend from macro expansion on, for modules a caller has already parsed. The file-path
@@ -181,11 +186,15 @@ fn run_frontend_on(
 
     // Before any body: a body checked against an ambiguous declaration table has been checked
     // against a coin flip.
-    timed("decl_check", || declaration_check_phase(&session, &env))?;
+    let mut warnings = timed("decl_check", || declaration_check_phase(&session, &env))?;
 
-    let mut checks = timed("type_check", || {
+    let Checked {
+        mut checks,
+        warnings: body_warnings,
+    } = timed("type_check", || {
         type_check_phase(&mut modules, &session, &env, sched, &reported)
     })?;
+    warnings.extend(body_warnings);
     let (merged_slow, merged_gen, merged_off, slow_mappings, gen_mappings) =
         timed("dedup_barrier", || deduplication_phase(&checks, &session));
 
@@ -197,6 +206,7 @@ fn run_frontend_on(
     Ok(Frontend {
         modules,
         session,
+        warnings,
         subspaces: crate::codegen::flat::subspaces_from_env(&env),
         topo_archs: crate::codegen::flat::topo_archs_from_env(&env),
         checks,
@@ -343,6 +353,7 @@ pub fn compile_modules_mlir_in(
         subspaces,
         topo_archs,
         mut checks,
+        warnings,
         type_streams,
         merged_arenas,
     } = run_frontend_on(modules, sched, intern_mode, reported)?;
@@ -357,6 +368,13 @@ pub fn compile_modules_mlir_in(
             sched,
         )
     });
+    // Only now, once codegen has answered, are the warnings this frontend found printed. A
+    // decline means the driver recompiles the program through the sequential path, which finds
+    // them again -- printing here as well would show every one of them twice.
+    if text.is_some() {
+        report_warnings(&warnings);
+    }
+
     // Freeing a compile is not free, and it is not noise. A compile of this corpus holds ~1,600
     // `LocalWorkerState`s and every module's AST, all allocated across the worker threads and all
     // released here on one. It is charged explicitly rather than left in the phase table's
@@ -1218,33 +1236,47 @@ fn check_one_function(
 fn declaration_check_phase(
     global_session: &std::sync::Arc<GlobalSession>,
     global_env: &GlobalAstEnv,
-) -> Result<(), PipelineError> {
+) -> Result<Vec<crate::diagnostic::Diagnostic>, PipelineError> {
     let mut worker = LocalWorkerState::new(global_session.clone());
     let mut checker = TypeChecker::new(global_env, &mut worker);
     checker.check_whole_program_declarations();
 
-    let errors = report_diagnostics(checker.errors.iter().collect());
+    let found: Vec<&crate::diagnostic::Diagnostic> = checker.errors.iter().collect();
+    let errors = report_errors(&found);
     if errors > 0 {
         return Err(PipelineError::Semantic(format!(
             "Compilation failed with {errors} declaration errors"
         )));
     }
-    Ok(())
+    Ok(found
+        .into_iter()
+        .filter(|d| d.level == DiagnosticLevel::Warning)
+        .cloned()
+        .collect())
 }
 
 /// Report a phase's diagnostics the way the sequential driver does: warnings first, then errors,
 /// each rendered with its code and location, on stderr, so stdout stays free for the MLIR.
 /// Returns the error count.
-fn report_diagnostics(diags: Vec<&crate::diagnostic::Diagnostic>) -> usize {
-    for diag in diags.iter().filter(|d| d.level == DiagnosticLevel::Warning) {
-        eprintln!("{diag}");
-    }
+fn report_errors(diags: &[&crate::diagnostic::Diagnostic]) -> usize {
     let mut errors = 0;
     for diag in diags.iter().filter(|d| d.level == DiagnosticLevel::Error) {
         errors += 1;
         eprintln!("{diag}");
     }
     errors
+}
+
+/// Print warnings the frontend held back.
+///
+/// Held rather than printed where they are found, because a compile that declines the flat subset
+/// falls back to the sequential driver, which checks the program again and prints every warning a
+/// second time. Whoever ends up using this frontend's output prints them; a frontend whose output
+/// is thrown away prints nothing.
+pub fn report_warnings(warnings: &[crate::diagnostic::Diagnostic]) {
+    for diag in warnings {
+        eprintln!("{diag}");
+    }
 }
 
 /// Per-function checks. The whole-program declaration checks run once in
@@ -1255,7 +1287,7 @@ fn type_check_phase(
     global_env: &GlobalAstEnv,
     sched: Schedule,
     reported: &Reported,
-) -> Result<Vec<FunctionCheck>, PipelineError> {
+) -> Result<Checked, PipelineError> {
     // Resolved before the checks run, while the modules can still be read by name.
     let reported_module: Option<usize> = match reported {
         Reported::EveryModule => None,
@@ -1365,16 +1397,20 @@ fn type_check_phase(
     // An imported module's body diagnostics are dropped, not counted: they cannot fail this
     // compile any more than they can be printed by it. The whole-program fold below is separate --
     // it is about this program's call graph, so it always reports.
-    let mut total_errors = report_diagnostics(
-        check_results
-            .iter()
-            .filter(|c| match reported_module {
-                None => true,
-                Some(entry) => c.module_idx == entry,
-            })
-            .flat_map(|c| c.diagnostics.iter())
-            .collect(),
-    );
+    let reported: Vec<&crate::diagnostic::Diagnostic> = check_results
+        .iter()
+        .filter(|c| match reported_module {
+            None => true,
+            Some(entry) => c.module_idx == entry,
+        })
+        .flat_map(|c| c.diagnostics.iter())
+        .collect();
+    let mut warnings: Vec<crate::diagnostic::Diagnostic> = reported
+        .iter()
+        .filter(|d| d.level == DiagnosticLevel::Warning)
+        .map(|d| (*d).clone())
+        .collect();
+    let mut total_errors = report_errors(&reported);
 
     // The cross-call capacity fold: the one whole-program step, after the parallel phase and
     // reading only what it exported. Same core as the sequential driver, so the two frontends
@@ -1390,7 +1426,13 @@ fn type_check_phase(
             global_env,
             &mut fold_diags,
         );
-        total_errors += report_diagnostics(fold_diags.iter().collect());
+        let fold: Vec<&crate::diagnostic::Diagnostic> = fold_diags.iter().collect();
+        warnings.extend(
+            fold.iter()
+                .filter(|d| d.level == DiagnosticLevel::Warning)
+                .map(|d| (*d).clone()),
+        );
+        total_errors += report_errors(&fold);
     }
 
     let total_monomorphized: usize = check_results.iter().map(|c| c.monomorphs.len()).sum();
@@ -1415,7 +1457,17 @@ fn type_check_phase(
         verify_phase_3_isolation(&workers, global_session);
     }
 
-    Ok(check_results)
+    Ok(Checked {
+        checks: check_results,
+        warnings,
+    })
+}
+
+/// What the per-function checks produced: the checks themselves, and the warnings that were held
+/// back rather than printed. See [`report_warnings`].
+struct Checked {
+    checks: Vec<FunctionCheck>,
+    warnings: Vec<crate::diagnostic::Diagnostic>,
 }
 
 type DeduplicationResult = (
@@ -2509,7 +2561,8 @@ mod gid_stream_tests {
             Schedule::Parallel,
             &Reported::EveryModule,
         )
-        .expect("type check ok");
+        .expect("type check ok")
+        .checks;
         let lowered = lower_checked(&modules, &mut results, &session);
         let ops: Vec<Opcode> = lowered[0]
             .0
@@ -3159,7 +3212,8 @@ fn main() -> i32 { return 0; }
                     Schedule::Parallel,
                     &Reported::EveryModule,
                 )
-                .expect("type check");
+                .expect("type check")
+                .checks;
                 lower_checked(&modules, &mut results, &session)
                     .iter()
                     .flat_map(|(w, _)| {

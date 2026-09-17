@@ -43,6 +43,9 @@ const KNOWN_DECLINES: &[&str] = &[
     // frontend has something to hand back to the sequential driver. Same shape as
     // generic_enum_returned_from_match.vx, and it declines for the same reason.
     "frontend/pass/jobs_falls_back_outside_the_flat_subset.vx",
+    // The same shape again, with a warning added: it states that a program checked by both
+    // frontends has its warnings reported once, which needs a program that declines.
+    "frontend/pass/jobs_warns_once_when_it_falls_back.vx",
     "frontend/pass/trait_topologies.vx",
     // A parameter with run-time extents (Vx#409). It used to compile through the flat path
     // while the dims-less spelling let it read as rank-0: `topology.vx` got a `memref<f32>`
