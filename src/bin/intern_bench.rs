@@ -65,6 +65,35 @@ fn phase_report(samples: Vec<Vec<(&'static str, Duration)>>) -> Vec<(&'static st
         .collect()
 }
 
+/// The phases to give a row in the scaling table: every phase any cell of the ladder recorded, in
+/// the order the pipeline runs them.
+///
+/// Taking the rows from the baseline cell alone dropped a phase that measured zero there from
+/// every column, including the thread counts where it ran and was not zero. Its time still joined
+/// those columns' totals, so the phase was counted everywhere and named nowhere.
+fn scaling_rows(cells: &[&Vec<(&'static str, f64)>]) -> Vec<&'static str> {
+    let mut rows: Vec<&'static str> = Vec::new();
+    for cell in cells {
+        for (name, _) in cell.iter() {
+            if !rows.contains(name) {
+                rows.push(name);
+            }
+        }
+    }
+    rows.sort_by_key(|n| phase_order(n));
+    rows
+}
+
+/// Where a phase sits in the pipeline. An unknown name sorts last rather than panicking: this is
+/// a report, and a name the compiler timed but did not declare is the phase table's problem to
+/// report, not this function's to crash on.
+fn phase_order(name: &str) -> usize {
+    vxc::intern_mode::PHASES
+        .iter()
+        .position(|p| *p == name)
+        .unwrap_or(usize::MAX)
+}
+
 /// What one rep compiled: its wall clock, and how many bytes of MLIR came out.
 ///
 /// `Some(0)` means codegen ran and the flat emitter *declined* — the frontend still did all its
@@ -513,7 +542,17 @@ fn main() {
                     };
                     let base_total: f64 = top(base_ph);
                     let max_t = *ladder.last().unwrap();
-                    for (name, base_ms) in base_ph {
+                    let cells: Vec<&Vec<(&'static str, f64)>> = std::iter::once(base_key)
+                        .chain(ladder.iter().copied())
+                        .filter_map(|cell| phase_medians.get(&(label, cell)))
+                        .collect();
+                    let rows = scaling_rows(&cells);
+                    for name in &rows {
+                        let base_ms = base_ph
+                            .iter()
+                            .find(|(n, _)| n == name)
+                            .map(|(_, v)| *v)
+                            .unwrap_or(0.0);
                         eprint!("  {name:<16}");
                         for &t in &ladder {
                             let v = phase_medians
@@ -556,5 +595,37 @@ fn main() {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A cell leaves out a phase it measured as zero, so the baseline cell is not the full set of
+    /// phases the ladder ran. Taking the rows from it alone hid a phase from every column.
+    #[test]
+    fn a_phase_the_baseline_cell_missed_still_gets_a_row() {
+        let baseline = vec![("parse", 1.0), ("type_check", 2.0)];
+        let threaded = vec![("parse", 0.5), ("mlir_passes", 3.0), ("type_check", 1.0)];
+        let rows = scaling_rows(&[&baseline, &threaded]);
+        assert!(
+            rows.contains(&"mlir_passes"),
+            "a phase only the threaded cell recorded lost its row: {rows:?}"
+        );
+    }
+
+    /// Collecting across cells appends, which is not the order the pipeline runs them in. A table
+    /// whose rows are out of order reads as a different compile than the one that was measured.
+    #[test]
+    fn the_rows_stay_in_the_order_the_pipeline_runs_them() {
+        let baseline = vec![("type_check", 2.0)];
+        let threaded = vec![("parse", 0.5), ("teardown", 1.0), ("macro_expand", 0.2)];
+        let rows = scaling_rows(&[&baseline, &threaded]);
+        let positions: Vec<usize> = rows.iter().map(|n| phase_order(n)).collect();
+        assert!(
+            positions.windows(2).all(|w| w[0] <= w[1]),
+            "rows are not in pipeline order: {rows:?}"
+        );
     }
 }
