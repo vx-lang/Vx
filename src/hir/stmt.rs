@@ -297,7 +297,23 @@ impl<'a> TypeChecker<'a> {
             span: loop_span,
         } = floop;
         let loop_span = *loop_span;
-        let iterable_ty = self.check_expr_type_flag(iterable, consume);
+        // `for x in it` consumes `it`, as Rust's does: the loop drives a copy of the
+        // iterator to exhaustion, so letting the name live on would hand back a value
+        // that had not moved.
+        //
+        // The consumption is deferred past the synthesized `next` below, though. Marking
+        // the move here left that call looking the method up on a consumed variable, of
+        // type `?`. Whether this is an iterator is read off the binding rather than by
+        // type-checking the expression twice, which would report each of its errors twice.
+        let defers_consume = consume
+            && match &**iterable {
+                Expr::Identifier(id) => matches!(
+                    self.lookup(id.name.as_ref()).map(|(t, _)| t),
+                    Some(Type::GenericInstance(..)) | Some(Type::Struct(..))
+                ),
+                _ => false,
+            };
+        let iterable_ty = self.check_expr_type_flag(iterable, consume && !defers_consume);
         self.push_releasing_scope();
 
         // If it's Range, it's I64. If it's Iterator, we extract from Option<T>
@@ -329,6 +345,9 @@ impl<'a> TypeChecker<'a> {
                         iter_ty = args[0].clone();
                     }
                 }
+            }
+            if defers_consume {
+                self.check_expr_type_flag(iterable, true);
             }
         } else {
             iter_ty = match iterable_ty {

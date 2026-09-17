@@ -1,0 +1,68 @@
+//===- for_over_a_user_iterator.vx - Vx Compiler ------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `for x in it` over a value with `next(self : &mut Self) -> Option<T>` (plan item A9).
+//
+// The loop used to report "Method 'next' not found on type ?": the iterable was marked
+// moved before the checker synthesized the `next` call, so the lookup ran against a
+// consumed variable.
+//
+// The element is `i32`. A loop that lost the element type falls back to `i64`, and the
+// `i32` sum below would not type-check against it.
+//
+// `for` consumes the iterator, so it is not read again here; that half is pinned by
+// tests/frontend/fail/for_consumes_the_iterator.vx.
+import core::option;
+
+struct Upto {
+  at : i32,
+  end : i32,
+}
+
+impl Upto {
+  fn next(self : &mut Upto) -> Option<i32> {
+    if self.at >= self.end {
+      return Option<i32>::None();
+    }
+    let v : i32 = self.at;
+    self.at = self.at + 1;
+    return Option<i32>::Some(v);
+  }
+}
+
+fn main() -> i32 {
+  let mut it : Upto = Upto {
+    at : 0, end : 4
+  };
+  let mut sum : i32 = 0;
+  for x in it {
+    sum = sum + x;
+  }
+  print(sum);
+  print!(" ");
+
+  // An empty iterator runs the body no times.
+  let mut none : Upto = Upto {
+    at : 2, end : 2
+  };
+  let mut ran : i32 = 0;
+  for y in none {
+    ran = ran + 1;
+  }
+  print(ran);
+  print!(" ");
+
+  // A range loop is unaffected: it consumes nothing and keeps its own element type.
+  let mut k : i32 = 0;
+  for i in 0..3 {
+    k = k + i;
+  }
+  print(k);
+  return 0;
+}
+
+// EXPECT: 6 0 3
