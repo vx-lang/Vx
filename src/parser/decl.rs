@@ -896,6 +896,9 @@ impl<'a> Parser<'a> {
             }
             self.consume(&TokenType::Fn, "Expected 'fn' in trait")?;
             let method_name = self.expect_identifier("Expected method name")?;
+            // The method's own parameters, on top of the trait's. They stay in scope for
+            // this signature only, so they are popped once its body or `;` is read.
+            let method_generics = self.parse_generic_params()?;
             self.consume(&TokenType::LeftParen, "Expected '('")?;
             let params = self.parse_comma_separated_params()?;
             self.consume(&TokenType::RightParen, "Expected ')'")?;
@@ -920,8 +923,12 @@ impl<'a> Parser<'a> {
                 )?;
                 None
             };
+            for _ in 0..method_generics.len() {
+                self.generic_params.pop();
+            }
             methods.push(MethodSignature {
                 name: method_name.into(),
+                generics: method_generics,
                 params,
                 return_type,
                 default_body,

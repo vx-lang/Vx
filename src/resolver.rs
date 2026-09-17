@@ -161,7 +161,7 @@ pub fn fill_trait_defaults_in(program: &mut crate::syntax::Program, defaults: &T
                 .expect("only methods with a default body are collected");
             block.methods.push(crate::syntax::Function {
                 name: signature.name.clone(),
-                generics: Vec::new(),
+                generics: signature.generics.clone(),
                 params: signature
                     .params
                     .iter()
