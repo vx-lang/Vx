@@ -31,8 +31,11 @@
 // CHECK: %[[V0:.*]] = llvm.getelementptr %{{.*}}, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<(i32)>
 // CHECK: %[[V1:.*]] = llvm.load %[[V0]] : !llvm.ptr -> i32
 // CHECK: return %[[V1]] : i32
+// The same, one level out: this body calls the closure above and adds 40, and both are
+// worked out while compiling, so no call to it survives.
 // CHECK-LABEL: func.func @Closure_6_call(%arg0: !llvm.ptr) -> i32
-// CHECK: call @Closure_7_call(%{{.*}}) : (!llvm.ptr) -> i32
+// CHECK: arith.constant 100 : i32
+// CHECK-NOT: call @Closure_7_call
 // CHECK-LABEL: func.func @Closure_5_call(%arg0: !llvm.ptr, %arg1: i32, %arg2: i32) -> i32
 // CHECK: %[[V0:.*]] = llvm.getelementptr %{{.*}}, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<(i32)>
 // CHECK: %[[V1:.*]] = llvm.load %[[V0]] : !llvm.ptr -> i32
@@ -66,15 +69,14 @@
 // CHECK: %[[V1:.*]] = llvm.load %[[V0]] : !llvm.ptr -> i32
 // CHECK: %[[V2:.*]] = arith.addi %[[V1]], %{{.*}} : i32
 // CHECK: return %[[V2]] : i32
+// This closure's body is a `comptime` block, so it is worked out while compiling and
+// returns the answer rather than the sum: 10 + 20 + 30. The additions used to be emitted
+// for the program to redo. The loads above them are the captures, which the backend no
+// longer has a use for.
 // CHECK-LABEL: func.func @Closure_7_call(%arg0: !llvm.ptr) -> i32
-// CHECK: %[[V0:.*]] = llvm.getelementptr %{{.*}}, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<(i32, i32)>
-// CHECK: %[[V1:.*]] = llvm.load %[[V0]] : !llvm.ptr -> i32
-// CHECK: %[[V2:.*]] = llvm.getelementptr %{{.*}}, 1] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<(i32, i32)>
-// CHECK: %[[V3:.*]] = llvm.load %[[V2]] : !llvm.ptr -> i32
-// CHECK: %[[V4:.*]] = arith.constant 30 : i32
-// CHECK: %[[V5:.*]] = arith.addi %[[V1]], %[[V3]] : i32
-// CHECK: %[[V6:.*]] = arith.addi %[[V5]], %[[V4]] : i32
-// CHECK: return %[[V6]] : i32
+// CHECK: arith.constant 60 : i32
+// CHECK-NOT: arith.addi
+// CHECK: return
 // EXPECT: 1
 
 import std::io;

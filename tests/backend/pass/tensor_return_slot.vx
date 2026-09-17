@@ -1,0 +1,42 @@
+//===- tensor_return_slot.vx - Vx Compiler -----------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A statically shaped tensor comes back through a buffer the caller allocated and passed as the
+// first parameter, the way C++ returns a class through `sret` and Rust through its return place.
+// Both back ends do this, so the checks hold on either (#643).
+//
+// One prefix per function, because the two paths emit them in opposite orders and a CHECK-LABEL
+// block is ordered. What each path does *inside* `make` differs -- only the flat one builds the
+// array in the slot -- so that belongs in the flat-only fixture, not here.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=MAKE
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=MAIN
+
+// The buffer is a parameter and there is no result: the `-> memref<4xi32>` is gone, and with it
+// the descriptor over callee-allocated storage that nothing freed.
+// MAKE: func.func @make(%{{.*}}: memref<4xi32>) {
+
+// The caller owns the buffer, and it is stack storage -- `memref.alloca`, not the `memref.alloc`
+// that lowers to a `malloc` with no matching free.
+// MAIN: %[[SLOT:.*]] = memref.alloca() : memref<4xi32>
+// MAIN: call @make(%[[SLOT]])
+// The caller reads its own buffer back, so the values have to survive the call.
+// MAIN: memref.load %[[SLOT]]
+// EXPECT: 1 4
+
+fn make() -> Tensor<i32, [4]> {
+  let l = [ 1, 2, 3, 4 ];
+  return l;
+}
+
+fn main() -> i32 {
+  let t = make();
+  print(t[0]);
+  print!(" ");
+  print(t[3]);
+  return 0;
+}

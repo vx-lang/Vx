@@ -1,0 +1,278 @@
+//===- iter.vx - Vx Standard Library ------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `Iterator`, one required method with the rest written over it.
+//
+// `Item` is a trait parameter rather than an associated type, which Vx does not have yet
+// (plan item A10). `trait Iterator<Item>` is the phase-1 encoding; associated types
+// replace it without changing any of the bodies below.
+//
+// A `for` loop consumes the iterator it drives, so an adaptor takes its inner iterator by
+// value and the chain is built before the loop.
+//
+// One adaptor deep only: a second one makes the inner type a nested generic, and a type
+// argument list is split on commas without counting brackets (Vx#647).
+//
+// The bound on an adaptor's `I` is not checked today (Vx#645): it is written for the
+// reader, and a type without `next` fails inside the adaptor instead of at the use.
+//
+// A method whose `loop` only ever leaves by `return` still needs a return after it: the
+// checker does not treat such a loop as diverging (E3028). Those are unreachable.
+//
+// No default body names `Item`. A trait's type parameter is not substituted into a
+// default body (Vx#649), so `Option<Item>::None()` written here reaches codegen as the
+// letter Item. Every `Option<Item>` below therefore comes from `next` or from a method of
+// `core::option`, which infers it.
+import core::ops;
+import core::option;
+
+trait Iterator<Item> {
+  fn next(self : &mut Self) -> Option<Item>;
+
+  fn count(self : &mut Self) -> i64 {
+    let mut n : i64 = 0;
+    loop {
+      let step = self.next();
+      if step.is_none() {
+        break;
+      }
+      n = n + 1i64;
+    }
+    return n;
+  }
+
+  fn last(self : &mut Self) -> Option<Item> {
+    let mut seen = self.next();
+    loop {
+      let step = self.next();
+      if step.is_none() {
+        break;
+      }
+      seen = step;
+    }
+    return seen;
+  }
+
+  fn nth(self : &mut Self, n : i64) -> Option<Item> {
+    let mut left : i64 = n;
+    loop {
+      let step = self.next();
+      if step.is_none() {
+        return step;
+      }
+      if left == 0i64 {
+        return step;
+      }
+      left = left - 1i64;
+    }
+    return self.next();
+  }
+
+  fn any(self : &mut Self, f : Closure1<Item, bool>) -> bool {
+    loop {
+      let step = self.next();
+      if step.is_none() {
+        return false;
+      }
+      let p = f.func;
+      if p(f.env, step.unwrap()) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  fn all(self : &mut Self, f : Closure1<Item, bool>) -> bool {
+    loop {
+      let step = self.next();
+      if step.is_none() {
+        return true;
+      }
+      let p = f.func;
+      if !p(f.env, step.unwrap()) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  fn find(self : &mut Self, f : Closure1<Item, bool>) -> Option<Item> {
+    loop {
+      let step = self.next();
+      if step.is_none() {
+        return step;
+      }
+      let kept = step.filter(f);
+      if kept.is_some() {
+        return kept;
+      }
+    }
+    return self.next();
+  }
+
+  fn position(self : &mut Self, f : Closure1<Item, bool>) -> Option<i64> {
+    let mut at : i64 = 0;
+    loop {
+      let step = self.next();
+      if step.is_none() {
+        return Option<i64>::None();
+      }
+      let p = f.func;
+      if p(f.env, step.unwrap()) {
+        return Option<i64>::Some(at);
+      }
+      at = at + 1i64;
+    }
+    return Option<i64>::None();
+  }
+
+  fn for_each(self : &mut Self, f : Closure1<Item, i32>) -> i32 {
+    loop {
+      let step = self.next();
+      if step.is_none() {
+        return 0;
+      }
+      let p = f.func;
+      p(f.env, step.unwrap());
+    }
+    return 0;
+  }
+}
+
+/// The numbers from `at` up to but not including `end`.
+struct Range {
+  at : i64,
+  end : i64,
+}
+
+impl Iterator<i64> for Range {
+  fn next(self : &mut Range) -> Option<i64> {
+    if self.at >= self.end {
+      return Option<i64>::None();
+    }
+    let v : i64 = self.at;
+    self.at = self.at + 1i64;
+    return Option<i64>::Some(v);
+  }
+}
+
+/// `f` over every item.
+struct Map<I, Item, U> {
+  inner : I,
+  f : Closure1<Item, U>,
+}
+
+impl<I : Iterator, Item, U> Iterator<U> for Map<I, Item, U> {
+  fn next(self : &mut Map<I, Item, U>) -> Option<U> {
+    let step = self.inner.next();
+    if step.is_none() {
+      return Option<U>::None();
+    }
+    let g = self.f;
+    let p = g.func;
+    return Option<U>::Some(p(g.env, step.unwrap()));
+  }
+}
+
+/// Only the items `keep` accepts.
+struct Filter<I, Item> {
+  inner : I,
+  keep : Closure1<Item, bool>,
+}
+
+impl<I : Iterator, Item> Iterator<Item> for Filter<I, Item> {
+  fn next(self : &mut Filter<I, Item>) -> Option<Item> {
+    loop {
+      let step = self.inner.next();
+      if step.is_none() {
+        return Option<Item>::None();
+      }
+      let v = step.unwrap();
+      let g = self.keep;
+      let p = g.func;
+      if p(g.env, v) {
+        return Option<Item>::Some(v);
+      }
+    }
+    return Option<Item>::None();
+  }
+}
+
+/// The first `left` items, then nothing.
+///
+/// `Item` is carried by the struct although `Take` never stores one: without associated
+/// types it is the only place the impl can read the element type from.
+struct Take<I, Item> {
+  inner : I,
+  left : i64,
+}
+
+impl<I : Iterator, Item> Iterator<Item> for Take<I, Item> {
+  fn next(self : &mut Take<I, Item>) -> Option<Item> {
+    if self.left <= 0i64 {
+      return Option<Item>::None();
+    }
+    self.left = self.left - 1i64;
+    return self.inner.next();
+  }
+}
+
+/// Everything after the first `drop` items.
+struct Skip<I, Item> {
+  inner : I,
+  drop : i64,
+}
+
+impl<I : Iterator, Item> Iterator<Item> for Skip<I, Item> {
+  fn next(self : &mut Skip<I, Item>) -> Option<Item> {
+    loop {
+      if self.drop <= 0i64 {
+        return self.inner.next();
+      }
+      let step = self.inner.next();
+      if step.is_none() {
+        return step;
+      }
+      self.drop = self.drop - 1i64;
+    }
+    return Option<Item>::None();
+  }
+}
+
+/// The adaptors are built through these rather than by writing the struct literal: a
+/// closure literal is coerced to `Closure1<A, B>` in an argument but not in a field
+/// initializer (Vx#648).
+fn map<I, Item, U>(inner : I, f : Closure1<Item, U>) -> Map<I, Item, U> {
+  return Map<I, Item, U> {
+    inner : inner, f : f
+  };
+}
+
+fn filter<I, Item>(inner : I, keep : Closure1<Item, bool>) -> Filter<I, Item> {
+  return Filter<I, Item> {
+    inner : inner, keep : keep
+  };
+}
+
+fn take<I, Item>(inner : I, left : i64) -> Take<I, Item> {
+  return Take<I, Item> {
+    inner : inner, left : left
+  };
+}
+
+fn skip<I, Item>(inner : I, drop : i64) -> Skip<I, Item> {
+  return Skip<I, Item> {
+    inner : inner, drop : drop
+  };
+}
+
+/// The numbers `at .. end`.
+fn range(at : i64, end : i64) -> Range {
+  return Range {
+    at : at, end : end
+  };
+}

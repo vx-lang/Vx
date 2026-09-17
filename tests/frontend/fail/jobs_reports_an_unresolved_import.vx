@@ -1,0 +1,20 @@
+//===- jobs_reports_an_unresolved_import.vx - Vx Compiler --------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The wave loader names the import it could not resolve and fails the compile, as the
+// sequential loader does, instead of compiling what it found.
+//
+// RUN: (vxc -j 2 --emit-mlir %s 2>&1; echo "exit=$?") | FileCheck %s
+
+import no::such::module;
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK: Could not resolve import 'no::such::module'
+// CHECK: exit=1

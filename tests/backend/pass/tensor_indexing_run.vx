@@ -1,0 +1,144 @@
+//===- tensor_indexing_run.vx - Vx Compiler ---------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Reading a tensor answers with the element that was written at that position.
+//
+// Every other tensor program in this directory that runs writes the diagonal --
+// `t[0][0]` and `t[1][1]` -- so a lowering that swapped the two indices would
+// hand back the same numbers and every one of them would still pass. The
+// positions here are off the diagonal for that reason: `a[0][1]` and `a[1][0]`
+// hold different values, and a swap shows up as the other one.
+//
+// The MLIR checks elsewhere pin the shape of the emitted `memref` and the name
+// of the op. They say nothing about which address is read, which is what this
+// file is about, so it states no CHECK lines and asserts on what the program
+// printed instead. Each fact is on its own line with a name, so a failure names
+// the position that answered wrongly rather than one long line of numbers.
+//
+// The `// EXPECT:` lines run twice: `run_backend_test` builds this with the AST
+// generator and `flat_path_answers_match_the_backend_expectations` builds it
+// with the flat one. Both must agree.
+//
+// EXPECT: a01=2;
+// EXPECT: a10=4;
+// EXPECT: r101=6;
+// EXPECT: r011=4;
+// EXPECT: v2=30;
+// EXPECT: w01=5;
+// EXPECT: w10=7;
+// EXPECT: ext0=3;
+// EXPECT: ext1=4;
+// EXPECT: len=3;
+// EXPECT: zero=0;
+// EXPECT: filled=7;
+// EXPECT: lit10=3;
+
+// Writes through a mutable borrow, at two positions that are not the diagonal.
+fn write_through(t : &mut Tensor<f32, [2, 2]>) -> void {
+  t[0][1] = 5.0;
+  t[1][0] = 7.0;
+}
+
+// Reads back through a shared borrow. A parameter that had become a copy would
+// answer with whatever the fresh buffer held.
+fn read_back(t : &Tensor<f32, [2, 2]>, i : i32, j : i32) -> f32 {
+  return t[i][j];
+}
+
+// A tensor whose row count is a run-time value and whose column count is not.
+// The two extents reach the answer differently: one off the descriptor, one
+// from the type.
+fn build(n : i32) -> Tensor<f32, [?, 4]> {
+  let mut m = Tensor<f32>([n, 4]);
+  m[0][0] = 1.0;
+  return m;
+}
+
+fn main() -> i32 {
+  // Rank 2. Every element gets a distinct value, so no pair of positions can
+  // be confused for each other.
+  let mut a = Tensor<f32, [2, 3]>::uninit();
+  for i in 0..2 {
+    for j in 0..3 {
+      a[i][j] = (i * 3 + j + 1) as f32;
+    }
+  }
+  print!("a01=");
+  print(a[0][1]);
+  print!("; ");
+  print!("a10=");
+  print(a[1][0]);
+  print!("; ");
+
+  // Rank 3. The middle axis has a stride of its own, and the two positions
+  // below differ only in which axis carries the 1.
+  let mut r = Tensor<f32, [2, 2, 2]>::uninit();
+  for i in 0..2 {
+    for j in 0..2 {
+      for k in 0..2 {
+        r[i][j][k] = (i * 4 + j * 2 + k + 1) as f32;
+      }
+    }
+  }
+  print!("r101=");
+  print(r[1][0][1]);
+  print!("; ");
+  print!("r011=");
+  print(r[0][1][1]);
+  print!("; ");
+
+  // Rank 1, where there is one index and nothing to swap it with.
+  let mut v = Tensor<f32, [4]>::uninit();
+  for i in 0..4 {
+    v[i] = ((i + 1) * 10) as f32;
+  }
+  print!("v2=");
+  print(v[2]);
+  print!("; ");
+
+  // Through a borrow, written by one function and read by another.
+  let mut w = Tensor<f32, [2, 2]>::uninit();
+  write_through(&mut w);
+  print!("w01=");
+  print(read_back(&w, 0, 1));
+  print!("; ");
+  print!("w10=");
+  print(read_back(&w, 1, 0));
+  print!("; ");
+
+  // Extents, read at run time. `len()` is the outermost one.
+  let d = build(3);
+  print!("ext0=");
+  print(d.extent(0));
+  print!("; ");
+  print!("ext1=");
+  print(d.extent(1));
+  print!("; ");
+  print!("len=");
+  print(d.len());
+  print!("; ");
+
+  // `::new()` zeroes the whole buffer. The position read here is never
+  // written, so an allocation that skipped the zeroing answers with garbage.
+  let z = Tensor<f32, [2, 2]>::new();
+  print!("zero=");
+  print(z[1][0]);
+  print!("; ");
+
+  // `::fill(v)` writes every element, including the ones off the diagonal.
+  let f = Tensor<f32, [2, 2]>::fill(7.0);
+  print!("filled=");
+  print(f[0][1]);
+  print!("; ");
+
+  // A nested literal lays the rows out in the order they are written.
+  let lit = Tensor<f32>([[1.0, 2.0], [3.0, 4.0]]);
+  print!("lit10=");
+  print(lit[1][0]);
+  print!("; ");
+  return 0;
+}

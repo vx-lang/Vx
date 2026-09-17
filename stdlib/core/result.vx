@@ -1,0 +1,142 @@
+//===- result.vx - Vx Standard Library ----------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `Result<T, E>`, for an operation that may fail.
+//
+// This replaces `std::result`, which was not a Vx type at all: six C symbols backed by a
+// Rust `Result<i32, i32>`, so it worked for one pair of types and could not be written
+// for any other. An enum needs neither an allocator nor an operating system, so it
+// belongs here.
+//
+// A closure is called by hand -- `let p = f.func; p(f.env, v)` -- since there is no call
+// syntax for one yet.
+import core::ops;
+import core::option;
+
+enum Result<T, E> {
+  Ok(T),
+  Err(E),
+}
+
+impl<T, E> Result<T, E> {
+  fn is_ok(self : &Result<T, E>) -> bool {
+    let mut ret = false;
+    match *self {
+      Result<T, E>::Ok(v) => {
+        ret = true;
+      }
+      Result<T, E>::Err(e) => {
+        ret = false;
+      }
+    }
+    return ret;
+  }
+
+  fn is_err(self : &Result<T, E>) -> bool {
+    return !self.is_ok();
+  }
+
+  /// The value, or a stop. `unwrap_or` is the form with an answer for the failing case.
+  fn unwrap(self : Result<T, E>) -> T {
+    match self {
+      Result<T, E>::Ok(v) => {
+        return v;
+      }
+      Result<T, E>::Err(e) => {
+        let ok = self.is_ok();
+        assert(ok, "unwrap called on Err");
+      }
+    }
+  }
+
+  fn unwrap_or(self : Result<T, E>, default : T) -> T {
+    match self {
+      Result<T, E>::Ok(v) => {
+        return v;
+      }
+      Result<T, E>::Err(e) => {
+        return default;
+      }
+    }
+  }
+
+  /// The success dropped, leaving what there is of one.
+  fn ok(self : Result<T, E>) -> Option<T> {
+    match self {
+      Result<T, E>::Ok(v) => {
+        return Option<T>::Some(v);
+      }
+      Result<T, E>::Err(e) => {
+        return Option<T>::None();
+      }
+    }
+  }
+
+  /// The failure as an `Option`, the mirror of `ok`.
+  fn err(self : Result<T, E>) -> Option<E> {
+    match self {
+      Result<T, E>::Ok(v) => {
+        return Option<E>::None();
+      }
+      Result<T, E>::Err(e) => {
+        return Option<E>::Some(e);
+      }
+    }
+  }
+
+  /// `f` over the success, the failure untouched.
+  fn map<U>(self : Result<T, E>, f : Closure1<T, U>) -> Result<U, E> {
+    match self {
+      Result<T, E>::Ok(v) => {
+        let p = f.func;
+        return Result<U, E>::Ok(p(f.env, v));
+      }
+      Result<T, E>::Err(e) => {
+        return Result<U, E>::Err(e);
+      }
+    }
+  }
+
+  /// `f` over the failure, the success untouched.
+  fn map_err<F>(self : Result<T, E>, f : Closure1<E, F>) -> Result<T, F> {
+    match self {
+      Result<T, E>::Ok(v) => {
+        return Result<T, F>::Ok(v);
+      }
+      Result<T, E>::Err(e) => {
+        let p = f.func;
+        return Result<T, F>::Err(p(f.env, e));
+      }
+    }
+  }
+
+  /// `map` for an `f` that may itself fail, without the nesting.
+  fn and_then<U>(self : Result<T, E>, f : Closure1<T, Result<U, E>>) -> Result<U, E> {
+    match self {
+      Result<T, E>::Ok(v) => {
+        let p = f.func;
+        return p(f.env, v);
+      }
+      Result<T, E>::Err(e) => {
+        return Result<U, E>::Err(e);
+      }
+    }
+  }
+
+  /// The value, or what `f` makes of the failure.
+  fn unwrap_or_else(self : Result<T, E>, f : Closure1<E, T>) -> T {
+    match self {
+      Result<T, E>::Ok(v) => {
+        return v;
+      }
+      Result<T, E>::Err(e) => {
+        let p = f.func;
+        return p(f.env, e);
+      }
+    }
+  }
+}

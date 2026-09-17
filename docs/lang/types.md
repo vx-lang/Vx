@@ -327,6 +327,10 @@ A tensor's shape is part of its type and is never optional: `Tensor<f32, []>` is
 `Tensor<f32, [2, 3]>` a fixed shape, `Tensor<f32, [?, ?]>` one whose extents are run-time values.
 Writing `Tensor<f32>` is a parse error.
 
+`t.extent(i)` reads the run-time extent of axis `i` as an `i32`, for a literal `i` below the
+rank. `t.len()` is `t.extent(0)`: the extent of the outermost axis, so `for i in 0..t.len()`
+visits every position `t[i]` accepts. A rank-0 tensor has no `len()`.
+
 | Type | Example |
 |------|---------|
 | `Tensor<T, Shape>` | `let a : Tensor<f32, []> = 1.0;` |

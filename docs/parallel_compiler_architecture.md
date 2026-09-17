@@ -1126,10 +1126,10 @@ gaps (what/why/tests, per commit) is
 
 There are currently **two** front-to-back paths, and they are different:
 
-- **Production (`vxc file.vx`)** — the **sequential** driver: `src/driver.rs::execute` → `execute_vx_pipeline` → `run_codegen`. This is AST-based (the working type checker + MLIR codegen); it does **not** use the flat GID streams.
-- **Parallel pipeline** — `src/pipeline.rs::compile_pipeline` (rayon, all phases, verification hooks). This is the data-oriented path this document describes; it is exercised by `tests/integration_test/architecture_test.rs` but is **not yet** the path `vxc` runs.
+- **Default (`vxc file.vx`)** — the **sequential** driver: `src/driver.rs::execute` → `execute_vx_pipeline` → `run_codegen`. It lowers what the entry module reaches, through the flat path with the AST walk as its fallback.
+- **Parallel (`vxc -j N file.vx`)** — the pipeline this document describes, from `vxc`: `ModuleLoader::load_all` parses each wave of imports in parallel, `pipeline::compile_modules_mlir_in` runs the phases on N threads (`-j 1` runs them with the parallel machinery off), and the driver's own backend takes the MLIR text from there. It lowers every loaded module whole. `-j` does not link a `.vxlib` interface, write `--diagnostics-json`, or verify seams yet; a program it cannot take falls back to the sequential driver, and a flag it cannot honour is refused.
 
-Converging them (making `vxc` drive `compile_pipeline`, and codegen consume the flat streams) is the remaining integration work; §9.3's "scaffolding" rows are the concrete gaps on that path.
+The sequential driver stays the default until those gaps close; §9.3's "scaffolding" rows are the concrete ones.
 
 **Decision (2026-07, [#197](https://github.com/vx-lang/Vx/issues/197)): converge.** The flat-array
 pipeline will become the production path — that is the architecture's core claim. The staged,

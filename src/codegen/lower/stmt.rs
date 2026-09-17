@@ -22,7 +22,15 @@ impl<'c> LowerToMelior<'c> for ReturnStmt {
             return Ok(None);
         };
         gen.expected_type = gen.current_return_type;
+        // Offer the caller's buffer to the expression being returned, so a tensor operator builds
+        // the answer there instead of in a buffer of its own that we then copy out of. Only an
+        // operator is offered it: it takes the slot before lowering its own operands, which is
+        // what keeps a nested operator from claiming it.
+        if matches!(expr, Expr::BinaryOp(_)) {
+            gen.nrvo_slot = gen.current_return_slot.filter(|_| !gen.in_spawn);
+        }
         let (mut val, expr_ty, block) = gen.generate_expr(expr, block)?;
+        gen.nrvo_slot = None;
         gen.expected_type = None;
         if let Some(ret_ty) = gen.current_return_type {
             if expr_ty != ret_ty {
@@ -78,6 +86,19 @@ impl<'c> LowerToMelior<'c> for ReturnStmt {
         } else {
             "func.return"
         };
+        // Returning through a buffer the caller allocated: copy the result in and return nothing.
+        // A `vx.return` is a spawn region's yield rather than the function's, so it is untouched.
+        if let Some(slot) = gen.current_return_slot.filter(|_| !gen.in_spawn) {
+            if val != slot {
+                let copy_op = OperationBuilder::new("memref.copy", gen.loc())
+                    .add_operands(&[val, slot])
+                    .build()?;
+                block.append_operation(copy_op);
+            }
+            block.append_operation(OperationBuilder::new(op_name, gen.loc()).build()?);
+            gen.has_returned = true;
+            return Ok(None);
+        }
         let ret_op = OperationBuilder::new(op_name, gen.loc())
             .add_operands(&[val])
             .build()?;

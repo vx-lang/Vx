@@ -311,18 +311,21 @@ fn bad_matmul() -> Tensor<f32, [?, ?]> {
             checker.errors.error_count() == 0
         };
         assert!(!success);
-        assert!(checker.errors.iter().any(|e| e
-            .message
-            .contains("Call to unsafe function 'malloc' is unsafe")));
+        assert!(checker.errors.iter().any(|e| {
+            e.message
+                .contains("Call to unsafe function 'malloc' is unsafe")
+        }));
     }
 
     #[test]
     fn test_sema_as_ptr_and_len() {
+        // `len()` answers the outermost extent as an i32, like `extent`, and the checker
+        // rewrites it to the `$extent` read both backends lower.
         let input = r#"
-        fn test_methods(t: Tensor<f32, [?, ?]>) -> i64 {
+        fn test_methods(t: Tensor<f32, [?, ?]>) -> i32 {
             let ptr: *const Tensor<f32, [?, ?]> = t.as_ptr();
             let mut_ptr: *mut Tensor<f32, [?, ?]> = t.as_mut_ptr();
-            let length: i64 = t.len();
+            let length: i32 = t.len();
             return length;
         }
         "#;
@@ -347,6 +350,23 @@ fn bad_matmul() -> Tensor<f32, [?, ?]> {
             "Semantic checking failed for methods: {:?}",
             checker.errors
         );
+        let crate::syntax::Statement::LetDecl(decl) = &program.functions[0].body[2] else {
+            panic!("expected the `let length` statement");
+        };
+        let crate::syntax::Expr::IndexAccess(ix) = &decl.expr else {
+            panic!(
+                "len() was not rewritten to an indexed read: {:?}",
+                decl.expr
+            );
+        };
+        let crate::syntax::Expr::MemberAccess(ma) = ix.base.as_ref() else {
+            panic!("the rewritten read is not a member access: {:?}", ix.base);
+        };
+        assert_eq!(ma.member.as_ref(), "$extent");
+        let crate::syntax::Expr::Number(axis) = ix.index.as_ref() else {
+            panic!("the axis is not a literal: {:?}", ix.index);
+        };
+        assert_eq!(axis.value.as_ref(), "0", "len() reads the outermost axis");
     }
     #[test]
     fn test_sema_liveness_analysis() {

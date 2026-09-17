@@ -109,8 +109,13 @@ fn substitute_self(ty: &crate::syntax::Type, target: &crate::syntax::Type) -> cr
 ///
 /// A trait's defaults are collected across every module first, because the trait and the
 /// impl need not be in the same one.
-pub type TraitDefaults =
-    std::collections::HashMap<crate::symbol::Symbol, Vec<crate::syntax::MethodSignature>>;
+pub type TraitDefaults = std::collections::HashMap<
+    crate::symbol::Symbol,
+    (
+        Vec<crate::syntax::GenericParam>,
+        Vec<crate::syntax::MethodSignature>,
+    ),
+>;
 
 /// The trait methods that carry a default body, across every module.
 ///
@@ -129,7 +134,7 @@ pub fn collect_trait_defaults<'p>(
                 .cloned()
                 .collect();
             if !with_bodies.is_empty() {
-                defaults.insert(decl.name.clone(), with_bodies);
+                defaults.insert(decl.name.clone(), (decl.generics.clone(), with_bodies));
             }
         }
     }
@@ -144,9 +149,17 @@ pub fn fill_trait_defaults_in(program: &mut crate::syntax::Program, defaults: &T
         let Some(trait_name) = block.trait_name.clone() else {
             continue;
         };
-        let Some(trait_methods) = defaults.get(&trait_name) else {
+        let Some((trait_generics, trait_methods)) = defaults.get(&trait_name) else {
             continue;
         };
+        // `impl Iterator<i64> for Range` binds the trait's `Item` to `i64`. Without this
+        // the copied signature still said `Option<Item>` while the body it came with
+        // produced `Option<i64>`, so the default did not type-check in the impl.
+        let mut trait_subst: std::collections::HashMap<crate::symbol::Symbol, crate::syntax::Type> =
+            std::collections::HashMap::new();
+        for (param, arg) in trait_generics.iter().zip(block.trait_args.iter()) {
+            trait_subst.insert(param.name().into(), arg.clone());
+        }
         for signature in trait_methods {
             if block
                 .methods
@@ -159,16 +172,36 @@ pub fn fill_trait_defaults_in(program: &mut crate::syntax::Program, defaults: &T
                 .default_body
                 .clone()
                 .expect("only methods with a default body are collected");
+            // A method of a generic impl has the block's parameters in scope, which the
+            // parser arranges for a hand-written one. A default arrives here after that,
+            // so it is done again: without it the copied body is checked with `I`
+            // unbound and reports "Method 'next' not found on type I".
+            let own: Vec<&str> = signature.generics.iter().map(|g| g.name()).collect();
+            let mut generics: Vec<crate::syntax::GenericParam> = block
+                .generics
+                .iter()
+                .filter(|g| !own.contains(&g.name()))
+                .cloned()
+                .collect();
+            generics.extend(signature.generics.iter().cloned());
             block.methods.push(crate::syntax::Function {
                 name: signature.name.clone(),
-                generics: Vec::new(),
+                generics,
                 params: signature
                     .params
                     .iter()
-                    .map(|(n, t)| (n.clone(), substitute_self(t, &block.target_type)))
+                    .map(|(n, t)| {
+                        (
+                            n.clone(),
+                            substitute_self(&t.substitute(&trait_subst), &block.target_type),
+                        )
+                    })
                     .collect(),
                 topology: crate::syntax::Topology::CPU,
-                return_type: substitute_self(&signature.return_type, &block.target_type),
+                return_type: substitute_self(
+                    &signature.return_type.substitute(&trait_subst),
+                    &block.target_type,
+                ),
                 requires: Vec::new(),
                 ensures: Vec::new(),
                 where_transfers: Vec::new(),

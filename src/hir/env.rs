@@ -686,6 +686,22 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// The moved marks as they stand, for putting back after a branch whose moves do not
+    /// reach the code that follows it.
+    pub fn moved_snapshot(&self) -> Vec<std::collections::HashSet<String>> {
+        self.borrow.moved_vars.clone()
+    }
+
+    /// Put the marks back as they were. Restores scope by scope rather than wholesale, so a
+    /// mismatch in depth cannot silently resize the stack.
+    pub fn restore_moved(&mut self, snapshot: Vec<std::collections::HashSet<String>>) {
+        for (scope, marks) in snapshot.into_iter().enumerate() {
+            if let Some(current) = self.borrow.moved_vars.get_mut(scope) {
+                *current = marks;
+            }
+        }
+    }
+
     /// The innermost scope binding `name`. `moved_vars` is pushed and popped alongside
     /// `scopes`, so the index means the same thing in both.
     fn scope_of(&self, name: &str) -> Option<usize> {
@@ -1317,6 +1333,7 @@ impl<'a> TypeChecker<'a> {
         }
 
         self.check_block(&mut func.body, &func.return_type.clone());
+        Self::drop_spent_comptime_lambdas(&mut func.body);
 
         self.seam.contracts = prev_contracts;
 

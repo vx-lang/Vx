@@ -148,7 +148,14 @@ impl<'a> TypeChecker<'a> {
             Expr::SpawnOn(..) => self.check_spawnon_expr(expr, consume),
             Expr::If(..) => self.check_if_expr(expr, consume),
             Expr::SizeOf(..) => Type::Scalar(ElementType::I64),
-            Expr::FunctionCall(..) => self.check_functioncall_expr(expr, consume),
+            Expr::FunctionCall(..) => {
+                let ty = self.check_functioncall_expr(expr, consume);
+                // A comptime lambda runs while compiling, so its calls fold here. With every
+                // call folded the lambda is unused, and the `let` that bound it is dropped.
+                let span = expr.span();
+                self.fold_comptime_lambda_call(expr, &span);
+                ty
+            }
             Expr::IndirectCall(..) => self.check_indirectcall_expr(expr, consume),
             Expr::Array(..) => self.check_array_expr(expr),
             Expr::MemberAccess(..) => self.check_memberaccess_expr(expr),

@@ -60,6 +60,22 @@ macro_rules! chatter {
     };
 }
 
+/// Whose diagnostics reach the user.
+///
+/// A compile reports what is wrong with the program it was asked to build, not with the libraries
+/// that program imports. Those are checked when they are compiled on their own, and a consumer who
+/// cannot edit them can do nothing with the report. The sequential driver draws the same line, by
+/// throwing away whatever its import pass found, so the parallel frontend has to draw it too --
+/// otherwise `-j` refuses programs that build without it.
+#[derive(Clone)]
+pub enum Reported {
+    /// Every module handed over: the file-path entry points, whose caller named each file itself.
+    EveryModule,
+    /// One module, under the name the loader stored it by, which is the raw file name for an entry
+    /// module. This is `vxc -j`, where every other module arrived by following an import.
+    OnlyEntry(crate::symbol::Symbol),
+}
+
 /// The parallel frontend run to completion — through the reconciliation barrier and the Phase 6
 /// SIMD patch — with every artefact codegen needs still in hand.
 ///
@@ -79,6 +95,8 @@ struct Frontend {
     /// (Vx#352), extracted from the env because the env cannot leave the frontend.
     topo_archs: Vec<(i64, String)>,
     checks: Vec<FunctionCheck>,
+    /// Warnings the checks found, held rather than printed. See [`report_warnings`].
+    warnings: Vec<crate::diagnostic::Diagnostic>,
     /// Per-check patched type streams, index-aligned with `checks`.
     type_streams: Vec<(usize, Vec<crate::gid::TypeId>)>,
     merged_arenas: MergedArenas,
@@ -98,8 +116,24 @@ fn run_frontend(
 ) -> Result<Frontend, PipelineError> {
     // Phase timing (#297), so a sweep can attribute wall clock to serial vs parallel work rather
     // than inferring it from a plateau.
+    let modules = crate::intern_mode::timed("parse", || parse_phase(file_paths, sched))?;
+    // Every file here was named by the caller, so every file's diagnostics are its concern.
+    let frontend = run_frontend_on(modules, sched, intern_mode, Reported::EveryModule)?;
+    // Nothing declines on this path, so there is no second compile to print them again.
+    report_warnings(&frontend.warnings);
+    Ok(frontend)
+}
+
+/// The frontend from macro expansion on, for modules a caller has already parsed. The file-path
+/// entry above parses exactly the files it is given; `vxc -j` loads modules through
+/// `ModuleLoader`, which follows imports. Both then run this.
+fn run_frontend_on(
+    mut modules: Vec<VxModule>,
+    sched: Schedule,
+    intern_mode: crate::intern_mode::InternMode,
+    reported: Reported,
+) -> Result<Frontend, PipelineError> {
     use crate::intern_mode::timed;
-    let mut modules = timed("parse", || parse_phase(file_paths, sched))?;
     timed("macro_expand", || {
         macro_expansion_phase(&mut modules, sched)
     })?;
@@ -152,11 +186,15 @@ fn run_frontend(
 
     // Before any body: a body checked against an ambiguous declaration table has been checked
     // against a coin flip.
-    timed("decl_check", || declaration_check_phase(&session, &env))?;
+    let mut warnings = timed("decl_check", || declaration_check_phase(&session, &env))?;
 
-    let mut checks = timed("type_check", || {
-        type_check_phase(&mut modules, &session, &env, sched)
+    let Checked {
+        mut checks,
+        warnings: body_warnings,
+    } = timed("type_check", || {
+        type_check_phase(&mut modules, &session, &env, sched, &reported)
     })?;
+    warnings.extend(body_warnings);
     let (merged_slow, merged_gen, merged_off, slow_mappings, gen_mappings) =
         timed("dedup_barrier", || deduplication_phase(&checks, &session));
 
@@ -168,6 +206,7 @@ fn run_frontend(
     Ok(Frontend {
         modules,
         session,
+        warnings,
         subspaces: crate::codegen::flat::subspaces_from_env(&env),
         topo_archs: crate::codegen::flat::topo_archs_from_env(&env),
         checks,
@@ -295,15 +334,29 @@ pub fn compile_pipeline_mlir_in(
     sched: Schedule,
     intern_mode: crate::intern_mode::InternMode,
 ) -> Result<Option<String>, PipelineError> {
+    let modules = crate::intern_mode::timed("parse", || parse_phase(file_paths, sched))?;
+    compile_modules_mlir_in(modules, sched, intern_mode, Reported::EveryModule)
+}
+
+/// [`compile_pipeline_mlir_in`] for modules a caller has already parsed and not yet expanded:
+/// what `vxc -j` hands over once its loader has followed the imports. The parse is the caller's
+/// to time under the `parse` phase; everything after it is timed here.
+pub fn compile_modules_mlir_in(
+    modules: Vec<VxModule>,
+    sched: Schedule,
+    intern_mode: crate::intern_mode::InternMode,
+    reported: Reported,
+) -> Result<Option<String>, PipelineError> {
     let Frontend {
         modules,
         session,
         subspaces,
         topo_archs,
         mut checks,
+        warnings,
         type_streams,
         merged_arenas,
-    } = run_frontend(file_paths, sched, intern_mode)?;
+    } = run_frontend_on(modules, sched, intern_mode, reported)?;
     let text = crate::intern_mode::timed("codegen", || {
         codegen_mlir_phase(
             &modules,
@@ -315,6 +368,13 @@ pub fn compile_pipeline_mlir_in(
             sched,
         )
     });
+    // Only now, once codegen has answered, are the warnings this frontend found printed. A
+    // decline means the driver recompiles the program through the sequential path, which finds
+    // them again -- printing here as well would show every one of them twice.
+    if text.is_some() {
+        report_warnings(&warnings);
+    }
+
     // Freeing a compile is not free, and it is not noise. A compile of this corpus holds ~1,600
     // `LocalWorkerState`s and every module's AST, all allocated across the worker threads and all
     // released here on one. It is charged explicitly rather than left in the phase table's
@@ -1149,7 +1209,15 @@ fn check_one_function(
     checker.check_function(func);
 
     let errors = checker.errors;
-    let monos = checker.mono.functions;
+    // A comptime lambda's generated body is not emitted: every call to it folded, so
+    // nothing refers to it and leaving it in would be the run-time code a `comptime` block
+    // must not leave behind.
+    let monos: Vec<_> = checker
+        .mono
+        .functions
+        .into_iter()
+        .filter(|(f, _)| !crate::hir::TypeChecker::is_comptime_lambda_body(f))
+        .collect();
     let gen_structs = checker.mono.generated_structs;
     let capacity_summaries = std::mem::take(&mut checker.traffic.capacity_summaries);
 
@@ -1176,26 +1244,47 @@ fn check_one_function(
 fn declaration_check_phase(
     global_session: &std::sync::Arc<GlobalSession>,
     global_env: &GlobalAstEnv,
-) -> Result<(), PipelineError> {
+) -> Result<Vec<crate::diagnostic::Diagnostic>, PipelineError> {
     let mut worker = LocalWorkerState::new(global_session.clone());
     let mut checker = TypeChecker::new(global_env, &mut worker);
     checker.check_whole_program_declarations();
 
-    let mut errors = 0;
-    for diag in checker.errors.iter() {
-        if diag.level == DiagnosticLevel::Error {
-            errors += 1;
-            println!("Error: {}", diag.message);
-        } else if diag.level == DiagnosticLevel::Warning {
-            println!("Warning: {}", diag.message);
-        }
-    }
+    let found: Vec<&crate::diagnostic::Diagnostic> = checker.errors.iter().collect();
+    let errors = report_errors(&found);
     if errors > 0 {
         return Err(PipelineError::Semantic(format!(
             "Compilation failed with {errors} declaration errors"
         )));
     }
-    Ok(())
+    Ok(found
+        .into_iter()
+        .filter(|d| d.level == DiagnosticLevel::Warning)
+        .cloned()
+        .collect())
+}
+
+/// Report a phase's diagnostics the way the sequential driver does: warnings first, then errors,
+/// each rendered with its code and location, on stderr, so stdout stays free for the MLIR.
+/// Returns the error count.
+fn report_errors(diags: &[&crate::diagnostic::Diagnostic]) -> usize {
+    let mut errors = 0;
+    for diag in diags.iter().filter(|d| d.level == DiagnosticLevel::Error) {
+        errors += 1;
+        eprintln!("{diag}");
+    }
+    errors
+}
+
+/// Print warnings the frontend held back.
+///
+/// Held rather than printed where they are found, because a compile that declines the flat subset
+/// falls back to the sequential driver, which checks the program again and prints every warning a
+/// second time. Whoever ends up using this frontend's output prints them; a frontend whose output
+/// is thrown away prints nothing.
+pub fn report_warnings(warnings: &[crate::diagnostic::Diagnostic]) {
+    for diag in warnings {
+        eprintln!("{diag}");
+    }
 }
 
 /// Per-function checks. The whole-program declaration checks run once in
@@ -1205,7 +1294,20 @@ fn type_check_phase(
     global_session: &std::sync::Arc<GlobalSession>,
     global_env: &GlobalAstEnv,
     sched: Schedule,
-) -> Result<Vec<FunctionCheck>, PipelineError> {
+    reported: &Reported,
+) -> Result<Checked, PipelineError> {
+    // Resolved before the checks run, while the modules can still be read by name.
+    let reported_module: Option<usize> = match reported {
+        Reported::EveryModule => None,
+        Reported::OnlyEntry(name) => {
+            let found = parsed_modules.iter().position(|m| m.module_path == *name);
+            assert!(
+                found.is_some(),
+                "the entry module '{name}' is not among the modules being checked"
+            );
+            found
+        }
+    };
     // The two branches are the same walk in the same order — a module's free functions, then its
     // impl methods, modules outermost — differing only in `iter_mut` versus `par_iter_mut`. They are
     // written out rather than abstracted because rayon's iterators share no trait with std's, and an
@@ -1300,17 +1402,23 @@ fn type_check_phase(
             .collect()
     };
 
-    let mut total_errors = 0;
-    for check in &check_results {
-        for diag in check.diagnostics.iter() {
-            if diag.level == DiagnosticLevel::Error {
-                total_errors += 1;
-                println!("Error: {}", diag.message);
-            } else if diag.level == DiagnosticLevel::Warning {
-                println!("Warning: {}", diag.message);
-            }
-        }
-    }
+    // An imported module's body diagnostics are dropped, not counted: they cannot fail this
+    // compile any more than they can be printed by it. The whole-program fold below is separate --
+    // it is about this program's call graph, so it always reports.
+    let reported: Vec<&crate::diagnostic::Diagnostic> = check_results
+        .iter()
+        .filter(|c| match reported_module {
+            None => true,
+            Some(entry) => c.module_idx == entry,
+        })
+        .flat_map(|c| c.diagnostics.iter())
+        .collect();
+    let mut warnings: Vec<crate::diagnostic::Diagnostic> = reported
+        .iter()
+        .filter(|d| d.level == DiagnosticLevel::Warning)
+        .map(|d| (*d).clone())
+        .collect();
+    let mut total_errors = report_errors(&reported);
 
     // The cross-call capacity fold: the one whole-program step, after the parallel phase and
     // reading only what it exported. Same core as the sequential driver, so the two frontends
@@ -1326,14 +1434,13 @@ fn type_check_phase(
             global_env,
             &mut fold_diags,
         );
-        for diag in fold_diags.iter() {
-            if diag.level == DiagnosticLevel::Error {
-                total_errors += 1;
-                println!("Error: {}", diag.message);
-            } else if diag.level == DiagnosticLevel::Warning {
-                println!("Warning: {}", diag.message);
-            }
-        }
+        let fold: Vec<&crate::diagnostic::Diagnostic> = fold_diags.iter().collect();
+        warnings.extend(
+            fold.iter()
+                .filter(|d| d.level == DiagnosticLevel::Warning)
+                .map(|d| (*d).clone()),
+        );
+        total_errors += report_errors(&fold);
     }
 
     let total_monomorphized: usize = check_results.iter().map(|c| c.monomorphs.len()).sum();
@@ -1358,7 +1465,17 @@ fn type_check_phase(
         verify_phase_3_isolation(&workers, global_session);
     }
 
-    Ok(check_results)
+    Ok(Checked {
+        checks: check_results,
+        warnings,
+    })
+}
+
+/// What the per-function checks produced: the checks themselves, and the warnings that were held
+/// back rather than printed. See [`report_warnings`].
+struct Checked {
+    checks: Vec<FunctionCheck>,
+    warnings: Vec<crate::diagnostic::Diagnostic>,
 }
 
 type DeduplicationResult = (
@@ -2445,8 +2562,15 @@ mod gid_stream_tests {
         let env_mods: Vec<VxModule> = modules.iter().map(|m| m.clone_signature()).collect();
         let env = GlobalAstEnv::build(&env_mods);
 
-        let mut results = type_check_phase(&mut modules, &session, &env, Schedule::Parallel)
-            .expect("type check ok");
+        let mut results = type_check_phase(
+            &mut modules,
+            &session,
+            &env,
+            Schedule::Parallel,
+            &Reported::EveryModule,
+        )
+        .expect("type check ok")
+        .checks;
         let lowered = lower_checked(&modules, &mut results, &session);
         let ops: Vec<Opcode> = lowered[0]
             .0
@@ -2484,7 +2608,8 @@ fn main() -> i32 { return 0; }
                 let session = Arc::new(GlobalSession::with_registry(1, registry));
                 let env_mods: Vec<VxModule> = modules.iter().map(|m| m.clone_signature()).collect();
                 let env = GlobalAstEnv::build(&env_mods);
-                let result = type_check_phase(&mut modules, &session, &env, sched);
+                let result =
+                    type_check_phase(&mut modules, &session, &env, sched, &Reported::EveryModule);
                 let outcome = match &result {
                     Ok(_) => "Ok".to_string(),
                     Err(e) => format!("{e:?}"),
@@ -3088,9 +3213,15 @@ fn main() -> i32 { return 0; }
                 let session = Arc::new(GlobalSession::with_registry(1, registry));
                 let env_mods: Vec<VxModule> = modules.iter().map(|m| m.clone_signature()).collect();
                 let env = GlobalAstEnv::build(&env_mods);
-                let mut results =
-                    type_check_phase(&mut modules, &session, &env, Schedule::Parallel)
-                        .expect("type check");
+                let mut results = type_check_phase(
+                    &mut modules,
+                    &session,
+                    &env,
+                    Schedule::Parallel,
+                    &Reported::EveryModule,
+                )
+                .expect("type check")
+                .checks;
                 lower_checked(&modules, &mut results, &session)
                     .iter()
                     .flat_map(|(w, _)| {

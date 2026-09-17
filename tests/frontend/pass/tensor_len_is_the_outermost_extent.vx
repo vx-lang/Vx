@@ -1,0 +1,37 @@
+//===- tensor_len_is_the_outermost_extent.vx - Vx Compiler ------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `t.len()` is rewritten to `t.extent(0)`: a `memref.dim` of axis 0 cast to
+// `i32`, on a shaped tensor and on one with a run-time extent alike. No call
+// named `len` survives to the backend.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK-LABEL: func.func @four(
+// CHECK: %[[AXIS:.*]] = arith.constant 0 : i32
+// CHECK: %[[IDX:.*]] = arith.index_cast %[[AXIS]] : i32 to index
+// CHECK: memref.dim %arg0, %[[IDX]] : memref<4xf32>
+// CHECK: arith.index_cast %{{.*}} : index to i32
+// CHECK-NOT: @len
+// CHECK-LABEL: func.func @rows(
+// CHECK: %[[AXIS:.*]] = arith.constant 0 : i32
+// CHECK: %[[IDX:.*]] = arith.index_cast %[[AXIS]] : i32 to index
+// CHECK: memref.dim %arg0, %[[IDX]] : memref<?x3xf32>
+// CHECK: arith.index_cast %{{.*}} : index to i32
+// CHECK-NOT: @len
+
+fn rows(m : Tensor<f32, [?, 3]>) -> i32 {
+  return m.len();
+}
+
+fn four(a : Tensor<f32, [4]>) -> i32 {
+  return a.len();
+}
+
+fn main() -> i32 {
+  let a = Tensor<f32, [4]>::uninit();
+  return four(a) - 4;
+}

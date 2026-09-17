@@ -1,0 +1,63 @@
+//===- comptime_recursive_quicksort.vx - Vx Compiler -------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A recursive quicksort, by value, run at compile time.
+//
+// Every piece of this was blocked at some point by something other than the evaluator.
+// The early-return base case needed a branch that returns to stop moving the value for
+// the path that carries on. Threading the array through the two recursive calls needed
+// a moved variable to be assignable again. Both are move-checker rules, and neither had
+// anything to do with compile-time evaluation -- the program did not compile at all.
+//
+// It is a real quicksort: Lomuto partition, pivot at the end, recursion on both sides.
+// Nothing is arranged for the evaluator's benefit.
+//
+// Every element is asserted, and each was confirmed to go red on its own. What this
+// cannot catch is the evaluator giving up -- an assert it does not run is silently
+// accepted, so a wrong-answer fixture is what holds that, and it lives in
+// fail/comptime_recursive_quicksort_wrong.vx.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK-LABEL: func.func @main() -> i32
+
+fn qsort(a : Tensor<i64, [8]>, lo : i64, hi : i64) -> Tensor<i64, [8]> {
+  let mut w : Tensor<i64, [8]> = a;
+  if lo >= hi {
+    return w;
+  }
+  let pivot : i64 = w[hi];
+  let mut i : i64 = lo - 1i64;
+  for j in lo..hi {
+    if w[j] <= pivot {
+      i = i + 1i64;
+      let t : i64 = w[i];
+      w[i] = w[j];
+      w[j] = t;
+    }
+  }
+  let p : i64 = i + 1i64;
+  let s : i64 = w[p];
+  w[p] = w[hi];
+  w[hi] = s;
+  return qsort(qsort(w, lo, p - 1i64), p + 1i64, hi);
+}
+
+fn main() -> i32 {
+  comptime {
+    let input : Tensor<i64, [8]> = [ 5i64, 3i64, 8i64, 1i64, 9i64, 2i64, 7i64, 4i64 ];
+    let out : Tensor<i64, [8]> = qsort(input, 0i64, 7i64);
+    assert(out[0] == 1i64, "quicksorted element 0");
+    assert(out[1] == 2i64, "quicksorted element 1");
+    assert(out[2] == 3i64, "quicksorted element 2");
+    assert(out[3] == 4i64, "quicksorted element 3");
+    assert(out[4] == 5i64, "quicksorted element 4");
+    assert(out[5] == 7i64, "quicksorted element 5");
+    assert(out[6] == 8i64, "quicksorted element 6");
+    assert(out[7] == 9i64, "quicksorted element 7");
+  }
+  return 0;
+}

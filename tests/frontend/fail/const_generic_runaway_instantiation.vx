@@ -1,0 +1,26 @@
+//===- const_generic_runaway_instantiation.vx - Vx Compiler ------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A generic recursion that never reaches its base case is reported, not crashed on.
+//
+// The base case returns, but the call after the `if` is checked anyway, so `N` goes
+// 2, 1, 0, -1, -2 and never stops. Each round is a new instance checked inside the
+// last, which used to take the compiler's stack down with no file and no message.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+fn countdown<const N : i32>() -> i32 {
+  if comptime N == 0 {
+    return 0;
+  }
+  // CHECK: Error[E3032]{{.*}}generic calls deep and was stopped
+  return countdown<N - 1>() + 1;
+}
+
+fn main() -> i32 {
+  return countdown<3>();
+}

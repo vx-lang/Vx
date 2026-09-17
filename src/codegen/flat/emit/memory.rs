@@ -10,7 +10,9 @@ impl FnEmit<'_> {
     // scalar param records its element type; a tensor param records its memref type (from the
     // side table) so later index/store ops address it.
     pub(crate) fn op_load(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
-        self.names[idx] = format!("%arg{}", ins.imm);
+        // `arg_offset` is 1 when a return slot took `%arg0`, so declared parameter `i` is
+        // `%arg{i + 1}` in the signature this body was emitted against.
+        self.names[idx] = format!("%arg{}", ins.imm as u32 + self.arg_offset);
         let gid = *self
             .types
             .get(ins.type_idx.0 as usize)

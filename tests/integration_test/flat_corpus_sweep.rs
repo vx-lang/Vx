@@ -25,6 +25,19 @@ const KNOWN_DECLINES: &[&str] = &[
     // and the AST path handles both. The module's other methods answer with a `T` or a
     // `bool` and compile through the flat path; adding these three is what moved the file.
     "backend/pass/core_option.vx",
+    // The flat path declines `main` here as "a callee return type": the adaptors it
+    // builds answer with a generic struct. Its answers come from the AST path.
+    "backend/pass/core_iter.vx",
+    // `ok`, `err`, `map`, `map_err` and `and_then` all answer with an `Option` or a
+    // `Result`, which the flat path declines as "a non-scalar default return" -- the same
+    // shape as the file above. The AST path handles them, and that is where the answers
+    // come from.
+    "backend/pass/core_result.vx",
+    // `right_opt` and `left_opt` answer with an `Option<T>`, which the flat path declines
+    // as "a non-scalar default return" -- the same shape as the file above. Those two
+    // methods are the point of the file: a parameter only reaches the code that binds it
+    // when it is handed to another generic type, so the AST path is where it is asked.
+    "backend/pass/enum_binds_every_type_parameter.vx",
     // A generic enum returned from a match whose arms each return. The flat path declines it
     // as "a non-scalar default return" -- the same shape the AST path used to mis-lower, and
     // the reason that file exists. Its answers come from the AST path, and it states no
@@ -34,11 +47,26 @@ const KNOWN_DECLINES: &[&str] = &[
     // exists to pin that `>>` still closes two generics now that it is also the right
     // shift, and that question is settled in the parser, so the decline costs it nothing.
     // It states no directive about emitted IR, precisely because it is on the AST path.
+    // Indexing the result of a rank-1 elementwise operator. The rank-1 lowering
+    // reads both operands as one `vector.load` and writes the result with one
+    // arithmetic op, and records no memref type for the value it produced, so
+    // `op_tensor_index` has nothing to load from and declines. The operator
+    // itself lowers fine; only reading an element back does not. Rank 2 keeps
+    // its buffer and is unaffected, which is why the rank-2 half of these
+    // checks lives in `tensor_arithmetic_run.vx` and still runs here.
+    "backend/pass/tensor_arithmetic_rank1_run.vx",
     "backend/pass/user_lowering_name_collisions.vx",
     "backend/pass/user_lowering_uncountable.vx",
     "backend/pass/user_lowering_waste.vx",
     "frontend/pass/closure_fat_ptr.vx",
     "frontend/pass/control_flow_rigorous.vx",
+    // The `vxc -j` fallback fixture: a program the flat path declines, chosen so the parallel
+    // frontend has something to hand back to the sequential driver. Same shape as
+    // generic_enum_returned_from_match.vx, and it declines for the same reason.
+    "frontend/pass/jobs_falls_back_outside_the_flat_subset.vx",
+    // The same shape again, with a warning added: it states that a program checked by both
+    // frontends has its warnings reported once, which needs a program that declines.
+    "frontend/pass/jobs_warns_once_when_it_falls_back.vx",
     "frontend/pass/trait_topologies.vx",
     // A parameter with run-time extents (Vx#409). It used to compile through the flat path
     // while the dims-less spelling let it read as rank-0: `topology.vx` got a `memref<f32>`

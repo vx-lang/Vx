@@ -25,13 +25,16 @@ fn main() -> i32 {
 
 // One monomorph per element type, each over a rank-0 buffer. The value reaching them is a
 // real memref<f32> rather than a scalar cast into a rank-2 memref (Vx#396, Vx#399).
-// CHECK-LABEL: func.func @process$Tensor$f32(%arg0: memref<f32>) -> memref<f32> {
-// CHECK: %[[V:.*]] = memref.load %arg0[] : memref<f32>
+// CHECK-LABEL: func.func @process$Tensor$f32
+// CHECK-SAME: (%[[RET:.*]]: memref<f32>, %arg1: memref<f32>) {
+// CHECK: %[[V:.*]] = memref.load %arg1[] : memref<f32>
 // CHECK: %[[OUT:.*]] = memref.alloc() : memref<f32>
 // CHECK: linalg.fill ins(%[[V]] : f32) outs(%[[OUT]] : memref<f32>)
-// CHECK: return %[[OUT]] : memref<f32>
-// CHECK-LABEL: func.func @process$Tensor$i32(%arg0: memref<i32>) -> memref<i32> {
-// CHECK: return %{{.*}} : memref<i32>
+// CHECK: memref.copy %[[OUT]], %[[RET]] : memref<f32> to memref<f32>
+// CHECK-NEXT: return
+// CHECK-LABEL: func.func @process$Tensor$i32
+// CHECK-SAME: (%[[RETI:.*]]: memref<i32>, %arg1: memref<i32>) {
+// CHECK: memref.copy %{{.*}}, %[[RETI]] : memref<i32> to memref<i32>
 // CHECK-LABEL: func.func @main() -> i32 {
-// CHECK: call @process$Tensor$f32(%{{.*}}) : (memref<f32>) -> memref<f32>
-// CHECK: call @process$Tensor$i32(%{{.*}}) : (memref<i32>) -> memref<i32>
+// CHECK: call @process$Tensor$f32(%{{.*}}, %{{.*}}) : (memref<f32>, memref<f32>) -> ()
+// CHECK: call @process$Tensor$i32(%{{.*}}, %{{.*}}) : (memref<i32>, memref<i32>) -> ()

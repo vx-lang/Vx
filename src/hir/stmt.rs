@@ -97,6 +97,14 @@ impl<'a> TypeChecker<'a> {
         self.borrow.exit_block();
     }
 
+    /// Drop the bindings of comptime lambdas once their calls have folded.
+    ///
+    /// Nothing is left to call, and keeping the binding emits the closure and its generated
+    /// body -- the run-time code a `comptime` block must not leave behind.
+    pub(crate) fn drop_spent_comptime_lambdas(body: &mut Vec<Statement>) {
+        body.retain(|stmt| !Self::binds_a_comptime_lambda(stmt));
+    }
+
     pub(crate) fn compute_block_liveness(
         body: &[Statement],
     ) -> HashMap<crate::symbol::Symbol, usize> {
@@ -289,7 +297,23 @@ impl<'a> TypeChecker<'a> {
             span: loop_span,
         } = floop;
         let loop_span = *loop_span;
-        let iterable_ty = self.check_expr_type_flag(iterable, consume);
+        // `for x in it` consumes `it`, as Rust's does: the loop drives a copy of the
+        // iterator to exhaustion, so letting the name live on would hand back a value
+        // that had not moved.
+        //
+        // The consumption is deferred past the synthesized `next` below, though. Marking
+        // the move here left that call looking the method up on a consumed variable, of
+        // type `?`. Whether this is an iterator is read off the binding rather than by
+        // type-checking the expression twice, which would report each of its errors twice.
+        let defers_consume = consume
+            && match &**iterable {
+                Expr::Identifier(id) => matches!(
+                    self.lookup(id.name.as_ref()).map(|(t, _)| t),
+                    Some(Type::GenericInstance(..)) | Some(Type::Struct(..))
+                ),
+                _ => false,
+            };
+        let iterable_ty = self.check_expr_type_flag(iterable, consume && !defers_consume);
         self.push_releasing_scope();
 
         // If it's Range, it's I64. If it's Iterator, we extract from Option<T>
@@ -321,6 +345,9 @@ impl<'a> TypeChecker<'a> {
                         iter_ty = args[0].clone();
                     }
                 }
+            }
+            if defers_consume {
+                self.check_expr_type_flag(iterable, true);
             }
         } else {
             iter_ty = match iterable_ty {
@@ -766,7 +793,7 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// The variable a place expression writes through: `a` for `a`, `a[i]` and `a[i][j]`.
-    fn place_root(expr: &Expr) -> Option<&crate::symbol::Symbol> {
+    pub(crate) fn place_root(expr: &Expr) -> Option<&crate::symbol::Symbol> {
         match expr {
             Expr::Identifier(IdentifierExpr { name, span: _ }) => Some(name),
             Expr::IndexAccess(IndexAccessExpr { base, .. }) => Self::place_root(base),
@@ -1122,15 +1149,30 @@ impl<'a> TypeChecker<'a> {
             }
             Expr::FunctionCall(FunctionCallExpr {
                 name,
-                type_args: None,
+                type_args,
                 args,
                 span: _,
             }) => {
-                let func = self.callee_body(name.as_ref())?;
+                // Ignored on purpose: the checker has already instantiated the call and
+                // substituted the arguments into the body, so `sort<4>` arrives with its
+                // `N` gone. Matching on `None` here was what skipped such a call.
+                let _ = type_args;
+                let func = match self.callee_body(name.as_ref()) {
+                    Some(func) => func,
+                    // A closure held in a variable: `add(41)` names the variable, and the
+                    // body lives in the `Closure_N_call` the literal generated.
+                    None => self.closure_call_body(name.as_ref())?,
+                };
+                // A generated closure body takes its captured environment as a first
+                // parameter, and the call passes a struct for it. The environment is not a
+                // value the evaluator can build, so both are skipped: a body that only uses
+                // its own parameters folds, and one that reads a capture finds the name
+                // unbound and answers nothing, which is the right answer either way.
+                let skip = usize::from(Self::is_closure_body(name.as_ref()));
                 let mut local_env = HashMap::new();
-                for (i, arg_expr) in args.iter().enumerate() {
+                for (i, arg_expr) in args.iter().skip(skip).enumerate() {
                     let arg_val = self.eval_expr(arg_expr, env)?;
-                    local_env.insert(func.params[i].0.clone(), arg_val);
+                    local_env.insert(func.params.get(i + skip)?.0.clone(), arg_val);
                 }
                 self.enter_call()?;
                 let outer_unsupported = self.consteval.unsupported_stmt.replace(false);
@@ -1148,6 +1190,28 @@ impl<'a> TypeChecker<'a> {
                 self.leave_call();
                 result
             }
+            // The body of a comptime lambda is a `comptime` block, so evaluating a call to
+            // one means evaluating the block: run its statements, then its trailing value.
+            Expr::ComptimeBlock(ComptimeBlockExpr {
+                stmts,
+                ret,
+                span: _,
+            }) => {
+                let mut local_env = env.clone();
+                if let EvalFlow::Return(value) = self.eval_block(stmts, &mut local_env) {
+                    return value;
+                }
+                if self.consteval.unsupported_stmt.get() {
+                    return None;
+                }
+                self.eval_expr(ret.as_deref()?, &local_env)
+            }
+            Expr::IndirectCall(IndirectCallExpr {
+                callee,
+                args,
+                target_func_ty: _,
+                span: _,
+            }) => self.eval_indirect_call(callee, args, env),
             Expr::Topology(TopologyExpr { top, span: _ }) => {
                 if matches!(top, Topology::Current) {
                     Some(Value::Topology(self.active_topology.clone()))
@@ -1289,13 +1353,100 @@ impl<'a> TypeChecker<'a> {
     /// The module being compiled goes into the resolution env with its non-generic bodies
     /// stripped, so a function defined alongside the caller has nothing to walk there and is
     /// looked up in the bodies kept for compile-time evaluation instead.
-    fn callee_body(&self, name: &str) -> Option<&'a Function> {
+    pub(crate) fn comptime_closure_body(&self, name: &str) -> Option<&Function> {
+        self.callee_body(name)
+    }
+
+    fn callee_body(&self, name: &str) -> Option<&Function> {
         if let Some(func) = self.env.syntax_functions.get(name) {
             if !func.body.is_empty() {
                 return Some(func);
             }
         }
-        self.env.comptime_bodies.get(name)
+        if let Some(func) = self.env.comptime_bodies.get(name) {
+            return Some(func);
+        }
+        // A function made while checking: a generic instance, or the `Closure_N_call` a
+        // closure literal generates. Neither table above has ever heard of the name, and a
+        // generic instance's mangled name encodes its arguments, so at most one matches.
+        self.mono
+            .functions
+            .iter()
+            .find(|(func, _)| func.name.as_ref() == name)
+            .map(|(func, _)| func)
+    }
+
+    /// The generated body behind a closure held in a variable.
+    ///
+    /// `let add = | y | comptime { .. }; add(41)` names `add`, which is a value of type
+    /// `Closure_N`. What can be run is the `Closure_N_call` the literal generated.
+    fn closure_call_body(&self, name: &str) -> Option<&Function> {
+        let (Type::Struct(struct_name, _), _) = self.lookup(name)? else {
+            return None;
+        };
+        self.closure_body_of(struct_name.as_ref())
+    }
+
+    /// Whether a name is the body a closure literal generated, whose first parameter is
+    /// the captured environment rather than anything the call wrote.
+    pub(crate) fn is_closure_body(name: &str) -> bool {
+        name.starts_with("Closure_") && name.ends_with("_call")
+    }
+
+    /// The generated body for a `Closure_N` type.
+    fn closure_body_of(&self, struct_name: &str) -> Option<&Function> {
+        if !struct_name.starts_with("Closure_") {
+            return None;
+        }
+        let call_name = format!("{}_call", struct_name);
+        self.mono
+            .functions
+            .iter()
+            .find(|(func, _)| func.name.as_ref() == call_name)
+            .map(|(func, _)| func)
+    }
+
+    /// Run a call through a closure value, which is how `add(41)` reaches the body of
+    /// `let add = | y | comptime { .. }`. A comptime lambda is a function that has to fold
+    /// where it is called; folding the call is what lets the lambda itself go away.
+    fn eval_indirect_call(
+        &self,
+        callee: &Expr,
+        args: &[Expr],
+        env: &HashMap<crate::symbol::Symbol, Value>,
+    ) -> Option<Value> {
+        eprintln!("[ic] indirect call, callee = {:?}", callee);
+        let Expr::Identifier(IdentifierExpr { name, span: _ }) = callee else {
+            return None;
+        };
+        eprintln!(
+            "[ic] name={:?} body={:?}",
+            name.as_ref(),
+            self.closure_call_body(name.as_ref())
+                .map(|f| f.name.to_string())
+        );
+        let func = self.closure_call_body(name.as_ref())?;
+        // The first parameter is the captured environment, which the call does not write.
+        let skip = func.params.len().checked_sub(args.len())?;
+        let mut local_env = HashMap::new();
+        for (i, arg_expr) in args.iter().enumerate() {
+            local_env.insert(
+                func.params[i + skip].0.clone(),
+                self.eval_expr(arg_expr, env)?,
+            );
+        }
+        self.enter_call()?;
+        let outer_unsupported = self.consteval.unsupported_stmt.replace(false);
+        let mut result = None;
+        if let EvalFlow::Return(ret_val) = self.eval_block(&func.body, &mut local_env) {
+            result = ret_val;
+        }
+        if self.consteval.unsupported_stmt.get() {
+            result = None;
+        }
+        self.consteval.unsupported_stmt.set(outer_unsupported);
+        self.leave_call();
+        result
     }
 
     /// Step one call deeper, or refuse. `None` stops the evaluation; whoever asked for the
@@ -1581,6 +1732,9 @@ impl<'a> TypeChecker<'a> {
                 invariants: _,
                 span: _,
             }) => self.eval_loop(body, env),
+            // Already checked and discharged by `check_assert_stmt`, and it produces no
+            // value, so there is nothing left for the evaluator to do with it.
+            Statement::Assert(_) => EvalFlow::Normal,
             Statement::Break(_) => EvalFlow::Break,
             Statement::Continue(_) => EvalFlow::Continue,
             // A call written as a statement. It is run only when it writes through a

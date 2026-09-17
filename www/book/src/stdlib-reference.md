@@ -24,9 +24,11 @@ friends.
 ## Contents
 
 - [`core::cmp`](#corecmp) —
+- [`core::iter`](#coreiter) — The `Iterator` trait and its adaptors, which `for` loops and `.map` build on.
 - [`core::num`](#corenum) — The integer methods, on `i32`.
 - [`core::ops`](#coreops) —
 - [`core::option`](#coreoption) — `Option<T>`, for a value that may be absent.
+- [`core::result`](#coreresult) — `Result<T, E>`, for an operation that may fail.
 - [`std::alloc`](#stdalloc) — Raw allocation and deallocation.
 - [`std::box`](#stdbox) — `Box<T>`, a single-owner heap allocation. Required for recursive types.
 - [`std::fs`](#stdfs) — Files and directories.
@@ -40,7 +42,6 @@ friends.
 - [`std::math`](#stdmath) — Mathematical functions and constants.
 - [`std::mmap`](#stdmmap) — Memory-mapped files.
 - [`std::net`](#stdnet) — TCP and UDP sockets.
-- [`std::result`](#stdresult) — `Result<T, E>`, for an operation that may fail.
 - [`std::simd`](#stdsimd) — SIMD vector types and operations.
 - [`std::string`](#stdstring) — `String` and text manipulation.
 - [`std::tensor`](#stdtensor) — Operations on `Tensor`, including shape queries and elementwise maths.
@@ -94,6 +95,80 @@ fn eq(self : &$t, other : &$t) -> bool
 
 ```rust
 fn cmp(self : &$t, other : &$t) -> Ordering
+```
+
+## `core::iter`
+
+The `Iterator` trait and its adaptors, which `for` loops and `.map` build on.
+
+**Types**
+
+- `trait Iterator<Item>`
+- `struct Range`
+- `struct Map<I, Item, U>`
+- `struct Filter<I, Item>`
+- `struct Take<I, Item>`
+- `struct Skip<I, Item>`
+
+**Functions**
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
+```rust
+fn next(self : &mut Self) -> Option<Item>
+fn count(self : &mut Self) -> i64
+fn last(self : &mut Self) -> Option<Item>
+fn nth(self : &mut Self, n : i64) -> Option<Item>
+fn any(self : &mut Self, f : Closure1<Item, bool>) -> bool
+fn all(self : &mut Self, f : Closure1<Item, bool>) -> bool
+fn find(self : &mut Self, f : Closure1<Item, bool>) -> Option<Item>
+fn position(self : &mut Self, f : Closure1<Item, bool>) -> Option<i64>
+fn for_each(self : &mut Self, f : Closure1<Item, i32>) -> i32
+```
+
+**`Iterator<i64> for Range` methods**
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
+```rust
+fn next(self : &mut Range) -> Option<i64>
+```
+
+**`Iterator<U> for Map<I, Item, U>` methods**
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
+```rust
+fn next(self : &mut Map<I, Item, U>) -> Option<U>
+```
+
+**`Iterator<Item> for Filter<I, Item>` methods**
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
+```rust
+fn next(self : &mut Filter<I, Item>) -> Option<Item>
+```
+
+**`Iterator<Item> for Take<I, Item>` methods**
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
+```rust
+fn next(self : &mut Take<I, Item>) -> Option<Item>
+```
+
+**`Iterator<Item> for Skip<I, Item>` methods**
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
+```rust
+fn next(self : &mut Skip<I, Item>) -> Option<Item>
+fn map<I, Item, U>(inner : I, f : Closure1<Item, U>) -> Map<I, Item, U>
+fn filter<I, Item>(inner : I, keep : Closure1<Item, bool>) -> Filter<I, Item>
+fn take<I, Item>(inner : I, left : i64) -> Take<I, Item>
+fn skip<I, Item>(inner : I, drop : i64) -> Skip<I, Item>
+fn range(at : i64, end : i64) -> Range
 ```
 
 ## `core::num`
@@ -172,6 +247,31 @@ fn filter(self : Option<T>, p : Closure1<T, bool>) -> Option<T>
 fn map_or<U>(self : Option<T>, default : U, f : Closure1<T, U>) -> U
 fn unwrap_or_else(self : Option<T>, f : Closure0<T>) -> T
 fn is_some_and(self : Option<T>, p : Closure1<T, bool>) -> bool
+```
+
+## `core::result`
+
+`Result<T, E>`, for an operation that may fail.
+
+**Types**
+
+- `enum Result<T, E>`
+
+**`Result<T, E>` methods**
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
+```rust
+fn is_ok(self : &Result<T, E>) -> bool
+fn is_err(self : &Result<T, E>) -> bool
+fn unwrap(self : Result<T, E>) -> T
+fn unwrap_or(self : Result<T, E>, default : T) -> T
+fn ok(self : Result<T, E>) -> Option<T>
+fn err(self : Result<T, E>) -> Option<E>
+fn map<U>(self : Result<T, E>, f : Closure1<T, U>) -> Result<U, E>
+fn map_err<F>(self : Result<T, E>, f : Closure1<E, F>) -> Result<T, F>
+fn and_then<U>(self : Result<T, E>, f : Closure1<T, Result<U, E>>) -> Result<U, E>
+fn unwrap_or_else(self : Result<T, E>, f : Closure1<E, T>) -> T
 ```
 
 ## `std::alloc`
@@ -615,23 +715,6 @@ fn vx_tcp_listener_accept(ptr : *mut i8) -> *mut i8
 fn vx_tcp_listener_drop(ptr : *mut i8) -> i32
 ```
 
-## `std::result`
-
-`Result<T, E>`, for an operation that may fail.
-
-**Functions** *(bound directly to C)*
-
-<!-- vx-doctest: skip -- signature listing, not a program -->
-
-```rust
-fn vx_result_new_ok_i32_i32(val : i32) -> *mut i8
-fn vx_result_new_err_i32_i32(err : i32) -> *mut i8
-fn vx_result_is_ok_i32_i32(ptr : *mut i8) -> Bool
-fn vx_result_is_err_i32_i32(ptr : *mut i8) -> Bool
-fn vx_result_unwrap_i32_i32(ptr : *mut i8) -> i32
-fn vx_result_drop_i32_i32(ptr : *mut i8) -> i32
-```
-
 ## `std::simd`
 
 SIMD vector types and operations.
@@ -834,4 +917,4 @@ fn vx_vec_bounds_check(index : i64, len : i64) -> i32
 
 ______________________________________________________________________
 
-288 functions across 23 modules.
+311 functions across 24 modules.

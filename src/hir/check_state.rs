@@ -53,6 +53,13 @@ pub struct ConstEvalState {
     /// Set when evaluation stopped because it ran past `MAX_LOOP_STEPS`. Whoever asked for
     /// the value reports it, since the evaluator itself cannot reach the diagnostics.
     pub steps_exceeded: std::cell::Cell<bool>,
+    /// How many closure bodies are open around the statement being checked.
+    ///
+    /// A `comptime` block that is a closure's body is that closure's body, not a request to
+    /// compute something now: `| y | comptime { y + 1 }` cannot fold, because `y` is not
+    /// known until someone calls it. It is a `constexpr` function, and what has to fold is
+    /// the call. An uncalled one is just an unused variable.
+    pub closure_body_depth: u32,
     /// How many `comptime` blocks are open around the statement being checked.
     ///
     /// Loops are run only inside one. A run-time loop has nothing to gain from being run at
@@ -87,6 +94,7 @@ impl Default for ConstEvalState {
             loop_steps: std::cell::Cell::new(0),
             steps_exceeded: std::cell::Cell::new(false),
             comptime_depth: 0,
+            closure_body_depth: 0,
         }
     }
 }
@@ -115,7 +123,17 @@ pub struct MonoState {
     pub closure_depths: Vec<usize>,
     /// Variables each open closure literal captured, innermost last.
     pub closure_captures_stack: Vec<HashMap<Symbol, Type>>,
+    /// How many generic instantiations are open around the call being checked.
+    ///
+    /// `f<N - 1>()` whose base case is never reached instantiates a new `f` every time
+    /// round, each one checked inside the last, and that took the compiler's stack down
+    /// with no file, no line and no message.
+    pub instantiation_depth: u32,
 }
+
+/// How deep a chain of generic instantiations the checker will follow before giving up.
+/// High enough that ordinary compile-time recursion never reaches it.
+pub const MAX_INSTANTIATION_DEPTH: u32 = 128;
 
 /// The memory algebra's seam obligations: the solver that discharges them, the facts they are
 /// checked against, and the cost of doing so.

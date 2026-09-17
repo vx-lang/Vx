@@ -1,0 +1,25 @@
+//===- several_inputs_compile_in_turn.vx - Vx Compiler ----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Given several inputs, vxc compiles each as its own program, in the order given, the way
+// `cc a.c b.c` does. Inputs are not composed: modules compose with `import`.
+//
+// The second file is written by the RUN line and defines a function this file does not, so
+// its function appearing after this file's is evidence that both were compiled, in order,
+// and the exit status is evidence that neither failed.
+//
+// RUN: mkdir -p %t.d
+// RUN: printf 'fn beta(b: i32) -> i32 {\n  return b * 2;\n}\n' > %t.d/second.vx
+// RUN: (vxc %s %t.d/second.vx --action emit-mlir 2>&1; echo "exit=$?") | FileCheck %s
+
+fn alpha(a: i32) -> i32 {
+  return a + 1;
+}
+
+// CHECK: func.func @alpha
+// CHECK: func.func @beta
+// CHECK: exit=0

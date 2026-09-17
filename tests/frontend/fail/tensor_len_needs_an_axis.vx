@@ -1,0 +1,26 @@
+//===- tensor_len_needs_an_axis.vx - Vx Compiler ----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `len()` counts the outermost axis. A rank-0 tensor holds one value and has
+// no axis to count, so it is refused rather than answered; and `len` takes
+// no arguments, unlike `extent(i)`.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK-DAG: `len()` on a rank-0 tensor
+// CHECK-DAG: `len()` takes no arguments
+
+fn scalar_len(s : Tensor<f32, []>) -> i32 {
+  return s.len();
+}
+
+fn with_an_argument(t : Tensor<f32, [4]>) -> i32 {
+  return t.len(1);
+}
+
+fn main() -> i32 {
+  return 0;
+}

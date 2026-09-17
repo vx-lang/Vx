@@ -5,8 +5,13 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// Four constructs whose bodies the AST emitter splices into the enclosing block
+// Three constructs whose bodies the AST emitter splices into the enclosing block
 // rather than giving a region of their own. Each one used to fail to compile.
+//
+// There was a fourth, a loop inside a `comptime { }` block. A `comptime` block emits
+// nothing now, so it has no tail to keep and nothing here to test. The version that was
+// here also wrote to a tensor declared outside the block, which is refused outright --
+// see fail/comptime_block_cannot_be_evaluated.vx.
 //
 // Lowering a statement can move the insertion point -- a `for` opens three
 // blocks and lands in a fourth, an `if` lands in its merge block -- or close it
@@ -40,7 +45,7 @@
 //
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // CHECK: func.func @main
-// EXPECT: 3 3 4 5
+// EXPECT: 3 3 5
 
 // A `spawn` region whose last statement is an `if`.
 fn tail_if_in_spawn() -> i32 {
@@ -69,18 +74,6 @@ fn loop_in_comptime_branch() -> i32 {
   return a[0][0] as i32;
 }
 
-// The same, in a `comptime { }` block.
-fn loop_in_comptime_block() -> i32 {
-  let mut a = Tensor<f32, [1, 1]>::uninit();
-  a[0][0] = 0.0;
-  comptime {
-    for i in 0..4 {
-      a[0][0] = a[0][0] + 1.0;
-    }
-  }
-  return a[0][0] as i32;
-}
-
 // A `return` inside the surviving branch. What follows it is unreachable rather
 // than illegal, so it needs a block of its own -- appending it after the
 // `func.return` is what MLIR refuses.
@@ -96,8 +89,6 @@ fn main() -> i32 {
   print!(tail_if_in_spawn());
   print!(" ");
   print!(loop_in_comptime_branch());
-  print!(" ");
-  print!(loop_in_comptime_block());
   print!(" ");
   print(return_in_comptime_branch());
   return 0;

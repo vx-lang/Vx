@@ -29,10 +29,12 @@ fn main() -> i32 {
   return 0;
 }
 
+// The block worked the sizes out while compiling and left nothing behind, so none of the
+// sizes it computed appear between `main` and its return. They used to be spliced in and
+// recomputed at run time. A wrong size is caught by the asserts above, which stop the
+// build; what is checked here is that the block itself is gone.
 // CHECK-LABEL: func.func @main
-// CHECK: arith.constant 4 : i64
-// CHECK: arith.constant 4 : i64
-// CHECK: arith.constant 8 : i64
-// CHECK: arith.constant 8 : i64
-// CHECK: arith.constant 1 : i64
-// CHECK: arith.constant 1 : i64
+// CHECK-NOT: arith.constant 4 : i64
+// CHECK-NOT: arith.constant 8 : i64
+// CHECK-NOT: arith.constant 1 : i64
+// CHECK: return

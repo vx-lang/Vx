@@ -1,0 +1,129 @@
+//===- tensor_arithmetic_run.vx - Vx Compiler -------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The tensor operators compute what they are named, element by element.
+//
+// `tensor_operations.vx` checks that `a + b` reaches codegen as a `linalg.add`
+// and `x @ y` as a `linalg.matmul`, and stops there. An op that read one
+// operand twice, wrote its result transposed, or subtracted where it should
+// add would emit exactly the IR those checks ask for. Nothing ran these
+// operators and compared the numbers, so this file does.
+//
+// Every operand position holds a different value and every checked result
+// position is distinct, so no two positions can be mistaken for each other.
+// The results are hand-computed above each block.
+//
+// Tensors are linear -- an operator consumes both its operands -- so each
+// expression builds its own pair rather than reusing one.
+//
+// EXPECT: add01=22;
+// EXPECT: add10=33;
+// EXPECT: sub01=18;
+// EXPECT: sub10=27;
+// EXPECT: mul01=40;
+// EXPECT: mul10=90;
+// EXPECT: div01=20;
+// EXPECT: div10=30;
+// EXPECT: mm00=22;
+// EXPECT: mm01=28;
+// EXPECT: mm10=49;
+// EXPECT: mm11=64;
+//
+// Rank 1 takes a different route and is checked in `tensor_arithmetic_rank1_run.vx`,
+// which the flat path declines; keeping it out of this file is what lets these
+// checks run on both paths.
+
+// A 2x2 written out position by position.
+fn t2(v00 : f32, v01 : f32, v10 : f32, v11 : f32) -> Tensor<f32, [2, 2]> {
+  let mut t = Tensor<f32, [2, 2]>::uninit();
+  t[0][0] = v00;
+  t[0][1] = v01;
+  t[1][0] = v10;
+  t[1][1] = v11;
+  return t;
+}
+
+// A 2x3 of 1..6, laid out row by row.
+fn wide() -> Tensor<f32, [2, 3]> {
+  let mut x = Tensor<f32, [2, 3]>::uninit();
+  for i in 0..2 {
+    for j in 0..3 {
+      x[i][j] = (i * 3 + j + 1) as f32;
+    }
+  }
+  return x;
+}
+
+// A 3x2 of 1..6. Not the transpose of `wide`, so multiplying the two in the
+// wrong order or transposing either one gives different numbers.
+fn tall() -> Tensor<f32, [3, 2]> {
+  let mut y = Tensor<f32, [3, 2]>::uninit();
+  for i in 0..3 {
+    for j in 0..2 {
+      y[i][j] = (i * 2 + j + 1) as f32;
+    }
+  }
+  return y;
+}
+
+fn main() -> i32 {
+  // [[1,2],[3,4]] + [[10,20],[30,40]] = [[11,22],[33,44]]
+  let add = t2(1.0, 2.0, 3.0, 4.0) + t2(10.0, 20.0, 30.0, 40.0);
+  print!("add01=");
+  print(add[0][1]);
+  print!("; ");
+  print!("add10=");
+  print(add[1][0]);
+  print!("; ");
+
+  // [[10,20],[30,40]] - [[1,2],[3,4]] = [[9,18],[27,36]]. The operands are in
+  // this order because subtraction is the one operator that notices a swap.
+  let sub = t2(10.0, 20.0, 30.0, 40.0) - t2(1.0, 2.0, 3.0, 4.0);
+  print!("sub01=");
+  print(sub[0][1]);
+  print!("; ");
+  print!("sub10=");
+  print(sub[1][0]);
+  print!("; ");
+
+  // [[1,2],[3,4]] * [[10,20],[30,40]] = [[10,40],[90,160]], element by
+  // element. This is not a matrix product: that is `@`, checked below.
+  let mul = t2(1.0, 2.0, 3.0, 4.0) * t2(10.0, 20.0, 30.0, 40.0);
+  print!("mul01=");
+  print(mul[0][1]);
+  print!("; ");
+  print!("mul10=");
+  print(mul[1][0]);
+  print!("; ");
+
+  // [[10,40],[90,160]] / [[1,2],[3,4]] = [[10,20],[30,40]]
+  let div = t2(10.0, 40.0, 90.0, 160.0) / t2(1.0, 2.0, 3.0, 4.0);
+  print!("div01=");
+  print(div[0][1]);
+  print!("; ");
+  print!("div10=");
+  print(div[1][0]);
+  print!("; ");
+
+  // [[1,2,3],[4,5,6]] @ [[1,2],[3,4],[5,6]] = [[22,28],[49,64]].
+  // All four entries are checked: a matmul that accumulated over the wrong
+  // axis still lands in a 2x2, so the shape alone proves nothing.
+  let mm = wide() @ tall();
+  print!("mm00=");
+  print(mm[0][0]);
+  print!("; ");
+  print!("mm01=");
+  print(mm[0][1]);
+  print!("; ");
+  print!("mm10=");
+  print(mm[1][0]);
+  print!("; ");
+  print!("mm11=");
+  print(mm[1][1]);
+  print!("; ");
+  return 0;
+}
