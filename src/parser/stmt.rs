@@ -201,12 +201,7 @@ impl<'a> Parser<'a> {
                 self.advance();
                 let mut invariants = Vec::new();
                 while self.match_token(&TokenType::Invariant) {
-                    self.consume(&TokenType::LeftParen, "Expected '(' after 'invariant'")?;
                     invariants.push(self.parse_expr()?);
-                    self.consume(
-                        &TokenType::RightParen,
-                        "Expected ')' after invariant expression",
-                    )?;
                 }
                 self.consume(&TokenType::LeftBrace, "Expected '{' after loop")?;
                 let mut body = Vec::new();
@@ -244,12 +239,7 @@ impl<'a> Parser<'a> {
                 let iterable = self.parse_expr()?;
                 let mut invariants = Vec::new();
                 while self.match_token(&TokenType::Invariant) {
-                    self.consume(&TokenType::LeftParen, "Expected '(' after 'invariant'")?;
                     invariants.push(self.parse_expr()?);
-                    self.consume(
-                        &TokenType::RightParen,
-                        "Expected ')' after invariant expression",
-                    )?;
                 }
                 self.consume(&TokenType::LeftBrace, "Expected '{'")?;
                 let mut stmts = Vec::new();
