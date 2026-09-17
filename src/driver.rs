@@ -19,6 +19,10 @@ use melior::ir::operation::OperationLike;
 use std::path::PathBuf;
 
 use crate::config::Schedule;
+
+/// The module `--host default` is synthesised into. Nothing on disk can be called this, so it
+/// cannot collide with a module a program actually imports.
+const NATIVE_HOST_MODULE: &str = "<native-host>";
 use crate::hir::{GlobalAstEnv, TypeChecker};
 use crate::intern_mode::InternMode;
 use crate::module_loader::ModuleLoader;
@@ -680,7 +684,7 @@ impl CompilerDriver {
     /// which is what a program staging through it needs there to be.
     fn native_host_program() -> crate::syntax::Program {
         crate::syntax::Program {
-            module_path: crate::symbol::Symbol::from("<native-host>"),
+            module_path: crate::symbol::Symbol::from(NATIVE_HOST_MODULE),
             item_macros: Vec::new(),
             memories: vec![crate::syntax::MemoryDecl {
                 name: crate::symbol::Symbol::from("CPU_DRAM"),
@@ -1078,13 +1082,30 @@ impl CompilerDriver {
     /// topology whose memory is host memory. That holds for a `--host` file and for the
     /// `--host default` declaration synthesised from the compiling machine, so there is
     /// one rule and no special case.
+    ///
+    /// More than one module can declare such a topology -- `--machine fleet/h100.vx --host
+    /// default` gives two -- so the candidates are put in a defined order before one is picked,
+    /// and the order is a property of the modules rather than of how the caller collected them.
+    /// One caller walks a `HashMap` and the other a `Vec`, and reading the first match out of
+    /// either used to stamp a different target triple on the same program from one run to the
+    /// next, and a different one again under `-j`.
     fn host_arch_of<'a>(
         programs: impl Iterator<Item = &'a crate::syntax::Program>,
     ) -> Option<String> {
-        programs
-            .flat_map(|p| p.topologies.iter())
-            .find(|t| t.descriptor.default_space == crate::syntax::MemorySpace::CPUDRAM)
-            .and_then(|t| t.descriptor.arch.as_ref())
+        let mut hosts: Vec<(&str, &crate::arch::TopologyDecl)> = programs
+            .flat_map(|p| {
+                let module = p.module_path.as_ref();
+                p.topologies.iter().map(move |t| (module, t))
+            })
+            .filter(|(_, t)| t.descriptor.default_space == crate::syntax::MemorySpace::CPUDRAM)
+            .collect();
+        // A declared host wins over the one `--host default` synthesises: the synthesised module
+        // says only "this machine", which is the answer when nothing else was stated. Among
+        // declared hosts the module name decides, so the answer never depends on iteration order.
+        hosts.sort_by_key(|(module, _)| (*module == NATIVE_HOST_MODULE, *module));
+        hosts
+            .first()
+            .and_then(|(_, t)| t.descriptor.arch.as_ref())
             .map(|a| a.to_string())
     }
 
@@ -1854,5 +1875,34 @@ mod flat_codegen_tests {
         // whole program declines -> AST fallback (never a wrong result).
         let unknown = parse("fn main() -> i32 { return mystery(1); }");
         assert!(CompilerDriver::build_flat_module(&context, &unknown, &empty, &[]).is_none());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Two modules can declare a host topology at once -- `--machine fleet/h100.vx --host default`
+    /// gives exactly that -- so which one answers must not depend on the order the caller happened
+    /// to collect them in. One caller walks a `HashMap`, so that order is not even stable between
+    /// two runs of the same command.
+    #[test]
+    fn the_host_arch_does_not_depend_on_the_order_the_modules_arrive_in() {
+        let native = CompilerDriver::native_host_program();
+        let mut machine = native.clone();
+        machine.module_path = crate::symbol::Symbol::from("fleet::h100");
+        machine.topologies[0].descriptor.arch = Some(crate::symbol::Symbol::from("declared-arch"));
+
+        let forwards = CompilerDriver::host_arch_of([&machine, &native].into_iter());
+        let backwards = CompilerDriver::host_arch_of([&native, &machine].into_iter());
+        assert_eq!(
+            forwards, backwards,
+            "the order the modules arrived in changed the host architecture"
+        );
+        assert_eq!(
+            forwards.as_deref(),
+            Some("declared-arch"),
+            "a declared host lost to the one --host default synthesises"
+        );
     }
 }
