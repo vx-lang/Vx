@@ -63,6 +63,18 @@ pub struct MeliorGenerator<'c> {
     pub(crate) enzyme_decls: std::collections::HashSet<String>,
     pub string_counter: usize,
     pub current_return_type: Option<Type<'c>>,
+    /// The buffer the caller allocated for this function's tensor result, when it returns through
+    /// one. A `return` writes its value in here and returns nothing. `None` for every other return
+    /// type, which still returns by value. See `returns_through_slot`.
+    pub current_return_slot: Option<melior::ir::Value<'c, 'c>>,
+    /// The return slot offered to the expression currently being returned, so an op that would
+    /// allocate a fresh result buffer writes into the caller's instead -- the named return value
+    /// optimization, matching what the flat path does through `FnEmit::nrvo_slot`.
+    ///
+    /// Set by `return` around the expression it returns, and taken by the outermost op that can
+    /// use it. A consumer takes it before lowering its own operands, so a nested op never mistakes
+    /// the slot for its own scratch.
+    pub(crate) nrvo_slot: Option<melior::ir::Value<'c, 'c>>,
     pub expected_type: Option<Type<'c>>,
     pub in_spawn: bool,
     pub break_blocks: Vec<*const melior::ir::Block<'c>>,
@@ -133,6 +145,18 @@ pub(crate) fn strip_memref_space(s: &str) -> Option<String> {
     Some(format!("memref<{head}>"))
 }
 
+/// Whether a lowered return type travels through a buffer the caller allocated, rather than
+/// coming back by value: a tensor whose extents are all known at compile time.
+///
+/// The same rule the flat path applies in `flat::returns_through_slot`, and the two have to agree
+/// -- every fixture runs on both back ends against one set of CHECK lines, and a caller on one
+/// path can link a body compiled by the other. A `?` extent gives the caller no size to reserve,
+/// and a memory space means the buffer is not the caller's to allocate, so both keep returning a
+/// descriptor. (#643)
+pub(crate) fn returns_through_slot(ty_text: &str) -> bool {
+    ty_text.starts_with("memref<") && !ty_text.contains('?') && !ty_text.contains(',')
+}
+
 /// The width in bits of a scalar MLIR type, so `i8` gives 8. `None` for anything with no
 /// width of its own, such as a pointer or an aggregate.
 fn scalar_type_bits(ty_text: &str) -> Option<u32> {
@@ -155,6 +179,26 @@ impl<'c> MeliorGenerator<'c> {
             self.current_span.line,
             self.current_span.column,
         )
+    }
+
+    /// The MLIR signature a Vx function is emitted with, given its declared one.
+    ///
+    /// A statically shaped tensor result is not a result at all: it is a buffer the caller
+    /// allocated and passed as the first parameter, so the function returns nothing. Every
+    /// consumer -- the definition, a call, a function constant -- goes through here, because a
+    /// caller that disagreed with the definition about this would build a call MLIR rejects.
+    pub(crate) fn abi_signature(
+        &self,
+        ret_ty: Type<'c>,
+        arg_tys: &[Type<'c>],
+    ) -> (Option<Type<'c>>, Vec<Type<'c>>) {
+        if !returns_through_slot(&ret_ty.to_string()) {
+            return (Some(ret_ty), arg_tys.to_vec());
+        }
+        let mut with_slot = Vec::with_capacity(arg_tys.len() + 1);
+        with_slot.push(ret_ty);
+        with_slot.extend_from_slice(arg_tys);
+        (None, with_slot)
     }
 
     pub fn is_memref(&self, ty: &Type<'c>) -> bool {
@@ -626,6 +670,8 @@ impl<'c> MeliorGenerator<'c> {
             enzyme_decls: std::collections::HashSet::new(),
             string_counter: 0,
             current_return_type: None,
+            current_return_slot: None,
+            nrvo_slot: None,
             expected_type: None,
             in_spawn: false,
             break_blocks: Vec::new(),
@@ -931,6 +977,15 @@ impl<'c> MeliorGenerator<'c> {
                 crate::codegen::lower::LowerError::from(format!("Function not found: {}", name))
             })?;
 
+            // An `extern` keeps the C convention: its return type is whatever the foreign
+            // function actually returns, never a slot we invented. Nothing in the stdlib returns
+            // an aggregate from C today, and guessing at the platform's rule for one would
+            // produce a call that links and is wrong.
+            assert!(
+                !returns_through_slot(&ret_ty.to_string()),
+                "extern '{name}' returns a tensor by value; the C return convention for an \
+                 aggregate is not modelled (#643)"
+            );
             let mut actual_ret_tys = Vec::new();
             if ret_ty.to_string() != "none" {
                 actual_ret_tys.push(*ret_ty);
@@ -983,14 +1038,19 @@ impl<'c> MeliorGenerator<'c> {
         let true_ret_ty = self.lower_type(&func.return_type)?;
         let ret_ty = if is_main { self.i32_ty } else { true_ret_ty };
 
-        let mut arg_tys = Vec::new();
+        let mut declared_tys = Vec::new();
         for (_, ty) in &func.params {
-            arg_tys.push(self.lower_type(ty)?);
+            declared_tys.push(self.lower_type(ty)?);
         }
+        // The return slot, when there is one, becomes the first parameter and the result goes
+        // away. `arg_tys` is what the block arguments are built from below, so a declared
+        // parameter `i` is block argument `i + slot_args`.
+        let (abi_ret, arg_tys) = self.abi_signature(ret_ty, &declared_tys);
+        let slot_args = arg_tys.len() - declared_tys.len();
 
         let mut actual_ret_tys = Vec::new();
-        if ret_ty.to_string() != "none" {
-            actual_ret_tys.push(ret_ty);
+        if let Some(rt) = abi_ret.filter(|rt| rt.to_string() != "none") {
+            actual_ret_tys.push(rt);
         }
         let func_type =
             melior::ir::r#type::FunctionType::new(self.context, &arg_tys, &actual_ret_tys);
@@ -1030,13 +1090,19 @@ impl<'c> MeliorGenerator<'c> {
         let region = melior::ir::Region::new();
         let mut current_block = region.append_block(Block::new(&block_args));
 
-        // Map arguments into the environment
+        // Map arguments into the environment, past the return slot when there is one.
         for (i, (name, ast_ty)) in func.params.iter().enumerate() {
-            let arg_val = current_block.argument(i)?.into();
+            let arg_val = current_block.argument(i + slot_args)?.into();
             self.env
-                .insert(name.to_string().into(), (arg_val, arg_tys[i]));
+                .insert(name.to_string().into(), (arg_val, arg_tys[i + slot_args]));
             self.ast_env.insert(name.to_string().into(), ast_ty.clone());
         }
+        // The caller's buffer is block argument 0; `return` writes into it. Cleared with
+        // `current_return_type` at the end of the function.
+        self.current_return_slot = match slot_args {
+            0 => None,
+            _ => Some(current_block.argument(0)?.into()),
+        };
 
         if is_main {
             // Call vx_init_signals
@@ -1106,6 +1172,7 @@ impl<'c> MeliorGenerator<'c> {
         }
 
         self.current_return_type = None;
+        self.current_return_slot = None;
 
         let func_attributes = vec![
             (

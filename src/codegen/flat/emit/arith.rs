@@ -160,8 +160,17 @@ impl FnEmit<'_> {
                 sizes.push(s);
             }
         }
-        let n = format!("%v{idx}");
-        self.body += &format!("  {n} = memref.alloc({}) : {memty}\n", sizes.join(", "));
+        // When this result is what the function returns, `outs` is the caller's buffer and no
+        // intermediate is allocated at all -- the elementwise op writes the answer where it is
+        // wanted. Otherwise it needs a buffer of its own.
+        let n = match self.nrvo_slot(idx, &memty) {
+            Some(slot) => slot,
+            None => {
+                let n = format!("%v{idx}");
+                self.body += &format!("  {n} = memref.alloc({}) : {memty}\n", sizes.join(", "));
+                n
+            }
+        };
         self.body += &format!("  {op} ins({a}, {b} : {ma}, {mb}) outs({n} : {memty})\n");
         self.names[idx] = n;
         self.mem_of[idx] = Some(memty);

@@ -6,10 +6,14 @@
 //
 //===----------------------------------------------------------------------===//
 // `a @ b` lowers to a `linalg.matmul` over a zero-filled destination, with the
-// shapes carried through from the tensor types.
+// shapes carried through from the tensor types. The result travels back through a buffer the
+// caller allocated and passed as the first parameter, so `my_matmul` returns nothing.
 //
 // The CHECK lines pin the AST path, which is what `test_melior_matmul` and the
-// middle-end harness both generate.
+// middle-end harness both generate. It still builds the product in a buffer of its own and
+// copies it out: the value is returned through the local `c`, and naming the destination of a
+// `let` is analysis the AST path does not do. The flat path, which does, writes the product
+// straight into the caller's buffer.
 //
 // RUN: vxc %s --action emit-mlir --legacy-codegen 2>&1 | FileCheck %s
 
@@ -27,12 +31,13 @@ fn main() -> i32 {
 }
 
 // CHECK: module
-// CHECK:   func.func @my_matmul(%arg0: memref<128x64xf32>, %arg1: memref<64x256xf32>) -> memref<128x256xf32> {
-// CHECK:     %alloc = memref.alloc() : memref<128x256xf32>
+// CHECK:   func.func @my_matmul(%[[RET:.*]]: memref<128x256xf32>, %arg1: memref<128x64xf32>, %arg2: memref<64x256xf32>) {
+// CHECK:     %[[C:.*]] = memref.alloc() : memref<128x256xf32>
 // CHECK:     %cst = arith.constant 0.000000e+00 : f32
-// CHECK:     linalg.fill ins(%cst : f32) outs(%alloc : memref<128x256xf32>)
-// CHECK:     linalg.matmul ins(%arg0, %arg1 : memref<128x64xf32>, memref<64x256xf32>) outs(%alloc : memref<128x256xf32>)
-// CHECK:     return %alloc : memref<128x256xf32>
+// CHECK:     linalg.fill ins(%cst : f32) outs(%[[C]] : memref<128x256xf32>)
+// CHECK:     linalg.matmul ins(%arg1, %arg2 : memref<128x64xf32>, memref<64x256xf32>) outs(%[[C]] : memref<128x256xf32>)
+// CHECK:     memref.copy %[[C]], %[[RET]] : memref<128x256xf32> to memref<128x256xf32>
+// CHECK:     return
 // CHECK:   }
 // CHECK:   func.func @main() -> i32 {
 // CHECK:     %[[A:.*]] = memref.alloc(%{{.*}}, %{{.*}}) : memref<?x?xf32>
@@ -41,9 +46,10 @@ fn main() -> i32 {
 // CHECK:     %[[B:.*]] = memref.alloc(%{{.*}}, %{{.*}}) : memref<?x?xf32>
 // CHECK:     %[[VB:.*]] = arith.constant 1.000000e+00 : f32
 // CHECK:     linalg.fill ins(%[[VB]] : f32) outs(%[[B]] : memref<?x?xf32>)
+// CHECK:     %[[SLOT:.*]] = memref.alloca() : memref<128x256xf32>
 // CHECK:     %[[CA:.*]] = memref.cast %[[A]] : memref<?x?xf32> to memref<128x64xf32>
 // CHECK:     %[[CB:.*]] = memref.cast %[[B]] : memref<?x?xf32> to memref<64x256xf32>
-// CHECK:     call @my_matmul(%[[CA]], %[[CB]]) : (memref<128x64xf32>, memref<64x256xf32>) -> memref<128x256xf32>
+// CHECK:     call @my_matmul(%[[SLOT]], %[[CA]], %[[CB]]) : (memref<128x256xf32>, memref<128x64xf32>, memref<64x256xf32>) -> ()
 // CHECK:     return
 // CHECK:   }
 // CHECK: }

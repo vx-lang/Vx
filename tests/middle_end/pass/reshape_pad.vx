@@ -18,11 +18,16 @@ fn process_tensor(val: Tensor<f32, [128, 128]>) -> Tensor<f32, [256]> {
   return padded;
 }
 
-// The reshape is a view: one reinterpret_cast rewrites the buffer as a flat 256-element
-// memref, so nothing is copied.
-// CHECK-LABEL: func.func @process_tensor(%arg0: memref<128x128xf32>) -> memref<256xf32> {
-// CHECK-NEXT: %[[V:.*]] = memref.reinterpret_cast %arg0 to offset: [0], sizes: [256], strides: [1] : memref<128x128xf32> to memref<256xf32>
-// CHECK-NEXT: return %[[V]] : memref<256xf32>
+// The reshape is a view: one reinterpret_cast rewrites the parameter's buffer as a flat
+// 256-element memref. Returning it copies, because the result is the caller's buffer and the
+// view points at the argument's. That copy is what keeps the returned tensor from aliasing the
+// argument -- handing the view back directly would have let a write through the result change
+// `val`, which its type does not say. The cost is real: a view returned unchanged now copies.
+// CHECK-LABEL: func.func @process_tensor
+// CHECK-SAME: (%[[RET:.*]]: memref<256xf32>, %arg1: memref<128x128xf32>) {
+// CHECK-NEXT: %[[V:.*]] = memref.reinterpret_cast %arg1 to offset: [0], sizes: [256], strides: [1] : memref<128x128xf32> to memref<256xf32>
+// CHECK-NEXT: memref.copy %[[V]], %[[RET]] : memref<256xf32> to memref<256xf32>
+// CHECK-NEXT: return
 
 fn main() -> i32 {
   let v = Tensor<f32, [ 128, 128 ]>::fill(1.0);
