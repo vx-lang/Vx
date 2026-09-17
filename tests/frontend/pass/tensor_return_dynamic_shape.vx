@@ -1,0 +1,36 @@
+//===- tensor_return_dynamic_shape.vx - Vx Compiler --------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The limit of the caller-allocated return buffer: a `?` extent is only known once the callee
+// runs, so the caller has no size to reserve. Those keep returning a descriptor over a buffer the
+// callee allocated -- which is the allocation #642 still owes a free for, and the reason this
+// case is not simply the same rule (#643).
+//
+// REQUIRES: flat-codegen
+// Not because the convention differs -- the oracle leaves a `?`-shaped return alone too -- but
+// because it cannot build the tensor in the first place: `Tensor<f32>(n)` with a run-time extent
+// lowers to a rank-0 `memref<f32>` there, return or no return, and the declared shape then
+// arrives by way of an f32-to-memref bitcast. That is its own bug (#646), not this one.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+
+import std::tensor;
+
+// Still a result, not a parameter, and the callee still allocates it.
+// CHECK: func.func @make_dyn(%{{.*}}: i32) -> memref<?xf32> {
+// CHECK: %[[BUF:.*]] = memref.alloc(%{{.*}}) : memref<?xf32>
+// CHECK: return %[[BUF]] : memref<?xf32>
+
+fn make_dyn(n : i32) -> Tensor<f32, [ ? ]> {
+  let t = Tensor<f32>(n);
+  return t;
+}
+
+fn main() -> i32 {
+  let _t = make_dyn(4);
+  return 0;
+}
