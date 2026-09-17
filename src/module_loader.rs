@@ -55,6 +55,10 @@ pub struct ModuleLoader {
     /// (keyed by module name) for the driver to deserialize + merge into the frozen registry. This is
     /// the automatic form of `--link-interface`.
     pub loaded_interfaces: HashMap<crate::symbol::Symbol, Vec<u8>>,
+    /// Set by [`ModuleLoader::load_all`], which returns the modules it parsed rather than storing
+    /// them here. Read by [`ModuleLoader::into_programs`], so that asking this loader for modules
+    /// it never kept is a crash instead of an empty compile.
+    returned_modules_directly: bool,
 }
 
 impl ModuleLoader {
@@ -90,6 +94,7 @@ impl ModuleLoader {
             search_paths,
             loaded_modules: HashMap::new(),
             loaded_interfaces: HashMap::new(),
+            returned_modules_directly: false,
         }
     }
 
@@ -124,6 +129,7 @@ impl ModuleLoader {
         roots: &[String],
         sched: Schedule,
     ) -> Result<Vec<Program>, ModuleError> {
+        self.returned_modules_directly = true;
         let mut programs: Vec<Program> = Vec::new();
         let mut seen: HashSet<Symbol> = HashSet::new();
         let mut wave: Vec<(Symbol, PathBuf)> = Vec::new();
@@ -173,7 +179,7 @@ impl ModuleLoader {
     }
 
     /// Where an import leads: a source file to parse, or a precompiled interface, which is
-    /// preferred when both sit where the source would (#219) and is read here so nothing about
+    /// preferred when both sit where the source would and is read here so nothing about
     /// resolution is left for the caller to do serially.
     fn resolve_import(&self, path: &[Symbol]) -> Result<Resolved, ModuleError> {
         if let Some(artifact) = self.resolve_artifact_path(path) {
@@ -191,7 +197,18 @@ impl ModuleLoader {
         }
     }
 
+    /// The modules this loader kept, for the `load_main` entry point that stores them.
+    ///
+    /// [`ModuleLoader::load_all`] hands its modules straight back to its caller instead, so it
+    /// leaves nothing here. Calling this after it used to return an empty `Vec`, and a caller
+    /// following the older shape -- `load_all(..)?; let programs = loader.into_programs();` --
+    /// compiled nothing at all, with no error anywhere to say so.
     pub fn into_programs(self) -> Vec<Program> {
+        assert!(
+            !self.returned_modules_directly,
+            "load_all already returned the modules it loaded; this loader kept none, so asking \
+             it for them would compile an empty program"
+        );
         self.loaded_modules.into_values().collect()
     }
 
@@ -301,5 +318,38 @@ impl ModuleLoader {
 impl Default for ModuleLoader {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `load_all` hands its modules back rather than keeping them, so a caller who follows the
+    /// `load_main` shape gets nothing from this loader. That used to be an empty `Vec` and an
+    /// empty compile; it is a crash now, because a compiler that emits nothing and reports
+    /// success is the worse of the two.
+    #[test]
+    #[should_panic(expected = "load_all already returned the modules")]
+    fn asking_load_all_s_loader_for_its_modules_is_refused() {
+        let mut loader = ModuleLoader::new();
+        let _ = loader.load_all(
+            &["tests/modules/jobs_wave_b.vx".to_string()],
+            Schedule::Sequential,
+        );
+        let _ = loader.into_programs();
+    }
+
+    /// The `load_main` entry point does keep them, and this is the shape that reads them back.
+    #[test]
+    fn load_main_keeps_the_modules_it_parsed() {
+        let mut loader = ModuleLoader::new();
+        loader
+            .load_main("tests/modules/jobs_wave_b.vx")
+            .expect("the fixture module should parse");
+        assert!(
+            !loader.into_programs().is_empty(),
+            "load_main kept nothing, so a compile through this loader would be empty"
+        );
     }
 }

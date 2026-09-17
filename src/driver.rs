@@ -525,8 +525,12 @@ impl CompilerDriver {
         roots.push(filename.to_string());
 
         let mut loader = ModuleLoader::new();
+        // The error names the file it happened in -- an import deep in a wave, or the --machine
+        // or --host file, none of which is the entry module. Naming the entry file here pointed
+        // at a file that parsed cleanly, and left the real one to be read out of the nested
+        // message.
         let mut programs = crate::intern_mode::timed("parse", || loader.load_all(&roots, sched))
-            .map_err(|e| format!("Frontend failed to parse '{}': {}", filename, e))?;
+            .map_err(|e| format!("Frontend failed to load '{}': {}", filename, e))?;
         let mut auto: Vec<(crate::symbol::Symbol, Vec<u8>)> =
             std::mem::take(&mut loader.loaded_interfaces)
                 .into_iter()

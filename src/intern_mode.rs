@@ -253,8 +253,10 @@ pub fn take_phases() -> Vec<(&'static str, std::time::Duration)> {
         .collect()
 }
 
-/// One machine-readable line per phase: `phase,<name>,<milliseconds>`. Written to stdout so a
-/// harness can parse a run without scraping the human report (#297).
+/// One machine-readable line per phase: `phase,<name>,<milliseconds>`, so a harness can parse a
+/// run without scraping the human report.
+///
+/// Its caller writes these to stderr, keeping stdout for the MLIR a compile prints.
 pub fn phases_csv() -> String {
     take_phases()
         .into_iter()
