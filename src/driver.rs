@@ -454,7 +454,7 @@ impl CompilerDriver {
         eprintln!("[parallel-frontend] emitted module with -j {jobs}");
         let emitted = self.emit_from_mlir_text(&text, host_arch, filename, main_file, mlir_args);
         Self::report_phases();
-        emitted.map(Some)
+        emitted
     }
 
     /// Under `VX_PIPELINE_PHASES`, the per-phase wall clock of this compile, one line per phase
@@ -1146,6 +1146,13 @@ impl CompilerDriver {
     }
 
     /// The backend, from the MLIR text the parallel frontend emitted.
+    ///
+    /// `Ok(None)` when that text does not parse, so the caller falls back to the sequential
+    /// driver. The emitter claimed this module by returning text at all, so unparseable text is
+    /// an emitter bug rather than a construct outside the subset -- the same bug the AST path
+    /// answers by falling back to its own walk. Answering it here by failing the compile made
+    /// `-j` refuse a program the default driver still builds, which is the one thing the fallback
+    /// exists to prevent.
     fn emit_from_mlir_text(
         &self,
         text: &str,
@@ -1153,17 +1160,31 @@ impl CompilerDriver {
         filename: &str,
         main_file: &std::path::Path,
         mlir_args: &[String],
-    ) -> Result<(), String> {
+    ) -> Result<Option<()>, String> {
         let context = self.backend_context();
         let parsed =
             crate::intern_mode::timed("mlir_parse", || melior::ir::Module::parse(&context, text));
-        let module = parsed.ok_or_else(|| {
-            format!(
-                "the parallel frontend emitted MLIR for '{filename}' that does not parse; this \
-                 is a compiler bug"
-            )
-        })?;
+        let Some(module) = parsed else {
+            // Loud in a debug build, where the corpus and the fallback both exist, so the gap is
+            // found here rather than by whoever consumes a `.vxlib` built from this module.
+            if std::env::var("VX_FLAT_DBG").is_ok() {
+                eprintln!(
+                    "[flat-dbg] the parallel frontend emitted MLIR that does not parse:\n{text}"
+                );
+            }
+            debug_assert!(
+                false,
+                "the parallel frontend emitted MLIR for '{filename}' that does not parse: a \
+                 construct emitted unparseable text instead of declining before it emitted.\n{text}"
+            );
+            eprintln!(
+                "[parallel-frontend] the MLIR it emitted does not parse; using the sequential \
+                 driver"
+            );
+            return Ok(None);
+        };
         self.lower_and_emit(&context, module, host_arch, filename, main_file, mlir_args)
+            .map(Some)
     }
 
     fn run_codegen(
@@ -1903,6 +1924,51 @@ mod tests {
             forwards.as_deref(),
             Some("declared-arch"),
             "a declared host lost to the one --host default synthesises"
+        );
+    }
+
+    fn driver_for(args: &[&str]) -> CompilerDriver {
+        CompilerDriver::new(DriverOptions::parse_from(args))
+    }
+
+    /// Text the frontend claimed to emit but that MLIR cannot parse is an emitter bug, not a
+    /// construct outside the subset. A debug build says so where the corpus and the fallback both
+    /// are, rather than leaving it for whoever consumes the artifact.
+    ///
+    /// The other half of the contract -- a release build falling back instead of failing -- is the
+    /// test below, which only runs under `cargo test --release`, because a `debug_assert` cannot
+    /// be observed both ways in one build.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "does not parse")]
+    fn unparseable_frontend_mlir_is_loud_in_a_debug_build() {
+        let driver = driver_for(&["vxc", "--emit-mlir", "prog.vx"]);
+        let _ = driver.emit_from_mlir_text(
+            "this is not MLIR",
+            None,
+            "prog.vx",
+            std::path::Path::new("prog.vx"),
+            &[],
+        );
+    }
+
+    /// A release build falls back to the sequential driver, which still compiles the program. It
+    /// used to return an error, so `-j` failed a compile that succeeds without the flag.
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn unparseable_frontend_mlir_falls_back_in_a_release_build() {
+        let driver = driver_for(&["vxc", "--emit-mlir", "prog.vx"]);
+        let declined = driver.emit_from_mlir_text(
+            "this is not MLIR",
+            None,
+            "prog.vx",
+            std::path::Path::new("prog.vx"),
+            &[],
+        );
+        assert_eq!(
+            declined,
+            Ok(None),
+            "unparseable MLIR did not hand the compile back to the sequential driver"
         );
     }
 }
