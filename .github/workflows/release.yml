@@ -221,7 +221,7 @@ jobs:
           # 42" on success-of-execution, while the error text reads "exited with NON-ZERO code:
           # 42" and does not contain this substring. Anyone editing either message should keep
           # that apart, or this check silently starts matching the wrong one.
-          echo "$out" | grep -q "exited with code: 42" || {
+          grep -q "exited with code: 42" <<<"$out" || {
             echo "error: the packaged compiler did not run the program (vxc exit $status)" >&2
             echo "--- output was:" >&2
             echo "$out" >&2
