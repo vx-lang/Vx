@@ -279,27 +279,19 @@ impl ModuleLoader {
             return Ok(());
         }
 
-        // Prefer a precompiled `.vxlib` interface if one sits where the source would (#219): collect
-        // its serialized module-interface bytes and skip parsing the module's source entirely — the
-        // automatic form of `--link-interface`. The artifact is self-contained (its own dependencies
-        // were baked into its registry at emit time), so no further import recursion is needed.
-        if let Some(artifact) = self.resolve_artifact_path(path) {
-            let buf = fs::read(&artifact)
-                .map_err(|e| ModuleError::IO(artifact.to_string_lossy().into_owned(), e))?;
-            let meta = crate::metadata::VxMetadata::load_from_buffer(&buf);
-            self.loaded_interfaces
-                .insert(module_name, meta.interface_data.to_vec());
-            return Ok(());
-        }
-
-        let resolved_path = match self.resolve_module_path(path) {
-            Some(p) => p,
-            None => {
-                return Err(ModuleError::Resolution(format!(
-                    "Could not resolve import '{}'",
-                    module_name
-                )))
+        // A precompiled interface is preferred over the source, and taking it means the module's
+        // source is never parsed -- the automatic form of `--link-interface`. The artifact is
+        // self-contained (its own dependencies were baked into its registry when it was emitted),
+        // so there is no further import recursion to do for it.
+        //
+        // Both loaders ask `resolve_import` rather than each probing for the artifact themselves,
+        // so the two cannot come to different conclusions about which file an import leads to.
+        let resolved_path = match self.resolve_import(path)? {
+            Resolved::Interface(bytes) => {
+                self.loaded_interfaces.insert(module_name, bytes);
+                return Ok(());
             }
+            Resolved::Source(p) => p,
         };
 
         let program = Self::parse_file(&resolved_path, module_name.clone())?;
@@ -338,6 +330,43 @@ mod tests {
             Schedule::Sequential,
         );
         let _ = loader.into_programs();
+    }
+
+    /// The two loaders follow imports by different machinery -- one recurses, one walks waves in
+    /// parallel -- but they must agree on where an import leads. They ask one function now; before
+    /// that each probed for a `.vxlib` beside the source itself, so the rule about which wins was
+    /// written down twice and could be changed in one place only.
+    #[test]
+    fn both_loaders_find_the_same_modules() {
+        let entry = "tests/frontend/pass/jobs_loads_imports_in_waves.vx";
+        let names = |mut programs: Vec<Program>| -> Vec<String> {
+            let mut out: Vec<String> = programs
+                .drain(..)
+                .map(|p| p.module_path.as_ref().to_string())
+                .collect();
+            out.sort();
+            out
+        };
+
+        let mut recursive = ModuleLoader::new();
+        recursive.load_main(entry).expect("the fixture should load");
+        let from_load_main = names(recursive.into_programs());
+
+        let mut waves = ModuleLoader::new();
+        let from_load_all = names(
+            waves
+                .load_all(&[entry.to_string()], Schedule::Sequential)
+                .expect("the fixture should load"),
+        );
+
+        assert_eq!(
+            from_load_main, from_load_all,
+            "the two loaders disagree about which modules this program is made of"
+        );
+        assert!(
+            from_load_all.len() > 1,
+            "the fixture stopped importing anything, so this compares nothing: {from_load_all:?}"
+        );
     }
 
     /// The `load_main` entry point does keep them, and this is the shape that reads them back.
