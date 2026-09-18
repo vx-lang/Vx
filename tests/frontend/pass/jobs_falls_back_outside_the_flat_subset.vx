@@ -1,0 +1,56 @@
+//===- jobs_falls_back_outside_the_flat_subset.vx - Vx Compiler --*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program the flat path declines is still compiled under `-j`: the parallel frontend says
+// so and the sequential driver takes over, through its AST codegen. A generic method with a
+// type parameter of its own, returning a generic enum out of a `match`, is outside the flat
+// subset today.
+//
+// The phase table is the second claim here: it describes the compile that produced the output.
+// Draining it when the parallel frontend declined printed the half that was thrown away, and
+// the sequential compile that emitted the program went unreported.
+//
+// RUN: (vxc -j 2 --emit-mlir %s 2>&1; echo "exit=$?") | FileCheck %s
+// RUN: (VX_PIPELINE_PHASES=1 vxc -j 2 --emit-mlir %s 2>&1 >/dev/null) | FileCheck --check-prefix=PHASES %s
+
+enum Holder<T> {
+  Full(T),
+  Empty,
+}
+
+impl<T> Holder<T> {
+  fn widen<U>(self : Holder<T>, r : U) -> Holder<U> {
+    match self {
+      Holder<T>::Full(v) => {
+        return Holder<U>::Full(r);
+      },
+      Holder<T>::Empty() => {
+        return Holder<U>::Empty();
+      },
+    }
+  }
+}
+
+fn main() -> i32 {
+  let full = Holder<i32>::Full(5);
+  let _widened = full.widen(9);
+  return 0;
+}
+
+// `flat_corpus_sweep` decides which codegen path a program took by looking for the flat emitter's
+// own decline line, so no other decline may be worded to contain it.
+// CHECK-NOT: [parallel-frontend] program outside the flat subset
+// CHECK: [parallel-frontend] the flat emitter did not take this program; using the sequential driver
+// CHECK: func.func @main
+// CHECK: exit=0
+
+// Nothing is drained before the compile that produces the output, so a table printed at the
+// decline -- whether instead of the real one or as well as it -- is caught here.
+// PHASES-NOT: phase,mlir_verify
+// PHASES: [flat-codegen] program outside the flat subset
+// And the compile that emitted the program is the one the table describes.
+// PHASES: phase,mlir_verify

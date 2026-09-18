@@ -1,0 +1,14 @@
+//===- jobs_wave_b.vx - Vx Compiler ------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A module, not a test: the second wave of imports for the `vxc -j` loader fixtures. It is
+// reached only through `jobs_wave_a`, never named by a test file directly.
+//===----------------------------------------------------------------------===//
+
+fn wave_b(x: i32) -> i32 {
+  return x * 2;
+}

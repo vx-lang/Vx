@@ -42,7 +42,7 @@ fn main() -> i32 {
 ```
 
 The condition may be written bare or in parentheses — `requires x > 0` and `requires (x > 0)` are
-the same. (`invariant` is stricter; see below.)
+the same.
 
 ## invariant
 
@@ -61,9 +61,8 @@ fn main() -> i32 {
 }
 ```
 
-Unlike `requires` and `ensures`, `invariant` **requires** its parentheses. `invariant i >= 0` is a
-parse error. This is an inconsistency rather than a design decision, tracked as
-[Vx#501](https://github.com/vx-lang/Vx/issues/501).
+Like `requires` and `ensures`, an invariant may be written bare or in parentheses:
+`invariant i >= 0` and `invariant(i >= 0)` are equivalent.
 
 ## What checks these
 

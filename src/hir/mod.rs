@@ -311,18 +311,21 @@ fn bad_matmul() -> Tensor<f32, [?, ?]> {
             checker.errors.error_count() == 0
         };
         assert!(!success);
-        assert!(checker.errors.iter().any(|e| e
-            .message
-            .contains("Call to unsafe function 'malloc' is unsafe")));
+        assert!(checker.errors.iter().any(|e| {
+            e.message
+                .contains("Call to unsafe function 'malloc' is unsafe")
+        }));
     }
 
     #[test]
     fn test_sema_as_ptr_and_len() {
+        // `len()` answers the outermost extent as an i32, like `extent`, and the checker
+        // rewrites it to the `$extent` read both backends lower.
         let input = r#"
-        fn test_methods(t: Tensor<f32, [?, ?]>) -> i64 {
+        fn test_methods(t: Tensor<f32, [?, ?]>) -> i32 {
             let ptr: *const Tensor<f32, [?, ?]> = t.as_ptr();
             let mut_ptr: *mut Tensor<f32, [?, ?]> = t.as_mut_ptr();
-            let length: i64 = t.len();
+            let length: i32 = t.len();
             return length;
         }
         "#;
@@ -347,6 +350,23 @@ fn bad_matmul() -> Tensor<f32, [?, ?]> {
             "Semantic checking failed for methods: {:?}",
             checker.errors
         );
+        let crate::syntax::Statement::LetDecl(decl) = &program.functions[0].body[2] else {
+            panic!("expected the `let length` statement");
+        };
+        let crate::syntax::Expr::IndexAccess(ix) = &decl.expr else {
+            panic!(
+                "len() was not rewritten to an indexed read: {:?}",
+                decl.expr
+            );
+        };
+        let crate::syntax::Expr::MemberAccess(ma) = ix.base.as_ref() else {
+            panic!("the rewritten read is not a member access: {:?}", ix.base);
+        };
+        assert_eq!(ma.member.as_ref(), "$extent");
+        let crate::syntax::Expr::Number(axis) = ix.index.as_ref() else {
+            panic!("the axis is not a literal: {:?}", ix.index);
+        };
+        assert_eq!(axis.value.as_ref(), "0", "len() reads the outermost axis");
     }
     #[test]
     fn test_sema_liveness_analysis() {
@@ -392,6 +412,49 @@ fn bad_matmul() -> Tensor<f32, [?, ?]> {
             liveness.get("c"),
             Some(&5),
             "c is last used in return c at index 5"
+        );
+    }
+
+    #[test]
+    fn liveness_includes_a_use_in_a_comptime_block_result() {
+        let input = r#"
+        fn f() -> i32 {
+            let value = 1;
+            let result = comptime { value };
+            return result;
+        }
+        "#;
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize();
+        let mut parser = Parser::new(&tokens, input);
+        let program = parser.parse().expect("comptime block parses");
+
+        let liveness = TypeChecker::compute_block_liveness(&program.functions[0].body);
+
+        assert_eq!(
+            liveness.get("value"),
+            Some(&1),
+            "a value used by a comptime block result remains live at that statement"
+        );
+    }
+
+    #[test]
+    fn liveness_includes_an_autodiff_argument() {
+        let input = r#"
+        fn cube(v: f32) -> f32 { return v * v * v; }
+        fn f(x: f32) -> f32 { return grad(cube, x); }
+        "#;
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize();
+        let mut parser = Parser::new(&tokens, input);
+        let program = parser.parse().expect("autodiff program parses");
+
+        let liveness = TypeChecker::compute_block_liveness(&program.functions[1].body);
+
+        assert_eq!(
+            liveness.get("x"),
+            Some(&0),
+            "an autodiff argument is read by the expression that contains it"
         );
     }
 

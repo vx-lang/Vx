@@ -34,7 +34,7 @@ impl FnEmit<'_> {
                 .struct_ty
                 .clone()
         } else if let Some(mt) = &callee.ret_tensor {
-            mt.clone() // a statically shaped tensor return: the result is a memref value
+            mt.clone() // a `?`-shaped tensor return: the result is a memref value the callee made
         } else if callee.ret_ptr {
             "!llvm.ptr".to_string() // an FFI pointer-returning callee (#235)
         } else if callee.ret_void {
@@ -85,7 +85,24 @@ impl FnEmit<'_> {
             };
             arg_types.push(at);
         }
-        if callee.ret_void {
+        // A callee returning a statically shaped tensor writes into a buffer we hand it, so
+        // allocate one and pass it as the first argument (#643). The slot goes in our entry block:
+        // a call in a loop then reuses one buffer rather than taking a fresh one per iteration,
+        // which is right because the result is consumed before the next iteration overwrites it.
+        let ret_slot_ty = callee
+            .ret_tensor
+            .as_ref()
+            .filter(|mt| !mt.contains(DYN_DIM))
+            .cloned();
+        if let Some(slot_ty) = &ret_slot_ty {
+            let slot = format!("%rs{idx}");
+            self.emit_slot(&format!("  {slot} = memref.alloca() : {slot_ty}\n"));
+            arg_names.insert(0, slot.clone());
+            arg_types.insert(0, slot_ty.clone());
+            self.names[idx] = slot;
+            self.mem_of[idx] = Some(slot_ty.clone()); // downstream ops index the buffer
+        }
+        if callee.ret_void || ret_slot_ty.is_some() {
             // A void call binds no result register (MLIR forbids `%v = func.call ... -> ()`);
             // the call is a pure effect (mutation through a `&mut` arg). The private extern decl
             // records an empty return (no `->`) so a void `extern` declares as `(args)`. (#230)

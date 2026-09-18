@@ -20,17 +20,15 @@ fn process_tensor(val : Tensor<f32, [ 128, 128 ]>)
   return final_view;
 }
 
-// CHECK: func.func @process_tensor(%arg0: memref<128x128xf32>) -> memref<4x64x64xf32> {
-// CHECK: %reinterpret_cast = memref.reinterpret_cast %arg0 to offset: [0], sizes: [2, 64, 2, 64], strides: [8192, 128, 64, 1] : memref<128x128xf32> to memref<2x64x2x64xf32>
+// The tensor result travels through a buffer the caller allocated and passed as the first
+// parameter, so the function returns nothing. The transpose still needs a buffer of its own here:
+// what gets returned is a reshaped *view* of it, and a view's contents reach the caller by copy.
+// CHECK: func.func @process_tensor(%[[RET:.*]]: memref<4x64x64xf32>, %arg1: memref<128x128xf32>) {
+// CHECK: %reinterpret_cast = memref.reinterpret_cast %arg1 to offset: [0], sizes: [2, 64, 2, 64], strides: [8192, 128, 64, 1] : memref<128x128xf32> to memref<2x64x2x64xf32>
 // CHECK: %reinterpret_cast_0 = memref.reinterpret_cast %reinterpret_cast to offset: [0], sizes: [2, 2, 64, 64], strides: [8192, 64, 128, 1] : memref<2x64x2x64xf32> to memref<2x2x64x64xf32, strided<[8192, 64, 128, 1]>>
 // CHECK: %alloc = memref.alloc() : memref<2x2x64x64xf32>
 // CHECK: memref.copy %reinterpret_cast_0, %alloc : memref<2x2x64x64xf32, strided<[8192, 64, 128, 1]>> to memref<2x2x64x64xf32>
-// CHECK: %reinterpret_cast_1 = memref.reinterpret_cast %alloc to offset: [0], sizes: [4, 64, 64], strides: [4096, 64, 1] : memref<2x2x64x64xf32> to memref<4x64x64xf32>
-// CHECK: return %reinterpret_cast_1 : memref<4x64x64xf32>
+// CHECK: %[[VIEW:.*]] = memref.reinterpret_cast %alloc to offset: [0], sizes: [4, 64, 64], strides: [4096, 64, 1] : memref<2x2x64x64xf32> to memref<4x64x64xf32>
+// CHECK: memref.copy %[[VIEW]], %[[RET]] : memref<4x64x64xf32> to memref<4x64x64xf32>
+// CHECK-NEXT: return
 // CHECK: }
-
-fn main() -> i32 {
-  let v = Tensor<f32, [ 128, 128 ]>::fill(1.0);
-  process_tensor(v);
-  return 0;
-}

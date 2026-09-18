@@ -1,0 +1,36 @@
+//===- jobs_output_does_not_depend_on_the_thread_count.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The MLIR `-j` emits is the same bytes at one thread, where the parallel machinery is off the
+// path, and at four, where the modules and functions are checked and lowered concurrently.
+// Two modules deep in imports, so module order is part of what is compared.
+//
+// RUN: vxc -j 1 --emit-mlir %s > %t.j1
+// RUN: vxc -j 4 --emit-mlir %s > %t.j4
+// RUN: FileCheck --check-prefix=MLIR %s < %t.j1
+// RUN: (cmp %t.j1 %t.j4 && echo "same bytes") | FileCheck %s
+
+import tests::modules::jobs_wave_a;
+
+struct Pair {
+  left: i32, right: i32,
+}
+
+fn total(p: Pair) -> i32 {
+  return p.left + p.right;
+}
+
+fn main() -> i32 {
+  let p: Pair = Pair {
+    left: wave_a(1), right: wave_b(2)
+  };
+  return total(p);
+}
+
+// MLIR: func.func @main
+// MLIR: func.func @wave_b
+// CHECK: same bytes

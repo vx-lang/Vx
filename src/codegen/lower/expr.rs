@@ -108,7 +108,11 @@ impl<'c> LowerToMelior<'c> for IdentifierExpr {
             }
         } else if gen.functions.contains_key(name) {
             let (ret_ty, arg_tys) = gen.functions.get(name).unwrap();
-            let func_ty = melior::ir::r#type::FunctionType::new(gen.context, arg_tys, &[*ret_ty]);
+            // The address of a function has to name the signature it was emitted with, return
+            // slot and all, or an indirect call through it disagrees with the body.
+            let (abi_ret, abi_args) = gen.abi_signature(*ret_ty, arg_tys);
+            let abi_rets: Vec<_> = abi_ret.into_iter().collect();
+            let func_ty = melior::ir::r#type::FunctionType::new(gen.context, &abi_args, &abi_rets);
             let const_op = OperationBuilder::new("func.constant", gen.loc())
                 .add_attributes(&[(
                     Identifier::new(gen.context, "value"),
@@ -706,6 +710,9 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
             rhs,
             span: _,
         } = self;
+        // Claim the return slot before lowering the operands, so a nested operator inside them
+        // does not take it and build its intermediate in the caller's buffer.
+        let nrvo_slot = gen.nrvo_slot.take();
         let (mut lhs_val, mut lhs_ty, block) = gen.generate_expr(lhs, block)?;
         let prev_expected = gen.expected_type;
         gen.expected_type = Some(lhs_ty);
@@ -852,17 +859,26 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
                 alloc_operands.push(block.append_operation(dim_n_op).result(0)?.into());
             }
 
-            // Alloc output buffer
-            let alloc_op = OperationBuilder::new("memref.alloc", gen.loc())
-                .add_operands(&alloc_operands)
-                .add_attributes(&[(
-                    Identifier::new(gen.context, "operandSegmentSizes"),
-                    DenseI32ArrayAttribute::new(gen.context, &[alloc_operands.len() as i32, 0])
-                        .into(),
-                )])
-                .add_results(&[out_ty])
-                .build()?;
-            let out_val = block.append_operation(alloc_op).result(0)?.into();
+            // The output buffer: the caller's when this product is what the function returns,
+            // otherwise one of our own.
+            let out_val = match nrvo_slot.filter(|s| s.r#type() == out_ty) {
+                Some(slot) => slot,
+                None => {
+                    let alloc_op = OperationBuilder::new("memref.alloc", gen.loc())
+                        .add_operands(&alloc_operands)
+                        .add_attributes(&[(
+                            Identifier::new(gen.context, "operandSegmentSizes"),
+                            DenseI32ArrayAttribute::new(
+                                gen.context,
+                                &[alloc_operands.len() as i32, 0],
+                            )
+                            .into(),
+                        )])
+                        .add_results(&[out_ty])
+                        .build()?;
+                    block.append_operation(alloc_op).result(0)?.into()
+                }
+            };
 
             // Zero initialize the output buffer since matmul accumulates!
             let zero_attr = if el_ty_str.starts_with('i') {
@@ -1067,17 +1083,26 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
                 }
             }
 
-            // Alloc output buffer
-            let alloc_op = OperationBuilder::new("memref.alloc", gen.loc())
-                .add_operands(&alloc_operands)
-                .add_attributes(&[(
-                    Identifier::new(gen.context, "operandSegmentSizes"),
-                    DenseI32ArrayAttribute::new(gen.context, &[alloc_operands.len() as i32, 0])
-                        .into(),
-                )])
-                .add_results(&[out_ty])
-                .build()?;
-            let out_val = block.append_operation(alloc_op).result(0)?.into();
+            // The output buffer: the caller's when this result is what the function returns,
+            // otherwise one of our own.
+            let out_val = match nrvo_slot.filter(|s| s.r#type() == out_ty) {
+                Some(slot) => slot,
+                None => {
+                    let alloc_op = OperationBuilder::new("memref.alloc", gen.loc())
+                        .add_operands(&alloc_operands)
+                        .add_attributes(&[(
+                            Identifier::new(gen.context, "operandSegmentSizes"),
+                            DenseI32ArrayAttribute::new(
+                                gen.context,
+                                &[alloc_operands.len() as i32, 0],
+                            )
+                            .into(),
+                        )])
+                        .add_results(&[out_ty])
+                        .build()?;
+                    block.append_operation(alloc_op).result(0)?.into()
+                }
+            };
 
             let op_name = match op {
                 BinaryOp::Add => "linalg.add",
@@ -2628,7 +2653,22 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
         }
 
         if let Some((ret_ty, arg_tys)) = gen.functions.get(name).cloned() {
-            let mut arg_vals = Vec::new();
+            // A callee returning a statically shaped tensor writes into a buffer we allocate and
+            // pass as its first argument, and the call itself produces nothing -- the result is
+            // that buffer (#643).
+            let ret_slot = if returns_through_slot(&ret_ty.to_string()) {
+                let alloc_op = OperationBuilder::new("memref.alloca", gen.loc())
+                    .add_attributes(&[(
+                        Identifier::new(gen.context, "operandSegmentSizes"),
+                        DenseI32ArrayAttribute::new(gen.context, &[0, 0]).into(),
+                    )])
+                    .add_results(&[ret_ty])
+                    .build()?;
+                Some(block.append_operation(alloc_op).result(0)?.into())
+            } else {
+                None
+            };
+            let mut arg_vals: Vec<Value> = ret_slot.into_iter().collect();
             let mut current_b = block;
             for (i, arg) in args.iter().enumerate() {
                 let field_ty = arg_tys[i];
@@ -2663,6 +2703,10 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                 .add_operands(&arg_vals)
                 .add_attributes(&[(Identifier::new(gen.context, "callee"), name_attr.into())]);
 
+            if let Some(slot) = ret_slot {
+                current_b.append_operation(builder.build()?);
+                return Ok((slot, ret_ty, current_b));
+            }
             if ret_ty.to_string() != "none" {
                 builder = builder.add_results(&[ret_ty]);
                 let call_op = builder.build()?;

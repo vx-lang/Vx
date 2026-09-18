@@ -113,6 +113,12 @@ where
 
 // ---- Progress chatter (#306) ------------------------------------------------------------------
 
+/// Tri-state rather than a one-shot lazy cell: 0 = not yet read, 1 = quiet, 2 = loud. A benign
+/// race on the first read just re-reads the environment and stores the same answer.
+/// `quiet_during_compile` is the only writer whose value does not come from the environment, and
+/// it puts back what it found.
+static QUIET: AtomicU8 = AtomicU8::new(0); // vx-lint: allow-atomic (eval-only log gate)
+
 /// Suppress the pipeline's progress output, via `VX_PIPELINE_QUIET=1`.
 ///
 /// `parse_phase` opens its per-module closure with a `println!`, *inside* a rayon parallel-for.
@@ -120,11 +126,7 @@ where
 /// a measurement that is fatal twice over: it puts a lock in the middle of the region whose scaling
 /// is being measured, and a lock profile then reports contention on stdout rather than on anything
 /// in the compiler. At a 512-module corpus it is 512 lock acquisitions per run.
-///
-/// Tri-state atomic rather than a one-shot lazy cell: 0 = not yet read, 1 = quiet, 2 = loud. A benign
-/// race just re-reads the environment and stores the same answer.
 pub fn quiet() -> bool {
-    static QUIET: AtomicU8 = AtomicU8::new(0); // vx-lint: allow-atomic (eval-only log gate)
     match QUIET.load(Ordering::Relaxed) {
         1 => true,
         2 => false,
@@ -133,6 +135,30 @@ pub fn quiet() -> bool {
             QUIET.store(if q { 1 } else { 2 }, Ordering::Relaxed);
             q
         }
+    }
+}
+
+/// Set the gate for one compile, putting back what it was when the guard drops.
+///
+/// `vxc -j` runs the pipeline as a compiler, where progress chatter on stdout would land in the
+/// middle of the MLIR it prints. The restore is what keeps that decision inside the compile that
+/// made it. A plain store would leave the gate set for every later compile in the same process,
+/// so a `-j` compile would silence a compile after it that asked for chatter.
+///
+/// This holds for compiles that run one at a time, which is how the driver runs them. Two
+/// compiles at once in one process still share the one static, and the first to finish would put
+/// back a value the other is still relying on.
+#[must_use = "the gate is restored as soon as the guard drops"]
+pub fn quiet_during_compile(quiet: bool) -> QuietGuard {
+    QuietGuard(QUIET.swap(if quiet { 1 } else { 2 }, Ordering::Relaxed))
+}
+
+/// Restores the gate that [`quiet_during_compile`] replaced.
+pub struct QuietGuard(u8);
+
+impl Drop for QuietGuard {
+    fn drop(&mut self) {
+        QUIET.store(self.0, Ordering::Relaxed);
     }
 }
 
@@ -157,7 +183,7 @@ pub const CODEGEN_LOWER: &str = "  codegen:lower";
 pub const CODEGEN_SETUP: &str = "  codegen:setup";
 pub const CODEGEN_EMIT: &str = "  codegen:emit";
 
-pub const PHASES: [&str; 17] = [
+pub const PHASES: [&str; 22] = [
     "parse",
     "macro_expand",
     "name_resolution",
@@ -165,6 +191,7 @@ pub const PHASES: [&str; 17] = [
     "sig_clone",
     "env_build",
     "return_prov",
+    "comptime_bodies",
     "decl_check",
     "type_check",
     "dedup_barrier",
@@ -175,6 +202,13 @@ pub const PHASES: [&str; 17] = [
     CODEGEN_SETUP,
     CODEGEN_EMIT,
     "teardown",
+    // The driver's backend, once the frontend has produced MLIR text: parsing that text back
+    // into a module, verifying it, running the pass pipeline, and printing. Recorded by `vxc`
+    // alone, so a `-j` ladder shows what the frontend's speed-up is worth in a whole compile.
+    "mlir_parse",
+    "mlir_verify",
+    "mlir_passes",
+    "mlir_print",
 ];
 
 // Accumulated FROM inside the parallel regions being timed, so there is no per-worker place to
@@ -219,8 +253,10 @@ pub fn take_phases() -> Vec<(&'static str, std::time::Duration)> {
         .collect()
 }
 
-/// One machine-readable line per phase: `phase,<name>,<milliseconds>`. Written to stdout so a
-/// harness can parse a run without scraping the human report (#297).
+/// One machine-readable line per phase: `phase,<name>,<milliseconds>`, so a harness can parse a
+/// run without scraping the human report.
+///
+/// Its caller writes these to stderr, keeping stdout for the MLIR a compile prints.
 pub fn phases_csv() -> String {
     take_phases()
         .into_iter()
@@ -243,10 +279,10 @@ mod tests {
     fn timed_passes_values_through_and_only_knows_declared_phases() {
         assert_eq!(timed("parse", || 41 + 1), 42);
         assert_eq!(timed("not_a_phase", || "ok"), "ok");
-        assert_eq!(phase_index("type_check"), Some(8));
+        assert_eq!(phase_index("type_check"), Some(9));
         assert_eq!(phase_index("not_a_phase"), None);
         // Every name the pipeline instruments must be declared, or its time vanishes.
-        assert_eq!(PHASES.len(), 17);
+        assert_eq!(PHASES.len(), 22);
         // The sub-phase constants are the names their instrumentation sites pass, so a lookup
         // that misses here is a row that would have read 0.0 in every report.
         for name in [CODEGEN_LOWER, CODEGEN_SETUP, CODEGEN_EMIT] {
@@ -255,5 +291,50 @@ mod tests {
                 "{name} is not a declared phase"
             );
         }
+    }
+
+    /// Every phase name the compiler hands to `timed` has to be declared here, or `record` drops
+    /// it: the phase's wall clock then lands in the report's `unaccounted` remainder rather than
+    /// under a name, and nothing says so.
+    ///
+    /// Checked against the source rather than against a list kept by hand, because a list kept by
+    /// hand is the thing that was already wrong. `comptime_bodies` was instrumented one line above
+    /// phases that were declared, and went unreported for exactly as long as nobody compared the
+    /// two by eye.
+    #[test]
+    fn every_phase_the_compiler_times_is_declared() {
+        let mut missing: Vec<(&str, &str)> = Vec::new();
+        for (file, src) in [
+            ("pipeline.rs", include_str!("pipeline.rs")),
+            ("driver.rs", include_str!("driver.rs")),
+        ] {
+            for (at, marker) in src.match_indices("timed(\"") {
+                let rest = &src[at + marker.len()..];
+                let name = rest.split('"').next().unwrap_or("");
+                if phase_index(name).is_none() {
+                    missing.push((file, name));
+                }
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "these phases are timed but not declared in PHASES, so their time is dropped: {missing:?}"
+        );
+    }
+
+    /// The gate a compile sets must not outlive it, or a `-j` compile silences a later compile in
+    /// the same process that asked for chatter.
+    ///
+    /// Reads the gate first so the tri-state is already resolved, then flips it to whatever it is
+    /// not. That way the test asserts the guard's own behaviour and never depends on whether
+    /// `VX_PIPELINE_QUIET` is set in the environment running it.
+    #[test]
+    fn the_quiet_gate_goes_back_when_the_compile_ends() {
+        let before = quiet();
+        {
+            let _gate = quiet_during_compile(!before);
+            assert_eq!(quiet(), !before, "the guard did not set the gate");
+        }
+        assert_eq!(quiet(), before, "the guard did not put the gate back");
     }
 }

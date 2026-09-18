@@ -26,7 +26,6 @@ A sample of what is open:
 | Issue | What it is |
 | --- | --- |
 | [Vx#506](https://github.com/vx-lang/Vx/issues/506) | `while` is not a keyword, and a fixture appears to test it but does not |
-| [Vx#501](https://github.com/vx-lang/Vx/issues/501) | `invariant` demands parentheses; `requires` and `ensures` do not |
 | [Vx#494](https://github.com/vx-lang/Vx/issues/494) | The unused-variable warning fires on a variable used only through method calls |
 | [Vx#445](https://github.com/vx-lang/Vx/issues/445) | Twelve warning codes are declared but never emitted |
 | [Vx#423](https://github.com/vx-lang/Vx/issues/423) | Issue numbers in code comments, against a rule that forbids them |

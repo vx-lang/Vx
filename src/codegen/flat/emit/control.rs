@@ -90,17 +90,28 @@ impl FnEmit<'_> {
         } else if gid == ptr_gid() {
             self.body += &format!("  func.return {a} : !llvm.ptr\n"); // a pointer return (#235)
         } else if let Some((elem, shape)) = self.ctx.tensors.get(&gid) {
+            let slot = self.ret_slot.clone();
             if let Some(vecty) = self.vec_of.get(ins.operand1.0 as usize).cloned().flatten() {
-                // An elementwise result is a vector register; the signature promises a buffer.
-                // Materialize it: alloc, store the vector, return the alloc.
+                // An elementwise result is a vector register; the result is a buffer. Store the
+                // vector into the caller's slot, or into a fresh one when there is no slot (a
+                // `?`-shaped return, where the caller could not have sized it).
                 let memty = tensor_memref_ty(elem, shape).ok_or(crate::emitter_gap!())?;
                 let al = vector_align_attr(&vecty);
-                let rt = format!("%rt{idx}");
                 let rc = format!("%rc{idx}");
-                self.body += &format!("  {rt} = memref.alloc() : {memty}\n");
+                let rt = match &slot {
+                    Some((s, _)) => s.clone(),
+                    None => {
+                        let rt = format!("%rt{idx}");
+                        self.body += &format!("  {rt} = memref.alloc() : {memty}\n");
+                        rt
+                    }
+                };
                 self.body += &format!("  {rc} = arith.constant 0 : index\n");
                 self.body += &format!("  vector.store {a}, {rt}[{rc}]{al} : {memty}, {vecty}\n");
-                self.body += &format!("  func.return {rt} : {memty}\n");
+                match &slot {
+                    Some(_) => self.body += "  func.return\n",
+                    None => self.body += &format!("  func.return {rt} : {memty}\n"),
+                }
             } else {
                 // A memref value: its tracked type is authoritative (a strided row differs from
                 // the plain spelling); fall back to the GID's shape.
@@ -108,7 +119,29 @@ impl FnEmit<'_> {
                     Some(m) => m,
                     None => tensor_memref_ty(elem, shape).ok_or(crate::emitter_gap!())?,
                 };
-                self.body += &format!("  func.return {a} : {memty}\n");
+                match &slot {
+                    // Under NRVO the value already is the slot -- the body has been writing into
+                    // the caller's buffer all along, so there is nothing left to do.
+                    Some((s, _)) if *s == a => self.body += "  func.return\n",
+                    // Otherwise the result lives somewhere else (a parameter, a call result) and
+                    // has to be copied into the caller's buffer before the frame goes away.
+                    Some((s, slot_ty)) => {
+                        let src = if &memty == slot_ty {
+                            a.clone()
+                        } else {
+                            // A strided row or a `?`-spelled view reaching a statically shaped
+                            // return: `memref.copy` wants both sides spelled the same.
+                            let c = format!("%rcast{idx}");
+                            self.body +=
+                                &format!("  {c} = memref.cast {a} : {memty} to {slot_ty}\n");
+                            c
+                        };
+                        self.body +=
+                            &format!("  memref.copy {src}, {s} : {slot_ty} to {slot_ty}\n");
+                        self.body += "  func.return\n";
+                    }
+                    None => self.body += &format!("  func.return {a} : {memty}\n"),
+                }
             }
         } else if let Some(agg) = self.ctx.aggs.get(&gid) {
             // A struct return (#215). The operand is either a slot pointer (a constructed

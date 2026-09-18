@@ -205,6 +205,47 @@ fn tensor_memref_of_type(ty: &Type) -> Option<String> {
     }
 }
 
+/// The memref spelling of a return type that travels through a caller-allocated slot: a tensor
+/// whose extents are all known at compile time.
+///
+/// The caller has to reserve the buffer, so it has to know how big it is. A `?` extent is only
+/// known once the callee runs, so those keep returning a descriptor over a buffer the callee
+/// allocated -- the case #642 still owes a free for.
+/// The AST path applies the same rule in `generator::returns_through_slot`, and the two have to
+/// agree: every fixture runs on both back ends against one set of CHECK lines, and a caller on one
+/// path can link a body compiled by the other.
+pub(crate) fn returns_through_slot(ty: &Type) -> Option<String> {
+    let memty = tensor_memref_of_type(ty)?;
+    crate::codegen::generator::returns_through_slot(&memty).then_some(memty)
+}
+
+/// The stream position of the instruction whose result buffer can be the return slot itself, so
+/// the function allocates nothing: the named-return-value optimization C++ and Rust both perform.
+///
+/// This only names the candidate. Producing instructions opt in through `nrvo_slot`, because only
+/// the emitter of an op knows whether it allocates a fresh buffer of the full result shape (a
+/// `TensorAlloc`, a `linalg` result, a matmul) or hands back a view into someone else's storage (a
+/// row, a reinterpreted cast) -- writing a view's contents into the caller's slot is a copy, not a
+/// rename. An instruction that does not opt in simply leaves `op_ret` to copy.
+///
+/// Conservative on purpose: it applies only when every `Ret` returns the same register. Two
+/// producers reaching two returns could both be live on one path, and binding both to the slot
+/// would let writes to one corrupt the other.
+fn nrvo_candidate(hir: &[HirInstruction]) -> Option<usize> {
+    let mut returned: Option<u32> = None;
+    for ins in hir {
+        if ins.opcode != Opcode::Ret || ins.type_idx.0 == u32::MAX {
+            continue;
+        }
+        match returned {
+            Some(r) if r != ins.operand1.0 => return None, // two returns, two values
+            _ => returned = Some(ins.operand1.0),
+        }
+    }
+    // The register a `Ret` names is the position of the instruction that produced it.
+    Some(returned? as usize)
+}
+
 fn is_ptr_ty(ty: &Type) -> bool {
     matches!(
         ty,
@@ -1597,6 +1638,19 @@ pub(crate) struct FnEmit<'a> {
     /// The function's scalar return element, when it has one — a `Ret` of a differently-typed
     /// value converts to this.
     pub(crate) ret_elem: Option<ElementType>,
+    /// The caller-allocated return slot, for a function returning a statically shaped tensor:
+    /// its SSA name and memref type. The function then returns nothing and writes its result
+    /// into this buffer, which the caller owns. `None` for every other return type, which still
+    /// returns by value. See `returns_through_slot`.
+    pub(crate) ret_slot: Option<(String, String)>,
+    /// How far the declared parameters are shifted in the MLIR signature. The return slot is the
+    /// first parameter when there is one, so `fn f(a, b)` becomes `@f(%ret, %arg1, %arg2)` and a
+    /// `Load` of declared parameter `i` names `%arg{i + 1}`.
+    pub(crate) arg_offset: u32,
+    /// The stream position of the `TensorAlloc` that builds the returned buffer, when the
+    /// function has one and it can write straight into the return slot. That allocation then
+    /// emits nothing at all and its register *is* the slot. See `nrvo_alloc_of`.
+    pub(crate) nrvo_alloc: Option<usize>,
     /// Alias-scope metadata for place-write field stores: each tagged store's stream position ->
     /// its own alias-scope `distinct[]` id and its disjoint-sibling ids. Numbered from the
     /// module-global counter, so scopes stay distinct across functions.
@@ -1699,6 +1753,21 @@ impl<'a> FnEmit<'a> {
     /// The scalar element type a type-stream index names, if it names one.
     pub(crate) fn ty_at(&self, ti: u32) -> Option<ElementType> {
         elem_of_gid(*self.types.get(ti as usize)?)
+    }
+
+    /// The caller's return slot, when the instruction at `idx` is the one whose buffer the
+    /// function returns and that buffer has exactly the slot's shape.
+    ///
+    /// A producer that allocates a fresh buffer of the full result shape calls this first: a
+    /// `Some` means it should build into the slot and allocate nothing, which is what turns
+    /// `return <a tensor this function computed>` into a write straight to the caller's memory.
+    /// The shape check is what keeps a differently shaped intermediate out of the slot.
+    pub(crate) fn nrvo_slot(&self, idx: usize, memty: &str) -> Option<String> {
+        if self.nrvo_alloc != Some(idx) {
+            return None;
+        }
+        let (slot, slot_ty) = self.ret_slot.as_ref()?;
+        (slot_ty == memty).then(|| slot.clone())
     }
 
     /// The scalar element type a register carries, if the producing instruction recorded one.
@@ -1944,12 +2013,24 @@ pub fn emit_function_mlir(
     // Signature (taken from the resolved AST signature; the *body* is flat-driven). A scalar param is
     // its element type; a tensor param is a memref recovered by GID from the side table (`ctx.tensors`
     // holds it — the param's `Load` recorded it). Anything else declines.
+    //
+    // A statically shaped tensor return is not a result at all: it is a buffer the caller
+    // allocated and passed in as the first parameter, which the body writes into. That is how C++
+    // returns a class (`sret`) and how Rust returns an aggregate that misses its register
+    // classification, and it is what keeps the callee from having to heap-allocate a buffer nobody
+    // frees (#643). The declared parameters shift along by one to make room.
+    let ret_slot = returns_through_slot(&func.return_type).map(|mt| ("%arg0".to_string(), mt));
+    let arg_offset = u32::from(ret_slot.is_some());
     let mut params = Vec::new();
+    if let Some((slot, memty)) = &ret_slot {
+        params.push(format!("{slot}: {memty}"));
+    }
     for (i, (_, ty)) in func.params.iter().enumerate() {
         // Signature-position MLIR type: scalar, payload-free enum `i32`, `!llvm.ptr` (pointer /
         // fn-pointer), tensor memref, or by-value aggregate `!llvm.struct`; else the function declines.
         let pty = ty_mlir(ty, ctx)?;
-        params.push(format!("%arg{i}: {pty}{}", param_alias_attrs(ty)));
+        let n = i as u32 + arg_offset;
+        params.push(format!("%arg{n}: {pty}{}", param_alias_attrs(ty)));
     }
     // A `Pinned<i32, ..>` return is the scalar it wraps, as at a call site.
     let ret_elem = match peel_wrappers(&func.return_type) {
@@ -1964,7 +2045,9 @@ pub fn emit_function_mlir(
     // The MLIR return type: a scalar, a payload-free enum's `i32` (#227), an `!llvm.struct` (a
     // by-value struct return, #215), or `None` for void. A struct return whose layout isn't modelled
     // declines the whole function.
-    let ret_mlir: Option<String> = if let Some(e) = &ret_elem {
+    let ret_mlir: Option<String> = if ret_slot.is_some() {
+        None // the result is the caller's buffer, passed in as a parameter above
+    } else if let Some(e) = &ret_elem {
         Some(mlir_scalar(e).ok_or(crate::emitter_gap!())?.to_string())
     } else if let Some(et) = enum_scalar(&func.return_type, ctx) {
         Some(et.to_string())
@@ -1983,7 +2066,10 @@ pub fn emit_function_mlir(
             what: "a vector element with no MLIR spelling",
         })?)
     } else if let Some(mt) = tensor_memref_of_type(&func.return_type) {
-        Some(mt) // a statically shaped tensor return, wrappers peeled (Vx#383)
+        // A `?`-shaped tensor return, wrappers peeled (Vx#383). The statically shaped ones went
+        // through the slot above; this is the case where the caller cannot size a buffer, so the
+        // callee allocates one and hands back the descriptor.
+        Some(mt)
     } else if crate::syntax::is_void_ty(&func.return_type) {
         None
     } else {
@@ -2031,6 +2117,9 @@ pub fn emit_function_mlir(
         inline_blocks,
         wrappers: String::new(),
         ret_elem,
+        nrvo_alloc: ret_slot.as_ref().and_then(|_| nrvo_candidate(hir)),
+        ret_slot,
+        arg_offset,
         alias_scope_of,
         calls,
         names: vec![String::new(); hir.len()],

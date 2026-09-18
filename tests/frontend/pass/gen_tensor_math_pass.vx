@@ -1,20 +1,25 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// Each arithmetic operator is a named linalg op over the two operands into a fresh buffer
-// of the static shape, and the function returns that buffer.
-// CHECK-LABEL: func.func @gen_tensor_math_sub() -> memref<16x16xf32>
+// Each arithmetic operator is a named linalg op over the two operands. A function that returns
+// the result writes it into the buffer its caller allocated -- the first parameter -- and returns
+// nothing, so the operator needs no result buffer of its own. `gen_tensor_math_add` is the
+// contrast: it drops the result instead of returning it, and still allocates one.
+// CHECK-LABEL: func.func @gen_tensor_math_sub
+// CHECK-SAME: (%[[RET:.*]]: memref<16x16xf32>) {
 // CHECK: %[[A:.*]] = memref.alloc() : memref<16x16xf32>
 // CHECK: %[[B:.*]] = memref.alloc() : memref<16x16xf32>
-// CHECK: %[[C:.*]] = memref.alloc() : memref<16x16xf32>
-// CHECK: linalg.sub ins(%[[A]], %[[B]] : memref<16x16xf32>, memref<16x16xf32>) outs(%[[C]] : memref<16x16xf32>)
-// CHECK: return %[[C]] : memref<16x16xf32>
-// CHECK-LABEL: func.func @gen_tensor_math_mul() -> memref<16x16xf32>
-// CHECK: linalg.mul ins(%{{.*}}, %{{.*}} : memref<16x16xf32>, memref<16x16xf32>) outs(%[[M:.*]] : memref<16x16xf32>)
-// CHECK: return %[[M]] : memref<16x16xf32>
-// CHECK-LABEL: func.func @gen_tensor_math_div() -> memref<16x16xf32>
-// CHECK: linalg.div ins(%{{.*}}, %{{.*}} : memref<16x16xf32>, memref<16x16xf32>) outs(%[[D:.*]] : memref<16x16xf32>)
-// CHECK: return %[[D]] : memref<16x16xf32>
+// CHECK: linalg.sub ins(%[[A]], %[[B]] : memref<16x16xf32>, memref<16x16xf32>) outs(%[[RET]] : memref<16x16xf32>)
+// CHECK-NEXT: return
+// CHECK-LABEL: func.func @gen_tensor_math_mul
+// CHECK-SAME: (%[[RETM:.*]]: memref<16x16xf32>) {
+// CHECK: linalg.mul ins(%{{.*}}, %{{.*}} : memref<16x16xf32>, memref<16x16xf32>) outs(%[[RETM]] : memref<16x16xf32>)
+// CHECK-LABEL: func.func @gen_tensor_math_div
+// CHECK-SAME: (%[[RETD:.*]]: memref<16x16xf32>) {
+// CHECK: linalg.div ins(%{{.*}}, %{{.*}} : memref<16x16xf32>, memref<16x16xf32>) outs(%[[RETD]] : memref<16x16xf32>)
 // CHECK-LABEL: func.func @gen_tensor_math_add() -> i32
-// CHECK: linalg.add ins(%{{.*}}, %{{.*}} : memref<16x16xf32>, memref<16x16xf32>) outs(%{{.*}} : memref<16x16xf32>)
+// CHECK: %{{.*}} = memref.alloc() : memref<16x16xf32>
+// CHECK: %{{.*}} = memref.alloc() : memref<16x16xf32>
+// CHECK: %[[C:.*]] = memref.alloc() : memref<16x16xf32>
+// CHECK: linalg.add ins(%{{.*}}, %{{.*}} : memref<16x16xf32>, memref<16x16xf32>) outs(%[[C]] : memref<16x16xf32>)
 // CHECK: %[[R:.*]] = arith.constant 0 : i32
 // CHECK: return %[[R]] : i32
 

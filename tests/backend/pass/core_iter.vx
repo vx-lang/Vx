@@ -1,0 +1,103 @@
+//===- core_iter.vx - Vx Compiler ---------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `core::iter`: one required `next`, everything else written over it.
+//
+// Each default is asked where it answers from the middle of the sequence, not the first
+// or last item: `find` and `position` over a predicate that only the third element meets,
+// `nth` over a range not starting at zero. An `any` that returned true for a non-empty
+// iterator, or a `position` that always answered 0, passes a test asked only at the edges.
+//
+// `any` and `all` are asked both ways round, since each differs from the other only in
+// which answer ends the loop.
+//
+// Every adaptor is driven by a `for` loop, which is the shape a user writes and which
+// consumes the iterator.
+//
+// One adaptor deep: chaining two is Vx#647. Each adaptor is bound before its loop
+// because a closure literal is not coerced inside a `for` header either (Vx#648).
+import core::iter;
+import core::option;
+
+fn show(b : bool) -> i32 {
+  if b {
+    print(1);
+  } else {
+    print(0);
+  }
+  return 0;
+}
+
+fn main() -> i32 {
+  for x in range(0i64, 4i64) {
+    print(x);
+  }
+  print!(" ");
+
+  let mut c = range(0i64, 5i64);
+  print(c.count());
+  print!(" ");
+  let mut l = range(0i64, 5i64);
+  print(l.last().unwrap());
+  print!(" ");
+  let mut n = range(10i64, 20i64);
+  print(n.nth(3i64).unwrap());
+  print!(" ");
+
+  let mut a1 = range(0i64, 5i64);
+  show(a1.any(| x : i64 | x > 3i64));
+  print!(" ");
+  let mut a2 = range(0i64, 5i64);
+  show(a2.any(| x : i64 | x > 9i64));
+  print!(" ");
+  let mut b1 = range(0i64, 5i64);
+  show(b1.all(| x : i64 | x > 3i64));
+  print!(" ");
+  let mut b2 = range(0i64, 5i64);
+  show(b2.all(| x : i64 | x < 9i64));
+  print!(" ");
+
+  let mut f1 = range(0i64, 5i64);
+  print(f1.find(| x : i64 | x > 2i64).unwrap());
+  print!(" ");
+  let mut f2 = range(0i64, 5i64);
+  show(f2.find(| x : i64 | x > 9i64).is_none());
+  print!(" ");
+  let mut p1 = range(5i64, 10i64);
+  print(p1.position(| x : i64 | x == 8i64).unwrap());
+  print!(" ");
+  let mut p2 = range(5i64, 10i64);
+  show(p2.position(| x : i64 | x == 99i64).is_none());
+  print!(" ");
+
+  let mut m = map(range(0i64, 4i64), | x : i64 | x * 10i64);
+  for y in m {
+    print(y);
+    print!(",");
+  }
+  print!(" ");
+  let mut fl = filter(range(0i64, 6i64), | x : i64 | x > 2i64);
+  for z in fl {
+    print(z);
+    print!(",");
+  }
+  print!(" ");
+  let mut tk = take<Range, i64>(range(0i64, 10i64), 3i64);
+  for u in tk {
+    print(u);
+    print!(",");
+  }
+  print!(" ");
+  let mut sk = skip<Range, i64>(range(0i64, 6i64), 4i64);
+  for w in sk {
+    print(w);
+    print!(",");
+  }
+  return 0;
+}
+
+// EXPECT: 0123 5 4 13 1 0 0 1 3 1 3 1 0,10,20,30, 3,4,5, 0,1,2, 4,5,

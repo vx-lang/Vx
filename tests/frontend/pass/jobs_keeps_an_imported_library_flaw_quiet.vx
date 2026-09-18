@@ -1,0 +1,28 @@
+//===- jobs_keeps_an_imported_library_flaw_quiet.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A compile reports what is wrong with the program it was asked to build, not with the library
+// that program imports. `jobs_library_with_a_flaw` holds a function this file never calls whose
+// body does not type check; the import is there for `library_good` alone.
+//
+// Both driver paths run the same checks here, so both RUN lines carry the same assertions: `-j`
+// used to walk every module and report all of it, which refused this program while the default
+// driver built it.
+//
+// RUN: vxc -j 4 --emit-mlir %s 2>&1 | FileCheck %s
+// RUN: vxc --emit-mlir %s 2>&1 | FileCheck %s
+
+import tests::modules::jobs_library_with_a_flaw;
+
+fn main() -> i32 {
+  return library_good(41);
+}
+
+// The library's flaw is not this compile's to report.
+// CHECK-NOT: Undefined function
+// The program still compiles, which is the half a silenced diagnostic could otherwise hide.
+// CHECK: func.func @main

@@ -1,0 +1,42 @@
+//===- for_consumes_the_iterator.vx - Vx Compiler ---------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// `for x in it` consumes the iterator, so the name is not usable afterwards.
+//
+// This has to be refused rather than allowed: the loop drives a copy to exhaustion, so a
+// program that read `it.at` here would be told 0 by a loop that had just run to 4.
+// CHECK: Use of moved or consumed linear variable: it
+import core::option;
+
+struct Upto {
+  at : i32,
+  end : i32,
+}
+
+impl Upto {
+  fn next(self : &mut Upto) -> Option<i32> {
+    if self.at >= self.end {
+      return Option<i32>::None();
+    }
+    let v : i32 = self.at;
+    self.at = self.at + 1;
+    return Option<i32>::Some(v);
+  }
+}
+
+fn main() -> i32 {
+  let mut it : Upto = Upto {
+    at : 0, end : 4
+  };
+  for x in it {
+    print(x);
+  }
+  print(it.at);
+  return 0;
+}

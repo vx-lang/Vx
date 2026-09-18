@@ -14,6 +14,10 @@ use super::*;
 
 /// What to say when a `Tensor` is spelled without its shape. Each replacement is one of the
 /// meanings the dims-less spelling used to carry (Vx#399).
+/// Where a constant generic argument stops parsing. Above the comparison level, so the
+/// closing `>` of the argument list stays a bracket instead of being read as greater-than.
+const CONST_ARG_PRECEDENCE: u8 = 50;
+
 const DIMS_REQUIRED: &str = "Tensor needs its shape: write `Tensor<f32, [2, 3]>` for a shape \
      known at compile time, `Tensor<f32, []>` for a scalar, or `Tensor<f32, [?, ?]>` for one \
      whose extents are run-time values";
@@ -275,6 +279,16 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Parse one constant argument of a generic instantiation, such as the `N - 1` in
+    /// `countdown<N - 1>()`.
+    ///
+    /// Stops above the comparisons so the closing `>` stays a bracket rather than becoming
+    /// a greater-than. That leaves arithmetic and the bitwise operators, which is what an
+    /// argument in this position is for.
+    fn parse_const_arg_expr(&mut self) -> ParseResult<'a, Expr> {
+        self.parse_binary_expr(CONST_ARG_PRECEDENCE)
+    }
+
     pub(crate) fn parse_generic_type_args(&mut self) -> ParseResult<'a, Vec<Type>> {
         let mut type_args = Vec::new();
         while !self.check(&TokenType::RightAngle) && !self.check(&TokenType::Eof) {
@@ -285,20 +299,29 @@ impl<'a> Parser<'a> {
             };
 
             if is_expr {
-                let expr = self.parse_primary_expr()?;
+                let expr = self.parse_const_arg_expr()?;
                 type_args.push(Type::Const(Box::new(expr)));
             } else {
+                // A name parses as a type, so `N - 1` reads as the type `N` and leaves the
+                // rest behind. What tells them apart is what follows: a type argument ends
+                // at a comma or the closing angle, anything else means this was the start
+                // of an expression.
                 let saved_pos = self.pos;
-                if let Ok(ty) = self.parse_type() {
-                    type_args.push(ty);
-                } else {
-                    self.pos = saved_pos;
-                    if let Ok(expr) = self.parse_primary_expr() {
-                        type_args.push(Type::Const(Box::new(expr)));
-                    } else {
-                        return Err(
-                            self.error("Expected type or constant expression in generic arguments")
-                        );
+                let parsed_type = self.parse_type().ok().filter(|_| {
+                    self.check(&TokenType::Comma) || self.check(&TokenType::RightAngle)
+                });
+                match parsed_type {
+                    Some(ty) => type_args.push(ty),
+                    None => {
+                        self.pos = saved_pos;
+                        match self.parse_const_arg_expr() {
+                            Ok(expr) => type_args.push(Type::Const(Box::new(expr))),
+                            Err(_) => {
+                                return Err(self.error(
+                                    "Expected type or constant expression in generic arguments",
+                                ))
+                            }
+                        }
                     }
                 }
             }

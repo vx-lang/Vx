@@ -1,0 +1,19 @@
+//===- jobs_refuses_a_flag_it_cannot_honour.vx - Vx Compiler -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `-j` refuses a flag whose meaning it does not implement rather than dropping it: the
+// parallel frontend has no AST codegen, so `--legacy-codegen` cannot be honoured, and a
+// compile that quietly ran the flat path instead would report success for the wrong thing.
+//
+// RUN: (vxc -j 2 --legacy-codegen --emit-mlir %s 2>&1; echo "exit=$?") | FileCheck %s
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK: -j does not support --legacy-codegen yet
+// CHECK: exit=1

@@ -437,6 +437,7 @@ impl<'a> TypeChecker<'a> {
                 } else if let Some(idx) = resolved_name.find('<') {
                     base_name = resolved_name[..idx].to_string().into();
                 }
+                self.fold_const_generic_args(&mut explicit_generic_args);
 
                 // Mocking built-ins
                 let mut arg_types = Vec::new();
@@ -935,6 +936,39 @@ impl<'a> TypeChecker<'a> {
         })
     }
 
+    /// Reduce each constant generic argument to the number it works out to.
+    ///
+    /// `countdown<N - 1>()` inside `countdown<3>` has to become `countdown<2>`, not
+    /// `countdown<3 - 1>`. The instance is named after its arguments, so an unfolded one
+    /// names a different instance every time round and the recursion never meets a base
+    /// case -- it took the compiler's stack down rather than terminating.
+    ///
+    /// An argument the evaluator cannot work out is left as written, which is what it did
+    /// before this.
+    fn fold_const_generic_args(&mut self, args: &mut [Type]) {
+        for arg in args.iter_mut() {
+            let Type::Const(expr) = arg else {
+                continue;
+            };
+            if matches!(&**expr, Expr::Number(_)) {
+                continue;
+            }
+            let env = self.consteval_snapshot();
+            let Some(value) = self.eval_expr(expr, &env).and_then(|v| match v {
+                Value::Int(i) => Some(i.to_string()),
+                Value::Number(n) if n.fract() == 0.0 => Some((n as i64).to_string()),
+                _ => None,
+            }) else {
+                continue;
+            };
+            **expr = Expr::Number(NumberExpr {
+                value: value.into(),
+                ty: None,
+                span: Span::default(),
+            });
+        }
+    }
+
     /// Resolve and instantiate a `Struct::method(...)` static call (an inherent-impl method
     /// named through its type). Parses any explicit type args on the struct or method, finds the
     /// matching `_inherent` impl method, deduces what those left open from the arguments and
@@ -1124,6 +1158,52 @@ impl<'a> TypeChecker<'a> {
 
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn instantiate_generic_function_call(
+        &mut self,
+        generic_func: &Function,
+        origin_hash: u64,
+        resolved_name: &str,
+        name: &mut crate::symbol::Symbol,
+        args: &[Expr],
+        arg_types: &[Type],
+        explicit_generic_args: &[Type],
+        span: &crate::syntax::Span,
+    ) -> Option<Type> {
+        // A recursion through the generic arguments themselves makes a fresh instance every
+        // time round, each checked inside the last. Stop, and say so, rather than running
+        // out of stack.
+        if self.mono.instantiation_depth >= crate::hir::check_state::MAX_INSTANTIATION_DEPTH {
+            if !self.speculating {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E3032,
+                    format!(
+                        "instantiating '{}' went more than {} generic calls deep and was \
+                         stopped. A recursive generic whose base case is never reached is the \
+                         usual cause.",
+                        resolved_name,
+                        crate::hir::check_state::MAX_INSTANTIATION_DEPTH
+                    ),
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                );
+            }
+            return None;
+        }
+        self.mono.instantiation_depth += 1;
+        let result = self.instantiate_generic_function_call_inner(
+            generic_func,
+            origin_hash,
+            resolved_name,
+            name,
+            args,
+            arg_types,
+            explicit_generic_args,
+            span,
+        );
+        self.mono.instantiation_depth -= 1;
+        result
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn instantiate_generic_function_call_inner(
         &mut self,
         generic_func: &Function,
         origin_hash: u64,
@@ -2052,6 +2132,47 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
 
+                // `t.len()`: the extent of the outermost axis, the same read as `t.extent(0)`,
+                // so `for i in 0..t.len() { t[i] }` visits exactly the positions `t[i]` accepts.
+                // Typed `i32` like `extent` and like `Vec::len`. A rank-0 tensor holds one value
+                // and has no axis to count, so it is refused rather than answered.
+                if _method.as_ref() == "len" {
+                    if let Some((_, dims, _)) = Self::as_tensor_operand(&base_ty) {
+                        if !args.is_empty() {
+                            self.errors.error_with_code(
+                                crate::diagnostic::DiagnosticCode::E3025,
+                                "`len()` takes no arguments; `extent(i)` reads one axis"
+                                    .to_string(),
+                                Some(crate::diagnostic::SourceSpan::from_ast_span(&method_span)),
+                            );
+                            return Type::Scalar(ElementType::I32);
+                        }
+                        if dims.is_empty() {
+                            self.errors.error_with_code(
+                                crate::diagnostic::DiagnosticCode::E3025,
+                                "`len()` on a rank-0 tensor: a scalar has no outermost axis to count"
+                                    .to_string(),
+                                Some(crate::diagnostic::SourceSpan::from_ast_span(&method_span)),
+                            );
+                            return Type::Scalar(ElementType::I32);
+                        }
+                        *expr = Expr::IndexAccess(IndexAccessExpr::new(
+                            Box::new(Expr::MemberAccess(MemberAccessExpr::new(
+                                obj.clone(),
+                                crate::symbol::Symbol::from("$extent"),
+                                method_span,
+                            ))),
+                            Box::new(Expr::Number(NumberExpr::new(
+                                "0".to_string(),
+                                None,
+                                method_span,
+                            ))),
+                            method_span,
+                        ));
+                        return Type::Scalar(ElementType::I32);
+                    }
+                }
+
                 // A placement query no comparison folded: nothing at run time holds a
                 // placement, so it has no value here.
                 if _method.as_ref() == "topology"
@@ -2179,9 +2300,9 @@ impl<'a> TypeChecker<'a> {
                     }
                 } else if _method.as_ref() == "len" {
                     match &base_ty {
-                        Type::Tensor(..) | Type::Borrow { .. } | Type::Pointer(_, _, _) => {
-                            // A count is a scalar. It answered a dims-less tensor, which is one
-                            // of the four things that spelling meant (Vx#399).
+                        // A tensor's `len()` was rewritten to `extent(0)` above, so only a
+                        // borrow or pointer of something else still lands here.
+                        Type::Borrow { .. } | Type::Pointer(_, _, _) => {
                             base_ty = Type::Scalar(ElementType::I64);
                         }
                         _ => {

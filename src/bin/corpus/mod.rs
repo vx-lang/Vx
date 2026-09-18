@@ -570,6 +570,20 @@ pub fn generate(params: &CorpusParams, out: Option<&Path>) -> Corpus {
         std::fs::write(&manifest_path, corpus.manifest_json()).expect("manifest");
     }
 
+    // The entry module `vxc` compiles the corpus through: it imports every module, so
+    // `vxc -j N --emit-mlir all.vx`, run in this directory, loads the files the harness hands the
+    // pipeline. Written for a reused directory too, which may predate it.
+    let umbrella = dir.join("all.vx");
+    if !umbrella.exists() {
+        let mut src = String::from(
+            "// The whole corpus as one program: vxc loads every module through these imports.\n",
+        );
+        for m in 0..params.modules {
+            src.push_str(&format!("import m{m};\n"));
+        }
+        std::fs::write(&umbrella, src).expect("umbrella");
+    }
+
     corpus
 }
 

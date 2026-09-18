@@ -1,0 +1,60 @@
+//===- trait_generic_method_bound_holds.vx - Vx Compiler --------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// The bound on a trait method's own type parameter still holds when the impl inherits the
+// default rather than writing it. The default is copied into the impl, and a copy that
+// dropped the bound would take any type at all.
+//
+// The error has to name `Plain`, the type that fails the bound. Losing the bound instead
+// reports `Method 'ok' not found on type U` from inside the default body, which points at
+// the trait rather than at the call.
+// CHECK: Method 'ok' not found on type Plain
+
+trait Marker {
+  fn ok(self : Self) -> i32;
+}
+
+struct Tagged {
+  n : i32,
+}
+
+impl Marker for Tagged {
+  fn ok(self : Tagged) -> i32 {
+    return self.n;
+  }
+}
+
+struct Plain {
+  n : i32,
+}
+
+trait Host {
+  fn tag(self : Self) -> i32;
+
+  fn via<U : Marker>(self : Self, u : U) -> i32 {
+    return u.ok();
+  }
+}
+
+impl Host for Tagged {
+  fn tag(self : Tagged) -> i32 {
+    return self.n;
+  }
+}
+
+fn main() -> i32 {
+  let t : Tagged = Tagged {
+    n : 4
+  };
+  let p : Plain = Plain {
+    n : 9
+  };
+  print(t.via(p));
+  return 0;
+}

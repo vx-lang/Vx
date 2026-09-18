@@ -25,6 +25,14 @@ impl FnEmit<'_> {
             .ok_or(crate::emitter_gap!())?;
         let (elem, shape) = self.ctx.tensors.get(&gid).ok_or(crate::emitter_gap!())?;
         let memty = tensor_memref_ty(elem, shape).ok_or(crate::emitter_gap!())?;
+        // This is the buffer the function returns, and the caller already allocated it: build in
+        // place and allocate nothing. Named return value optimization, the same move C++ and Rust
+        // make. `op_ret` then returns without copying, because the value already *is* the slot.
+        if let Some(slot) = self.nrvo_slot(idx, &memty) {
+            self.names[idx] = slot;
+            self.mem_of[idx] = Some(memty);
+            return Ok(());
+        }
         let n = format!("%v{idx}");
         // A `?` dimension's extent is the `Arg` before this instruction, one per `?` in order:
         // `memref.alloc(%d0, %d1)` takes them as indices.
@@ -202,7 +210,15 @@ impl FnEmit<'_> {
             i64_list(&view_sizes),
             i64_list(&view_strides)
         );
-        self.body += &format!("  {n} = memref.alloc() : {memty}\n");
+        // A returned transpose copies out of the permuted view into the caller's buffer, which is
+        // the one copy this op always needed -- it just no longer needs a buffer to make it into.
+        let n = match self.nrvo_slot(idx, &memty) {
+            Some(slot) => slot,
+            None => {
+                self.body += &format!("  {n} = memref.alloc() : {memty}\n");
+                n
+            }
+        };
         self.body += &format!("  memref.copy {v}, {n} : {view_ty} to {memty}\n");
         self.names[idx] = n;
         self.mem_of[idx] = Some(memty);
@@ -263,8 +279,15 @@ impl FnEmit<'_> {
                 sizes.push(sz);
             }
         }
-        let n = format!("%v{idx}");
-        self.body += &format!("  {n} = memref.alloc({}) : {memty}\n", sizes.join(", "));
+        // A returned map writes its elements straight into the caller's buffer.
+        let n = match self.nrvo_slot(idx, &memty) {
+            Some(slot) => slot,
+            None => {
+                let n = format!("%v{idx}");
+                self.body += &format!("  {n} = memref.alloc({}) : {memty}\n", sizes.join(", "));
+                n
+            }
+        };
         let dims: Vec<String> = (0..shape.len()).map(|i| format!("d{i}")).collect();
         let map = format!("affine_map<({0}) -> ({0})>", dims.join(", "));
         let iters: Vec<&str> = shape.iter().map(|_| "\"parallel\"").collect();
@@ -879,8 +902,16 @@ impl FnEmit<'_> {
                 sizes.push(sz);
             }
         }
-        let n = format!("%v{idx}");
-        self.body += &format!("  {n} = memref.alloc({}) : {md}\n", sizes.join(", "));
+        // A returned product accumulates straight into the caller's buffer -- the biggest of the
+        // buffers this saves, since a matmul result is the whole output matrix.
+        let n = match self.nrvo_slot(idx, &md) {
+            Some(slot) => slot,
+            None => {
+                let n = format!("%v{idx}");
+                self.body += &format!("  {n} = memref.alloc({}) : {md}\n", sizes.join(", "));
+                n
+            }
+        };
         self.body += &format!("  %mz{idx} = arith.constant 0.0 : {et}\n");
         self.body += &format!("  linalg.fill ins(%mz{idx} : {et}) outs({n} : {md})\n");
         self.body += &format!("  linalg.matmul ins({a}, {b} : {ma}, {mb}) outs({n} : {md})\n");

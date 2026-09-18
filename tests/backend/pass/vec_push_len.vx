@@ -10,6 +10,7 @@
 // Before the fix every push wrote to index 0 and `len` stayed 0.
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action run-jit
 // CHECK-DAG: func.func private @vx_vec_grow(
 // CHECK-DAG: func.func private @vx_googletest_expect_eq_i32(
 // CHECK-DAG: func.func private @vx_vec_bounds_check(

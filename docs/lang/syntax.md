@@ -360,8 +360,8 @@ fn difference(x : i32, y : i32) -> i32
     return x - y;
 }
 
-// A loop invariant must hold on entry and be preserved by the body. Note the
-// parentheses: `invariant(...)` takes them, `requires` and `ensures` do not.
+// A loop invariant must hold on entry and be preserved by the body. Like
+// `requires` and `ensures`, its parentheses are optional.
 fn test_loop_increment(N : i32) -> i32
     requires N == 0
     ensures return == 0

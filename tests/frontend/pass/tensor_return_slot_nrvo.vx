@@ -1,0 +1,62 @@
+//===- tensor_return_slot_nrvo.vx - Vx Compiler ------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// What the caller's return buffer buys, on the flat path: a function that returns a tensor it
+// built allocates nothing, because it built the answer in the caller's buffer. This is the named
+// return value optimization, and it is the half that removes the allocation rather than moving
+// it (#643).
+//
+// REQUIRES: flat-codegen
+// The AST oracle uses the same calling convention but only applies this to an operator it is
+// handed directly, so `built` below still allocates and copies there. That difference is what
+// tests/middle_end/pass/matmul.vx records; this file is about the path that does it.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=BUILT
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=FORWARD
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=LOOP
+
+// The stores land straight in the caller's buffer, and the function allocates nothing.
+// BUILT: func.func @built(%[[RET:.*]]: memref<4xi32>) {
+// BUILT-NOT: memref.alloc
+// BUILT: memref.store %{{.*}}, %[[RET]]
+// BUILT-NOT: memref.alloc
+// BUILT: return
+
+// A returned *parameter* was never ours to rename, so it copies -- still no allocation, because
+// the source already exists and the destination is the caller's.
+// FORWARD: func.func @forward(%[[RET:.*]]: memref<4xi32>, %[[SRC:.*]]: memref<4xi32>) {
+// FORWARD-NOT: memref.alloc
+// FORWARD: memref.copy %[[SRC]], %[[RET]]
+
+// One slot for the call site, hoisted to the entry block: a call in a loop reuses the buffer
+// rather than taking a fresh one per iteration, which would grow the stack until it ran out.
+// Entry-block placement is the claim, so the check is positional -- no branch has been emitted
+// yet when the slot is taken -- rather than a count, which cannot tell the two apart.
+// LOOP: func.func @main
+// LOOP-NOT: cf.br
+// LOOP: %[[SLOT:.*]] = memref.alloca() : memref<4xi32>
+// The loop body is a later block, and the call there uses that same buffer.
+// LOOP: cf.br
+// LOOP: call @built(%[[SLOT]])
+
+fn built() -> Tensor<i32, [4]> {
+  let l = [ 1, 2, 3, 4 ];
+  return l;
+}
+
+fn forward(src : Tensor<i32, [4]>) -> Tensor<i32, [4]> {
+  return src;
+}
+
+fn main() -> i32 {
+  let mut total = 0;
+  for i in 0..3 {
+    let t = built();
+    total = total + t[0] + t[3];
+  }
+  return total;
+}

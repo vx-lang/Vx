@@ -1,0 +1,18 @@
+//===- jobs_library_with_a_flaw.vx - Vx Compiler ------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A module, not a test: an imported library holding one good function and one generic that does
+// not type check. Nothing imports the generic, so a compile of the importer must not report it.
+//===----------------------------------------------------------------------===//
+
+fn library_good(x: i32) -> i32 {
+  return x + 1;
+}
+
+fn library_flawed(x: i32) -> i32 {
+  return no_such_function(x);
+}
