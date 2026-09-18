@@ -5099,6 +5099,13 @@ impl BorrowScan {
                 self.expr(&ix.index);
             }
             Expr::Array(arr) => arr.elements.iter().for_each(|el| self.expr(el)),
+            // A `for` bound can assign a local, and the local then needs a slot for the same
+            // reason `spawn on` below needs one. Pass 2 has no arm: no program was found where
+            // its missing one changes the answer.
+            Expr::Range(r) => {
+                self.expr(&r.start);
+                self.expr(&r.end);
+            }
             Expr::If(i) => {
                 self.expr(&i.cond);
                 self.block(&i.then_block);

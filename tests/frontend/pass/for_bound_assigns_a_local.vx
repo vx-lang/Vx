@@ -1,0 +1,39 @@
+//===- for_bound_assigns_a_local.vx - Vx Compiler ----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `for` bound may assign a local, so the local needs a slot. The use analysis did not look
+// inside a range, so `n` stayed a register, the assignment rebound it inside the `if`, and the
+// `return` read a value defined in a block that does not reach it.
+//
+// `bound(true, ..)` takes the assigning arm and gives 3; `bound(false, 7)` takes the other and
+// leaves the start value alone, so 37 covers both arms.
+//
+// Here rather than under middle_end or backend because those runners generate through the AST
+// codegen in process, and the AST path still fails on this program for a separate reason (#655).
+//
+// RUN: vxc %s --action emit-mlir | FileCheck %s
+// RUN: (vxc %s --run 2>&1; echo "exit=$?") | FileCheck --check-prefix=JIT %s
+
+fn bound(c : bool, start : i32) -> i32 {
+  let mut n = start;
+  for i in 0..(if c {
+    n = 3; n
+  } else {
+    4
+  }) { }
+  return n;
+}
+
+fn main() -> i32 {
+  return bound(true, 0) * 10 + bound(false, 7);
+}
+
+// The first line only establishes that the program still emits MLIR: when this regresses the
+// emitter produces text that does not parse, so there is no output to match against. The value
+// is the second line's claim, and it is what separates a wrong answer from a missing one.
+// CHECK: func.func @bound
+// JIT: Program exited with code: 37
