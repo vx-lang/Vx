@@ -127,7 +127,9 @@ not pre-convert, since a hand-converted figure no longer matches its citation.
 Note that whether a *quoted capacity* is decimal or binary is itself contested per SKU (the
 192-vs-180 GiB gap below), and settling it by measurement is experiment **M4** in
 `memory-algebra-paper/EXPERIMENTS.md`. The spellings here record current belief, not a verified
-fact; `spec:` says where the belief came from.
+fact; `spec:` says where the belief came from. If a figure transcribed as `GiB` was in fact
+quoted decimal, that capacity is ~7% smaller than modelled — inside the margins in the current
+matrix, but enough to flip a marginal cell.
 
 ### Verification status
 
@@ -171,13 +173,6 @@ machine, which is worth recording as evidence that transcribing from memory is n
 
 A rounded bandwidth is not cosmetic: `bandwidth:` drives the derived roofline cost, so an
 understated figure inflates every transfer cost on that SKU.
-
-**Units are binary.** Vx parses `GB` as 2^30 and `TB` as 2^40, so `capacity: 192 GB` means
-192 GiB. Vendors are inconsistent about whether their published "GB" is decimal or binary, and for
-memory capacity it is conventionally binary — but this has not been confirmed per figure, and a
-decimal reading would make each capacity ~7% smaller than modelled. That is smaller than the
-margins in the current matrix but large enough to flip a marginal cell, so it belongs on the
-verification list above rather than in a footnote.
 
 ### Declared capacity is the device, not the deployment budget
 
