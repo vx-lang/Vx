@@ -47,6 +47,14 @@ A program that needs a scratchpad cannot run on a machine without one, and finds
 compile time. That is the claim this directory exists to support, and it is not worth weakening to
 keep a table rectangular.
 
+`cortex-m7.vx` is where the roles pay for themselves, because the hardware behind them looks like
+nothing else here. It is an STM32H743 microcontroller: `HBM` is 512 KiB of AXI SRAM, `L2` is the
+Cortex-M7's 16 KiB L1 data cache, and `SMEM` is the 128 KiB DTCM. The tightly-coupled memory really
+is the same kind of space as a GPU's shared memory — you put something there on purpose, it stays
+there, and it is fast because it is not a cache — so the same capacity check decides both, six
+orders of magnitude apart. Vx emits no code for the part; the placement and capacity checks run in
+the frontend and need no backend.
+
 To turn an admission verdict into an engine launch command, see
 [`utils/vllm/map_admission.py`](../utils/vllm/). It reads the `--diagnostics-json` record, not these
 files — the mapping lives outside `fleet/` because it changes with vLLM's flag surface, not with
@@ -77,6 +85,7 @@ error rather than a silently ignored word.
 | b200 | NVIDIA RTX Blackwell PRO GPU Architecture whitepaper v1.0 — "Blackwell 5th Generation Tensor Cores" |
 | mi300x | AMD ROCm documentation, "AMD Instinct MI300 series microarchitecture" — per-datatype table |
 | m4-uma | Apple, Metal Shading Language Specification — "Scalar Data Types", Table 2.1 |
+| cortex-m7 | STMicroelectronics, STM32H742xI/G STM32H743xI/G datasheet (DS12110) |
 
 What the declarations then say, which is the point of writing them down:
 
@@ -138,6 +147,8 @@ fact; `spec:` says where the belief came from.
 | `HBM` bandwidth (**B200**) | **contested** — 7.7 TB/s (Lenovo per-GPU table) vs 8.0 TB/s (NVIDIA DGX aggregate ÷ 8). 7.7 used; see `b200.vx` |
 | `L2` capacity and bandwidth | **unverified** — transcribed from architecture whitepapers from memory |
 | `SMEM` capacity | **unverified** — per-SM/CU configurable maximum |
+| **cortex-m7** capacities (AXI SRAM, DTCM, L1 D-cache) | **verified 2026-09-17** — quoted from the ST datasheet (DS12110) |
+| **cortex-m7** bandwidths | **unverified** — derived from bus width x clock (64-bit AXI at 240 MHz; 64-bit TCM at the 480 MHz core clock), not quoted |
 | Interconnect figures in `node-8gpu.vx` | **unverified** |
 | `dtypes` lists | **verified 2026-09-03** — each quoted from a vendor document; see "Element type vocabularies" below |
 | Transfer costs (`: N` on an edge) | not physical — relative latencies for path selection |

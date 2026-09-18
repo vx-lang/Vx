@@ -1,0 +1,49 @@
+//===- dtcm_tiles_in_sibling_blocks_fit_a_cortex_m7.vx - Vx ----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The same three 48 KiB buffers that overflow DTCM in
+// tests/frontend/fail/three_dtcm_tiles_do_not_fit_a_cortex_m7.vx, admitted here
+// because two of them are placed in arms of the same `if` and never coexist.
+//
+// 144 KiB of buffers against a 128 KiB DTCM, and the answer is yes. That is the
+// difference between a peak and a sum, and it is the thing a linker script
+// cannot say: section sizes add up whatever the lifetimes are.
+//
+// The reported peak is 96 KiB -- the one function-scope tile plus whichever arm
+// runs -- so `utilization` is 0.75 of the declared DTCM.
+//
+// RUN: vxc %s --machine fleet/cortex-m7.vx --host default --action emit-mlir -o /dev/null --diagnostics-json 2>/dev/null | FileCheck %s
+
+fn main(argc: i32) -> i32 {
+  let raw = Tensor<f32, [128, 96]>::uninit();
+  let filtered = Tensor<f32, [128, 96]>::uninit();
+  let output = Tensor<f32, [128, 96]>::uninit();
+  let raw_sram = transfer(raw, Memory::HBM);
+  let filtered_sram = transfer(filtered, Memory::HBM);
+  let output_sram = transfer(output, Memory::HBM);
+  let raw_tcm = transfer(raw_sram, Memory::SMEM);
+  let _back_raw = transfer(raw_tcm, Memory::HBM);
+  if argc > 1 {
+    let filtered_tcm = transfer(filtered_sram, Memory::SMEM);
+    let _back_filtered = transfer(filtered_tcm, Memory::HBM);
+  } else {
+    let output_tcm = transfer(output_sram, Memory::SMEM);
+    let _back_output = transfer(output_tcm, Memory::HBM);
+  }
+  return 0;
+}
+
+// The RUN line carries no `not`, so vxc exiting 0 is itself the claim that E6010
+// did not fire. What the checks add is the number it was admitted on.
+//
+// Anchored on `resident_sets` because `"space": "SMEM"` also appears in the
+// per-transfer traffic records above it, which carry no capacity at all.
+// CHECK: "resident_sets"
+// CHECK: "space": "SMEM"
+// CHECK-SAME: "total_bytes": 98304
+// CHECK-SAME: "capacity_bytes": 131072
+// CHECK-SAME: "utilization": 0.75

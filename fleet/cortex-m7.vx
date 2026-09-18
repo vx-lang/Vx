@@ -1,0 +1,113 @@
+//===- cortex-m7.vx - STM32H743 (Cortex-M7) machine model -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A microcontroller, modelled the same way every accelerator here is. This is
+// the smallest machine in the fleet by six orders of magnitude: the scratchpad
+// is 128 KiB rather than 128 GiB, and that is the only thing that changes.
+//
+// It is here because the capacity question this directory exists to answer is
+// the question embedded developers already ask, and answer late. Today "does
+// this buffer fit in DTCM" is settled by the linker: you place a section, you
+// link, and a region overflow comes back naming a region and a byte count with
+// no source location. The check in `src/hir/check/transfer.rs` answers the same
+// question in the frontend, against a declared capacity, naming the tile.
+//
+// Vx does not emit code for this part. `arch: thumbv7em` has no entry in
+// `arch_triple_and_datalayout`, so a program that gets as far as codegen is
+// refused rather than mis-targeted. The placement and capacity checks run in the
+// frontend and do not need a backend, which is what this file is for.
+//
+// Unlike every other file here, this part has no host: the CPU whose DRAM would
+// be `Memory::CPU_DRAM` is the same Cortex-M7 core, so the entry edge below is a
+// memcpy within one chip. That is the degenerate seam `xeon-e5-2666v3.vx`
+// already describes, taken one step further -- there the device is the host, and
+// here there is no DRAM behind it at all.
+//
+//===----------------------------------------------------------------------===//
+
+// AXI SRAM: the part's general-purpose memory, and so the `HBM` role (see
+// fleet/README.md -- the name says which role a space plays, not what it is made
+// of). 512 KiB of SRAM is not high-bandwidth memory by any reading; it is this
+// machine's device-global memory, which is what the role means.
+//
+// spec: STM32H742xI/G STM32H743xI/G datasheet (DS12110), "512 Kbytes of SRAM
+// mapped onto the AXI bus". The D2 and D3 domain SRAMs (SRAM1/2 128 KiB each,
+// SRAM3 32 KiB, SRAM4 64 KiB) are deliberately not folded in: they are separate
+// address ranges behind different bus matrices, and a tile does not spill from
+// one into the next. Modelling them means separate spaces, like the two NUMA
+// nodes in xeon-e5-2666v3.vx.
+//
+// UNVERIFIED bandwidth, derived rather than quoted: the AXI bus is 64-bit and
+// runs at up to 240 MHz on this part (half the 480 MHz core clock), so
+//   8 B x 240 MHz = 1.92 GB/s.
+// That is the bus peak, not an achievable copy rate.
+Memory HBM {
+  capacity: 512 KiB, bandwidth: 1.92 GB/s, managed: explicit, scope: device
+}
+
+// The Cortex-M7 L1 data cache, which is the last level of cache on this die --
+// the fleet's `L2` names that role, not the level number, the same way it does
+// for the Xeon's L3.
+//
+// spec: DS12110 -- the Arm Cortex-M7 core includes 16 Kbytes of data and
+// 16 Kbytes of instruction cache. Only the data cache is declared: a tile is
+// data.
+//
+// `within: Memory::HBM` because the D-cache fronts AXI SRAM. It does not front
+// the TCM below, and that is the whole point of a TCM.
+//
+// UNVERIFIED bandwidth: Arm publishes no figure for the M7 cache. 8 B/cyc is the
+// core's 64-bit load path and is of the right order; nothing rests on it.
+Memory L2 {
+  within: Memory::HBM, capacity: 16 KiB, bandwidth: 8 B/cyc, clock: 480 MHz, managed: cached, scope: device
+}
+
+// DTCM -- the tightly-coupled data memory, and the reason this file is
+// interesting. It is a software-managed scratchpad in exactly the sense the
+// fleet's `SMEM` means: you put something there on purpose, it stays there, and
+// it is fast because it is not a cache. The GPU files' `SMEM` and this are the
+// same kind of space at different scales, and the same capacity check decides
+// both.
+//
+// No `within:`, unlike every other SMEM here. GPU shared memory is carved out of
+// the cache hierarchy; DTCM is a separate physical memory on its own port at its
+// own address, and it is not backed by AXI SRAM. Declaring it `within: L2` would
+// claim the 16 KiB cache holds a 128 KiB space.
+//
+// spec: DS12110 -- "128 Kbytes of DTCM RAM". ITCM (64 KiB) is not declared: it
+// holds code, and a tile is data.
+//
+// UNVERIFIED bandwidth, derived: the Cortex-M7 TCM interface is 64-bit and runs
+// at the core clock, so 8 B/cyc at 480 MHz = 3.84 GB/s -- twice the AXI SRAM
+// figure above, at zero wait states, which is why anyone uses it.
+Memory SMEM {
+  capacity: 128 KiB, bandwidth: 8 B/cyc, clock: 480 MHz, managed: explicit, scope: device
+}
+
+Topology Device {
+  // spec: Arm Cortex-M7, Armv7E-M. Vx has no backend for it: this is declared so
+  // the machine model says what the part is, and so a program that reaches
+  // codegen against it is refused rather than given a host triple by default.
+  arch: thumbv7em,
+  memory: Memory::HBM,
+  visible: [Memory::HBM, Memory::L2, Memory::SMEM],
+  // spec: DS12110 lists no f64 unit; the Cortex-M7 FPU on this part is
+  // double-precision capable, but the smaller parts in the family are not, and
+  // the fleet declares what a part has rather than what a family might.
+  dtypes: [f64, f32, f16, i8, u8, i16, u16, i32, u32, i64, u64, bool],
+  // The entry edge, and a fiction on this part: there is no host DRAM, so
+  // "staging from the host" is the program's own data already sitting in AXI
+  // SRAM. Declared at the AXI figure because that is the memory being written.
+  transfer Memory::CPU_DRAM -> Memory::HBM : 1.92 GB/s,
+  transfer Memory::HBM -> Memory::CPU_DRAM : 1.92 GB/s,
+  transfer Memory::HBM -> Memory::L2,
+  // AXI SRAM to DTCM: on real hardware this is MDMA or a memcpy. The general
+  // DMA1/DMA2 controllers cannot reach DTCM on this part, which is a real
+  // constraint this model does not yet express.
+  transfer Memory::HBM -> Memory::SMEM,
+  transfer Memory::SMEM -> Memory::HBM
+}

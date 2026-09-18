@@ -1,0 +1,42 @@
+//===- three_dtcm_tiles_do_not_fit_a_cortex_m7.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The DTCM budget of a real microcontroller, checked in the frontend. Three
+// 128x96 f32 stage buffers are 48 KiB each: any one fits the 128 KiB DTCM that
+// fleet/cortex-m7.vx declares, and all three live at once do not (144 KiB).
+//
+// On the hardware this is a linker job today -- place three sections in the DTCM
+// region, link, and read a region-overflow message that names a region and a
+// byte count. Here it is E6010, before anything is linked or flashed.
+//
+// The admitted half, where the same three buffers are placed in blocks that do
+// not overlap, is tests/frontend/pass/dtcm_tiles_in_sibling_blocks_fit_a_cortex_m7.vx.
+//
+// RUN: not vxc %s --machine fleet/cortex-m7.vx --host default 2>&1 | FileCheck %s
+
+fn main() -> i32 {
+  let raw = Tensor<f32, [128, 96]>::uninit();
+  let filtered = Tensor<f32, [128, 96]>::uninit();
+  let output = Tensor<f32, [128, 96]>::uninit();
+  let raw_sram = transfer(raw, Memory::HBM);
+  let filtered_sram = transfer(filtered, Memory::HBM);
+  let output_sram = transfer(output, Memory::HBM);
+  // All three into DTCM, and all three still read afterwards, so none is
+  // released early and the peak really is the sum.
+  let raw_tcm = transfer(raw_sram, Memory::SMEM);
+  let filtered_tcm = transfer(filtered_sram, Memory::SMEM);
+  let output_tcm = transfer(output_sram, Memory::SMEM);
+  let _back_raw = transfer(raw_tcm, Memory::HBM);
+  let _back_filtered = transfer(filtered_tcm, Memory::HBM);
+  let _back_output = transfer(output_tcm, Memory::HBM);
+  return 0;
+}
+
+// CHECK: E6010
+// CHECK-SAME: memory space 'SMEM' (3 tiles)
+// CHECK-SAME: sums to 147456 bytes
+// CHECK-SAME: over its 131072 byte capacity
