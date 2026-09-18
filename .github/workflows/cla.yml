@@ -38,6 +38,9 @@ concurrency:
 jobs:
   check:
     name: Check CLA signature
+    # `issue_comment` fires on plain issues too, and the action resolves the number it is
+    # handed as a pull request -- that lookup fails and the run goes red for nothing.
+    if: github.event_name != 'issue_comment' || github.event.issue.pull_request
     runs-on: ubuntu-latest
     steps:
       # Pinned to the commit behind v2.6.1 rather than the tag. A tag can be moved to point at
