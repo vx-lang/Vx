@@ -152,17 +152,52 @@ pub fn shared_library_paths() -> Result<Vec<String>, String> {
         libs.push(npu);
     }
     // Supplies the plain `printMemrefBF16`/`printMemrefF16` MLIR exports only packed.
-    //
-    // Overridable at run time for the same reason the dispatch backend is: the compile-time value
-    // is a path into the build machine's OUT_DIR, which an installed toolchain ships its own copy
-    // of somewhere else. Without an override the shims are simply never found, and half-precision
-    // memrefs print nothing, with no diagnostic to explain why.
-    let shims = std::env::var("VX_MLIR_SHIMS")
-        .unwrap_or_else(|_| std::env!("VX_MLIR_SHIMS_PATH").to_string());
-    if !shims.is_empty() && std::path::Path::new(&shims).exists() {
+    let shims = mlir_shims_path();
+    if !shims.is_empty() {
         libs.push(shims);
     }
     Ok(libs)
+}
+
+/// Where `libvx_mlir_shims` sits, most specific first: named outright, then an installed
+/// toolchain's own copy next to the compiler, then the OUT_DIR of the build that produced this
+/// binary.
+///
+/// That last one is an absolute path on the build machine. It is right in a source checkout and
+/// meaningless anywhere else, so it used to be the only candidate an installed toolchain had:
+/// the shims were never found, and half-precision memrefs printed nothing with no diagnostic
+/// saying why.
+///
+/// An empty string means there are none. Not fatal -- only half-precision printing needs them.
+pub fn mlir_shims_path() -> String {
+    let file_name = format!(
+        "{}vx_mlir_shims{}",
+        std::env::consts::DLL_PREFIX,
+        std::env::consts::DLL_SUFFIX
+    );
+
+    if let Ok(named) = std::env::var("VX_MLIR_SHIMS") {
+        if std::path::Path::new(&named).exists() {
+            return named;
+        }
+    }
+
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(bin_dir) = exe.parent() {
+            for relative in ["../lib", "."] {
+                let path = bin_dir.join(relative).join(&file_name);
+                if path.exists() {
+                    return path.to_string_lossy().into_owned();
+                }
+            }
+        }
+    }
+
+    let built = std::env!("VX_MLIR_SHIMS_PATH");
+    if !built.is_empty() && std::path::Path::new(built).exists() {
+        return built.to_string();
+    }
+    String::new()
 }
 
 /// linker without it and clang reports a missing file with no hint of which build produces it.
@@ -412,9 +447,24 @@ pub fn execute_mlir_streams(
     let clang_path = std::env::var("CLANG_PATH").unwrap_or_else(|_| "clang".to_string());
     let mut clang_cmd = Command::new(&clang_path);
 
+    // Each of our own libraries names itself `@rpath/<file>`, so that a program built by an
+    // installed toolchain does not carry this machine's paths. The cost is that every directory
+    // we link out of has to be named here: an unlisted one is a program that builds and then
+    // cannot start. They do not share a directory -- in a checkout the runtime sits in
+    // `target/<profile>` and the shims in the build script's OUT_DIR.
+    let runtime_lib = runtime_library_path()?;
+    let shims = mlir_shims_path();
+    let parent_of = |p: &str| {
+        std::path::Path::new(p)
+            .parent()
+            .map(|d| d.display().to_string())
+            .unwrap_or_else(|| ".".to_string())
+    };
+
     // Rpaths
     clang_cmd.args([
         &format!("-Wl,-rpath,{}", llvm_libdir),
+        &format!("-Wl,-rpath,{}", parent_of(&runtime_lib)),
         &format!(
             "-Wl,-rpath,{}/target/{}",
             current_dir.display(),
@@ -422,6 +472,9 @@ pub fn execute_mlir_streams(
         ),
         // No longer need target/jit in rpath
     ]);
+    if !shims.is_empty() {
+        clang_cmd.arg(format!("-Wl,-rpath,{}", parent_of(&shims)));
+    }
 
     // Input obj and output exe
     clang_cmd.args([&temp_obj, "-o", &temp_exe]);
@@ -438,15 +491,14 @@ pub fn execute_mlir_streams(
             llvm_libdir,
             std::env::consts::DLL_SUFFIX
         ),
-        &runtime_library_path()?,
+        &runtime_lib,
     ]);
 
     // The plain half-precision printers MLIR exports only packed. Linked here as well as handed to
     // the execution engine, because this path builds a native executable with clang rather than
-    // loading shared libraries into a JIT.
-    let shims = std::env!("VX_MLIR_SHIMS_PATH");
-    if !shims.is_empty() && std::path::Path::new(shims).exists() {
-        clang_cmd.arg(shims);
+    // loading shared libraries into a JIT. Its rpath went in with the others above.
+    if !shims.is_empty() {
+        clang_cmd.arg(&shims);
     }
 
     // The dispatch runtime provides vx_plugin_dispatch_async, which any program
@@ -568,5 +620,41 @@ mod tests {
         if let Err(why) = runtime_library_path() {
             panic!("{why}");
         }
+    }
+
+    /// A macOS dylib records the path it expects to be found at, and every program the JIT
+    /// links copies that string verbatim. An absolute build path there means the programs run
+    /// on the machine that built the library and nowhere else -- which is how v0.0.1 shipped a
+    /// runtime pointing into a release runner's home directory.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn the_libraries_we_ship_name_themselves_relocatably() {
+        let mut checked = 0;
+        for lib in [
+            runtime_library_path().expect("runtime library not found"),
+            mlir_shims_path(),
+        ] {
+            if lib.is_empty() {
+                continue; // The shims are optional; only half-precision printing needs them.
+            }
+            let out = Command::new("otool")
+                .args(["-D", &lib])
+                .output()
+                .expect("otool should be present on macOS");
+            let name = String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .last()
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            assert!(
+                name.starts_with("@rpath/"),
+                "{lib} calls itself '{name}', so a program linked against it looks there on \
+                 every machine. It should start with '@rpath/', leaving the location to the \
+                 -rpath the linker passes."
+            );
+            checked += 1;
+        }
+        assert!(checked > 0, "no shipped library was checked");
     }
 }

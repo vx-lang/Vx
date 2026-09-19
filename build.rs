@@ -124,6 +124,9 @@ fn main() {
         // alongside this. ELF shared objects allow that by default; Mach-O has to be told.
         if cfg!(target_os = "macos") {
             cmd.args(["-undefined", "dynamic_lookup"]);
+            // Otherwise the library records this OUT_DIR as the path it lives at, and every
+            // program linked against it looks for the build machine's directory.
+            cmd.arg("-Wl,-install_name,@rpath/libvx_mlir_shims.dylib");
         }
         cmd.args(["-o", shim_path.to_str().unwrap()]);
         match cmd.status() {

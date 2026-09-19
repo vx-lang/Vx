@@ -185,8 +185,10 @@ Things a new user will hit, with the issue that tracks each:
   expression yielding a future; there is no future type and no `await` today.
 - `Ref<T, Memory>` parses and type-checks but has no effect (#507).
 - `Vec` has no destructor; `free()` is manual (#495).
-- An installed toolchain cannot yet find its own runtime library or `mlir-translate` without the
-  source tree on `PATH` (#496, #498). Run from a checkout for now.
+- The published v0.0.1 macOS tarball cannot run a program: its runtime library names itself by the
+  absolute path of the machine that built it, so every binary it links looks for
+  `/Users/runner/work/...` and `dyld` fails. Fixed in the source tree; the release needs rebuilding
+  before `curl | sh` works. Building from a checkout is unaffected.
 - Item visibility (`pub`) is reserved in the identifier layout and absent from the language (#489).
 - Two standard library modules, `iter` and `tensor`, do not type-check on their own (#487).
 - Of the five directories under `packages/`, four are empty placeholders. `packages/README.md` says so.

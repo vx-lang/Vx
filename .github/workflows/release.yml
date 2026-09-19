@@ -159,6 +159,32 @@ jobs:
           mkdir -p /tmp/vx-test
           tar -xzf "dist/vx-${version}-${target}.tar.gz" -C /tmp/vx-test
 
+          # What the shipped libraries record about where they live, which is not something
+          # running them here can tell us: this job runs on the machine that built them, so an
+          # absolute build path still resolves. v0.0.1 shipped a runtime naming
+          # /Users/runner/work/Vx/Vx/target/release/deps/libvx_std_core.dylib and passed the
+          # smoke test below, then failed for every user with a dyld error.
+          if [ "$(uname -s)" = "Darwin" ]; then
+            baked=0
+            while IFS= read -r f; do
+              file "$f" | grep -q 'Mach-O' || continue
+              recorded="$( (otool -D "$f" | tail -n +2; otool -L "$f" | tail -n +2 | awk '{print $1}') 2>/dev/null )"
+              for p in $recorded; do
+                case "$p" in
+                  /Users/runner/*|/home/runner/*)
+                    echo "error: $(basename "$f") records the build machine's path: $p" >&2
+                    baked=1
+                    ;;
+                esac
+              done
+            done <<< "$(find "$prefix" -type f)"
+            [ "$baked" -eq 0 ] || {
+              echo "A library that names an absolute build path cannot be found on any other machine." >&2
+              exit 1
+            }
+            echo "No shipped library records a build-machine path."
+          fi
+
           mkdir -p "$prefix/etc"
           printf 'VX_LLVM_BIN="%s"\n' "$(dirname "$(command -v llvm-config)")" \
             > "$prefix/etc/llvm-env.sh"
