@@ -8,15 +8,15 @@
 #===----------------------------------------------------------------------===#
 #
 # The pass pipeline that turns an outlined `vx.kernel` body into PTX, verified
-# on a kernel shaped like the one #251 exists for: FlashAttention, whose outer
-# loop over queries is parallel and whose inner online-softmax loop is not.
+# on a kernel with the shape a placed Vx kernel has: an outer loop that is
+# parallel over rows and an inner reduction that is not.
 #
 # This is a spike, not the compiler path. It exists so that wiring it into
 # src/dialect/VxLowering.cpp starts from a recipe known to work rather than from
 # the several that do not, and so the failures below stay recorded. It needs no
 # GPU: `format=isa` stops at PTX text, which is inspectable anywhere.
 #
-#   ./scripts/emit_gpu_kernel.sh [sm_80]
+#   ./scripts/tools/emit_gpu_kernel.sh [sm_80]
 #
 # Three things had to be right, and each was a dead end first:
 #
@@ -40,7 +40,7 @@
 # (`use-bare-ptr-memref-call-conv=true`) cannot be used here. It needs static
 # shapes and Vx emits `memref<?x?xf32>` throughout, so `gpu.func` fails to
 # legalize. Descriptors work, at the cost of a wide parameter list -- the kernel
-# below takes 18 `.param`s for three memrefs and two indices.
+# below takes five arguments and lands on 24 `.param`s.
 #
 #===----------------------------------------------------------------------===#
 
@@ -55,8 +55,8 @@ command -v mlir-opt >/dev/null 2>&1 || {
   exit 1
 }
 
-# A kernel with FlashAttention's dependence structure: parallel over queries,
-# sequential within one. Dynamic memrefs, because that is what Vx emits.
+# Parallel over rows, sequential within one row. Dynamic memrefs, because that
+# is what Vx emits.
 cat > "$OUT/kernel.mlir" <<'EOF'
 func.func @vx_npu_kernel_0(%q: memref<?x?xf32>, %k: memref<?x?xf32>,
                            %o: memref<?x?xf32>, %n: index, %d: index) {

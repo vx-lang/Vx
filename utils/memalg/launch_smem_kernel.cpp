@@ -19,9 +19,10 @@
 //
 // What this verifies, in order:
 //   1. `cuModuleLoadData` accepts an image containing a `.shared` declaration
-//      and a dynamic-shared-capable entry (the flash kernel had neither);
+//      and a dynamic-shared-capable entry (placed_kernel_four_operands.vx,
+//      the other kernel with a device image, has neither);
 //   2. `vx_launch_entry_param_count` agrees with the marshaller at 14 -- this
-//      kernel is that check's first customer besides the flash kernel's 28;
+//      kernel is that check's first customer besides that one's 28;
 //   3. the launch succeeds single-threaded. The copy loop has no barrier (the
 //      C3 gap, owned by #353 A3) -- SAFE here because one thread cannot race
 //      itself, and this run is the empirical confirmation of that claim;
