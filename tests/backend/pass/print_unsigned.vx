@@ -12,12 +12,11 @@
 // be above the signed range of its own width, so a signed helper prints it negative: the
 // `u64` printed -1, the `u32` -1, and so on.
 //
-// `u8` and `u16` widen into `i32` and `u32` into `i64`, which hold every value they have.
-// `u64` has nowhere wider to go, which is why it is the one width with a helper of its own.
+// Each unsigned width has a helper of its own, so the element type alone decides the call.
 //
-// The three at the end are the control, and they are the narrow *signed* widths on purpose:
-// those share the widening arm this rewrote, and a zero extension applied to them would turn
-// -5 into 251.
+// The three at the end are the control, and two of them are the narrow *signed* widths on
+// purpose: those have no helper and still widen to reach `print_i32`, and a zero extension
+// there would turn -5 into 251.
 //
 // Flat path only: the legacy code generator chooses its helper from the printed MLIR type,
 // where the element type is already gone, so it cannot tell these apart.
