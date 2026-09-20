@@ -569,3 +569,24 @@ footer > p {
   font-style: italic;
   color: inherit;
 }
+
+/* ---------------------------------------------------------- cite this ---- */
+
+/* The citation line at the foot of anything quotable. Understated on the page and plain in
+ * the markup, because the audience is partly a crawler reading the HTML.
+ */
+.cite-this {
+  max-width: 46rem;
+  margin: 3.5rem auto 0;
+  padding: 1rem 1.25rem;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--bg-raised);
+  font-size: 0.9rem;
+  color: var(--fg-muted);
+}
+
+.cite-this p { margin: 0; }
+.cite-this p + p { margin-top: 0.5rem; }
+.cite-this strong { color: var(--fg); }
+.cite-this a { overflow-wrap: break-word; }

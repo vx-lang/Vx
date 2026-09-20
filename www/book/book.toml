@@ -11,6 +11,8 @@ preferred-dark-theme = "navy"
 git-repository-url = "https://github.com/vx-lang/Vx"
 edit-url-template = "https://github.com/vx-lang/Vx/edit/main/www/book/{path}"
 site-url = "/docs/"
+# Styles the citation line that gen_site_metadata.py appends to each chapter.
+additional-css = ["theme/cite.css"]
 
 [output.html.print]
 enable = true

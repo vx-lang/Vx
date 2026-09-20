@@ -1,0 +1,27 @@
+/* The citation line the metadata generator appends to each chapter.
+ *
+ * mdBook's own theme variables rather than the landing page's, so the block follows
+ * whichever book theme the reader has chosen.
+ */
+
+.cite-this {
+  margin: 3.5rem 0 1rem;
+  padding: 1rem 1.25rem;
+  border: 1px solid var(--quote-border);
+  border-radius: 8px;
+  background: var(--quote-bg);
+  font-size: 0.9rem;
+}
+
+.cite-this p {
+  margin: 0;
+}
+
+.cite-this p + p {
+  margin-top: 0.5rem;
+  opacity: 0.8;
+}
+
+.cite-this a {
+  overflow-wrap: break-word;
+}

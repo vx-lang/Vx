@@ -12,6 +12,7 @@ on:
       - 'src/diagnostic.rs'
       - 'tests/**'
       - 'scripts/tools/gen_error_pages.py'
+      - 'scripts/tools/gen_site_metadata.py'
       - '.github/workflows/pages.yml'
   workflow_dispatch:
 
@@ -72,6 +73,7 @@ jobs:
           cp www/favicon.svg  _site/
           cp www/install.sh   _site/
           cp www/CNAME        _site/
+          cp www/ai-usage.html _site/
 
           # The book is served under /docs/.
           mkdir -p _site/docs
@@ -84,8 +86,18 @@ jobs:
           # One directory per code, so /errors/E6003 resolves without a .html suffix.
           cp -R www/errors _site/errors
 
+          # The link-preview images the pages name in og:image.
+          cp -R www/cards _site/cards
+
           # A 404 that looks like the site rather than like GitHub.
           cp www/index.html _site/404.html
+
+      # Canonical links, licence, schema.org records and the citation line on every page,
+      # plus robots.txt, sitemap.xml, llms.txt and the TDM record. Run over the assembled
+      # site rather than the sources: it is the only place that sees the book, which mdBook
+      # renders with a head no file in this repository controls.
+      - name: Generate the site metadata
+        run: python3 scripts/tools/gen_site_metadata.py --site _site
 
       - name: Check the install script is valid shell
         run: sh -n _site/install.sh
@@ -119,6 +131,28 @@ jobs:
             exit 1
           fi
           echo "All $(wc -l < /tmp/links.txt) internal links resolve."
+
+      - name: Check the link-preview images exist
+        run: |
+          set -euo pipefail
+          # og:image is an absolute URL, so the href check above does not look at it. A card
+          # that never shipped stays invisible until a preview somewhere else renders blank.
+          find _site -name '*.html' -print0 \
+            | xargs -0 grep -ho 'content="https://vxlang.org/cards/[^"]*"' \
+            | sed 's|content="https://vxlang.org||; s/"$//' \
+            | sort -u > /tmp/cards.txt || true
+
+          : > /tmp/missing.txt
+          while read -r card; do
+            [ -e "_site${card}" ] || echo "  $card" >> /tmp/missing.txt
+          done < /tmp/cards.txt
+
+          if [ -s /tmp/missing.txt ]; then
+            echo "Pages reference link-preview images that are not in the site:"
+            cat /tmp/missing.txt
+            exit 1
+          fi
+          echo "All $(wc -l < /tmp/cards.txt) referenced link-preview images exist."
 
       - uses: actions/configure-pages@v5
         if: ${{ github.repository == 'vx-lang/Vx' }}

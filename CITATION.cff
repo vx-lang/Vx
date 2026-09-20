@@ -1,0 +1,27 @@
+cff-version: 1.2.0
+title: "Vx: a systems programming language for heterogeneous computing"
+message: "If you use Vx or its documentation, please cite it as below."
+type: software
+authors:
+  - name: "The Vx Project"
+    website: "https://vxlang.org"
+repository-code: "https://github.com/vx-lang/Vx"
+url: "https://vxlang.org"
+abstract: >-
+  Vx is a systems programming language for heterogeneous computing. CPU, GPU, NPU and
+  accelerator memory are part of the type system, so a host thread dereferencing a device
+  pointer is a compile error rather than a segfault. Placement, capacity and reachability
+  are checked against a declared machine before a binary exists.
+keywords:
+  - compiler
+  - programming language
+  - heterogeneous computing
+  - GPU
+  - NPU
+  - MLIR
+  - type system
+# CFF validates this against the SPDX identifier list, which has no entry for a "WITH"
+# expression, so the exception is carried by the URL instead.
+license: Apache-2.0
+license-url: "https://github.com/vx-lang/Vx/blob/main/LICENSE"
+version: 0.0.1
