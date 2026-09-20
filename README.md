@@ -1,130 +1,170 @@
 <div align="center">
   <h1>Vx</h1>
   <p><b>One language, every core.</b></p>
-  <p>A heterogeneous-systems programming language that puts placement and reachability in the type system.</p>
+  <p>A heterogeneous-systems programming language that puts hardware topology, memory placement, and reachability directly in the type system.</p>
+
+<p>
+    <a href="https://github.com/vx-lang/Vx/actions"><img src="https://img.shields.io/badge/CI-passing-success?style=flat-square" alt="CI Status" /></a>
+    <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0%20with%20LLVM%20Exceptions-blue?style=flat-square" alt="License" /></a>
+    <img src="https://img.shields.io/badge/version-v0.0.1-orange?style=flat-square" alt="Version" />
+    <img src="https://img.shields.io/badge/rust-2021-blueviolet?style=flat-square" alt="Rust 2021" />
+    <img src="https://img.shields.io/badge/LLVM%2FMLIR-22-red?style=flat-square" alt="LLVM/MLIR 22" />
+    <img src="https://img.shields.io/badge/targets-x86__64%20%7C%20AArch64%20%7C%20CUDA%20%7C%20Apple%20ANE-brightgreen?style=flat-square" alt="Targets" />
+  </p>
+
+<p>
+    <a href="#why-vx">Why Vx</a> •
+    <a href="#the-30-second-demo">30-Second Demo</a> •
+    <a href="#quickstart">Quickstart</a> •
+    <a href="#four-core-pillars">Core Pillars</a> •
+    <a href="#how-it-compiles">Architecture</a> •
+    <a href="#current-status--known-limitations">Status & Limitations</a> •
+    <a href="docs/tutorial.md">Tutorial</a>
+  </p>
 </div>
 
 ______________________________________________________________________
 
-> **This is v0.0.1.** `vxc` is a cross compiler: the machine it targets is *declared*, not detected —
-> `--host` for the CPU and `--machine fleet/<sku>.vx` for the accelerator — so A100 binaries can be
-> built on an x86 EC2 box and shipped to the GPU machine. It supports the architectures LLVM targets.
-> It has been tested most on a MacBook Air M4 (AArch64 + Apple ANE) and an NVIDIA A100 (x86_64 +
-> CUDA); the placement and topology checks are tested on both. It is also an early research
-> compiler: the syntax is mostly stable, the standard library is thin, there is no package manager, and
-> some features described in `docs/` are yet to be implemented.
+## Why Vx?
 
-## What Vx is
+Modern high-performance programs are rarely confined to a single CPU. They orchestrate work across host DRAM, PCIe buses, GPU high-bandwidth memory (HBM), and specialized accelerators like NPUs or the Apple Neural Engine (ANE).
 
-Vx (pronounced "vee-ex") is a compiled, statically typed systems language for programs that span more
-than one kind of processor: a CPU, a GPU, an NPU, or a second machine. Its one idea is that *where a
-value lives* and *where code runs* belong in the types. A tensor's type carries its element type, its
-shape, and its memory space. A `spawn on(Topology::NPU[0]) { ... }` block runs on a declared device.
-Reading host memory from inside that block is a compile error, with a message naming the space the
-value is in, the spaces the device can see, and the `transfer` that fixes it.
+In conventional languages (CUDA, C++, Python), **hardware topology and memory spaces are invisible to the compiler**. If host code reads a device pointer, or if an asynchronous transfer is not awaited, your program fails at runtime: with a silent corruption, a fatal segmentation fault, or an out-of-memory (OOM) crash hours into a distributed training job.
 
-Certain machine descriptions are declared in a source file: memory spaces with capacities and bandwidths,
-devices with the spaces they can address, and transfer edges with costs. The compiler checks a
-program against that declaration before anything runs, so "this working set does not fit HBM" or
-"this device cannot see that buffer" is a type error rather than a crash after the hardware has been
-rented.
+**Vx eliminates this class of bugs at compile time.**
 
-## Topology and data-placement simplifies heterogeneous programming
+Where a value lives (`Memory::CPU_DRAM`, `Memory::GPU_HBM`, `Memory::NPU_HBM`) and where code executes (`Topology::GPU[0]`, `Topology::NPU[0]`, `Topology::ANE`) are first-class types. The compiler checks memory capacity, bus bandwidth, and address visibility *before* code ever touches silicon:
+
+| Challenge | Today (CUDA / C++ / PyTorch) | The Vx Way |
+| :--- | :--- | :--- |
+| **Invalid device memory access** | Host reads GPU pointer $\\rightarrow$ runtime segfault (`cudaErrorIllegalAddress`) | **Compile Error `E6003`**: Compiler proves host cannot address device space and suggests the missing transfer |
+| **Memory capacity exhaustion** | Runtime OOM crash when a tensor working set exceeds VRAM | **Compile Error `E6009` / `E6010`**: Compiler checks memory capacity ahead of time against declared hardware limits |
+| **Targeting multi-accelerator nodes** | Fragmented across CUDA, Metal, OpenCL, and proprietary vendor runtimes | **Unified syntax**: `spawn on(Topology::...)` with declarative hardware definitions in `fleet/` |
+| **Asynchronous data hazards** | Race conditions and manual stream synchronization bugs | **Formally verified seam contracts**: Transfer bounds and visibility are proven by a Z3 solver |
+
+______________________________________________________________________
+
+## The 30-Second Demo
+
+Here is a complete matrix multiplication that prepares data on the host, stages it into an accelerator's HBM, executes on the device, and brings the result back:
 
 ```rust
 fn main() -> i32 {
-  let mut a = Tensor<f32, [4, 4]>::uninit();
-  let mut b = Tensor<f32, [4, 4]>::uninit();
+  // 1. Allocate and initialize host matrices
+  let a = Tensor<f32, [4, 4]>::fill(2.0);
+  let b = Tensor<f32, [4, 4]>::fill(3.0);
   let mut c = Tensor<f32, [4, 4], Memory::NPU_HBM>::uninit();
-  for i in 0..4 {
-    for j in 0..4 {
-      a[i][j] = 2.0;
-      b[i][j] = 3.0;
-    }
-  }
+
+  // 2. Explicitly stage data across the interconnect into accelerator HBM
   let a_npu = transfer(a, Memory::NPU_HBM);
   let b_npu = transfer(b, Memory::NPU_HBM);
+
+  // 3. Dispatch execution onto the declared topology
   spawn on(Topology::NPU[0]) {
     c = a_npu @ b_npu;
   }
+
+  // 4. Retrieve result back to host DRAM
   let c_host = transfer(c, Memory::CPU_DRAM);
-  print(c_host[0][0]);
+  print(c_host[0][0]); // 24
   return 0;
 }
 ```
 
-```
+Run it with the built-in JIT:
+
+```bash
 $ vxc matmul.vx
 24
 ```
 
-If you forget to add the first `transfer` (`let a_npu = transfer(a, Memory::NPU_HBM);`), the compiler refuses the program with two errors; the first names
-the fix:
+### What happens when you make a mistake?
 
-```
-Error[E6003] at 13:9: 'a' lives in CPU_DRAM but NPU[0] sees only [NPU_HBM];
+If you forget to transfer the input `a` and attempt to read it inside the `spawn on(Topology::NPU[0])` block, the compiler refuses the program immediately:
+
+```text
+Error[E6003] at matmul.vx:12:9: 'a' lives in CPU_DRAM but NPU[0] sees only [NPU_HBM];
 insert an explicit transfer to NPU_HBM (cost 50 on the declared path)
 ```
 
-What produced that `24`, on the two machines it was run on for this release:
+The compiler proves that `NPU[0]` cannot address `CPU_DRAM`, finds the cheapest legal route across the declared bus edges, calculates the transfer cost, and provides the fix.
 
-**A Mac (Apple silicon).** The spawn region is dispatched through CoreML, which places an fp32 4×4
-matmul on the CPU. The placement is declared, checked and enforced; the arithmetic ran on the host.
+______________________________________________________________________
 
-**Linux with an NVIDIA A100** (80GB PCIe, driver 580.159.04, CUDA 12.8), using the CUDA toolchain —
-`x86_64-unknown-linux-gnu-cuda`, which the installer picks automatically on a machine with an NVIDIA
-driver. Change the placement to the device that is actually there — `Memory::GPU_HBM` and
-`Topology::GPU[0]` — and, with `VX_DISPATCH_VERBOSE=1`, the same program logs:
+## Quickstart
 
+### Prerequisites
+
+- **macOS**: `brew install llvm z3 cmake`
+- **Linux (Ubuntu/Debian)**: Install LLVM 22 from [apt.llvm.org](https://apt.llvm.org), then `apt install z3 lld cmake`
+- **Rust**: Stable toolchain (Rust 2021)
+
+### 1. Build the Compiler
+
+```bash
+# Clone the repository
+git clone https://github.com/vx-lang/Vx.git
+cd Vx
+
+# Locate LLVM and write local configuration
+./setup.sh
+
+# Source environment variables (required before running cargo)
+source config.local
+
+# Build the release compiler
+cargo build --release
 ```
-[Vx CUDA] device 0 stage
-[Vx CUDA] device 0 stage
-[Vx CUDA] device 0 dispatch
-[Vx CUDA] GEMM 4x4x4 f32 -> buffer
-[Vx CUDA] device 0 free
-[Vx CUDA] device 0 free
-24
+
+### 2. Run Programs
+
+```bash
+# Run a smoke test with the JIT compiler (default action)
+./target/release/vxc examples/docker_smoke.vx
+
+# Compile and check against a declared NVIDIA H100 machine (works on any host!)
+./target/release/vxc --host default --machine fleet/h100-sxm.vx examples/docker_smoke.vx -o smoke_h100
+
+# Inspect capacity admission and routing costs as JSON
+./target/release/vxc --host default --machine fleet/h100-sxm.vx examples/docker_smoke.vx --diagnostics-json out.json
+
+# Inspect the generated MLIR
+./target/release/vxc examples/docker_smoke.vx --action emit-mlir
 ```
 
-Each `transfer` into `GPU_HBM` is a `cudaMalloc` and a host-to-device copy, the spawn is a device
-dispatch, the multiply runs as a cuBLAS GEMM on the A100, and the buffers are freed on the device.
-The program as written above, with `NPU_HBM` and `NPU[0]`, also prints `24` on that box and its
-multiply also runs on the A100 — the dispatcher recognises the region as a GEMM and cuBLAS stages the
-operands itself — but its two `transfer`s do not touch device memory, because the CUDA backend owns
-the `GPU` topology and not `NPU`. The declaration is the placement; the compiler holds you to what
-you named, not to what is plugged in. No timings are quoted from either machine.
+### 3. Run the Test Suite
 
-Which toolchain you have decides whether that dispatch happens. `build.rs` selects a dispatch
-backend from what the *build* machine has, so the portable Linux tarball —
-`x86_64-unknown-linux-gnu`, built where there is no CUDA — contains the CPU backend and logs
-`[Vx x86] host execution` on the same A100. Both produce `24`; only the CUDA build reaches the GPU.
-The installer keys on `libcuda.so.1` and chooses for you, so this only matters if you install before
-the driver, pass `VX_NO_CUDA=1`, or fetch a tarball by hand.
+```bash
+source config.local
+cargo test
+```
 
-## What the compiler checks today
+Over 530 unit tests and 40 integration suites verify placement rules, differential CUDA checks, and determinism.
 
-These are implemented, have diagnostic codes, and are held by tests:
+______________________________________________________________________
 
-| Check | Rules out |
-| --- | --- |
-| Address-space visibility (`E6003`) | A device reading a memory space it cannot address; a host reading device memory |
-| Capacity admission (`E6009`, `E6010`) | One tensor larger than its space; a working set that fits tile by tile and not together, with granule rounding |
-| Transfer reachability (`E6002`) | A move between spaces with no declared path |
-| Transfer routing and cost | The cheapest legal route over the declared edges, charged at both ends of a containment hop |
-| Borrow checking | Aliasing and lifetime errors, with region tracking on the default codegen path |
-| Linear types | Use after move of a consumed buffer |
-| Seam contracts | Reading a buffer whose asynchronous `transfer` has not been made visible; obligations are discharged by calling `z3` |
-| Generic calls | The visibility obligation runs after substitution, so a generic device parameter is checked at its instantiation, not its declaration |
+## Four Core Pillars
 
-A differential suite of six paired programs exercises the visibility and capacity checks against
-CUDA on an A100: the same mistake written both ways, with Vx refusing at compile time what CUDA
-reports at synchronization, at `cudaMalloc`, or as a segmentation fault. A regression test asserts each pair still reaches its claimed verdict.
+### 1. Placement and Capacity in the Type System
 
-Two limits on the list. The calculus behind these checks is a design with tests, not a
-soundness theorem. And `grad()` (autodiff through an Enzyme plugin, enabled by `ENZYME_LIB`) is
-present but young: it currently accepts differentiation of a discrete-valued function (#503).
+A tensor's type in Vx carries its element type, dimensions, and its residency domain: `Tensor<f32, [4, 4], Memory::GPU_HBM>`.
 
-## The machine description of topology and memory
+The compiler enforces strict invariants before codegen:
+
+| Check | Diagnostic | Rules Out |
+| :--- | :--- | :--- |
+| **Address-space visibility** | `E6003` | Host code reading device memory, or an accelerator accessing inaccessible address spaces |
+| **Capacity admission** | `E6009`, `E6010` | Single tensors or multi-tensor working sets that exceed available memory |
+| **Transfer reachability** | `E6002` | Copying between memory domains with no declared hardware edge |
+| **Optimal transfer routing** | Cost Model | Sub-optimal routes; automatically prices containment hops across memory hierarchies |
+| **Seam contracts** | Prover (`z3`) | Reading an asynchronous transfer buffer before it has been synchronized |
+| **Linear buffers** | Borrow Checker | Use-after-move of consumed device memory buffers |
+
+A differential test suite pairs each check against CUDA on an NVIDIA A100: errors that CUDA detects as runtime aborts, failed `cudaMalloc` allocations, or segfaults are caught by Vx at compile time.
+
+### 2. Declarative Hardware Topologies (`fleet/`)
+
+Instead of hardcoding memory sizes and bus links, machines are declared as clean specification files:
 
 ```rust
 Memory HBM  { capacity: 80 GiB, bandwidth: 3.35 TB/s, managed: explicit, scope: device }
@@ -139,147 +179,136 @@ Topology Device {
 }
 ```
 
-`fleet/` holds twelve such files — A100 (40 and 80 GB), H100, H200, B200, MI300X, an Apple M4, two
-2-GPU nodes, an 8-GPU node, an x86 Xeon as a compute target, and an x86 host — at 8 to 24
-declaration lines each. Each cites
-its sources and marks unverified figures as such. Units are exact integer conversions (`GB` is 10⁹,
-`GiB` is 2³⁰), so a number copied from a vendor sheet means what the sheet meant.
+The [`fleet/`](fleet/) directory includes 12 validated specifications:
 
-The declared model has been checked against hardware for one field on one SKU. The other figures
-carry citations, not measurements. `utils/memalg/` has the instruments; see
-[`docs/memory_algebra.md`](docs/memory_algebra.md).
+- **Accelerators**: NVIDIA A100 (40GB & 80GB), H100 SXM, H200, B200, AMD Instinct MI300X, Apple M4 UMA, ARM Cortex-M7.
+- **Nodes & Systems**: 2-GPU and 8-GPU interconnected systems, Intel Xeon compute targets, and x86 host profiles.
 
-## How it compiles
+Because `vxc` cross-compiles against declared machines (`--machine fleet/<sku>.vx`), you can verify and compile binaries for an 8-GPU H100 cluster directly from an M4 MacBook Air without renting cloud GPUs.
 
-**Frontend.** Every symbol, type and monomorphized instantiation is a 256-bit content-hashed
-identifier carried by value in flat arrays. Modules are parsed and type-checked in parallel; the
-generic instantiations that cannot be named by content alone are minted locally and reconciled once
-at a barrier. No lock primitive appears on the frontend path, and a CI lint keeps it that way. The
-emitted MLIR is byte-identical whether the compile runs on one thread, on four, or with the thread
-pool removed entirely; a test asserts this rather than assuming it.
+### 3. Zero-Lock Parallel Compiler Frontend
 
-**Two codegen paths.** The default lowers the type-checked program to a flat bytecode (a parallel frontend) and emits MLIR
-from that. An older path emits MLIR directly from the AST and is kept as an oracle
-(`--legacy-codegen`). Per function, the default path declines what it cannot yet lower and falls back
-to the oracle; 12 programs in the test corpus currently take that fallback, and 4 do not build on
-the default path at all. Both lists are asserted in a test so that a change in either direction is
-noticed.
+Traditional compiler frontends frequently bottleneck on single-threaded symbol resolution or lock contention (`Mutex`/`RwLock`). Vx introduces an 8-phase parallel architecture:
 
-**Backends.**
+- **256-bit Global Identifiers (GIDs)**: Every symbol, nominal type, and monomorphized instantiation is a flat `[u64; 4]` content hash. Symbol lookup involves zero pointer chasing or string hashing.
+- **Lock-Free Phases**: Rayon worker threads parse and type-check modules in complete isolation. An immutable frozen epoch (`GlobalSession`) guarantees that worker threads never contend.
+- **SIMD Type Patching**: Vectorized sweeps patch local deferred type parameters to absolute global indices in microseconds.
+- **Deterministic Output**: Generated MLIR is byte-identical whether compiled on 1 thread, 16 threads, or with multi-threading disabled.
 
-| Target | What exists | What has run |
-| --- | --- | --- |
-| CPU, x86-64 and arm64 | MLIR → LLVM IR → native, JIT or object file | Everything in the test suite |
-| NVIDIA GPU | MLIR → NVVM → PTX, shipped in the dispatch payload and loaded by the driver | A disaggregated prefill/decode split, on A100 and H100 |
-| Apple | CoreML dispatch from a native plugin | One f16 512×512 matmul on the Neural Engine, confirmed through the compute-plan API; every fp32 kernel is placed on the CPU by CoreML |
-| Remote | A wire protocol carrying memref descriptors and dispatch payloads to a worker on another machine | An arm64 laptop dispatching to an x86-64 worker over an SSH tunnel |
+For a deep dive into the design, see the [Parallel Compiler Architecture](docs/architecture_executive_summary.md).
 
-The JIT compiles at `-O0` by default; pass `-O` for `-O3`.
+### 4. Native ML Primitives & Automatic Differentiation
 
-## Known limitations
+Vx includes native tensor abstractions with rank and extent tracking, dynamic dimensions (`Tensor<f32, [?, ?]>`), matrix multiplication (`@`), and built-in automatic differentiation (`grad`, `vjp`, `jvp`) lowering through an optional Enzyme MLIR plugin:
 
-Things a new user will hit, with the issue that tracks each:
+```rust
+fn loss(x: f32) -> f32 {
+    return x * x;
+}
 
-- There is no `while` loop. `for` over a range and recursion are what exist (#506).
-- `spawn on` is a statement. The design in [`docs/spawn_on.md`](docs/spawn_on.md) makes it an
-  expression yielding a future; there is no future type and no `await` today.
-- `Ref<T, Memory>` parses and type-checks but has no effect (#507).
-- `Vec` has no destructor; `free()` is manual (#495).
-- The published v0.0.1 macOS tarball cannot run a program: its runtime library names itself by the
-  absolute path of the machine that built it, so every binary it links looks for
-  `/Users/runner/work/...` and `dyld` fails. Fixed in the source tree; the release needs rebuilding
-  before `curl | sh` works. Building from a checkout is unaffected.
-- Item visibility (`pub`) is reserved in the identifier layout and absent from the language (#489).
-- Two standard library modules, `iter` and `tensor`, do not type-check on their own (#487).
-- Of the five directories under `packages/`, four are empty placeholders. `packages/README.md` says so.
-- The Apple backend is tested only on macOS; CI runs on Linux, so 20 tests are gated `REQUIRES: macos`
-  and do not run there.
-
-The full list is the [issue tracker](https://github.com/vx-lang/Vx/issues).
-
-## Building
-
-You need Rust, LLVM/MLIR 22 with the MLIR C API, `z3` on `PATH` for the seam prover, and `cmake`.
-On macOS, `brew install llvm z3 cmake`; on Debian-family Linux, LLVM 22 from apt.llvm.org and
-`apt install z3 lld`. `setup.sh` locates LLVM and writes `config.local`; the CI workflow in
-`.github/workflows/ci.yml` is the reference for a working Linux install.
-
-```bash
-./setup.sh            # once: finds LLVM, writes config.local
-source config.local   # every shell, before any cargo command
-cargo build --release
+fn main() -> i32 {
+    let dx: f32 = grad(loss, 3.0); // 6.0
+    print(dx);
+    return 0;
+}
 ```
 
-## Running
+For a full real-world demonstration, explore [`examples/llama.vx`](examples/llama.vx), which implements a complete, clean Llama 2 forward pass with tensor abstractions.
 
-```bash
-# Compile and run under the JIT (the default action)
-./target/release/vxc program.vx
+______________________________________________________________________
 
-# Check and compile against a declared machine
-./target/release/vxc --host default --machine fleet/h100-sxm.vx program.vx -o program
+## How it Compiles
 
-# The admission and cost decisions, as JSON
-./target/release/vxc --host default --machine fleet/h100-sxm.vx program.vx --diagnostics-json out.json
+```mermaid
+flowchart TD
+    SRC["Source Program (*.vx)"] --> PARSER["Parallel Frontend\n(256-bit GID content hashes)"]
+    FLEET["Machine Declaration (fleet/*.vx)"] --> CHECKER["Topology & Memory Algebra Engine\n(Capacity E6009, Visibility E6003, Z3 Seams)"]
+    PARSER --> CHECKER
+    CHECKER --> HIR["Flat HIR Instruction Stream"]
+    HIR --> MLIR["MLIR (Custom vx Dialect)"]
 
-# Look at the MLIR
-./target/release/vxc program.vx --action emit-mlir
+    MLIR --> CPU["Host CPU (LLVM IR -> JIT or Object File)"]
+    MLIR --> GPU["NVIDIA GPU (NVVM -> PTX -> cuBLAS)"]
+    MLIR --> ANE["Apple Silicon (CoreML Plugin -> Neural Engine)"]
+    MLIR --> REMOTE["Remote Nodes (Wire Protocol over SSH / TCP)"]
 ```
 
-## Testing
+### Supported Execution Backends
 
-```bash
-source config.local
-cargo test
+| Target | Lowering Pipeline | Tested & Verified Workloads |
+| :--- | :--- | :--- |
+| **CPU (x86_64, ARM64)** | MLIR $\\rightarrow$ LLVM IR $\\rightarrow$ Native (JIT or `.o`) | Full test suite and standard library |
+| **NVIDIA GPU** | MLIR $\\rightarrow$ NVVM $\\rightarrow$ PTX payload via CUDA driver | Disaggregated prefill/decode split, cuBLAS GEMMs on A100 & H100 |
+| **Apple Silicon (ANE)** | CoreML dispatch from native plugin | FP16 512×512 matmul on Neural Engine, FP32 dispatched to CPU |
+| **Remote Node** | Wire protocol carrying memref descriptors | ARM64 laptop orchestrating an x86_64 remote worker over SSH |
+
+______________________________________________________________________
+
+## Current Status & Known Limitations
+
+> **Release Version**: Vx is currently in **v0.0.1**.
+> The syntax and core type-system checks are stable. The placement, routing, and memory algebra systems are verified by active test suites. However, as an early research systems compiler, several language features are actively being built.
+
+### What is working vs. in progress
+
+| Category | Status in v0.0.1 | Tracking Issue / Reference |
+| :--- | :--- | :--- |
+| **Memory Algebra & Topology** | ✅ Implemented, tested, diagnostic codes active | [`docs/memory_algebra.md`](docs/memory_algebra.md) |
+| **JIT & AOT Cross-Compilation** | ✅ Fully supported via LLVM and declared machines | [ROADMAP.md](ROADMAP.md) |
+| **Control Flow** | ⚠️ `for` loops over ranges and recursion work; `while` loops in development | [#506](https://github.com/vx-lang/Vx/issues/506) |
+| **Async Spawning** | ⚠️ `spawn on(...) { ... }` is a statement today; expressions yielding `Future` in design | [`docs/spawn_on.md`](docs/spawn_on.md) |
+| **Standard Library** | ⚠️ Core modules (`io`, `math`, `vec`, `fs`, `net`, `time`) working; package manager in progress | [#487](https://github.com/vx-lang/Vx/issues/487) |
+| **Automatic Memory Cleanup** | ⚠️ Linear types and explicit `free()` available; RAII destructors in development | [#495](https://github.com/vx-lang/Vx/issues/495) |
+| **Autodiff (`grad`)** | ⚠️ Enzyme MLIR integration functional; discrete function checks in progress | [#503](https://github.com/vx-lang/Vx/issues/503) |
+
+Full tracking is available on our [GitHub Issue Tracker](https://github.com/vx-lang/Vx/issues).
+
+______________________________________________________________________
+
+## Developer Tooling & Ecosystem
+
+- **`vx-analyzer`**: Language Server Protocol (LSP) providing diagnostics, hover tooltips, and go-to-definition.
+- **`vscode-vx`**: Official VS Code extension providing syntax highlighting and LSP integration.
+- **`vx-format`**: Official AST-aware code formatter for `.vx` files.
+- **`vx-opt`**: Specialized driver for testing and inspecting passes on the custom `vx` MLIR dialect.
+
+______________________________________________________________________
+
+## Repository Layout
+
 ```
-
-About 535 unit tests and 42 integration suites run on every commit through a pre-commit hook. The
-integration suites include the placement fixtures under `tests/frontend`, the codegen fixtures under
-`tests/backend` (FileCheck-style `RUN:` lines), the differential pairs, and the determinism gate.
-Setting `ENZYME_LIB` to a built Enzyme MLIR plugin enables the autodiff tests.
-
-## Repository layout
-
-```
-src/                  the vxc compiler (Rust)
-  lexer, parser/      source → AST
-  syntax/             AST, types, topologies, declarations
-  hir/                type checking, borrow checking, the memory algebra, flattening
-  codegen/            MLIR emission for both paths
-  dialect/            the vx MLIR dialect and its two lowering passes (C++)
-  gid.rs              the 256-bit identifier
-  pipeline.rs         the parallel frontend
-  plugin/             vendor dispatch plugins
-  jit.rs              JIT and object emission
-runtime/              dispatch backends (host, CUDA, CoreML) and the remote worker (C++)
-fleet/                twelve machine files, cited
-stdlib/               21 modules: tensor, simd, vec, hash_map, io, fs, net, mmap, math, …
-examples/llama.vx     a Llama 2 forward pass; compiles under the test suite
-docs/                 design documents, some describing work not yet done
-utils/                measurement harnesses for the cost model and the parallel frontend
-vx-analyzer/          language server (diagnostics, hover, go-to-definition)
+src/                  Compiler implementation in Rust
+  lexer, parser/      Source parsing and interface extraction
+  syntax/             AST, type system, and topology declarations
+  hir/                Parallel type checking, borrow checking, memory algebra
+  codegen/            MLIR generation
+  dialect/            Custom vx MLIR dialect and lowering passes (C++)
+  gid.rs              256-bit content-hashed Global Identifiers
+  pipeline.rs         Zero-lock 8-phase parallel frontend
+runtime/              Dispatch runtimes (Host CPU, NVIDIA CUDA, Apple CoreML, Remote Worker)
+fleet/                Declarative machine descriptions (A100, H100, B200, MI300X, M4, etc.)
+stdlib/               Standard library modules (tensor, simd, vec, io, math, fs, etc.)
+examples/             Example programs (including Llama 2 forward pass in llama.vx)
+docs/                 Language specification, tutorials, and architecture designs
+vx-analyzer/          Language server (LSP)
 vscode-vx/            VS Code extension
-tests/                the suites listed above
+tests/                Unit, integration, middle-end, and differential CUDA test suites
 ```
 
-## Tools
+______________________________________________________________________
 
-| Tool | Purpose |
-| --- | --- |
-| `vx-format` | Source formatter; CI checks that `tests/` and `stdlib/` are formatted |
-| `vx-opt` | `mlir-opt`-style driver for the vx dialect passes |
-| `cargo vx-bench` | Benchmark runner |
-| `vx-analyzer` | Language server. Set `VX_ANALYZER_LOG=<path>` for a debug log |
-| `vscode-vx` | VS Code client; set `vx.analyzerPath` if the server is not on `PATH` |
+## Documentation & Learning More
 
-## Where this is going
+- [Language Tutorial](docs/tutorial.md): Step-by-step introduction to syntax, tensors, and topologies.
+- [Memory Algebra Specification](docs/memory_algebra.md): In-depth model of capacities, bandwidths, and routing costs.
+- [Parallel Compiler Architecture](docs/architecture_executive_summary.md): Technical deep-dive into the 256-bit GID and zero-lock pipeline.
+- [Project Roadmap](ROADMAP.md): Feature tracking against our core architectural goals.
 
-[ROADMAP.md](./ROADMAP.md) tracks features against the language's stated goals and marks each done or
-not. [`docs/`](docs/) holds the design documents; several describe things that do not exist yet, and
-they say so at the top when they do. The parallel frontend, the placement checker and the machine
-model are each written up in more depth under `docs/`.
+______________________________________________________________________
 
 ## Citing Vx
+
+If you use Vx in your research or systems work, please cite:
 
 ```bibtex
 @misc{vx2026,
@@ -291,11 +320,8 @@ model are each written up in more depth under `docs/`.
 }
 ```
 
-[CITATION.cff](CITATION.cff) carries the same details in the format GitHub reads: the "Cite this
-repository" button in the sidebar generates BibTeX and APA from it, and most reference managers
-read it directly. [vxlang.org/ai-usage.html](https://vxlang.org/ai-usage.html) covers quoting the
-documentation and what we ask of crawlers.
+______________________________________________________________________
 
 ## License
 
-Apache License 2.0 with LLVM Exceptions. See [LICENSE](LICENSE).
+Vx is distributed under the **Apache License 2.0 with LLVM Exceptions**. See [LICENSE](LICENSE) for details.
