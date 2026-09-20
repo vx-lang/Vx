@@ -1,0 +1,47 @@
+// A name read before the body's first call is used, whatever that call goes on to check.
+//
+// A callee is checked from inside its caller's body, and the callee's check used to clear
+// the set of names the caller had used so far. So `lo` and `hi` -- read on the way to
+// `self.next()` -- were reported unused, and so was `v`, a variable this file pushes to and
+// reads. Only the first caller of a given callee was affected, which made it look arbitrary.
+//
+// `never_read` is the control: the warning still fires where it should, so a fix that simply
+// stopped warning would not pass this file.
+// WARN: W1009
+// WARN: Unused function parameter 'never_read'
+// NO-WARN: 'lo'
+// NO-WARN: 'hi'
+// NO-WARN: Unused variable 'v'
+import std::vec;
+
+struct Counter {
+  n : f64,
+}
+
+impl Counter {
+  fn next(self : &mut Counter) -> f64 {
+    self.n = self.n + 1.0;
+    return self.n;
+  }
+
+  fn range(self : &mut Counter, lo : f64, hi : f64) -> f64 {
+    return lo + (hi - lo) * self.next();
+  }
+}
+
+fn never_reads_it(never_read : i32) -> i32 {
+  return 0;
+}
+
+fn main() -> i32 {
+  let mut c = Counter {
+    n : 0.0
+  };
+  print(c.range(0.0, 2.0));
+
+  let mut v = Vec<i32>::new();
+  v.push(7);
+  print(v.get(0));
+
+  return never_reads_it(5);
+}

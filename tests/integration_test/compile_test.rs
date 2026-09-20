@@ -395,6 +395,15 @@ fn run_warning_test(path: &Path) -> Result<(), String> {
             path
         ));
     }
+    // `// NO-WARN:` is the other direction: text that must NOT appear in any warning. A
+    // fixture for a fixed false positive needs it, since every other check here passes
+    // when a warning is merely present. It never stands alone -- a file still states what
+    // it does expect, so "warn about nothing at all" cannot satisfy it.
+    let unwanted: Vec<String> = source
+        .lines()
+        .filter(|l| l.trim().starts_with("// NO-WARN:"))
+        .map(|l| l.split_once("NO-WARN:").unwrap().1.trim().to_string())
+        .collect();
 
     let mut loader = vxc::module_loader::ModuleLoader::new();
     loader
@@ -471,6 +480,15 @@ fn run_warning_test(path: &Path) -> Result<(), String> {
                 path,
                 w,
                 warnings.join("\n")
+            ));
+        }
+    }
+    for w in &unwanted {
+        if let Some(got) = warnings.iter().find(|got| got.contains(w.as_str())) {
+            return Err(format!(
+                "NO-WARN check failed on {:?}: `{}` was not supposed to be warned about, \
+                 but got `{}`.",
+                path, w, got
             ));
         }
     }

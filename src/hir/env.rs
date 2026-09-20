@@ -1298,6 +1298,13 @@ impl<'a> TypeChecker<'a> {
         let prev_call_sites = std::mem::take(&mut self.traffic.call_sites);
         let prev_scope_chain = std::mem::take(&mut self.traffic.scope_chain);
         let prev_scope_releases = std::mem::take(&mut self.traffic.scope_releases);
+        // The unused-name sets are per-function for the same reason, and used to be cleared
+        // on the way out instead of restored. A callee checked from inside a caller's body
+        // wiped the names the caller had used so far, so the caller then warned that its own
+        // parameters were unused -- which is every parameter read before the body's first
+        // method call.
+        let prev_used_vars = std::mem::take(&mut self.used_vars);
+        let prev_declared_vars = std::mem::take(&mut self.declared_vars);
         self.push_scope();
 
         let prev_top = self.active_topology.clone();
@@ -1417,7 +1424,8 @@ impl<'a> TypeChecker<'a> {
         self.active_memory = prev_mem;
         self.borrow.current_params = prev_params;
         self.borrow.ref_provenance = prev_provenance;
-        self.used_vars.clear();
+        self.used_vars = prev_used_vars;
+        self.declared_vars = prev_declared_vars;
     }
 
     pub fn parse_ty_str(&self, s: &str) -> Type {
