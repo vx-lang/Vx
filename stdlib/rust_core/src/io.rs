@@ -32,6 +32,19 @@ pub extern "C" fn print_i64(val: i64) -> i32 {
     0
 }
 
+/// The unsigned counterpart of `print_i64`. MLIR's integer types are signless, so a Vx `u64`
+/// and `i64` reach codegen as the same `i64` and only the element type says which is which;
+/// without this helper every draw above `i64::MAX` printed as a negative number.
+///
+/// The narrower unsigned widths need no helper of their own: `u8`, `u16` and `u32` all widen
+/// with a zero extension into a signed type that holds every one of their values.
+#[no_mangle]
+pub extern "C" fn print_u64(val: u64) -> i32 {
+    print!("{}", val);
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+    0
+}
+
 #[no_mangle]
 pub extern "C" fn print_f32(val: f32) -> i32 {
     print!("{}", val);

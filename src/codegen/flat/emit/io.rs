@@ -36,24 +36,42 @@ impl FnEmit<'_> {
         } else if let Some(e) = self.elem_at(ins.operand1.0) {
             let et = mlir_scalar(&e).ok_or(crate::emitter_gap!())?;
             // The narrow scalars have no print helper of their own, so widen to one that does.
-            // Same widening the AST path applies, so a program prints the same text either way.
-            let (arg, et) = match et {
-                "f16" | "bf16" => {
+            // An unsigned value is zero-extended into a signed width that holds all of it --
+            // `u32` into `i64` rather than `i32`, since a `u32` above 2^31 does not fit there.
+            // A signed narrow width sign-extends, which is the widening the AST path applies.
+            let unsigned = matches!(
+                e,
+                ElementType::U8 | ElementType::U16 | ElementType::U32 | ElementType::U64
+            );
+            let (arg, et) = match (et, unsigned) {
+                ("f16" | "bf16", _) => {
                     let w = format!("%pw{idx}");
                     self.body += &format!("  {w} = arith.extf {arg} : {et} to f32\n");
                     (w, "f32")
                 }
-                "i8" | "i16" => {
+                ("i32", true) => {
+                    let w = format!("%pw{idx}");
+                    self.body += &format!("  {w} = arith.extui {arg} : i32 to i64\n");
+                    (w, "i64")
+                }
+                ("i8" | "i16", true) => {
+                    let w = format!("%pw{idx}");
+                    self.body += &format!("  {w} = arith.extui {arg} : {et} to i32\n");
+                    (w, "i32")
+                }
+                ("i8" | "i16", false) => {
                     let w = format!("%pw{idx}");
                     self.body += &format!("  {w} = arith.extsi {arg} : {et} to i32\n");
                     (w, "i32")
                 }
                 _ => (arg, et),
             };
+            // `u64` is the one width with nowhere wider to go, so it has a helper of its own.
             let helper = match et {
                 "f32" => "print_f32",
                 "f64" => "print_f64",
                 "i32" => "print_i32",
+                "i64" if unsigned && matches!(e, ElementType::U64) => "print_u64",
                 "i64" => "print_i64",
                 _ => {
                     return Err(Decline::TypeNotModelled {

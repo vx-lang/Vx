@@ -1,0 +1,65 @@
+//===- print_unsigned.vx - Vx Compiler ----------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `print` writes an unsigned value as unsigned.
+//
+// MLIR's integer types are signless, so a Vx `u64` and `i64` arrive at the emitter as the
+// same `i64` and only the element type says which is which. Every value below is chosen to
+// be above the signed range of its own width, so a signed helper prints it negative: the
+// `u64` printed -1, the `u32` -1, and so on.
+//
+// `u8` and `u16` widen into `i32` and `u32` into `i64`, which hold every value they have.
+// `u64` has nowhere wider to go, which is why it is the one width with a helper of its own.
+//
+// The three at the end are the control, and they are the narrow *signed* widths on purpose:
+// those share the widening arm this rewrote, and a zero extension applied to them would turn
+// -5 into 251.
+//
+// Flat path only: the legacy code generator chooses its helper from the printed MLIR type,
+// where the element type is already gone, so it cannot tell these apart.
+//
+// REQUIRES: flat-codegen
+// EXPECT: 18446744073709551615 9223372036854775808 4294967295 2147483648 65535 32768 255 128 -7 -5 -300
+fn main() -> i32 {
+  let top : u64 = 18446744073709551615;
+  let past_signed : u64 = 9223372036854775808;
+  print(top);
+  print!(" ");
+  print(past_signed);
+  print!(" ");
+
+  let wide : u32 = 4294967295;
+  let past_wide : u32 = 2147483648;
+  print(wide);
+  print!(" ");
+  print(past_wide);
+  print!(" ");
+
+  let short : u16 = 65535;
+  let past_short : u16 = 32768;
+  print(short);
+  print!(" ");
+  print(past_short);
+  print!(" ");
+
+  let byte : u8 = 255;
+  let past_byte : u8 = 128;
+  print(byte);
+  print!(" ");
+  print(past_byte);
+  print!(" ");
+
+  let signed : i64 = -7;
+  print(signed);
+  print!(" ");
+  let tiny : i8 = -5;
+  print(tiny);
+  print!(" ");
+  let short_signed : i16 = -300;
+  print(short_signed);
+  return 0;
+}
