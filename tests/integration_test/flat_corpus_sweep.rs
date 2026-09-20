@@ -396,8 +396,10 @@ fn flat_path_answers_match_the_backend_expectations() {
         }
         let source = std::fs::read_to_string(&program).unwrap_or_default();
 
-        // The same three gates `run_backend_test` applies, so the two harnesses agree on what
-        // a fixture has opted out of. Every other `// REQUIRES:` is about which codegen path a
+        // The same gates `run_backend_test` applies, so the two harnesses agree on what a
+        // fixture has opted out of -- all but `// REQUIRES: flat-codegen`, which says the
+        // legacy path gets the answers wrong and is therefore a reason to run a file here,
+        // not to skip it. Every other `// REQUIRES:` is about which codegen path a
         // program takes, which is this file's other test, not a reason to skip running one.
         // `NO_EXEC` was the gate this loop first left out: a fixture that has never been run
         // can carry EXPECT lines nothing has ever compared, and `matmul_bf16.vx` did.

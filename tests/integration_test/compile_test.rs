@@ -499,6 +499,15 @@ fn run_warning_test(path: &Path) -> Result<(), String> {
 fn run_backend_test(path: &Path) -> Result<(), String> {
     let source = fs::read_to_string(path).expect("Failed to read test file");
 
+    // This runner is the legacy AST code generator. `// REQUIRES: flat-codegen` says the
+    // program's answers are only right on the flat path -- an unsigned `>>` or `%` lowers to
+    // the signed op here, because the element type is gone by the time the op is chosen.
+    // The flat sweep in flat_corpus_sweep.rs still runs the file, so its `EXPECT` lines are
+    // checked -- on one code generator rather than two.
+    if source.contains("// REQUIRES: flat-codegen") {
+        return Ok(());
+    }
+
     // Extract // EXPECT: lines (assuming just one for simplicity right now)
     let expect_lines: Vec<String> = source
         .lines()

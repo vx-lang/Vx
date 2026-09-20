@@ -1,0 +1,147 @@
+//===- std_rand.vx - Vx Compiler ----------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `std::rand`: the draws, the distributions, and the promise that a seed replays.
+//
+// The expected values are written out rather than checked for being "random enough". They
+// come from an independent implementation of xoshiro256** and SplitMix64, so a wrong
+// constant, a wrong shift, or a state word updated in the wrong order changes them.
+// Distribution is not what a compiler test can establish; reproducing a published
+// generator exactly is.
+//
+// Every draw comes from one stream, so each line depends on the state the line before it
+// left behind. A method that failed to advance the state, or advanced it twice, moves
+// everything after it.
+//
+// The `as i64` on a `u64` draw is there because `print` reaches the signed helper for both,
+// so a draw above i64's range prints as a negative number. The cast says so at the call.
+//
+// Flat path only: the legacy code generator lowers an unsigned `>>` to an arithmetic shift,
+// which turns "uniform in [0, 1)" into a negative number. It compiles and answers wrongly, so
+// running it there would pin a miscompile rather than test the library.
+//
+// REQUIRES: flat-codegen
+// EXPECT: -5523389002881075622 5142052590334782674 | 0.8396274618764198 0.9810977 0.99072266 0.87109375 | 260928194 448548299 26457 9949 138 -69 | 7 -4 -0.09716069453706844 1 0 | 229352378439957178 9145175930522072856 | -0.11902840736293237 -1.2117382437320459 -0.09410879996291692 | -5523389002881075622 7191089600892374487 | 0.7029218 0.5204366 0.5741057 0.39132857 | 0.7026367 0.52001953 0.57373047 0.39111328 | 6.390625 6.0273438 3.5058594 5.1796875
+import std::rand;
+
+fn show(b : bool) -> i32 {
+  if b {
+    print(1);
+  } else {
+    print(0);
+  }
+  return 0;
+}
+
+extern "C" {
+  fn malloc(n : i64) -> *mut i8;
+  fn free(p : *mut i8) -> void;
+}
+
+fn main() -> i32 {
+  let mut r = Rng::seeded(7);
+
+  // The raw draw, twice: the second one proves the state advanced.
+  print(r.next_u64() as i64);
+  print!(" ");
+  print(r.next_u64() as i64);
+  print!(" | ");
+
+  // The float widths, each in [0, 1).
+  print(r.next_f64());
+  print!(" ");
+  print(r.next_f32());
+  print!(" ");
+  print(r.next_f16());
+  print!(" ");
+  print(r.next_bf16());
+  print!(" | ");
+
+  // The narrow integer widths. The signed ones reinterpret the bits, so `next_i8` is
+  // negative here where `next_u8` is not.
+  print(r.next_u32() as i64);
+  print!(" ");
+  print(r.next_i32());
+  print!(" ");
+  print(r.next_u16() as i32);
+  print!(" ");
+  print(r.next_i16() as i32);
+  print!(" ");
+  print(r.next_u8() as i32);
+  print!(" ");
+  print(r.next_i8() as i32);
+  print!(" | ");
+
+  // Bounded draws, a coin, and a probability that is not a half.
+  print(r.below(10) as i64);
+  print!(" ");
+  print(r.range_i64(-5, 5));
+  print!(" ");
+  print(r.range_f64(-1.0, 1.0));
+  print!(" ");
+  show(r.next_bool());
+  print!(" ");
+  show(r.chance(0.25));
+  print!(" | ");
+
+  // The rejection loop, which every other bound leaves untouched: a bound just above half
+  // the range throws away about half of all draws, and the first of these two answers only
+  // on the seventh draw. Nothing else here would notice if the loop stopped rejecting.
+  let mut picky = Rng::seeded(11);
+  print(picky.below(9223372036854775809) as i64);
+  print!(" ");
+  print(picky.below(9223372036854775809) as i64);
+  print!(" | ");
+
+  // Three normals: the first computes a pair, the second hands back the spare it kept,
+  // and the third goes round the rejection loop again.
+  print(r.normal());
+  print!(" ");
+  print(r.normal());
+  print!(" ");
+  print(r.normal_around(0.0, 0.5));
+  print!(" | ");
+
+  // A second stream on the same seed replays the first draw, and SplitMix64 on that seed
+  // is its own generator, not a copy of the stream it seeded.
+  let mut replay = Rng::seeded(7);
+  print(replay.next_u64() as i64);
+  print!(" ");
+  let mut mix = SplitMix64::seeded(7);
+  print(mix.next_u64() as i64);
+  print!(" | ");
+
+  // The buffer fills: uniform f32, then normals into f16 storage.
+  let bytes : *mut f32 = unsafe { malloc(16) };
+  let mut fill = Rng::seeded(1);
+  fill.fill_f32(bytes, 4);
+  for i in 0..4 {
+    print(unsafe { bytes[i] });
+    print!(" ");
+  }
+  unsafe { free(bytes) };
+  print!("| ");
+
+  let halves : *mut f16 = unsafe { malloc(8) };
+  let mut half_fill = Rng::seeded(1);
+  half_fill.fill_f16(halves, 4);
+  for i in 0..4 {
+    print(unsafe { halves[i] });
+    print!(" ");
+  }
+  print!("| ");
+  let mut normal_fill = Rng::seeded(3);
+  normal_fill.fill_normal_f16(halves, 4, 5.0, 1.0);
+  for i in 0..4 {
+    print(unsafe { halves[i] });
+    if i < 3 {
+      print!(" ");
+    }
+  }
+  unsafe { free(halves) };
+  return 0;
+}

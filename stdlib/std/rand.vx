@@ -1,0 +1,327 @@
+//===- rand.vx - Vx Standard Library ------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Pseudo-random numbers, as a library rather than a runtime call.
+//
+// `Rng` is xoshiro256**: four words of state, one rotate and two multiplies per draw. It
+// passes BigCrush. It is not cryptographic: the state can be recovered from the output.
+//
+// The state lives in the struct, so two `Rng` values are two streams. The runtime's
+// `vx_rand_*` entry points share one global counter instead, which is why two threads
+// filling two buffers interleave their draws and neither buffer can be replayed alone.
+//
+// A seed is expanded through SplitMix64 rather than written into the four words directly,
+// where `Rng::seeded(1)` would leave three of them zero. xoshiro recovers slowly from a state
+// that is nearly all zeros. Expanding first is what `rand_xoshiro` does for `seed_from_u64`.
+//
+// The same seed replays the same sequence on every platform: the draws are integer
+// arithmetic and the conversions to float are IEEE. That is what a differential test needs,
+// since it compares two execution paths on the *same* inputs.
+//
+// No `extern` here. The draws are arithmetic and `normal` reaches the `math` dialect through
+// `mlir!`, so this module works where there is no libc.
+
+/// SplitMix64: a counter, scrambled. One multiply-xor-shift chain, no rejection, no loop.
+///
+/// Its job here is to turn one seed word into the four `Rng` needs, which is what it was
+/// written for. It is a usable generator on its own where 64 bits of state are enough.
+struct SplitMix64 {
+  state : u64,
+}
+
+impl SplitMix64 {
+  fn seeded(seed : u64) -> SplitMix64 {
+    return SplitMix64 {
+      state : seed
+    };
+  }
+
+  /// Advance the counter by the golden-ratio constant, then scramble the value taken. The
+  /// three constants are 0x9E3779B97F4A7C15, 0xBF58476D1CE4E5B9 and 0x94D049BB133111EB,
+  /// spelled in decimal because Vx has no hex literal.
+  fn next_u64(self : &mut SplitMix64) -> u64 {
+    self.state = self.state + 11400714819323198485;
+    let mut z = self.state;
+    z = (z ^ (z >> 30)) * 13787848793156543929;
+    z = (z ^ (z >> 27)) * 10723151780598845931;
+    return z ^ (z >> 31);
+  }
+}
+
+/// A stream of pseudo-random numbers. Seed it, then draw from it.
+///
+/// `spare` holds the second of the pair `normal` produces, since the polar method makes two
+/// normals at once and handing one back would throw half the work away.
+struct Rng {
+  s0 : u64,
+  s1 : u64,
+  s2 : u64,
+  s3 : u64,
+  has_spare : bool,
+  spare : f64,
+}
+
+/// The bits rotated round, which is how xoshiro mixes. Written out because the rotate in
+/// `core::num` is stamped for the signed widths, where `>>` copies the sign bit.
+fn rotate_left_u64(x : u64, k : u64) -> u64 {
+  return (x << k) | (x >> (64 - k));
+}
+
+fn sqrt_f64(x : f64) -> f64 {
+  return mlir!( inputs : (%a = x : f64), returns : f64, dialects : ["math"]) {
+    %r = math.sqrt %a : f64
+    macro.yield %r : f64
+  };
+}
+
+fn ln_f64(x : f64) -> f64 {
+  return mlir!( inputs : (%a = x : f64), returns : f64, dialects : ["math"]) {
+    %r = math.log %a : f64
+    macro.yield %r : f64
+  };
+}
+
+impl Rng {
+  /// A stream from one seed word. Every seed is allowed, zero included.
+  fn seeded(seed : u64) -> Rng {
+    let mut mix = SplitMix64::seeded(seed);
+    return Rng {
+      s0 : mix.next_u64(),
+      s1 : mix.next_u64(),
+      s2 : mix.next_u64(),
+      s3 : mix.next_u64(),
+      has_spare : false,
+      spare : 0.0,
+    };
+  }
+
+  /// The next draw, uniform over the whole 64-bit range. Every other method is built on it.
+  ///
+  /// The value handed back is computed from the state *before* the state advances, which is
+  /// what xoshiro256** specifies; returning the new state instead is a different and worse
+  /// generator.
+  fn next_u64(self : &mut Rng) -> u64 {
+    let draw = rotate_left_u64(self.s1 * 5, 7) * 9;
+    let t = self.s1 << 17;
+    self.s2 = self.s2 ^ self.s0;
+    self.s3 = self.s3 ^ self.s1;
+    self.s1 = self.s1 ^ self.s2;
+    self.s0 = self.s0 ^ self.s3;
+    self.s2 = self.s2 ^ t;
+    self.s3 = rotate_left_u64(self.s3, 45);
+    return draw;
+  }
+
+  /// The narrower widths take the *high* bits of a draw. The low bits of a xoshiro draw are
+  /// the weakest ones, and a `% 256` would hand back exactly those.
+  fn next_u32(self : &mut Rng) -> u32 {
+    return (self.next_u64() >> 32) as u32;
+  }
+
+  fn next_u16(self : &mut Rng) -> u16 {
+    return (self.next_u64() >> 48) as u16;
+  }
+
+  fn next_u8(self : &mut Rng) -> u8 {
+    return (self.next_u64() >> 56) as u8;
+  }
+
+  /// Uniform over the signed range, negatives included: the bits are reinterpreted, not
+  /// clamped, so half the draws are below zero.
+  fn next_i64(self : &mut Rng) -> i64 {
+    return self.next_u64() as i64;
+  }
+
+  fn next_i32(self : &mut Rng) -> i32 {
+    return (self.next_u64() >> 32) as i32;
+  }
+
+  fn next_i16(self : &mut Rng) -> i16 {
+    return (self.next_u64() >> 48) as i16;
+  }
+
+  fn next_i8(self : &mut Rng) -> i8 {
+    return (self.next_u64() >> 56) as i8;
+  }
+
+  /// Uniform in [0, 1), built from the top 53 bits because that is f64's mantissa. Taking
+  /// more would round, and rounding up at the top of the range returns exactly 1.0 -- which
+  /// a caller scaling into a half-open range does not expect.
+  fn next_f64(self : &mut Rng) -> f64 {
+    return ((self.next_u64() >> 11) as f64) / 9007199254740992.0f64;
+  }
+
+  /// Uniform in [0, 1), on the same terms with f32's 24 bits.
+  fn next_f32(self : &mut Rng) -> f32 {
+    return ((self.next_u64() >> 40) as f32) / 16777216.0f32;
+  }
+
+  /// Uniform in [0, 1) over an evenly spaced grid: 2048 points at f16 and 256 at bf16, each
+  /// of them exact at that width. The draw is built from that many bits rather than narrowed
+  /// from an f32, so every point is equally likely.
+  fn next_f16(self : &mut Rng) -> f16 {
+    return (((self.next_u64() >> 53) as f32) / 2048.0f32) as f16;
+  }
+
+  fn next_bf16(self : &mut Rng) -> bf16 {
+    return (((self.next_u64() >> 56) as f32) / 256.0f32) as bf16;
+  }
+
+  /// One bit, from the top of a draw.
+  fn next_bool(self : &mut Rng) -> bool {
+    return (self.next_u64() >> 63) == 1;
+  }
+
+  /// True with probability `p`. Outside [0, 1] it is always false or always true.
+  fn chance(self : &mut Rng, p : f64) -> bool {
+    return self.next_f64() < p;
+  }
+
+  /// Uniform in [0, bound), with no bias.
+  ///
+  /// A plain `next_u64() % bound` is biased whenever `bound` does not divide 2^64: the first
+  /// `2^64 % bound` values come up once more often than the rest. The draws that would land
+  /// in that overhang are rejected and taken again. `floor` is where the overhang ends, and
+  /// `0 - bound` is `2^64 - bound` -- the subtraction wraps, which is what makes 2^64
+  /// expressible in a 64-bit word at all.
+  fn below(self : &mut Rng, bound : u64) -> u64 {
+    assert(bound > 0, "below(0) has no value to draw");
+    let floor = (0 - bound) % bound;
+    let mut draw = self.next_u64();
+    loop {
+      if draw >= floor {
+        break;
+      }
+      draw = self.next_u64();
+    }
+    return draw % bound;
+  }
+
+  /// Uniform in [lo, hi), `lo` included and `hi` not.
+  ///
+  /// The span is measured in `u64` so that a range spanning zero, or the whole of `i64`,
+  /// is still one subtraction: `hi - lo` in `i64` would overflow for the widest of them.
+  fn range_i64(self : &mut Rng, lo : i64, hi : i64) -> i64 {
+    assert(lo < hi, "range_i64 needs lo < hi");
+    let span = (hi as u64) - (lo as u64);
+    return ((lo as u64) + self.below(span)) as i64;
+  }
+
+  /// Uniform in [lo, hi). With lo > hi the range runs backwards and the result is in
+  /// (hi, lo], which is the same arithmetic and rarely what a caller meant.
+  fn range_f64(self : &mut Rng, lo : f64, hi : f64) -> f64 {
+    return lo + (hi - lo) * self.next_f64();
+  }
+
+  fn range_f32(self : &mut Rng, lo : f32, hi : f32) -> f32 {
+    return lo + (hi - lo) * self.next_f32();
+  }
+
+  /// One draw from the standard normal distribution: mean 0, standard deviation 1.
+  ///
+  /// Marsaglia's polar method. A point is drawn from the square until it lands inside the
+  /// unit circle (about four tries in five), and that point yields *two* normals. The second
+  /// is kept in the struct for the next call, so the loop runs once per two draws.
+  ///
+  /// This is the method to reach for when filling something that stands in for model data.
+  /// Weights, activations and KV entries are roughly Gaussian, and a uniform fill exercises
+  /// a range of magnitudes real data never has -- which matters most in f16, where the
+  /// interesting failures are overflow and underflow at the tails.
+  fn normal(self : &mut Rng) -> f64 {
+    if self.has_spare {
+      self.has_spare = false;
+      return self.spare;
+    }
+    let mut x : f64 = 0.0;
+    let mut y : f64 = 0.0;
+    let mut radius_sq : f64 = 0.0;
+    loop {
+      x = 2.0 * self.next_f64() - 1.0;
+      y = 2.0 * self.next_f64() - 1.0;
+      radius_sq = x * x + y * y;
+      // The origin is rejected along with the outside: `ln(0)` has no value.
+      if radius_sq < 1.0 && radius_sq > 0.0 {
+        break;
+      }
+    }
+    let scale = sqrt_f64(-2.0 * ln_f64(radius_sq) / radius_sq);
+    self.spare = y * scale;
+    self.has_spare = true;
+    return x * scale;
+  }
+
+  /// A normal draw moved and stretched: mean `mean`, standard deviation `stddev`.
+  fn normal_around(self : &mut Rng, mean : f64, stddev : f64) -> f64 {
+    return mean + stddev * self.normal();
+  }
+
+  /// Fill a buffer in place. One call per buffer rather than one per element, which is what
+  /// makes filling a real tensor practical -- a 256x8192 one is two million values.
+  ///
+  /// `count` elements are written, so the buffer must hold that many.
+  fn fill_f32(self : &mut Rng, out : *mut f32, count : i32) -> i32 {
+    let mut i = 0;
+    loop {
+      if i >= count {
+        break;
+      }
+      unsafe { out[i] = self.next_f32(); }
+      i = i + 1;
+    }
+    return 0;
+  }
+
+  fn fill_range_f32(self : &mut Rng, out : *mut f32, count : i32, lo : f32, hi : f32) -> i32 {
+    let mut i = 0;
+    loop {
+      if i >= count {
+        break;
+      }
+      unsafe { out[i] = self.range_f32(lo, hi); }
+      i = i + 1;
+    }
+    return 0;
+  }
+
+  fn fill_normal_f32(self : &mut Rng, out : *mut f32, count : i32, mean : f32, stddev : f32) -> i32 {
+    let mut i = 0;
+    loop {
+      if i >= count {
+        break;
+      }
+      unsafe { out[i] = mean + stddev * (self.normal() as f32); }
+      i = i + 1;
+    }
+    return 0;
+  }
+
+  fn fill_f16(self : &mut Rng, out : *mut f16, count : i32) -> i32 {
+    let mut i = 0;
+    loop {
+      if i >= count {
+        break;
+      }
+      unsafe { out[i] = self.next_f16(); }
+      i = i + 1;
+    }
+    return 0;
+  }
+
+  /// The normal fill at half precision. The draw and the scaling happen in f64 and narrow
+  /// once at the store, so a tail value is rounded rather than computed twice.
+  fn fill_normal_f16(self : &mut Rng, out : *mut f16, count : i32, mean : f64, stddev : f64) -> i32 {
+    let mut i = 0;
+    loop {
+      if i >= count {
+        break;
+      }
+      unsafe { out[i] = self.normal_around(mean, stddev) as f16; }
+      i = i + 1;
+    }
+    return 0;
+  }
+}
