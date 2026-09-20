@@ -32,6 +32,7 @@ SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 """
 
 import argparse
+import functools
 import html
 import json
 import re
@@ -143,6 +144,17 @@ def meta_of(text):
     return {k: html.unescape(v) for k, v in got.items()}
 
 
+@functools.lru_cache(maxsize=1)
+def book_index_alias():
+    """The second name mdBook gives the book's first chapter.
+
+    It writes that chapter both under its own name and as index.html, so /docs/ and
+    /docs/introduction.html are the same bytes. Only one of them should be citable.
+    """
+    chapters = book_chapters()
+    return f"docs/{chapters[0][1][:-3]}.html" if chapters else None
+
+
 def canonical_for(rel):
     """The URL a page should name as its own.
 
@@ -151,6 +163,8 @@ def canonical_for(rel):
     that works but does not match what anything else links to.
     """
     parts = rel.as_posix()
+    if parts == book_index_alias():
+        return f"{SITE}/docs/"
     if parts == "index.html":
         return f"{SITE}/"
     if parts.endswith("/index.html"):
@@ -314,6 +328,9 @@ def inject(path, rel, chapter_titles, has_card):
     # all, so the book is the one part of the site a crawler cannot tell apart page to page.
     if posix.startswith("docs/") and posix != "docs/404.html":
         src = posix[len("docs/") :].replace(".html", ".md")
+        if posix == "docs/index.html":
+            chapters = book_chapters()
+            src = chapters[0][1] if chapters else src
         if (BOOK_SRC / src).is_file():
             summary = chapter_summary(src)
             if summary:
@@ -325,12 +342,18 @@ def inject(path, rel, chapter_titles, has_card):
                     text,
                     count=1,
                 )
-            head += [
-                f'<meta property="og:title" content="{html.escape(title, quote=True)}">',
-                f'<meta property="og:description" content="{html.escape(got.get("description", ""), quote=True)}">',
-                '<meta property="og:type" content="article">',
-                f'<meta property="og:url" content="{url}">',
-            ]
+            # Only what the theme partial has not already said. It sets og:type and the
+            # card; duplicating either is how a page ends up claiming two of everything.
+            for prop, value in (
+                ("og:title", title),
+                ("og:description", got.get("description", "")),
+                ("og:type", "article"),
+                ("og:url", url),
+            ):
+                if prop not in got:
+                    head.append(
+                        f'<meta property="{prop}" content="{html.escape(value, quote=True)}">'
+                    )
             # A book page can only get a card from a theme partial, since mdBook has no
             # per-page metadata hook. Never add a second one, and never name a card this
             # build did not produce -- an empty preview slot is worse than none.
@@ -409,16 +432,22 @@ def write_sitemap(site, pages):
         '<?xml version="1.0" encoding="utf-8"?>',
         '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
     ]
+    seen = set()
     for rel in pages:
+        loc = canonical_for(rel)
+        # An aliased page shares a canonical with the page it duplicates; list it once.
+        if loc in seen:
+            continue
+        seen.add(loc)
         lines += [
             "  <url>",
-            f"    <loc>{html.escape(canonical_for(rel))}</loc>",
+            f"    <loc>{html.escape(loc)}</loc>",
             f"    <lastmod>{today}</lastmod>",
             "  </url>",
         ]
     lines.append("</urlset>")
     (site / "sitemap.xml").write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return f"sitemap.xml ({len(pages)} pages)"
+    return f"sitemap.xml ({len(seen)} urls from {len(pages)} pages)"
 
 
 ASK = f"""Vx is a systems programming language for heterogeneous computing. Placement and
