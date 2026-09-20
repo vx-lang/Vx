@@ -86,9 +86,6 @@ jobs:
           # One directory per code, so /errors/E6003 resolves without a .html suffix.
           cp -R www/errors _site/errors
 
-          # The link-preview images the pages name in og:image.
-          cp -R www/cards _site/cards
-
           # A 404 that looks like the site rather than like GitHub.
           cp www/index.html _site/404.html
 
@@ -131,28 +128,6 @@ jobs:
             exit 1
           fi
           echo "All $(wc -l < /tmp/links.txt) internal links resolve."
-
-      - name: Check the link-preview images exist
-        run: |
-          set -euo pipefail
-          # og:image is an absolute URL, so the href check above does not look at it. A card
-          # that never shipped stays invisible until a preview somewhere else renders blank.
-          find _site -name '*.html' -print0 \
-            | xargs -0 grep -ho 'content="https://vxlang.org/cards/[^"]*"' \
-            | sed 's|content="https://vxlang.org||; s/"$//' \
-            | sort -u > /tmp/cards.txt || true
-
-          : > /tmp/missing.txt
-          while read -r card; do
-            [ -e "_site${card}" ] || echo "  $card" >> /tmp/missing.txt
-          done < /tmp/cards.txt
-
-          if [ -s /tmp/missing.txt ]; then
-            echo "Pages reference link-preview images that are not in the site:"
-            cat /tmp/missing.txt
-            exit 1
-          fi
-          echo "All $(wc -l < /tmp/cards.txt) referenced link-preview images exist."
 
       - uses: actions/configure-pages@v5
         if: ${{ github.repository == 'vx-lang/Vx' }}

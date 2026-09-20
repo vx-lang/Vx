@@ -287,7 +287,7 @@ def page_title(rel, got, chapter_titles):
     return title.strip()
 
 
-def inject(path, rel, chapter_titles):
+def inject(path, rel, chapter_titles, has_card):
     """Give one built page its canonical link, its record and its citation line."""
     text = path.read_text(encoding="utf-8")
     if MARKER in text:
@@ -330,11 +330,18 @@ def inject(path, rel, chapter_titles):
                 f'<meta property="og:description" content="{html.escape(got.get("description", ""), quote=True)}">',
                 '<meta property="og:type" content="article">',
                 f'<meta property="og:url" content="{url}">',
-                f'<meta property="og:image" content="{DEFAULT_CARD}">',
-                '<meta name="twitter:card" content="summary_large_image">',
-                f'<meta name="twitter:image" content="{DEFAULT_CARD}">',
             ]
-            got["og:image"] = DEFAULT_CARD
+            # A book page can only get a card from a theme partial, since mdBook has no
+            # per-page metadata hook. Never add a second one, and never name a card this
+            # build did not produce -- an empty preview slot is worse than none.
+            if "og:image" not in got and has_card:
+                head += [
+                    f'<meta property="og:image" content="{DEFAULT_CARD}">',
+                    f'<meta name="twitter:image" content="{DEFAULT_CARD}">',
+                ]
+                got["og:image"] = DEFAULT_CARD
+            if "twitter:card" not in got and "og:image" in got:
+                head.append('<meta name="twitter:card" content="summary_large_image">')
 
     graph = {"@context": "https://schema.org", "@graph": schema_for(rel, url, got, title)}
     head += [
@@ -531,7 +538,9 @@ def main():
     assert pages, f"no pages under {site}"
 
     chapter_titles = {src: title for title, src in book_chapters()}
-    injected = sum(inject(site / rel, rel, chapter_titles) for rel in pages)
+    # The cards are produced by a separate step; the book only points at one if it ran.
+    has_card = (site / "cards" / "default.png").is_file()
+    injected = sum(inject(site / rel, rel, chapter_titles, has_card) for rel in pages)
     # A page that already carried the marker means this ran twice over the same directory,
     # which in CI means the site was assembled on top of a previous build.
     assert injected == len(pages), (
