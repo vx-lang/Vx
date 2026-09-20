@@ -1,0 +1,25 @@
+//===- u64_literal_above_i64_max.vx - Vx Compiler -----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `u64` literal above `i64::MAX` is a constant like any other.
+//
+// The legacy code generator used to read every integer literal with `parse::<i64>().unwrap()`
+// and panicked on this one; the flat path already fell back to `u64`. A generator's
+// multipliers are all of this shape, which is how it was found.
+//
+// Both operations below are sign-agnostic -- a subtraction and a reinterpretation -- so the
+// two code generators agree on the answers, and the file is a constant test rather than a
+// signedness test.
+//
+// EXPECT: 4 -4611686018427387904
+fn main() -> i32 {
+  let big : u64 = 13835058055282163712;
+  print((big - 13835058055282163708) as i64);
+  print!(" ");
+  print(big as i64);
+  return 0;
+}
