@@ -202,7 +202,10 @@ SHELL = """<!DOCTYPE html>
 <meta property="og:description" content="{description}">
 <meta property="og:type" content="article">
 <meta property="og:url" content="{url}">
-<meta name="twitter:card" content="summary">
+<meta property="og:image" content="{image}">
+<meta property="og:image:alt" content="{image_alt}">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="{image}">
 
 <link rel="stylesheet" href="/style.css">
 </head>
@@ -301,6 +304,8 @@ def render_code_page(section, code, desc, fixture, neighbours):
         title=f"{code} — Vx",
         description=plain(summary)[:300],
         url=f"https://vxlang.org/errors/{code}/",
+        image=f"https://vxlang.org/cards/errors/{code}.png",
+        image_alt=plain(f"{code}: {summary}")[:200],
         body="\n".join(parts),
     )
 
@@ -357,6 +362,8 @@ def render_index(entries, index):
             "each with the message and a program that triggers it."
         ),
         url="https://vxlang.org/errors/",
+        image="https://vxlang.org/cards/errors.png",
+        image_alt=f"The Vx diagnostic index: {len(entries)} codes the compiler can emit.",
         body="\n".join(parts),
     )
 

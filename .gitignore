@@ -61,6 +61,9 @@ www/book/book/
 # fixtures under tests/, so it is build output rather than a source file.
 www/errors/
 
+# Social preview images (www/cards). Screenshots rendered by CI; build output like the above.
+www/cards/
+
 # Release tarballs staged by scripts/release/package.sh. Build output, not source: a local
 # packaging run leaves a few hundred megabytes here and it must never reach a commit.
 dist/

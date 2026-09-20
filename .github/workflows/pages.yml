@@ -61,6 +61,24 @@ jobs:
           fi
           echo "$pages diagnostic pages, one per declared code."
 
+      # The image a link shows when it is posted anywhere. Rendered from HTML through headless
+      # Chrome, which ubuntu-latest already has, so the cards use the site's own colours and
+      # type. A diagnostic's card is the message the compiler prints.
+      - name: Render the social cards
+        run: |
+          set -euo pipefail
+          python3 scripts/tools/gen_social_cards.py
+          cards=$(find www/cards -name '*.png' | wc -l)
+          # One per diagnostic, plus the site default, the blog index, each post, and /errors.
+          codes=$(grep -cE '^    [EW][0-9]{4},$' src/diagnostic.rs)
+          posts=$(find www/blog -name '*.html' | wc -l)
+          expected=$((codes + posts + 2))
+          if [ "$cards" -ne "$expected" ]; then
+            echo "Rendered $cards cards, expected $expected."
+            exit 1
+          fi
+          echo "$cards social cards."
+
       - name: Assemble the site
         run: |
           set -euo pipefail
@@ -83,6 +101,9 @@ jobs:
 
           # One directory per code, so /errors/E6003 resolves without a .html suffix.
           cp -R www/errors _site/errors
+
+          # The social preview images every page points at.
+          cp -R www/cards _site/cards
 
           # A 404 that looks like the site rather than like GitHub.
           cp www/index.html _site/404.html
@@ -119,6 +140,33 @@ jobs:
             exit 1
           fi
           echo "All $(wc -l < /tmp/links.txt) internal links resolve."
+
+      - name: Check every page names a social card that exists
+        run: |
+          set -euo pipefail
+          # A card named but not built is a blank preview on Twitter and LinkedIn, which is the
+          # failure this whole step exists to prevent. The href check above cannot see these:
+          # they are absolute URLs in a meta tag, not links.
+          find _site -name '*.html' -print0 \
+            | xargs -0 grep -ho 'content="https://vxlang.org/cards/[^"]*"' \
+            | sed 's|content="https://vxlang.org/||; s/"$//' \
+            | sort -u > /tmp/cards.txt
+
+          : > /tmp/missing.txt
+          while read -r card; do
+            [ -e "_site/$card" ] || echo "  $card" >> /tmp/missing.txt
+          done < /tmp/cards.txt
+
+          if [ -s /tmp/missing.txt ]; then
+            echo "Pages name social cards that were not built:"
+            cat /tmp/missing.txt
+            exit 1
+          fi
+
+          pages_without=$(find _site -name '*.html' -print0 \
+            | xargs -0 grep -L 'og:image' | wc -l)
+          echo "All $(wc -l < /tmp/cards.txt) referenced cards exist."
+          echo "$pages_without page(s) carry no og:image."
 
       - uses: actions/configure-pages@v5
         if: ${{ github.repository == 'vx-lang/Vx' }}
