@@ -581,7 +581,14 @@ impl<'a> TypeChecker<'a> {
                         for (f_name, f_expr) in fields.iter_mut() {
                             if f_name == expected_name {
                                 found = true;
-                                let f_type = self.check_expr_type_flag(f_expr, consume);
+                                // The field's type is the expected type of what initializes it,
+                                // so `Counter { n : 0 }` writes a `u64` zero into a `u64` field
+                                // rather than an `i32` one the field then refuses.
+                                let f_type = self.check_expr_expecting(
+                                    f_expr,
+                                    Some(expected_type.clone()),
+                                    consume,
+                                );
                                 if !self.is_assignable(expected_type, &f_type) && !self.speculating
                                 {
                                     self.errors.push(format!(

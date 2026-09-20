@@ -1,0 +1,56 @@
+//===- negative_literal_takes_its_type.vx - Vx Compiler -----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A negated literal takes its type from its context, as a positive one does.
+//
+// `-1` is a unary minus applied to `1`, so the literal that adopts a type sits one level in.
+// Every position below refused a negative literal while accepting the same literal positive.
+//
+// Compiling is not the assertion; the printed values are. Each one is chosen so that the
+// spelling default gives a different answer: the f32 third prints as -0.33333334, and the
+// three i64 values do not fit in an i32 at all, so an i32 literal would have made the
+// arithmetic 32-bit and wrapped. The `count` field is the same gap for a positive literal:
+// a struct field was not a typing position for one either, so a `u64` field refused the `i64`
+// a bare 5000000000 is born as.
+//
+// EXPECT: -0.3333333333333333 -15000000000 -5000000000 -5.25 0.25 5000000000
+struct Weights {
+  scale : f64,
+  offset : i64,
+  count : u64,
+}
+
+fn apply(scale : f64, offset : i64) -> f64 {
+  return scale + (offset as f64);
+}
+
+fn main() -> i32 {
+  // In a binary operation, from the other operand.
+  let third : f64 = 1.0 / 3.0;
+  print(-1.0 * third);
+  print!(" ");
+  let far : i64 = 5000000000;
+  print(-3 * far);
+  print!(" ");
+
+  // In a struct field, from the field's type.
+  let w = Weights {
+    scale : -0.25, offset : -5000000000, count : 5000000000
+  };
+  print(w.offset);
+  print!(" ");
+
+  // In a call argument, from the parameter's type. On its spelling alone `-5` is an `i32`
+  // and `-0.75` an f32, and neither parameter takes one.
+  print(apply(w.scale, -5));
+  print!(" ");
+  print(apply(-0.75, 1));
+  print!(" ");
+
+  print(w.count as i64);
+  return 0;
+}

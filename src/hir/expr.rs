@@ -37,6 +37,38 @@ pub(crate) fn expected_numeric_elem(expected: &Type, value: &str) -> Option<Elem
     (el.is_float() == is_float_lit).then(|| el.clone())
 }
 
+/// The numeric literal an expression *is*, seen through a unary minus.
+///
+/// `-1` is a negation applied to the literal `1`, so a position that types a literal from its
+/// context has to look one level in to find the literal that adopts the type. Without this a
+/// negative number is typed by its spelling alone, and every context that accepts `1` refuses
+/// `-1`.
+pub(crate) fn numeric_literal_mut(e: &mut Expr) -> Option<&mut NumberExpr> {
+    match e {
+        Expr::Number(n) => Some(n),
+        Expr::UnaryOp(UnaryOpExpr {
+            op: UnaryOp::Neg,
+            expr: inner,
+            ..
+        }) => numeric_literal_mut(inner),
+        _ => None,
+    }
+}
+
+/// Whether an expression is a numeric literal that has no type of its own yet -- the one that
+/// takes its type from the other operand of a binary op, or from the position it sits in.
+pub(crate) fn is_untyped_numeric_literal(e: &Expr) -> bool {
+    match e {
+        Expr::Number(n) => n.ty.is_none(),
+        Expr::UnaryOp(UnaryOpExpr {
+            op: UnaryOp::Neg,
+            expr: inner,
+            ..
+        }) => is_untyped_numeric_literal(inner),
+        _ => false,
+    }
+}
+
 impl<'a> TypeChecker<'a> {
     pub fn check_expr_type(&mut self, expr: &mut Expr) -> Type {
         // A "fresh", non-speculative check. Force `speculating` off for the duration so a probe

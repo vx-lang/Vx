@@ -208,8 +208,8 @@ impl<'a> TypeChecker<'a> {
         rhs: &mut Expr,
         consume: bool,
     ) -> (Type, Type) {
-        let lhs_untyped_lit = matches!(&*lhs, Expr::Number(n) if n.ty.is_none());
-        let rhs_untyped_lit = matches!(&*rhs, Expr::Number(n) if n.ty.is_none());
+        let lhs_untyped_lit = crate::hir::expr::is_untyped_numeric_literal(lhs);
+        let rhs_untyped_lit = crate::hir::expr::is_untyped_numeric_literal(rhs);
         if rhs_untyped_lit && !lhs_untyped_lit {
             let lt = self.check_expr_type_flag(lhs, consume);
             let rt = self.check_expr_expecting(rhs, Some(lt.clone()), consume);
