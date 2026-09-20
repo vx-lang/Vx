@@ -277,6 +277,23 @@ not. [`docs/`](docs/) holds the design documents; several describe things that d
 they say so at the top when they do. The parallel frontend, the placement checker and the machine
 model are each written up in more depth under `docs/`.
 
+## Citing Vx
+
+```bibtex
+@misc{vx2026,
+  author       = {Aditya Kumar},
+  title        = {{Vx}: a systems programming language for heterogeneous computing},
+  year         = {2026},
+  howpublished = {\url{https://vxlang.org}},
+  note         = {Version 0.0.1. Source at \url{https://github.com/vx-lang/Vx}}
+}
+```
+
+[CITATION.cff](CITATION.cff) carries the same details in the format GitHub reads: the "Cite this
+repository" button in the sidebar generates BibTeX and APA from it, and most reference managers
+read it directly. [vxlang.org/ai-usage.html](https://vxlang.org/ai-usage.html) covers quoting the
+documentation and what we ask of crawlers.
+
 ## License
 
 Apache License 2.0 with LLVM Exceptions. See [LICENSE](LICENSE).

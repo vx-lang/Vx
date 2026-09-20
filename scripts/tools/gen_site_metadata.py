@@ -48,8 +48,8 @@ PROJECT = "The Vx Project"
 AUTHOR = "Aditya Kumar"
 AUTHOR_SAME_AS = [
     "https://github.com/hiraditya",
-    "https://www.linkedin.com/in/hiraditya",
-    "https://x.com/hiraditya",
+    "https://www.linkedin.com/in/adityazero/",
+    "https://x.com/adityazero_",
 ]
 
 LICENSE_NAME = "Apache-2.0 WITH LLVM-exception"
