@@ -1,6 +1,6 @@
 # Standard library reference
 
-Every public type and function in the 21 `std` modules, taken from their signatures.
+Every public type and function in the shipped library modules, taken from their signatures.
 
 Import a module with its path, then use the names it declares:
 
@@ -42,6 +42,7 @@ friends.
 - [`std::math`](#stdmath) — Mathematical functions and constants.
 - [`std::mmap`](#stdmmap) — Memory-mapped files.
 - [`std::net`](#stdnet) — TCP and UDP sockets.
+- [`std::rand`](#stdrand) — Seeded pseudo-random numbers, one stream per `Rng`.
 - [`std::simd`](#stdsimd) — SIMD vector types and operations.
 - [`std::string`](#stdstring) — `String` and text manipulation.
 - [`std::tensor`](#stdtensor) — Operations on `Tensor`, including shape queries and elementwise maths.
@@ -715,6 +716,67 @@ fn vx_tcp_listener_accept(ptr : *mut i8) -> *mut i8
 fn vx_tcp_listener_drop(ptr : *mut i8) -> i32
 ```
 
+## `std::rand`
+
+Seeded pseudo-random numbers, one stream per `Rng`.
+
+**Types**
+
+- `struct SplitMix64`
+- `struct Rng`
+
+**Functions**
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
+```rust
+fn rotate_left_u64(x : u64, k : u64) -> u64
+fn sqrt_f64(x : f64) -> f64
+fn ln_f64(x : f64) -> f64
+```
+
+**`SplitMix64` methods**
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
+```rust
+fn seeded(seed : u64) -> SplitMix64
+fn next_u64(self : &mut SplitMix64) -> u64
+```
+
+**`Rng` methods**
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
+```rust
+fn seeded(seed : u64) -> Rng
+fn next_u64(self : &mut Rng) -> u64
+fn next_u32(self : &mut Rng) -> u32
+fn next_u16(self : &mut Rng) -> u16
+fn next_u8(self : &mut Rng) -> u8
+fn next_i64(self : &mut Rng) -> i64
+fn next_i32(self : &mut Rng) -> i32
+fn next_i16(self : &mut Rng) -> i16
+fn next_i8(self : &mut Rng) -> i8
+fn next_f64(self : &mut Rng) -> f64
+fn next_f32(self : &mut Rng) -> f32
+fn next_f16(self : &mut Rng) -> f16
+fn next_bf16(self : &mut Rng) -> bf16
+fn next_bool(self : &mut Rng) -> bool
+fn chance(self : &mut Rng, p : f64) -> bool
+fn below(self : &mut Rng, bound : u64) -> u64
+fn range_i64(self : &mut Rng, lo : i64, hi : i64) -> i64
+fn range_f64(self : &mut Rng, lo : f64, hi : f64) -> f64
+fn range_f32(self : &mut Rng, lo : f32, hi : f32) -> f32
+fn normal(self : &mut Rng) -> f64
+fn normal_around(self : &mut Rng, mean : f64, stddev : f64) -> f64
+fn fill_f32(self : &mut Rng, out : *mut f32, count : i32) -> i32
+fn fill_range_f32(self : &mut Rng, out : *mut f32, count : i32, lo : f32, hi : f32) -> i32
+fn fill_normal_f32(self : &mut Rng, out : *mut f32, count : i32, mean : f32, stddev : f32) -> i32
+fn fill_f16(self : &mut Rng, out : *mut f16, count : i32) -> i32
+fn fill_normal_f16(self : &mut Rng, out : *mut f16, count : i32, mean : f64, stddev : f64) -> i32
+```
+
 ## `std::simd`
 
 SIMD vector types and operations.
@@ -917,4 +979,4 @@ fn vx_vec_bounds_check(index : i64, len : i64) -> i32
 
 ______________________________________________________________________
 
-311 functions across 24 modules.
+342 functions across 25 modules.

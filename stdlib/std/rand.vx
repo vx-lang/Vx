@@ -25,6 +25,26 @@
 // No `extern` here. The draws are arithmetic and `normal` reaches the `math` dialect through
 // `mlir!`, so this module works where there is no libc.
 
+/// The bits rotated round, which is how xoshiro mixes. Written out because the rotate in
+/// `core::num` is stamped for the signed widths, where `>>` copies the sign bit.
+fn rotate_left_u64(x : u64, k : u64) -> u64 {
+  return (x << k) | (x >> (64 - k));
+}
+
+fn sqrt_f64(x : f64) -> f64 {
+  return mlir!( inputs : (%a = x : f64), returns : f64, dialects : ["math"]) {
+    %r = math.sqrt %a : f64
+    macro.yield %r : f64
+  };
+}
+
+fn ln_f64(x : f64) -> f64 {
+  return mlir!( inputs : (%a = x : f64), returns : f64, dialects : ["math"]) {
+    %r = math.log %a : f64
+    macro.yield %r : f64
+  };
+}
+
 /// SplitMix64: a counter, scrambled. One multiply-xor-shift chain, no rejection, no loop.
 ///
 /// Its job here is to turn one seed word into the four `Rng` needs, which is what it was
@@ -63,26 +83,6 @@ struct Rng {
   s3 : u64,
   has_spare : bool,
   spare : f64,
-}
-
-/// The bits rotated round, which is how xoshiro mixes. Written out because the rotate in
-/// `core::num` is stamped for the signed widths, where `>>` copies the sign bit.
-fn rotate_left_u64(x : u64, k : u64) -> u64 {
-  return (x << k) | (x >> (64 - k));
-}
-
-fn sqrt_f64(x : f64) -> f64 {
-  return mlir!( inputs : (%a = x : f64), returns : f64, dialects : ["math"]) {
-    %r = math.sqrt %a : f64
-    macro.yield %r : f64
-  };
-}
-
-fn ln_f64(x : f64) -> f64 {
-  return mlir!( inputs : (%a = x : f64), returns : f64, dialects : ["math"]) {
-    %r = math.log %a : f64
-    macro.yield %r : f64
-  };
 }
 
 impl Rng {

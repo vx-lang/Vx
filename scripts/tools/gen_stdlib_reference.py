@@ -42,6 +42,7 @@ MODULE_BLURB = {
     "net": "TCP and UDP sockets.",
     "num": "The integer methods, on `i32`.",
     "option": "`Option<T>`, for a value that may be absent.",
+    "rand": "Seeded pseudo-random numbers, one stream per `Rng`.",
     "result": "`Result<T, E>`, for an operation that may fail.",
     "simd": "SIMD vector types and operations.",
     "string": "`String` and text manipulation.",
@@ -56,7 +57,7 @@ SIGNATURE_SKIP = "<!-- vx-doctest: skip -- signature listing, not a program -->\
 
 HEADER = """# Standard library reference
 
-Every public type and function in the 21 `std` modules, taken from their signatures.
+Every public type and function in the shipped library modules, taken from their signatures.
 
 Import a module with its path, then use the names it declares:
 
