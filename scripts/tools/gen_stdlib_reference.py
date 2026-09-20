@@ -40,7 +40,7 @@ MODULE_BLURB = {
     "math": "Mathematical functions and constants.",
     "mmap": "Memory-mapped files.",
     "net": "TCP and UDP sockets.",
-    "num": "The integer methods, on `i32`.",
+    "num": "The integer methods, stamped over the signed and the unsigned widths.",
     "option": "`Option<T>`, for a value that may be absent.",
     "rand": "Seeded pseudo-random numbers, one stream per `Rng`.",
     "result": "`Result<T, E>`, for an operation that may fail.",

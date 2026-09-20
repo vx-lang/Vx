@@ -1,0 +1,175 @@
+//===- core_num_unsigned.vx - Vx Compiler -------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `core::num` over the unsigned widths.
+//
+// Every operand is picked so that the signed answer differs from the unsigned one, because
+// the two macros share their shape and a body that read a sign would still compile. The
+// working value is 12345678901234567890, which is above `i64::MAX`: as a signed number it is
+// negative, so a signed shift, divide, compare or print gives a different answer at each
+// line below rather than the same answer by luck.
+//
+// The narrow widths are asked the questions that depend on the width -- the limits,
+// `swap_bytes`, `next_power_of_two` -- since those are what a wrong `$bits` or a `u32`
+// stamped with `i32`'s limit would move. 30000 rather than 50000 for the `u16`: the next
+// power of two above 50000 is 65536, which this width cannot hold, and the assert that says
+// so fires before anything can be printed.
+//
+// Flat path only, for the reason `std_rand.vx` is: the legacy code generator chooses its
+// arithmetic from the printed MLIR type, which has no sign, so `>>`, `/`, `%` and `<` on an
+// unsigned operand all take the signed op there.
+//
+// REQUIRES: flat-codegen
+// EXPECT: 255 65535 4294967295 18446744073709551615 0 64 | 32 32 0 1 5427111154114964181 15134944594269656235 | 1 0 0 40 63 1024 3486784401 | 6100562111716053675 15180320056172814090 12345678901234567890 | 4115226300411522630 1 12345677801722940114 12345677801722940114 | 12345678901234567891 1 12345678901234567889 1 21 1 4115226300411522630 1 1 1 | 18446744073709551615 12345678901234567891 0 12345678901234567889 | 200 145 3 12405 1 32768 755359755 31 428571428 1
+import core::num;
+import core::option;
+
+fn show(b : bool) -> i32 {
+  if b {
+    print(1);
+  } else {
+    print(0);
+  }
+  return 0;
+}
+
+fn main() -> i32 {
+  let v : u64 = 12345678901234567890;
+
+  // The limits, at each width.
+  let a : u8 = 0;
+  let b : u16 = 0;
+  let c : u32 = 0;
+  print(a.max_value());
+  print!(" ");
+  print(b.max_value());
+  print!(" ");
+  print(c.max_value());
+  print!(" ");
+  print(v.max_value());
+  print!(" ");
+  print(v.min_value());
+  print!(" ");
+  print(v.bits());
+  print!(" | ");
+
+  // Bit counts. The operand has its top bit set, which is what a signed `>>` would smear.
+  print(v.count_ones());
+  print!(" ");
+  print(v.count_zeros());
+  print!(" ");
+  print(v.leading_zeros());
+  print!(" ");
+  print(v.trailing_zeros());
+  print!(" ");
+  print(v.reverse_bits());
+  print!(" ");
+  print(v.swap_bytes());
+  print!(" | ");
+
+  // Powers and logarithms.
+  let p : u64 = 1099511627776;
+  show(p.is_power_of_two());
+  print!(" ");
+  show(v.is_power_of_two());
+  print!(" ");
+  // Zero is not a power of two, and it is the only value that tells a `> 0` guard from a
+  // `>= 0` one -- which at an unsigned width is every value there is.
+  let none : u64 = 0;
+  show(none.is_power_of_two());
+  print!(" ");
+  print(p.ilog2());
+  print!(" ");
+  print(v.ilog2());
+  print!(" ");
+  let q : u64 = 1000;
+  print(q.next_power_of_two());
+  print!(" ");
+  let r : u64 = 3;
+  print(r.pow(20));
+  print!(" | ");
+
+  // Rotation, which needs no mask at an unsigned width.
+  print(v.rotate_left(8));
+  print!(" ");
+  print(v.rotate_right(8));
+  print!(" ");
+  print(v.rotate_left(0));
+  print!(" | ");
+
+  // Division and distance. `v / 3` and `v % 7` are the divisions a signed op gets wrong.
+  let three : u64 = 3;
+  let seven : u64 = 7;
+  print(v.div_euclid(three));
+  print!(" ");
+  print(v.rem_euclid(seven));
+  print!(" ");
+  print(v.abs_diff(p));
+  print!(" ");
+  print(p.abs_diff(v));
+  print!(" | ");
+
+  // The checked family: one that fits and one that does not, per operation.
+  let top : u64 = 18446744073709551615;
+  print(v.checked_add(1).unwrap());
+  print!(" ");
+  show(top.checked_add(1).is_none());
+  print!(" ");
+  print(v.checked_sub(1).unwrap());
+  print!(" ");
+  let one : u64 = 1;
+  show(one.checked_sub(2).is_none());
+  print!(" ");
+  print(three.checked_mul(seven).unwrap());
+  print!(" ");
+  show(v.checked_mul(v).is_none());
+  print!(" ");
+  print(v.checked_div(three).unwrap());
+  print!(" ");
+  let zero : u64 = 0;
+  show(v.checked_div(zero).is_none());
+  print!(" ");
+  print(v.checked_rem(seven).unwrap());
+  print!(" ");
+  show(v.checked_rem(zero).is_none());
+  print!(" | ");
+
+  // Saturation, at both ends.
+  print(top.saturating_add(9));
+  print!(" ");
+  print(v.saturating_add(1));
+  print!(" ");
+  print(one.saturating_sub(9));
+  print!(" ");
+  print(v.saturating_sub(1));
+  print!(" | ");
+
+  // The narrow widths, on the questions their width decides.
+  let byte : u8 = 200;
+  print(byte.swap_bytes());
+  print!(" ");
+  print(byte.rotate_left(1));
+  print!(" ");
+  print(byte.count_ones());
+  print!(" ");
+  let short : u16 = 30000;
+  print(short.swap_bytes());
+  print!(" ");
+  print(short.leading_zeros());
+  print!(" ");
+  print(short.next_power_of_two());
+  print!(" ");
+  let wide : u32 = 3000000000;
+  print(wide.rotate_left(4));
+  print!(" ");
+  print(wide.ilog2());
+  print!(" ");
+  print(wide.div_euclid(7));
+  print!(" ");
+  show(wide.checked_mul(wide).is_none());
+  return 0;
+}

@@ -25,7 +25,7 @@ friends.
 
 - [`core::cmp`](#corecmp) —
 - [`core::iter`](#coreiter) — The `Iterator` trait and its adaptors, which `for` loops and `.map` build on.
-- [`core::num`](#corenum) — The integer methods, on `i32`.
+- [`core::num`](#corenum) — The integer methods, stamped over the signed and the unsigned widths.
 - [`core::ops`](#coreops) —
 - [`core::option`](#coreoption) — `Option<T>`, for a value that may be absent.
 - [`core::result`](#coreresult) — `Result<T, E>`, for an operation that may fail.
@@ -174,7 +174,7 @@ fn range(at : i64, end : i64) -> Range
 
 ## `core::num`
 
-The integer methods, on `i32`.
+The integer methods, stamped over the signed and the unsigned widths.
 
 **`$t` methods**
 
@@ -209,6 +209,31 @@ fn checked_mul(self : $t, rhs : $t) -> Option<$t>
 fn checked_div(self : $t, rhs : $t) -> Option<$t>
 fn checked_rem(self : $t, rhs : $t) -> Option<$t>
 fn checked_neg(self : $t) -> Option<$t>
+fn saturating_add(self : $t, rhs : $t) -> $t
+fn saturating_sub(self : $t, rhs : $t) -> $t
+fn min_value(self : $t) -> $t
+fn max_value(self : $t) -> $t
+fn bits(self : $t) -> $t
+fn count_ones(self : $t) -> $t
+fn count_zeros(self : $t) -> $t
+fn leading_zeros(self : $t) -> $t
+fn trailing_zeros(self : $t) -> $t
+fn is_power_of_two(self : $t) -> bool
+fn abs_diff(self : $t, other : $t) -> $t
+fn pow(self : $t, exp : $t) -> $t
+fn div_euclid(self : $t, rhs : $t) -> $t
+fn rem_euclid(self : $t, rhs : $t) -> $t
+fn ilog2(self : $t) -> $t
+fn next_power_of_two(self : $t) -> $t
+fn rotate_left(self : $t, n : $t) -> $t
+fn rotate_right(self : $t, n : $t) -> $t
+fn swap_bytes(self : $t) -> $t
+fn reverse_bits(self : $t) -> $t
+fn checked_add(self : $t, rhs : $t) -> Option<$t>
+fn checked_sub(self : $t, rhs : $t) -> Option<$t>
+fn checked_mul(self : $t, rhs : $t) -> Option<$t>
+fn checked_div(self : $t, rhs : $t) -> Option<$t>
+fn checked_rem(self : $t, rhs : $t) -> Option<$t>
 fn saturating_add(self : $t, rhs : $t) -> $t
 fn saturating_sub(self : $t, rhs : $t) -> $t
 ```
@@ -730,7 +755,6 @@ Seeded pseudo-random numbers, one stream per `Rng`.
 <!-- vx-doctest: skip -- signature listing, not a program -->
 
 ```rust
-fn rotate_left_u64(x : u64, k : u64) -> u64
 fn sqrt_f64(x : f64) -> f64
 fn ln_f64(x : f64) -> f64
 ```
@@ -979,4 +1003,4 @@ fn vx_vec_bounds_check(index : i64, len : i64) -> i32
 
 ______________________________________________________________________
 
-342 functions across 25 modules.
+366 functions across 25 modules.
