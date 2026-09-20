@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=MLIR
-// An `impl transfer` body is INLINED at the transfer site (Vx#353 A3), and the
+// An `impl transfer` body is INLINED at the transfer site (Vx#353), and the
 // generator's name maps are flat -- no scoping. So every name the body uses is a
 // chance to corrupt the caller. This fixture makes all three collide at once:
 //

@@ -1,4 +1,4 @@
-// measure_device.cu -- M1 per-seam instrument for an NVIDIA part.
+// measure_device.cu -- per-seam instrument for an NVIDIA part.
 //
 // Measures exactly the three seams the frozen predictions price for a discrete SKU, in the units
 // they are priced in:
@@ -32,7 +32,7 @@
 // H100 80GB HBM3 (2026-08-08) -- with two exceptions, both written after that box was released
 // and with no toolkit reachable, so NEITHER HAS BEEN RUN:
 //   * `seam 2b: HBM -> L2, the actual fill`
-//   * the `M4: the declared numbers themselves` block
+//   * the `declared device numbers` block
 // Their HOST code is checked by `utils/memalg/check_host_compile.sh`, which compiles each block
 // against a stub cuda_runtime.h. That catches typos, printf formats and type errors -- the things
 // that would otherwise eat the first hour of a rented session. It does NOT check device code, and
@@ -68,7 +68,7 @@ static const size_t SIZES[] = {4096ul,      16384ul,     65536ul,     262144ul, 
                                4194304ul,   16777216ul,  67108864ul,  268435456ul, 1073741824ul};
 static const int N_SIZES = sizeof(SIZES) / sizeof(SIZES[0]);
 
-// The M6 walk's working-set sizes: FlashAttention-2 blocks, (Br*d + 2*Bc*d) * 4 bytes for
+// The hierarchy walk's working-set sizes: FlashAttention-2 blocks, (Br*d + 2*Bc*d) * 4 bytes for
 // (Br, Bc, d) over {64,128} x {64,128} (utils/memalg/walk.py WALKS). Hard-coded for
 // the same reason as SIZES: these join against walk.py's table, and a computed sweep could
 // silently desynchronise the join.
@@ -78,7 +78,7 @@ static const int N_WALK = sizeof(WALK_BYTES) / sizeof(WALK_BYTES[0]);
 // One declared-number row. These are facts, not distributions: `median` carries the
 // value, `unit` says what it is, q1/q3/rate are empty and reps is 1. compare_m1.py joins on
 // (seam, bytes, note) and no frozen cell carries a `device/` seam name, so these are inert to the
-// M1 error table -- they exist to be read by whoever annotates the machine files.
+// per-seam error table -- they exist to be read by whoever annotates the machine files.
 static void fact_row(const char *seam, size_t bytes, const char *unit, double value,
                      const char *note) {
   printf("%s,%zu,%s,%.3f,,,,1,%s\n", seam, bytes, unit, value, note);
@@ -169,14 +169,14 @@ int main() {
 
   printf("seam,bytes,unit,median,q1,q3,derived_rate_GBps,reps,note\n");
 
-  // ---- M4: the declared numbers themselves -------------------------------------
+  // ---- declared device numbers -------------------------------------------------
   // Every figure in fleet/*.vx came from a vendor document. These rows are the same figures read
   // off the hardware, so each machine-file line can be marked `measured:` against a log reference
   // instead of `spec:`. They go to the CSV rather than only to stderr because "update the machine
   // files" is then a mechanical join; a human transcribing from a log is exactly the step where a
   // number quietly becomes the number that fits.
   //
-  // NOT COMPILE-VERIFIED AND NOT RUN, like seam 2b -- written with no reachable toolkit. Compile
+  // NOT COMPILE-VERIFIED AND NOT RUN, like the HBM -> L2 fill -- written with no reachable toolkit. Compile
   // before quoting anything from it.
   //
   // Two things these rows are NOT:
@@ -582,7 +582,7 @@ int main() {
   }
 
 
-  // ---- M6 walk: the same three hops at the attention working-set sizes ---------
+  // ---- walk: the same three hops at the attention working-set sizes ---------
   // walk.py prices CPU_DRAM -> HBM -> L2 -> SMEM per hop for FlashAttention-2 working sets; these
   // rows are the measured column at exactly those byte counts, so the join is on bytes with no
   // interpolation. Seam names carry a `walk/` prefix: compare_m1.py sets them aside (they join

@@ -16,7 +16,7 @@
 # no freeze and no prediction checkout is needed -- unlike run_m1.sh, which must have the tag.
 #
 # Build first, and stop on failure. probe_edges.cu has NOT been compiled anywhere: the CUDA box
-# used to pre-verify the M1 instrument is gone, so this build is its first. That is deliberate --
+# used to pre-verify the per-seam instrument is gone, so this build is its first. That is deliberate --
 # a compile error costs seconds here and nothing at all in wrong conclusions.
 #
 #===----------------------------------------------------------------------===#

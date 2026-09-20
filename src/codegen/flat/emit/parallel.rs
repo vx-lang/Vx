@@ -13,7 +13,7 @@ impl FnEmit<'_> {
     // `memref<NxT>`). When the target space declares a sub-space descriptor, re-attach the
     // scheduling attrs (`space`/`within`/`granule`/`capacity`/`scope` + a bump-allocated
     // `offset`/`slots`) the AST path emits — a device backend needs them to place the tile
-    // into VMEM/TMEM, and they are dropped otherwise (B1/P0-1).
+    // into VMEM/TMEM, and they are dropped otherwise.
     pub(crate) fn op_transfer(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
         let src = self
             .names

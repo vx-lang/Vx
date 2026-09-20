@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// P0-3: a transfer over a *declared* `relaxed` edge (`Memory::SMEM -> Memory::TMEM : 5 relaxed`)
+// A transfer over a *declared* `relaxed` edge (`Memory::SMEM -> Memory::TMEM : 5 relaxed`)
 // must get the same per-buffer seam proof as the built-in `to_sram_relaxed` intrinsic — an E6004
 // at the *use site* with a z3 counterexample, not only the blunt declaration-time W1027. The
 // SMEM->TMEM hop of the staged CPU->HBM3e->SMEM->TMEM route carries no synchronizing release, so a

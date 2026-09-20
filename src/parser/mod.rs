@@ -384,7 +384,7 @@ mod tests {
     #[test]
     fn test_parse_transfer_edge_markers_compose() {
         // The trailing markers compose in any order: `relaxed copy_engine` declares a
-        // relaxed edge with a hardware copy engine (Vx#353 A2). Each is independent --
+        // relaxed edge with a hardware copy engine (Vx#353). Each is independent --
         // the consistency grade answers visibility, the engine answers capability.
         let input = "Topology EdgeTPU { memory: Memory::Local_SRAM \
                      transfer Memory::GPU_HBM -> Memory::Local_SRAM relaxed copy_engine }";

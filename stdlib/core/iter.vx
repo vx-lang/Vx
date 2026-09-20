@@ -7,8 +7,8 @@
 //===----------------------------------------------------------------------===//
 // `Iterator`, one required method with the rest written over it.
 //
-// `Item` is a trait parameter rather than an associated type, which Vx does not have yet
-// (plan item A10). `trait Iterator<Item>` is the phase-1 encoding; associated types
+// `Item` is a trait parameter rather than an associated type, which Vx does not have yet.
+// `trait Iterator<Item>` is the phase-1 encoding; associated types
 // replace it without changing any of the bodies below.
 //
 // A `for` loop consumes the iterator it drives, so an adaptor takes its inner iterator by

@@ -195,7 +195,7 @@ pub struct Bandwidth {
     pub per: RatePer,
 }
 
-/// How a memory space is managed (M5 uses this to decide the transfer obligation).
+/// How a memory space is managed (the transfer checker uses this to decide the obligation).
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum Management {
     /// Programmer-managed: movement in/out requires an explicit `transfer`.
@@ -331,7 +331,7 @@ pub struct TransferImplDecl {
     pub topology: crate::syntax::Topology,
     /// The lowering's functions, `fn move(...)` by convention. Parsed as ordinary Vx functions,
     /// and treated as such downstream: macro-expanded, structurally checked (E6015), and
-    /// type-checked like impl methods (#353 A1). Not yet emitted as code, and the `raw::`
+    /// type-checked like impl methods (#353). Not yet emitted as code, and the `raw::`
     /// primitive obligations are not yet enforced. Which shapes are legal (copy fills a `dst`;
     /// an alias returns a view) is sema's question, not the parser's, so the parser accepts any
     /// `fn` items here.
@@ -401,7 +401,7 @@ impl Program {
             // for the same reason as everything else -- the signature clone exists so the
             // parallel pipeline can share a light Program -- but a lowering's body is now a
             // fact the checker reads at every transfer site: it is what the traffic count is
-            // derived FROM (#353 A4). Stripped, the count came back as zero bytes with no
+            // derived FROM (#353). Stripped, the count came back as zero bytes with no
             // indication anything was missing, which is the failure a derived figure must
             // never have. They are copy loops, a few statements each; the weight argument
             // does not survive contact with needing them.

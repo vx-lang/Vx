@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// The honesty witness for derived traffic (Vx#353 A4).
+// The honesty witness for derived traffic (Vx#353).
 //
 // This lowering is perfectly good code -- it is the cooperative copy the
 // contract document itself sketches -- but the number of times its loop runs

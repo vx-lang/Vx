@@ -2,7 +2,7 @@
 # Syntax- and format-check measure_device.cu's HOST code without a CUDA toolkit.
 #
 # Why this exists: two blocks in measure_device.cu were written on a machine with no nvcc and
-# committed unverified -- `seam 2b` and the `M4: the declared numbers` block. An unverified
+# committed unverified -- `seam 2b` and the `declared device numbers` block. An unverified
 # instrument is a rented GPU session spent debugging a compiler error instead of measuring, so
 # this catches the errors that are catchable here: typos, wrong printf formats, wrong types,
 # missing variables.
@@ -88,9 +88,9 @@ preamble = "\n".join([
 ])
 
 blocks = {
-    "m4_facts": between(r"---- M4: the declared numbers", r"---- seam 1: CPU_DRAM"),
+    "device_facts": between(r"---- declared device numbers", r"---- seam 1: CPU_DRAM"),
     "seam2b":   between(r"---- seam 2b: HBM -> L2, the actual fill", r"---- seam 3: L2 -> SMEM"),
-    "m6_walk":  between(r"---- M6 walk: the same three hops", r"^  return 0;"),
+    "walk":      between(r"---- walk: the same three hops", r"^  return 0;"),
 }
 
 for name, body in blocks.items():

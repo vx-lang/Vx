@@ -93,13 +93,13 @@ use crate::report::{ResidentSet, SpawnRegionTraffic, StagingRoute};
 /// }
 /// ```
 ///
-/// The `traffic_*` keys were added for #353 A4 and are **additive** in the same sense. They
+/// The `traffic_*` keys were added for #353 and are **additive** in the same sense. They
 /// carry bytes, never time: traffic is what the code moves, and what that costs is the time
 /// model's separate (and calibrated) claim. `traffic` is null rather than zero when a movement
 /// cannot be counted statically, because a harvested zero is indistinguishable from a
 /// measurement of nothing.
 ///
-/// `spawn_regions` was added for #353 A4 T4 and is **additive** likewise. It answers the
+/// `spawn_regions` was added for #353 and is **additive** likewise. It answers the
 /// question the `routes` traffic cannot: a route says what it cost to GET a tile to a space,
 /// while a region says what the kernel then does with it. Those differ by the loop nest, which
 /// is where re-reading lives — a kernel that streams one operand past a block of another
@@ -243,7 +243,7 @@ fn route_json(r: &StagingRoute) -> String {
         Some(crate::syntax::Crossing::Streamed) => "\"bottleneck\"",
         None => "null",
     };
-    // Derived traffic (#353 A4). Present or explicitly absent-with-a-reason; never a
+    // Derived traffic (#353). Present or explicitly absent-with-a-reason; never a
     // silent zero, which a consumer could not tell from a real count of nothing.
     let (traffic, traffic_source, traffic_exact) = match &r.traffic {
         Some(t) => (
@@ -315,7 +315,7 @@ fn resident_set_json(r: &ResidentSet) -> String {
     )
 }
 
-/// One `spawn` region's derived traffic (#353 A4 T4).
+/// One `spawn` region's derived traffic (#353).
 ///
 /// `by_buffer` is carried beside the per-space aggregate because the amplification this
 /// record exists to show is a fact about a particular tensor: summed into their shared space,
@@ -548,7 +548,7 @@ mod tests {
             "prog.vx",
             None,
         );
-        // Traffic is bytes, per space, with the side it moved them on (#353 A4).
+        // Traffic is bytes, per space, with the side it moved them on (#353).
         assert!(
             out.contains("{\"space\": \"CPU_DRAM\", \"read_bytes\": 16384, \"written_bytes\": 0}"),
             "{out}"

@@ -2277,7 +2277,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
         if name.as_ref() == "Verified" {
             return gen.generate_expr(&args[0], block);
         }
-        // The eight raw:: transfer-lowering primitives (#353 A3). They reach codegen
+        // The eight raw:: transfer-lowering primitives (#353). They reach codegen
         // only inside an inlined `impl transfer` body -- the checker refuses them
         // anywhere else (E6017) -- and they lower to loads/stores/gpu ops directly in
         // place, never to calls: a func.call inside a kernel region silently costs the
@@ -3834,7 +3834,7 @@ impl<'c> LowerToMelior<'c> for syntax::expr::SizeOfExpr {
         let size: i64 = match &self.target_ty {
             // Scalar byte size from the single width source (`scalar_size_align` -> `ElementType::bits`),
             // rather than a fourth hand-maintained per-type table; also sizes sub-byte scalars (`i4` = 1)
-            // that the old match dropped to the `_ => 8` fallback. (P1-4a)
+            // that the old match dropped to the `_ => 8` fallback.
             syntax::Type::Scalar(e) => crate::layout::scalar_size_align(e)
                 .map(|(s, _)| s as i64)
                 .unwrap_or(8),

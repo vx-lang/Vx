@@ -1,7 +1,7 @@
 // RUN: not vxc %s 2>&1 | FileCheck %s
 // A lane-guarded early return carries the in-flight copy out of the body: the
 // walk models every exit, so the leak on the early path is refused. This
-// program passed every check before the exit-aware walk (A2 review).
+// program passed every check before the exit-aware walk (found in review).
 // CHECK: E6021
 // CHECK: on some path out of the body
 Topology Dev {

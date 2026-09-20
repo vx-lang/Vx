@@ -1,6 +1,6 @@
 // RUN: not vxc %s 2>&1 | FileCheck %s
 // The topology declares the edge but cannot see one of its endpoints: the
-// lowering would run on a part that cannot address the space it fills (C6).
+// lowering would run on a part that cannot address the space it fills.
 // CHECK: E6022
 // CHECK: cannot see
 Topology Dev {

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""M1: join measured seams against the FROZEN predictions and emit the error table.
+"""Join measured seams against the FROZEN predictions and emit the error table.
 
 Reads predictions only from the frozen directory, never by re-running the compiler. That is the
 point of the freeze: if this script could regenerate them it could also regenerate them *after*
@@ -58,7 +58,7 @@ def load_measurements(path):
             if row["seam"].startswith("device/"):
                 facts.append(row)
                 continue
-            # walk/* rows are the M6 measured column (utils/memalg/walk.py --measured joins them);
+            # walk/* rows are the hierarchy walk's measured column (utils/memalg/walk.py --measured joins them);
             # they have no frozen per-seam cell and would otherwise crowd the unmatched list.
             if row["seam"].startswith("walk/"):
                 continue
@@ -179,7 +179,7 @@ def main():
             "lines before citing anything."
         )
 
-    # M4: the declared numbers, read off the hardware. Nothing is scored here --
+    # The declared numbers, read off the hardware. Nothing is scored here --
     # the frozen cells carry costs, not capacities, so there is no predicted side to subtract.
     # This is the table someone reads while turning a `spec:` line into a `measured:` one, and it
     # is printed rather than summarised because the transcription is the fragile step.

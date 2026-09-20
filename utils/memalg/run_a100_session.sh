@@ -6,13 +6,13 @@
 #   bash utils/memalg/run_a100_session.sh run  <host> <port> <key>  # ship, run, fetch results
 #
 # What the session measures, and which issue each item belongs to:
-#   1. measure_device (M1 sweep + M4 device facts + seam 2b + M6 walk rows)
+#   1. measure_device (per-seam sweep + device facts + seam 2b + walk rows)
 #   2. launch_smem_kernel: the FIRST shared-memory kernel Vx emits, run and
 #      checked exact against the host answer                                  Vx#352/#353
 #   3. probe_peer: the 2-GPU peer edge vs the declared 31.5 GB/s bound
 #   4. if `ncu` exists on the pod: DRAM/shared traffic counts for the SMEM
-#      kernel vs its global-only twin -- A4's first data point (traffic is
-#      valid even single-threaded; TIME is not, so no timing comparison)      Vx#353 A4
+#      kernel vs its global-only twin -- the traffic work's first data point (traffic is
+#      valid even single-threaded; TIME is not, so no timing comparison)      Vx#353
 #
 # Policy (from the campaign's standing rules): only an archive is shipped, never a checkout;
 # the pod directory is removed at the end; every artifact lands under results/ with an env
@@ -150,7 +150,7 @@ mkdir -p out
     nvcc --version | tail -1
 } > out/env.txt 2>&1
 
-echo "== 1/4 measure_device (M1 + M4 + seam2b + M6 walk) =="
+echo "== 1/4 measure_device (seams + device facts + seam2b + walk) =="
 nvcc -O3 -arch=sm_80 measure_device.cu -o measure_device 2> out/build_measure.log \
     && ./measure_device > out/measured.csv 2> out/measured.log \
     || echo "MEASURE_DEVICE FAILED" | tee -a out/measured.log

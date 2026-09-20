@@ -178,7 +178,7 @@ fn a_custom_topology_with_a_declared_arch_gets_a_device_image() {
         image.contains("ld.shared"),
         "the body must READ the tile from shared memory, not re-read global:\n{image}"
     );
-    // The C3 barrier, closed in #353 A3: the builtin copy publishes the tile to every
+    // The visibility barrier, closed in #353: the builtin copy publishes the tile to every
     // lane before any lane reads it. Exactly one -- the count is what separates the
     // builtin from a user lowering (see the user-lowering test below, which pins two).
     assert_eq!(
@@ -197,10 +197,10 @@ fn a_custom_topology_with_a_declared_arch_gets_a_device_image() {
 }
 
 /// A user-supplied `impl transfer` fills the SMEM tile, and the emitted image proves it
-/// ran: TWO `bar.sync` where the builtin has one (Vx#353 A3).
+/// ran: TWO `bar.sync` where the builtin has one (Vx#353).
 ///
 /// The discriminator is structural on purpose. A transfer is a move, not a conversion
-/// (contract C2), so a faithful user lowering computes exactly what the builtin computes
+/// (value preservation), so a faithful user lowering computes exactly what the builtin computes
 /// -- the answer cannot distinguish them. The fixture's body says `raw::barrier()` twice,
 /// both top-level, and the count survives to PTX.
 #[test]
@@ -232,7 +232,7 @@ fn a_user_supplied_lowering_is_emitted_instead_of_the_builtin_copy() {
 }
 
 /// The AST-fallback path now gets a real device image for a statically shaped tile --
-/// the flip its predecessor pre-authorized, earned in #353 A3.
+/// the flip its predecessor pre-authorized, earned in #353.
 ///
 /// It used to be refused, and the refusal was right at the time: this path typed the SMEM
 /// tile as a dynamic memref (`?x?`), a dynamic shared tile cannot become a `.shared`

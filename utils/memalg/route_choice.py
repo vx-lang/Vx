@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""M5: does the graph pick the faster route?
+"""Does the graph pick the faster route?
 
 When two routes connect the same pair of spaces, the graph picks one. This asks whether it picked
 the faster one, and whether the answer depends on transfer size.
 
-The predicted half of M5 needs no hardware, because both halves of the comparison are things the
+The predicted half needs no hardware, because both halves of the comparison are things the
 compiler already computes: which route it chose, and what every route costs. So this runs on a
 laptop and the machine time is spent only on confirming the *measured* column.
 
@@ -31,7 +31,7 @@ import subprocess
 import sys
 import tempfile
 
-# The frozen cell sizes, so an M5 row can be read next to an M1 row for the same transfer.
+# The frozen cell sizes, so a route row can be read next to a per-seam row for the same transfer.
 DIMS = [32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384]
 
 # Decimal, not binary. fleet/README.md records that reading `TB` as 2^40 cost 9% against every
@@ -159,7 +159,7 @@ def main():
         print(f"            {' -> '.join(p)}  ({len(p) - 1} hop(s))")
     if len(cands) == 1:
         print(
-            "\nOnly one route exists, so there is no choice to score. M5 needs a pair whose\n"
+            "\nOnly one route exists, so there is no choice to score. This needs a pair whose\n"
             "endpoints are connected two ways -- see utils/memalg/m5_partial_nvlink.vx."
         )
 
@@ -183,7 +183,7 @@ def main():
                 f"cannot price the chosen route {' -> '.join(path)} at {nbytes}B: {why}.\n"
                 "This is a limit of this script, not a defect in the route: a containment hop is\n"
                 "priced from the roofline between the spaces at its ends, which the compiler\n"
-                "composes and this script does not reimplement. So M5 currently scores routes\n"
+                "composes and this script does not reimplement. So it currently scores routes\n"
                 "made of declared link rates -- the between-device edges, which is where two\n"
                 "routes actually compete. Scoring an on-die alternative needs the compiler to\n"
                 "report the routes it rejected, not a second copy of the roofline here."
@@ -251,7 +251,7 @@ def main():
             "structural, not a coincidence: every edge is priced bytes/bandwidth, a line through\n"
             "the origin, so the ratio between two routes cannot depend on bytes. The model\n"
             "carries no fixed per-transfer term, and so cannot express a size crossover at all --\n"
-            "which is the effect M5 set out to locate."
+            "which is the effect this set out to locate."
         )
     return 0
 

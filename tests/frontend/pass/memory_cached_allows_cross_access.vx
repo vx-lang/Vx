@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// M5: a value in a `managed: cached` space may be used implicitly across spaces (hardware
+// A value in a `managed: cached` space may be used implicitly across spaces (hardware
 // coherence keeps it visible), so no explicit transfer is required. The same program without
 // the `managed: cached` declaration is rejected (see fail/illegal_npu_to_gpu.vx): declaring
 // NPU_HBM cached is exactly what makes this legal.

@@ -70,7 +70,7 @@ Topology Node {
   visible: [Memory::HBM, Memory::L2, Memory::SMEM, Memory::PEER_HBM],
   // spec: PCIe Gen5 x16 = 63 GB/s per direction (32 GT/s x 16 lanes, 128b/130b).
   // UNVERIFIED on this SKU; a Grace/C2C-attached part reaches the host at ~450 GB/s instead,
-  // a 7x difference in every host-seam prediction. Settling it is experiment M1/M4.
+  // a 7x difference in every host-seam prediction. Settling it is an open experiment (utils/memalg).
   // The on-die hops below declare no cost -- their `bandwidth:` figures derive it (E6013).
   transfer Memory::CPU_DRAM -> Memory::HBM : 63 GB/s,
   transfer Memory::HBM -> Memory::L2,
@@ -85,7 +85,7 @@ Topology Node {
   // route selection and are NOT times, so nothing derived a cost from them: every one of
   // these edges reported `derived_cost: null`. The compiler would route a KV cache from
   // GPU0 to GPU7, or out through the NIC to another machine, and predict nothing about how
-  // long it took -- which left M7 with no predicted column to measure
+  // long it took -- which left the between-machine measurement with no predicted column
   // against. An unpriced edge cannot be validated by any amount of machine time.
   //
   // Worth recording: the old weights did not even encode the right ORDER. 450/63/50 GB/s
@@ -102,7 +102,7 @@ Topology Node {
   // the fabric's. UNVERIFIED, and it shares the Grace/C2C uncertainty noted above.
   transfer Memory::HBM -> Memory::NIC_RAM : 63 GB/s,
   // spec: NVIDIA ConnectX-7 / InfiniBand NDR -- 400 Gb/s = 50 GB/s per port. This is the
-  // between-machine edge M7 exists to measure, and it is deliberately the *port* rate
+  // between-machine edge the fleet campaign exists to measure, and it is deliberately the *port* rate
   // rather than any aggregate: a placement crossing it is one flow on one port.
   transfer Memory::NIC_RAM -> Memory::Remote_HBM : 50 GB/s
 }

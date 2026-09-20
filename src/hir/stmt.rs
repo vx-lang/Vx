@@ -275,7 +275,7 @@ impl<'a> TypeChecker<'a> {
             // `raw::extent(t)` folds to its literal element count first: the prover cannot
             // lower a function call, so `let n = raw::extent(src)` would otherwise record
             // an unlowerable fact and every bound written against `n` would be unprovable
-            // (Vx#353 A2).
+            // (Vx#353).
             let eq_expr = Expr::RelationalOp(RelationalOpExpr {
                 lhs: Box::new(id_expr),
                 op: RelationalOp::Eq,
@@ -379,7 +379,7 @@ impl<'a> TypeChecker<'a> {
 
         // A range loop constrains its induction variable: `for i in a..b` gives
         // `a <= i && i < b` for the body. Recorded as prover facts so bounds obligations
-        // over `i` (the `raw::` primitives, Vx#353 A2) and `Verified<T>` assertions can
+        // over `i` (the `raw::` primitives, Vx#353) and `Verified<T>` assertions can
         // close without a hand-written invariant. Skipped when the body reassigns the
         // variable: the checker does not version mutated symbols, so a stale fact would
         // prove false things. The facts sit above `prev_constraints_len`, so the

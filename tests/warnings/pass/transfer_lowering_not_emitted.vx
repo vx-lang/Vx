@@ -1,5 +1,5 @@
 // A lowering the emission path cannot use, and the two reasons it says so
-// (Vx#353 A3). Both were silent data corruption before review found them:
+// (Vx#353). Both were silent data corruption before review found them:
 //
 //   * `move_tile(dst, src)` -- parameters in the other order. Binding is
 //     positional, so the body read the empty destination and wrote over the

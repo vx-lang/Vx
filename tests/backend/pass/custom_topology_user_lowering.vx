@@ -9,14 +9,14 @@
 // The same program as custom_topology_device_image.vx, with ONE difference: the
 // machine model ships an `impl transfer Memory::GPU_HBM -> Memory::SMEM`, so the
 // tile placed in SMEM is filled by USER Vx code instead of the builtin copy
-// (Vx#353 A3). The lowering is value-preserving (C2: a transfer moves, it does
+// (Vx#353). The lowering is value-preserving (a transfer moves, it does
 // not convert), so the computed answer is identical -- what changes is the shape
 // of the emitted code, and that shape is the witness:
 //
 //   * the body is INLINED at the site (the user_lowered marker and gpu.barrier below);
 //   * the body says raw::barrier() twice, both top-level, the second one
 //     trailing -- so the device image shows exactly TWO bar.sync where the
-//     builtin (post-A3) shows one. device_image_test.rs counts them.
+//     builtin shows one. device_image_test.rs counts them.
 //
 // The host fallback runs the same inlined body single-threaded (barriers erased,
 // lane 0, lanes 1), which is what computes EXPECT here on machines with no GPU.

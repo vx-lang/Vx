@@ -21,7 +21,7 @@
 //
 // `GPU_HBM` is `managed: explicit` here on purpose. A space left to the default
 // is `cached`, and a cached space is readable across the boundary by the same
-// M5 rule that governs every other implicit cross-space use -- so refusing it
+// rule that governs every other implicit cross-space use -- so refusing it
 // would refuse what the model permits everywhere else.
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s

@@ -9,7 +9,7 @@
 // `capacity` cannot be capacity-checked (E6009/E6010 need static byte sizes). Previously this
 // was skipped silently, so a user believed the placement was verified when it was not. Now it
 // warns (W1029) and still compiles. Make the shape static, or
-// bound it (P1-1), to get the check back. This is P0-4 from the heterogeneous gap analysis.
+// bound it, to get the check back.
 //
 // A runtime dimension is a `?` in the type, per position, so the note can name the
 // dimension without reading an extent off a value that does not have one yet.

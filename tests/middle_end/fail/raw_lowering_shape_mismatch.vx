@@ -3,7 +3,7 @@
 // tile shape to the shape actually being moved -- and the raw:: primitives read
 // their extents from the declaration. Declaring a smaller tile copies part of it
 // and reads the rest back uninitialised; declaring a larger one stores past the
-// end, observed as a SIGSEGV before this refusal existed (Vx#353 A3 review).
+// end, observed as a SIGSEGV before this refusal existed (Vx#353 review).
 // CHECK: E6023
 // CHECK: declared shape must be the shape it is given
 Memory CPU_DRAM {}

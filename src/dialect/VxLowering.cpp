@@ -899,7 +899,7 @@ struct TransferOpLowering : public OpRewritePattern<TransferOp> {
         // assumed: with the sizes supplied, the AST path's kernel compiles to
         // the same `.shared` PTX as the flat path's (the dims fold to constants
         // by the time NVVM sees them). A tile whose shape stays GENUINELY
-        // dynamic at device compilation is untested territory, owned by #353 A3
+        // dynamic at device compilation is untested territory, owned by #353
         // alongside the barrier -- if it fails there, it fails in
         // `deviceImageOf` with a diagnostic, not silently.
         SmallVector<Value> sharedDynSizes;
@@ -922,13 +922,13 @@ struct TransferOpLowering : public OpRewritePattern<TransferOp> {
         Value shared = rewriter.create<memref::AllocaOp>(
             op.getLoc(), sharedType, sharedDynSizes,
             rewriter.getI64IntegerAttr(16));
-        // A site whose transfer carries a user lowering (#353 A3) keeps this
+        // A site whose transfer carries a user lowering (#353) keeps this
         // allocation half -- the alloca, the offsets, the space propagation --
         // and skips the copy: the user's inlined body does the filling, and its
         // own trailing raw::barrier() is the synchronization (checked, E6021).
         if (!op->hasAttr("user_lowered")) {
           rewriter.create<memref::CopyOp>(op.getLoc(), src, shared);
-          // The C3 barrier (#353 A3). Every lane must see the filled tile
+          // The visibility barrier (#353). Every lane must see the filled tile
           // before any lane reads it; without this the transfer is relaxed and
           // a stale read is reachable -- latent while kernels launch 1x1x1,
           // measured obligation all the same. The host clone of this body gets
@@ -2640,7 +2640,7 @@ struct ConvertVxToLLVMPass
     // host clone of every kernel body, which KernelOpLowering below inlines
     // into an ordinary func.func that the CPU fallback runs on ONE thread. The
     // gpu ops a kernel body can carry (the builtin SMEM barrier, a user
-    // lowering's raw::barrier()/lane()/lanes(), #353 A3) mean this on one
+    // lowering's raw::barrier()/lane()/lanes(), #353) mean this on one
     // thread: the thread id is 0, the block has one thread, and a barrier over
     // one thread orders nothing. Lower them to exactly that here -- the host
     // ConversionTarget below has no gpu story, and the device twin already

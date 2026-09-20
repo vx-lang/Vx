@@ -18,7 +18,7 @@
 // `llvm.load`/`store`); and the tensor surface (`memref` alloc, element + row
 // access, sub-views via `reinterpret_cast`, `vector.reduction`, elementwise
 // `vector` ops, row `vector.store`, and `vx.transfer`; tensor shapes come from a
-// side table the lowerer fills — see the C2 plan). `emit_function_mlir` emits one
+// side table the lowerer fills). `emit_function_mlir` emits one
 // `func.func` as text (SSA name = producing instruction's register; blocks become
 // `^bbN:` labels); `emit_module_mlir` emits a whole program (needed for calls).
 // The caller parses + verifies with melior. The AST path stays the oracle: the
@@ -782,7 +782,7 @@ fn pointer_pointee_name(ty: &Type) -> Option<String> {
 
 /// A tensor type recovered by GID: its element and shape (dim expressions, numeric or symbolic).
 /// The tensor analogue of `AggLayout`, but sourced from the lowerer's side table rather than the
-/// registry (tensor types are structural, not nominal). See the C2 plan's tensor-type design note.
+/// registry (tensor types are structural, not nominal).
 pub type TensorMap = HashMap<TypeId, (ElementType, Vec<String>)>;
 
 /// The resolution context a flat stream references by GID: callee signatures (for `Call`), aggregate
@@ -809,7 +809,7 @@ pub struct EmitCtx {
     /// `imm` is that dispatch id) can re-attach the scheduling attributes (`space`/`within`/`granule`/
     /// `capacity`/`scope` + the bump-allocated `offset`/`slots`) the AST path emits. The frozen registry
     /// carries no memory decls, so this is threaded in from the per-compilation env. Empty for a program
-    /// with no declared sub-spaces (P0-1).
+    /// with no declared sub-spaces.
     pub subspaces: HashMap<u64, SubspaceInfo>,
     /// Declared topology arch by dispatch id, so a `vx.spawn` can carry the arch its machine file
     /// declared and the device pipeline can gate on the DECLARATION rather than on the dispatch-id
@@ -822,7 +822,7 @@ pub struct EmitCtx {
 /// The declared properties of a memory sub-space the flat emitter re-attaches to a `vx.transfer`,
 /// keyed in `EmitCtx.subspaces` by the space's dispatch id. Mirrors the fields the AST path reads off
 /// `MemoryDecl` ([`src/codegen/lower/tensors.rs`]). The frozen registry has no memory decls, so this is
-/// built in `build_flat_module` from the per-compilation env and passed into `emit_module_mlir`. (P0-1)
+/// built in `build_flat_module` from the per-compilation env and passed into `emit_module_mlir`.
 #[derive(Clone, Debug, Default)]
 pub struct SubspaceInfo {
     pub dispatch_id: u64,
@@ -871,7 +871,7 @@ const RUNTIME_HELPERS: [(&str, &str); 11] = [
 /// can get them; without this the `space`/`within`/`granule`/`capacity`/`scope` attributes an
 /// `Opcode::Transfer` should carry are silently dropped on the flat path. Shared by `vxc`'s
 /// `build_flat_module` and the parallel pipeline's codegen phase, so the two cannot disagree about
-/// what a `vx.transfer` is annotated with (P0-1, #311).
+/// what a `vx.transfer` is annotated with (#311).
 /// The declared-arch table for `EmitCtx::topo_archs`, from the per-compilation env: one entry per
 /// user-declared topology that states an `arch:`. A topology that declines to declare one gets no
 /// entry, no `arch` attribute, and therefore no device compilation -- refusing to guess is the
@@ -987,7 +987,7 @@ fn enum_scalar(ty: &Type, ctx: &EmitCtx) -> Option<&'static str> {
 /// Byte size of a statically-shaped flat tensor (its shape strings are all integer literals):
 /// `ceil(element_bits × Π(dims) / 8)`. `None` when the shape is empty or any dim is symbolic — the
 /// flat-emitter analogue of the AST codegen's `static_tensor_bytes`, over the lowerer's `Vec<String>`
-/// shape, so both paths size a tile identically for the sub-space bump allocator. (P0-1)
+/// shape, so both paths size a tile identically for the sub-space bump allocator.
 fn static_tile_bytes(elem: &ElementType, shape: &[String]) -> Option<u64> {
     if shape.is_empty() {
         return None;
@@ -1925,7 +1925,7 @@ impl<'a> FnEmit<'a> {
             // `memref<NxT>`). When the target space declares a sub-space descriptor, re-attach the
             // scheduling attrs (`space`/`within`/`granule`/`capacity`/`scope` + a bump-allocated
             // `offset`/`slots`) the AST path emits — a device backend needs them to place the tile
-            // into VMEM/TMEM, and they are dropped otherwise (B1/P0-1).
+            // into VMEM/TMEM, and they are dropped otherwise.
             Opcode::Transfer => self.op_transfer(idx, ins),
             // Print a value (no result). A tensor is `memref.cast`'d to an unranked memref and passed
             // to the `printMemref*` runtime helper; a scalar goes to `print_*`. These are the same

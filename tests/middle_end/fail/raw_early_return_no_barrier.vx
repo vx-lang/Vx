@@ -2,9 +2,9 @@
 // A publishing lowering on a synchronizing edge has one exit, past the
 // barrier. The early path here publishes and leaves with no barrier -- and
 // lane 0 skips a barrier the other lanes wait at. Passed before the
-// exit-aware grade check (A2 review).
+// exit-aware grade check (found in review).
 //
-// The rule that refuses it stopped being about publishing or edge grade in A3:
+// The rule that refuses it stopped being about publishing or edge grade:
 // once the body is INLINED at the transfer site, any non-final return returns
 // from the function containing the transfer, whatever the edge says. See
 // raw_lowering_early_return.vx for the relaxed-edge case that proved it.

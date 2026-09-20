@@ -933,12 +933,12 @@ impl CompilerDriver {
                 checker.check_function(f);
             }
         }
-        // Transfer lowerings carry ordinary function bodies (#353 A1): check them exactly like
+        // Transfer lowerings carry ordinary function bodies (#353): check them exactly like
         // impl methods. Before this, a body that errors with E3002 at top level parsed clean
         // inside a lowering -- the review on 0c791d17 reproduced it -- and a lowering whose body
         // is wrong is a lowering that will move bytes wrongly on the day it is emitted.
         // The edge is set around each lowering's bodies so the eight `raw::` primitives
-        // resolve inside them and nowhere else (Vx#353 A2).
+        // resolve inside them and nowhere else (Vx#353).
         for t in &mut ast.transfer_impls {
             checker.seam.lowering_edge = Some((
                 t.from.clone(),
@@ -952,7 +952,7 @@ impl CompilerDriver {
         }
         // The per-body contract obligations that need the whole body, not one call site:
         // barrier placement, async-copy discipline, the trailing synchronization grade,
-        // and the edge's space visibility (Vx#353 A2).
+        // and the edge's space visibility (Vx#353).
         checker.check_transfer_impl_bodies(&ast.transfer_impls);
 
         // Imported modules' lowerings get the same treatment, and their diagnostics are
@@ -961,7 +961,7 @@ impl CompilerDriver {
         // when the library was compiled on its own, but a lowering's edge, capability,
         // and space obligations resolve against THIS compilation's machine file, which
         // the library never saw. Reviewed and reproduced: an imported lowering that
-        // fails every A2 check compiled clean before this loop.
+        // fails every lowering check compiled clean before this loop.
         for p in other_asts.values_mut() {
             for t in &mut p.transfer_impls {
                 checker.seam.lowering_edge = Some((
@@ -1055,7 +1055,7 @@ impl CompilerDriver {
             }
         }
 
-        // Eval metric M1: per-seam proof cost discharged during this compile. The
+        // Per-seam proof cost discharged during this compile. The
         // one-time solver startup is reported separately from the marginal per-seam
         // solving time (the persistent solver is spawned once and reused).
         if checker.seam.checks > 0 {
@@ -1459,11 +1459,11 @@ impl CompilerDriver {
         // those GIDs are `None` and the flat lowerer would decline every struct). The bodies were
         // already checked + monomorphized, so this pass only settles the annotation; its diagnostics
         // and any re-collected monomorphs are discarded. (#215)
-        // Sub-space descriptors for the flat emitter (P0-1): the frozen registry carries no memory
+        // Sub-space descriptors for the flat emitter: the frozen registry carries no memory
         // decls, so build them here from the per-compilation env — keyed by each space's dispatch id,
         // the same identity an `Opcode::Transfer` carries in its `imm`. Lets the flat path re-attach the
         // `space`/`within`/`granule`/`capacity`/`scope` + bump-allocated `offset`/`slots` attrs the AST
-        // path emits (otherwise dropped on the default path — B1).
+        // path emits (otherwise dropped on the default path).
         let subspaces: Vec<crate::codegen::flat::SubspaceInfo>;
         let topo_archs: Vec<(i64, String)>;
         {

@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// M5: a topology in which the shortest route and the fastest
+// A topology in which the shortest route and the fastest
 // route are different routes, so the graph's choice can be scored.
 //
 //   python3 utils/memalg/route_choice.py --machine utils/memalg/m5_partial_nvlink.vx \
@@ -23,7 +23,7 @@
 //
 // Every fleet file with more than one device declares the peer edge directly and
 // has exactly one route, so none of them can express this question -- which is
-// why M5 needed a file of its own rather than a flag.
+// why route choice needed a file of its own rather than a flag.
 //
 // The figures are the same ones fleet/node-2gpu-h100.vx already cites, used here
 // to make the two paths differ rather than to describe any particular pod:

@@ -30,7 +30,7 @@
 //          scope) or a DMA completion wait, else `Relaxed { published }`;
 //        - `Contract` : from the kernel's `assert` / required alignment.
 //      then `match seam::check_seam(&st, &t, &c) { Reject{..} => diagnostic, .. }`.
-//   3. Time each `check_seam` and accumulate against total compile time (eval M1).
+//   3. Time each `check_seam` and accumulate against total compile time.
 //   This mirrors `src/hir/prover.rs`'s z3 invocation; only the logic is QF_BV.
 //
 //===----------------------------------------------------------------------===//
@@ -618,7 +618,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "M1 timing micro-benchmark; run with: cargo test --lib \
+    #[ignore = "seam timing micro-benchmark; run with: cargo test --lib \
                 seam::tests::bench_marginal_seam_cost -- --ignored --nocapture"]
     fn bench_marginal_seam_cost() {
         // Marginal per-seam solving cost on the persistent solver, after warmup, over

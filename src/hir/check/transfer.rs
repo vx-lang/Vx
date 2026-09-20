@@ -462,7 +462,7 @@ impl<'a> TypeChecker<'a> {
                 // the placement is unverified. We are past the `capacity` guard above, so there
                 // genuinely was a bound to check against; and only monomorphized bodies reach here
                 // (`check_function` skips generic templates), so a non-literal dim is a true runtime
-                // value, not an un-substituted const generic. P0-4 / W1029.
+                // value, not an un-substituted const generic. See W1029.
                 let dyn_note = dims
                     .iter()
                     .enumerate()
@@ -783,7 +783,7 @@ impl<'a> TypeChecker<'a> {
 
     /// Whether a memory space is declared `managed: cached` (hardware-coherent), so an implicit
     /// cross-space use of a value there — or a relaxed transfer into it — is safe. Undeclared
-    /// spaces are treated as `explicit` (the strict default), preserving the pre-M5 behavior.
+    /// spaces are treated as `explicit` (the strict default), preserving the older behavior.
     pub(crate) fn space_is_cached(&self, space: &MemorySpace) -> bool {
         self.env.memories.values().any(|d| {
             d.managed == crate::syntax::Management::Cached
@@ -920,7 +920,7 @@ impl<'a> TypeChecker<'a> {
     ) {
         use crate::hir::seam::{AbsState, Cell, Solver, Transfer, Verdict};
 
-        // M5: a relaxed transfer into a `managed: cached` space is safe — hardware coherence
+        // A relaxed transfer into a `managed: cached` space is safe — hardware coherence
         // keeps the buffer visible, so there is no seam obligation to discharge.
         if relaxed && self.space_is_cached(dst) {
             return;
@@ -1452,8 +1452,8 @@ impl<'a> TypeChecker<'a> {
             // EXACTLY two parameters, both tiles. A third parameter has
             // nothing to bind to at the site: it would resolve against
             // whatever the caller happens to have under that name and let
-            // the lowering write into a buffer it never named (constraint
-            // C9), or fail to resolve at all. Reproduced both ways before
+            // the lowering write into a buffer it never named (the contract's
+            // no-side-effects constraint), or fail to resolve at all. Reproduced both ways before
             // this said `==`.
             // The destination must be SM-scoped. That is the one edge kind
             // emission handles: the site becomes a shared-memory allocation
@@ -1478,12 +1478,12 @@ impl<'a> TypeChecker<'a> {
                 && !matches!(li.methods[0].params[0].1, Type::Borrow { is_mut: true, .. })
                 && matches!(li.methods[0].params[1].1, Type::Borrow { is_mut: true, .. });
             // The body must be written against the `raw::` primitives. The
-            // whole-body contract -- the trailing barrier (C3), the early-return
+            // whole-body contract -- the trailing barrier, the early-return
             // refusal, the async discipline -- is SKIPPED for a body with no
-            // `raw::` call ("A1-era body", raw.rs), because such bodies predate
+            // `raw::` call (see raw.rs), because such bodies predate
             // the primitives and are carried, not emitted. Emitting one anyway
             // took both halves of that bargain: the site is marked
-            // `user_lowered`, so VxLowering skips the builtin copy AND its C3
+            // `user_lowered`, so VxLowering skips the builtin copy AND its
             // barrier on the stated grounds that "its own trailing
             // raw::barrier() is the synchronization (checked, E6021)" -- while
             // E6021 never ran. Probed: a body filling `dst[i][d] = src[i][d]`
@@ -1491,7 +1491,7 @@ impl<'a> TypeChecker<'a> {
             // source, and a nested `return 7` in such a body spliced
             // `vx.return` into the middle of the kernel region.
             //
-            // Carried-but-not-emitted is the A1-era contract; this restores it.
+            // Carried-but-not-emitted is the older contract; this restores it.
             let uses_raw = li
                 .methods
                 .iter()
@@ -1555,10 +1555,10 @@ impl<'a> TypeChecker<'a> {
         let declared_cost = self
             .transfer_cost_graph
             .declared_edge_cost(&source_mem, &target_mem);
-        // Derived traffic (#353 A4). The builtin copy reads the whole tile
+        // Derived traffic (#353). The builtin copy reads the whole tile
         // from the source space and writes it into the target: one pass, no
         // amplification, exact by construction. A hop whose body a user
-        // supplied is counted from that body instead (T2), and a hop whose
+        // supplied is counted from that body instead, and a hop whose
         // size is not statically known is not counted at all -- an
         // uncountable movement is reported as uncountable, never as zero.
         let (traffic, traffic_absent_reason) = match (moved_bytes, &t.lowering) {
@@ -1589,7 +1589,7 @@ impl<'a> TypeChecker<'a> {
             // actually run, not from the tile size the builtin would have
             // moved: that difference is the whole point -- a body that reads
             // the source twice reports twice the reads, with nobody declaring
-            // anything (#353 A4).
+            // anything (#353).
             (Some(_), Some((_, _, topo))) => {
                 // Look up the lowering sema CHOSE, topology included. Matching on
                 // the edge alone would count the body of whichever machine's
@@ -1701,7 +1701,7 @@ impl<'a> TypeChecker<'a> {
         // A hop over a *declared* `relaxed` edge is relaxed too, not just the caller's
         // `*_relaxed` intrinsic escape hatch: route it through the same seam obligation so a
         // declared relaxed transfer gets the per-buffer E6004 at the use site, not only the
-        // blunt declaration-time W1027 (P0-3). A relaxed hop anywhere in a staged multi-hop
+        // blunt declaration-time W1027. A relaxed hop anywhere in a staged multi-hop
         // route taints that hop, since each single hop re-enters this check.
         let hop_relaxed = self
             .transfer_cost_graph
@@ -1968,7 +1968,7 @@ impl<'a> TypeChecker<'a> {
                 self.push_releasing_scope();
 
                 // The placed values this region can see, captured BEFORE its body is checked
-                // (#353 A4 T4). Checking mutates the scopes it reads -- a call that consumes a
+                // (#353). Checking mutates the scopes it reads -- a call that consumes a
                 // placed tensor moves it out -- so a live lookup afterwards finds nothing and
                 // the region silently reports no traffic. Probed and reproduced.
                 let placed_outer = self.placed_names_snapshot();
@@ -1981,7 +1981,7 @@ impl<'a> TypeChecker<'a> {
                     ret_ty = self.check_expr_type_flag(r, consume);
                 }
 
-                // What this region moves, counted from its own accesses (#353 A4 T4). Here,
+                // What this region moves, counted from its own accesses (#353). Here,
                 // BEFORE the scope pops, because the body's free names -- the placed tensors
                 // it was given -- resolve through the enclosing function's live scopes.
                 //

@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// M5 (seam facet): a *relaxed* transfer into a `managed: explicit` (programmer-managed) space
+// A *relaxed* transfer into a `managed: explicit` (programmer-managed) space
 // must discharge the coherence seam -- the buffer carries no synchronizing release, so a
 // consumer may read it stale (E6004). Requires seam verification.
 //

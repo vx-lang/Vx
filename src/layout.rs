@@ -74,7 +74,7 @@ pub fn scalar_size_align(et: &ElementType) -> Option<(usize, usize)> {
     // Byte size = the dense bit width rounded up to a whole byte (padded storage: a sub-byte `I4`
     // field occupies 1 byte). Derived from the single width source `ElementType::bits`, so this can no
     // longer drift from `hir::memory::element_bits` (they disagreed on `I4` before — see `bits`). A
-    // scalar's alignment equals its size here (natural alignment for the modelled widths). (P1-4a)
+    // scalar's alignment equals its size here (natural alignment for the modelled widths).
     let bytes = (et.bits()? as usize).div_ceil(8);
     Some((bytes, bytes))
 }
@@ -322,7 +322,7 @@ mod tests {
 
     #[test]
     fn width_tables_derive_from_one_source() {
-        // P1-4a invariant: `element_bits` (dense) and `scalar_size_align` (padded bytes) both derive
+        // Invariant: `element_bits` (dense) and `scalar_size_align` (padded bytes) both derive
         // from `ElementType::bits`, so they can never drift again. In particular the sub-byte case that
         // used to be maintained independently: I4 is 4 dense bits but occupies a padded byte.
         for et in [

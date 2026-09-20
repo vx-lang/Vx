@@ -260,7 +260,7 @@ impl<'a> TypeChecker<'a> {
                                         &top,
                                         &ty,
                                     );
-                                    // M5: an implicit cross-space use is allowed when the value's
+                                    // An implicit cross-space use is allowed when the value's
                                     // memory space is declared `managed: cached` (hardware-coherent)
                                     // and a path exists (`NeedsSeam`). `explicit`/undeclared spaces
                                     // and truly `Unreachable` ones still require an explicit transfer.

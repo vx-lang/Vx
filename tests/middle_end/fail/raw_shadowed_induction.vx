@@ -2,7 +2,7 @@
 // REQUIRES: z3
 // The inner loop shadows `i`. Before shadow-aware fact handling the stale
 // outer fact `i < 2` sat beside the inner `i < 8` and "proved" the bounds
-// while the inner i reached 7 -- a forged out-of-bounds proof (A2 review).
+// while the inner i reached 7 -- a forged out-of-bounds proof (found in review).
 // CHECK: E6018
 // CHECK: stays inside
 Topology Dev {

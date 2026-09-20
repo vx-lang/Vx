@@ -244,7 +244,7 @@ impl<'c> LowerToMelior<'c> for syntax::TransferExpr {
         // AST type even though this path's memrefs are dynamically shaped (`?x?`). A
         // static result type is what makes the SMEM alloca static downstream, and a
         // static space-3 alloca is what the device clone can promote to real `.shared`
-        // storage -- the dynamic one is refused outright (#353 A3; the A100
+        // storage -- the dynamic one is refused outright (#353; the A100
         // ILLEGAL_ADDRESS fault is why the refusal exists). Shapes that stay genuinely
         // dynamic keep the dynamic type and keep the refusal.
         //
@@ -414,7 +414,7 @@ impl<'c> LowerToMelior<'c> for syntax::TransferExpr {
             }
         }
 
-        // #353 A3: a site sema matched to a user lowering keeps the builtin's
+        // #353: a site sema matched to a user lowering keeps the builtin's
         // allocation half -- the alloca, the offsets, the space propagation all hang
         // off the vx.transfer op -- and skips its copy and barrier: `user_lowered`
         // is the C++ side's signal. The body is then inlined right here with its

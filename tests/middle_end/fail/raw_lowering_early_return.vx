@@ -2,7 +2,7 @@
 // The body is inlined at the transfer site, so a `return` anywhere but the
 // bottom returns from whatever function performs the transfer. On a `relaxed`
 // edge -- where no trailing barrier is demanded -- this escaped every check and
-// made `main` return 7 without running the rest of the program (Vx#353 A3
+// made `main` return 7 without running the rest of the program (Vx#353
 // review). The rule is now unconditional: a lowering returns once, at the end.
 // CHECK: E6021
 // CHECK: return` before the end of a lowering

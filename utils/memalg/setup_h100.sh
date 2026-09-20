@@ -11,7 +11,7 @@
 #
 #   curl -sSL <this file> | bash     # or: ./setup_h100.sh
 #
-# Deliberately minimal. M1 needs a CUDA toolchain, python3, and the repo -- it does NOT need the
+# Deliberately minimal. The sweep needs a CUDA toolchain, python3, and the repo -- it does NOT need the
 # Vx compiler built, because predictions are read from the frozen directory rather than
 # regenerated. That keeps the metered box off the critical path of a Rust+MLIR build, which on a
 # fresh machine is tens of minutes of rental time spent on nothing.
@@ -99,12 +99,12 @@ echo
 
 # --- THE QUESTION THAT DECIDES WHETHER THE HOST-SEAM PREDICTIONS ARE EVEN THE RIGHT KIND --------
 # PREDICTIONS.md records the host link as a PCIe placeholder. A Grace/C2C-attached part reaches
-# the host ~7x faster, in which case the M1 host-seam cells are measuring a wrong DECLARATION
+# the host ~7x faster, in which case the host-seam cells are measuring a wrong DECLARATION
 # rather than a model residual, and must be re-frozen under an amendment instead of scored.
 echo "=== host link: PCIe or C2C? ==="
 if nvidia-smi -q 2>/dev/null | grep -qi "C2C\|Grace"; then
     echo "  C2C / Grace detected -- the declared PCIe figure is WRONG for this box."
-    echo "  Amend PREDICTIONS.md and re-freeze the host-seam cells BEFORE running M1."
+    echo "  Amend PREDICTIONS.md and re-freeze the host-seam cells BEFORE running the sweep."
 else
     echo "  no C2C indication; treating the host link as PCIe"
     nvidia-smi --query-gpu=pcie.link.gen.max,pcie.link.width.max --format=csv 2>/dev/null || true

@@ -24,7 +24,7 @@
 //   2. `vx_launch_entry_param_count` agrees with the marshaller at 14 -- this
 //      kernel is that check's first customer besides that one's 28;
 //   3. the launch succeeds single-threaded. The copy loop has no barrier (the
-//      C3 gap, owned by #353 A3) -- SAFE here because one thread cannot race
+//      visibility gap, owned by #353) -- SAFE here because one thread cannot race
 //      itself, and this run is the empirical confirmation of that claim;
 //   4. the arithmetic: o[i][d] must equal (i+d) EXACTLY. Inputs are
 //      (i+d)*0.5 and the kernel doubles them; small integers are exact in f32,

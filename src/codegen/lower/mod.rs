@@ -956,7 +956,7 @@ pub(crate) fn lower_print_call<'c>(
     ))
 }
 
-/// The eight `raw::` transfer-lowering primitives (#353 A3), emitted in place.
+/// The eight `raw::` transfer-lowering primitives (#353), emitted in place.
 ///
 /// These are reachable only from an `impl transfer` body inlined at a transfer
 /// site -- the checker refuses `raw::` anywhere else (E6017) and discharges the
@@ -969,7 +969,7 @@ pub(crate) fn lower_print_call<'c>(
 /// Tiles are FLAT-indexed at the surface (`raw::load(t, i)` with
 /// `i < raw::extent(t)`) while the memrefs are rank-N, so a linear index is
 /// delinearized here with the tile's static dims (row-major div/mod chain).
-/// Static dims are a checked fact: the A2 prover obligations only close for
+/// Static dims are a checked fact: the prover obligations only close for
 /// statically shaped tiles, and the device path refuses dynamic shared tiles.
 ///
 /// `raw::async_copy` lowers to its synchronous fallback (an element load+store)
@@ -1000,7 +1000,7 @@ pub(crate) fn lower_raw_primitive<'c>(
                         let Some(n) = d.literal() else {
                             return Err(LowerError::from(
                                 "raw:: tile has a non-static dim; the device path \
-                                 refuses dynamic shared tiles (#353 A3)"
+                                 refuses dynamic shared tiles (#353)"
                                     .to_string(),
                             ));
                         };
@@ -1272,7 +1272,7 @@ mod tests {
 
     #[test]
     fn test_topology_to_i32_slice() {
-        // B4 (#253): a slice's id derives from (base, start, end) in the dedicated 2000..2999
+        // #253: a slice's id derives from (base, start, end) in the dedicated 2000..2999
         // band — stable across calls, distinct for a different extent or base, no longer the
         // single constant every slice used to collapse onto.
         let slice = |base: &str, start: &str, end: &str| {

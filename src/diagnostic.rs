@@ -105,7 +105,7 @@ pub enum DiagnosticCode {
     W1028,
     /// A tensor placed in a memory space that declares a `capacity` has a *dynamic* (non-
     /// literal) shape, so the capacity check (E6009/E6010) could not run — the placement is
-    /// unverified. Silence by making the shape static, or bounding it (see P1-1). Emitted only
+    /// unverified. Silence by making the shape static, or bounding it. Emitted only
     /// when the destination space actually declares a capacity.
     W1029,
     /// A topology's device index is not a compile-time constant (`GPU[i]` for a runtime `i`), so
@@ -374,7 +374,7 @@ pub enum DiagnosticCode {
     /// same program getting a device image on some runs and not others for a topology, and as a
     /// `transfer` carrying the other space's capacity and granule for a memory space.
     E6016,
-    /// A misuse of the `raw::` transfer-lowering primitives (Vx#353 A2): a `raw::` call
+    /// A misuse of the `raw::` transfer-lowering primitives (Vx#353): a `raw::` call
     /// outside an `impl transfer` body, an unknown primitive name, a tile argument that
     /// is not a bare parameter name (the primitives are indexed, not addressed), a store
     /// into a tile not held by `&mut`, or a wrongly typed index/value.
@@ -401,7 +401,7 @@ pub enum DiagnosticCode {
     E6021,
     /// An `impl transfer` lowering whose edge endpoints are not visible to a topology
     /// that declares the edge -- the lowering would execute on a part that cannot
-    /// address the spaces it moves bytes between (contract constraint C6).
+    /// address the spaces it moves bytes between, which the transfer contract's space-visibility constraint forbids.
     E6022,
     /// An `impl transfer` lowering whose declared tile shape is not the shape the
     /// transfer at hand actually moves. A lowering is selected by edge, so nothing else

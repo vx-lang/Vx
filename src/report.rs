@@ -73,7 +73,7 @@ pub struct StagingRoute {
     /// two laws differ by ~2x on a multi-hop walk and a harvested prediction that does not say
     /// which one applied cannot be re-scored later -- the same reason `derived_unit` is carried.
     pub composition: Option<crate::syntax::Crossing>,
-    /// Bytes moved per space, derived from code (#353 A4). `None` when the movement cannot be
+    /// Bytes moved per space, derived from code (#353). `None` when the movement cannot be
     /// counted statically, in which case `traffic_absent_reason` says why -- a guess here would
     /// be indistinguishable from a measurement in the record a campaign harvests, which is the
     /// same reason `derived_cost` is `None` rather than 0 when no bandwidth is declared.
@@ -82,7 +82,7 @@ pub struct StagingRoute {
     pub traffic_absent_reason: Option<String>,
 }
 
-/// Bytes read and written against one placed buffer by a `spawn` region (#353 A4 T4).
+/// Bytes read and written against one placed buffer by a `spawn` region (#353).
 ///
 /// Per BUFFER, not just per space, because the amplification this stage exists to show is a
 /// fact about a particular tensor: a streamed operand is re-read on every outer iteration
@@ -97,7 +97,7 @@ pub struct BufferTraffic {
 }
 
 /// What one `spawn on(...)` region moves, counted from its indexed accesses and the static
-/// trip counts of the loops around them (#353 A4 T4).
+/// trip counts of the loops around them (#353).
 ///
 /// The transfer-hop counts say what it costs to GET a tile to a space. This says what the
 /// kernel then does with it, which is where re-reading lives: a tile staged once and read
@@ -117,7 +117,7 @@ pub struct SpawnRegionTraffic {
     pub traffic_absent_reason: Option<String>,
 }
 
-/// Bytes read and written against ONE memory space by a single transfer hop (#353 A4).
+/// Bytes read and written against ONE memory space by a single transfer hop (#353).
 ///
 /// Read and written are kept apart because they are different facts about the hardware: a
 /// space's read bandwidth and its write bandwidth are separate figures, and a plan that
@@ -139,7 +139,7 @@ pub enum TrafficSource {
     /// Counted from a user `impl transfer` body's `raw::` calls and static loop bounds.
     LoweringBody,
     /// Counted from the indexed reads and writes of a `spawn` region's static loop nest
-    /// (#353 A4 T4). Appears on `spawn_regions` records, never on a transfer route: a route
+    /// (#353). Appears on `spawn_regions` records, never on a transfer route: a route
     /// is one hop across one edge, while this is what a kernel does once the tile has
     /// arrived.
     SpawnRegion,
@@ -157,7 +157,7 @@ impl TrafficSource {
 
 /// The data movement one transfer hop performs, per space.
 ///
-/// This is the *derived* half of "cost is derived, not declared" (#353 A4): bytes counted
+/// This is the *derived* half of "cost is derived, not declared" (#353): bytes counted
 /// from code, carrying no bandwidth, no time, and no opinion about how long they take. The
 /// time model consumes these; it does not produce them.
 #[derive(Debug, Clone, PartialEq, Eq)]

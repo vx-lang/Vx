@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// What a `spawn on(...)` region moves, counted from its own code (Vx#353 A4 T4).
+// What a `spawn on(...)` region moves, counted from its own code (Vx#353).
 //
 // The transfer-hop counts in `raw.rs` answer "what did it cost to get this tile to this
 // space". This answers the question after it: what does the kernel then DO with the tile.
@@ -191,7 +191,7 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// Element size in bytes of a placed tensor type, or an error naming why it cannot be
-    /// counted. Sub-byte elements are refused rather than rounded up, for the reason the A4
+    /// counted. Sub-byte elements are refused rather than rounded up, for the reason the traffic
     /// review established: rounding i4 to a byte made a faithful copy report the same 2.0
     /// ratio that is this stage's evidence of waste, and a figure indistinguishable from the
     /// thing it exists to detect is worse than no figure.
@@ -583,7 +583,7 @@ impl<'a> TypeChecker<'a> {
             // `let tile = transfer(ad, Memory::SMEM)` -- the placement this stage most wants
             // to see, because it is what makes a staged tile's re-reads attributable to SMEM
             // rather than to the space it came from. The element size comes from the value
-            // being transferred: a transfer moves bytes, it does not convert them (C2).
+            // being transferred: a transfer moves bytes, it does not convert them.
             Expr::Transfer(t) => {
                 let mut cur: &Expr = &t.expr;
                 while let Expr::Borrow(b) = cur {

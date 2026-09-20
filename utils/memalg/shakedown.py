@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Predict -> measure -> compare, end to end.
 
-The Tier-0 dry run. Its output is an error table for one memory link on the machine we already
+The dry run. Its output is an error table for one memory link on the machine we already
 own, and its purpose is to find bugs in OUR harness -- a wrong formula, a mislabeled column, a
 unit mismatch -- before any GPU time is paid for. The MLSys admission matrix was dry-run the same
 way and it caught an 8x arithmetic error before any money was spent.

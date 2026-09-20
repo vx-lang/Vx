@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""M6: one full walk down the hierarchy, predicted per hop.
+"""One full walk down the hierarchy, predicted per hop.
 
-M1 prices one seam at a time against a log-spaced sweep of square tiles. This prices a whole walk
+The per-seam instrument prices one seam at a time against a log-spaced sweep of square tiles. This prices a whole walk
 -- CPU_DRAM -> HBM -> L2 -> SMEM -- for the tiles a real attention kernel actually moves, and
 splits the predicted total per hop so that when the measured total disagrees we can say WHICH edge
 was wrong rather than "the walk was off by 40%".
@@ -24,8 +24,8 @@ after the fact.
 
 **Where the walk stops.** TMEM is not declared on any fleet SKU -- fleet/b200.vx says so and gives
 the reason: nothing places into it yet, and a declared-but-unused space would appear in the
-hierarchy without any placement exercising it. So the honest end of the walk is SMEM. M6 allows
-exactly this ("or state the boundary and stop"), and TMEM only accepts data through tensor-core
+hierarchy without any placement exercising it. So the honest end of the walk is SMEM. The campaign allows
+exactly this -- state the boundary and stop -- and TMEM only accepts data through tensor-core
 instructions anyway, so measuring it means measuring a matmul rather than a transfer.
 
 Usage:
@@ -257,7 +257,7 @@ def main():
                 f"against {sm['capacity_bytes']:,} B ({sm['utilization']:.2f}x)"
             )
 
-    # A prediction M4's instrument settles, recorded here because this is the walk that lands on
+    # A prediction measure_m4.mm settles, recorded here because this is the walk that lands on
     # it. `capacity:` is checked against a space's resident set, and on a discrete SKU that set
     # lives in ONE BLOCK. The fleet files declare SMEM at the per-SM figure (228 KiB on H100,
     # 164 KiB on A100), but a block cannot opt into all of it -- the driver reserves one granule,

@@ -270,7 +270,7 @@ impl<'a> Parser<'a> {
                 // Optional trailing markers, in any order: a `relaxed` / `sync` consistency
                 // grade (default synchronizing), and `copy_engine` -- the declaration that a
                 // hardware engine (a DMA, Ampere's cp.async) can drive this hop. `copy_engine`
-                // is what makes `raw::async_copy` legal in a lowering for this edge (Vx#353 A2).
+                // is what makes `raw::async_copy` legal in a lowering for this edge (Vx#353).
                 let mut sync = true;
                 let mut copy_engine = false;
                 while let TokenType::Identifier(s) = &self.peek().kind {
@@ -1499,7 +1499,7 @@ impl Transfer<Memory::L2, Memory::SMEM> for Topology::Dev {
 
     #[test]
     fn transfer_impl_signature_clone_keeps_bodies() {
-        // The reverse of what this test pinned until #353 A4, and the reversal is the
+        // The reverse of what this test pinned until #353, and the reversal is the
         // point. `clone_signature` strips function bodies so the parallel pipeline can
         // share a light Program, and a lowering body used to go with them -- but a
         // lowering's body is now a fact the checker reads at every transfer site: it is

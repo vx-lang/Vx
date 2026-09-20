@@ -22,7 +22,7 @@
 // Where a claim can be tested rather than asserted, it is: see the "is L1 gated by L2?" section,
 // which measures the L1 hit rate against L2 delivery instead of taking the architecture note on
 // faith. And every COMPOSITE is measured end-to-end AND as the sum of its legs, which is a direct
-// test of the additivity axiom (M2) on real paths.
+// test of the additivity axiom on real paths.
 //
 // Residency is controlled by buffer size plus cache hints, the only honest way to name a cache
 // level here:
@@ -35,7 +35,7 @@
 // Every kernel edge is reported twice, because the algebra needs both and they are not
 // interchangeable: per-SM B/cyc from ONE block (what a tile load in one CTA sees, and what a
 // `B/cyc` declaration like SMEM's 128 actually claims) and aggregate GB/s at full occupancy (what
-// a whole-device transfer sees). M1 conflated these, which is how L2->SMEM scored -91.3% against
+// a whole-device transfer sees). The per-seam sweep conflated these, which is how L2->SMEM scored -91.3% against
 // a per-SM peak a single 8-warp block could never reach.
 //
 // Cycles, not wall clock, for the per-SM column: cycles are clock-invariant, and a rented
@@ -332,11 +332,11 @@ int main() {
     printf("                       ignores L1 will under-predict every HBM/L2 read.\n");
   }
 
-  // ---- additivity on a real composite (M2) -----------------------------------------------------
+  // ---- additivity on a real composite ----------------------------------------------------------
   // HBM->SMEM must physically pass through L2. The algebra asserts the staged cost is the sum of
-  // its legs; M2 pre-registered that copy engines and TMA overlap them, so measured should come in
+  // its legs; the campaign pre-registered that copy engines and TMA overlap them, so measured should come in
   // BELOW the sum. This is that test on a path the hardware actually composes.
-  printf("\n=== additivity: HBM -> SMEM vs its legs (M2) ===\n");
+  printf("\n=== additivity: HBM -> SMEM vs its legs ===\n");
   {
     Res leg1 = measure<KS_HBM, KD_L2>(ctx);    // HBM -> L2
     Res leg2 = measure<KS_L2, KD_SMEM>(ctx);   // L2  -> SMEM
@@ -350,12 +350,12 @@ int main() {
     printf("  sum of legs  :            %.4f cyc/B   <- what the algebra asserts\n", t1 + t2);
     printf("  staged direct: %8.1f B/cyc  (%.4f cyc/B)\n", staged.bcyc, ts);
     printf("  staged/sum   : %.2f%s\n", (t1 + t2) > 0 ? ts / (t1 + t2) : 0.0,
-           ts < t1 + t2 ? "   (overlap -- M2 confirmed)" : "   (no overlap seen)");
+           ts < t1 + t2 ? "   (overlap -- as predicted)" : "   (no overlap seen)");
   }
 
-  // ---- L2 -> SMEM vs warps: the edge M1 got wrong ----------------------------------------------
-  printf("\n=== L2 -> SMEM vs warps (one block) -- M1 scored this at -91.3%% ===\n");
-  printf("Model predicts 128.0 B/cyc.  M1 measured ~9.5-12.2 with 8 warps.\n");
+  // ---- L2 -> SMEM vs warps: the edge the sweep got wrong ----------------------------------------------
+  printf("\n=== L2 -> SMEM vs warps (one block) -- the sweep scored this at -91.3%% ===\n");
+  printf("Model predicts 128.0 B/cyc.  The sweep measured ~9.5-12.2 with 8 warps.\n");
   printf("%8s %8s %16s %16s\n", "threads", "warps", "L2->SMEM B/cyc", "L1->SMEM B/cyc");
   {
     Ctx t = ctx;

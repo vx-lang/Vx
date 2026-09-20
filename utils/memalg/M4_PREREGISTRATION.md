@@ -1,14 +1,14 @@
-# M4 on-die seams: what is predicted, written before the instrument exists
+# On-die seams: what is predicted, written before the instrument exists
 
 Dated 2026-08-12, Vx `461b6e72`. Committed **before** `measure_m4.mm` is written, for the reason
 the freeze exists: a prediction recorded after the measurement is not a prediction.
 
 `fleet/m4-uma.vx` is one of the seven held-out SKUs. Its 30 frozen cells were taken at
 `memalg-freeze-2026-08-07` and have never been scored. Only its host seam has been measured at all
-(the Tier-0 shakedown, `results/shakedown-20260807T173942Z`), and that measurement turns out to be
+(the shakedown, `results/shakedown-20260807T173942Z`), and that measurement turns out to be
 defective — see below. The GPU-side seams are untouched.
 
-## P1 — The composition law on Apple silicon should be SUM, not bottleneck
+## Prediction 1 — The composition law on Apple silicon should be SUM, not bottleneck
 
 This is the real reason to do this on a laptop rather than wait for a pod.
 
@@ -41,7 +41,7 @@ threadgroup memory on Apple family 9 has no asynchronous-copy engine equivalent 
 - If neither fits, the composition law is machine-specific, which is the worst case for the
   portability argument in #22 and worth knowing early.
 
-## P2 — The host seam is nearly free, and the model over-predicts its cost enormously
+## Prediction 2 — The host seam is nearly free, and the model over-predicts its cost enormously
 
 `CPU_DRAM -> HBM` is declared at 120 GB/s on this SKU, but the two spaces are the same physical
 memory: the GPU can read a buffer the CPU wrote with no copy at all (`hasUnifiedMemory` is true and
@@ -53,7 +53,7 @@ percentage. The interesting question is not the error but whether the algebra ca
 two declared spaces are one", which today it cannot: they are separate `Memory` declarations joined
 by a `transfer` edge with a rate.
 
-## P3 — `Memory::L2` on this SKU is describing the wrong cache
+## Prediction 3 — `Memory::L2` on this SKU is describing the wrong cache
 
 `m4-uma.vx` cites `hw.perflevel0.l2cachesize` = 16 MiB. That is the **CPU P-core cluster L2**. The
 topology that declares it is `arch: applegpu`, and the Apple GPU does not use the CPU cluster's L2
@@ -63,7 +63,7 @@ topology that declares it is `arch: applegpu`, and the Apple GPU does not use th
 knee is at 16 MiB the declaration is accidentally right; anywhere else and a tile the model places
 in `Memory::L2` for a GPU kernel is priced against a cache that kernel never touches.
 
-## P4 — The `L2 -> SMEM` cell cannot be scored on this machine at all
+## Prediction 4 — The `L2 -> SMEM` cell cannot be scored on this machine at all
 
 It is declared in `B/cyc` with an explicitly UNVERIFIED `clock: 1.4 GHz` placeholder. Metal exposes
 no cycle counter to a kernel, so the seam can only be timed in wall-clock. Protocol decision 5 in
@@ -85,17 +85,17 @@ Every buffer in `measure_m4.mm` must exceed the largest cache it could be served
 and the instrument must report the ratio against declared peak so that a figure above 1.0× is
 visible in the output rather than needing to be noticed.
 
----
+______________________________________________________________________
 
 # Addendum, dated 2026-08-12, Vx `a6ab362c`
 
-P1, P3 and P4 have now been measured (see `results/m4-*`). P2 was only half done. These two are
+Predictions 1, 3 and 4 have now been measured (see `results/m4-*`). Prediction 2 was only half done. These two are
 for experiments not yet written, and are recorded before the code exists for the same reason as
 above.
 
-## P5 — contention: the aggregate is already saturated, so sharing is a straight division
+## Prediction 5 — contention: the aggregate is already saturated, so sharing is a straight division
 
-M3 is the most expensive item on the fleet list and has no predicted column: the
+The contention measurement is the most expensive item on the fleet list and has no predicted column: the
 model has no contention term, so it says each of K concurrent transfers gets the whole edge. This
 machine can measure the sharing law for nothing.
 
@@ -118,7 +118,7 @@ the spread is the whole range. Both give the same aggregate, so the aggregate al
 them apart — and a placement decision needs to know which, because "when does my tensor arrive" is
 answered by the slowest flow, not the average.
 
-## P6 — the host seam is free, and the model charges 120 GB/s for it
+## Prediction 6 — the host seam is free, and the model charges 120 GB/s for it
 
 `CPU_DRAM -> HBM` is declared at 120 GB/s, but `hasUnifiedMemory` is true: a `MTLStorageModeShared`
 buffer the CPU wrote is readable by a kernel with no copy and no API call at all.

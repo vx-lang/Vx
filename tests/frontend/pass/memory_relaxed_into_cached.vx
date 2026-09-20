@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// M5 (seam facet): a relaxed transfer into a `managed: cached` space needs no seam discharge
+// A relaxed transfer into a `managed: cached` space needs no seam discharge
 // -- hardware coherence keeps the buffer visible. The same program with `managed: explicit`
 // is rejected (see fail/memory_relaxed_into_explicit.vx). Requires seam verification.
 //

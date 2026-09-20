@@ -21,7 +21,7 @@
 // cheaper than streaming -- and that is what Axiom 1 now asserts.
 //
 // The hardware moves the same way and further: a staged HBM->L2->SMEM measured 0.60x the sum of
-// its legs on an H100, because copy engines and TMA overlap the legs. That was M2's pre-registered
+// its legs on an H100, because copy engines and TMA overlap the legs. That was the pre-registered
 // expectation. So the model and the hardware now agree on the SIGN of the gap and disagree on its
 // size, which is a residual to quantify rather than a bug to fix.
 //
@@ -66,7 +66,7 @@ fn space(n: &str) -> MemorySpace {
 ///
 /// The hardware agrees, and by a wide margin in the same direction. Measured on an H100, a staged
 /// `HBM->L2->SMEM` costs 0.60x the sum of its legs (measurements/EDGES.md) because
-/// copy engines and TMA overlap the legs. M2 pre-registered exactly this, so the old axiom failing
+/// copy engines and TMA overlap the legs. This was pre-registered, so the old axiom failing
 /// is a confirmed prediction rather than a surprise — but note the model and the hardware disagree
 /// on *how much*: the model now says staging is dearer by the doubled intermediates, and the
 /// hardware says it is dearer still than that, because streaming overlaps and staging does not.

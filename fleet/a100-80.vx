@@ -44,7 +44,7 @@ Topology Device {
   // Same GA100 die as a100-40, so the same vocabulary. No FP8; that arrives with Hopper.
   dtypes: [f64, f32, bf16, f16, i4, u4, i8, u8, i16, u16, i32, u32, i64, u64, bool],
   // spec: PCIe Gen4 x16 = 31.5 GB/s per direction (16 GT/s x 16 lanes, 128b/130b).
-  // UNVERIFIED on this SKU; the host link and its achieved bandwidth are experiment M1/M4.
+  // UNVERIFIED on this SKU; the host link and its achieved bandwidth are an open experiment (utils/memalg).
   // The on-die hops below declare no cost -- their `bandwidth:` figures derive it (E6013).
   transfer Memory::CPU_DRAM -> Memory::HBM : 31.5 GB/s,
   // The way home, at the same per-direction rate the spec note above gives.
@@ -54,6 +54,6 @@ Topology Device {
   transfer Memory::HBM -> Memory::L2,
   // spec: Ampere's cp.async copies global memory into shared memory without passing through
   // registers (PTX ISA 8.3 section 9.7.8.24). Declaring the engine is what makes
-  // `raw::async_copy` legal in an `impl Transfer` lowering for this hop (Vx#353 A2).
+  // `raw::async_copy` legal in an `impl Transfer` lowering for this hop (Vx#353).
   transfer Memory::L2 -> Memory::SMEM copy_engine
 }

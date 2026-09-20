@@ -1,9 +1,9 @@
 // A lowering body that never says `raw::` is CARRIED, not emitted (Vx#358).
 //
-// The whole-body contract -- the trailing barrier (C3), the early-return refusal,
+// The whole-body contract -- the trailing barrier, the early-return refusal,
 // the async discipline -- is skipped for such a body, because these predate the
 // primitives. Emitting one anyway took both halves of that bargain: the site was
-// marked `user_lowered`, so the lowering skipped the builtin copy AND its C3
+// marked `user_lowered`, so the lowering skipped the builtin copy AND its
 // barrier on the stated grounds that the body's own trailing `raw::barrier()`
 // supplies it (VxLowering.cpp) -- while the check that guarantees that barrier
 // never ran. The emitted synchronizing transfer had no barrier from either

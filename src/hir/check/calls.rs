@@ -1419,7 +1419,7 @@ impl<'a> TypeChecker<'a> {
         let Some(p) = ty.placement() else { return };
         let owner = self.transfer_cost_graph.placement_topology(p);
         let src = self.transfer_cost_graph.placement_space(p);
-        // Same admission the identifier rule applies (M5): a space declared `managed: cached` is
+        // Same admission the identifier rule applies: a space declared `managed: cached` is
         // hardware-coherent, so reading it across the boundary is legal when a path exists. Only
         // an `explicit` space obliges a transfer -- refusing a cached one here would refuse what
         // the model permits everywhere else.
@@ -1468,7 +1468,7 @@ impl<'a> TypeChecker<'a> {
         explicit_generic_args: &[Type],
         call_span: crate::syntax::Span,
     ) -> Option<Type> {
-        // The `raw::` prefix is reserved for the transfer-lowering primitives (Vx#353 A2).
+        // The `raw::` prefix is reserved for the transfer-lowering primitives (Vx#353).
         // Intercepted before every other lookup so the namespace cannot be shadowed by user
         // code, and so a use outside an `impl transfer` body gets a targeted error instead
         // of "Undefined static method".

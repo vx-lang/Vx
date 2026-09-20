@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// `for x in it` over a value with `next(self : &mut Self) -> Option<T>` (plan item A9).
+// `for x in it` over a value with `next(self : &mut Self) -> Option<T>`.
 //
 // The loop used to report "Method 'next' not found on type ?": the iterable was marked
 // moved before the checker synthesized the `next` call, so the lookup ran against a

@@ -826,7 +826,7 @@ impl ElementType {
     /// `hir::memory::element_bits` (dense bits) and `layout::scalar_size_align` (padded bytes =
     /// `ceil(bits/8)`) both derive, so the two can no longer drift (they disagreed on `I4` before:
     /// 4 dense bits vs 1 padded byte, both from independent tables). `None` for an un-instantiated
-    /// generic. Adding a numeric format sets its width here, in one place. (P1-4a; see the
+    /// generic. Adding a numeric format sets its width here, in one place. (See the
     /// heterogeneous gap analysis §9.8.1.)
     pub fn bits(&self) -> Option<u32> {
         Some(match self {

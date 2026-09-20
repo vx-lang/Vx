@@ -282,10 +282,10 @@ fn run_middle_end_test(path: &Path) -> Result<(), String> {
     for f in &mut program.functions {
         checker.check_function(f);
     }
-    // Transfer lowerings, exactly as the driver checks them (#353 A1/A2): bodies with the
+    // Transfer lowerings, exactly as the driver checks them (#353): bodies with the
     // edge set so `raw::` resolves, then the structural pass (E6015) and the whole-body
     // pass (E6019/E6021/E6022). Without this the harness never emits a lowering
-    // diagnostic and every lowering fail test passes vacuously -- the A2 review proved
+    // diagnostic and every lowering fail test passes vacuously -- the review proved
     // it by planting a fully legal program with a bogus CHECK line, and it passed.
     for t in &mut program.transfer_impls {
         checker.seam.lowering_edge = Some((
@@ -1032,7 +1032,7 @@ fn test_middle_end_fail() -> Result<(), String> {
         |path| {
             // A fail test must fail AND fail for the declared reason: the error text has
             // to satisfy the file's CHECK directives. "Any error passes" let a test keep
-            // passing while the diagnostic it pinned was deleted -- the A2 review planted
+            // passing while the diagnostic it pinned was deleted -- the review planted
             // a legal program with `// CHECK: E9999` and it passed.
             let source = fs::read_to_string(path).expect("Failed to read test file");
             // `// REQUIRES: z3`: the pinned diagnostic needs the prover, and the prover

@@ -262,7 +262,7 @@ fn flat_exit_code(src: &str) -> Option<i32> {
 }
 
 /// The raw flat-path MLIR (`vx.transfer` and friends, *before* the lowering to LLVM), with sub-space
-/// scheduling metadata attached — the P0-1 companion to `flat_llvm`. Mirrors the driver's flat build:
+/// scheduling metadata attached — the sub-space companion to `flat_llvm`. Mirrors the driver's flat build:
 /// builds the `SubspaceInfo` descriptors from the per-compilation env (the frozen registry has no
 /// memory decls) so a `vx.transfer` carries `space`/`within`/`granule`/`capacity`/`scope` +
 /// bump-allocated `offset`/`slots`, exactly as the AST path does. `None` if outside the flat subset.
@@ -612,7 +612,7 @@ fn flat_reads_and_writes_a_field_through_a_place() {
     assert_parity(src, 42);
 }
 
-/// #275 M4 / #278: nested references (`&&T`). `let rr = &r` binds `rr : &&i32`; `**rr` derefs twice — the
+/// #275 / #278: nested references (`&&T`). `let rr = &r` binds `rr : &&i32`; `**rr` derefs twice — the
 /// inner load yields the `&i32` pointer, the outer loads its `i32`. The AST codegen used to miscompile
 /// nested address-of and segfault (§18.2), so this once had to ground on the value-semantics equivalent.
 /// #278 fixed `BorrowExpr::lower` to materialize a slot for `&r`, restoring the AST oracle, so this is now
@@ -651,7 +651,7 @@ fn flat_writes_through_a_nested_mutable_reference() {
     );
 }
 
-/// #275 M4: a reference-typed struct field (`struct Holder { r : &i32 }`). Constructing `Holder { r : &x }`
+/// #275: a reference-typed struct field (`struct Holder { r : &i32 }`). Constructing `Holder { r : &x }`
 /// stores the address of `x` into the reference field, and `*h.r` loads the field pointer and derefs it.
 /// Previously declined: the escape scan didn't descend into aggregate literals, so the `&x` never
 /// materialized `x`. Now it does; the whole program lowers and matches the AST oracle (5).
@@ -690,7 +690,7 @@ fn flat_returns_a_reference_to_a_non_first_field() {
 /// aggregate. The nested construction stores the inner struct *value* (#277 — not the inner slot's
 /// address), the borrow check accepts the read after the loan is dead (#276), and the two-level
 /// projection resolves the write and read through `o.inner.v`. Parity: writes 42 through `*r`, reads it
-/// back. This is the case §12 originally named as M2's target.
+/// back. This is the case §12 originally named as the target.
 #[test]
 fn flat_runs_nested_field_place_example_b() {
     let src = "struct Inner { v : i32 }\n\
@@ -3010,7 +3010,7 @@ fn flat_matches_ast_matmul_half_stores_half() {
 
 #[test]
 fn flat_carries_subspace_scheduling_metadata() {
-    // P0-1: the sub-space scheduler's output (`space`/`within`/`granule`/`capacity`/`scope` + the
+    // The sub-space scheduler's output (`space`/`within`/`granule`/`capacity`/`scope` + the
     // bump-allocated `offset`/`slots`) must survive on the *flat* path, not just under
     // `--legacy-codegen`. SMEM's granule is 16 KB; a 128x128 f32 tile is exactly 4 granules (65536 B),
     // so the two tiles land at offset 0 and offset 65536, 4 slots each — the same values the AST path

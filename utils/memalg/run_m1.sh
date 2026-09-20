@@ -7,7 +7,7 @@
 #
 #===----------------------------------------------------------------------===#
 #
-# M1: measure every declared seam and compare against the FROZEN predictions.
+# Measure every declared seam and compare against the FROZEN predictions.
 #
 #   ./run_m1.sh [--sku h100-sxm] [--predictions <dir>]
 #
@@ -39,14 +39,14 @@ done
 
 if [ -z "$PRED" ]; then
     echo "FATAL: no predictions directory given." >&2
-    echo "Pass --predictions <dir> or set VX_MEMALG_PREDICTIONS. M1 scores against the freeze," >&2
+    echo "Pass --predictions <dir> or set VX_MEMALG_PREDICTIONS. This scores against the freeze," >&2
     echo "and must not regenerate it." >&2
     exit 1
 fi
 
 if [ ! -d "$PRED" ]; then
     echo "FATAL: frozen predictions not found at $PRED" >&2
-    echo "Pass --predictions <dir>. M1 scores against the freeze, and must not regenerate it." >&2
+    echo "Pass --predictions <dir>. This scores against the freeze, and must not regenerate it." >&2
     exit 1
 fi
 
@@ -97,7 +97,7 @@ mkdir -p "$OUT"
 # someone could have edited this morning, and no reader can tell from the outside.
 if grep -q "predictions_tag=UNTAGGED" "$OUT/env.txt"; then
     echo "WARNING: the predictions directory is not at a tag." >&2
-    echo "  M1 results scored against an untagged freeze are not pre-registered evidence." >&2
+    echo "  Results scored against an untagged freeze are not pre-registered evidence." >&2
 fi
 
 # ---- pin clocks -------------------------------------------------------------------------------

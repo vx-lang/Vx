@@ -122,7 +122,7 @@ fn bellman_ford(
     dist
 }
 
-/// **P1: a route exists exactly when the pair is reachable, and P2: it is cost-minimal.**
+/// **A route exists exactly when the pair is reachable, and it is cost-minimal.**
 ///
 /// Both directions matter. A route where none should exist would let the compiler stage data over
 /// a link the hardware does not have; a missing route where one exists rejects a legal program.
@@ -209,9 +209,9 @@ fn fleet_routes_exist_iff_reachable_and_are_cost_minimal() {
     }
 }
 
-/// **P3: every hop of every synthesized route is a declared edge.**
+/// **Every hop of every synthesized route is a declared edge.**
 ///
-/// Checked inside P1/P2 above for the routes the router returns; this states it as its own
+/// Checked by the reachability and cost tests above for the routes the router returns; this states it as its own
 /// property over the reachable closure so a failure names the invariant rather than a cost
 /// mismatch. A synthesized hop that nobody declared is the model inventing hardware.
 #[test]
@@ -246,7 +246,7 @@ fn fleet_route_hops_are_all_declared_edges() {
     }
 }
 
-/// **P4: the NCA rule for sibling moves.**
+/// **The NCA rule for sibling moves.**
 ///
 /// Two spaces that nest under a common ancestor are moved by going up to their nearest common
 /// ancestor and back down; the ancestor itself is the shared reservoir and contributes no

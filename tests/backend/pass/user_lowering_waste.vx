@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// The payoff witness for derived traffic (Vx#353 A4): a lowering that computes
+// The payoff witness for derived traffic (Vx#353): a lowering that computes
 // the RIGHT ANSWER while moving twice the bytes it needs to.
 //
 // Every declared figure about this edge is identical to the faithful copy in
@@ -19,7 +19,7 @@
 //
 // The EXPECT values are unchanged from the faithful version on purpose: if they
 // ever differ, the lowering stopped being value-preserving and the fixture is
-// measuring the wrong thing (C2).
+// measuring the wrong thing.
 //
 // CHECK: user_lowered
 // EXPECT: [[0,   1],
@@ -46,7 +46,7 @@ impl Transfer<Memory::GPU_HBM, Memory::SMEM> for Topology::Dev {
     for i in 0..raw::extent(src) {
       // Reads the source TWICE and averages. Exact in IEEE for any value
       // (x + x is exact, and halving a power-of-two multiple is exact), so the
-      // computed answer is bit-identical to the faithful copy above -- C2 holds,
+      // computed answer is bit-identical to the faithful copy above -- value preservation holds,
       // a transfer still moves rather than converts. What changes is the traffic:
       // read_bytes doubles, and nothing declared anything.
       raw::store(dst, i, (raw::load(src, i) + raw::load(src, i)) * 0.5);

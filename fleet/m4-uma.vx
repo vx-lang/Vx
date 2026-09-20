@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// The Tier-0 machine: the development Mac, for the zero-cost protocol shakedown
+// The development Mac, for the zero-cost protocol shakedown
 // before any cluster is rented. Its job is not to produce data
 // about Apple silicon -- it is to run predict -> measure -> compare end to end so
 // the harness's own bugs surface here rather than on a metered box.
@@ -28,7 +28,7 @@
 // UNVERIFIED bandwidth: Apple publishes 120 GB/s for the base M4 (LPDDR5X-7500 on
 // a 128-bit bus). That is the *hardware peak* for the memory system as a whole,
 // not an achievable single-threaded copy rate, and the gap between the two is
-// exactly what experiment M1 measures. Declared as the peak on purpose: the
+// exactly what the bandwidth experiment measures. Declared as the peak on purpose: the
 // shakedown's error table is only informative if the declared figure is the
 // vendor's claim rather than a number already fitted to the measurement.
 //
@@ -41,7 +41,7 @@ Memory HBM {
 // spec: Apple M4 P-core cluster L2 = 16 MiB (`sysctl hw.perflevel0.l2cachesize`
 // = 16777216, read off the development machine rather than transcribed).
 // UNVERIFIED bandwidth: Apple publishes no L2 bandwidth figure. 400 GB/s is a
-// placeholder of the right order for a shared cluster L2; M1 measures it, and
+// placeholder of the right order for a shared cluster L2; measurement will settle it, and
 // until then no claim rests on it.
 Memory L2 {
   within: Memory::HBM, capacity: 16 MiB, bandwidth: 400 GB/s, managed: cached, scope: device

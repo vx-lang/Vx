@@ -1069,7 +1069,7 @@ impl<'r> Lowerer<'r> {
             // the same element + shape, so the destination is sized to hold the source ("enough
             // storage on the receiving side").
             Expr::Transfer(t) => {
-                // A transfer sema matched to a user `impl transfer` lowering (#353 A3)
+                // A transfer sema matched to a user `impl transfer` lowering (#353)
                 // declines: the body is inlined at the site by the AST path, and the
                 // flat emitter has no raw:: opcodes yet. Decline keeps the AST path
                 // the oracle, exactly as for every other unsupported construct.
@@ -5079,8 +5079,8 @@ impl BorrowScan {
                     self.expr(r);
                 }
             }
-            // A borrow inside an aggregate literal (`Holder { r : &x }`, a reference-typed field — #275
-            // M4) escapes into the aggregate, so its base must materialize. Descend into the field/payload
+            // A borrow inside an aggregate literal (`Holder { r : &x }`, a reference-typed field — #275)
+            // escapes into the aggregate, so its base must materialize. Descend into the field/payload
             // values so the `&x` is seen (else `x` stays a register and the `&x` declines at lowering).
             Expr::StructInit(si) => si.fields.iter().for_each(|(_, e)| self.expr(e)),
             Expr::EnumVariant(ev) => {
@@ -5226,7 +5226,7 @@ impl RefUseScan<'_> {
                 }
             }
             // A ref-local mentioned inside an aggregate literal escapes into it (a non-`*r` use), so it
-            // can't stay a symbolic place — descend to catch it, matching pass 1. (#275 M4)
+            // can't stay a symbolic place — descend to catch it, matching pass 1. (#275)
             Expr::StructInit(si) => si.fields.iter().for_each(|(_, e)| self.expr(e)),
             Expr::EnumVariant(ev) => {
                 if let Some(p) = &ev.payload {
@@ -7528,7 +7528,7 @@ mod tests {
 
     #[test]
     fn borrow_inside_a_struct_literal_materializes_its_base() {
-        // #275 M4: a `&x` inside an aggregate literal (`Holder { r : &x }`, a reference-typed field)
+        // #275: a `&x` inside an aggregate literal (`Holder { r : &x }`, a reference-typed field)
         // escapes into the struct, so the escape scan must descend into the literal and materialize `x`
         // — an addressable `llvm.alloca` (`imm = 1`). Without the StructInit arm in the scan, `x` stayed
         // a register and the `&x` declined. The whole reference-field program then lowers.

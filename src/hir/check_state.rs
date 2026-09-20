@@ -150,7 +150,7 @@ pub struct SeamState {
     /// `var`. Populated before statements are checked so a transfer seam (checked before the
     /// consumer's `spawn` body) can consult the downstream contract on the buffer it produces.
     pub contracts: HashMap<String, u64>,
-    /// Number of per-seam obligations discharged (eval metric M1).
+    /// Number of per-seam obligations discharged.
     pub checks: usize,
     /// Total marginal solving time across all seams, excluding the one-time solver startup.
     pub check_time: std::time::Duration,

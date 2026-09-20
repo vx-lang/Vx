@@ -134,8 +134,7 @@ Copy the digits from the spec sheet and pick the spelling that matches what the 
 not pre-convert, since a hand-converted figure no longer matches its citation.
 
 Note that whether a *quoted capacity* is decimal or binary is itself contested per SKU (the
-192-vs-180 GiB gap below), and settling it by measurement is experiment **M4** in
-`memory-algebra-paper/EXPERIMENTS.md`. The spellings here record current belief, not a verified
+192-vs-180 GiB gap below), and settling it by measurement is an open experiment (`utils/memalg`). The spellings here record current belief, not a verified
 fact; `spec:` says where the belief came from. If a figure transcribed as `GiB` was in fact
 quoted decimal, that capacity is ~7% smaller than modelled — inside the margins in the current
 matrix, but enough to flip a marginal cell.

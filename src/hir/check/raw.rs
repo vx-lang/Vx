@@ -7,11 +7,11 @@
 //===----------------------------------------------------------------------===//
 //
 // The eight `raw::` primitives an `impl transfer` lowering is written in, and the
-// obligations each one carries (Vx#353 A2; the table lives in
+// obligations each one carries (Vx#353; the table lives in
 // docs/custom_transfer_contract.md). The primitives are *indexed, not addressed*:
 // every one takes a typed tile plus an element index, none takes or produces an
 // address. That single restriction is what keeps the contract's placement and
-// visibility constraints (C1, C6) mechanically checkable.
+// visibility constraints -- placement and space visibility -- mechanically checkable.
 //
 // Discharge follows the contract doc's split exactly:
 //   * bounds        -> the existing `SmtProver` (`prove_expr`), refused when
@@ -494,13 +494,13 @@ impl<'a> TypeChecker<'a> {
             })
     }
 
-    /// The whole-body half of the A2 obligations, run once after every lowering body has
+    /// The whole-body half of the lowering obligations, run once after every lowering body has
     /// been type-checked (the per-call-site half lives in `check_raw_primitive`). Checks,
     /// per `impl transfer from -> to`:
     ///
     ///   * the edge exists on some declared topology (warning if not: the lowering is
     ///     carried but nothing can execute it), and every topology that declares it can
-    ///     see both endpoint spaces (E6022, constraint C6);
+    ///     see both endpoint spaces (E6022, the space-visibility constraint);
     ///   * `raw::barrier()` appears only as a top-level statement (E6019) and never
     ///     inside a closure (E6017);
     ///   * async-copy discipline: no read or write of a destination while a copy into it
@@ -535,7 +535,7 @@ impl<'a> TypeChecker<'a> {
                 .collect();
 
             // The whole-body checks and the edge-level checks below apply to lowerings
-            // written against the primitives. An A1-era body that never says `raw::` is
+            // written against the primitives. A body predating them that never says `raw::` is
             // carried code -- warning it (or refusing its edge) would fail every
             // existing program the moment a fleet file declares the edge.
             let scans: Vec<RawScan> = t
@@ -575,7 +575,7 @@ impl<'a> TypeChecker<'a> {
                                     "topology {} declares the edge {} -> {} but cannot see \
                                      Memory::{}; a lowering for this edge would run on a \
                                      part that cannot address the space it moves bytes \
-                                     through (constraint C6 of the transfer contract)",
+                                     through (the space-visibility constraint)",
                                     topo_name,
                                     t.from.name(),
                                     t.to.name(),
@@ -596,7 +596,7 @@ impl<'a> TypeChecker<'a> {
 
             for (f, scan) in t.methods.iter().zip(&scans) {
                 if scan.calls.is_empty() {
-                    continue; // Not written against the primitives (yet); A1-era body.
+                    continue; // Not written against the primitives (yet); it predates them.
                 }
 
                 for (name, span, in_closure) in &scan.calls {
@@ -695,7 +695,7 @@ impl<'a> TypeChecker<'a> {
                     );
                 }
 
-                // The trailing synchronization grade (C3, syntactic form).
+                // The trailing synchronization grade (the visibility clause, syntactic form).
                 if edge_requires_sync && scan.publishes {
                     // Every Vx function ends with a `return` (the language has no void
                     // functions), and a return carries no synchronization -- the barrier
@@ -1088,7 +1088,7 @@ struct WalkCx {
 
 /// Is this lowering body written against the `raw::` primitives?
 ///
-/// The whole-body contract in `check_transfer_impl_bodies` -- the trailing barrier (C3), the
+/// The whole-body contract in `check_transfer_impl_bodies` -- the trailing barrier, the
 /// early-return refusal, the async discipline -- is skipped for a body with no `raw::` call,
 /// because such bodies predate the primitives and are CARRIED rather than emitted. So a body
 /// that answers `false` here must never be emitted: doing so takes the skip and the emission
@@ -1587,7 +1587,7 @@ impl TrafficAcc {
 }
 
 impl<'a> TypeChecker<'a> {
-    /// Count the bytes a user `impl transfer` body moves, per space (#353 A4).
+    /// Count the bytes a user `impl transfer` body moves, per space (#353).
     ///
     /// This is where "cost is derived, not declared" cashes out: the figures come from the
     /// body's own `raw::` calls multiplied by its static loop bounds, so a lowering that

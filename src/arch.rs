@@ -101,7 +101,7 @@ pub enum Reachability {
 ///
 /// `copy_engine` declares that a hardware engine (a DMA, Ampere's `cp.async`) can drive this
 /// hop without passing through registers. It is a *capability*, not a choice: declaring it
-/// makes `raw::async_copy` legal in an `impl transfer` lowering for this edge (Vx#353 A2),
+/// makes `raw::async_copy` legal in an `impl transfer` lowering for this edge (Vx#353),
 /// and nothing more. Distinct from `crossing:` on the memory space, which answers how legs
 /// *compose in cost*, not whether an engine exists.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -145,7 +145,7 @@ impl EdgeCost {
     ///
     /// No longer the primary routing key. It used to be, on the reasoning that "route choice
     /// happens before a byte count is known, so a size-dependent cost cannot decide it" -- which
-    /// M5 showed to be a false premise. Every edge costs `bytes / bandwidth`, a
+    /// measurement showed to be a false premise. Every edge costs `bytes / bandwidth`, a
     /// line through the origin, so the ratio between two routes does not depend on bytes and the
     /// cheapest route can be chosen once, for all sizes, from the per-byte rate alone. Minimising
     /// hops instead picked a route 3.57x slower than one the same graph already contained.
@@ -398,7 +398,7 @@ pub fn topology_dispatch_id(top: &Topology) -> i32 {
         Topology::CpuNeon => 700,
         // A slice is identified by (base topology, extent): `NPU[0..144]` and `NPU[0..72]` are
         // distinct devices for dispatch and seam identity, so they carry distinct stable ids
-        // (B4, #253) — every slice used to collapse onto one constant (900), which made a slice
+        // (#253) — every slice used to collapse onto one constant (900), which made a slice
         // unable to name an NVL domain. FNV over the canonical triple, banded to 2000..2999
         // (declared names start above at `CUSTOM_DISPATCH_ID_BASE`).
         Topology::Slice(base, start, end) => {
@@ -1120,7 +1120,7 @@ impl TransferCostGraph {
     /// `from -> to`: a declared escape hatch whose visibility the seam engine cannot guarantee. A
     /// transfer's use site consults this so a hop over a declared relaxed edge is routed through the
     /// same seam obligation the `*_relaxed` intrinsics take — yielding a per-buffer E6004 at the use
-    /// site, not only the coarse declaration-time W1027 (P0-3).
+    /// site, not only the coarse declaration-time W1027.
     pub fn is_relaxed_edge(&self, from: &MemorySpace, to: &MemorySpace) -> bool {
         self.descriptors.values().any(|d| {
             d.transfers
@@ -1748,7 +1748,7 @@ mod tests {
 
     #[test]
     fn routing_takes_the_faster_route_not_the_shorter_one() {
-        // M5. The shape of a partially-meshed box: A reaches C directly over a slow
+        // The shape of a partially-meshed box: A reaches C directly over a slow
         // link, or in two hops over fast ones. Hop count picks the slow direct edge; cost picks the
         // relay, which is 3.57x faster end to end.
         let desc = TopologyDescriptor {

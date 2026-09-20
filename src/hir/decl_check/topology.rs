@@ -340,7 +340,7 @@ impl TypeChecker<'_> {
             // A generic fn inside a lowering can never be checked: generic bodies are checked at
             // instantiation, and a lowering fn is not callable, so it is never instantiated -- its
             // body would escape the checker forever. That silently reopens, for generics only, the
-            // exact parses-clean-while-broken gap #353 A1 closes, so it is refused outright: a
+            // exact parses-clean-while-broken gap #353 closes, so it is refused outright: a
             // lowering is instantiated per EDGE, not per type, and a type parameter has no meaning
             // there.
             for f in &t.methods {

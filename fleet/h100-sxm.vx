@@ -46,7 +46,7 @@ Memory SMEM {
 // UNVERIFIED on this SKU: an H100 SXM in an HGX baseboard may reach the host over PCIe Gen5 or,
 // on a Grace-Hopper part, over NVLink-C2C at ~450 GB/s -- a 7x difference that changes every
 // host-seam prediction. Measuring which link is present, and its achieved bandwidth, is
-// experiment M1/M4 in memory-algebra-paper/EXPERIMENTS.md.
+// an open experiment; the measurement tooling is in utils/memalg.
 Topology Device {
   // spec: NVIDIA Hopper GH100; LLVM's NVPTX target.
   arch: nvptx64,

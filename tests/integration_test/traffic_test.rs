@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// "Cost is derived, not declared" (#353 A4), made checkable. Every figure here
+// "Cost is derived, not declared" (#353), made checkable. Every figure here
 // is counted from a body's own `raw::` calls and static loop bounds -- nothing
 // in these programs declares a byte count anywhere.
 //
@@ -477,7 +477,7 @@ fn a_machine_without_a_lowering_gets_the_builtin_not_a_peers_body() {
 }
 
 // ---------------------------------------------------------------------------
-// Spawn-region traffic (#353 A4 T4): what a KERNEL moves, as opposed to what it
+// Spawn-region traffic (#353): what a KERNEL moves, as opposed to what it
 // cost to stage the tile it moves. The two are different questions and only one
 // of them is reachable from an edge cost.
 // ---------------------------------------------------------------------------
@@ -513,7 +513,7 @@ fn spawn_region(rec: &str, func: &str) -> String {
     rec[head..tail].to_string()
 }
 
-/// Calibration, the same shape T1 used and for the same reason: a count that
+/// Calibration, the same shape the earlier counts used and for the same reason: a count that
 /// cannot be checked against an independently-known answer is not evidence.
 ///
 /// One placed 2x2 f32 tile, read once per element under a literal nest and
@@ -720,7 +720,7 @@ fn main() -> i32 {
     );
 }
 
-/// An overflowing count is an absence, not a saturated number. The A4 review
+/// An overflowing count is an absence, not a saturated number. The traffic review
 /// established the rule after saturation published `u64::MAX` as an EXACT byte
 /// count; the nest here is instant to count and must never be run.
 #[test]

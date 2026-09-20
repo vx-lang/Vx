@@ -2,7 +2,7 @@
 // REQUIRES: z3
 // A shadowing let: with both `i == 1` and `i == 9` recorded, the fact set is
 // unsatisfiable and every obligation becomes vacuously "provable". The stale
-// fact is neutralized at the rebinding instead (A2 review).
+// fact is neutralized at the rebinding instead (found in review).
 // CHECK: E6018
 // CHECK: stays inside
 Topology Dev {

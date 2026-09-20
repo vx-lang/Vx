@@ -5,7 +5,7 @@
 // predict -> measure -> compare loop runs for free and settles a question the CUDA instrument
 // cannot: whether the composition law found on an H100 survives a change of vendor and ISA.
 //
-// Read utils/memalg/M4_PREREGISTRATION.md first. It states P1..P4 with their falsifiers and was
+// Read utils/memalg/M4_PREREGISTRATION.md first. It states predictions 1-4 with their falsifiers and was
 // committed before this file existed.
 //
 // Build:  clang++ -std=c++17 -ObjC++ -fobjc-arc -O2 measure_m4.mm \
@@ -21,14 +21,14 @@
 //     encoding and submission are excluded.
 //   * Every rate is reported against the declared 120 GB/s peak. A ratio above 1.0x is impossible
 //     for DRAM traffic and means the buffer was served from a cache -- printing the ratio makes
-//     that visible instead of leaving it to be noticed. Six of ten points in the Tier-0 CPU
+//     that visible instead of leaving it to be noticed. Six of ten points in the shakedown's CPU
 //     shakedown had exactly that defect and it went unreported for five days.
 //   * Buffers for DRAM-scale seams are sized from the MEASURED cache knee, not from a guess.
 //
 // WHAT IS DELIBERATELY NOT MEASURED
 //   `L2 -> SMEM` in cycles. It is declared `B/cyc` against an UNVERIFIED 1.4 GHz placeholder and
 //   Metal exposes no cycle counter to a kernel, so it can only be timed in wall-clock. Protocol
-//   decision 5 forbids converting with an invented clock, so that cell stays unscorable (P4).
+//   decision 5 forbids converting with an invented clock, so that cell stays unscorable (prediction 4).
 
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
@@ -115,7 +115,7 @@ kernel void reg_to_tg(constant uint&        iters [[buffer(0)]],
 }
 
 // Global -> threadgroup: a load into a register followed by a threadgroup store. This is the route
-// kind P1 is about -- on Apple family 9 there is no asynchronous copy engine, so this is two
+// kind prediction 1 is about -- on Apple family 9 there is no asynchronous copy engine, so this is two
 // instructions and not a hardware-streamed fill.
 kernel void global_to_tg(device const float4* src   [[buffer(0)]],
                          constant uint&       n4    [[buffer(1)]],
@@ -274,7 +274,7 @@ int main() {
     fact_row("device/max_working_set", 0, "B", (double)dev.recommendedMaxWorkingSetSize,
              "MTLDevice::recommendedMaxWorkingSetSize -- usable against the declared HBM capacity");
     fact_row("device/unified_memory", 0, "bool", dev.hasUnifiedMemory ? 1.0 : 0.0,
-             "MTLDevice::hasUnifiedMemory -- 1 means CPU_DRAM and HBM are one memory (P2)");
+             "MTLDevice::hasUnifiedMemory -- 1 means CPU_DRAM and HBM are one memory (prediction 2)");
     fact_row("device/simd_width", 0, "count", (double)ps_stream.threadExecutionWidth,
              "MTLComputePipelineState::threadExecutionWidth");
     fact_row("device/max_threads_per_tg", 0, "count",
@@ -283,13 +283,13 @@ int main() {
 
     id<MTLBuffer> sink = [dev newBufferWithLength:64 options:MTLResourceStorageModeShared];
 
-    // ---- P3: where is the GPU's cache knee? --------------------------------------------------
+    // ---- prediction 3: where is the GPU's cache knee? --------------------------------------------------
     // The machine file declares `L2` from hw.perflevel0.l2cachesize, which is the CPU P-core
     // cluster's cache. The topology that declares it is `arch: applegpu`. This sweep asks the GPU
     // where its own working set stops fitting, and the answer is what the composite test below
     // uses to pick a cache-resident source -- rather than a guess, which is the mistake that put
     // six impossible rows in the CPU shakedown.
-    fprintf(stderr, "\n== working-set sweep (P3): where does the GPU's rate fall off? ==\n");
+    fprintf(stderr, "\n== working-set sweep (prediction 3): where does the GPU's rate fall off? ==\n");
     size_t knee_bytes = 0;
     double best_rate = 0.0;
     const int tg_count = TG_COUNT;
@@ -332,12 +332,12 @@ int main() {
     const size_t cached_bytes = std::max<size_t>(knee_bytes, 256 * 1024);
     const size_t dram_bytes = 512 * 1024 * 1024;
 
-    // ---- P1: the composition test ------------------------------------------------------------
+    // ---- prediction 1: the composition test ------------------------------------------------------------
     // Composite CACHE -> SMEM against its legs CACHE -> REG and REG -> SMEM. Both legs are on-chip
     // so their rates are comparable, which is what lets sum and bottleneck disagree: with a DRAM
     // source the read leg dominates so completely that the two laws predict nearly the same thing
     // and the experiment could not discriminate.
-    fprintf(stderr, "\n== composition (P1): source %zu B, cache-resident ==\n", cached_bytes);
+    fprintf(stderr, "\n== composition (prediction 1): source %zu B, cache-resident ==\n", cached_bytes);
 
     struct Seam {
       const char *name;
@@ -485,7 +485,7 @@ int main() {
       }
     }
 
-    // ---- P6: the host seam, which on this part is not a transfer -----------------------------
+    // ---- prediction 6: the host seam, which on this part is not a transfer -----------------------------
     // `CPU_DRAM -> HBM` is declared at 120 GB/s. hasUnifiedMemory is true, so a shared buffer the
     // CPU wrote is readable by a kernel with no copy and no API call. Three timings settle what
     // the model is charging for:
@@ -496,7 +496,7 @@ int main() {
     //
     // If the first two agree, the transfer costs nothing and the model is wrong by the whole
     // quantity rather than by a percentage.
-    fprintf(stderr, "\n== host seam (P6): is CPU_DRAM -> HBM a transfer at all? ==\n");
+    fprintf(stderr, "\n== host seam (prediction 6): is CPU_DRAM -> HBM a transfer at all? ==\n");
     {
       const size_t bytes = dram_bytes;
       uint32_t n4 = (uint32_t)(bytes / 16);
@@ -554,14 +554,14 @@ int main() {
       }
     }
 
-    // ---- P5: contention, which the model has no term for -------------------------------------
+    // ---- prediction 5: contention, which the model has no term for -------------------------------------
     // K independent streaming reads, each on its own buffer and its own command queue, all
     // committed before any is waited on. The model predicts each gets the whole edge.
     //
     // Per-flow times are kept, not just the aggregate, because fair sharing and serialisation
     // produce the SAME aggregate and differ only in when each flow finishes. A placement needs the
     // slowest flow -- "when does my tensor arrive" -- and an averaged number cannot answer it.
-    fprintf(stderr, "\n== contention (P5): K concurrent DRAM readers ==\n");
+    fprintf(stderr, "\n== contention (prediction 5): K concurrent DRAM readers ==\n");
     fprintf(stderr, "   K   aggregate GB/s   per-flow GB/s    slowest/fastest\n");
     {
       const size_t bytes = 128ull * 1024 * 1024;  // K of these must fit; 8 x 128 MiB = 1 GiB
@@ -677,7 +677,7 @@ int main() {
     // ---- the powerset table, in the format compose.py already parses -------------------------
     // Same shape as probes.txt from the H100 run so the composition laws can be scored on this
     // machine with the same script and no special case. Columns are GB/s per threadgroup and GB/s
-    // device-wide -- NOT B/cyc, because Metal exposes no cycle counter (P4). compose.py's
+    // device-wide -- NOT B/cyc, because Metal exposes no cycle counter (prediction 4). compose.py's
     // arithmetic is unit-agnostic; pass --units to label it correctly.
     fprintf(stderr, "\n=== transfer-edge powerset over {HBM, L2, SMEM, REG} ===\n");
     fprintf(stderr, "from          to             kind   per-TG GB/s   aggregate GB/s\n");

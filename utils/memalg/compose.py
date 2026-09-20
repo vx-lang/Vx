@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Score composition laws against the measured edge powerset (#20).
 
-The algebra composes a multi-hop route by SUMMING its legs. M2 already showed that overstates the
+The algebra composes a multi-hop route by SUMMING its legs. The additivity probe already showed that overstates the
 cost of `HBM->SMEM` by 1/0.60. This asks the next question: what law does fit, scored over every
-composite in the powerset run rather than the one route M2 looked at.
+composite in the powerset run rather than the one route that probe looked at.
 
 Two candidates, both parameter-free:
 
@@ -13,7 +13,7 @@ Two candidates, both parameter-free:
                                                     passed through, and the narrowest point sets
                                                     the rate.
 
-Neither has a fitted constant, which is the point -- a 0.60 fudge factor would fit M2 by
+Neither has a fitted constant, which is the point -- a 0.60 fudge factor would fit that one measurement by
 construction and predict nothing. These two disagree by a factor of ~2 on every route, so the data
 can separate them.
 
@@ -42,7 +42,7 @@ COMPOSITES = [
     ("REG", "HBM", "L2"),
     # Apple GPU (measure_m4.mm). Threadgroup memory is filled by an ordinary load followed by an
     # ordinary threadgroup store -- family 9 has no asynchronous copy engine -- so both of these
-    # are instruction-sequenced routes and P1 predicts SUM.
+    # are instruction-sequenced routes and the preregistration predicts SUM.
     ("L2", "SMEM", "REG"),
     ("HBM", "SMEM", "REG"),
 ]

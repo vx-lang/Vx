@@ -8,7 +8,7 @@
 //
 // The declared memory-space hierarchy (`Memory <Name> { within: ... }`). A per-compilation
 // view built from `Program.memories` (not a process-global registry). Provides the containment
-// queries later milestones need (capacity checks, derived transfer costs) and the M2 coherence
+// queries later work needs (capacity checks, derived transfer costs) and the coherence
 // laws: `within:` is acyclic, a sub-space's capacity does not exceed its parent's, and declared
 // properties are positive.
 //
@@ -46,7 +46,7 @@ pub struct Flow {
 ///
 /// `flows` counts every flow through the space including this one, so it is always >= 2. It is the
 /// "number of users" a `bandwidth / users` model would divide by -- recorded, not applied: whether
-/// that is the right law is what M3 measures, and the issue notes it may be a cliff rather than a
+/// that is the right law is unmeasured, and the issue notes it may be a cliff rather than a
 /// smooth falloff.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sharing {
@@ -121,7 +121,7 @@ pub fn hop_cost(bytes: u64, bw: crate::syntax::Bandwidth) -> Option<u64> {
 }
 
 /// Bit width of a tensor element (dense packing, e.g. `I4` = 4 bits) — a thin wrapper over the single
-/// width source `ElementType::bits`. `None` for an un-instantiated generic element. (P1-4a)
+/// width source `ElementType::bits`. `None` for an un-instantiated generic element.
 pub fn element_bits(elem: &ElementType) -> Option<u64> {
     elem.bits().map(|b| b as u64)
 }
@@ -319,7 +319,7 @@ impl<'a> MemoryHierarchy<'a> {
     ///
     /// What this does **not** do is model contention. `FlowCost::cost` is still the isolated
     /// roofline even for a flow that `FlowCost::sharing` reports as contended, because the model
-    /// has no sharing law and M3 has not been run. Inventing one before it is
+    /// has no sharing law and none has been measured. Inventing one before it is
     /// measured is precisely what the freeze exists to prevent. The value here is that the gap is
     /// now *visible and typed* -- a caller can see "this flow shares HBM with three others and was
     /// priced as though it were alone" -- instead of being invisible in a signature that could not
@@ -947,7 +947,7 @@ mod tests {
 
     #[test]
     fn contended_flows_are_still_priced_as_exclusive() {
-        // The deliberate gap, pinned so it cannot be closed by accident. Until M3 measures a
+        // The deliberate gap, pinned so it cannot be closed by accident. Until a measurement gives a
         // sharing law, a contended flow costs exactly what a lone one costs -- and
         // the type says so out loud rather than the signature hiding the question.
         let decls = three_level();

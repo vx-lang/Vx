@@ -1204,7 +1204,7 @@ fn check_one_function(
     let mut worker = LocalWorkerState::new(global_session.clone());
     let mut checker = TypeChecker::new(global_env, &mut worker);
     // Inside an `impl transfer` body the eight `raw::` primitives resolve; everywhere
-    // else the edge is `None` and they do not (Vx#353 A2).
+    // else the edge is `None` and they do not (Vx#353).
     checker.seam.lowering_edge = lowering_edge;
     checker.check_function(func);
 
@@ -1329,7 +1329,7 @@ fn type_check_phase(
                     .map(|f| check_one_function(f, module_idx, global_session, global_env, None))
                     .collect();
                 results.extend(impl_results);
-                // Transfer lowerings, same walk (#353 A1). Third traversal rather than folded
+                // Transfer lowerings, same walk (#353). Third traversal rather than folded
                 // into the impls one so the order stays module -> functions -> impls -> lowerings
                 // in both branches.
                 let lowering_results: Vec<FunctionCheck> = module
@@ -2585,7 +2585,7 @@ mod gid_stream_tests {
         );
     }
 
-    /// Transfer-lowering bodies flow through BOTH schedules of `type_check_phase` (#353 A1).
+    /// Transfer-lowering bodies flow through BOTH schedules of `type_check_phase` (#353).
     /// The driver path has a FileCheck test asserting the E3002 itself; this is the only coverage
     /// the pipeline branches have, because no vxc flag reaches them. The phase fails fast on a
     /// semantic error rather than returning diagnostics, so the assertion is Err-vs-Ok -- with a
