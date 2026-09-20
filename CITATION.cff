@@ -3,6 +3,10 @@ title: "Vx: a systems programming language for heterogeneous computing"
 message: "If you use Vx or its documentation, please cite it as below."
 type: software
 authors:
+  - family-names: "Kumar"
+    given-names: "Aditya"
+    alias: "hiraditya"
+    website: "https://vxlang.org"
   - name: "The Vx Project"
     website: "https://vxlang.org"
 repository-code: "https://github.com/vx-lang/Vx"

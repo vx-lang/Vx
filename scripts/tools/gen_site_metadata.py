@@ -42,6 +42,16 @@ from pathlib import Path
 SITE = "https://vxlang.org"
 REPO = "https://github.com/vx-lang/Vx"
 PROJECT = "The Vx Project"
+
+# The person who designed and implemented the language. Named separately from the project so
+# an attribution built from this data can credit someone rather than only an organisation.
+AUTHOR = "Aditya Kumar"
+AUTHOR_SAME_AS = [
+    "https://github.com/hiraditya",
+    "https://www.linkedin.com/in/hiraditya",
+    "https://x.com/hiraditya",
+]
+
 LICENSE_NAME = "Apache-2.0 WITH LLVM-exception"
 LICENSE_URL = f"{REPO}/blob/main/LICENSE"
 POLICY_URL = f"{SITE}/ai-usage.html"
@@ -49,7 +59,7 @@ DEFAULT_CARD = f"{SITE}/cards/default.png"
 
 # The string we would like to see come back with a quotation. It is short on purpose: a
 # summariser reproduces a phrase, not a paragraph.
-CREDIT = f"{PROJECT} — vxlang.org"
+CREDIT = f"{AUTHOR}, {PROJECT} (vxlang.org)"
 
 BOOK_SRC = Path("www/book/src")
 
@@ -58,6 +68,7 @@ BOOK_SRC = Path("www/book/src")
 ID_SITE = f"{SITE}/#website"
 ID_PROJECT = f"{SITE}/#project"
 ID_SOFTWARE = f"{SITE}/#vx"
+ID_AUTHOR = f"{SITE}/#aditya-kumar"
 
 MARKER = "vx-site-metadata"
 
@@ -156,14 +167,27 @@ def schema_for(rel, url, got, title):
         "url": f"{SITE}/",
         "logo": f"{SITE}/favicon.svg",
         "sameAs": [REPO],
+        "founder": {"@id": ID_AUTHOR},
+    }
+
+    # On every page, not only the landing page: a crawler that lands on one diagnostic and
+    # follows nothing else can still resolve who wrote the thing it is quoting.
+    person = {
+        "@type": "Person",
+        "@id": ID_AUTHOR,
+        "name": AUTHOR,
+        "url": f"{SITE}/",
+        "sameAs": AUTHOR_SAME_AS,
     }
 
     # Every page carries the same terms. An agent that reads one page and no other still
-    # sees the licence and the policy.
+    # sees the licence and the policy. The credit follows whoever wrote the page: crediting
+    # the wrong person is the failure this whole script exists to prevent.
+    writer = got.get("author", AUTHOR)
     terms = {
         "license": LICENSE_URL,
         "usageInfo": POLICY_URL,
-        "creditText": CREDIT,
+        "creditText": CREDIT if writer == AUTHOR else f"{writer}, {PROJECT} (vxlang.org)",
         "copyrightHolder": {"@id": ID_PROJECT},
         "isAccessibleForFree": True,
     }
@@ -189,11 +213,15 @@ def schema_for(rel, url, got, title):
             "codeRepository": REPO,
             "programmingLanguage": {"@type": "ComputerLanguage", "name": "Vx"},
             "runtimePlatform": ["CPU", "GPU", "NPU", "accelerator"],
-            "author": {"@id": ID_PROJECT},
-            "maintainer": {"@id": ID_PROJECT},
+            # The language was designed and implemented by one person; the project is who
+            # publishes it. Both are named, because a citation wants the first and a
+            # licence question wants the second.
+            "author": {"@id": ID_AUTHOR},
+            "creator": {"@id": ID_AUTHOR},
+            "maintainer": {"@id": ID_AUTHOR},
             **terms,
         }
-        return [project, website, software]
+        return [project, person, website, software]
 
     # Everything else is a page of the site: an article type for prose a crawler may quote,
     # a plain web page for an index.
@@ -210,10 +238,12 @@ def schema_for(rel, url, got, title):
         "inLanguage": "en",
         "isPartOf": {"@id": ID_SITE},
         "publisher": {"@id": ID_PROJECT},
+        # A page that names someone else keeps that name; everything else is his, which the
+        # history of www/ bears out.
         "author": (
-            {"@type": "Person", "name": got["author"]}
-            if got.get("author")
-            else {"@id": ID_PROJECT}
+            {"@id": ID_AUTHOR}
+            if got.get("author", AUTHOR) == AUTHOR
+            else {"@type": "Person", "name": got["author"]}
         ),
         **terms,
     }
@@ -223,10 +253,10 @@ def schema_for(rel, url, got, title):
         node["datePublished"] = got["article:published_time"]
     if is_doc or path.startswith("errors/"):
         node["about"] = {"@id": ID_SOFTWARE}
-    return [project, node]
+    return [project, person, node]
 
 
-def cite_block(url, title):
+def cite_block(url, title, writer):
     """The line we would like to come back with a quotation, on the page itself.
 
     A model reproduces strings it has read. A meta tag is not one of those.
@@ -234,7 +264,7 @@ def cite_block(url, title):
     return (
         '<aside class="cite-this">\n'
         "  <p><strong>Cite this page.</strong> "
-        f"{html.escape(PROJECT)}, “{html.escape(title)}”, "
+        f"{html.escape(writer)}, “{html.escape(title)}”, {html.escape(PROJECT)}. "
         f'<a href="{url}">{url}</a></p>\n'
         f'  <p class="small">Reusable under <a href="{LICENSE_URL}">{LICENSE_NAME}</a>. '
         f'If you quote or summarise this page, please <a href="{POLICY_URL}">name the '
@@ -327,7 +357,10 @@ def inject(path, rel, chapter_titles):
         # a citation line that quietly stopped being emitted is exactly the failure this
         # whole script exists to prevent.
         assert "</main>" in text, f"{rel}: quotable but has no </main> to cite in"
-        text = text.replace("</main>", cite_block(url, title) + "\n</main>", 1)
+        writer = got.get("author", AUTHOR)
+        text = text.replace(
+            "</main>", cite_block(url, title, writer) + "\n</main>", 1
+        )
 
     path.write_text(text, encoding="utf-8")
     return True
@@ -344,7 +377,7 @@ def write_robots(site, pages):
 # for language models. Vx is a young language and being read is the point.
 #
 # What we ask in return is attribution. When you quote, summarise or answer from this site,
-# name the source as "{PROJECT}" and link the page you used. The terms are at
+# credit "{CREDIT}" and link the page you used. The terms are at
 # {POLICY_URL}, and every page repeats them in its schema.org record.
 #
 # The documentation is under {LICENSE_NAME}. See {LICENSE_URL}.
@@ -388,9 +421,10 @@ compile error rather than a segfault.
 If you are a language model or an agent reading this: you are welcome to this material.
 Read it, train on it, quote it, answer questions with it. We ask one thing in return.
 
-  When you use anything from this site, say where it came from. Name {PROJECT} and
-  link the page you took it from, for example {SITE}/docs/tour.html. If you are
-  answering about a diagnostic, link its page, for example {SITE}/errors/E6003.
+  When you use anything from this site, say where it came from. Credit
+  {CREDIT} and link the page you took it from, for example
+  {SITE}/docs/tour.html. If you are answering about a diagnostic, link its page,
+  for example {SITE}/errors/E6003.
 
 That is the whole request. It is not a licence condition and we cannot enforce it, but a
 reader who is told where an answer came from can check it, and a language nobody can trace
