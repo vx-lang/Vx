@@ -130,11 +130,30 @@ fi
 echo "==> Staging the standard library, machine files and examples"
 # Source only. The .vxlib interface format carries a version tag that the compiler rejects when
 # it does not match, so shipping prebuilt interfaces would break on the next format bump.
+#
+# Every Vx module under stdlib/, rather than a list kept by hand. The list said `std graph`, and
+# when `core` was added nothing updated it, so the toolchain shipped without it and `import
+# std::vec` -- which reaches core::ops -- failed to resolve in a released build while working in
+# every checkout. rust_core is the Rust crate behind libvx_std_core, not Vx source, so it is the
+# one directory skipped.
 mkdir -p "$STAGE/stdlib"
-for dir in std graph; do
-    [ -d "stdlib/$dir" ] && cp -R "stdlib/$dir" "$STAGE/stdlib/"
+for dir in stdlib/*/; do
+    name=$(basename "$dir")
+    [ "$name" = "rust_core" ] && continue
+    # No trailing slash: `cp -R dir/ dest` copies the *contents* of dir, which spills every
+    # module's sources flat into stdlib/ and leaves no std/ or core/ to import.
+    cp -R "${dir%/}" "$STAGE/stdlib/"
 done
 find "$STAGE/stdlib" -name '*.vxlib' -delete
+
+# A toolchain whose standard library is missing a module fails only when a program imports it,
+# which is how the gap above reached a release. Name the ones the smoke test depends on.
+for required in std core; do
+    [ -d "$STAGE/stdlib/$required" ] || {
+        echo "error: stdlib/$required was not staged; a released toolchain needs it." >&2
+        exit 1
+    }
+done
 
 cp -R fleet "$STAGE/fleet"
 
