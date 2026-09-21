@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>What writing core taught the compiler</title>
+<meta name="author" content="Aditya Kumar">
+<meta name="description" content="A week ago Vx had no core library. Now it has six modules of it, a random-number library, and more than a dozen compiler fixes that writing them forced. Every module is written in Vx, with no extern in sight.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+
+<meta property="og:title" content="What writing core taught the compiler">
+<meta property="og:description" content="A week ago Vx had no core library. Now it has six modules of it, a random-number library, and more than a dozen compiler fixes that writing them forced.">
+<meta property="og:type" content="article">
+<meta property="article:published_time" content="2026-09-21T18:00:00Z">
+<meta property="og:url" content="https://vxlang.org/blog/what-writing-core-taught-the-compiler.html">
+<meta property="og:image" content="https://vxlang.org/cards/blog-what-writing-core-taught-the-compiler.png">
+<meta property="og:image:alt" content="What writing core taught the compiler: six modules, one library, more than a dozen fixes.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://vxlang.org/cards/blog-what-writing-core-taught-the-compiler.png">
+
+<link rel="alternate" type="application/atom+xml" title="Vx" href="/blog/feed.xml">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header class="nav">
+  <a class="brand" href="/">
+    <span class="mark">Vx</span>
+  </a>
+  <nav>
+    <a href="/docs/getting-started.html">Install</a>
+    <a href="/docs/tour.html">Language tour</a>
+    <a href="/docs/">Docs</a>
+    <a href="/blog/">Blog</a>
+    <a href="https://github.com/vx-lang/Vx">GitHub</a>
+  </nav>
+</header>
+
+<main>
+
+<article class="post">
+
+<h1>What writing core taught the compiler</h1>
+<p class="post-meta">Aditya Kumar &middot; 21 September 2026</p>
+
+<blockquote class="tldr"><strong>TL;DR</strong> &mdash; a week ago <code>stdlib/core/</code> did not
+exist. Now it holds <code>cmp</code>, <code>option</code>, <code>result</code>, <code>num</code>,
+<code>ops</code> and <code>iter</code>, about 1,400 lines, with <code>std::rand</code> beside them and
+<code>clone</code> and <code>default</code> in review. Every line is Vx, and none of it declares an
+<code>extern</code>. Writing it found more than a dozen compiler bugs, because a standard library is the
+first program that uses every feature at once.</blockquote>
+
+<p class="lede">The standard library was one 1,358-line <code>std</code> with the layers Rust keeps
+apart mixed together: <code>Option&lt;T&gt;</code> next to <code>TcpStream</code>, and
+<code>Result&lt;i32, i32&gt;</code> standing on six C symbols in a Rust crate. The plan was to
+rebuild the bottom layer as <code>core</code>, with Rust's <code>core</code> as the checklist and its
+public API, module by module, as the definition of done.</p>
+
+<h2>One rule</h2>
+
+<p><code>core</code> contains no <code>extern</code> block. What Rust's <code>core</code> gets from
+<code>core::intrinsics</code>, Vx's gets from <code>mlir!</code>, an inline block of MLIR that every
+backend lowers. So a bit count is the hardware instruction, written where a library author can see
+it:</p>
+
+<pre><code><span class="k">impl</span> <span class="t">u64</span> {
+  <span class="k">fn</span> <span class="f">count_ones</span>(self : <span class="t">u64</span>) -&gt; <span class="t">u64</span> {
+    <span class="k">return</span> <span class="f">mlir!</span>( inputs : (%a = self : i64), returns : <span class="t">u64</span>, dialects : [<span class="n">"math"</span>]) {
+      %r = math.ctpop %a : i64
+      macro.yield %r : i64
+    };
+  }
+}</code></pre>
+
+<p>The rule is what lets a <code>core</code> module run inside a <code>spawn on(..)</code> region on
+a device that has no libc. It is also what makes a module portable across the two code generators
+the compiler currently has, since neither has to know a runtime symbol the other does not.</p>
+
+<h2>What landed</h2>
+
+<table>
+<tr><th>Module</th><th>What is in it</th></tr>
+<tr><td><code>core::num</code></td><td>The integer methods over every width, signed and unsigned: the bit counts, rotates, <code>pow</code>, <code>ilog2</code>, <code>next_power_of_two</code>, the <code>checked_*</code> and <code>saturating_*</code> families.</td></tr>
+<tr><td><code>core::cmp</code></td><td><code>PartialEq</code> and <code>Ord</code> as a trait tower: one required method each, <code>ne</code>, <code>lt</code>, <code>le</code>, <code>gt</code>, <code>ge</code>, <code>min</code>, <code>max</code> and <code>clamp</code> as defaults, and <code>Ordering</code> with <code>reverse</code> and <code>then</code>.</td></tr>
+<tr><td><code>core::option</code></td><td><code>Option&lt;T&gt;</code> with <code>map</code>, <code>and_then</code>, <code>filter</code>, <code>map_or</code>, <code>unwrap_or_else</code>, <code>is_some_and</code> and the rest.</td></tr>
+<tr><td><code>core::result</code></td><td><code>Result&lt;T, E&gt;</code> with <code>ok</code>, <code>err</code>, <code>map</code>, <code>map_err</code>, <code>and_then</code>. The six C symbols are gone.</td></tr>
+<tr><td><code>core::iter</code></td><td><code>Iterator&lt;Item&gt;</code> with <code>next</code> required and <code>count</code>, <code>last</code>, <code>nth</code>, <code>any</code>, <code>all</code>, <code>find</code>, <code>position</code>, <code>for_each</code> written over it; <code>Range</code>, <code>map</code>, <code>filter</code>, <code>take</code>, <code>skip</code>.</td></tr>
+<tr><td><code>core::ops</code></td><td>Declared. The operator traits dispatch in a later phase.</td></tr>
+<tr><td><code>std::rand</code></td><td>xoshiro256** with the state in a struct, the width table from <code>u8</code> to <code>f64</code>, an unbiased bounded draw, a normal distribution, buffer fills.</td></tr>
+</table>
+
+<p>The trait tower is the shape Rust has, and it works because default method bodies landed the
+same week. A type writes <code>eq</code> and <code>cmp</code> and gets the other ten:</p>
+
+<pre><code><span class="k">import</span> core::cmp;
+
+<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+  <span class="k">let</span> a : <span class="t">i32</span> = <span class="n">3</span>;
+  <span class="k">let</span> b : <span class="t">i32</span> = <span class="n">9</span>;
+  <span class="f">print</span>(a.<span class="f">max</span>(b));
+  <span class="f">print</span>(b.<span class="f">clamp</span>(<span class="n">0</span>, <span class="n">5</span>));
+  <span class="k">if</span> a.<span class="f">cmp</span>(&amp;b).<span class="f">then</span>(b.<span class="f">cmp</span>(&amp;a)).<span class="f">is_lt</span>() {
+    <span class="f">print</span>(<span class="n">1</span>);
+  }
+  <span class="k">return</span> <span class="n">0</span>;
+}</code></pre>
+
+<p>And <code>for</code> drives anything with a <code>next</code>, adaptors included:</p>
+
+<pre><code><span class="k">import</span> core::iter;
+
+<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+  <span class="k">let</span> <span class="k">mut</span> evens = <span class="f">filter</span>(<span class="f">range</span>(<span class="n">0i64</span>, <span class="n">10i64</span>), | x : <span class="t">i64</span> | x % <span class="n">2i64</span> == <span class="n">0i64</span>);
+  <span class="k">for</span> x <span class="k">in</span> evens {
+    <span class="f">print</span>(x);
+  }
+  <span class="k">return</span> <span class="n">0</span>;
+}</code></pre>
+
+<h2>Random numbers that replay</h2>
+
+<p><code>std::rand</code> replaced a runtime call. The old generator was a SplitMix64 behind six C
+symbols with one global counter, which meant two threads filling two tensors interleaved their draws
+and neither tensor could be replayed on its own. The new one is xoshiro256** with the state in the
+struct, so two <code>Rng</code> values are two streams:</p>
+
+<pre><code><span class="k">import</span> std::rand;
+
+<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+  <span class="k">let</span> <span class="k">mut</span> r = <span class="t">Rng</span>::<span class="f">seeded</span>(<span class="n">7</span>);
+  <span class="f">print</span>(r.<span class="f">next_f32</span>());               <span class="c">// uniform in [0, 1)</span>
+  <span class="f">print</span>(r.<span class="f">range_i64</span>(-<span class="n">5</span>, <span class="n">5</span>));         <span class="c">// unbiased, by rejection</span>
+  <span class="f">print</span>(r.<span class="f">normal_around</span>(<span class="n">0.0</span>, <span class="n">0.02</span>)); <span class="c">// the polar method</span>
+  <span class="k">let</span> <span class="k">mut</span> again = <span class="t">Rng</span>::<span class="f">seeded</span>(<span class="n">7</span>);
+  <span class="f">print</span>(again.<span class="f">next_f32</span>());           <span class="c">// the same first draw</span>
+  <span class="k">return</span> <span class="n">0</span>;
+}</code></pre>
+
+<p>Determinism is the property that matters here. A differential test compares two execution paths
+on the <em>same</em> inputs, which is only meaningful if the inputs can be produced twice, on every
+platform. The draws are integer arithmetic and the conversions to float are IEEE, so they are. The
+normal distribution exists because uniform is the wrong shape for anything that stands in for model
+data: weights and activations are roughly Gaussian, and a uniform fill exercises a range of
+magnitudes real data never has, which matters most in <code>f16</code>, where the interesting failures
+are overflow and underflow at the tails.</p>
+
+<h2>What the compiler learned</h2>
+
+<p>This is the larger share of the week. Each module was written by first fixing whatever stopped
+it, and the pattern held from the first one to the last: the library is the first program that
+combines generics, traits, macros, enums and inline MLIR in one file, and the seams show.</p>
+
+<p>Some were plain gaps. The integer operators <code>%</code>, <code>&amp;</code>, <code>|</code>,
+<code>^</code>, <code>&lt;&lt;</code> and <code>&gt;&gt;</code> did not exist. A trait method could not
+have type parameters of its own. A trait's default body was dropped when an impl inherited it. A
+negated literal was typed by its spelling alone, so <code>-2.0 * ln(x)</code> with <code>x : f64</code>
+was a type error, though <code>2.0 * ln(x)</code> was fine. A <code>u64</code> above
+<code>i64::MAX</code> crashed one code generator, and printed as a negative number on the other.</p>
+
+<p>Three were the kind that had been wrong for a while without anyone standing where they could
+see it.</p>
+
+<p><strong>The warnings that forgot.</strong> Importing <code>std::rand</code> printed fourteen
+warnings that its parameters were unused. They were used. The checker kept one set of used names
+for the whole compilation and cleared it at the end of every function, and a callee is checked from
+inside its caller's body, so the first call a body made wiped the names read before it:</p>
+
+<pre><code><span class="k">struct</span> <span class="t">Counter</span> {
+  n : <span class="t">f64</span>,
+}
+
+<span class="k">impl</span> <span class="t">Counter</span> {
+  <span class="k">fn</span> <span class="f">next</span>(self : &amp;<span class="k">mut</span> <span class="t">Counter</span>) -&gt; <span class="t">f64</span> {
+    self.n = self.n + <span class="n">1.0</span>;
+    <span class="k">return</span> self.n;
+  }
+
+  <span class="c">// Used to report: unused parameter 'lo', unused parameter 'hi'.</span>
+  <span class="k">fn</span> <span class="f">range</span>(self : &amp;<span class="k">mut</span> <span class="t">Counter</span>, lo : <span class="t">f64</span>, hi : <span class="t">f64</span>) -&gt; <span class="t">f64</span> {
+    <span class="k">return</span> lo + (hi - lo) * self.<span class="f">next</span>();
+  }
+}</code></pre>
+
+<p>Only the first caller of a given callee was affected, because the second found it already
+checked and nothing nested. That is what made it look arbitrary for as long as it did.</p>
+
+<p><strong>The method that changed between runs.</strong> Two traits each define
+<code>describe</code> for <code>i64</code>:</p>
+
+<pre><code><span class="k">trait</span> <span class="t">Loud</span> {
+  <span class="k">fn</span> <span class="f">describe</span>(self : &amp;<span class="t">i64</span>) -&gt; <span class="t">i32</span>;
+}
+
+<span class="k">trait</span> <span class="t">Quiet</span> {
+  <span class="k">fn</span> <span class="f">describe</span>(self : &amp;<span class="t">i64</span>) -&gt; <span class="t">i32</span>;
+}
+
+<span class="k">impl</span> <span class="t">Loud</span> <span class="k">for</span> <span class="t">i64</span> {
+  <span class="k">fn</span> <span class="f">describe</span>(self : &amp;<span class="t">i64</span>) -&gt; <span class="t">i32</span> {
+    <span class="k">return</span> <span class="n">1</span>;
+  }
+}
+
+<span class="k">impl</span> <span class="t">Quiet</span> <span class="k">for</span> <span class="t">i64</span> {
+  <span class="k">fn</span> <span class="f">describe</span>(self : &amp;<span class="t">i64</span>) -&gt; <span class="t">i32</span> {
+    <span class="k">return</span> <span class="n">2</span>;
+  }
+}</code></pre>
+
+<p>Three runs of the same compiler on a program that called <code>x.describe()</code> printed
+<code>1</code>, <code>1</code>, <code>2</code>. Dispatch walked a hash map of impl blocks and took the
+first match. The fix, in review as this is written, chooses the way Rust does: an inherent method
+over a trait's, and two traits' refused with a diagnostic that names both, since a call has no
+spelling to say which it means:</p>
+
+<pre><code>Error[E3035]: Method 'describe' on 'i64' is defined by more than one impl (Loud, Quiet);
+a call cannot choose between them</code></pre>
+
+<p><strong>The static method that did not exist.</strong> <code>Type::method()</code> searched the
+inherent impl blocks only, so a trait's static method was refused, which is every
+<code>Default::default()</code> and every <code>From::from()</code>. It also matched the target by
+name over structs and enums, so any static method on a scalar was refused too, trait or not.
+<code>core::default</code> waited on that one, and it is in review now.</p>
+
+<h2>How the numbers are checked</h2>
+
+<p>Every module has a fixture that prints values, and the values are written out rather than
+checked for looking right. For <code>rand</code> they come from a separate implementation of
+xoshiro256** and SplitMix64 written from the published algorithms, so a wrong constant, a wrong
+shift or a state word updated out of order changes them. For <code>num</code> every operand is above
+the signed range of its width, so a body that read a sign gives a different answer rather than the
+same one by luck.</p>
+
+<p>Then each assertion is checked by breaking the thing it names. Twenty-nine single-edit mutations
+of <code>rand.vx</code>, each run against its fixture, each noticed by a specific part of the expected
+line. The first round found one that noticed nothing: no bound in the test ever rejected a draw, so
+the rejection loop in <code>below</code>, the part of the function the comment is about, was never
+entered. A bound just above half the range fixed that. It now takes seven draws to answer.</p>
+
+<p>The same round on <code>core::clone</code> found a compiler bug instead of a test gap. Deleting the
+<code>None</code> arm of <code>Option</code>'s clone was meant to be refused, and was not: the
+<code>match</code> compiled, the function fell off its end, and the fixture read back a wrong
+<code>Some</code>. That is filed, and it is the reason the code generator has to synthesize a default
+return at all.</p>
+
+<h2>What is not done</h2>
+
+<p><code>core::convert</code> is designed as one <code>From</code> impl per pair of widths, and those
+collide: a method's mangled name carries the target type and the method and nothing of the trait, so
+<code>impl From&lt;i32&gt; for i64</code> and <code>impl From&lt;u8&gt; for i64</code> are both
+<code>i64$from</code>. The call is refused today instead of reaching one of them silently, which is
+right, and leaves the module waiting on mangling that carries the trait. <code>mem</code>,
+<code>ptr</code>, <code>hint</code>, <code>marker</code> and <code>panic</code> are unstarted and
+mostly small. <code>Drop</code> is the large one, and everything that owns something waits on it.</p>
+
+<p>And the plan's own scoreboard, the parity matrix that every PR was supposed to update, still
+says none of this exists. That is next.</p>
+
+<p class="post-foot">The modules are in
+<a href="https://github.com/vx-lang/Vx/tree/main/stdlib/core">stdlib/core</a>, every signature is in
+the <a href="/docs/stdlib-reference.html">standard library reference</a>, and the plan with its
+parity matrix is
+<a href="https://github.com/vx-lang/Vx/blob/main/docs/implementation_plans/core_library.md">core_library.md</a>.
+Vx is Apache 2.0 with the LLVM exception &mdash; <a href="/docs/getting-started.html">install it</a>.</p>
+
+</article>
+
+</main>
+
+<footer>
+  <p>Vx is Apache 2.0 with the LLVM exception. <a href="https://github.com/vx-lang/Vx">Source</a>.</p>
+</footer>
+
+</body>
+</html>
