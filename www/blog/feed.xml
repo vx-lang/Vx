@@ -14,7 +14,7 @@
     <id>https://vxlang.org/blog/what-writing-core-taught-the-compiler.html</id>
     <updated>2026-09-21T18:00:00Z</updated>
     <author><name>Aditya Kumar</name></author>
-    <summary>A week ago Vx had no core library. Now it has six modules of it, a random-number library, and more than a dozen compiler fixes that writing them forced, a method that dispatched differently between runs among them. Every line is Vx, with no extern in it.</summary>
+    <summary>A week ago Vx had no core library. Now it has six modules of it, a random-number library, and the compiler fixes that writing them forced, a method that dispatched differently between runs among them. Every line is Vx, with no extern in it.</summary>
   </entry>
 
   <entry>

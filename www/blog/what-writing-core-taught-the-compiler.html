@@ -5,16 +5,16 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>What writing core taught the compiler</title>
 <meta name="author" content="Aditya Kumar">
-<meta name="description" content="A week ago Vx had no core library. Now it has six modules of it, a random-number library, and more than a dozen compiler fixes that writing them forced. Every module is written in Vx, with no extern in sight.">
+<meta name="description" content="A week ago Vx had no core library. Now it has six modules of it, a random-number library, and the compiler fixes that writing them forced. Every module is written in Vx, with no extern in sight.">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 
 <meta property="og:title" content="What writing core taught the compiler">
-<meta property="og:description" content="A week ago Vx had no core library. Now it has six modules of it, a random-number library, and more than a dozen compiler fixes that writing them forced.">
+<meta property="og:description" content="A week ago Vx had no core library. Now it has six modules of it, a random-number library, and the compiler fixes that writing them forced.">
 <meta property="og:type" content="article">
 <meta property="article:published_time" content="2026-09-21T18:00:00Z">
 <meta property="og:url" content="https://vxlang.org/blog/what-writing-core-taught-the-compiler.html">
 <meta property="og:image" content="https://vxlang.org/cards/blog-what-writing-core-taught-the-compiler.png">
-<meta property="og:image:alt" content="What writing core taught the compiler: six modules, one library, more than a dozen fixes.">
+<meta property="og:image:alt" content="What writing core taught the compiler: six modules, one library, and the fixes that writing them forced.">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:image" content="https://vxlang.org/cards/blog-what-writing-core-taught-the-compiler.png">
 
@@ -47,8 +47,8 @@
 exist. Now it holds <code>cmp</code>, <code>option</code>, <code>result</code>, <code>num</code>,
 <code>ops</code> and <code>iter</code>, about 1,400 lines, with <code>std::rand</code> beside them and
 <code>clone</code> and <code>default</code> in review. Every line is Vx, and none of it declares an
-<code>extern</code>. Writing it found more than a dozen compiler bugs, because a standard library is the
-first program that uses every feature at once.</blockquote>
+<code>extern</code>. Writing it kept finding compiler bugs, because a standard library is the first
+program that uses every feature at once.</blockquote>
 
 <p class="lede">The standard library was one 1,358-line <code>std</code> with the layers Rust keeps
 apart mixed together: <code>Option&lt;T&gt;</code> next to <code>TcpStream</code>, and
@@ -157,8 +157,7 @@ negated literal was typed by its spelling alone, so <code>-2.0 * ln(x)</code> wi
 was a type error, though <code>2.0 * ln(x)</code> was fine. A <code>u64</code> above
 <code>i64::MAX</code> crashed one code generator, and printed as a negative number on the other.</p>
 
-<p>Three were the kind that had been wrong for a while without anyone standing where they could
-see it.</p>
+<p>Others had been wrong for a while without anyone standing where they could see them.</p>
 
 <p><strong>The warnings that forgot.</strong> Importing <code>std::rand</code> printed fourteen
 warnings that its parameters were unused. They were used. The checker kept one set of used names
