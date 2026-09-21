@@ -1,0 +1,13 @@
+[package]
+name = "vxlang"
+version = "0.0.2"
+edition = "2021"
+description = "The Vx programming language. This name points at the compiler, which is published as `vxc`."
+authors = ["Aditya"]
+license = "Apache-2.0 WITH LLVM-exception"
+repository = "https://github.com/vx-lang/Vx"
+homepage = "https://vxlang.org"
+documentation = "https://vxlang.org/docs/"
+readme = "README.md"
+keywords = ["compiler", "heterogeneous", "mlir", "gpu", "npu"]
+categories = ["compilers", "development-tools"]

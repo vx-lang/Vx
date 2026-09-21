@@ -54,6 +54,9 @@ members = ["refactor_tool",
 # rlib to link against; the cdylib the JIT loads at run time is built when the package is
 # selected, and nothing selects it by default.
 default-members = [".", "stdlib/rust_core"]
+# The crates.io name-reservation stubs are packages, but they are not part of this build: they are
+# a few lines published to hold `vxc` and `vxlang`, copied out of the tree before `cargo publish`.
+exclude = ["scripts/release/crates-io"]
 
 [lints.clippy]
 if_same_then_else = "allow"
