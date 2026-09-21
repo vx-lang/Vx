@@ -292,6 +292,10 @@ pub enum DiagnosticCode {
     /// so the inner one asks for nothing extra, and nesting them is what made a block's
     /// value depend on evaluating a closure defined inside another block.
     E3034,
+    /// A method name that more than one `impl` block defines for the same type. The impls
+    /// are kept in a hash map, so which body a call reached used to change from one run of
+    /// the compiler to the next; refusing the call is the only answer that is the same twice.
+    E3035,
 
     // --- Borrow/Ownership Errors (E4xxx) ---
     /// Use of moved or consumed linear variable

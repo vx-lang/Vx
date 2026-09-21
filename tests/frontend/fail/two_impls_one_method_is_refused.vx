@@ -1,0 +1,65 @@
+//===- two_impls_one_method_is_refused.vx - Vx Compiler ---------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// Two traits define `describe` for `i64`, and a call has no way to say which one it means.
+//
+// This has to be refused rather than resolved: the impl blocks live in a hash map, and the
+// body a call reached used to be whichever came first in that order. Three runs of this
+// program printed 1, 1 and 2. The diagnostic names both impls, so the reader knows what to
+// rename.
+//
+// The static spelling is refused for the same reason, with the trait's arguments spelled
+// out, since two impls of one trait differ in nothing else.
+//
+// CHECK: E3035
+// CHECK: Method 'describe' on 'i64' is defined by more than one impl (Loud, Quiet)
+// CHECK: Method 'make' on 'i64' is defined by more than one impl (Build<i32>, Build<u8>)
+trait Loud {
+  fn describe(self : &i64) -> i32;
+}
+
+trait Quiet {
+  fn describe(self : &i64) -> i32;
+}
+
+impl Loud for i64 {
+  fn describe(self : &i64) -> i32 {
+    return 1;
+  }
+}
+
+impl Quiet for i64 {
+  fn describe(self : &i64) -> i32 {
+    return 2;
+  }
+}
+
+trait Build<T> {
+  fn make(v : T) -> Self;
+}
+
+impl Build<i32> for i64 {
+  fn make(v : i32) -> i64 {
+    return v as i64;
+  }
+}
+
+impl Build<u8> for i64 {
+  fn make(v : u8) -> i64 {
+    return v as i64;
+  }
+}
+
+fn main() -> i32 {
+  let x : i64 = 5;
+  print(x.describe());
+  let b : u8 = 3;
+  print(i64::make(b));
+  return 0;
+}

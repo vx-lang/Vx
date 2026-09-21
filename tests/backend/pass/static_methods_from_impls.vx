@@ -1,0 +1,118 @@
+//===- static_methods_from_impls.vx - Vx Compiler ----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `Type::method()` reaches a method wherever its impl block is.
+//
+// The lookup used to search the inherent blocks only, and matched the target by name over
+// structs and enums only. So a trait's static method (`Point::default()`) and any static
+// method on a scalar (`u64::doubled(21)`) were both "Undefined static method", and a static
+// method of a trait impl on an enum (`Option<i32>::default()`) was read as a variant.
+//
+// Each value is chosen so that the wrong body gives a different answer: the inherent
+// `origin` and the trait's `default` for `Point` return different points, so a lookup that
+// let one shadow the other prints the wrong sum. Inherent shadows trait, as in Rust, and
+// the `Shadowed` case checks that direction rather than the other.
+//
+// EXPECT: 42 0 3 7 11 1
+import core::option;
+
+trait Default {
+  fn default() -> Self;
+}
+
+struct Point {
+  x : i32,
+  y : i32,
+}
+
+impl Point {
+  fn origin() -> Point {
+    return Point {
+      x : 1, y : 2
+    };
+  }
+}
+
+impl Default for Point {
+  fn default() -> Point {
+    return Point {
+      x : 3, y : 4
+    };
+  }
+}
+
+impl Default for i32 {
+  fn default() -> i32 {
+    return 0;
+  }
+}
+
+impl u64 {
+  fn doubled(v : u64) -> u64 {
+    return v * 2;
+  }
+}
+
+impl<T> Default for Option<T> {
+  fn default() -> Option<T> {
+    return Option<T>::None();
+  }
+}
+
+trait Named {
+  fn tag() -> i32;
+}
+
+struct Shadowed {
+  n : i32,
+}
+
+impl Shadowed {
+  fn tag() -> i32 {
+    return 11;
+  }
+}
+
+impl Named for Shadowed {
+  fn tag() -> i32 {
+    return 99;
+  }
+}
+
+fn show(b : bool) -> i32 {
+  if b {
+    print(1);
+  } else {
+    print(0);
+  }
+  return 0;
+}
+
+fn main() -> i32 {
+  // A static method on a scalar target.
+  print(u64::doubled(21));
+  print!(" ");
+
+  // A trait's static method, on a scalar and on a struct.
+  print(i32::default());
+  print!(" ");
+  let o = Point::origin();
+  print(o.x + o.y);
+  print!(" ");
+  let d = Point::default();
+  print(d.x + d.y);
+  print!(" ");
+
+  // An inherent method wins over a trait's of the same name.
+  print(Shadowed::tag());
+  print!(" ");
+
+  // A trait's static method on an enum is a method, not a variant.
+  let none = Option<i32>::default();
+  show(none.is_none());
+  return 0;
+}

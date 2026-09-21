@@ -38,6 +38,16 @@ struct ReborrowPlan {
     base_snapshots: HashMap<String, Option<Vec<BorrowRecord>>>,
 }
 
+/// How an impl block is named in a diagnostic: the trait with its arguments, so two impls of
+/// one trait for one type (`From<i32>`, `From<u8>`) are told apart.
+fn impl_display(trait_name: &crate::symbol::Symbol, ib: &decl::ImplBlock) -> String {
+    if ib.trait_args.is_empty() {
+        return trait_name.to_string();
+    }
+    let args: Vec<String> = ib.trait_args.iter().map(|a| a.to_string()).collect();
+    format!("{}<{}>", trait_name, args.join(", "))
+}
+
 impl<'a> TypeChecker<'a> {
     pub(crate) fn check_indirectcall_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
         let (callee, args, call_span) = match expr {
@@ -1013,79 +1023,107 @@ impl<'a> TypeChecker<'a> {
         let mut found_generics: Vec<decl::GenericParam> = Vec::new();
         let mut found_mapping: HashMap<crate::symbol::Symbol, Type> = HashMap::new();
 
-        if let Some(impl_blocks) = self.env.impls.get("_inherent") {
+        // Every impl block that targets the named type and has the method: the inherent one
+        // and each trait's. A scalar target (`impl u64 { .. }`, `impl Default for i32`) is
+        // matched by its spelling, which a name-only match over structs and enums never was.
+        let target_matches = |ib: &decl::ImplBlock| -> bool {
+            match &ib.target_type {
+                Type::Struct(n, _) | Type::Enum(n, _) | Type::Generic(n, _) => *struct_name == **n,
+                Type::GenericInstance(inner, _) => match &**inner {
+                    Type::Struct(n, _) | Type::Enum(n, _) => *struct_name == **n,
+                    _ => false,
+                },
+                Type::Scalar(el) => struct_name == el.to_string(),
+                _ => false,
+            }
+        };
+        let mut inherent: Vec<&decl::ImplBlock> = Vec::new();
+        let mut from_traits: Vec<(&crate::symbol::Symbol, &decl::ImplBlock)> = Vec::new();
+        for (trait_key, impl_blocks) in self.env.impls.iter() {
             for ib in impl_blocks {
-                let mut matches = false;
-                if let Type::Struct(n, _) = &ib.target_type {
-                    if *struct_name == **n {
-                        matches = true;
-                    }
-                } else if let Type::Enum(n, _) = &ib.target_type {
-                    if *struct_name == **n {
-                        matches = true;
-                    }
-                } else if let Type::Generic(n, _) = &ib.target_type {
-                    if *struct_name == **n {
-                        matches = true;
-                    }
-                } else if let Type::GenericInstance(inner, _) = &ib.target_type {
-                    if let Type::Struct(n, _) = &**inner {
-                        if *struct_name == **n {
-                            matches = true;
-                        }
-                    } else if let Type::Enum(n, _) = &**inner {
-                        if *struct_name == **n {
-                            matches = true;
-                        }
-                    }
+                if !target_matches(ib)
+                    || !ib
+                        .methods
+                        .iter()
+                        .any(|m| m.name == method_name.as_str().into())
+                {
+                    continue;
                 }
-
-                if matches {
-                    for m in &ib.methods {
-                        if m.name == method_name.as_str().into() {
-                            found_generic_func = Some(m.clone());
-                            // A method's own list repeats the impl block's parameters, so
-                            // take each name once or an unbound one is reported twice.
-                            found_generics = ib.generics.clone();
-                            for g in &m.generics {
-                                if !found_generics.iter().any(|f| f.name() == g.name()) {
-                                    found_generics.push(g.clone());
-                                }
-                            }
-                            if !explicit_ty_str.is_empty() {
-                                let mut explicit_args = Vec::new();
-                                let mut depth = 0;
-                                let mut current = String::new();
-                                for c in explicit_ty_str.chars() {
-                                    if c == '<' {
-                                        depth += 1;
-                                        current.push(c);
-                                    } else if c == '>' {
-                                        depth -= 1;
-                                        current.push(c);
-                                    } else if c == ',' && depth == 0 {
-                                        explicit_args.push(self.parse_ty_str(&current));
-                                        current.clear();
-                                    } else {
-                                        current.push(c);
-                                    }
-                                }
-                                if !current.trim().is_empty() {
-                                    explicit_args.push(self.parse_ty_str(&current));
-                                }
-
-                                for (i, parsed_ty) in explicit_args.into_iter().enumerate() {
-                                    if i < ib.generics.len() {
-                                        found_mapping
-                                            .insert(ib.generics[i].name().into(), parsed_ty);
-                                    }
-                                }
-                            }
-                            break;
+                if trait_key.as_ref() == "_inherent" {
+                    inherent.push(ib);
+                } else {
+                    from_traits.push((trait_key, ib));
+                }
+            }
+        }
+        // An inherent method shadows a trait's, as in Rust. Two traits' is a refusal rather
+        // than a choice: the impls live in a hash map, and which one a call reached used to
+        // change between runs of the compiler.
+        let chosen: Option<&decl::ImplBlock> = if let Some(ib) = inherent.first() {
+            Some(ib)
+        } else if from_traits.len() > 1 {
+            if !self.speculating {
+                let mut names: Vec<String> = from_traits
+                    .iter()
+                    .map(|(t, ib)| impl_display(t, ib))
+                    .collect();
+                names.sort();
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E3035,
+                    format!(
+                        "Method '{}' on '{}' is defined by more than one impl ({}); a call \
+                         cannot choose between them",
+                        method_name,
+                        struct_name,
+                        names.join(", ")
+                    ),
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                );
+            }
+            return Type::Unknown;
+        } else {
+            from_traits.first().map(|(_, ib)| *ib)
+        };
+        if let Some(ib) = chosen {
+            for m in &ib.methods {
+                if m.name == method_name.as_str().into() {
+                    found_generic_func = Some(m.clone());
+                    // A method's own list repeats the impl block's parameters, so
+                    // take each name once or an unbound one is reported twice.
+                    found_generics = ib.generics.clone();
+                    for g in &m.generics {
+                        if !found_generics.iter().any(|f| f.name() == g.name()) {
+                            found_generics.push(g.clone());
                         }
                     }
-                }
-                if found_generic_func.is_some() {
+                    if !explicit_ty_str.is_empty() {
+                        let mut explicit_args = Vec::new();
+                        let mut depth = 0;
+                        let mut current = String::new();
+                        for c in explicit_ty_str.chars() {
+                            if c == '<' {
+                                depth += 1;
+                                current.push(c);
+                            } else if c == '>' {
+                                depth -= 1;
+                                current.push(c);
+                            } else if c == ',' && depth == 0 {
+                                explicit_args.push(self.parse_ty_str(&current));
+                                current.clear();
+                            } else {
+                                current.push(c);
+                            }
+                        }
+                        if !current.trim().is_empty() {
+                            explicit_args.push(self.parse_ty_str(&current));
+                        }
+
+                        for (i, parsed_ty) in explicit_args.into_iter().enumerate() {
+                            if i < ib.generics.len() {
+                                found_mapping.insert(ib.generics[i].name().into(), parsed_ty);
+                            }
+                        }
+                    }
                     break;
                 }
             }
@@ -1799,34 +1837,78 @@ impl<'a> TypeChecker<'a> {
         method: &crate::symbol::Symbol,
         mapping: &mut std::collections::HashMap<crate::symbol::Symbol, Type>,
     ) -> Option<(Function, decl::ImplBlock)> {
-        let mut found_method = None;
-        for impl_blocks in self.env.impls.values() {
-            for ib in impl_blocks {
-                mapping.clear();
-                let mut check_ty = base_ty.clone();
-                while let Type::Borrow { inner, .. }
-                | Type::Pointer(inner, _, _)
-                | Type::Ref(inner, _) = &check_ty
-                {
-                    check_ty = *inner.clone();
-                }
+        let mut check_ty = base_ty.clone();
+        while let Type::Borrow { inner, .. } | Type::Pointer(inner, _, _) | Type::Ref(inner, _) =
+            &check_ty
+        {
+            check_ty = *inner.clone();
+        }
 
-                if self.unify_types(&ib.target_type, &check_ty, mapping) {
-                    for m in &ib.methods {
-                        if m.name == *method {
-                            found_method = Some((m.clone(), (*ib).clone()));
-                            break;
-                        }
+        // Every impl block the receiver unifies with that has the method, with the mapping
+        // that unification produced. An inherent method shadows a trait's, as in Rust; two
+        // traits' is refused rather than chosen, because the blocks live in a hash map and
+        // which body a call reached used to change from one run of the compiler to the next.
+        let mut inherent = None;
+        let mut from_traits: Vec<(
+            crate::symbol::Symbol,
+            Function,
+            decl::ImplBlock,
+            HashMap<_, _>,
+        )> = Vec::new();
+        for (trait_key, impl_blocks) in self.env.impls.iter() {
+            for ib in impl_blocks {
+                let mut candidate_mapping = HashMap::new();
+                if !self.unify_types(&ib.target_type, &check_ty, &mut candidate_mapping) {
+                    continue;
+                }
+                let Some(m) = ib.methods.iter().find(|m| m.name == *method) else {
+                    continue;
+                };
+                if trait_key.as_ref() == "_inherent" {
+                    if inherent.is_none() {
+                        inherent = Some((m.clone(), (*ib).clone(), candidate_mapping));
                     }
+                } else {
+                    from_traits.push((
+                        trait_key.clone(),
+                        m.clone(),
+                        (*ib).clone(),
+                        candidate_mapping,
+                    ));
                 }
-                if found_method.is_some() {
-                    break;
-                }
-            }
-            if found_method.is_some() {
-                break;
             }
         }
+        let found_method = if let Some((m, ib, chosen_mapping)) = inherent {
+            *mapping = chosen_mapping;
+            Some((m, ib))
+        } else if from_traits.len() > 1 {
+            if !self.speculating {
+                let mut names: Vec<String> = from_traits
+                    .iter()
+                    .map(|(t, _, ib, _)| impl_display(t, ib))
+                    .collect();
+                names.sort();
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E3035,
+                    format!(
+                        "Method '{}' on '{}' is defined by more than one impl ({}); a call \
+                         cannot choose between them",
+                        method,
+                        check_ty,
+                        names.join(", ")
+                    ),
+                    None,
+                );
+            }
+            mapping.clear();
+            None
+        } else if let Some((_, m, ib, chosen_mapping)) = from_traits.pop() {
+            *mapping = chosen_mapping;
+            Some((m, ib))
+        } else {
+            mapping.clear();
+            None
+        };
 
         // Dual-run parity gate for the stdlib<->compiler decoupling (#219): when the AST
         // impl-walk above resolves a method on a *concrete* receiver via a non-generic impl,
