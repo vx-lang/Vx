@@ -56,6 +56,13 @@ rm -f "$DEST/Cargo.toml.bak"
 grep -E '^(name|version) = ' "$DEST/Cargo.toml"
 
 cd "$DEST"
+
+# config.local points CARGO_HOME at the repository so the toolchain stays self-contained, and a
+# shell that has sourced it looks for the crates.io token there and finds none -- "no token found,
+# please run `cargo login`" while ~/.cargo/credentials.toml holds a perfectly good one. These
+# stubs have no LLVM dependency, so they want the ordinary cargo home.
+cargo() { env -u CARGO_HOME command cargo "$@"; }
+
 if [ "$MODE" = "--publish" ]; then
     echo "==> Publishing $CRATE $VERSION to crates.io. This cannot be undone."
     cargo publish --allow-dirty
