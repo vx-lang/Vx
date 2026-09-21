@@ -783,20 +783,20 @@ live docs, not this table.
 | Rust `core` module | Vx module | Phase | Status | Blocking Track A items | Notes / exclusions |
 | --- | --- | --- | --- | --- | --- |
 | `marker` | `core::marker` | 1 | — | A6 | `Send`/`Sync` declared, not enforced; `Unpin`, `Sized` no-ops |
-| `cmp` | `core::cmp` | 1 | — | A1, A2 | `Rhs` defaults to `Self` by convention until trait-parameter defaults exist |
-| `ops` | `core::ops` | 1→2 | — | A11 (dispatch), A10 (`Output`) | `Deref`, `Drop`, `Fn*`, coroutine traits excluded |
+| `cmp` | `core::cmp` | 1 | partial | | `PartialEq`, `Ord`, `Ordering`; no `PartialOrd` (no float impl), `Reverse`, `max_by`/`min_by_key`; `Rhs` is `Self` by convention until trait-parameter defaults exist |
+| `ops` | `core::ops` | 1→2 | declared | A11 (dispatch), A10 (`Output`) | `Deref`, `Drop`, `Fn*`, coroutine traits excluded |
 | `clone` | `core::clone` | 1 | partial | | `Clone` for the scalars, `bool`, `Ordering`, `Option<T : Clone>`; `Result<T, E>` pending an impl over two bounded parameters |
 | `default` | `core::default` | 1 | par | | `Default` for the scalars, `bool`, `Option<T>`; a static trait method dispatches since Vx#684 |
 | `convert` | `core::convert` | 1 | — | Vx#686 | blanket `Into` excluded; stamped per pair -- which is the shape whose impls collide on one mangled name |
-| `option` | `core::option` | 1 | — | A14, A1, A2 | `zip` returns `Pair` until A16 |
-| `result` | `core::result` | 1 | — | A14, A1 | replaces the Rust-backed shims |
-| `num` (integers) | `core::num` | 1 | — | A5, A7 | constants as functions until `const` items; per-width table |
+| `option` | `core::option` | 1 | partial | A16 for `zip` | the combinators through `is_some_and`; no `zip`, `take`, `replace`, `ok_or`, `expect`, `unwrap_or_default` |
+| `result` | `core::result` | 1 | partial | | replaced the Rust-backed shims; `ok`, `err`, `map`, `map_err`, `and_then`, `unwrap_or_else`; no `expect`, `unwrap_err`, `or_else`, `and`, `or` |
+| `num` (integers) | `core::num` | 1 | partial | | every width, signed and unsigned; bit ops, rotates, `pow`, `ilog2`, `next_power_of_two`, the checked and saturating families; no `wrapping_*`/`overflowing_*` spellings, `from_str_radix`, `to_be`/`to_le`; constants as functions until `const` items |
 | `num` (floats) | `core::num` | 2 | — | — | superset of Rust's: `exp`/`sqrt`/`sin`/.. via `mlir!` `math` dialect; parsing in phase 3 |
 | `mem` | `core::mem` | 1 | — | A19 for semantics | `drop`/`forget`/`needs_drop` declared, semantics pending Drop |
 | `ptr` | `core::ptr` | 1 | — | — | `addr_of` excluded |
 | `hint` | `core::hint` | 1 | — | — | |
 | `panic` | `core::panic` | 1 | — | A8 | `Location`, `PanicInfo`, hooks excluded |
-| `iter` | `core::iter` | 2 | — | A9, A10, A13, A3, A2 | |
+| `iter` | `core::iter` | 2 | partial | A10 (`Item`), A16 (`zip`, `enumerate`), Vx#647, Vx#649 | `Iterator<Item>` with eight defaults, `Range`, `map`/`filter`/`take`/`skip`; one adaptor deep, and no default names `Item`; no `rev`, `sum`, `fold`, `collect` |
 | `slice` | `core::slice` | 2 | — | A17 for `&[T]` spelling | library `Slice`/`SliceMut` first; `sort` (stable) is alloc |
 | `str` | `core::str` | 2 | — | A15 | float `parse` in phase 3 |
 | `char` | `core::char` | 2 | — | A15 | Unicode case tables phase 4; ASCII + Latin-1 first |
