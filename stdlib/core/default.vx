@@ -1,0 +1,49 @@
+//===- default.vx - Vx Standard Library ---------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `Default`: the value a type starts from when nothing better is said.
+//
+// One static method, called through the type: `i64::default()`, `Option<f32>::default()`.
+// A trait method with no `self` is what needed the static lookup to search trait impls.
+//
+// The answers are Rust's: zero for every number, `false`, `None`. `Ordering` has none in
+// Rust either, and none here. A struct gets one by writing the impl; deriving it is not
+// something the language does yet.
+import core::option;
+
+trait Default {
+  fn default() -> Self;
+}
+
+/// Zero, spelled at the width by the return type.
+macro_rules stamp_default {
+  ($t : ident , $zero : expr) => {
+    impl Default for $t {
+      fn default() -> $t {
+        return $zero;
+      }
+    }
+  };
+}
+
+stamp_default!(i8 , 0);
+stamp_default!(i16 , 0);
+stamp_default!(i32 , 0);
+stamp_default!(i64 , 0);
+stamp_default!(u8 , 0);
+stamp_default!(u16 , 0);
+stamp_default!(u32 , 0);
+stamp_default!(u64 , 0);
+stamp_default!(f32 , 0.0);
+stamp_default!(f64 , 0.0);
+stamp_default!(bool , false);
+
+impl<T> Default for Option<T> {
+  fn default() -> Option<T> {
+    return Option<T>::None();
+  }
+}

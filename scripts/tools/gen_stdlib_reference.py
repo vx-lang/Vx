@@ -28,7 +28,9 @@ OUTPUT = Path("www/book/src/stdlib-reference.md")
 MODULE_BLURB = {
     "alloc": "Raw allocation and deallocation.",
     "box": "`Box<T>`, a single-owner heap allocation. Required for recursive types.",
+    "clone": "`Clone`, an explicit duplicate of a value.",
     "closure": "The closure types the compiler lowers `|x| ...` into.",
+    "default": "`Default`, the value a type starts from.",
     "fs": "Files and directories.",
     "googletest": "Assertions for tests written in Vx.",
     "hash_map": "`HashMap<K, V>`.",

@@ -1,0 +1,83 @@
+//===- core_clone_default.vx - Vx Compiler -----------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `core::clone` and `core::default`.
+//
+// A clone is checked by changing the original afterwards and reading the copy: a `clone`
+// that handed back the same storage would follow the change. `clone_from` is the trait's
+// one default body, so it is called rather than trusted. `Option<T>` is cloned with a
+// payload and without, since the two arms are two bodies.
+//
+// A default is checked against a value that is not it, so a `default` that returned its
+// receiver's width but the wrong value would print differently. The `u64` one prints 0
+// through the unsigned helper, which is why this file is flat-only.
+//
+// The `Ordering` bindings are annotated because a value built straight from a variant call
+// finds no impl yet; the annotation is what gives the binding its type.
+//
+// REQUIRES: flat-codegen
+// EXPECT: 7 9 | 1 2.5 1 | 9 1 | 0 0 0 0 1
+import core::clone;
+import core::cmp;
+import core::default;
+import core::option;
+
+fn show(b : bool) -> i32 {
+  if b {
+    print(1);
+  } else {
+    print(0);
+  }
+  return 0;
+}
+
+fn main() -> i32 {
+  // A copy is its own value: the original moves on, the copy does not.
+  let mut a : i32 = 7;
+  let b : i32 = a.clone();
+  a = 9;
+  print(b);
+  print!(" ");
+  let mut c : i32 = 1;
+  c.clone_from(&a);
+  print(c);
+  print!(" | ");
+
+  // The other stamped kinds.
+  let t : bool = true;
+  show(t.clone());
+  print!(" ");
+  let f : f64 = 2.5;
+  print(f.clone());
+  print!(" ");
+  let o : Ordering = Ordering::Greater();
+  let p : Ordering = o.clone();
+  show(p.is_gt());
+  print!(" | ");
+
+  // Both arms of Option<T>.
+  let s = Option<i32>::Some(9);
+  print(s.clone().unwrap());
+  print!(" ");
+  let n = Option<i32>::None();
+  show(n.clone().is_none());
+  print!(" | ");
+
+  // Defaults, each read against the value it is not.
+  let z : i32 = i32::default();
+  print(z);
+  print!(" ");
+  print(u64::default());
+  print!(" ");
+  print(f32::default());
+  print!(" ");
+  show(bool::default());
+  print!(" ");
+  let d = Option<f64>::default();
+  show(d.is_none());
+  return 0;
+}

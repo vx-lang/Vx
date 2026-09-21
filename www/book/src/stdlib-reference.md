@@ -23,7 +23,9 @@ friends.
 
 ## Contents
 
+- [`core::clone`](#coreclone) — `Clone`, an explicit duplicate of a value.
 - [`core::cmp`](#corecmp) —
+- [`core::default`](#coredefault) — `Default`, the value a type starts from.
 - [`core::iter`](#coreiter) — The `Iterator` trait and its adaptors, which `for` loops and `.map` build on.
 - [`core::num`](#corenum) — The integer methods, stamped over the signed and the unsigned widths.
 - [`core::ops`](#coreops) —
@@ -48,6 +50,39 @@ friends.
 - [`std::tensor`](#stdtensor) — Operations on `Tensor`, including shape queries and elementwise maths.
 - [`std::time`](#stdtime) — Clocks and durations.
 - [`std::vec`](#stdvec) — `Vec<T>`, a growable array.
+
+## `core::clone`
+
+`Clone`, an explicit duplicate of a value.
+
+**Types**
+
+- `trait Clone`
+
+**Functions**
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
+```rust
+fn clone(self : &Self) -> Self
+fn clone_from(self : &mut Self, source : &Self) -> void
+```
+
+**`Clone for $t` methods**
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
+```rust
+fn clone(self : &$t) -> $t
+```
+
+**`Clone for Option<T>` methods**
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
+```rust
+fn clone(self : &Option<T>) -> Option<T>
+```
 
 ## `core::cmp`
 
@@ -96,6 +131,38 @@ fn eq(self : &$t, other : &$t) -> bool
 
 ```rust
 fn cmp(self : &$t, other : &$t) -> Ordering
+```
+
+## `core::default`
+
+`Default`, the value a type starts from.
+
+**Types**
+
+- `trait Default`
+
+**Functions**
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
+```rust
+fn default() -> Self
+```
+
+**`Default for $t` methods**
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
+```rust
+fn default() -> $t
+```
+
+**`Default for Option<T>` methods**
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
+```rust
+fn default() -> Option<T>
 ```
 
 ## `core::iter`
@@ -1003,4 +1070,4 @@ fn vx_vec_bounds_check(index : i64, len : i64) -> i32
 
 ______________________________________________________________________
 
-366 functions across 25 modules.
+373 functions across 27 modules.

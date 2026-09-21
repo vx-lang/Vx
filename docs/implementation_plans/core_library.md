@@ -785,9 +785,9 @@ live docs, not this table.
 | `marker` | `core::marker` | 1 | — | A6 | `Send`/`Sync` declared, not enforced; `Unpin`, `Sized` no-ops |
 | `cmp` | `core::cmp` | 1 | — | A1, A2 | `Rhs` defaults to `Self` by convention until trait-parameter defaults exist |
 | `ops` | `core::ops` | 1→2 | — | A11 (dispatch), A10 (`Output`) | `Deref`, `Drop`, `Fn*`, coroutine traits excluded |
-| `clone` | `core::clone` | 1 | — | A1 | |
-| `default` | `core::default` | 1 | — | A1 | check: trait method without `self` |
-| `convert` | `core::convert` | 1 | — | A7 | blanket `Into` excluded; stamped per pair |
+| `clone` | `core::clone` | 1 | partial | | `Clone` for the scalars, `bool`, `Ordering`, `Option<T : Clone>`; `Result<T, E>` pending an impl over two bounded parameters |
+| `default` | `core::default` | 1 | par | | `Default` for the scalars, `bool`, `Option<T>`; a static trait method dispatches since Vx#684 |
+| `convert` | `core::convert` | 1 | — | Vx#686 | blanket `Into` excluded; stamped per pair -- which is the shape whose impls collide on one mangled name |
 | `option` | `core::option` | 1 | — | A14, A1, A2 | `zip` returns `Pair` until A16 |
 | `result` | `core::result` | 1 | — | A14, A1 | replaces the Rust-backed shims |
 | `num` (integers) | `core::num` | 1 | — | A5, A7 | constants as functions until `const` items; per-width table |

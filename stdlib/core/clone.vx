@@ -1,0 +1,71 @@
+//===- clone.vx - Vx Standard Library -----------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `Clone`: an explicit duplicate of a value.
+//
+// One required method, `clone`, and `clone_from` as a default written over it, which is
+// Rust's shape. A type that can duplicate itself more cheaply into an existing value than
+// by building a fresh one overrides `clone_from`; nothing here needs to.
+//
+// The scalars, `bool` and `Ordering` are stamped because Vx has no `Copy` yet: each is
+// copied on every read, so its `clone` is a read, but a generic body written over
+// `T : Clone` still has to be able to call it.
+//
+// `Option<T>` clones when `T` does, as in Rust. `Result<T, E>` does not yet: an impl over two
+// parameters with two bounds is the shape the checker has not been asked for, and it is
+// better absent than written and untested.
+import core::cmp;
+import core::option;
+
+trait Clone {
+  fn clone(self : &Self) -> Self;
+  fn clone_from(self : &mut Self, source : &Self) -> void {
+    *self = source.clone();
+  }
+}
+
+/// A read is a copy at every scalar width, so `clone` is a dereference.
+macro_rules stamp_clone {
+  ($t : ident) => {
+    impl Clone for $t {
+      fn clone(self : &$t) -> $t {
+        return *self;
+      }
+    }
+  };
+}
+
+stamp_clone!(i8);
+stamp_clone!(i16);
+stamp_clone!(i32);
+stamp_clone!(i64);
+stamp_clone!(u8);
+stamp_clone!(u16);
+stamp_clone!(u32);
+stamp_clone!(u64);
+stamp_clone!(f32);
+stamp_clone!(f64);
+stamp_clone!(bool);
+stamp_clone!(Ordering);
+
+/// Bound first and returned once, as `core::option`'s own bodies are: a `match` whose arms
+/// each return an enum is declined by the flat path, which has no default value of that
+/// type to give the fall-through it cannot rule out.
+impl<T : Clone> Clone for Option<T> {
+  fn clone(self : &Option<T>) -> Option<T> {
+    let mut out = Option<T>::None();
+    match *self {
+      Option<T>::Some(v) => {
+        out = Option<T>::Some(v.clone());
+      }
+      Option<T>::None() => {
+        out = Option<T>::None();
+      }
+    }
+    return out;
+  }
+}
