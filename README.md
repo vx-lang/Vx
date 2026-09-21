@@ -6,7 +6,7 @@
 <p>
     <a href="https://github.com/vx-lang/Vx/actions"><img src="https://img.shields.io/badge/CI-passing-success?style=flat-square" alt="CI Status" /></a>
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0%20with%20LLVM%20Exceptions-blue?style=flat-square" alt="License" /></a>
-    <img src="https://img.shields.io/badge/version-v0.0.1-orange?style=flat-square" alt="Version" />
+    <img src="https://img.shields.io/badge/version-v0.0.2-orange?style=flat-square" alt="Version" />
     <img src="https://img.shields.io/badge/rust-2021-blueviolet?style=flat-square" alt="Rust 2021" />
     <img src="https://img.shields.io/badge/LLVM%2FMLIR-22-red?style=flat-square" alt="LLVM/MLIR 22" />
     <img src="https://img.shields.io/badge/targets-x86__64%20%7C%20AArch64%20%7C%20CUDA%20%7C%20Apple%20ANE-brightgreen?style=flat-square" alt="Targets" />
@@ -246,12 +246,12 @@ ______________________________________________________________________
 
 ## Current Status & Known Limitations
 
-> **Release Version**: Vx is currently in **v0.0.1**.
+> **Release Version**: Vx is currently in **v0.0.2**.
 > The syntax and core type-system checks are stable. The placement, routing, and memory algebra systems are verified by active test suites. However, as an early research systems compiler, several language features are actively being built.
 
 ### What is working vs. in progress
 
-| Category | Status in v0.0.1 | Tracking Issue / Reference |
+| Category | Status in v0.0.2 | Tracking Issue / Reference |
 | :--- | :--- | :--- |
 | **Memory Algebra & Topology** | ✅ Implemented, tested, diagnostic codes active | [`docs/memory_algebra.md`](docs/memory_algebra.md) |
 | **JIT & AOT Cross-Compilation** | ✅ Fully supported via LLVM and declared machines | [ROADMAP.md](ROADMAP.md) |
@@ -316,7 +316,7 @@ If you use Vx in your research or systems work, please cite:
   title        = {{Vx}: a systems programming language for heterogeneous computing},
   year         = {2026},
   howpublished = {\url{https://vxlang.org}},
-  note         = {Version 0.0.1. Source at \url{https://github.com/vx-lang/Vx}}
+  note         = {Version 0.0.2. Source at \url{https://github.com/vx-lang/Vx}}
 }
 ```
 

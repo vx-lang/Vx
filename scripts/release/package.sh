@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build a redistributable Vx toolchain tarball for the host platform.
 #
-#   ./scripts/release/package.sh v0.0.1
+#   ./scripts/release/package.sh v0.0.2
 #
 # Produces  dist/vx-<version>-<target>.tar.gz  and its .sha256.
 #
@@ -29,7 +29,7 @@ set -euo pipefail
 
 VERSION="${1:-}"
 if [ -z "$VERSION" ]; then
-    echo "usage: $0 <version>        e.g. $0 v0.0.1" >&2
+    echo "usage: $0 <version>        e.g. $0 v0.0.2" >&2
     exit 1
 fi
 
@@ -239,7 +239,11 @@ export VX_STD_PATH="\${VX_STD_PATH:-\$PREFIX/stdlib/std:\$PREFIX/stdlib}"
 # sat on the machine that built it. Each is set only if the file is actually present, so a
 # toolchain built without one falls back to the compiler's own handling instead of naming a file
 # that is not there.
-for candidate in "\$PREFIX"/lib/*dispatch.*; do
+#
+# Shared libraries only. lib/ also holds libnpu_dispatch.a, which the AOT linker needs, and an
+# archive is not something dlopen can ever load -- naming it here made the first emit-obj of a
+# fresh install print a dyld failure about a "slice is not valid mach-o file".
+for candidate in "\$PREFIX"/lib/*dispatch."${DLL}"; do
     if [ -f "\$candidate" ]; then
         export VX_DISPATCH_LIB="\${VX_DISPATCH_LIB:-\$candidate}"
         break

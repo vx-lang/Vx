@@ -217,7 +217,7 @@ resolve_version() {
         https://github.com/${REPO}/blob/main/docs/INSTALL.md
 
       Install a specific version, once one is published:
-        curl -fsSL https://vxlang.org/install.sh | VX_VERSION=v0.0.1 sh
+        curl -fsSL https://vxlang.org/install.sh | VX_VERSION=v0.0.2 sh
 
     Published releases are listed at https://github.com/${REPO}/releases"
 }
