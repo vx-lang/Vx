@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>What Vx refuses to do</title>
+<meta name="description" content="Vx has one idea — a value's type says where it lives — and most of what follows is a refusal that falls out of it. What the compiler will not do for you, and what that costs.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+
+<meta property="og:title" content="What Vx refuses to do">
+<meta property="og:description" content="Vx has one idea — a value's type says where it lives — and most of what follows is a refusal that falls out of it.">
+<meta property="og:type" content="article">
+<meta property="og:url" content="https://vxlang.org/manifesto/">
+<meta property="og:image" content="https://vxlang.org/cards/default.png">
+<meta property="og:image:alt" content="Vx: one language, every core. Placement and reachability in the type system.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://vxlang.org/cards/default.png">
+
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header class="nav">
+  <a class="brand" href="/">
+    <span class="mark">Vx</span>
+  </a>
+  <nav>
+    <a href="/docs/getting-started.html">Install</a>
+    <a href="/docs/tour.html">Language tour</a>
+    <a href="/docs/">Docs</a>
+    <a href="/blog/">Blog</a>
+    <a href="https://github.com/vx-lang/Vx">GitHub</a>
+  </nav>
+</header>
+
+<main>
+
+<article class="post">
+
+<h1>What Vx refuses to do</h1>
+
+<blockquote class="tldr">Heterogeneity belongs in the type system, not in the runtime.</blockquote>
+
+<p class="lede">Vx has one idea. Most of what follows is a refusal that falls out of it.</p>
+
+<h2>The idea</h2>
+
+<p>
+  A value's type says where it lives. <code>Tensor&lt;f32, [4, 4], Memory::GPU_HBM&gt;</code> is a
+  different type from <code>Tensor&lt;f32, [4, 4]&gt;</code>. A device that cannot address the
+  first will not compile against it, and the error names the space the value is in, the spaces the
+  device can see, and the transfer that would fix it.
+</p>
+
+<h2>It will not move your data for you</h2>
+
+<p>
+  Crossing a memory space takes an explicit <code>transfer()</code>, even where the hardware
+  boundary is free. On Apple's unified memory that call lowers to almost nothing. It is still
+  written down, because where a program moves its data should be legible in the source rather than
+  recovered afterwards from a profile.
+</p>
+
+<h2>It will not guess the machine</h2>
+
+<p>
+  Most compilers carry a cost model. Vx reads one. A <a href="/docs/machine-files.html">machine
+  file</a> names a real part's memory spaces, their capacities and bandwidths, and the links
+  between them; the compiler admits or rejects placements against that description. Fourteen ship
+  with the toolchain — A100, H100, H200, B200, MI300X, an Apple M4, multi-GPU nodes, a Cortex-M7 —
+  each citing its sources and marking unverified figures as unverified.
+</p>
+
+<p>
+  Units are exact integer conversions. <code>GB</code> is 10<sup>9</sup> and <code>GiB</code> is
+  2<sup>30</sup>, so a figure copied off a vendor sheet means what the sheet meant.
+</p>
+
+<h2>It will not wait for the hardware to tell you</h2>
+
+<p>
+  A tile that does not fit the space it is placed in is a compile error. So is a working set that
+  fits tile by tile and not together. Those verdicts cost a rebuild on a laptop, rather than an
+  afternoon on a machine billed by the hour.
+</p>
+
+<h2>It will not claim what it has not checked</h2>
+
+<p>
+  Vx is an early research compiler. The placement and capacity rules have diagnostic codes and
+  tests behind them; they do not have proofs. Where a check is young, the documentation says so
+  and names the issue that tracks it.
+</p>
+
+<p>
+  One claim in particular it will not make. Vx is not zero-overhead end to end. Placement and
+  capacity are resolved during compilation and cost nothing at run time — that much is true, and
+  it is the part worth saying. Dispatch is a runtime, with host, CUDA and CoreML backends and a
+  wire protocol for remote regions. Rounding that up to "zero overhead" would be easy and would be
+  false.
+</p>
+
+<h2>What it costs you</h2>
+
+<p>
+  PyTorch users mutate architecture mid-loop, print a tensor shape, branch on it, and carry on. In
+  Vx — ahead-of-time, statically regioned — that same dynamism takes real work.
+</p>
+
+<p class="verdict">
+  Vx is the right language for the thing that must be correct and fast across ten kinds of
+  silicon. It is the wrong language for the thing you are still figuring out.
+</p>
+
+<h2>Check it in five minutes</h2>
+
+<p>
+  None of the above is worth believing on our say-so. Install the toolchain, write six lines that
+  place a tensor on a device, then delete the <code>transfer</code> and read what comes back:
+</p>
+
+<pre class="diag"><code>Error[E6003]: 'a' lives in CPU_DRAM but NPU[0] sees only [NPU_HBM];
+insert an explicit transfer to NPU_HBM (cost 50 on the declared path)</code></pre>
+
+<p>
+  Every code the compiler can emit has <a href="/errors/">a page of its own</a>, with the message
+  and, where the test suite has one, a program that triggers it.
+</p>
+
+<div class="links">
+  <a href="/docs/getting-started.html">
+    <strong>Install Vx</strong>
+    <span>One command, then your first program.</span>
+  </a>
+  <a href="/errors/E6003/">
+    <strong>E6003</strong>
+    <span>The diagnostic above, and the program that produces it.</span>
+  </a>
+</div>
+
+</article>
+
+</main>
+
+<footer>
+  <p>Vx is Apache 2.0 with the LLVM exception. <a href="https://github.com/vx-lang/Vx">Source</a>.</p>
+</footer>
+
+</body>
+</html>

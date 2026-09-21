@@ -107,6 +107,9 @@ jobs:
           # The social preview images every page points at.
           cp -R www/cards _site/cards
 
+          # A directory, so /manifesto resolves without a .html suffix.
+          cp -R www/manifesto _site/manifesto
+
           # A 404 that looks like the site rather than like GitHub.
           cp www/index.html _site/404.html
 
