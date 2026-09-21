@@ -17,7 +17,7 @@ the test suite has one, a program that triggers it.
 - [Warnings](#warnings) — `W1001`–`W1031` (23 codes)
 - [Parser Errors](#parser-errors) — `E1001`–`E1013` (13 codes)
 - [Name Resolution Errors](#name-resolution-errors) — `E2001`–`E2007` (7 codes)
-- [Type Errors](#type-errors) — `E3001`–`E3034` (34 codes)
+- [Type Errors](#type-errors) — `E3001`–`E3035` (35 codes)
 - [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4005` (5 codes)
 - [Safety Errors](#safety-errors) — `E5001`–`E5002` (2 codes)
 - [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6028` (28 codes)
@@ -128,6 +128,7 @@ Raised by the type checker. Vx performs no implicit numeric conversion, so many 
 | [`E3032`](/errors/E3032/) | A chain of generic instantiations that does not end -- `f<N - 1>()` whose base case is never reached. Reported here rather than left to run out of stack, which gave no file, no line and no message. |
 | [`E3033`](/errors/E3033/) | A `comptime` block the evaluator could not finish. The block runs during compilation and leaves nothing behind, so one that cannot be run has no meaning -- and used to be emitted as ordinary run-time code, which hid the fact entirely. |
 | [`E3034`](/errors/E3034/) | A `comptime` block inside another one. The outer block already runs at compile time, so the inner one asks for nothing extra, and nesting them is what made a block's value depend on evaluating a closure defined inside another block. |
+| [`E3035`](/errors/E3035/) | A method name that more than one `impl` block defines for the same type. The impls are kept in a hash map, so which body a call reached used to change from one run of the compiler to the next; refusing the call is the only answer that is the same twice. |
 
 ## Borrow/Ownership Errors
 
@@ -210,4 +211,4 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 
 ______________________________________________________________________
 
-121 diagnostics.
+122 diagnostics.
