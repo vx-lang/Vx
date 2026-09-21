@@ -19,7 +19,7 @@
     <a href="#four-core-pillars">Core Pillars</a> •
     <a href="#how-it-compiles">Architecture</a> •
     <a href="#current-status--known-limitations">Status & Limitations</a> •
-    <a href="docs/tutorial.md">Tutorial</a>
+    <a href="https://vxlang.org/docs/">Documentation</a>
   </p>
 </div>
 
@@ -299,7 +299,8 @@ ______________________________________________________________________
 
 ## Documentation & Learning More
 
-- [Language Tutorial](docs/tutorial.md): Step-by-step introduction to syntax, tensors, and topologies.
+- [The Vx Book (vxlang.org/docs)](https://vxlang.org/docs/): The official comprehensive guide covering installation, a language tour, ownership, topologies, the standard library, and compiler error diagnostics.
+- [Language Tutorial](docs/tutorial.md): In-repo introductory walkthrough of syntax, tensors, and topologies.
 - [Memory Algebra Specification](docs/memory_algebra.md): In-depth model of capacities, bandwidths, and routing costs.
 - [Parallel Compiler Architecture](docs/architecture_executive_summary.md): Technical deep-dive into the 256-bit GID and zero-lock pipeline.
 - [Project Roadmap](ROADMAP.md): Feature tracking against our core architectural goals.
