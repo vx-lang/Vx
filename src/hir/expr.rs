@@ -139,8 +139,14 @@ impl<'a> TypeChecker<'a> {
                 } else {
                     enum_name
                 };
-                if self.env.enums.contains_key(actual_enum_name) {
-                    is_enum_variant = true;
+                // Only a name the enum declares is a variant. `Option<i32>::default()` names a
+                // trait's static method on the enum, which has to reach the static call path
+                // rather than be reported as a variant the enum does not have.
+                if let Some(decl) = self.env.enums.get(actual_enum_name) {
+                    let variant = fc.name[fc.name.find("::").unwrap() + 2..].to_string();
+                    if decl.variants.iter().any(|(v, _)| v.as_ref() == variant) {
+                        is_enum_variant = true;
+                    }
                 }
             }
         }
