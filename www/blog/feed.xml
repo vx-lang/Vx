@@ -5,8 +5,17 @@
   <link href="https://vxlang.org/blog/feed.xml" rel="self"/>
   <link href="https://vxlang.org/blog/"/>
   <id>https://vxlang.org/blog/</id>
-  <updated>2026-09-21T18:00:00Z</updated>
+  <updated>2026-09-21T23:00:00Z</updated>
   <author><name>Aditya Kumar</name></author>
+
+  <entry>
+    <title>The 43 gigabytes that are never there</title>
+    <link href="https://vxlang.org/blog/the-43-gigabytes-that-are-never-there.html"/>
+    <id>https://vxlang.org/blog/the-43-gigabytes-that-are-never-there.html</id>
+    <updated>2026-09-21T23:00:00Z</updated>
+    <author><name>Aditya Kumar</name></author>
+    <summary>Add up every tensor a Llama-2-7B prefill puts on the GPU and you get 58.93 GiB, which does not fit a 40 GiB A100. The tensors resident at the same time peak at 15.94 GiB, and the 42.99 GiB difference is larger than the card. Vx computes the peak from the program's block structure and a declared machine model, at compile time.</summary>
+  </entry>
 
   <entry>
     <title>What writing core taught the compiler</title>
