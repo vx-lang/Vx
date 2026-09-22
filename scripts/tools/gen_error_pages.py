@@ -230,7 +230,7 @@ SHELL = """<!DOCTYPE html>
 </main>
 
 <footer>
-  <p>Vx is Apache 2.0 with the LLVM exception. <a href="https://github.com/vx-lang/Vx">Source</a>.</p>
+  <p>Vx is Apache 2.0 with the LLVM exception. <a href="https://github.com/vx-lang/Vx">Source</a>. Questions and discussion: <a href="https://www.reddit.com/r/vxlang">r/vxlang</a>.</p>
 </footer>
 
 </body>

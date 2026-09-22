@@ -307,6 +307,13 @@ ______________________________________________________________________
 
 ______________________________________________________________________
 
+## Community
+
+- [r/vxlang](https://www.reddit.com/r/vxlang): questions, design discussion, and anything that is not a bug report.
+- [Issue tracker](https://github.com/vx-lang/Vx/issues): bugs, and diagnostics that fired when they should not have. A program that reproduces it is worth more than a description of it.
+
+______________________________________________________________________
+
 ## Citing Vx
 
 If you use Vx in your research or systems work, please cite:
