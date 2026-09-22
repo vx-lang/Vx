@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The library that only worked on the machine that built it</title>
+<meta name="author" content="Aditya Kumar">
+<meta name="description" content="Vx 0.0.1 shipped on 10 September and could not run hello-world on any machine except the one that built it. The release smoke test passed the whole time, because it ran on that machine.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+
+<meta property="og:title" content="The library that only worked on the machine that built it">
+<meta property="og:description" content="Vx 0.0.1 could not run hello-world anywhere except the machine that built it. The smoke test passed the whole time, because it ran on that machine.">
+<meta property="og:type" content="article">
+<meta property="article:published_time" content="2026-09-22T09:00:00Z">
+<meta property="og:url" content="https://vxlang.org/blog/only-on-the-machine-that-built-it.html">
+<meta property="og:image" content="https://vxlang.org/cards/blog-only-on-the-machine-that-built-it.png">
+<meta property="og:image:alt" content="The library that only worked on the machine that built it: a dylib that recorded its build directory, and a smoke test that could not see it.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://vxlang.org/cards/blog-only-on-the-machine-that-built-it.png">
+
+<link rel="alternate" type="application/atom+xml" title="Vx" href="/blog/feed.xml">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header class="nav">
+  <a class="brand" href="/">
+    <span class="mark">Vx</span>
+  </a>
+  <nav>
+    <a href="/docs/getting-started.html">Install</a>
+    <a href="/docs/tour.html">Language tour</a>
+    <a href="/docs/">Docs</a>
+    <a href="/blog/">Blog</a>
+    <a href="https://github.com/vx-lang/Vx">GitHub</a>
+  </nav>
+</header>
+
+<main>
+
+<article class="post">
+
+<h1>The library that only worked on the machine that built it</h1>
+<p class="post-meta">Aditya Kumar &middot; 22 September 2026</p>
+
+<blockquote class="tldr"><strong>TL;DR</strong> &mdash; Vx 0.0.1 shipped on 10 September and could
+not run hello-world on any machine except the one that built it. Both macOS libraries recorded the
+release runner's own directory as their identity, and every program linked against them copied that
+string. The release smoke test passed, because it ran on that machine, and the broken tarball
+stayed the published one for eleven days. Behind that bug were three more, each hidden by the same
+habit: testing that something runs, in the place it was made. Here is each one, and the two commands
+that would have caught the first.</blockquote>
+
+<p class="lede">The front page of this site offers one instruction. Someone follows it on a laptop
+that has never seen the source tree, and this is what they get.</p>
+
+<pre class="diag"><code>$ curl -fsSL https://vxlang.org/install.sh | sh
+...
+==&gt; Verifying the install
+dyld[7851]: Library not loaded: /Users/runner/work/Vx/Vx/target/release/deps/libvx_std_core.dylib
+  Reason: tried: (no such file), ...
+error: the installed compiler could not run a hello-world program</code></pre>
+
+<p>
+  That path is not on their machine. It was never on their machine. It is a directory on a GitHub
+  Actions runner that stopped existing the moment the release job finished.
+</p>
+
+<h2>What a dylib remembers</h2>
+
+<p>
+  A Mach-O shared library carries the path it expects to be found at, in a load command called
+  <code>LC_ID_DYLIB</code>. When you link a program against that library, the linker copies the
+  string into the program. At startup, dyld reads it back and goes looking.
+</p>
+
+<p>
+  Neither of our libraries set one. When a library does not say what it is called, it gets called by
+  wherever it happened to be built:
+</p>
+
+<pre class="diag"><code>$ otool -D ~/.vx/toolchains/v0.0.1/lib/libvx_std_core.dylib
+/Users/runner/work/Vx/Vx/target/release/deps/libvx_std_core.dylib
+
+$ otool -D ~/.vx/toolchains/v0.0.1/lib/libvx_mlir_shims.dylib
+/Users/runner/work/Vx/Vx/target/release/build/vxc-7e805375eee9c913/out/libvx_mlir_shims.dylib</code></pre>
+
+<p>
+  Every toolchain we published carried the build machine's filesystem inside it. ELF has the same
+  mechanism under different names &mdash; <code>DT_SONAME</code> for what a library calls itself,
+  <code>DT_RPATH</code> and <code>DT_RUNPATH</code> for where the loader should look &mdash; so this
+  is not a macOS problem that Linux is immune to. It is a packaging problem that both formats let
+  you ship.
+</p>
+
+<h2>The smoke test was green, and it was not a bad test</h2>
+
+<p>
+  The release workflow already unpacked the tarball and ran a program with it. It passed on every
+  release. It was not a careless test, and it was not broken.
+</p>
+
+<p>
+  It ran on the machine that built the toolchain, a few steps after building it. There,
+  <code>/Users/runner/work/Vx/Vx/target/release/deps</code>
+  is a real directory with a real library in it, so dyld found what it was asked for and the program
+  printed its answer. The test asserted something true. It just wasn't the thing that needed to be
+  true.
+</p>
+
+<p>
+  Running an artifact and checking an artifact are different acts. The first asks whether it works
+  here. The second asks what it says about where it expects to live &mdash; and only the second
+  survives being copied somewhere else.
+</p>
+
+<h2>The fix broke a test, which is how we found the rest of it</h2>
+
+<p>
+  The repair is to give each library an <code>@rpath</code> name, and have the compiler pass an
+  <code>-rpath</code> for the directory it links each one out of. The libraries do not share a
+  directory: in a checkout the runtime sits in <code>target/&lt;profile&gt;</code> and the shims in
+  the build script's <code>OUT_DIR</code>.
+</p>
+
+<p>
+  The first attempt renamed both and added one rpath. That is worse than not fixing it, because now
+  the shims announced a name nothing could resolve. The suite caught it immediately:
+  <code>host_workers_cover_the_loop_once.vx</code>, a fixture that links a program and checks its
+  answer rather than reading its MLIR, stopped linking.
+</p>
+
+<p>
+  That fixture exists to prove a parallel loop covers its iteration space exactly once. It has
+  nothing to do with packaging. It caught this because it is one of the tests that runs a built
+  program instead of inspecting compiler output, which turns out to be the only kind that can.
+</p>
+
+<h2>The second question that smoke test never asked</h2>
+
+<p>
+  While fixing the first hole we looked at what else the smoke test does not cover. It compiles a
+  hello program with <code>--run</code>, and parses one importing <code>std::vec</code>. Nothing asks
+  for <code>--action emit-obj</code>.
+</p>
+
+<p>
+  That is not hypothetical. <code>emit-obj</code> was broken on Linux for months.
+  <code>mlirExecutionEngineCreate</code> builds its <code>StringRef</code> from the pointer alone, so
+  it calls <code>strlen</code> and throws away the length it was handed. A Rust <code>&amp;str</code>
+  is not NUL-terminated. Every runtime library path ran off its end into whatever heap bytes came
+  next, no library loaded, and no object file was written.
+</p>
+
+<p>
+  It survived macOS testing, a native Linux run on EC2, and a Docker 22.04 container. All three
+  exercised <code>--run</code>, which reaches MLIR by a different route: <code>--run</code> hands the
+  module to <code>mlir-translate</code> and links with clang, while <code>emit-obj</code> builds an
+  execution engine in process. Three environments, one code path, and the broken one was the other.
+</p>
+
+<h2>Then the release failed on a third thing</h2>
+
+<p>
+  With the fix merged, the v0.0.2 job ran and failed on both platforms:
+</p>
+
+<pre><code>Frontend failed to parse 'uses_std.vx':
+  Resolution error: Could not resolve import 'core::ops'</code></pre>
+
+<p>
+  The packaging script staged the standard library by a list written by hand: <code>std</code> and
+  <code>graph</code>. <code>core</code> was added to the tree later and nothing updated the list, so
+  every release shipped without it. <code>import std::vec</code> reaches <code>core::ops</code>, which
+  is why this failed in a released toolchain while passing in every checkout, where the whole tree is
+  simply there.
+</p>
+
+<h2>And that fix shipped a bug its own assertion caught</h2>
+
+<p>
+  The repair is to stage every directory under <code>stdlib/</code> rather than a remembered list,
+  and to assert that <code>std</code> and <code>core</code> arrived before building the tarball.
+</p>
+
+<p>
+  The assertion failed on its first run. Globbing <code>stdlib/*/</code> hands <code>cp</code> a
+  trailing slash, and <code>cp -R dir/ dest</code> copies the <em>contents</em> of the directory
+  rather than the directory. Every module spilled flat into <code>stdlib/</code>, leaving no
+  <code>std/</code> for a program to import.
+</p>
+
+<p>
+  Five minutes older than the bug it caught. This is the argument for writing the assertion at the
+  same time as the thing it guards, rather than after you believe the thing works.
+</p>
+
+<h2>What is in place now</h2>
+
+<p>Four guards, each one verified by breaking the code it covers and watching the right assertion report:</p>
+
+<ul>
+  <li>A unit test that our shipped libraries name themselves relocatably.</li>
+  <li>A release step that reads what every shipped Mach-O records and fails the release if any of it
+      names a build-machine path. Validated against the broken v0.0.1 tarball, where it fails and
+      names both libraries.</li>
+  <li>An <code>emit-obj</code> assertion in the smoke test that checks for the object file rather than
+      the exit status &mdash; that arm reported success in three distinct failure modes before it was
+      written this way.</li>
+  <li>Standard library staged by iterating the directory, with an assertion that <code>std</code> and
+      <code>core</code> are present.</li>
+</ul>
+
+<h2>Two commands, on your release rather than ours</h2>
+
+<p>
+  Nothing above is specific to Vx. Any project that builds a shared library in CI and ships it can
+  publish the build machine's filesystem by accident. Unpack your own release and ask what it
+  recorded:
+</p>
+
+<pre><code># macOS
+$ otool -D lib/*.dylib
+$ otool -L bin/*
+
+# Linux
+$ readelf -d lib/*.so | grep -E 'RPATH|RUNPATH|SONAME'</code></pre>
+
+<p>
+  If any of it prints a directory that exists only on the machine that built it, your release has
+  this bug, and your smoke test is probably green. Ours says this now:
+</p>
+
+<pre><code>$ otool -D lib/libvx_std_core.dylib
+@rpath/libvx_std_core.dylib</code></pre>
+
+<p class="verdict">
+  A test that runs an artifact on the machine that produced it is testing the machine. Our release
+  said the toolchain worked, and it was right about the only computer it ever asked.
+</p>
+
+<p>
+  v0.0.2 is out, with all four guards in it. The install line on the front page now leads somewhere:
+  <code>curl -fsSL https://vxlang.org/install.sh | sh</code>, on macOS with Apple Silicon or Linux
+  x86-64. If it fails on your machine, that is a bug worth
+  <a href="https://github.com/vx-lang/Vx/issues">filing</a> &mdash; with the output, which is more
+  than we gave anyone for eleven days.
+</p>
+
+</article>
+
+</main>
+
+<footer>
+  <p>Vx is Apache 2.0 with the LLVM exception. <a href="https://github.com/vx-lang/Vx">Source</a>. Questions and discussion: <a href="https://www.reddit.com/r/vxlang">r/vxlang</a>.</p>
+</footer>
+
+</body>
+</html>
