@@ -18,6 +18,15 @@
   </entry>
 
   <entry>
+    <title>Tiles, without a tile type</title>
+    <link href="https://vxlang.org/blog/tiles-without-a-tile-type.html"/>
+    <id>https://vxlang.org/blog/tiles-without-a-tile-type.html</id>
+    <updated>2026-09-21T21:00:00Z</updated>
+    <author><name>Aditya Kumar</name></author>
+    <summary>Can Vx be used for tile-based GPU programming, the way NVIDIA's cuTile is? A block loop, a tensor in Memory::SMEM and two barriers already compile to PTX with shared storage and bar.sync. What Vx adds is that the tile's memory space is part of its type and its shared-memory budget is a compile error; what it lacks is everything that makes a tile a value.</summary>
+  </entry>
+
+  <entry>
     <title>What writing core taught the compiler</title>
     <link href="https://vxlang.org/blog/what-writing-core-taught-the-compiler.html"/>
     <id>https://vxlang.org/blog/what-writing-core-taught-the-compiler.html</id>
