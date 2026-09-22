@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The 43 gigabytes that are never there — Vx</title>
+<meta name="author" content="Aditya Kumar">
+<meta name="description" content="Adding up every tensor a Llama-2-7B prefill allocates gives 58.9 GiB. An A100-40 has 40. The tensors resident at the same time peak at 15.9 GiB, and Vx computes that at compile time.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+
+<meta property="og:title" content="The 43 gigabytes that are never there">
+<meta property="og:description" content="Summing a model's tensors says 58.9 GiB and a 40 GiB card cannot hold it. The peak residency is 15.9 GiB. Vx computes the peak from the program's block structure before the GPU is booked, which is the difference between offloading and not.">
+<meta property="og:type" content="article">
+<meta property="article:published_time" content="2026-09-21T23:00:00Z">
+<meta property="og:url" content="https://vxlang.org/blog/the-43-gigabytes-that-are-never-there.html">
+<meta property="og:image" content="https://vxlang.org/cards/blog-the-43-gigabytes-that-are-never-there.png">
+<meta property="og:image:alt" content="The 43 gigabytes that are never there: a sum says 58.9 GiB, the peak is 15.9 GiB.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://vxlang.org/cards/blog-the-43-gigabytes-that-are-never-there.png">
+
+<link rel="alternate" type="application/atom+xml" title="Vx" href="/blog/feed.xml">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header class="nav">
+  <a class="brand" href="/">
+    <span class="mark">Vx</span>
+  </a>
+  <nav>
+    <a href="/docs/getting-started.html">Install</a>
+    <a href="/docs/tour.html">Language tour</a>
+    <a href="/docs/">Docs</a>
+    <a href="/blog/">Blog</a>
+    <a href="https://github.com/vx-lang/Vx">GitHub</a>
+  </nav>
+</header>
+
+<main>
+
+<article class="post">
+
+<h1>The 43 gigabytes that are never there</h1>
+<p class="post-meta">Aditya Kumar &middot; 21 September 2026</p>
+
+<blockquote class="tldr"><strong>TL;DR</strong> — Add up every tensor a Llama-2-7B prefill puts on
+the GPU and you get <strong>58.93 GiB</strong>. An A100-40 has 40, so the model does not fit and you
+start offloading layers to the host. The tensors that are resident <em>at the same time</em> peak at
+<strong>15.94 GiB</strong>, which is 39.8% of the card. The gap between those two numbers is
+42.99 GiB — more than the whole GPU — and it is memory the program never holds. Vx computes the peak
+from the program's block structure and a declared machine model, at compile time, on a laptop.</blockquote>
+
+<p class="lede">Deciding whether a model fits on a card is the decision that sets everything after
+it: one GPU or two, resident weights or streamed ones, a batch size you can serve or one you cannot.
+It is usually settled by adding numbers up, and a sum is the wrong quantity.</p>
+
+<h2>Why the sum is wrong</h2>
+
+<p>A tensor occupies the card between its allocation and its release. Two tensors need room at the
+same time only if those intervals overlap. So the quantity that has to fit is the <strong>peak</strong>
+over the run, and a sum describes a moment the program never has.</p>
+
+<p>For transformer inference the gap between the two is enormous, and it falls along a clean line:</p>
+
+<ul>
+<li><strong>Weights are resident.</strong> Every layer is read on every token, so all 32 layers'
+matrices sit on the card from the first token to the last. Lifetime analysis has nothing to offer
+here — these really are all live at once.</li>
+<li><strong>Activations are not.</strong> Layer 7's attention scores are dead the moment layer 8
+starts. There are 32 layers' worth of them in the sum and one layer's worth on the card.</li>
+</ul>
+
+<p>That second line is where the 43 GiB lives. Getting it wrong pushes you toward offloading, which
+is expensive, and the expense is the point of the whole exercise.</p>
+
+<h2>A sum, a peak, and twenty lines</h2>
+
+<p>Here is the shape of the problem with the sizes made small enough to read. One resident buffer,
+and a scratch buffer allocated inside a loop that runs 32 times:</p>
+
+<pre><code><span class="k">Memory</span> CPU_DRAM {}
+<span class="k">Memory</span> HBM {
+  within: <span class="k">Memory</span>::CPU_DRAM, capacity: <span class="n">4</span> MiB, bandwidth: <span class="n">1555</span> GB/s, managed: cached
+}
+<span class="k">Topology</span> Dev {
+  arch: nvptx64,
+  memory: <span class="k">Memory</span>::HBM,
+  visible: [<span class="k">Memory</span>::HBM],
+  <span class="k">transfer</span> <span class="k">Memory</span>::CPU_DRAM -&gt; <span class="k">Memory</span>::HBM : <span class="n">31.5</span> GB/s
+}
+
+<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+  <span class="k">let</span> weights_h = <span class="t">Tensor</span>&lt;<span class="t">f32</span>, [<span class="n">512</span>, <span class="n">512</span>]&gt;::<span class="f">uninit</span>();
+  <span class="k">let</span> <span class="k">mut</span> weights = <span class="f">transfer</span>(weights_h, <span class="k">Memory</span>::HBM);
+  <span class="k">for</span> layer <span class="k">in</span> <span class="n">0</span>..<span class="n">32</span> {
+    <span class="k">let</span> scratch_h = <span class="t">Tensor</span>&lt;<span class="t">f32</span>, [<span class="n">512</span>, <span class="n">512</span>]&gt;::<span class="f">uninit</span>();
+    <span class="k">let</span> scratch = <span class="f">transfer</span>(scratch_h, <span class="k">Memory</span>::HBM);
+    <span class="k">spawn</span> <span class="k">on</span>(<span class="k">Topology</span>::Dev) {
+      weights[<span class="n">0</span>][<span class="n">0</span>] = weights[<span class="n">0</span>][<span class="n">0</span>] + scratch[<span class="n">0</span>][<span class="n">0</span>];
+    }
+  }
+  <span class="f">print</span>(<span class="n">2</span>);
+  <span class="k">return</span> <span class="n">0</span>;
+}</code></pre>
+
+<p>Thirty-three buffers of 1 MiB each are placed into a 4 MiB space. The compiler admits it, and
+reports what it admitted on:</p>
+
+<pre><code>"resident_sets": [
+  {"space": "HBM", "total_bytes": 2097152, "capacity_bytes": 4194304,
+   "utilization": 0.5, "tiles": 2, "overcommit": false}
+]</code></pre>
+
+<p>Two tiles, 2 MiB, half the space: the resident buffer plus whichever scratch buffer the current
+iteration holds. Unroll that loop — write the 32 scratch placements out at function scope, changing
+nothing else — and the same compiler refuses the same program:</p>
+
+<pre><code>Error[E6010]: the working set placed in memory space 'HBM' (33 tiles) sums to 34603008 bytes,
+              over its 4194304 byte capacity; place fewer/smaller tiles or declare it `overcommit`</code></pre>
+
+<p>33 MiB against 4 MiB, utilization 8.25. Both verdicts are correct. The unrolled program really
+does hold 33 buffers at once, because nothing releases them until the function ends.</p>
+
+<h2>How the compiler knows</h2>
+
+<p>Every lexical scope gets an id when it is entered, so at any point during checking there is a
+<strong>scope chain</strong>: the ids of the blocks currently open, outermost first. Each placement
+records its size, the chain it was placed under, and its position in program order. At the end of a
+function, for each space:</p>
+
+<pre><code>peak ← 0
+for each tile T, in program order:
+    live ← Σ { U.bytes : U placed no later than T,
+                         and U.scope is a prefix of T.scope }
+    peak ← max(peak, live)</code></pre>
+
+<p>The prefix test is the coexistence test. A tile placed in a block that <em>encloses</em> T's block
+is still open when T is placed; a tile in a sibling block was released when that block closed. The
+ordering test handles the rest: a tile placed in the enclosing scope <em>after</em> an inner block
+closed does not coexist with what was inside it, and prefix alone would say it did.</p>
+
+<p>Three properties make this computable, and it needs all three. Placement is in the type, so
+<code>transfer(t, Memory::HBM)</code> produces a value whose type names the budget it draws on.
+Spaces declare a capacity, so the budget is a number in the machine model instead of a property of
+whichever machine the program lands on. And release follows the block structure, so "do these
+overlap" becomes a question about the syntax tree.</p>
+
+<p>One design decision is worth stating because it looks like a missed optimization. The obvious
+refinement is to release a tile at its <em>last use</em> rather than at the end of its block, and the
+machinery for that already exists — it is what the borrow checker runs on. Using it here would be
+wrong. The runtime frees at block end, so a tile whose last read is early is dead to the borrow
+checker and still allocated. Accounting at last-use granularity would be finer than what actually
+happens, and the check would start admitting programs that then run out of memory. The accounting has
+to model the release discipline the compiler implements, not the tightest one imaginable.</p>
+
+<h2>Llama-2-7B, for real</h2>
+
+<p>Now the same structure at the real sizes. Llama-2-7B: 32 layers, hidden 4096, FFN intermediate
+11008, 32 heads, vocabulary 32000. A 4096-token prefill, batch 1, f16 throughout, with attention
+scores materialized. The machine is <code>fleet/a100-40.vx</code>, which declares 40 GiB of HBM at
+1555 GB/s and a host link at 31.5 GB/s.</p>
+
+<p>The weights go in at function scope, because that is where they live. The per-layer activations go
+inside the layer loop, because that is where they live:</p>
+
+<pre><code><span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+  <span class="c">// Resident for the whole run: embeddings, the KV cache, and one tile per</span>
+  <span class="c">// layer standing for that layer's seven weight matrices.</span>
+  <span class="k">let</span> embed = <span class="f">transfer</span>(embed_h, <span class="k">Memory</span>::HBM);        <span class="c">// 250 MiB</span>
+  <span class="k">let</span> lm_head = <span class="f">transfer</span>(lm_head_h, <span class="k">Memory</span>::HBM);    <span class="c">// 250 MiB</span>
+  <span class="k">let</span> <span class="k">mut</span> kv = <span class="f">transfer</span>(kv_h, <span class="k">Memory</span>::HBM);          <span class="c">// 2 GiB</span>
+  <span class="k">let</span> w0 = <span class="f">transfer</span>(w0_h, <span class="k">Memory</span>::HBM);              <span class="c">// 386 MiB, x32</span>
+  ...
+
+  <span class="k">for</span> layer <span class="k">in</span> <span class="n">0</span>..<span class="n">32</span> {
+    <span class="c">// Dead at the end of the iteration, every one of them.</span>
+    <span class="k">let</span> scores = <span class="f">transfer</span>(scores_h, <span class="k">Memory</span>::HBM);     <span class="c">// 1 GiB</span>
+    <span class="k">let</span> qkv = <span class="f">transfer</span>(qkv_h, <span class="k">Memory</span>::HBM);           <span class="c">// 96 MiB</span>
+    <span class="k">let</span> ffn = <span class="f">transfer</span>(ffn_h, <span class="k">Memory</span>::HBM);           <span class="c">// 172 MiB</span>
+    ...
+  }
+  <span class="k">return</span> <span class="n">0</span>;
+}</code></pre>
+
+<p>Two layouts of the same tensors, one machine file, one command:</p>
+
+<table>
+<tr><th>Layout</th><th>Tiles</th><th>Working set</th><th>Utilization</th><th>Verdict</th></tr>
+<tr><td>Every layer's activations at function scope</td><td>227</td><td>58.93 GiB</td><td>1.4731</td><td>E6010, refused</td></tr>
+<tr><td>Activations inside the layer loop</td><td>41</td><td>15.94 GiB</td><td>0.3984</td><td>admitted</td></tr>
+</table>
+
+<p>Exactly: 63,271,075,840 bytes against 17,112,760,320. The peak breaks down as 12.06 GiB of layer
+weights, 0.49 GiB of embeddings, 2 GiB of KV cache and 1.39 GiB for one layer's activations. The
+other 31 layers' activations — 42.99 GiB of them — are the memory that is never there.</p>
+
+<p>Note what the analysis did <em>not</em> do. It did not shrink the weights. All 32 layers of them
+are in the peak at full size, counted 32 times, because they are genuinely all live. A lifetime
+analysis that reported anything smaller would be lying. The saving comes entirely from the buffers
+whose lifetimes really are disjoint, which is the only place it can come from.</p>
+
+<h2>What the wrong answer costs</h2>
+
+<p>Suppose you believed the 58.93. The model does not fit, so the weights get streamed from host
+memory as each layer runs. The same machine file prices that, because the host link is a declared
+edge, and the compiler reports the cost of each transfer it plans:</p>
+
+<pre><code>{"path": ["CPU_DRAM", "HBM"], "bytes": 404750336,
+ "derived_cost": 12849217016, "derived_unit": "ps", "cost_source": "link_rate"}</code></pre>
+
+<p>12.85 ms to move one layer's weights across the host link. Thirty-two layers is
+<strong>411 ms per token</strong>, or 2.4 tokens/s. Had those same weights stayed in HBM, reading
+all of them costs 13.48 GB at 1555 GB/s — <strong>8.7 ms</strong>, or 115 tokens/s as a roofline.</p>
+
+<p>So the accounting error is worth roughly <strong>47&times;</strong> in throughput. It is not a
+rounding error in a capacity plan; it is the difference between a card that serves the model and a
+card that streams it.</p>
+
+<h2>Where the line actually is</h2>
+
+<p>A check that always says yes is not a check. Keeping the prefill at 4096 tokens and raising the
+batch on the same A100-40:</p>
+
+<table>
+<tr><th>Batch</th><th>Working set</th><th>Utilization</th><th>Verdict</th></tr>
+<tr><td>1</td><td>15.94 GiB</td><td>0.3984</td><td>admitted</td></tr>
+<tr><td>8</td><td>39.65 GiB</td><td>0.9911</td><td>admitted</td></tr>
+<tr><td>9</td><td>43.03 GiB</td><td>1.0758</td><td>E6010, refused</td></tr>
+</table>
+
+<p>Batch 8 fits with 0.9% of the card to spare and batch 9 does not, and both answers arrive from
+<code>vxc</code> on a laptop. That is the shape of the question a serving deployment actually asks,
+answered before anything is scheduled.</p>
+
+<h2>What it does not do</h2>
+
+<p>The analysis is deliberately conservative, and the conservatism runs in one direction: it can
+refuse a program that would have fit, and it cannot admit one that does not.</p>
+
+<ul>
+<li><strong>It stops at the function boundary.</strong> The budget is taken per function, so a tile
+a caller is holding is not counted against a callee's placements. The quantity wanted there is a peak
+over the call tree, which needs a call graph and a decision about recursion —
+<a href="https://github.com/vx-lang/Vx/issues/444">Vx#444</a>.</li>
+<li><strong>A loop body is checked once.</strong> That matches the runtime, where the release at the
+end of the body runs every iteration. It also means the analysis says nothing about a loop that
+accumulates tiles into something outside it.</li>
+<li><strong>Only some scopes release.</strong> <code>if</code> arms and loop bodies were each checked
+against the emitted IR and opted in. <code>spawn</code> regions, <code>match</code> arms,
+<code>comptime</code> and <code>unsafe</code> blocks are left conservative — their tiles stay
+resident to the end of the function. A match arm is probably releasing on the same grounds as an
+<code>if</code> arm; it stays out until someone reads the IR, because the cost of being wrong is not
+symmetric.</li>
+<li><strong>Shapes must be static.</strong> A tile whose size is not known at compile time cannot be
+added to a budget, and the compiler says so with a warning rather than guessing.</li>
+</ul>
+
+<h2>Why this is not the usual state of affairs</h2>
+
+<p>The comparison worth drawing is not that other toolchains compute this incorrectly. It is that
+they are not in a position to ask at compile time.</p>
+
+<p>In C, C++ or Rust a heap allocation is not associated with a bounded named space, so there is
+nothing to compare a lifetime against; capacity is discovered when an allocator returns null. In CUDA,
+static <code>__shared__</code> is bounded per kernel rather than composed across a program's scopes,
+and device global memory has no compile-time budget at all. Frameworks that place tensors on devices
+learn the element type, the shape and the device at dispatch, so the peak is discovered by the
+allocator, at run time, on the machine that either has the memory or does not.</p>
+
+<p>Discovering it there is not useless — it is how everyone does capacity planning today. But the
+failure is asymmetric in an expensive way. Overestimate and you offload, or rent the larger card, and
+pay for it every token forever. Underestimate and you find out in production. What the three
+properties buy is that the number arrives before either bill does.</p>
+
+<p class="post-foot">The analysis is described in <code>docs/working_set_peak_implementation_plan.md</code>
+and tested by <code>tests/integration_test/working_set_peak_test.rs</code>; the two ends of it read as
+<code>tests/frontend/pass/working_set_is_a_peak_not_a_sum.vx</code> and
+<code>tests/frontend/fail/three_dtcm_tiles_do_not_fit_a_cortex_m7.vx</code>. Cross-function peaks are
+<a href="https://github.com/vx-lang/Vx/issues/444">Vx#444</a>. Vx is Apache 2.0 with the LLVM
+exception — <a href="/docs/getting-started.html">install it</a>, or read
+<a href="/blog/what-a-pointer-forgets.html">What a pointer forgets</a> for why the memory space is in
+the type to begin with.</p>
+
+</article>
+
+</main>
+
+<footer>
+  <p>Vx is Apache 2.0 with the LLVM exception. <a href="https://github.com/vx-lang/Vx">Source</a>.</p>
+</footer>
+
+</body>
+</html>
