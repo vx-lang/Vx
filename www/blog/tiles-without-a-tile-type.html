@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tiles, without a tile type — Vx</title>
+<meta name="author" content="Aditya Kumar">
+<meta name="description" content="Can Vx be used for tile-based GPU programming, the way NVIDIA's cuTile is? The program shape already compiles to PTX with shared memory and barriers. The tile algebra does not exist.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+
+<meta property="og:title" content="Tiles, without a tile type">
+<meta property="og:description" content="A block loop, a tensor in Memory::SMEM and two barriers compile to a real shared-memory kernel. What Vx adds is that the tile's space is in its type; what it lacks is everything that makes a tile a value.">
+<meta property="og:type" content="article">
+<meta property="article:published_time" content="2026-09-21T21:00:00Z">
+<meta property="og:url" content="https://vxlang.org/blog/tiles-without-a-tile-type.html">
+<meta property="og:image" content="https://vxlang.org/cards/blog-tiles-without-a-tile-type.png">
+<meta property="og:image:alt" content="Tiles, without a tile type: a shared-memory kernel Vx already compiles, and the abstraction it is missing.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://vxlang.org/cards/blog-tiles-without-a-tile-type.png">
+
+<link rel="alternate" type="application/atom+xml" title="Vx" href="/blog/feed.xml">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header class="nav">
+  <a class="brand" href="/">
+    <span class="mark">Vx</span>
+  </a>
+  <nav>
+    <a href="/docs/getting-started.html">Install</a>
+    <a href="/docs/tour.html">Language tour</a>
+    <a href="/docs/">Docs</a>
+    <a href="/blog/">Blog</a>
+    <a href="https://github.com/vx-lang/Vx">GitHub</a>
+  </nav>
+</header>
+
+<main>
+
+<article class="post">
+
+<h1>Tiles, without a tile type</h1>
+<p class="post-meta">Aditya Kumar &middot; 21 September 2026</p>
+
+<blockquote class="tldr"><strong>TL;DR</strong> — Tile-based GPU programming structures kernels around sub-arrays of a tensor. Vx has no built-in tile type, yet nested loops over a <code>Tensor&lt;T, [..], Memory::SMEM&gt;</code> compile to PTX: 8 bytes of <code>.shared</code> storage, <code>bar.sync</code> instructions, and grid-strided execution over <code>%ctaid.x</code> and <code>%tid.x</code>. Tracking memory space in types turns shared-memory overcommit into a compile-time error. What Vx still lacks is a dedicated tile abstraction: there are no tile arithmetic operations, no tensor-core instructions, only one grid dimension, and loop bounds must be static literals.</blockquote>
+
+<p class="lede">A developer recently asked if Vx could support tile-based GPU programming like NVIDIA's cuTile. To find out, I wrote a shared-memory staging kernel in Vx and examined the compiler's PTX output.</p>
+
+<h2>Tiles versus threads</h2>
+
+<p>In standard CUDA programming, you write code from the perspective of an individual thread. The programmer coordinates the entire cooperative thread group: computing array offsets with <code>threadIdx</code> and <code>blockIdx</code>, staging data into <code>__shared__</code> memory, synchronizing threads with <code>__syncthreads()</code>, and loading elements back out.</p>
+
+<p>Tile-based programming frameworks like Triton or cuTile raise this level of abstraction. You express operations directly on multi-dimensional chunks of data called tiles. The compiler then handles the thread layout and schedules transfers between global DRAM and fast on-chip SRAM.</p>
+
+<p>Working at the tile level eliminates common concurrency bugs. In CUDA, an off-by-one indexing error during staging silently corrupts numbers without crashing. A missing <code>__syncthreads()</code> creates a subtle data race that might only appear once in ten runs.</p>
+
+<p>Vx takes a different angle by placing memory hierarchies directly into the type system. Every tensor type tracks which physical memory space holds it and which processor can access it. Can this same placement system compile a working tile-style kernel?</p>
+
+<h2>The staging kernel</h2>
+
+<p>To test this question, I wrote a minimal staging kernel. It copies slices of an array from GPU global memory (HBM) into shared memory (SMEM), synchronizes, and writes the results back to global memory. The arithmetic is intentionally simple so the memory patterns and loop structures remain easy to follow:</p>
+
+<pre><code><span class="k">Memory</span> CPU_DRAM {}
+<span class="k">Memory</span> GPU_HBM {
+  within: <span class="k">Memory</span>::CPU_DRAM, capacity: <span class="n">40</span> GiB, bandwidth: <span class="n">3</span> TB/s, managed: cached
+}
+<span class="k">Memory</span> SMEM {
+  within: <span class="k">Memory</span>::GPU_HBM, capacity: <span class="n">228</span> KiB, bandwidth: <span class="n">128</span> B/cyc,
+  granule: <span class="n">1</span> KiB, managed: explicit, scope: sm
+}
+<span class="k">Topology</span> Dev {
+  arch: nvptx64,
+  memory: <span class="k">Memory</span>::GPU_HBM,
+  visible: [<span class="k">Memory</span>::GPU_HBM, <span class="k">Memory</span>::SMEM],
+  <span class="k">transfer</span> <span class="k">Memory</span>::CPU_DRAM -&gt; <span class="k">Memory</span>::GPU_HBM : <span class="n">63</span> GB/s,
+  <span class="k">transfer</span> <span class="k">Memory</span>::GPU_HBM -&gt; <span class="k">Memory</span>::SMEM
+}
+
+<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+  <span class="k">let</span> <span class="k">mut</span> q_h = <span class="t">Tensor</span>&lt;<span class="t">f32</span>, [<span class="n">8</span>]&gt;::<span class="f">uninit</span>();
+  <span class="k">let</span> <span class="k">mut</span> o_h = <span class="t">Tensor</span>&lt;<span class="t">f32</span>, [<span class="n">8</span>]&gt;::<span class="f">uninit</span>();
+  <span class="k">for</span> i <span class="k">in</span> <span class="n">0</span>..<span class="n">8</span> {
+    q_h[i] = (i <span class="k">as</span> <span class="t">f32</span>);
+    o_h[i] = <span class="n">0.0</span>;
+  }
+  <span class="k">let</span> q = <span class="f">transfer</span>(q_h, <span class="k">Memory</span>::GPU_HBM);
+  <span class="k">let</span> <span class="k">mut</span> o = <span class="f">transfer</span>(o_h, <span class="k">Memory</span>::GPU_HBM);
+
+  <span class="k">spawn</span> <span class="k">on</span>(<span class="k">Topology</span>::Dev) {
+    <span class="c">// The tile. Its memory space is part of its type.</span>
+    <span class="k">let</span> <span class="k">mut</span> qs = <span class="t">Tensor</span>&lt;<span class="t">f32</span>, [<span class="n">2</span>], <span class="k">Memory</span>::SMEM&gt;::<span class="f">uninit</span>();
+    <span class="k">for</span> bq <span class="k">in</span> <span class="n">0</span>..<span class="n">4</span> {              <span class="c">// one iteration per tile</span>
+      <span class="k">for</span> qi <span class="k">in</span> <span class="n">0</span>..<span class="n">2</span> {            <span class="c">// cooperative fill</span>
+        qs[qi] = q[bq * <span class="n">2</span> + qi] * <span class="n">2.0</span>;
+      }
+      <span class="f">barrier</span>();
+      <span class="k">for</span> qi <span class="k">in</span> <span class="n">0</span>..<span class="n">2</span> {            <span class="c">// cooperative consume</span>
+        o[bq * <span class="n">2</span> + qi] = qs[qi] + <span class="n">1.0</span>;
+      }
+      <span class="f">barrier</span>();
+    }
+  }
+  <span class="f">print</span>(o);
+  <span class="k">return</span> <span class="n">0</span>;
+}</code></pre>
+
+<p>Inside <code>spawn on(Topology::Dev)</code>, the source omits traditional CUDA boilerplate. It contains no <code>blockIdx</code>, no <code>threadIdx</code>, no launch configuration parameters, no <code>__shared__</code> annotations, and no <code>__syncthreads()</code> calls. Instead, the kernel defines four elements:</p>
+
+<ul>
+  <li>A tile buffer <code>qs</code> typed explicitly in <code>Memory::SMEM</code>.</li>
+  <li>An outer loop over tile batches (<code>bq</code> from 0 to 4).</li>
+  <li>Inner loops (<code>qi</code> from 0 to 2) that cooperatively fill and consume the tile.</li>
+  <li>Two <code>barrier()</code> calls to coordinate thread synchronization.</li>
+</ul>
+
+<h2>How the compiler maps loops to PTX</h2>
+
+<p>To compile this kernel, the compiler must determine which loop runs over thread blocks and which loop runs over individual threads. It does this through a check called <code>parallel_two_level</code>. To guarantee that threads never race or leave unwritten gaps, the analysis verifies every index expression that writes to a captured array.</p>
+
+<p>A captured write index must follow one of two patterns:</p>
+
+<ol>
+  <li>The thread loop variable itself (<code>qi</code>).</li>
+  <li>The affine expression <code>bq * K + t</code>, where <code>K</code> equals the exact trip count of that thread loop.</li>
+</ol>
+
+<p>The exact multiplier is critical. If <code>t</code> spans <code>0..4</code>, an expression like <code>bq * 8 + t</code> leaves unwritten gaps in the output tensor. If <code>t</code> spans <code>0..16</code>, different iterations overlap and overwrite the same indices. The multiplier <code>bq * 2 + qi</code> is exact, ensuring every (block, thread) coordinate owns one distinct element.</p>
+
+<p>The staging kernel satisfies this proof, emitting the following MLIR attributes:</p>
+
+<pre><code>{arch = "nvptx64", vx_parallel_threads = 2 : i64, vx_parallel_trip = 4 : i64, vx_parallel_two_level}</code></pre>
+
+<p>The compiler derives the launch geometry directly from the loop bounds: 4 blocks of 2 threads. It passes <code>launch=4,2</code> to the runtime dispatch payload and lowers the loop body to PTX:</p>
+
+<pre><code>.visible .entry vx_npu_kernel_0(
+        .shared .align 16 .b8 vx_npu_kernel_0_smem_0[8];
+        mov.u32         %r11, %ctaid.x;
+        mov.u32         %r1, %tid.x;
+        mov.u32         %r2, %ntid.x;
+        mov.u32         %r3, %nctaid.x;
+        ...
+        ld.global.b32   %r6, [%rd12];      // read one element out of HBM
+        st.shared.b32   [%rd13], %r7;      // write it into the tile
+        bar.sync        0;
+        ld.shared.b32   %r8, [%rd14];      // read it back out of the tile
+        st.global.b32   [%rd15], %r9;      // write the result to HBM
+        bar.sync        0;</code></pre>
+
+<p>(An excerpt, with the address arithmetic between these lines cut. The comments are mine.)</p>
+
+<p>The generated PTX has the ingredients of a hand-written staging kernel:</p>
+
+<ul>
+  <li><code>.shared .align 16 .b8 vx_npu_kernel_0_smem_0[8];</code> reserves 8 bytes of shared memory, matching the two 4-byte floats declared in <code>Tensor&lt;f32, [2], Memory::SMEM&gt;</code>.</li>
+  <li>Special registers <code>%ctaid.x</code> and <code>%tid.x</code> supply the block and thread IDs.</li>
+  <li><code>ld.global.b32</code> and <code>st.shared.b32</code> stage data into shared memory.</li>
+  <li><code>bar.sync 0</code> coordinates threads across stages.</li>
+  <li><code>ld.shared.b32</code> and <code>st.global.b32</code> read from shared memory and store the final results back to global memory.</li>
+</ul>
+
+<p>The compiled kernel also employs grid-strided loops: the outer block loop steps by <code>%nctaid.x</code>, and the inner thread loop steps by <code>%ntid.x</code>. Grid-striding allows the kernel to execute correctly across any hardware launch configuration. The <code>launch=4,2</code> payload is a sizing hint: it is the shape that leaves no thread idle and no iteration doubled, and any other shape still computes the same answer.</p>
+
+<p>At a 1&times;1 launch (one block of one thread), the parallel loops reduce directly to the original serial loop nest. That degeneracy is why the same source also runs on a CPU host with no GPU in it, producing the verified result:</p>
+
+<pre><code>$ vxc tile_kernel.vx
+[1,  3,  5,  7,  9,  11,  13,  15]</code></pre>
+
+<p>That output came from the host, not from a GPU. The degeneracy is the reason it is the right number: one launch shape is the serial program, so the host path and the device path stay the same program instead of two implementations that have to be kept in agreement.</p>
+
+<p>There is one case where this equivalence breaks down: placing a <code>barrier()</code> inside a thread loop. No serial execution order can satisfy a barrier within a single thread's loop iterations. In that scenario, the compiler marks the payload with <code>coop=1</code>, instructing the runtime to reject host fallback and avoid returning corrupted data.</p>
+
+<h2>Two compile-time checks CUDA lacks</h2>
+
+<p>Writing this kernel triggered two compiler errors that have no direct equivalents in traditional GPU programming.</p>
+
+<p>The first error occurred when I initially attempted to copy a row of the HBM tensor directly into the shared-memory tile using a standard assignment (<code>=</code>). That draft used two-dimensional tensors, which is why the rows below are <code>[4]</code> wide and the kernel above uses a <code>[2]</code> tile:</p>
+
+<pre><code>Error[E3004]: Type mismatch in assignment: cannot assign Tensor&lt;f32, [4], GPU, GpuHbm&gt;
+              to Tensor&lt;f32, [4], Custom("SMEM"), Custom("SMEM")&gt;</code></pre>
+
+<p>In CUDA C++, pointers do not track memory spaces at the type level. An assignment that crosses address spaces compiles without complaint, and the mistake surfaces when the program runs. In Vx, memory space is an explicit type parameter. An HBM tensor and an SMEM tile are incompatible types. Data movement across spaces requires an explicit <code>transfer()</code> call, which succeeds only along routes permitted by the machine topology. (The compiler renders internal space names like <code>Custom("SMEM")</code> in this message, which is a known rough edge.)</p>
+
+<p>The second error prevents shared-memory overflow. Shared memory is a strict per-SM budget, and exceeding it is ordinarily something the device toolchain or the launch tells you, on a machine that has the part in it. In Vx the topology declares the capacity of <code>Memory::SMEM</code> and the tiles are statically sized, so the compiler adds up the tiles live at once before it emits any code:</p>
+
+<pre><code>Error[E6010]: the working set placed in memory space 'SMEM' (3 tiles) sums to 147456 bytes,
+              over its 131072 byte capacity; place fewer/smaller tiles or declare it `overcommit`</code></pre>
+
+<p>This message comes from <code>tests/frontend/fail/three_dtcm_tiles_do_not_fit_a_cortex_m7.vx</code>. That test targets the tightly-coupled memory of an ARM Cortex-M7 microcontroller, not a GPU. The check keys on the declared capacity of a space rather than on what kind of part holds it, which is the point: it runs on a laptop, with no device toolchain involved.</p>
+
+<h2>What is still missing</h2>
+
+<p>The kernel above demonstrates that Vx can compile the physical mechanics of a shared-memory staging pipeline. However, Vx does not yet provide a complete tile programming model. Five major features remain unimplemented:</p>
+
+<ul>
+  <li><strong>No tile type and no tile operators.</strong> Vx has no dedicated tile primitives. There is no tile-level matrix multiply, reduction, or broadcast. A tile is simply a <code>Tensor&lt;T, [..], Memory::SMEM&gt;</code>, and you manipulate its contents by writing scalar loops element by element. (The custom-transfer design document used <code>Tile&lt;f32&gt;</code> in an example snippet, but no such type exists in the language; test fixtures use tensors.)</li>
+
+  <li><strong>No tensor core instructions.</strong> The compiler never emits PTX <code>mma</code> or <code>wmma</code> instructions. Matrix operations reach tensor cores only through vendor libraries: when an entire placed region consists of a <code>linalg.matmul</code>, the runtime dispatches it directly to cuBLAS. General user-written kernels receive scalar PTX instructions.</li>
+
+  <li><strong>A single grid dimension.</strong> The loop lowering pass only generates block and thread coordinates along <code>Dimension::x</code> (<code>%ctaid.x</code> and <code>%tid.x</code>). Multi-dimensional tile grids must be linearized into 1D indexing in source code.</li>
+
+  <li><strong>Static shapes only.</strong> The affine loop prover requires literal integer bounds. The number of tiles and the dimensions of each tile must be known constants at compile time. Loops with dynamic runtime bounds fail verification and fall back to serial lowering.</li>
+
+  <li><strong>No hardware scheduling or pipelining.</strong> Block dimensions match the thread loop trip count, and grid dimensions match the block loop trip count. The compiler offers no autotuning, software pipelining, or double buffering. It does not generate asynchronous copy instructions (such as <code>cp.async</code> or Hopper TMA) inside kernel bodies; asynchronous copies exist only during transfers managed by a declared hardware <code>copy_engine</code>.</li>
+</ul>
+
+<h2>Where this leaves us</h2>
+
+<p>Vx can already lower a shared-memory staging pattern to a functional GPU device image. It does so by using static analysis to prove properties of nested loops. The developer still writes explicit element loops, and hardware tensor instructions remain unavailable.</p>
+
+<p>Tile frameworks and Vx address complementary concerns:</p>
+
+<ul>
+  <li>Tile models treat a tile as a first-class mathematical value, eliminating manual element indexing.</li>
+  <li>Vx encodes physical memory placement into types, verifying data transfers and memory capacity at compile time.</li>
+</ul>
+
+<p>These two concepts fit together cleanly. Building tile operations on top of typed memory spaces would combine their strengths: developers could write concise matrix operations while the type system guarantees memory safety across hardware hierarchies. The existing loop lowering and memory tracking provide a solid foundation for that abstraction.</p>
+
+<p class="post-foot">The two-level block/thread mapping is
+<a href="https://github.com/vx-lang/Vx/issues/379">Vx#379</a> and general device-kernel emission is
+<a href="https://github.com/vx-lang/Vx/issues/251">Vx#251</a>. The kernel above is the shape of
+<code>tests/backend/pass/custom_topology_device_image.vx</code>; the shared-memory budget check is
+<code>tests/frontend/fail/three_dtcm_tiles_do_not_fit_a_cortex_m7.vx</code>. Vx is Apache 2.0 with
+the LLVM exception — <a href="/docs/getting-started.html">install it</a>, or read
+<a href="/blog/what-a-pointer-forgets.html">What a pointer forgets</a> for why the memory space is in
+the type in the first place.</p>
+
+</article>
+
+</main>
+
+<footer>
+  <p>Vx is Apache 2.0 with the LLVM exception. <a href="https://github.com/vx-lang/Vx">Source</a>.</p>
+</footer>
+
+</body>
+</html>
