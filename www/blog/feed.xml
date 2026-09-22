@@ -5,8 +5,17 @@
   <link href="https://vxlang.org/blog/feed.xml" rel="self"/>
   <link href="https://vxlang.org/blog/"/>
   <id>https://vxlang.org/blog/</id>
-  <updated>2026-09-21T18:00:00Z</updated>
+  <updated>2026-09-22T09:00:00Z</updated>
   <author><name>Aditya Kumar</name></author>
+
+  <entry>
+    <title>The library that only worked on the machine that built it</title>
+    <link href="https://vxlang.org/blog/only-on-the-machine-that-built-it.html"/>
+    <id>https://vxlang.org/blog/only-on-the-machine-that-built-it.html</id>
+    <updated>2026-09-22T09:00:00Z</updated>
+    <author><name>Aditya Kumar</name></author>
+    <summary>Vx 0.0.1 shipped on 10 September and could not run hello-world on any machine except the one that built it. Both macOS libraries recorded the release runner's own directory as their identity, and the release smoke test passed because it ran on that runner. Three more bugs were hiding behind it.</summary>
+  </entry>
 
   <entry>
     <title>What writing core taught the compiler</title>
