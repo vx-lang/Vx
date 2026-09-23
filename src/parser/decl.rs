@@ -891,6 +891,24 @@ impl<'a> Parser<'a> {
 
         let mut methods = Vec::new();
         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
+            // Collected the same way an impl block's are, below. A trait method could not carry
+            // one at all before: the loop went straight to `fn` and a `///` was a parse error,
+            // which left the traits -- the public surface of every type implementing them --
+            // as the one part of the library that could not be documented where it is declared.
+            let mut doc_comment: Option<String> = None;
+            while let TokenType::DocComment(c) = &self.peek().kind {
+                let text = c.to_string();
+                if let Some(existing) = &mut doc_comment {
+                    existing.push('\n');
+                    existing.push_str(&text);
+                } else {
+                    doc_comment = Some(text);
+                }
+                self.advance();
+            }
+            if self.check(&TokenType::RightBrace) || self.check(&TokenType::Eof) {
+                break;
+            }
             if self.check(&TokenType::Unsafe) {
                 return Err(self.error("`unsafe fn` on a trait method is not supported yet"));
             }
@@ -932,6 +950,7 @@ impl<'a> Parser<'a> {
                 params,
                 return_type,
                 default_body,
+                doc_comment,
             });
         }
         self.consume(&TokenType::RightBrace, "Expected '}'")?;

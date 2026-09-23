@@ -35,6 +35,11 @@
 import core::option;
 
 trait From<T> {
+  /// This type built from a `T`, losing nothing.
+  ///
+  /// A static method, called through the target: `i32::from(x)`. Only implemented where every
+  /// value of `T` fits, so there is no failure to report; the narrowing direction is
+  /// `TryFrom`'s, which Vx does not have yet.
   fn from(v : T) -> Self;
 }
 

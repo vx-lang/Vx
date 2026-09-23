@@ -116,6 +116,9 @@ pub struct MethodSignature {
     /// provide the method gets a copy of this, with `Self` replaced by the type it is
     /// implemented for. `None` means the method is required.
     pub default_body: Option<Vec<crate::syntax::Statement>>,
+    /// The `///` lines above the signature. A trait's methods are the public surface of the
+    /// types that implement it, so this is where most of the library's documentation belongs.
+    pub doc_comment: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Clone)]

@@ -51,6 +51,7 @@ enum Ordering {
 impl Copy for Ordering {}
 
 impl Ordering {
+  /// Is this Less?
   fn is_lt(self : Ordering) -> bool {
     match self {
       Ordering::Less() => {
@@ -65,6 +66,7 @@ impl Ordering {
     }
   }
 
+  /// Is this Greater?
   fn is_gt(self : Ordering) -> bool {
     match self {
       Ordering::Less() => {
@@ -79,6 +81,7 @@ impl Ordering {
     }
   }
 
+  /// Is this Equal?
   fn is_eq(self : Ordering) -> bool {
     match self {
       Ordering::Less() => {
@@ -93,14 +96,17 @@ impl Ordering {
     }
   }
 
+  /// Is this anything but Equal?
   fn is_ne(self : Ordering) -> bool {
     return !self.is_eq();
   }
 
+  /// Is this Less or Equal?
   fn is_le(self : Ordering) -> bool {
     return !self.is_gt();
   }
 
+  /// Is this Greater or Equal?
   fn is_ge(self : Ordering) -> bool {
     return !self.is_lt();
   }
@@ -154,32 +160,54 @@ impl Ordering {
 }
 
 trait PartialEq {
+  /// Are the two values equal?
+  ///
+  /// The only required method of this trait. "Partial" is Rust's name for the fact that
+  /// equality need not be reflexive: a NaN is not equal to itself, and `f32` implements this
+  /// and not `Ord` for that reason.
   fn eq(self : &Self, other : &Self) -> bool;
 
+  /// Are the two values different? The negation of `eq`, and not spelled `!=`, which answers
+  /// false for a NaN on both sides (Vx#716).
   fn ne(self : &Self, other : &Self) -> bool {
     return !self.eq(other);
   }
 }
 
 trait Ord {
+  /// Where this value sits relative to the other: Less, Equal or Greater.
+  ///
+  /// The only required method. Every other method of this trait is a default written over it,
+  /// so a type joins the ordering by writing this one and nothing else.
+  ///
+  /// The order must be total, which is why the floats do not implement this trait: a NaN
+  /// compares to nothing, and `PartialOrd` is where they answer.
   fn cmp(self : &Self, other : &Self) -> Ordering;
 
+  /// Is this value less than the other?
   fn lt(self : &Self, other : &Self) -> bool {
     return self.cmp(other).is_lt();
   }
 
+  /// Is this value less than or equal to the other?
   fn le(self : &Self, other : &Self) -> bool {
     return self.cmp(other).is_le();
   }
 
+  /// Is this value greater than the other?
   fn gt(self : &Self, other : &Self) -> bool {
     return self.cmp(other).is_gt();
   }
 
+  /// Is this value greater than or equal to the other?
   fn ge(self : &Self, other : &Self) -> bool {
     return self.cmp(other).is_ge();
   }
 
+  /// The greater of the two, taking both by value and handing one back.
+  ///
+  /// A method rather than the free function Rust also has, because the compiler reads the
+  /// bare names `max` and `min` as the tensor reductions (Vx#223).
   fn max(self : Self, other : Self) -> Self {
     if self.lt(&other) {
       return other;
@@ -187,6 +215,7 @@ trait Ord {
     return self;
   }
 
+  /// The lesser of the two.
   fn min(self : Self, other : Self) -> Self {
     if self.lt(&other) {
       return self;
@@ -194,6 +223,11 @@ trait Ord {
     return other;
   }
 
+  /// This value brought inside the range, so `lo` below it and `hi` above it.
+  ///
+  /// # Panics
+  ///
+  /// When `lo` is greater than `hi`, which asks for a range no value can be in.
   fn clamp(self : Self, lo : Self, hi : Self) -> Self {
     assert(lo.le(&hi), "clamp needs lo <= hi");
     if self.lt(&lo) {
@@ -242,6 +276,12 @@ stamp_cmp!(bool);
 /// A comparison that may answer with nothing, which is what a float needs: NaN is neither
 /// less than, equal to, nor greater than anything, itself included.
 trait PartialOrd {
+  /// Where this value sits relative to the other, or nothing when they do not compare.
+  ///
+  /// Nothing is what a float answers against a NaN: it is neither less than, equal to, nor
+  /// greater than anything, itself included. Over a total order this always answers `Some`,
+  /// and the integer widths implement it that way so a body written over `PartialOrd` works
+  /// for every number.
   fn partial_cmp(self : &Self, other : &Self) -> Option<Ordering>;
 }
 

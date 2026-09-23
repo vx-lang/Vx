@@ -27,7 +27,16 @@ import core::option;
 import core::result;
 
 trait Clone {
+  /// A duplicate of this value, made explicitly.
+  ///
+  /// The only required method. A type that can copy itself by a plain read still needs one,
+  /// because a body written over `T : Clone` has to be able to call it.
   fn clone(self : &Self) -> Self;
+
+  /// Replace this value with a duplicate of `source`.
+  ///
+  /// A default written over `clone`. Override it for a type that can overwrite itself more
+  /// cheaply than it can build a fresh copy; nothing in `core` needs to.
   fn clone_from(self : &mut Self, source : &Self) -> void {
     *self = source.clone();
   }

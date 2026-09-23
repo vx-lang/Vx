@@ -5,6 +5,16 @@ There was no API reference at all: 21 modules and roughly 200 functions, and the
 out what `std::vec` offered was to read it. Generating the reference from the signatures keeps it
 complete and stops it drifting, which a hand-written one would do within a release.
 
+The `///` lines above each item are carried through, so the specification of a function lives
+next to the function and cannot drift from it. That is Rust's arrangement, and it is why a
+comment stripper used to sit at the top of this file: the reference listed signatures and threw
+the prose away.
+
+Macro-stamped impls are resolved rather than printed raw. `core::convert` stamps `From` once per
+source-and-target pair, and the page used to read ``From<$from> for $to`` -- the macro's own
+placeholders, which mean nothing to a reader. The parameters are now shown as `T`, `U`, `V` and
+the concrete instantiations are listed beneath.
+
     python3 scripts/tools/gen_stdlib_reference.py            # write the reference
     python3 scripts/tools/gen_stdlib_reference.py --check    # fail if it is out of date
 
@@ -29,7 +39,8 @@ MODULE_BLURB = {
     "alloc": "Raw allocation and deallocation.",
     "box": "`Box<T>`, a single-owner heap allocation. Required for recursive types.",
     "clone": "`Clone`, an explicit duplicate of a value.",
-    "closure": "The closure types the compiler lowers `|x| ...` into.",
+    "cmp": "Ordering and equality: `PartialEq`, `Ord`, `PartialOrd` and `Ordering`.",
+    "convert": "`From`, the conversions that cannot fail and lose nothing.",
     "default": "`Default`, the value a type starts from.",
     "fs": "Files and directories.",
     "googletest": "Assertions for tests written in Vx.",
@@ -39,11 +50,14 @@ MODULE_BLURB = {
     "iter": "The `Iterator` trait and its adaptors, which `for` loops and `.map` build on.",
     "libc": "Direct bindings to the C library.",
     "llama": "Helpers used by the Llama 2 example.",
-    "math": "Mathematical functions and constants.",
+    "marker": "The traits that say something about a type without giving it a method.",
+    "mem": "Moving values around without looking at what they are.",
     "mmap": "Memory-mapped files.",
     "net": "TCP and UDP sockets.",
-    "num": "The integer methods, stamped over the signed and the unsigned widths.",
+    "num": "The integer and float methods, stamped over every width.",
+    "ops": "The callable types a closure literal lowers into.",
     "option": "`Option<T>`, for a value that may be absent.",
+    "ptr": "Raw pointers: making one, and reading or writing through it.",
     "rand": "Seeded pseudo-random numbers, one stream per `Rng`.",
     "result": "`Result<T, E>`, for an operation that may fail.",
     "simd": "SIMD vector types and operations.",
@@ -53,13 +67,10 @@ MODULE_BLURB = {
     "vec": "`Vec<T>`, a growable array.",
 }
 
-# These blocks list signatures, not programs: they have no bodies and cannot compile. The
-# documentation-example checker is told so explicitly rather than left to guess.
-SIGNATURE_SKIP = "<!-- vx-doctest: skip -- signature listing, not a program -->\n"
-
 HEADER = """# Standard library reference
 
-Every public type and function in the shipped library modules, taken from their signatures.
+Every public type and function in the shipped library modules, taken from their signatures, with
+the documentation each one carries in the source.
 
 Import a module with its path, then use the names it declares:
 
@@ -78,21 +89,48 @@ The toolchain also ships a `graph` library outside `std`, imported as `graph::tr
 friends.
 
 > This page is generated from `stdlib/core/*.vx` and `stdlib/std/*.vx` by
-> `scripts/tools/gen_stdlib_reference.py`. Signatures are exactly what the source declares.
+> `scripts/tools/gen_stdlib_reference.py`. Signatures are exactly what the source declares, and
+> the prose under each is its `///` comment. An item with no description has none in the source.
 
 """
 
+# The letters a macro's parameters are shown as, in the order they are declared. Only the ones
+# that reach a signature are ever printed -- `core::num` passes a width and two limits that do
+# not -- but every parameter needs a letter so the substitution is total.
+PARAM_LETTERS = ["T", "U", "V", "W", "X", "Y", "Z"]
+
+
+def letters_for(params):
+    """A letter per parameter, running past the table if a macro ever takes more."""
+    out = []
+    for i in range(len(params)):
+        out.append(PARAM_LETTERS[i] if i < len(PARAM_LETTERS) else f"P{i}")
+    return out
+
+
+def strip_comments(text):
+    """Remove ordinary comments and keep `///` ones.
+
+    The banner, the implementation notes and the `// RUN:` lines all go; the doc comments are
+    what this file exists to carry through.
+
+    The lookbehind is what makes that work. Without it the pattern matches the *second and
+    third* slashes of `///`, strips from there, and leaves a bare `/` where the description
+    was -- so every doc comment survived the scan and arrived empty.
+    """
+    return re.sub(r"(?<!/)//(?!/).*", "", text)
+
 
 def split_externs(text):
-    """Return (vx_source, extern_source) with the licence banner and comments removed.
+    """Return (vx_source, extern_source) with ordinary comments removed.
 
     The two are listed separately rather than merged, because an `extern` block means different
-    things in different modules. In `vec` it is the Rust core backing the collection — plumbing a
+    things in different modules. In `vec` it is the Rust core backing the collection -- plumbing a
     caller never names. In `io` and `libc` the extern block *is* the module: there is nothing else
     in the file. Dropping externs outright lost six of the twenty-one modules entirely, including
     `std::io`.
     """
-    text = re.sub(r"//.*", "", text)
+    text = strip_comments(text)
 
     kept, externs, i = [], [], 0
     while True:
@@ -114,6 +152,30 @@ def split_externs(text):
         externs.append(text[start : j + 1])
         i = j + 1
     return "".join(kept), "\n".join(externs)
+
+
+def doc_above(text, pos):
+    """The `///` block immediately above the item starting at `pos`, as one string.
+
+    Blank lines between the comment and the item are allowed, so that a doc comment separated
+    from its function by the formatter still belongs to it. Anything else in between ends the
+    block, which is what stops a module header being read as the first function's description.
+    """
+    lines = text[:pos].split("\n")
+    # `lines[-1]` is the partial line the item starts on.
+    i = len(lines) - 2
+    while i >= 0 and lines[i].strip() == "":
+        i -= 1
+    out = []
+    while i >= 0 and lines[i].strip().startswith("///"):
+        out.append(lines[i].strip()[3:].strip())
+        i -= 1
+    if not out:
+        return None
+    out.reverse()
+    # A doc comment's blank line is written as a bare `///`, which strips to "".
+    text = "\n".join(out).strip()
+    return text or None
 
 
 def normalise(sig):
@@ -144,43 +206,143 @@ def signatures(text):
         )
 
 
-def parse_module(path):
-    text, extern_text = split_externs(path.read_text())
+def balanced_block(text, open_pos):
+    """The text between the brace at `open_pos` and its match, and the index just past it."""
+    depth, j = 0, open_pos
+    while j < len(text):
+        if text[j] == "{":
+            depth += 1
+        elif text[j] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[open_pos + 1 : j], j + 1
+        j += 1
+    return text[open_pos + 1 :], len(text)
 
-    types = []
-    for m in re.finditer(r"\b(struct|enum|trait)\s+([A-Za-z_]\w*)\s*(<[^{]*?>)?\s*\{", text):
-        types.append(normalise(f"{m.group(1)} {m.group(2)}{m.group(3) or ''}"))
 
-    # Associate each function with the impl block it sits in, so `Vec<T>::push` is not listed as a
-    # free function. Impl headers may wrap across lines after formatting.
-    impls = [
-        (m.start(), normalise(m.group(1)))
-        for m in re.finditer(r"\bimpl\b\s*(?:<[^>]*>)?\s*([^{]+?)\{", text)
-    ]
+def take_macros(text):
+    """Pull `macro_rules` definitions and their invocations out of a module.
 
-    funcs = []
+    Returns (text_without_them, [(params, body, [arg_tuples])]). The definition and the
+    invocations are removed from the text so the ordinary parse below does not see a body full
+    of `$t` and report it as a function on a type called `$t`.
+    """
+    macros = []
+    for m in list(re.finditer(r"\bmacro_rules\s+([A-Za-z_]\w*)\s*\{", text)):
+        name = m.group(1)
+        whole, _ = balanced_block(text, m.end() - 1)
+        rule = re.search(r"\(([^)]*)\)\s*=>\s*\{", whole)
+        if not rule:
+            continue
+        params = [p.strip() for p in re.findall(r"(\$\w+)\s*:", rule.group(1))]
+        body, _ = balanced_block(whole, rule.end() - 1)
+        args = []
+        for inv in re.finditer(rf"\b{name}!\(([^)]*)\)", text):
+            args.append([a.strip() for a in inv.group(1).split(",")])
+        if args:
+            macros.append((params, body, args))
+        # Remove the definition and every invocation from the text the ordinary parse sees.
+        text = text.replace(text[m.start() : m.end() - 1 + len(whole) + 1], "")
+        text = re.sub(rf"\b{name}!\([^)]*\)\s*;", "", text)
+    return text, macros
+
+
+def parse_impl_groups(text):
+    """Group each function with the impl block it sits in, and carry its doc comment.
+
+    A free function has an empty owner. Impl headers may wrap across lines after formatting.
+    """
+    # The impl's whole extent, not just where it starts. Keyed on the opening position alone,
+    # a free function written *after* an impl block was filed as one of its methods --
+    # `core::convert`'s `identity` was listed under `From<T> for Option<T>`.
+    impls = []
+    for m in re.finditer(r"\bimpl\b\s*(?:<[^>]*>)?\s*([^{]+?)\{", text):
+        brace = text.index("{", m.start())
+        _, end = balanced_block(text, brace)
+        impls.append((m.start(), end, normalise(m.group(1))))
+
+    # A trait's own methods are requirements and defaults, not free functions, and were
+    # labelled as free functions because only impl blocks had an owner.
+    for m in re.finditer(r"\btrait\s+([A-Za-z_]\w*)\s*(<[^{]*?>)?\s*\{", text):
+        brace = text.index("{", m.start())
+        _, end = balanced_block(text, brace)
+        impls.append((m.start(), end, normalise(f"trait {m.group(1)}{m.group(2) or ''}")))
+
+    out = []
     for pos, sig in signatures(text):
         owner = ""
-        for impl_pos, name in impls:
-            if impl_pos < pos:
+        for start, end, name in impls:
+            if start < pos < end:
                 owner = name
-            else:
                 break
-        funcs.append((owner, sig))
+        out.append((owner, sig, doc_above(text, pos)))
+    return out
+
+
+def parse_module(path):
+    raw, extern_text = split_externs(path.read_text())
+    body, macros = take_macros(raw)
+
+    types = []
+    for m in re.finditer(
+        r"\b(struct|enum|trait)\s+([A-Za-z_]\w*)\s*(<[^{]*?>)?\s*\{", body
+    ):
+        types.append(
+            (normalise(f"{m.group(1)} {m.group(2)}{m.group(3) or ''}"), doc_above(body, m.start()))
+        )
+
+    funcs = parse_impl_groups(body)
+
+    # A stamped impl is rendered once, with its parameters lettered and the concrete
+    # instantiations listed, rather than once per invocation.
+    stamped = []
+    for params, mbody, args in macros:
+        subst = dict(zip(params, letters_for(params)))
+        shown = mbody
+        for p, letter in subst.items():
+            shown = re.sub(re.escape(p) + r"\b", letter, shown)
+        groups = parse_impl_groups(shown)
+        if not groups:
+            continue
+        # Only the parameters that survive into a signature are worth listing: `core::num`
+        # passes a width and a limit that never appear in one.
+        used = [i for i, p in enumerate(params) if any(subst[p] in s for _, s, _ in groups)]
+        if not used:
+            used = [0]
+        tuples = []
+        for a in args:
+            picked = [a[i] for i in used if i < len(a)]
+            if picked:
+                tuples.append(" → ".join(picked) if len(picked) > 1 else picked[0])
+        stamped.append(([subst[params[i]] for i in used], groups, tuples))
 
     externs = [sig for _, sig in signatures(extern_text)]
+    return types, funcs, stamped, externs
 
-    return types, funcs, externs
+
+def render_items(out, items):
+    """One bullet per item: signature, then its description if it has one."""
+    for sig, doc in items:
+        if doc:
+            summary, _, rest = doc.partition("\n")
+            out.append(f"- `{sig}`<br>")
+            out.append(f"  {summary}")
+            for line in rest.split("\n"):
+                if line.strip():
+                    out.append(f"  {line.strip()}")
+        else:
+            out.append(f"- `{sig}`")
+    out.append("")
 
 
 def render(modules):
     out = [HEADER, "## Contents\n"]
-    for lib, name, _types, _funcs, _externs in modules:
+    for lib, name, *_ in modules:
         out.append(f"- [`{lib}::{name}`](#{lib}{name}) — {MODULE_BLURB.get(name, '')}")
     out.append("")
 
     total_fns = 0
-    for lib, name, types, funcs, externs in modules:
+    for lib, name, types, funcs, stamped, externs in modules:
         out.append(f"## `{lib}::{name}`\n")
         blurb = MODULE_BLURB.get(name)
         if blurb:
@@ -188,36 +350,39 @@ def render(modules):
 
         if types:
             out.append("**Types**\n")
-            for t in types:
-                out.append(f"- `{t}`")
-            out.append("")
+            render_items(out, types)
 
         by_owner = {}
-        for owner, sig in funcs:
-            by_owner.setdefault(owner, []).append(sig)
+        for owner, sig, doc in funcs:
+            by_owner.setdefault(owner, []).append((sig, doc))
 
-        for owner, sigs in by_owner.items():
-            total_fns += len(sigs)
+        for owner, items in by_owner.items():
+            total_fns += len(items)
             out.append(f"**{'Functions' if not owner else f'`{owner}` methods'}**\n")
-            out.append(SIGNATURE_SKIP)
-            out.append("```rust")
-            out.extend(sigs)
-            out.append("```")
-            out.append("")
+            render_items(out, items)
+
+        for letters, groups, tuples in stamped:
+            by_owner = {}
+            for owner, sig, doc in groups:
+                by_owner.setdefault(owner, []).append((sig, doc))
+            for owner, items in by_owner.items():
+                total_fns += len(items) * max(len(tuples), 1)
+                label = f"`{owner}` methods" if owner else "Functions"
+                out.append(f"**{label}**, stamped for {len(tuples)} instantiations\n")
+                render_items(out, items)
+                joined = ", ".join(f"`{t}`" for t in tuples)
+                pair = "".join(letters) if len(letters) == 1 else f"({', '.join(letters)})"
+                out.append(f"{pair} = {joined}\n")
 
         if externs:
             total_fns += len(externs)
             label = (
                 "**Functions** *(bound directly to C)*"
-                if not funcs
+                if not funcs and not stamped
                 else "**C bindings** *(the native functions this module is built on)*"
             )
             out.append(f"{label}\n")
-            out.append(SIGNATURE_SKIP)
-            out.append("```rust")
-            out.extend(externs)
-            out.append("```")
-            out.append("")
+            render_items(out, [(s, None) for s in externs])
 
     out.append("______________________________________________________________________\n")
     out.append(f"{total_fns} functions across {len(modules)} modules.\n")
@@ -234,9 +399,9 @@ def main():
             )
             return 1
         for path in sorted(directory.glob("*.vx")):
-            types, funcs, externs = parse_module(path)
-            if types or funcs or externs:
-                modules.append((lib, path.stem, types, funcs, externs))
+            types, funcs, stamped, externs = parse_module(path)
+            if types or funcs or stamped or externs:
+                modules.append((lib, path.stem, types, funcs, stamped, externs))
 
     if not modules:
         print("error: no modules parsed", file=sys.stderr)

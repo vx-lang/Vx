@@ -23,6 +23,14 @@
 // bound exists to be written.
 
 /// A type that is duplicated rather than moved when it is assigned.
+///
+/// Opt-in, as Rust's is: a type is copyable only when it says so, and only when every field
+/// already is. That is what keeps it away from placement -- a tensor or a placed buffer cannot
+/// declare it, so they stay linear without a special case, and duplicating placed data stays an
+/// explicit `transfer`.
+///
+/// Enforced for a struct and for a payload-free enum. A generic enum is not treated as linear
+/// at all, so `Option` and `Result` survive a move whether or not they declare this (Vx#715).
 trait Copy {}
 
 /// The scalars already copy on every read. The impls are here so a generic body bounded by
@@ -45,15 +53,21 @@ stamp_copy!(f32);
 stamp_copy!(f64);
 stamp_copy!(bool);
 
-/// Declared, not enforced: there are no threads to send a value between.
+/// A type that may be moved to another thread. Declared, not enforced: there are no threads
+/// to send a value between yet.
 trait Send {}
 
-/// Declared, not enforced.
+/// A type that may be referenced from several threads at once. Declared, not enforced, for
+/// the same reason as `Send`.
 trait Sync {}
 
-/// Every Vx type has a known size, so this holds of all of them.
+/// A type whose size is known at compile time, which every Vx type is. The bound exists to be
+/// written, as Rust's does; nothing is excluded by it.
 trait Sized {}
 
-/// A field that records a type without storing one. An empty struct occupies nothing.
+/// A field that records a type without storing a value of it.
+///
+/// An empty struct occupies nothing, so a struct carrying one is no larger. It is how a type
+/// parameter that appears in no field is still named by the type.
 struct PhantomData<T> {
 }

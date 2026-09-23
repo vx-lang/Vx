@@ -16,6 +16,10 @@
 import core::option;
 
 trait Default {
+  /// The value this type starts from: zero for a number, `false`, `None`.
+  ///
+  /// A static method, so it is called through the type -- `i64::default()`, not `x.default()`.
+  /// A struct gets one by writing the impl; the language does not derive it.
   fn default() -> Self;
 }
 
