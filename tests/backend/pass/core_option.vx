@@ -90,7 +90,48 @@ fn main() -> i32 {
   show(Option<i32>::Some(5).xor(Option<i32>::Some(7)).is_none());
   print!(" ");
   show(Option<i32>::None().xor(Option<i32>::None()).is_none());
+  print!(" | ");
+
+  // `is_none_or` answers true for the absent case and defers to `p` otherwise, so it
+  // needs a value `p` likes and one it does not, or a version that ignored `p` would pass.
+  show(Option<i32>::None().is_none_or(| x : i32 | x > 3));
+  print!(" ");
+  show(Option<i32>::Some(5).is_none_or(| x : i32 | x > 3));
+  print!(" ");
+  show(Option<i32>::Some(2).is_none_or(| x : i32 | x > 3));
+  print!(" ");
+
+  // `or_else` and `map_or_else` each have a side that must not run its closure; the
+  // closures answer with values the other side cannot produce.
+  print(Option<i32>::None().or_else(|| Option<i32>::Some(4)).unwrap());
+  print!(" ");
+  print(Option<i32>::Some(5).or_else(|| Option<i32>::Some(4)).unwrap());
+  print!(" ");
+  print(Option<i32>::Some(1).map_or_else(|| 9, | x : i32 | x + 100));
+  print!(" ");
+  print(Option<i32>::None().map_or_else(|| 9, | x : i32 | x + 100));
+  print!(" | ");
+
+  // `take` and `replace` are read twice each: what came back, and what was left behind.
+  // A `take` that returned the value without clearing, or cleared without returning,
+  // passes a test that only looks at one of the two.
+  let mut a = Option<i32>::Some(7);
+  print(a.take().unwrap_or(-1));
+  print!(" ");
+  show(a.is_none());
+  print!(" ");
+  let mut b = Option<i32>::None();
+  print(b.take().unwrap_or(-1));
+  print!(" ");
+  show(b.replace(9).is_none());
+  print!(" ");
+  print(b.unwrap_or(-1));
+  print!(" ");
+  let mut c = Option<i32>::Some(1);
+  print(c.replace(2).unwrap_or(-1));
+  print!(" ");
+  print(c.unwrap_or(-1));
   return 0;
 }
 
-// EXPECT: 1 0 0 1 5 5 9 21 -1 10 -1 5 -1 15 -1 77 5 1 0 5 7 7 1 5 7 1 1
+// EXPECT: 1 0 0 1 5 5 9 21 -1 10 -1 5 -1 15 -1 77 5 1 0 5 7 7 1 5 7 1 1 | 1 1 0 4 5 101 9 | 7 1 -1 1 9 1 2

@@ -13,8 +13,20 @@
 // matches, and the rest of `core` is written against it -- `Iterator::next` returns one,
 // and so will every `checked_` method in `core::num`.
 //
-// `ok_or` and `transpose` wait on `core::result`, and `zip` on a pair type. Nothing else
-// of Rust's `Option` is missing.
+// `ok_or`, `ok_or_else` and `transpose` are here in spirit but live in `core::result`,
+// because that module already imports this one and importing it back would be a cycle.
+//
+// Still missing, each waiting on something outside this file:
+//
+//   `expect`               `assert` wants a string literal, so a message parameter cannot
+//                          be handed to it (Vx#526).
+//   `unwrap_or_default`    `T::default()` on a bounded type parameter is not resolved.
+//   `inspect`              no closure literal can return void (Vx#711).
+//   `zip`                  wants a pair type.
+//   `flatten`              wants `Option<Option<T>>` to lower.
+//   `as_ref`, `as_mut`,    each answers with a reference into the option, and `iter` needs
+//   `iter`, `insert`,      `core::iter` besides.
+//   `get_or_insert`
 //
 // A closure is called by hand -- `let p = f.func; p(f.env, v)` -- since there is no call
 // syntax for one yet.
@@ -205,5 +217,61 @@ impl<T> Option<T> {
         return false;
       }
     }
+  }
+
+  /// Is there no value, or does `p` accept the one there is? The mirror of `is_some_and`.
+  fn is_none_or(self : Option<T>, p : Closure1<T, bool>) -> bool {
+    match self {
+      Option<T>::Some(v) => {
+        let f = p.func;
+        return f(p.env, v);
+      }
+      Option<T>::None() => {
+        return true;
+      }
+    }
+  }
+
+  /// This one if it holds a value, otherwise what `f` gives. `or` is the form that
+  /// evaluates the other side either way.
+  fn or_else(self : Option<T>, f : Closure0<Option<T>>) -> Option<T> {
+    match self {
+      Option<T>::Some(v) => {
+        return Option<T>::Some(v);
+      }
+      Option<T>::None() => {
+        let p = f.func;
+        return p(f.env);
+      }
+    }
+  }
+
+  /// `f` applied to the value, or what `d` gives when there is none. `map_or` is the form
+  /// that takes the fallback as a value.
+  fn map_or_else<U>(self : Option<T>, d : Closure0<U>, f : Closure1<T, U>) -> U {
+    match self {
+      Option<T>::Some(v) => {
+        let p = f.func;
+        return p(f.env, v);
+      }
+      Option<T>::None() => {
+        let q = d.func;
+        return q(d.env);
+      }
+    }
+  }
+
+  /// The value, leaving nothing behind.
+  fn take(self : &mut Option<T>) -> Option<T> {
+    let old = *self;
+    *self = Option<T>::None();
+    return old;
+  }
+
+  /// The value, leaving `v` behind.
+  fn replace(self : &mut Option<T>, v : T) -> Option<T> {
+    let old = *self;
+    *self = Option<T>::Some(v);
+    return old;
   }
 }
