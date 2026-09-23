@@ -1,0 +1,205 @@
+//===- core_num_float.vx - Vx Compiler ---------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `core::num` over the floats, which is where Rust's `core` stops and this one does not:
+// every body is one `math` dialect op, so the source names no libm symbol and each backend
+// lowers the op its own way.
+//
+// Each argument is chosen so the answer is exact in binary and a neighbouring operation
+// gives a different one: `sqrt(4)` is 2 and `exp2(3)` is 8, so a stamp that pasted the
+// wrong op name reads differently rather than off by a rounding step. The ops that share a
+// shape are the ones most worth separating this way -- `exp`/`exp2`, `log2`/`log10`,
+// `floor`/`ceil`/`round`/`trunc`.
+//
+// `trunc` and `fract` are asked of a negative value, since that is where they part company
+// with `floor` and with each other.
+//
+// `to_degrees` and `to_radians` are the two answers that are not exact, so they are read
+// through a tolerance rather than printed.
+//
+// Both widths get the whole set, because the two come from one macro and a width that was
+// never asked is a width the macro may not have covered.
+import core::num;
+
+fn show(flag : bool) -> i32 {
+  if flag {
+    print(1);
+  } else {
+    print(0);
+  }
+  return 0;
+}
+
+fn near(a : f64, b : f64) -> bool {
+  let d : f64 = (a - b).abs();
+  return d < 0.001;
+}
+
+fn main() -> i32 {
+  let four : f64 = 4.0;
+  let neg : f64 = -2.5;
+  let zero : f64 = 0.0;
+  let one : f64 = 1.0;
+  let three : f64 = 3.0;
+  let eight : f64 = 8.0;
+  let hundred : f64 = 100.0;
+  let two_seven : f64 = 2.7;
+  let two_one : f64 = 2.1;
+  let two_five : f64 = 2.5;
+
+  print(four.sqrt());
+  print!(" ");
+  print(neg.abs());
+  print!(" ");
+  print(zero.exp());
+  print!(" ");
+  print(three.exp2());
+  print!(" ");
+  print(zero.exp_m1());
+  print!(" ");
+  print(one.ln());
+  print!(" ");
+  print(eight.log2());
+  print!(" ");
+  print(hundred.log10());
+  print!(" ");
+  print(zero.ln_1p());
+  print!(" | ");
+
+  print(zero.sin());
+  print!(" ");
+  print(zero.cos());
+  print!(" ");
+  print(zero.tan());
+  print!(" ");
+  print(zero.asin());
+  print!(" ");
+  print(one.acos());
+  print!(" ");
+  print(zero.atan());
+  print!(" ");
+  print(zero.sinh());
+  print!(" ");
+  print(zero.cosh());
+  print!(" ");
+  print(zero.tanh());
+  print!(" | ");
+
+  print(two_seven.floor());
+  print!(" ");
+  print(two_one.ceil());
+  print!(" ");
+  print(two_five.round());
+  print!(" ");
+  let neg_seven : f64 = -2.75;
+  print(neg_seven.trunc());
+  print!(" ");
+  print(neg_seven.fract());
+  print!(" | ");
+
+  let two : f64 = 2.0;
+  print(two.powf(three));
+  print!(" ");
+  print(zero.atan2(one));
+  print!(" ");
+  let minus_one : f64 = -1.0;
+  print(two_five.copysign(minus_one));
+  print!(" ");
+  print(four.recip());
+  print!(" | ");
+
+  // The answers that are not exact, read through a tolerance.
+  //
+  // The last three are here because their exact-answer argument above coincides with a
+  // neighbouring op's: `exp2(0)` is also 1, `log2(1)` is also 0, and `powf(0, 1)` is also
+  // 0, so those three lines pass with the wrong op pasted in. These ask the same methods
+  // where the two answers differ. The sabotage run is what found that; the arguments were
+  // picked to be exact and three of them were exact for two ops at once.
+  let half_pi : f64 = 1.5707963267948966;
+  show(near(half_pi.to_degrees(), 90.0));
+  print!(" ");
+  let ninety : f64 = 90.0;
+  show(near(ninety.to_radians(), half_pi));
+  print!(" ");
+  show(near(one.exp(), 2.718281828459045));
+  print!(" ");
+  show(near(eight.ln(), 2.0794415416798357));
+  print!(" ");
+  show(near(one.atan2(one), 0.7853981633974483));
+  print!(" | ");
+
+  // Classification. The infinity and the NaN are built rather than written, since neither
+  // has a literal.
+  let inf : f64 = one / zero;
+  let nan : f64 = zero / zero;
+  show(nan.is_nan());
+  print!(" ");
+  show(one.is_nan());
+  print!(" ");
+  show(one.is_finite());
+  print!(" ");
+  show(inf.is_finite());
+  print!(" ");
+  show(nan.is_finite());
+  print!(" ");
+  show(inf.is_infinite());
+  print!(" ");
+  show(one.is_infinite());
+  print!(" ");
+  print(neg.signum());
+  print!(" ");
+  print(two_five.signum());
+  print!(" ");
+  print(zero.signum());
+  print!(" | ");
+
+  // The same set at the narrower width, since one macro stamps both.
+  let f4 : f32 = 4.0;
+  let f0 : f32 = 0.0;
+  let f1 : f32 = 1.0;
+  let f3 : f32 = 3.0;
+  let f8 : f32 = 8.0;
+  let f100 : f32 = 100.0;
+  let fneg : f32 = -2.5;
+  print(f4.sqrt());
+  print!(" ");
+  print(fneg.abs());
+  print!(" ");
+  print(f0.exp());
+  print!(" ");
+  print(f3.exp2());
+  print!(" ");
+  print(f1.ln());
+  print!(" ");
+  print(f8.log2());
+  print!(" ");
+  print(f100.log10());
+  print!(" ");
+  print(f0.sin());
+  print!(" ");
+  print(f0.cos());
+  print!(" ");
+  print(f0.tanh());
+  print!(" ");
+  let f27 : f32 = 2.7;
+  print(f27.floor());
+  print!(" ");
+  print(f27.trunc());
+  print!(" ");
+  let f2 : f32 = 2.0;
+  print(f2.powf(f3));
+  print!(" ");
+  print(f4.recip());
+  print!(" ");
+  let finf : f32 = f1 / f0;
+  show(finf.is_infinite());
+  print!(" ");
+  show(f1.is_finite());
+  return 0;
+}
+
+// EXPECT: 2 2.5 1 8 0 0 3 2 0 | 0 1 0 0 0 0 0 1 0 | 2 3 3 -2 -0.75 | 8 0 -2.5 0.25 | 1 1 1 1 1 | 1 0 1 0 0 1 0 -1 1 1 | 2 2.5 1 8 0 3 2 0 1 0 2 2 8 0.25 1 1
