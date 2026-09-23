@@ -218,12 +218,15 @@ pub enum DiagnosticCode {
     /// comparison against 0 -- so the arm fired for scrutinee 0, the most common value there is,
     /// with no diagnostic.
     E3019,
-    /// A `match` used as a value that no arm is guaranteed to match.
+    /// A `match` that no arm is guaranteed to match.
     ///
-    /// A value-position match must produce a value on every path, so it needs a wildcard arm or
-    /// must name every variant of its scrutinee's enum. Without that the fall-through edge has
-    /// no value to carry, and codegen used to paper over it by evaluating the whole match to a
-    /// constant zero.
+    /// A match over an enum must name every variant or carry a wildcard arm, wherever it sits.
+    /// The uncovered value falls through, and when every written arm returns, the function
+    /// falls off its end and hands back whatever was in the return slot.
+    ///
+    /// A scrutinee that is not an enum cannot be enumerated, so it is only asked for a wildcard
+    /// in value position, where the fall-through edge would otherwise have no value to carry --
+    /// codegen used to paper over that by evaluating the whole match to a constant zero.
     E3020,
     /// An enum variant whose payload is a tensor.
     ///

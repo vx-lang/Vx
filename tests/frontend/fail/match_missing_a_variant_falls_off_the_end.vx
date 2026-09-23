@@ -1,0 +1,46 @@
+//===- match_missing_a_variant_falls_off_the_end.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `match` whose every arm returns, missing a variant. Nothing reads the
+// match's value, so the coverage check used to skip it entirely: it only ran
+// when some arm ended in a tail expression. `Nothing` then fell through, the
+// function ran off its end, and the caller read back whatever was in the return
+// slot as a `Just`.
+//
+// E3028 did not catch it either -- a match whose every written arm returns
+// counts as returning, and the arm that would have to return is the one that
+// was not written.
+//
+// Found by deleting the `None` arm of `impl Clone for Option<T>` on purpose.
+// That was meant to be refused and instead produced a wrong answer.
+//
+// `Just` is declared first so the refusal has to name the MISSING variant to
+// satisfy the check. With `Nothing` first, a message that listed every variant
+// would still read "does not cover Nothing" and the check would pass on a
+// coverage filter that did nothing.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: E3020
+// CHECK-SAME: does not cover Nothing
+
+enum Maybe {
+  Just(i32),
+  Nothing
+}
+
+fn unwrap_or_zero(m : Maybe) -> i32 {
+  match m {
+    Maybe::Just(v) => {
+      return v;
+    }
+  }
+}
+
+fn main() -> i32 {
+  print(unwrap_or_zero(Maybe::Nothing()));
+  return 0;
+}

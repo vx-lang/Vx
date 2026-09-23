@@ -13,13 +13,13 @@
 // the arm, or add a `_`. Codegen used to answer the whole match with a constant
 // zero, which made the missing case indistinguishable from an arm returning 0.
 //
-// The statement-position form of the same match is fine and is not refused --
-// nothing reads its value, so falling through yields nothing that is needed.
+// The statement-position form of the same match is refused too, for a reason
+// this file does not cover: see match_missing_a_variant_falls_off_the_end.vx.
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s
 // CHECK: E3020
-// CHECK-SAME: produces a value but does not cover Blue
-// CHECK-SAME: add a `_` arm
+// CHECK-SAME: does not cover Blue
+// CHECK-SAME: add an arm for each, or a `_` arm
 
 enum Color {
   Red, Green, Blue

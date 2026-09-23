@@ -570,35 +570,43 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
 
-                // A match in value position has to produce one on every path. Without a
-                // wildcard arm or full variant coverage there is a path through it that
-                // yields nothing, which codegen cannot lower and used to answer with zero.
-                if match_ty.is_some() && !has_wildcard && !self.speculating {
-                    let variants = self.enum_variants_of(&expr_ty);
-                    let exhaustive = match &variants {
-                        Some(all) => all.iter().all(|v| covered.contains(v)),
-                        None => false,
-                    };
-                    if !exhaustive {
-                        let missing = match &variants {
-                            Some(all) => {
-                                let m: Vec<String> = all
-                                    .iter()
-                                    .filter(|v| !covered.contains(v))
-                                    .map(|v| v.to_string())
-                                    .collect();
-                                format!("does not cover {}", m.join(", "))
+                // Coverage. An enum scrutinee can be enumerated, so a missing variant is a fact
+                // about the match wherever it sits: the uncovered value falls through, and if
+                // every written arm returns, the function falls off its end carrying whatever
+                // was in the return slot. A scrutinee that cannot be enumerated has no such
+                // fact, so asking it for a wildcard stays limited to value position, where the
+                // fall-through edge would otherwise have no value to carry.
+                if !has_wildcard && !self.speculating {
+                    match self.enum_variants_of(&expr_ty) {
+                        Some(all) => {
+                            let missing: Vec<String> = all
+                                .iter()
+                                .filter(|v| !covered.contains(v))
+                                .map(|v| v.to_string())
+                                .collect();
+                            if !missing.is_empty() {
+                                self.errors.error_with_code(
+                                    crate::diagnostic::DiagnosticCode::E3020,
+                                    format!(
+                                        "this `match` does not cover {}; add an arm for each, \
+                                         or a `_` arm",
+                                        missing.join(", ")
+                                    ),
+                                    None,
+                                );
                             }
-                            None => "has no arm matching every value".to_string(),
-                        };
-                        self.errors.error_with_code(
-                            crate::diagnostic::DiagnosticCode::E3020,
-                            format!(
-                                "this `match` produces a value but {missing}; add a `_` arm so \
-                                 every path yields one"
-                            ),
-                            None,
-                        );
+                        }
+                        None => {
+                            if match_ty.is_some() {
+                                self.errors.error_with_code(
+                                    crate::diagnostic::DiagnosticCode::E3020,
+                                    "this `match` produces a value but has no arm matching every \
+                                     value; add a `_` arm so every path yields one"
+                                        .to_string(),
+                                    None,
+                                );
+                            }
+                        }
                     }
                 }
 
