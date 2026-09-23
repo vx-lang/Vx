@@ -218,6 +218,13 @@ pub enum DiagnosticCode {
     /// comparison against 0 -- so the arm fired for scrutinee 0, the most common value there is,
     /// with no diagnostic.
     E3019,
+    /// A static call to a method several traits supply, where no impl takes the argument types
+    /// written.
+    ///
+    /// Reported instead of an ambiguity (E3035), because ambiguity is not what went wrong: the
+    /// call named one thing and the arguments ruled every candidate out. The message lists the
+    /// impls that do exist, which is the edit.
+    E3036,
     /// A `match` that no arm is guaranteed to match.
     ///
     /// A match over an enum must name every variant or carry a wildcard arm, wherever it sits.

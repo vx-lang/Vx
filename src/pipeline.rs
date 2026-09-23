@@ -995,8 +995,9 @@ pub fn build_frozen_registry_with(
     // Method signatures keyed by (receiver GID, method name), minted from `impl` blocks (#218). This
     // is the GID-keyed method table that lets the frontend resolve `x.exp()` without walking borrowed
     // AST `ImplBlock`s in `GlobalAstEnv`. The method's GID is minted from its mangled name
-    // (`<type>$<method>`, e.g. `f32$exp`); the key is `(receiver GID, unmangled method name)`.
-    use crate::syntax::types::Mangle;
+    // (`f32$exp` for an inherent impl, `i64$From$i32$from` for a trait's); the key stays
+    // `(receiver GID, unmangled method name)`, so two impls of one trait for one type land on one
+    // key with different GIDs and are dropped as ambiguous rather than overwriting each other.
     let mut ambiguous_methods = std::collections::HashSet::new();
     for module in modules {
         let module_hash = crate::hash::compute_module_hash(&module.module_path);
@@ -1005,7 +1006,12 @@ pub fn build_frozen_registry_with(
                 continue; // generic/tensor/unresolved receiver -- deferred
             };
             for m in &imp.methods {
-                let mangled = format!("{}${}", imp.target_type.mangle(), m.name);
+                let mangled = crate::syntax::types::mangle_method(
+                    &imp.target_type,
+                    imp.trait_name.as_ref(),
+                    &imp.trait_args,
+                    m.name.as_ref(),
+                );
                 let gid = crate::gid::TypeId::new(
                     module_hash,
                     crate::hash::DefPath::Named(mangled.as_str()).compute_symbol_hash(),

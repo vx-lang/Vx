@@ -40,6 +40,22 @@ struct ReborrowPlan {
 
 /// How an impl block is named in a diagnostic: the trait with its arguments, so two impls of
 /// one trait for one type (`From<i32>`, `From<u8>`) are told apart.
+/// Could this method take `arg_types` as written?
+///
+/// Used to narrow several traits' same-named methods down to the one the call means. Exact types
+/// only: Vx has no implicit scalar conversion (#240), so a `u8` argument does not reach an `i32`
+/// parameter and the two impls really are distinguishable. A generic parameter matches anything --
+/// it has not been substituted yet, and excluding it would drop a candidate that does apply.
+fn params_accept(m: &Function, arg_types: &[Type]) -> bool {
+    if m.params.len() != arg_types.len() {
+        return false;
+    }
+    m.params
+        .iter()
+        .zip(arg_types)
+        .all(|((_, p), a)| matches!(p, Type::Generic(..)) || p == a)
+}
+
 fn impl_display(trait_name: &crate::symbol::Symbol, ib: &decl::ImplBlock) -> String {
     if ib.trait_args.is_empty() {
         return trait_name.to_string();
@@ -1059,9 +1075,30 @@ impl<'a> TypeChecker<'a> {
         // An inherent method shadows a trait's, as in Rust. Two traits' is a refusal rather
         // than a choice: the impls live in a hash map, and which one a call reached used to
         // change between runs of the compiler.
+        // Kept before narrowing, so a call that no impl accepts can still name them all.
+        let candidate_impls = from_traits.clone();
+        // Several traits supplying this method name is not yet an ambiguity: the arguments
+        // usually say which one is meant. Rust settles `i64::from(x)` the same way -- it does not
+        // choose between impls at all, it infers the argument's type and then exactly one impl
+        // applies. An untyped integer literal is already `i32` by the time it reaches here, which
+        // is Rust's integer fallback arriving by a different route.
+        if inherent.is_empty() && from_traits.len() > 1 {
+            from_traits.retain(|(_, ib)| {
+                ib.methods
+                    .iter()
+                    .find(|m| m.name == method_name.as_str().into())
+                    .is_some_and(|m| params_accept(m, arg_types))
+            });
+        }
+        // The trait and its arguments belong in the instantiated name for the same reason they
+        // belong in instance dispatch's: `impl MyFrom<i32> for i64` and `impl MyFrom<u8> for i64`
+        // are both `i64::my_from` without them, and whichever is instantiated first answers for
+        // both. Empty for an inherent impl, which cannot collide.
         let chosen: Option<&decl::ImplBlock> = if let Some(ib) = inherent.first() {
             Some(ib)
         } else if from_traits.len() > 1 {
+            // Still more than one after the arguments have had their say: two traits whose
+            // methods take the same types. Nothing at the call can decide, so refuse.
             if !self.speculating {
                 let mut names: Vec<String> = from_traits
                     .iter()
@@ -1081,8 +1118,43 @@ impl<'a> TypeChecker<'a> {
                 );
             }
             return Type::Unknown;
+        } else if from_traits.is_empty() && !candidate_impls.is_empty() {
+            // Every candidate was ruled out by the arguments. Name what IS implemented rather
+            // than reporting an ambiguity, which is not what went wrong: the same shape in Rust
+            // reports the bound that failed and lists the impls that exist.
+            if !self.speculating {
+                let mut names: Vec<String> = candidate_impls
+                    .iter()
+                    .map(|(t, ib)| impl_display(t, ib))
+                    .collect();
+                names.sort();
+                let got: Vec<String> = arg_types.iter().map(|a| a.to_string()).collect();
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E3036,
+                    format!(
+                        "No impl of '{}' on '{}' takes ({}); '{}' implements {}",
+                        method_name,
+                        struct_name,
+                        got.join(", "),
+                        struct_name,
+                        names.join(", ")
+                    ),
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                );
+            }
+            return Type::Unknown;
         } else {
             from_traits.first().map(|(_, ib)| *ib)
+        };
+        // Computed here, while both lists are still in scope: an inherent impl cannot collide, so
+        // it keeps the bare `Type::method` spelling it has always had.
+        let chosen_seg = if inherent.is_empty() {
+            from_traits
+                .first()
+                .map(|(tr, ib)| crate::syntax::types::trait_segment(Some(*tr), &ib.trait_args))
+                .unwrap_or_default()
+        } else {
+            String::new()
         };
         if let Some(ib) = chosen {
             for m in &ib.methods {
@@ -1152,7 +1224,7 @@ impl<'a> TypeChecker<'a> {
             }
 
             let mut modified_func = generic_func.clone();
-            modified_func.name = format!("{}::{}", struct_name, method_name).into();
+            modified_func.name = format!("{}::{}{}", struct_name, chosen_seg, method_name).into();
             modified_func.generics = found_mapping
                 .keys()
                 .map(|k| decl::GenericParam::Type {
@@ -1965,6 +2037,7 @@ impl<'a> TypeChecker<'a> {
         generic_method: Function,
         mut mapping: std::collections::HashMap<crate::symbol::Symbol, Type>,
         base_ty: &Type,
+        ib: &decl::ImplBlock,
         obj: &Expr,
         args: &[Expr],
         checked_arg_types: &[Type],
@@ -1992,8 +2065,15 @@ impl<'a> TypeChecker<'a> {
         let mut method_func =
             self.instantiate_function(&modified_func, &mapping, &std::collections::HashMap::new());
 
-        // Create a unique mangled name for the method based on the target type
-        let mangled_name = format!("{}${}", base_ty.mangle(), method_func.name);
+        // The name the definition was minted under: receiver, then the trait and its arguments
+        // when the method came from a trait impl. Shared with the definition site, so a call and
+        // the body it resolves to cannot drift apart.
+        let mangled_name = crate::syntax::types::mangle_method(
+            base_ty,
+            ib.trait_name.as_ref(),
+            &ib.trait_args,
+            method_func.name.as_ref(),
+        );
 
         method_func.name = mangled_name.clone().into();
 
@@ -2228,7 +2308,7 @@ impl<'a> TypeChecker<'a> {
                 // Dynamic Method Resolution
                 let mut mapping = HashMap::new();
                 let found_method = self.resolve_method_in_impls(&base_ty, _method, &mut mapping);
-                if let Some((generic_method, _ib)) = found_method {
+                if let Some((generic_method, ib)) = found_method {
                     // An `unsafe fn` method needs an unsafe context at its call, exactly as a
                     // free function does. Only the resolution differs, so the rule is repeated
                     // here rather than shared: a method never reaches `env.functions`.
@@ -2247,6 +2327,7 @@ impl<'a> TypeChecker<'a> {
                         generic_method,
                         mapping,
                         &base_ty,
+                        &ib,
                         obj,
                         args.as_slice(),
                         &checked_arg_types,

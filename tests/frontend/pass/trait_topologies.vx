@@ -148,25 +148,25 @@ fn main() -> i32 {
 // CHECK:   func.func private @printMemrefI64(memref<*xi64>)
 // CHECK:   func.func private @printMemrefBF16(memref<*xbf16>)
 // CHECK:   func.func private @vx_init_signals()
-// CHECK:   func.func @CPU$add_vector(%arg0: !llvm.struct<"CPU", ()>, %arg1: vector<4xf32>, %arg2: vector<4xf32>) -> vector<4xf32> {
+// CHECK:   func.func @CPU$ExecuteArith$CPU$add_vector(%arg0: !llvm.struct<"CPU", ()>, %arg1: vector<4xf32>, %arg2: vector<4xf32>) -> vector<4xf32> {
 // CHECK:     %0 = arith.addf %arg1, %arg2 : vector<4xf32>
 // CHECK:     return %0 : vector<4xf32>
 // CHECK:   }
-// CHECK:   func.func @NPU$add_vector(%arg0: !llvm.struct<"NPU", ()>, %arg1: vector<4xf32>, %arg2: vector<4xf32>) -> vector<4xf32> {
+// CHECK:   func.func @NPU$ExecuteArith$NPU$add_vector(%arg0: !llvm.struct<"NPU", ()>, %arg1: vector<4xf32>, %arg2: vector<4xf32>) -> vector<4xf32> {
 // CHECK:     %0 = arith.addf %arg1, %arg2 : vector<4xf32>
 // CHECK:     return %0 : vector<4xf32>
 // CHECK:   }
-// CHECK:   func.func @CPU$transfer_vector(%arg0: !llvm.struct<"CPU", ()>, %arg1: vector<4xf32>) -> vector<4xf32> {
+// CHECK:   func.func @CPU$TransferDMA$CPU$transfer_vector(%arg0: !llvm.struct<"CPU", ()>, %arg1: vector<4xf32>) -> vector<4xf32> {
 // CHECK:     return %arg1 : vector<4xf32>
 // CHECK:   }
-// CHECK:   func.func @NPU$transfer_vector(%arg0: !llvm.struct<"NPU", ()>, %arg1: vector<4xf32>) -> vector<4xf32> {
+// CHECK:   func.func @NPU$TransferDMA$NPU$transfer_vector(%arg0: !llvm.struct<"NPU", ()>, %arg1: vector<4xf32>) -> vector<4xf32> {
 // CHECK:     return %arg1 : vector<4xf32>
 // CHECK:   }
-// CHECK:   func.func @CPU$add_array(%arg0: memref<4xf32>, %arg1: !llvm.struct<"CPU", ()>, %arg2: memref<4xf32>, %arg3: memref<4xf32>) {
+// CHECK:   func.func @CPU$ExecuteArith$CPU$add_array(%arg0: memref<4xf32>, %arg1: !llvm.struct<"CPU", ()>, %arg2: memref<4xf32>, %arg3: memref<4xf32>) {
 // CHECK:     linalg.add ins(%arg2, %arg3 : memref<4xf32>, memref<4xf32>) outs(%arg0 : memref<4xf32>)
 // CHECK:     return
 // CHECK:   }
-// CHECK:   func.func @CPU$add_tensor(%arg0: !llvm.struct<"CPU", ()>, %arg1: memref<?x?xf32>, %arg2: memref<?x?xf32>) -> memref<?x?xf32> {
+// CHECK:   func.func @CPU$ExecuteArith$CPU$add_tensor(%arg0: !llvm.struct<"CPU", ()>, %arg1: memref<?x?xf32>, %arg2: memref<?x?xf32>) -> memref<?x?xf32> {
 // CHECK:     %c0 = arith.constant 0 : index
 // CHECK:     %dim = memref.dim %arg1, %c0 : memref<?x?xf32>
 // CHECK:     %c1 = arith.constant 1 : index
@@ -175,11 +175,11 @@ fn main() -> i32 {
 // CHECK:     linalg.add ins(%arg1, %arg2 : memref<?x?xf32>, memref<?x?xf32>) outs(%alloc : memref<?x?xf32>)
 // CHECK:     return %alloc : memref<?x?xf32>
 // CHECK:   }
-// CHECK:   func.func @NPU$add_array(%arg0: memref<4xf32>, %arg1: !llvm.struct<"NPU", ()>, %arg2: memref<4xf32>, %arg3: memref<4xf32>) {
+// CHECK:   func.func @NPU$ExecuteArith$NPU$add_array(%arg0: memref<4xf32>, %arg1: !llvm.struct<"NPU", ()>, %arg2: memref<4xf32>, %arg3: memref<4xf32>) {
 // CHECK:     linalg.add ins(%arg2, %arg3 : memref<4xf32>, memref<4xf32>) outs(%arg0 : memref<4xf32>)
 // CHECK:     return
 // CHECK:   }
-// CHECK:   func.func @NPU$add_tensor(%arg0: !llvm.struct<"NPU", ()>, %arg1: memref<?x?xf32>, %arg2: memref<?x?xf32>) -> memref<?x?xf32> {
+// CHECK:   func.func @NPU$ExecuteArith$NPU$add_tensor(%arg0: !llvm.struct<"NPU", ()>, %arg1: memref<?x?xf32>, %arg2: memref<?x?xf32>) -> memref<?x?xf32> {
 // CHECK:     %c0 = arith.constant 0 : index
 // CHECK:     %dim = memref.dim %arg1, %c0 : memref<?x?xf32>
 // CHECK:     %c1 = arith.constant 1 : index
@@ -188,126 +188,126 @@ fn main() -> i32 {
 // CHECK:     linalg.add ins(%arg1, %arg2 : memref<?x?xf32>, memref<?x?xf32>) outs(%alloc : memref<?x?xf32>)
 // CHECK:     return %alloc : memref<?x?xf32>
 // CHECK:   }
-// CHECK:   func.func @CPU$transfer_array_to_npu(%arg0: memref<4xf32>, %arg1: !llvm.struct<"CPU", ()>, %arg2: memref<4xf32>) {
+// CHECK:   func.func @CPU$TransferDMA$CPU$transfer_array_to_npu(%arg0: memref<4xf32>, %arg1: !llvm.struct<"CPU", ()>, %arg2: memref<4xf32>) {
 // CHECK:     %0 = "vx.transfer"(%arg2) <{target_topology = 100 : i32}> {space = "NPU_HBM"} : (memref<4xf32>) -> memref<4xf32>
 // CHECK:     memref.copy %0, %arg0 : memref<4xf32> to memref<4xf32>
 // CHECK:     return
 // CHECK:   }
-// CHECK:   func.func @CPU$transfer_array_to_cpu(%arg0: memref<4xf32>, %arg1: !llvm.struct<"CPU", ()>, %arg2: memref<4xf32>) {
+// CHECK:   func.func @CPU$TransferDMA$CPU$transfer_array_to_cpu(%arg0: memref<4xf32>, %arg1: !llvm.struct<"CPU", ()>, %arg2: memref<4xf32>) {
 // CHECK:     %0 = "vx.transfer"(%arg2) <{target_topology = 0 : i32}> {space = "CPU_DRAM"} : (memref<4xf32>) -> memref<4xf32>
 // CHECK:     memref.copy %0, %arg0 : memref<4xf32> to memref<4xf32>
 // CHECK:     return
 // CHECK:   }
-// CHECK:   func.func @CPU$transfer_tensor_to_npu(%arg0: !llvm.struct<"CPU", ()>, %arg1: memref<?x?xf32>) -> memref<?x?xf32> {
+// CHECK:   func.func @CPU$TransferDMA$CPU$transfer_tensor_to_npu(%arg0: !llvm.struct<"CPU", ()>, %arg1: memref<?x?xf32>) -> memref<?x?xf32> {
 // CHECK:     %0 = "vx.transfer"(%arg1) <{target_topology = 100 : i32}> {space = "NPU_HBM"} : (memref<?x?xf32>) -> memref<?x?xf32>
 // CHECK:     return %0 : memref<?x?xf32>
 // CHECK:   }
-// CHECK:   func.func @CPU$transfer_tensor_to_cpu(%arg0: !llvm.struct<"CPU", ()>, %arg1: memref<?x?xf32>) -> memref<?x?xf32> {
+// CHECK:   func.func @CPU$TransferDMA$CPU$transfer_tensor_to_cpu(%arg0: !llvm.struct<"CPU", ()>, %arg1: memref<?x?xf32>) -> memref<?x?xf32> {
 // CHECK:     %0 = "vx.transfer"(%arg1) <{target_topology = 0 : i32}> {space = "CPU_DRAM"} : (memref<?x?xf32>) -> memref<?x?xf32>
 // CHECK:     return %0 : memref<?x?xf32>
 // CHECK:   }
-// CHECK:   func.func @NPU$transfer_array_to_npu(%arg0: memref<4xf32>, %arg1: !llvm.struct<"NPU", ()>, %arg2: memref<4xf32>) {
+// CHECK:   func.func @NPU$TransferDMA$NPU$transfer_array_to_npu(%arg0: memref<4xf32>, %arg1: !llvm.struct<"NPU", ()>, %arg2: memref<4xf32>) {
 // CHECK:     %0 = "vx.transfer"(%arg2) <{target_topology = 100 : i32}> {space = "NPU_HBM"} : (memref<4xf32>) -> memref<4xf32>
 // CHECK:     memref.copy %0, %arg0 : memref<4xf32> to memref<4xf32>
 // CHECK:     return
 // CHECK:   }
-// CHECK:   func.func @NPU$transfer_array_to_cpu(%arg0: memref<4xf32>, %arg1: !llvm.struct<"NPU", ()>, %arg2: memref<4xf32>) {
+// CHECK:   func.func @NPU$TransferDMA$NPU$transfer_array_to_cpu(%arg0: memref<4xf32>, %arg1: !llvm.struct<"NPU", ()>, %arg2: memref<4xf32>) {
 // CHECK:     %0 = "vx.transfer"(%arg2) <{target_topology = 0 : i32}> {space = "CPU_DRAM"} : (memref<4xf32>) -> memref<4xf32>
 // CHECK:     memref.copy %0, %arg0 : memref<4xf32> to memref<4xf32>
 // CHECK:     return
 // CHECK:   }
-// CHECK:   func.func @NPU$transfer_tensor_to_npu(%arg0: !llvm.struct<"NPU", ()>, %arg1: memref<?x?xf32>) -> memref<?x?xf32> {
+// CHECK:   func.func @NPU$TransferDMA$NPU$transfer_tensor_to_npu(%arg0: !llvm.struct<"NPU", ()>, %arg1: memref<?x?xf32>) -> memref<?x?xf32> {
 // CHECK:     %0 = "vx.transfer"(%arg1) <{target_topology = 100 : i32}> {space = "NPU_HBM"} : (memref<?x?xf32>) -> memref<?x?xf32>
 // CHECK:     return %0 : memref<?x?xf32>
 // CHECK:   }
-// CHECK:   func.func @NPU$transfer_tensor_to_cpu(%arg0: !llvm.struct<"NPU", ()>, %arg1: memref<?x?xf32>) -> memref<?x?xf32> {
+// CHECK:   func.func @NPU$TransferDMA$NPU$transfer_tensor_to_cpu(%arg0: !llvm.struct<"NPU", ()>, %arg1: memref<?x?xf32>) -> memref<?x?xf32> {
 // CHECK:     %0 = "vx.transfer"(%arg1) <{target_topology = 0 : i32}> {space = "CPU_DRAM"} : (memref<?x?xf32>) -> memref<?x?xf32>
 // CHECK:     return %0 : memref<?x?xf32>
 // CHECK:   }
 // CHECK:   func.func @test_cpu_add_vec(%arg0: vector<4xf32>, %arg1: vector<4xf32>) {
 // CHECK:     %0 = llvm.mlir.undef : !llvm.struct<"CPU", ()>
-// CHECK:     %1 = call @CPU$add_vector(%0, %arg0, %arg1) : (!llvm.struct<"CPU", ()>, vector<4xf32>, vector<4xf32>) -> vector<4xf32>
+// CHECK:     %1 = call @CPU$ExecuteArith$CPU$add_vector(%0, %arg0, %arg1) : (!llvm.struct<"CPU", ()>, vector<4xf32>, vector<4xf32>) -> vector<4xf32>
 // CHECK:     return
 // CHECK:   }
 // CHECK:   func.func @test_npu_add_vec(%arg0: vector<4xf32>, %arg1: vector<4xf32>) {
 // CHECK:     %0 = llvm.mlir.undef : !llvm.struct<"NPU", ()>
-// CHECK:     %1 = call @NPU$add_vector(%0, %arg0, %arg1) : (!llvm.struct<"NPU", ()>, vector<4xf32>, vector<4xf32>) -> vector<4xf32>
+// CHECK:     %1 = call @NPU$ExecuteArith$NPU$add_vector(%0, %arg0, %arg1) : (!llvm.struct<"NPU", ()>, vector<4xf32>, vector<4xf32>) -> vector<4xf32>
 // CHECK:     return
 // CHECK:   }
 // CHECK:   func.func @test_cpu_transfer_vec(%arg0: vector<4xf32>) {
 // CHECK:     %0 = llvm.mlir.undef : !llvm.struct<"CPU", ()>
-// CHECK:     %1 = call @CPU$transfer_vector(%0, %arg0) : (!llvm.struct<"CPU", ()>, vector<4xf32>) -> vector<4xf32>
+// CHECK:     %1 = call @CPU$TransferDMA$CPU$transfer_vector(%0, %arg0) : (!llvm.struct<"CPU", ()>, vector<4xf32>) -> vector<4xf32>
 // CHECK:     return
 // CHECK:   }
 // CHECK:   func.func @test_npu_transfer_vec(%arg0: vector<4xf32>) {
 // CHECK:     %0 = llvm.mlir.undef : !llvm.struct<"NPU", ()>
-// CHECK:     %1 = call @NPU$transfer_vector(%0, %arg0) : (!llvm.struct<"NPU", ()>, vector<4xf32>) -> vector<4xf32>
+// CHECK:     %1 = call @NPU$TransferDMA$NPU$transfer_vector(%0, %arg0) : (!llvm.struct<"NPU", ()>, vector<4xf32>) -> vector<4xf32>
 // CHECK:     return
 // CHECK:   }
 // CHECK:   func.func @test_cpu_add_arr(%arg0: memref<4xf32>, %arg1: memref<4xf32>) {
 // CHECK:     %alloca = memref.alloca() : memref<4xf32>
 // CHECK:     %0 = llvm.mlir.undef : !llvm.struct<"CPU", ()>
-// CHECK:     call @CPU$add_array(%alloca, %0, %arg0, %arg1) : (memref<4xf32>, !llvm.struct<"CPU", ()>, memref<4xf32>, memref<4xf32>) -> ()
+// CHECK:     call @CPU$ExecuteArith$CPU$add_array(%alloca, %0, %arg0, %arg1) : (memref<4xf32>, !llvm.struct<"CPU", ()>, memref<4xf32>, memref<4xf32>) -> ()
 // CHECK:     return
 // CHECK:   }
 // CHECK:   func.func @test_cpu_add_tensor(%arg0: memref<?x?xf32>, %arg1: memref<?x?xf32>) {
 // CHECK:     %0 = llvm.mlir.undef : !llvm.struct<"CPU", ()>
-// CHECK:     %1 = call @CPU$add_tensor(%0, %arg0, %arg1) : (!llvm.struct<"CPU", ()>, memref<?x?xf32>, memref<?x?xf32>) -> memref<?x?xf32>
+// CHECK:     %1 = call @CPU$ExecuteArith$CPU$add_tensor(%0, %arg0, %arg1) : (!llvm.struct<"CPU", ()>, memref<?x?xf32>, memref<?x?xf32>) -> memref<?x?xf32>
 // CHECK:     return
 // CHECK:   }
 // CHECK:   func.func @test_npu_add_arr(%arg0: memref<4xf32>, %arg1: memref<4xf32>) {
 // CHECK:     %alloca = memref.alloca() : memref<4xf32>
 // CHECK:     %0 = llvm.mlir.undef : !llvm.struct<"NPU", ()>
-// CHECK:     call @NPU$add_array(%alloca, %0, %arg0, %arg1) : (memref<4xf32>, !llvm.struct<"NPU", ()>, memref<4xf32>, memref<4xf32>) -> ()
+// CHECK:     call @NPU$ExecuteArith$NPU$add_array(%alloca, %0, %arg0, %arg1) : (memref<4xf32>, !llvm.struct<"NPU", ()>, memref<4xf32>, memref<4xf32>) -> ()
 // CHECK:     return
 // CHECK:   }
 // CHECK:   func.func @test_npu_add_tensor(%arg0: memref<?x?xf32>, %arg1: memref<?x?xf32>) {
 // CHECK:     %0 = llvm.mlir.undef : !llvm.struct<"NPU", ()>
-// CHECK:     %1 = call @NPU$add_tensor(%0, %arg0, %arg1) : (!llvm.struct<"NPU", ()>, memref<?x?xf32>, memref<?x?xf32>) -> memref<?x?xf32>
+// CHECK:     %1 = call @NPU$ExecuteArith$NPU$add_tensor(%0, %arg0, %arg1) : (!llvm.struct<"NPU", ()>, memref<?x?xf32>, memref<?x?xf32>) -> memref<?x?xf32>
 // CHECK:     return
 // CHECK:   }
 // CHECK:   func.func @test_cpu_t_npu_arr(%arg0: memref<4xf32>) {
 // CHECK:     %alloca = memref.alloca() : memref<4xf32>
 // CHECK:     %0 = llvm.mlir.undef : !llvm.struct<"CPU", ()>
-// CHECK:     call @CPU$transfer_array_to_npu(%alloca, %0, %arg0) : (memref<4xf32>, !llvm.struct<"CPU", ()>, memref<4xf32>) -> ()
+// CHECK:     call @CPU$TransferDMA$CPU$transfer_array_to_npu(%alloca, %0, %arg0) : (memref<4xf32>, !llvm.struct<"CPU", ()>, memref<4xf32>) -> ()
 // CHECK:     return
 // CHECK:   }
 // CHECK:   func.func @test_cpu_t_cpu_arr(%arg0: memref<4xf32>) {
 // CHECK:     %alloca = memref.alloca() : memref<4xf32>
 // CHECK:     %0 = llvm.mlir.undef : !llvm.struct<"CPU", ()>
-// CHECK:     call @CPU$transfer_array_to_cpu(%alloca, %0, %arg0) : (memref<4xf32>, !llvm.struct<"CPU", ()>, memref<4xf32>) -> ()
+// CHECK:     call @CPU$TransferDMA$CPU$transfer_array_to_cpu(%alloca, %0, %arg0) : (memref<4xf32>, !llvm.struct<"CPU", ()>, memref<4xf32>) -> ()
 // CHECK:     return
 // CHECK:   }
 // CHECK:   func.func @test_cpu_t_npu_tensor(%arg0: memref<?x?xf32>) {
 // CHECK:     %0 = llvm.mlir.undef : !llvm.struct<"CPU", ()>
-// CHECK:     %1 = call @CPU$transfer_tensor_to_npu(%0, %arg0) : (!llvm.struct<"CPU", ()>, memref<?x?xf32>) -> memref<?x?xf32>
+// CHECK:     %1 = call @CPU$TransferDMA$CPU$transfer_tensor_to_npu(%0, %arg0) : (!llvm.struct<"CPU", ()>, memref<?x?xf32>) -> memref<?x?xf32>
 // CHECK:     return
 // CHECK:   }
 // CHECK:   func.func @test_cpu_t_cpu_tensor(%arg0: memref<?x?xf32>) {
 // CHECK:     %0 = llvm.mlir.undef : !llvm.struct<"CPU", ()>
-// CHECK:     %1 = call @CPU$transfer_tensor_to_cpu(%0, %arg0) : (!llvm.struct<"CPU", ()>, memref<?x?xf32>) -> memref<?x?xf32>
+// CHECK:     %1 = call @CPU$TransferDMA$CPU$transfer_tensor_to_cpu(%0, %arg0) : (!llvm.struct<"CPU", ()>, memref<?x?xf32>) -> memref<?x?xf32>
 // CHECK:     return
 // CHECK:   }
 // CHECK:   func.func @test_npu_t_npu_arr(%arg0: memref<4xf32>) {
 // CHECK:     %alloca = memref.alloca() : memref<4xf32>
 // CHECK:     %0 = llvm.mlir.undef : !llvm.struct<"NPU", ()>
-// CHECK:     call @NPU$transfer_array_to_npu(%alloca, %0, %arg0) : (memref<4xf32>, !llvm.struct<"NPU", ()>, memref<4xf32>) -> ()
+// CHECK:     call @NPU$TransferDMA$NPU$transfer_array_to_npu(%alloca, %0, %arg0) : (memref<4xf32>, !llvm.struct<"NPU", ()>, memref<4xf32>) -> ()
 // CHECK:     return
 // CHECK:   }
 // CHECK:   func.func @test_npu_t_cpu_arr(%arg0: memref<4xf32>) {
 // CHECK:     %alloca = memref.alloca() : memref<4xf32>
 // CHECK:     %0 = llvm.mlir.undef : !llvm.struct<"NPU", ()>
-// CHECK:     call @NPU$transfer_array_to_cpu(%alloca, %0, %arg0) : (memref<4xf32>, !llvm.struct<"NPU", ()>, memref<4xf32>) -> ()
+// CHECK:     call @NPU$TransferDMA$NPU$transfer_array_to_cpu(%alloca, %0, %arg0) : (memref<4xf32>, !llvm.struct<"NPU", ()>, memref<4xf32>) -> ()
 // CHECK:     return
 // CHECK:   }
 // CHECK:   func.func @test_npu_t_npu_tensor(%arg0: memref<?x?xf32>) {
 // CHECK:     %0 = llvm.mlir.undef : !llvm.struct<"NPU", ()>
-// CHECK:     %1 = call @NPU$transfer_tensor_to_npu(%0, %arg0) : (!llvm.struct<"NPU", ()>, memref<?x?xf32>) -> memref<?x?xf32>
+// CHECK:     %1 = call @NPU$TransferDMA$NPU$transfer_tensor_to_npu(%0, %arg0) : (!llvm.struct<"NPU", ()>, memref<?x?xf32>) -> memref<?x?xf32>
 // CHECK:     return
 // CHECK:   }
 // CHECK:   func.func @test_npu_t_cpu_tensor(%arg0: memref<?x?xf32>) {
 // CHECK:     %0 = llvm.mlir.undef : !llvm.struct<"NPU", ()>
-// CHECK:     %1 = call @NPU$transfer_tensor_to_cpu(%0, %arg0) : (!llvm.struct<"NPU", ()>, memref<?x?xf32>) -> memref<?x?xf32>
+// CHECK:     %1 = call @NPU$TransferDMA$NPU$transfer_tensor_to_cpu(%0, %arg0) : (!llvm.struct<"NPU", ()>, memref<?x?xf32>) -> memref<?x?xf32>
 // CHECK:     return
 // CHECK:   }
 // CHECK:   func.func @main() -> i32 {
@@ -326,7 +326,7 @@ fn main() -> i32 {
 // that is what it asserts.
 //
 // LLVM: module attributes
-// LLVM: llvm.func @CPU$add_vector
-// LLVM: llvm.func @NPU$add_vector
-// LLVM: llvm.func @CPU$transfer_vector
-// LLVM: llvm.func @NPU$transfer_vector
+// LLVM: llvm.func @CPU$ExecuteArith$CPU$add_vector
+// LLVM: llvm.func @NPU$ExecuteArith$NPU$add_vector
+// LLVM: llvm.func @CPU$TransferDMA$CPU$transfer_vector
+// LLVM: llvm.func @NPU$TransferDMA$NPU$transfer_vector

@@ -17,7 +17,7 @@ the test suite has one, a program that triggers it.
 - [Warnings](#warnings) — `W1001`–`W1031` (23 codes)
 - [Parser Errors](#parser-errors) — `E1001`–`E1013` (13 codes)
 - [Name Resolution Errors](#name-resolution-errors) — `E2001`–`E2007` (7 codes)
-- [Type Errors](#type-errors) — `E3001`–`E3035` (35 codes)
+- [Type Errors](#type-errors) — `E3001`–`E3035` (36 codes)
 - [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4005` (5 codes)
 - [Safety Errors](#safety-errors) — `E5001`–`E5002` (2 codes)
 - [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6028` (28 codes)
@@ -113,6 +113,7 @@ Raised by the type checker. Vx performs no implicit numeric conversion, so many 
 | [`E3017`](/errors/E3017/) | Closure argument count or type mismatch |
 | [`E3018`](/errors/E3018/) | An array literal whose elements are not scalars, or which is empty. An array literal lowers to `tensor.from_elements`, whose element type must be a scalar, so `[a, b]` for tensors -- placed or not -- has nothing to lower to, and an empty literal has no element type to give it. Both used to be accepted by the checker (the element type silently stayed at its `f32` default) and then crash codegen with an internal error rather than a diagnostic. See Vx#354. |
 | [`E3019`](/errors/E3019/) | A `match` arm whose integer literal cannot be represented in the scrutinee's type. The arm can never be selected, so the program does not mean what it says. Codegen used to parse the literal with a zero fallback, which turned an unrepresentable arm into a comparison against 0 -- so the arm fired for scrutinee 0, the most common value there is, with no diagnostic. |
+| [`E3036`](/errors/E3036/) | A static call to a method several traits supply, where no impl takes the argument types written. Reported instead of an ambiguity (E3035), because ambiguity is not what went wrong: the call named one thing and the arguments ruled every candidate out. The message lists the impls that do exist, which is the edit. |
 | [`E3020`](/errors/E3020/) | A `match` that no arm is guaranteed to match. A match over an enum must name every variant or carry a wildcard arm, wherever it sits. The uncovered value falls through, and when every written arm returns, the function falls off its end and hands back whatever was in the return slot. A scrutinee that is not an enum cannot be enumerated, so it is only asked for a wildcard in value position, where the fall-through edge would otherwise have no value to carry -- codegen used to paper over that by evaluating the whole match to a constant zero. |
 | [`E3021`](/errors/E3021/) | An enum variant whose payload is a tensor. A payload is stored into the variant's tagged-union slot with `llvm.insertvalue`, which takes primitive operands, and a tensor is a memref descriptor. The AST path dropped such a payload silently: the construction emitted the tag and nothing else, so a program carrying a tensor through an enum compiled, ran, and lost it with no diagnostic. A struct field holding a tensor is the same representational gap in another position. |
 | [`E3022`](/errors/E3022/) | An `extern` function whose signature mentions a tensor. A tensor is a memref, and lowering expands a memref parameter into the seven scalars of its descriptor -- allocated pointer, aligned pointer, offset, and a size and stride per rank. So `fn c_take(t : Tensor<f32, [?, ?]>) -> i32` declares a C symbol taking seven arguments, which is not a signature anyone writes on the C side; the call links by name and passes something the callee never agreed to. Take a raw pointer and build the tensor in Vx (`Tensor<f32, [?, ?]>::from_ptr_2d`), which is what the corpus already does. |
@@ -211,4 +212,4 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 
 ______________________________________________________________________
 
-122 diagnostics.
+123 diagnostics.

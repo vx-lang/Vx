@@ -1,9 +1,12 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK-LABEL: func.func @Range$next(%arg0: !llvm.ptr) -> !llvm.struct<"Option_i32", (i32, i32)>
+// A trait-impl method's name carries the trait and its arguments, so two impls of
+// one trait for one type do not collide. Only an argument-bearing trait contributes
+// the segment -- `impl Math for f32` is still `f32$abs`.
+// CHECK-LABEL: func.func @Range$Iterator$Range$i32$next(%arg0: !llvm.ptr) -> !llvm.struct<"Option_i32", (i32, i32)>
 // CHECK: %[[C0:.*]] = arith.cmpi slt, %{{.*}}, %{{.*}} : i32
 // CHECK: cf.cond_br %[[C0]], ^{{.*}}, ^{{.*}}
-// CHECK-LABEL: func.func @Map$next(%arg0: !llvm.ptr) -> !llvm.struct<"Option_i32", (i32, i32)>
-// CHECK: call @Range$next(%{{.*}}) : (!llvm.ptr) -> !llvm.struct<"Option_i32", (i32, i32)>
+// CHECK-LABEL: func.func @Map$Iterator$Map$i32$next(%arg0: !llvm.ptr) -> !llvm.struct<"Option_i32", (i32, i32)>
+// CHECK: call @Range$Iterator$Range$i32$next(%{{.*}}) : (!llvm.ptr) -> !llvm.struct<"Option_i32", (i32, i32)>
 // CHECK-LABEL: func.func @map_range(%arg0: !llvm.struct<"Range", (i32, i32)>, %arg1: !llvm.ptr) -> !llvm.struct<"Map", (struct<"Range", (i32, i32)>, ptr)>
 // CHECK: llvm.mlir.undef : !llvm.struct<"Map", (struct<"Range", (i32, i32)>, ptr)>
 // CHECK: llvm.insertvalue %{{.*}}, %{{.*}} : !llvm.struct<"Map", (struct<"Range", (i32, i32)>, ptr)>
@@ -14,7 +17,7 @@
 // CHECK: return %[[V0]] : i32
 // CHECK-LABEL: func.func @main() -> i32
 // CHECK: call @map_range(%{{.*}}, %{{.*}}) : (!llvm.struct<"Range", (i32, i32)>, !llvm.ptr) -> !llvm.struct<"Map", (struct<"Range", (i32, i32)>, ptr)>
-// CHECK: call @Map$next(%{{.*}}) : (!llvm.ptr) -> !llvm.struct<"Option_i32", (i32, i32)>
+// CHECK: call @Map$Iterator$Map$i32$next(%{{.*}}) : (!llvm.ptr) -> !llvm.struct<"Option_i32", (i32, i32)>
 import core::option;
 import std::iter;
 

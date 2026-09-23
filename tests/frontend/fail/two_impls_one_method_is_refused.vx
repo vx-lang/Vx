@@ -14,12 +14,17 @@
 // program printed 1, 1 and 2. The diagnostic names both impls, so the reader knows what to
 // rename.
 //
-// The static spelling is refused for the same reason, with the trait's arguments spelled
-// out, since two impls of one trait differ in nothing else.
+// Two impls of ONE trait are a different case and are no longer refused: their methods take
+// different types, so the argument says which is meant. That is
+// tests/backend/pass/static_call_picks_the_impl_by_argument.vx. What is left here is the case
+// no argument can decide, because both signatures are identical.
+//
+// The call is an instance call. Static dispatch narrows by argument type; instance dispatch
+// does not, because `resolve_method_in_impls` is not given the argument types -- so this file
+// would be refused either way, and it is not evidence about the static path.
 //
 // CHECK: E3035
 // CHECK: Method 'describe' on 'i64' is defined by more than one impl (Loud, Quiet)
-// CHECK: Method 'make' on 'i64' is defined by more than one impl (Build<i32>, Build<u8>)
 trait Loud {
   fn describe(self : &i64) -> i32;
 }
@@ -40,26 +45,8 @@ impl Quiet for i64 {
   }
 }
 
-trait Build<T> {
-  fn make(v : T) -> Self;
-}
-
-impl Build<i32> for i64 {
-  fn make(v : i32) -> i64 {
-    return v as i64;
-  }
-}
-
-impl Build<u8> for i64 {
-  fn make(v : u8) -> i64 {
-    return v as i64;
-  }
-}
-
 fn main() -> i32 {
   let x : i64 = 5;
   print(x.describe());
-  let b : u8 = 3;
-  print(i64::make(b));
   return 0;
 }

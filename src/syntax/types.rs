@@ -642,6 +642,61 @@ pub trait Mangle {
     }
 }
 
+/// The part of a method's name that says which trait impl it came from: `""` for an inherent
+/// impl, `From$i32$` for `impl From<i32> for ...`.
+///
+/// Without it, two impls of one trait for one type land on one name: `impl From<i32> for i64`
+/// and `impl From<u8> for i64` are both `i64$from`, and the second is dropped by the by-name
+/// dedup before its body is ever emitted. Rust puts the same three things in its v0 symbols --
+/// self type, trait, trait arguments -- which is what makes `<i64 as From<i32>>::from` and
+/// `<i64 as From<u8>>::from` different functions there.
+///
+/// Only a trait that HAS arguments contributes one, and that is the whole rule rather than a
+/// shortcut: two impls of one trait for one type can differ in nothing but those arguments, so a
+/// trait without them can be implemented for a type at most once and cannot collide with itself.
+/// `impl Math for f32` therefore keeps `f32$abs`, which is what the stdlib's scalar intrinsics
+/// and every fixture naming one already say.
+///
+/// Two DIFFERENT traits supplying one method name for one type still collide, exactly as they did
+/// before; that pair is refused at the call site (E3035) rather than resolved here.
+///
+/// Trailing separator rather than leading, so a caller joins it to the method name and gets the
+/// inherent spelling back for free when there is no trait.
+pub fn trait_segment(trait_name: Option<&crate::symbol::Symbol>, trait_args: &[Type]) -> String {
+    let Some(t) = trait_name else {
+        return String::new();
+    };
+    if trait_args.is_empty() {
+        return String::new();
+    }
+    let mut s = t.as_ref().to_string();
+    for a in trait_args {
+        s.push('$');
+        s.push_str(&a.mangle());
+    }
+    s.push('$');
+    s
+}
+
+/// The mangled name of a method written in an `impl` block, as instance dispatch spells it:
+/// `i64$from` for an inherent impl, `i64$From$i32$from` for a trait's.
+///
+/// Every site that builds one calls this, because a call has to arrive at the same string the
+/// definition did or it resolves to nothing.
+pub fn mangle_method(
+    target: &Type,
+    trait_name: Option<&crate::symbol::Symbol>,
+    trait_args: &[Type],
+    method: &str,
+) -> String {
+    format!(
+        "{}${}{}",
+        target.mangle(),
+        trait_segment(trait_name, trait_args),
+        method
+    )
+}
+
 impl Type {
     pub fn is_linear(&self) -> bool {
         matches!(

@@ -1,0 +1,45 @@
+//===- no_impl_takes_the_literals_fallback_type.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// An untyped integer literal is i32, and no impl takes an i32.
+//
+// The narrowing that picks an impl by argument type leaves nothing here, and
+// what went wrong is not ambiguity: the call named one method and the argument
+// ruled every candidate out. So it reports what IS implemented, which is the
+// edit -- annotate the literal, or write the missing impl.
+//
+// Rust answers the same program the same way, with E0277 on the bound that
+// failed and a list of the impls that exist, rather than an ambiguity error.
+//
+// `u16` is declared first so the message has to list both: a candidate list
+// that printed only the first impl would still satisfy a check naming `u8`.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: E3036
+// CHECK-SAME: No impl of 'make' on 'i64' takes (i32)
+// CHECK-SAME: implements Build<u16>, Build<u8>
+
+trait Build<T> {
+  fn make(v : T) -> Self;
+}
+
+impl Build<u16> for i64 {
+  fn make(v : u16) -> i64 {
+    return 16;
+  }
+}
+
+impl Build<u8> for i64 {
+  fn make(v : u8) -> i64 {
+    return 8;
+  }
+}
+
+fn main() -> i32 {
+  print(i64::make(7));
+  return 0;
+}

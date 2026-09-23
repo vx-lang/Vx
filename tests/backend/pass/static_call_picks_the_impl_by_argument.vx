@@ -1,0 +1,60 @@
+//===- static_call_picks_the_impl_by_argument.vx - Vx Compiler --*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Two impls of one trait for one type, told apart by what the call passes.
+//
+// Both used to mangle to `i64$make`, so the second was dropped by the by-name
+// dedup before its body was emitted, and the call was refused outright (E3035)
+// because nothing could say which was meant. `core::convert` is this shape --
+// `From` stamped per pair from a table of widenings -- so the module waited on
+// it.
+//
+// Each body returns a digit naming itself -- i32 impl 1, u8 impl 2, u16 impl 3
+// -- because the question this file asks is which body ran. `print` writes no
+// separator between scalars, so the three calls read as one line, `123`. Any
+// other order or digit means a call reached the wrong impl.
+//
+// Rust settles the same program the same way, and does it without choosing
+// between impls at all: the argument's type is inferred first, and then exactly
+// one impl applies. An untyped integer literal reaches i32 by fallback, which
+// is why the first call reaches the i32 impl rather than being ambiguous.
+//
+// RUN: vxc %s | FileCheck %s
+// EXPECT: 123
+// CHECK: 123
+
+trait Build<T> {
+  fn make(v : T) -> Self;
+}
+
+impl Build<i32> for i64 {
+  fn make(v : i32) -> i64 {
+    return 1;
+  }
+}
+
+impl Build<u8> for i64 {
+  fn make(v : u8) -> i64 {
+    return 2;
+  }
+}
+
+impl Build<u16> for i64 {
+  fn make(v : u16) -> i64 {
+    return 3;
+  }
+}
+
+fn main() -> i32 {
+  // No annotation: the literal is i32, so the i32 impl runs.
+  print(i64::make(7));
+  let b : u8 = 3;
+  print(i64::make(b));
+  let s : u16 = 9;
+  print(i64::make(s));
+  return 0;
+}
