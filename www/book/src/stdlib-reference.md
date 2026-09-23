@@ -25,11 +25,15 @@ friends.
 
 - [`core::clone`](#coreclone) — `Clone`, an explicit duplicate of a value.
 - [`core::cmp`](#corecmp) —
+- [`core::convert`](#coreconvert) —
 - [`core::default`](#coredefault) — `Default`, the value a type starts from.
 - [`core::iter`](#coreiter) — The `Iterator` trait and its adaptors, which `for` loops and `.map` build on.
+- [`core::marker`](#coremarker) —
+- [`core::mem`](#coremem) —
 - [`core::num`](#corenum) — The integer methods, stamped over the signed and the unsigned widths.
 - [`core::ops`](#coreops) —
 - [`core::option`](#coreoption) — `Option<T>`, for a value that may be absent.
+- [`core::ptr`](#coreptr) —
 - [`core::result`](#coreresult) — `Result<T, E>`, for an operation that may fail.
 - [`std::alloc`](#stdalloc) — Raw allocation and deallocation.
 - [`std::box`](#stdbox) — `Box<T>`, a single-owner heap allocation. Required for recursive types.
@@ -84,6 +88,14 @@ fn clone(self : &$t) -> $t
 fn clone(self : &Option<T>) -> Option<T>
 ```
 
+**`Clone for Result<T, E>` methods**
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
+```rust
+fn clone(self : &Result<T, E>) -> Result<T, E>
+```
+
 ## `core::cmp`
 
 **Types**
@@ -91,6 +103,7 @@ fn clone(self : &Option<T>) -> Option<T>
 - `enum Ordering`
 - `trait PartialEq`
 - `trait Ord`
+- `trait PartialOrd`
 
 **`Ordering` methods**
 
@@ -104,6 +117,7 @@ fn is_ne(self : Ordering) -> bool
 fn is_le(self : Ordering) -> bool
 fn is_ge(self : Ordering) -> bool
 fn reverse(self : Ordering) -> Ordering
+fn then_with(self : Ordering, f : Closure0<Ordering>) -> Ordering
 fn then(self : Ordering, other : Ordering) -> Ordering
 fn eq(self : &Self, other : &Self) -> bool
 fn ne(self : &Self, other : &Self) -> bool
@@ -123,6 +137,7 @@ fn clamp(self : Self, lo : Self, hi : Self) -> Self
 
 ```rust
 fn eq(self : &$t, other : &$t) -> bool
+fn eq(self : &$t, other : &$t) -> bool
 ```
 
 **`Ord for $t` methods**
@@ -131,6 +146,50 @@ fn eq(self : &$t, other : &$t) -> bool
 
 ```rust
 fn cmp(self : &$t, other : &$t) -> Ordering
+fn partial_cmp(self : &Self, other : &Self) -> Option<Ordering>
+```
+
+**`PartialOrd for $t` methods**
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
+```rust
+fn partial_cmp(self : &$t, other : &$t) -> Option<Ordering>
+fn partial_cmp(self : &$t, other : &$t) -> Option<Ordering>
+fn max_by<T>(a : T, b : T, f : Closure2<T, T, Ordering>) -> T
+fn min_by<T>(a : T, b : T, f : Closure2<T, T, Ordering>) -> T
+```
+
+## `core::convert`
+
+**Types**
+
+- `trait From<T>`
+- `enum Infallible`
+
+**Functions**
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
+```rust
+fn from(v : T) -> Self
+```
+
+**`From<$from> for $to` methods**
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
+```rust
+fn from(v : $from) -> $to
+```
+
+**`From<T> for Option<T>` methods**
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
+```rust
+fn from(v : T) -> Option<T>
+fn identity<T>(x : T) -> T
 ```
 
 ## `core::default`
@@ -239,6 +298,31 @@ fn skip<I, Item>(inner : I, drop : i64) -> Skip<I, Item>
 fn range(at : i64, end : i64) -> Range
 ```
 
+## `core::marker`
+
+**Types**
+
+- `trait Copy`
+- `trait Send`
+- `trait Sync`
+- `trait Sized`
+- `struct PhantomData<T>`
+
+## `core::mem`
+
+**Functions**
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
+```rust
+fn size_of<T>() -> i64
+fn swap<T>(a : &mut T, b : &mut T) -> void
+fn replace<T>(dest : &mut T, src : T) -> T
+fn drop<T>(_x : T) -> void
+fn forget<T>(_x : T) -> void
+fn needs_drop<T>() -> bool
+```
+
 ## `core::num`
 
 The integer methods, stamped over the signed and the unsigned widths.
@@ -278,6 +362,13 @@ fn checked_rem(self : $t, rhs : $t) -> Option<$t>
 fn checked_neg(self : $t) -> Option<$t>
 fn saturating_add(self : $t, rhs : $t) -> $t
 fn saturating_sub(self : $t, rhs : $t) -> $t
+fn wrapping_add(self : $t, rhs : $t) -> $t
+fn wrapping_sub(self : $t, rhs : $t) -> $t
+fn wrapping_mul(self : $t, rhs : $t) -> $t
+fn wrapping_neg(self : $t) -> $t
+fn saturating_mul(self : $t, rhs : $t) -> $t
+fn leading_ones(self : $t) -> $t
+fn trailing_ones(self : $t) -> $t
 fn min_value(self : $t) -> $t
 fn max_value(self : $t) -> $t
 fn bits(self : $t) -> $t
@@ -303,6 +394,46 @@ fn checked_div(self : $t, rhs : $t) -> Option<$t>
 fn checked_rem(self : $t, rhs : $t) -> Option<$t>
 fn saturating_add(self : $t, rhs : $t) -> $t
 fn saturating_sub(self : $t, rhs : $t) -> $t
+fn wrapping_add(self : $t, rhs : $t) -> $t
+fn wrapping_sub(self : $t, rhs : $t) -> $t
+fn wrapping_mul(self : $t, rhs : $t) -> $t
+fn wrapping_neg(self : $t) -> $t
+fn saturating_mul(self : $t, rhs : $t) -> $t
+fn leading_ones(self : $t) -> $t
+fn trailing_ones(self : $t) -> $t
+fn sqrt(self : $t) -> $t
+fn abs(self : $t) -> $t
+fn exp(self : $t) -> $t
+fn exp2(self : $t) -> $t
+fn exp_m1(self : $t) -> $t
+fn ln(self : $t) -> $t
+fn log2(self : $t) -> $t
+fn log10(self : $t) -> $t
+fn ln_1p(self : $t) -> $t
+fn sin(self : $t) -> $t
+fn cos(self : $t) -> $t
+fn tan(self : $t) -> $t
+fn asin(self : $t) -> $t
+fn acos(self : $t) -> $t
+fn atan(self : $t) -> $t
+fn sinh(self : $t) -> $t
+fn cosh(self : $t) -> $t
+fn tanh(self : $t) -> $t
+fn floor(self : $t) -> $t
+fn ceil(self : $t) -> $t
+fn round(self : $t) -> $t
+fn trunc(self : $t) -> $t
+fn fract(self : $t) -> $t
+fn powf(self : $t, n : $t) -> $t
+fn atan2(self : $t, x : $t) -> $t
+fn copysign(self : $t, sign : $t) -> $t
+fn recip(self : $t) -> $t
+fn to_degrees(self : $t) -> $t
+fn to_radians(self : $t) -> $t
+fn is_nan(self : $t) -> bool
+fn signum(self : $t) -> $t
+fn is_finite(self : $t) -> bool
+fn is_infinite(self : $t) -> bool
 ```
 
 ## `core::ops`
@@ -340,6 +471,24 @@ fn filter(self : Option<T>, p : Closure1<T, bool>) -> Option<T>
 fn map_or<U>(self : Option<T>, default : U, f : Closure1<T, U>) -> U
 fn unwrap_or_else(self : Option<T>, f : Closure0<T>) -> T
 fn is_some_and(self : Option<T>, p : Closure1<T, bool>) -> bool
+fn is_none_or(self : Option<T>, p : Closure1<T, bool>) -> bool
+fn or_else(self : Option<T>, f : Closure0<Option<T>>) -> Option<T>
+fn map_or_else<U>(self : Option<T>, d : Closure0<U>, f : Closure1<T, U>) -> U
+fn take(self : &mut Option<T>) -> Option<T>
+fn replace(self : &mut Option<T>, v : T) -> Option<T>
+```
+
+## `core::ptr`
+
+**Functions**
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
+```rust
+fn null<T>() -> *const T
+fn null_mut<T>() -> *mut T
+unsafe fn read<T>(p : *const T) -> T
+unsafe fn write<T>(p : *mut T, v : T) -> void
 ```
 
 ## `core::result`
@@ -365,6 +514,22 @@ fn map<U>(self : Result<T, E>, f : Closure1<T, U>) -> Result<U, E>
 fn map_err<F>(self : Result<T, E>, f : Closure1<E, F>) -> Result<T, F>
 fn and_then<U>(self : Result<T, E>, f : Closure1<T, Result<U, E>>) -> Result<U, E>
 fn unwrap_or_else(self : Result<T, E>, f : Closure1<E, T>) -> T
+fn unwrap_err(self : Result<T, E>) -> E
+fn is_ok_and(self : Result<T, E>, p : Closure1<T, bool>) -> bool
+fn is_err_and(self : Result<T, E>, p : Closure1<E, bool>) -> bool
+fn and<U>(self : Result<T, E>, other : Result<U, E>) -> Result<U, E>
+fn or<F>(self : Result<T, E>, other : Result<T, F>) -> Result<T, F>
+fn map_or<U>(self : Result<T, E>, default : U, f : Closure1<T, U>) -> U
+fn map_or_else<U>(self : Result<T, E>, d : Closure1<E, U>, f : Closure1<T, U>) -> U
+```
+
+**`Option<T>` methods**
+
+<!-- vx-doctest: skip -- signature listing, not a program -->
+
+```rust
+fn ok_or<E>(self : Option<T>, err : E) -> Result<T, E>
+fn ok_or_else<E>(self : Option<T>, f : Closure0<E>) -> Result<T, E>
 ```
 
 ## `std::alloc`
@@ -1070,4 +1235,4 @@ fn vx_vec_bounds_check(index : i64, len : i64) -> i32
 
 ______________________________________________________________________
 
-373 functions across 27 modules.
+456 functions across 31 modules.
