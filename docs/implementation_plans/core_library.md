@@ -316,14 +316,31 @@ Exclusions: `Deref`/`DerefMut` (no auto-deref in the language; revisit with A11)
 
 #### `core::convert`
 
-`From<T>`, `Into<T>` (with the blanket `impl<T, U : From<T>> Into<U> for T` **excluded** until the
-checker can express a blanket impl; phase 1 stamps `Into` per pair alongside `From`), `TryFrom<T>`,
-`TryInto<T>` (returning `Result<Self, TryFromIntError>`), `AsRef<T>`, `AsMut<T>`, `Infallible` (an
-enum with no variants; check it parses), the identity `fn identity<T>(x : T) -> T`.
+Landed: `From<T>` stamped per source-and-target pair over the lossless widenings
+(`i8 -> i16 -> i32 -> i64`, unsigned likewise, `u8 -> i16` and so on, the integer-to-float
+conversions that do not round, `f32 -> f64`, and `bool` to every width), the reflexive
+`From<T> for T` stamped per type, `From<T> for Option<T>`, `Infallible` as an enum with no
+variants, and `fn identity<T>(x : T) -> T`. This is the module where A7 pays for itself first,
+and it is the first one that needed a trait's arguments in the mangled method name (Vx#686):
+without that every `From` impl for one target claimed the same symbol.
 
-The lossless integer widenings (`i8 -> i16 -> i32 -> i64 -> i128`, unsigned likewise, `u8 -> i16`
-and so on) and the fallible narrowings are stamped by macro from a table. This is the module where
-A7 pays for itself first.
+Three things this section predicted did not survive contact.
+
+**`Into` and `TryInto` are excluded, and not for the reason given here.** The plan assumed a
+blanket `impl<T, U : From<T>> Into<U> for T` was the only obstacle and that stamping per pair
+would do instead. It does not: `x.into()` carries no argument, so two `Into` impls for one
+source type are indistinguishable at the call site, and the checker refuses the call as
+ambiguous (E3035). Vx does not resolve a call from the type its result is assigned to, which
+is what makes `into()` work in Rust. One target per source would resolve, and is not worth a
+trait.
+
+**A blanket impl whose `Self` is a bare type parameter is never found**, so the reflexive case
+is stamped per type. `impl<T> From<T> for T` alone gives "Undefined static method 'i32::from'".
+Worth knowing before any other module reaches for a blanket impl.
+
+**`TryFrom` is blocked by Vx#570, not by anything in this section.** It returns
+`Result<Self, TryFromIntError>`, and a `Result` whose two payloads have different layouts does
+not lower on the flat path when one of them is a struct. The narrowings land with it.
 
 #### `core::option`
 
@@ -787,7 +804,7 @@ live docs, not this table.
 | `ops` | `core::ops` | 1→2 | declared | A11 (dispatch), A10 (`Output`) | `Deref`, `Drop`, `Fn*`, coroutine traits excluded |
 | `clone` | `core::clone` | 1 | partial | | `Clone` for the scalars, `bool`, `Ordering`, `Option<T : Clone>`; `Result<T, E>` pending an impl over two bounded parameters |
 | `default` | `core::default` | 1 | par | | `Default` for the scalars, `bool`, `Option<T>`; a static trait method dispatches since Vx#684 |
-| `convert` | `core::convert` | 1 | — | Vx#686 | blanket `Into` excluded; stamped per pair -- which is the shape whose impls collide on one mangled name |
+| `convert` | `core::convert` | 1 | partial | Vx#570 for `TryFrom` | `From` stamped per pair, the reflexive case among them, since a blanket impl over `Self` is never found; `Into`/`TryInto` excluded (a call carries no argument to choose an impl by, and Vx does not resolve from the expected type); `AsRef`/`AsMut` pending `str` and slices |
 | `option` | `core::option` | 1 | partial | A16 for `zip` | the combinators through `is_some_and`; no `zip`, `take`, `replace`, `ok_or`, `expect`, `unwrap_or_default` |
 | `result` | `core::result` | 1 | partial | | replaced the Rust-backed shims; `ok`, `err`, `map`, `map_err`, `and_then`, `unwrap_or_else`; no `expect`, `unwrap_err`, `or_else`, `and`, `or` |
 | `num` (integers) | `core::num` | 1 | partial | | every width, signed and unsigned; bit ops, rotates, `pow`, `ilog2`, `next_power_of_two`, the checked and saturating families; no `wrapping_*`/`overflowing_*` spellings, `from_str_radix`, `to_be`/`to_le`; constants as functions until `const` items |
