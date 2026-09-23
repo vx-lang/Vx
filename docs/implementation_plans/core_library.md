@@ -147,9 +147,12 @@ Two consequences worth stating:
 
 - `core` has no I/O, not even `print`. Its tests use `std::googletest`, which is fine, because
   tests run on the host.
-- `core` cannot panic through the runtime's `vx_panic`. Until the compiler grows a `panic(msg)`
-  intrinsic that lowers to `cf.assert`, `core` uses `assert(false, "msg")`, which is what
-  `Option::unwrap` already does.
+- `core` cannot panic through the runtime's `vx_panic`, and it cannot panic at all yet.
+  `assert(false, "msg")` does not compile: a statically false assert is reported at check time
+  whether or not anything calls the function holding it, so a function that always panics
+  cannot be written (Vx#526). `Option::unwrap` works because its condition comes from a method
+  call the checker cannot fold, which is a shape only a method with a receiver has. So
+  `core::panic` waits on the intrinsics rather than shipping in a reduced form.
 
 ### 3.3 Traits before types
 
@@ -802,7 +805,7 @@ live docs, not this table.
 | `marker` | `core::marker` | 1 | partial | Vx#715 | `Copy` declared and stamped for the scalars, `PhantomData<T>`; `Send`/`Sync`/`Sized` declared, not enforced. `Copy` is enforced for a struct and a payload-free enum; a generic enum is not treated as linear at all, so `Option`'s and `Result`'s impls are written and unenforced |
 | `cmp` | `core::cmp` | 1 | partial | Vx#712 for `Reverse`, Vx#223 for free `max`/`min` | `PartialEq` and `Ord` over every integer width and `bool`; `PartialOrd` over those and the floats, which cannot be `Ord`; `Ordering` with `then_with`; `max_by`/`min_by`. No `Reverse` (its `Ord` impl declines on the flat path), no free `max`/`min` (the names are the compiler's tensor reductions), no `max_by_key`/`min_by_key`, no `Eq`. `Rhs` is `Self` by convention until trait-parameter defaults exist |
 | `ops` | `core::ops` | 1→2 | declared | A11 (dispatch), A10 (`Output`) | `Deref`, `Drop`, `Fn*`, coroutine traits excluded |
-| `clone` | `core::clone` | 1 | partial | | `Clone` for the scalars, `bool`, `Ordering`, `Option<T : Clone>`; `Result<T, E>` pending an impl over two bounded parameters |
+| `clone` | `core::clone` | 1 | par | | `Clone` for the scalars, `bool`, `Ordering`, `Option<T : Clone>` and `Result<T : Clone, E : Clone>`; `clone_from` as the trait's one default. An impl over two bounded parameters turned out to be a shape the checker takes. `Result::clone` does not run at an instantiation mixing a float with an integer, which is `Result<f32, i32>` failing to lower rather than the impl |
 | `default` | `core::default` | 1 | par | | `Default` for the scalars, `bool`, `Option<T>`; a static trait method dispatches since Vx#684 |
 | `convert` | `core::convert` | 1 | partial | Vx#570 for `TryFrom` | `From` stamped per pair, the reflexive case among them, since a blanket impl over `Self` is never found; `Into`/`TryInto` excluded (a call carries no argument to choose an impl by, and Vx does not resolve from the expected type); `AsRef`/`AsMut` pending `str` and slices |
 | `option` | `core::option` | 1 | partial | A16 for `zip`, Vx#526 for `expect`, Vx#711 for `inspect` | the combinators plus `is_none_or`, `or_else`, `map_or_else`, `take`, `replace`; `ok_or`/`ok_or_else` live in `core::result` to avoid an import cycle; no `zip`, `flatten`, `unwrap_or_default` (`T::default()` on a bounded parameter is not resolved), or the reference-returning methods |
@@ -812,7 +815,7 @@ live docs, not this table.
 | `mem` | `core::mem` | 1 | partial | A19 for semantics | `size_of`, `swap`, `replace`, `drop`, `forget`, `needs_drop`. No `align_of` (wants an intrinsic beside `sizeof`), no `take` (`T::default()` on a bounded parameter is not resolved), no `zeroed`/`transmute`/`ManuallyDrop`/`MaybeUninit`/`discriminant` |
 | `ptr` | `core::ptr` | 1 | partial | Vx#714 | `null`, `null_mut`, `read`, `write`. No `eq`/`is_null`: two raw pointers cannot be compared and a pointer cannot be cast to an integer, so a null test cannot be spelled. No pointer arithmetic, `copy`, or the volatile forms. `addr_of` excluded |
 | `hint` | `core::hint` | 1 | — | — | |
-| `panic` | `core::panic` | 1 | — | A8 | `Location`, `PanicInfo`, hooks excluded |
+| `panic` | `core::panic` | 1 | — | A8 (Vx#526) | blocked outright, not merely reduced: `assert(false, ..)` is folded at check time, so no function that always panics compiles. `Location`, `PanicInfo`, hooks excluded |
 | `iter` | `core::iter` | 2 | partial | A10 (`Item`), A16 (`zip`, `enumerate`), Vx#647, Vx#649 | `Iterator<Item>` with eight defaults, `Range`, `map`/`filter`/`take`/`skip`; one adaptor deep, and no default names `Item`; no `rev`, `sum`, `fold`, `collect` |
 | `slice` | `core::slice` | 2 | — | A17 for `&[T]` spelling | library `Slice`/`SliceMut` first; `sort` (stable) is alloc |
 | `str` | `core::str` | 2 | — | A15 | float `parse` in phase 3 |

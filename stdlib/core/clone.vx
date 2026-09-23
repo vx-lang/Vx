@@ -15,11 +15,16 @@
 // copied on every read, so its `clone` is a read, but a generic body written over
 // `T : Clone` still has to be able to call it.
 //
-// `Option<T>` clones when `T` does, as in Rust. `Result<T, E>` does not yet: an impl over two
-// parameters with two bounds is the shape the checker has not been asked for, and it is
-// better absent than written and untested.
+// `Option<T>` and `Result<T, E>` clone when what they hold does, as in Rust. The `Result`
+// impl was held back once on the grounds that two parameters with a bound each was a shape
+// the checker had not been asked for; it takes it.
+//
+// What `Result::clone` cannot do is run at an instantiation mixing a float with an
+// integer. `Result<f32, i32>` fails to lower on both code generators, so the impl is
+// exercised over the integer widths only and the header of `core_clone_default.vx` says so.
 import core::cmp;
 import core::option;
+import core::result;
 
 trait Clone {
   fn clone(self : &Self) -> Self;
@@ -67,5 +72,21 @@ impl<T : Clone> Clone for Option<T> {
       }
     }
     return out;
+  }
+}
+
+/// Returned from each arm rather than bound first, which is the opposite of `Option` above
+/// and is forced: `Result` has no variant that can be built without a value, so there is
+/// nothing to start the binding at that does not assume something about `T`.
+impl<T : Clone, E : Clone> Clone for Result<T, E> {
+  fn clone(self : &Result<T, E>) -> Result<T, E> {
+    match *self {
+      Result<T, E>::Ok(v) => {
+        return Result<T, E>::Ok(v.clone());
+      }
+      Result<T, E>::Err(e) => {
+        return Result<T, E>::Err(e.clone());
+      }
+    }
   }
 }
