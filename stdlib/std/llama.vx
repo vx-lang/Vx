@@ -12,13 +12,23 @@ import std::tensor;
 import std::string;
 
 extern {
+  /// Read the seven header fields of a llama2.c checkpoint into an array of `i32`.
   fn vx_load_config(filepath : *const i8) -> *mut i32;
+  /// Map a checkpoint's weights and hand back a pointer to the first float.
   fn vx_load_weights(filepath : *const i8) -> *mut f32;
 
+  /// Read a tokenizer file, answering an opaque handle the Rust core owns.
   fn vx_build_tokenizer(filepath : *const i8, vocab_size : i32) -> *mut i8;
+  /// The text for one token, as a NUL-terminated string.
+  ///
+  /// `prev_token` is needed because llama2's tokenizer strips a leading space after the
+  /// beginning-of-sequence token and not otherwise.
   fn vx_decode_token(tokenizer_ptr : *mut i8, prev_token : i32, token : i32) -> *const i8;
+  /// Encode a prompt, answering an array of token ids with its length in the first slot.
   fn vx_encode_prompt(tokenizer_ptr : *mut i8, text_ptr : *const i8) -> *mut i32;
+  /// Read a whole file as a NUL-terminated string.
   fn vx_read_prompt_file(filepath : *const i8) -> *const i8;
+  /// The configuration of the checkpoint most recently loaded.
   fn vx_get_llama_config() -> *mut i32;
 }
 
@@ -33,6 +43,10 @@ struct LlamaConfig {
 }
 
 impl LlamaConfig {
+  /// Read a checkpoint's header.
+  ///
+  /// Nothing validates the file: a path that is not a checkpoint gives a config of whatever
+  /// the first seven words happen to be, and the sizes computed from it are then wrong.
   fn load(filepath: *const i8) -> LlamaConfig {
     let config_ptr = unsafe { vx_load_config(filepath) };
 
@@ -67,6 +81,9 @@ struct TransformerWeightOffsets {
 }
 
 impl TransformerWeightOffsets {
+  /// Where each weight matrix begins, as a float offset into one flat buffer.
+  ///
+  /// The order is llama2.c's, and the arithmetic assumes the checkpoint was written by it.
   fn calculate(c: &LlamaConfig) -> TransformerWeightOffsets {
     let dim = c.dim;
     let n_layers = c.n_layers;
@@ -129,6 +146,10 @@ impl TransformerWeightOffsets {
     };
   }
 
+  /// Every weight as one 1-by-N tensor, copied out of the mapped checkpoint.
+  ///
+  /// The length is computed from `c`, so a config that does not match the file reads past its
+  /// end. A copy rather than a view, so the whole model is resident twice while this runs.
   fn load_all_weights(filepath: *const i8, c: &LlamaConfig) -> Tensor<f32, [?, ?]> {
     let ptr = unsafe { vx_load_weights(filepath) };
     let dim = c.dim;
@@ -165,6 +186,7 @@ struct Tokenizer {
 }
 
 impl Tokenizer {
+  /// Read a tokenizer file. `vocab_size` must match the checkpoint's.
   fn load(filepath: *const i8, vocab_size: i32) -> Tokenizer {
     let ptr = unsafe { vx_build_tokenizer(filepath, vocab_size) };
     return Tokenizer {
@@ -172,6 +194,10 @@ impl Tokenizer {
     };
   }
 
+  /// The text for one token, as an owned `String` the caller must `drop`.
+  ///
+  /// `prev_token` decides whether a leading space is stripped, which is why decoding a token
+  /// in isolation can differ from decoding it in sequence.
   fn decode(self: &Tokenizer, prev_token: i32, token: i32) -> String {
     let piece_ptr = unsafe { vx_decode_token(self.ptr, prev_token, token) };
     return unsafe { String::from_c_str(piece_ptr) };

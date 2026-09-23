@@ -852,6 +852,23 @@ impl<'a> Parser<'a> {
         let mut externs = Vec::new();
 
         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
+            // As the trait and impl loops do. `std::libc`, `std::alloc`, `std::mmap`,
+            // `std::hash_map` and `std::hash_set` contain nothing but declarations, so a
+            // doc comment being a parse error here left those modules undocumentable.
+            let mut doc_comment: Option<String> = None;
+            while let TokenType::DocComment(c) = &self.peek().kind {
+                let text = c.to_string();
+                if let Some(existing) = &mut doc_comment {
+                    existing.push('\n');
+                    existing.push_str(&text);
+                } else {
+                    doc_comment = Some(text);
+                }
+                self.advance();
+            }
+            if self.check(&TokenType::RightBrace) || self.check(&TokenType::Eof) {
+                break;
+            }
             let decl_line = self.peek().line;
             let decl_column = self.peek().column;
             let is_safe = self.match_token(&TokenType::Safe);
@@ -876,6 +893,7 @@ impl<'a> Parser<'a> {
                     column: decl_column,
                     length: 0,
                 },
+                doc_comment,
             });
         }
         self.consume(&TokenType::RightBrace, "Expected '}'")?;

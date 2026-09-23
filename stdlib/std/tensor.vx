@@ -7,6 +7,10 @@
 //
 //===----------------------------------------------------------------------===//
 impl<T : Float> Tensor<T, [?, ?]> {
+  /// A 1-by-`d1` tensor holding a copy of `d1` elements read from `ptr`.
+  ///
+  /// The elements are copied, so the tensor does not alias the buffer and outlives it. `ptr`
+  /// must address `d1` elements; nothing here checks.
   fn from_ptr_1d(ptr: *mut T, d1: i32) -> Tensor<T, [?, ?]> {
     let mut t = Tensor<T>([ 1, d1 ]);
     for i in 0..d1 {
@@ -15,6 +19,8 @@ impl<T : Float> Tensor<T, [?, ?]> {
     return t;
   }
 
+  /// A `d1`-by-`d2` tensor holding a copy of `d1 * d2` elements read from `ptr` in row-major
+  /// order. Copied, as `from_ptr_1d` is.
   fn from_ptr_2d(ptr: *mut T, d1: i32, d2: i32) -> Tensor<T, [?, ?]> {
     let mut t = Tensor<T>([ d1, d2 ]);
     for i in 0..d1 {
@@ -25,6 +31,10 @@ impl<T : Float> Tensor<T, [?, ?]> {
     return t;
   }
 
+  /// A `d1`-by-`d2` tensor read from one row of this one, taken row-major from its start.
+  ///
+  /// **A copy, not a view.** Every `slice_` method here allocates and copies, so writing to
+  /// the result does not touch the original and the cost is the elements moved, not constant.
   fn slice_2d(self: &Tensor<T, [?, ?]>, row: i32, d1: i32, d2: i32) -> Tensor<T, [?, ?]> {
     let mut t = Tensor<T>([ d1, d2 ]);
     for i in 0..d1 {
@@ -35,6 +45,7 @@ impl<T : Float> Tensor<T, [?, ?]> {
     return t;
   }
 
+  /// A `d1`-by-`d2` tensor read from row 0 beginning at `start`, reshaped row-major. A copy.
   fn slice_2d_from_1d(self: &Tensor<T, [?, ?]>, start: i32, d1: i32, d2: i32) -> Tensor<T, [?, ?]> {
     let mut t = Tensor<T>([ d1, d2 ]);
     for i in 0..d1 {
@@ -45,6 +56,7 @@ impl<T : Float> Tensor<T, [?, ?]> {
     return t;
   }
 
+  /// A 1-by-`d1` tensor read from row 0 beginning at `start`. A copy.
   fn slice_1d(self: &Tensor<T, [?, ?]>, start: i32, d1: i32) -> Tensor<T, [?, ?]> {
     let mut t = Tensor<T>([ 1, d1 ]);
     for i in 0..d1 {
@@ -54,6 +66,9 @@ impl<T : Float> Tensor<T, [?, ?]> {
   }
 
   // Fills the tensor with a constant value using Linalg
+  /// Set every element to `val`.
+  ///
+  /// Lowered through `linalg`, with a separate path chosen at compile time for AVX-512.
   fn fill(self : &mut Tensor<T, [?, ?]>, val : T) -> void {
     mlir!(
     inputs: (%arg_t = self: memref<?x?xf32>, %arg_v = val: f32),
@@ -65,6 +80,10 @@ impl<T : Float> Tensor<T, [?, ?]> {
     };
   }
 
+  /// Overwrite this tensor's elements with `src`'s.
+  ///
+  /// Both must have the same shape; nothing here checks, and a mismatch reads or writes past
+  /// an end.
   fn copy(self : &mut Tensor<T, [?, ?]>, src : &Tensor<T, [?, ?]>) -> void {
     if comptime
     Topology::Current == Topology::CPU_AVX512 {
@@ -98,6 +117,8 @@ impl<T : Float> Tensor<T, [?, ?]> {
     };
   }
 
+  /// Set every element to `val`, as `fill` does. The two differ in the `linalg` form they
+  /// emit, not in what they mean.
   fn assign(self : &mut Tensor<T, [?, ?]>, val : T) -> void {
     if comptime
     Topology::Current == Topology::CPU_AVX512 {
@@ -131,6 +152,10 @@ impl<T : Float> Tensor<T, [?, ?]> {
     };
   }
 
+  /// Are the two tensors equal element by element?
+  ///
+  /// Exact equality, reduced over every element, so two tensors a rounding step apart answer
+  /// false. A NaN anywhere makes the answer false, including against itself.
   fn compare(self : &Tensor<T, [?, ?]>, other : &Tensor<T, [?, ?]>) -> bool {
     if comptime
     Topology::Current == Topology::CPU_AVX512 {
@@ -218,6 +243,9 @@ impl<T : Float> Tensor<T, [?, ?]> {
 
 impl<T : Float, const N : i32, const M : i32> Tensor<T, [N, M]> {
   // Fills the statically shaped tensor with a constant value using Linalg
+  /// Set every element of a statically shaped tensor to `val`.
+  ///
+  /// The shape is known at compile time here, so the emitted loop has constant bounds.
   fn fill_static(self : &mut Tensor<T, [ N, M ]>, val : T) -> void {
     if comptime
     Topology::Current == Topology::CPU_AVX512 {

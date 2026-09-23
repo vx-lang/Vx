@@ -6,21 +6,34 @@
 //
 //===----------------------------------------------------------------------===//
 extern {
+  /// The Rust core behind `String::new`.
   fn vx_string_new() -> *mut i8;
+  /// The Rust core behind `String::from_c_str`.
   fn vx_string_from_c_str(ptr : *const i8) -> *mut i8;
+  /// The Rust core behind `String::push_c_str`.
   fn vx_string_push_c_str(ptr : *mut i8, c_str : *const i8) -> i32;
+  /// The Rust core behind `String::len`.
   fn vx_string_len(ptr : *mut i8) -> i32;
+  /// Allocate a NUL-terminated copy and hand out its raw pointer. The caller owns it and
+  /// releases it with `vx_string_free_c_str`; `String::as_c_str` does not, and leaks.
   fn vx_string_as_c_str(ptr : *mut i8) -> *const i8;
+  /// Release what `vx_string_as_c_str` returned. Nothing in Vx calls this yet.
   fn vx_string_free_c_str(ptr : *const i8) -> i32;
+  /// The Rust core behind `String::drop`.
   fn vx_string_drop(ptr : *mut i8) -> i32;
+  /// The Rust core behind `i32::to_string`.
   fn vx_i32_to_string(val : i32)->*mut i8;
 }
 
+/// A growable, owned string, held by the Rust core behind an opaque pointer.
+///
+/// Released by calling `drop`, since the language has no `Drop` (Vx#495).
 struct String {
   ptr : *mut i8,
 }
 
 impl String {
+  /// An empty string.
   fn new ()->String {
     let ptr = unsafe { vx_string_new() };
     String {
@@ -29,6 +42,10 @@ impl String {
     }
   }
 
+  /// A copy of a NUL-terminated C string.
+  ///
+  /// Unsafe because nothing here checks that `c_str` is a valid pointer to a NUL-terminated
+  /// run of bytes. The copy is owned by the new `String`; the argument is not taken.
   unsafe fn from_c_str(c_str : *const i8) -> String {
     let ptr = unsafe { vx_string_from_c_str(c_str) };
     String {
@@ -37,24 +54,34 @@ impl String {
     }
   }
 
+  /// Append a NUL-terminated C string, with the same requirement `from_c_str` has.
   unsafe fn push_c_str(self : *mut String, c_str : *const i8) -> i32 {
     return unsafe { vx_string_push_c_str(self.ptr, c_str) };
   }
 
+  /// The length in bytes, not in characters: this counts UTF-8 code units.
   fn len(self : *mut String) -> i32 {
     return unsafe { vx_string_len(self.ptr) };
   }
 
+  /// A NUL-terminated copy of the contents.
+  ///
+  /// **This allocates and leaks.** The Rust core builds a fresh `CString` and hands out its
+  /// raw pointer, so every call costs a copy that is never released: the matching
+  /// `vx_string_free_c_str` is declared in the extern block and is not wrapped as a method
+  /// here. Calling this in a loop grows the process without bound.
   fn as_c_str(self : *mut String) -> *const i8 {
     return unsafe { vx_string_as_c_str(self.ptr) };
   }
 
+  /// Release the string. Reading it afterwards reads freed memory.
   fn drop(self : *mut String) -> i32 {
     return unsafe { vx_string_drop(self.ptr) };
   }
 }
 
 impl i32 {
+  /// This number in decimal, as an owned `String` the caller must `drop`.
   fn to_string(self : i32) -> String {
     let ptr = unsafe { vx_i32_to_string(self) };
     return String {
@@ -64,6 +91,10 @@ impl i32 {
 }
 
 // Returns the length of a null-terminated string
+/// The number of bytes before the NUL, found by scanning.
+///
+/// Unsafe because it walks until it finds one: a pointer to bytes with no NUL runs off the
+/// end. `core::str` replaces this once a string literal carries its length (Vx#532).
 unsafe fn string_length(s: *const i8) -> i32 {
   let mut len: i32 = 0;
   unsafe { loop { if s[len] == 0 { break; } len = len + 1; } }
@@ -71,6 +102,10 @@ unsafe fn string_length(s: *const i8) -> i32 {
 }
 
 // Compares two null-terminated strings
+/// C's `strcmp`: negative when `s1` sorts first, positive when `s2` does, zero when equal.
+///
+/// The magnitude is the difference between the first bytes that differ, which callers should
+/// not read anything into beyond its sign. Unsafe for the reason `string_length` is.
 unsafe fn string_compare(s1: *const i8, s2: *const i8) -> i32 {
   let mut i: i32 = 0;
   let mut result: i32 = 0;
@@ -87,6 +122,12 @@ unsafe fn string_compare(s1: *const i8, s2: *const i8) -> i32 {
 }
 
 // Parses a simple integer from a string slice
+/// The leading run of decimal digits as an `i32`.
+///
+/// Stops at the first byte that is not a digit and answers what it has, so `"12abc"` is 12 and
+/// `"abc"` is 0 -- there is no way to tell that second case from a genuine zero. A leading `-`
+/// is not a sign, it is a stop. Nothing checks for overflow: a run longer than `i32` holds
+/// wraps. `core::str`'s `parse` replaces it (Vx#532).
 unsafe fn parse_int(s: *const i8) -> i32 {
   let mut val: i32 = 0;
   let mut i: i32 = 0;

@@ -6,30 +6,55 @@
 //
 //===----------------------------------------------------------------------===//
 extern {
+  /// The Rust core behind `simd_add_f32x4`.
   fn vx_simd_add_f32x4(a : *const f32, b : *const f32, out : *mut f32) -> i32;
+  /// The Rust core behind `simd_sub_f32x4`.
   fn vx_simd_sub_f32x4(a : *const f32, b : *const f32, out : *mut f32) -> i32;
+  /// The Rust core behind `simd_mul_f32x4`.
   fn vx_simd_mul_f32x4(a : *const f32, b : *const f32, out : *mut f32) -> i32;
+  /// The Rust core behind `simd_div_f32x4`.
   fn vx_simd_div_f32x4(a : *const f32, b : *const f32, out : *mut f32) -> i32;
+  /// The Rust core behind `simd_fma_f32x4`.
   fn vx_simd_fma_f32x4(a : *const f32, b : *const f32, c : *const f32,
   out : *mut f32) -> i32;
 }
 
+/// The elementwise sum of two four-lane `f32` vectors, written to `out`.
+///
+/// All three pointers must address four `f32`s; nothing here checks. `out` may alias `a` or
+/// `b`.
 unsafe fn simd_add_f32x4(a : *const f32, b : *const f32, out : *mut f32) -> i32 {
   return unsafe { vx_simd_add_f32x4(a, b, out) };
 }
 
+/// The elementwise difference of two four-lane `f32` vectors, written to `out`.
+///
+/// All three pointers must address four `f32`s; nothing here checks. `out` may alias `a` or
+/// `b`.
 unsafe fn simd_sub_f32x4(a : *const f32, b : *const f32, out : *mut f32) -> i32 {
   return unsafe { vx_simd_sub_f32x4(a, b, out) };
 }
 
+/// The elementwise product of two four-lane `f32` vectors, written to `out`.
+///
+/// All three pointers must address four `f32`s; nothing here checks. `out` may alias `a` or
+/// `b`.
 unsafe fn simd_mul_f32x4(a : *const f32, b : *const f32, out : *mut f32) -> i32 {
   return unsafe { vx_simd_mul_f32x4(a, b, out) };
 }
 
+/// The elementwise quotient of two four-lane `f32` vectors, written to `out`.
+///
+/// All three pointers must address four `f32`s; nothing here checks. `out` may alias `a` or
+/// `b`.
 unsafe fn simd_div_f32x4(a : *const f32, b : *const f32, out : *mut f32) -> i32 {
   return unsafe { vx_simd_div_f32x4(a, b, out) };
 }
 
+/// `a * b + c` elementwise over four lanes, written to `out`.
+///
+/// Fused, so the product is not rounded before the addition: the answer can differ from a
+/// separate multiply and add in the last bit, and is the more accurate of the two.
 unsafe fn simd_fma_f32x4(a : *const f32, b : *const f32, c : *const f32,
 out : *mut f32) -> i32 {
   return unsafe { vx_simd_fma_f32x4(a, b, c, out) };

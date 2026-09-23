@@ -103,6 +103,9 @@ pub struct ExternDecl {
     pub return_type: Type,
     /// Where the declaration was written, so a diagnostic about the signature can point at it.
     pub span: Span,
+    /// The `///` lines above the declaration. Six library modules are nothing but an extern
+    /// block, so without this they had no way to say what their functions do.
+    pub doc_comment: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Clone)]

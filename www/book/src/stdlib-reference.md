@@ -805,9 +805,15 @@ Raw allocation and deallocation.
 
 **Functions** *(bound directly to C)*
 
-- `fn malloc(size : i64) -> *mut i8`
-- `fn realloc(ptr : *mut i8, size : i64) -> *mut i8`
-- `fn free(ptr : *mut i8) -> i32`
+- `fn malloc(size : i64) -> *mut i8`<br>
+  C's `malloc`: `size` bytes of uninitialised heap, or null when it cannot.
+  Vx cannot test the result against null (Vx#714), so a failed allocation is found by
+  writing through it.
+- `fn realloc(ptr : *mut i8, size : i64) -> *mut i8`<br>
+  C's `realloc`: the block resized, moving it if need be. The old pointer is invalid
+  afterwards whether or not it moved.
+- `fn free(ptr : *mut i8) -> i32`<br>
+  C's `free`. Freeing twice, or freeing what `malloc` did not return, is undefined.
 
 ## `std::box`
 
@@ -815,12 +821,19 @@ Raw allocation and deallocation.
 
 **Types**
 
-- `struct Box<T>`
+- `struct Box<T>`<br>
+  A single-owner heap allocation, which is what makes a recursive type possible.
+  Released by calling `free`, since the language has no `Drop` (Vx#495).
 
 **`Box<T>` methods**
 
-- `fn new(val : T) -> Box<T>`
-- `fn free(self : &mut Box<T>) -> i32`
+- `fn new(val : T) -> Box<T>`<br>
+  Move a value to the heap.
+  The allocation is not checked: `malloc` answering null gives a `Box` that writes through
+  a null pointer, and Vx cannot test one (Vx#714).
+- `fn free(self : &mut Box<T>) -> i32`<br>
+  Release the allocation. The pointer is left as it was, so using the box afterwards
+  reads freed memory.
 
 ## `std::fs`
 
@@ -828,34 +841,69 @@ Files and directories.
 
 **Types**
 
-- `struct File`
+- `struct File`<br>
+  An open file, held by the Rust core behind an opaque pointer.
+  Closed by calling `file_drop`, since the language has no `Drop` (Vx#495).
 
 **`File` methods**
 
-- `unsafe fn open(path : *const i8, mode : i32) -> File`
-- `unsafe fn read(self : *mut File, buffer : *mut u8, len : i64) -> i64`
-- `unsafe fn write(self : *mut File, buffer : *const u8, len : i64) -> i64`
-- `fn seek(self : *mut File, offset : i64, whence : i32) -> i64`
+- `unsafe fn open(path : *const i8, mode : i32) -> File`<br>
+  Open `path`. `mode` is 0 to read, 1 to write, and anything else to read and write.
+  Writing creates the file and truncates it; read-and-write creates it and does not
+  truncate. Reading does not create it.
+  **A failed open cannot be detected.** The returned `File` holds a null pointer, and Vx
+  cannot compare a raw pointer against null or cast one to an integer (Vx#714) -- so a
+  missing file is indistinguishable from an empty one until that closes. Every later call
+  on it answers 0 or -1 rather than doing anything.
+  Unsafe because nothing checks that `path` points at a NUL-terminated string.
+- `unsafe fn read(self : *mut File, buffer : *mut u8, len : i64) -> i64`<br>
+  Read up to `len` bytes into `buffer` and answer how many arrived.
+  Zero means end of file, a null file or buffer, or a read error -- the four are not told
+  apart. A short read is normal and is not an error.
+  Unsafe because `buffer` must have room for `len` bytes; nothing here checks.
+- `unsafe fn write(self : *mut File, buffer : *const u8, len : i64) -> i64`<br>
+  Write up to `len` bytes from `buffer` and answer how many were taken.
+  Zero means a null file or buffer, or a write error, with the same lack of distinction
+  `read` has. A short write is not an error and the remainder is not retried here.
+- `fn seek(self : *mut File, offset : i64, whence : i32) -> i64`<br>
+  Move the read and write position, answering where it ended up.
+  `whence` is 0 from the start, 1 from the current position, 2 from the end, as libc's
+  `SEEK_SET`, `SEEK_CUR` and `SEEK_END`. Answers -1 for a null file, an unknown `whence`,
+  or a seek the operating system refuses.
 
 **Functions**
 
-- `unsafe fn file_drop(file : *mut File) -> void`
+- `unsafe fn file_drop(file : *mut File) -> void`<br>
+  Close the file and release it. Using it afterwards reads freed memory.
 
 **C bindings** *(the native functions this module is built on)*
 
-- `fn vx_file_open(c_path : *const i8, mode : i32) -> *mut i8`
-- `fn vx_file_read(ptr : *mut i8, buffer : *mut u8, len : i64) -> i64`
-- `fn vx_file_write(ptr : *mut i8, buffer : *const u8, len : i64) -> i64`
-- `fn vx_file_seek(ptr : *mut i8, offset : i64, whence : i32) -> i64`
-- `fn vx_file_drop(ptr : *mut i8) -> i32`
-- `fn fopen(path : *const i8, mode : *const i8) -> *mut i8`
-- `fn fread(ptr : *mut u8, size : i64, nmemb : i64, stream : *mut i8) -> i64`
-- `fn fclose(stream : *mut i8) -> i32`
-- `fn fileno(f : *mut i8) -> i32`
-- `fn fseek(f : *mut i8, offset : i64, whence : i32) -> i32`
-- `fn ftell(f : *mut i8) -> i64`
-- `fn mmap(addr : *mut i8, len : i64, prot : i32, flags : i32, fd : i32, offset : i64) -> *mut i8`
-- `fn munmap(addr : *mut i8, len : i64) -> i32`
+- `fn vx_file_open(c_path : *const i8, mode : i32) -> *mut i8`<br>
+  The Rust core behind `File::open`. Null when the open fails.
+- `fn vx_file_read(ptr : *mut i8, buffer : *mut u8, len : i64) -> i64`<br>
+  The Rust core behind `File::read`.
+- `fn vx_file_write(ptr : *mut i8, buffer : *const u8, len : i64) -> i64`<br>
+  The Rust core behind `File::write`.
+- `fn vx_file_seek(ptr : *mut i8, offset : i64, whence : i32) -> i64`<br>
+  The Rust core behind `File::seek`.
+- `fn vx_file_drop(ptr : *mut i8) -> i32`<br>
+  The Rust core behind `file_drop`.
+- `fn fopen(path : *const i8, mode : *const i8) -> *mut i8`<br>
+  C's `fopen`, for code that wants a `FILE*` rather than the Rust-backed `File`.
+- `fn fread(ptr : *mut u8, size : i64, nmemb : i64, stream : *mut i8) -> i64`<br>
+  C's `fread`: the number of whole items read, not the number of bytes.
+- `fn fclose(stream : *mut i8) -> i32`<br>
+  C's `fclose`.
+- `fn fileno(f : *mut i8) -> i32`<br>
+  C's `fileno`: the descriptor behind a `FILE*`, for handing to `mmap`.
+- `fn fseek(f : *mut i8, offset : i64, whence : i32) -> i32`<br>
+  C's `fseek`.
+- `fn ftell(f : *mut i8) -> i64`<br>
+  C's `ftell`: the current position, which is how the size is found after a seek to the end.
+- `fn mmap(addr : *mut i8, len : i64, prot : i32, flags : i32, fd : i32, offset : i64) -> *mut i8`<br>
+  C's `mmap`, declared here so a file can be mapped without importing `std::mmap`.
+- `fn munmap(addr : *mut i8, len : i64) -> i32`<br>
+  C's `munmap`.
 
 ## `std::googletest`
 
@@ -867,24 +915,32 @@ Assertions for tests written in Vx.
 
 **`trait GoogletestEq` methods**
 
-- `fn expect_eq(self : Self, expected : Self) -> i32`
+- `fn expect_eq(self : Self, expected : Self) -> i32`<br>
+  Report whether this value equals `expected`, and answer non-zero when it does not.
+  Records the comparison rather than stopping at it, so a test reports every failure it
+  finds rather than only the first.
 
 **`GoogletestEq for f32` methods**
 
-- `fn expect_eq(self : f32, expected : f32) -> i32`
+- `fn expect_eq(self : f32, expected : f32) -> i32`<br>
+  Compared exactly, so two values a rounding step apart are reported as different.
 
 **`GoogletestEq for i32` methods**
 
-- `fn expect_eq(self : i32, expected : i32) -> i32`
+- `fn expect_eq(self : i32, expected : i32) -> i32`<br>
+  Compared exactly.
 
 **Functions**
 
-- `fn expect_eq<T : GoogletestEq>(actual : T, expected : T) -> i32`
+- `fn expect_eq<T : GoogletestEq>(actual : T, expected : T) -> i32`<br>
+  `actual.expect_eq(expected)` written the way a test reads: the value under test first.
 
 **C bindings** *(the native functions this module is built on)*
 
-- `fn vx_googletest_expect_eq_f32(actual : f32, expected : f32) -> i32`
-- `fn vx_googletest_expect_eq_i32(actual : i32, expected : i32) -> i32`
+- `fn vx_googletest_expect_eq_f32(actual : f32, expected : f32) -> i32`<br>
+  The Rust core behind `f32`'s `expect_eq`.
+- `fn vx_googletest_expect_eq_i32(actual : i32, expected : i32) -> i32`<br>
+  The Rust core behind `i32`'s `expect_eq`.
 
 ## `std::hash_map`
 
@@ -892,18 +948,34 @@ Assertions for tests written in Vx.
 
 **Functions** *(bound directly to C)*
 
-- `fn vx_hash_map_new_i32_i32() -> *mut i8`
-- `fn vx_hash_map_insert_i32_i32(ptr : *mut i8, key : i32, val : i32) -> i32`
-- `fn vx_hash_map_get_i32_i32(ptr : *mut i8, key : i32) -> *mut i8`
-- `fn vx_hash_map_contains_key_i32_i32(ptr : *mut i8, key : i32) -> Bool`
-- `fn vx_hash_map_len_i32_i32(ptr : *mut i8) -> i32`
-- `fn vx_hash_map_drop_i32_i32(ptr : *mut i8) -> i32`
-- `fn vx_hash_map_new_i32_f32() -> *mut i8`
-- `fn vx_hash_map_insert_i32_f32(ptr : *mut i8, key : i32, val : f32) -> i32`
-- `fn vx_hash_map_get_i32_f32(ptr : *mut i8, key : i32) -> *mut i8`
-- `fn vx_hash_map_contains_key_i32_f32(ptr : *mut i8, key : i32) -> Bool`
-- `fn vx_hash_map_len_i32_f32(ptr : *mut i8) -> i32`
-- `fn vx_hash_map_drop_i32_f32(ptr : *mut i8) -> i32`
+- `fn vx_hash_map_new_i32_i32() -> *mut i8`<br>
+  An empty map from `i32` to `i32`, owned by the Rust core.
+- `fn vx_hash_map_insert_i32_i32(ptr : *mut i8, key : i32, val : i32) -> i32`<br>
+  Insert a value under a key, replacing whatever was there.
+- `fn vx_hash_map_get_i32_i32(ptr : *mut i8, key : i32) -> *mut i8`<br>
+  A pointer to the value under a key, or null when the key is absent.
+  Vx cannot test a pointer against null (Vx#714), so `contains_key` is the way to ask
+  whether the key is there.
+- `fn vx_hash_map_contains_key_i32_i32(ptr : *mut i8, key : i32) -> Bool`<br>
+  Is the key present?
+- `fn vx_hash_map_len_i32_i32(ptr : *mut i8) -> i32`<br>
+  How many entries the map holds.
+- `fn vx_hash_map_drop_i32_i32(ptr : *mut i8) -> i32`<br>
+  Release the map.
+- `fn vx_hash_map_new_i32_f32() -> *mut i8`<br>
+  An empty map from `i32` to `f32`, owned by the Rust core.
+- `fn vx_hash_map_insert_i32_f32(ptr : *mut i8, key : i32, val : f32) -> i32`<br>
+  Insert a value under a key, replacing whatever was there.
+- `fn vx_hash_map_get_i32_f32(ptr : *mut i8, key : i32) -> *mut i8`<br>
+  A pointer to the value under a key, or null when the key is absent.
+  Vx cannot test a pointer against null (Vx#714), so `contains_key` is the way to ask
+  whether the key is there.
+- `fn vx_hash_map_contains_key_i32_f32(ptr : *mut i8, key : i32) -> Bool`<br>
+  Is the key present?
+- `fn vx_hash_map_len_i32_f32(ptr : *mut i8) -> i32`<br>
+  How many entries the map holds.
+- `fn vx_hash_map_drop_i32_f32(ptr : *mut i8) -> i32`<br>
+  Release the map.
 
 ## `std::hash_set`
 
@@ -911,11 +983,16 @@ Assertions for tests written in Vx.
 
 **Functions** *(bound directly to C)*
 
-- `fn vx_hash_set_new_i32() -> *mut i8`
-- `fn vx_hash_set_insert_i32(ptr : *mut i8, val : i32) -> i32`
-- `fn vx_hash_set_contains_i32(ptr : *mut i8, val : i32) -> Bool`
-- `fn vx_hash_set_len_i32(ptr : *mut i8) -> i32`
-- `fn vx_hash_set_drop_i32(ptr : *mut i8) -> i32`
+- `fn vx_hash_set_new_i32() -> *mut i8`<br>
+  An empty set of `i32`, owned by the Rust core.
+- `fn vx_hash_set_insert_i32(ptr : *mut i8, val : i32) -> i32`<br>
+  Add a value. Adding one already present changes nothing.
+- `fn vx_hash_set_contains_i32(ptr : *mut i8, val : i32) -> Bool`<br>
+  Is the value in the set?
+- `fn vx_hash_set_len_i32(ptr : *mut i8) -> i32`<br>
+  How many distinct values the set holds.
+- `fn vx_hash_set_drop_i32(ptr : *mut i8) -> i32`<br>
+  Release the set.
 
 ## `std::io`
 
@@ -923,15 +1000,25 @@ Standard input, output and error.
 
 **Functions**
 
-- `unsafe fn stdout_write(buffer : *const u8, len : i64) -> i64`
-- `unsafe fn stderr_write(buffer : *const u8, len : i64) -> i64`
-- `unsafe fn stdin_read(buffer : *mut u8, len : i64) -> i64`
+- `unsafe fn stdout_write(buffer : *const u8, len : i64) -> i64`<br>
+  Write `len` bytes to standard output and answer how many were taken.
+  A short write is possible and is not retried here. Unsafe because `buffer` must have `len`
+  bytes to read.
+- `unsafe fn stderr_write(buffer : *const u8, len : i64) -> i64`<br>
+  Write `len` bytes to standard error, with the same caveats as `stdout_write`.
+- `unsafe fn stdin_read(buffer : *mut u8, len : i64) -> i64`<br>
+  Read up to `len` bytes from standard input and answer how many arrived.
+  Zero means end of input or an error, which are not told apart. Unsafe because `buffer` must
+  have room for `len` bytes.
 
 **C bindings** *(the native functions this module is built on)*
 
-- `fn vx_stdout_write(buffer : *const u8, len : i64) -> i64`
-- `fn vx_stderr_write(buffer : *const u8, len : i64) -> i64`
-- `fn vx_stdin_read(buffer : *mut u8, len : i64) -> i64`
+- `fn vx_stdout_write(buffer : *const u8, len : i64) -> i64`<br>
+  The Rust core behind `stdout_write`.
+- `fn vx_stderr_write(buffer : *const u8, len : i64) -> i64`<br>
+  The Rust core behind `stderr_write`.
+- `fn vx_stdin_read(buffer : *mut u8, len : i64) -> i64`<br>
+  The Rust core behind `stdin_read`.
 
 ## `std::iter`
 
@@ -943,15 +1030,20 @@ The `Iterator` trait and its adaptors, which `for` loops and `.map` build on.
 
 **`trait Iterator<T, Item>` methods**
 
-- `fn next(self : &mut T) -> Option<Item>`
+- `fn next(self : &mut T) -> Option<Item>`<br>
+  The next item, or nothing once the sequence is finished.
+  This is the older two-parameter `Iterator`, kept for `std::vec`. `core::iter`'s is the
+  one to write against; this goes when `Vec` moves to it (Vx#721).
 
 **`Iterator<Map<I, F, Item, NewItem>, NewItem> for Map<I, F, Item, NewItem>` methods**
 
-- `fn next(self : &mut Map<I, F, Item, NewItem>) -> Option<NewItem>`
+- `fn next(self : &mut Map<I, F, Item, NewItem>) -> Option<NewItem>`<br>
+  The inner iterator's next item with `f` applied.
 
 **`Map<I, F, Item, NewItem>` methods**
 
-- `fn collect(self : &mut Map<I, F, Item, NewItem>) -> Vec<NewItem>`
+- `fn collect(self : &mut Map<I, F, Item, NewItem>) -> Vec<NewItem>`<br>
+  Drain the iterator into a fresh `Vec`, which the caller owns and must `free`.
 
 ## `std::libc`
 
@@ -959,9 +1051,13 @@ Direct bindings to the C library.
 
 **Functions** *(bound directly to C)*
 
-- `fn open(path : *const i8, flags : i32) -> i32`
-- `fn close(fd : i32) -> i32`
-- `fn lseek(fd : i32, offset : i64, whence : i32) -> i64`
+- `fn open(path : *const i8, flags : i32) -> i32`<br>
+  C's `open`: a file descriptor, or -1 on failure. `flags` is the platform's, not Vx's.
+- `fn close(fd : i32) -> i32`<br>
+  C's `close`: 0, or -1 on failure.
+- `fn lseek(fd : i32, offset : i64, whence : i32) -> i64`<br>
+  C's `lseek`: the new offset, or -1. `whence` is 0 from the start, 1 from the current
+  position, 2 from the end.
 
 ## `std::llama`
 
@@ -975,27 +1071,48 @@ Helpers used by the Llama 2 example.
 
 **`LlamaConfig` methods**
 
-- `fn load(filepath : *const i8) -> LlamaConfig`
+- `fn load(filepath : *const i8) -> LlamaConfig`<br>
+  Read a checkpoint's header.
+  Nothing validates the file: a path that is not a checkpoint gives a config of whatever
+  the first seven words happen to be, and the sizes computed from it are then wrong.
 
 **`TransformerWeightOffsets` methods**
 
-- `fn calculate(c : &LlamaConfig) -> TransformerWeightOffsets`
-- `fn load_all_weights(filepath : *const i8, c : &LlamaConfig) -> Tensor<f32, [?, ?]>`
+- `fn calculate(c : &LlamaConfig) -> TransformerWeightOffsets`<br>
+  Where each weight matrix begins, as a float offset into one flat buffer.
+  The order is llama2.c's, and the arithmetic assumes the checkpoint was written by it.
+- `fn load_all_weights(filepath : *const i8, c : &LlamaConfig) -> Tensor<f32, [?, ?]>`<br>
+  Every weight as one 1-by-N tensor, copied out of the mapped checkpoint.
+  The length is computed from `c`, so a config that does not match the file reads past its
+  end. A copy rather than a view, so the whole model is resident twice while this runs.
 
 **`Tokenizer` methods**
 
-- `fn load(filepath : *const i8, vocab_size : i32) -> Tokenizer`
-- `fn decode(self : &Tokenizer, prev_token : i32, token : i32) -> String`
+- `fn load(filepath : *const i8, vocab_size : i32) -> Tokenizer`<br>
+  Read a tokenizer file. `vocab_size` must match the checkpoint's.
+- `fn decode(self : &Tokenizer, prev_token : i32, token : i32) -> String`<br>
+  The text for one token, as an owned `String` the caller must `drop`.
+  `prev_token` decides whether a leading space is stripped, which is why decoding a token
+  in isolation can differ from decoding it in sequence.
 
 **C bindings** *(the native functions this module is built on)*
 
-- `fn vx_load_config(filepath : *const i8) -> *mut i32`
-- `fn vx_load_weights(filepath : *const i8) -> *mut f32`
-- `fn vx_build_tokenizer(filepath : *const i8, vocab_size : i32) -> *mut i8`
-- `fn vx_decode_token(tokenizer_ptr : *mut i8, prev_token : i32, token : i32) -> *const i8`
-- `fn vx_encode_prompt(tokenizer_ptr : *mut i8, text_ptr : *const i8) -> *mut i32`
-- `fn vx_read_prompt_file(filepath : *const i8) -> *const i8`
-- `fn vx_get_llama_config() -> *mut i32`
+- `fn vx_load_config(filepath : *const i8) -> *mut i32`<br>
+  Read the seven header fields of a llama2.c checkpoint into an array of `i32`.
+- `fn vx_load_weights(filepath : *const i8) -> *mut f32`<br>
+  Map a checkpoint's weights and hand back a pointer to the first float.
+- `fn vx_build_tokenizer(filepath : *const i8, vocab_size : i32) -> *mut i8`<br>
+  Read a tokenizer file, answering an opaque handle the Rust core owns.
+- `fn vx_decode_token(tokenizer_ptr : *mut i8, prev_token : i32, token : i32) -> *const i8`<br>
+  The text for one token, as a NUL-terminated string.
+  `prev_token` is needed because llama2's tokenizer strips a leading space after the
+  beginning-of-sequence token and not otherwise.
+- `fn vx_encode_prompt(tokenizer_ptr : *mut i8, text_ptr : *const i8) -> *mut i32`<br>
+  Encode a prompt, answering an array of token ids with its length in the first slot.
+- `fn vx_read_prompt_file(filepath : *const i8) -> *const i8`<br>
+  Read a whole file as a NUL-terminated string.
+- `fn vx_get_llama_config() -> *mut i32`<br>
+  The configuration of the checkpoint most recently loaded.
 
 ## `std::mmap`
 
@@ -1003,8 +1120,12 @@ Memory-mapped files.
 
 **Functions** *(bound directly to C)*
 
-- `fn mmap(addr : *mut i8, length : i64, prot : i32, flags : i32, fd : i32, offset : i64) -> *mut i8`
-- `fn munmap(addr : *mut i8, length : i64) -> i32`
+- `fn mmap(addr : *mut i8, length : i64, prot : i32, flags : i32, fd : i32, offset : i64) -> *mut i8`<br>
+  C's `mmap`: map `length` bytes of `fd` into memory.
+  Answers `MAP_FAILED` rather than null on failure, which is -1 cast to a pointer and
+  which Vx cannot test for (Vx#714). `prot` and `flags` are the platform's.
+- `fn munmap(addr : *mut i8, length : i64) -> i32`<br>
+  C's `munmap`: unmap a region previously mapped. 0, or -1 on failure.
 
 ## `std::net`
 
@@ -1012,46 +1133,89 @@ TCP and UDP sockets.
 
 **Types**
 
-- `struct TcpStream`
-- `struct UdpSocket`
-- `struct TcpListener`
+- `struct TcpStream`<br>
+  A connected TCP socket, held by the Rust core behind an opaque pointer.
+  Closed by calling `tcp_stream_drop`, since the language has no `Drop` (Vx#495).
+- `struct UdpSocket`<br>
+  A bound UDP socket, held by the Rust core behind an opaque pointer.
+- `struct TcpListener`<br>
+  A listening TCP socket, held by the Rust core behind an opaque pointer.
 
 **`TcpStream` methods**
 
-- `unsafe fn connect(addr : *const i8) -> TcpStream`
-- `unsafe fn read(self : *mut TcpStream, buffer : *mut u8, len : i64) -> i64`
-- `unsafe fn write(self : *mut TcpStream, buffer : *const u8, len : i64) -> i64`
+- `unsafe fn connect(addr : *const i8) -> TcpStream`<br>
+  Connect to `addr`, written as `host:port`. ///
+  **A failure cannot be detected.** The value handed back holds a null pointer, and Vx
+  cannot compare a raw pointer against null (Vx#714), so a refused connection looks like a
+  working one until every later call answers 0.
+  Unsafe because nothing checks that `addr` points at a NUL-terminated string.
+- `unsafe fn read(self : *mut TcpStream, buffer : *mut u8, len : i64) -> i64`<br>
+  Read up to `len` bytes into `buffer` and answer how many arrived.
+  Zero means the peer closed, a null socket, or a read error. A short read is normal: TCP
+  is a stream and a message may arrive in pieces, so a caller wanting a whole one loops.
+  Unsafe because `buffer` must have room for `len` bytes.
+- `unsafe fn write(self : *mut TcpStream, buffer : *const u8, len : i64) -> i64`<br>
+  Write up to `len` bytes from `buffer` and answer how many were taken.
+  A short write is normal and the remainder is not retried here.
 
 **Functions**
 
-- `unsafe fn tcp_stream_drop(stream : *mut TcpStream) -> void`
-- `unsafe fn udp_socket_drop(socket : *mut UdpSocket) -> void`
-- `unsafe fn tcp_listener_drop(listener : *mut TcpListener) -> void`
+- `unsafe fn tcp_stream_drop(stream : *mut TcpStream) -> void`<br>
+  Close the connection and release it. Using it afterwards reads freed memory.
+- `unsafe fn udp_socket_drop(socket : *mut UdpSocket) -> void`<br>
+  Close the socket and release it.
+- `unsafe fn tcp_listener_drop(listener : *mut TcpListener) -> void`<br>
+  Stop listening and release the socket.
 
 **`UdpSocket` methods**
 
-- `unsafe fn bind(addr : *const i8) -> UdpSocket`
-- `unsafe fn recv(self : *mut UdpSocket, buffer : *mut u8, len : i64) -> i64`
-- `unsafe fn send_to(self : *mut UdpSocket, buffer : *const u8, len : i64, addr : *const i8) -> i64`
+- `unsafe fn bind(addr : *const i8) -> UdpSocket`<br>
+  Bind to `addr`, written as `host:port`. ///
+  **A failure cannot be detected.** The value handed back holds a null pointer, and Vx
+  cannot compare a raw pointer against null (Vx#714), so a refused connection looks like a
+  working one until every later call answers 0.
+- `unsafe fn recv(self : *mut UdpSocket, buffer : *mut u8, len : i64) -> i64`<br>
+  Receive one datagram into `buffer` and answer its length.
+  A datagram longer than `len` is truncated and the rest is lost, which is UDP's behaviour
+  and not an error here. The sender's address is not reported.
+- `unsafe fn send_to(self : *mut UdpSocket, buffer : *const u8, len : i64, addr : *const i8) -> i64`<br>
+  Send one datagram of `len` bytes to `addr`, answering how many were sent.
+  Nothing guarantees it arrives, or arrives once, or arrives in order.
 
 **`TcpListener` methods**
 
-- `unsafe fn bind(addr : *const i8) -> TcpListener`
-- `fn accept(self : *mut TcpListener) -> TcpStream`
+- `unsafe fn bind(addr : *const i8) -> TcpListener`<br>
+  Listen on `addr`, written as `host:port`.
+  **A failure cannot be detected**, for the reason `TcpStream::connect` gives (Vx#714).
+- `fn accept(self : *mut TcpListener) -> TcpStream`<br>
+  Wait for a connection and answer with it.
+  Blocks until one arrives. The stream handed back holds a null pointer when the accept
+  failed, which cannot be told from a working one either.
 
 **C bindings** *(the native functions this module is built on)*
 
-- `fn vx_tcp_stream_connect(c_addr : *const i8) -> *mut i8`
-- `fn vx_tcp_stream_read(ptr : *mut i8, buffer : *mut u8, len : i64) -> i64`
-- `fn vx_tcp_stream_write(ptr : *mut i8, buffer : *const u8, len : i64) -> i64`
-- `fn vx_tcp_stream_drop(ptr : *mut i8) -> i32`
-- `fn vx_udp_socket_bind(c_addr : *const i8) -> *mut i8`
-- `fn vx_udp_socket_recv(ptr : *mut i8, buffer : *mut u8, len : i64) -> i64`
-- `fn vx_udp_socket_send_to(ptr : *mut i8, buffer : *const u8, len : i64, c_addr : *const i8) -> i64`
-- `fn vx_udp_socket_drop(ptr : *mut i8) -> i32`
-- `fn vx_tcp_listener_bind(c_addr : *const i8) -> *mut i8`
-- `fn vx_tcp_listener_accept(ptr : *mut i8) -> *mut i8`
-- `fn vx_tcp_listener_drop(ptr : *mut i8) -> i32`
+- `fn vx_tcp_stream_connect(c_addr : *const i8) -> *mut i8`<br>
+  The Rust core behind `TcpStream::connect`. Null when the connection fails.
+- `fn vx_tcp_stream_read(ptr : *mut i8, buffer : *mut u8, len : i64) -> i64`<br>
+  The Rust core behind `TcpStream::read`.
+- `fn vx_tcp_stream_write(ptr : *mut i8, buffer : *const u8, len : i64) -> i64`<br>
+  The Rust core behind `TcpStream::write`.
+- `fn vx_tcp_stream_drop(ptr : *mut i8) -> i32`<br>
+  The Rust core behind `tcp_stream_drop`.
+- `fn vx_udp_socket_bind(c_addr : *const i8) -> *mut i8`<br>
+  The Rust core behind `UdpSocket::bind`. Null when the bind fails.
+- `fn vx_udp_socket_recv(ptr : *mut i8, buffer : *mut u8, len : i64) -> i64`<br>
+  The Rust core behind `UdpSocket::recv`.
+- `fn vx_udp_socket_send_to(ptr : *mut i8, buffer : *const u8, len : i64, c_addr : *const i8) -> i64`<br>
+  The Rust core behind `UdpSocket::send_to`.
+- `fn vx_udp_socket_drop(ptr : *mut i8) -> i32`<br>
+  The Rust core behind `udp_socket_drop`.
+- `fn vx_tcp_listener_bind(c_addr : *const i8) -> *mut i8`<br>
+  The Rust core behind `TcpListener::bind`. Null when the bind fails.
+- `fn vx_tcp_listener_accept(ptr : *mut i8) -> *mut i8`<br>
+  The Rust core behind `TcpListener::accept`. Blocks until a connection arrives.
+- `fn vx_tcp_listener_drop(ptr : *mut i8) -> i32`<br>
+  The Rust core behind `tcp_listener_drop`.
 
 ## `std::rand`
 
@@ -1070,12 +1234,17 @@ Seeded pseudo-random numbers, one stream per `Rng`.
 
 **Functions**
 
-- `fn sqrt_f64(x : f64) -> f64`
-- `fn ln_f64(x : f64) -> f64`
+- `fn sqrt_f64(x : f64) -> f64`<br>
+  The square root, over the `math` dialect so this module needs no libm.
+  `core::num` has the same method; this is kept because `normal` runs before an import of it
+  would settle, and a local one keeps the dependency to `core::num` alone.
+- `fn ln_f64(x : f64) -> f64`<br>
+  The natural logarithm, over the `math` dialect.
 
 **`SplitMix64` methods**
 
-- `fn seeded(seed : u64) -> SplitMix64`
+- `fn seeded(seed : u64) -> SplitMix64`<br>
+  A generator started at `seed`. Every seed is valid, including zero.
 - `fn next_u64(self : &mut SplitMix64) -> u64`<br>
   Advance the counter by the golden-ratio constant, then scramble the value taken. The
   three constants are 0x9E3779B97F4A7C15, 0xBF58476D1CE4E5B9 and 0x94D049BB133111EB,
@@ -1093,14 +1262,19 @@ Seeded pseudo-random numbers, one stream per `Rng`.
 - `fn next_u32(self : &mut Rng) -> u32`<br>
   The narrower widths take the *high* bits of a draw. The low bits of a xoshiro draw are
   the weakest ones, and a `% 256` would hand back exactly those.
-- `fn next_u16(self : &mut Rng) -> u16`
-- `fn next_u8(self : &mut Rng) -> u8`
+- `fn next_u16(self : &mut Rng) -> u16`<br>
+  The next 16 bits.
+- `fn next_u8(self : &mut Rng) -> u8`<br>
+  The next 8 bits.
 - `fn next_i64(self : &mut Rng) -> i64`<br>
   Uniform over the signed range, negatives included: the bits are reinterpreted, not
   clamped, so half the draws are below zero.
-- `fn next_i32(self : &mut Rng) -> i32`
-- `fn next_i16(self : &mut Rng) -> i16`
-- `fn next_i8(self : &mut Rng) -> i8`
+- `fn next_i32(self : &mut Rng) -> i32`<br>
+  The next 32 bits read as signed, so negative half the time.
+- `fn next_i16(self : &mut Rng) -> i16`<br>
+  The next 16 bits read as signed.
+- `fn next_i8(self : &mut Rng) -> i8`<br>
+  The next 8 bits read as signed.
 - `fn next_f64(self : &mut Rng) -> f64`<br>
   Uniform in \[0, 1), built from the top 53 bits because that is f64's mantissa. Taking
   more would round, and rounding up at the top of the range returns exactly 1.0 -- which
@@ -1111,7 +1285,8 @@ Seeded pseudo-random numbers, one stream per `Rng`.
   Uniform in \[0, 1) over an evenly spaced grid: 2048 points at f16 and 256 at bf16, each
   of them exact at that width. The draw is built from that many bits rather than narrowed
   from an f32, so every point is equally likely.
-- `fn next_bf16(self : &mut Rng) -> bf16`
+- `fn next_bf16(self : &mut Rng) -> bf16`<br>
+  A `bf16` uniform in \[0, 1). Eight bits of mantissa, so the draws are coarse.
 - `fn next_bool(self : &mut Rng) -> bool`<br>
   One bit, from the top of a draw.
 - `fn chance(self : &mut Rng, p : f64) -> bool`<br>
@@ -1130,7 +1305,8 @@ Seeded pseudo-random numbers, one stream per `Rng`.
 - `fn range_f64(self : &mut Rng, lo : f64, hi : f64) -> f64`<br>
   Uniform in \[lo, hi). With lo > hi the range runs backwards and the result is in
   (hi, lo\], which is the same arithmetic and rarely what a caller meant.
-- `fn range_f32(self : &mut Rng, lo : f32, hi : f32) -> f32`
+- `fn range_f32(self : &mut Rng, lo : f32, hi : f32) -> f32`<br>
+  Uniform in \[lo, hi), with the caveat `range_f64` gives for a backwards range.
 - `fn normal(self : &mut Rng) -> f64`<br>
   One draw from the standard normal distribution: mean 0, standard deviation 1.
   Marsaglia's polar method. A point is drawn from the square until it lands inside the
@@ -1146,9 +1322,15 @@ Seeded pseudo-random numbers, one stream per `Rng`.
   Fill a buffer in place. One call per buffer rather than one per element, which is what
   makes filling a real tensor practical -- a 256x8192 one is two million values.
   `count` elements are written, so the buffer must hold that many.
-- `fn fill_range_f32(self : &mut Rng, out : *mut f32, count : i32, lo : f32, hi : f32) -> i32`
-- `fn fill_normal_f32(self : &mut Rng, out : *mut f32, count : i32, mean : f32, stddev : f32) -> i32`
-- `fn fill_f16(self : &mut Rng, out : *mut f16, count : i32) -> i32`
+- `fn fill_range_f32(self : &mut Rng, out : *mut f32, count : i32, lo : f32, hi : f32) -> i32`<br>
+  Fill `count` elements with draws uniform in \[lo, hi).
+  `out` must have room for `count` of them; nothing here checks.
+- `fn fill_normal_f32(self : &mut Rng, out : *mut f32, count : i32, mean : f32, stddev : f32) -> i32`<br>
+  Fill `count` elements with normal draws of the given mean and standard deviation.
+  `out` must have room for `count` of them. A negative `stddev` mirrors the distribution
+  rather than being refused.
+- `fn fill_f16(self : &mut Rng, out : *mut f16, count : i32) -> i32`<br>
+  Fill `count` elements with `f16` draws uniform in \[0, 1).
 - `fn fill_normal_f16(self : &mut Rng, out : *mut f16, count : i32, mean : f64, stddev : f64) -> i32`<br>
   The normal fill at half precision. The draw and the scaling happen in f64 and narrow
   once at the store, so a tail value is rounded rather than computed twice.
@@ -1159,19 +1341,39 @@ SIMD vector types and operations.
 
 **Functions**
 
-- `unsafe fn simd_add_f32x4(a : *const f32, b : *const f32, out : *mut f32) -> i32`
-- `unsafe fn simd_sub_f32x4(a : *const f32, b : *const f32, out : *mut f32) -> i32`
-- `unsafe fn simd_mul_f32x4(a : *const f32, b : *const f32, out : *mut f32) -> i32`
-- `unsafe fn simd_div_f32x4(a : *const f32, b : *const f32, out : *mut f32) -> i32`
-- `unsafe fn simd_fma_f32x4(a : *const f32, b : *const f32, c : *const f32, out : *mut f32) -> i32`
+- `unsafe fn simd_add_f32x4(a : *const f32, b : *const f32, out : *mut f32) -> i32`<br>
+  The elementwise sum of two four-lane `f32` vectors, written to `out`.
+  All three pointers must address four `f32`s; nothing here checks. `out` may alias `a` or
+  `b`.
+- `unsafe fn simd_sub_f32x4(a : *const f32, b : *const f32, out : *mut f32) -> i32`<br>
+  The elementwise difference of two four-lane `f32` vectors, written to `out`.
+  All three pointers must address four `f32`s; nothing here checks. `out` may alias `a` or
+  `b`.
+- `unsafe fn simd_mul_f32x4(a : *const f32, b : *const f32, out : *mut f32) -> i32`<br>
+  The elementwise product of two four-lane `f32` vectors, written to `out`.
+  All three pointers must address four `f32`s; nothing here checks. `out` may alias `a` or
+  `b`.
+- `unsafe fn simd_div_f32x4(a : *const f32, b : *const f32, out : *mut f32) -> i32`<br>
+  The elementwise quotient of two four-lane `f32` vectors, written to `out`.
+  All three pointers must address four `f32`s; nothing here checks. `out` may alias `a` or
+  `b`.
+- `unsafe fn simd_fma_f32x4(a : *const f32, b : *const f32, c : *const f32, out : *mut f32) -> i32`<br>
+  `a * b + c` elementwise over four lanes, written to `out`.
+  Fused, so the product is not rounded before the addition: the answer can differ from a
+  separate multiply and add in the last bit, and is the more accurate of the two.
 
 **C bindings** *(the native functions this module is built on)*
 
-- `fn vx_simd_add_f32x4(a : *const f32, b : *const f32, out : *mut f32) -> i32`
-- `fn vx_simd_sub_f32x4(a : *const f32, b : *const f32, out : *mut f32) -> i32`
-- `fn vx_simd_mul_f32x4(a : *const f32, b : *const f32, out : *mut f32) -> i32`
-- `fn vx_simd_div_f32x4(a : *const f32, b : *const f32, out : *mut f32) -> i32`
-- `fn vx_simd_fma_f32x4(a : *const f32, b : *const f32, c : *const f32, out : *mut f32) -> i32`
+- `fn vx_simd_add_f32x4(a : *const f32, b : *const f32, out : *mut f32) -> i32`<br>
+  The Rust core behind `simd_add_f32x4`.
+- `fn vx_simd_sub_f32x4(a : *const f32, b : *const f32, out : *mut f32) -> i32`<br>
+  The Rust core behind `simd_sub_f32x4`.
+- `fn vx_simd_mul_f32x4(a : *const f32, b : *const f32, out : *mut f32) -> i32`<br>
+  The Rust core behind `simd_mul_f32x4`.
+- `fn vx_simd_div_f32x4(a : *const f32, b : *const f32, out : *mut f32) -> i32`<br>
+  The Rust core behind `simd_div_f32x4`.
+- `fn vx_simd_fma_f32x4(a : *const f32, b : *const f32, c : *const f32, out : *mut f32) -> i32`<br>
+  The Rust core behind `simd_fma_f32x4`.
 
 ## `std::string`
 
@@ -1179,37 +1381,72 @@ SIMD vector types and operations.
 
 **Types**
 
-- `struct String`
+- `struct String`<br>
+  A growable, owned string, held by the Rust core behind an opaque pointer.
+  Released by calling `drop`, since the language has no `Drop` (Vx#495).
 
 **`String` methods**
 
-- `fn new() -> String`
-- `unsafe fn from_c_str(c_str : *const i8) -> String`
-- `unsafe fn push_c_str(self : *mut String, c_str : *const i8) -> i32`
-- `fn len(self : *mut String) -> i32`
-- `fn as_c_str(self : *mut String) -> *const i8`
-- `fn drop(self : *mut String) -> i32`
+- `fn new() -> String`<br>
+  An empty string.
+- `unsafe fn from_c_str(c_str : *const i8) -> String`<br>
+  A copy of a NUL-terminated C string.
+  Unsafe because nothing here checks that `c_str` is a valid pointer to a NUL-terminated
+  run of bytes. The copy is owned by the new `String`; the argument is not taken.
+- `unsafe fn push_c_str(self : *mut String, c_str : *const i8) -> i32`<br>
+  Append a NUL-terminated C string, with the same requirement `from_c_str` has.
+- `fn len(self : *mut String) -> i32`<br>
+  The length in bytes, not in characters: this counts UTF-8 code units.
+- `fn as_c_str(self : *mut String) -> *const i8`<br>
+  A NUL-terminated copy of the contents.
+  **This allocates and leaks.** The Rust core builds a fresh `CString` and hands out its
+  raw pointer, so every call costs a copy that is never released: the matching
+  `vx_string_free_c_str` is declared in the extern block and is not wrapped as a method
+  here. Calling this in a loop grows the process without bound.
+- `fn drop(self : *mut String) -> i32`<br>
+  Release the string. Reading it afterwards reads freed memory.
 
 **`i32` methods**
 
-- `fn to_string(self : i32) -> String`
+- `fn to_string(self : i32) -> String`<br>
+  This number in decimal, as an owned `String` the caller must `drop`.
 
 **Functions**
 
-- `unsafe fn string_length(s : *const i8) -> i32`
-- `unsafe fn string_compare(s1 : *const i8, s2 : *const i8) -> i32`
-- `unsafe fn parse_int(s : *const i8) -> i32`
+- `unsafe fn string_length(s : *const i8) -> i32`<br>
+  The number of bytes before the NUL, found by scanning.
+  Unsafe because it walks until it finds one: a pointer to bytes with no NUL runs off the
+  end. `core::str` replaces this once a string literal carries its length (Vx#532).
+- `unsafe fn string_compare(s1 : *const i8, s2 : *const i8) -> i32`<br>
+  C's `strcmp`: negative when `s1` sorts first, positive when `s2` does, zero when equal.
+  The magnitude is the difference between the first bytes that differ, which callers should
+  not read anything into beyond its sign. Unsafe for the reason `string_length` is.
+- `unsafe fn parse_int(s : *const i8) -> i32`<br>
+  The leading run of decimal digits as an `i32`.
+  Stops at the first byte that is not a digit and answers what it has, so `"12abc"` is 12 and
+  `"abc"` is 0 -- there is no way to tell that second case from a genuine zero. A leading `-`
+  is not a sign, it is a stop. Nothing checks for overflow: a run longer than `i32` holds
+  wraps. `core::str`'s `parse` replaces it (Vx#532).
 
 **C bindings** *(the native functions this module is built on)*
 
-- `fn vx_string_new() -> *mut i8`
-- `fn vx_string_from_c_str(ptr : *const i8) -> *mut i8`
-- `fn vx_string_push_c_str(ptr : *mut i8, c_str : *const i8) -> i32`
-- `fn vx_string_len(ptr : *mut i8) -> i32`
-- `fn vx_string_as_c_str(ptr : *mut i8) -> *const i8`
-- `fn vx_string_free_c_str(ptr : *const i8) -> i32`
-- `fn vx_string_drop(ptr : *mut i8) -> i32`
-- `fn vx_i32_to_string(val : i32) -> *mut i8`
+- `fn vx_string_new() -> *mut i8`<br>
+  The Rust core behind `String::new`.
+- `fn vx_string_from_c_str(ptr : *const i8) -> *mut i8`<br>
+  The Rust core behind `String::from_c_str`.
+- `fn vx_string_push_c_str(ptr : *mut i8, c_str : *const i8) -> i32`<br>
+  The Rust core behind `String::push_c_str`.
+- `fn vx_string_len(ptr : *mut i8) -> i32`<br>
+  The Rust core behind `String::len`.
+- `fn vx_string_as_c_str(ptr : *mut i8) -> *const i8`<br>
+  Allocate a NUL-terminated copy and hand out its raw pointer. The caller owns it and
+  releases it with `vx_string_free_c_str`; `String::as_c_str` does not, and leaks.
+- `fn vx_string_free_c_str(ptr : *const i8) -> i32`<br>
+  Release what `vx_string_as_c_str` returned. Nothing in Vx calls this yet.
+- `fn vx_string_drop(ptr : *mut i8) -> i32`<br>
+  The Rust core behind `String::drop`.
+- `fn vx_i32_to_string(val : i32) -> *mut i8`<br>
+  The Rust core behind `i32::to_string`.
 
 ## `std::tensor`
 
@@ -1217,19 +1454,41 @@ Operations on `Tensor`, including shape queries and elementwise maths.
 
 **`Tensor<T, [?, ?]>` methods**
 
-- `fn from_ptr_1d(ptr : *mut T, d1 : i32) -> Tensor<T, [?, ?]>`
-- `fn from_ptr_2d(ptr : *mut T, d1 : i32, d2 : i32) -> Tensor<T, [?, ?]>`
-- `fn slice_2d(self : &Tensor<T, [?, ?]>, row : i32, d1 : i32, d2 : i32) -> Tensor<T, [?, ?]>`
-- `fn slice_2d_from_1d(self : &Tensor<T, [?, ?]>, start : i32, d1 : i32, d2 : i32) -> Tensor<T, [?, ?]>`
-- `fn slice_1d(self : &Tensor<T, [?, ?]>, start : i32, d1 : i32) -> Tensor<T, [?, ?]>`
-- `fn fill(self : &mut Tensor<T, [?, ?]>, val : T) -> void`
-- `fn copy(self : &mut Tensor<T, [?, ?]>, src : &Tensor<T, [?, ?]>) -> void`
-- `fn assign(self : &mut Tensor<T, [?, ?]>, val : T) -> void`
-- `fn compare(self : &Tensor<T, [?, ?]>, other : &Tensor<T, [?, ?]>) -> bool`
+- `fn from_ptr_1d(ptr : *mut T, d1 : i32) -> Tensor<T, [?, ?]>`<br>
+  A 1-by-`d1` tensor holding a copy of `d1` elements read from `ptr`.
+  The elements are copied, so the tensor does not alias the buffer and outlives it. `ptr`
+  must address `d1` elements; nothing here checks.
+- `fn from_ptr_2d(ptr : *mut T, d1 : i32, d2 : i32) -> Tensor<T, [?, ?]>`<br>
+  A `d1`-by-`d2` tensor holding a copy of `d1 * d2` elements read from `ptr` in row-major
+  order. Copied, as `from_ptr_1d` is.
+- `fn slice_2d(self : &Tensor<T, [?, ?]>, row : i32, d1 : i32, d2 : i32) -> Tensor<T, [?, ?]>`<br>
+  A `d1`-by-`d2` tensor read from one row of this one, taken row-major from its start.
+  **A copy, not a view.** Every `slice_` method here allocates and copies, so writing to
+  the result does not touch the original and the cost is the elements moved, not constant.
+- `fn slice_2d_from_1d(self : &Tensor<T, [?, ?]>, start : i32, d1 : i32, d2 : i32) -> Tensor<T, [?, ?]>`<br>
+  A `d1`-by-`d2` tensor read from row 0 beginning at `start`, reshaped row-major. A copy.
+- `fn slice_1d(self : &Tensor<T, [?, ?]>, start : i32, d1 : i32) -> Tensor<T, [?, ?]>`<br>
+  A 1-by-`d1` tensor read from row 0 beginning at `start`. A copy.
+- `fn fill(self : &mut Tensor<T, [?, ?]>, val : T) -> void`<br>
+  Set every element to `val`.
+  Lowered through `linalg`, with a separate path chosen at compile time for AVX-512.
+- `fn copy(self : &mut Tensor<T, [?, ?]>, src : &Tensor<T, [?, ?]>) -> void`<br>
+  Overwrite this tensor's elements with `src`'s.
+  Both must have the same shape; nothing here checks, and a mismatch reads or writes past
+  an end.
+- `fn assign(self : &mut Tensor<T, [?, ?]>, val : T) -> void`<br>
+  Set every element to `val`, as `fill` does. The two differ in the `linalg` form they
+  emit, not in what they mean.
+- `fn compare(self : &Tensor<T, [?, ?]>, other : &Tensor<T, [?, ?]>) -> bool`<br>
+  Are the two tensors equal element by element?
+  Exact equality, reduced over every element, so two tensors a rounding step apart answer
+  false. A NaN anywhere makes the answer false, including against itself.
 
 **`Tensor<T, [N, M]>` methods**
 
-- `fn fill_static(self : &mut Tensor<T, [ N, M ]>, val : T) -> void`
+- `fn fill_static(self : &mut Tensor<T, [ N, M ]>, val : T) -> void`<br>
+  Set every element of a statically shaped tensor to `val`.
+  The shape is known at compile time here, so the emitted loop has constant bounds.
 
 ## `std::time`
 
@@ -1237,17 +1496,30 @@ Clocks and durations.
 
 **Functions**
 
-- `fn now() -> f32`
-- `fn sleep(seconds : f32) -> i32`
-- `fn unix_timestamp() -> f64`
-- `unsafe fn bench_report(name : *const i8, unit : *const i8, value : f32) -> i32`
+- `fn now() -> f32`<br>
+  Seconds from some fixed point, for measuring how long something took.
+  Only differences between two calls mean anything: the origin is unspecified. An `f32`
+  holds about seven digits, so a long-running process loses resolution as the value grows
+  -- `unix_timestamp` is the `f64` one.
+- `fn sleep(seconds : f32) -> i32`<br>
+  Pause this thread for at least `seconds`. It may be longer; it is never shorter.
+- `fn unix_timestamp() -> f64`<br>
+  Seconds since the Unix epoch, as an `f64`. Wall-clock time, so it can move backwards
+  when the system clock is adjusted; `now` is the one to measure a duration with.
+- `unsafe fn bench_report(name : *const i8, unit : *const i8, value : f32) -> i32`<br>
+  Report a benchmark measurement in the form the harness collects.
+  Unsafe because `name` and `unit` must point at NUL-terminated strings.
 
 **C bindings** *(the native functions this module is built on)*
 
-- `fn vx_get_time() -> f32`
-- `fn vx_sleep(seconds : f32) -> i32`
-- `fn vx_unix_timestamp() -> f64`
-- `fn vx_bench_report(name : *const i8, unit : *const i8, value : f32) -> i32`
+- `fn vx_get_time() -> f32`<br>
+  The Rust core behind `now`.
+- `fn vx_sleep(seconds : f32) -> i32`<br>
+  The Rust core behind `sleep`.
+- `fn vx_unix_timestamp() -> f64`<br>
+  The Rust core behind `unix_timestamp`.
+- `fn vx_bench_report(name : *const i8, unit : *const i8, value : f32) -> i32`<br>
+  The Rust core behind `bench_report`.
 
 ## `std::vec`
 
@@ -1255,46 +1527,87 @@ Clocks and durations.
 
 **Types**
 
-- `struct Vec<T>`
-- `struct VecIter<T>`
-- `struct VecMap<T, NewItem>`
+- `struct Vec<T>`<br>
+  A growable array of `T`, held in a buffer the Rust core owns.
+  Vx keeps a typed view into that buffer and does its own element loads and stores; growth,
+  alignment and the `capacity * elem_size` overflow check belong to Rust. There is no `Drop`
+  in the language, so the buffer is released by calling `free` and not before.
+- `struct VecIter<T>`<br>
+  An iterator over a `Vec<T>`'s elements, holding a pointer to the vector it walks.
+  Growing or freeing that vector while this exists leaves the iterator pointing at the old
+  buffer.
+- `struct VecMap<T, NewItem>`<br>
+  The iterator `VecIter::map` builds: the inner walk plus the function applied to each item.
 
 **`Vec<T>` methods**
 
-- `fn new() -> Vec<T>`
-- `fn with_capacity(capacity : i32) -> Vec<T>`
-- `fn free(self : &mut Vec<T>) -> i32`
-- `fn as_mut_ptr(self : &Vec<T>) -> *mut T`
-- `fn as_mut_slice(self : &mut Vec<T>) -> &mut T`
-- `fn as_slice(self : &Vec<T>) -> &T`
-- `fn push(self : &mut Vec<T>, val : T) -> i32`
-- `fn get(self : &Vec<T>, index : i32) -> T`
-- `fn set(self : &mut Vec<T>, index : i32, val : T) -> i32`
-- `fn len(self : &Vec<T>) -> i32`
-- `fn iter(self : &Vec<T>) -> VecIter<T>`
+- `fn new() -> Vec<T>`<br>
+  An empty vector with room for two elements.
+- `fn with_capacity(capacity : i32) -> Vec<T>`<br>
+  An empty vector with room for `capacity` elements before it has to grow.
+- `fn free(self : &mut Vec<T>) -> i32`<br>
+  Release the buffer and leave the vector empty with no capacity.
+  Called by hand, because the language has no `Drop` yet (Vx#495). Reading an element after
+  this is reading freed memory; `len` answers 0, so a loop over it is safe.
+- `fn as_mut_ptr(self : &Vec<T>) -> *mut T`<br>
+  A raw pointer to the first element. Invalidated by anything that grows the vector.
+- `fn as_mut_slice(self : &mut Vec<T>) -> &mut T`<br>
+  A mutable reference to the first element.
+  Named for what it will return once slices exist (Vx#534); today it hands back the first
+  element rather than a `(pointer, length)` pair, so the length has to be carried
+  separately by whoever reads it.
+- `fn as_slice(self : &Vec<T>) -> &T`<br>
+  A reference to the first element, with the caveat `as_mut_slice` describes.
+- `fn push(self : &mut Vec<T>, val : T) -> i32`<br>
+  Append a value, growing the buffer when it is full.
+  Capacity doubles, from four upwards, so appending n values reallocates about log2(n)
+  times. Any raw pointer or reference taken from this vector is invalidated by a growth.
+- `fn get(self : &Vec<T>, index : i32) -> T`<br>
+  The element at `index`, by value.
+  # Panics
+  When `index` is negative or not below `len`. The check is in the Rust core, which prints
+  the index and the length and aborts the process -- it does not unwind.
+- `fn set(self : &mut Vec<T>, index : i32, val : T) -> i32`<br>
+  Overwrite the element at `index`.
+  # Panics
+  As `get` does, and for the same reason. Setting past the end does not extend the vector;
+  `push` is what grows it.
+- `fn len(self : &Vec<T>) -> i32`<br>
+  How many elements are in the vector, which is not its capacity.
+- `fn iter(self : &Vec<T>) -> VecIter<T>`<br>
+  An iterator over the elements, borrowing the vector rather than consuming it.
 
 **`Iterator<VecIter<T>, T> for VecIter<T>` methods**
 
-- `fn next(self : &mut VecIter<T>) -> Option<T>`
+- `fn next(self : &mut VecIter<T>) -> Option<T>`<br>
+  The next element, or nothing once the end is reached.
 
 **`VecIter<T>` methods**
 
-- `fn map<NewItem>(self : VecIter<T>, f : Closure1<T, NewItem>) -> VecMap<T, NewItem>`
+- `fn map<NewItem>(self : VecIter<T>, f : Closure1<T, NewItem>) -> VecMap<T, NewItem>`<br>
+  An iterator over these elements with `f` applied to each.
 
 **`Iterator<VecMap<T, NewItem>, NewItem> for VecMap<T, NewItem>` methods**
 
-- `fn next(self : &mut VecMap<T, NewItem>) -> Option<NewItem>`
+- `fn next(self : &mut VecMap<T, NewItem>) -> Option<NewItem>`<br>
+  The next element of the inner iterator with `f` applied.
 
 **`VecMap<T, NewItem>` methods**
 
-- `fn collect(self : &mut VecMap<T, NewItem>) -> Vec<NewItem>`
+- `fn collect(self : &mut VecMap<T, NewItem>) -> Vec<NewItem>`<br>
+  Drain the iterator into a fresh `Vec`, which the caller owns and must `free`.
 
 **C bindings** *(the native functions this module is built on)*
 
-- `fn vx_vec_alloc(elem_size : i64, cap : i64) -> *mut i8`
-- `fn vx_vec_grow(ptr : *mut i8, old_cap : i64, new_cap : i64, elem_size : i64) -> *mut i8`
-- `fn vx_vec_free(ptr : *mut i8, cap : i64, elem_size : i64) -> i32`
-- `fn vx_vec_bounds_check(index : i64, len : i64) -> i32`
+- `fn vx_vec_alloc(elem_size : i64, cap : i64) -> *mut i8`<br>
+  Allocate a buffer for `cap` elements of `elem_size` bytes. Rust owns the alignment
+  and the overflow check on the product.
+- `fn vx_vec_grow(ptr : *mut i8, old_cap : i64, new_cap : i64, elem_size : i64) -> *mut i8`<br>
+  Reallocate to `new_cap` elements, moving the contents. The old pointer is invalid after.
+- `fn vx_vec_free(ptr : *mut i8, cap : i64, elem_size : i64) -> i32`<br>
+  Release the buffer.
+- `fn vx_vec_bounds_check(index : i64, len : i64) -> i32`<br>
+  Abort the process when `index` is outside `0..len`, printing both. Answers 0 otherwise.
 
 ______________________________________________________________________
 

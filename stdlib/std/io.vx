@@ -6,21 +6,33 @@
 //
 //===----------------------------------------------------------------------===//
 extern {
+  /// The Rust core behind `stdout_write`.
   fn vx_stdout_write(buffer : *const u8, len : i64) -> i64;
+  /// The Rust core behind `stderr_write`.
   fn vx_stderr_write(buffer : *const u8, len : i64) -> i64;
+  /// The Rust core behind `stdin_read`.
   fn vx_stdin_read(buffer : *mut u8, len : i64) -> i64;
 }
 
+/// Write `len` bytes to standard output and answer how many were taken.
+///
+/// A short write is possible and is not retried here. Unsafe because `buffer` must have `len`
+/// bytes to read.
 unsafe fn stdout_write(buffer : *const u8, len : i64)
 -> i64 {
   unsafe { vx_stdout_write(buffer, len) }
 }
 
+/// Write `len` bytes to standard error, with the same caveats as `stdout_write`.
 unsafe fn stderr_write(buffer : *const u8, len : i64)
 ->i64 {
   unsafe { vx_stderr_write(buffer, len) }
 }
 
+/// Read up to `len` bytes from standard input and answer how many arrived.
+///
+/// Zero means end of input or an error, which are not told apart. Unsafe because `buffer` must
+/// have room for `len` bytes.
 unsafe fn stdin_read(buffer : *mut u8, len : i64)
 ->i64 {
   unsafe { vx_stdin_read(buffer, len) }

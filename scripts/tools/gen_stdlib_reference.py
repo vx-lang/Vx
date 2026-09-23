@@ -316,7 +316,7 @@ def parse_module(path):
                 tuples.append(" → ".join(picked) if len(picked) > 1 else picked[0])
         stamped.append(([subst[params[i]] for i in used], groups, tuples))
 
-    externs = [sig for _, sig in signatures(extern_text)]
+    externs = [(sig, doc_above(extern_text, pos)) for pos, sig in signatures(extern_text)]
     return types, funcs, stamped, externs
 
 
@@ -382,7 +382,7 @@ def render(modules):
                 else "**C bindings** *(the native functions this module is built on)*"
             )
             out.append(f"{label}\n")
-            render_items(out, [(s, None) for s in externs])
+            render_items(out, externs)
 
     out.append("______________________________________________________________________\n")
     out.append(f"{total_fns} functions across {len(modules)} modules.\n")

@@ -8,12 +8,19 @@
 
 import std::alloc;
 
+/// A single-owner heap allocation, which is what makes a recursive type possible.
+///
+/// Released by calling `free`, since the language has no `Drop` (Vx#495).
 struct Box<T> {
   ptr : *mut T,
 }
 
 impl<T>
 Box<T> {
+  /// Move a value to the heap.
+  ///
+  /// The allocation is not checked: `malloc` answering null gives a `Box` that writes through
+  /// a null pointer, and Vx cannot test one (Vx#714).
   fn new (val : T)->Box<T> {
     let size_bytes : i64 = sizeof<T>();
     let p : *mut T = unsafe { malloc(size_bytes) };
@@ -23,6 +30,8 @@ Box<T> {
     };
   }
 
+  /// Release the allocation. The pointer is left as it was, so using the box afterwards
+  /// reads freed memory.
   fn free(self : &mut Box<T>) -> i32 {
     unsafe { let ptr_i8 : *mut i8 = self.ptr; free(ptr_i8); }
     return 0;
