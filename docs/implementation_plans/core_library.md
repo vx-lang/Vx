@@ -788,7 +788,9 @@ order:
 1. Implicit `core::prelude` import (A12)
 
 And for Track B, one tracking issue per phase under Vx#451, each listing its modules as checkboxes
-and linking the matrix.
+and linking the matrix. Phase 1 is Vx#720 and phase 2 is Vx#721; phases 3 and 4 are far enough out
+that a list of them now would be fiction, and are described in Vx#451 instead. The Track A items
+above are all filed and are tracked together in Vx#536.
 
 ______________________________________________________________________
 
