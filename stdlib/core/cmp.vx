@@ -17,8 +17,27 @@
 // A trait method carries no doc comment: the parser wants `fn` and does not skip one.
 // What each default does is in its name and its one line of body.
 //
-// `PartialOrd` is not here. Without it `Ord` is total, which is what the integer widths
-// want; a float needs the partial version and `f32` has no impl yet.
+// `PartialOrd` is here for the floats, which cannot be `Ord`: a comparison against NaN
+// answers with none of Less, Equal or Greater, so `partial_cmp` returns an `Option`. The
+// integer widths get it too, answering `Some` always, so a body written over `PartialOrd`
+// works for every number.
+//
+// The unsigned widths and `bool` are stamped like the signed ones. Their comparisons are
+// right on the flat path only -- the legacy code generator picks its arithmetic from the
+// printed MLIR type, which carries no sign, so `<` on a `u32` takes the signed op and
+// `true > false` reads as -1 > 0. `tests/backend/pass/core_cmp_unsigned.vx` is flat-only
+// for that reason.
+//
+// Not here:
+//
+//   free `max`, `min`   the names are recognized by the compiler as the tensor reductions,
+//                       so a function called `max` in `core` is never reached (Vx#223).
+//                       `Ord::max` and `Ord::min` are methods and work.
+//   `Reverse<T>`        the generic struct with the inverted `Ord` impl runs, and declines
+//                       on the flat path with an emitter gap (Vx#712). It lands when that
+//                       closes, since `core` is the corpus the flat path is measured on.
+import core::ops;
+import core::option;
 
 enum Ordering {
   Less,
@@ -92,6 +111,22 @@ impl Ordering {
       }
       Ordering::Greater() => {
         return Ordering::Less();
+      }
+    }
+  }
+
+  /// `then`, with the second comparison left uncomputed unless it is needed.
+  fn then_with(self : Ordering, f : Closure0<Ordering>) -> Ordering {
+    match self {
+      Ordering::Less() => {
+        return Ordering::Less();
+      }
+      Ordering::Equal() => {
+        let p = f.func;
+        return p(f.env);
+      }
+      Ordering::Greater() => {
+        return Ordering::Greater();
       }
     }
   }
@@ -193,3 +228,86 @@ stamp_cmp!(i8);
 stamp_cmp!(i16);
 stamp_cmp!(i32);
 stamp_cmp!(i64);
+stamp_cmp!(u8);
+stamp_cmp!(u16);
+stamp_cmp!(u32);
+stamp_cmp!(u64);
+stamp_cmp!(bool);
+
+/// A comparison that may answer with nothing, which is what a float needs: NaN is neither
+/// less than, equal to, nor greater than anything, itself included.
+trait PartialOrd {
+  fn partial_cmp(self : &Self, other : &Self) -> Option<Ordering>;
+}
+
+/// For a type that is already `Ord`, every comparison has an answer.
+macro_rules stamp_total_partial_ord {
+  ($t : ident) => {
+    impl PartialOrd for $t {
+      fn partial_cmp(self : &$t, other : &$t) -> Option<Ordering> {
+        return Option<Ordering>::Some(self.cmp(other));
+      }
+    }
+  };
+}
+
+stamp_total_partial_ord!(i8);
+stamp_total_partial_ord!(i16);
+stamp_total_partial_ord!(i32);
+stamp_total_partial_ord!(i64);
+stamp_total_partial_ord!(u8);
+stamp_total_partial_ord!(u16);
+stamp_total_partial_ord!(u32);
+stamp_total_partial_ord!(u64);
+stamp_total_partial_ord!(bool);
+
+/// The floats get equality and the partial comparison, and no `Ord`. The three tests are
+/// written out rather than ending in an `else`, so a pair that answers false to all of
+/// them -- which is what NaN does -- falls through to `None`.
+macro_rules stamp_float_cmp {
+  ($t : ident) => {
+    impl PartialEq for $t {
+      fn eq(self : &$t, other : &$t) -> bool {
+        return *self == *other;
+      }
+    }
+
+    impl PartialOrd for $t {
+      fn partial_cmp(self : &$t, other : &$t) -> Option<Ordering> {
+        if *self < *other {
+          return Option<Ordering>::Some(Ordering::Less());
+        }
+        if *self > *other {
+          return Option<Ordering>::Some(Ordering::Greater());
+        }
+        if *self == *other {
+          return Option<Ordering>::Some(Ordering::Equal());
+        }
+        return Option<Ordering>::None();
+      }
+    }
+  };
+}
+
+stamp_float_cmp!(f32);
+stamp_float_cmp!(f64);
+
+/// The greater of two values by `f`, and the lesser. They are free functions because they
+/// take the comparison rather than reading it off the type. Rust spells them `max_by` and
+/// `min_by`; the plain `max` and `min` are `Ord` methods here, since those two names are
+/// the compiler's tensor reductions.
+fn max_by<T>(a : T, b : T, f : Closure2<T, T, Ordering>) -> T {
+  let p = f.func;
+  if p(f.env, a, b).is_lt() {
+    return b;
+  }
+  return a;
+}
+
+fn min_by<T>(a : T, b : T, f : Closure2<T, T, Ordering>) -> T {
+  let p = f.func;
+  if p(f.env, a, b).is_gt() {
+    return b;
+  }
+  return a;
+}

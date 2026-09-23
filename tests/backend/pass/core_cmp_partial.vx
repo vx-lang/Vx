@@ -1,0 +1,82 @@
+//===- core_cmp_partial.vx - Vx Compiler --------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `core::cmp`'s partial order, `then_with`, and the two comparator-taking functions.
+//
+// These are apart from `core_cmp.vx` because each of them declines on the flat path and
+// that file compiles through it. `then_with` takes a `Closure0<Ordering>` and `max_by` a
+// `Closure2<T, T, Ordering>`, which are both "an indirect callee returning a non-scalar";
+// `partial_cmp` answers with an `Option<Ordering>`, which is "a callee return type". The
+// answers here come from the AST path, and the file is listed in KNOWN_DECLINES.
+//
+// NaN is the case the `Option` exists for. It answers false to less, greater and equal
+// alike, so a `partial_cmp` written with a trailing `else` would hand back whichever
+// branch it fell into; these fall through to `None` instead. `nan.eq(&nan)` is asked too,
+// since a float equality that compared bit patterns would answer true.
+//
+// `then_with` gets both of its receivers: Equal, which must call the closure, and Less,
+// which must not. `max_by` and `min_by` are each asked with the answer on the left and on
+// the right, or one that always returned the same side would pass.
+import core::cmp;
+
+fn show(flag : bool) -> i32 {
+  if flag {
+    print(1);
+  } else {
+    print(0);
+  }
+  return 0;
+}
+
+fn main() -> i32 {
+  let a : i32 = 3;
+  let b : i32 = 9;
+
+  show(a.cmp(&a).then_with(|| b.cmp(&a)).is_gt());
+  print!(" ");
+  show(a.cmp(&b).then_with(|| b.cmp(&a)).is_lt());
+  print!(" | ");
+
+  // Over a total order every comparison has an answer, so the `Option` is only
+  // interesting for what it holds.
+  show(a.partial_cmp(&b).unwrap().is_lt());
+  print!(" ");
+  show(a.partial_cmp(&a).unwrap().is_eq());
+  print!(" ");
+  show(b.partial_cmp(&a).unwrap().is_gt());
+  print!(" | ");
+
+  let p : f64 = 1.5;
+  let q : f64 = 2.5;
+  show(p.eq(&p));
+  print!(" ");
+  show(p.eq(&q));
+  print!(" ");
+  show(p.partial_cmp(&q).unwrap().is_lt());
+  print!(" ");
+  show(q.partial_cmp(&p).unwrap().is_gt());
+  print!(" ");
+  show(p.partial_cmp(&p).unwrap().is_eq());
+  print!(" ");
+  let zero : f64 = 0.0;
+  let nan : f64 = zero / zero;
+  show(nan.partial_cmp(&p).is_none());
+  print!(" ");
+  show(nan.eq(&nan));
+  print!(" | ");
+
+  print(max_by<i32>(3, 9, | m : i32 , n : i32 | m.cmp(&n)));
+  print!(" ");
+  print(max_by<i32>(9, 3, | m : i32 , n : i32 | m.cmp(&n)));
+  print!(" ");
+  print(min_by<i32>(3, 9, | m : i32 , n : i32 | m.cmp(&n)));
+  print!(" ");
+  print(min_by<i32>(9, 3, | m : i32 , n : i32 | m.cmp(&n)));
+  return 0;
+}
+
+// EXPECT: 1 1 | 1 1 1 | 1 0 1 1 1 1 0 | 9 9 3 3

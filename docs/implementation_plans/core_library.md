@@ -800,7 +800,7 @@ live docs, not this table.
 | Rust `core` module | Vx module | Phase | Status | Blocking Track A items | Notes / exclusions |
 | --- | --- | --- | --- | --- | --- |
 | `marker` | `core::marker` | 1 | — | A6 | `Send`/`Sync` declared, not enforced; `Unpin`, `Sized` no-ops |
-| `cmp` | `core::cmp` | 1 | partial | | `PartialEq`, `Ord`, `Ordering`; no `PartialOrd` (no float impl), `Reverse`, `max_by`/`min_by_key`; `Rhs` is `Self` by convention until trait-parameter defaults exist |
+| `cmp` | `core::cmp` | 1 | partial | Vx#712 for `Reverse`, Vx#223 for free `max`/`min` | `PartialEq` and `Ord` over every integer width and `bool`; `PartialOrd` over those and the floats, which cannot be `Ord`; `Ordering` with `then_with`; `max_by`/`min_by`. No `Reverse` (its `Ord` impl declines on the flat path), no free `max`/`min` (the names are the compiler's tensor reductions), no `max_by_key`/`min_by_key`, no `Eq`. `Rhs` is `Self` by convention until trait-parameter defaults exist |
 | `ops` | `core::ops` | 1→2 | declared | A11 (dispatch), A10 (`Output`) | `Deref`, `Drop`, `Fn*`, coroutine traits excluded |
 | `clone` | `core::clone` | 1 | partial | | `Clone` for the scalars, `bool`, `Ordering`, `Option<T : Clone>`; `Result<T, E>` pending an impl over two bounded parameters |
 | `default` | `core::default` | 1 | par | | `Default` for the scalars, `bool`, `Option<T>`; a static trait method dispatches since Vx#684 |
