@@ -5,8 +5,17 @@
   <link href="https://vxlang.org/blog/feed.xml" rel="self"/>
   <link href="https://vxlang.org/blog/"/>
   <id>https://vxlang.org/blog/</id>
-  <updated>2026-09-22T09:00:00Z</updated>
+  <updated>2026-09-22T17:00:00Z</updated>
   <author><name>Aditya Kumar</name></author>
+
+  <entry>
+    <title>Asking the other compiler</title>
+    <link href="https://vxlang.org/blog/asking-the-other-compiler.html"/>
+    <id>https://vxlang.org/blog/asking-the-other-compiler.html</id>
+    <updated>2026-09-22T17:00:00Z</updated>
+    <author><name>Aditya Kumar</name></author>
+    <summary>Two impls of one trait for one type collided on a single mangled name, and choosing between them looked like a language design decision. Compiling the same program in Rust showed that Rust decides nothing: it infers the argument's type first, and then exactly one impl applies. The untyped literal case it settles with a blunt fallback to i32, which Vx already had.</summary>
+  </entry>
 
   <entry>
     <title>The library that only worked on the machine that built it</title>

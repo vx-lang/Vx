@@ -43,6 +43,14 @@
 
   <ul class="posts">
     <li>
+      <a href="/blog/asking-the-other-compiler.html">Asking the other compiler</a>
+      <time datetime="2026-09-22">22 September 2026</time>
+      <p>Two impls of one trait collided on one mangled name, and picking between them looked like a
+      language design decision. Compiling the same program in Rust showed that Rust makes no such
+      decision: it infers the argument's type, and defaults a bare integer literal to
+      <code>i32</code>.</p>
+    </li>
+    <li>
       <a href="/blog/only-on-the-machine-that-built-it.html">The library that only worked on the machine that built it</a>
       <time datetime="2026-09-22">22 September 2026</time>
       <p>Vx 0.0.1 could not run hello-world on any machine except the one that built it. Both macOS
