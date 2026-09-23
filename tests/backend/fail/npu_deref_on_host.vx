@@ -1,5 +1,5 @@
 //===- npu_deref_on_host.vx - Vx Compiler ------------------------*- Vx -*-===//
-// CHECK: E3001{{.*}}'t_device' is declared Tensor<f32, [?, ?]> but its initializer is Tensor<f32, [1, 1], NPU, NPUHBM>
+// CHECK: E3001{{.*}}'t_device' is declared Tensor<f32, [?, ?]> but its initializer is Tensor<f32, [1, 1], NPU, NPU_HBM>
 //
 // Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.

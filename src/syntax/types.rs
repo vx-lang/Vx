@@ -413,6 +413,27 @@ pub enum TopologyKind {
     Current,
 }
 
+/// The surface name of a topology kind, for diagnostics. `Debug` spells the variant
+/// (`GpuHbm`, `Custom("SMEM")`), which is the compiler's name for it rather than the user's.
+impl std::fmt::Display for TopologyKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            TopologyKind::CPU => "CPU",
+            TopologyKind::NPU => "NPU",
+            TopologyKind::AccCore => "AccCore",
+            TopologyKind::AMX => "AMX",
+            TopologyKind::ANE => "ANE",
+            TopologyKind::GPU => "GPU",
+            TopologyKind::CpuAvx512 => "CpuAvx512",
+            TopologyKind::CpuNeon => "CpuNeon",
+            TopologyKind::Slice => "Slice",
+            TopologyKind::Current => "Current",
+            TopologyKind::Custom(name) => name.as_ref(),
+        };
+        f.write_str(s)
+    }
+}
+
 impl Topology {
     /// `Topology::gpu(0)[index]`.
     ///
@@ -1010,7 +1031,7 @@ impl std::fmt::Display for Type {
                 // `NumberExpr { .. }` for the device index into every message naming a placed
                 // tensor. The index is not what a placement mismatch is ever about.
                 if let Some(p) = top {
-                    write!(f, ", {:?}, {:?}", p.topology.kind(), p.space)?;
+                    write!(f, ", {}, {}", p.topology.kind(), p.space.name())?;
                 }
                 write!(f, ">")
             }

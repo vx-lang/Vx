@@ -918,11 +918,7 @@ mod tests {
         for fc in &out {
             assert!(fc.is_contended());
             assert_eq!(fc.worst_sharing().map(|s| s.flows), Some(2));
-            let mut spaces: Vec<String> = fc
-                .sharing
-                .iter()
-                .map(|s| format!("{:?}", s.space))
-                .collect();
+            let mut spaces: Vec<String> = fc.sharing.iter().map(|s| s.space.name()).collect();
             spaces.sort();
             assert_eq!(spaces.len(), 2, "both L2 and SMEM are shared");
         }

@@ -170,7 +170,7 @@ impl<'a> TypeChecker<'a> {
         } else {
             if !self.speculating {
                 self.errors
-                    .push(format!("Cannot call expression of type {:?}", callee_ty));
+                    .push(format!("Cannot call expression of type {}", callee_ty));
             }
         }
 
@@ -2580,11 +2580,11 @@ impl<'a> TypeChecker<'a> {
                 if let Type::Struct(name, _) = &arg_ty {
                     if !name.starts_with("Closure_") {
                         self.errors
-                            .push(format!("map expects a closure, got {:?}", arg_ty));
+                            .push(format!("map expects a closure, got {}", arg_ty));
                     }
                 } else {
                     self.errors
-                        .push(format!("map expects a closure, got {:?}", arg_ty));
+                        .push(format!("map expects a closure, got {}", arg_ty));
                 }
                 return Some((base_ty.clone(), false));
             } else if _method == "transpose" {

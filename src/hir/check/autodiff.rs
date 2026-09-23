@@ -38,7 +38,7 @@ impl<'a> TypeChecker<'a> {
     pub(crate) fn check_differentiability(&mut self, func: &Function) {
         match Self::differentiable_elem(&func.return_type) {
             None => {
-                self.errors.push(format!("Function '{}' cannot be differentiated because it returns a non-continuous type: {:?}", func.name, func.return_type));
+                self.errors.push(format!("Function '{}' cannot be differentiated because it returns a non-continuous type: {}", func.name, func.return_type));
             }
             Some(e) if !Self::is_continuous(e) => {
                 self.errors.push(format!(

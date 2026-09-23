@@ -1,0 +1,52 @@
+//===- placement_diagnostics_read_as_source.vx - Vx Compiler ----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A type error naming two placed tensors prints the spaces the way the program
+// spells them.
+//
+// `Type`'s Display wrote the placement with `{:?}`, so the space arrived as the
+// compiler's name for its enum variant -- `Custom("SMEM")` for a declared space
+// and `GpuHbm` for a built-in one. Both leak internal spelling into the user's
+// terminal and make `Custom` look like something the language has.
+//
+// The two CHECK-SAME lines are the whole assertion, and they are enough: a
+// placement rendered with `{:?}` cannot produce either spelling. A trailing
+// CHECK-NOT for `Custom(` was dropped rather than kept -- it only scans from the
+// last match to the end of the output, which here is one summary line, so it
+// would have read as a guard while asserting nothing.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: E3004
+// CHECK-SAME: Tensor<f32, [4], GPU, GPU_HBM>
+// CHECK-SAME: Tensor<f32, [4], SMEM, SMEM>
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+}
+Memory SMEM {
+  within: Memory::GPU_HBM, capacity: 228 KiB, granule: 1 KiB, managed: explicit, scope: sm
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::GPU_HBM,
+  visible: [Memory::GPU_HBM, Memory::SMEM],
+  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s,
+  transfer Memory::GPU_HBM -> Memory::SMEM
+}
+
+fn main() -> i32 {
+  let host = Tensor<f32, [4, 4]>::uninit();
+  let device = transfer(host, Memory::GPU_HBM);
+  spawn on(Topology::Dev) {
+    // A row of the HBM tensor is not a row of the shared-memory tile: the only
+    // way across is `transfer`, along an edge the machine file declared.
+    let mut tile = Tensor<f32, [4, 4], Memory::SMEM>::uninit();
+    tile[0] = device[0];
+  }
+  return 0;
+}

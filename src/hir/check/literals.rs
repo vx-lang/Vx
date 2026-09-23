@@ -125,7 +125,7 @@ impl<'a> TypeChecker<'a> {
                                         {
                                             self.errors.error_with_code(
                                                 crate::diagnostic::DiagnosticCode::E3008,
-                                                format!("Type mismatch in payload argument {} for {}::{}: expected {:?}, got {:?}", i + 1, actual_enum_name, variant, expected_ty, expr_ty),
+                                                format!("Type mismatch in payload argument {} for {}::{}: expected {}, got {}", i + 1, actual_enum_name, variant, expected_ty, expr_ty),
                                                 Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                                             );
                                         }

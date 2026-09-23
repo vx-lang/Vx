@@ -250,7 +250,7 @@ impl<'a> TypeChecker<'a> {
                         if el_ty_l != el_ty_r {
                             self.errors.error_with_code(
                                 crate::diagnostic::DiagnosticCode::E7002,
-                                format!("Tensor multiplication requires matching element types, got {:?} and {:?}", el_ty_l, el_ty_r),
+                                format!("Tensor multiplication requires matching element types, got {} and {}", el_ty_l, el_ty_r),
                                 Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                             );
                         }

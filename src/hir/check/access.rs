@@ -309,15 +309,16 @@ impl<'a> TypeChecker<'a> {
                                             );
                                         }
                                         Reachability::Unreachable => self.errors.push(format!(
-                                            "Cross-topology access error: '{}' (type: {:?}) is \
-                                             unreachable from {:?}: no transfer path exists",
-                                            name, ty, self.active_topology
+                                            "Cross-topology access error: '{}' (type: {}) is \
+                                             unreachable from {}: no transfer path exists",
+                                            name, ty, self.active_topology.display_name()
                                         )),
                                         // Not visible here by construction; fall back to the plain message.
                                         Reachability::Visible => self.errors.push(format!(
-                                            "Cross-topology access error: Variable '{}' belongs to {:?} \
-                                             (type: {:?}), but accessed from {:?}",
-                                            name, top, ty, self.active_topology
+                                            "Cross-topology access error: Variable '{}' belongs to {} \
+                                             (type: {}), but accessed from {}",
+                                            name, top.display_name(), ty,
+                                            self.active_topology.display_name()
                                         )),
                                         }
                                     }
@@ -719,7 +720,7 @@ impl<'a> TypeChecker<'a> {
                     if !self.speculating {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E3004,
-                            format!("Cannot index a value of type {:?}", base),
+                            format!("Cannot index a value of type {}", base),
                             None,
                         );
                     }
