@@ -97,10 +97,12 @@ macro_rules stamp_signed_int {
         return self > (0 as $t) && (self & (self - 1)) == (0 as $t);
       }
 
+      /// Is this greater than zero? Zero is neither positive nor negative.
       fn is_positive(self : $t) -> bool {
         return self > (0 as $t);
       }
 
+      /// Is this less than zero?
       fn is_negative(self : $t) -> bool {
         return self < (0 as $t);
       }
@@ -768,6 +770,7 @@ macro_rules stamp_float {
         };
       }
 
+      /// The sine of this many radians.
       fn sin(self : $t) -> $t {
         return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
           %r = math.sin %a : $t
@@ -775,6 +778,7 @@ macro_rules stamp_float {
         };
       }
 
+      /// The cosine of this many radians.
       fn cos(self : $t) -> $t {
         return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
           %r = math.cos %a : $t
@@ -782,6 +786,7 @@ macro_rules stamp_float {
         };
       }
 
+      /// The tangent of this many radians.
       fn tan(self : $t) -> $t {
         return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
           %r = math.tan %a : $t
@@ -789,6 +794,7 @@ macro_rules stamp_float {
         };
       }
 
+      /// The angle in radians whose sine is this, between -pi/2 and pi/2.
       fn asin(self : $t) -> $t {
         return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
           %r = math.asin %a : $t
@@ -796,6 +802,7 @@ macro_rules stamp_float {
         };
       }
 
+      /// The angle in radians whose cosine is this, between 0 and pi.
       fn acos(self : $t) -> $t {
         return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
           %r = math.acos %a : $t
@@ -803,6 +810,7 @@ macro_rules stamp_float {
         };
       }
 
+      /// The angle in radians whose tangent is this. `atan2` is the form that keeps the quadrant.
       fn atan(self : $t) -> $t {
         return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
           %r = math.atan %a : $t
@@ -810,6 +818,7 @@ macro_rules stamp_float {
         };
       }
 
+      /// The hyperbolic sine.
       fn sinh(self : $t) -> $t {
         return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
           %r = math.sinh %a : $t
@@ -817,6 +826,7 @@ macro_rules stamp_float {
         };
       }
 
+      /// The hyperbolic cosine.
       fn cosh(self : $t) -> $t {
         return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
           %r = math.cosh %a : $t
@@ -824,6 +834,7 @@ macro_rules stamp_float {
         };
       }
 
+      /// The hyperbolic tangent.
       fn tanh(self : $t) -> $t {
         return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
           %r = math.tanh %a : $t

@@ -46,6 +46,7 @@ enum Result<T, E> {
 impl<T : Copy, E : Copy> Copy for Result<T, E> {}
 
 impl<T, E> Result<T, E> {
+  /// Did it succeed?
   fn is_ok(self : &Result<T, E>) -> bool {
     let mut ret = false;
     match *self {
@@ -59,6 +60,7 @@ impl<T, E> Result<T, E> {
     return ret;
   }
 
+  /// Did it fail? The negation of `is_ok`.
   fn is_err(self : &Result<T, E>) -> bool {
     return !self.is_ok();
   }
@@ -76,6 +78,10 @@ impl<T, E> Result<T, E> {
     }
   }
 
+  /// The value, or the given one on failure.
+  ///
+  /// `default` is evaluated by the caller either way, so keep it cheap; `unwrap_or_else` is
+  /// the form that computes nothing when there is a value.
   fn unwrap_or(self : Result<T, E>, default : T) -> T {
     match self {
       Result<T, E>::Ok(v) => {

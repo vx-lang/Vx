@@ -244,12 +244,14 @@ trait Ord {
 macro_rules stamp_cmp {
   ($t : ident) => {
     impl PartialEq for $t {
+      /// Equality at this width.
       fn eq(self : &$t, other : &$t) -> bool {
         return *self == *other;
       }
     }
 
     impl Ord for $t {
+      /// The three-way comparison at this width.
       fn cmp(self : &$t, other : &$t) -> Ordering {
         if *self < *other {
           return Ordering::Less();
@@ -289,6 +291,7 @@ trait PartialOrd {
 macro_rules stamp_total_partial_ord {
   ($t : ident) => {
     impl PartialOrd for $t {
+      /// Always an answer, since this type is totally ordered.
       fn partial_cmp(self : &$t, other : &$t) -> Option<Ordering> {
         return Option<Ordering>::Some(self.cmp(other));
       }
@@ -312,12 +315,14 @@ stamp_total_partial_ord!(bool);
 macro_rules stamp_float_cmp {
   ($t : ident) => {
     impl PartialEq for $t {
+      /// Equality at this width. A NaN is equal to nothing, itself included.
       fn eq(self : &$t, other : &$t) -> bool {
         return *self == *other;
       }
     }
 
     impl PartialOrd for $t {
+      /// The comparison, or nothing when either side is a NaN.
       fn partial_cmp(self : &$t, other : &$t) -> Option<Ordering> {
         if *self < *other {
           return Option<Ordering>::Some(Ordering::Less());
@@ -349,6 +354,7 @@ fn max_by<T>(a : T, b : T, f : Closure2<T, T, Ordering>) -> T {
   return a;
 }
 
+/// The lesser of the two by `f`, answering `a` when they compare equal.
 fn min_by<T>(a : T, b : T, f : Closure2<T, T, Ordering>) -> T {
   let p = f.func;
   if p(f.env, a, b).is_gt() {

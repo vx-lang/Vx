@@ -77,15 +77,18 @@ friends.
 
 **`Clone for Option<T>` methods**
 
-- `fn clone(self : &Option<T>) -> Option<T>`
+- `fn clone(self : &Option<T>) -> Option<T>`<br>
+  The option with its value cloned, if it has one.
 
 **`Clone for Result<T, E>` methods**
 
-- `fn clone(self : &Result<T, E>) -> Result<T, E>`
+- `fn clone(self : &Result<T, E>) -> Result<T, E>`<br>
+  The result with whichever side it holds cloned.
 
 **`Clone for T` methods**, stamped for 12 instantiations
 
-- `fn clone(self : &T) -> T`
+- `fn clone(self : &T) -> T`<br>
+  A read, since a value of this width is copied by reading it.
 
 T = `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `f32`, `f64`, `bool`, `Ordering`
 
@@ -173,7 +176,8 @@ Ordering and equality: `PartialEq`, `Ord`, `PartialOrd` and `Ordering`.
 
 **`PartialOrd for $t` methods**
 
-- `fn partial_cmp(self : &$t, other : &$t) -> Option<Ordering>`
+- `fn partial_cmp(self : &$t, other : &$t) -> Option<Ordering>`<br>
+  Always an answer, since this type is totally ordered.
 
 **Functions**
 
@@ -182,29 +186,34 @@ Ordering and equality: `PartialEq`, `Ord`, `PartialOrd` and `Ordering`.
   take the comparison rather than reading it off the type. Rust spells them `max_by` and
   `min_by`; the plain `max` and `min` are `Ord` methods here, since those two names are
   the compiler's tensor reductions.
-- `fn min_by<T>(a : T, b : T, f : Closure2<T, T, Ordering>) -> T`
+- `fn min_by<T>(a : T, b : T, f : Closure2<T, T, Ordering>) -> T`<br>
+  The lesser of the two by `f`, answering `a` when they compare equal.
 
 **`PartialEq for T` methods**, stamped for 9 instantiations
 
-- `fn eq(self : &T, other : &T) -> bool`
+- `fn eq(self : &T, other : &T) -> bool`<br>
+  Equality at this width.
 
 T = `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `bool`
 
 **`Ord for T` methods**, stamped for 9 instantiations
 
-- `fn cmp(self : &T, other : &T) -> Ordering`
+- `fn cmp(self : &T, other : &T) -> Ordering`<br>
+  The three-way comparison at this width.
 
 T = `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `bool`
 
 **`PartialEq for T` methods**, stamped for 9 instantiations
 
-- `fn eq(self : &T, other : &T) -> bool`
+- `fn eq(self : &T, other : &T) -> bool`<br>
+  Equality at this width. A NaN is equal to nothing, itself included.
 
 T = `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `bool`
 
 **`PartialOrd for T` methods**, stamped for 9 instantiations
 
-- `fn partial_cmp(self : &T, other : &T) -> Option<Ordering>`
+- `fn partial_cmp(self : &T, other : &T) -> Option<Ordering>`<br>
+  The comparison, or nothing when either side is a NaN.
 
 T = `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `bool`
 
@@ -229,7 +238,8 @@ T = `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `bool`
 
 **`From<T> for Option<T>` methods**
 
-- `fn from(v : T) -> Option<T>`
+- `fn from(v : T) -> Option<T>`<br>
+  The value wrapped in `Some`.
 
 **Functions**
 
@@ -238,7 +248,8 @@ T = `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `bool`
 
 **`From<T> for U` methods**, stamped for 48 instantiations
 
-- `fn from(v : T) -> U`
+- `fn from(v : T) -> U`<br>
+  The value widened, which cannot lose anything at these two widths.
 
 (T, U) = `i8 → i8`, `i16 → i16`, `i32 → i32`, `i64 → i64`, `u8 → u8`, `u16 → u16`, `u32 → u32`, `u64 → u64`, `f32 → f32`, `f64 → f64`, `bool → bool`, `i8 → i16`, `i8 → i32`, `i8 → i64`, `i16 → i32`, `i16 → i64`, `i32 → i64`, `u8 → u16`, `u8 → u32`, `u8 → u64`, `u16 → u32`, `u16 → u64`, `u32 → u64`, `u8 → i16`, `u8 → i32`, `u8 → i64`, `u16 → i32`, `u16 → i64`, `u32 → i64`, `i8 → f32`, `u8 → f32`, `i16 → f32`, `u16 → f32`, `i8 → f64`, `u8 → f64`, `i16 → f64`, `u16 → f64`, `i32 → f64`, `u32 → f64`, `f32 → f64`, `bool → i8`, `bool → i16`, `bool → i32`, `bool → i64`, `bool → u8`, `bool → u16`, `bool → u32`, `bool → u64`
 
@@ -256,11 +267,13 @@ T = `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `bool`
   The value this type starts from: zero for a number, `false`, `None`.
   A static method, so it is called through the type -- `i64::default()`, not `x.default()`.
   A struct gets one by writing the impl; the language does not derive it.
-- `fn default() -> Option<T>`
+- `fn default() -> Option<T>`<br>
+  `None`, whatever `T` is: an option's default is the absent one.
 
 **`Default for T` methods**, stamped for 11 instantiations
 
-- `fn default() -> T`
+- `fn default() -> T`<br>
+  Zero, spelled at this width.
 
 T = `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `f32`, `f64`, `bool`
 
@@ -273,48 +286,76 @@ The `Iterator` trait and its adaptors, which `for` loops and `.map` build on.
 - `trait Iterator<Item>`
 - `struct Range`<br>
   The numbers from `at` up to but not including `end`.
+  A half-open span of `i64`, from `at` up to but not including `end`.
 - `struct Map<I, Item, U>`<br>
   `f` over every item.
+  An iterator over another one's items with `f` applied to each. Built by `map`.
 - `struct Filter<I, Item>`<br>
   Only the items `keep` accepts.
+  An iterator over the items of another that `keep` accepts. Built by `filter`.
 - `struct Take<I, Item>`<br>
   The first `left` items, then nothing.
   `Item` is carried by the struct although `Take` never stores one: without associated
   types it is the only place the impl can read the element type from.
+  An iterator over at most `left` items of another. Built by `take`.
 - `struct Skip<I, Item>`<br>
   Everything after the first `drop` items.
+  An iterator over another's items with the first `drop` of them discarded. Built by `skip`.
 
 **`trait Iterator<Item>` methods**
 
-- `fn next(self : &mut Self) -> Option<Item>`
-- `fn count(self : &mut Self) -> i64`
-- `fn last(self : &mut Self) -> Option<Item>`
-- `fn nth(self : &mut Self, n : i64) -> Option<Item>`
-- `fn any(self : &mut Self, f : Closure1<Item, bool>) -> bool`
-- `fn all(self : &mut Self, f : Closure1<Item, bool>) -> bool`
-- `fn find(self : &mut Self, f : Closure1<Item, bool>) -> Option<Item>`
-- `fn position(self : &mut Self, f : Closure1<Item, bool>) -> Option<i64>`
-- `fn for_each(self : &mut Self, f : Closure1<Item, i32>) -> i32`
+- `fn next(self : &mut Self) -> Option<Item>`<br>
+  The next item, or nothing once the sequence is finished.
+  The only required method. Every other method of this trait is a default written over it,
+  so a type becomes iterable by writing this one.
+  Calling it again after it has answered nothing is allowed and answers nothing again; an
+  iterator that would resume is not something this trait promises either way.
+- `fn count(self : &mut Self) -> i64`<br>
+  How many items are left, consuming them all to find out.
+- `fn last(self : &mut Self) -> Option<Item>`<br>
+  The final item, consuming the sequence. Nothing when it is already finished.
+- `fn nth(self : &mut Self, n : i64) -> Option<Item>`<br>
+  The item `n` places along, counting the next one as zero, discarding those before it.
+  Nothing when the sequence finishes first. The items skipped are consumed either way.
+- `fn any(self : &mut Self, f : Closure1<Item, bool>) -> bool`<br>
+  Does `f` accept any item? Stops at the first it does, leaving the rest unconsumed.
+- `fn all(self : &mut Self, f : Closure1<Item, bool>) -> bool`<br>
+  Does `f` accept every item? Stops at the first it does not.
+  True for a sequence that is already finished, which is the usual convention: there is no
+  item to disagree.
+- `fn find(self : &mut Self, f : Closure1<Item, bool>) -> Option<Item>`<br>
+  The first item `f` accepts, or nothing. Stops there, so the rest is unconsumed.
+- `fn position(self : &mut Self, f : Closure1<Item, bool>) -> Option<i64>`<br>
+  How far along the first item `f` accepts is, counting the next one as zero.
+- `fn for_each(self : &mut Self, f : Closure1<Item, i32>) -> i32`<br>
+  Hand every item to `f`, consuming the sequence.
+  `f` answers an `i32` rather than nothing, and this returns the last of them, because no
+  closure literal can return void yet (Vx#711). Both signatures become Rust's when it can.
 
 **`Iterator<i64> for Range` methods**
 
-- `fn next(self : &mut Range) -> Option<i64>`
+- `fn next(self : &mut Range) -> Option<i64>`<br>
+  The next value in the span, or nothing once `end` is reached.
 
 **`Iterator<U> for Map<I, Item, U>` methods**
 
-- `fn next(self : &mut Map<I, Item, U>) -> Option<U>`
+- `fn next(self : &mut Map<I, Item, U>) -> Option<U>`<br>
+  The inner iterator's next item with `f` applied.
 
 **`Iterator<Item> for Filter<I, Item>` methods**
 
-- `fn next(self : &mut Filter<I, Item>) -> Option<Item>`
+- `fn next(self : &mut Filter<I, Item>) -> Option<Item>`<br>
+  The inner iterator's next item that `keep` accepts.
 
 **`Iterator<Item> for Take<I, Item>` methods**
 
-- `fn next(self : &mut Take<I, Item>) -> Option<Item>`
+- `fn next(self : &mut Take<I, Item>) -> Option<Item>`<br>
+  The inner iterator's next item, until `left` of them have been handed out.
 
 **`Iterator<Item> for Skip<I, Item>` methods**
 
-- `fn next(self : &mut Skip<I, Item>) -> Option<Item>`
+- `fn next(self : &mut Skip<I, Item>) -> Option<Item>`<br>
+  The inner iterator's next item, once the skipped ones have been consumed.
 
 **Functions**
 
@@ -322,9 +363,12 @@ The `Iterator` trait and its adaptors, which `for` loops and `.map` build on.
   The adaptors are built through these rather than by writing the struct literal: a
   closure literal is coerced to `Closure1<A, B>` in an argument but not in a field
   initializer (Vx#648).
-- `fn filter<I, Item>(inner : I, keep : Closure1<Item, bool>) -> Filter<I, Item>`
-- `fn take<I, Item>(inner : I, left : i64) -> Take<I, Item>`
-- `fn skip<I, Item>(inner : I, drop : i64) -> Skip<I, Item>`
+- `fn filter<I, Item>(inner : I, keep : Closure1<Item, bool>) -> Filter<I, Item>`<br>
+  An iterator over the items of `inner` that `keep` accepts.
+- `fn take<I, Item>(inner : I, left : i64) -> Take<I, Item>`<br>
+  An iterator over at most `left` items of `inner`.
+- `fn skip<I, Item>(inner : I, drop : i64) -> Skip<I, Item>`<br>
+  An iterator over `inner` with its first `drop` items discarded.
 - `fn range(at : i64, end : i64) -> Range`<br>
   The numbers `at .. end`.
 
@@ -472,15 +516,24 @@ The integer and float methods, stamped over every width.
   The logarithm to base ten.
 - `fn ln_1p(self : $t) -> $t`<br>
   `ln` of one plus this, kept accurate for a small argument.
-- `fn sin(self : $t) -> $t`
-- `fn cos(self : $t) -> $t`
-- `fn tan(self : $t) -> $t`
-- `fn asin(self : $t) -> $t`
-- `fn acos(self : $t) -> $t`
-- `fn atan(self : $t) -> $t`
-- `fn sinh(self : $t) -> $t`
-- `fn cosh(self : $t) -> $t`
-- `fn tanh(self : $t) -> $t`
+- `fn sin(self : $t) -> $t`<br>
+  The sine of this many radians.
+- `fn cos(self : $t) -> $t`<br>
+  The cosine of this many radians.
+- `fn tan(self : $t) -> $t`<br>
+  The tangent of this many radians.
+- `fn asin(self : $t) -> $t`<br>
+  The angle in radians whose sine is this, between -pi/2 and pi/2.
+- `fn acos(self : $t) -> $t`<br>
+  The angle in radians whose cosine is this, between 0 and pi.
+- `fn atan(self : $t) -> $t`<br>
+  The angle in radians whose tangent is this. `atan2` is the form that keeps the quadrant.
+- `fn sinh(self : $t) -> $t`<br>
+  The hyperbolic sine.
+- `fn cosh(self : $t) -> $t`<br>
+  The hyperbolic cosine.
+- `fn tanh(self : $t) -> $t`<br>
+  The hyperbolic tangent.
 - `fn floor(self : $t) -> $t`<br>
   The largest whole number no greater than this.
 - `fn ceil(self : $t) -> $t`<br>
@@ -535,8 +588,10 @@ The integer and float methods, stamped over every width.
   Zero bits below the lowest set bit. All of them, for zero.
 - `fn is_power_of_two(self : T) -> bool`<br>
   Zero and the negatives are not.
-- `fn is_positive(self : T) -> bool`
-- `fn is_negative(self : T) -> bool`
+- `fn is_positive(self : T) -> bool`<br>
+  Is this greater than zero? Zero is neither positive nor negative.
+- `fn is_negative(self : T) -> bool`<br>
+  Is this less than zero?
 - `fn abs(self : T) -> T`<br>
   Refused at the smallest value, which has no positive counterpart.
 - `fn signum(self : T) -> T`<br>
@@ -696,11 +751,16 @@ Raw pointers: making one, and reading or writing through it.
 
 **`Result<T, E>` methods**
 
-- `fn is_ok(self : &Result<T, E>) -> bool`
-- `fn is_err(self : &Result<T, E>) -> bool`
+- `fn is_ok(self : &Result<T, E>) -> bool`<br>
+  Did it succeed?
+- `fn is_err(self : &Result<T, E>) -> bool`<br>
+  Did it fail? The negation of `is_ok`.
 - `fn unwrap(self : Result<T, E>) -> T`<br>
   The value, or a stop. `unwrap_or` is the form with an answer for the failing case.
-- `fn unwrap_or(self : Result<T, E>, default : T) -> T`
+- `fn unwrap_or(self : Result<T, E>, default : T) -> T`<br>
+  The value, or the given one on failure.
+  `default` is evaluated by the caller either way, so keep it cheap; `unwrap_or_else` is
+  the form that computes nothing when there is a value.
 - `fn ok(self : Result<T, E>) -> Option<T>`<br>
   The success dropped, leaving what there is of one.
 - `fn err(self : Result<T, E>) -> Option<E>`<br>

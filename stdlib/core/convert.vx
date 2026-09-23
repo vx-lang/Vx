@@ -47,6 +47,7 @@ trait From<T> {
 macro_rules stamp_from {
   ($from : ident , $to : ident) => {
     impl From<$from> for $to {
+      /// The value widened, which cannot lose anything at these two widths.
       fn from(v : $from) -> $to {
         return v as $to;
       }
@@ -116,6 +117,7 @@ stamp_from!(bool , u64);
 
 /// A value becomes the `Some` that holds it.
 impl<T> From<T> for Option<T> {
+  /// The value wrapped in `Some`.
   fn from(v : T) -> Option<T> {
     return Option<T>::Some(v);
   }

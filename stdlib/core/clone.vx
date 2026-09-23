@@ -46,6 +46,7 @@ trait Clone {
 macro_rules stamp_clone {
   ($t : ident) => {
     impl Clone for $t {
+      /// A read, since a value of this width is copied by reading it.
       fn clone(self : &$t) -> $t {
         return *self;
       }
@@ -70,6 +71,7 @@ stamp_clone!(Ordering);
 /// each return an enum is declined by the flat path, which has no default value of that
 /// type to give the fall-through it cannot rule out.
 impl<T : Clone> Clone for Option<T> {
+  /// The option with its value cloned, if it has one.
   fn clone(self : &Option<T>) -> Option<T> {
     let mut out = Option<T>::None();
     match *self {
@@ -88,6 +90,7 @@ impl<T : Clone> Clone for Option<T> {
 /// and is forced: `Result` has no variant that can be built without a value, so there is
 /// nothing to start the binding at that does not assume something about `T`.
 impl<T : Clone, E : Clone> Clone for Result<T, E> {
+  /// The result with whichever side it holds cloned.
   fn clone(self : &Result<T, E>) -> Result<T, E> {
     match *self {
       Result<T, E>::Ok(v) => {
