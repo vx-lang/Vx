@@ -1,0 +1,27 @@
+//===- associated_type_not_declared.vx - Vx Compiler ------------*- Vx -*-===//
+// RUN: not vxc %s --action print-ast 2>&1 | FileCheck %s
+
+trait Counter {
+  type Item;
+  fn next(self : Self) -> Self::Item;
+}
+
+impl Counter for i32 {
+  type Itm = i64;
+  fn next(self : i32) -> i64 {
+    return 7;
+  }
+}
+
+fn main() -> i32 {
+  let a : i32 = 1;
+  print(a.next());
+  return 0;
+}
+
+// A misspelling reports both halves: the name that was not bound, and the one that was bound
+// and means nothing.
+// CHECK: E3037
+// CHECK-SAME: does not bind the associated type 'Item'
+// CHECK: E3038
+// CHECK-SAME: binds 'Itm', which trait Counter does not declare

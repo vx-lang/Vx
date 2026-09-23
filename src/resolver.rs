@@ -141,6 +141,47 @@ pub fn collect_trait_defaults<'p>(
     defaults
 }
 
+/// What an impl binds each of the trait's associated types to, keyed by the way a signature
+/// spells it: `type Item = i64;` becomes `Self::Item -> i64`.
+fn assoc_substitution(
+    block: &crate::syntax::ImplBlock,
+) -> std::collections::HashMap<crate::symbol::Symbol, crate::syntax::Type> {
+    block
+        .assoc_bindings
+        .iter()
+        .map(|(name, bound)| {
+            (
+                crate::symbol::Symbol::from(format!("Self::{}", name.as_ref()).as_str()),
+                bound.clone(),
+            )
+        })
+        .collect()
+}
+
+/// Replace `Self::Item` in an impl's method signatures with the type that impl bound it to.
+///
+/// This runs beside the trait-default copy and for the same reason `Self` itself is
+/// substituted there: from here on the impl's methods are ordinary methods, and nothing
+/// downstream -- name resolution, the checker, either code generator -- needs to know that
+/// an associated type was ever written.
+///
+/// Signatures only, which is the same reach `Self` has today. An annotation inside a body is
+/// not rewritten, so a binding is not yet usable there.
+pub fn bind_associated_types_in(program: &mut crate::syntax::Program) {
+    for block in &mut program.impls {
+        if block.assoc_bindings.is_empty() {
+            continue;
+        }
+        let subst = assoc_substitution(block);
+        for method in &mut block.methods {
+            for (_, param_ty) in &mut method.params {
+                *param_ty = param_ty.substitute(&subst);
+            }
+            method.return_type = method.return_type.substitute(&subst);
+        }
+    }
+}
+
 pub fn fill_trait_defaults_in(program: &mut crate::syntax::Program, defaults: &TraitDefaults) {
     if defaults.is_empty() {
         return;

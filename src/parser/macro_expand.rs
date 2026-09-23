@@ -281,6 +281,10 @@ impl<'a> MacroExpander<'a> {
         // not exist yet, and filling defaults then left it without them.
         crate::resolver::fill_trait_defaults_in(module, self.trait_defaults);
 
+        // After the copy, so a default's signature gets the same treatment a hand-written
+        // method's does. Both say `Self::Item`; from here on both say what the impl bound it to.
+        crate::resolver::bind_associated_types_in(module);
+
         // Expand top level decls
         for func in &mut module.functions {
             self.expand_function(func)?;

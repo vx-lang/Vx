@@ -306,6 +306,13 @@ pub enum DiagnosticCode {
     /// are kept in a hash map, so which body a call reached used to change from one run of
     /// the compiler to the next; refusing the call is the only answer that is the same twice.
     E3035,
+    /// An impl of a trait that declares an associated type does not bind it. The trait's
+    /// signatures are written against `Self::Item`, so with no binding there is nothing to put
+    /// in their place, and the method's type becomes whatever the impl happened to write.
+    E3037,
+    /// `type Item = ..` in an impl whose trait declares no `Item`. Usually a misspelling:
+    /// nothing reads the binding, so it would go on meaning nothing, in silence.
+    E3038,
 
     // --- Borrow/Ownership Errors (E4xxx) ---
     /// Use of moved or consumed linear variable

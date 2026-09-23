@@ -123,6 +123,9 @@ pub struct TraitDecl {
     pub name: Symbol,
     pub generics: Vec<GenericParam>,
     pub methods: Vec<MethodSignature>,
+    /// `type Item;`. A name the trait's signatures may write as `Self::Item`, which every
+    /// impl binds to a type of its own.
+    pub assoc_types: Vec<Symbol>,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -134,6 +137,8 @@ pub struct ImplBlock {
     pub trait_args: Vec<Type>,
     pub target_type: Type,
     pub methods: Vec<Function>,
+    /// `type Item = i64;`. What this impl binds each of the trait's associated types to.
+    pub assoc_bindings: Vec<(Symbol, Type)>,
 }
 
 impl ImplBlock {
@@ -143,6 +148,7 @@ impl ImplBlock {
             trait_name: self.trait_name.clone(),
             trait_args: self.trait_args.clone(),
             target_type: self.target_type.clone(),
+            assoc_bindings: self.assoc_bindings.clone(),
             // Always preserve method bodies: methods only exist in impl blocks, so
             // method-call monomorphization clones the body from the type-check env
             // (env.impls). Dropping it (as the signature clone does for free

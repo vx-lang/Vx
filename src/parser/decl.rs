@@ -890,7 +890,20 @@ impl<'a> Parser<'a> {
         self.consume(&TokenType::LeftBrace, "Expected '{'")?;
 
         let mut methods = Vec::new();
+        let mut assoc_types: Vec<crate::symbol::Symbol> = Vec::new();
         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
+            // `type Item;` declares an associated type. The trait's signatures write it as
+            // `Self::Item`, and every impl binds it to a type of its own. No bound is accepted
+            // yet, so the name is all there is to record.
+            if self.match_token(&TokenType::TypeKw) {
+                let assoc = self.expect_identifier("Expected an associated type name")?;
+                self.consume(
+                    &TokenType::Semicolon,
+                    "Expected ';' after an associated type declaration",
+                )?;
+                assoc_types.push(assoc.into());
+                continue;
+            }
             if self.check(&TokenType::Unsafe) {
                 return Err(self.error("`unsafe fn` on a trait method is not supported yet"));
             }
@@ -944,6 +957,7 @@ impl<'a> Parser<'a> {
             name: name.into(),
             generics,
             methods,
+            assoc_types,
         })
     }
 
@@ -999,6 +1013,7 @@ impl<'a> Parser<'a> {
 
         self.consume(&TokenType::LeftBrace, "Expected '{' after impl target")?;
         let mut methods = Vec::new();
+        let mut assoc_bindings: Vec<(crate::symbol::Symbol, Type)> = Vec::new();
         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
             let mut doc_comment: Option<String> = None;
             while let TokenType::DocComment(c) = &self.peek().kind {
@@ -1010,6 +1025,22 @@ impl<'a> Parser<'a> {
                     doc_comment = Some(text);
                 }
                 self.advance();
+            }
+
+            // `type Item = i64;` binds one of the trait's associated types.
+            if self.match_token(&TokenType::TypeKw) {
+                let assoc = self.expect_identifier("Expected an associated type name")?;
+                self.consume(
+                    &TokenType::Equals,
+                    "Expected '=' after an associated type name",
+                )?;
+                let bound = self.parse_type()?;
+                self.consume(
+                    &TokenType::Semicolon,
+                    "Expected ';' after an associated type binding",
+                )?;
+                assoc_bindings.push((assoc.into(), bound));
+                continue;
             }
 
             let mut method = self.parse_function()?;
@@ -1046,6 +1077,7 @@ impl<'a> Parser<'a> {
             trait_args,
             target_type,
             methods,
+            assoc_bindings,
         })
     }
 

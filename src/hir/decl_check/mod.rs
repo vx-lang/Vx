@@ -13,6 +13,7 @@
 
 use super::*;
 
+mod assoc_types;
 mod conflicts;
 mod copy_impls;
 mod memory;
@@ -36,6 +37,9 @@ impl TypeChecker<'_> {
         self.check_declaration_conflicts();
         // `impl Copy for X` where one of X's fields moves rather than copies.
         self.check_copy_impls();
+        // An impl binds every associated type its trait declares. Nothing downstream can catch
+        // this: the binding is substituted into the signatures before name resolution runs.
+        self.check_associated_type_bindings();
         // Structural validity of transfer lowerings: duplicate edge, empty body.
         self.check_transfer_impls();
         // Declared topologies, read from the env rather than one program: a topology arriving via

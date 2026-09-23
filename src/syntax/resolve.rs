@@ -399,6 +399,9 @@ impl TraitDecl {
 impl ImplBlock {
     pub fn resolve_names(&mut self, scope: &ResolutionScope) {
         self.target_type.resolve_names(scope);
+        for (_, bound) in &mut self.assoc_bindings {
+            bound.resolve_names(scope);
+        }
         for f in &mut self.methods {
             f.resolve_names(scope);
         }

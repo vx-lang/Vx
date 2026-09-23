@@ -1,0 +1,24 @@
+//===- associated_type_not_bound.vx - Vx Compiler ---------------*- Vx -*-===//
+// RUN: not vxc %s --action print-ast 2>&1 | FileCheck %s
+
+trait Counter {
+  type Item;
+  fn next(self : Self) -> Self::Item;
+}
+
+impl Counter for i32 {
+  fn next(self : i32) -> i64 {
+    return 7;
+  }
+}
+
+fn main() -> i32 {
+  let a : i32 = 1;
+  print(a.next());
+  return 0;
+}
+
+// Nothing downstream can catch this: the binding is substituted into the impl's signatures
+// before name resolution, so a missing one leaves the impl's own `-> i64` to be trusted.
+// CHECK: E3037
+// CHECK-SAME: does not bind the associated type 'Item'

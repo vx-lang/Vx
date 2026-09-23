@@ -354,6 +354,15 @@ impl<'a> Parser<'a> {
                 segments
                     .push(self.expect_identifier("Expected identifier after '::' in type path")?);
             }
+            // `Self::Item` is a trait's associated type, not a path to a declared one. It is a
+            // type variable the impl binds, so it is parsed as one and substituted away with
+            // the trait's other parameters before name resolution runs.
+            if segments.len() == 2 && segments[0] == "Self" {
+                return Ok(Type::Generic(
+                    crate::symbol::Symbol::from(segments.join("::").as_ref()),
+                    None,
+                ));
+            }
             let base_type = Type::Struct(
                 crate::symbol::Symbol::from(segments.join("::").as_ref()),
                 None,
