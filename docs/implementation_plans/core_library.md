@@ -799,7 +799,7 @@ live docs, not this table.
 
 | Rust `core` module | Vx module | Phase | Status | Blocking Track A items | Notes / exclusions |
 | --- | --- | --- | --- | --- | --- |
-| `marker` | `core::marker` | 1 | — | A6 | `Send`/`Sync` declared, not enforced; `Unpin`, `Sized` no-ops |
+| `marker` | `core::marker` | 1 | partial | Vx#715 | `Copy` declared and stamped for the scalars, `PhantomData<T>`; `Send`/`Sync`/`Sized` declared, not enforced. `Copy` is enforced for a struct and a payload-free enum; a generic enum is not treated as linear at all, so `Option`'s and `Result`'s impls are written and unenforced |
 | `cmp` | `core::cmp` | 1 | partial | Vx#712 for `Reverse`, Vx#223 for free `max`/`min` | `PartialEq` and `Ord` over every integer width and `bool`; `PartialOrd` over those and the floats, which cannot be `Ord`; `Ordering` with `then_with`; `max_by`/`min_by`. No `Reverse` (its `Ord` impl declines on the flat path), no free `max`/`min` (the names are the compiler's tensor reductions), no `max_by_key`/`min_by_key`, no `Eq`. `Rhs` is `Self` by convention until trait-parameter defaults exist |
 | `ops` | `core::ops` | 1→2 | declared | A11 (dispatch), A10 (`Output`) | `Deref`, `Drop`, `Fn*`, coroutine traits excluded |
 | `clone` | `core::clone` | 1 | partial | | `Clone` for the scalars, `bool`, `Ordering`, `Option<T : Clone>`; `Result<T, E>` pending an impl over two bounded parameters |
@@ -809,8 +809,8 @@ live docs, not this table.
 | `result` | `core::result` | 1 | partial | Vx#526 for `expect`, Vx#711 for `inspect` | replaced the Rust-backed shims; `ok`, `err`, `map`, `map_err`, `and_then`, `unwrap_or_else`, `unwrap_err`, `is_ok_and`, `is_err_and`, `and`, `or`, `map_or`, `map_or_else`; no `or_else` (answers with a `Result` built from a closure, the shape the flat path declines hardest), `transpose`, `flatten`, or the reference-returning methods |
 | `num` (integers) | `core::num` | 1 | partial | | every width, signed and unsigned; bit ops, rotates, `pow`, `ilog2`, `next_power_of_two`, the checked and saturating families; no `wrapping_*`/`overflowing_*` spellings, `from_str_radix`, `to_be`/`to_le`; constants as functions until `const` items |
 | `num` (floats) | `core::num` | 2 | — | — | superset of Rust's: `exp`/`sqrt`/`sin`/.. via `mlir!` `math` dialect; parsing in phase 3 |
-| `mem` | `core::mem` | 1 | — | A19 for semantics | `drop`/`forget`/`needs_drop` declared, semantics pending Drop |
-| `ptr` | `core::ptr` | 1 | — | — | `addr_of` excluded |
+| `mem` | `core::mem` | 1 | partial | A19 for semantics | `size_of`, `swap`, `replace`, `drop`, `forget`, `needs_drop`. No `align_of` (wants an intrinsic beside `sizeof`), no `take` (`T::default()` on a bounded parameter is not resolved), no `zeroed`/`transmute`/`ManuallyDrop`/`MaybeUninit`/`discriminant` |
+| `ptr` | `core::ptr` | 1 | partial | Vx#714 | `null`, `null_mut`, `read`, `write`. No `eq`/`is_null`: two raw pointers cannot be compared and a pointer cannot be cast to an integer, so a null test cannot be spelled. No pointer arithmetic, `copy`, or the volatile forms. `addr_of` excluded |
 | `hint` | `core::hint` | 1 | — | — | |
 | `panic` | `core::panic` | 1 | — | A8 | `Location`, `PanicInfo`, hooks excluded |
 | `iter` | `core::iter` | 2 | partial | A10 (`Item`), A16 (`zip`, `enumerate`), Vx#647, Vx#649 | `Iterator<Item>` with eight defaults, `Range`, `map`/`filter`/`take`/`skip`; one adaptor deep, and no default names `Item`; no `rev`, `sum`, `fold`, `collect` |

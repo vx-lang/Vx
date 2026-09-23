@@ -31,12 +31,18 @@
 // A closure is called by hand -- `let p = f.func; p(f.env, v)` -- since there is no call
 // syntax for one yet.
 
+import core::marker;
 import core::ops;
 
 enum Option<T> {
   Some(T),
   None,
 }
+
+/// An option copies when what it may hold copies, which is Rust's rule. It buys nothing
+/// yet: a generic enum is not treated as linear, so an `Option` survives a move whether or
+/// not this is written (Vx#715). It is here to be right when that is fixed.
+impl<T : Copy> Copy for Option<T> {}
 
 impl<T> Option<T> {
   /// Is there a value?

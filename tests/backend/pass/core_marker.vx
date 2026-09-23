@@ -1,0 +1,66 @@
+//===- core_marker.vx - Vx Compiler ------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `core::marker`, and the `Copy` impls the core types get from it.
+//
+// Every case below reads the *original* after assigning it somewhere else, which is the
+// whole of what `Copy` buys. Without the impl the second read is a compile failure rather
+// than a wrong answer, so that is what a broken `Copy` looks like here.
+//
+// Only the `Ordering` case actually tests anything. Removing `impl Copy for Ordering`
+// stops this file building; removing the `Option<T>` or `Result<T, E>` impl changes
+// nothing, because a generic enum is not treated as linear in the first place and can be
+// used after a move whether or not it declares `Copy` (Vx#715). Those two lines are here
+// so the day that is fixed, this file is already asking the question -- they are not
+// evidence today, and this comment is the record of that.
+//
+// `Option<T>` and `Result<T, E>` are conditional -- they copy when what they hold does --
+// so each is instantiated at a scalar, which is the case the bound admits.
+//
+// `PhantomData` is constructed and not read, because there is nothing in it to read. It is
+// here so that a change breaking the empty generic struct is a failure in `core`'s own
+// tests rather than somewhere downstream.
+import core::cmp;
+import core::marker;
+import core::option;
+import core::result;
+
+fn show(flag : bool) -> i32 {
+  if flag {
+    print(1);
+  } else {
+    print(0);
+  }
+  return 0;
+}
+
+fn main() -> i32 {
+  let m = PhantomData<i32> { };
+
+  let o : Ordering = Ordering::Greater();
+  let p : Ordering = o;
+  show(o.is_gt());
+  print!(" ");
+  show(p.is_gt());
+  print!(" | ");
+
+  let a = Option<i32>::Some(5);
+  let b = a;
+  print(a.unwrap_or(-1));
+  print!(" ");
+  print(b.unwrap_or(-1));
+  print!(" | ");
+
+  let r = Result<i32, i32>::Ok(7);
+  let s = r;
+  print(r.unwrap_or(-1));
+  print!(" ");
+  print(s.unwrap_or(-1));
+  return 0;
+}
+
+// EXPECT: 1 1 | 5 5 | 7 7

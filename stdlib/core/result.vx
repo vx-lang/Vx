@@ -32,6 +32,7 @@
 //   `cloned`
 //   `transpose`, `flatten`  want `Result<Option<T>, E>` and `Result<Result<T, E>, E>` to
 //                           lower.
+import core::marker;
 import core::ops;
 import core::option;
 
@@ -39,6 +40,10 @@ enum Result<T, E> {
   Ok(T),
   Err(E),
 }
+
+/// A result copies when both of the types it may hold copy. As with `Option`, this buys
+/// nothing until a generic enum is treated as linear (Vx#715).
+impl<T : Copy, E : Copy> Copy for Result<T, E> {}
 
 impl<T, E> Result<T, E> {
   fn is_ok(self : &Result<T, E>) -> bool {

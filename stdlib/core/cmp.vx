@@ -36,6 +36,7 @@
 //   `Reverse<T>`        the generic struct with the inverted `Ord` impl runs, and declines
 //                       on the flat path with an emitter gap (Vx#712). It lands when that
 //                       closes, since `core` is the corpus the flat path is measured on.
+import core::marker;
 import core::ops;
 import core::option;
 
@@ -44,6 +45,10 @@ enum Ordering {
   Equal,
   Greater,
 }
+
+/// An ordering is three states and no payload, so it copies. Without this a comparison
+/// could only be read once: `let o = a.cmp(&b);` would consume `o` at its first use.
+impl Copy for Ordering {}
 
 impl Ordering {
   fn is_lt(self : Ordering) -> bool {

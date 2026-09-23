@@ -1,0 +1,86 @@
+//===- core_mem_ptr.vx - Vx Compiler -----------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `core::mem` and `core::ptr`.
+//
+// `size_of` is asked at three widths, since one answer alone does not tell a working
+// intrinsic from a constant.
+//
+// `swap` and `replace` are each read twice: what came back and what was left behind. A
+// `swap` that copied one way, or a `replace` that returned the new value instead of the
+// old, passes a test that only looks at one of the two.
+//
+// `read` and `write` are asked of a value that is not the one already there, so a `read`
+// that answered zero or a `write` that did nothing would show.
+//
+// `null` and `null_mut` are the two items here with no assertion. There is no way to ask
+// whether a pointer is null: comparing two raw pointers fails MLIR verification on both
+// code generators, and casting one to an integer is refused by the checker (Vx#714). They
+// are called so that a broken body is a compile failure, and that is all this file can
+// claim about them.
+//
+// `drop` and `forget` consume their argument and do nothing else, so the assertion is that
+// the program still runs afterwards.
+import core::mem;
+import core::ptr;
+
+fn show(flag : bool) -> i32 {
+  if flag {
+    print(1);
+  } else {
+    print(0);
+  }
+  return 0;
+}
+
+fn main() -> i32 {
+  print(size_of<i64>() as i32);
+  print!(" ");
+  print(size_of<i32>() as i32);
+  print!(" ");
+  print(size_of<u8>() as i32);
+  print!(" | ");
+
+  let mut a : i32 = 1;
+  let mut b : i32 = 2;
+  swap<i32>(&mut a, &mut b);
+  print(a);
+  print!(" ");
+  print(b);
+  print!(" ");
+
+  let mut c : i32 = 7;
+  print(replace<i32>(&mut c, 9));
+  print!(" ");
+  print(c);
+  print!(" | ");
+
+  show(needs_drop<i32>());
+  print!(" ");
+  let z : i32 = 3;
+  drop<i32>(z);
+  let w : i32 = 4;
+  forget<i32>(w);
+  print(1);
+  print!(" | ");
+
+  let x : i32 = 42;
+  let pc : *const i32 = &x;
+  print(unsafe { read<i32>(pc) });
+  print!(" ");
+  let mut y : i32 = 1;
+  let pm : *mut i32 = &mut y;
+  unsafe { write<i32>(pm, 5); }
+  print(y);
+  print!(" ");
+  let n = null<i32>();
+  let nm = null_mut<i32>();
+  print(2);
+  return 0;
+}
+
+// EXPECT: 8 4 1 | 2 1 7 9 | 0 1 | 42 5 2

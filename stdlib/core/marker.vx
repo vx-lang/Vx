@@ -1,0 +1,59 @@
+//===- marker.vx - Vx Standard Library ----------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The traits that say something about a type without giving it a method.
+//
+// `Copy` is the one that means anything today. A type that implements it survives being
+// assigned somewhere else, so `let b = a;` leaves `a` readable. Everything else moves,
+// which is what keeps a tensor or a placed buffer linear: neither can declare `Copy`,
+// since a type may only do so when all of its fields already have.
+//
+// The checker recognizes the trait by name, so it has to be declared somewhere a program
+// can import rather than written out in each one. That is what this module is for.
+//
+// `Send` and `Sync` are declared and mean nothing: the language has no threads to enforce
+// them across. They are here so a signature that wants to name a bound can, and the parity
+// matrix records that they are not enforced.
+//
+// `Sized` is a no-op for the same reason Rust's is: every type Vx has is sized, and the
+// bound exists to be written.
+
+/// A type that is duplicated rather than moved when it is assigned.
+trait Copy {}
+
+/// The scalars already copy on every read. The impls are here so a generic body bounded by
+/// `T : Copy` can be instantiated at one of them, which is what the bound is for.
+macro_rules stamp_copy {
+  ($t : ident) => {
+    impl Copy for $t {}
+  };
+}
+
+stamp_copy!(i8);
+stamp_copy!(i16);
+stamp_copy!(i32);
+stamp_copy!(i64);
+stamp_copy!(u8);
+stamp_copy!(u16);
+stamp_copy!(u32);
+stamp_copy!(u64);
+stamp_copy!(f32);
+stamp_copy!(f64);
+stamp_copy!(bool);
+
+/// Declared, not enforced: there are no threads to send a value between.
+trait Send {}
+
+/// Declared, not enforced.
+trait Sync {}
+
+/// Every Vx type has a known size, so this holds of all of them.
+trait Sized {}
+
+/// A field that records a type without storing one. An empty struct occupies nothing.
+struct PhantomData<T> {
+}

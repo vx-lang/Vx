@@ -1,0 +1,64 @@
+//===- mem.vx - Vx Standard Library -------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Moving values around without looking at what they are.
+//
+// `size_of` is the existing `sizeof<T>()` intrinsic under Rust's name. `swap` and
+// `replace` are the two ways to put a value where another one was, and both are safe: the
+// old value comes back rather than being lost.
+//
+// `drop` and `forget` do the same thing today, which is nothing beyond consuming their
+// argument. They differ in Rust because one runs a destructor and the other does not, and
+// Vx has no `Drop` (Vx#495). Both are here because a program that means "I am finished
+// with this" should be able to say so, and because their meaning will change under them
+// rather than their names appearing later.
+//
+// Still missing, each waiting on something outside this file:
+//
+//   `align_of`               wants an intrinsic beside `sizeof`, which does not exist.
+//   `take`                   `T::default()` on a bounded type parameter reports an
+//                            undefined static method, so there is no value to leave behind.
+//   `zeroed`, `transmute`    want a bit-level cast this module cannot yet spell.
+//   `ManuallyDrop`,          mean nothing before `Drop` (Vx#495).
+//   `MaybeUninit`,
+//   `needs_drop` answering
+//   anything but false
+//   `discriminant`           wants to read an enum's tag as a value.
+
+/// The size of `T` in bytes.
+fn size_of<T>() -> i64 {
+  return sizeof<T>();
+}
+
+/// Each value ends up where the other one was.
+fn swap<T>(a : &mut T, b : &mut T) -> void {
+  let t = *a;
+  *a = *b;
+  *b = t;
+}
+
+/// `src` goes in, and what was there comes back.
+fn replace<T>(dest : &mut T, src : T) -> T {
+  let old = *dest;
+  *dest = src;
+  return old;
+}
+
+/// Consumes the value. With no `Drop` in the language this frees nothing; it says that the
+/// caller is finished with it, and the move checker holds them to it.
+fn drop<T>(_x : T) -> void {
+}
+
+/// Consumes the value without running anything. The same as `drop` until `Drop` exists.
+fn forget<T>(_x : T) -> void {
+}
+
+/// Whether dropping a `T` does any work. False for every type, since nothing has a
+/// destructor yet.
+fn needs_drop<T>() -> bool {
+  return false;
+}
