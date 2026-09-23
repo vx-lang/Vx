@@ -342,6 +342,59 @@ macro_rules stamp_signed_int {
         }
         return self - rhs;
       }
+
+      /// The sum, wrapping round at the width. Vx's `+` already wraps, so the body is the
+      /// operator; the name is what a reader who wants that on purpose looks for, and what
+      /// a hash function is written in.
+      fn wrapping_add(self : $t, rhs : $t) -> $t {
+        return self + rhs;
+      }
+
+      /// The difference, wrapping round at the width.
+      fn wrapping_sub(self : $t, rhs : $t) -> $t {
+        return self - rhs;
+      }
+
+      /// The product, keeping the low bits and discarding the rest.
+      fn wrapping_mul(self : $t, rhs : $t) -> $t {
+        return self * rhs;
+      }
+
+      /// Zero minus this, wrapping. The smallest value negates to itself, because its
+      /// positive is one past the largest.
+      fn wrapping_neg(self : $t) -> $t {
+        return (0 as $t) - self;
+      }
+
+      /// Clamped to the width rather than wrapping. Which end it clamps to is the sign the
+      /// product would have had, which is whether the two operands agree in sign.
+      fn saturating_mul(self : $t, rhs : $t) -> $t {
+        let product = self.checked_mul(rhs);
+        let signs_agree = (self < (0 as $t)) == (rhs < (0 as $t));
+        let mut limit = self.min_value();
+        if signs_agree {
+          limit = self.max_value();
+        }
+        return product.unwrap_or(limit);
+      }
+
+      /// How many set bits the value starts with, counting from the top.
+      ///
+      /// The complement is taken with `^` against an all-ones value rather than with `!`,
+      /// which the checker types as a `bool` on an integer and the two code generators
+      /// lower two different ways (Vx#717).
+      fn leading_ones(self : $t) -> $t {
+        let ones : $t = (0 as $t) - (1 as $t);
+        let flipped : $t = self ^ ones;
+        return flipped.leading_zeros();
+      }
+
+      /// How many set bits the value ends with, counting from the bottom.
+      fn trailing_ones(self : $t) -> $t {
+        let ones : $t = (0 as $t) - (1 as $t);
+        let flipped : $t = self ^ ones;
+        return flipped.trailing_zeros();
+      }
     }
   };
 }
@@ -577,6 +630,51 @@ macro_rules stamp_unsigned_int {
           return 0;
         }
         return self - rhs;
+      }
+
+      /// The sum, wrapping round at the width. Vx's `+` already wraps.
+      fn wrapping_add(self : $t, rhs : $t) -> $t {
+        return self + rhs;
+      }
+
+      /// The difference, wrapping round at the width, so subtracting past zero lands near
+      /// the top.
+      fn wrapping_sub(self : $t, rhs : $t) -> $t {
+        return self - rhs;
+      }
+
+      /// The product, keeping the low bits and discarding the rest.
+      fn wrapping_mul(self : $t, rhs : $t) -> $t {
+        return self * rhs;
+      }
+
+      /// Zero minus this, wrapping.
+      fn wrapping_neg(self : $t) -> $t {
+        return 0 - self;
+      }
+
+      /// Clamped to the top of the width rather than wrapping. There is no other end to
+      /// clamp to without a sign.
+      fn saturating_mul(self : $t, rhs : $t) -> $t {
+        return self.checked_mul(rhs).unwrap_or(self.max_value());
+      }
+
+      /// How many set bits the value starts with, counting from the top.
+      ///
+      /// The complement is taken with `^` against an all-ones value rather than with `!`,
+      /// which the checker types as a `bool` on an integer and the two code generators
+      /// lower two different ways (Vx#717).
+      fn leading_ones(self : $t) -> $t {
+        let ones : $t = self.max_value();
+        let flipped : $t = self ^ ones;
+        return flipped.leading_zeros();
+      }
+
+      /// How many set bits the value ends with, counting from the bottom.
+      fn trailing_ones(self : $t) -> $t {
+        let ones : $t = self.max_value();
+        let flipped : $t = self ^ ones;
+        return flipped.trailing_zeros();
       }
     }
   };

@@ -1,0 +1,101 @@
+//===- core_num_wrapping.vx - Vx Compiler ------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The `wrapping_` family, `saturating_mul`, and the two bit counts that read ones.
+//
+// Every `wrapping_` case is asked where it actually wraps, since the body is the bare
+// operator and a case that stays in range proves nothing about the name. The signed and
+// unsigned stamps are separate macros, so both are asked: an unsigned `wrapping_sub` past
+// zero lands near the top of the width, which is the case with no signed counterpart.
+//
+// `saturating_mul` is asked with both signs, because which end it clamps to is the only
+// thing it decides. Two negatives clamp to the top and a mixed pair to the bottom, so a
+// version that always answered `max_value` passes the first and fails the second.
+//
+// `leading_ones` and `trailing_ones` are asked of -1, which is all ones, and of a value
+// with ones at one end only -- a complement taken the wrong way round answers the width
+// where these answer a part of it.
+//
+// `wrapping_neg` is asked of an ordinary value as well as of the smallest one. The
+// smallest negates to itself, so a `wrapping_neg` that returned its argument passes that
+// case alone; the sabotage run is what found it.
+//
+// `u64` prints through the unsigned helper, so this file is flat-only.
+//
+// REQUIRES: flat-codegen
+// EXPECT: -2147483648 2147483647 0 -2147483648 -1 | 0 4294967295 0 4294967295 4294967295 32 0 | 2147483647 -2147483648 6 | 32 0 32 0 2 3
+import core::num;
+import core::option;
+
+fn main() -> i32 {
+  // Signed, each at the edge where it wraps.
+  let max : i32 = 2147483647;
+  let min : i32 = -2147483647 - 1;
+  let one : i32 = 1;
+  print(max.wrapping_add(one));
+  print!(" ");
+  print(min.wrapping_sub(one));
+  print!(" ");
+  let root : i32 = 65536;
+  print(root.wrapping_mul(root));
+  print!(" ");
+  print(min.wrapping_neg());
+  print!(" ");
+  print(one.wrapping_neg());
+  print!(" | ");
+
+  // Unsigned. Subtracting past zero is the case the signed stamp has no counterpart for.
+  let u_max : u32 = 4294967295;
+  let u_one : u32 = 1;
+  let u_zero : u32 = 0;
+  print(u_max.wrapping_add(u_one) as i32);
+  print!(" ");
+  print(u_zero.wrapping_sub(u_one));
+  print!(" ");
+  let u_root : u32 = 65536;
+  print(u_root.wrapping_mul(u_root) as i32);
+  print!(" ");
+  print(u_one.wrapping_neg());
+  print!(" ");
+  let u_big : u32 = 100000;
+  print(u_big.saturating_mul(u_big));
+  print!(" ");
+  print(u_max.leading_ones());
+  print!(" ");
+  print(u_zero.leading_ones());
+  print!(" | ");
+
+  // `saturating_mul` at both ends, and once where it does not clamp.
+  let big : i32 = 100000;
+  let neg_big : i32 = -100000;
+  print(big.saturating_mul(big));
+  print!(" ");
+  print(big.saturating_mul(neg_big));
+  print!(" ");
+  let two : i32 = 2;
+  let three : i32 = 3;
+  print(two.saturating_mul(three));
+  print!(" | ");
+
+  // All ones, then ones at one end only.
+  let all : i32 = -1;
+  print(all.leading_ones());
+  print!(" ");
+  print(all.leading_zeros());
+  print!(" ");
+  print(all.trailing_ones());
+  print!(" ");
+  let zero : i32 = 0;
+  print(zero.leading_ones());
+  print!(" ");
+  let top_two : i32 = -1073741824;
+  print(top_two.leading_ones());
+  print!(" ");
+  let low_three : i32 = 7;
+  print(low_three.trailing_ones());
+  return 0;
+}
