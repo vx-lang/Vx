@@ -24,7 +24,7 @@
 import std::llama;
 import std::io;
 import std::vec;
-import std::math;
+import core::num;
 import std::time;
 
 extern {

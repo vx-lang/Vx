@@ -9,7 +9,7 @@
 // RUN: vxc %s --action run-jit 2>&1 | FileCheck %s
 
 import std::io;
-import std::math;
+import core::num;
 extern "C" {
 }
 

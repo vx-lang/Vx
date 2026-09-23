@@ -45,7 +45,6 @@ friends.
 - [`std::iter`](#stditer) — The `Iterator` trait and its adaptors, which `for` loops and `.map` build on.
 - [`std::libc`](#stdlibc) — Direct bindings to the C library.
 - [`std::llama`](#stdllama) — Helpers used by the Llama 2 example.
-- [`std::math`](#stdmath) — Mathematical functions and constants.
 - [`std::mmap`](#stdmmap) — Memory-mapped files.
 - [`std::net`](#stdnet) — TCP and UDP sockets.
 - [`std::rand`](#stdrand) — Seeded pseudo-random numbers, one stream per `Rng`.
@@ -804,102 +803,6 @@ fn vx_read_prompt_file(filepath : *const i8) -> *const i8
 fn vx_get_llama_config() -> *mut i32
 ```
 
-## `std::math`
-
-Mathematical functions and constants.
-
-**Types**
-
-- `trait Math`
-
-**Functions**
-
-<!-- vx-doctest: skip -- signature listing, not a program -->
-
-```rust
-fn sin(self : Self) -> Self
-fn cos(self : Self) -> Self
-fn tan(self : Self) -> Self
-fn abs(self : Self) -> Self
-fn sqrt(self : Self) -> Self
-fn exp(self : Self) -> Self
-fn ln(self : Self) -> Self
-fn asin(self : Self) -> Self
-fn acos(self : Self) -> Self
-fn atan(self : Self) -> Self
-fn log2(self : Self) -> Self
-fn log10(self : Self) -> Self
-```
-
-**`Math for f32` methods**
-
-<!-- vx-doctest: skip -- signature listing, not a program -->
-
-```rust
-fn sin(self : f32) -> f32
-fn cos(self : f32) -> f32
-fn tan(self : f32) -> f32
-fn abs(self : f32) -> f32
-fn sqrt(self : f32) -> f32
-fn exp(self : f32) -> f32
-fn ln(self : f32) -> f32
-fn asin(self : f32) -> f32
-fn acos(self : f32) -> f32
-fn atan(self : f32) -> f32
-fn log2(self : f32) -> f32
-fn log10(self : f32) -> f32
-```
-
-**`Math for f64` methods**
-
-<!-- vx-doctest: skip -- signature listing, not a program -->
-
-```rust
-fn sin(self : f64) -> f64
-fn cos(self : f64) -> f64
-fn tan(self : f64) -> f64
-fn abs(self : f64) -> f64
-fn sqrt(self : f64) -> f64
-fn exp(self : f64) -> f64
-fn ln(self : f64) -> f64
-fn asin(self : f64) -> f64
-fn acos(self : f64) -> f64
-fn atan(self : f64) -> f64
-fn log2(self : f64) -> f64
-fn log10(self : f64) -> f64
-```
-
-**C bindings** *(the native functions this module is built on)*
-
-<!-- vx-doctest: skip -- signature listing, not a program -->
-
-```rust
-fn sinf(x : f32) -> f32
-fn cosf(x : f32) -> f32
-fn tanf(x : f32) -> f32
-fn asinf(x : f32) -> f32
-fn acosf(x : f32) -> f32
-fn atanf(x : f32) -> f32
-fn fabsf(x : f32) -> f32
-fn sqrtf(x : f32) -> f32
-fn expf(x : f32) -> f32
-fn logf(x : f32) -> f32
-fn log2f(x : f32) -> f32
-fn log10f(x : f32) -> f32
-fn sin(x : f64) -> f64
-fn cos(x : f64) -> f64
-fn tan(x : f64) -> f64
-fn asin(x : f64) -> f64
-fn acos(x : f64) -> f64
-fn atan(x : f64) -> f64
-fn fabs(x : f64) -> f64
-fn sqrt(x : f64) -> f64
-fn exp(x : f64) -> f64
-fn log(x : f64) -> f64
-fn log2(x : f64) -> f64
-fn log10(x : f64) -> f64
-```
-
 ## `std::mmap`
 
 Memory-mapped files.
@@ -1235,4 +1138,4 @@ fn vx_vec_bounds_check(index : i64, len : i64) -> i32
 
 ______________________________________________________________________
 
-456 functions across 31 modules.
+396 functions across 30 modules.

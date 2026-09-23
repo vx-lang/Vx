@@ -5,23 +5,41 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// Scalar `f64` values returned across the C ABI, the double-width companion to
+// `ffi_math.vx`, over five different symbols rather than one.
+//
+// The externs are declared here rather than imported, for the reason that file gives: the
+// methods that used to reach them are `core::num`'s now and lower to `math` dialect ops,
+// so importing them would leave this file testing no FFI.
+//
+// All five results are summed and the sum checked, so a call that returned a wrong value
+// or nothing at all moves the total. They are approximately 1, 1, 1.571, 2 and 2, which is
+// why the threshold is 7.5. `asin` was called and its result dropped before; it is in the
+// sum now, so the call is asserted rather than merely made.
+//
 // main calls each function in order; the assertion is that the chain survives to codegen
 // rather than being folded away.
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK-DAG: func.func private @sin(
+// CHECK-DAG: func.func private @cos(
+// CHECK-DAG: func.func private @asin(
+// CHECK-DAG: func.func private @log2(
+// CHECK-DAG: func.func private @log10(
 // CHECK-LABEL: func.func @main() -> i32
-// CHECK: %[[V0:.*]] = call @f64$sin(%{{.*}}) : (f64) -> f64
-// CHECK: call @f64$abs(%[[V0]]) : (f64) -> f64
-// CHECK: %[[V1:.*]] = call @f64$cos(%{{.*}}) : (f64) -> f64
-// CHECK: call @f64$abs(%[[V1]]) : (f64) -> f64
-// CHECK: call @f64$asin(%{{.*}}) : (f64) -> f64
-// CHECK: call @f64$log2(%{{.*}}) : (f64) -> f64
-// CHECK: call @f64$log10(%{{.*}}) : (f64) -> f64
-import std::math;
-
-import std::io;
+// CHECK: %[[V0:.*]] = call @sin(%{{.*}}) : (f64) -> f64
+// CHECK: call @fabs(%[[V0]]) : (f64) -> f64
+// CHECK: %[[V1:.*]] = call @cos(%{{.*}}) : (f64) -> f64
+// CHECK: call @fabs(%[[V1]]) : (f64) -> f64
+// CHECK: call @asin(%{{.*}}) : (f64) -> f64
+// CHECK: call @log2(%{{.*}}) : (f64) -> f64
+// CHECK: call @log10(%{{.*}}) : (f64) -> f64
 extern {
-  // We can also define a helper to print f64 if we want, but for now we'll do
-  // simple return checks.
+  fn sin(x : f64) -> f64;
+  fn cos(x : f64) -> f64;
+  fn asin(x : f64) -> f64;
+  fn log2(x : f64) -> f64;
+  fn log10(x : f64) -> f64;
+  fn fabs(x : f64) -> f64;
 }
 
 fn main() -> i32 {
@@ -29,35 +47,30 @@ fn main() -> i32 {
   let half_pi_f64 : f64 = 1.5707963267;
 
   // sin(pi/2) approx 1.0
-  let s64 : f64 = half_pi_f64.sin();
-  let s64_abs : f64 = s64.abs();
+  let s64 : f64 = unsafe { sin(half_pi_f64) };
+  let s64_abs : f64 = unsafe { fabs(s64) };
 
   // cos(pi) approx -1.0
-  let c64 : f64 = pi_f64.cos();
-  let c64_abs : f64 = c64.abs();
+  let c64 : f64 = unsafe { cos(pi_f64) };
+  let c64_abs : f64 = unsafe { fabs(c64) };
 
-  // Check asin(1.0) approx 1.57079
+  // asin(1.0) approx 1.57079
   let one_f64 : f64 = 1.0;
-  let asin_val : f64 = one_f64.asin();
+  let asin_val : f64 = unsafe { asin(one_f64) };
 
-  // Check log2(4.0) approx 2.0
+  // log2(4.0) approx 2.0
   let four_f64 : f64 = 4.0;
-  let l2 : f64 = four_f64.log2();
+  let l2 : f64 = unsafe { log2(four_f64) };
 
-  // Check log10(100.0) approx 2.0
+  // log10(100.0) approx 2.0
   let hundred_f64 : f64 = 100.0;
-  let l10 : f64 = hundred_f64.log10();
+  let l10 : f64 = unsafe { log10(hundred_f64) };
 
-  // Instead of nested ifs which might break codegen, we can just do sum checks
-  let sum : f64 = s64_abs + c64_abs + l2 + l10; // ~ 1.0 + 1.0 + 2.0 + 2.0 = 6.0
+  let sum : f64 = s64_abs + c64_abs + asin_val + l2 + l10;
   let mut ret : i32 = 1;
 
-  if sum > 5.9 {
+  if sum > 7.5 {
     ret = 0;
   }
-
-  // Ensure all FFI math bindings we added work
   return ret;
 }
-
-// EXPECT:

@@ -4,7 +4,7 @@
 // See LICENSE for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
-import std::math;
+import core::num;
 import std::time;
 
 extern {

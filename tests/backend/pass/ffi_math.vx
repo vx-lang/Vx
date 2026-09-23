@@ -5,24 +5,35 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// A scalar `f32` returned across the C ABI. None of the other `ffi_` fixtures covers that:
+// they hand back pointers and integers, and a float comes back in a different register.
+//
+// The externs are declared here rather than imported. This file used to reach them through
+// `std::math`, whose methods are `core::num`'s now and lower to `math` dialect ops with no
+// call in them at all -- which would have left a file named `ffi_math` testing no FFI.
+//
 // main calls each function in order; the assertion is that the chain survives to codegen
 // rather than being folded away.
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK-DAG: func.func private @sinf(
+// CHECK-DAG: func.func private @fabsf(
 // CHECK-LABEL: func.func @main() -> i32
-// CHECK: %[[V0:.*]] = call @f32$sin(%{{.*}}) : (f32) -> f32
-// CHECK: call @f32$abs(%[[V0]]) : (f32) -> f32
-import std::math;
+// CHECK: %[[V0:.*]] = call @sinf(%{{.*}}) : (f32) -> f32
+// CHECK: call @fabsf(%[[V0]]) : (f32) -> f32
+extern {
+  fn sinf(x : f32) -> f32;
+  fn fabsf(x : f32) -> f32;
+}
 
 fn main() -> i32 {
-  let pi : f32 = 3.141592;
   let half_pi : f32 = 1.570796;
 
   // sin(pi/2) approx 1.0
-  let s : f32 = half_pi.sin();
-  let s_abs : f32 = s.abs();
+  let s : f32 = unsafe { sinf(half_pi) };
+  let s_abs : f32 = unsafe { fabsf(s) };
 
   let mut ret : i32 = 1;
-  // Test that FFI correctly returned scalar 1.0
+  // The FFI returned a scalar 1.0 and it survived the round trip.
   if s_abs > 0.99 {
     ret = 0;
   }

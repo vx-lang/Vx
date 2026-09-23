@@ -28,10 +28,9 @@
 // to `exp` is a libm call, so `exp` lives in Rust's `std`. A `math` dialect op is a route
 // that every backend lowers on its own terms, so they belong here.
 //
-// `std::math` still declares a `Math` trait over the same names, backed by libm externs.
-// A program importing both resolves to these, because an inherent method is preferred to a
-// trait one, and both answer the same on the host. `std::math` goes when its callers move
-// across, which is phase 2 of the plan.
+// These replaced `std::math`, which declared the same names as a `Math` trait over a block
+// of libm externs. That module is gone and its callers import this one: the method names
+// are the same, so only the import line moved.
 //
 // `cbrt` and `erf` are absent. Their `math` ops lower to a libm declaration the pipeline
 // then rejects, and neither is in Rust's `core` either.

@@ -52,7 +52,7 @@
 // CHECK-NOT: call @f32$exp
 // CHECK: vx.return
 
-import std::math;
+import core::num;
 
 fn kernel_prep() -> f32 {
   let mut o = Tensor<f32, [4, 4]>::uninit();
