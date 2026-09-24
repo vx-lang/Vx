@@ -61,8 +61,8 @@ memory it just handed out. The first thing the language does with that answer is
 a = b;              <span class="c">// compiles</span>
 <span class="t">float</span> x = b[<span class="n">0</span>];    <span class="c">// compiles; faults on a discrete GPU</span></code></pre>
 
-<p><code>a</code> points into host DRAM. <code>b</code> points into the GPU's HBM, which the host
-thread cannot address at all. They are the same type, they assign to each other, and reading
+<p><code>a</code> points into host DRAM. <code>b</code> points into the GPU's HBM, which a host
+thread on a discrete GPU cannot address at all. They are the same type, they assign to each other, and reading
 through either is a well-formed expression.</p>
 
 <figure>
@@ -166,6 +166,60 @@ fact, which space each generic pointer points into. The allocator knew. The type
 compiler pass spends its time guessing it back, and it gives up at any call it cannot see
 through.</p>
 
+<h2>The bug, in the wild</h2>
+
+<p>This is a mistake people make often enough to leave a trail. A few from public trackers:</p>
+
+<table>
+<tr><th>Where</th><th>What happened</th></tr>
+<tr><td><a href="https://github.com/pytorch/pytorch/issues/49814">PyTorch #49814</a> (2020)</td>
+<td>A user took <code>data_ptr()</code> from a CUDA tensor and wrapped it with
+<code>from_blob</code>. The new tensor said <code>device=cpu</code>, and printing it was a SIGSEGV.
+The user's own comment on the pointer: <em>&ldquo;I believe &lsquo;p&rsquo; is a gpu
+pointer?&rdquo;</em></td></tr>
+<tr><td><a href="https://forums.developer.nvidia.com/t/cublassasum-fails-if-result-is-on-device/139805/2">cuBLAS
+pointer mode</a> (2020)</td>
+<td><code>cublasSasum</code> writes its result through a <code>float *</code> that means host memory
+or device memory depending on a setting on the library handle, made at run time with
+<code>cublasSetPointerMode</code>. A device result pointer in the default host mode fails.</td></tr>
+<tr><td><a href="https://github.com/ORNL/HeCBench/pull/351">HeCBench #351</a> (2026)</td>
+<td>A GPU memory tester reset its error counter with <code>cudaMemset(&amp;err, ...)</code>, the
+address of a host stack variable, where it meant the device counter. Nothing crashed; later tests
+inherited a stale error count. The same bug was in the HIP version.</td></tr>
+<tr><td><a href="https://github.com/llnl/hiop/issues/774">HiOp #774</a> (2026)</td>
+<td>A sparse solver backend converted a matrix with plain host loads. With
+<code>mem_space=device</code> the arrays were device allocations, and the solver crashed before
+its first factorization.</td></tr>
+<tr><td><a href="https://github.com/AMReX-Codes/amrex/issues/5706">AMReX #5706</a> (2026)</td>
+<td>Four particle-tile vectors fell through to the default arena, which is device memory on GPU
+builds, and host code read them while writing a plot file.</td></tr>
+<tr><td><a href="https://github.com/pytorch/pytorch/issues/196969">PyTorch #196969</a> (2026)</td>
+<td>PyTorch's own compiler generated a CUDA kernel call that received a CPU tensor pointer. Eager
+mode ran correctly.</td></tr>
+</table>
+
+<p>The cuBLAS row is the clearest. The library's authors knew exactly which memory a result pointer
+names, and the only place they could record it was a mode flag on a handle, because the parameter's
+type has nowhere to put it. The last row is a compiler making the same mistake a person does.</p>
+
+<h2>Prior art</h2>
+
+<p>Putting the space in the pointer's type is an old idea. OpenCL C writes
+<code>__global float *</code> and <code>__local float *</code> as distinct types. ISO/IEC TR 18037
+gave C named address spaces for embedded targets, and clang accepts
+<code>__attribute__((address_space(N)))</code> in C and C++. Sequoia, Chapel's locales, X10's places
+and Legion's regions all built placement into the language.</p>
+
+<p>CUDA went the other way on purpose. Unified virtual addressing, since CUDA 4.0, gives every
+allocation a distinct address across host and device, so one generic pointer can reach any memory
+and <code>cudaPointerGetAttributes</code> reports at run time where it points. That buys one kernel
+for every memory, and it moves the question of where a pointer points from the compiler to the run
+time.</p>
+
+<p>Vx keeps the space in the type and adds a description of the machine to check it against: which
+spaces each processor can see, how large each space is, and which links join them. The check runs
+at compile time, and the error names the transfer that fixes it.</p>
+
 <h2>In Vx, the space is in the type</h2>
 
 <p>A Vx tensor's type has a slot for the memory it lives in. Here is a host function, and a caller
@@ -220,6 +274,14 @@ description lists <code>NPU_HBM</code> among the spaces it can see. A host read 
 still written, and compiles to almost nothing. The type records where a value lives; the machine
 description decides who may read it.</p>
 
+<p>Hardware is moving this way. On Grace Hopper the CPU reads the GPU's HBM directly over
+NVLink-C2C, and MI300A puts CPU and GPU on one pool of HBM. Where a read is legal it still has a
+price: a remote read runs at the link's bandwidth, and on a two-socket host a remote NUMA access
+measured
+<a href="/blog/the-numa-that-wasnt-there.html">2.35&times; the cost of a local one</a>. The machine
+file records both facts: <code>visible:</code> says who may read a space, and the transfer edges
+say what moving data costs.</p>
+
 <h2>Raw pointers mean CPU memory</h2>
 
 <p>Vx has raw pointers too, <code>*const T</code> and <code>*mut T</code>, and they carry no space
@@ -231,6 +293,12 @@ unchanged.</p>
 <p>Memory anywhere else is reached through a type that names its space: <code>Tensor</code> or
 <code>Pinned</code>. That is why taking the address of a device element from host code is refused.
 The pointer it would produce claims CPU memory, and the element is in HBM.</p>
+
+<p>That leaves a question for GPU libraries: how does a device tensor reach cuBLAS? Today the
+runtime does it. Its CUDA dispatch calls cuBLAS for matrix products, with the buffers it already
+holds on the device. User code cannot yet pass a device tensor to a C library through its own
+<code>extern</code> declaration. That needs a way to spell a device-memory parameter in an
+<code>extern</code> signature, and Vx does not have one yet.</p>
 
 <p class="post-foot">An earlier post, <a href="/blog/what-a-pointer-forgets.html">What a pointer
 forgets</a>, follows the same fact across a function return. The
