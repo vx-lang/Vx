@@ -29,8 +29,9 @@ friends.
 - [`core::cmp`](#corecmp) — Ordering and equality: `PartialEq`, `Ord`, `PartialOrd` and `Ordering`.
 - [`core::convert`](#coreconvert) — `From`, the conversions that cannot fail and lose nothing.
 - [`core::default`](#coredefault) — `Default`, the value a type starts from.
+- [`core::iter::adapters`](#coreiteradapters) — The iterators `Iterator`'s adaptor methods build: `Map`, `Filter`, `Chain` and the rest.
 - [`core::iter::traits`](#coreitertraits) — The `Iterator` trait: one required `next`, and the methods written over it.
-- [`core::iter`](#coreiter) — `Range` and the iterator adaptors, `map`, `filter`, `take` and `skip`.
+- [`core::iter`](#coreiter) — `Range` and `range`; importing it brings the trait and the adaptors too.
 - [`core::marker`](#coremarker) — The traits that say something about a type without giving it a method.
 - [`core::mem`](#coremem) — Moving values around without looking at what they are.
 - [`core::num`](#corenum) — The integer and float methods, stamped over every width.
@@ -277,6 +278,84 @@ T = `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `bool`
 
 T = `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `f32`, `f64`, `bool`
 
+## `core::iter::adapters`
+
+The iterators `Iterator`'s adaptor methods build: `Map`, `Filter`, `Chain` and the rest.
+
+**Types**
+
+- `struct Map<I, F>`<br>
+  An iterator over another one's items with `f` applied to each. Built by `map`.
+- `struct Filter<I, P>`<br>
+  An iterator over the items of another that `keep` accepts. Built by `filter`.
+- `struct Take<I>`<br>
+  An iterator over at most `left` items of another. Built by `take`.
+- `struct Skip<I>`<br>
+  An iterator over another's items with the first `drop` of them discarded. Built by `skip`.
+- `struct StepBy<I>`<br>
+  An iterator over every `step`th item of another, starting with its first. Built by `step_by`.
+- `struct Chain<A, B>`<br>
+  An iterator over the items of one iterator, then those of another. Built by `chain`.
+- `struct TakeWhile<I, P>`<br>
+  An iterator over another's items for as long as `keep` accepts them. Built by `take_while`.
+- `struct SkipWhile<I, P>`<br>
+  An iterator over another's items from the first one `skip` refuses. Built by `skip_while`.
+- `struct MapWhile<I, F>`<br>
+  An iterator over what `f` answers for another's items, until it answers nothing. Built by
+  `map_while`.
+- `struct Inspect<I, F>`<br>
+  An iterator that hands each of another's items to `f` on its way past. Built by `inspect`.
+
+**`Iterator for Map<I, Closure1<I :  : Item, U>>` methods**
+
+- `fn next(self : &mut Map<I, Closure1<I :  : Item, U>>) -> Option<U>`<br>
+  The inner iterator's next item with `f` applied.
+
+**`Iterator for Filter<I, Closure1<&I :  : Item, bool>>` methods**
+
+- `fn next(self : &mut Filter<I, Closure1<&I :  : Item, bool>>) -> Option<I :  : Item>`<br>
+  The inner iterator's next item that `keep` accepts.
+
+**`Iterator for Take<I>` methods**
+
+- `fn next(self : &mut Take<I>) -> Option<I :  : Item>`<br>
+  The inner iterator's next item, until `left` of them have been handed out.
+
+**`Iterator for Skip<I>` methods**
+
+- `fn next(self : &mut Skip<I>) -> Option<I :  : Item>`<br>
+  The inner iterator's next item, once the skipped ones have been consumed.
+
+**`Iterator for StepBy<I>` methods**
+
+- `fn next(self : &mut StepBy<I>) -> Option<I :  : Item>`<br>
+  The inner iterator's first item, and after that the one `step` places further on.
+
+**`Iterator for Chain<A, B>` methods**
+
+- `fn next(self : &mut Chain<A, B>) -> Option<A :  : Item>`<br>
+  The first iterator's next item, or the second's once the first is finished.
+
+**`Iterator for TakeWhile<I, Closure1<&I :  : Item, bool>>` methods**
+
+- `fn next(self : &mut TakeWhile<I, Closure1<&I :  : Item, bool>>) -> Option<I :  : Item>`<br>
+  The inner iterator's next item, until the first `keep` refuses; nothing from then on.
+
+**`Iterator for SkipWhile<I, Closure1<&I :  : Item, bool>>` methods**
+
+- `fn next(self : &mut SkipWhile<I, Closure1<&I :  : Item, bool>>) -> Option<I :  : Item>`<br>
+  The inner iterator's next item, once the leading ones `skip` accepts are consumed.
+
+**`Iterator for MapWhile<I, Closure1<I :  : Item, Option<U>>>` methods**
+
+- `fn next(self : &mut MapWhile<I, Closure1<I :  : Item, Option<U>>>) -> Option<U>`<br>
+  `f` of the inner iterator's next item, which is nothing once `f` says so.
+
+**`Iterator for Inspect<I, Closure1<&I :  : Item, i32>>` methods**
+
+- `fn next(self : &mut Inspect<I, Closure1<&I :  : Item, i32>>) -> Option<I :  : Item>`<br>
+  The inner iterator's next item, after `f` has seen it.
+
 ## `core::iter::traits`
 
 The `Iterator` trait: one required `next`, and the methods written over it.
@@ -347,6 +426,30 @@ The `Iterator` trait: one required `next`, and the methods written over it.
   The item whose `key` is greatest. Of several with equal greatest keys, the last.
 - `fn min_by_key<B>(self : &mut Self, key : Closure1<&Self :  : Item, B>) -> Option<Self :  : Item>`<br>
   The item whose `key` is least. Of several with equal least keys, the first.
+- `fn map<U>(self : Self, f : Closure1<Self :  : Item, U>) -> Map<Self, Closure1<Self :  : Item, U>>`<br>
+  An iterator over these items with `f` applied to each.
+- `fn filter(self : Self, keep : Closure1<&Self :  : Item, bool>) -> Filter<Self, Closure1<&Self :  : Item, bool>>`<br>
+  An iterator over the items `keep` accepts.
+- `fn take(self : Self, n : i64) -> Take<Self>`<br>
+  An iterator over at most the first `n` items.
+- `fn skip(self : Self, n : i64) -> Skip<Self>`<br>
+  An iterator over the items after the first `n`.
+- `fn step_by(self : Self, step : i64) -> StepBy<Self>`<br>
+  An iterator over the first item and every `step`th one after it.
+  # Panics
+  When `step` is not positive: a step of zero would hand out the first item forever.
+- `fn chain<B>(self : Self, other : B) -> Chain<Self, B>`<br>
+  An iterator over these items and then `other`'s, which must be of the same type.
+- `fn take_while(self : Self, keep : Closure1<&Self :  : Item, bool>) -> TakeWhile<Self, Closure1<&Self :  : Item, bool>>`<br>
+  An iterator over the leading items `keep` accepts, stopping at the first it refuses.
+- `fn skip_while(self : Self, skip : Closure1<&Self :  : Item, bool>) -> SkipWhile<Self, Closure1<&Self :  : Item, bool>>`<br>
+  An iterator over the items from the first one `skip` refuses onward.
+- `fn map_while<U>(self : Self, f : Closure1<Self :  : Item, Option<U>>) -> MapWhile<Self, Closure1<Self :  : Item, Option<U>>>`<br>
+  An iterator over what `f` answers for each item, ending where `f` first answers nothing.
+- `fn inspect(self : Self, f : Closure1<&Self :  : Item, i32>) -> Inspect<Self, Closure1<&Self :  : Item, i32>>`<br>
+  An iterator over these items that hands each to `f` on its way past.
+  `f` answers an `i32`, which is discarded, because no closure literal can return void yet
+  (Vx#711).
 - `fn reduce(self : &mut Self, f : Closure2<Self :  : Item, Self :  : Item, Self :  : Item>) -> Option<Self :  : Item>`<br>
   `fold` with the first item as the starting value, so nothing for a sequence already
   finished.
@@ -385,63 +488,21 @@ T = `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `f32`, `f64`
 
 ## `core::iter`
 
-`Range` and the iterator adaptors, `map`, `filter`, `take` and `skip`.
+`Range` and `range`; importing it brings the trait and the adaptors too.
 
 **Types**
 
 - `struct Range`<br>
   The numbers from `at` up to but not including `end`.
   A half-open span of `i64`, from `at` up to but not including `end`.
-- `struct Map<I, F>`<br>
-  `f` over every item.
-  An iterator over another one's items with `f` applied to each. Built by `map`.
-- `struct Filter<I, P>`<br>
-  Only the items `keep` accepts.
-  An iterator over the items of another that `keep` accepts. Built by `filter`.
-- `struct Take<I>`<br>
-  The first `left` items, then nothing.
-  An iterator over at most `left` items of another. Built by `take`.
-- `struct Skip<I>`<br>
-  Everything after the first `drop` items.
-  An iterator over another's items with the first `drop` of them discarded. Built by `skip`.
 
 **`Iterator for Range` methods**
 
 - `fn next(self : &mut Range) -> Option<i64>`<br>
   The next value in the span, or nothing once `end` is reached.
 
-**`Iterator for Map<I, Closure1<I :  : Item, U>>` methods**
-
-- `fn next(self : &mut Map<I, Closure1<I :  : Item, U>>) -> Option<U>`<br>
-  The inner iterator's next item with `f` applied.
-
-**`Iterator for Filter<I, Closure1<I :  : Item, bool>>` methods**
-
-- `fn next(self : &mut Filter<I, Closure1<I :  : Item, bool>>) -> Option<I :  : Item>`<br>
-  The inner iterator's next item that `keep` accepts.
-
-**`Iterator for Take<I>` methods**
-
-- `fn next(self : &mut Take<I>) -> Option<I :  : Item>`<br>
-  The inner iterator's next item, until `left` of them have been handed out.
-
-**`Iterator for Skip<I>` methods**
-
-- `fn next(self : &mut Skip<I>) -> Option<I :  : Item>`<br>
-  The inner iterator's next item, once the skipped ones have been consumed.
-
 **Functions**
 
-- `fn map<I : Iterator, U>(inner : I, f : Closure1<I :  : Item, U>) -> Map<I, Closure1<I :  : Item, U>>`<br>
-  The adaptors are built through these rather than by writing the struct literal: a
-  closure literal is coerced to `Closure1<A, B>` in an argument but not in a field
-  initializer (Vx#648).
-- `fn filter<I : Iterator>(inner : I, keep : Closure1<I :  : Item, bool>) -> Filter<I, Closure1<I :  : Item, bool>>`<br>
-  An iterator over the items of `inner` that `keep` accepts.
-- `fn take<I : Iterator>(inner : I, left : i64) -> Take<I>`<br>
-  An iterator over at most `left` items of `inner`.
-- `fn skip<I : Iterator>(inner : I, drop : i64) -> Skip<I>`<br>
-  An iterator over `inner` with its first `drop` items discarded.
 - `fn range(at : i64, end : i64) -> Range`<br>
   The numbers `at .. end`.
 
@@ -1655,4 +1716,4 @@ Clocks and durations.
 
 ______________________________________________________________________
 
-639 functions across 30 modules.
+651 functions across 31 modules.

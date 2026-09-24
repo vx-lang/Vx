@@ -5,19 +5,12 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// The iterator library: `Range`, the adaptors, and the functions that build them. The
-// `Iterator` trait itself is in `core::iter::traits`, which this imports, so importing
-// `core::iter` brings the trait as well.
-//
-// `Item` is an associated type: each impl binds it with `type Item = ..;`, and an adaptor
-// names its inner iterator's as `I::Item`. As in Rust, `Map` and `Filter` take their closure
-// as a type parameter, `F` and `P`, because a struct field cannot name `I::Item`.
+// The iterator library: `Range` and `range`. The `Iterator` trait is in `core::iter::traits`
+// and the adaptors its methods build are in `core::iter::adapters`; importing `core::iter`
+// brings both.
 //
 // A `for` loop consumes the iterator it drives, so an adaptor takes its inner iterator by
 // value and the chain is built before the loop.
-//
-// The bound on an adaptor's `I` is not checked today (Vx#645): it is written for the
-// reader, and a type without `next` fails inside the adaptor instead of at the use.
 import core::iter::traits;
 import core::ops;
 import core::option;
@@ -41,133 +34,6 @@ impl Iterator for Range {
     self.at = self.at + 1i64;
     return Option<i64>::Some(v);
   }
-}
-
-/// `f` over every item.
-/// An iterator over another one's items with `f` applied to each. Built by `map`.
-struct Map<I, F> {
-  inner : I,
-  f : F,
-}
-
-impl<I : Iterator, U> Iterator for Map<I, Closure1<I::Item, U>> {
-  type Item = U;
-
-  /// The inner iterator's next item with `f` applied.
-  fn next(self : &mut Map<I, Closure1<I::Item, U>>) -> Option<U> {
-    let step = self.inner.next();
-    if step.is_none() {
-      return Option<U>::None();
-    }
-    let g = self.f;
-    let p = g.func;
-    return Option<U>::Some(p(g.env, step.unwrap()));
-  }
-}
-
-/// Only the items `keep` accepts.
-/// An iterator over the items of another that `keep` accepts. Built by `filter`.
-struct Filter<I, P> {
-  inner : I,
-  keep : P,
-}
-
-impl<I : Iterator> Iterator for Filter<I, Closure1<I::Item, bool>> {
-  type Item = I::Item;
-
-  /// The inner iterator's next item that `keep` accepts.
-  fn next(self : &mut Filter<I, Closure1<I::Item, bool>>) -> Option<I::Item> {
-    loop {
-      let step = self.inner.next();
-      if step.is_none() {
-        return step;
-      }
-      let v = step.unwrap();
-      let g = self.keep;
-      let p = g.func;
-      if p(g.env, v) {
-        return Option<I::Item>::Some(v);
-      }
-    }
-    return Option<I::Item>::None();
-  }
-}
-
-/// The first `left` items, then nothing.
-/// An iterator over at most `left` items of another. Built by `take`.
-struct Take<I> {
-  inner : I,
-  left : i64,
-}
-
-impl<I : Iterator> Iterator for Take<I> {
-  type Item = I::Item;
-
-  /// The inner iterator's next item, until `left` of them have been handed out.
-  fn next(self : &mut Take<I>) -> Option<I::Item> {
-    if self.left <= 0i64 {
-      return Option<I::Item>::None();
-    }
-    self.left = self.left - 1i64;
-    return self.inner.next();
-  }
-}
-
-/// Everything after the first `drop` items.
-/// An iterator over another's items with the first `drop` of them discarded. Built by `skip`.
-struct Skip<I> {
-  inner : I,
-  drop : i64,
-}
-
-impl<I : Iterator> Iterator for Skip<I> {
-  type Item = I::Item;
-
-  /// The inner iterator's next item, once the skipped ones have been consumed.
-  fn next(self : &mut Skip<I>) -> Option<I::Item> {
-    loop {
-      if self.drop <= 0i64 {
-        return self.inner.next();
-      }
-      let step = self.inner.next();
-      if step.is_none() {
-        return step;
-      }
-      self.drop = self.drop - 1i64;
-    }
-    return Option<I::Item>::None();
-  }
-}
-
-/// The adaptors are built through these rather than by writing the struct literal: a
-/// closure literal is coerced to `Closure1<A, B>` in an argument but not in a field
-/// initializer (Vx#648).
-fn map<I : Iterator, U>(inner : I, f : Closure1<I::Item, U>) -> Map<I, Closure1<I::Item, U>> {
-  return Map<I, Closure1<I::Item, U>> {
-    inner : inner, f : f
-  };
-}
-
-/// An iterator over the items of `inner` that `keep` accepts.
-fn filter<I : Iterator>(inner : I, keep : Closure1<I::Item, bool>)
--> Filter<I, Closure1<I::Item, bool>> {
-  return Filter<I, Closure1<I::Item, bool>> {
-    inner : inner, keep : keep
-  };
-}
-
-/// An iterator over at most `left` items of `inner`.
-fn take<I : Iterator>(inner : I, left : i64) -> Take<I> {
-  return Take<I> {
-    inner : inner, left : left
-  };
-}
-
-/// An iterator over `inner` with its first `drop` items discarded.
-fn skip<I : Iterator>(inner : I, drop : i64) -> Skip<I> {
-  return Skip<I> {
-    inner : inner, drop : drop
-  };
 }
 
 /// The numbers `at .. end`.

@@ -209,10 +209,18 @@ pub fn fill_trait_defaults_in(program: &mut crate::syntax::Program, defaults: &T
             {
                 continue;
             }
+            // `Self` in the body too, where an adaptor names its own type: `Map<Self, ..> {..}`.
+            let self_subst: std::collections::HashMap<crate::symbol::Symbol, crate::syntax::Type> =
+                [("Self".into(), block.target_type.clone())]
+                    .into_iter()
+                    .collect();
             let body = signature
                 .default_body
                 .clone()
-                .expect("only methods with a default body are collected");
+                .expect("only methods with a default body are collected")
+                .iter()
+                .map(|s| s.substitute(&self_subst))
+                .collect();
             // A method of a generic impl has the block's parameters in scope, which the
             // parser arranges for a hand-written one. A default arrives here after that,
             // so it is done again: without it the copied body is checked with `I`

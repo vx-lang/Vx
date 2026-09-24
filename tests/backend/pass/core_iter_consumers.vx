@@ -25,13 +25,13 @@ fn main() -> i32 {
   let mut b = range(0i64, 0i64);
   print(b.product());
   print!(" ");
-  let mut c = map(range(0i64, 3i64), | x : i64 | 2.5);
+  let mut c = range(0i64, 3i64).map(| x : i64 | 2.5);
   print(c.product());
   print!(" ");
-  let mut d = map(range(0i64, 5i64), | x : i64 | (x - 2i64) * (x - 2i64));
+  let mut d = range(0i64, 5i64).map(| x : i64 | (x - 2i64) * (x - 2i64));
   print(d.max().unwrap());
   print!(" ");
-  let mut e = map(range(0i64, 5i64), | x : i64 | (x - 2i64) * (x - 2i64));
+  let mut e = range(0i64, 5i64).map(| x : i64 | (x - 2i64) * (x - 2i64));
   print(e.min().unwrap());
   print!(" ");
   let mut f = range(0i64, 5i64);

@@ -1,0 +1,261 @@
+//===- adapters.vx - Vx Standard Library --------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The iterators the adaptor methods of `Iterator` build: `it.map(f)` is a `Map`, and so on.
+//
+// Each names its inner iterator's item type as `I::Item`. As in Rust, an adaptor that holds a
+// closure takes it as a type parameter, because a struct field cannot name `I::Item`; the impl
+// states the closure's type, and applies only when that agrees with the inner iterator.
+//
+// `core::iter::traits` imports this module, since the trait's methods return these types, and
+// every program that imports the trait therefore sees these names (Vx#731).
+import core::iter::traits;
+import core::ops;
+import core::option;
+
+/// An iterator over another one's items with `f` applied to each. Built by `map`.
+struct Map<I, F> {
+  inner : I,
+  f : F,
+}
+
+impl<I : Iterator, U> Iterator for Map<I, Closure1<I::Item, U>> {
+  type Item = U;
+
+  /// The inner iterator's next item with `f` applied.
+  fn next(self : &mut Map<I, Closure1<I::Item, U>>) -> Option<U> {
+    let step = self.inner.next();
+    if step.is_none() {
+      return Option<U>::None();
+    }
+    let g = self.f;
+    let p = g.func;
+    return Option<U>::Some(p(g.env, step.unwrap()));
+  }
+}
+
+/// An iterator over the items of another that `keep` accepts. Built by `filter`.
+struct Filter<I, P> {
+  inner : I,
+  keep : P,
+}
+
+impl<I : Iterator> Iterator for Filter<I, Closure1<&I::Item, bool>> {
+  type Item = I::Item;
+
+  /// The inner iterator's next item that `keep` accepts.
+  fn next(self : &mut Filter<I, Closure1<&I::Item, bool>>) -> Option<I::Item> {
+    loop {
+      let step = self.inner.next();
+      if step.is_none() {
+        return step;
+      }
+      let v = step.unwrap();
+      let g = self.keep;
+      let p = g.func;
+      if p(g.env, &v) {
+        return Option<I::Item>::Some(v);
+      }
+    }
+    return Option<I::Item>::None();
+  }
+}
+
+/// An iterator over at most `left` items of another. Built by `take`.
+struct Take<I> {
+  inner : I,
+  left : i64,
+}
+
+impl<I : Iterator> Iterator for Take<I> {
+  type Item = I::Item;
+
+  /// The inner iterator's next item, until `left` of them have been handed out.
+  fn next(self : &mut Take<I>) -> Option<I::Item> {
+    if self.left <= 0i64 {
+      return Option<I::Item>::None();
+    }
+    self.left = self.left - 1i64;
+    return self.inner.next();
+  }
+}
+
+/// An iterator over another's items with the first `drop` of them discarded. Built by `skip`.
+struct Skip<I> {
+  inner : I,
+  drop : i64,
+}
+
+impl<I : Iterator> Iterator for Skip<I> {
+  type Item = I::Item;
+
+  /// The inner iterator's next item, once the skipped ones have been consumed.
+  fn next(self : &mut Skip<I>) -> Option<I::Item> {
+    loop {
+      if self.drop <= 0i64 {
+        return self.inner.next();
+      }
+      let step = self.inner.next();
+      if step.is_none() {
+        return step;
+      }
+      self.drop = self.drop - 1i64;
+    }
+    return Option<I::Item>::None();
+  }
+}
+
+/// An iterator over every `step`th item of another, starting with its first. Built by `step_by`.
+struct StepBy<I> {
+  inner : I,
+  // How many items to pass over between two handed out: the step less one.
+  gap : i64,
+  first : bool,
+}
+
+impl<I : Iterator> Iterator for StepBy<I> {
+  type Item = I::Item;
+
+  /// The inner iterator's first item, and after that the one `step` places further on.
+  fn next(self : &mut StepBy<I>) -> Option<I::Item> {
+    if self.first {
+      self.first = false;
+      return self.inner.next();
+    }
+    return self.inner.nth(self.gap);
+  }
+}
+
+/// An iterator over the items of one iterator, then those of another. Built by `chain`.
+struct Chain<A, B> {
+  a : A,
+  b : B,
+  a_done : bool,
+}
+
+impl<A : Iterator, B : Iterator> Iterator for Chain<A, B> {
+  type Item = A::Item;
+
+  /// The first iterator's next item, or the second's once the first is finished.
+  fn next(self : &mut Chain<A, B>) -> Option<A::Item> {
+    if !self.a_done {
+      let step = self.a.next();
+      if step.is_some() {
+        return step;
+      }
+      self.a_done = true;
+    }
+    return self.b.next();
+  }
+}
+
+/// An iterator over another's items for as long as `keep` accepts them. Built by `take_while`.
+struct TakeWhile<I, P> {
+  inner : I,
+  keep : P,
+  done : bool,
+}
+
+impl<I : Iterator> Iterator for TakeWhile<I, Closure1<&I::Item, bool>> {
+  type Item = I::Item;
+
+  /// The inner iterator's next item, until the first `keep` refuses; nothing from then on.
+  fn next(self : &mut TakeWhile<I, Closure1<&I::Item, bool>>) -> Option<I::Item> {
+    if self.done {
+      return Option<I::Item>::None();
+    }
+    let step = self.inner.next();
+    if step.is_none() {
+      return step;
+    }
+    let v = step.unwrap();
+    let g = self.keep;
+    let p = g.func;
+    if p(g.env, &v) {
+      return Option<I::Item>::Some(v);
+    }
+    self.done = true;
+    return Option<I::Item>::None();
+  }
+}
+
+/// An iterator over another's items from the first one `skip` refuses. Built by `skip_while`.
+struct SkipWhile<I, P> {
+  inner : I,
+  skip : P,
+  done : bool,
+}
+
+impl<I : Iterator> Iterator for SkipWhile<I, Closure1<&I::Item, bool>> {
+  type Item = I::Item;
+
+  /// The inner iterator's next item, once the leading ones `skip` accepts are consumed.
+  fn next(self : &mut SkipWhile<I, Closure1<&I::Item, bool>>) -> Option<I::Item> {
+    if self.done {
+      return self.inner.next();
+    }
+    loop {
+      let step = self.inner.next();
+      if step.is_none() {
+        return step;
+      }
+      let v = step.unwrap();
+      let g = self.skip;
+      let p = g.func;
+      if !p(g.env, &v) {
+        self.done = true;
+        return Option<I::Item>::Some(v);
+      }
+    }
+    return Option<I::Item>::None();
+  }
+}
+
+/// An iterator over what `f` answers for another's items, until it answers nothing. Built by
+/// `map_while`.
+struct MapWhile<I, F> {
+  inner : I,
+  f : F,
+}
+
+impl<I : Iterator, U> Iterator for MapWhile<I, Closure1<I::Item, Option<U>>> {
+  type Item = U;
+
+  /// `f` of the inner iterator's next item, which is nothing once `f` says so.
+  fn next(self : &mut MapWhile<I, Closure1<I::Item, Option<U>>>) -> Option<U> {
+    let step = self.inner.next();
+    if step.is_none() {
+      return Option<U>::None();
+    }
+    let g = self.f;
+    let p = g.func;
+    return p(g.env, step.unwrap());
+  }
+}
+
+/// An iterator that hands each of another's items to `f` on its way past. Built by `inspect`.
+struct Inspect<I, F> {
+  inner : I,
+  f : F,
+}
+
+impl<I : Iterator> Iterator for Inspect<I, Closure1<&I::Item, i32>> {
+  type Item = I::Item;
+
+  /// The inner iterator's next item, after `f` has seen it.
+  fn next(self : &mut Inspect<I, Closure1<&I::Item, i32>>) -> Option<I::Item> {
+    let step = self.inner.next();
+    if step.is_none() {
+      return step;
+    }
+    let v = step.unwrap();
+    let g = self.f;
+    let p = g.func;
+    p(g.env, &v);
+    return Option<I::Item>::Some(v);
+  }
+}

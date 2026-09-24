@@ -3,7 +3,7 @@
 import core::iter;
 
 fn main() -> i32 {
-  let mut c = map(range(0i64, 3i64), | x : i64 | 2.5);
+  let mut c = range(0i64, 3i64).map(| x : i64 | 2.5);
   let m = c.max();
   return 0;
 }

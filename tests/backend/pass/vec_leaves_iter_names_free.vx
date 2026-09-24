@@ -5,8 +5,9 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// `std::vec` implements `core`'s `Iterator` but imports only the trait, so the names the rest of
-// `core::iter` declares stay free for a program that uses a `Vec`.
+// `std::vec` implements `core`'s `Iterator` but imports only the trait, so `core::iter`'s own
+// names stay free for a program that uses a `Vec`. The adaptor types do not: the trait's methods
+// return them, so they come with it (Vx#731).
 //
 // An import brings everything a module declares into its importer and onward. With all of
 // `core::iter` imported by `std::vec`, this program's `Range` met `core::iter`'s and codegen

@@ -1,0 +1,14 @@
+//===- iter_chain_needs_one_item_type.vx - Vx Compiler ----------*- Vx -*-===//
+// RUN: not vxc %s --action print-ast 2>&1 | FileCheck %s
+import core::iter;
+
+fn main() -> i32 {
+  let mut c = range(0i64, 3i64).chain(range(0i64, 3i64).map(| x : i64 | 1i32));
+  let n = c.next();
+  return 0;
+}
+
+// `chain` joins two sequences of one item type. Rust states that as a bound on `chain`; Vx cannot
+// yet, so the refusal comes from inside `Chain::next`, where the second iterator's item is
+// returned as the first's.
+// CHECK: Type mismatch on return. Expected Option<i64>, got Option<i32>

@@ -17,13 +17,13 @@
 import core::iter;
 
 fn main() -> i32 {
-  let mut wide = take(map(range(0i64, 5i64), | x : i64 | x + 5000000000i64), 2i64);
+  let mut wide = range(0i64, 5i64).map(| x : i64 | x + 5000000000i64).take(2i64);
   for v in wide {
     print(v);
     print!(",");
   }
   print!(" ");
-  let mut narrow = take(map(range(0i64, 5i64), | x : i64 | 5i32), 2i64);
+  let mut narrow = range(0i64, 5i64).map(| x : i64 | 5i32).take(2i64);
   for v in narrow {
     print(v);
     print!(",");

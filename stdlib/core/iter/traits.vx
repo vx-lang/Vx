@@ -16,6 +16,7 @@
 // A method whose `loop` only ever leaves by `return` still needs a return after it: the checker
 // does not treat such a loop as diverging (E3028). Those are unreachable.
 import core::cmp;
+import core::iter::adapters;
 import core::ops;
 import core::option;
 
@@ -321,6 +322,89 @@ trait Iterator {
       }
     }
     return first;
+  }
+
+  /// An iterator over these items with `f` applied to each.
+  fn map<U>(self : Self, f : Closure1<Self::Item, U>) -> Map<Self, Closure1<Self::Item, U>> {
+    return Map<Self, Closure1<Self::Item, U>> {
+      inner : self, f : f
+    };
+  }
+
+  /// An iterator over the items `keep` accepts.
+  fn filter(self : Self, keep : Closure1<&Self::Item, bool>)
+  -> Filter<Self, Closure1<&Self::Item, bool>> {
+    return Filter<Self, Closure1<&Self::Item, bool>> {
+      inner : self, keep : keep
+    };
+  }
+
+  /// An iterator over at most the first `n` items.
+  fn take(self : Self, n : i64) -> Take<Self> {
+    return Take<Self> {
+      inner : self, left : n
+    };
+  }
+
+  /// An iterator over the items after the first `n`.
+  fn skip(self : Self, n : i64) -> Skip<Self> {
+    return Skip<Self> {
+      inner : self, drop : n
+    };
+  }
+
+  /// An iterator over the first item and every `step`th one after it.
+  ///
+  /// # Panics
+  ///
+  /// When `step` is not positive: a step of zero would hand out the first item forever.
+  fn step_by(self : Self, step : i64) -> StepBy<Self> {
+    assert(step > 0i64, "step_by needs a step of at least one");
+    return StepBy<Self> {
+      inner : self, gap : step - 1i64, first : true
+    };
+  }
+
+  /// An iterator over these items and then `other`'s, which must be of the same type.
+  fn chain<B>(self : Self, other : B) -> Chain<Self, B> {
+    return Chain<Self, B> {
+      a : self, b : other, a_done : false
+    };
+  }
+
+  /// An iterator over the leading items `keep` accepts, stopping at the first it refuses.
+  fn take_while(self : Self, keep : Closure1<&Self::Item, bool>)
+  -> TakeWhile<Self, Closure1<&Self::Item, bool>> {
+    return TakeWhile<Self, Closure1<&Self::Item, bool>> {
+      inner : self, keep : keep, done : false
+    };
+  }
+
+  /// An iterator over the items from the first one `skip` refuses onward.
+  fn skip_while(self : Self, skip : Closure1<&Self::Item, bool>)
+  -> SkipWhile<Self, Closure1<&Self::Item, bool>> {
+    return SkipWhile<Self, Closure1<&Self::Item, bool>> {
+      inner : self, skip : skip, done : false
+    };
+  }
+
+  /// An iterator over what `f` answers for each item, ending where `f` first answers nothing.
+  fn map_while<U>(self : Self, f : Closure1<Self::Item, Option<U>>)
+  -> MapWhile<Self, Closure1<Self::Item, Option<U>>> {
+    return MapWhile<Self, Closure1<Self::Item, Option<U>>> {
+      inner : self, f : f
+    };
+  }
+
+  /// An iterator over these items that hands each to `f` on its way past.
+  ///
+  /// `f` answers an `i32`, which is discarded, because no closure literal can return void yet
+  /// (Vx#711).
+  fn inspect(self : Self, f : Closure1<&Self::Item, i32>)
+  -> Inspect<Self, Closure1<&Self::Item, i32>> {
+    return Inspect<Self, Closure1<&Self::Item, i32>> {
+      inner : self, f : f
+    };
   }
 
   /// `fold` with the first item as the starting value, so nothing for a sequence already

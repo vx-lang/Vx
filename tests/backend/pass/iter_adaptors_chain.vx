@@ -8,7 +8,7 @@
 // Iterator adaptors chained more than one deep, and a nested generic in a pattern.
 //
 // A chain's type is a generic whose argument is itself a generic with a comma in it:
-// `Map<Filter<Range, Closure1<i64, bool>>, Closure1<i64, i64>>`. Every place that took such
+// `Map<Filter<Range, Closure1<&i64, bool>>, Closure1<i64, i64>>`. Every place that took such
 // a name apart split it on every comma, so `Filter<Range` and `Closure1<i64` came out as
 // separate arguments and codegen failed on the first.
 //
@@ -18,31 +18,39 @@
 //   pattern     7                      `Option<Pair<i64, i64>>::Some(p)`, which did not parse
 import core::iter;
 
+fn first_two<I : Iterator>(it : I) -> Take<I> {
+  return it.take(2i64);
+}
+
+fn after_two<I : Iterator>(it : I) -> Skip<I> {
+  return it.skip(2i64);
+}
+
 struct Pair<A, B> {
   a : A,
   b : B,
 }
 
 fn main() -> i32 {
-  let e1 = filter(range(0i64, 10i64), | x : i64 | x % 2i64 == 0i64);
-  let mut two = map(e1, | x : i64 | x + 100i64);
+  let e1 = range(0i64, 10i64).filter(| x : &i64 | *x % 2i64 == 0i64);
+  let mut two = e1.map(| x : i64 | x + 100i64);
   for v in two {
     print(v);
     print!(",");
   }
   print!(" ");
 
-  let e2 = filter(range(0i64, 10i64), | x : i64 | x % 2i64 == 0i64);
-  let m2 = map(e2, | x : i64 | x * 10i64);
-  let mut three = take<Map<Filter<Range, Closure1<i64, bool>>, Closure1<i64, i64>>>(m2, 2i64);
+  let e2 = range(0i64, 10i64).filter(| x : &i64 | *x % 2i64 == 0i64);
+  let m2 = e2.map(| x : i64 | x * 10i64);
+  let mut three = first_two<Map<Filter<Range, Closure1<&i64, bool>>, Closure1<i64, i64>>>(m2);
   for v in three {
     print(v);
     print!(",");
   }
   print!(" ");
 
-  let e3 = filter(range(0i64, 10i64), | x : i64 | x % 2i64 == 0i64);
-  let mut sk = skip<Filter<Range, Closure1<i64, bool>>>(e3, 2i64);
+  let e3 = range(0i64, 10i64).filter(| x : &i64 | *x % 2i64 == 0i64);
+  let mut sk = after_two<Filter<Range, Closure1<&i64, bool>>>(e3);
   for v in sk {
     print(v);
     print!(",");

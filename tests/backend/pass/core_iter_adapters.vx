@@ -1,0 +1,52 @@
+//===- core_iter_adapters.vx - Vx Compiler ----------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The adaptor methods of `Iterator`, each driven to the end by a `for` loop.
+//
+//   0,20,40,               `filter`, `map` and `take` chained as methods
+//   7,8,9,                 `skip`
+//   0,3,6,9,               `step_by(3)`: the first item, then every third
+//   0,1,2,7,8,             `chain`: one iterator's items, then another's
+//   0,1,2,                 `take_while` stops at the first item refused
+//   3,4,5,                 `skip_while` starts at the first item refused
+//   0,5,                   `map_while` stops where the closure first answers nothing
+//   1000,1011,1022,        `inspect` sees each item (the 100s) before it is handed on
+import core::iter;
+
+fn show<I : Iterator>(it : I) -> i32 {
+  let mut i = it;
+  for v in i {
+    print(v);
+    print!(",");
+  }
+  print!(" ");
+  return 0;
+}
+
+fn note(x : i64) -> i32 {
+  print(x + 100i64);
+  return 0;
+}
+
+fn main() -> i32 {
+  show(range(0i64, 10i64).filter(| x : &i64 | *x % 2i64 == 0i64).map(| x : i64 | x * 10i64).take(3i64));
+  show(range(0i64, 10i64).skip(7i64));
+  show(range(0i64, 10i64).step_by(3i64));
+  show(range(0i64, 3i64).chain(range(7i64, 9i64)));
+  show(range(0i64, 10i64).take_while(| x : &i64 | *x < 3i64));
+  show(range(0i64, 6i64).skip_while(| x : &i64 | *x < 3i64));
+  show(range(0i64, 10i64).map_while(| x : i64 | if x < 2i64 {
+    Option<i64>::Some(x * 5i64)
+  } else {
+    Option<i64>::None()
+  }));
+  show(range(0i64, 3i64).inspect(| x : &i64 | note(*x)));
+  print!("end");
+  return 0;
+}
+
+// EXPECT: 0,20,40, 7,8,9, 0,3,6,9, 0,1,2,7,8, 0,1,2, 3,4,5, 0,5, 1000,1011,1022, end

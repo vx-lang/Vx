@@ -654,6 +654,13 @@ pub fn substitute_type_name(
     name: &str,
     mapping: &std::collections::HashMap<Symbol, Type>,
 ) -> String {
+    // `&T` and `&mut T`: the reference stays, what it refers to is substituted.
+    let trimmed = name.trim();
+    for prefix in ["&mut ", "&"] {
+        if let Some(rest) = trimmed.strip_prefix(prefix) {
+            return format!("{prefix}{}", substitute_type_name(rest, mapping));
+        }
+    }
     let Some(open) = name.find('<') else {
         return match mapping.get(name.trim()) {
             Some(concrete) => concrete.to_string(),

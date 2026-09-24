@@ -2,8 +2,14 @@
 // RUN: not vxc %s --action print-ast 2>&1 | FileCheck %s
 import core::iter;
 
+fn apply<I : Iterator, U>(it : I, f : Closure1<I::Item, U>) -> U {
+  let mut i = it;
+  let p = f.func;
+  return p(f.env, i.next().unwrap());
+}
+
 fn main() -> i32 {
-  let m = map(range(0i64, 5i64), | x : i32 | x * 2);
+  let m = apply(range(0i64, 5i64), | x : i32 | x * 2);
   return 0;
 }
 
