@@ -298,7 +298,8 @@ The pointer it would produce claims CPU memory, and the element is in HBM.</p>
 runtime does it. Its CUDA dispatch calls cuBLAS for matrix products, with the buffers it already
 holds on the device. User code cannot yet pass a device tensor to a C library through its own
 <code>extern</code> declaration. That needs a way to spell a device-memory parameter in an
-<code>extern</code> signature, and Vx does not have one yet.</p>
+<code>extern</code> signature, and Vx does not have one yet; it is tracked in
+<a href="https://github.com/vx-lang/Vx/issues/742">issue #742</a>.</p>
 
 <p class="post-foot">An earlier post, <a href="/blog/what-a-pointer-forgets.html">What a pointer
 forgets</a>, follows the same fact across a function return. The
