@@ -1,0 +1,56 @@
+//===- float_not_equal_nan.vx - Vx Compiler ---------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `a != b` on floats is the negation of `a == b`, so a NaN on either side makes it true.
+// Both code generators lowered it to the ordered `cmpf one`, which is false whenever a NaN is
+// involved, so `x != x` -- the usual NaN test -- answered false for a NaN.
+//
+//   NaN != NaN  1   the case that was wrong
+//   NaN != 1.0  1   one NaN operand is enough
+//   1.0 != 1.0  0   no NaN: `une` must still answer what `one` did
+//   1.0 != 2.0  1   likewise
+//   f64 NaN     1   the other width takes the same predicate
+fn main() -> i32 {
+  let z : f32 = 0.0;
+  let nan : f32 = z / z;
+  let a : f32 = 1.0;
+  let b : f32 = 2.0;
+  if nan != nan {
+    print(1);
+  } else {
+    print(0);
+  }
+  print!(" ");
+  if nan != a {
+    print(1);
+  } else {
+    print(0);
+  }
+  print!(" ");
+  if a != a {
+    print(1);
+  } else {
+    print(0);
+  }
+  print!(" ");
+  if a != b {
+    print(1);
+  } else {
+    print(0);
+  }
+  print!(" ");
+  let zd : f64 = 0.0;
+  let nand : f64 = zd / zd;
+  if nand != nand {
+    print(1);
+  } else {
+    print(0);
+  }
+  return 0;
+}
+
+// EXPECT: 1 1 0 1 1

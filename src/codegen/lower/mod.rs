@@ -113,12 +113,13 @@ impl MeliorOpInfo for RelationalOp {
     fn get_predicate(&self, is_float: bool) -> Option<i64> {
         Some(if is_float {
             match self {
-                RelationalOp::Eq => 1,    // oeq
-                RelationalOp::Gt => 2,    // ogt
-                RelationalOp::Ge => 3,    // oge
-                RelationalOp::Lt => 4,    // olt
-                RelationalOp::Le => 5,    // ole
-                RelationalOp::NotEq => 6, // one
+                RelationalOp::Eq => 1, // oeq
+                RelationalOp::Gt => 2, // ogt
+                RelationalOp::Ge => 3, // oge
+                RelationalOp::Lt => 4, // olt
+                RelationalOp::Le => 5, // ole
+                // Unordered: `!=` is the negation of `==`, so a NaN on either side makes it true.
+                RelationalOp::NotEq => 13, // une
             }
         } else {
             match self {

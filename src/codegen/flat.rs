@@ -368,12 +368,13 @@ fn arith_op(op: Opcode, e: &ElementType) -> Option<&'static str> {
 /// The `arith.cmp{i,f}` op + textual predicate for a `Cmp` on operands of element type `e`, given
 /// the relation code stored in the instruction's `imm` (0=Eq,1=Ne,2=Lt,3=Gt,4=Le,5=Ge — kept in
 /// sync with `flatten::rel_code`). Integers use signed vs. unsigned predicates by the element's
-/// signedness; floats use the ordered predicates.
+/// signedness. Floats use the ordered predicates, except `!=`: it is the negation of `==`, so it
+/// holds when either side is a NaN, which is `une`. The ordered `one` is false there.
 fn cmp_op(rel: u64, e: &ElementType) -> Option<(&'static str, &'static str)> {
     if e.is_float() {
         let pred = match rel {
             0 => "oeq",
-            1 => "one",
+            1 => "une",
             2 => "olt",
             3 => "ogt",
             4 => "ole",

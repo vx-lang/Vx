@@ -908,12 +908,8 @@ macro_rules stamp_float {
       }
 
       /// Is this the value that is equal to nothing, itself included?
-      ///
-      /// Spelled as the negation of an equality rather than as `self != self`, which is
-      /// how Rust writes it: `!=` between floats lowers to the ordered predicate and so
-      /// answers false for a NaN, while `==` is ordered as it should be (Vx#716).
       fn is_nan(self : $t) -> bool {
-        return !(self == self);
+        return self != self;
       }
 
       /// One with this value's sign, or the value itself when it is a NaN. Zero answers 1
