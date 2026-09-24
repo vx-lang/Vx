@@ -494,6 +494,28 @@ impl<'a> Parser<'a> {
                 self.pos = saved_pos;
             }
         }
+        // `Self::Item::default()`, `I::Item::default()`: the associated type is the owner of the
+        // call, so its segment joins the name before the method's does.
+        let is_type_var = call_name == "Self" || self.generic_params.contains(&call_name);
+        if is_type_var
+            && parsed_type_args.is_none()
+            && matches!(
+                (
+                    self.tokens.get(self.pos).map(|t| &t.kind),
+                    self.tokens.get(self.pos + 1).map(|t| &t.kind),
+                    self.tokens.get(self.pos + 2).map(|t| &t.kind),
+                ),
+                (
+                    Some(TokenType::DoubleColon),
+                    Some(TokenType::Identifier(_)),
+                    Some(TokenType::DoubleColon)
+                )
+            )
+        {
+            self.advance(); // consume '::'
+            let assoc = self.expect_identifier("Expected an associated type name")?;
+            call_name = format!("{call_name}::{assoc}");
+        }
         if self.check(&TokenType::DoubleColon) {
             let t1 = self.tokens.get(self.pos + 1).map(|t| &t.kind);
             let t2 = self.tokens.get(self.pos + 2).map(|t| &t.kind);

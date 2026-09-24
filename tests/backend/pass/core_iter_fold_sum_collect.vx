@@ -1,0 +1,59 @@
+//===- core_iter_fold_sum_collect.vx - Vx Compiler --------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `fold`, `sum` and `collect`, the defaults that consume a whole sequence.
+//
+//   1626  `fold` carries its value in order: ((((100*2+1)*2+2)*2+3)*2+4)
+//   7     `fold` over nothing answers `init`
+//   30    `sum` of a `map`, whose item type is the closure's
+//   0     `sum` over nothing is `Self::Item::default()`
+//   4.5   `sum` of `f64` items: the zero and the `+` are the item type's
+//   379   `collect` into `Vec<i64>`, `B` read off the `let`: three items, 7 and 9 at the ends
+//   47    `collect` into `Vec<i32>` from a two-adaptor chain: four items of 7
+//   0     `T::default()` in a generic function
+import core::default;
+import core::iter;
+import std::vec;
+
+fn zero_of<T : Default>(x : T) -> T {
+  return T::default();
+}
+
+fn main() -> i32 {
+  let mut a = range(1i64, 5i64);
+  print(a.fold(100i64, | acc : i64, x : i64 | acc * 2i64 + x));
+  print!(" ");
+  let mut b = range(3i64, 3i64);
+  print(b.fold(7i64, | acc : i64, x : i64 | acc + x));
+  print!(" ");
+  let mut c = map(range(1i64, 5i64), | x : i64 | x * x);
+  print(c.sum());
+  print!(" ");
+  let mut d = filter(range(0i64, 0i64), | x : i64 | x > 0i64);
+  print(d.sum());
+  print!(" ");
+  let mut e = map(range(0i64, 3i64), | x : i64 | 1.5);
+  print(e.sum());
+  print!(" ");
+  let mut f = skip(range(0i64, 10i64), 7i64);
+  let mut v : Vec<i64> = f.collect();
+  print(v.len());
+  print(v.get(0));
+  print(v.get(2));
+  v.free();
+  print!(" ");
+  let mut g = map(filter(range(0i64, 10i64), | x : i64 | x % 3i64 == 0i64), | x : i64 | 7i32);
+  let mut w : Vec<i32> = g.collect();
+  print(w.len());
+  print(w.get(3));
+  w.free();
+  print!(" ");
+  print(zero_of(5i64));
+  return 0;
+}
+
+// EXPECT: 1626 7 30 0 4.5 379 47 0

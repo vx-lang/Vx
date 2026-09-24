@@ -284,6 +284,8 @@ The `Iterator` trait: one required `next`, and the methods written over it.
 **Types**
 
 - `trait Iterator`
+- `trait FromIterator<A>`<br>
+  A collection that can be built from an iterator's items, which is what `collect` builds.
 
 **`trait Iterator` methods**
 
@@ -314,6 +316,25 @@ The `Iterator` trait: one required `next`, and the methods written over it.
   Hand every item to `f`, consuming the sequence.
   `f` answers an `i32` rather than nothing, and this returns the last of them, because no
   closure literal can return void yet (Vx#711). Both signatures become Rust's when it can.
+- `fn fold<B>(self : &mut Self, init : B, f : Closure2<B, Self :  : Item, B>) -> B`<br>
+  `f` over every item, carrying a value from one to the next: `init` goes in with the
+  first item, and what `f` answers goes in with the next. The last answer is the result,
+  or `init` for a sequence that is already finished.
+- `fn collect<B>(self : &mut Self) -> B`<br>
+  Every item, gathered into a new collection of whatever type the result is assigned to:
+  `let v : Vec<i64> = it.collect();`. That type says how, by implementing `FromIterator`.
+
+**`and lets the caller choose the result's type. Both agree for the numbers. fn sum(self : &mut Self) -> Self :  : Item` methods**
+
+- `fn sum(self : &mut Self) -> Self :  : Item`<br>
+  Every item added up, consuming the sequence. Zero for one that is already finished.
+  Answers the item type, and asks it for `+` and a `Default`, where Rust asks for a `Sum`
+  impl and lets the caller choose the result's type. Both agree for the numbers.
+
+**`trait FromIterator<A>` methods**
+
+- `fn from_iter<I : Iterator>(iter : I) -> Self`<br>
+  A new collection holding every item `iter` has left, in order.
 
 ## `core::iter`
 
@@ -1548,6 +1569,11 @@ Clocks and durations.
 - `fn iter(self : &Vec<T>) -> VecIter<T>`<br>
   An iterator over the elements, borrowing the vector rather than consuming it.
 
+**`FromIterator<T> for Vec<T>` methods**
+
+- `fn from_iter<I : Iterator>(iter : I) -> Vec<T>`<br>
+  A new `Vec` holding every item `iter` has left, which the caller owns and must `free`.
+
 **`Iterator for VecIter<T>` methods**
 
 - `fn next(self : &mut VecIter<T>) -> Option<T>`<br>
@@ -1582,4 +1608,4 @@ Clocks and durations.
 
 ______________________________________________________________________
 
-604 functions across 30 modules.
+609 functions across 30 modules.
