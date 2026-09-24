@@ -384,18 +384,13 @@ impl<'a> Parser<'a> {
                 let mut enum_name = s.to_string();
                 self.advance();
                 if self.check(&TokenType::LeftAngle) {
-                    // A list, not one argument: `Result<T, E>::Ok(v)` has two.
+                    // A list, not one argument: `Result<T, E>::Ok(v)` has two. Each is a whole
+                    // type, so `Option<Pair<i64, i64>>::Some(p)` parses; it is printed back the
+                    // way a type prints, which is how the name is spelled everywhere else.
                     self.advance();
                     let mut args = Vec::new();
                     loop {
-                        match &self.advance().kind {
-                            TokenType::Identifier(s) => args.push(s.to_string()),
-                            _ => {
-                                return Err(
-                                    self.error("Expected type identifier in generic pattern")
-                                )
-                            }
-                        }
+                        args.push(self.parse_type()?.to_string());
                         if !self.match_token(&TokenType::Comma) {
                             break;
                         }

@@ -253,8 +253,8 @@ fn generic_arg_mapping(
         return mapping;
     };
     let inner = &resolved_struct_name[lt + 1..resolved_struct_name.len() - 1];
-    let inner_tys: Vec<Type> = inner
-        .split(',')
+    let inner_tys: Vec<Type> = crate::syntax::split_type_args(inner)
+        .into_iter()
         .map(|raw| {
             let a = raw.trim();
             match a {

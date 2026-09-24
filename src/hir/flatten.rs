@@ -5274,34 +5274,11 @@ fn parse_enum_instance(name: &str) -> (String, Vec<Type>) {
     };
     let base = name[..lt].to_string();
     let inner = &name[lt + 1..name.rfind('>').unwrap_or(name.len())];
-    let args = split_type_args(inner)
+    let args = crate::syntax::split_type_args(inner)
         .into_iter()
         .map(parse_scalar_type_arg)
         .collect();
     (base, args)
-}
-
-/// Split a type-argument list on the commas that separate ARGUMENTS, ignoring those inside a
-/// nested instance. A plain `split(',')` cuts `Pair<i32, f32>` in half when it is one argument
-/// of `Holder<Pair<i32, f32>>`, and both halves then parse as nonsense struct names.
-fn split_type_args(inner: &str) -> Vec<&str> {
-    let mut out = Vec::new();
-    let mut depth = 0usize;
-    let mut start = 0usize;
-    for (i, c) in inner.char_indices() {
-        match c {
-            '<' => depth += 1,
-            '>' => depth = depth.saturating_sub(1),
-            ',' if depth == 0 => {
-                out.push(inner[start..i].trim());
-                start = i + 1;
-            }
-            _ => {}
-        }
-    }
-    out.push(inner[start..].trim());
-    out.retain(|s| !s.is_empty());
-    out
 }
 
 /// Parse a type-argument string to a `Type`: a scalar spelling to its `ElementType`, anything else to

@@ -28,6 +28,11 @@ const KNOWN_DECLINES: &[&str] = &[
     // The flat path declines `main` here as "a callee return type": the adaptors it
     // builds answer with a generic struct. Its answers come from the AST path.
     "backend/pass/core_iter.vx",
+    // Same decline as `core_iter.vx`, one adaptor deeper: the answers come from the AST path.
+    "backend/pass/iter_adaptors_chain.vx",
+    // The flat path declines `main` as "a callee return type", since `wrap` and `some_pair`
+    // answer with a generic struct and a generic enum. The answers come from the AST path.
+    "backend/pass/nested_generic_names_in_generic_fns.vx",
     // `ok`, `err`, `map`, `map_err` and `and_then` all answer with an `Option` or a
     // `Result`, which the flat path declines as "a non-scalar default return" -- the same
     // shape as the file above. The AST path handles them, and that is where the answers

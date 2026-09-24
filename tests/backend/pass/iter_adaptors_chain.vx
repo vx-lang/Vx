@@ -1,0 +1,66 @@
+//===- iter_adaptors_chain.vx - Vx Compiler ---------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Iterator adaptors chained more than one deep, and a nested generic in a pattern.
+//
+// A chain's type is a generic whose argument is itself a generic with a comma in it:
+// `Map<Filter<Range, i64>, i64, i64>`. Every place that took such a name apart split it on
+// every comma, so `Filter<Range` and `i64>` came out as two arguments and codegen failed on
+// the first.
+//
+//   two deep    100,102,104,106,108   the struct name split in codegen
+//   three deep  0,20                   an explicit type argument that is itself nested
+//   skip        4,6,8                  likewise, one level down
+//   pattern     7                      `Option<Pair<i64, i64>>::Some(p)`, which did not parse
+import core::iter;
+
+struct Pair<A, B> {
+  a : A,
+  b : B,
+}
+
+fn main() -> i32 {
+  let e1 = filter(range(0i64, 10i64), | x : i64 | x % 2i64 == 0i64);
+  let mut two = map(e1, | x : i64 | x + 100i64);
+  for v in two {
+    print(v);
+    print!(",");
+  }
+  print!(" ");
+
+  let e2 = filter(range(0i64, 10i64), | x : i64 | x % 2i64 == 0i64);
+  let m2 = map(e2, | x : i64 | x * 10i64);
+  let mut three = take<Map<Filter<Range, i64>, i64, i64>, i64>(m2, 2i64);
+  for v in three {
+    print(v);
+    print!(",");
+  }
+  print!(" ");
+
+  let e3 = filter(range(0i64, 10i64), | x : i64 | x % 2i64 == 0i64);
+  let mut sk = skip<Filter<Range, i64>, i64>(e3, 2i64);
+  for v in sk {
+    print(v);
+    print!(",");
+  }
+  print!(" ");
+
+  let o = Option<Pair<i64, i64>>::Some(Pair<i64, i64> {
+    a : 3i64, b : 4i64
+  });
+  match o {
+    Option<Pair<i64, i64>>::Some(p) => {
+      print(p.a + p.b);
+    }
+    Option<Pair<i64, i64>>::None => {
+      print(0);
+    }
+  }
+  return 0;
+}
+
+// EXPECT: 100,102,104,106,108, 0,20, 4,6,8, 7

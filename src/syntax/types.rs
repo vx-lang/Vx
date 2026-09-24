@@ -621,6 +621,76 @@ impl Dim {
     }
 }
 
+/// Split a type-argument list on the commas that separate ARGUMENTS, ignoring those inside a
+/// nested instance. A plain `split(',')` cuts `Pair<i32, f32>` in half when it is one argument
+/// of `Holder<Pair<i32, f32>>`, and both halves then parse as nonsense struct names.
+pub fn split_type_args(inner: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    for (i, c) in inner.char_indices() {
+        match c {
+            '<' => depth += 1,
+            '>' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                out.push(inner[start..i].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(inner[start..].trim());
+    out.retain(|s| !s.is_empty());
+    out
+}
+
+/// Substitute type parameters throughout a generic name such as `Map<Filter<I, T>, T, U>`,
+/// descending into nested arguments, and keep whatever follows the argument list
+/// (`Vec<T>::new`) as it is.
+///
+/// Substituting argument by argument after a flat split both cut a nested argument at its comma
+/// and left the parameters inside it untouched.
+pub fn substitute_type_name(
+    name: &str,
+    mapping: &std::collections::HashMap<Symbol, Type>,
+) -> String {
+    let Some(open) = name.find('<') else {
+        return match mapping.get(name.trim()) {
+            Some(concrete) => concrete.to_string(),
+            None => name.to_string(),
+        };
+    };
+    // The `>` that closes the first `<`, not merely the first `>`.
+    let mut depth = 0usize;
+    let mut close = None;
+    for (i, c) in name.char_indices().skip(open) {
+        match c {
+            '<' => depth += 1,
+            '>' => {
+                depth -= 1;
+                if depth == 0 {
+                    close = Some(i);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let Some(close) = close else {
+        return name.to_string();
+    };
+    let args: Vec<String> = split_type_args(&name[open + 1..close])
+        .into_iter()
+        .map(|arg| substitute_type_name(arg, mapping))
+        .collect();
+    format!(
+        "{}<{}>{}",
+        &name[..open],
+        args.join(", "),
+        &name[close + 1..]
+    )
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub enum Type {
     /// A shaped tensor. Its extents are part of the type, so `[2, 3]` and `[4, 5]` are

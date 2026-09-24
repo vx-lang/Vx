@@ -454,9 +454,9 @@ impl<'a> TypeChecker<'a> {
                             )
                             .into();
                             let args_str = &resolved_name[start_idx + 1..end_idx];
-                            explicit_generic_args = args_str
-                                .split(',')
-                                .map(|s| self.parse_ty_str(s.trim()))
+                            explicit_generic_args = crate::syntax::split_type_args(args_str)
+                                .into_iter()
+                                .map(|s| self.parse_ty_str(s))
                                 .collect();
                         }
                     }

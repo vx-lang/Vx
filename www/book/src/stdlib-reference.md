@@ -492,9 +492,6 @@ The integer and float methods, stamped over every width.
   clamp to without a sign.
 - `fn leading_ones(self : $t) -> $t`<br>
   How many set bits the value starts with, counting from the top.
-  The complement is taken with `^` against an all-ones value rather than with `!`,
-  which the checker types as a `bool` on an integer and the two code generators
-  lower two different ways (Vx#717).
 - `fn trailing_ones(self : $t) -> $t`<br>
   How many set bits the value ends with, counting from the bottom.
 - `fn sqrt(self : $t) -> $t`<br>
@@ -558,9 +555,6 @@ The integer and float methods, stamped over every width.
   This many degrees in radians.
 - `fn is_nan(self : $t) -> bool`<br>
   Is this the value that is equal to nothing, itself included?
-  Spelled as the negation of an equality rather than as `self != self`, which is
-  how Rust writes it: `!=` between floats lowers to the ordered predicate and so
-  answers false for a NaN, while `==` is ordered as it should be (Vx#716).
 - `fn signum(self : $t) -> $t`<br>
   One with this value's sign, or the value itself when it is a NaN. Zero answers 1
   rather than 0, which is Rust's rule and not `signum`'s in every language.
@@ -652,9 +646,6 @@ The integer and float methods, stamped over every width.
   product would have had, which is whether the two operands agree in sign.
 - `fn leading_ones(self : T) -> T`<br>
   How many set bits the value starts with, counting from the top.
-  The complement is taken with `^` against an all-ones value rather than with `!`,
-  which the checker types as a `bool` on an integer and the two code generators
-  lower two different ways (Vx#717).
 - `fn trailing_ones(self : T) -> T`<br>
   How many set bits the value ends with, counting from the bottom.
 

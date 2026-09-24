@@ -1432,7 +1432,7 @@ impl<'c> LowerToMelior<'c> for StructInitExpr {
         let struct_ty = if name.contains('<') && name.ends_with('>') {
             let inner_ty_str = &name[name.find('<').unwrap() + 1..name.len() - 1];
             let mut inner_tys = Vec::new();
-            for ty_arg_raw in inner_ty_str.split(',') {
+            for ty_arg_raw in crate::syntax::split_type_args(inner_ty_str) {
                 let ty_arg = ty_arg_raw.trim();
                 let inner_ty = if ty_arg == "i32" {
                     syntax::Type::Scalar(syntax::ElementType::I32)
@@ -1590,7 +1590,7 @@ impl<'c> LowerToMelior<'c> for MemberAccessExpr {
                 let inner_ty_str = &resolved_struct_name
                     [resolved_struct_name.find('<').unwrap() + 1..resolved_struct_name.len() - 1];
                 let mut inner_tys = Vec::new();
-                for ty_arg_raw in inner_ty_str.split(',') {
+                for ty_arg_raw in crate::syntax::split_type_args(inner_ty_str) {
                     let ty_arg = ty_arg_raw.trim();
                     let inner_ty = if ty_arg == "i32" {
                         syntax::Type::Scalar(syntax::ElementType::I32)

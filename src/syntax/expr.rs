@@ -1033,24 +1033,8 @@ impl Expr {
                     if let Some(concrete_el) = mapping.get(t_name) {
                         new_name = format!("Tensor_{}", concrete_el).into();
                     }
-                } else if let Some(idx) = new_name.find('<') {
-                    if let Some(end_idx) = new_name.find('>') {
-                        let base = &new_name[..idx];
-                        let ty_arg = &new_name[idx + 1..end_idx];
-                        let remainder = &new_name[end_idx + 1..];
-                        let mut substituted_args = Vec::new();
-                        for t in ty_arg.split(',') {
-                            let t = t.trim();
-                            if let Some(mapped_ty) = mapping.get(t) {
-                                substituted_args.push(mapped_ty.to_string());
-                            } else {
-                                substituted_args.push(t.to_string());
-                            }
-                        }
-                        new_name =
-                            format!("{}<{}>{}", base, substituted_args.join(", "), remainder)
-                                .into();
-                    }
+                } else if new_name.contains('<') {
+                    new_name = crate::syntax::substitute_type_name(&new_name, mapping).into();
                 }
                 let substituted_type_args = e
                     .type_args
@@ -1137,19 +1121,8 @@ impl Expr {
             }),
             Expr::StructInit(e) => {
                 let mut new_name = e.name.clone();
-                if let Some(idx) = new_name.find('<') {
-                    let base = &new_name[..idx];
-                    let ty_args_str = &new_name[idx + 1..new_name.len() - 1];
-                    let mut substituted_args = Vec::new();
-                    for ty_arg in ty_args_str.split(',') {
-                        let ty_arg = ty_arg.trim();
-                        if let Some(mapped_ty) = mapping.get(ty_arg) {
-                            substituted_args.push(mapped_ty.to_string());
-                        } else {
-                            substituted_args.push(ty_arg.to_string());
-                        }
-                    }
-                    new_name = format!("{}<{}>", base, substituted_args.join(", ")).into();
+                if new_name.contains('<') {
+                    new_name = crate::syntax::substitute_type_name(&new_name, mapping).into();
                 }
                 Expr::StructInit(StructInitExpr {
                     name: new_name,
@@ -1243,19 +1216,8 @@ impl Expr {
             }
             Expr::EnumVariant(e) => {
                 let mut new_name = e.enum_name.clone();
-                if let Some(idx) = new_name.find('<') {
-                    let base = &new_name[..idx];
-                    let ty_args_str = &new_name[idx + 1..new_name.len() - 1];
-                    let mut substituted_args = Vec::new();
-                    for ty_arg in ty_args_str.split(',') {
-                        let ty_arg = ty_arg.trim();
-                        if let Some(mapped_ty) = mapping.get(ty_arg) {
-                            substituted_args.push(mapped_ty.to_string());
-                        } else {
-                            substituted_args.push(ty_arg.to_string());
-                        }
-                    }
-                    new_name = format!("{}<{}>", base, substituted_args.join(", ")).into();
+                if new_name.contains('<') {
+                    new_name = crate::syntax::substitute_type_name(&new_name, mapping).into();
                 }
                 Expr::EnumVariant(EnumVariantExpr {
                     enum_name: new_name,
