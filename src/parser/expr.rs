@@ -765,7 +765,7 @@ impl<'a> Parser<'a> {
             self.consume(&TokenType::LeftBrace, "Expected '{' after unsafe")?;
             let mut stmts = Vec::new();
             while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
-                stmts.push(self.parse_statement()?);
+                self.parse_statement_into(&mut stmts)?;
             }
             let mut ret = None;
             if let Some(Statement::ExprStmt(ExprStmtStmt {
@@ -791,7 +791,7 @@ impl<'a> Parser<'a> {
             self.consume(&TokenType::LeftBrace, "Expected '{'")?;
             let mut then_block = Vec::new();
             while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
-                then_block.push(self.parse_statement()?);
+                self.parse_statement_into(&mut then_block)?;
             }
             self.consume(&TokenType::RightBrace, "Expected '}'")?;
 
@@ -809,7 +809,7 @@ impl<'a> Parser<'a> {
                     self.consume(&TokenType::LeftBrace, "Expected '{'")?;
                     let mut block = Vec::new();
                     while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
-                        block.push(self.parse_statement()?);
+                        self.parse_statement_into(&mut block)?;
                     }
                     self.consume(&TokenType::RightBrace, "Expected '}'")?;
                     else_block = Some(block);
@@ -832,12 +832,12 @@ impl<'a> Parser<'a> {
                 let mut body = Vec::new();
                 if self.match_token(&TokenType::LeftBrace) {
                     while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
-                        body.push(self.parse_statement()?);
+                        self.parse_statement_into(&mut body)?;
                     }
                     self.consume(&TokenType::RightBrace, "Expected '}'")?;
                     self.match_token(&TokenType::Comma); // optional comma
                 } else {
-                    body.push(self.parse_statement()?);
+                    self.parse_statement_into(&mut body)?;
                     self.match_token(&TokenType::Comma); // optional comma
                 }
                 arms.push(MatchArm { pattern, body });
@@ -1002,8 +1002,32 @@ impl<'a> Parser<'a> {
                 match token.kind {
                     TokenType::LeftParen => {
                         let expr = self.parse_expr()?;
-                        self.consume(&TokenType::RightParen, "Expected ')' after expression")?;
-                        expr
+                        if self.check(&TokenType::Comma) {
+                            // `(a, b)`: a tuple, which is the struct `core::tuple` declares for
+                            // its length, its type arguments inferred from `a` and `b`.
+                            let mut elems = vec![expr];
+                            while self.match_token(&TokenType::Comma) {
+                                if self.check(&TokenType::RightParen) {
+                                    break;
+                                }
+                                elems.push(self.parse_expr()?);
+                            }
+                            self.consume(&TokenType::RightParen, "Expected ')' after a tuple")?;
+                            let name = self.tuple_struct(elems.len())?;
+                            Expr::StructInit(StructInitExpr {
+                                name: name.into(),
+                                fields: elems
+                                    .into_iter()
+                                    .enumerate()
+                                    .map(|(i, e)| (format!("_{i}").into(), e))
+                                    .collect(),
+                                type_id: None,
+                                span: Span::default(),
+                            })
+                        } else {
+                            self.consume(&TokenType::RightParen, "Expected ')' after expression")?;
+                            expr
+                        }
                     }
                     TokenType::Identifier(s) => {
                         let ident_line = token.line;
@@ -1084,6 +1108,7 @@ impl<'a> Parser<'a> {
                                 }
                             }
                             stmts.push(stmt);
+                            stmts.append(&mut self.pending_stmts);
                         }
                         self.consume(&TokenType::RightBrace, "Expected '}'")?;
                         Expr::ComptimeBlock(ComptimeBlockExpr {
@@ -1151,6 +1176,7 @@ impl<'a> Parser<'a> {
                                 }
                             }
                             stmts.push(stmt);
+                            stmts.append(&mut self.pending_stmts);
                         }
                         self.consume(&TokenType::RightBrace, "Expected '}'")?;
                         Expr::SpawnOn(SpawnOnExpr {
@@ -1181,6 +1207,19 @@ impl<'a> Parser<'a> {
                 };
                 let ident = match self.advance().kind.clone() {
                     TokenType::Identifier(s) => s.to_string(),
+                    // `t.0`, a tuple's element, is its field `_0`. `t.0.1` lexes its tail as the
+                    // number `0.1`, so each part is one step.
+                    TokenType::Number(n) if n.chars().all(|c| c.is_ascii_digit() || c == '.') => {
+                        for part in n.split('.') {
+                            expr = Expr::MemberAccess(MemberAccessExpr {
+                                base: Box::new(expr),
+                                member: format!("_{part}").into(),
+                                struct_name: None,
+                                span: name_span,
+                            });
+                        }
+                        continue;
+                    }
                     _ => return Err(self.error("Expected identifier after '.'")),
                 };
                 if self.match_token(&TokenType::LeftParen) {

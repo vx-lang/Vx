@@ -1,6 +1,6 @@
 //===- parser_invalid_tuple_type.vx - Vx Compiler -------------------*- Vx
 //-*-===//
-// CHECK: Expected type identifier
+// CHECK: a tuple has 2 to 6 elements; this one has 1
 //
 // Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.

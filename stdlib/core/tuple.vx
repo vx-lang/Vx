@@ -1,0 +1,52 @@
+//===- tuple.vx - Vx Standard Library -----------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The structs tuple syntax stands for. `(A, B)` is `Tuple2<A, B>`, `(a, b)` builds one, `t.0`
+// is its field `_0`, and `let (x, y) = t;` binds each field. A module that writes tuple
+// syntax imports this one without saying so.
+//
+// Two to six elements. Nothing here is meant to be named directly.
+
+/// A pair.
+struct Tuple2<A, B> {
+  _0 : A,
+  _1 : B,
+}
+
+/// Three values.
+struct Tuple3<A, B, C> {
+  _0 : A,
+  _1 : B,
+  _2 : C,
+}
+
+/// Four values.
+struct Tuple4<A, B, C, D> {
+  _0 : A,
+  _1 : B,
+  _2 : C,
+  _3 : D,
+}
+
+/// Five values.
+struct Tuple5<A, B, C, D, E> {
+  _0 : A,
+  _1 : B,
+  _2 : C,
+  _3 : D,
+  _4 : E,
+}
+
+/// Six values.
+struct Tuple6<A, B, C, D, E, F> {
+  _0 : A,
+  _1 : B,
+  _2 : C,
+  _3 : D,
+  _4 : E,
+  _5 : F,
+}

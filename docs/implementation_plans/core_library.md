@@ -211,7 +211,7 @@ Track B can be completed; the rest are tagged with the phase that needs them.
 | A13 | **Generic struct with an enum field lowers.** `struct Peekable<I, T> { it : I, peeked : Option<T> }` | `Peekable`, `Fuse`, `Chain`, `Cycle`, `Rev`; `Cell<Option<T>>`; `OnceCell`. | Flat path declines ("struct with no GID"); AST path fails MLIR verification (§9 M3). | M | P2 |
 | A14 | **A generic enum constructed at a method-level type parameter lowers.** `fn map<U>(..) -> Option<U> { return Option<U>::Some(..); }` | `Option::map`, `Result::map`, `Iterator::map`'s `next`. | `unrealized_conversion_cast i32 to Opt_i32` on both code generators (§9 M1). | M | **P1** for `option` |
 | A15 | **`char` and `str` as language types**, or the compiler treating a string literal as `(ptr, len)`. | `core::char`, `core::str`. Phase 2 ships them as library types (`Char { code : u32 }`, `Str { ptr : *const u8, len : i64 }`), which is faithful to what Rust's are underneath. What the library cannot do is know a literal's length without scanning for NUL, or write `'a'`. | String literal types as `*const i8`; indexing one and comparing the byte fails in the AST code generator (§9 M4). | M | P2 |
-| A16 | **Tuples** (types, literals, patterns). | `zip`, `enumerate`, `split_at`, `Option::zip`, `unzip`, `overflowing_add -> (T, bool)`. Phase 1 uses `Pair<A, B>` / `Triple<A, B, C>` structs in `core::tuple`; tuples replace them. | None. | L | P3 |
+| A16 | **Tuples** (types, literals, patterns). | `zip`, `enumerate`, `split_at`, `Option::zip`, `unzip`, `overflowing_add -> (T, bool)`. Phase 1 uses `Pair<A, B>` / `Triple<A, B, C>` structs in `core::tuple`; tuples replace them. | Types, literals, `.0` access and `let` patterns, two to six elements: the parser spells each as `core::tuple`'s `Tuple2`..`Tuple6`, and a struct literal infers its type arguments. Patterns in `match` remain (Vx#533). | L | P3 |
 | A17 | **Slices `&[T]` / `&mut [T]` as fat references.** | `core::slice` is a quarter of Rust's `core`. Phase 2 ships `Slice<T>` / `SliceMut<T>` structs over `(ptr, len)` with a `get`/`set` API; `&[T]` sugar and `s[i]` indexing come with A11 and A17. | `Vec::as_slice` returns `&T`. | L | P3 |
 | A18 | **Const generics on methods.** | `core::array`: `[T; N]::map`, `from_fn`, `IntoIter`. | `const_generics_methods.vx` is `XFAIL`. | M | P3 |
 | A19 | **`Drop`.** | Not for `core` itself (its owning types are `Cell` and `ManuallyDrop`, which are trivial), but `mem::drop`, `mem::forget`, `ManuallyDrop` and `MaybeUninit` only mean something once it exists, and every `alloc` type needs it. Vx#495 is the decision. | Reserved bit, nothing set. | L | P3 / alloc |
@@ -833,7 +833,7 @@ live docs, not this table.
 | `error` | `core::error` | 3 | — | — | `source` returns `Option<&Self>`, no `dyn` |
 | `net` | `core::net` | 3 | — | — | |
 | `array` | — | — | excluded | A18, §8.5 | `Tensor` is the array type for now |
-| `tuple` (Rust: primitive) | `core::tuple` | 1 | — | A16 | Vx-only `Pair`/`Triple`, deleted when tuples land |
+| `tuple` (Rust: primitive) | `core::tuple` | 1 | partial | `match` patterns (Vx#533) | the structs tuple syntax is spelled as, `Tuple2` to `Tuple6`; imported by any module that writes a tuple. A type prints as its struct, `Tuple2<i64, bool>`, in diagnostics |
 | `borrow` | `core::borrow` | 3 | — | — | `Borrow`/`BorrowMut`/`ToOwned` (alloc) |
 | `any` | — | — | excluded | | no runtime type identity |
 | `future`, `task`, `pin` | — | — | excluded | | no `async` |

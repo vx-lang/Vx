@@ -72,6 +72,14 @@ pub struct Parser<'a> {
     pos: usize,
     generic_params: Vec<String>, // Tracks generic parameters in scope
     source: &'a str,
+    /// Set once tuple syntax is seen: the module then imports `core::tuple`, where the structs
+    /// it stands for are declared.
+    uses_tuples: bool,
+    /// Statements a desugaring produced after the one it returned: `let (a, b) = e;` is a `let`
+    /// of `e` followed by one per name. `parse_statement_into` appends them.
+    pending_stmts: Vec<crate::syntax::Statement>,
+    /// Numbers the temporaries a tuple `let` introduces, so two in one scope do not collide.
+    tuple_lets: usize,
 }
 
 impl<'a> Parser<'a> {
@@ -91,7 +99,36 @@ impl<'a> Parser<'a> {
             pos: 0,
             generic_params: Vec::new(),
             source,
+            uses_tuples: false,
+            pending_stmts: Vec::new(),
+            tuple_lets: 0,
         }
+    }
+
+    /// The largest tuple, as the number of `core::tuple`'s last struct, `Tuple6`.
+    pub(crate) const MAX_TUPLE: usize = 6;
+
+    /// The struct `(a, b, ..)` stands for: `Tuple2` for a pair, and so on.
+    pub(crate) fn tuple_struct(&mut self, arity: usize) -> ParseResult<'a, String> {
+        if !(2..=Self::MAX_TUPLE).contains(&arity) {
+            return Err(self.error(&format!(
+                "a tuple has 2 to {} elements; this one has {arity}",
+                Self::MAX_TUPLE
+            )));
+        }
+        self.uses_tuples = true;
+        Ok(format!("Tuple{arity}"))
+    }
+
+    /// Parse one statement onto `out`, with whatever a desugaring added after it.
+    pub(crate) fn parse_statement_into(
+        &mut self,
+        out: &mut Vec<crate::syntax::Statement>,
+    ) -> ParseResult<'a, ()> {
+        let stmt = self.parse_statement()?;
+        out.push(stmt);
+        out.append(&mut self.pending_stmts);
+        Ok(())
     }
 
     pub(crate) fn peek(&self) -> &'a Token<'a> {

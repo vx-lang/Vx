@@ -170,7 +170,7 @@ impl<'a> Parser<'a> {
         self.consume(&TokenType::LeftBrace, "Expected '{'")?;
         let mut body = Vec::new();
         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
-            body.push(self.parse_statement()?);
+            self.parse_statement_into(&mut body)?;
         }
 
         // Transform implicit return
@@ -958,7 +958,7 @@ impl<'a> Parser<'a> {
             let default_body = if self.match_token(&TokenType::LeftBrace) {
                 let mut body = Vec::new();
                 while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
-                    body.push(self.parse_statement()?);
+                    self.parse_statement_into(&mut body)?;
                 }
                 self.consume(
                     &TokenType::RightBrace,
@@ -1314,6 +1314,16 @@ impl<'a> Parser<'a> {
                     self.peek().kind
                 )));
             }
+        }
+        // Tuple syntax stands for `core::tuple`'s structs, so it brings that module with it.
+        if self.uses_tuples
+            && !imports.iter().any(|i: &ImportDecl| {
+                i.path.len() == 2 && &*i.path[0] == "core" && &*i.path[1] == "tuple"
+            })
+        {
+            imports.push(ImportDecl {
+                path: vec!["core".into(), "tuple".into()],
+            });
         }
         Ok(Program {
             module_path: self.source.to_string().into(), // Default fallback, should be overridden by pipeline

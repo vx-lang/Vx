@@ -37,6 +37,8 @@ const KNOWN_DECLINES: &[&str] = &[
     "backend/pass/core_iter_adapters.vx",
     "backend/pass/core_iter_stateful_adapters.vx",
     "backend/pass/core_iter_rev.vx",
+    // "An enum with no modelled instance layout": `Option` of a tuple.
+    "backend/pass/tuple_in_an_option.vx",
     // Same decline again: two chains whose `Map`s differ, for a name clash in the AST path.
     "backend/pass/generic_struct_instances_nested.vx",
     // A generic struct, `Cap<Count>`, which the flat path declines as "a struct with no GID".
