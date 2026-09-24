@@ -249,8 +249,17 @@ impl<'c> LowerToMelior<'c> for BorrowExpr {
                 }
             }
         }
+        // Only a place is lowered to its address. Anything else, `&(*p / 2)`, is a value that
+        // gets a slot below, and inside it `*p` is a load like any other.
+        let is_place = matches!(
+            &**expr,
+            Expr::Identifier(_)
+                | Expr::MemberAccess(_)
+                | Expr::IndexAccess(_)
+                | Expr::Dereference(_)
+        );
         let prev_lvalue = gen.is_lvalue_context;
-        gen.is_lvalue_context = true;
+        gen.is_lvalue_context = is_place;
         let (val, ty, block) = gen.generate_expr(expr, block)?;
         gen.is_lvalue_context = prev_lvalue;
         let ptr_ty = gen.ptr_ty;

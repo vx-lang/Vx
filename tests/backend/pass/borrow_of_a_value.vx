@@ -1,0 +1,46 @@
+//===- borrow_of_a_value.vx - Vx Compiler -----------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A borrow lowers a place to its address, and everything else to a value in a fresh slot. The
+// address mode used to reach inside the borrowed expression, where a `*p` then answered its
+// pointer instead of loading through it.
+//
+//   20    `&(*p / 2)`: a value with a dereference in it; this was invalid MLIR
+//   30    `&a[*ip]`: a place whose index dereferences; so was this
+//   30 6  `&a[i]` and `&s.y`, places, still borrowed where they are
+struct S {
+  x : i64,
+  y : i64,
+}
+
+fn read(x : &i64) -> i64 {
+  return *x;
+}
+
+fn half(p : &i64) -> i64 {
+  return read(&(*p / 2i64));
+}
+
+fn main() -> i32 {
+  let n : i64 = 40;
+  print(half(&n));
+  print!(" ");
+  let a = [ 10i64, 20i64, 30i64 ];
+  let i : i32 = 2;
+  let ip : &i32 = &i;
+  print(read(&a[*ip]));
+  print!(" ");
+  print(read(&a[i]));
+  print!(" ");
+  let s = S {
+    x : 5, y : 6
+  };
+  print(read(&s.y));
+  return 0;
+}
+
+// EXPECT: 20 30 30 6
