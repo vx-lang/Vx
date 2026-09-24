@@ -43,6 +43,20 @@
 
   <ul class="posts">
     <li>
+      <a href="/blog/many-short-tapes.html">Many short tapes</a>
+      <time datetime="2026-09-23">23 September 2026</time>
+      <p>Mainstream languages assume one memory that never runs out: Turing's tape with a pointer
+      size on it. An H100 node has host DRAM, 80 GiB of HBM, 50 MiB of L2 and 132 copies of 228 KiB
+      of shared memory. Vx reads that list as a machine file and checks programs against it.</p>
+    </li>
+    <li>
+      <a href="/blog/two-allocators-one-type.html">Two allocators, one type</a>
+      <time datetime="2026-09-23">23 September 2026</time>
+      <p><code>malloc</code> and <code>cudaMalloc</code> return different memory, and C, C++ and
+      Rust give both the same type. The libraries each built the missing type, and lose it again at
+      every raw pointer. In Vx the memory space is part of the type.</p>
+    </li>
+    <li>
       <a href="/blog/asking-the-other-compiler.html">Asking the other compiler</a>
       <time datetime="2026-09-22">22 September 2026</time>
       <p>Two impls of one trait collided on one mangled name, and picking between them looked like a

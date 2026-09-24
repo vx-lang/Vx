@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Many short tapes</title>
+<meta name="author" content="Aditya Kumar">
+<meta name="description" content="Mainstream languages define themselves against an abstract machine with one unbounded memory, which is Turing's tape with a pointer size on it. Real machines have many memories, each finite, each readable by some processors and not others. Vx describes the machine as a finite graph of memories and checks programs against it.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+
+<meta property="og:title" content="Many short tapes">
+<meta property="og:description" content="Languages assume one unbounded memory. Machines have many bounded ones. Vx checks programs against the machine they will run on.">
+<meta property="og:type" content="article">
+<meta property="article:published_time" content="2026-09-23T18:00:00Z">
+<meta property="og:url" content="https://vxlang.org/blog/many-short-tapes.html">
+<meta property="og:image" content="https://vxlang.org/cards/blog-many-short-tapes.png">
+<meta property="og:image:alt" content="Many short tapes: real memories are bounded, disaggregated, and not one linear address space.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://vxlang.org/cards/blog-many-short-tapes.png">
+
+<link rel="alternate" type="application/atom+xml" title="Vx" href="/blog/feed.xml">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header class="nav">
+  <a class="brand" href="/">
+    <span class="mark">Vx</span>
+  </a>
+  <nav>
+    <a href="/docs/getting-started.html">Install</a>
+    <a href="/docs/tour.html">Language tour</a>
+    <a href="/docs/">Docs</a>
+    <a href="/blog/">Blog</a>
+    <a href="https://github.com/vx-lang/Vx">GitHub</a>
+  </nav>
+</header>
+
+<main>
+
+<article class="post">
+
+<h1>Many short tapes</h1>
+<p class="post-meta">Aditya Kumar &middot; 23 September 2026</p>
+
+<blockquote class="tldr"><strong>TL;DR</strong> — C, C++, Rust, Java and Python each define
+themselves against an abstract machine with a single memory: one array of bytes, addressed by one
+kind of integer, large enough for whatever is asked of it. That is Turing's tape. The machines we
+run on have many memories, each with a size, each reachable from some processors and not others.
+Vx takes a description of those memories as input and checks programs against it.</blockquote>
+
+<p class="lede">Turing needed a tape that never runs out, because his question was what can be
+computed at all. Ours is what can be computed on <em>this</em> machine, and the answer depends on
+sizes.</p>
+
+<h2>The tape</h2>
+
+<p>The C standard describes a program's meaning in terms of &ldquo;an abstract machine&rdquo;, and
+C++ and Rust follow it. The details differ. The memory is the same in all three: one flat space of
+bytes, where every object has an address and every address is a number of the same kind.</p>
+
+<p>That memory has no size the program can talk about. It can only be found by running out:</p>
+
+<table>
+<tr><th>Language</th><th>What running out looks like</th></tr>
+<tr><td>C</td><td><code>malloc</code> returns <code>NULL</code></td></tr>
+<tr><td>C++</td><td><code>new</code> throws <code>std::bad_alloc</code></td></tr>
+<tr><td>Rust</td><td>the process aborts; <code>Vec::push</code> has no failure path</td></tr>
+<tr><td>Java, Python</td><td><code>OutOfMemoryError</code>, <code>MemoryError</code></td></tr>
+</table>
+
+<p>In every row, capacity is an event at run time. None of these languages lets a type say
+&ldquo;this fits&rdquo;, because there is nothing for it to fit into.</p>
+
+<p>Strictly, C's tape does end. Pointers have a fixed width, so a 64-bit C implementation can name
+at most 2<sup>64</sup> bytes, and people have argued on those grounds that C is not Turing
+complete. But 16 EiB is a limit no program meets. The limit a GPU program does meet is 80 GiB, and
+the type system has no way to mention it.</p>
+
+<h2>The machine</h2>
+
+<p>Here is one node with an H100 in it, from the outside in:</p>
+
+<ul>
+<li>host DRAM, split into NUMA domains, each attached to one socket;</li>
+<li>80 GiB of HBM on the GPU, reached from the host over PCIe;</li>
+<li>50 MiB of L2 inside that;</li>
+<li>228 KiB of shared memory in each of 132 streaming multiprocessors;</li>
+<li>and, on bigger systems, a peer GPU over NVLink, a CXL memory expander, or another node's
+memory over RDMA.</li>
+</ul>
+
+<p>Three properties of this list have no counterpart on the tape.</p>
+
+<p><strong>Every memory is bounded, and the small ones matter most.</strong> Host DRAM is large
+enough that the tape is a fair approximation. Shared memory is 228 KiB, and a kernel's whole
+performance depends on what fits in it.</p>
+
+<p><strong>The memories are disaggregated.</strong> They are separate pools on separate devices,
+joined by links, each with its own bandwidth. Moving a byte from host DRAM to shared memory is
+three hops at three different speeds.</p>
+
+<p><strong>They do not form one linear space.</strong> A host address and a device address can be
+the same number and name different bytes. Shared-memory address 0 exists 132 times at once, once in
+each SM. A processor can address some of these memories and has no way to address others.</p>
+
+<h2>How languages keep the tape</h2>
+
+<p>On the host, the operating system maintains the illusion. Virtual memory, paging, overcommit and
+the OOM killer let a program behave as if memory were one large array, and when the illusion fails
+it fails at run time, often somewhere unrelated to the allocation that caused it.</p>
+
+<p>On a GPU there is less illusion to maintain. <code>cudaMalloc</code> returns
+<code>cudaErrorMemoryAllocation</code>. Managed memory extends the illusion across the bus by
+migrating pages on demand, which is correct and shows up later as time in a profile. A framework
+like PyTorch keeps a caching allocator in front of all of it, and the usual way to learn a model
+does not fit is <code>CUDA out of memory</code>, some time after the job started.</p>
+
+<h2>Describing the machine instead</h2>
+
+<p>Vx drops the single memory. A <em>machine file</em> declares the memories a part has, their
+sizes, how they nest, who can see them, and which links join them. This is the H100 description
+that ships with the compiler, without its citations:</p>
+
+<pre><code><span class="t">Memory</span> <span class="t">HBM</span> {
+  capacity: <span class="n">80 GiB</span>, bandwidth: <span class="n">3.35 TB/s</span>, managed: explicit, scope: device
+}
+<span class="t">Memory</span> <span class="t">L2</span> {
+  within: <span class="t">Memory</span>::<span class="t">HBM</span>, capacity: <span class="n">50 MiB</span>, bandwidth: <span class="n">12 TB/s</span>, managed: cached, scope: device
+}
+<span class="t">Memory</span> <span class="t">SMEM</span> {
+  within: <span class="t">Memory</span>::<span class="t">L2</span>, capacity: <span class="n">228 KiB</span>, bandwidth: <span class="n">128 B/cyc</span>, clock: <span class="n">1.98 GHz</span>,
+  granule: <span class="n">1 KiB</span>, managed: explicit, scope: sm, replicas: <span class="n">132</span>
+}
+<span class="t">Topology</span> <span class="t">Device</span> {
+  arch: nvptx64,
+  memory: <span class="t">Memory</span>::<span class="t">HBM</span>,
+  visible: [<span class="t">Memory</span>::<span class="t">HBM</span>, <span class="t">Memory</span>::<span class="t">L2</span>, <span class="t">Memory</span>::<span class="t">SMEM</span>],
+  transfer <span class="t">Memory</span>::<span class="t">CPU_DRAM</span> -&gt; <span class="t">Memory</span>::<span class="t">HBM</span> : <span class="n">63 GB/s</span>,
+  transfer <span class="t">Memory</span>::<span class="t">HBM</span> -&gt; <span class="t">Memory</span>::<span class="t">CPU_DRAM</span> : <span class="n">63 GB/s</span>,
+  transfer <span class="t">Memory</span>::<span class="t">HBM</span> -&gt; <span class="t">Memory</span>::<span class="t">L2</span>,
+  transfer <span class="t">Memory</span>::<span class="t">L2</span> -&gt; <span class="t">Memory</span>::<span class="t">SMEM</span> copy_engine
+}</code></pre>
+
+<p>Each of the three properties is a field. <code>capacity</code> is the bound.
+<code>transfer</code> edges are the links between separate pools. <code>visible</code>,
+<code>scope</code> and <code>replicas</code> say who can address what, and how many copies of a
+space exist.</p>
+
+<p>Programs are checked against that description. A 256&times;256 tile of <code>f32</code> is 256
+KiB:</p>
+
+<pre><code><span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+  <span class="k">let</span> host : <span class="t">Tensor</span>&lt;<span class="t">f32</span>, [<span class="n">256</span>, <span class="n">256</span>]&gt; = <span class="t">Tensor</span>&lt;<span class="t">f32</span>, [<span class="n">256</span>, <span class="n">256</span>]&gt;::<span class="f">new</span>();
+  <span class="k">let</span> tile = <span class="f">transfer</span>(host, <span class="t">Memory</span>::<span class="t">SMEM</span>);
+  <span class="k">return</span> <span class="n">0</span>;
+}</code></pre>
+
+<pre><code>$ vxc --machine fleet/h100-sxm.vx --host default tile.vx
+Error[E6009]: transferred tensor needs 262144 bytes but memory space 'SMEM' has capacity 233472 bytes</code></pre>
+
+<p>A weight tensor of 2<sup>35</sup> floats is 128 GiB, and HBM holds 80:</p>
+
+<pre><code>Error[E6009]: variable 'weights' needs 137438953472 bytes but memory space 'HBM' has capacity 85899345920 bytes</code></pre>
+
+<p>Both errors came from a laptop with no GPU in it. The same description also routes: the single
+<code>transfer(host, Memory::SMEM)</code> above, at a size that fits, becomes three hops,
+<code>CPU_DRAM</code> to <code>HBM</code> to <code>L2</code> to <code>SMEM</code>, each costed from
+the declared bandwidths. A transfer between two memories with no declared path is a compile error.
+And because the spaces are finite, the compiler can ask a question the tape never raises: how much
+is live <em>at the same time</em>. For a Llama-2-7B prefill that is
+<a href="/blog/the-43-gigabytes-that-are-never-there.html">15.94 GiB, against 58.93 GiB
+allocated</a>.</p>
+
+<h2>Where Vx still uses a tape</h2>
+
+<p>The host. A host description declares no capacity on purpose: host memory is virtual, and a
+tensor larger than physical RAM pages rather than failing. A hard limit there would reject programs
+that run. So the one memory where the operating system maintains the illusion is the one where Vx
+accepts it.</p>
+
+<p>Two more limits. A tensor whose shape is only known at run time cannot be checked against a
+capacity; the compiler says so with <code>W1029</code> and leaves the placement unverified. And the
+description is only as good as its numbers. The files that ship in <code>fleet/</code> cite a
+source for every figure and mark the ones not yet measured on hardware, so when a prediction is
+wrong it is clear whether to blame the model or the program.</p>
+
+<p class="post-foot"><a href="/docs/machine-files.html">Machine files</a> covers every field and
+what the compiler derives from it; <a href="/errors/E6009/">E6009</a> is the capacity error's own
+page. For NUMA domains described with the same vocabulary, see
+<a href="/blog/the-numa-that-wasnt-there.html">The NUMA that wasn't there</a>.</p>
+
+</article>
+
+</main>
+
+<footer>
+  <p>Vx is Apache 2.0 with the LLVM exception. <a href="https://github.com/vx-lang/Vx">Source</a>. Questions and discussion: <a href="https://www.reddit.com/r/vxlang">r/vxlang</a>.</p>
+</footer>
+
+</body>
+</html>

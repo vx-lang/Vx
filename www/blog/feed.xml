@@ -5,8 +5,26 @@
   <link href="https://vxlang.org/blog/feed.xml" rel="self"/>
   <link href="https://vxlang.org/blog/"/>
   <id>https://vxlang.org/blog/</id>
-  <updated>2026-09-22T17:00:00Z</updated>
+  <updated>2026-09-23T18:00:00Z</updated>
   <author><name>Aditya Kumar</name></author>
+
+  <entry>
+    <title>Many short tapes</title>
+    <link href="https://vxlang.org/blog/many-short-tapes.html"/>
+    <id>https://vxlang.org/blog/many-short-tapes.html</id>
+    <updated>2026-09-23T18:00:00Z</updated>
+    <author><name>Aditya Kumar</name></author>
+    <summary>C, C++, Rust, Java and Python define themselves against an abstract machine with one unbounded memory, which is Turing's tape. Real machines have many memories, each bounded, disaggregated, and addressable by some processors and not others. Vx describes the machine as a finite graph of memories and checks capacity and routing at compile time.</summary>
+  </entry>
+
+  <entry>
+    <title>Two allocators, one type</title>
+    <link href="https://vxlang.org/blog/two-allocators-one-type.html"/>
+    <id>https://vxlang.org/blog/two-allocators-one-type.html</id>
+    <updated>2026-09-23T12:00:00Z</updated>
+    <author><name>Aditya Kumar</name></author>
+    <summary>malloc and cudaMalloc return memory with different readers and different sizes, and C, C++ and Rust give both the same type. Libraries such as Thrust, SYCL and cudarc each built the missing type and lose it at every raw pointer. Vx makes the memory space part of the type, so device memory cannot be passed, assigned or read as host memory.</summary>
+  </entry>
 
   <entry>
     <title>Asking the other compiler</title>

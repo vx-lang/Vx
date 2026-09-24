@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Two allocators, one type</title>
+<meta name="author" content="Aditya Kumar">
+<meta name="description" content="malloc and cudaMalloc hand back memory with different owners, different sizes and different readers, and C, C++ and Rust give both the same type. Vx records the memory space in the type, so the difference the allocator knew stays in the program.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+
+<meta property="og:title" content="Two allocators, one type">
+<meta property="og:description" content="malloc and cudaMalloc hand back different memory, and C, C++ and Rust give both the same type. Vx records the memory space in the type.">
+<meta property="og:type" content="article">
+<meta property="article:published_time" content="2026-09-23T12:00:00Z">
+<meta property="og:url" content="https://vxlang.org/blog/two-allocators-one-type.html">
+<meta property="og:image" content="https://vxlang.org/cards/blog-two-allocators-one-type.png">
+<meta property="og:image:alt" content="Two allocators, one type: a float* from malloc and a float* from cudaMalloc look the same to C, C++ and Rust.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://vxlang.org/cards/blog-two-allocators-one-type.png">
+
+<link rel="alternate" type="application/atom+xml" title="Vx" href="/blog/feed.xml">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header class="nav">
+  <a class="brand" href="/">
+    <span class="mark">Vx</span>
+  </a>
+  <nav>
+    <a href="/docs/getting-started.html">Install</a>
+    <a href="/docs/tour.html">Language tour</a>
+    <a href="/docs/">Docs</a>
+    <a href="/blog/">Blog</a>
+    <a href="https://github.com/vx-lang/Vx">GitHub</a>
+  </nav>
+</header>
+
+<main>
+
+<article class="post">
+
+<h1>Two allocators, one type</h1>
+<p class="post-meta">Aditya Kumar &middot; 23 September 2026</p>
+
+<blockquote class="tldr"><strong>TL;DR</strong> — <code>malloc</code> and <code>cudaMalloc</code>
+return memory that lives in different places, is read by different processors, and runs out at
+different sizes. C, C++ and Rust give both results the same type. Vx makes the memory space part of
+the type, so a value from device memory cannot be passed, assigned or read as if it were host
+memory.</blockquote>
+
+<p class="lede">An allocator knows exactly one thing better than anyone else in the program: which
+memory it just handed out. The first thing the language does with that answer is throw it away.</p>
+
+<h2>Two lines of C</h2>
+
+<pre><code><span class="t">float</span> *a = (<span class="t">float</span> *)<span class="f">malloc</span>(<span class="n">16</span> * <span class="k">sizeof</span>(<span class="t">float</span>));
+<span class="t">float</span> *b;
+<span class="f">cudaMalloc</span>((<span class="t">void</span> **)&amp;b, <span class="n">16</span> * <span class="k">sizeof</span>(<span class="t">float</span>));
+
+a = b;              <span class="c">// compiles</span>
+<span class="t">float</span> x = b[<span class="n">0</span>];    <span class="c">// compiles; faults on a discrete GPU</span></code></pre>
+
+<p><code>a</code> points into host DRAM. <code>b</code> points into the GPU's HBM, which the host
+thread cannot address at all. They are the same type, they assign to each other, and reading
+through either is a well-formed expression.</p>
+
+<p>Look at where the difference <em>is</em> written down. The signature is</p>
+
+<pre><code><span class="t">cudaError_t</span> <span class="f">cudaMalloc</span>(<span class="t">void</span> **devPtr, <span class="t">size_t</span> size);</code></pre>
+
+<p>The only record that the result is device memory is the function's name and the parameter name
+<code>devPtr</code>. Both are comments, as far as the compiler is concerned.</p>
+
+<h2>C++ and Rust agree with C</h2>
+
+<p>C++ inherits the same <code>float *</code>. CUDA's <code>__device__</code> and
+<code>__shared__</code> qualify a variable's declaration; they do not survive into a pointer's
+type, and inside a kernel a pointer is generic until something proves otherwise. Rust has one raw
+pointer per mutability, and its foreign-function declarations come out identical:</p>
+
+<!-- vx-doctest: skip -- Rust FFI declarations, the subject of this section -->
+<pre><code><span class="k">extern</span> <span class="n">"C"</span> {
+    <span class="k">fn</span> <span class="f">malloc</span>(size: <span class="t">usize</span>) -&gt; *<span class="k">mut</span> <span class="t">c_void</span>;
+    <span class="k">fn</span> <span class="f">cudaMalloc</span>(dev_ptr: *<span class="k">mut</span> *<span class="k">mut</span> <span class="t">c_void</span>, size: <span class="t">usize</span>) -&gt; <span class="t">i32</span>;
+}</code></pre>
+
+<p>Rust's memory model does track more about a pointer than its address. It tracks
+<em>provenance</em>: which allocation the pointer was derived from. It does not track which memory
+that allocation is in, because in its abstract machine there is only one.</p>
+
+<h2>The libraries noticed</h2>
+
+<p>People who write GPU code hit this early, and the libraries built the missing type themselves.
+Thrust has <code>thrust::device_ptr&lt;T&gt;</code>. SYCL has
+<code>multi_ptr&lt;T, address_space&gt;</code>. In Rust, <code>cudarc</code> has
+<code>CudaSlice&lt;T&gt;</code> and <code>cust</code> has <code>DeviceBuffer&lt;T&gt;</code>. Inside
+one of these libraries, a device buffer and a host buffer are different types, and that works.</p>
+
+<p>Each one is a private vocabulary, though, and they meet at the raw pointer. cuBLAS takes
+<code>const float *</code>. A kernel launch takes <code>float *</code>. Thrust's way out is
+<code>thrust::raw_pointer_cast</code>, and the Rust crates have their own equivalents. Every time a
+buffer crosses from one library to another, it crosses as a bare pointer, and the space is gone
+again.</p>
+
+<p>The compiler underneath them knows the fact matters. LLVM's IR has address spaces
+(<code>ptr addrspace(1)</code> is NVPTX global memory, <code>addrspace(3)</code> is shared), and its
+NVPTX pipeline runs a pass called <em>InferAddressSpaces</em> whose job is to work out, after the
+fact, which space each generic pointer points into. The allocator knew. The type dropped it. A
+compiler pass spends its time guessing it back, and it gives up at any call it cannot see
+through.</p>
+
+<h2>In Vx, the space is in the type</h2>
+
+<p>A Vx tensor's type has a slot for the memory it lives in. Here is a host function, and a caller
+that passes it device memory:</p>
+
+<pre><code><span class="k">fn</span> <span class="f">sum_on_host</span>(t : <span class="t">Tensor</span>&lt;<span class="t">f32</span>, [<span class="n">4</span>, <span class="n">4</span>]&gt;) -&gt; <span class="t">f32</span> {
+  <span class="k">return</span> t[<span class="n">0</span>][<span class="n">0</span>] + t[<span class="n">1</span>][<span class="n">1</span>];
+}
+
+<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+  <span class="k">let</span> host_data : <span class="t">Tensor</span>&lt;<span class="t">f32</span>, [<span class="n">4</span>, <span class="n">4</span>]&gt; = <span class="t">Tensor</span>&lt;<span class="t">f32</span>, [<span class="n">4</span>, <span class="n">4</span>]&gt;::<span class="f">new</span>();
+  <span class="k">let</span> on_gpu = <span class="f">transfer</span>(host_data, <span class="t">Memory</span>::<span class="t">GPU_HBM</span>);
+  <span class="f">print</span>(<span class="f">sum_on_host</span>(on_gpu));
+  <span class="k">return</span> <span class="n">0</span>;
+}</code></pre>
+
+<p>The compiler refuses the call twice, once for the type and once for the read:</p>
+
+<pre><code>Error[E6003] at 8:21: 'on_gpu' lives in GPU_HBM but CPU sees only [CPU_DRAM, NPU_HBM];
+  insert an explicit transfer to CPU_DRAM (cost 50 on the declared path)
+Error[E3003] at 8:9: Type mismatch in argument 1 for function 'sum_on_host'.
+  Expected Tensor&lt;f32, [4, 4]&gt;, got Tensor&lt;f32, [4, 4], GPU, GpuHbm&gt;</code></pre>
+
+<p>The other ways C lets the two mix are closed too. Assigning device memory to a variable declared
+as a host tensor is <code>E3001</code>. Reading it inside an <code>unsafe</code> block is still
+<code>E6003</code>, because <code>unsafe</code> in Vx permits unchecked operations, and reading
+memory your processor cannot address is simply wrong. Taking the element's address to get a raw
+pointer is refused at the same read.</p>
+
+<p>The fix is the copy the C program also needed:</p>
+
+<pre><code><span class="k">fn</span> <span class="f">sum_on_host</span>(t : <span class="t">Tensor</span>&lt;<span class="t">f32</span>, [<span class="n">4</span>, <span class="n">4</span>]&gt;) -&gt; <span class="t">f32</span> {
+  <span class="k">return</span> t[<span class="n">0</span>][<span class="n">0</span>] + t[<span class="n">1</span>][<span class="n">1</span>];
+}
+
+<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+  <span class="k">let</span> host_data : <span class="t">Tensor</span>&lt;<span class="t">f32</span>, [<span class="n">4</span>, <span class="n">4</span>]&gt; = <span class="t">Tensor</span>&lt;<span class="t">f32</span>, [<span class="n">4</span>, <span class="n">4</span>]&gt;::<span class="f">new</span>();
+  <span class="k">let</span> on_gpu = <span class="f">transfer</span>(host_data, <span class="t">Memory</span>::<span class="t">GPU_HBM</span>);
+  <span class="k">let</span> home = <span class="f">transfer</span>(on_gpu, <span class="t">Memory</span>::<span class="t">CPU_DRAM</span>);
+  <span class="f">print</span>(<span class="f">sum_on_host</span>(home));
+  <span class="k">return</span> <span class="n">0</span>;
+}</code></pre>
+
+<p>That compiles and runs. Nothing about it needs a GPU on the machine doing the compiling: which
+spaces a CPU can see comes from the machine description the compiler checks against.</p>
+
+<h2>Where the space goes when two memories are one</h2>
+
+<p>On Apple silicon the CPU and the neural engine share physical memory, and the built-in CPU
+description lists <code>NPU_HBM</code> among the spaces it can see. A host read of a tensor in
+<code>NPU_HBM</code> is legal there, and Vx accepts it. The <code>transfer</code> into that space is
+still written, and compiles to almost nothing. The type records where a value lives; the machine
+description decides who may read it.</p>
+
+<h2>What is not built</h2>
+
+<p>The space lives on <code>Tensor</code> (and on <code>Pinned</code>). Vx's own raw pointers,
+<code>*const T</code> and <code>*mut T</code>, have no space slot yet. From host code that gap is
+closed today because forming such a pointer to device memory already reads the element, and the
+read is refused. A raw pointer that carries its space the way a tensor does is the obvious next
+step, and it is not there.</p>
+
+<p class="post-foot">An earlier post, <a href="/blog/what-a-pointer-forgets.html">What a pointer
+forgets</a>, follows the same fact across a function return. The
+<a href="/docs/heterogeneous.html">heterogeneous model</a> covers placement and transfer, and
+<a href="/errors/E6003/">E6003</a> has the diagnostic's own page.</p>
+
+</article>
+
+</main>
+
+<footer>
+  <p>Vx is Apache 2.0 with the LLVM exception. <a href="https://github.com/vx-lang/Vx">Source</a>. Questions and discussion: <a href="https://www.reddit.com/r/vxlang">r/vxlang</a>.</p>
+</footer>
+
+</body>
+</html>
