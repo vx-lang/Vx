@@ -14,6 +14,25 @@
 //
 // A closure is called by hand -- `let p = f.func; p(f.env, v)` -- since there is no call
 // syntax for one yet.
+//
+// `Option::ok_or` and `Option::ok_or_else` are at the bottom of this file rather than in
+// `core::option`, which cannot import this module back without a cycle.
+//
+// Still missing, each waiting on something outside this file:
+//
+//   `expect`, `expect_err`  `assert` wants a string literal, so a message parameter cannot
+//                           be handed to it (Vx#526).
+//   `unwrap_or_default`     `T::default()` on a bounded type parameter is not resolved.
+//   `inspect`,              no closure literal can return void (Vx#711).
+//   `inspect_err`
+//   `or_else`               answers with `Result<T, F>` built from a closure, which is the
+//                           shape the flat path declines hardest; `or` covers the case.
+//   `as_ref`, `as_mut`,     each answers with a reference into the result, and `iter` needs
+//   `iter`, `copied`,       `core::iter` besides.
+//   `cloned`
+//   `transpose`, `flatten`  want `Result<Option<T>, E>` and `Result<Result<T, E>, E>` to
+//                           lower.
+import core::marker;
 import core::ops;
 import core::option;
 
@@ -22,7 +41,12 @@ enum Result<T, E> {
   Err(E),
 }
 
+/// A result copies when both of the types it may hold copy. As with `Option`, this buys
+/// nothing until a generic enum is treated as linear (Vx#715).
+impl<T : Copy, E : Copy> Copy for Result<T, E> {}
+
 impl<T, E> Result<T, E> {
+  /// Did it succeed?
   fn is_ok(self : &Result<T, E>) -> bool {
     let mut ret = false;
     match *self {
@@ -36,6 +60,7 @@ impl<T, E> Result<T, E> {
     return ret;
   }
 
+  /// Did it fail? The negation of `is_ok`.
   fn is_err(self : &Result<T, E>) -> bool {
     return !self.is_ok();
   }
@@ -53,6 +78,10 @@ impl<T, E> Result<T, E> {
     }
   }
 
+  /// The value, or the given one on failure.
+  ///
+  /// `default` is evaluated by the caller either way, so keep it cheap; `unwrap_or_else` is
+  /// the form that computes nothing when there is a value.
   fn unwrap_or(self : Result<T, E>, default : T) -> T {
     match self {
       Result<T, E>::Ok(v) => {
@@ -136,6 +165,133 @@ impl<T, E> Result<T, E> {
       Result<T, E>::Err(e) => {
         let p = f.func;
         return p(f.env, e);
+      }
+    }
+  }
+
+  /// The failure, or a stop. The mirror of `unwrap`.
+  fn unwrap_err(self : Result<T, E>) -> E {
+    match self {
+      Result<T, E>::Ok(v) => {
+        let err = self.is_err();
+        assert(err, "unwrap_err called on Ok");
+      }
+      Result<T, E>::Err(e) => {
+        return e;
+      }
+    }
+  }
+
+  /// Did it succeed, and does `p` accept the value?
+  fn is_ok_and(self : Result<T, E>, p : Closure1<T, bool>) -> bool {
+    match self {
+      Result<T, E>::Ok(v) => {
+        let f = p.func;
+        return f(p.env, v);
+      }
+      Result<T, E>::Err(e) => {
+        return false;
+      }
+    }
+  }
+
+  /// Did it fail, and does `p` accept the failure?
+  fn is_err_and(self : Result<T, E>, p : Closure1<E, bool>) -> bool {
+    match self {
+      Result<T, E>::Ok(v) => {
+        return false;
+      }
+      Result<T, E>::Err(e) => {
+        let f = p.func;
+        return f(p.env, e);
+      }
+    }
+  }
+
+  /// The other one if this succeeded, otherwise this failure. The success types differ,
+  /// which is why this takes a type parameter where `Option::and` does not.
+  ///
+  /// Bound first and returned once: a `match` whose arms each return an enum is declined
+  /// by the flat path, and `other` is a starting value that needs no default of its own.
+  fn and<U>(self : Result<T, E>, other : Result<U, E>) -> Result<U, E> {
+    let mut out = other;
+    match self {
+      Result<T, E>::Ok(v) => {
+      }
+      Result<T, E>::Err(e) => {
+        out = Result<U, E>::Err(e);
+      }
+    }
+    return out;
+  }
+
+  /// This success if there is one, otherwise the other result. The failure types differ.
+  fn or<F>(self : Result<T, E>, other : Result<T, F>) -> Result<T, F> {
+    let mut out = other;
+    match self {
+      Result<T, E>::Ok(v) => {
+        out = Result<T, F>::Ok(v);
+      }
+      Result<T, E>::Err(e) => {
+      }
+    }
+    return out;
+  }
+
+  /// `f` applied to the value, or the given answer when there is none.
+  fn map_or<U>(self : Result<T, E>, default : U, f : Closure1<T, U>) -> U {
+    match self {
+      Result<T, E>::Ok(v) => {
+        let p = f.func;
+        return p(f.env, v);
+      }
+      Result<T, E>::Err(e) => {
+        return default;
+      }
+    }
+  }
+
+  /// `f` over the value, or `d` over the failure. Both answer with the same type.
+  fn map_or_else<U>(self : Result<T, E>, d : Closure1<E, U>, f : Closure1<T, U>) -> U {
+    match self {
+      Result<T, E>::Ok(v) => {
+        let p = f.func;
+        return p(f.env, v);
+      }
+      Result<T, E>::Err(e) => {
+        let q = d.func;
+        return q(d.env, e);
+      }
+    }
+  }
+}
+
+/// `Option`'s two bridges to `Result`. They belong to `core::option` and sit here because
+/// that module cannot import this one back: the import would be a cycle, and this file
+/// already has both types in scope.
+impl<T> Option<T> {
+  /// The value as a success, or the given failure.
+  fn ok_or<E>(self : Option<T>, err : E) -> Result<T, E> {
+    match self {
+      Option<T>::Some(v) => {
+        return Result<T, E>::Ok(v);
+      }
+      Option<T>::None() => {
+        return Result<T, E>::Err(err);
+      }
+    }
+  }
+
+  /// The value as a success, or the failure `f` gives. Nothing is computed when there is
+  /// a value.
+  fn ok_or_else<E>(self : Option<T>, f : Closure0<E>) -> Result<T, E> {
+    match self {
+      Option<T>::Some(v) => {
+        return Result<T, E>::Ok(v);
+      }
+      Option<T>::None() => {
+        let p = f.func;
+        return Result<T, E>::Err(p(f.env));
       }
     }
   }

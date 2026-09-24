@@ -1,0 +1,69 @@
+//===- core_convert.vx - Vx Compiler -----------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `core::convert`.
+//
+// Every `From` impl for one target type used to claim the same mangled name, so all but
+// one was dropped and a call reached whichever survived. Each value here is chosen so that
+// the wrong impl gives a different answer rather than the same one:
+//
+//   -5 through `From<i8>` sign-extends to -5; through `From<u8>` it would read 251.
+//   300 and 100000 do not survive a trip through a narrower source type.
+//   200 as a `u8` is -56 once a signed body has it.
+//   16777217 is exact in an `f64` and rounds to 16777216 in an `f32`.
+//
+// The reflexive impl is called where the value already has the target type, which is the
+// one case a per-pair impl cannot serve.
+//
+// Flat-only, and the three unsigned lines are why: the AST path widens a `u8`, a `u32` and
+// a `bool` by sign-extending them, so it prints -56, -294967296 and -1 where this file
+// expects 200, 4000000000 and 1. The casts alone show it, with no library in the way.
+//
+// REQUIRES: flat-codegen
+// EXPECT: -5 300 100000 | 200 4000000000 | 16777217 0.5 1 | 5 7 42
+import core::convert;
+import core::option;
+
+fn main() -> i32 {
+  // Signed widenings, each from a value the narrower sources cannot hold.
+  let a : i8 = -5;
+  print(i16::from(a));
+  print!(" ");
+  let b : i16 = 300;
+  print(i32::from(b));
+  print!(" ");
+  let c : i32 = 100000;
+  print(i64::from(c));
+  print!(" | ");
+
+  // Unsigned sources stay unsigned.
+  let u : u8 = 200;
+  print(i32::from(u));
+  print!(" ");
+  let w : u32 = 4000000000;
+  print(u64::from(w));
+  print!(" | ");
+
+  // To float, and from `bool`.
+  let d : i32 = 16777217;
+  print(f64::from(d));
+  print!(" ");
+  let g : f32 = 0.5;
+  print(f64::from(g));
+  print!(" ");
+  let t : bool = true;
+  print(i32::from(t));
+  print!(" | ");
+
+  // The reflexive impl, `Option`, and `identity`.
+  print(i32::from(5));
+  print!(" ");
+  print(Option<i32>::from(7).unwrap());
+  print!(" ");
+  print(identity<i32>(42));
+  return 0;
+}

@@ -464,6 +464,45 @@ static StringRef libmSymbolBehind(StringRef callee, ModuleOp module) {
   return inner.getCallee();
 }
 
+// The `math` op a call ultimately performs, for a wrapper that already holds one.
+//
+// `core::num` writes `x.exp()` as an `mlir!` block over `math.exp`, and the
+// flattener outlines that block into a function of its own: `@f32$exp` calls
+// `@vx_macro_mlir_...`, whose body is the single `math.exp`. So the op is already
+// the portable spelling and only needs to be found, one call deeper than the libm
+// shape above. Following the chain by shape rather than by name means the
+// generated wrapper can be called whatever it likes.
+//
+// Bounded, so a recursive wrapper cannot spin here.
+static StringRef mathOpBehind(StringRef callee, ModuleOp module) {
+  StringRef name = callee;
+  for (int depth = 0; depth < 4; ++depth) {
+    auto fn = module.lookupSymbol<func::FuncOp>(name);
+    if (!fn || fn.isExternal())
+      return StringRef();
+    Region &body = fn.getBody();
+    if (!body.hasOneBlock())
+      return StringRef();
+    Block &blk = body.front();
+    auto ops = blk.without_terminator();
+    if (!llvm::hasSingleElement(ops))
+      return StringRef();
+    Operation *inner = &*ops.begin();
+    auto ret = dyn_cast<func::ReturnOp>(blk.getTerminator());
+    if (!ret || ret->getOperands() != inner->getResults())
+      return StringRef();
+    if (inner->getOperands() != ValueRange(blk.getArguments()))
+      return StringRef();
+    if (auto innerCall = dyn_cast<func::CallOp>(inner)) {
+      name = innerCall.getCallee();
+      continue;
+    }
+    StringRef opName = inner->getName().getStringRef();
+    return opName.starts_with("math.") ? opName : StringRef();
+  }
+  return StringRef();
+}
+
 // Rewrite host libm calls in an outlined kernel to `math` ops.
 static void useDeviceMathIn(Region &kernel, ModuleOp module,
                             PatternRewriter &rewriter) {
@@ -471,9 +510,9 @@ static void useDeviceMathIn(Region &kernel, ModuleOp module,
   kernel.walk([&](func::CallOp call) { calls.push_back(call); });
   for (func::CallOp call : calls) {
     StringRef libm = libmSymbolBehind(call.getCallee(), module);
-    if (libm.empty())
-      continue;
-    StringRef mathName = mathOpForLibm(libm);
+    StringRef mathName = libm.empty() ? StringRef() : mathOpForLibm(libm);
+    if (mathName.empty())
+      mathName = mathOpBehind(call.getCallee(), module);
     if (mathName.empty())
       continue;
     OpBuilder::InsertionGuard guard(rewriter);

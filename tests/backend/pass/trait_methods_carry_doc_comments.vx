@@ -1,0 +1,60 @@
+//===- trait_methods_carry_doc_comments.vx - Vx Compiler ---------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `///` above a trait method used to be a parse error: the trait body went straight to
+// `fn`, so the one place the library most needs documenting -- a trait's methods are the
+// public surface of every type implementing it -- was the one place it could not be
+// written.
+//
+// Both kinds of method are covered, because they end differently and the parser reads them
+// on separate paths: a requirement ends at `;` and a default ends at a body.
+//
+// The multi-line comment on `twice` is what says the lines accumulate rather than the last
+// one winning. The comment between the two methods, attached to nothing a reader would
+// notice, is the case that used to leave a dangling token and now does not.
+//
+// The values are chosen so each method reports separately: `hello` answers the receiver,
+// `twice` doubles it, and `offset` adds a constant no other method produces. A default
+// that never reached the impl's required method would print 0.
+//
+// EXPECT: 5 10 12 21
+trait Greet {
+  /// The number this value greets with.
+  fn hello(self : &Self) -> i32;
+
+  /// Twice what `hello` answers.
+  ///
+  /// Written over the required method, so this also says a default still reaches it with
+  /// the doc comment in the way.
+  fn twice(self : &Self) -> i32 {
+    return self.hello() * 2;
+  }
+
+  /// Seven past `hello`, so this default is told apart from the one above.
+  fn offset(self : &Self) -> i32 {
+    return self.hello() + 7;
+  }
+}
+
+impl Greet for i32 {
+  fn hello(self : &i32) -> i32 {
+    return *self;
+  }
+}
+
+fn main() -> i32 {
+  let x : i32 = 5;
+  print(x.hello());
+  print!(" ");
+  print(x.twice());
+  print!(" ");
+  print(x.offset());
+  print!(" ");
+  let y : i32 = 14;
+  print(y.offset());
+  return 0;
+}

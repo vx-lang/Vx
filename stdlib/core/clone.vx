@@ -15,14 +15,28 @@
 // copied on every read, so its `clone` is a read, but a generic body written over
 // `T : Clone` still has to be able to call it.
 //
-// `Option<T>` clones when `T` does, as in Rust. `Result<T, E>` does not yet: an impl over two
-// parameters with two bounds is the shape the checker has not been asked for, and it is
-// better absent than written and untested.
+// `Option<T>` and `Result<T, E>` clone when what they hold does, as in Rust. The `Result`
+// impl was held back once on the grounds that two parameters with a bound each was a shape
+// the checker had not been asked for; it takes it.
+//
+// What `Result::clone` cannot do is run at an instantiation mixing a float with an
+// integer. `Result<f32, i32>` fails to lower on both code generators, so the impl is
+// exercised over the integer widths only and the header of `core_clone_default.vx` says so.
 import core::cmp;
 import core::option;
+import core::result;
 
 trait Clone {
+  /// A duplicate of this value, made explicitly.
+  ///
+  /// The only required method. A type that can copy itself by a plain read still needs one,
+  /// because a body written over `T : Clone` has to be able to call it.
   fn clone(self : &Self) -> Self;
+
+  /// Replace this value with a duplicate of `source`.
+  ///
+  /// A default written over `clone`. Override it for a type that can overwrite itself more
+  /// cheaply than it can build a fresh copy; nothing in `core` needs to.
   fn clone_from(self : &mut Self, source : &Self) -> void {
     *self = source.clone();
   }
@@ -32,6 +46,7 @@ trait Clone {
 macro_rules stamp_clone {
   ($t : ident) => {
     impl Clone for $t {
+      /// A read, since a value of this width is copied by reading it.
       fn clone(self : &$t) -> $t {
         return *self;
       }
@@ -56,6 +71,7 @@ stamp_clone!(Ordering);
 /// each return an enum is declined by the flat path, which has no default value of that
 /// type to give the fall-through it cannot rule out.
 impl<T : Clone> Clone for Option<T> {
+  /// The option with its value cloned, if it has one.
   fn clone(self : &Option<T>) -> Option<T> {
     let mut out = Option<T>::None();
     match *self {
@@ -67,5 +83,22 @@ impl<T : Clone> Clone for Option<T> {
       }
     }
     return out;
+  }
+}
+
+/// Returned from each arm rather than bound first, which is the opposite of `Option` above
+/// and is forced: `Result` has no variant that can be built without a value, so there is
+/// nothing to start the binding at that does not assume something about `T`.
+impl<T : Clone, E : Clone> Clone for Result<T, E> {
+  /// The result with whichever side it holds cloned.
+  fn clone(self : &Result<T, E>) -> Result<T, E> {
+    match *self {
+      Result<T, E>::Ok(v) => {
+        return Result<T, E>::Ok(v.clone());
+      }
+      Result<T, E>::Err(e) => {
+        return Result<T, E>::Err(e.clone());
+      }
+    }
   }
 }

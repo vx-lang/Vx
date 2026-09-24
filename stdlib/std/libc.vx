@@ -1,5 +1,9 @@
 extern {
+  /// C's `open`: a file descriptor, or -1 on failure. `flags` is the platform's, not Vx's.
   fn open(path: *const i8, flags: i32) -> i32;
+  /// C's `close`: 0, or -1 on failure.
   fn close(fd: i32) -> i32;
+  /// C's `lseek`: the new offset, or -1. `whence` is 0 from the start, 1 from the current
+  /// position, 2 from the end.
   fn lseek(fd: i32, offset: i64, whence: i32) -> i64;
 }

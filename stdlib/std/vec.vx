@@ -16,12 +16,22 @@ import std::iter;
 // `data : *mut T` view into the Rust-managed buffer and does its own typed
 // element loads/stores.
 extern "C" {
+  /// Allocate a buffer for `cap` elements of `elem_size` bytes. Rust owns the alignment
+  /// and the overflow check on the product.
   fn vx_vec_alloc(elem_size : i64, cap : i64) -> *mut i8;
+  /// Reallocate to `new_cap` elements, moving the contents. The old pointer is invalid after.
   fn vx_vec_grow(ptr : *mut i8, old_cap : i64, new_cap : i64, elem_size : i64) -> *mut i8;
+  /// Release the buffer.
   fn vx_vec_free(ptr : *mut i8, cap : i64, elem_size : i64) -> i32;
+  /// Abort the process when `index` is outside `0..len`, printing both. Answers 0 otherwise.
   fn vx_vec_bounds_check(index : i64, len : i64) -> i32;
 }
 
+/// A growable array of `T`, held in a buffer the Rust core owns.
+///
+/// Vx keeps a typed view into that buffer and does its own element loads and stores; growth,
+/// alignment and the `capacity * elem_size` overflow check belong to Rust. There is no `Drop`
+/// in the language, so the buffer is released by calling `free` and not before.
 struct Vec<T> {
   data : *mut T,
   len : i32,
@@ -30,10 +40,12 @@ struct Vec<T> {
 
 impl<T>
 Vec<T> {
+  /// An empty vector with room for two elements.
   fn new ()->Vec<T> {
     return Vec<T>::with_capacity(2);
   }
 
+  /// An empty vector with room for `capacity` elements before it has to grow.
   fn with_capacity(capacity : i32) -> Vec<T> {
     let ptr : *mut T = unsafe { vx_vec_alloc(sizeof<T>(), capacity as i64) };
     return Vec<T> {
@@ -41,6 +53,10 @@ Vec<T> {
     };
   }
 
+  /// Release the buffer and leave the vector empty with no capacity.
+  ///
+  /// Called by hand, because the language has no `Drop` yet (Vx#495). Reading an element after
+  /// this is reading freed memory; `len` answers 0, so a loop over it is safe.
   fn free(self : &mut Vec<T>) -> i32 {
     unsafe {
       let ptr_i8 : *mut i8 = self.data;
@@ -52,20 +68,31 @@ Vec<T> {
     return 0;
   }
 
+  /// A raw pointer to the first element. Invalidated by anything that grows the vector.
   fn as_mut_ptr(self : &Vec<T>) -> *mut T {
     return self.data;
   }
 
+  /// A mutable reference to the first element.
+  ///
+  /// Named for what it will return once slices exist (Vx#534); today it hands back the first
+  /// element rather than a `(pointer, length)` pair, so the length has to be carried
+  /// separately by whoever reads it.
   fn as_mut_slice(self : &mut Vec<T>) -> &mut T {
     let ptr : *mut T = self.data;
     return unsafe { &mut *ptr };
   }
 
+  /// A reference to the first element, with the caveat `as_mut_slice` describes.
   fn as_slice(self : &Vec<T>) -> &T {
     let ptr : *mut T = self.data;
     return unsafe { &*ptr };
   }
 
+  /// Append a value, growing the buffer when it is full.
+  ///
+  /// Capacity doubles, from four upwards, so appending n values reallocates about log2(n)
+  /// times. Any raw pointer or reference taken from this vector is invalidated by a growth.
   fn push(self : &mut Vec<T>, val : T) -> i32 {
     if self
     .len == self.capacity {
@@ -88,21 +115,35 @@ Vec<T> {
     return 0;
   }
 
+  /// The element at `index`, by value.
+  ///
+  /// # Panics
+  ///
+  /// When `index` is negative or not below `len`. The check is in the Rust core, which prints
+  /// the index and the length and aborts the process -- it does not unwind.
   fn get(self : &Vec<T>, index: i32) -> T {
     unsafe { vx_vec_bounds_check(index as i64, self.len as i64); }
     return unsafe { self.data[index] };
   }
 
+  /// Overwrite the element at `index`.
+  ///
+  /// # Panics
+  ///
+  /// As `get` does, and for the same reason. Setting past the end does not extend the vector;
+  /// `push` is what grows it.
   fn set(self : &mut Vec<T>, index: i32, val: T) -> i32 {
     unsafe { vx_vec_bounds_check(index as i64, self.len as i64); }
     unsafe { self.data[index] = val; }
     return 0;
   }
 
+  /// How many elements are in the vector, which is not its capacity.
   fn len(self : &Vec<T>) -> i32 {
     return self.len;
   }
 
+  /// An iterator over the elements, borrowing the vector rather than consuming it.
   fn iter(self : &Vec<T>) -> VecIter<T> {
     return VecIter<T> {
       vec : self, current : 0
@@ -110,12 +151,17 @@ Vec<T> {
   }
 }
 
+/// An iterator over a `Vec<T>`'s elements, holding a pointer to the vector it walks.
+///
+/// Growing or freeing that vector while this exists leaves the iterator pointing at the old
+/// buffer.
 struct VecIter<T> {
   vec: *const Vec<T>,
   current: i32,
 }
 
 impl<T> Iterator<VecIter<T>, T> for VecIter<T> {
+  /// The next element, or nothing once the end is reached.
   fn next(self : &mut VecIter<T>) -> Option<T> {
     let vec_len : i32 = unsafe { (*self.vec).len };
     let mut ret = Option<T>::None();
@@ -131,6 +177,7 @@ impl<T> Iterator<VecIter<T>, T> for VecIter<T> {
 
 impl<T>
 VecIter<T> {
+  /// An iterator over these elements with `f` applied to each.
   fn map<NewItem>(self : VecIter<T>, f : Closure1<T, NewItem>)
   -> VecMap<T, NewItem> {
     return VecMap<T, NewItem> {
@@ -139,12 +186,14 @@ VecIter<T> {
   }
 }
 
+/// The iterator `VecIter::map` builds: the inner walk plus the function applied to each item.
 struct VecMap<T, NewItem> {
   iter: VecIter<T>,
   f: Closure1<T, NewItem>,
 }
 
 impl<T, NewItem> Iterator<VecMap<T, NewItem>, NewItem> for VecMap<T, NewItem> {
+  /// The next element of the inner iterator with `f` applied.
   fn next(self : &mut VecMap<T, NewItem>) -> Option<NewItem> {
     let mut ret = Option<NewItem>::None();
     let mut opt = self.iter.next();
@@ -166,6 +215,7 @@ impl<T, NewItem> Iterator<VecMap<T, NewItem>, NewItem> for VecMap<T, NewItem> {
 
 impl<T, NewItem>
 VecMap<T, NewItem> {
+  /// Drain the iterator into a fresh `Vec`, which the caller owns and must `free`.
   fn collect(self : &mut VecMap<T, NewItem>) -> Vec<NewItem> {
     let mut result = Vec<NewItem>::new ();
     loop {

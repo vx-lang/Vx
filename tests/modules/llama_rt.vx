@@ -15,7 +15,7 @@
 // exposed as C-compatible symbols.
 
 import std::io;
-import std::math;
+import core::num;
 import std::time;
 extern {
   fn putchar(char : i32) -> i32;

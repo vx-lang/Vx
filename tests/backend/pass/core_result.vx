@@ -28,12 +28,16 @@
 // Every value is built where it is used rather than bound first: a `Result` is an enum,
 // so it is a linear value and `unwrap` takes it by value.
 //
-// Each method was broken in turn and reported here separately, except `and_then`: with
-// only `v : T` and `f` in scope there is no type-correct way to build a wrong
-// `Result<U, E>`, so its body cannot be mutated locally. Its three cases are still asked,
-// and the hand-written closure call it uses is the same one `unwrap_or_else` pins.
-import core::result;
+// Each method was broken in turn and reported here separately, except `and_then` and
+// `clone`: with only `v : T` and `f` in scope there is no type-correct way to build a
+// wrong `Result<U, E>`, so neither body can be mutated locally. `and_then`'s three cases
+// are still asked, and the hand-written closure call it uses is the same one
+// `unwrap_or_else` pins. `clone` was broken by deleting the impl, which takes the file to
+// "Method 'clone' not found on type Result<i32, i64>" -- that says the calls bind here,
+// and the payload values below are what would show a clone that dropped one.
+import core::clone;
 import core::option;
+import core::result;
 
 fn show(flag : bool) -> i32 {
   if flag {
@@ -102,7 +106,78 @@ fn main() -> i32 {
   print(Result<i32, i64>::Err(big).unwrap_or(-3));
   print!(" ");
   show(Result<i32, i64>::Ok(-3).err().is_none());
+  print!(" | ");
+
+  print(Result<i32, i32>::Err(3).unwrap_err());
+  print!(" ");
+
+  // The two predicates get a value their closure likes, one it does not, and the side it
+  // never sees -- a version that ignored the closure, or read the wrong variant, shows.
+  show(Result<i32, i32>::Ok(5).is_ok_and(| x : i32 | x > 3));
+  print!(" ");
+  show(Result<i32, i32>::Ok(2).is_ok_and(| x : i32 | x > 3));
+  print!(" ");
+  show(Result<i32, i32>::Err(9).is_ok_and(| x : i32 | x > 3));
+  print!(" ");
+  show(Result<i32, i32>::Err(5).is_err_and(| e : i32 | e > 3));
+  print!(" ");
+  show(Result<i32, i32>::Err(2).is_err_and(| e : i32 | e > 3));
+  print!(" ");
+  show(Result<i32, i32>::Ok(9).is_err_and(| e : i32 | e > 3));
+  print!(" ");
+
+  // `and` and `or` differ only in which side they answer with, so each is asked with two
+  // successes that hold different values: answering with the wrong one prints the other.
+  print(Result<i32, i32>::Ok(1).and(Result<i32, i32>::Ok(8)).unwrap_or(0));
+  print!(" ");
+  print(Result<i32, i32>::Err(2).and(Result<i32, i32>::Ok(8)).unwrap_or(-1));
+  print!(" ");
+  print(Result<i32, i32>::Err(2).or(Result<i32, i32>::Ok(6)).unwrap_or(0));
+  print!(" ");
+  print(Result<i32, i32>::Ok(5).or(Result<i32, i32>::Ok(6)).unwrap_or(0));
+  print!(" ");
+
+  print(Result<i32, i32>::Ok(5).map_or(-1, | x : i32 | x * 3));
+  print!(" ");
+  print(Result<i32, i32>::Err(3).map_or(-1, | x : i32 | x * 3));
+  print!(" ");
+  print(Result<i32, i32>::Ok(5).map_or_else(| e : i32 | e + 9, | x : i32 | x + 100));
+  print!(" ");
+  print(Result<i32, i32>::Err(3).map_or_else(| e : i32 | e + 9, | x : i32 | x + 100));
+  print!(" | ");
+
+  // The two bridges from `Option`. `ok_or` is given an `i64` error against an `i32` value,
+  // so the failure it carries is read back at its own width and not the value's.
+  let e : i64 = 9223372036854775807;
+  print(Option<i32>::Some(7).ok_or(e).unwrap_or(-1));
+  print!(" ");
+  print(Option<i32>::None().ok_or(e).unwrap_or(-1));
+  print!(" ");
+  print(Option<i32>::None().ok_or(e).unwrap_err());
+  print!(" ");
+  print(Option<i32>::Some(7).ok_or_else(|| 4).unwrap_or(-1));
+  print!(" ");
+  print(Option<i32>::None().ok_or_else(|| 4).unwrap_err());
+  print!(" | ");
+
+  // `Clone` for `Result` lives in `core::clone` and is asked here rather than in
+  // `core_clone_default.vx`, which is flat-only: this impl returns an enum from each match
+  // arm, so it declines, and a flat-only file has to compile through the flat path.
+  //
+  // Both arms are cloned, since they are two bodies, and the `i64` failure carries the
+  // widest value so a clone that rebuilt it at the success type would show. A mixed
+  // float-and-integer instantiation is absent because `Result<f32, i32>` fails to lower on
+  // both code generators, not because the impl minds.
+  print(Result<i32, i32>::Ok(5).clone().unwrap_or(-1));
+  print!(" ");
+  print(Result<i32, i32>::Err(3).clone().unwrap_or(-1));
+  print!(" ");
+  print(Result<i32, i32>::Err(3).clone().err().unwrap_or(-1));
+  print!(" ");
+  print(Result<i32, i64>::Err(e).clone().err().unwrap_or(-1));
+  print!(" ");
+  print(Result<i32, i64>::Ok(7).clone().unwrap_or(-1));
   return 0;
 }
 
-// EXPECT: 1 0 0 1 5 5 9 5 1 3 1 21 -1 30 5 10 -1 -1 103 5 9223372036854775807 -3 -3 1
+// EXPECT: 1 0 0 1 5 5 9 5 1 3 1 21 -1 30 5 10 -1 -1 103 5 9223372036854775807 -3 -3 1 | 3 1 0 0 1 0 0 8 -1 6 5 15 -1 105 12 | 7 -1 9223372036854775807 7 4 | 5 -1 3 9223372036854775807 7

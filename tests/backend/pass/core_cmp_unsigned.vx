@@ -1,0 +1,102 @@
+//===- core_cmp_unsigned.vx - Vx Compiler -------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `core::cmp` over the unsigned widths and `bool`.
+//
+// Every operand is above the signed limit of its width, so the signed answer differs from
+// the unsigned one at each line: 200 as a `u8` is -56 read as signed, and 4000000000 as a
+// `u32` is -294967296. The stamped impls share one macro body, so a comparison that read a
+// sign would still compile and would answer the opposite here.
+//
+// `bool` is the same case at one bit: `true` as a signed `i1` is -1, so `true > false`
+// reads as -1 > 0 and answers false.
+//
+// Each width is compared in both directions. Asked only which of the two is greater, the
+// file passes with `Less` and `Greater` swapped in the stamped body, since the smaller
+// operand is never the receiver.
+//
+// `max` and `min` are bound to a local before being read. Calling a method on the value a
+// method just returned declines on the flat path as "a borrow of something that is not a
+// tensor", and this file has to stay on the flat path to mean anything.
+//
+// Flat path only, for the reason `core_num_unsigned.vx` is: the legacy code generator
+// chooses its arithmetic from the printed MLIR type, which carries no sign, so `<` and `>`
+// on an unsigned operand take the signed op there. It answers 0 to the first line below.
+//
+// REQUIRES: flat-codegen
+// EXPECT: 1 1 0 1 | 1 1 0 40000 | 1 1 0 5 | 1 1 0 1 | 1 1 0 1 0
+import core::cmp;
+
+fn show(flag : bool) -> i32 {
+  if flag {
+    print(1);
+  } else {
+    print(0);
+  }
+  return 0;
+}
+
+fn main() -> i32 {
+  let b8 : u8 = 200;
+  let s8 : u8 = 5;
+  show(b8.cmp(&s8).is_gt());
+  print!(" ");
+  show(s8.cmp(&b8).is_lt());
+  print!(" ");
+  show(b8.lt(&s8));
+  print!(" ");
+  show(b8.eq(&b8));
+  print!(" | ");
+
+  let b16 : u16 = 40000;
+  let s16 : u16 = 5;
+  show(b16.cmp(&s16).is_gt());
+  print!(" ");
+  show(s16.cmp(&b16).is_lt());
+  print!(" ");
+  show(b16.lt(&s16));
+  print!(" ");
+  let widest : u16 = b16.max(s16);
+  print(widest as i32);
+  print!(" | ");
+
+  let b32 : u32 = 4000000000;
+  let s32 : u32 = 5;
+  show(b32.cmp(&s32).is_gt());
+  print!(" ");
+  show(s32.cmp(&b32).is_lt());
+  print!(" ");
+  show(b32.lt(&s32));
+  print!(" ");
+  let narrowest : u32 = b32.min(s32);
+  print(narrowest as i32);
+  print!(" | ");
+
+  let b64 : u64 = 12345678901234567890;
+  let s64 : u64 = 5;
+  show(b64.cmp(&s64).is_gt());
+  print!(" ");
+  show(s64.cmp(&b64).is_lt());
+  print!(" ");
+  show(b64.lt(&s64));
+  print!(" ");
+  show(b64.ne(&s64));
+  print!(" | ");
+
+  let t : bool = true;
+  let f : bool = false;
+  show(t.cmp(&f).is_gt());
+  print!(" ");
+  show(f.cmp(&t).is_lt());
+  print!(" ");
+  show(t.lt(&f));
+  print!(" ");
+  show(f.cmp(&f).is_eq());
+  print!(" ");
+  show(t.eq(&f));
+  return 0;
+}

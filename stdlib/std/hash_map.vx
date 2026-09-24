@@ -6,17 +6,35 @@
 //
 //===----------------------------------------------------------------------===//
 extern {
+  /// An empty map from `i32` to `i32`, owned by the Rust core.
   fn vx_hash_map_new_i32_i32() -> *mut i8;
+  /// Insert a value under a key, replacing whatever was there.
   fn vx_hash_map_insert_i32_i32(ptr : *mut i8, key : i32, val : i32) -> i32;
+  /// A pointer to the value under a key, or null when the key is absent.
+  ///
+  /// Vx cannot test a pointer against null (Vx#714), so `contains_key` is the way to ask
+  /// whether the key is there.
   fn vx_hash_map_get_i32_i32(ptr : *mut i8, key : i32) -> *mut i8;
+  /// Is the key present?
   fn vx_hash_map_contains_key_i32_i32(ptr : *mut i8, key : i32) -> Bool;
+  /// How many entries the map holds.
   fn vx_hash_map_len_i32_i32(ptr : *mut i8) -> i32;
+  /// Release the map.
   fn vx_hash_map_drop_i32_i32(ptr : *mut i8) -> i32;
 
+  /// An empty map from `i32` to `f32`, owned by the Rust core.
   fn vx_hash_map_new_i32_f32() -> *mut i8;
+  /// Insert a value under a key, replacing whatever was there.
   fn vx_hash_map_insert_i32_f32(ptr : *mut i8, key : i32, val : f32) -> i32;
+  /// A pointer to the value under a key, or null when the key is absent.
+  ///
+  /// Vx cannot test a pointer against null (Vx#714), so `contains_key` is the way to ask
+  /// whether the key is there.
   fn vx_hash_map_get_i32_f32(ptr : *mut i8, key : i32) -> *mut i8;
+  /// Is the key present?
   fn vx_hash_map_contains_key_i32_f32(ptr : *mut i8, key : i32) -> Bool;
+  /// How many entries the map holds.
   fn vx_hash_map_len_i32_f32(ptr : *mut i8) -> i32;
+  /// Release the map.
   fn vx_hash_map_drop_i32_f32(ptr : *mut i8) -> i32;
 }

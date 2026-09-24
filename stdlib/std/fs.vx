@@ -6,29 +6,56 @@
 //
 //===----------------------------------------------------------------------===//
 extern {
+  /// The Rust core behind `File::open`. Null when the open fails.
   fn vx_file_open(c_path : *const i8, mode : i32) -> *mut i8;
+  /// The Rust core behind `File::read`.
   fn vx_file_read(ptr : *mut i8, buffer : *mut u8, len : i64) -> i64;
+  /// The Rust core behind `File::write`.
   fn vx_file_write(ptr : *mut i8, buffer : *const u8, len : i64) -> i64;
+  /// The Rust core behind `File::seek`.
   fn vx_file_seek(ptr : *mut i8, offset : i64, whence : i32) -> i64;
+  /// The Rust core behind `file_drop`.
   fn vx_file_drop(ptr : *mut i8) -> i32;
 
   // libc bindings for high-level I/O
+  /// C's `fopen`, for code that wants a `FILE*` rather than the Rust-backed `File`.
   fn fopen(path: *const i8, mode: *const i8) -> *mut i8;
+  /// C's `fread`: the number of whole items read, not the number of bytes.
   fn fread(ptr: *mut u8, size: i64, nmemb: i64, stream: *mut i8) -> i64;
+  /// C's `fclose`.
   fn fclose(stream: *mut i8) -> i32;
+  /// C's `fileno`: the descriptor behind a `FILE*`, for handing to `mmap`.
   fn fileno(f: *mut i8) -> i32;
+  /// C's `fseek`.
   fn fseek(f: *mut i8, offset: i64, whence: i32) -> i32;
+  /// C's `ftell`: the current position, which is how the size is found after a seek to the end.
   fn ftell(f: *mut i8) -> i64;
+  /// C's `mmap`, declared here so a file can be mapped without importing `std::mmap`.
   fn mmap(addr: *mut i8, len: i64, prot: i32, flags: i32, fd: i32, offset: i64) -> *mut i8;
+  /// C's `munmap`.
   fn munmap(addr: *mut i8, len: i64) -> i32;
 }
 
+/// An open file, held by the Rust core behind an opaque pointer.
+///
+/// Closed by calling `file_drop`, since the language has no `Drop` (Vx#495).
 struct File {
   ptr : *mut i8,
 }
 
 impl File {
   // Mode flags: 0 = read, 1 = write, 2 = read/write (create)
+  /// Open `path`. `mode` is 0 to read, 1 to write, and anything else to read and write.
+  ///
+  /// Writing creates the file and truncates it; read-and-write creates it and does not
+  /// truncate. Reading does not create it.
+  ///
+  /// **A failed open cannot be detected.** The returned `File` holds a null pointer, and Vx
+  /// cannot compare a raw pointer against null or cast one to an integer (Vx#714) -- so a
+  /// missing file is indistinguishable from an empty one until that closes. Every later call
+  /// on it answers 0 or -1 rather than doing anything.
+  ///
+  /// Unsafe because nothing checks that `path` points at a NUL-terminated string.
   unsafe fn open(path : *const i8, mode : i32) -> File {
     let ptr = unsafe { vx_file_open(path, mode) };
     File {
@@ -36,19 +63,35 @@ impl File {
     }
   }
 
+  /// Read up to `len` bytes into `buffer` and answer how many arrived.
+  ///
+  /// Zero means end of file, a null file or buffer, or a read error -- the four are not told
+  /// apart. A short read is normal and is not an error.
+  ///
+  /// Unsafe because `buffer` must have room for `len` bytes; nothing here checks.
   unsafe fn read(self : *mut File, buffer : *mut u8, len : i64) -> i64 {
     unsafe { vx_file_read(self.ptr, buffer, len) }
   }
 
+  /// Write up to `len` bytes from `buffer` and answer how many were taken.
+  ///
+  /// Zero means a null file or buffer, or a write error, with the same lack of distinction
+  /// `read` has. A short write is not an error and the remainder is not retried here.
   unsafe fn write(self : *mut File, buffer : *const u8, len : i64) -> i64 {
     unsafe { vx_file_write(self.ptr, buffer, len) }
   }
 
+  /// Move the read and write position, answering where it ended up.
+  ///
+  /// `whence` is 0 from the start, 1 from the current position, 2 from the end, as libc's
+  /// `SEEK_SET`, `SEEK_CUR` and `SEEK_END`. Answers -1 for a null file, an unknown `whence`,
+  /// or a seek the operating system refuses.
   fn seek(self : *mut File, offset : i64, whence : i32) -> i64 {
     unsafe { vx_file_seek(self.ptr, offset, whence) }
   }
 }
 
+/// Close the file and release it. Using it afterwards reads freed memory.
 unsafe fn file_drop(file : *mut File) -> void {
   let _dropped = unsafe { vx_file_drop(file.ptr) };
 }

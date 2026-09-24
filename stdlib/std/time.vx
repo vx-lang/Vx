@@ -10,20 +10,32 @@
 //===----------------------------------------------------------------------===//
 
 extern {
+  /// The Rust core behind `now`.
   fn vx_get_time() -> f32;
+  /// The Rust core behind `sleep`.
   fn vx_sleep(seconds : f32)->i32;
+  /// The Rust core behind `unix_timestamp`.
   fn vx_unix_timestamp() -> f64;
+  /// The Rust core behind `bench_report`.
   fn vx_bench_report(name : *const i8, unit : *const i8, value : f32) -> i32;
 }
 
+/// Seconds from some fixed point, for measuring how long something took.
+///
+/// Only differences between two calls mean anything: the origin is unspecified. An `f32`
+/// holds about seven digits, so a long-running process loses resolution as the value grows
+/// -- `unix_timestamp` is the `f64` one.
 fn now() -> f32 {
   return unsafe { vx_get_time() };
 }
 
+/// Pause this thread for at least `seconds`. It may be longer; it is never shorter.
 fn sleep(seconds : f32) -> i32 {
   return unsafe { vx_sleep(seconds) };
 }
 
+/// Seconds since the Unix epoch, as an `f64`. Wall-clock time, so it can move backwards
+/// when the system clock is adjusted; `now` is the one to measure a duration with.
 fn unix_timestamp() -> f64 {
   return unsafe { vx_unix_timestamp() };
 }
@@ -36,6 +48,9 @@ fn unix_timestamp() -> f64 {
 // literally and appends the arguments after it, so a Vx-side interpolation cannot
 // produce a parseable record. A program reports only what it can know -- its own
 // name, unit and number; the runner supplies the commit and the machine.
+/// Report a benchmark measurement in the form the harness collects.
+///
+/// Unsafe because `name` and `unit` must point at NUL-terminated strings.
 unsafe fn bench_report(name : *const i8, unit : *const i8, value : f32) -> i32 {
   return unsafe { vx_bench_report(name, unit, value) };
 }

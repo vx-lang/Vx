@@ -1,0 +1,134 @@
+//===- convert.vx - Vx Standard Library ---------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `From`: a conversion that cannot fail and loses nothing.
+//
+// One static method, called through the target type: `i32::from(x)`. The impls are stamped
+// one per source-and-target pair, which is the shape that had to wait for a trait's
+// arguments to join the mangled method name. Before that every `From` impl for `i32`
+// claimed the name `i32$from` and all but one was dropped on the floor.
+//
+// Only the conversions Rust has. `u8 -> i16` is here because every `u8` value fits in an
+// `i16`. `i32 -> f32` is absent because a 32-bit integer needs more mantissa than an `f32`
+// has, so the conversion would round. The narrowings belong to `TryFrom`.
+//
+// The reflexive case is stamped per type rather than written once as
+// `impl<T> From<T> for T`, because an impl whose `Self` is a bare type parameter is never
+// found: `i32::from(5)` reports an undefined static method. Rust's blanket impls stay out
+// of reach, and each one this module wants is short enough to stamp.
+//
+// Three of Rust's items in this module are absent, each for its own reason:
+//
+//   `Into`, `TryInto`  `x.into()` carries no argument to choose an impl by, and Vx does not
+//                      resolve a call from the type its result is assigned to. Stamping
+//                      `Into` per pair gives one source type several impls that a call
+//                      cannot tell apart, and the checker refuses the call as ambiguous.
+//   `TryFrom`          returns `Result<Self, TryFromIntError>`. A `Result` whose two
+//                      payloads have different layouts does not lower on the flat path,
+//                      so the error type would have to be a bare integer to work at all.
+//   `AsRef`, `AsMut`   convert between references, and `core` has no pair of types that
+//                      needs one until `str` and slices arrive.
+import core::option;
+
+trait From<T> {
+  /// This type built from a `T`, losing nothing.
+  ///
+  /// A static method, called through the target: `i32::from(x)`. Only implemented where every
+  /// value of `T` fits, so there is no failure to report; the narrowing direction is
+  /// `TryFrom`'s, which Vx does not have yet.
+  fn from(v : T) -> Self;
+}
+
+/// A widening is a cast: the target holds every value of the source.
+macro_rules stamp_from {
+  ($from : ident , $to : ident) => {
+    impl From<$from> for $to {
+      /// The value widened, which cannot lose anything at these two widths.
+      fn from(v : $from) -> $to {
+        return v as $to;
+      }
+    }
+  };
+}
+
+// Every type converts from itself, which is the one case a pair of distinct types cannot
+// cover. In Rust this is a single blanket impl.
+stamp_from!(i8 , i8);
+stamp_from!(i16 , i16);
+stamp_from!(i32 , i32);
+stamp_from!(i64 , i64);
+stamp_from!(u8 , u8);
+stamp_from!(u16 , u16);
+stamp_from!(u32 , u32);
+stamp_from!(u64 , u64);
+stamp_from!(f32 , f32);
+stamp_from!(f64 , f64);
+stamp_from!(bool , bool);
+
+stamp_from!(i8 , i16);
+stamp_from!(i8 , i32);
+stamp_from!(i8 , i64);
+stamp_from!(i16 , i32);
+stamp_from!(i16 , i64);
+stamp_from!(i32 , i64);
+
+stamp_from!(u8 , u16);
+stamp_from!(u8 , u32);
+stamp_from!(u8 , u64);
+stamp_from!(u16 , u32);
+stamp_from!(u16 , u64);
+stamp_from!(u32 , u64);
+
+// An unsigned value fits in a signed type one step wider, never in the same width.
+stamp_from!(u8 , i16);
+stamp_from!(u8 , i32);
+stamp_from!(u8 , i64);
+stamp_from!(u16 , i32);
+stamp_from!(u16 , i64);
+stamp_from!(u32 , i64);
+
+// `f32` carries 24 bits of mantissa and `f64` carries 53, so the widest integer each
+// converts from exactly is 16 and 32 bits.
+stamp_from!(i8 , f32);
+stamp_from!(u8 , f32);
+stamp_from!(i16 , f32);
+stamp_from!(u16 , f32);
+stamp_from!(i8 , f64);
+stamp_from!(u8 , f64);
+stamp_from!(i16 , f64);
+stamp_from!(u16 , f64);
+stamp_from!(i32 , f64);
+stamp_from!(u32 , f64);
+stamp_from!(f32 , f64);
+
+// `false` is 0 and `true` is 1 at every width.
+stamp_from!(bool , i8);
+stamp_from!(bool , i16);
+stamp_from!(bool , i32);
+stamp_from!(bool , i64);
+stamp_from!(bool , u8);
+stamp_from!(bool , u16);
+stamp_from!(bool , u32);
+stamp_from!(bool , u64);
+
+/// A value becomes the `Some` that holds it.
+impl<T> From<T> for Option<T> {
+  /// The value wrapped in `Some`.
+  fn from(v : T) -> Option<T> {
+    return Option<T>::Some(v);
+  }
+}
+
+/// An enum with no variants, so no value of it can be built. It is the error type of a
+/// conversion that cannot fail.
+enum Infallible {
+}
+
+/// Returns its argument. Useful where a function is wanted and nothing should happen.
+fn identity<T>(x : T) -> T {
+  return x;
+}

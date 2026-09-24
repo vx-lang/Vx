@@ -33,6 +33,12 @@ const KNOWN_DECLINES: &[&str] = &[
     // shape as the file above. The AST path handles them, and that is where the answers
     // come from.
     "backend/pass/core_result.vx",
+    // `partial_cmp` answers with an `Option<Ordering>`, and `then_with` and `max_by` take
+    // closures that answer with an `Ordering`. The flat path declines the first as "a
+    // callee return type" and the others as "an indirect callee returning a non-scalar".
+    // These live apart from `core_cmp.vx` so that file keeps compiling through the flat
+    // path; putting them together would have moved it here instead.
+    "backend/pass/core_cmp_partial.vx",
     // `right_opt` and `left_opt` answer with an `Option<T>`, which the flat path declines
     // as "a non-scalar default return" -- the same shape as the file above. Those two
     // methods are the point of the file: a parameter only reaches the code that binds it

@@ -8,15 +8,22 @@
 //===----------------------------------------------------------------------===//
 
 extern {
+  /// The Rust core behind `f32`'s `expect_eq`.
   fn vx_googletest_expect_eq_f32(actual : f32, expected : f32)->i32;
+  /// The Rust core behind `i32`'s `expect_eq`.
   fn vx_googletest_expect_eq_i32(actual : i32, expected : i32)->i32;
 }
 
 trait GoogletestEq {
+  /// Report whether this value equals `expected`, and answer non-zero when it does not.
+  ///
+  /// Records the comparison rather than stopping at it, so a test reports every failure it
+  /// finds rather than only the first.
   fn expect_eq(self : Self, expected : Self)->i32;
 }
 
 impl GoogletestEq for f32 {
+  /// Compared exactly, so two values a rounding step apart are reported as different.
   fn expect_eq(self : f32, expected : f32) -> i32 {
     let res : i32 = unsafe { vx_googletest_expect_eq_f32(self, expected) };
     return res;
@@ -24,12 +31,14 @@ impl GoogletestEq for f32 {
 }
 
 impl GoogletestEq for i32 {
+  /// Compared exactly.
   fn expect_eq(self : i32, expected : i32) -> i32 {
     let res : i32 = unsafe { vx_googletest_expect_eq_i32(self, expected) };
     return res;
   }
 }
 
+/// `actual.expect_eq(expected)` written the way a test reads: the value under test first.
 fn expect_eq<T : GoogletestEq>(actual : T, expected : T) -> i32 {
   return actual.expect_eq(expected);
 }

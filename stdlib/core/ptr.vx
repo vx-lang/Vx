@@ -1,0 +1,48 @@
+//===- ptr.vx - Vx Standard Library -------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//====---------------------------------------------------------------------===//
+// Raw pointers: making one, and reading or writing through it.
+//
+// `read` and `write` are `unsafe fn` because nothing here checks that the pointer is
+// valid, which is the same reason Rust's are. `null` and `null_mut` are safe: making a
+// null pointer is fine, and using one is what these two cannot promise.
+//
+// Still missing, and all of it for one reason:
+//
+//   `eq`, `is_null`          two raw pointers cannot be compared. `==` between them
+//                            lowers to `arith.cmpi` on an `!llvm.ptr` and fails
+//                            verification on both code generators, and casting a pointer
+//                            to an integer to compare addresses instead is refused by the
+//                            checker (Vx#714). So there is no way to ask whether a pointer
+//                            is null, and `null` below is a value a program can make and
+//                            hand back but not test.
+//   `offset`, `add`, `sub`   want pointer arithmetic, which is the same gap.
+//   `copy`, `copy_nonoverlapping`, `write_bytes`
+//                            want `llvm.intr.memcpy` and friends through `mlir!`.
+//   `read_volatile`,         want the volatile forms of the load and store.
+//   `write_volatile`
+//   `NonNull<T>`             wants the null test above.
+
+/// A pointer to nothing.
+fn null<T>() -> *const T {
+  return unsafe { 0 as *const T };
+}
+
+/// A mutable pointer to nothing.
+fn null_mut<T>() -> *mut T {
+  return unsafe { 0 as *mut T };
+}
+
+/// The value the pointer addresses. The caller promises there is one.
+unsafe fn read<T>(p : *const T) -> T {
+  return *p;
+}
+
+/// Puts a value where the pointer addresses. The caller promises it may.
+unsafe fn write<T>(p : *mut T, v : T) -> void {
+  *p = v;
+}

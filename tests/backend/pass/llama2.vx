@@ -30,7 +30,7 @@
 import tests::modules::llama_rt;
 import std::io;
 import std::vec;
-import std::math;
+import core::num;
 
 struct Config {
   dim : i32,

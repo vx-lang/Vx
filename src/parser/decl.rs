@@ -852,6 +852,23 @@ impl<'a> Parser<'a> {
         let mut externs = Vec::new();
 
         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
+            // As the trait and impl loops do. `std::libc`, `std::alloc`, `std::mmap`,
+            // `std::hash_map` and `std::hash_set` contain nothing but declarations, so a
+            // doc comment being a parse error here left those modules undocumentable.
+            let mut doc_comment: Option<String> = None;
+            while let TokenType::DocComment(c) = &self.peek().kind {
+                let text = c.to_string();
+                if let Some(existing) = &mut doc_comment {
+                    existing.push('\n');
+                    existing.push_str(&text);
+                } else {
+                    doc_comment = Some(text);
+                }
+                self.advance();
+            }
+            if self.check(&TokenType::RightBrace) || self.check(&TokenType::Eof) {
+                break;
+            }
             let decl_line = self.peek().line;
             let decl_column = self.peek().column;
             let is_safe = self.match_token(&TokenType::Safe);
@@ -876,6 +893,7 @@ impl<'a> Parser<'a> {
                     column: decl_column,
                     length: 0,
                 },
+                doc_comment,
             });
         }
         self.consume(&TokenType::RightBrace, "Expected '}'")?;
@@ -892,6 +910,24 @@ impl<'a> Parser<'a> {
         let mut methods = Vec::new();
         let mut assoc_types: Vec<crate::symbol::Symbol> = Vec::new();
         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
+            // Collected the same way an impl block's are, below. A trait method could not carry
+            // one at all before: the loop went straight to `fn` and a `///` was a parse error,
+            // which left the traits -- the public surface of every type implementing them --
+            // as the one part of the library that could not be documented where it is declared.
+            let mut doc_comment: Option<String> = None;
+            while let TokenType::DocComment(c) = &self.peek().kind {
+                let text = c.to_string();
+                if let Some(existing) = &mut doc_comment {
+                    existing.push('\n');
+                    existing.push_str(&text);
+                } else {
+                    doc_comment = Some(text);
+                }
+                self.advance();
+            }
+            if self.check(&TokenType::RightBrace) || self.check(&TokenType::Eof) {
+                break;
+            }
             // `type Item;` declares an associated type. The trait's signatures write it as
             // `Self::Item`, and every impl binds it to a type of its own. No bound is accepted
             // yet, so the name is all there is to record.
@@ -945,6 +981,7 @@ impl<'a> Parser<'a> {
                 params,
                 return_type,
                 default_body,
+                doc_comment,
             });
         }
         self.consume(&TokenType::RightBrace, "Expected '}'")?;

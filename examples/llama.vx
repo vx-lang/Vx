@@ -13,7 +13,7 @@ import std::vec;
 import std::libc;
 import std::mmap;
 import tests::modules::llama_rt;
-import std::math;
+import core::num;
 import std::time;
 
 struct Config {

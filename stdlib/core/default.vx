@@ -16,6 +16,10 @@
 import core::option;
 
 trait Default {
+  /// The value this type starts from: zero for a number, `false`, `None`.
+  ///
+  /// A static method, so it is called through the type -- `i64::default()`, not `x.default()`.
+  /// A struct gets one by writing the impl; the language does not derive it.
   fn default() -> Self;
 }
 
@@ -23,6 +27,7 @@ trait Default {
 macro_rules stamp_default {
   ($t : ident , $zero : expr) => {
     impl Default for $t {
+      /// Zero, spelled at this width.
       fn default() -> $t {
         return $zero;
       }
@@ -43,6 +48,7 @@ stamp_default!(f64 , 0.0);
 stamp_default!(bool , false);
 
 impl<T> Default for Option<T> {
+  /// `None`, whatever `T` is: an option's default is the absent one.
   fn default() -> Option<T> {
     return Option<T>::None();
   }

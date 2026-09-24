@@ -23,6 +23,17 @@
 //
 // The limits are methods because Vx has no `const` item, and because a bare literal is
 // born `i32` -- returning one from a method declared `-> $t` is what gives it the width.
+//
+// The float methods at the bottom are the ones Rust's `core` does not have: its only route
+// to `exp` is a libm call, so `exp` lives in Rust's `std`. A `math` dialect op is a route
+// that every backend lowers on its own terms, so they belong here.
+//
+// These replaced `std::math`, which declared the same names as a `Math` trait over a block
+// of libm externs. That module is gone and its callers import this one: the method names
+// are the same, so only the import line moved.
+//
+// `cbrt` and `erf` are absent. Their `math` ops lower to a libm declaration the pipeline
+// then rejects, and neither is in Rust's `core` either.
 import core::option;
 
 /// Stamps the integer methods for one signed width.
@@ -86,10 +97,12 @@ macro_rules stamp_signed_int {
         return self > (0 as $t) && (self & (self - 1)) == (0 as $t);
       }
 
+      /// Is this greater than zero? Zero is neither positive nor negative.
       fn is_positive(self : $t) -> bool {
         return self > (0 as $t);
       }
 
+      /// Is this less than zero?
       fn is_negative(self : $t) -> bool {
         return self < (0 as $t);
       }
@@ -330,6 +343,59 @@ macro_rules stamp_signed_int {
         }
         return self - rhs;
       }
+
+      /// The sum, wrapping round at the width. Vx's `+` already wraps, so the body is the
+      /// operator; the name is what a reader who wants that on purpose looks for, and what
+      /// a hash function is written in.
+      fn wrapping_add(self : $t, rhs : $t) -> $t {
+        return self + rhs;
+      }
+
+      /// The difference, wrapping round at the width.
+      fn wrapping_sub(self : $t, rhs : $t) -> $t {
+        return self - rhs;
+      }
+
+      /// The product, keeping the low bits and discarding the rest.
+      fn wrapping_mul(self : $t, rhs : $t) -> $t {
+        return self * rhs;
+      }
+
+      /// Zero minus this, wrapping. The smallest value negates to itself, because its
+      /// positive is one past the largest.
+      fn wrapping_neg(self : $t) -> $t {
+        return (0 as $t) - self;
+      }
+
+      /// Clamped to the width rather than wrapping. Which end it clamps to is the sign the
+      /// product would have had, which is whether the two operands agree in sign.
+      fn saturating_mul(self : $t, rhs : $t) -> $t {
+        let product = self.checked_mul(rhs);
+        let signs_agree = (self < (0 as $t)) == (rhs < (0 as $t));
+        let mut limit = self.min_value();
+        if signs_agree {
+          limit = self.max_value();
+        }
+        return product.unwrap_or(limit);
+      }
+
+      /// How many set bits the value starts with, counting from the top.
+      ///
+      /// The complement is taken with `^` against an all-ones value rather than with `!`,
+      /// which the checker types as a `bool` on an integer and the two code generators
+      /// lower two different ways (Vx#717).
+      fn leading_ones(self : $t) -> $t {
+        let ones : $t = (0 as $t) - (1 as $t);
+        let flipped : $t = self ^ ones;
+        return flipped.leading_zeros();
+      }
+
+      /// How many set bits the value ends with, counting from the bottom.
+      fn trailing_ones(self : $t) -> $t {
+        let ones : $t = (0 as $t) - (1 as $t);
+        let flipped : $t = self ^ ones;
+        return flipped.trailing_zeros();
+      }
     }
   };
 }
@@ -566,6 +632,51 @@ macro_rules stamp_unsigned_int {
         }
         return self - rhs;
       }
+
+      /// The sum, wrapping round at the width. Vx's `+` already wraps.
+      fn wrapping_add(self : $t, rhs : $t) -> $t {
+        return self + rhs;
+      }
+
+      /// The difference, wrapping round at the width, so subtracting past zero lands near
+      /// the top.
+      fn wrapping_sub(self : $t, rhs : $t) -> $t {
+        return self - rhs;
+      }
+
+      /// The product, keeping the low bits and discarding the rest.
+      fn wrapping_mul(self : $t, rhs : $t) -> $t {
+        return self * rhs;
+      }
+
+      /// Zero minus this, wrapping.
+      fn wrapping_neg(self : $t) -> $t {
+        return 0 - self;
+      }
+
+      /// Clamped to the top of the width rather than wrapping. There is no other end to
+      /// clamp to without a sign.
+      fn saturating_mul(self : $t, rhs : $t) -> $t {
+        return self.checked_mul(rhs).unwrap_or(self.max_value());
+      }
+
+      /// How many set bits the value starts with, counting from the top.
+      ///
+      /// The complement is taken with `^` against an all-ones value rather than with `!`,
+      /// which the checker types as a `bool` on an integer and the two code generators
+      /// lower two different ways (Vx#717).
+      fn leading_ones(self : $t) -> $t {
+        let ones : $t = self.max_value();
+        let flipped : $t = self ^ ones;
+        return flipped.leading_zeros();
+      }
+
+      /// How many set bits the value ends with, counting from the bottom.
+      fn trailing_ones(self : $t) -> $t {
+        let ones : $t = self.max_value();
+        let flipped : $t = self ^ ones;
+        return flipped.trailing_zeros();
+      }
     }
   };
 }
@@ -574,3 +685,279 @@ stamp_unsigned_int!(u8 , i8 , 8 , 255);
 stamp_unsigned_int!(u16 , i16 , 16 , 65535);
 stamp_unsigned_int!(u32 , i32 , 32 , 4294967295);
 stamp_unsigned_int!(u64 , i64 , 64 , 18446744073709551615);
+
+/// Stamps the float methods for one width.
+///
+/// Every body is one `math` dialect op, so nothing here needs libm at the source level and
+/// each backend lowers the op its own way. That is the whole reason these are in `core`
+/// rather than in `std` as Rust's are: Rust's `core` cannot offer `exp` because its only
+/// route is a libm call, and the `math` dialect is a route that is not.
+///
+/// `$t` is both the Vx type and the MLIR type, as it is for the signed integers.
+macro_rules stamp_float {
+  ($t : ident , $one : expr , $zero : expr , $half_circle : expr) => {
+    impl $t {
+      /// The positive square root.
+      fn sqrt(self : $t) -> $t {
+        return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
+          %r = math.sqrt %a : $t
+          macro.yield %r : $t
+        };
+      }
+
+      /// The distance from zero, so the sign is dropped.
+      fn abs(self : $t) -> $t {
+        return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
+          %r = math.absf %a : $t
+          macro.yield %r : $t
+        };
+      }
+
+      /// e raised to this.
+      fn exp(self : $t) -> $t {
+        return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
+          %r = math.exp %a : $t
+          macro.yield %r : $t
+        };
+      }
+
+      /// Two raised to this.
+      fn exp2(self : $t) -> $t {
+        return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
+          %r = math.exp2 %a : $t
+          macro.yield %r : $t
+        };
+      }
+
+      /// `exp` minus one, kept accurate for a small argument where the subtraction would
+      /// lose every significant digit.
+      fn exp_m1(self : $t) -> $t {
+        return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
+          %r = math.expm1 %a : $t
+          macro.yield %r : $t
+        };
+      }
+
+      /// The natural logarithm.
+      fn ln(self : $t) -> $t {
+        return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
+          %r = math.log %a : $t
+          macro.yield %r : $t
+        };
+      }
+
+      /// The logarithm to base two.
+      fn log2(self : $t) -> $t {
+        return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
+          %r = math.log2 %a : $t
+          macro.yield %r : $t
+        };
+      }
+
+      /// The logarithm to base ten.
+      fn log10(self : $t) -> $t {
+        return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
+          %r = math.log10 %a : $t
+          macro.yield %r : $t
+        };
+      }
+
+      /// `ln` of one plus this, kept accurate for a small argument.
+      fn ln_1p(self : $t) -> $t {
+        return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
+          %r = math.log1p %a : $t
+          macro.yield %r : $t
+        };
+      }
+
+      /// The sine of this many radians.
+      fn sin(self : $t) -> $t {
+        return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
+          %r = math.sin %a : $t
+          macro.yield %r : $t
+        };
+      }
+
+      /// The cosine of this many radians.
+      fn cos(self : $t) -> $t {
+        return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
+          %r = math.cos %a : $t
+          macro.yield %r : $t
+        };
+      }
+
+      /// The tangent of this many radians.
+      fn tan(self : $t) -> $t {
+        return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
+          %r = math.tan %a : $t
+          macro.yield %r : $t
+        };
+      }
+
+      /// The angle in radians whose sine is this, between -pi/2 and pi/2.
+      fn asin(self : $t) -> $t {
+        return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
+          %r = math.asin %a : $t
+          macro.yield %r : $t
+        };
+      }
+
+      /// The angle in radians whose cosine is this, between 0 and pi.
+      fn acos(self : $t) -> $t {
+        return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
+          %r = math.acos %a : $t
+          macro.yield %r : $t
+        };
+      }
+
+      /// The angle in radians whose tangent is this. `atan2` is the form that keeps the quadrant.
+      fn atan(self : $t) -> $t {
+        return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
+          %r = math.atan %a : $t
+          macro.yield %r : $t
+        };
+      }
+
+      /// The hyperbolic sine.
+      fn sinh(self : $t) -> $t {
+        return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
+          %r = math.sinh %a : $t
+          macro.yield %r : $t
+        };
+      }
+
+      /// The hyperbolic cosine.
+      fn cosh(self : $t) -> $t {
+        return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
+          %r = math.cosh %a : $t
+          macro.yield %r : $t
+        };
+      }
+
+      /// The hyperbolic tangent.
+      fn tanh(self : $t) -> $t {
+        return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
+          %r = math.tanh %a : $t
+          macro.yield %r : $t
+        };
+      }
+
+      /// The largest whole number no greater than this.
+      fn floor(self : $t) -> $t {
+        return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
+          %r = math.floor %a : $t
+          macro.yield %r : $t
+        };
+      }
+
+      /// The smallest whole number no less than this.
+      fn ceil(self : $t) -> $t {
+        return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
+          %r = math.ceil %a : $t
+          macro.yield %r : $t
+        };
+      }
+
+      /// The nearest whole number, halves going away from zero.
+      fn round(self : $t) -> $t {
+        return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
+          %r = math.round %a : $t
+          macro.yield %r : $t
+        };
+      }
+
+      /// The whole part, so the fraction is dropped and the sign is kept.
+      fn trunc(self : $t) -> $t {
+        return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
+          %r = math.trunc %a : $t
+          macro.yield %r : $t
+        };
+      }
+
+      /// The fractional part, which carries this value's sign.
+      fn fract(self : $t) -> $t {
+        return self - self.trunc();
+      }
+
+      /// This raised to `n`.
+      fn powf(self : $t, n : $t) -> $t {
+        return mlir!( inputs : (%a = self : $t, %b = n : $t), returns : $t, dialects : ["math"]) {
+          %r = math.powf %a, %b : $t
+          macro.yield %r : $t
+        };
+      }
+
+      /// The angle to the point (`x`, this), which is `atan` with the quadrant kept.
+      fn atan2(self : $t, x : $t) -> $t {
+        return mlir!( inputs : (%a = self : $t, %b = x : $t), returns : $t, dialects : ["math"]) {
+          %r = math.atan2 %a, %b : $t
+          macro.yield %r : $t
+        };
+      }
+
+      /// This value's magnitude with `sign`'s sign.
+      fn copysign(self : $t, sign : $t) -> $t {
+        return mlir!( inputs : (%a = self : $t, %b = sign : $t), returns : $t, dialects : ["math"]) {
+          %r = math.copysign %a, %b : $t
+          macro.yield %r : $t
+        };
+      }
+
+      /// One divided by this.
+      fn recip(self : $t) -> $t {
+        return $one / self;
+      }
+
+      /// This many radians in degrees.
+      fn to_degrees(self : $t) -> $t {
+        return self * ($half_circle / 3.14159265358979323846);
+      }
+
+      /// This many degrees in radians.
+      fn to_radians(self : $t) -> $t {
+        return self * (3.14159265358979323846 / $half_circle);
+      }
+
+      /// Is this the value that is equal to nothing, itself included?
+      ///
+      /// Spelled as the negation of an equality rather than as `self != self`, which is
+      /// how Rust writes it: `!=` between floats lowers to the ordered predicate and so
+      /// answers false for a NaN, while `==` is ordered as it should be (Vx#716).
+      fn is_nan(self : $t) -> bool {
+        return !(self == self);
+      }
+
+      /// One with this value's sign, or the value itself when it is a NaN. Zero answers 1
+      /// rather than 0, which is Rust's rule and not `signum`'s in every language.
+      fn signum(self : $t) -> $t {
+        if self.is_nan() {
+          return self;
+        }
+        return $one.copysign(self);
+      }
+
+      /// Is this a real number, rather than an infinity or a NaN?
+      fn is_finite(self : $t) -> bool {
+        if self.is_nan() {
+          return false;
+        }
+        let infinity : $t = $one / $zero;
+        let magnitude : $t = self.abs();
+        return magnitude != infinity;
+      }
+
+      /// Is this an infinity, of either sign?
+      fn is_infinite(self : $t) -> bool {
+        if self.is_nan() {
+          return false;
+        }
+        let infinity : $t = $one / $zero;
+        let magnitude : $t = self.abs();
+        return magnitude == infinity;
+      }
+    }
+  };
+}
+
+stamp_float!(f32 , 1.0 , 0.0 , 180.0);
+stamp_float!(f64 , 1.0 , 0.0 , 180.0);

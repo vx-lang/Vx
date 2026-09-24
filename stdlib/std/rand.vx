@@ -26,6 +26,10 @@
 // reaches the `math` dialect through `mlir!`, so this module works where there is no libc.
 import core::num;
 
+/// The square root, over the `math` dialect so this module needs no libm.
+///
+/// `core::num` has the same method; this is kept because `normal` runs before an import of it
+/// would settle, and a local one keeps the dependency to `core::num` alone.
 fn sqrt_f64(x : f64) -> f64 {
   return mlir!( inputs : (%a = x : f64), returns : f64, dialects : ["math"]) {
     %r = math.sqrt %a : f64
@@ -33,6 +37,7 @@ fn sqrt_f64(x : f64) -> f64 {
   };
 }
 
+/// The natural logarithm, over the `math` dialect.
 fn ln_f64(x : f64) -> f64 {
   return mlir!( inputs : (%a = x : f64), returns : f64, dialects : ["math"]) {
     %r = math.log %a : f64
@@ -49,6 +54,7 @@ struct SplitMix64 {
 }
 
 impl SplitMix64 {
+  /// A generator started at `seed`. Every seed is valid, including zero.
   fn seeded(seed : u64) -> SplitMix64 {
     return SplitMix64 {
       state : seed
@@ -118,10 +124,12 @@ impl Rng {
     return (self.next_u64() >> 32) as u32;
   }
 
+  /// The next 16 bits.
   fn next_u16(self : &mut Rng) -> u16 {
     return (self.next_u64() >> 48) as u16;
   }
 
+  /// The next 8 bits.
   fn next_u8(self : &mut Rng) -> u8 {
     return (self.next_u64() >> 56) as u8;
   }
@@ -132,14 +140,17 @@ impl Rng {
     return self.next_u64() as i64;
   }
 
+  /// The next 32 bits read as signed, so negative half the time.
   fn next_i32(self : &mut Rng) -> i32 {
     return (self.next_u64() >> 32) as i32;
   }
 
+  /// The next 16 bits read as signed.
   fn next_i16(self : &mut Rng) -> i16 {
     return (self.next_u64() >> 48) as i16;
   }
 
+  /// The next 8 bits read as signed.
   fn next_i8(self : &mut Rng) -> i8 {
     return (self.next_u64() >> 56) as i8;
   }
@@ -163,6 +174,7 @@ impl Rng {
     return (((self.next_u64() >> 53) as f32) / 2048.0f32) as f16;
   }
 
+  /// A `bf16` uniform in [0, 1). Eight bits of mantissa, so the draws are coarse.
   fn next_bf16(self : &mut Rng) -> bf16 {
     return (((self.next_u64() >> 56) as f32) / 256.0f32) as bf16;
   }
@@ -213,6 +225,7 @@ impl Rng {
     return lo + (hi - lo) * self.next_f64();
   }
 
+  /// Uniform in [lo, hi), with the caveat `range_f64` gives for a backwards range.
   fn range_f32(self : &mut Rng, lo : f32, hi : f32) -> f32 {
     return lo + (hi - lo) * self.next_f32();
   }
@@ -271,6 +284,9 @@ impl Rng {
     return 0;
   }
 
+  /// Fill `count` elements with draws uniform in [lo, hi).
+  ///
+  /// `out` must have room for `count` of them; nothing here checks.
   fn fill_range_f32(self : &mut Rng, out : *mut f32, count : i32, lo : f32, hi : f32) -> i32 {
     let mut i = 0;
     loop {
@@ -283,6 +299,10 @@ impl Rng {
     return 0;
   }
 
+  /// Fill `count` elements with normal draws of the given mean and standard deviation.
+  ///
+  /// `out` must have room for `count` of them. A negative `stddev` mirrors the distribution
+  /// rather than being refused.
   fn fill_normal_f32(self : &mut Rng, out : *mut f32, count : i32, mean : f32, stddev : f32) -> i32 {
     let mut i = 0;
     loop {
@@ -295,6 +315,7 @@ impl Rng {
     return 0;
   }
 
+  /// Fill `count` elements with `f16` draws uniform in [0, 1).
   fn fill_f16(self : &mut Rng, out : *mut f16, count : i32) -> i32 {
     let mut i = 0;
     loop {

@@ -6,9 +6,14 @@
 //
 //===----------------------------------------------------------------------===//
 extern {
+  /// An empty set of `i32`, owned by the Rust core.
   fn vx_hash_set_new_i32() -> *mut i8;
+  /// Add a value. Adding one already present changes nothing.
   fn vx_hash_set_insert_i32(ptr : *mut i8, val : i32) -> i32;
+  /// Is the value in the set?
   fn vx_hash_set_contains_i32(ptr : *mut i8, val : i32) -> Bool;
+  /// How many distinct values the set holds.
   fn vx_hash_set_len_i32(ptr : *mut i8) -> i32;
+  /// Release the set.
   fn vx_hash_set_drop_i32(ptr : *mut i8) -> i32;
 }

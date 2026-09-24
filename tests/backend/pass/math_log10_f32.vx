@@ -6,16 +6,14 @@
 //
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK-DAG: func.func private @log10f(
-// CHECK-DAG: func.func private @fabsf(
+// CHECK-DAG: math.log10 %{{.*}} : f32
+// CHECK-DAG: math.absf %{{.*}} : f32
 // CHECK-LABEL: func.func @f32$log10(%arg0: f32) -> f32
-// CHECK: call @log10f(%{{.*}}) : (f32) -> f32
 // CHECK-LABEL: func.func @f32$abs(%arg0: f32) -> f32
-// CHECK: call @fabsf(%{{.*}}) : (f32) -> f32
 // CHECK-LABEL: func.func @main() -> i32
 // CHECK: call @f32$log10(%{{.*}}) : (f32) -> f32
 // CHECK: call @f32$abs(%{{.*}}) : (f32) -> f32
-import std::math;
+import core::num;
 
 fn main() -> i32 {
   let x : f32 = 100.0;

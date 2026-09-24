@@ -17,8 +17,28 @@
 // A trait method carries no doc comment: the parser wants `fn` and does not skip one.
 // What each default does is in its name and its one line of body.
 //
-// `PartialOrd` is not here. Without it `Ord` is total, which is what the integer widths
-// want; a float needs the partial version and `f32` has no impl yet.
+// `PartialOrd` is here for the floats, which cannot be `Ord`: a comparison against NaN
+// answers with none of Less, Equal or Greater, so `partial_cmp` returns an `Option`. The
+// integer widths get it too, answering `Some` always, so a body written over `PartialOrd`
+// works for every number.
+//
+// The unsigned widths and `bool` are stamped like the signed ones. Their comparisons are
+// right on the flat path only -- the legacy code generator picks its arithmetic from the
+// printed MLIR type, which carries no sign, so `<` on a `u32` takes the signed op and
+// `true > false` reads as -1 > 0. `tests/backend/pass/core_cmp_unsigned.vx` is flat-only
+// for that reason.
+//
+// Not here:
+//
+//   free `max`, `min`   the names are recognized by the compiler as the tensor reductions,
+//                       so a function called `max` in `core` is never reached (Vx#223).
+//                       `Ord::max` and `Ord::min` are methods and work.
+//   `Reverse<T>`        the generic struct with the inverted `Ord` impl runs, and declines
+//                       on the flat path with an emitter gap (Vx#712). It lands when that
+//                       closes, since `core` is the corpus the flat path is measured on.
+import core::marker;
+import core::ops;
+import core::option;
 
 enum Ordering {
   Less,
@@ -26,7 +46,12 @@ enum Ordering {
   Greater,
 }
 
+/// An ordering is three states and no payload, so it copies. Without this a comparison
+/// could only be read once: `let o = a.cmp(&b);` would consume `o` at its first use.
+impl Copy for Ordering {}
+
 impl Ordering {
+  /// Is this Less?
   fn is_lt(self : Ordering) -> bool {
     match self {
       Ordering::Less() => {
@@ -41,6 +66,7 @@ impl Ordering {
     }
   }
 
+  /// Is this Greater?
   fn is_gt(self : Ordering) -> bool {
     match self {
       Ordering::Less() => {
@@ -55,6 +81,7 @@ impl Ordering {
     }
   }
 
+  /// Is this Equal?
   fn is_eq(self : Ordering) -> bool {
     match self {
       Ordering::Less() => {
@@ -69,14 +96,17 @@ impl Ordering {
     }
   }
 
+  /// Is this anything but Equal?
   fn is_ne(self : Ordering) -> bool {
     return !self.is_eq();
   }
 
+  /// Is this Less or Equal?
   fn is_le(self : Ordering) -> bool {
     return !self.is_gt();
   }
 
+  /// Is this Greater or Equal?
   fn is_ge(self : Ordering) -> bool {
     return !self.is_lt();
   }
@@ -92,6 +122,22 @@ impl Ordering {
       }
       Ordering::Greater() => {
         return Ordering::Less();
+      }
+    }
+  }
+
+  /// `then`, with the second comparison left uncomputed unless it is needed.
+  fn then_with(self : Ordering, f : Closure0<Ordering>) -> Ordering {
+    match self {
+      Ordering::Less() => {
+        return Ordering::Less();
+      }
+      Ordering::Equal() => {
+        let p = f.func;
+        return p(f.env);
+      }
+      Ordering::Greater() => {
+        return Ordering::Greater();
       }
     }
   }
@@ -114,32 +160,54 @@ impl Ordering {
 }
 
 trait PartialEq {
+  /// Are the two values equal?
+  ///
+  /// The only required method of this trait. "Partial" is Rust's name for the fact that
+  /// equality need not be reflexive: a NaN is not equal to itself, and `f32` implements this
+  /// and not `Ord` for that reason.
   fn eq(self : &Self, other : &Self) -> bool;
 
+  /// Are the two values different? The negation of `eq`, and not spelled `!=`, which answers
+  /// false for a NaN on both sides (Vx#716).
   fn ne(self : &Self, other : &Self) -> bool {
     return !self.eq(other);
   }
 }
 
 trait Ord {
+  /// Where this value sits relative to the other: Less, Equal or Greater.
+  ///
+  /// The only required method. Every other method of this trait is a default written over it,
+  /// so a type joins the ordering by writing this one and nothing else.
+  ///
+  /// The order must be total, which is why the floats do not implement this trait: a NaN
+  /// compares to nothing, and `PartialOrd` is where they answer.
   fn cmp(self : &Self, other : &Self) -> Ordering;
 
+  /// Is this value less than the other?
   fn lt(self : &Self, other : &Self) -> bool {
     return self.cmp(other).is_lt();
   }
 
+  /// Is this value less than or equal to the other?
   fn le(self : &Self, other : &Self) -> bool {
     return self.cmp(other).is_le();
   }
 
+  /// Is this value greater than the other?
   fn gt(self : &Self, other : &Self) -> bool {
     return self.cmp(other).is_gt();
   }
 
+  /// Is this value greater than or equal to the other?
   fn ge(self : &Self, other : &Self) -> bool {
     return self.cmp(other).is_ge();
   }
 
+  /// The greater of the two, taking both by value and handing one back.
+  ///
+  /// A method rather than the free function Rust also has, because the compiler reads the
+  /// bare names `max` and `min` as the tensor reductions (Vx#223).
   fn max(self : Self, other : Self) -> Self {
     if self.lt(&other) {
       return other;
@@ -147,6 +215,7 @@ trait Ord {
     return self;
   }
 
+  /// The lesser of the two.
   fn min(self : Self, other : Self) -> Self {
     if self.lt(&other) {
       return self;
@@ -154,6 +223,11 @@ trait Ord {
     return other;
   }
 
+  /// This value brought inside the range, so `lo` below it and `hi` above it.
+  ///
+  /// # Panics
+  ///
+  /// When `lo` is greater than `hi`, which asks for a range no value can be in.
   fn clamp(self : Self, lo : Self, hi : Self) -> Self {
     assert(lo.le(&hi), "clamp needs lo <= hi");
     if self.lt(&lo) {
@@ -170,12 +244,14 @@ trait Ord {
 macro_rules stamp_cmp {
   ($t : ident) => {
     impl PartialEq for $t {
+      /// Equality at this width.
       fn eq(self : &$t, other : &$t) -> bool {
         return *self == *other;
       }
     }
 
     impl Ord for $t {
+      /// The three-way comparison at this width.
       fn cmp(self : &$t, other : &$t) -> Ordering {
         if *self < *other {
           return Ordering::Less();
@@ -193,3 +269,96 @@ stamp_cmp!(i8);
 stamp_cmp!(i16);
 stamp_cmp!(i32);
 stamp_cmp!(i64);
+stamp_cmp!(u8);
+stamp_cmp!(u16);
+stamp_cmp!(u32);
+stamp_cmp!(u64);
+stamp_cmp!(bool);
+
+/// A comparison that may answer with nothing, which is what a float needs: NaN is neither
+/// less than, equal to, nor greater than anything, itself included.
+trait PartialOrd {
+  /// Where this value sits relative to the other, or nothing when they do not compare.
+  ///
+  /// Nothing is what a float answers against a NaN: it is neither less than, equal to, nor
+  /// greater than anything, itself included. Over a total order this always answers `Some`,
+  /// and the integer widths implement it that way so a body written over `PartialOrd` works
+  /// for every number.
+  fn partial_cmp(self : &Self, other : &Self) -> Option<Ordering>;
+}
+
+/// For a type that is already `Ord`, every comparison has an answer.
+macro_rules stamp_total_partial_ord {
+  ($t : ident) => {
+    impl PartialOrd for $t {
+      /// Always an answer, since this type is totally ordered.
+      fn partial_cmp(self : &$t, other : &$t) -> Option<Ordering> {
+        return Option<Ordering>::Some(self.cmp(other));
+      }
+    }
+  };
+}
+
+stamp_total_partial_ord!(i8);
+stamp_total_partial_ord!(i16);
+stamp_total_partial_ord!(i32);
+stamp_total_partial_ord!(i64);
+stamp_total_partial_ord!(u8);
+stamp_total_partial_ord!(u16);
+stamp_total_partial_ord!(u32);
+stamp_total_partial_ord!(u64);
+stamp_total_partial_ord!(bool);
+
+/// The floats get equality and the partial comparison, and no `Ord`. The three tests are
+/// written out rather than ending in an `else`, so a pair that answers false to all of
+/// them -- which is what NaN does -- falls through to `None`.
+macro_rules stamp_float_cmp {
+  ($t : ident) => {
+    impl PartialEq for $t {
+      /// Equality at this width. A NaN is equal to nothing, itself included.
+      fn eq(self : &$t, other : &$t) -> bool {
+        return *self == *other;
+      }
+    }
+
+    impl PartialOrd for $t {
+      /// The comparison, or nothing when either side is a NaN.
+      fn partial_cmp(self : &$t, other : &$t) -> Option<Ordering> {
+        if *self < *other {
+          return Option<Ordering>::Some(Ordering::Less());
+        }
+        if *self > *other {
+          return Option<Ordering>::Some(Ordering::Greater());
+        }
+        if *self == *other {
+          return Option<Ordering>::Some(Ordering::Equal());
+        }
+        return Option<Ordering>::None();
+      }
+    }
+  };
+}
+
+stamp_float_cmp!(f32);
+stamp_float_cmp!(f64);
+
+/// The greater of two values by `f`, and the lesser. They are free functions because they
+/// take the comparison rather than reading it off the type. Rust spells them `max_by` and
+/// `min_by`; the plain `max` and `min` are `Ord` methods here, since those two names are
+/// the compiler's tensor reductions.
+fn max_by<T>(a : T, b : T, f : Closure2<T, T, Ordering>) -> T {
+  let p = f.func;
+  if p(f.env, a, b).is_lt() {
+    return b;
+  }
+  return a;
+}
+
+/// The lesser of the two by `f`, answering `a` when they compare equal.
+fn min_by<T>(a : T, b : T, f : Closure2<T, T, Ordering>) -> T {
+  let p = f.func;
+  if p(f.env, a, b).is_gt() {
+    return b;
+  }
+  return a;
+}

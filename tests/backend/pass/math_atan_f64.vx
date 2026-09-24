@@ -6,16 +6,14 @@
 //
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK-DAG: func.func private @atan(
-// CHECK-DAG: func.func private @fabs(
+// CHECK-DAG: math.atan %{{.*}} : f64
+// CHECK-DAG: math.absf %{{.*}} : f64
 // CHECK-LABEL: func.func @f64$atan(%arg0: f64) -> f64
-// CHECK: call @atan(%{{.*}}) : (f64) -> f64
 // CHECK-LABEL: func.func @f64$abs(%arg0: f64) -> f64
-// CHECK: call @fabs(%{{.*}}) : (f64) -> f64
 // CHECK-LABEL: func.func @main() -> i32
 // CHECK: call @f64$atan(%{{.*}}) : (f64) -> f64
 // CHECK: call @f64$abs(%{{.*}}) : (f64) -> f64
-import std::math;
+import core::num;
 
 fn main() -> i32 {
   let x : f64 = 0.0;

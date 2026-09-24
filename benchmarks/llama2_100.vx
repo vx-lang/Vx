@@ -9,7 +9,7 @@
 import std::io;
 import std::vec;
 import tests::modules::llama_rt;
-import std::math;
+import core::num;
 import std::time;
 
 struct Config {

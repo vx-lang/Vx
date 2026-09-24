@@ -88,7 +88,7 @@ The pieces that already belong to `core`, and will move:
 | `std/option.vx` | 51 | `enum Option<T>`, `is_some`, `is_none`, `unwrap`. Pure Vx. |
 | `std/iter.vx` | 45 | `trait Iterator<T, Item>` with `Item` as a trait parameter, a `Map` adaptor whose struct is never declared (why Vx#487 lists it). |
 | `std/closure.vx` | 22 | `Closure0..3<..>`, the nominal record the compiler lowers a closure literal into. Vx's `Fn` traits, in effect. |
-| `std/math.vx` | 130 | `trait Math` over f32/f64, every method a libm `extern`. The trait moves; the bodies are rewritten over `mlir!` so they need no libm. |
+| `std/math.vx` | 130 | `trait Math` over f32/f64, every method a libm `extern`. Moved: the methods are inherent on `f32`/`f64` in `core::num` now, over `math` dialect ops, and this module is gone. |
 | `std/googletest.vx` | 35 | Stays in `std` (it calls into Rust) but is the assertion vocabulary `core`'s tests use. |
 
 What the repo already decided, in the design document that preceded this one (removed from the
@@ -147,9 +147,12 @@ Two consequences worth stating:
 
 - `core` has no I/O, not even `print`. Its tests use `std::googletest`, which is fine, because
   tests run on the host.
-- `core` cannot panic through the runtime's `vx_panic`. Until the compiler grows a `panic(msg)`
-  intrinsic that lowers to `cf.assert`, `core` uses `assert(false, "msg")`, which is what
-  `Option::unwrap` already does.
+- `core` cannot panic through the runtime's `vx_panic`, and it cannot panic at all yet.
+  `assert(false, "msg")` does not compile: a statically false assert is reported at check time
+  whether or not anything calls the function holding it, so a function that always panics
+  cannot be written (Vx#526). `Option::unwrap` works because its condition comes from a method
+  call the checker cannot fold, which is a shape only a method with a receiver has. So
+  `core::panic` waits on the intrinsics rather than shipping in a reduced form.
 
 ### 3.3 Traits before types
 
@@ -316,14 +319,31 @@ Exclusions: `Deref`/`DerefMut` (no auto-deref in the language; revisit with A11)
 
 #### `core::convert`
 
-`From<T>`, `Into<T>` (with the blanket `impl<T, U : From<T>> Into<U> for T` **excluded** until the
-checker can express a blanket impl; phase 1 stamps `Into` per pair alongside `From`), `TryFrom<T>`,
-`TryInto<T>` (returning `Result<Self, TryFromIntError>`), `AsRef<T>`, `AsMut<T>`, `Infallible` (an
-enum with no variants; check it parses), the identity `fn identity<T>(x : T) -> T`.
+Landed: `From<T>` stamped per source-and-target pair over the lossless widenings
+(`i8 -> i16 -> i32 -> i64`, unsigned likewise, `u8 -> i16` and so on, the integer-to-float
+conversions that do not round, `f32 -> f64`, and `bool` to every width), the reflexive
+`From<T> for T` stamped per type, `From<T> for Option<T>`, `Infallible` as an enum with no
+variants, and `fn identity<T>(x : T) -> T`. This is the module where A7 pays for itself first,
+and it is the first one that needed a trait's arguments in the mangled method name (Vx#686):
+without that every `From` impl for one target claimed the same symbol.
 
-The lossless integer widenings (`i8 -> i16 -> i32 -> i64 -> i128`, unsigned likewise, `u8 -> i16`
-and so on) and the fallible narrowings are stamped by macro from a table. This is the module where
-A7 pays for itself first.
+Three things this section predicted did not survive contact.
+
+**`Into` and `TryInto` are excluded, and not for the reason given here.** The plan assumed a
+blanket `impl<T, U : From<T>> Into<U> for T` was the only obstacle and that stamping per pair
+would do instead. It does not: `x.into()` carries no argument, so two `Into` impls for one
+source type are indistinguishable at the call site, and the checker refuses the call as
+ambiguous (E3035). Vx does not resolve a call from the type its result is assigned to, which
+is what makes `into()` work in Rust. One target per source would resolve, and is not worth a
+trait.
+
+**A blanket impl whose `Self` is a bare type parameter is never found**, so the reflexive case
+is stamped per type. `impl<T> From<T> for T` alone gives "Undefined static method 'i32::from'".
+Worth knowing before any other module reaches for a blanket impl.
+
+**`TryFrom` is blocked by Vx#570, not by anything in this section.** It returns
+`Result<Self, TryFromIntError>`, and a `Result` whose two payloads have different layouts does
+not lower on the flat path when one of them is a struct. The narrowings land with it.
 
 #### `core::option`
 
@@ -620,7 +640,7 @@ ______________________________________________________________________
 | `result.vx` | deleted; `core::result` is a Vx enum; the `vx_result_*` externs and their Rust macro instantiation go | phase 1 |
 | `closure.vx` | moves to `core::ops` with a `call` method | phase 1 |
 | `iter.vx` | deleted; `core::iter` replaces it, and `tests/modules/iter.vx` (a second, incompatible copy) goes with it | phase 2 |
-| `math.vx` | trait moves to `core::num` over `mlir!`; the libm `extern` block is deleted once every method has an `mlir!` body that lowers on the host. Until then `std::math` keeps the externs and `core::num` has the pure ones. | phase 2 |
+| `math.vx` | **deleted.** The methods are `core::num`'s, over `math` dialect ops, and the 39 callers import `core::num` instead. The two `ffi_math` fixtures declare the libm externs themselves, since a scalar float across the C ABI is what they exist to test. | done |
 | `string.vx` | `string_length`, `string_compare`, `parse_int` deleted in favour of `core::str`; `String` itself moves to `alloc` in phase 4 | phase 2, 4 |
 | `vec.vx` | `as_slice`/`as_mut_slice` return `Slice`/`SliceMut`; `iter()` implements `core::iter::Iterator`; `VecIter`/`VecMap` deleted in favour of the generic adaptors; moves to `alloc` | phase 2, 4 |
 | `hash_map.vx`, `hash_set.vx` | deleted; rewritten in Vx in `alloc` over `core::hash` | phase 4 |
@@ -768,7 +788,9 @@ order:
 1. Implicit `core::prelude` import (A12)
 
 And for Track B, one tracking issue per phase under Vx#451, each listing its modules as checkboxes
-and linking the matrix.
+and linking the matrix. Phase 1 is Vx#720 and phase 2 is Vx#721; phases 3 and 4 are far enough out
+that a list of them now would be fiction, and are described in Vx#451 instead. The Track A items
+above are all filed and are tracked together in Vx#536.
 
 ______________________________________________________________________
 
@@ -782,20 +804,20 @@ live docs, not this table.
 
 | Rust `core` module | Vx module | Phase | Status | Blocking Track A items | Notes / exclusions |
 | --- | --- | --- | --- | --- | --- |
-| `marker` | `core::marker` | 1 | — | A6 | `Send`/`Sync` declared, not enforced; `Unpin`, `Sized` no-ops |
-| `cmp` | `core::cmp` | 1 | partial | | `PartialEq`, `Ord`, `Ordering`; no `PartialOrd` (no float impl), `Reverse`, `max_by`/`min_by_key`; `Rhs` is `Self` by convention until trait-parameter defaults exist |
+| `marker` | `core::marker` | 1 | partial | Vx#715 | `Copy` declared and stamped for the scalars, `PhantomData<T>`; `Send`/`Sync`/`Sized` declared, not enforced. `Copy` is enforced for a struct and a payload-free enum; a generic enum is not treated as linear at all, so `Option`'s and `Result`'s impls are written and unenforced |
+| `cmp` | `core::cmp` | 1 | partial | Vx#712 for `Reverse`, Vx#223 for free `max`/`min` | `PartialEq` and `Ord` over every integer width and `bool`; `PartialOrd` over those and the floats, which cannot be `Ord`; `Ordering` with `then_with`; `max_by`/`min_by`. No `Reverse` (its `Ord` impl declines on the flat path), no free `max`/`min` (the names are the compiler's tensor reductions), no `max_by_key`/`min_by_key`, no `Eq`. `Rhs` is `Self` by convention until trait-parameter defaults exist |
 | `ops` | `core::ops` | 1→2 | declared | A11 (dispatch), A10 (`Output`) | `Deref`, `Drop`, `Fn*`, coroutine traits excluded |
-| `clone` | `core::clone` | 1 | partial | | `Clone` for the scalars, `bool`, `Ordering`, `Option<T : Clone>`; `Result<T, E>` pending an impl over two bounded parameters |
+| `clone` | `core::clone` | 1 | par | | `Clone` for the scalars, `bool`, `Ordering`, `Option<T : Clone>` and `Result<T : Clone, E : Clone>`; `clone_from` as the trait's one default. An impl over two bounded parameters turned out to be a shape the checker takes. `Result::clone` does not run at an instantiation mixing a float with an integer, which is `Result<f32, i32>` failing to lower rather than the impl |
 | `default` | `core::default` | 1 | par | | `Default` for the scalars, `bool`, `Option<T>`; a static trait method dispatches since Vx#684 |
-| `convert` | `core::convert` | 1 | — | Vx#686 | blanket `Into` excluded; stamped per pair -- which is the shape whose impls collide on one mangled name |
-| `option` | `core::option` | 1 | partial | A16 for `zip` | the combinators through `is_some_and`; no `zip`, `take`, `replace`, `ok_or`, `expect`, `unwrap_or_default` |
-| `result` | `core::result` | 1 | partial | | replaced the Rust-backed shims; `ok`, `err`, `map`, `map_err`, `and_then`, `unwrap_or_else`; no `expect`, `unwrap_err`, `or_else`, `and`, `or` |
-| `num` (integers) | `core::num` | 1 | partial | | every width, signed and unsigned; bit ops, rotates, `pow`, `ilog2`, `next_power_of_two`, the checked and saturating families; no `wrapping_*`/`overflowing_*` spellings, `from_str_radix`, `to_be`/`to_le`; constants as functions until `const` items |
-| `num` (floats) | `core::num` | 2 | — | — | superset of Rust's: `exp`/`sqrt`/`sin`/.. via `mlir!` `math` dialect; parsing in phase 3 |
-| `mem` | `core::mem` | 1 | — | A19 for semantics | `drop`/`forget`/`needs_drop` declared, semantics pending Drop |
-| `ptr` | `core::ptr` | 1 | — | — | `addr_of` excluded |
+| `convert` | `core::convert` | 1 | partial | Vx#570 for `TryFrom` | `From` stamped per pair, the reflexive case among them, since a blanket impl over `Self` is never found; `Into`/`TryInto` excluded (a call carries no argument to choose an impl by, and Vx does not resolve from the expected type); `AsRef`/`AsMut` pending `str` and slices |
+| `option` | `core::option` | 1 | partial | A16 for `zip`, Vx#526 for `expect`, Vx#711 for `inspect` | the combinators plus `is_none_or`, `or_else`, `map_or_else`, `take`, `replace`; `ok_or`/`ok_or_else` live in `core::result` to avoid an import cycle; no `zip`, `flatten`, `unwrap_or_default` (`T::default()` on a bounded parameter is not resolved), or the reference-returning methods |
+| `result` | `core::result` | 1 | partial | Vx#526 for `expect`, Vx#711 for `inspect` | replaced the Rust-backed shims; `ok`, `err`, `map`, `map_err`, `and_then`, `unwrap_or_else`, `unwrap_err`, `is_ok_and`, `is_err_and`, `and`, `or`, `map_or`, `map_or_else`; no `or_else` (answers with a `Result` built from a closure, the shape the flat path declines hardest), `transpose`, `flatten`, or the reference-returning methods |
+| `num` (integers) | `core::num` | 1 | partial | A16 for `overflowing_*`, Vx#717 for `!` | every width, signed and unsigned; bit ops, rotates, `pow`, `ilog2`, `next_power_of_two`, `leading_ones`/`trailing_ones`, the checked, saturating and wrapping families; no `overflowing_*` (wants a pair type), `from_str_radix` (wants `str`), `to_be`/`to_le` (want the target's byte order), `isqrt`, `midpoint`, `div_ceil`; constants as functions until `const` items |
+| `num` (floats) | `core::num` | 2 | partial | Vx#716 for `!=` | the superset this table promised, over `f32` and `f64`: `sqrt`, `abs`, `exp`, `exp2`, `exp_m1`, `ln`, `log2`, `log10`, `ln_1p`, the six trigonometric and three hyperbolic functions, `floor`, `ceil`, `round`, `trunc`, `fract`, `powf`, `atan2`, `copysign`, `recip`, `to_degrees`, `to_radians`, `is_nan`, `is_finite`, `is_infinite`, `signum` -- each one `math` dialect op, no libm named in the source. `cbrt` and `erf` excluded: their ops lower to a libm declaration the pipeline rejects, and Rust's `core` has neither. No `max`/`min` (their NaN rule differs from `Ord`'s), `mul_add`, `hypot`, `rem_euclid`, `powi`, or the constants. Parsing in phase 3. `std::math` is deleted and its callers moved across |
+| `mem` | `core::mem` | 1 | partial | A19 for semantics | `size_of`, `swap`, `replace`, `drop`, `forget`, `needs_drop`. No `align_of` (wants an intrinsic beside `sizeof`), no `take` (`T::default()` on a bounded parameter is not resolved), no `zeroed`/`transmute`/`ManuallyDrop`/`MaybeUninit`/`discriminant` |
+| `ptr` | `core::ptr` | 1 | partial | Vx#714 | `null`, `null_mut`, `read`, `write`. No `eq`/`is_null`: two raw pointers cannot be compared and a pointer cannot be cast to an integer, so a null test cannot be spelled. No pointer arithmetic, `copy`, or the volatile forms. `addr_of` excluded |
 | `hint` | `core::hint` | 1 | — | — | |
-| `panic` | `core::panic` | 1 | — | A8 | `Location`, `PanicInfo`, hooks excluded |
+| `panic` | `core::panic` | 1 | — | A8 (Vx#526) | blocked outright, not merely reduced: `assert(false, ..)` is folded at check time, so no function that always panics compiles. `Location`, `PanicInfo`, hooks excluded |
 | `iter` | `core::iter` | 2 | partial | Vx#727 for the adaptors, A16 (`zip`, `enumerate`), Vx#647, Vx#649 | `Iterator<Item>` with eight defaults, `Range`, `map`/`filter`/`take`/`skip`; one adaptor deep, and no default names `Item`; no `rev`, `sum`, `fold`, `collect`. The trait can now be written against `Self::Item`; the adaptors keep their extra `Item` parameter until `I::Item` resolves |
 | `slice` | `core::slice` | 2 | — | A17 for `&[T]` spelling | library `Slice`/`SliceMut` first; `sort` (stable) is alloc |
 | `str` | `core::str` | 2 | — | A15 | float `parse` in phase 3 |
