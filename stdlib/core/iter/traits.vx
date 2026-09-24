@@ -445,6 +445,13 @@ trait Iterator {
     };
   }
 
+  /// An iterator over these items from the back, for an iterator that can answer from both ends.
+  fn rev(self : Self) -> Rev<Self> {
+    return Rev<Self> {
+      inner : self
+    };
+  }
+
   /// `fold` with the first item as the starting value, so nothing for a sequence already
   /// finished.
   fn reduce(self : &mut Self, f : Closure2<Self::Item, Self::Item, Self::Item>)
@@ -469,6 +476,61 @@ trait Iterator {
   /// `let v : Vec<i64> = it.collect();`. That type says how, by implementing `FromIterator`.
   fn collect<B>(self : &mut Self) -> B {
     return B::from_iter(self);
+  }
+}
+
+/// An iterator that can also answer from its far end, which is what `rev` needs.
+///
+/// Rust declares it as a subtrait of `Iterator`; Vx has no subtraits, and `Self::Item` here is
+/// the one the type's `Iterator` impl binds.
+trait DoubleEndedIterator {
+  /// The last item not yet handed out from either end, or nothing once they meet.
+  fn next_back(self : &mut Self) -> Option<Self::Item>;
+
+  /// `fold`, from the back.
+  fn rfold<B>(self : &mut Self, init : B, f : Closure2<B, Self::Item, B>) -> B {
+    let mut acc : B = init;
+    loop {
+      let step = self.next_back();
+      if step.is_none() {
+        return acc;
+      }
+      let p = f.func;
+      acc = p(f.env, acc, step.unwrap());
+    }
+    return acc;
+  }
+
+  /// The last item `f` accepts, searching from the back.
+  fn rfind(self : &mut Self, f : Closure1<&Self::Item, bool>) -> Option<Self::Item> {
+    loop {
+      let step = self.next_back();
+      if step.is_none() {
+        return step;
+      }
+      let v = step.unwrap();
+      let p = f.func;
+      if p(f.env, &v) {
+        return Option<Self::Item>::Some(v);
+      }
+    }
+    return Option<Self::Item>::None();
+  }
+
+  /// The item `n` places from the back, counting the last as zero.
+  fn nth_back(self : &mut Self, n : i64) -> Option<Self::Item> {
+    let mut left : i64 = n;
+    loop {
+      let step = self.next_back();
+      if step.is_none() {
+        return step;
+      }
+      if left == 0i64 {
+        return step;
+      }
+      left = left - 1i64;
+    }
+    return Option<Self::Item>::None();
   }
 }
 

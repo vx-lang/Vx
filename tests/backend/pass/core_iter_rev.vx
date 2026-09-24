@@ -1,0 +1,65 @@
+//===- core_iter_rev.vx - Vx Compiler ---------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `rev`, and the `DoubleEndedIterator` it needs.
+//
+//   3,2,1,0,        `Range` backwards
+//   40,20,0,        `filter` then `map`, backwards: each answers from the back of the one inside
+//   8,7,1,0,        `chain` backwards starts with the second iterator
+//   0,1,2,          `rev` twice is forwards
+//   041329          `next` and `next_back` in turn meet in the middle, then both answer nothing
+//   4321 9 7        `rfold`, `rfind`, `nth_back`: defaults whose `Self::Item` is `Range`'s
+//                   `Iterator` binding, since `impl DoubleEndedIterator for Range` binds none
+//   3,2,1,          a `Vec`'s iterator backwards
+import core::iter;
+import std::vec;
+
+fn show<I : Iterator>(it : I) -> i32 {
+  let mut i = it;
+  for v in i {
+    print(v);
+    print!(",");
+  }
+  print!(" ");
+  return 0;
+}
+
+fn main() -> i32 {
+  show(range(0i64, 4i64).rev());
+  show(range(0i64, 6i64).filter(| x : &i64 | *x % 2i64 == 0i64).map(| x : i64 | x * 10i64).rev());
+  show(range(0i64, 2i64).chain(range(7i64, 9i64)).rev());
+  show(range(0i64, 3i64).rev().rev());
+  let mut both = range(0i64, 5i64);
+  print(both.next().unwrap());
+  print(both.next_back().unwrap());
+  print(both.next().unwrap());
+  print(both.next_back().unwrap());
+  print(both.next().unwrap());
+  if both.next().is_none() && both.next_back().is_none() {
+    print(9);
+  }
+  print!(" ");
+  let mut r = range(1i64, 5i64);
+  print(r.rfold(0i64, | acc : i64, x : i64 | acc * 10i64 + x));
+  print!(" ");
+  let mut f = range(0i64, 10i64);
+  print(f.rfind(| x : &i64 | *x % 3i64 == 0i64).unwrap());
+  print!(" ");
+  let mut n = range(0i64, 10i64);
+  print(n.nth_back(2i64).unwrap());
+  print!(" ");
+  let mut v = Vec<i64>::new();
+  v.push(1i64);
+  v.push(2i64);
+  v.push(3i64);
+  show(v.iter().rev());
+  v.free();
+  print!("end");
+  return 0;
+}
+
+// EXPECT: 3,2,1,0, 40,20,0, 8,7,1,0, 0,1,2, 041329 4321 9 7 3,2,1, end

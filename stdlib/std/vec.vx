@@ -146,7 +146,7 @@ Vec<T> {
   /// An iterator over the elements, borrowing the vector rather than consuming it.
   fn iter(self : &Vec<T>) -> VecIter<T> {
     return VecIter<T> {
-      vec : self, current : 0
+      vec : self, current : 0, back : self.len
     };
   }
 }
@@ -174,6 +174,8 @@ impl<T> FromIterator<T> for Vec<T> {
 struct VecIter<T> {
   vec: *const Vec<T>,
   current: i32,
+  // One past the last element not yet handed out from the back.
+  back: i32,
 }
 
 impl<T> Iterator for VecIter<T> {
@@ -181,15 +183,26 @@ impl<T> Iterator for VecIter<T> {
 
   /// The next element, or nothing once the end is reached.
   fn next(self : &mut VecIter<T>) -> Option<T> {
-    let vec_len : i32 = unsafe { (*self.vec).len };
     let mut ret = Option<T>::None();
     if self
-    .current < vec_len {
+    .current < self.back {
       let val : T = unsafe { (*self.vec).data[self.current] };
       self.current = self.current + 1;
       ret = Option<T>::Some(val);
     }
     return ret;
+  }
+}
+
+impl<T> DoubleEndedIterator for VecIter<T> {
+  /// The last element not yet handed out from either end.
+  fn next_back(self : &mut VecIter<T>) -> Option<T> {
+    if self.back <= self.current {
+      return Option<T>::None();
+    }
+    self.back = self.back - 1;
+    let val : T = unsafe { (*self.vec).data[self.back] };
+    return Option<T>::Some(val);
   }
 }
 

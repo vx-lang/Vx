@@ -36,6 +36,17 @@ impl Iterator for Range {
   }
 }
 
+impl DoubleEndedIterator for Range {
+  /// The last value in the span not yet handed out from either end.
+  fn next_back(self : &mut Range) -> Option<i64> {
+    if self.at >= self.end {
+      return Option<i64>::None();
+    }
+    self.end = self.end - 1i64;
+    return Option<i64>::Some(self.end);
+  }
+}
+
 /// The numbers `at .. end`.
 fn range(at : i64, end : i64) -> Range {
   return Range {
