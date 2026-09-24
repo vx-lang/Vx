@@ -1,0 +1,13 @@
+//===- name_declared_by_two_imports.vx - Vx Compiler ------------*- Vx -*-===//
+// RUN: not vxc %s --action print-ast 2>&1 | FileCheck %s
+import tests::modules::clash_left;
+import tests::modules::clash_right;
+
+fn main() -> i32 {
+  let p = Point {
+    x : 1i64
+  };
+  return 0;
+}
+
+// CHECK: line 7: `Point` is declared by both `tests::modules::clash_left` and `tests::modules::clash_right`, and this module sees both through its imports

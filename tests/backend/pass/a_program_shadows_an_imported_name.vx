@@ -1,0 +1,50 @@
+//===- a_program_shadows_an_imported_name.vx - Vx Compiler ------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The program declares `Range`, `Count`, `count`, `iter` and `core`, which its imports declare too. Its
+// own are what it sees, and the library's code still sees the library's.
+import core::iter;
+import tests::modules::shadowed_by_the_program;
+
+struct Range {
+  lo : i32,
+  hi : i32,
+}
+
+struct Count {
+  a : i32,
+  b : i32,
+}
+
+fn count() -> Count {
+  return Count {
+    a : 1, b : 2
+  };
+}
+
+fn iter() -> i32 {
+  return 7;
+}
+
+fn core() -> i32 {
+  return 20;
+}
+
+fn main() -> i32 {
+  let r = Range {
+    lo : 1, hi : 5
+  };
+  print(r.hi - r.lo);
+  print!(" ");
+  let c = count();
+  print(c.a + c.b + iter() + core());
+  print!(" ");
+  print(library_total());
+  return 0;
+}
+
+// EXPECT: 4 30 1116
