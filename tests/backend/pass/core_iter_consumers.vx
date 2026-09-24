@@ -1,0 +1,63 @@
+//===- core_iter_consumers.vx - Vx Compiler ---------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `product`, `max`/`min` and their `_by` and `_by_key` forms, and `reduce`.
+//
+//   120 1 15.625  `product` of 1..5, of nothing (one), of three `f64` 2.5s
+//   4 0           `max` and `min` of 4, 1, 0, 1, 4
+//   4 0           `max_by_key` and `min_by_key` with two items tied: Rust's rule is the last
+//                 greatest and the first least, and 0 and 4 are the tied pair
+//   40            `max_by`, `min_by` with every pair equal: last and first again
+//   04            `max_by`, `min_by` with the order reversed
+//   1234          `reduce` folds from the first item, in order
+//   1             `max` and `reduce` over nothing answer nothing
+import core::cmp;
+import core::iter;
+
+fn main() -> i32 {
+  let mut a = range(1i64, 6i64);
+  print(a.product());
+  print!(" ");
+  let mut b = range(0i64, 0i64);
+  print(b.product());
+  print!(" ");
+  let mut c = map(range(0i64, 3i64), | x : i64 | 2.5);
+  print(c.product());
+  print!(" ");
+  let mut d = map(range(0i64, 5i64), | x : i64 | (x - 2i64) * (x - 2i64));
+  print(d.max().unwrap());
+  print!(" ");
+  let mut e = map(range(0i64, 5i64), | x : i64 | (x - 2i64) * (x - 2i64));
+  print(e.min().unwrap());
+  print!(" ");
+  let mut f = range(0i64, 5i64);
+  print(f.max_by_key(| x : &i64 | (*x - 2i64) * (*x - 2i64)).unwrap());
+  print!(" ");
+  let mut g = range(0i64, 5i64);
+  print(g.min_by_key(| x : &i64 | 0i64 - (*x - 2i64) * (*x - 2i64)).unwrap());
+  print!(" ");
+  let mut h = range(0i64, 5i64);
+  print(h.max_by(| x : &i64, y : &i64 | Ordering::Equal).unwrap());
+  let mut h2 = range(0i64, 5i64);
+  print(h2.min_by(| x : &i64, y : &i64 | Ordering::Equal).unwrap());
+  print!(" ");
+  let mut i = range(0i64, 5i64);
+  print(i.max_by(| x : &i64, y : &i64 | y.cmp(x)).unwrap());
+  let mut i2 = range(0i64, 5i64);
+  print(i2.min_by(| x : &i64, y : &i64 | y.cmp(x)).unwrap());
+  print!(" ");
+  let mut j = range(1i64, 5i64);
+  print(j.reduce(| x : i64, y : i64 | x * 10i64 + y).unwrap());
+  print!(" ");
+  let mut k = range(0i64, 0i64);
+  if k.max().is_none() && range(0i64, 0i64).reduce(| x : i64, y : i64 | x).is_none() {
+    print(1);
+  }
+  return 0;
+}
+
+// EXPECT: 120 1 15.625 4 0 4 0 40 04 1234 1

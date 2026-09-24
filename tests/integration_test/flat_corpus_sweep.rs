@@ -32,6 +32,8 @@ const KNOWN_DECLINES: &[&str] = &[
     "backend/pass/iter_adaptors_chain.vx",
     // Same decline as `core_iter.vx`: `main` builds adaptors before consuming them.
     "backend/pass/core_iter_fold_sum_collect.vx",
+    // Same decline again, for the same reason.
+    "backend/pass/core_iter_consumers.vx",
     // Same decline again: two chains whose `Map`s differ, for a name clash in the AST path.
     "backend/pass/generic_struct_instances_nested.vx",
     // A generic struct, `Cap<Count>`, which the flat path declines as "a struct with no GID".

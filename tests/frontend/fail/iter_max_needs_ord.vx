@@ -1,0 +1,13 @@
+//===- iter_max_needs_ord.vx - Vx Compiler ----------------------*- Vx -*-===//
+// RUN: not vxc %s --action print-ast 2>&1 | FileCheck %s
+import core::iter;
+
+fn main() -> i32 {
+  let mut c = map(range(0i64, 3i64), | x : i64 | 2.5);
+  let m = c.max();
+  return 0;
+}
+
+// A float is not `Ord`, since NaN compares to nothing, so its items have no `max`. Rust refuses
+// the same call.
+// CHECK: Method 'cmp' not found on type f32

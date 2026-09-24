@@ -10,8 +10,8 @@
 //   1626  `fold` carries its value in order: ((((100*2+1)*2+2)*2+3)*2+4)
 //   7     `fold` over nothing answers `init`
 //   30    `sum` of a `map`, whose item type is the closure's
-//   0     `sum` over nothing is `Self::Item::default()`
-//   4.5   `sum` of `f64` items: the zero and the `+` are the item type's
+//   0     `sum` over nothing is zero
+//   4.5   `sum` of `f64` items, through `f64`'s `Sum`
 //   379   `collect` into `Vec<i64>`, `B` read off the `let`: three items, 7 and 9 at the ends
 //   47    `collect` into `Vec<i32>` from a two-adaptor chain: four items of 7
 //   0     `T::default()` in a generic function
