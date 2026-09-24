@@ -750,13 +750,21 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
         );
 
         let opt_ty_str = opt_ty.to_string();
-        let payload_ty_str = if opt_ty_str.contains("(i32, ") {
+        let mut payload_ty_str = if opt_ty_str.contains("(i32, ") {
             let start = opt_ty_str.find("(i32, ").unwrap() + 6;
             let end = opt_ty_str.rfind(')').unwrap();
             opt_ty_str[start..end].to_string()
         } else {
             "i32".to_string()
         };
+        // A struct payload prints inside the option's type without its dialect prefix, and
+        // parses only with it, as `match` lowering also finds.
+        if ["struct", "ptr", "array"]
+            .iter()
+            .any(|p| payload_ty_str.starts_with(p))
+        {
+            payload_ty_str = format!("!llvm.{payload_ty_str}");
+        }
         let payload_ty = Type::parse(gen.context, &payload_ty_str).ok_or_else(|| {
             crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string())
         })?;

@@ -326,6 +326,12 @@ The iterators `Iterator`'s adaptor methods build: `Map`, `Filter`, `Chain` and t
   Built by `flatten`.
 - `struct Rev<I>`<br>
   An iterator over another's items from the back. Built by `rev`.
+- `struct Zip<A, B>`<br>
+  An iterator over pairs of two others' items, taken in step, ending when either does.
+  Built by `zip`.
+- `struct Enumerate<I>`<br>
+  An iterator over another's items, each paired with how far along it is, counting from zero.
+  Built by `enumerate`.
 
 **`Iterator for Map<I, Closure1<I :  : Item, U>>` methods**
 
@@ -440,6 +446,16 @@ The iterators `Iterator`'s adaptor methods build: `Map`, `Filter`, `Chain` and t
 - `fn next_back(self : &mut Rev<I>) -> Option<I :  : Item>`<br>
   The inner iterator's first item.
 
+**`Iterator for Zip<A, B>` methods**
+
+- `fn next(self : &mut Zip<A, B>) -> Option<(A :  : Item, B :  : Item)>`<br>
+  The next item of each, paired, or nothing once either has run out.
+
+**`Iterator for Enumerate<I>` methods**
+
+- `fn next(self : &mut Enumerate<I>) -> Option<(i64, I :  : Item)>`<br>
+  The inner iterator's next item with its position.
+
 ## `core::iter::traits`
 
 The `Iterator` trait: one required `next`, and the methods written over it.
@@ -551,6 +567,11 @@ The `Iterator` trait: one required `next`, and the methods written over it.
   An iterator over the items of each of these items, which are iterators themselves.
 - `fn rev(self : Self) -> Rev<Self>`<br>
   An iterator over these items from the back, for an iterator that can answer from both ends.
+- `fn zip<U>(self : Self, other : U) -> Zip<Self, U>`<br>
+  An iterator over pairs of these items and `other`'s, in step, as long as both last.
+- `fn enumerate(self : Self) -> Enumerate<Self>`<br>
+  An iterator over these items, each paired with its position, counting from zero.
+  The position is an `i64`, where Rust's is a `usize`.
 - `fn reduce(self : &mut Self, f : Closure2<Self :  : Item, Self :  : Item, Self :  : Item>) -> Option<Self :  : Item>`<br>
   `fold` with the first item as the starting value, so nothing for a sequence already
   finished.
@@ -945,6 +966,8 @@ The callable types a closure literal lowers into.
   The value with `f` applied, if there is one.
 - `fn and_then<U>(self : Option<T>, f : Closure1<T, Option<U>>) -> Option<U>`<br>
   `map` for an `f` that answers with an `Option` of its own, without the nesting.
+- `fn zip<U>(self : Option<T>, other : Option<U>) -> Option<(T, U)>`<br>
+  Both values as a pair when both are there, otherwise nothing.
 - `fn filter(self : Option<T>, p : Closure1<T, bool>) -> Option<T>`<br>
   The value if it is there and `p` accepts it, otherwise nothing.
 - `fn map_or<U>(self : Option<T>, default : U, f : Closure1<T, U>) -> U`<br>
@@ -1855,4 +1878,4 @@ Clocks and durations.
 
 ______________________________________________________________________
 
-676 functions across 32 modules.
+681 functions across 32 modules.

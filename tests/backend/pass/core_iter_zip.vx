@@ -1,0 +1,60 @@
+//===- core_iter_zip.vx - Vx Compiler ---------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `zip`, `enumerate` and `Option::zip`, whose items are tuples.
+//
+//   010,111,212,   `zip` pairs items in step and stops with the shorter iterator, of 3
+//   010,112,214,   `enumerate` counts from zero; `let (i, v)` takes each pair apart
+//   14             `zip`, then `map` over the pairs, then `sum`: 1*1 + 2*2 + 3*3
+//   340            `Option::zip` of two values, then of a value and nothing
+//   024            a `for` loop over struct items, which a tuple item is; the loop read the
+//                  payload's type from the option's printed type, which it failed to parse
+import core::iter;
+import core::option;
+
+struct P {
+  a : i64,
+  b : i64,
+}
+
+fn main() -> i32 {
+  let mut z = range(0i64, 5i64).zip(range(10i64, 13i64));
+  for p in z {
+    print(p.0);
+    print(p.1);
+    print!(",");
+  }
+  print!(" ");
+  let mut e = range(5i64, 8i64).map(| x : i64 | x * 2i64).enumerate();
+  for p in e {
+    let (i, v) = p;
+    print(i);
+    print(v);
+    print!(",");
+  }
+  print!(" ");
+  let s = range(1i64, 4i64).zip(range(1i64, 4i64)).map(| p : (i64, i64) | p.0 * p.1).sum();
+  print(s);
+  print!(" ");
+  let both = Option<i64>::Some(3i64).zip(Option<i32>::Some(4i32));
+  print(both.unwrap().0);
+  print(both.unwrap().1);
+  if Option<i64>::Some(3i64).zip(Option<i32>::None()).is_none() {
+    print(0);
+  }
+  print!(" ");
+  let mut ps = range(0i64, 3i64).map(| x : i64 | P {
+    a : x, b : x * 2i64
+  });
+  for p in ps {
+    print(p.b);
+  }
+  print!(" end");
+  return 0;
+}
+
+// EXPECT: 010,111,212, 010,112,214, 14 340 024 end

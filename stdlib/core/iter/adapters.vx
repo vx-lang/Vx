@@ -509,3 +509,49 @@ impl<I : DoubleEndedIterator> DoubleEndedIterator for Rev<I> {
     return self.inner.next();
   }
 }
+
+/// An iterator over pairs of two others' items, taken in step, ending when either does.
+/// Built by `zip`.
+struct Zip<A, B> {
+  a : A,
+  b : B,
+}
+
+impl<A : Iterator, B : Iterator> Iterator for Zip<A, B> {
+  type Item = (A::Item, B::Item);
+
+  /// The next item of each, paired, or nothing once either has run out.
+  fn next(self : &mut Zip<A, B>) -> Option<(A::Item, B::Item)> {
+    let x = self.a.next();
+    if x.is_none() {
+      return Option<(A::Item, B::Item)>::None();
+    }
+    let y = self.b.next();
+    if y.is_none() {
+      return Option<(A::Item, B::Item)>::None();
+    }
+    return Option<(A::Item, B::Item)>::Some((x.unwrap(), y.unwrap()));
+  }
+}
+
+/// An iterator over another's items, each paired with how far along it is, counting from zero.
+/// Built by `enumerate`.
+struct Enumerate<I> {
+  inner : I,
+  count : i64,
+}
+
+impl<I : Iterator> Iterator for Enumerate<I> {
+  type Item = (i64, I::Item);
+
+  /// The inner iterator's next item with its position.
+  fn next(self : &mut Enumerate<I>) -> Option<(i64, I::Item)> {
+    let step = self.inner.next();
+    if step.is_none() {
+      return Option<(i64, I::Item)>::None();
+    }
+    let at = self.count;
+    self.count = self.count + 1i64;
+    return Option<(i64, I::Item)>::Some((at, step.unwrap()));
+  }
+}
