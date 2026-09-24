@@ -12,7 +12,7 @@
 // states the closure's type, and applies only when that agrees with the inner iterator.
 //
 // `core::iter::traits` imports this module, since the trait's methods return these types, and
-// every program that imports the trait therefore sees these names (Vx#731).
+// every program that imports the trait therefore sees these names.
 import core::iter::traits;
 import core::ops;
 import core::option;
@@ -257,5 +257,176 @@ impl<I : Iterator> Iterator for Inspect<I, Closure1<&I::Item, i32>> {
     let p = g.func;
     p(g.env, &v);
     return Option<I::Item>::Some(v);
+  }
+}
+
+/// An iterator over what `f` answers for another's items while it carries a state between
+/// them, ending where `f` first answers nothing. Built by `scan`.
+struct Scan<I, St, F> {
+  inner : I,
+  state : St,
+  f : F,
+}
+
+impl<I : Iterator, St, B> Iterator for Scan<I, St, Closure2<&mut St, I::Item, Option<B>>> {
+  type Item = B;
+
+  /// `f` of the state and the inner iterator's next item.
+  fn next(self : &mut Scan<I, St, Closure2<&mut St, I::Item, Option<B>>>) -> Option<B> {
+    let step = self.inner.next();
+    if step.is_none() {
+      return Option<B>::None();
+    }
+    let g = self.f;
+    let p = g.func;
+    // Through a local: handing `&mut self.state` straight to `p` leaves the checker reporting
+    // `self` as still borrowed in other adaptors' methods.
+    let mut state = self.state;
+    let out = p(g.env, &mut state, step.unwrap());
+    self.state = state;
+    return out;
+  }
+}
+
+/// An iterator that answers nothing forever once another has answered nothing once. Built by
+/// `fuse`.
+struct Fuse<I> {
+  inner : I,
+  done : bool,
+}
+
+impl<I : Iterator> Iterator for Fuse<I> {
+  type Item = I::Item;
+
+  /// The inner iterator's next item, or nothing for good once it has run out.
+  fn next(self : &mut Fuse<I>) -> Option<I::Item> {
+    if self.done {
+      return Option<I::Item>::None();
+    }
+    let step = self.inner.next();
+    if step.is_none() {
+      self.done = true;
+    }
+    return step;
+  }
+}
+
+/// An iterator whose next item can be looked at without taking it. Built by `peekable`.
+///
+/// `T` is always `I::Item`: a struct field cannot name `I::Item`, so the item it holds on to
+/// is typed by a parameter of its own, which `peekable` fills in.
+struct Peekable<I, T> {
+  inner : I,
+  peeked : Option<T>,
+  has_peeked : bool,
+}
+
+impl<I : Iterator> Iterator for Peekable<I, I::Item> {
+  type Item = I::Item;
+
+  /// The item `peek` looked at, if it looked, and otherwise the inner iterator's next.
+  fn next(self : &mut Peekable<I, I::Item>) -> Option<I::Item> {
+    if self.has_peeked {
+      self.has_peeked = false;
+      return self.peeked;
+    }
+    return self.inner.next();
+  }
+}
+
+impl<I : Iterator> Peekable<I, I::Item> {
+  /// The item `next` would answer, left where it is.
+  ///
+  /// Answers a copy where Rust answers a reference into the iterator.
+  fn peek(self : &mut Peekable<I, I::Item>) -> Option<I::Item> {
+    if !self.has_peeked {
+      self.peeked = self.inner.next();
+      self.has_peeked = true;
+    }
+    return self.peeked;
+  }
+
+  /// The next item if `accept` takes it, and otherwise nothing, with the item left in place.
+  fn next_if(self : &mut Peekable<I, I::Item>, accept : Closure1<&I::Item, bool>)
+  -> Option<I::Item> {
+    let ahead = self.peek();
+    if ahead.is_none() {
+      return ahead;
+    }
+    let v = ahead.unwrap();
+    let p = accept.func;
+    if p(accept.env, &v) {
+      self.has_peeked = false;
+      return ahead;
+    }
+    return Option<I::Item>::None();
+  }
+}
+
+/// An iterator over the items of the iterators `f` answers for another's items, one after
+/// another. Built by `flat_map`.
+///
+/// `U` is what `f` answers, held while its items are handed out, and a parameter of its own
+/// for the reason `Peekable`'s `T` is.
+struct FlatMap<I, F, U> {
+  outer : I,
+  f : F,
+  front : Option<U>,
+}
+
+impl<I : Iterator, U : Iterator> Iterator for FlatMap<I, Closure1<I::Item, U>, U> {
+  type Item = U::Item;
+
+  /// The current inner iterator's next item, moving to the next one when it runs out.
+  fn next(self : &mut FlatMap<I, Closure1<I::Item, U>, U>) -> Option<U::Item> {
+    loop {
+      if self.front.is_some() {
+        let mut cur = self.front.unwrap();
+        let step = cur.next();
+        self.front = Option<U>::Some(cur);
+        if step.is_some() {
+          return step;
+        }
+      }
+      let outer = self.outer.next();
+      if outer.is_none() {
+        return Option<U::Item>::None();
+      }
+      let g = self.f;
+      let p = g.func;
+      self.front = Option<U>::Some(p(g.env, outer.unwrap()));
+    }
+    return Option<U::Item>::None();
+  }
+}
+
+/// An iterator over the items of each of another's items, which are iterators themselves.
+/// Built by `flatten`.
+struct Flatten<I, U> {
+  outer : I,
+  front : Option<U>,
+}
+
+impl<I : Iterator, U : Iterator> Iterator for Flatten<I, U> {
+  type Item = U::Item;
+
+  /// The current inner iterator's next item, moving to the next one when it runs out.
+  fn next(self : &mut Flatten<I, U>) -> Option<U::Item> {
+    loop {
+      if self.front.is_some() {
+        let mut cur = self.front.unwrap();
+        let step = cur.next();
+        self.front = Option<U>::Some(cur);
+        if step.is_some() {
+          return step;
+        }
+      }
+      let outer = self.outer.next();
+      if outer.is_none() {
+        return Option<U::Item>::None();
+      }
+      self.front = outer;
+    }
+    return Option<U::Item>::None();
   }
 }

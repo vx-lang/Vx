@@ -1,0 +1,87 @@
+//===- core_iter_stateful_adapters.vx - Vx Compiler -------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The adaptors that hold something between one item and the next.
+//
+//   1,3,6,10,          `scan` keeps a running total and stops where it first answers nothing
+//   103                `Blink` answers again after answering nothing, which is what `fuse` is for
+//   10                 fused, it answers nothing from then on
+//   55567              `peek` twice, then `next` answers the peeked 5; `next_if` takes 6 and
+//                      leaves 7, which `next` then answers
+//   0,0,1,0,1,2,       `flat_map` over ranges of growing length
+//   10,10,11,10,11,12, `flatten` of a `map` that answers ranges
+import core::iter;
+
+// Answers 1, nothing, 3, nothing, 5, ...: an iterator that resumes after running out.
+struct Blink {
+  at : i64,
+}
+
+impl Iterator for Blink {
+  type Item = i64;
+  fn next(self : &mut Blink) -> Option<i64> {
+    self.at = self.at + 1i64;
+    if self.at % 2i64 == 0i64 {
+      return Option<i64>::None();
+    }
+    return Option<i64>::Some(self.at);
+  }
+}
+
+fn running_total(acc : &mut i64, x : i64) -> Option<i64> {
+  *acc = *acc + x;
+  if *acc > 10i64 {
+    return Option<i64>::None();
+  }
+  return Option<i64>::Some(*acc);
+}
+
+fn show<I : Iterator>(it : I) -> i32 {
+  let mut i = it;
+  for v in i {
+    print(v);
+    print!(",");
+  }
+  print!(" ");
+  return 0;
+}
+
+fn main() -> i32 {
+  show(range(1i64, 10i64).scan(0i64, | acc : &mut i64, x : i64 | running_total(acc, x)));
+  let mut b = Blink {
+    at : 0i64
+  };
+  print(b.next().unwrap());
+  if b.next().is_none() {
+    print(0);
+  }
+  print(b.next().unwrap());
+  print!(" ");
+  let mut f = Blink {
+    at : 0i64
+  }.fuse();
+  print(f.next().unwrap());
+  if f.next().is_none() && f.next().is_none() {
+    print(0);
+  }
+  print!(" ");
+  let mut p = range(5i64, 9i64).peekable();
+  print(p.peek().unwrap());
+  print(p.peek().unwrap());
+  print(p.next().unwrap());
+  print(p.next_if(| x : &i64 | *x == 6i64).unwrap());
+  if p.next_if(| x : &i64 | *x == 99i64).is_none() {
+    print(p.next().unwrap());
+  }
+  print!(" ");
+  show(range(1i64, 4i64).flat_map(| n : i64 | range(0i64, n)));
+  show(range(1i64, 4i64).map(| n : i64 | range(10i64, 10i64 + n)).flatten());
+  print!("end");
+  return 0;
+}
+
+// EXPECT: 1,3,6,10, 103 10 55567 0,0,1,0,1,2, 10,10,11,10,11,12, end

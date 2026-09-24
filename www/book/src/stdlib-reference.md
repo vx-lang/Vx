@@ -305,6 +305,24 @@ The iterators `Iterator`'s adaptor methods build: `Map`, `Filter`, `Chain` and t
   `map_while`.
 - `struct Inspect<I, F>`<br>
   An iterator that hands each of another's items to `f` on its way past. Built by `inspect`.
+- `struct Scan<I, St, F>`<br>
+  An iterator over what `f` answers for another's items while it carries a state between
+  them, ending where `f` first answers nothing. Built by `scan`.
+- `struct Fuse<I>`<br>
+  An iterator that answers nothing forever once another has answered nothing once. Built by
+  `fuse`.
+- `struct Peekable<I, T>`<br>
+  An iterator whose next item can be looked at without taking it. Built by `peekable`.
+  `T` is always `I::Item`: a struct field cannot name `I::Item`, so the item it holds on to
+  is typed by a parameter of its own, which `peekable` fills in.
+- `struct FlatMap<I, F, U>`<br>
+  An iterator over the items of the iterators `f` answers for another's items, one after
+  another. Built by `flat_map`.
+  `U` is what `f` answers, held while its items are handed out, and a parameter of its own
+  for the reason `Peekable`'s `T` is.
+- `struct Flatten<I, U>`<br>
+  An iterator over the items of each of another's items, which are iterators themselves.
+  Built by `flatten`.
 
 **`Iterator for Map<I, Closure1<I :  : Item, U>>` methods**
 
@@ -355,6 +373,39 @@ The iterators `Iterator`'s adaptor methods build: `Map`, `Filter`, `Chain` and t
 
 - `fn next(self : &mut Inspect<I, Closure1<&I :  : Item, i32>>) -> Option<I :  : Item>`<br>
   The inner iterator's next item, after `f` has seen it.
+
+**`Iterator for Scan<I, St, Closure2<&mut St, I :  : Item, Option<B>>>` methods**
+
+- `fn next(self : &mut Scan<I, St, Closure2<&mut St, I :  : Item, Option<B>>>) -> Option<B>`<br>
+  `f` of the state and the inner iterator's next item.
+
+**`Iterator for Fuse<I>` methods**
+
+- `fn next(self : &mut Fuse<I>) -> Option<I :  : Item>`<br>
+  The inner iterator's next item, or nothing for good once it has run out.
+
+**`Iterator for Peekable<I, I :  : Item>` methods**
+
+- `fn next(self : &mut Peekable<I, I :  : Item>) -> Option<I :  : Item>`<br>
+  The item `peek` looked at, if it looked, and otherwise the inner iterator's next.
+
+**`Peekable<I, I :  : Item>` methods**
+
+- `fn peek(self : &mut Peekable<I, I :  : Item>) -> Option<I :  : Item>`<br>
+  The item `next` would answer, left where it is.
+  Answers a copy where Rust answers a reference into the iterator.
+- `fn next_if(self : &mut Peekable<I, I :  : Item>, accept : Closure1<&I :  : Item, bool>) -> Option<I :  : Item>`<br>
+  The next item if `accept` takes it, and otherwise nothing, with the item left in place.
+
+**`Iterator for FlatMap<I, Closure1<I :  : Item, U>, U>` methods**
+
+- `fn next(self : &mut FlatMap<I, Closure1<I :  : Item, U>, U>) -> Option<U :  : Item>`<br>
+  The current inner iterator's next item, moving to the next one when it runs out.
+
+**`Iterator for Flatten<I, U>` methods**
+
+- `fn next(self : &mut Flatten<I, U>) -> Option<U :  : Item>`<br>
+  The current inner iterator's next item, moving to the next one when it runs out.
 
 ## `core::iter::traits`
 
@@ -448,8 +499,19 @@ The `Iterator` trait: one required `next`, and the methods written over it.
   An iterator over what `f` answers for each item, ending where `f` first answers nothing.
 - `fn inspect(self : Self, f : Closure1<&Self :  : Item, i32>) -> Inspect<Self, Closure1<&Self :  : Item, i32>>`<br>
   An iterator over these items that hands each to `f` on its way past.
-  `f` answers an `i32`, which is discarded, because no closure literal can return void yet
-  (Vx#711).
+  `f` answers an `i32`, which is discarded, because no closure literal can return void yet.
+- `fn scan<St, B>(self : Self, initial : St, f : Closure2<&mut St, Self :  : Item, Option<B>>) -> Scan<Self, St, Closure2<&mut St, Self :  : Item, Option<B>>>`<br>
+  An iterator over what `f` answers for each item, with `f` given `initial` to keep and
+  change from one item to the next. Ends where `f` first answers nothing.
+- `fn fuse(self : Self) -> Fuse<Self>`<br>
+  An iterator that answers nothing forever once these items have run out.
+- `fn peekable(self : Self) -> Peekable<Self, Self :  : Item>`<br>
+  An iterator whose next item can be looked at, by `peek`, without taking it.
+- `fn flat_map<U>(self : Self, f : Closure1<Self :  : Item, U>) -> FlatMap<Self, Closure1<Self :  : Item, U>, U>`<br>
+  An iterator over the items of each iterator `f` answers, in order.
+  `f` answers an iterator, where Rust accepts anything that can become one.
+- `fn flatten(self : Self) -> Flatten<Self, Self :  : Item>`<br>
+  An iterator over the items of each of these items, which are iterators themselves.
 - `fn reduce(self : &mut Self, f : Closure2<Self :  : Item, Self :  : Item, Self :  : Item>) -> Option<Self :  : Item>`<br>
   `fold` with the first item as the starting value, so nothing for a sequence already
   finished.
@@ -1716,4 +1778,4 @@ Clocks and durations.
 
 ______________________________________________________________________
 
-651 functions across 31 modules.
+663 functions across 31 modules.

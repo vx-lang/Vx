@@ -398,12 +398,50 @@ trait Iterator {
 
   /// An iterator over these items that hands each to `f` on its way past.
   ///
-  /// `f` answers an `i32`, which is discarded, because no closure literal can return void yet
-  /// (Vx#711).
+  /// `f` answers an `i32`, which is discarded, because no closure literal can return void yet.
   fn inspect(self : Self, f : Closure1<&Self::Item, i32>)
   -> Inspect<Self, Closure1<&Self::Item, i32>> {
     return Inspect<Self, Closure1<&Self::Item, i32>> {
       inner : self, f : f
+    };
+  }
+
+  /// An iterator over what `f` answers for each item, with `f` given `initial` to keep and
+  /// change from one item to the next. Ends where `f` first answers nothing.
+  fn scan<St, B>(self : Self, initial : St, f : Closure2<&mut St, Self::Item, Option<B>>)
+  -> Scan<Self, St, Closure2<&mut St, Self::Item, Option<B>>> {
+    return Scan<Self, St, Closure2<&mut St, Self::Item, Option<B>>> {
+      inner : self, state : initial, f : f
+    };
+  }
+
+  /// An iterator that answers nothing forever once these items have run out.
+  fn fuse(self : Self) -> Fuse<Self> {
+    return Fuse<Self> {
+      inner : self, done : false
+    };
+  }
+
+  /// An iterator whose next item can be looked at, by `peek`, without taking it.
+  fn peekable(self : Self) -> Peekable<Self, Self::Item> {
+    return Peekable<Self, Self::Item> {
+      inner : self, peeked : Option<Self::Item>::None(), has_peeked : false
+    };
+  }
+
+  /// An iterator over the items of each iterator `f` answers, in order.
+  ///
+  /// `f` answers an iterator, where Rust accepts anything that can become one.
+  fn flat_map<U>(self : Self, f : Closure1<Self::Item, U>) -> FlatMap<Self, Closure1<Self::Item, U>, U> {
+    return FlatMap<Self, Closure1<Self::Item, U>, U> {
+      outer : self, f : f, front : Option<U>::None()
+    };
+  }
+
+  /// An iterator over the items of each of these items, which are iterators themselves.
+  fn flatten(self : Self) -> Flatten<Self, Self::Item> {
+    return Flatten<Self, Self::Item> {
+      outer : self, front : Option<Self::Item>::None()
     };
   }
 
