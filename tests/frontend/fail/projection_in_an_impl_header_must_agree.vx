@@ -1,0 +1,30 @@
+//===- projection_in_an_impl_header_must_agree.vx - Vx Compiler -*- Vx -*-===//
+// RUN: not vxc %s --action print-ast 2>&1 | FileCheck %s
+import core::iter;
+
+// A `Filter` built around a predicate over i32, when its `Range` yields i64. `core::iter`
+// implements `Iterator` for `Filter<I, Closure1<I::Item, bool>>`, so this one is not an iterator.
+fn wrap<I>(inner : I, keep : Closure1<i32, bool>) -> Filter<I, Closure1<i32, bool>> {
+  return Filter<I, Closure1<i32, bool>> {
+    inner : inner, keep : keep
+  };
+}
+
+fn item_of<I>(it : I) -> Option<I::Item> {
+  return Option<I::Item>::None();
+}
+
+fn main() -> i32 {
+  let w = wrap(range(0i64, 5i64), | x : i32 | x > 0);
+  let t = take(w, 1i64);
+  let mut u = wrap(range(0i64, 5i64), | x : i32 | x > 0);
+  let n = u.next();
+  let o = item_of(wrap(range(0i64, 5i64), | x : i32 | x > 0));
+  return 0;
+}
+
+// The bound on `take`'s `I`, then method lookup, then `I::Item` with no bound to go through.
+// CHECK: does not implement trait 'Iterator' required by parameter 'I'
+// CHECK: Method 'next' not found
+// CHECK: E3040
+// CHECK-SAME: no impl for `Filter<Range, Closure1<i32, bool>>` binds an associated type named 'Item'

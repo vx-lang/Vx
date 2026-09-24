@@ -17,7 +17,7 @@
 // CHECK-LABEL: func.func @Vec$i32$push$i32(%arg0: !llvm.ptr, %arg1: i32) -> i32
 // CHECK: call @vx_vec_grow(%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, i64, i64, i64) -> !llvm.ptr
 // CHECK-LABEL: func.func @Vec$i32$len$i32(%arg0: !llvm.ptr) -> i32
-// CHECK: %[[V0:.*]] = llvm.getelementptr %{{.*}}, 1] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<"Vec", (ptr, i32, i32)>
+// CHECK: %[[V0:.*]] = llvm.getelementptr %{{.*}}, 1] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<"Vec_i32", (ptr, i32, i32)>
 // CHECK: %[[V1:.*]] = llvm.load %[[V0]] : !llvm.ptr -> i32
 // CHECK: return %[[V1]] : i32
 // CHECK-LABEL: func.func @i32$expect_eq(%arg0: i32, %arg1: i32) -> i32

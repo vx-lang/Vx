@@ -283,6 +283,7 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
             invariants: _,
             body,
             span: _,
+            next_fn,
         } = self;
 
         if let Expr::Range(syntax::expr::RangeExpr {
@@ -611,7 +612,13 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
                 || name.ends_with("$next")
         };
         let mut actual_next_name = "next".to_string();
-        for (name, (_, _args)) in &gen.functions {
+        if let Some(n) = next_fn
+            .as_ref()
+            .filter(|n| gen.functions.contains_key(n.as_ref()))
+        {
+            actual_next_name = n.to_string();
+        }
+        for (name, (_, _args)) in gen.functions.iter().filter(|_| actual_next_name == "next") {
             if is_next(name) && (iter_base.is_empty() || name.starts_with(&iter_base)) {
                 actual_next_name = name.to_string();
                 break;

@@ -86,13 +86,13 @@ fn main() -> i32 {
     print!(",");
   }
   print!(" ");
-  let mut tk = take<Range, i64>(range(0i64, 10i64), 3i64);
+  let mut tk = take(range(0i64, 10i64), 3i64);
   for u in tk {
     print(u);
     print!(",");
   }
   print!(" ");
-  let mut sk = skip<Range, i64>(range(0i64, 6i64), 4i64);
+  let mut sk = skip(range(0i64, 6i64), 4i64);
   for w in sk {
     print(w);
     print!(",");

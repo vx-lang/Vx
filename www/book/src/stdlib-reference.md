@@ -324,18 +324,16 @@ The `Iterator` trait: one required `next`, and the methods written over it.
 - `struct Range`<br>
   The numbers from `at` up to but not including `end`.
   A half-open span of `i64`, from `at` up to but not including `end`.
-- `struct Map<I, T, U>`<br>
+- `struct Map<I, F>`<br>
   `f` over every item.
   An iterator over another one's items with `f` applied to each. Built by `map`.
-- `struct Filter<I, T>`<br>
+- `struct Filter<I, P>`<br>
   Only the items `keep` accepts.
   An iterator over the items of another that `keep` accepts. Built by `filter`.
-- `struct Take<I, T>`<br>
+- `struct Take<I>`<br>
   The first `left` items, then nothing.
-  `T` is carried by the struct although `Take` never stores one: until `I::Item` resolves
-  it is the only place the impl can read the element type from.
   An iterator over at most `left` items of another. Built by `take`.
-- `struct Skip<I, T>`<br>
+- `struct Skip<I>`<br>
   Everything after the first `drop` items.
   An iterator over another's items with the first `drop` of them discarded. Built by `skip`.
 
@@ -344,37 +342,37 @@ The `Iterator` trait: one required `next`, and the methods written over it.
 - `fn next(self : &mut Range) -> Option<i64>`<br>
   The next value in the span, or nothing once `end` is reached.
 
-**`Iterator for Map<I, T, U>` methods**
+**`Iterator for Map<I, Closure1<I :  : Item, U>>` methods**
 
-- `fn next(self : &mut Map<I, T, U>) -> Option<U>`<br>
+- `fn next(self : &mut Map<I, Closure1<I :  : Item, U>>) -> Option<U>`<br>
   The inner iterator's next item with `f` applied.
 
-**`Iterator for Filter<I, T>` methods**
+**`Iterator for Filter<I, Closure1<I :  : Item, bool>>` methods**
 
-- `fn next(self : &mut Filter<I, T>) -> Option<T>`<br>
+- `fn next(self : &mut Filter<I, Closure1<I :  : Item, bool>>) -> Option<I :  : Item>`<br>
   The inner iterator's next item that `keep` accepts.
 
-**`Iterator for Take<I, T>` methods**
+**`Iterator for Take<I>` methods**
 
-- `fn next(self : &mut Take<I, T>) -> Option<T>`<br>
+- `fn next(self : &mut Take<I>) -> Option<I :  : Item>`<br>
   The inner iterator's next item, until `left` of them have been handed out.
 
-**`Iterator for Skip<I, T>` methods**
+**`Iterator for Skip<I>` methods**
 
-- `fn next(self : &mut Skip<I, T>) -> Option<T>`<br>
+- `fn next(self : &mut Skip<I>) -> Option<I :  : Item>`<br>
   The inner iterator's next item, once the skipped ones have been consumed.
 
 **Functions**
 
-- `fn map<I, T, U>(inner : I, f : Closure1<T, U>) -> Map<I, T, U>`<br>
+- `fn map<I : Iterator, U>(inner : I, f : Closure1<I :  : Item, U>) -> Map<I, Closure1<I :  : Item, U>>`<br>
   The adaptors are built through these rather than by writing the struct literal: a
   closure literal is coerced to `Closure1<A, B>` in an argument but not in a field
   initializer (Vx#648).
-- `fn filter<I, T>(inner : I, keep : Closure1<T, bool>) -> Filter<I, T>`<br>
+- `fn filter<I : Iterator>(inner : I, keep : Closure1<I :  : Item, bool>) -> Filter<I, Closure1<I :  : Item, bool>>`<br>
   An iterator over the items of `inner` that `keep` accepts.
-- `fn take<I, T>(inner : I, left : i64) -> Take<I, T>`<br>
+- `fn take<I : Iterator>(inner : I, left : i64) -> Take<I>`<br>
   An iterator over at most `left` items of `inner`.
-- `fn skip<I, T>(inner : I, drop : i64) -> Skip<I, T>`<br>
+- `fn skip<I : Iterator>(inner : I, drop : i64) -> Skip<I>`<br>
   An iterator over `inner` with its first `drop` items discarded.
 - `fn range(at : i64, end : i64) -> Range`<br>
   The numbers `at .. end`.

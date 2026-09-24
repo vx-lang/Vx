@@ -1627,26 +1627,12 @@ impl<'c> LowerToMelior<'c> for MemberAccessExpr {
 
                     if is_ptr {
                         let ptr_ty = gen.ptr_ty;
-                        let mut field_types = Vec::new();
-                        for (_, ty) in &struct_decl.fields {
-                            let sub_ty2 = ty.substitute(&mapping);
-                            let mut lowered = gen.lower_type_str(&sub_ty2)?;
-                            if lowered.starts_with("memref<") {
-                                lowered = "!llvm.ptr".to_string();
-                            }
-                            field_types.push(lowered);
-                        }
-                        let struct_llvm_ty_str = format!(
-                            "!llvm.struct<\"{}\", ({})>",
-                            base_name,
-                            field_types.join(", ")
-                        );
-                        let struct_llvm_ty = Type::parse(gen.context, &struct_llvm_ty_str)
-                            .ok_or_else(|| {
-                                crate::codegen::lower::LowerError::ParseType(
-                                    "Type::parse failed".to_string(),
-                                )
-                            })?;
+                        let struct_llvm_ty = crate::codegen::lower::stmt::struct_instance_ty(
+                            gen,
+                            &base_name.as_str().into(),
+                            &struct_decl,
+                            &mapping,
+                        )?;
 
                         let gep_op = OperationBuilder::new("llvm.getelementptr", gen.loc())
                             .add_operands(&[base_val])

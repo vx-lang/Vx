@@ -269,8 +269,14 @@ impl<'a> Parser<'a> {
         } else {
             if let TokenType::Identifier(s) = &self.peek().kind {
                 if self.generic_params.iter().any(|p| p == *s) {
-                    let s = s.to_string();
+                    let mut s = s.to_string();
                     self.advance();
+                    // `I::Item`, an associated type of the parameter. A type variable of its
+                    // own, bound when the instantiation says what `I` is.
+                    if self.match_token(&TokenType::DoubleColon) {
+                        let assoc = self.expect_identifier("Expected an associated type name")?;
+                        s = format!("{s}::{assoc}");
+                    }
                     return Ok(Type::Generic(s.into(), None));
                 }
             }

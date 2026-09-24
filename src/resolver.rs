@@ -158,15 +158,14 @@ fn assoc_substitution(
         .collect()
 }
 
-/// Replace `Self::Item` in an impl's method signatures with the type that impl bound it to.
+/// Replace `Self::Item` in an impl's methods with the type that impl bound it to.
 ///
 /// This runs beside the trait-default copy and for the same reason `Self` itself is
 /// substituted there: from here on the impl's methods are ordinary methods, and nothing
 /// downstream -- name resolution, the checker, either code generator -- needs to know that
 /// an associated type was ever written.
 ///
-/// Signatures only, which is the same reach `Self` has today. An annotation inside a body is
-/// not rewritten, so a binding is not yet usable there.
+/// Bodies as well as signatures, so a default can write `Option<Self::Item>::None()`.
 pub fn bind_associated_types_in(program: &mut crate::syntax::Program) {
     for block in &mut program.impls {
         if block.assoc_bindings.is_empty() {
@@ -178,6 +177,7 @@ pub fn bind_associated_types_in(program: &mut crate::syntax::Program) {
                 *param_ty = param_ty.substitute(&subst);
             }
             method.return_type = method.return_type.substitute(&subst);
+            method.body = method.body.iter().map(|s| s.substitute(&subst)).collect();
         }
     }
 }

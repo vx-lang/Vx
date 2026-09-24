@@ -1,0 +1,16 @@
+//===- projection_does_not_resolve.vx - Vx Compiler -------------*- Vx -*-===//
+// RUN: not vxc %s --action print-ast 2>&1 | FileCheck %s
+import core::iter;
+
+fn first<I : Iterator>(it : I) -> Option<I::Itme> {
+  let mut i = it;
+  return i.next();
+}
+
+fn main() -> i32 {
+  let v = first(range(0i64, 5i64));
+  return 0;
+}
+
+// CHECK: E3040
+// CHECK-SAME: `I::Itme` does not resolve, because no impl for `Range` binds an associated type named 'Itme'

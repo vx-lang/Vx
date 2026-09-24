@@ -17,7 +17,7 @@ the test suite has one, a program that triggers it.
 - [Warnings](#warnings) — `W1001`–`W1031` (23 codes)
 - [Parser Errors](#parser-errors) — `E1001`–`E1013` (13 codes)
 - [Name Resolution Errors](#name-resolution-errors) — `E2001`–`E2007` (7 codes)
-- [Type Errors](#type-errors) — `E3001`–`E3038` (38 codes)
+- [Type Errors](#type-errors) — `E3001`–`E3041` (41 codes)
 - [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4005` (5 codes)
 - [Safety Errors](#safety-errors) — `E5001`–`E5002` (2 codes)
 - [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6028` (28 codes)
@@ -132,6 +132,9 @@ Raised by the type checker. Vx performs no implicit numeric conversion, so many 
 | [`E3035`](/errors/E3035/) | A method name that more than one `impl` block defines for the same type. The impls are kept in a hash map, so which body a call reached used to change from one run of the compiler to the next; refusing the call is the only answer that is the same twice. |
 | [`E3037`](/errors/E3037/) | An impl of a trait that declares an associated type does not bind it. The trait's signatures are written against `Self::Item`, so with no binding there is nothing to put in their place, and the method's type becomes whatever the impl happened to write. |
 | [`E3038`](/errors/E3038/) | `type Item = ..` in an impl whose trait declares no `Item`. Usually a misspelling: nothing reads the binding, so it would go on meaning nothing, in silence. |
+| [`E3039`](/errors/E3039/) | `I::Item` disagrees with the impl for what `I` is: an argument bound it to one type and that impl binds `Item` to another. |
+| [`E3040`](/errors/E3040/) | `I::Item` where no impl for what `I` is binds an associated type named `Item`: `I` has no such bound, or the name is misspelled. |
+| [`E3041`](/errors/E3041/) | A struct field that names `I::Item`. Fields are laid out from the struct's parameters alone, so the projection is made a parameter instead, as `Map<I, F>` does with its closure. |
 
 ## Borrow/Ownership Errors
 
@@ -214,4 +217,4 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 
 ______________________________________________________________________
 
-125 diagnostics.
+128 diagnostics.

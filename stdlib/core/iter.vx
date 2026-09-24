@@ -9,16 +9,12 @@
 // `Iterator` trait itself is in `core::iter::traits`, which this imports, so importing
 // `core::iter` brings the trait as well.
 //
-// `Item` is an associated type: each impl binds it with `type Item = ..;` and the trait's
-// signatures say `Self::Item`. The adaptors still carry their inner iterator's item type as
-// a parameter of their own, `T`, because naming it as `I::Item` does not resolve yet (Vx#727);
-// that is also why `take` and `skip` are called with the item type spelled out.
+// `Item` is an associated type: each impl binds it with `type Item = ..;`, and an adaptor
+// names its inner iterator's as `I::Item`. As in Rust, `Map` and `Filter` take their closure
+// as a type parameter, `F` and `P`, because a struct field cannot name `I::Item`.
 //
 // A `for` loop consumes the iterator it drives, so an adaptor takes its inner iterator by
 // value and the chain is built before the loop.
-//
-// One adaptor deep only: a second one makes the inner type a nested generic, and a type
-// argument list is split on commas without counting brackets (Vx#647).
 //
 // The bound on an adaptor's `I` is not checked today (Vx#645): it is written for the
 // reader, and a type without `next` fails inside the adaptor instead of at the use.
@@ -49,16 +45,16 @@ impl Iterator for Range {
 
 /// `f` over every item.
 /// An iterator over another one's items with `f` applied to each. Built by `map`.
-struct Map<I, T, U> {
+struct Map<I, F> {
   inner : I,
-  f : Closure1<T, U>,
+  f : F,
 }
 
-impl<I : Iterator, T, U> Iterator for Map<I, T, U> {
+impl<I : Iterator, U> Iterator for Map<I, Closure1<I::Item, U>> {
   type Item = U;
 
   /// The inner iterator's next item with `f` applied.
-  fn next(self : &mut Map<I, T, U>) -> Option<U> {
+  fn next(self : &mut Map<I, Closure1<I::Item, U>>) -> Option<U> {
     let step = self.inner.next();
     if step.is_none() {
       return Option<U>::None();
@@ -71,49 +67,46 @@ impl<I : Iterator, T, U> Iterator for Map<I, T, U> {
 
 /// Only the items `keep` accepts.
 /// An iterator over the items of another that `keep` accepts. Built by `filter`.
-struct Filter<I, T> {
+struct Filter<I, P> {
   inner : I,
-  keep : Closure1<T, bool>,
+  keep : P,
 }
 
-impl<I : Iterator, T> Iterator for Filter<I, T> {
-  type Item = T;
+impl<I : Iterator> Iterator for Filter<I, Closure1<I::Item, bool>> {
+  type Item = I::Item;
 
   /// The inner iterator's next item that `keep` accepts.
-  fn next(self : &mut Filter<I, T>) -> Option<T> {
+  fn next(self : &mut Filter<I, Closure1<I::Item, bool>>) -> Option<I::Item> {
     loop {
       let step = self.inner.next();
       if step.is_none() {
-        return Option<T>::None();
+        return step;
       }
       let v = step.unwrap();
       let g = self.keep;
       let p = g.func;
       if p(g.env, v) {
-        return Option<T>::Some(v);
+        return Option<I::Item>::Some(v);
       }
     }
-    return Option<T>::None();
+    return Option<I::Item>::None();
   }
 }
 
 /// The first `left` items, then nothing.
-///
-/// `T` is carried by the struct although `Take` never stores one: until `I::Item` resolves
-/// it is the only place the impl can read the element type from.
 /// An iterator over at most `left` items of another. Built by `take`.
-struct Take<I, T> {
+struct Take<I> {
   inner : I,
   left : i64,
 }
 
-impl<I : Iterator, T> Iterator for Take<I, T> {
-  type Item = T;
+impl<I : Iterator> Iterator for Take<I> {
+  type Item = I::Item;
 
   /// The inner iterator's next item, until `left` of them have been handed out.
-  fn next(self : &mut Take<I, T>) -> Option<T> {
+  fn next(self : &mut Take<I>) -> Option<I::Item> {
     if self.left <= 0i64 {
-      return Option<T>::None();
+      return Option<I::Item>::None();
     }
     self.left = self.left - 1i64;
     return self.inner.next();
@@ -122,16 +115,16 @@ impl<I : Iterator, T> Iterator for Take<I, T> {
 
 /// Everything after the first `drop` items.
 /// An iterator over another's items with the first `drop` of them discarded. Built by `skip`.
-struct Skip<I, T> {
+struct Skip<I> {
   inner : I,
   drop : i64,
 }
 
-impl<I : Iterator, T> Iterator for Skip<I, T> {
-  type Item = T;
+impl<I : Iterator> Iterator for Skip<I> {
+  type Item = I::Item;
 
   /// The inner iterator's next item, once the skipped ones have been consumed.
-  fn next(self : &mut Skip<I, T>) -> Option<T> {
+  fn next(self : &mut Skip<I>) -> Option<I::Item> {
     loop {
       if self.drop <= 0i64 {
         return self.inner.next();
@@ -142,36 +135,37 @@ impl<I : Iterator, T> Iterator for Skip<I, T> {
       }
       self.drop = self.drop - 1i64;
     }
-    return Option<T>::None();
+    return Option<I::Item>::None();
   }
 }
 
 /// The adaptors are built through these rather than by writing the struct literal: a
 /// closure literal is coerced to `Closure1<A, B>` in an argument but not in a field
 /// initializer (Vx#648).
-fn map<I, T, U>(inner : I, f : Closure1<T, U>) -> Map<I, T, U> {
-  return Map<I, T, U> {
+fn map<I : Iterator, U>(inner : I, f : Closure1<I::Item, U>) -> Map<I, Closure1<I::Item, U>> {
+  return Map<I, Closure1<I::Item, U>> {
     inner : inner, f : f
   };
 }
 
 /// An iterator over the items of `inner` that `keep` accepts.
-fn filter<I, T>(inner : I, keep : Closure1<T, bool>) -> Filter<I, T> {
-  return Filter<I, T> {
+fn filter<I : Iterator>(inner : I, keep : Closure1<I::Item, bool>)
+-> Filter<I, Closure1<I::Item, bool>> {
+  return Filter<I, Closure1<I::Item, bool>> {
     inner : inner, keep : keep
   };
 }
 
 /// An iterator over at most `left` items of `inner`.
-fn take<I, T>(inner : I, left : i64) -> Take<I, T> {
-  return Take<I, T> {
+fn take<I : Iterator>(inner : I, left : i64) -> Take<I> {
+  return Take<I> {
     inner : inner, left : left
   };
 }
 
 /// An iterator over `inner` with its first `drop` items discarded.
-fn skip<I, T>(inner : I, drop : i64) -> Skip<I, T> {
-  return Skip<I, T> {
+fn skip<I : Iterator>(inner : I, drop : i64) -> Skip<I> {
+  return Skip<I> {
     inner : inner, drop : drop
   };
 }

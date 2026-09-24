@@ -278,6 +278,35 @@ fn generic_arg_mapping(
     mapping
 }
 
+/// The LLVM type of struct `base` instantiated by `mapping`, under the name every other use of
+/// that instance gives it. Spelled with the bare `base`, two instances of one generic struct
+/// were two bodies under one name, which MLIR refuses.
+pub(crate) fn struct_instance_ty<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    base: &crate::symbol::Symbol,
+    decl: &syntax::StructDecl,
+    mapping: &std::collections::HashMap<crate::symbol::Symbol, syntax::Type>,
+) -> Result<melior::ir::Type<'c>, crate::codegen::lower::LowerError> {
+    let nominal = syntax::Type::Struct(base.clone(), None);
+    if decl.generics.is_empty() {
+        return gen.lower_type(&nominal);
+    }
+    let args = decl
+        .generics
+        .iter()
+        .map(|g| {
+            mapping.get(g.name()).cloned().ok_or_else(|| {
+                crate::codegen::lower::LowerError::from(format!(
+                    "no type argument for `{}` of `{}`",
+                    g.name(),
+                    base
+                ))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    gen.lower_type(&syntax::Type::GenericInstance(Box::new(nominal), args))
+}
+
 /// Do `dst = a @ b`'s three tensors have statically agreeing rank-2 shapes?
 ///
 /// Only then is the destination known to be the size of the product, which is what makes
@@ -662,26 +691,8 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
 
                             if is_ptr {
                                 let ptr_ty = gen.ptr_ty;
-                                let mut field_types = Vec::new();
-                                for (_, ty) in &struct_decl.fields {
-                                    let mut lowered =
-                                        gen.lower_type_str(&ty.substitute(&mapping))?;
-                                    if lowered.starts_with("memref<") {
-                                        lowered = "!llvm.ptr".to_string();
-                                    }
-                                    field_types.push(lowered);
-                                }
-                                let struct_llvm_ty_str = format!(
-                                    "!llvm.struct<\"{}\", ({})>",
-                                    base_struct,
-                                    field_types.join(", ")
-                                );
-                                let struct_llvm_ty = Type::parse(gen.context, &struct_llvm_ty_str)
-                                    .ok_or_else(|| {
-                                        crate::codegen::lower::LowerError::ParseType(
-                                            "Type::parse failed".to_string(),
-                                        )
-                                    })?;
+                                let struct_llvm_ty =
+                                    struct_instance_ty(gen, &base_struct, &struct_decl, &mapping)?;
 
                                 let gep_op = OperationBuilder::new("llvm.getelementptr", gen.loc())
                                     .add_attributes(&[

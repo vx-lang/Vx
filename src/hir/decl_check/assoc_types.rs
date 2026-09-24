@@ -74,4 +74,32 @@ impl TypeChecker<'_> {
             );
         }
     }
+
+    /// No struct field names `I::Item`. A field's type is read from the struct's own parameters
+    /// wherever a value is laid out, which is in both code generators as well as here, and none
+    /// of them selects an impl. Rust's `Map<I, F>` takes the closure as a parameter for the
+    /// same reason, and that shape works here.
+    pub fn check_no_projections_in_fields(&mut self) {
+        let mut found: Vec<(String, String, String)> = Vec::new();
+        for (name, decl) in &self.env.structs {
+            for (field, ty) in &decl.fields {
+                let mut written = Vec::new();
+                crate::hir::check::projection::projections_in(ty, &mut written);
+                if let Some(p) = written.first() {
+                    found.push((name.to_string(), field.to_string(), p.to_string()));
+                }
+            }
+        }
+        found.sort();
+        for (name, field, projection) in found {
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E3041,
+                format!(
+                    "field '{field}' of struct '{name}' names `{projection}`, which a struct field \
+                     cannot yet; make the field's type a parameter of '{name}'"
+                ),
+                None,
+            );
+        }
+    }
 }

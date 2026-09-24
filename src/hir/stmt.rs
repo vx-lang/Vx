@@ -295,6 +295,7 @@ impl<'a> TypeChecker<'a> {
             invariants,
             body,
             span: loop_span,
+            next_fn,
         } = floop;
         let loop_span = *loop_span;
         // `for x in it` consumes `it`, as Rust's does: the loop drives a copy of the
@@ -339,6 +340,9 @@ impl<'a> TypeChecker<'a> {
             // lost and the loop variable wrongly falls back to `i64` (E3004 against an i32
             // body, the for-over-iterator typing bug, #242).
             let opt_ty = self.check_expr_type_flag(&mut next_call, consume);
+            if let Expr::FunctionCall(call) = &next_call {
+                *next_fn = Some(call.name.clone());
+            }
             if let Type::GenericInstance(base, args) = opt_ty {
                 if let Type::Enum(name, _) | Type::Struct(name, _) = &*base {
                     if name.as_ref() == "Option" && args.len() == 1 {
@@ -1726,6 +1730,7 @@ impl<'a> TypeChecker<'a> {
                 invariants: _,
                 body,
                 span: _,
+                next_fn: _,
             }) => self.eval_for_loop(iter, iterable, body, env),
             Statement::Loop(LoopStmt {
                 body,

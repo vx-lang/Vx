@@ -30,6 +30,11 @@ const KNOWN_DECLINES: &[&str] = &[
     "backend/pass/core_iter.vx",
     // Same decline as `core_iter.vx`, one adaptor deeper: the answers come from the AST path.
     "backend/pass/iter_adaptors_chain.vx",
+    // Same decline again: two chains whose `Map`s differ, for a name clash in the AST path.
+    "backend/pass/generic_struct_instances_nested.vx",
+    // A generic struct, `Cap<Count>`, which the flat path declines as "a struct with no GID".
+    // The projections are resolved by the checker, before either code generator runs.
+    "backend/pass/associated_type_projection.vx",
     // The flat path declines `main` as "a callee return type", since `wrap` and `some_pair`
     // answer with a generic struct and a generic enum. The answers come from the AST path.
     "backend/pass/nested_generic_names_in_generic_fns.vx",

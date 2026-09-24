@@ -1,0 +1,39 @@
+//===- projection_is_ambiguous.vx - Vx Compiler -----------------*- Vx -*-===//
+// RUN: not vxc %s --action print-ast 2>&1 | FileCheck %s
+
+trait Source {
+  type Item;
+  fn get(self : Self) -> Self::Item;
+}
+
+trait Sink {
+  type Item;
+  fn put(self : Self, v : Self::Item) -> i32;
+}
+
+impl Source for i32 {
+  type Item = i64;
+  fn get(self : i32) -> i64 {
+    return 1;
+  }
+}
+
+impl Sink for i32 {
+  type Item = f32;
+  fn put(self : i32, v : f32) -> i32 {
+    return 0;
+  }
+}
+
+fn pass<I : Source>(it : I) -> I::Item {
+  return it.get();
+}
+
+fn main() -> i32 {
+  let v = pass(3);
+  return 0;
+}
+
+// Two traits bind `Item` for `i32`, differently, and `I::Item` does not say which it means.
+// CHECK: E3039
+// CHECK-SAME: `i32` has two associated types named `Item`

@@ -253,6 +253,7 @@ impl<'a> Parser<'a> {
                     invariants,
                     body: stmts,
                     span: Span::default(),
+                    next_fn: None,
                 }))
             }
             TokenType::Identifier(s) => {

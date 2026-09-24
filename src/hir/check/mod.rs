@@ -21,6 +21,7 @@ pub mod capacity_fold;
 pub mod control;
 pub mod literals;
 pub mod operators;
+pub mod projection;
 pub mod raw;
 pub mod region_traffic;
 pub mod transfer;

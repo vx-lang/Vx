@@ -1,0 +1,15 @@
+//===- projection_in_a_struct_field.vx - Vx Compiler ------------*- Vx -*-===//
+// RUN: not vxc %s --action print-ast 2>&1 | FileCheck %s
+import core::iter;
+
+struct Holder<I> {
+  it : I,
+  last : I::Item,
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK: E3041
+// CHECK-SAME: field 'last' of struct 'Holder' names `I::Item`

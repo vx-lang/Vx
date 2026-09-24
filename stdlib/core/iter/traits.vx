@@ -13,10 +13,6 @@
 // every program that uses a `Vec`, where a type of the same name crashes codegen. Rust keeps
 // its trait in `core::iter::traits` for the same reason of layering.
 //
-// No default body names the item type. `Self::Item` is substituted into signatures only, so
-// `Option<Self::Item>::None()` in a body would reach codegen unresolved. Every `Option` of an
-// item below comes from `next` or from a method of `core::option`, which infers it.
-//
 // A method whose `loop` only ever leaves by `return` still needs a return after it: the checker
 // does not treat such a loop as diverging (E3028). Those are unreachable.
 import core::ops;

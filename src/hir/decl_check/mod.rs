@@ -40,6 +40,7 @@ impl TypeChecker<'_> {
         // An impl binds every associated type its trait declares. Nothing downstream can catch
         // this: the binding is substituted into the signatures before name resolution runs.
         self.check_associated_type_bindings();
+        self.check_no_projections_in_fields();
         // Structural validity of transfer lowerings: duplicate edge, empty body.
         self.check_transfer_impls();
         // Declared topologies, read from the env rather than one program: a topology arriving via

@@ -1,0 +1,12 @@
+//===- projection_disagrees_with_the_impl.vx - Vx Compiler ------*- Vx -*-===//
+// RUN: not vxc %s --action print-ast 2>&1 | FileCheck %s
+import core::iter;
+
+fn main() -> i32 {
+  let m = map(range(0i64, 5i64), | x : i32 | x * 2);
+  return 0;
+}
+
+// The closure says the items are i32; `Range` says they are i64.
+// CHECK: E3039
+// CHECK-SAME: `I::Item` is i32 here, but `Range` binds `Item` to i64

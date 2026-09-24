@@ -1,0 +1,104 @@
+//===- associated_type_projection.vx - Vx Compiler --------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `I::Item`, the associated type of a generic parameter, resolved from the impl for what `I` is.
+//
+//   6    `Self::Item` in a default's body: `second` skips one item
+//   30   `I::Item` in a free function's signature: `scale` takes a `Closure1<I::Item, U>`
+//   9    `type Item = I::Item` and `Option<I::Item>::None()` in a generic impl's body: `Cap`
+//        runs out after one item and answers nothing
+//   4    `J::Item` of a method's own parameter: `pull` answers the first item of another `Count`
+import core::ops;
+import core::option;
+
+trait Stream {
+  type Item;
+  fn next(self : &mut Self) -> Option<Self::Item>;
+
+  fn second(self : &mut Self) -> Option<Self::Item> {
+    let first : Option<Self::Item> = self.next();
+    if first.is_none() {
+      return Option<Self::Item>::None();
+    }
+    return self.next();
+  }
+}
+
+struct Count {
+  at : i64,
+  end : i64,
+}
+
+impl Stream for Count {
+  type Item = i64;
+  fn next(self : &mut Count) -> Option<i64> {
+    if self.at >= self.end {
+      return Option<i64>::None();
+    }
+    let v : i64 = self.at;
+    self.at = self.at + 1i64;
+    return Option<i64>::Some(v);
+  }
+}
+
+impl Count {
+  fn pull<J : Stream>(self : &Count, j : J) -> Option<J::Item> {
+    let mut k = j;
+    return k.next();
+  }
+}
+
+struct Cap<I> {
+  inner : I,
+  left : i64,
+}
+
+impl<I : Stream> Stream for Cap<I> {
+  type Item = I::Item;
+  fn next(self : &mut Cap<I>) -> Option<I::Item> {
+    if self.left <= 0i64 {
+      return Option<I::Item>::None();
+    }
+    self.left = self.left - 1i64;
+    return self.inner.next();
+  }
+}
+
+fn scale<I : Stream, U>(it : I, f : Closure1<I::Item, U>) -> U {
+  let mut s = it;
+  let g = f.func;
+  return g(f.env, s.next().unwrap());
+}
+
+fn main() -> i32 {
+  let mut a = Count {
+    at : 5i64, end : 9i64
+  };
+  print(a.second().unwrap());
+  print!(" ");
+  let b = Count {
+    at : 3i64, end : 9i64
+  };
+  print(scale(b, | x : i64 | x * 10i64));
+  print!(" ");
+  let mut c = Cap<Count> {
+    inner : Count {
+      at : 0i64, end : 9i64
+    },
+    left : 1i64
+  };
+  if c.next().is_some() && c.next().is_none() {
+    print(9);
+  }
+  print!(" ");
+  print(b.pull(Count {
+    at : 4i64, end : 9i64
+  }).unwrap());
+  return 0;
+}
+
+// EXPECT: 6 30 9 4

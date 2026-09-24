@@ -70,6 +70,9 @@ pub struct ForLoopStmt {
     pub invariants: Vec<Expr>,
     pub body: Vec<Statement>,
     pub span: Span,
+    /// The `next` the checker resolved for this loop's iterator, by its instance name. Two
+    /// instances of one generic iterator have two `next`s, and only the checker knows which.
+    pub next_fn: Option<crate::symbol::Symbol>,
 }
 impl ForLoopStmt {
     pub fn new(
@@ -85,6 +88,7 @@ impl ForLoopStmt {
             invariants,
             body,
             span,
+            next_fn: None,
         }
     }
 }
@@ -255,6 +259,7 @@ impl Statement {
                     .collect(),
                 body: e.body.iter().map(|s| s.substitute(mapping)).collect(),
                 span: e.span,
+                next_fn: e.next_fn.clone(),
             }),
             Statement::Assign(e) => Statement::Assign(AssignStmt {
                 lhs: e.lhs.substitute(mapping),

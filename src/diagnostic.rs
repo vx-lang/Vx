@@ -313,6 +313,16 @@ pub enum DiagnosticCode {
     /// `type Item = ..` in an impl whose trait declares no `Item`. Usually a misspelling:
     /// nothing reads the binding, so it would go on meaning nothing, in silence.
     E3038,
+    /// `I::Item` disagrees with the impl for what `I` is: an argument bound it to one type and
+    /// that impl binds `Item` to another.
+    E3039,
+    /// `I::Item` where no impl for what `I` is binds an associated type named `Item`: `I` has
+    /// no such bound, or the name is misspelled.
+    E3040,
+    /// A struct field that names `I::Item`. Fields are laid out from the struct's parameters
+    /// alone, so the projection is made a parameter instead, as `Map<I, F>` does with its
+    /// closure.
+    E3041,
 
     // --- Borrow/Ownership Errors (E4xxx) ---
     /// Use of moved or consumed linear variable

@@ -1419,11 +1419,7 @@ impl<'a> TypeChecker<'a> {
                         let mut implements_trait = false;
                         if let Some(impl_blocks) = self.env.impls.get(bound_name.as_ref()) {
                             for ib in impl_blocks {
-                                if self.unify_types(
-                                    &ib.target_type,
-                                    concrete_ty,
-                                    &mut HashMap::new(),
-                                ) {
+                                if self.impl_applies(ib, concrete_ty, &mut HashMap::new()) {
                                     implements_trait = true;
                                     break;
                                 }
@@ -1441,6 +1437,17 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
             }
+        }
+
+        if success {
+            let params: Vec<&Type> = generic_func.params.iter().map(|(_, t)| t).collect();
+            success = self.resolve_projections_for(
+                resolved_name,
+                &params,
+                &generic_func.return_type,
+                &mut mapping,
+                Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+            );
         }
 
         if success {
@@ -1930,7 +1937,7 @@ impl<'a> TypeChecker<'a> {
         for (trait_key, impl_blocks) in self.env.impls.iter() {
             for ib in impl_blocks {
                 let mut candidate_mapping = HashMap::new();
-                if !self.unify_types(&ib.target_type, &check_ty, &mut candidate_mapping) {
+                if !self.impl_applies(ib, &check_ty, &mut candidate_mapping) {
                     continue;
                 }
                 let Some(m) = ib.methods.iter().find(|m| m.name == *method) else {
@@ -2052,6 +2059,14 @@ impl<'a> TypeChecker<'a> {
                 self.unify_types(expected_param, arg_ty, &mut mapping);
             }
         }
+        let params: Vec<&Type> = generic_method.params.iter().map(|(_, t)| t).collect();
+        self.resolve_projections_for(
+            generic_method.name.as_ref(),
+            &params,
+            &generic_method.return_type,
+            &mut mapping,
+            None,
+        );
 
         // Provide generic mapping to the method itself by copying impl block generics
         let mut modified_func = generic_method.clone();
