@@ -97,6 +97,13 @@ impl<'a> Parser<'a> {
                 if self.match_token(&TokenType::Mut) {
                     is_mut = true;
                 }
+                if !is_mut && self.check(&TokenType::LeftParen) {
+                    return self.parse_tuple_let(Span {
+                        line: token_line,
+                        column: token_col,
+                        length: token_len,
+                    });
+                }
                 let name = match &self.advance().kind {
                     TokenType::Identifier(s) => s.to_string(),
                     _ => return Err(self.error("Expected identifier after let")),
@@ -129,7 +136,7 @@ impl<'a> Parser<'a> {
                 while self.peek().kind != TokenType::RightBrace
                     && self.peek().kind != TokenType::Eof
                 {
-                    stmts.push(self.parse_statement()?);
+                    self.parse_statement_into(&mut stmts)?;
                 }
                 let mut ret = None;
                 if let Some(Statement::ExprStmt(stmt)) = stmts.last() {
@@ -206,7 +213,7 @@ impl<'a> Parser<'a> {
                 self.consume(&TokenType::LeftBrace, "Expected '{' after loop")?;
                 let mut body = Vec::new();
                 while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
-                    body.push(self.parse_statement()?);
+                    self.parse_statement_into(&mut body)?;
                 }
                 self.consume(&TokenType::RightBrace, "Expected '}'")?;
                 Ok(Statement::Loop(LoopStmt {
@@ -244,7 +251,7 @@ impl<'a> Parser<'a> {
                 self.consume(&TokenType::LeftBrace, "Expected '{'")?;
                 let mut stmts = Vec::new();
                 while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
-                    stmts.push(self.parse_statement()?);
+                    self.parse_statement_into(&mut stmts)?;
                 }
                 self.consume(&TokenType::RightBrace, "Expected '}'")?;
                 Ok(Statement::ForLoop(ForLoopStmt {
@@ -298,4 +305,101 @@ impl<'a> Parser<'a> {
             }
         }
     }
+
+    /// `let (a, mut b, _) = e;`: a `let` of `e` under a name no source can spell, then one `let`
+    /// per name, of the element in its place. Nested tuples recurse the same way.
+    ///
+    /// The first `let` is returned and the rest wait in `pending_stmts` for
+    /// `parse_statement_into`, since a statement parses to one statement.
+    fn parse_tuple_let(&mut self, span: Span) -> ParseResult<'a, Statement> {
+        let pattern = self.parse_tuple_pattern()?;
+        let mut type_annotation = None;
+        if self.match_token(&TokenType::Colon) {
+            type_annotation = Some(self.parse_type()?);
+        }
+        self.consume(&TokenType::Equals, "Expected '='")?;
+        let expr = self.parse_expr()?;
+        self.consume(&TokenType::Semicolon, "Expected ';'")?;
+        let mut out = Vec::new();
+        self.lower_tuple_pattern(pattern, type_annotation, expr, span, &mut out);
+        let first = out.remove(0);
+        self.pending_stmts.extend(out);
+        Ok(first)
+    }
+
+    fn parse_tuple_pattern(&mut self) -> ParseResult<'a, TuplePattern> {
+        self.consume(&TokenType::LeftParen, "Expected '('")?;
+        let mut elems = Vec::new();
+        while !self.check(&TokenType::RightParen) {
+            if self.check(&TokenType::LeftParen) {
+                elems.push(self.parse_tuple_pattern()?);
+            } else {
+                let is_mut = self.match_token(&TokenType::Mut);
+                let name = self.expect_identifier("Expected a name in a tuple pattern")?;
+                elems.push(if name == "_" && !is_mut {
+                    TuplePattern::Ignore
+                } else {
+                    TuplePattern::Bind(name, is_mut)
+                });
+            }
+            if !self.match_token(&TokenType::Comma) {
+                break;
+            }
+        }
+        self.consume(&TokenType::RightParen, "Expected ')' after a tuple pattern")?;
+        self.tuple_struct(elems.len())?;
+        Ok(TuplePattern::Tuple(elems))
+    }
+
+    fn lower_tuple_pattern(
+        &mut self,
+        pattern: TuplePattern,
+        ty_ann: Option<crate::syntax::Type>,
+        expr: Expr,
+        span: Span,
+        out: &mut Vec<Statement>,
+    ) {
+        match pattern {
+            TuplePattern::Ignore => {}
+            TuplePattern::Bind(name, is_mut) => out.push(Statement::LetDecl(LetDeclStmt {
+                name: name.into(),
+                is_mut,
+                ty_ann,
+                expr,
+                span,
+            })),
+            TuplePattern::Tuple(elems) => {
+                let temp = format!("$tuple{}", self.tuple_lets);
+                self.tuple_lets += 1;
+                out.push(Statement::LetDecl(LetDeclStmt {
+                    name: temp.clone().into(),
+                    is_mut: false,
+                    ty_ann,
+                    expr,
+                    span,
+                }));
+                for (i, elem) in elems.into_iter().enumerate() {
+                    let element = Expr::MemberAccess(MemberAccessExpr {
+                        base: Box::new(Expr::Identifier(IdentifierExpr {
+                            name: temp.clone().into(),
+                            span,
+                        })),
+                        member: format!("_{i}").into(),
+                        struct_name: None,
+                        span,
+                    });
+                    self.lower_tuple_pattern(elem, None, element, span, out);
+                }
+            }
+        }
+    }
+}
+
+/// The left of a tuple `let`.
+enum TuplePattern {
+    /// `_`: the element is not bound.
+    Ignore,
+    /// A name, and whether it was written `mut`.
+    Bind(String, bool),
+    Tuple(Vec<TuplePattern>),
 }

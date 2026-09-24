@@ -38,6 +38,7 @@ friends.
 - [`core::option`](#coreoption) — `Option<T>`, for a value that may be absent.
 - [`core::ptr`](#coreptr) — Raw pointers: making one, and reading or writing through it.
 - [`core::result`](#coreresult) — `Result<T, E>`, for an operation that may fail.
+- [`core::tuple`](#coretuple) — The structs tuple syntax stands for, `Tuple2` to `Tuple6`; imported by any module that writes a tuple.
 - [`std::alloc`](#stdalloc) — Raw allocation and deallocation.
 - [`std::box`](#stdbox) — `Box<T>`, a single-owner heap allocation. Required for recursive types.
 - [`std::fs`](#stdfs) — Files and directories.
@@ -794,6 +795,23 @@ Raw pointers: making one, and reading or writing through it.
 - `fn ok_or_else<E>(self : Option<T>, f : Closure0<E>) -> Result<T, E>`<br>
   The value as a success, or the failure `f` gives. Nothing is computed when there is
   a value.
+
+## `core::tuple`
+
+The structs tuple syntax stands for, `Tuple2` to `Tuple6`; imported by any module that writes a tuple.
+
+**Types**
+
+- `struct Tuple2<A, B>`<br>
+  A pair.
+- `struct Tuple3<A, B, C>`<br>
+  Three values.
+- `struct Tuple4<A, B, C, D>`<br>
+  Four values.
+- `struct Tuple5<A, B, C, D, E>`<br>
+  Five values.
+- `struct Tuple6<A, B, C, D, E, F>`<br>
+  Six values.
 
 ## `std::alloc`
 
@@ -1582,4 +1600,4 @@ Clocks and durations.
 
 ______________________________________________________________________
 
-604 functions across 30 modules.
+604 functions across 31 modules.

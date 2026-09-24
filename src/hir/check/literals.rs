@@ -567,6 +567,47 @@ impl<'a> TypeChecker<'a> {
                     });
 
                 if let Some((generic_names, struct_fields)) = struct_info {
+                    // `Pair { a : 1i64, b : true }` with no type arguments written: they come from
+                    // what the literal is expected to be, else from its field values, as in Rust.
+                    // The fields are checked for real below, so the probe here is speculative.
+                    if generic_args.is_empty() && !generic_names.is_empty() {
+                        let mut inferred: HashMap<crate::symbol::Symbol, Type> = HashMap::new();
+                        if let Some(Type::GenericInstance(b, a)) = self.expected_type.clone() {
+                            if matches!(*b, Type::Struct(ref n, _) if *n == base_name)
+                                && a.len() == generic_names.len()
+                            {
+                                for (g, t) in generic_names.iter().zip(a) {
+                                    inferred.insert(g.as_str().into(), t);
+                                }
+                            }
+                        }
+                        if inferred.len() < generic_names.len() {
+                            let saved = self.speculating;
+                            self.speculating = true;
+                            for (f_name, f_ty) in &struct_fields {
+                                if let Some((_, f_expr)) = fields.iter().find(|(n, _)| n == f_name)
+                                {
+                                    let mut probe = f_expr.clone();
+                                    let actual = self.check_expr_type_flag(&mut probe, false);
+                                    self.unify_types(f_ty, &actual, &mut inferred);
+                                }
+                            }
+                            self.speculating = saved;
+                        }
+                        if generic_names
+                            .iter()
+                            .all(|g| inferred.contains_key(g.as_str()))
+                        {
+                            generic_args = generic_names
+                                .iter()
+                                .map(|g| inferred[g.as_str()].clone())
+                                .collect();
+                            let spelled: Vec<String> =
+                                generic_args.iter().map(|t| t.to_string()).collect();
+                            *name = format!("{}<{}>", base_name, spelled.join(", ")).into();
+                            *type_id = None;
+                        }
+                    }
                     let mut mapping = std::collections::HashMap::new();
                     for (i, param) in generic_names.iter().enumerate() {
                         if i < generic_args.len() {

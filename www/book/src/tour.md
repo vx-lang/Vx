@@ -98,6 +98,26 @@ exits early with a bare `return;`.
 `&Point` borrows immutably, `&mut Point` mutably. A method with no `self` parameter is an associated
 function, called as `Point::make(...)`.
 
+## Tuples
+
+A tuple groups a few values without naming a struct for them. Its elements are read by
+position, or taken apart with `let`:
+
+```rust
+fn divmod(a: i64, b: i64) -> (i64, i64) {
+    return (a / b, a % b);
+}
+
+fn main() -> i32 {
+    let (q, r) = divmod(17, 5);
+    let pair = (q, r);
+    return (pair.0 + pair.1) as i32;
+}
+```
+
+A tuple has two to six elements. Patterns nest, `let ((a, _), c) = t;`, and `_` skips an element.
+Tuple patterns in `match` are not supported yet.
+
 ## Enums and pattern matching
 
 Enums carry data:

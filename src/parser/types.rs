@@ -171,6 +171,26 @@ impl<'a> Parser<'a> {
             };
             let inner = self.parse_type()?;
             Ok(Type::Pointer(Box::new(inner), None, is_mut))
+        } else if self.match_token(&TokenType::LeftParen) {
+            // `(A, B)`, a tuple, or `(A)`, a type in brackets.
+            let mut elems = vec![self.parse_type()?];
+            let mut is_tuple = false;
+            while self.match_token(&TokenType::Comma) {
+                is_tuple = true;
+                if self.check(&TokenType::RightParen) {
+                    break;
+                }
+                elems.push(self.parse_type()?);
+            }
+            self.consume(&TokenType::RightParen, "Expected ')' after a tuple type")?;
+            if !is_tuple {
+                return Ok(elems.pop().expect("one element"));
+            }
+            let name = self.tuple_struct(elems.len())?;
+            Ok(Type::GenericInstance(
+                Box::new(Type::Struct(name.into(), None)),
+                elems,
+            ))
         } else if self.match_token(&TokenType::Ref) {
             self.consume(&TokenType::LeftAngle, "Expected '<'")?;
             let inner = self.parse_type()?;

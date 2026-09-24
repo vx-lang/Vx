@@ -65,6 +65,7 @@ MODULE_BLURB = {
     "string": "`String` and text manipulation.",
     "tensor": "Operations on `Tensor`, including shape queries and elementwise maths.",
     "time": "Clocks and durations.",
+    "tuple": "The structs tuple syntax stands for, `Tuple2` to `Tuple6`; imported by any module that writes a tuple.",
     "vec": "`Vec<T>`, a growable array.",
 }
 
