@@ -5,11 +5,14 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// `Iterator`, one required method with the rest written over it.
+// The iterator library: `Range`, the adaptors, and the functions that build them. The
+// `Iterator` trait itself is in `core::iter::traits`, which this imports, so importing
+// `core::iter` brings the trait as well.
 //
-// `Item` is a trait parameter rather than an associated type, which Vx does not have yet.
-// `trait Iterator<Item>` is the phase-1 encoding; associated types
-// replace it without changing any of the bodies below.
+// `Item` is an associated type: each impl binds it with `type Item = ..;` and the trait's
+// signatures say `Self::Item`. The adaptors still carry their inner iterator's item type as
+// a parameter of their own, `T`, because naming it as `I::Item` does not resolve yet (Vx#727);
+// that is also why `take` and `skip` are called with the item type spelled out.
 //
 // A `for` loop consumes the iterator it drives, so an adaptor takes its inner iterator by
 // value and the chain is built before the loop.
@@ -19,152 +22,9 @@
 //
 // The bound on an adaptor's `I` is not checked today (Vx#645): it is written for the
 // reader, and a type without `next` fails inside the adaptor instead of at the use.
-//
-// A method whose `loop` only ever leaves by `return` still needs a return after it: the
-// checker does not treat such a loop as diverging (E3028). Those are unreachable.
-//
-// No default body names `Item`. A trait's type parameter is not substituted into a
-// default body (Vx#649), so `Option<Item>::None()` written here reaches codegen as the
-// letter Item. Every `Option<Item>` below therefore comes from `next` or from a method of
-// `core::option`, which infers it.
+import core::iter::traits;
 import core::ops;
 import core::option;
-
-trait Iterator<Item> {
-  /// The next item, or nothing once the sequence is finished.
-  ///
-  /// The only required method. Every other method of this trait is a default written over it,
-  /// so a type becomes iterable by writing this one.
-  ///
-  /// Calling it again after it has answered nothing is allowed and answers nothing again; an
-  /// iterator that would resume is not something this trait promises either way.
-  fn next(self : &mut Self) -> Option<Item>;
-
-  /// How many items are left, consuming them all to find out.
-  fn count(self : &mut Self) -> i64 {
-    let mut n : i64 = 0;
-    loop {
-      let step = self.next();
-      if step.is_none() {
-        break;
-      }
-      n = n + 1i64;
-    }
-    return n;
-  }
-
-  /// The final item, consuming the sequence. Nothing when it is already finished.
-  fn last(self : &mut Self) -> Option<Item> {
-    let mut seen = self.next();
-    loop {
-      let step = self.next();
-      if step.is_none() {
-        break;
-      }
-      seen = step;
-    }
-    return seen;
-  }
-
-  /// The item `n` places along, counting the next one as zero, discarding those before it.
-  ///
-  /// Nothing when the sequence finishes first. The items skipped are consumed either way.
-  fn nth(self : &mut Self, n : i64) -> Option<Item> {
-    let mut left : i64 = n;
-    loop {
-      let step = self.next();
-      if step.is_none() {
-        return step;
-      }
-      if left == 0i64 {
-        return step;
-      }
-      left = left - 1i64;
-    }
-    return self.next();
-  }
-
-  /// Does `f` accept any item? Stops at the first it does, leaving the rest unconsumed.
-  fn any(self : &mut Self, f : Closure1<Item, bool>) -> bool {
-    loop {
-      let step = self.next();
-      if step.is_none() {
-        return false;
-      }
-      let p = f.func;
-      if p(f.env, step.unwrap()) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  /// Does `f` accept every item? Stops at the first it does not.
-  ///
-  /// True for a sequence that is already finished, which is the usual convention: there is no
-  /// item to disagree.
-  fn all(self : &mut Self, f : Closure1<Item, bool>) -> bool {
-    loop {
-      let step = self.next();
-      if step.is_none() {
-        return true;
-      }
-      let p = f.func;
-      if !p(f.env, step.unwrap()) {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  /// The first item `f` accepts, or nothing. Stops there, so the rest is unconsumed.
-  fn find(self : &mut Self, f : Closure1<Item, bool>) -> Option<Item> {
-    loop {
-      let step = self.next();
-      if step.is_none() {
-        return step;
-      }
-      let kept = step.filter(f);
-      if kept.is_some() {
-        return kept;
-      }
-    }
-    return self.next();
-  }
-
-  /// How far along the first item `f` accepts is, counting the next one as zero.
-  fn position(self : &mut Self, f : Closure1<Item, bool>) -> Option<i64> {
-    let mut at : i64 = 0;
-    loop {
-      let step = self.next();
-      if step.is_none() {
-        return Option<i64>::None();
-      }
-      let p = f.func;
-      if p(f.env, step.unwrap()) {
-        return Option<i64>::Some(at);
-      }
-      at = at + 1i64;
-    }
-    return Option<i64>::None();
-  }
-
-  /// Hand every item to `f`, consuming the sequence.
-  ///
-  /// `f` answers an `i32` rather than nothing, and this returns the last of them, because no
-  /// closure literal can return void yet (Vx#711). Both signatures become Rust's when it can.
-  fn for_each(self : &mut Self, f : Closure1<Item, i32>) -> i32 {
-    loop {
-      let step = self.next();
-      if step.is_none() {
-        return 0;
-      }
-      let p = f.func;
-      p(f.env, step.unwrap());
-    }
-    return 0;
-  }
-}
 
 /// The numbers from `at` up to but not including `end`.
 /// A half-open span of `i64`, from `at` up to but not including `end`.
@@ -173,7 +33,9 @@ struct Range {
   end : i64,
 }
 
-impl Iterator<i64> for Range {
+impl Iterator for Range {
+  type Item = i64;
+
   /// The next value in the span, or nothing once `end` is reached.
   fn next(self : &mut Range) -> Option<i64> {
     if self.at >= self.end {
@@ -187,14 +49,16 @@ impl Iterator<i64> for Range {
 
 /// `f` over every item.
 /// An iterator over another one's items with `f` applied to each. Built by `map`.
-struct Map<I, Item, U> {
+struct Map<I, T, U> {
   inner : I,
-  f : Closure1<Item, U>,
+  f : Closure1<T, U>,
 }
 
-impl<I : Iterator, Item, U> Iterator<U> for Map<I, Item, U> {
+impl<I : Iterator, T, U> Iterator for Map<I, T, U> {
+  type Item = U;
+
   /// The inner iterator's next item with `f` applied.
-  fn next(self : &mut Map<I, Item, U>) -> Option<U> {
+  fn next(self : &mut Map<I, T, U>) -> Option<U> {
     let step = self.inner.next();
     if step.is_none() {
       return Option<U>::None();
@@ -207,45 +71,49 @@ impl<I : Iterator, Item, U> Iterator<U> for Map<I, Item, U> {
 
 /// Only the items `keep` accepts.
 /// An iterator over the items of another that `keep` accepts. Built by `filter`.
-struct Filter<I, Item> {
+struct Filter<I, T> {
   inner : I,
-  keep : Closure1<Item, bool>,
+  keep : Closure1<T, bool>,
 }
 
-impl<I : Iterator, Item> Iterator<Item> for Filter<I, Item> {
+impl<I : Iterator, T> Iterator for Filter<I, T> {
+  type Item = T;
+
   /// The inner iterator's next item that `keep` accepts.
-  fn next(self : &mut Filter<I, Item>) -> Option<Item> {
+  fn next(self : &mut Filter<I, T>) -> Option<T> {
     loop {
       let step = self.inner.next();
       if step.is_none() {
-        return Option<Item>::None();
+        return Option<T>::None();
       }
       let v = step.unwrap();
       let g = self.keep;
       let p = g.func;
       if p(g.env, v) {
-        return Option<Item>::Some(v);
+        return Option<T>::Some(v);
       }
     }
-    return Option<Item>::None();
+    return Option<T>::None();
   }
 }
 
 /// The first `left` items, then nothing.
 ///
-/// `Item` is carried by the struct although `Take` never stores one: without associated
-/// types it is the only place the impl can read the element type from.
+/// `T` is carried by the struct although `Take` never stores one: until `I::Item` resolves
+/// it is the only place the impl can read the element type from.
 /// An iterator over at most `left` items of another. Built by `take`.
-struct Take<I, Item> {
+struct Take<I, T> {
   inner : I,
   left : i64,
 }
 
-impl<I : Iterator, Item> Iterator<Item> for Take<I, Item> {
+impl<I : Iterator, T> Iterator for Take<I, T> {
+  type Item = T;
+
   /// The inner iterator's next item, until `left` of them have been handed out.
-  fn next(self : &mut Take<I, Item>) -> Option<Item> {
+  fn next(self : &mut Take<I, T>) -> Option<T> {
     if self.left <= 0i64 {
-      return Option<Item>::None();
+      return Option<T>::None();
     }
     self.left = self.left - 1i64;
     return self.inner.next();
@@ -254,14 +122,16 @@ impl<I : Iterator, Item> Iterator<Item> for Take<I, Item> {
 
 /// Everything after the first `drop` items.
 /// An iterator over another's items with the first `drop` of them discarded. Built by `skip`.
-struct Skip<I, Item> {
+struct Skip<I, T> {
   inner : I,
   drop : i64,
 }
 
-impl<I : Iterator, Item> Iterator<Item> for Skip<I, Item> {
+impl<I : Iterator, T> Iterator for Skip<I, T> {
+  type Item = T;
+
   /// The inner iterator's next item, once the skipped ones have been consumed.
-  fn next(self : &mut Skip<I, Item>) -> Option<Item> {
+  fn next(self : &mut Skip<I, T>) -> Option<T> {
     loop {
       if self.drop <= 0i64 {
         return self.inner.next();
@@ -272,36 +142,36 @@ impl<I : Iterator, Item> Iterator<Item> for Skip<I, Item> {
       }
       self.drop = self.drop - 1i64;
     }
-    return Option<Item>::None();
+    return Option<T>::None();
   }
 }
 
 /// The adaptors are built through these rather than by writing the struct literal: a
 /// closure literal is coerced to `Closure1<A, B>` in an argument but not in a field
 /// initializer (Vx#648).
-fn map<I, Item, U>(inner : I, f : Closure1<Item, U>) -> Map<I, Item, U> {
-  return Map<I, Item, U> {
+fn map<I, T, U>(inner : I, f : Closure1<T, U>) -> Map<I, T, U> {
+  return Map<I, T, U> {
     inner : inner, f : f
   };
 }
 
 /// An iterator over the items of `inner` that `keep` accepts.
-fn filter<I, Item>(inner : I, keep : Closure1<Item, bool>) -> Filter<I, Item> {
-  return Filter<I, Item> {
+fn filter<I, T>(inner : I, keep : Closure1<T, bool>) -> Filter<I, T> {
+  return Filter<I, T> {
     inner : inner, keep : keep
   };
 }
 
 /// An iterator over at most `left` items of `inner`.
-fn take<I, Item>(inner : I, left : i64) -> Take<I, Item> {
-  return Take<I, Item> {
+fn take<I, T>(inner : I, left : i64) -> Take<I, T> {
+  return Take<I, T> {
     inner : inner, left : left
   };
 }
 
 /// An iterator over `inner` with its first `drop` items discarded.
-fn skip<I, Item>(inner : I, drop : i64) -> Skip<I, Item> {
-  return Skip<I, Item> {
+fn skip<I, T>(inner : I, drop : i64) -> Skip<I, T> {
+  return Skip<I, T> {
     inner : inner, drop : drop
   };
 }

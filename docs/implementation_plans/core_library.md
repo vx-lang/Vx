@@ -639,7 +639,7 @@ ______________________________________________________________________
 | `option.vx` | moves to `core::option`, extended | phase 1 |
 | `result.vx` | deleted; `core::result` is a Vx enum; the `vx_result_*` externs and their Rust macro instantiation go | phase 1 |
 | `closure.vx` | moves to `core::ops` with a `call` method | phase 1 |
-| `iter.vx` | deleted; `core::iter` replaces it, and `tests/modules/iter.vx` (a second, incompatible copy) goes with it | phase 2 |
+| `iter.vx` | **deleted.** `core::iter` replaces it, and `std::vec`'s two iterators implement its trait. `tests/modules/iter.vx`, a third copy four fixtures import, is still there: none of them imports `core::iter`, so it does not collide yet | done; `tests/modules` pending |
 | `math.vx` | **deleted.** The methods are `core::num`'s, over `math` dialect ops, and the 39 callers import `core::num` instead. The two `ffi_math` fixtures declare the libm externs themselves, since a scalar float across the C ABI is what they exist to test. | done |
 | `string.vx` | `string_length`, `string_compare`, `parse_int` deleted in favour of `core::str`; `String` itself moves to `alloc` in phase 4 | phase 2, 4 |
 | `vec.vx` | `as_slice`/`as_mut_slice` return `Slice`/`SliceMut`; `iter()` implements `core::iter::Iterator`; `VecIter`/`VecMap` deleted in favour of the generic adaptors; moves to `alloc` | phase 2, 4 |
@@ -818,7 +818,7 @@ live docs, not this table.
 | `ptr` | `core::ptr` | 1 | partial | Vx#714 | `null`, `null_mut`, `read`, `write`. No `eq`/`is_null`: two raw pointers cannot be compared and a pointer cannot be cast to an integer, so a null test cannot be spelled. No pointer arithmetic, `copy`, or the volatile forms. `addr_of` excluded |
 | `hint` | `core::hint` | 1 | — | — | |
 | `panic` | `core::panic` | 1 | — | A8 (Vx#526) | blocked outright, not merely reduced: `assert(false, ..)` is folded at check time, so no function that always panics compiles. `Location`, `PanicInfo`, hooks excluded |
-| `iter` | `core::iter` | 2 | partial | Vx#727 for the adaptors, A16 (`zip`, `enumerate`), Vx#647, Vx#649 | `Iterator<Item>` with eight defaults, `Range`, `map`/`filter`/`take`/`skip`; one adaptor deep, and no default names `Item`; no `rev`, `sum`, `fold`, `collect`. The trait can now be written against `Self::Item`; the adaptors keep their extra `Item` parameter until `I::Item` resolves |
+| `iter` | `core::iter` | 2 | partial | Vx#727 for the adaptors, A16 (`zip`, `enumerate`), Vx#647, Vx#649 | `Iterator` with `type Item` and eight defaults, `Range`, `map`/`filter`/`take`/`skip`; one adaptor deep, and no default body names the item type; no `rev`, `sum`, `fold`, `collect`. The adaptors carry their inner item type as a parameter `T` until `I::Item` resolves, so `take`/`skip` are called with it spelled out. `std::vec`'s `VecIter`/`VecMap` implement this trait. The trait itself is `core::iter::traits`, which `std::vec` imports alone so the rest of `core::iter`'s names do not reach every program with a `Vec` (Vx#731) |
 | `slice` | `core::slice` | 2 | — | A17 for `&[T]` spelling | library `Slice`/`SliceMut` first; `sort` (stable) is alloc |
 | `str` | `core::str` | 2 | — | A15 | float `parse` in phase 3 |
 | `char` | `core::char` | 2 | — | A15 | Unicode case tables phase 4; ASCII + Latin-1 first |

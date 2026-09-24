@@ -24,7 +24,7 @@
 // CHECK: llvm.insertvalue %{{.*}}, %{{.*}} : !llvm.struct<"VecMap_i32_i32", (struct<"VecIter_i32", (ptr, i32)>, struct<"Closure1_i32_i32", (ptr, ptr)>)>
 // CHECK: %[[V0:.*]] = llvm.insertvalue %{{.*}}, %{{.*}} : !llvm.struct<"VecMap_i32_i32", (struct<"VecIter_i32", (ptr, i32)>, struct<"Closure1_i32_i32", (ptr, ptr)>)>
 // CHECK: return %[[V0]] : !llvm.struct<"VecMap_i32_i32", (struct<"VecIter_i32", (ptr, i32)>, struct<"Closure1_i32_i32", (ptr, ptr)>)>
-// CHECK-LABEL: func.func @VecIter$i32$Iterator$VecIter$T$T$next$i32(%arg0: !llvm.ptr) -> !llvm.struct<"Option_i32", (i32, i32)>
+// CHECK-LABEL: func.func @VecIter$i32$next$i32(%arg0: !llvm.ptr) -> !llvm.struct<"Option_i32", (i32, i32)>
 // CHECK: %[[C0:.*]] = arith.cmpi slt, %{{.*}}, %{{.*}} : i32
 // CHECK: cf.cond_br %[[C0]], ^{{.*}}, ^{{.*}}
 // CHECK-LABEL: func.func @Option$i32$is_none$i32(%arg0: !llvm.ptr) -> i1
@@ -39,13 +39,13 @@
 // CHECK: cf.cond_br %[[C1]], ^{{.*}}, ^{{.*}}
 // CHECK-LABEL: func.func @Option$i32$unwrap$i32(%arg0: !llvm.struct<"Option_i32", (i32, i32)>) -> i32
 // CHECK: call @Option$i32$is_some$i32(%{{.*}}) : (!llvm.ptr) -> i1
-// CHECK-LABEL: func.func @ref$mut$VecMap$i32$i32$Iterator$VecMap$T$NewItem$NewItem$next$i32$i32(%arg0: !llvm.ptr) -> !llvm.struct<"Option_i32", (i32, i32)>
-// CHECK: call @VecIter$i32$Iterator$VecIter$T$T$next$i32(%{{.*}}) : (!llvm.ptr) -> !llvm.struct<"Option_i32", (i32, i32)>
+// CHECK-LABEL: func.func @ref$mut$VecMap$i32$i32$next$i32$i32(%arg0: !llvm.ptr) -> !llvm.struct<"Option_i32", (i32, i32)>
+// CHECK: call @VecIter$i32$next$i32(%{{.*}}) : (!llvm.ptr) -> !llvm.struct<"Option_i32", (i32, i32)>
 // CHECK: call @Option$i32$is_none$i32(%{{.*}}) : (!llvm.ptr) -> i1
 // CHECK: call @Option$i32$unwrap$i32(%{{.*}}) : (!llvm.struct<"Option_i32", (i32, i32)>) -> i32
 // CHECK-LABEL: func.func @VecMap$i32$i32$collect$i32$i32(%arg0: !llvm.ptr) -> !llvm.struct<"Vec_i32", (ptr, i32, i32)>
 // CHECK: call @"Vec::new$i32"() : () -> !llvm.struct<"Vec_i32", (ptr, i32, i32)>
-// CHECK: call @ref$mut$VecMap$i32$i32$Iterator$VecMap$T$NewItem$NewItem$next$i32$i32(%{{.*}}) : (!llvm.ptr) -> !llvm.struct<"Option_i32", (i32, i32)>
+// CHECK: call @ref$mut$VecMap$i32$i32$next$i32$i32(%{{.*}}) : (!llvm.ptr) -> !llvm.struct<"Option_i32", (i32, i32)>
 // CHECK: call @Option$i32$is_none$i32(%{{.*}}) : (!llvm.ptr) -> i1
 // CHECK: %[[V0:.*]] = call @Option$i32$unwrap$i32(%{{.*}}) : (!llvm.struct<"Option_i32", (i32, i32)>) -> i32
 // CHECK: call @Vec$i32$push$i32(%{{.*}}, %[[V0]]) : (!llvm.ptr, i32) -> i32

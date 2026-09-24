@@ -1,0 +1,162 @@
+//===- traits.vx - Vx Standard Library ----------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The `Iterator` trait on its own, which is what a type needs in order to implement it.
+//
+// Separate from `core::iter` because an import brings every name the module declares into the
+// importer, and so into everything that imports the importer. `std::vec` implements this trait;
+// importing all of `core::iter` there put `Range`, `Map` and the free `range`/`map` in front of
+// every program that uses a `Vec`, where a type of the same name crashes codegen. Rust keeps
+// its trait in `core::iter::traits` for the same reason of layering.
+//
+// No default body names the item type. `Self::Item` is substituted into signatures only, so
+// `Option<Self::Item>::None()` in a body would reach codegen unresolved. Every `Option` of an
+// item below comes from `next` or from a method of `core::option`, which infers it.
+//
+// A method whose `loop` only ever leaves by `return` still needs a return after it: the checker
+// does not treat such a loop as diverging (E3028). Those are unreachable.
+import core::ops;
+import core::option;
+
+trait Iterator {
+  /// What `next` hands out.
+  type Item;
+
+  /// The next item, or nothing once the sequence is finished.
+  ///
+  /// The only required method. Every other method of this trait is a default written over it,
+  /// so a type becomes iterable by writing this one.
+  ///
+  /// Calling it again after it has answered nothing is allowed and answers nothing again; an
+  /// iterator that would resume is not something this trait promises either way.
+  fn next(self : &mut Self) -> Option<Self::Item>;
+
+  /// How many items are left, consuming them all to find out.
+  fn count(self : &mut Self) -> i64 {
+    let mut n : i64 = 0;
+    loop {
+      let step = self.next();
+      if step.is_none() {
+        break;
+      }
+      n = n + 1i64;
+    }
+    return n;
+  }
+
+  /// The final item, consuming the sequence. Nothing when it is already finished.
+  fn last(self : &mut Self) -> Option<Self::Item> {
+    let mut seen = self.next();
+    loop {
+      let step = self.next();
+      if step.is_none() {
+        break;
+      }
+      seen = step;
+    }
+    return seen;
+  }
+
+  /// The item `n` places along, counting the next one as zero, discarding those before it.
+  ///
+  /// Nothing when the sequence finishes first. The items skipped are consumed either way.
+  fn nth(self : &mut Self, n : i64) -> Option<Self::Item> {
+    let mut left : i64 = n;
+    loop {
+      let step = self.next();
+      if step.is_none() {
+        return step;
+      }
+      if left == 0i64 {
+        return step;
+      }
+      left = left - 1i64;
+    }
+    return self.next();
+  }
+
+  /// Does `f` accept any item? Stops at the first it does, leaving the rest unconsumed.
+  fn any(self : &mut Self, f : Closure1<Self::Item, bool>) -> bool {
+    loop {
+      let step = self.next();
+      if step.is_none() {
+        return false;
+      }
+      let p = f.func;
+      if p(f.env, step.unwrap()) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /// Does `f` accept every item? Stops at the first it does not.
+  ///
+  /// True for a sequence that is already finished, which is the usual convention: there is no
+  /// item to disagree.
+  fn all(self : &mut Self, f : Closure1<Self::Item, bool>) -> bool {
+    loop {
+      let step = self.next();
+      if step.is_none() {
+        return true;
+      }
+      let p = f.func;
+      if !p(f.env, step.unwrap()) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /// The first item `f` accepts, or nothing. Stops there, so the rest is unconsumed.
+  fn find(self : &mut Self, f : Closure1<Self::Item, bool>) -> Option<Self::Item> {
+    loop {
+      let step = self.next();
+      if step.is_none() {
+        return step;
+      }
+      let kept = step.filter(f);
+      if kept.is_some() {
+        return kept;
+      }
+    }
+    return self.next();
+  }
+
+  /// How far along the first item `f` accepts is, counting the next one as zero.
+  fn position(self : &mut Self, f : Closure1<Self::Item, bool>) -> Option<i64> {
+    let mut at : i64 = 0;
+    loop {
+      let step = self.next();
+      if step.is_none() {
+        return Option<i64>::None();
+      }
+      let p = f.func;
+      if p(f.env, step.unwrap()) {
+        return Option<i64>::Some(at);
+      }
+      at = at + 1i64;
+    }
+    return Option<i64>::None();
+  }
+
+  /// Hand every item to `f`, consuming the sequence.
+  ///
+  /// `f` answers an `i32` rather than nothing, and this returns the last of them, because no
+  /// closure literal can return void yet (Vx#711). Both signatures become Rust's when it can.
+  fn for_each(self : &mut Self, f : Closure1<Self::Item, i32>) -> i32 {
+    loop {
+      let step = self.next();
+      if step.is_none() {
+        return 0;
+      }
+      let p = f.func;
+      p(f.env, step.unwrap());
+    }
+    return 0;
+  }
+}

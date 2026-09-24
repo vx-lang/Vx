@@ -1,0 +1,45 @@
+//===- vec_leaves_iter_names_free.vx - Vx Compiler --------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `std::vec` implements `core`'s `Iterator` but imports only the trait, so the names the rest of
+// `core::iter` declares stay free for a program that uses a `Vec`.
+//
+// An import brings everything a module declares into its importer and onward. With all of
+// `core::iter` imported by `std::vec`, this program's `Range` met `core::iter`'s and codegen
+// panicked.
+//
+//   Range   4   the program's own type, not `core::iter`'s
+//   filter  2   likewise its own function
+//   for     5   `Vec`'s iterator still drives a loop
+import std::vec;
+
+struct Range {
+  lo : i32,
+  hi : i32,
+}
+
+fn filter(x : i32) -> i32 {
+  return x * 2;
+}
+
+fn main() -> i32 {
+  let mut v = Vec<i32>::new();
+  v.push(5);
+  let r = Range {
+    lo : 1, hi : 5
+  };
+  print(r.hi - r.lo);
+  print!(" ");
+  print(filter(v.len()));
+  print!(" ");
+  for x in v.iter() {
+    print(x);
+  }
+  return 0;
+}
+
+// EXPECT: 4 2 5

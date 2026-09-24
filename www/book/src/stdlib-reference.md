@@ -29,7 +29,8 @@ friends.
 - [`core::cmp`](#corecmp) — Ordering and equality: `PartialEq`, `Ord`, `PartialOrd` and `Ordering`.
 - [`core::convert`](#coreconvert) — `From`, the conversions that cannot fail and lose nothing.
 - [`core::default`](#coredefault) — `Default`, the value a type starts from.
-- [`core::iter`](#coreiter) — The `Iterator` trait and its adaptors, which `for` loops and `.map` build on.
+- [`core::iter::traits`](#coreitertraits) — The `Iterator` trait: one required `next`, and the methods written over it.
+- [`core::iter`](#coreiter) — `Range` and the iterator adaptors, `map`, `filter`, `take` and `skip`.
 - [`core::marker`](#coremarker) — The traits that say something about a type without giving it a method.
 - [`core::mem`](#coremem) — Moving values around without looking at what they are.
 - [`core::num`](#corenum) — The integer and float methods, stamped over every width.
@@ -44,7 +45,6 @@ friends.
 - [`std::hash_map`](#stdhash_map) — `HashMap<K, V>`.
 - [`std::hash_set`](#stdhash_set) — `HashSet<T>`.
 - [`std::io`](#stdio) — Standard input, output and error.
-- [`std::iter`](#stditer) — The `Iterator` trait and its adaptors, which `for` loops and `.map` build on.
 - [`std::libc`](#stdlibc) — Direct bindings to the C library.
 - [`std::llama`](#stdllama) — Helpers used by the Llama 2 example.
 - [`std::mmap`](#stdmmap) — Memory-mapped files.
@@ -277,34 +277,17 @@ T = `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `bool`
 
 T = `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `f32`, `f64`, `bool`
 
-## `core::iter`
+## `core::iter::traits`
 
-The `Iterator` trait and its adaptors, which `for` loops and `.map` build on.
+The `Iterator` trait: one required `next`, and the methods written over it.
 
 **Types**
 
-- `trait Iterator<Item>`
-- `struct Range`<br>
-  The numbers from `at` up to but not including `end`.
-  A half-open span of `i64`, from `at` up to but not including `end`.
-- `struct Map<I, Item, U>`<br>
-  `f` over every item.
-  An iterator over another one's items with `f` applied to each. Built by `map`.
-- `struct Filter<I, Item>`<br>
-  Only the items `keep` accepts.
-  An iterator over the items of another that `keep` accepts. Built by `filter`.
-- `struct Take<I, Item>`<br>
-  The first `left` items, then nothing.
-  `Item` is carried by the struct although `Take` never stores one: without associated
-  types it is the only place the impl can read the element type from.
-  An iterator over at most `left` items of another. Built by `take`.
-- `struct Skip<I, Item>`<br>
-  Everything after the first `drop` items.
-  An iterator over another's items with the first `drop` of them discarded. Built by `skip`.
+- `trait Iterator`
 
-**`trait Iterator<Item>` methods**
+**`trait Iterator` methods**
 
-- `fn next(self : &mut Self) -> Option<Item>`<br>
+- `fn next(self : &mut Self) -> Option<Self :  : Item>`<br>
   The next item, or nothing once the sequence is finished.
   The only required method. Every other method of this trait is a default written over it,
   so a type becomes iterable by writing this one.
@@ -312,62 +295,86 @@ The `Iterator` trait and its adaptors, which `for` loops and `.map` build on.
   iterator that would resume is not something this trait promises either way.
 - `fn count(self : &mut Self) -> i64`<br>
   How many items are left, consuming them all to find out.
-- `fn last(self : &mut Self) -> Option<Item>`<br>
+- `fn last(self : &mut Self) -> Option<Self :  : Item>`<br>
   The final item, consuming the sequence. Nothing when it is already finished.
-- `fn nth(self : &mut Self, n : i64) -> Option<Item>`<br>
+- `fn nth(self : &mut Self, n : i64) -> Option<Self :  : Item>`<br>
   The item `n` places along, counting the next one as zero, discarding those before it.
   Nothing when the sequence finishes first. The items skipped are consumed either way.
-- `fn any(self : &mut Self, f : Closure1<Item, bool>) -> bool`<br>
+- `fn any(self : &mut Self, f : Closure1<Self :  : Item, bool>) -> bool`<br>
   Does `f` accept any item? Stops at the first it does, leaving the rest unconsumed.
-- `fn all(self : &mut Self, f : Closure1<Item, bool>) -> bool`<br>
+- `fn all(self : &mut Self, f : Closure1<Self :  : Item, bool>) -> bool`<br>
   Does `f` accept every item? Stops at the first it does not.
   True for a sequence that is already finished, which is the usual convention: there is no
   item to disagree.
-- `fn find(self : &mut Self, f : Closure1<Item, bool>) -> Option<Item>`<br>
+- `fn find(self : &mut Self, f : Closure1<Self :  : Item, bool>) -> Option<Self :  : Item>`<br>
   The first item `f` accepts, or nothing. Stops there, so the rest is unconsumed.
-- `fn position(self : &mut Self, f : Closure1<Item, bool>) -> Option<i64>`<br>
+- `fn position(self : &mut Self, f : Closure1<Self :  : Item, bool>) -> Option<i64>`<br>
   How far along the first item `f` accepts is, counting the next one as zero.
-- `fn for_each(self : &mut Self, f : Closure1<Item, i32>) -> i32`<br>
+- `fn for_each(self : &mut Self, f : Closure1<Self :  : Item, i32>) -> i32`<br>
   Hand every item to `f`, consuming the sequence.
   `f` answers an `i32` rather than nothing, and this returns the last of them, because no
   closure literal can return void yet (Vx#711). Both signatures become Rust's when it can.
 
-**`Iterator<i64> for Range` methods**
+## `core::iter`
+
+`Range` and the iterator adaptors, `map`, `filter`, `take` and `skip`.
+
+**Types**
+
+- `struct Range`<br>
+  The numbers from `at` up to but not including `end`.
+  A half-open span of `i64`, from `at` up to but not including `end`.
+- `struct Map<I, T, U>`<br>
+  `f` over every item.
+  An iterator over another one's items with `f` applied to each. Built by `map`.
+- `struct Filter<I, T>`<br>
+  Only the items `keep` accepts.
+  An iterator over the items of another that `keep` accepts. Built by `filter`.
+- `struct Take<I, T>`<br>
+  The first `left` items, then nothing.
+  `T` is carried by the struct although `Take` never stores one: until `I::Item` resolves
+  it is the only place the impl can read the element type from.
+  An iterator over at most `left` items of another. Built by `take`.
+- `struct Skip<I, T>`<br>
+  Everything after the first `drop` items.
+  An iterator over another's items with the first `drop` of them discarded. Built by `skip`.
+
+**`Iterator for Range` methods**
 
 - `fn next(self : &mut Range) -> Option<i64>`<br>
   The next value in the span, or nothing once `end` is reached.
 
-**`Iterator<U> for Map<I, Item, U>` methods**
+**`Iterator for Map<I, T, U>` methods**
 
-- `fn next(self : &mut Map<I, Item, U>) -> Option<U>`<br>
+- `fn next(self : &mut Map<I, T, U>) -> Option<U>`<br>
   The inner iterator's next item with `f` applied.
 
-**`Iterator<Item> for Filter<I, Item>` methods**
+**`Iterator for Filter<I, T>` methods**
 
-- `fn next(self : &mut Filter<I, Item>) -> Option<Item>`<br>
+- `fn next(self : &mut Filter<I, T>) -> Option<T>`<br>
   The inner iterator's next item that `keep` accepts.
 
-**`Iterator<Item> for Take<I, Item>` methods**
+**`Iterator for Take<I, T>` methods**
 
-- `fn next(self : &mut Take<I, Item>) -> Option<Item>`<br>
+- `fn next(self : &mut Take<I, T>) -> Option<T>`<br>
   The inner iterator's next item, until `left` of them have been handed out.
 
-**`Iterator<Item> for Skip<I, Item>` methods**
+**`Iterator for Skip<I, T>` methods**
 
-- `fn next(self : &mut Skip<I, Item>) -> Option<Item>`<br>
+- `fn next(self : &mut Skip<I, T>) -> Option<T>`<br>
   The inner iterator's next item, once the skipped ones have been consumed.
 
 **Functions**
 
-- `fn map<I, Item, U>(inner : I, f : Closure1<Item, U>) -> Map<I, Item, U>`<br>
+- `fn map<I, T, U>(inner : I, f : Closure1<T, U>) -> Map<I, T, U>`<br>
   The adaptors are built through these rather than by writing the struct literal: a
   closure literal is coerced to `Closure1<A, B>` in an argument but not in a field
   initializer (Vx#648).
-- `fn filter<I, Item>(inner : I, keep : Closure1<Item, bool>) -> Filter<I, Item>`<br>
+- `fn filter<I, T>(inner : I, keep : Closure1<T, bool>) -> Filter<I, T>`<br>
   An iterator over the items of `inner` that `keep` accepts.
-- `fn take<I, Item>(inner : I, left : i64) -> Take<I, Item>`<br>
+- `fn take<I, T>(inner : I, left : i64) -> Take<I, T>`<br>
   An iterator over at most `left` items of `inner`.
-- `fn skip<I, Item>(inner : I, drop : i64) -> Skip<I, Item>`<br>
+- `fn skip<I, T>(inner : I, drop : i64) -> Skip<I, T>`<br>
   An iterator over `inner` with its first `drop` items discarded.
 - `fn range(at : i64, end : i64) -> Range`<br>
   The numbers `at .. end`.
@@ -492,9 +499,6 @@ The integer and float methods, stamped over every width.
   clamp to without a sign.
 - `fn leading_ones(self : $t) -> $t`<br>
   How many set bits the value starts with, counting from the top.
-  The complement is taken with `^` against an all-ones value rather than with `!`,
-  which the checker types as a `bool` on an integer and the two code generators
-  lower two different ways (Vx#717).
 - `fn trailing_ones(self : $t) -> $t`<br>
   How many set bits the value ends with, counting from the bottom.
 - `fn sqrt(self : $t) -> $t`<br>
@@ -558,9 +562,6 @@ The integer and float methods, stamped over every width.
   This many degrees in radians.
 - `fn is_nan(self : $t) -> bool`<br>
   Is this the value that is equal to nothing, itself included?
-  Spelled as the negation of an equality rather than as `self != self`, which is
-  how Rust writes it: `!=` between floats lowers to the ordered predicate and so
-  answers false for a NaN, while `==` is ordered as it should be (Vx#716).
 - `fn signum(self : $t) -> $t`<br>
   One with this value's sign, or the value itself when it is a NaN. Zero answers 1
   rather than 0, which is Rust's rule and not `signum`'s in every language.
@@ -652,9 +653,6 @@ The integer and float methods, stamped over every width.
   product would have had, which is whether the two operands agree in sign.
 - `fn leading_ones(self : T) -> T`<br>
   How many set bits the value starts with, counting from the top.
-  The complement is taken with `^` against an all-ones value rather than with `!`,
-  which the checker types as a `bool` on an integer and the two code generators
-  lower two different ways (Vx#717).
 - `fn trailing_ones(self : T) -> T`<br>
   How many set bits the value ends with, counting from the bottom.
 
@@ -1019,31 +1017,6 @@ Standard input, output and error.
   The Rust core behind `stderr_write`.
 - `fn vx_stdin_read(buffer : *mut u8, len : i64) -> i64`<br>
   The Rust core behind `stdin_read`.
-
-## `std::iter`
-
-The `Iterator` trait and its adaptors, which `for` loops and `.map` build on.
-
-**Types**
-
-- `trait Iterator<T, Item>`
-
-**`trait Iterator<T, Item>` methods**
-
-- `fn next(self : &mut T) -> Option<Item>`<br>
-  The next item, or nothing once the sequence is finished.
-  This is the older two-parameter `Iterator`, kept for `std::vec`. `core::iter`'s is the
-  one to write against; this goes when `Vec` moves to it (Vx#721).
-
-**`Iterator<Map<I, F, Item, NewItem>, NewItem> for Map<I, F, Item, NewItem>` methods**
-
-- `fn next(self : &mut Map<I, F, Item, NewItem>) -> Option<NewItem>`<br>
-  The inner iterator's next item with `f` applied.
-
-**`Map<I, F, Item, NewItem>` methods**
-
-- `fn collect(self : &mut Map<I, F, Item, NewItem>) -> Vec<NewItem>`<br>
-  Drain the iterator into a fresh `Vec`, which the caller owns and must `free`.
 
 ## `std::libc`
 
@@ -1577,7 +1550,7 @@ Clocks and durations.
 - `fn iter(self : &Vec<T>) -> VecIter<T>`<br>
   An iterator over the elements, borrowing the vector rather than consuming it.
 
-**`Iterator<VecIter<T>, T> for VecIter<T>` methods**
+**`Iterator for VecIter<T>` methods**
 
 - `fn next(self : &mut VecIter<T>) -> Option<T>`<br>
   The next element, or nothing once the end is reached.
@@ -1587,7 +1560,7 @@ Clocks and durations.
 - `fn map<NewItem>(self : VecIter<T>, f : Closure1<T, NewItem>) -> VecMap<T, NewItem>`<br>
   An iterator over these elements with `f` applied to each.
 
-**`Iterator<VecMap<T, NewItem>, NewItem> for VecMap<T, NewItem>` methods**
+**`Iterator for VecMap<T, NewItem>` methods**
 
 - `fn next(self : &mut VecMap<T, NewItem>) -> Option<NewItem>`<br>
   The next element of the inner iterator with `f` applied.
@@ -1611,4 +1584,4 @@ Clocks and durations.
 
 ______________________________________________________________________
 
-607 functions across 30 modules.
+604 functions across 30 modules.

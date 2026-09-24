@@ -47,7 +47,8 @@ MODULE_BLURB = {
     "hash_map": "`HashMap<K, V>`.",
     "hash_set": "`HashSet<T>`.",
     "io": "Standard input, output and error.",
-    "iter": "The `Iterator` trait and its adaptors, which `for` loops and `.map` build on.",
+    "iter": "`Range` and the iterator adaptors, `map`, `filter`, `take` and `skip`.",
+    "iter::traits": "The `Iterator` trait: one required `next`, and the methods written over it.",
     "libc": "Direct bindings to the C library.",
     "llama": "Helpers used by the Llama 2 example.",
     "marker": "The traits that say something about a type without giving it a method.",
@@ -338,7 +339,8 @@ def render_items(out, items):
 def render(modules):
     out = [HEADER, "## Contents\n"]
     for lib, name, *_ in modules:
-        out.append(f"- [`{lib}::{name}`](#{lib}{name}) — {MODULE_BLURB.get(name, '')}")
+        anchor = lib + name.replace("::", "")
+        out.append(f"- [`{lib}::{name}`](#{anchor}) — {MODULE_BLURB.get(name, '')}")
     out.append("")
 
     total_fns = 0
@@ -398,10 +400,13 @@ def main():
                 file=sys.stderr,
             )
             return 1
-        for path in sorted(directory.glob("*.vx")):
+        # Recursive, so a nested module such as `core::iter::traits` is listed rather than
+        # silently left out; its name is its path under the library.
+        for path in sorted(directory.rglob("*.vx")):
+            name = "::".join(path.relative_to(directory).with_suffix("").parts)
             types, funcs, stamped, externs = parse_module(path)
             if types or funcs or stamped or externs:
-                modules.append((lib, path.stem, types, funcs, stamped, externs))
+                modules.append((lib, name, types, funcs, stamped, externs))
 
     if not modules:
         print("error: no modules parsed", file=sys.stderr)

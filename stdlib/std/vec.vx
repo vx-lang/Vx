@@ -5,8 +5,8 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
+import core::iter::traits;
 import core::ops;
-import std::iter;
 
 // Memory management is delegated to the type-erased byte allocator in
 // `stdlib/rust_core` (collections/vec.rs). Rust owns alignment, growth doubling,
@@ -160,7 +160,9 @@ struct VecIter<T> {
   current: i32,
 }
 
-impl<T> Iterator<VecIter<T>, T> for VecIter<T> {
+impl<T> Iterator for VecIter<T> {
+  type Item = T;
+
   /// The next element, or nothing once the end is reached.
   fn next(self : &mut VecIter<T>) -> Option<T> {
     let vec_len : i32 = unsafe { (*self.vec).len };
@@ -192,7 +194,9 @@ struct VecMap<T, NewItem> {
   f: Closure1<T, NewItem>,
 }
 
-impl<T, NewItem> Iterator<VecMap<T, NewItem>, NewItem> for VecMap<T, NewItem> {
+impl<T, NewItem> Iterator for VecMap<T, NewItem> {
+  type Item = NewItem;
+
   /// The next element of the inner iterator with `f` applied.
   fn next(self : &mut VecMap<T, NewItem>) -> Option<NewItem> {
     let mut ret = Option<NewItem>::None();

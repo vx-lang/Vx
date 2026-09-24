@@ -1,0 +1,37 @@
+//===- vec_iter_is_core_iterator.vx - Vx Compiler ---------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `Vec`'s iterator implements `core::iter::Iterator`, and a program can import both.
+//
+// There used to be two traits named `Iterator`, `std::iter`'s and `core::iter`'s, and a trait
+// is known by its bare name, so a program importing `std::vec` and `core::iter` got
+// `core`'s associated-type check applied to `std`'s impls. `std::iter` is gone and `Vec`
+// implements `core`'s trait.
+//
+//   count   2    a `core` default, inherited by `VecIter` and run against its `next`
+//   last    4    another, which reads the item type `VecIter` binds
+//   range   012  `core::iter` itself, unaffected by `std::vec` in the same program
+import std::vec;
+import core::iter;
+
+fn main() -> i32 {
+  let mut v = Vec<i32>::new();
+  v.push(3);
+  v.push(4);
+  let mut a = v.iter();
+  print(a.count());
+  print!(" ");
+  let mut b = v.iter();
+  print(b.last().unwrap());
+  print!(" ");
+  for x in range(0i64, 3i64) {
+    print(x);
+  }
+  return 0;
+}
+
+// EXPECT: 2 4 012
