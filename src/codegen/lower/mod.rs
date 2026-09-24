@@ -111,25 +111,26 @@ impl MeliorOpInfo for RelationalOp {
     }
 
     fn get_predicate(&self, is_float: bool) -> Option<i64> {
+        use melior::dialect::arith::{CmpfPredicate as F, CmpiPredicate as I};
         Some(if is_float {
-            match self {
-                RelationalOp::Eq => 1, // oeq
-                RelationalOp::Gt => 2, // ogt
-                RelationalOp::Ge => 3, // oge
-                RelationalOp::Lt => 4, // olt
-                RelationalOp::Le => 5, // ole
+            (match self {
+                RelationalOp::Eq => F::Oeq,
+                RelationalOp::Gt => F::Ogt,
+                RelationalOp::Ge => F::Oge,
+                RelationalOp::Lt => F::Olt,
+                RelationalOp::Le => F::Ole,
                 // Unordered: `!=` is the negation of `==`, so a NaN on either side makes it true.
-                RelationalOp::NotEq => 13, // une
-            }
+                RelationalOp::NotEq => F::Une,
+            }) as i64
         } else {
-            match self {
-                RelationalOp::Eq => 0,    // eq
-                RelationalOp::NotEq => 1, // ne
-                RelationalOp::Lt => 2,    // slt
-                RelationalOp::Le => 3,    // sle
-                RelationalOp::Gt => 4,    // sgt
-                RelationalOp::Ge => 5,    // sge
-            }
+            (match self {
+                RelationalOp::Eq => I::Eq,
+                RelationalOp::NotEq => I::Ne,
+                RelationalOp::Lt => I::Slt,
+                RelationalOp::Le => I::Sle,
+                RelationalOp::Gt => I::Sgt,
+                RelationalOp::Ge => I::Sge,
+            }) as i64
         })
     }
 }

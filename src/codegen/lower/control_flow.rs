@@ -353,7 +353,11 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
                     .add_results(&[gen.i1_ty])
                     .add_attributes(&[(
                         Identifier::new(gen.context, "predicate"),
-                        IntegerAttribute::new(gen.i64_ty, 2).into(), // slt
+                        IntegerAttribute::new(
+                            gen.i64_ty,
+                            melior::dialect::arith::CmpiPredicate::Slt as i64,
+                        )
+                        .into(),
                     )])
                     .build()?,
             );
@@ -499,7 +503,11 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
                     .add_results(&[gen.i1_ty])
                     .add_attributes(&[(
                         Identifier::new(gen.context, "predicate"),
-                        IntegerAttribute::new(gen.i64_ty, 2).into(), // slt
+                        IntegerAttribute::new(
+                            gen.i64_ty,
+                            melior::dialect::arith::CmpiPredicate::Slt as i64,
+                        )
+                        .into(),
                     )])
                     .build()?,
             );
@@ -712,7 +720,11 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
                 .add_results(&[gen.i1_ty])
                 .add_attributes(&[(
                     Identifier::new(gen.context, "predicate"),
-                    IntegerAttribute::new(gen.i64_ty, 0).into(), // eq
+                    IntegerAttribute::new(
+                        gen.i64_ty,
+                        melior::dialect::arith::CmpiPredicate::Eq as i64,
+                    )
+                    .into(),
                 )])
                 .build()?,
         );
