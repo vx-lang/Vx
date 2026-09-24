@@ -65,6 +65,62 @@ a = b;              <span class="c">// compiles</span>
 thread cannot address at all. They are the same type, they assign to each other, and reading
 through either is a well-formed expression.</p>
 
+<figure>
+<div class="fig-panels">
+<svg class="diagram" viewBox="0 0 400 300" role="img" aria-label="In C, C++ and Rust, malloc and cudaMalloc both return float *, and that one type points into either host DRAM or GPU HBM; a host read of device memory compiles and faults.">
+  <defs><marker id="fig1-arrow-c" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="d-head" d="M0 0L10 5L0 10z"/></marker></defs>
+  <text class="d-title" x="200" y="18" text-anchor="middle">C, C++, Rust</text>
+  <rect class="d-box" x="14" y="32" width="172" height="34" rx="4"/>
+  <text class="d-mono" x="100" y="54" text-anchor="middle">malloc(64)</text>
+  <rect class="d-box" x="214" y="32" width="172" height="34" rx="4"/>
+  <text class="d-mono" x="300" y="54" text-anchor="middle">cudaMalloc(&amp;b, 64)</text>
+  <line class="d-line" x1="100" y1="66" x2="168" y2="120" marker-end="url(#fig1-arrow-c)"/>
+  <line class="d-line" x1="300" y1="66" x2="232" y2="120" marker-end="url(#fig1-arrow-c)"/>
+  <text class="d-small" x="200" y="92" text-anchor="middle">returns</text>
+  <rect class="d-box" x="130" y="122" width="140" height="34" rx="4"/>
+  <text class="d-mono" x="200" y="144" text-anchor="middle">float *</text>
+  <line class="d-line d-dashed" x1="180" y1="156" x2="104" y2="204" marker-end="url(#fig1-arrow-c)"/>
+  <line class="d-line d-dashed" x1="220" y1="156" x2="296" y2="204" marker-end="url(#fig1-arrow-c)"/>
+  <text class="d-small" x="200" y="182" text-anchor="middle">either</text>
+  <rect class="d-mem" x="14" y="206" width="172" height="40" rx="4"/>
+  <text x="100" y="231" text-anchor="middle">Host DRAM</text>
+  <rect class="d-mem" x="214" y="206" width="172" height="40" rx="4"/>
+  <text x="300" y="231" text-anchor="middle">GPU HBM</text>
+  <line class="d-line" x1="186" y1="226" x2="214" y2="226"/>
+  <text class="d-small" x="200" y="262" text-anchor="middle">PCIe</text>
+  <text class="d-danger" x="200" y="290" text-anchor="middle">host reads b[0]: compiles, then faults</text>
+</svg>
+<svg class="diagram" viewBox="0 0 400 300" role="img" aria-label="In Vx, a host tensor and a tensor in GPU_HBM have different types, each pointing into its own memory; a host read of the device tensor is refused at compile time with E6003.">
+  <defs><marker id="fig1-arrow-vx" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="d-head" d="M0 0L10 5L0 10z"/></marker></defs>
+  <text class="d-title" x="200" y="18" text-anchor="middle">Vx</text>
+  <rect class="d-box" x="14" y="32" width="172" height="34" rx="4"/>
+  <text class="d-mono" x="100" y="54" text-anchor="middle">Tensor::new()</text>
+  <rect class="d-box" x="214" y="32" width="172" height="34" rx="4"/>
+  <text class="d-mono" x="300" y="54" text-anchor="middle">transfer(t, GPU_HBM)</text>
+  <line class="d-line" x1="100" y1="66" x2="100" y2="120" marker-end="url(#fig1-arrow-vx)"/>
+  <line class="d-line" x1="300" y1="66" x2="300" y2="120" marker-end="url(#fig1-arrow-vx)"/>
+  <text class="d-small" x="200" y="97" text-anchor="middle">returns</text>
+  <rect class="d-box" x="14" y="122" width="172" height="34" rx="4"/>
+  <text class="d-mono" x="100" y="144" text-anchor="middle">Tensor&lt;f32, [4, 4]&gt;</text>
+  <rect class="d-box d-accent-stroke" x="214" y="122" width="172" height="34" rx="4"/>
+  <text class="d-mono" x="300" y="144" text-anchor="middle" style="font-size:10.5px">Tensor&lt;f32,[4,4],GPU_HBM&gt;</text>
+  <line class="d-line" x1="100" y1="156" x2="100" y2="204" marker-end="url(#fig1-arrow-vx)"/>
+  <line class="d-line" x1="300" y1="156" x2="300" y2="204" marker-end="url(#fig1-arrow-vx)"/>
+  <text class="d-small" x="200" y="184" text-anchor="middle">lives in</text>
+  <rect class="d-mem" x="14" y="206" width="172" height="40" rx="4"/>
+  <text x="100" y="231" text-anchor="middle">Host DRAM</text>
+  <rect class="d-mem" x="214" y="206" width="172" height="40" rx="4"/>
+  <text x="300" y="231" text-anchor="middle">GPU HBM</text>
+  <line class="d-line" x1="186" y1="226" x2="214" y2="226"/>
+  <text class="d-small" x="200" y="262" text-anchor="middle">PCIe</text>
+  <text class="d-accent-text" x="200" y="290" text-anchor="middle">host reads it: refused at compile time, E6003</text>
+</svg>
+</div>
+<figcaption>The same two allocations. On the left, both results collapse into one type, so a host
+read of GPU memory compiles. On the right, each keeps a type that names its memory, and the host
+read is a compile error.</figcaption>
+</figure>
+
 <p>Look at where the difference <em>is</em> written down. The signature is</p>
 
 <pre><code><span class="t">cudaError_t</span> <span class="f">cudaMalloc</span>(<span class="t">void</span> **devPtr, <span class="t">size_t</span> size);</code></pre>
