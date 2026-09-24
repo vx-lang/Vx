@@ -164,13 +164,17 @@ description lists <code>NPU_HBM</code> among the spaces it can see. A host read 
 still written, and compiles to almost nothing. The type records where a value lives; the machine
 description decides who may read it.</p>
 
-<h2>What is not built</h2>
+<h2>Raw pointers mean CPU memory</h2>
 
-<p>The space lives on <code>Tensor</code> (and on <code>Pinned</code>). Vx's own raw pointers,
-<code>*const T</code> and <code>*mut T</code>, have no space slot yet. From host code that gap is
-closed today because forming such a pointer to device memory already reads the element, and the
-read is refused. A raw pointer that carries its space the way a tensor does is the obvious next
-step, and it is not there.</p>
+<p>Vx has raw pointers too, <code>*const T</code> and <code>*mut T</code>, and they carry no space
+parameter. That is deliberate: a raw pointer points into the default CPU memory, which is what a
+<code>float *</code> means to C, C++ and Rust code today. A pointer passed to or from a C library
+keeps the meaning it had there, so existing code and <code>extern</code> declarations work
+unchanged.</p>
+
+<p>Memory anywhere else is reached through a type that names its space: <code>Tensor</code> or
+<code>Pinned</code>. That is why taking the address of a device element from host code is refused.
+The pointer it would produce claims CPU memory, and the element is in HBM.</p>
 
 <p class="post-foot">An earlier post, <a href="/blog/what-a-pointer-forgets.html">What a pointer
 forgets</a>, follows the same fact across a function return. The
