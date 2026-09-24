@@ -702,12 +702,18 @@ impl<'a> Parser<'a> {
     }
 
     pub(crate) fn parse_primary_expr(&mut self) -> ParseResult<'a, Expr> {
+        // Where the `!` is, so a refused operand is reported at it rather than at 0:0.
+        let (bang_line, bang_column) = (self.peek().line, self.peek().column);
         if self.match_token(&TokenType::Bang) {
             let inner = self.parse_primary_expr()?;
             return Ok(Expr::UnaryOp(UnaryOpExpr {
                 op: UnaryOp::Not,
                 expr: Box::new(inner),
-                span: Span::default(),
+                span: Span {
+                    line: bang_line,
+                    column: bang_column,
+                    length: 1,
+                },
             }));
         } else if self.match_token(&TokenType::Minus) {
             let inner = self.parse_primary_expr()?;

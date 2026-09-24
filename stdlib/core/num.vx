@@ -378,21 +378,13 @@ macro_rules stamp_signed_int {
       }
 
       /// How many set bits the value starts with, counting from the top.
-      ///
-      /// The complement is taken with `^` against an all-ones value rather than with `!`,
-      /// which the checker types as a `bool` on an integer and the two code generators
-      /// lower two different ways (Vx#717).
       fn leading_ones(self : $t) -> $t {
-        let ones : $t = (0 as $t) - (1 as $t);
-        let flipped : $t = self ^ ones;
-        return flipped.leading_zeros();
+        return (!self).leading_zeros();
       }
 
       /// How many set bits the value ends with, counting from the bottom.
       fn trailing_ones(self : $t) -> $t {
-        let ones : $t = (0 as $t) - (1 as $t);
-        let flipped : $t = self ^ ones;
-        return flipped.trailing_zeros();
+        return (!self).trailing_zeros();
       }
     }
   };
@@ -659,21 +651,13 @@ macro_rules stamp_unsigned_int {
       }
 
       /// How many set bits the value starts with, counting from the top.
-      ///
-      /// The complement is taken with `^` against an all-ones value rather than with `!`,
-      /// which the checker types as a `bool` on an integer and the two code generators
-      /// lower two different ways (Vx#717).
       fn leading_ones(self : $t) -> $t {
-        let ones : $t = self.max_value();
-        let flipped : $t = self ^ ones;
-        return flipped.leading_zeros();
+        return (!self).leading_zeros();
       }
 
       /// How many set bits the value ends with, counting from the bottom.
       fn trailing_ones(self : $t) -> $t {
-        let ones : $t = self.max_value();
-        let flipped : $t = self ^ ones;
-        return flipped.trailing_zeros();
+        return (!self).trailing_zeros();
       }
     }
   };

@@ -1,0 +1,13 @@
+//===- not_on_a_float.vx - Vx Compiler --------------------------*- Vx -*-===//
+// RUN: not vxc %s --action print-ast 2>&1 | FileCheck %s
+
+fn main() -> i32 {
+  let f : f32 = 1.5;
+  let g : f32 = !f;
+  return 0;
+}
+
+// A float has no bitwise complement, and Rust has no `!` on one. It used to type as a `bool`.
+// CHECK: E3030
+// CHECK-SAME: at 6:17
+// CHECK-SAME: `!` takes a bool or an integer, got f32

@@ -558,11 +558,27 @@ impl<'a> TypeChecker<'a> {
             Expr::UnaryOp(UnaryOpExpr {
                 op,
                 expr: inner,
-                span: _,
+                span,
             }) => {
                 let inner_ty = self.check_expr_type(inner);
                 match op {
-                    UnaryOp::Not => Type::Scalar(ElementType::Bool),
+                    // Rust's rule: logical on a `bool`, bitwise on an integer, so the result has
+                    // the operand's type. It used to be `bool` whatever the operand was, and each
+                    // code generator then lowered an integer operand its own way.
+                    UnaryOp::Not => match &inner_ty {
+                        Type::Unknown | Type::Generic(..) => inner_ty,
+                        _ => match Self::single_value_elem(&inner_ty) {
+                            Some(e) if !e.is_float() => Type::Scalar(e),
+                            _ => {
+                                self.errors.error_with_code(
+                                    crate::diagnostic::DiagnosticCode::E3030,
+                                    format!("`!` takes a bool or an integer, got {}", inner_ty),
+                                    Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                                );
+                                Type::Unknown
+                            }
+                        },
+                    },
                     UnaryOp::Neg => inner_ty,
                 }
             }

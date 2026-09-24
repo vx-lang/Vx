@@ -1,0 +1,44 @@
+//===- integer_not_is_bitwise.vx - Vx Compiler ------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `!` is logical on a `bool` and bitwise on an integer, and the result has the operand's type.
+// The checker used to call every `!x` a `bool`, the flat path complemented, and the AST path
+// flipped only the low bit, so `!5` was -6 on one and 4 on the other.
+//
+//   !5        -6   the complement, not the low bit flipped
+//   !0        -1   bound to an i32, which the checker refused while it said `bool`
+//   flip(5)   -6   returned as an i32, likewise refused before
+//   i64 !5    -6   all ones at 64 bits, not only at 32
+//   !true      0   `bool` stays logical
+fn flip(v : i32) -> i32 {
+  return !v;
+}
+
+fn main() -> i32 {
+  let a : i32 = 5;
+  print(!a);
+  print!(" ");
+  let b : i32 = 0;
+  let z : i32 = !b;
+  print(z);
+  print!(" ");
+  print(flip(5));
+  print!(" ");
+  let w : i64 = 5;
+  let nw : i64 = !w;
+  print(nw);
+  print!(" ");
+  let t : bool = true;
+  if !t {
+    print(1);
+  } else {
+    print(0);
+  }
+  return 0;
+}
+
+// EXPECT: -6 -1 -6 -6 0

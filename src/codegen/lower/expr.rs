@@ -1353,7 +1353,9 @@ impl<'c> LowerToMelior<'c> for syntax::UnaryOpExpr {
                     .add_results(&[ty])
                     .add_attributes(&[(
                         Identifier::new(gen.context, "value"),
-                        IntegerAttribute::new(ty, 1).into(),
+                        // All ones at the operand's width: `true` for a `bool`, the bitwise
+                        // complement for an integer. `1` is all ones only at one bit.
+                        IntegerAttribute::new(ty, -1).into(),
                     )])
                     .build()?;
                 let true_val_ref = block.append_operation(true_val_op);
