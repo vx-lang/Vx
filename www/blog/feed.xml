@@ -18,7 +18,7 @@
   </entry>
 
   <entry>
-    <title>Two allocators, one type</title>
+    <title>float * of C/C++/Rust Fails to Distinguish Host DRAM from GPU HBM</title>
     <link href="https://vxlang.org/blog/two-allocators-one-type.html"/>
     <id>https://vxlang.org/blog/two-allocators-one-type.html</id>
     <updated>2026-09-23T12:00:00Z</updated>

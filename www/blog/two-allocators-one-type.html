@@ -3,18 +3,18 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Two allocators, one type</title>
+<title>float * of C/C++/Rust Fails to Distinguish Host DRAM from GPU HBM</title>
 <meta name="author" content="Aditya Kumar">
 <meta name="description" content="malloc and cudaMalloc hand back memory with different owners, different sizes and different readers, and C, C++ and Rust give both the same type. Vx records the memory space in the type, so the difference the allocator knew stays in the program.">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 
-<meta property="og:title" content="Two allocators, one type">
+<meta property="og:title" content="float * of C/C++/Rust Fails to Distinguish Host DRAM from GPU HBM">
 <meta property="og:description" content="malloc and cudaMalloc hand back different memory, and C, C++ and Rust give both the same type. Vx records the memory space in the type.">
 <meta property="og:type" content="article">
 <meta property="article:published_time" content="2026-09-23T12:00:00Z">
 <meta property="og:url" content="https://vxlang.org/blog/two-allocators-one-type.html">
 <meta property="og:image" content="https://vxlang.org/cards/blog-two-allocators-one-type.png">
-<meta property="og:image:alt" content="Two allocators, one type: a float* from malloc and a float* from cudaMalloc look the same to C, C++ and Rust.">
+<meta property="og:image:alt" content="A float* from malloc and a float* from cudaMalloc look the same to C, C++ and Rust.">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:image" content="https://vxlang.org/cards/blog-two-allocators-one-type.png">
 
@@ -40,7 +40,7 @@
 
 <article class="post">
 
-<h1>Two allocators, one type</h1>
+<h1>float * of C/C++/Rust Fails to Distinguish Host DRAM from GPU HBM</h1>
 <p class="post-meta">Aditya Kumar &middot; 23 September 2026</p>
 
 <blockquote class="tldr"><strong>TL;DR</strong> — <code>malloc</code> and <code>cudaMalloc</code>
