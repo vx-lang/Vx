@@ -1,0 +1,56 @@
+//===- core_iter_extend.vx - Vx Compiler ------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `Extend`, and `partition` and `unzip`, which fill two collections through it.
+//
+//   47    `extend` appends after what is there: [1, 5, 6, 7]
+//   581   `partition` of 0..10 by evenness: five evens ending in 8; the odds start at 1
+//   00    `partition` of nothing: both halves empty
+//   211   `unzip` of `zip`: [0, 1, 2] and [10, 11, 12]
+//   3     `Vec`'s `Default` is empty, and grows by `extend_one`
+import core::default;
+import core::iter;
+import std::vec;
+
+fn main() -> i32 {
+  let mut v : Vec<i64> = Vec<i64>::new ();
+  v.push(1i64);
+  v.extend(range(5i64, 8i64));
+  print(v.len());
+  print(v.get(3));
+  print!(" ");
+  let mut it = range(0i64, 10i64);
+  let (evens, odds) : (Vec<i64>, Vec<i64>) = it.partition(| x : &i64 | *x % 2i64 == 0i64);
+  print(evens.len());
+  print(evens.get(4));
+  print(odds.get(0));
+  print!(" ");
+  let mut none = range(4i64, 4i64);
+  let (yes, no) : (Vec<i64>, Vec<i64>) = none.partition(| x : &i64 | *x > 0i64);
+  print(yes.len());
+  print(no.len());
+  print!(" ");
+  let mut z = range(0i64, 3i64).zip(range(10i64, 13i64));
+  let (a, b) : (Vec<i64>, Vec<i64>) = z.unzip();
+  print(a.get(2));
+  print(b.get(1));
+  print!(" ");
+  let mut d : Vec<i32> = Vec<i32>::default();
+  d.extend_one(3);
+  print(d.get(0));
+  v.free();
+  evens.free();
+  odds.free();
+  yes.free();
+  no.free();
+  a.free();
+  b.free();
+  d.free();
+  return 0;
+}
+
+// EXPECT: 47 581 00 211 3

@@ -469,6 +469,8 @@ The `Iterator` trait: one required `next`, and the methods written over it.
   the one the type's `Iterator` impl binds.
 - `trait FromIterator<A>`<br>
   A collection that can be built from an iterator's items, which is what `collect` builds.
+- `trait Extend<A>`<br>
+  A collection that grows by an iterator's items, which is what `partition` and `unzip` fill.
 - `trait Sum<A>`<br>
   A type whose values can be added up from an iterator's items, which is what `sum` does.
 - `trait Product<A>`<br>
@@ -578,6 +580,13 @@ The `Iterator` trait: one required `next`, and the methods written over it.
 - `fn collect<B>(self : &mut Self) -> B`<br>
   Every item, gathered into a new collection of whatever type the result is assigned to:
   `let v : Vec<i64> = it.collect();`. That type says how, by implementing `FromIterator`.
+- `fn partition<B>(self : &mut Self, f : Closure1<&Self :  : Item, bool>) -> (B, B)`<br>
+  Every item, split in two by `f`: the ones it accepts first, the rest second. Each half
+  is a collection of whatever type the result is assigned to, which starts from its
+  `Default` and grows through `Extend`.
+- `fn unzip<FromA, FromB>(self : &mut Self) -> (FromA, FromB)`<br>
+  An iterator of pairs, split into two collections: the first of each pair in one, the
+  second in the other.
 
 **`binds. trait DoubleEndedIterator` methods**
 
@@ -594,6 +603,13 @@ The `Iterator` trait: one required `next`, and the methods written over it.
 
 - `fn from_iter<I : Iterator>(iter : I) -> Self`<br>
   A new collection holding every item `iter` has left, in order.
+
+**`trait Extend<A>` methods**
+
+- `fn extend<I : Iterator>(self : &mut Self, iter : I) -> i32`<br>
+  Add every item `iter` has left, in order.
+- `fn extend_one(self : &mut Self, item : A) -> i32`<br>
+  Add one item.
 
 **`trait Sum<A>` methods**
 
@@ -1834,6 +1850,18 @@ Clocks and durations.
 - `fn iter(self : &Vec<T>) -> VecIter<T>`<br>
   An iterator over the elements, borrowing the vector rather than consuming it.
 
+**`Extend<T> for Vec<T>` methods**
+
+- `fn extend<I : Iterator>(self : &mut Vec<T>, iter : I) -> i32`<br>
+  Push every item `iter` has left, in order.
+- `fn extend_one(self : &mut Vec<T>, item : T) -> i32`<br>
+  Push `item`.
+
+**`Default for Vec<T>` methods**
+
+- `fn default() -> Vec<T>`<br>
+  An empty `Vec`, as `new` makes.
+
 **`FromIterator<T> for Vec<T>` methods**
 
 - `fn from_iter<I : Iterator>(iter : I) -> Vec<T>`<br>
@@ -1878,4 +1906,4 @@ Clocks and durations.
 
 ______________________________________________________________________
 
-681 functions across 32 modules.
+688 functions across 32 modules.

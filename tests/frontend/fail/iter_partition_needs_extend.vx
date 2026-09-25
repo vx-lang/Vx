@@ -1,0 +1,13 @@
+//===- iter_partition_needs_extend.vx - Vx Compiler -------------*- Vx -*-===//
+// RUN: not vxc %s --action print-ast 2>&1 | FileCheck %s
+import core::default;
+import core::iter;
+
+fn main() -> i32 {
+  let mut it = range(0i64, 10i64);
+  let (a, b) : (i64, i64) = it.partition(| x : &i64 | *x > 2i64);
+  return 0;
+}
+
+// `partition` fills each half through `Extend`, which `i64` does not implement.
+// CHECK: Method 'extend_one' not found on type i64

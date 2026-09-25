@@ -38,6 +38,9 @@ const KNOWN_DECLINES: &[&str] = &[
     "backend/pass/core_iter_stateful_adapters.vx",
     "backend/pass/core_iter_rev.vx",
     "backend/pass/core_iter_zip.vx",
+    "backend/pass/core_iter_extend.vx",
+    // A closure passed to a generic function: the flat emitter has no path for the call yet.
+    "warnings/pass/w1001_a_called_local_is_used.vx",
     // "An enum with no modelled instance layout": `Option` of a tuple.
     "backend/pass/tuple_in_an_option.vx",
     // Same decline again: two chains whose `Map`s differ, for a name clash in the AST path.

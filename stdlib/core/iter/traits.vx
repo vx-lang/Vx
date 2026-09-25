@@ -493,6 +493,45 @@ trait Iterator {
   fn collect<B>(self : &mut Self) -> B {
     return B::from_iter(self);
   }
+
+  /// Every item, split in two by `f`: the ones it accepts first, the rest second. Each half
+  /// is a collection of whatever type the result is assigned to, which starts from its
+  /// `Default` and grows through `Extend`.
+  fn partition<B>(self : &mut Self, f : Closure1<&Self::Item, bool>) -> (B, B) {
+    let mut yes = B::default();
+    let mut no = B::default();
+    let p = f.func;
+    loop {
+      let step = self.next();
+      if step.is_none() {
+        return (yes, no);
+      }
+      let v = step.unwrap();
+      if p(f.env, &v) {
+        yes.extend_one(v);
+      } else {
+        no.extend_one(v);
+      }
+    }
+    return (yes, no);
+  }
+
+  /// An iterator of pairs, split into two collections: the first of each pair in one, the
+  /// second in the other.
+  fn unzip<FromA, FromB>(self : &mut Self) -> (FromA, FromB) {
+    let mut left = FromA::default();
+    let mut right = FromB::default();
+    loop {
+      let step = self.next();
+      if step.is_none() {
+        return (left, right);
+      }
+      let pair = step.unwrap();
+      left.extend_one(pair.0);
+      right.extend_one(pair.1);
+    }
+    return (left, right);
+  }
 }
 
 /// An iterator that can also answer from its far end, which is what `rev` needs.
@@ -554,6 +593,15 @@ trait DoubleEndedIterator {
 trait FromIterator<A> {
   /// A new collection holding every item `iter` has left, in order.
   fn from_iter<I : Iterator>(iter : I) -> Self;
+}
+
+/// A collection that grows by an iterator's items, which is what `partition` and `unzip` fill.
+trait Extend<A> {
+  /// Add every item `iter` has left, in order.
+  fn extend<I : Iterator>(self : &mut Self, iter : I) -> i32;
+
+  /// Add one item.
+  fn extend_one(self : &mut Self, item : A) -> i32;
 }
 
 /// A type whose values can be added up from an iterator's items, which is what `sum` does.

@@ -1,0 +1,14 @@
+// W1001: a local that is only called, as a closure's function is, counts as used.
+// WARN: Unused variable 'unused'
+// NO-WARN: Unused variable 'p'
+import core::ops;
+
+fn apply<T>(f : Closure1<T, T>, x : T) -> T {
+  let p = f.func;
+  let unused = 1;
+  return p(f.env, x);
+}
+
+fn main() -> i32 {
+  return apply(| x : i32 | x + 1, 2);
+}
