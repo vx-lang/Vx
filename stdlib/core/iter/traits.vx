@@ -452,6 +452,22 @@ trait Iterator {
     };
   }
 
+  /// An iterator over pairs of these items and `other`'s, in step, as long as both last.
+  fn zip<U>(self : Self, other : U) -> Zip<Self, U> {
+    return Zip<Self, U> {
+      a : self, b : other
+    };
+  }
+
+  /// An iterator over these items, each paired with its position, counting from zero.
+  ///
+  /// The position is an `i64`, where Rust's is a `usize`.
+  fn enumerate(self : Self) -> Enumerate<Self> {
+    return Enumerate<Self> {
+      inner : self, count : 0i64
+    };
+  }
+
   /// `fold` with the first item as the starting value, so nothing for a sequence already
   /// finished.
   fn reduce(self : &mut Self, f : Closure2<Self::Item, Self::Item, Self::Item>)

@@ -1,0 +1,9 @@
+//===- tuple_of_one.vx - Vx Compiler ----------------------------*- Vx -*-===//
+// RUN: not vxc %s --action print-ast 2>&1 | FileCheck %s
+
+fn main() -> i32 {
+  let t = (1i64,);
+  return 0;
+}
+
+// CHECK: a tuple has 2 to 6 elements; this one has 1

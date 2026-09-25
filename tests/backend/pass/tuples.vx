@@ -1,0 +1,50 @@
+//===- tuples.vx - Vx Compiler ----------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Tuple types, literals, positional access and `let` patterns. Each is spelled out as
+// `core::tuple`'s struct of its length, which this file never imports by name.
+//
+//   37   `(A, B)` in a generic signature: `swap` hands back `(3, 7)`
+//   32   a function returning `(i64, i64)`, taken apart by `let (q, r)`
+//   2    `t.0.1`, positional access twice, which lexes as `t`, `.`, `0.1`
+//   4    `let ((a, _), c)`: a nested pattern, and `_` binding nothing
+//   11   `let (mut m, n)`: `m` can be assigned
+//   6    a six-element tuple, the longest there is
+fn swap<A, B>(p : (A, B)) -> (B, A) {
+  return (p.1, p.0);
+}
+
+fn divmod(a : i64, b : i64) -> (i64, i64) {
+  return (a / b, a % b);
+}
+
+fn main() -> i32 {
+  let t = (7i64, 3i32);
+  let s = swap(t);
+  print(s.0);
+  print(s.1);
+  print!(" ");
+  let (q, r) = divmod(17i64, 5i64);
+  print(q);
+  print(r);
+  print!(" ");
+  let nested = ((1i64, 2i64), 3i64);
+  print(nested.0.1);
+  print!(" ");
+  let ((a, _), c) = nested;
+  print(a + c);
+  print!(" ");
+  let (mut m, n) = (10i64, 1i64);
+  m = m + n;
+  print(m);
+  print!(" ");
+  let six = (1i64, 1i64, 1i64, 1i64, 1i64, 1i64);
+  print(six.0 + six.1 + six.2 + six.3 + six.4 + six.5);
+  return 0;
+}
+
+// EXPECT: 37 32 2 4 11 6

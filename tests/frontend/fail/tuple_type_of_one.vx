@@ -1,0 +1,13 @@
+//===- tuple_type_of_one.vx - Vx Compiler -----------------------*- Vx -*-===//
+// RUN: not vxc %s --action print-ast 2>&1 | FileCheck %s
+
+// `(i64,)` is a tuple of one, which there is none of; `(i64)` is `i64` in brackets.
+fn f(t : (i64,)) -> i64 {
+  return 0;
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK: a tuple has 2 to 6 elements; this one has 1

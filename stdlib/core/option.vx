@@ -22,7 +22,6 @@
 //                          be handed to it (Vx#526).
 //   `unwrap_or_default`    `T::default()` on a bounded type parameter is not resolved.
 //   `inspect`              no closure literal can return void (Vx#711).
-//   `zip`                  wants a pair type.
 //   `flatten`              wants `Option<Option<T>>` to lower.
 //   `as_ref`, `as_mut`,    each answers with a reference into the option, and `iter` needs
 //   `iter`, `insert`,      `core::iter` besides.
@@ -166,6 +165,14 @@ impl<T> Option<T> {
         return Option<U>::None();
       }
     }
+  }
+
+  /// Both values as a pair when both are there, otherwise nothing.
+  fn zip<U>(self : Option<T>, other : Option<U>) -> Option<(T, U)> {
+    if self.is_some() && other.is_some() {
+      return Option<(T, U)>::Some((self.unwrap(), other.unwrap()));
+    }
+    return Option<(T, U)>::None();
   }
 
   /// The value if it is there and `p` accepts it, otherwise nothing.
