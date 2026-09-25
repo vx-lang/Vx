@@ -43,40 +43,45 @@
 <h1>The 43 gigabytes that are never there</h1>
 <p class="post-meta">Aditya Kumar &middot; 21 September 2026</p>
 
-<blockquote class="tldr"><strong>TL;DR</strong> — Add up every tensor a Llama-2-7B prefill puts on
-the GPU and you get <strong>58.93 GiB</strong>. An A100-40 has 40, so the model does not fit and you
-start offloading layers to the host. The tensors that are resident <em>at the same time</em> peak at
-<strong>15.94 GiB</strong>, which is 39.8% of the card. The gap between those two numbers is
-42.99 GiB — more than the whole GPU — and it is memory the program never holds. Vx computes the peak
-from the program's block structure and a declared machine model, at compile time, on a laptop.</blockquote>
+<blockquote class="tldr"><strong>TL;DR</strong>: Summing every tensor allocated during a Llama-2-7B
+prefill gives <strong>58.93 GiB</strong>. An NVIDIA A100-40 GPU has only 40 GiB of memory. That sum
+makes the model look too large to fit, prompting engineers to offload layers to host RAM. In reality,
+the tensors resident in memory at the same time peak at <strong>15.94 GiB</strong>, which uses 39.8% of
+the card. The 42.99 GiB difference is memory the program never holds simultaneously. Vx computes this
+peak at compile time on a laptop using the program's block structure and a declared machine
+model.</blockquote>
 
-<p class="lede">Deciding whether a model fits on a card is the decision that sets everything after
-it: one GPU or two, resident weights or streamed ones, a batch size you can serve or one you cannot.
-It is usually settled by adding numbers up, and a sum is the wrong quantity.</p>
+<p class="lede">Deciding whether a model fits on a GPU determines your entire deployment setup:
+whether you need one GPU or two, resident weights or streamed weights, and your serving batch size.
+Engineers usually make this decision by summing all allocations. That sum measures the wrong
+quantity.</p>
 
 <h2>Why the sum is wrong</h2>
 
-<p>A tensor occupies the card between its allocation and its release. Two tensors need room at the
-same time only if those intervals overlap. So the quantity that has to fit is the <strong>peak</strong>
-over the run, and a sum describes a moment the program never has.</p>
+<p>Memory capacity depends on peak residency during execution. A tensor occupies GPU memory only
+between its allocation and its release. Two tensors need space simultaneously only when their lifetimes
+overlap.</p>
 
-<p>For transformer inference the gap between the two is enormous, and it falls along a clean line:</p>
+<p>During transformer inference, memory usage splits cleanly into two groups:</p>
 
 <ul>
-<li><strong>Weights are resident.</strong> Every layer is read on every token, so all 32 layers'
-matrices sit on the card from the first token to the last. Lifetime analysis has nothing to offer
-here — these really are all live at once.</li>
-<li><strong>Activations are not.</strong> Layer 7's attention scores are dead the moment layer 8
-starts. There are 32 layers' worth of them in the sum and one layer's worth on the card.</li>
+<li><strong>Weights stay resident.</strong> The model reads every layer to generate each token. As a
+result, all 32 layers of weight matrices remain in GPU memory from the first token to the last. They are
+all live at the same time.</li>
+<li><strong>Activations are temporary.</strong> Activations are intermediate values produced during
+layer computation. When layer 8 begins, the attention scores from layer 7 are already freed. A naive sum
+adds up activations for all 32 layers, but the GPU only holds one layer of activations at any
+moment.</li>
 </ul>
 
-<p>That second line is where the 43 GiB lives. Getting it wrong pushes you toward offloading, which
-is expensive, and the expense is the point of the whole exercise.</p>
+<p>The 42.99 GiB difference comes entirely from temporary activations. Counting released activations
+leads to unnecessary layer offloading, which severely degrades performance.</p>
 
 <h2>A sum, a peak, and twenty lines</h2>
 
-<p>Here is the shape of the problem with the sizes made small enough to read. One resident buffer,
-and a scratch buffer allocated inside a loop that runs 32 times:</p>
+<p>The Vx compiler tracks memory lifetimes across lexical blocks to distinguish peak usage from total
+allocations. Here is a minimal program demonstrating this behavior. It places one persistent weights
+buffer and one loop-scoped scratch buffer into a 4 MiB memory space:</p>
 
 <pre><code><span class="k">Memory</span> CPU_DRAM {}
 <span class="k">Memory</span> HBM {
@@ -103,30 +108,38 @@ and a scratch buffer allocated inside a loop that runs 32 times:</p>
   <span class="k">return</span> <span class="n">0</span>;
 }</code></pre>
 
-<p>Thirty-three buffers of 1 MiB each are placed into a 4 MiB space. The compiler admits it, and
-reports what it admitted on:</p>
+<p>The program allocates thirty-three 1 MiB buffers across the run inside a 4 MiB high-bandwidth
+memory (HBM) space. The compiler accepts the program and reports its memory usage:</p>
 
 <pre><code>"resident_sets": [
   {"space": "HBM", "total_bytes": 2097152, "capacity_bytes": 4194304,
    "utilization": 0.5, "tiles": 2, "overcommit": false}
 ]</code></pre>
 
-<p>Two tiles, 2 MiB, half the space: the resident buffer plus whichever scratch buffer the current
-iteration holds. Unroll that loop — write the 32 scratch placements out at function scope, changing
-nothing else — and the same compiler refuses the same program:</p>
+<p>The report shows two tiles occupying 2 MiB, which is 50% utilization. At any moment, only the
+persistent weights buffer and the scratch buffer for the current iteration exist simultaneously.</p>
+
+<p>If you unroll the loop by placing all 32 scratch buffers at function scope, the program's lifetime
+structure changes. Because function-scoped variables stay allocated until <code>main</code> returns, all
+33 buffers remain live at the same time. The compiler rejects the unrolled program:</p>
 
 <pre><code>Error[E6010]: the working set placed in memory space 'HBM' (33 tiles) sums to 34603008 bytes,
               over its 4194304 byte capacity; place fewer/smaller tiles or declare it `overcommit`</code></pre>
 
-<p>33 MiB against 4 MiB, utilization 8.25. Both verdicts are correct. The unrolled program really
-does hold 33 buffers at once, because nothing releases them until the function ends.</p>
+<p>The unrolled working set requires 33 MiB against a 4 MiB capacity, reaching 8.25 utilization. Both
+compiler verdicts are correct. The unrolled code holds 33 buffers at once because no block boundary
+releases them earlier.</p>
 
 <h2>How the compiler knows</h2>
 
-<p>Every lexical scope gets an id when it is entered, so at any point during checking there is a
-<strong>scope chain</strong>: the ids of the blocks currently open, outermost first. Each placement
-records its size, the chain it was placed under, and its position in program order. At the end of a
-function, for each space:</p>
+<p>Vx calculates peak memory usage by tracking scope nesting and allocation order at compile time. The
+compiler assigns a unique identifier to each lexical scope (code block enclosed in braces) as it enters
+that block. During type checking, it maintains a <strong>scope chain</strong>: an ordered list of active
+block identifiers from outermost scope to innermost scope.</p>
+
+<p>Each allocation records three attributes: its size in bytes, its active scope chain, and its sequential
+position in program order. At the end of a function, the compiler computes the peak memory required for
+each space:</p>
 
 <pre><code>peak ← 0
 for each tile T, in program order:
@@ -134,34 +147,39 @@ for each tile T, in program order:
                          and U.scope is a prefix of T.scope }
     peak ← max(peak, live)</code></pre>
 
-<p>The prefix test is the coexistence test. A tile placed in a block that <em>encloses</em> T's block
-is still open when T is placed; a tile in a sibling block was released when that block closed. The
-ordering test handles the rest: a tile placed in the enclosing scope <em>after</em> an inner block
-closed does not coexist with what was inside it, and prefix alone would say it did.</p>
+<p>The prefix test checks for coexistence. If tile <code>U</code> belongs to a block that encloses
+<code>T</code>, then <code>U</code> is still open when <code>T</code> is placed. Tiles in sibling blocks
+were already released when those blocks closed. The program order check ensures that tiles placed in an
+outer scope after an inner block closes are not counted as coexisting with that inner block.</p>
 
-<p>Three properties make this computable, and it needs all three. Placement is in the type, so
-<code>transfer(t, Memory::HBM)</code> produces a value whose type names the budget it draws on.
-Spaces declare a capacity, so the budget is a number in the machine model instead of a property of
-whichever machine the program lands on. And release follows the block structure, so "do these
-overlap" becomes a question about the syntax tree.</p>
+<p>Three language design choices make this analysis computable at compile time:</p>
 
-<p>One design decision is worth stating because it looks like a missed optimization. The obvious
-refinement is to release a tile at its <em>last use</em> rather than at the end of its block, and the
-machinery for that already exists — it is what the borrow checker runs on. Using it here would be
-wrong. The runtime frees at block end, so a tile whose last read is early is dead to the borrow
-checker and still allocated. Accounting at last-use granularity would be finer than what actually
-happens, and the check would start admitting programs that then run out of memory. The accounting has
-to model the release discipline the compiler implements, not the tightest one imaginable.</p>
+<ul>
+<li><strong>Placement is part of the type.</strong> Calling <code>transfer(t, Memory::HBM)</code> produces
+a value whose type identifies the memory space and budget it draws from.</li>
+<li><strong>Spaces declare capacities.</strong> Memory spaces specify explicit capacities in the machine
+model, providing fixed limits instead of runtime hardware queries.</li>
+<li><strong>Release follows block structure.</strong> Because the runtime reclaims memory at block
+exits, the compiler determines buffer overlap directly from the syntax tree.</li>
+</ul>
+
+<p>The compiler accounts for memory at block exits. A borrow checker can track when a variable is last
+read, but the Vx runtime frees the backing buffer when the surrounding lexical block closes. If
+compile-time accounting assumed last-use reclamation, the compiler would approve programs that exceed
+memory limits and crash at runtime. The static check accurately models the runtime release
+discipline.</p>
 
 <h2>Llama-2-7B, for real</h2>
 
-<p>Now the same structure at the real sizes. Llama-2-7B: 32 layers, hidden 4096, FFN intermediate
-11008, 32 heads, vocabulary 32000. A 4096-token prefill, batch 1, f16 throughout, with attention
-scores materialized. The machine is <code>fleet/a100-40.vx</code>, which declares 40 GiB of HBM at
-1555 GB/s and a host link at 31.5 GB/s.</p>
+<p>Applying this peak analysis to production workloads shows that Llama-2-7B fits comfortably on a
+single 40 GiB GPU. Consider standard Llama-2-7B dimensions: 32 layers, hidden dimension 4096,
+feed-forward network (FFN) intermediate dimension 11008, 32 attention heads, and a vocabulary size of
+32000. The workload is a 4096-token prefill at batch size 1 in 16-bit floating point (f16), with
+attention scores materialized. The target machine is <code>fleet/a100-40.vx</code>, declaring 40 GiB
+of HBM at 1555 GB/s and a host link at 31.5 GB/s.</p>
 
-<p>The weights go in at function scope, because that is where they live. The per-layer activations go
-inside the layer loop, because that is where they live:</p>
+<p>The weights are placed at function scope because they persist throughout execution. The per-layer
+activations are placed inside the layer loop because each iteration reclaims them:</p>
 
 <pre><code><span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
   <span class="c">// Resident for the whole run: embeddings, the KV cache, and one tile per</span>
@@ -182,7 +200,8 @@ inside the layer loop, because that is where they live:</p>
   <span class="k">return</span> <span class="n">0</span>;
 }</code></pre>
 
-<p>Two layouts of the same tensors, one machine file, one command:</p>
+<p>Testing both allocation layouts against the same machine model produces these compile-time
+results:</p>
 
 <table>
 <tr><th>Layout</th><th>Tiles</th><th>Working set</th><th>Utilization</th><th>Verdict</th></tr>
@@ -190,36 +209,40 @@ inside the layer loop, because that is where they live:</p>
 <tr><td>Activations inside the layer loop</td><td>41</td><td>15.94 GiB</td><td>0.3984</td><td>admitted</td></tr>
 </table>
 
-<p>Exactly: 63,271,075,840 bytes against 17,112,760,320. The peak breaks down as 12.06 GiB of layer
-weights, 0.49 GiB of embeddings, 2 GiB of KV cache and 1.39 GiB for one layer's activations. The
-other 31 layers' activations — 42.99 GiB of them — are the memory that is never there.</p>
+<p>Total allocations sum to 63,271,075,840 bytes (58.93 GiB), whereas peak residency requires only
+17,112,760,320 bytes (15.94 GiB). The peak breaks down into 12.06 GiB of layer weights, 0.49 GiB of
+embeddings, 2 GiB of key-value (KV) cache, and 1.39 GiB for a single layer's activations. The remaining
+42.99 GiB represents activations from the other 31 layers that never coexist in memory.</p>
 
-<p>Note what the analysis did <em>not</em> do. It did not shrink the weights. All 32 layers of them
-are in the peak at full size, counted 32 times, because they are genuinely all live. A lifetime
-analysis that reported anything smaller would be lying. The saving comes entirely from the buffers
-whose lifetimes really are disjoint, which is the only place it can come from.</p>
+<p>The analysis preserves the full size of persistent data. All 32 layers of weights are live
+concurrently, so they are fully counted at 12.06 GiB. Memory savings come entirely from temporary
+activation buffers whose lifetimes do not overlap.</p>
 
 <h2>What the wrong answer costs</h2>
 
-<p>Suppose you believed the 58.93. The model does not fit, so the weights get streamed from host
-memory as each layer runs. The same machine file prices that, because the host link is a declared
-edge, and the compiler reports the cost of each transfer it plans:</p>
+<p>Assuming that total allocations determine fit causes an unnecessary 47&times; throughput penalty. If
+an engineer believes the model requires 58.93 GiB, they will conclude it cannot fit on a 40 GiB GPU. To
+run anyway, the system must stream weights from host CPU memory across the PCIe bus for each layer. The
+machine model prices this transfer directly because the host link is a declared edge. The compiler
+reports the planned transfer cost:</p>
 
 <pre><code>{"path": ["CPU_DRAM", "HBM"], "bytes": 404750336,
  "derived_cost": 12849217016, "derived_unit": "ps", "cost_source": "link_rate"}</code></pre>
 
-<p>12.85 ms to move one layer's weights across the host link. Thirty-two layers is
-<strong>411 ms per token</strong>, or 2.4 tokens/s. Had those same weights stayed in HBM, reading
-all of them costs 13.48 GB at 1555 GB/s — <strong>8.7 ms</strong>, or 115 tokens/s as a roofline.</p>
+<p>Moving one layer's weights across the host link takes 12.85 ms. Across 32 layers, streaming requires
+<strong>411 ms per token</strong>, capping throughput at 2.4 tokens per second. Keeping those same
+weights resident in GPU HBM allows reading all 13.48 GB at 1555 GB/s. That takes only <strong>8.7
+ms</strong>, providing a roofline throughput of 115 tokens per second.</p>
 
-<p>So the accounting error is worth roughly <strong>47&times;</strong> in throughput. It is not a
-rounding error in a capacity plan; it is the difference between a card that serves the model and a
-card that streams it.</p>
+<p>This calculation gap creates a <strong>47&times;</strong> throughput penalty. Accurate peak
+accounting determines whether the GPU serves the model at full memory bandwidth or stalls waiting for
+bus transfers.</p>
 
 <h2>Where the line actually is</h2>
 
-<p>A check that always says yes is not a check. Keeping the prefill at 4096 tokens and raising the
-batch on the same A100-40:</p>
+<p>The compile-time check enforces physical memory limits by rejecting configurations that exceed
+capacity. Keeping the prefill length at 4096 tokens and raising the batch size on the same A100-40
+illustrates this boundary:</p>
 
 <table>
 <tr><th>Batch</th><th>Working set</th><th>Utilization</th><th>Verdict</th></tr>
@@ -228,58 +251,61 @@ batch on the same A100-40:</p>
 <tr><td>9</td><td>43.03 GiB</td><td>1.0758</td><td>E6010, refused</td></tr>
 </table>
 
-<p>Batch 8 fits with 0.9% of the card to spare and batch 9 does not, and both answers arrive from
-<code>vxc</code> on a laptop. That is the shape of the question a serving deployment actually asks,
-answered before anything is scheduled.</p>
+<p>Batch 8 fits with 0.9% of GPU memory to spare (39.65 GiB used). Batch 9 requires 43.03 GiB and exceeds
+card capacity, so the compiler rejects it with error <code>E6010</code>. The compiler CLI
+(<code>vxc</code>) runs on a laptop and answers deployment capacity questions before hardware is
+provisioned or jobs are scheduled.</p>
 
 <h2>What it does not do</h2>
 
-<p>The analysis is deliberately conservative, and the conservatism runs in one direction: it can
-refuse a program that would have fit, and it cannot admit one that does not.</p>
+<p>The peak analysis is intentionally conservative. The compiler guarantees that it will never approve
+a program that exceeds capacity. In edge cases, it may reject a program that would have fit at
+runtime.</p>
 
 <ul>
-<li><strong>It stops at the function boundary.</strong> The budget is taken per function, so a tile
-a caller is holding is not counted against a callee's placements. The quantity wanted there is a peak
-over the call tree, which needs a call graph and a decision about recursion —
+<li><strong>Analysis stops at the function boundary.</strong> The compiler checks memory budgets per
+function. A caller's active buffers are not yet counted against a callee's allocations. Calculating peak
+usage across the full call tree requires call graph analysis and recursion handling, tracked in
 <a href="https://github.com/vx-lang/Vx/issues/444">Vx#444</a>.</li>
-<li><strong>A loop body is checked once.</strong> That matches the runtime, where the release at the
-end of the body runs every iteration. It also means the analysis says nothing about a loop that
-accumulates tiles into something outside it.</li>
-<li><strong>Only some scopes release.</strong> <code>if</code> arms and loop bodies were each checked
-against the emitted IR and opted in. <code>spawn</code> regions, <code>match</code> arms,
-<code>comptime</code> and <code>unsafe</code> blocks are left conservative — their tiles stay
-resident to the end of the function. A match arm is probably releasing on the same grounds as an
-<code>if</code> arm; it stays out until someone reads the IR, because the cost of being wrong is not
-symmetric.</li>
-<li><strong>Shapes must be static.</strong> A tile whose size is not known at compile time cannot be
-added to a budget, and the compiler says so with a warning rather than guessing.</li>
+<li><strong>Loop bodies are checked once.</strong> The compiler analyzes loop bodies a single time
+because the runtime reclaims iteration buffers on each pass. This check assumes loops do not accumulate
+buffers into outer collections across iterations.</li>
+<li><strong>Only verified scopes release memory early.</strong> The compiler currently frees allocations
+at the end of <code>if</code> branches and loop bodies, matching its emitted intermediate representation
+(IR). Other constructs, such as <code>spawn</code> regions, <code>match</code> arms,
+<code>comptime</code> blocks, and <code>unsafe</code> blocks, keep their allocations alive until the
+enclosing function returns.</li>
+<li><strong>Shapes must be static.</strong> If a tensor dimension is not known at compile time, the
+compiler issues a warning and omits that allocation from the compile-time budget check.</li>
 </ul>
 
 <h2>Why this is not the usual state of affairs</h2>
 
-<p>The comparison worth drawing is not that other toolchains compute this incorrectly. It is that
-they are not in a position to ask at compile time.</p>
+<p>Mainstream toolchains cannot compute peak working sets at compile time because their type systems lack
+hardware memory bounds.</p>
 
-<p>In C, C++ or Rust a heap allocation is not associated with a bounded named space, so there is
-nothing to compare a lifetime against; capacity is discovered when an allocator returns null. In CUDA,
-static <code>__shared__</code> is bounded per kernel rather than composed across a program's scopes,
-and device global memory has no compile-time budget at all. Frameworks that place tensors on devices
-learn the element type, the shape and the device at dispatch, so the peak is discovered by the
-allocator, at run time, on the machine that either has the memory or does not.</p>
+<p>In C, C++, or Rust, heap allocations are not tied to bounded memory spaces. Because compilers in those
+languages do not track capacity limits, programs discover memory exhaustion only when an allocator
+returns null. In CUDA, static shared memory (<code>__shared__</code>) is scoped to individual kernels and
+does not compose across lexical scopes, and device global memory has no compile-time budget. Machine
+learning frameworks discover tensor shapes and device targets at runtime dispatch, leaving peak memory
+detection to the runtime allocator.</p>
 
-<p>Discovering it there is not useless — it is how everyone does capacity planning today. But the
-failure is asymmetric in an expensive way. Overestimate and you offload, or rent the larger card, and
-pay for it every token forever. Underestimate and you find out in production. What the three
-properties buy is that the number arrives before either bill does.</p>
+<p>Runtime discovery remains the standard approach today, but runtime estimation errors are costly. An
+overestimate leads to unnecessary host offloading or larger GPU rentals that add latency to every token.
+An underestimate causes out-of-memory crashes in production. By combining typed placement, declared
+hardware capacities, and lexical lifetimes, Vx calculates exact peak requirements before provisioning
+hardware.</p>
 
-<p class="post-foot">The analysis is described in <code>docs/working_set_peak_implementation_plan.md</code>
-and tested by <code>tests/integration_test/working_set_peak_test.rs</code>; the two ends of it read as
+<p class="post-foot">The analysis implementation is described in
+<code>docs/working_set_peak_implementation_plan.md</code> and tested in
+<code>tests/integration_test/working_set_peak_test.rs</code>. Test cases include
 <code>tests/frontend/pass/working_set_is_a_peak_not_a_sum.vx</code> and
-<code>tests/frontend/fail/three_dtcm_tiles_do_not_fit_a_cortex_m7.vx</code>. Cross-function peaks are
-<a href="https://github.com/vx-lang/Vx/issues/444">Vx#444</a>. Vx is Apache 2.0 with the LLVM
-exception — <a href="/docs/getting-started.html">install it</a>, or read
-<a href="/blog/what-a-pointer-forgets.html">What a pointer forgets</a> for why the memory space is in
-the type to begin with.</p>
+<code>tests/frontend/fail/three_dtcm_tiles_do_not_fit_a_cortex_m7.vx</code>. Cross-function peak analysis
+is tracked in <a href="https://github.com/vx-lang/Vx/issues/444">Vx#444</a>. Vx is licensed under
+Apache 2.0 with the LLVM exception. You can <a href="/docs/getting-started.html">install Vx</a>, or read
+<a href="/blog/what-a-pointer-forgets.html">What a pointer forgets</a> to learn why memory spaces belong
+in the type system.</p>
 
 </article>
 
