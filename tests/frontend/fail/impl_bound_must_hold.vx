@@ -1,0 +1,54 @@
+//===- impl_bound_must_hold.vx - Vx Compiler --------------------*- Vx -*-===//
+// RUN: not vxc %s --action print-ast 2>&1 | FileCheck %s
+
+trait Shape {
+  fn sides(self : Self) -> i32;
+}
+
+trait Named {
+  fn name_len(self : Self) -> i32;
+}
+
+struct Square {
+  size : i32,
+}
+
+struct Blob {
+  size : i32,
+}
+
+struct Wrap<T> {
+  inner : T,
+}
+
+impl Shape for Square {
+  fn sides(self : Square) -> i32 {
+    return 4;
+  }
+}
+
+impl<T : Shape> Named for Wrap<T> {
+  fn name_len(self : Wrap<T>) -> i32 {
+    return self.inner.sides();
+  }
+}
+
+fn main() -> i32 {
+  let s = Wrap<Square> {
+    inner : Square {
+      size : 1
+    }
+  };
+  let b = Wrap<Blob> {
+    inner : Blob {
+      size : 1
+    }
+  };
+  return s.name_len() + b.name_len();
+}
+
+// `Named` is implemented for a `Wrap<T>` whose `T` is a `Shape`, which `Blob` is not. The
+// call is refused, rather than the body instantiated and refused inside.
+// CHECK-NOT: name_len{{.*}}Square
+// CHECK: Method 'name_len' not found on type Wrap<Blob>
+// CHECK-NOT: sides

@@ -589,6 +589,20 @@ trait DoubleEndedIterator {
   }
 }
 
+/// An iterator that knows how many items it has left, which is what `rev` needs from `take`,
+/// `skip` and `step_by`.
+///
+/// Rust declares it as a subtrait of `Iterator`; Vx has no subtraits.
+trait ExactSizeIterator {
+  /// How many items are left.
+  fn len(self : &Self) -> i64;
+
+  /// Whether no items are left.
+  fn is_empty(self : &Self) -> bool {
+    return self.len() == 0i64;
+  }
+}
+
 /// A collection that can be built from an iterator's items, which is what `collect` builds.
 trait FromIterator<A> {
   /// A new collection holding every item `iter` has left, in order.

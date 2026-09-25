@@ -234,6 +234,13 @@ impl<T> DoubleEndedIterator for VecIter<T> {
   }
 }
 
+impl<T> ExactSizeIterator for VecIter<T> {
+  /// How many elements are left between the two ends.
+  fn len(self : &VecIter<T>) -> i64 {
+    return (self.back - self.current) as i64;
+  }
+}
+
 impl<T>
 VecIter<T> {
   /// An iterator over these elements with `f` applied to each.
@@ -271,6 +278,13 @@ impl<T, NewItem> Iterator for VecMap<T, NewItem> {
       break;
     }
     return ret;
+  }
+}
+
+impl<T, NewItem> ExactSizeIterator for VecMap<T, NewItem> {
+  /// As many as the inner iterator has.
+  fn len(self : &VecMap<T, NewItem>) -> i64 {
+    return self.iter.len();
   }
 }
 

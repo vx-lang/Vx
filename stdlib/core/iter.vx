@@ -47,6 +47,16 @@ impl DoubleEndedIterator for Range {
   }
 }
 
+impl ExactSizeIterator for Range {
+  /// How many values are left in the span.
+  fn len(self : &Range) -> i64 {
+    if self.at >= self.end {
+      return 0i64;
+    }
+    return self.end - self.at;
+  }
+}
+
 /// The numbers `at .. end`.
 fn range(at : i64, end : i64) -> Range {
   return Range {
