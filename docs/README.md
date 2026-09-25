@@ -62,6 +62,15 @@ Documents named `*_plan.md` or `*_implementation_plan.md` are working plans for 
 They describe an intended end state and are the most likely of anything here to have drifted from
 the code. Read them for intent, not as a description of what exists.
 
+## Discussions
+
+Notes under [`discussions/`](discussions/) record a decision while it is being made: the problem,
+the proposal, and what was considered and rejected. Like the plans, they describe intent.
+
+| Document | Covers |
+| --- | --- |
+| [`discussions/size_type.md`](discussions/size_type.md) | A size type whose overflow is a bug rather than a value |
+
 ## A note on accuracy
 
 Documentation that is wrong is worse than documentation that is missing, so two things are worth

@@ -712,7 +712,8 @@ ______________________________________________________________________
    above uses `i64`, `sizeof` returns `i64`. Recommendation: `i64` everywhere in `core`, since it
    is what `memref.dim` and `sizeof` produce and it removes a class of overflow; `Vec` changes to
    match in phase 4. Adding `usize` as an alias for the target pointer width is a later language
-   item.
+   item. A later note, [`size_type.md`](../discussions/size_type.md), proposes a `size` type that
+   never wraps in place of `i64`.
 
 1. **Panic on a device.** `assert`/`cf.assert` traps. On a GPU or the ANE there is no message
    channel back. Recommendation: `core` panics are `cf.assert` with the message, the host prints
