@@ -117,8 +117,8 @@ prefer extending a macro over hand-writing a shim.
 
 ## 3. `spawn on(...)` kernel dispatch ABI
 
-`spawn on(Topology::...)` outlines its body into a kernel function. For CPU
-topologies this becomes an `async.execute` region. For accelerator topologies
+For `Topology::CPU` the body of `spawn on` is inlined where it stands; there is
+nothing to dispatch to. For accelerator topologies
 (NPU / ANE / GPU) the body is outlined into a function `vx_npu_kernel_N` carrying
 the `llvm.emit_c_interface` attribute, so MLIR additionally emits a C-interface
 wrapper `_mlir_ciface_vx_npu_kernel_N`. The captured values become the kernel's
