@@ -931,7 +931,9 @@ impl CompilerDriver {
             checker.check_function(f);
         }
         for i in &mut ast.impls {
-            for f in &mut i.methods {
+            // A copied default is checked as the instance a call creates, if anything calls it.
+            let copied = &i.copied_defaults;
+            for f in i.methods.iter_mut().filter(|f| !copied.contains(&f.name)) {
                 checker.check_function(f);
             }
         }
