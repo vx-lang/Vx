@@ -666,6 +666,26 @@ The `Iterator` trait: one required `next`, and the methods written over it.
 - `fn unzip<FromA, FromB>(self : &mut Self) -> (FromA, FromB)`<br>
   An iterator of pairs, split into two collections: the first of each pair in one, the
   second in the other.
+- `fn cmp<Other>(self : &mut Self, other : Other) -> Ordering`<br>
+  These items against `other`'s, in step, by their `Ord`: the first pair that differs
+  decides. When one sequence runs out first and every pair so far was equal, the shorter
+  one is Less, as for words in a dictionary.
+- `fn partial_cmp<Other>(self : &mut Self, other : Other) -> Option<Ordering>`<br>
+  `cmp` by the items' `PartialOrd`, so nothing as soon as a pair does not compare, which is
+  what a NaN does.
+- `fn eq<Other>(self : &mut Self, other : Other) -> bool`<br>
+  Are these items equal to `other`'s, one for one and as many of them?
+- `fn ne<Other>(self : &mut Self, other : Other) -> bool`<br>
+  Do these items differ from `other`'s anywhere, or in how many there are?
+- `fn lt<Other>(self : &mut Self, other : Other) -> bool`<br>
+  Are these items less than `other`'s, in the order `partial_cmp` gives? False when some
+  pair does not compare.
+- `fn le<Other>(self : &mut Self, other : Other) -> bool`<br>
+  Less than or equal, by `partial_cmp`. False when some pair does not compare.
+- `fn gt<Other>(self : &mut Self, other : Other) -> bool`<br>
+  Greater than, by `partial_cmp`. False when some pair does not compare.
+- `fn ge<Other>(self : &mut Self, other : Other) -> bool`<br>
+  Greater than or equal, by `partial_cmp`. False when some pair does not compare.
 
 **`binds. trait DoubleEndedIterator` methods**
 
@@ -2007,4 +2027,4 @@ Clocks and durations.
 
 ______________________________________________________________________
 
-708 functions across 32 modules.
+716 functions across 32 modules.
