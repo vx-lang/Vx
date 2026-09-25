@@ -3,18 +3,18 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>What writing core taught the compiler</title>
+<title>The compiler bugs we found by writing Vx's core library</title>
 <meta name="author" content="Aditya Kumar">
 <meta name="description" content="A week ago Vx had no core library. Now it has eight modules, a reproducible random-number library, and the compiler fixes that writing them forced. Every module is written in pure Vx, with zero externs in sight.">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 
-<meta property="og:title" content="What writing core taught the compiler">
+<meta property="og:title" content="The compiler bugs we found by writing Vx's core library">
 <meta property="og:description" content="A week ago Vx had no core library. Now it has eight modules, a reproducible random-number library, and the compiler fixes that writing them forced.">
 <meta property="og:type" content="article">
 <meta property="article:published_time" content="2026-09-21T18:00:00Z">
 <meta property="og:url" content="https://vxlang.org/blog/what-writing-core-taught-the-compiler.html">
 <meta property="og:image" content="https://vxlang.org/cards/blog-what-writing-core-taught-the-compiler.png">
-<meta property="og:image:alt" content="What writing core taught the compiler: eight modules, one library, and the fixes that writing them forced.">
+<meta property="og:image:alt" content="The compiler bugs we found by writing Vx's core library: eight modules, one library, and the fixes that writing them forced.">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:image" content="https://vxlang.org/cards/blog-what-writing-core-taught-the-compiler.png">
 
@@ -40,52 +40,36 @@
 
 <article class="post">
 
-<h1>What writing core taught the compiler</h1>
+<h1>The compiler bugs we found by writing Vx's core library</h1>
 <p class="post-meta">Aditya Kumar &middot; 21 September 2026</p>
 
-<blockquote class="tldr"><strong>TL;DR</strong> &mdash; A week ago, <code>stdlib/core/</code> did not
-exist. Now it holds eight modules (<code>cmp</code>, <code>option</code>, <code>result</code>, <code>num</code>,
-<code>ops</code>, <code>iter</code>, <code>clone</code>, and <code>default</code>) plus a reproducible random-number library
-(<code>std::rand</code>), shipped as part of Vx v0.0.2. Every line is written in pure Vx, without a single
-<code>extern</code> in sight. Writing it was the ultimate stress test for our compiler: a standard library is
-the first program that forces every language feature to work together simultaneously. Here is what we built,
-how we tested it, and the compiler bugs that writing it uncovered.</blockquote>
+<blockquote class="tldr"><strong>TL;DR:</strong> Vx v0.0.2 includes a brand new <code>stdlib/core/</code> library. It contains eight modules (<code>cmp</code>, <code>option</code>, <code>result</code>, <code>num</code>, <code>ops</code>, <code>iter</code>, <code>clone</code>, and <code>default</code>) and a reproducible random-number library (<code>std::rand</code>). Every line is written in pure Vx with zero <code>extern</code> calls (external C functions). Building this library tested our compiler across many features at once. This post covers what we built, how we tested it, and the compiler bugs we fixed along the way.</blockquote>
 
-<p class="lede">Writing a compiler frontend is deceptive. Your unit tests are small, tidy, and well-behaved:
-they test one feature in isolation, like whether an enum can match or a generic can monomorphize.
-Then you sit down to write its standard library, and the illusion shatters.</p>
+<p class="lede">Writing a standard library tests a compiler far more thoroughly than small unit tests. Unit tests usually check one feature at a time, such as matching an enum or monomorphizing a generic function (generating concrete code for each type). In contrast, standard library code combines many features together. Generic traits, default methods, enums, and hardware intrinsics all interact in the same code.</p>
 
-<p>A standard library cannot test features in isolation. It forces generic traits with default method
-implementations to return enums containing inline hardware intrinsics, all composed inside lazy iterator
-adapters. In one week, building Vx's <code>core</code> library surfaced compiler gaps that had hidden
-in plain sight across our parser, type checker, and code generators.</p>
+<p>Building Vx's <code>core</code> library in one week revealed bugs across our parser, type checker, and code generators. Here is what we learned from that process.</p>
 
 <h2>The architectural split: Why <code>core</code> matters</h2>
 
-<p>Previously, Vx had a single 1,358-line <code>std</code> where disparate abstraction layers were
-tangled together: <code>Option&lt;T&gt;</code> lived beside <code>TcpStream</code>, and <code>Result&lt;i32, i32&gt;</code>
-was backed by six foreign C symbols in a Rust crate. Following Rust's proven architectural tiered model,
-we split the library into clean layers:</p>
+<p>We split the Vx standard library into three distinct layers: <code>core</code>, <code>alloc</code>, and <code>std</code>. This tiered design follows the model used by Rust.</p>
+
+<p>Previously, Vx had a single 1,358-line <code>std</code> library that mixed different levels of abstraction. Basic data types like <code>Option&lt;T&gt;</code> lived next to operating system networking code like <code>TcpStream</code>. Even <code>Result&lt;i32, i32&gt;</code> depended on six foreign C symbols in a Rust crate.</p>
+
+<p>The new structure separates these concerns into clear tiers:</p>
 
 <ul>
-  <li><strong><code>core</code></strong>: Pure language fundamentals. No operating system dependency, no dynamic heap allocator, no thread scheduler, and zero libc calls.</li>
-  <li><strong><code>alloc</code></strong>: Dynamic data structures that require an allocator (like <code>Vec</code>, <code>String</code>, and <code>HashMap</code>).</li>
-  <li><strong><code>std</code></strong>: The full operating system interface (filesystem, networking, processes, and wall-clock time).</li>
+  <li><strong><code>core</code></strong>: Pure language fundamentals. This layer has no operating system dependencies, no dynamic heap allocator, no thread scheduler, and zero libc calls.</li>
+  <li><strong><code>alloc</code></strong>: Data structures that require a dynamic heap allocator, such as <code>Vec</code>, <code>String</code>, and <code>HashMap</code>.</li>
+  <li><strong><code>std</code></strong>: Features that interact with the operating system, including the filesystem, networking, processes, and wall-clock time.</li>
 </ul>
 
 <h2>The golden rule: Zero <code>extern</code> calls</h2>
 
-<p>Every module in <code>core</code> obeys one non-negotiable rule: <strong>no <code>extern</code> blocks allowed.</strong></p>
+<p>Every module in <code>core</code> forbids <code>extern</code> blocks. An <code>extern</code> block declares foreign functions, such as functions provided by an external C runtime library.</p>
 
-<p>Why? Because Vx is a heterogeneous systems programming language. A function written in <code>core</code>
-must run anywhere: on an x86 host CPU, inside an accelerator region with <code>spawn on(Topology::GPU[0])</code>,
-on the Apple Neural Engine, or on a bare-metal microcontroller like an ARM Cortex-M7 with no C runtime.
-If <code>Option::unwrap</code> or a bitwise count called an external C symbol, executing that code on an accelerator
-would fail immediately.</p>
+<p>Vx is a heterogeneous systems programming language, designed to target different types of processors in a single program. Code written in <code>core</code> must run on an x86 host CPU, inside an accelerator region with <code>spawn on(Topology::GPU[0])</code>, on the Apple Neural Engine, or on a bare-metal microcontroller like an ARM Cortex-M7 with no C runtime. If <code>Option::unwrap</code> or a bitwise count called an external C symbol, executing that code on an accelerator would fail immediately.</p>
 
-<p>Where Rust's <code>core</code> reaches for magic compiler intrinsics (<code>core::intrinsics</code>), Vx reaches
-for <code>mlir!</code>: an inline MLIR block that our compiler pipeline lowers natively to hardware instructions.
-A population count (bit count) is expressed directly in MLIR, right where the library author can see and audit it:</p>
+<p>Rust's <code>core</code> relies on compiler intrinsics (<code>core::intrinsics</code>) for low-level operations. Vx uses <code>mlir!</code> blocks instead. MLIR (Multi-Level Intermediate Representation) is an extensible compiler framework. An <code>mlir!</code> block lets library authors write inline MLIR instructions directly in Vx source code. For example, <code>core::num</code> implements <code>count_ones</code> (a population count of set bits) directly in MLIR:</p>
 
 <pre><code><span class="k">impl</span> <span class="t">u64</span> {
   <span class="k">fn</span> <span class="f">count_ones</span>(self : <span class="t">u64</span>) -&gt; <span class="t">u64</span> {
@@ -96,27 +80,26 @@ A population count (bit count) is expressed directly in MLIR, right where the li
   }
 }</code></pre>
 
-<p>Because every backend in `vxc` understands the MLIR <code>math</code> dialect, this single implementation
-compiles portably to native LLVM IR on the CPU, NVVM/PTX on NVIDIA GPUs, and hardware-specific instructions
-across all targets, without a single byte of foreign runtime overhead.</p>
+<p>Every backend in <code>vxc</code> supports the MLIR <code>math</code> dialect. This single implementation compiles portably to native LLVM IR on the CPU, NVVM/PTX on NVIDIA GPUs, and hardware-specific instructions across all targets. It adds zero foreign runtime overhead.</p>
 
 <h2>What landed in <code>stdlib/core/</code></h2>
+
+<p>The new <code>stdlib/core/</code> library ships with eight fundamental modules, accompanied by a reproducible random-number library in <code>std::rand</code>:</p>
 
 <table>
 <tr><th>Module</th><th>What is inside</th></tr>
 <tr><td><code>core::num</code></td><td>Full integer arithmetic and bit manipulation across all widths (<code>i8</code>&ndash;<code>i64</code>, <code>u8</code>&ndash;<code>u64</code>): bit counts, rotates, <code>pow</code>, <code>ilog2</code>, <code>next_power_of_two</code>, plus the <code>checked_*</code> and <code>saturating_*</code> families.</td></tr>
-<tr><td><code>core::cmp</code></td><td><code>PartialEq</code> and <code>Ord</code> as an ergonomic trait tower. Implement only <code>eq</code> and <code>cmp</code>, and default method bodies supply <code>ne</code>, <code>lt</code>, <code>le</code>, <code>gt</code>, <code>ge</code>, <code>min</code>, <code>max</code>, and <code>clamp</code> automatically. Plus <code>Ordering</code> with <code>reverse</code> and <code>then</code>.</td></tr>
-<tr><td><code>core::option</code></td><td><code>Option&lt;T&gt;</code> with full functional combinators: <code>map</code>, <code>and_then</code>, <code>filter</code>, <code>map_or</code>, <code>unwrap_or_else</code>, <code>is_some_and</code>, and pattern matching.</td></tr>
-<tr><td><code>core::result</code></td><td>Pure-Vx <code>Result&lt;T, E&gt;</code> with <code>ok</code>, <code>err</code>, <code>map</code>, <code>map_err</code>, and <code>and_then</code>. The old foreign C symbols are gone.</td></tr>
-<tr><td><code>core::iter</code></td><td>The <code>Iterator&lt;Item&gt;</code> trait: implementing <code>next</code> provides <code>count</code>, <code>last</code>, <code>nth</code>, <code>any</code>, <code>all</code>, <code>find</code>, <code>position</code>, and <code>for_each</code>, along with composable lazy adaptors: <code>range</code>, <code>map</code>, <code>filter</code>, <code>take</code>, and <code>skip</code>.</td></tr>
+<tr><td><code>core::cmp</code></td><td>Comparison traits (<code>PartialEq</code> and <code>Ord</code>). Implementing <code>eq</code> and <code>cmp</code> automatically provides default implementations for <code>ne</code>, <code>lt</code>, <code>le</code>, <code>gt</code>, <code>ge</code>, <code>min</code>, <code>max</code>, and <code>clamp</code>. Also includes <code>Ordering</code> with <code>reverse</code> and <code>then</code>.</td></tr>
+<tr><td><code>core::option</code></td><td><code>Option&lt;T&gt;</code> for optional values, with functional combinators: <code>map</code>, <code>and_then</code>, <code>filter</code>, <code>map_or</code>, <code>unwrap_or_else</code>, <code>is_some_and</code>, and pattern matching.</td></tr>
+<tr><td><code>core::result</code></td><td>Pure-Vx <code>Result&lt;T, E&gt;</code> for error handling, with <code>ok</code>, <code>err</code>, <code>map</code>, <code>map_err</code>, and <code>and_then</code>. The old foreign C symbols are gone.</td></tr>
+<tr><td><code>core::iter</code></td><td>The <code>Iterator&lt;Item&gt;</code> trait for sequence traversal. Implementing <code>next</code> provides <code>count</code>, <code>last</code>, <code>nth</code>, <code>any</code>, <code>all</code>, <code>find</code>, <code>position</code>, and <code>for_each</code>. Includes composable lazy adaptors: <code>range</code>, <code>map</code>, <code>filter</code>, <code>take</code>, and <code>skip</code>.</td></tr>
 <tr><td><code>core::clone</code></td><td>The <code>Clone</code> trait, enabling explicit, predictable deep duplication of values without hidden runtime cost.</td></tr>
 <tr><td><code>core::default</code></td><td>The <code>Default</code> trait, providing standard, boilerplate-free fallback initialization.</td></tr>
 <tr><td><code>core::ops</code></td><td>Fundamental operator traits (arithmetic, bitwise, index, and dereference).</td></tr>
 <tr><td><code>std::rand</code></td><td>A pure xoshiro256** pseudorandom generator with struct-encapsulated state, uniform floats in <code>[0, 1)</code>, unbiased integer ranges via rejection sampling, Box-Muller normal distributions, and buffer fills.</td></tr>
 </table>
 
-<p>The trait tower for comparisons works because trait default method bodies landed in the compiler
-at the same time. By defining just <code>eq</code> and <code>cmp</code>, a type gets ten comparison methods for free:</p>
+<p>A trait defines shared behavior that types can implement. When a trait provides default method bodies, types only need to define a small set of core methods. In <code>core::cmp</code>, defining just <code>eq</code> and <code>cmp</code> gives a type ten comparison methods for free:</p>
 
 <pre><code><span class="k">import</span> core::cmp;
 
@@ -131,8 +114,7 @@ at the same time. By defining just <code>eq</code> and <code>cmp</code>, a type 
   <span class="k">return</span> <span class="n">0</span>;
 }</code></pre>
 
-<p>Likewise, <code>for</code> loops now seamlessly consume anything that implements the <code>Iterator</code> trait,
-including chained adaptors:</p>
+<p>In addition, <code>for</code> loops now work directly with any type that implements the <code>Iterator</code> trait, including chained adaptors:</p>
 
 <pre><code><span class="k">import</span> core::iter;
 
@@ -146,13 +128,11 @@ including chained adaptors:</p>
 
 <h2>Random numbers that can replay anywhere</h2>
 
-<p>Alongside <code>core</code>, we rebuilt <code>std::rand</code>. Our old generator was SplitMix64 hidden behind a
-set of foreign C runtime symbols sharing a single global counter. In a concurrent or multi-device environment,
-two threads populating tensors would interleave their draws unpredictably, making deterministic debugging impossible.</p>
+<p>The new <code>std::rand</code> library provides reproducible, deterministic random numbers across all execution targets.</p>
 
-<p>The new <code>std::rand</code> implements the modern xoshiro256** algorithm in pure Vx, keeping the entire generator
-state inside a local <code>Rng</code> struct. Two generator instances seeded with the same value produce identical
-pseudo-random streams anywhere in the world:</p>
+<p>Our old generator was SplitMix64 hidden behind external C runtime symbols that shared a single global counter. In concurrent or multi-device programs, threads drew from the shared counter in unpredictable order, making debugging non-deterministic.</p>
+
+<p>The rewritten <code>std::rand</code> implements the xoshiro256** algorithm in pure Vx. It encapsulates the full generator state inside an <code>Rng</code> struct. Two generator instances seeded with the same value produce identical pseudorandom streams on any device:</p>
 
 <pre><code><span class="k">import</span> std::rand;
 
@@ -166,31 +146,27 @@ pseudo-random streams anywhere in the world:</p>
   <span class="k">return</span> <span class="n">0</span>;
 }</code></pre>
 
-<p>Determinism is essential for heterogeneous systems. Differential testing compares two execution
-paths&mdash;such as an optimized CUDA kernel on an A100 versus a CPU reference implementation&mdash;on the
-<em>exact same input data</em>. If random inputs vary across runs or backends, differential correctness is impossible
-to assert.</p>
+<p>Deterministic random generation enables differential testing. Differential testing runs the same inputs through two different implementations, such as an optimized CUDA kernel on an NVIDIA A100 GPU and a reference implementation on a CPU. Comparing their outputs confirms that the optimized code matches the reference. If random inputs vary between runs or backends, verifying correctness becomes impossible.</p>
 
-<p>Additionally, generating normal (Gaussian) distributions natively is critical for deep learning workloads:
-real neural network weights and activations cluster around zero. Testing half-precision (<code>f16</code>/<code>bf16</code>)
-kernels with uniform noise fails to exercise the tail underflow and overflow conditions that cause silent training divergence.</p>
+<p>Native support for normal (Gaussian) distributions also supports deep learning workloads. Real neural network weights and activations cluster around zero. Testing half-precision (<code>f16</code>/<code>bf16</code>) numeric kernels with uniform noise misses tail underflow and overflow bugs that cause silent training divergence.</p>
 
 <h2>What the compiler learned (The bugs that dogfooding found)</h2>
 
-<p>Writing standard library code was the ultimate crucible for the compiler. Every single module was written by
-first debugging whatever compiler bug blocked it. When generics, traits, macros, enums, and inline MLIR collided
-in the same source file, the compiler's hidden seams burst open.</p>
+<p>Writing standard library code served as an end-to-end stress test for the Vx compiler. Developing each module required fixing compiler bugs as language features interacted in practice.</p>
 
-<p>Some were straightforward feature omissions: the language was missing basic bitwise operators (<code>%</code>,
-<code>&amp;</code>, <code>|</code>, <code>^</code>, <code>&lt;&lt;</code>, <code>&gt;&gt;</code>); trait methods could not
-declare generic type parameters of their own; and trait default bodies were accidentally dropped when an <code>impl</code>
-block was instantiated. But the more fascinating bugs were deep architectural assumptions that had remained
-unnoticed until now.</p>
+<p>Some fixes were straightforward additions for missing features:</p>
+
+<ul>
+  <li>Basic bitwise and modulo operators (<code>%</code>, <code>&amp;</code>, <code>|</code>, <code>^</code>, <code>&lt;&lt;</code>, <code>&gt;&gt;</code>).</li>
+  <li>Generic type parameters on trait methods.</li>
+  <li>Trait default method bodies, which the compiler previously dropped when instantiating an <code>impl</code> block.</li>
+</ul>
+
+<p>Other issues exposed deeper architectural bugs in the compiler pipeline. Four notable bugs are detailed below.</p>
 
 <h3>1. The linter with amnesia (The nested call bug)</h3>
 
-<p>The moment we imported <code>std::rand</code>, the compiler flooded the console with fourteen bogus warnings
-claiming function parameters were unused&mdash;even though they were clearly read:</p>
+<p>A bug in the semantic analyzer caused the compiler to issue false warnings about unused function parameters during nested calls. Importing <code>std::rand</code> flooded the console with fourteen false warnings for parameters that were clearly used:</p>
 
 <pre><code><span class="k">struct</span> <span class="t">Counter</span> {
   n : <span class="t">f64</span>,
@@ -208,19 +184,15 @@ claiming function parameters were unused&mdash;even though they were clearly rea
   }
 }</code></pre>
 
-<p>Why did this happen? The semantic analyzer maintained a single, global <code>HashSet</code> of used names
-for the entire compilation session and cleared it after checking each function. However, when the type checker
-encountered a call inside <code>range</code> (like <code>self.next()</code>), it recursively checked the callee's body
-first. When the callee finished, it cleared the global set! As a result, all names read in the caller before the call
-were erased from memory, causing the compiler to accuse the caller of having unused parameters.</p>
+<p>The semantic analyzer tracks which variable names are read. It previously used a single global <code>HashSet</code> of used names for the entire compilation session, clearing the set after checking each function. When the type checker analyzed a call inside <code>range</code> (such as <code>self.next()</code>), it paused checking <code>range</code> to check the called function (<code>next</code>) first. When <code>next</code> finished, the analyzer cleared the shared global set. This wiped out every recorded variable name read in <code>range</code> before that call. The compiler then reported those parameters as unused.</p>
 
-<p>The bug appeared intermittent because only the <em>first</em> caller to invoke a callee triggered the nested
-check; subsequent callers found the callee already verified. Scoping the used-name analysis per function frame
-solved the issue permanently.</p>
+<p>This bug appeared intermittent because only the first caller to invoke a function triggered the nested check. Subsequent callers found the function already checked. Scoping used-name tracking to individual function frames instead of a shared global set resolved the issue.</p>
 
 <h3>2. The non-deterministic dice roll (Hash map dispatch)</h3>
 
-<p>Consider a scalar implementing two distinct traits that both provide a method with the same name:</p>
+<p>The compiler could produce non-deterministic builds when resolving method calls between traits with overlapping method names.</p>
+
+<p>Consider a type that implements two distinct traits with the same method name:</p>
 
 <pre><code><span class="k">trait</span> <span class="t">Loud</span> {
   <span class="k">fn</span> <span class="f">describe</span>(self : &amp;<span class="t">i64</span>) -&gt; <span class="t">i32</span>;
@@ -242,64 +214,56 @@ solved the issue permanently.</p>
   }
 }</code></pre>
 
-<p>When compiling a test program that invoked <code>x.describe()</code> across multiple runs, the binary printed:
-<code>1</code>, <code>1</code>, and then <code>2</code>! Method resolution was iterating through an unsorted
-Rust <code>HashMap</code> of trait implementations and blindly selecting the first match that matched the method name.</p>
+<p>When compiling a program that called <code>x.describe()</code> across multiple builds, the resulting binary printed <code>1</code>, <code>1</code>, and then <code>2</code>. Method resolution iterated through an unsorted Rust <code>HashMap</code> of trait implementations and picked whichever match appeared first in map iteration order.</p>
 
-<p>To eliminate this non-determinism, we established clear precedence rules: inherent methods always take
-priority over trait methods, and ambiguous calls between multiple conflicting trait implementations are rejected
-at compile time with a clear diagnostic:</p>
+<p>To ensure deterministic builds, we established explicit precedence rules:</p>
+
+<ul>
+  <li>Inherent methods (methods defined directly on a type) always take priority over trait methods.</li>
+  <li>Conflicting calls between multiple trait implementations are rejected at compile time with a clear error:</li>
+</ul>
 
 <pre><code>Error[E3035]: Method 'describe' on 'i64' is defined by more than one impl (Loud, Quiet);
 a call cannot choose between them</code></pre>
 
 <h3>3. The invisible static methods</h3>
 
-<p>When writing <code>core::default</code> and <code>core::clone</code>, we ran into a wall: calling
-<code>Default::default()</code> or <code>T::default()</code> refused to compile. The method lookup routine
-for static calls (<code>Type::method()</code>) was only searching <em>inherent</em> <code>impl</code> blocks,
-completely ignoring traits. Furthermore, it only looked up types by name across structs and enums, meaning any
-static method on a primitive scalar (like <code>i32::min_value()</code>) was rejected as non-existent.</p>
+<p>Static method calls (such as <code>Type::method()</code>) previously failed when invoked on traits or primitive scalar types.</p>
 
-<p>Fixing static method lookup to traverse both inherent and trait tables across all types unblocked
-<code>core::default</code> and <code>core::clone</code>, allowing idioms like <code>Default::default()</code>
-to work as expected.</p>
+<p>When implementing <code>core::default</code> and <code>core::clone</code>, calls like <code>Default::default()</code> and <code>T::default()</code> failed to compile. The compiler's static method lookup inspected only inherent <code>impl</code> blocks, ignoring traits entirely. In addition, the lookup only searched structs and enums by name. This meant static methods on primitive types, such as <code>i32::min_value()</code>, were rejected as non-existent.</p>
+
+<p>Updating static method resolution to search both inherent and trait tables across all types resolved the problem. This change enabled standard patterns like <code>Default::default()</code> and primitive helper methods.</p>
 
 <h3>4. The 64-bit sign flip</h3>
 
-<p>In <code>core::num</code>, integer literals larger than <code>i64::MAX</code> (such as <code>0x8000_0000_0000_0000u64</code>)
-crashed our default bytecode lowering path and printed as negative numbers on our legacy codegen path.
-Because negated literals were being typed purely by their lexical spelling rather than context, an expression like
-<code>-2.0 * ln(x)</code> with <code>x : f64</code> failed type checking, even though <code>2.0 * ln(x)</code>
-compiled without issue. Context-sensitive numeric typing resolved the issue across both compilers.</p>
+<p>Large integer literals and negated numeric expressions exposed type inference bugs across our code generation pipelines.</p>
+
+<p>In <code>core::num</code>, unsigned integer literals larger than <code>i64::MAX</code> (such as <code>0x8000_0000_0000_0000u64</code>) caused issues. They crashed our default bytecode lowering path and printed as negative numbers in our legacy code generator.</p>
+
+<p>In addition, the lexer typed negated numeric literals purely from their surface syntax rather than semantic context. As a result, an expression like <code>-2.0 * ln(x)</code> failed type checking when <code>x : f64</code>, even though <code>2.0 * ln(x)</code> compiled successfully.</p>
+
+<p>Implementing context-sensitive numeric typing resolved both problems across both compiler backends.</p>
 
 <h2>Testing by sabotage: Mutation testing in action</h2>
 
-<p>Our rule for compiler verification is straightforward: <strong>never trust a test you have not watched fail.</strong>
-Seeing a green checkmark only proves the test passed; it does not prove the test was capable of catching a bug.</p>
+<p>We used mutation testing to verify that our test suite catches real bugs. Mutation testing introduces small intentional bugs (mutations) into source code to verify that the test suite fails as expected.</p>
 
-<p>To verify <code>std::rand</code>, we created 29 distinct, single-edit mutations in <code>rand.vx</code> (altering a
-shift distance, flipping an addition to subtraction, swapping a state word update) and ran each mutation against our
-integration test fixture. Every single mutation was expected to trigger a specific, predicted failure.</p>
+<p>Our testing principle is simple: <strong>never trust a test you have not watched fail.</strong> A passing test confirms that the code ran without error. Injecting deliberate mutations confirms that the test detects incorrect behavior.</p>
 
-<p>The first round exposed a major blind spot: one mutation failed to break anything! The rejection-sampling loop
-inside <code>range_i64</code> was never being entered because the test bounds never forced a rejection. The test was
-100% green, yet the core algorithmic branch was completely untested. Adjusting the bounds to sit just above half
-the range forced the rejection loop to execute, requiring seven draws to produce the value and making the test sound.</p>
+<p>To verify <code>std::rand</code>, we introduced 29 distinct single-edit mutations in <code>rand.vx</code>. These edits included altering a shift distance, flipping an addition to a subtraction, and swapping the update order of state words. We ran each mutation against our integration test suite. Every mutation was expected to trigger a specific failure.</p>
 
-<p>A similar mutation check on <code>Option::clone</code> uncovered a compiler bug: removing the <code>None</code>
-branch from a <code>match</code> expression compiled cleanly without an exhaustiveness error! The compiled function
-simply fell off its end at runtime, returning an invalid memory slot. Mutation testing caught the missing exhaustiveness
-check before it could escape into production.</p>
+<p>The first run revealed a gap: one mutation did not cause any test to fail. The rejection-sampling loop in <code>range_i64</code> never executed because the chosen test bounds never triggered a rejection. The test suite passed completely, leaving this algorithmic branch untested. We updated the test bounds to sit just above half the valid range. This forced the rejection loop to execute, requiring seven draws to produce the number and properly exercising the code.</p>
+
+<p>Mutation testing also uncovered a compiler bug while testing <code>Option::clone</code>. When we deleted the <code>None</code> branch from a <code>match</code> expression, the compiler compiled the code without reporting an exhaustiveness error. At runtime, the compiled function reached the end without a value and returned invalid memory. Mutation testing caught this missing exhaustiveness check before release.</p>
 
 <h2>What comes next</h2>
 
-<p>With <code>stdlib/core/</code> established, our roadmap moves to the next layer:</p>
+<p>With <code>stdlib/core/</code> in place, our roadmap focuses on three next steps:</p>
 
 <ul>
-  <li><strong>Trait-Qualified Name Mangling (<code>core::convert</code>)</strong>: Currently, implementing <code>From&lt;i32&gt; for i64</code> and <code>From&lt;u8&gt; for i64</code> generates colliding symbol names (<code>i64$from</code>). Extending name mangling to encode the originating trait will unlock the full <code>From</code>/<code>Into</code> conversion suite.</li>
-  <li><strong>Automatic Destructors (<code>Drop</code>)</strong>: Implementing the <code>Drop</code> trait for deterministic, RAII-based cleanup of heap-allocated structures without a garbage collector.</li>
-  <li><strong>The <code>alloc</code> Layer</strong>: Bringing first-class <code>Vec</code>, <code>String</code>, and <code>HashMap</code> abstractions onto the new <code>core</code> foundation.</li>
+  <li><strong>Trait-Qualified Name Mangling (<code>core::convert</code>)</strong>: Compilers use name mangling to generate unique internal names for functions and methods. Currently, implementing <code>From&lt;i32&gt; for i64</code> and <code>From&lt;u8&gt; for i64</code> creates duplicate symbol names (<code>i64$from</code>). Updating name mangling to include the trait name will unlock the complete <code>From</code> and <code>Into</code> conversion traits.</li>
+  <li><strong>Automatic Destructors (<code>Drop</code>)</strong>: Implementing the <code>Drop</code> trait will provide RAII (Resource Acquisition Is Initialization). This enables deterministic cleanup for heap-allocated data structures without a garbage collector.</li>
+  <li><strong>The <code>alloc</code> Layer</strong>: Bringing first-class <code>Vec</code>, <code>String</code>, and <code>HashMap</code> collections onto the new <code>core</code> foundation.</li>
 </ul>
 
 <p class="post-foot">All eight <code>core</code> modules and <code>std::rand</code> are now live in

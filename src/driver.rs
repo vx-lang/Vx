@@ -669,7 +669,9 @@ impl CompilerDriver {
                 .collect();
         auto.sort_by(|a, b| a.0.cmp(&b.0));
         let auto_interfaces: Vec<Vec<u8>> = auto.into_iter().map(|(_, b)| b).collect();
-        let mut program_arr = loader.into_programs();
+        let mut program_arr = loader
+            .into_programs()
+            .map_err(|e| format!("Frontend failed to parse '{}': {}", filename, e))?;
 
         if self.options.host.as_deref() == Some("default") {
             program_arr.push(Self::native_host_program());

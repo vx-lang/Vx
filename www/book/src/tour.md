@@ -219,6 +219,11 @@ import graph::traversal;
 `std::` resolves against the standard library shipped with your toolchain. Anything else resolves
 against the library search path and then the current directory.
 
+An import brings in everything the module declares, and everything it imports. A module's own
+declaration wins over an imported one with the same name, so declaring `struct Range` does not
+disturb the library code that uses `core::iter`'s. When two imports declare the same name, using
+it is an error, since nothing says which one is meant.
+
 ## Unsafe
 
 Raw pointers exist, and the operations that can go wrong with them require `unsafe`:
