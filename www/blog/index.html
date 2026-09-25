@@ -57,7 +57,7 @@
       every raw pointer. In Vx the memory space is part of the type.</p>
     </li>
     <li>
-      <a href="/blog/asking-the-other-compiler.html">Asking the other compiler</a>
+      <a href="/blog/asking-the-other-compiler.html">Reverse engineering trait implementation to fix the Vx's</a>
       <time datetime="2026-09-22">22 September 2026</time>
       <p>Two impls of one trait collided on one mangled name, and picking between them looked like a
       language design decision. Compiling the same program in Rust showed that Rust makes no such
@@ -72,7 +72,7 @@
       because it ran on that runner. Three more bugs were hiding behind it.</p>
     </li>
     <li>
-      <a href="/blog/the-43-gigabytes-that-are-never-there.html">The 43 gigabytes that are never there</a>
+      <a href="/blog/the-43-gigabytes-that-are-never-there.html">Vx can model peak memory pressure at compile time</a>
       <time datetime="2026-09-21">21 September 2026</time>
       <p>Add up every tensor a Llama-2-7B prefill puts on the GPU and you get 58.93 GiB, which does
       not fit a 40 GiB A100. The tensors resident at the same time peak at 15.94 GiB. The compiler
@@ -86,7 +86,7 @@
       storage and <code>bar.sync</code>. The tile algebra does not exist.</p>
     </li>
     <li>
-      <a href="/blog/what-writing-core-taught-the-compiler.html">What writing core taught the compiler</a>
+      <a href="/blog/what-writing-core-taught-the-compiler.html">The compiler bugs we found by writing Vx's core library</a>
       <time datetime="2026-09-21">21 September 2026</time>
       <p>A week ago Vx had no core library. Now it has six modules of it, a random-number library,
       and the compiler fixes that writing them forced &mdash; a method that dispatched

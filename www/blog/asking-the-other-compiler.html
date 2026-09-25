@@ -3,18 +3,18 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Asking the other compiler — Vx</title>
+<title>Reverse engineering trait implementation to fix the Vx's — Vx</title>
 <meta name="author" content="Aditya Kumar">
 <meta name="description" content="A Vx bug looked like it needed a language design decision. An hour of compiling Rust showed that Rust does not make that decision either — it infers, and falls back to i32.">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 
-<meta property="og:title" content="Asking the other compiler">
+<meta property="og:title" content="Reverse engineering trait implementation to fix the Vx's">
 <meta property="og:description" content="Two impls of one trait collided on one mangled name. Picking between them looked like a language decision, so I compiled the same program in Rust to see what it decided. It decides nothing: it infers the argument's type first, and then exactly one impl applies.">
 <meta property="og:type" content="article">
 <meta property="article:published_time" content="2026-09-22T17:00:00Z">
 <meta property="og:url" content="https://vxlang.org/blog/asking-the-other-compiler.html">
 <meta property="og:image" content="https://vxlang.org/cards/blog-asking-the-other-compiler.png">
-<meta property="og:image:alt" content="Asking the other compiler: what rustc does with two impls of one trait.">
+<meta property="og:image:alt" content="Reverse engineering trait implementation to fix the Vx's: what rustc does with two impls of one trait.">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:image" content="https://vxlang.org/cards/blog-asking-the-other-compiler.png">
 
@@ -40,36 +40,42 @@
 
 <article class="post">
 
-<h1>Asking the other compiler</h1>
+<h1>Reverse engineering trait implementation to fix the Vx's</h1>
 <p class="post-meta">Aditya Kumar &middot; 22 September 2026</p>
 
-<blockquote class="tldr"><strong>TL;DR</strong> — In Vx, two implementations of the same trait collided on a single mangled symbol name when they differed only by parameter type. Resolving calls between them initially seemed to require C++-style overload resolution. Testing the same pattern in Rust revealed a simpler answer: type inference resolves the argument type first, leaving exactly one matching implementation. Untyped integer literals resolve through integer fallback to <code>i32</code>. Fixing the bug took two things: encoding trait arguments into mangled names, so the implementations become distinct functions, and narrowing candidates by argument type at the call site. Vx already defaulted untyped integer literals to <code>i32</code>, so that rule cost nothing.</blockquote>
+<blockquote class="tldr"><strong>TL;DR</strong>: In Vx, two implementations of the same trait produced identical symbol names when they differed only by parameter type. Resolving calls between them seemed to require C++-style overload resolution. Testing the pattern in Rust revealed a simpler solution. The compiler infers the argument type first, leaving only one matching implementation. Untyped integer literals resolve through integer fallback to <code>i32</code>. Fixing the bug in Vx took two steps: encoding trait arguments into mangled symbol names so implementations stay distinct, and narrowing candidate implementations by argument type at call sites. Because Vx already defaulted untyped integer literals to <code>i32</code>, the fallback behavior worked immediately.</blockquote>
 
 <p class="lede">The most productive hour of this fix was writing forty lines of Rust and inspecting what <code>rustc</code> emitted.</p>
 
 <h2>Two implementations, one mangled name</h2>
 
-<p>Vx generated method symbols by combining the receiver type and the method name: <code>&lt;receiver&gt;$&lt;method&gt;</code>. Because the mangled name omitted the trait, multiple implementations of the same trait with different argument types produced identical symbols:</p>
+<p>In Vx, implementing the same trait multiple times for one type caused a symbol name collision. Compilers assign internal identifiers called symbol names (or mangled names) to functions so the linker can tell them apart. Vx generated method symbols by joining the receiver type (the type implementing the method) and the method name: <code>&lt;receiver&gt;$&lt;method&gt;</code>.</p>
+
+<p>This scheme omitted the trait and its type arguments. Multiple implementations of the same trait with different argument types produced identical symbols:</p>
 
 <!-- vx-doctest: skip -- two impl headers, not a program: the bodies are the point being elided -->
 <pre><code><span class="k">impl</span> <span class="t">From</span>&lt;<span class="t">i32</span>&gt; <span class="k">for</span> <span class="t">i64</span> { .. }   <span class="c">// i64$from</span>
 <span class="k">impl</span> <span class="t">From</span>&lt;<span class="t">u8</span>&gt;  <span class="k">for</span> <span class="t">i64</span> { .. }   <span class="c">// i64$from, again</span></code></pre>
 
-<p>A deduplication pass dropped the second implementation before emitting its body. Call sites then rejected the call because two functions shared one name. This collision blocked work on <code>core::convert</code>, which defines widening conversions for primitive integers by stamping out <code>From</code> across integer types.</p>
+<p>Because the symbols collided, a deduplication pass dropped the second implementation before emitting its code. Call sites then failed because two functions shared one name.</p>
+
+<p>This collision blocked work on <code>core::convert</code>. That module defines widening conversions for primitive integers by generating <code>From</code> implementations across integer types.</p>
 
 <h2>Why this looked like a language design problem</h2>
 
-<p>Encoding trait information into symbol names is straightforward engineering. Call-site resolution seemed harder. Consider this invocation:</p>
+<p>Fixing the symbol names was straightforward, but deciding which method to call at a call site looked difficult. Consider this call:</p>
 
 <pre><code>i64::from(7)</code></pre>
 
-<p>When candidates exist for both <code>i32</code> and <code>u8</code>, which implementation should the compiler select? The literal <code>7</code> fits into both types. Resolving this appeared to require selection among same-named candidates by parameter type — full C++-style overload resolution with conversion ranks, best-match scoring, and tie-breaking rules. Adding overload resolution changes the core semantics of a language, and getting it right is difficult.</p>
+<p>Candidates exist for both <code>i32</code> and <code>u8</code>. Which implementation should the compiler choose? The literal <code>7</code> fits into both types.</p>
+
+<p>This problem seemed to demand overload resolution. In languages like C++, overload resolution inspects multiple functions with the same name. It scores conversion ranks, picks the best match, and applies tie-breaking rules. Adding full overload resolution changes the core semantics of a language, and implementing it correctly is difficult.</p>
 
 <p>Before designing a complex resolution system for Vx, I checked how Rust handles this exact pattern.</p>
 
 <h2>Testing the pattern in Rust</h2>
 
-<p>Rust's orphan rule prevents implementing an external trait like <code>From</code> for primitive types in user code, so the test uses a local trait named <code>MyFrom</code>. Each implementation returns a distinct integer:</p>
+<p>To see how another language handles this, I wrote a test program in Rust. Rust uses an orphan rule, which prevents user code from implementing an external trait for external types. Because both <code>From</code> and <code>i64</code> belong to the standard library, the test uses a local trait named <code>MyFrom</code>. Each implementation returns a distinct integer:</p>
 
 <!-- vx-doctest: skip -- this is Rust, and it is the point of the section -->
 <pre><code><span class="k">trait</span> <span class="t">MyFrom</span>&lt;T&gt; { <span class="k">fn</span> <span class="f">my_from</span>(v: T) -&gt; <span class="t">Self</span>; }
@@ -90,33 +96,35 @@
 typed u8     -> 8
 u8 variable  -> 8</code></pre>
 
-<p>The untyped literal selects the <code>i32</code> implementation, while explicit types select the matching type. Inspecting the compiled object file with <code>nm</code> shows how Rust names the symbols:</p>
+<p>The untyped literal selects the <code>i32</code> implementation, while explicit types select their matching implementation.</p>
+
+<p>Next, I inspected the compiled object file with <code>nm</code>, a command-line tool that lists symbol names in compiled binaries:</p>
 
 <pre><code>__RNvXCs..._1b  x  INtB2_6MyFrom l E  7my_from     &lt;i64 as MyFrom&lt;i32&gt;&gt;::my_from
 __RNvXs_Cs..._1b x INtB4_6MyFrom h E  7my_from     &lt;i64 as MyFrom&lt;u8&gt;&gt;::my_from</code></pre>
 
-<p>Rust's v0 mangling format encodes the self type, the trait name, and the trait arguments. In these symbols, <code>x</code> represents <code>i64</code>, while <code>l</code> and <code>h</code> represent <code>i32</code> and <code>u8</code>. Changing <code>u8</code> to <code>u16</code> changes <code>h</code> to <code>t</code>. Rust avoids symbol collisions by including the trait arguments in the mangled name.</p>
+<p>Rust's v0 symbol mangling format encodes the receiver type, the trait name, and the trait arguments into each symbol. In these names, <code>x</code> represents <code>i64</code>, while <code>l</code> and <code>h</code> represent <code>i32</code> and <code>u8</code>. Changing <code>u8</code> to <code>u16</code> changes <code>h</code> to <code>t</code>. By including trait arguments in mangled names, Rust gives every implementation a distinct symbol.</p>
 
-<p>The second question is what happens when no implementation matches the default integer type. Compiling the same program with implementations for <code>u8</code> and <code>u16</code>, omitting <code>i32</code>, produces this diagnostic:</p>
+<p>I also tested what happens when no implementation matches the default integer type. Compiling the program with implementations for only <code>u8</code> and <code>u16</code> produces this error:</p>
 
 <pre><code>error[E0277]: the trait bound `i64: MyFrom&lt;i32&gt;` is not satisfied
 help: the following other types implement trait `MyFrom&lt;T&gt;`
       `i64` implements `MyFrom&lt;u8&gt;`
       `i64` implements `MyFrom&lt;u16&gt;`</code></pre>
 
-<p>Rust reports an unsatisfied trait bound. The compiler assigns <code>i32</code> to the literal, evaluates the concrete bound <code>i64: MyFrom&lt;i32&gt;</code>, fails, and lists the available implementations.</p>
+<p>Rust reports an unsatisfied trait bound (a requirement that a type implement a trait). The compiler assigns <code>i32</code> to the literal, checks whether <code>i64: MyFrom&lt;i32&gt;</code> exists, fails, and lists the available implementations.</p>
 
 <h2>How type inference avoids overload resolution</h2>
 
-<p>Rust resolves this call site without overload resolution. When the compiler evaluates <code>i64::my_from(7)</code>, it creates a trait obligation <code>i64: MyFrom&lt;?T&gt;</code> containing an unbound inference variable <code>?T</code>. Resolving the argument type determines <code>?T</code>. Once <code>?T</code> has a concrete type, trait lookup finds exactly one matching implementation, removing the need to rank candidate methods.</p>
+<p>Rust avoids overload resolution by combining type inference with fallback rules. When the compiler checks <code>i64::my_from(7)</code>, it creates a trait obligation: <code>i64: MyFrom&lt;?T&gt;</code>. A trait obligation is a requirement that a type implement a trait. The placeholder <code>?T</code> is an inference variable, an unknown type that the compiler still needs to solve. Once the compiler determines the argument type, it replaces <code>?T</code> with a concrete type. That concrete type matches exactly one implementation, so the compiler never has to rank candidate methods.</p>
 
-<p>Untyped literals rely on <strong>integer fallback</strong>. If an integer inference variable remains unresolved at the end of type checking, the compiler defaults it to <code>i32</code> and re-evaluates the obligation. This single fallback rule replaces an entire overload resolution subsystem.</p>
+<p>Untyped integer literals rely on <strong>integer fallback</strong>. When an integer inference variable remains unresolved at the end of type checking, the compiler defaults it to <code>i32</code> and re-checks the trait obligation. This fallback rule eliminates the need for an overload resolution subsystem.</p>
 
-<p>This behavior simplified the fix for Vx: <strong>Vx already defaults uncontexted integer literals to <code>i32</code></strong>. Statements like <code>let x = 7;</code> have always produced an <code>i32</code>. Because the fallback rule already existed in the language, method resolution only needed to infer argument types before looking up implementations.</p>
+<p>This pattern simplified the fix in Vx because <strong>Vx already defaults uncontexted integer literals to <code>i32</code></strong>. An uncontexted literal is a literal without an explicit type hint, such as <code>let x = 7;</code>. Because Vx already had this fallback rule, method resolution only needed to infer argument types before looking up implementations.</p>
 
 <h2>The working program in Vx</h2>
 
-<p>The pull request includes this test fixture directly from the change. Each implementation returns a number identifying itself, and <code>print</code> writes numbers without separators:</p>
+<p>With this fix, Vx resolves calls to multi-implementation traits by argument type. The pull request adds a test fixture to verify this behavior. Each implementation returns an identifier number, and <code>print</code> writes numbers without separators:</p>
 
 <pre><code><span class="k">trait</span> <span class="t">Build</span>&lt;T&gt; {
   <span class="k">fn</span> <span class="f">make</span>(v : T) -&gt; <span class="t">Self</span>;
@@ -150,40 +158,42 @@ help: the following other types implement trait `MyFrom&lt;T&gt;`
   <span class="k">return</span> <span class="n">0</span>;
 }</code></pre>
 
-<p>Running the program outputs <code>123</code>. When fallback targets an unimplemented type, Vx mirrors Rust by listing existing implementations:</p>
+<p>Running the program outputs <code>123</code>.</p>
+
+<p>If fallback selects a type that lacks an implementation, Vx mirrors Rust by listing the available implementations in an error message:</p>
 
 <pre><code>Error[E3036]: No impl of 'make' on 'i64' takes (i32); 'i64' implements Build&lt;u16&gt;, Build&lt;u8&gt;</code></pre>
 
 <h2>What went wrong: breaking scalar math</h2>
 
-<p>My initial implementation mangled trait names onto every trait method unconditionally. That change broke the standard library's scalar math. In Vx, <code>abs</code> on an <code>f32</code> comes from <code>impl Math for f32</code>, which is a standard trait implementation. Mangling the trait name renamed every math method in the standard library, breaking roughly forty test fixtures.</p>
+<p>My first implementation broke the standard library's scalar math by mangling trait names onto every trait method. In Vx, <code>abs</code> on <code>f32</code> comes from <code>impl Math for f32</code>. Mangling the trait name renamed every math method in the standard library, breaking roughly forty test fixtures.</p>
 
-<p>Updating forty fixtures would have codified the wrong rule. Two implementations of the same trait for one type can differ only in their trait arguments. A trait without type arguments can only be implemented once for any given type, so its methods can never collide with themselves. The mangling rule only needs to append trait information when the trait takes arguments.</p>
+<p>Updating forty test fixtures would have preserved a bad rule. A trait without type arguments can be implemented only once for any given type. Its methods can never collide with themselves. Two implementations of the same trait for one type can differ only when the trait takes type arguments. Therefore, the mangler only needs to include trait details when a trait accepts type arguments.</p>
 
-<p>Under the revised rule, <code>impl Math for f32</code> retains the symbol <code>f32$abs</code>, while <code>impl Build&lt;i32&gt; for i64</code> becomes <code>i64$Build$i32$make</code>. Methods from two distinct traits that share a name still produce a collision and are rejected at the call site.</p>
+<p>Under this revised rule, <code>impl Math for f32</code> keeps the simple symbol <code>f32$abs</code>, while <code>impl Build&lt;i32&gt; for i64</code> becomes <code>i64$Build$i32$make</code>. If two different traits provide the same method name for a type, the compiler still flags that collision at the call site.</p>
 
 <h2>What the test suite caught and grep missed</h2>
 
-<p>Six fixtures pinned the old symbol names for methods on argument-bearing traits. Running the test suite caught all six fixtures. Three separate manual searches across the repository missed every one.</p>
+<p>Automated test fixtures caught regressions that manual searches completely missed. Six fixtures pinned the old symbol names for methods on argument-bearing traits. Running the test suite caught all six fixtures, whereas three separate manual searches across the repository missed every one.</p>
 
-<p>During the fix, four separate checks produced false confidence by reporting success when they should have failed:</p>
+<p>During the fix, four manual checks produced false confidence by reporting success when they should have failed:</p>
 
 <ul>
-<li><strong>Incomplete search terms:</strong> While checking for affected fixtures, I grepped for the enum variant <code>GpuHbm</code> and missed <code>NPUHBM</code>, which a fixture was pinning. The test suite caught the mismatch.</li>
-<li><strong>Searching output that was never produced:</strong> To assess the blast radius across 66 files, I ran <code>vxc</code> with an invalid <code>--action</code> flag. Every run rejected the flag and exited 2, printing an argument error instead of compiling anything. My sweep grepped that output for a diagnostic code, found none, and reported zero affected files. It never looked at an exit code.</li>
-<li><strong>Testing against the wrong backend:</strong> While checking fixtures by hand, I ran the default code generator. The test harness appends <code>--legacy-codegen</code> to backend fixtures, so manual runs tested a different backend than the automated assertions, triggering a hunt for a phantom regression.</li>
-<li><strong>Laundering exit codes through pipes:</strong> Twice I piped <code>cargo test</code> into <code>grep</code> and checked the command's exit code, which reflected <code>grep</code> rather than the test runner. A suite with a failing test reported success. The test script now writes runner exit codes directly to the log.</li>
+<li><strong>Incomplete search terms:</strong> While searching for affected fixtures, I grepped for the enum variant <code>GpuHbm</code> and missed <code>NPUHBM</code>, which a fixture pinned. The test suite caught the mismatch.</li>
+<li><strong>Searching output that was never produced:</strong> To assess the blast radius across 66 files, I ran <code>vxc</code> with an invalid <code>--action</code> flag. Every run rejected the flag, printed a command-line argument error, and exited with status 2. My script searched that error text for a compiler diagnostic code, found nothing, and reported zero affected files because it never checked the command exit code.</li>
+<li><strong>Testing against the wrong backend:</strong> While checking fixtures by hand, I ran the default code generator. However, the automated test harness appends <code>--legacy-codegen</code> to backend fixtures. My manual runs tested a different backend than the automated assertions, triggering a search for a nonexistent regression.</li>
+<li><strong>Laundering exit codes through pipes:</strong> Twice I piped <code>cargo test</code> into <code>grep</code> and checked the shell exit code. The shell returned the exit code of <code>grep</code>, which hid the test failure. A test suite with a failing test reported success. The test script now writes runner exit codes directly to the log.</li>
 </ul>
 
-<p>Each check returned a successful result without performing a valid test. A check that cannot fail provides no useful signal, making silent pass states the most critical failure mode to eliminate.</p>
+<p>Each check returned a successful result without performing a valid test. A check that cannot fail provides no useful signal. Silent pass states are the most dangerous testing trap to eliminate.</p>
 
 <h2>Measuring existing compilers</h2>
 
 <p>Studying Rust saved significant language design effort. Deciding how a language resolves calls is costly to implement and difficult to change later. Rust solved this problem a decade ago. Writing forty lines of code and running <code>nm</code> replaced open-ended language debate with an empirical measurement.</p>
 
-<p>The investigation also produced a much simpler implementation. A full overload resolution system with candidate ranking was unnecessary. The actual requirement was straightforward: resolve argument types through inference, select the single matching implementation, and apply the existing <code>i32</code> fallback for bare integer literals.</p>
+<p>The investigation also produced a much simpler implementation. The compiler only needs to infer argument types, select the single matching implementation, and apply the existing <code>i32</code> fallback for untyped integer literals.</p>
 
-<p class="post-foot">The change is <a href="https://github.com/vx-lang/Vx/pull/709">Vx#709</a>, the issue is <a href="https://github.com/vx-lang/Vx/issues/686">Vx#686</a>, and the Rust findings are documented in a <a href="https://github.com/vx-lang/Vx/issues/686#issuecomment-5789854313">comment on the issue</a>. Instance dispatch currently does not narrow by argument type; that follow-up task is explicitly recorded in test fixtures. Vx is licensed under Apache 2.0 with the LLVM exception — <a href="/docs/getting-started.html">install it</a>.</p>
+<p class="post-foot">The change is <a href="https://github.com/vx-lang/Vx/pull/709">Vx#709</a>, the issue is <a href="https://github.com/vx-lang/Vx/issues/686">Vx#686</a>, and the Rust findings are documented in a <a href="https://github.com/vx-lang/Vx/issues/686#issuecomment-5789854313">comment on the issue</a>. Instance dispatch currently does not narrow by argument type; that follow-up task is explicitly recorded in test fixtures. Vx is licensed under Apache 2.0 with the LLVM exception (<a href="/docs/getting-started.html">install it</a>).</p>
 
 </article>
 
