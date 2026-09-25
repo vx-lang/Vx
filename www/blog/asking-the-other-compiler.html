@@ -3,18 +3,18 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Reverse engineering trait implementation to fix Vx's — Vx</title>
+<title>Reverse engineering trait implementation to fix the Vx's — Vx</title>
 <meta name="author" content="Aditya Kumar">
 <meta name="description" content="A Vx bug looked like it needed a language design decision. An hour of compiling Rust showed that Rust does not make that decision either — it infers, and falls back to i32.">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 
-<meta property="og:title" content="Reverse engineering trait implementation to fix Vx's">
+<meta property="og:title" content="Reverse engineering trait implementation to fix the Vx's">
 <meta property="og:description" content="Two impls of one trait collided on one mangled name. Picking between them looked like a language decision, so I compiled the same program in Rust to see what it decided. It decides nothing: it infers the argument's type first, and then exactly one impl applies.">
 <meta property="og:type" content="article">
 <meta property="article:published_time" content="2026-09-22T17:00:00Z">
 <meta property="og:url" content="https://vxlang.org/blog/asking-the-other-compiler.html">
 <meta property="og:image" content="https://vxlang.org/cards/blog-asking-the-other-compiler.png">
-<meta property="og:image:alt" content="Reverse engineering trait implementation to fix Vx's: what rustc does with two impls of one trait.">
+<meta property="og:image:alt" content="Reverse engineering trait implementation to fix the Vx's: what rustc does with two impls of one trait.">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:image" content="https://vxlang.org/cards/blog-asking-the-other-compiler.png">
 
@@ -40,7 +40,7 @@
 
 <article class="post">
 
-<h1>Reverse engineering trait implementation to fix Vx's</h1>
+<h1>Reverse engineering trait implementation to fix the Vx's</h1>
 <p class="post-meta">Aditya Kumar &middot; 22 September 2026</p>
 
 <blockquote class="tldr"><strong>TL;DR</strong>: In Vx, two implementations of the same trait produced identical symbol names when they differed only by parameter type. Resolving calls between them seemed to require C++-style overload resolution. Testing the pattern in Rust revealed a simpler solution. The compiler infers the argument type first, leaving only one matching implementation. Untyped integer literals resolve through integer fallback to <code>i32</code>. Fixing the bug in Vx took two steps: encoding trait arguments into mangled symbol names so implementations stay distinct, and narrowing candidate implementations by argument type at call sites. Because Vx already defaulted untyped integer literals to <code>i32</code>, the fallback behavior worked immediately.</blockquote>
