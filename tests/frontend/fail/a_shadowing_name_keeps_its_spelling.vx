@@ -1,0 +1,15 @@
+//===- a_shadowing_name_keeps_its_spelling.vx - Vx Compiler -----*- Vx -*-===//
+// RUN: not vxc %s --action print-ast 2>&1 | FileCheck %s
+import core::iter;
+
+struct Range {
+  lo : i32,
+}
+
+fn main() -> i32 {
+  let r : Range = 5;
+  return 0;
+}
+
+// The program's `Range` keeps its name; core::iter's is the one renamed.
+// CHECK: 'r' is declared Range but its initializer is i32
