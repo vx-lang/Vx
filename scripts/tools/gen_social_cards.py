@@ -166,7 +166,7 @@ def targets():
         "default.png",
         card_html(
             "Systems language for heterogeneous compute",
-            'One Language,<br><span class="grad">Every Core</span>',
+            'One Language,<br><span class="grad">Every Chip</span>',
             lede="Placement and reachability in the type system. A host thread dereferencing a "
             "device pointer is a compile error.",
             foot_left="CPU · GPU · NPU · accelerators",

@@ -383,7 +383,7 @@ print_next_steps() {
 
 main() {
     say ""
-    say "${B}Vx${R} — one language, every core"
+    say "${B}Vx${R} — one language, every chip"
     say ""
 
     need_cmd uname

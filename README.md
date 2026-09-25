@@ -1,6 +1,6 @@
 <div align="center">
   <h1>Vx</h1>
-  <p><b>One language, every core.</b></p>
+  <p><b>One language, every chip.</b></p>
   <p>A heterogeneous-systems programming language that puts hardware topology, memory placement, and reachability directly in the type system.</p>
 
 <p>
