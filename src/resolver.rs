@@ -109,13 +109,24 @@ fn substitute_self(ty: &crate::syntax::Type, target: &crate::syntax::Type) -> cr
 ///
 /// A trait's defaults are collected across every module first, because the trait and the
 /// impl need not be in the same one.
-pub type TraitDefaults = std::collections::HashMap<
-    crate::symbol::Symbol,
-    (
-        Vec<crate::syntax::GenericParam>,
-        Vec<crate::syntax::MethodSignature>,
-    ),
->;
+#[derive(Default)]
+pub struct TraitDefaults {
+    /// Each trait's parameters and the methods it gives a default body.
+    pub methods: std::collections::HashMap<
+        crate::symbol::Symbol,
+        (
+            Vec<crate::syntax::GenericParam>,
+            Vec<crate::syntax::MethodSignature>,
+        ),
+    >,
+    /// Every impl's associated-type bindings, by the type it is for. `Self::Item` in an impl
+    /// that binds no `Item` of its own -- `impl DoubleEndedIterator for Range` -- means the one
+    /// another impl for the same type binds, as a supertrait's does in Rust.
+    pub bindings: Vec<(
+        crate::syntax::Type,
+        Vec<(crate::symbol::Symbol, crate::syntax::Type)>,
+    )>,
+}
 
 /// The trait methods that carry a default body, across every module.
 ///
@@ -124,8 +135,15 @@ pub type TraitDefaults = std::collections::HashMap<
 pub fn collect_trait_defaults<'p>(
     programs: impl IntoIterator<Item = &'p crate::syntax::Program>,
 ) -> TraitDefaults {
-    let mut defaults = TraitDefaults::new();
+    let mut defaults = TraitDefaults::default();
     for program in programs {
+        for block in &program.impls {
+            if !block.assoc_bindings.is_empty() {
+                defaults
+                    .bindings
+                    .push((block.target_type.clone(), block.assoc_bindings.clone()));
+            }
+        }
         for decl in &program.traits {
             let with_bodies: Vec<crate::syntax::MethodSignature> = decl
                 .methods
@@ -134,7 +152,9 @@ pub fn collect_trait_defaults<'p>(
                 .cloned()
                 .collect();
             if !with_bodies.is_empty() {
-                defaults.insert(decl.name.clone(), (decl.generics.clone(), with_bodies));
+                defaults
+                    .methods
+                    .insert(decl.name.clone(), (decl.generics.clone(), with_bodies));
             }
         }
     }
@@ -143,19 +163,25 @@ pub fn collect_trait_defaults<'p>(
 
 /// What an impl binds each of the trait's associated types to, keyed by the way a signature
 /// spells it: `type Item = i64;` becomes `Self::Item -> i64`.
+///
+/// A name the block does not bind comes from another impl for the same type, when one binds it.
 fn assoc_substitution(
     block: &crate::syntax::ImplBlock,
+    defaults: &TraitDefaults,
 ) -> std::collections::HashMap<crate::symbol::Symbol, crate::syntax::Type> {
-    block
-        .assoc_bindings
+    let others = defaults
+        .bindings
         .iter()
-        .map(|(name, bound)| {
-            (
-                crate::symbol::Symbol::from(format!("Self::{}", name.as_ref()).as_str()),
-                bound.clone(),
-            )
-        })
-        .collect()
+        .filter(|(target, _)| *target == block.target_type)
+        .flat_map(|(_, bound)| bound.iter());
+    let mut subst = std::collections::HashMap::new();
+    for (name, bound) in others.chain(block.assoc_bindings.iter()) {
+        subst.insert(
+            crate::symbol::Symbol::from(format!("Self::{}", name.as_ref()).as_str()),
+            bound.clone(),
+        );
+    }
+    subst
 }
 
 /// Replace `Self::Item` in an impl's methods with the type that impl bound it to.
@@ -166,12 +192,12 @@ fn assoc_substitution(
 /// an associated type was ever written.
 ///
 /// Bodies as well as signatures, so a default can write `Option<Self::Item>::None()`.
-pub fn bind_associated_types_in(program: &mut crate::syntax::Program) {
+pub fn bind_associated_types_in(program: &mut crate::syntax::Program, defaults: &TraitDefaults) {
     for block in &mut program.impls {
-        if block.assoc_bindings.is_empty() {
+        let subst = assoc_substitution(block, defaults);
+        if subst.is_empty() {
             continue;
         }
-        let subst = assoc_substitution(block);
         for method in &mut block.methods {
             for (_, param_ty) in &mut method.params {
                 *param_ty = param_ty.substitute(&subst);
@@ -183,14 +209,14 @@ pub fn bind_associated_types_in(program: &mut crate::syntax::Program) {
 }
 
 pub fn fill_trait_defaults_in(program: &mut crate::syntax::Program, defaults: &TraitDefaults) {
-    if defaults.is_empty() {
+    if defaults.methods.is_empty() {
         return;
     }
     for block in &mut program.impls {
         let Some(trait_name) = block.trait_name.clone() else {
             continue;
         };
-        let Some((trait_generics, trait_methods)) = defaults.get(&trait_name) else {
+        let Some((trait_generics, trait_methods)) = defaults.methods.get(&trait_name) else {
             continue;
         };
         // `impl Iterator<i64> for Range` binds the trait's `Item` to `i64`. Without this

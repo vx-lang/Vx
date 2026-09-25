@@ -323,16 +323,28 @@ The iterators `Iterator`'s adaptor methods build: `Map`, `Filter`, `Chain` and t
 - `struct Flatten<I, U>`<br>
   An iterator over the items of each of another's items, which are iterators themselves.
   Built by `flatten`.
+- `struct Rev<I>`<br>
+  An iterator over another's items from the back. Built by `rev`.
 
 **`Iterator for Map<I, Closure1<I :  : Item, U>>` methods**
 
 - `fn next(self : &mut Map<I, Closure1<I :  : Item, U>>) -> Option<U>`<br>
   The inner iterator's next item with `f` applied.
 
+**`DoubleEndedIterator for Map<I, Closure1<I :  : Item, U>>` methods**
+
+- `fn next_back(self : &mut Map<I, Closure1<I :  : Item, U>>) -> Option<U>`<br>
+  The inner iterator's last item with `f` applied.
+
 **`Iterator for Filter<I, Closure1<&I :  : Item, bool>>` methods**
 
 - `fn next(self : &mut Filter<I, Closure1<&I :  : Item, bool>>) -> Option<I :  : Item>`<br>
   The inner iterator's next item that `keep` accepts.
+
+**`DoubleEndedIterator for Filter<I, Closure1<&I :  : Item, bool>>` methods**
+
+- `fn next_back(self : &mut Filter<I, Closure1<&I :  : Item, bool>>) -> Option<I :  : Item>`<br>
+  The inner iterator's last item that `keep` accepts.
 
 **`Iterator for Take<I>` methods**
 
@@ -354,6 +366,11 @@ The iterators `Iterator`'s adaptor methods build: `Map`, `Filter`, `Chain` and t
 - `fn next(self : &mut Chain<A, B>) -> Option<A :  : Item>`<br>
   The first iterator's next item, or the second's once the first is finished.
 
+**`DoubleEndedIterator for Chain<A, B>` methods**
+
+- `fn next_back(self : &mut Chain<A, B>) -> Option<A :  : Item>`<br>
+  The second iterator's last item, or the first's once the second is finished.
+
 **`Iterator for TakeWhile<I, Closure1<&I :  : Item, bool>>` methods**
 
 - `fn next(self : &mut TakeWhile<I, Closure1<&I :  : Item, bool>>) -> Option<I :  : Item>`<br>
@@ -373,6 +390,11 @@ The iterators `Iterator`'s adaptor methods build: `Map`, `Filter`, `Chain` and t
 
 - `fn next(self : &mut Inspect<I, Closure1<&I :  : Item, i32>>) -> Option<I :  : Item>`<br>
   The inner iterator's next item, after `f` has seen it.
+
+**`DoubleEndedIterator for Inspect<I, Closure1<&I :  : Item, i32>>` methods**
+
+- `fn next_back(self : &mut Inspect<I, Closure1<&I :  : Item, i32>>) -> Option<I :  : Item>`<br>
+  The inner iterator's last item, after `f` has seen it.
 
 **`Iterator for Scan<I, St, Closure2<&mut St, I :  : Item, Option<B>>>` methods**
 
@@ -407,6 +429,16 @@ The iterators `Iterator`'s adaptor methods build: `Map`, `Filter`, `Chain` and t
 - `fn next(self : &mut Flatten<I, U>) -> Option<U :  : Item>`<br>
   The current inner iterator's next item, moving to the next one when it runs out.
 
+**`Iterator for Rev<I>` methods**
+
+- `fn next(self : &mut Rev<I>) -> Option<I :  : Item>`<br>
+  The inner iterator's last item.
+
+**`DoubleEndedIterator for Rev<I>` methods**
+
+- `fn next_back(self : &mut Rev<I>) -> Option<I :  : Item>`<br>
+  The inner iterator's first item.
+
 ## `core::iter::traits`
 
 The `Iterator` trait: one required `next`, and the methods written over it.
@@ -414,6 +446,10 @@ The `Iterator` trait: one required `next`, and the methods written over it.
 **Types**
 
 - `trait Iterator`
+- `trait DoubleEndedIterator`<br>
+  An iterator that can also answer from its far end, which is what `rev` needs.
+  Rust declares it as a subtrait of `Iterator`; Vx has no subtraits, and `Self::Item` here is
+  the one the type's `Iterator` impl binds.
 - `trait FromIterator<A>`<br>
   A collection that can be built from an iterator's items, which is what `collect` builds.
 - `trait Sum<A>`<br>
@@ -512,12 +548,25 @@ The `Iterator` trait: one required `next`, and the methods written over it.
   `f` answers an iterator, where Rust accepts anything that can become one.
 - `fn flatten(self : Self) -> Flatten<Self, Self :  : Item>`<br>
   An iterator over the items of each of these items, which are iterators themselves.
+- `fn rev(self : Self) -> Rev<Self>`<br>
+  An iterator over these items from the back, for an iterator that can answer from both ends.
 - `fn reduce(self : &mut Self, f : Closure2<Self :  : Item, Self :  : Item, Self :  : Item>) -> Option<Self :  : Item>`<br>
   `fold` with the first item as the starting value, so nothing for a sequence already
   finished.
 - `fn collect<B>(self : &mut Self) -> B`<br>
   Every item, gathered into a new collection of whatever type the result is assigned to:
   `let v : Vec<i64> = it.collect();`. That type says how, by implementing `FromIterator`.
+
+**`binds. trait DoubleEndedIterator` methods**
+
+- `fn next_back(self : &mut Self) -> Option<Self :  : Item>`<br>
+  The last item not yet handed out from either end, or nothing once they meet.
+- `fn rfold<B>(self : &mut Self, init : B, f : Closure2<B, Self :  : Item, B>) -> B`<br>
+  `fold`, from the back.
+- `fn rfind(self : &mut Self, f : Closure1<&Self :  : Item, bool>) -> Option<Self :  : Item>`<br>
+  The last item `f` accepts, searching from the back.
+- `fn nth_back(self : &mut Self, n : i64) -> Option<Self :  : Item>`<br>
+  The item `n` places from the back, counting the last as zero.
 
 **`trait FromIterator<A>` methods**
 
@@ -562,6 +611,11 @@ T = `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `f32`, `f64`
 
 - `fn next(self : &mut Range) -> Option<i64>`<br>
   The next value in the span, or nothing once `end` is reached.
+
+**`DoubleEndedIterator for Range` methods**
+
+- `fn next_back(self : &mut Range) -> Option<i64>`<br>
+  The last value in the span not yet handed out from either end.
 
 **Functions**
 
@@ -1749,6 +1803,11 @@ Clocks and durations.
 - `fn next(self : &mut VecIter<T>) -> Option<T>`<br>
   The next element, or nothing once the end is reached.
 
+**`DoubleEndedIterator for VecIter<T>` methods**
+
+- `fn next_back(self : &mut VecIter<T>) -> Option<T>`<br>
+  The last element not yet handed out from either end.
+
 **`VecIter<T>` methods**
 
 - `fn map<NewItem>(self : VecIter<T>, f : Closure1<T, NewItem>) -> VecMap<T, NewItem>`<br>
@@ -1778,4 +1837,4 @@ Clocks and durations.
 
 ______________________________________________________________________
 
-663 functions across 31 modules.
+676 functions across 31 modules.

@@ -38,6 +38,19 @@ impl<I : Iterator, U> Iterator for Map<I, Closure1<I::Item, U>> {
   }
 }
 
+impl<I : DoubleEndedIterator, U> DoubleEndedIterator for Map<I, Closure1<I::Item, U>> {
+  /// The inner iterator's last item with `f` applied.
+  fn next_back(self : &mut Map<I, Closure1<I::Item, U>>) -> Option<U> {
+    let step = self.inner.next_back();
+    if step.is_none() {
+      return Option<U>::None();
+    }
+    let g = self.f;
+    let p = g.func;
+    return Option<U>::Some(p(g.env, step.unwrap()));
+  }
+}
+
 /// An iterator over the items of another that `keep` accepts. Built by `filter`.
 struct Filter<I, P> {
   inner : I,
@@ -51,6 +64,25 @@ impl<I : Iterator> Iterator for Filter<I, Closure1<&I::Item, bool>> {
   fn next(self : &mut Filter<I, Closure1<&I::Item, bool>>) -> Option<I::Item> {
     loop {
       let step = self.inner.next();
+      if step.is_none() {
+        return step;
+      }
+      let v = step.unwrap();
+      let g = self.keep;
+      let p = g.func;
+      if p(g.env, &v) {
+        return Option<I::Item>::Some(v);
+      }
+    }
+    return Option<I::Item>::None();
+  }
+}
+
+impl<I : DoubleEndedIterator> DoubleEndedIterator for Filter<I, Closure1<&I::Item, bool>> {
+  /// The inner iterator's last item that `keep` accepts.
+  fn next_back(self : &mut Filter<I, Closure1<&I::Item, bool>>) -> Option<I::Item> {
+    loop {
+      let step = self.inner.next_back();
       if step.is_none() {
         return step;
       }
@@ -153,6 +185,17 @@ impl<A : Iterator, B : Iterator> Iterator for Chain<A, B> {
   }
 }
 
+impl<A : DoubleEndedIterator, B : DoubleEndedIterator> DoubleEndedIterator for Chain<A, B> {
+  /// The second iterator's last item, or the first's once the second is finished.
+  fn next_back(self : &mut Chain<A, B>) -> Option<A::Item> {
+    let step = self.b.next_back();
+    if step.is_some() {
+      return step;
+    }
+    return self.a.next_back();
+  }
+}
+
 /// An iterator over another's items for as long as `keep` accepts them. Built by `take_while`.
 struct TakeWhile<I, P> {
   inner : I,
@@ -249,6 +292,21 @@ impl<I : Iterator> Iterator for Inspect<I, Closure1<&I::Item, i32>> {
   /// The inner iterator's next item, after `f` has seen it.
   fn next(self : &mut Inspect<I, Closure1<&I::Item, i32>>) -> Option<I::Item> {
     let step = self.inner.next();
+    if step.is_none() {
+      return step;
+    }
+    let v = step.unwrap();
+    let g = self.f;
+    let p = g.func;
+    p(g.env, &v);
+    return Option<I::Item>::Some(v);
+  }
+}
+
+impl<I : DoubleEndedIterator> DoubleEndedIterator for Inspect<I, Closure1<&I::Item, i32>> {
+  /// The inner iterator's last item, after `f` has seen it.
+  fn next_back(self : &mut Inspect<I, Closure1<&I::Item, i32>>) -> Option<I::Item> {
+    let step = self.inner.next_back();
     if step.is_none() {
       return step;
     }
@@ -428,5 +486,26 @@ impl<I : Iterator, U : Iterator> Iterator for Flatten<I, U> {
       self.front = outer;
     }
     return Option<U::Item>::None();
+  }
+}
+
+/// An iterator over another's items from the back. Built by `rev`.
+struct Rev<I> {
+  inner : I,
+}
+
+impl<I : DoubleEndedIterator> Iterator for Rev<I> {
+  type Item = I::Item;
+
+  /// The inner iterator's last item.
+  fn next(self : &mut Rev<I>) -> Option<I::Item> {
+    return self.inner.next_back();
+  }
+}
+
+impl<I : DoubleEndedIterator> DoubleEndedIterator for Rev<I> {
+  /// The inner iterator's first item.
+  fn next_back(self : &mut Rev<I>) -> Option<I::Item> {
+    return self.inner.next();
   }
 }
