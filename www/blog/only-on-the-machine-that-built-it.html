@@ -43,9 +43,15 @@
 <h1>The library that only worked on the machine that built it</h1>
 <p class="post-meta">Aditya Kumar &middot; 22 September 2026</p>
 
-<blockquote class="tldr"><strong>TL;DR</strong>: Vx 0.0.1 shipped on 10 September and could only run hello-world on the machine that built it. Both macOS dynamic libraries recorded the build runner's local directory as their install path. Every program linked against them copied that path. Our CI smoke test passed because it ran on that same build machine, leaving the broken release archive published for eleven days. Fixing this bug revealed three additional packaging issues. Here is how each bug occurred, how we fixed it, and two commands to check your own releases.</blockquote>
+<blockquote class="tldr"><strong>TL;DR</strong>: Vx 0.0.1 shipped on 10 September and could only
+run hello-world on the machine that built it. Both macOS libraries recorded the build runner's
+directory as their install path, and every program linked against them copied that path. The
+release smoke test passed because it ran on that same runner, so the broken release stayed up for
+eleven days. Fixing it uncovered three more bugs, one after another. Here is the whole chain, and
+two commands that check your own release for the first one.</blockquote>
 
-<p class="lede">The front page of this site offers one install command. Running it on a fresh machine produces an immediate error:</p>
+<p class="lede">On 10 September we shipped Vx 0.0.1. Every check was green. For the next eleven
+days, anyone who ran the install command from our front page on their own machine got this:</p>
 
 <pre class="diag"><code>$ curl -fsSL https://vxlang.org/install.sh | sh
 ...
@@ -55,17 +61,28 @@ dyld[7851]: Library not loaded: /Users/runner/work/Vx/Vx/target/release/deps/lib
 error: the installed compiler could not run a hello-world program</code></pre>
 
 <p>
-  That path points to a directory on a temporary GitHub Actions build runner. The runner deleted that directory when the release job finished, making the library unavailable on any user's machine.
-</p>
-
-<h2>What a dylib remembers</h2>
-
-<p>
-  On macOS, dynamic shared libraries (dylib files in Mach-O format) record their expected install location in a header field called <code>LC_ID_DYLIB</code>. When a compiler links an executable against a shared library, the linker copies that path string into the executable. At program startup, the macOS dynamic linker (<code>dyld</code>) reads the path from the executable to find and load the library.
+  Look at the path. <code>/Users/runner/work/...</code> is a folder on a GitHub Actions runner: the
+  temporary machine that built the release. That machine was deleted when the release job finished.
+  So the only computer where Vx 0.0.1 worked stopped existing a few minutes after it was built.
 </p>
 
 <p>
-  When a build script does not specify an install name, the compiler defaults to the absolute path where the library was compiled. Neither of our libraries configured an install name. Both binaries stored the temporary build runner path:
+  This post follows that bug and the three that were hiding behind it. Each fix led straight to the
+  next bug.
+</p>
+
+<h2>Bug 1: the library remembered where it was born</h2>
+
+<p>
+  On macOS, a shared library (a <code>.dylib</code> file) stores the path where it expects to be
+  found. The field is called <code>LC_ID_DYLIB</code>. When you link a program against the
+  library, the linker copies that path into the program. When the program starts, the macOS
+  dynamic loader, <code>dyld</code>, reads the path back and goes looking for the library there.
+</p>
+
+<p>
+  If the build never sets this path, the library gets the full path of the folder it was built in.
+  We never set it for either library. Here is what the 0.0.1 release recorded:
 </p>
 
 <pre class="diag"><code>$ otool -D ~/.vx/toolchains/v0.0.1/lib/libvx_std_core.dylib
@@ -75,93 +92,139 @@ $ otool -D ~/.vx/toolchains/v0.0.1/lib/libvx_mlir_shims.dylib
 /Users/runner/work/Vx/Vx/target/release/build/vxc-7e805375eee9c913/out/libvx_mlir_shims.dylib</code></pre>
 
 <p>
-  The published toolchains included paths from the build runner's local filesystem. Linux binaries (ELF format) use similar mechanisms: <code>DT_SONAME</code> defines the library's identity, while <code>DT_RPATH</code> and <code>DT_RUNPATH</code> specify runtime search directories. Both operating systems allow builds to produce this packaging mistake if install paths are omitted.
+  Every toolchain we published carried a piece of the build machine's filesystem inside it. Linux
+  has the same trap under other names: <code>DT_SONAME</code> is the name a library gives itself,
+  and <code>DT_RPATH</code> and <code>DT_RUNPATH</code> tell the loader where to search. Any
+  project that builds shared libraries in CI can ship this bug, on either system.
 </p>
 
-<h2>The smoke test was green, and it was not a bad test</h2>
+<h2>Why every check was green</h2>
 
 <p>
-  The release smoke test passed because it ran on the same virtual machine that compiled the binaries. In CI, a smoke test runs basic checks to verify an installation before publishing. Our release workflow unpacked the release tarball and ran a test program on that runner.
-</p>
-
-<p>
-  On that build runner, the original build path <code>/Users/runner/work/Vx/Vx/target/release/deps</code> still existed with the compiled library inside it. When <code>dyld</code> searched that path, it loaded the library and the program ran successfully. The test proved that the artifact worked in its build environment, but gave no guarantee of portability to other systems.
-</p>
-
-<p>
-  Verifying a release artifact requires testing portability as well as execution. Running an executable checks only the current machine. Inspecting library metadata reveals where the binary expects dependencies to exist when copied to a new system.
-</p>
-
-<h2>The fix broke a test, which is how we found the rest of it</h2>
-
-<p>
-  To fix library paths on macOS, each library must set an <code>@rpath</code> install name, and the compiler must pass matching <code>-rpath</code> linker flags. The <code>@rpath</code> prefix instructs <code>dyld</code> to search a list of runtime paths supplied by the application at launch. The Vx runtime and shims do not share a single directory: in a source checkout, the runtime sits in <code>target/&lt;profile&gt;</code> and the MLIR shims sit in Cargo's build script output directory (<code>OUT_DIR</code>).
+  Our release workflow already had a smoke test. It unpacked the release archive and ran a program
+  with it. It passed on every release, and it was doing its job correctly.
 </p>
 
 <p>
-  Our initial fix gave both libraries an <code>@rpath</code> name, but added only one <code>-rpath</code> entry for the runtime directory. Because the shims directory was missing from the search list, programs could not resolve the shims library at runtime.
+  The problem was where it ran: on the same runner, a few steps after the build. On that machine,
+  <code>/Users/runner/work/Vx/Vx/target/release/deps</code> was a real folder with the real library
+  inside. <code>dyld</code> found exactly what it was told to find, and the program printed the
+  right answer.
 </p>
 
 <p>
-  An existing test fixture, <code>host_workers_cover_the_loop_once.vx</code>, immediately failed during linking. This fixture tests parallel loop execution by compiling and executing a binary. Because it links and runs a program, it exercised dynamic library loading and caught the missing linker flag before release.
+  The test asked "does this run?" on the one machine in the world where the answer was yes. Running
+  a program only tells you about the machine it ran on. To know whether a release will work
+  somewhere else, you have to read the binaries and see which paths they expect.
 </p>
 
-<h2>The second question that smoke test never asked</h2>
+<h2>The first fix broke a test about parallel loops</h2>
 
 <p>
-  Our smoke test tested only the <code>--run</code> flag, leaving the <code>--action emit-obj</code> compiler flag unverified. This omission hid an existing bug: <code>emit-obj</code> had been broken on Linux for months.
+  The fix has two parts. Each library gets an <code>@rpath</code> install name, which tells
+  <code>dyld</code> to search a list of folders that the program provides. Then the compiler passes
+  an <code>-rpath</code> flag for each folder the program links a library from. Our two libraries
+  live in different folders: the runtime in <code>target/&lt;profile&gt;</code>, and the MLIR shims
+  in the build script's output folder (<code>OUT_DIR</code>).
 </p>
 
 <p>
-  The bug originated in string conversion between Rust and MLIR's C API. In Rust, a string slice (<code>&amp;str</code>) consists of a pointer and a byte length, without a terminating NUL (<code>\0</code>) byte. The C function <code>mlirExecutionEngineCreate</code> constructed an LLVM <code>StringRef</code> using only the pointer, calling <code>strlen</code> and discarding the provided length. The function read past the end of the string into adjacent heap bytes. Because the library path was corrupted, dynamic loading failed and the compiler wrote no object file.
+  Our first attempt renamed both libraries but added only one <code>-rpath</code>. That was worse
+  than no fix at all: the shims library now announced a name that nothing could resolve.
 </p>
 
 <p>
-  This bug survived testing on macOS, Linux on EC2, and Ubuntu 22.04 in Docker. All three environments executed only <code>--run</code>. The <code>--run</code> flag passes the module to <code>mlir-translate</code> and links through Clang, while <code>emit-obj</code> builds an MLIR execution engine in-process. Testing multiple operating systems failed to detect the issue because every environment exercised the same code path.
+  The test suite caught it right away, from an unexpected place.
+  <code>host_workers_cover_the_loop_once.vx</code> checks that a parallel loop visits every
+  iteration exactly once. It has nothing to do with packaging. It caught the bug because it builds
+  a real program and runs it, and only a test that runs a built program can see a library that
+  fails to load.
 </p>
 
-<h2>Then the release failed on a third thing</h2>
+<h2>Bug 2: the flag nobody ran</h2>
 
 <p>
-  The release packaging script used an outdated, manual list of standard library directories. After merging the library path fixes, the v0.0.2 release build failed on both macOS and Linux:
+  With the first bug in view, we asked what else the smoke test never tried. It compiled hello-world
+  with <code>--run</code>. Nothing ever tried <code>--action emit-obj</code>, which writes an object
+  file.
+</p>
+
+<p>
+  <code>emit-obj</code> had been broken on Linux for months. The cause was a string handed from
+  Rust to MLIR's C API. A Rust string slice (<code>&amp;str</code>) is a pointer plus a length, with
+  no NUL (<code>\0</code>) byte at the end. The C function <code>mlirExecutionEngineCreate</code>
+  ignored the length, built its <code>StringRef</code> from the pointer alone, and called
+  <code>strlen</code> to find the end. Every runtime library path ran past its real end into
+  whatever heap bytes came next. No library loaded, and no object file was written.
+</p>
+
+<p>
+  This bug survived testing on macOS, on Linux on EC2, and in an Ubuntu 22.04 Docker container.
+  All three used <code>--run</code>, which takes a different route through MLIR:
+  <code>--run</code> hands the module to <code>mlir-translate</code> and links with Clang, while
+  <code>emit-obj</code> builds an MLIR execution engine inside the compiler. Three environments
+  all tested the same code path, and the bug was on the other one.
+</p>
+
+<h2>Bug 3: the release shipped without <code>core</code></h2>
+
+<p>
+  With both fixes merged, we started the v0.0.2 release. It failed on both macOS and Linux:
 </p>
 
 <pre><code>Frontend failed to parse 'uses_std.vx':
   Resolution error: Could not resolve import 'core::ops'</code></pre>
 
 <p>
-  The packaging script explicitly copied only <code>std</code> and <code>graph</code>. When <code>core</code> was added to the repository later, the script was not updated. The standard library module <code>std::vec</code> imports <code>core::ops</code>. In a local git checkout, the compiler found <code>core</code> on disk. In the release archive, <code>core</code> was missing, causing imports to fail.
+  The packaging script copied the standard library from a hand-written list: <code>std</code> and
+  <code>graph</code>. We added <code>core</code> to the repository later, and nobody updated the
+  list. So every release shipped without <code>core</code>. Nobody noticed in development, because
+  a source checkout has the whole tree on disk. The release archive did not, and
+  <code>std::vec</code> imports <code>core::ops</code>.
 </p>
 
-<h2>And that fix shipped a bug its own assertion caught</h2>
+<h2>Bug 4: the fix for bug 3, caught by its own assertion</h2>
 
 <p>
-  We updated the packaging script to copy every directory under <code>stdlib/</code> dynamically, and added an assertion to verify that <code>std</code> and <code>core</code> were present before building the release archive. That new assertion failed on its very first execution.
+  The fix was to copy every folder under <code>stdlib/</code> instead of a remembered list. In the
+  same change, we added an assertion that <code>std</code> and <code>core</code> are present before
+  the archive is built.
 </p>
 
 <p>
-  The shell pattern <code>stdlib/*/</code> passed directory names with trailing slashes to <code>cp</code>. On Unix, <code>cp -R dir/ dest</code> copies the files inside <code>dir/</code> directly into <code>dest</code>, leaving out the enclosing folder name. This flattened all files into <code>stdlib/</code>, leaving no <code>std/</code> directory for imports.
+  The assertion failed on its very first run. The glob <code>stdlib/*/</code> gives each folder
+  name to <code>cp</code> with a trailing slash, and <code>cp -R dir/ dest</code> copies what is
+  inside <code>dir/</code> and drops the folder itself. Every module landed loose in
+  <code>stdlib/</code>, with no <code>std/</code> folder left to import from.
 </p>
 
 <p>
-  Because the assertion checked for <code>stdlib/std</code> immediately after copying, the release failed before creating a broken tarball. Adding assertions alongside packaging modifications catches script errors during the build.
+  Without the assertion, this would have been bug 5, found by users. That is why we now write the
+  assertion in the same change as the code it guards.
 </p>
 
-<h2>What is in place now</h2>
+<h2>What guards the release now</h2>
 
-<p>Our release pipeline now includes four automated guards, each verified by reproducing the failure and confirming the test caught it:</p>
+<p>We added four guards. We tested each one by breaking the code it covers and checking that the
+guard reported it:</p>
 
 <ul>
-  <li>A unit test verifying that compiled shared libraries specify relocatable <code>@rpath</code> install names.</li>
-  <li>A release step that inspects all shipped Mach-O binaries and fails if any binary records a build-machine path. Validated against the broken v0.0.1 archive, where it caught both libraries.</li>
-  <li>An <code>emit-obj</code> assertion in the smoke test that confirms the object file exists on disk. Previously, the command could return an exit status of zero across three distinct failure modes.</li>
-  <li>A packaging script that automatically iterates through all subdirectories in <code>stdlib/</code>, backed by an assertion that verifies <code>std</code> and <code>core</code> are present before archiving.</li>
+  <li>A unit test that checks our shipped libraries use relocatable <code>@rpath</code> install
+      names.</li>
+  <li>A release step that reads the paths recorded in every shipped Mach-O binary and fails if any
+      of them is a build-machine path. We ran it against the broken v0.0.1 archive, and it caught
+      both libraries.</li>
+  <li>An <code>emit-obj</code> check in the smoke test that looks for the object file on disk. The
+      exit status alone reported success in three different failure modes.</li>
+  <li>A packaging step that copies every folder under <code>stdlib/</code>, with an assertion that
+      <code>std</code> and <code>core</code> made it into the archive.</li>
 </ul>
 
-<h2>Two commands, on your release rather than ours</h2>
+<h2>Check your own release</h2>
 
 <p>
-  Any software project compiling shared libraries in CI can accidentally package build-machine paths. You can inspect your release archives using these commands:
+  Nothing here is specific to Vx. If your project builds a shared library in CI and ships it,
+  unpack your release and look at the paths inside:
 </p>
 
 <pre><code># macOS
@@ -172,21 +235,27 @@ $ otool -L bin/*
 $ readelf -d lib/*.so | grep -E 'RPATH|RUNPATH|SONAME'</code></pre>
 
 <p>
-  On macOS, <code>otool -D</code> prints the library install name, and <code>otool -L</code> lists linked dependencies. On Linux, <code>readelf -d</code> displays dynamic section tags. If any command outputs a build-runner path, the binary will fail on user machines. In Vx v0.0.2, the libraries report relocatable paths:
+  On macOS, <code>otool -D</code> prints a library's install name and <code>otool -L</code> lists
+  what a program links against. On Linux, <code>readelf -d</code> shows the same information. If
+  any line shows a folder that only exists on your build machine, your release has this bug, and
+  your smoke test is probably green. Ours now prints:
 </p>
 
 <pre><code>$ otool -D lib/libvx_std_core.dylib
 @rpath/libvx_std_core.dylib</code></pre>
 
 <p class="verdict">
-  Running an artifact solely on the machine that built it tests only that specific environment. Our original smoke test verified that the toolchain worked on the CI runner, while hiding that the binaries were broken on every other computer.
+  A test that runs a release on the machine that built it is testing that machine. Our release said
+  the toolchain worked, and it was right about the only computer it ever asked.
 </p>
 
 <p>
-  Vx v0.0.2 is available with all four guards in place. You can install it on macOS (Apple Silicon) or Linux (x86-64) by running:
+  Vx v0.0.2 is out with all four guards. The install command on the front page now works on macOS
+  (Apple Silicon) and Linux (x86-64):
   <code>curl -fsSL https://vxlang.org/install.sh | sh</code>.
-  If the installer fails on your machine, please include the terminal output when opening an
-  <a href="https://github.com/vx-lang/Vx/issues">issue on GitHub</a>.
+  If it fails on your machine, please
+  <a href="https://github.com/vx-lang/Vx/issues">open an issue on GitHub</a> and include the
+  output.
 </p>
 
 </article>
