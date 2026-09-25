@@ -1,0 +1,19 @@
+//===- clash_right.vx - Vx Compiler -----------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Declares `Point`, as clash_left does, with a different layout.
+struct Point {
+  y : i32,
+  z : i64,
+}
+
+fn right_z() -> i64 {
+  let p = Point {
+    y : 5, z : 20i64
+  };
+  return p.z;
+}
