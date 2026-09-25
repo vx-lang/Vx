@@ -415,6 +415,15 @@ trait Iterator {
     };
   }
 
+  /// An iterator over these items, repeated forever. Each pass restarts from a clone of this
+  /// iterator as it was when `cycle` was called, so the type must implement `Clone`. An
+  /// iterator with no items gives one with none.
+  fn cycle(self : Self) -> Cycle<Self> {
+    return Cycle<Self> {
+      orig : self, cur : Option<Self>::None()
+    };
+  }
+
   /// An iterator that answers nothing forever once these items have run out.
   fn fuse(self : Self) -> Fuse<Self> {
     return Fuse<Self> {
