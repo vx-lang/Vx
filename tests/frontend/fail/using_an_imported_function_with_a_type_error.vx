@@ -1,0 +1,20 @@
+//===- using_an_imported_function_with_a_type_error.vx - Vx Compiler *- Vx -*-===//
+// RUN: not vxc --emit-mlir %s 2>&1 | FileCheck %s
+// RUN: not vxc --legacy-codegen --emit-mlir %s 2>&1 | FileCheck %s
+// RUN: not vxc -j 4 --emit-mlir %s 2>&1 | FileCheck %s --check-prefixes=CHECK,JOBS
+import tests::modules::library_that_uses_its_type_error;
+
+fn main() -> i32 {
+  print(total());
+  return 0;
+}
+
+// `total` has no errors, but it calls `wrong_field`, which has one. The compiler reports that
+// error, naming the function and the module it is in. It used to crash instead, while
+// generating code for `wrong_field`.
+//
+// A parallel compile (`-j`) reports the error directly, instead of falling back to a normal
+// compile.
+// JOBS-NOT: using the sequential driver
+// CHECK: in `wrong_field`, imported from `tests::modules::library_that_uses_its_type_error` and used by this program: Struct 'Point' has no field 'y'
+// JOBS: Compilation failed with 1 semantic errors

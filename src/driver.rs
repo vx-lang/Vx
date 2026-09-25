@@ -989,9 +989,9 @@ impl CompilerDriver {
         // instantiations land in `monomorphized_functions`, and the method/generic calls in the
         // emitted bodies are rewritten to those instance names. Generic functions were already
         // dropped from `other_asts`; generic *methods* are instantiated on demand by these calls.
-        // A library function's diagnostics are not the program's, unless the program calls a
-        // function whose body does not check: see `imported_flaws`.
-        let mut flaws: std::collections::BTreeMap<
+        // Keep each imported function's errors apart, and report only those of the functions
+        // the program uses. See `imported_errors`.
+        let mut errors_by_function: std::collections::BTreeMap<
             String,
             (String, Vec<crate::diagnostic::Diagnostic>),
         > = std::collections::BTreeMap::new();
@@ -1002,30 +1002,33 @@ impl CompilerDriver {
                     checker.check_function(f);
                     let found: Vec<_> = checker.errors.inner.drain(before..).collect();
                     if found.iter().any(|d| d.level == DiagnosticLevel::Error) {
-                        flaws.insert(f.name.to_string(), (p.module_path.to_string(), found));
+                        errors_by_function
+                            .insert(f.name.to_string(), (p.module_path.to_string(), found));
                     }
                 }
             }
         }
-        let flawed: std::collections::HashSet<String> = flaws.keys().cloned().collect();
-        let reached = crate::hir::check::imported_flaws::reached(
+        let with_errors: std::collections::HashSet<String> =
+            errors_by_function.keys().cloned().collect();
+        let used = crate::hir::check::imported_errors::used_functions_with_errors(
             &checker.traffic.capacity_summaries,
-            &flawed,
+            &with_errors,
         );
-        for (name, (module, found)) in flaws {
-            if reached.contains(&name) {
+        for (name, (module, found)) in errors_by_function {
+            if used.contains(&name) {
                 checker
                     .errors
                     .inner
-                    .extend(crate::hir::check::imported_flaws::errors_of(
+                    .extend(crate::hir::check::imported_errors::errors_to_report(
                         found, &module, &name,
                     ));
             }
         }
-        // Code generation cannot compile a body that does not check, called or not.
+        // Do not compile the unused ones: the code generator cannot compile a type error.
         for p in other_asts.values_mut() {
-            p.functions
-                .retain(|f| !flawed.contains(f.name.as_ref()) || reached.contains(f.name.as_ref()));
+            p.functions.retain(|f| {
+                !with_errors.contains(f.name.as_ref()) || used.contains(f.name.as_ref())
+            });
         }
 
         // The cross-call half of the capacity check: fold every function's summary over the

@@ -1,0 +1,24 @@
+//===- library_that_uses_its_type_error.vx - Vx Compiler --------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A library function without errors, `total`, that calls one with a type error.
+
+struct Point {
+  x : i64,
+}
+
+// `Point` has no field `y`.
+fn wrong_field() -> i64 {
+  let p = Point {
+    x : 1i64
+  };
+  return p.y;
+}
+
+fn total() -> i64 {
+  return wrong_field() + 1i64;
+}

@@ -1,0 +1,14 @@
+//===- using_an_imported_function_with_a_type_error_from_a_closure.vx - Vx Compiler *- Vx -*-===//
+// RUN: not vxc --emit-mlir %s 2>&1 | FileCheck %s
+import core::iter;
+import tests::modules::library_with_type_errors;
+
+fn main() -> i32 {
+  let mut it = range(0i64, 3i64).map(| x : i64 | calls_a_missing_function(x));
+  print(it.next().unwrap());
+  return 0;
+}
+
+// Only the closure calls `calls_a_missing_function`. Calling a function from inside a closure
+// still counts as using it, so its error is reported.
+// CHECK: in `calls_a_missing_function`, imported from `tests::modules::library_with_type_errors` and used by this program: Undefined function 'missing_function'

@@ -1,0 +1,35 @@
+//===- library_with_type_errors.vx - Vx Compiler ----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A library in which some functions have type errors. The functions without errors do not call
+// them, so a program that imports this library compiles as long as it does not use them.
+
+struct Point {
+  x : i64,
+}
+
+// `Point` has no field `y`.
+fn wrong_field() -> i64 {
+  let p = Point {
+    x : 1i64
+  };
+  return p.y;
+}
+
+// Calls `wrong_field`, and also a function that does not exist.
+fn calls_wrong_field() -> i64 {
+  return wrong_field() + no_such_function(1i64);
+}
+
+// Calls a function that does not exist.
+fn calls_a_missing_function(x : i64) -> i64 {
+  return missing_function(x);
+}
+
+fn add_one(x : i32) -> i32 {
+  return x + 1;
+}

@@ -1297,15 +1297,16 @@ pub fn report_warnings(warnings: &[crate::diagnostic::Diagnostic]) {
     }
 }
 
-/// The errors of the imported free functions that something emitted calls. The flawed ones
-/// nothing calls are taken out of `modules`, with what checking them instantiated, since code
-/// generation cannot compile them.
-fn imported_flaws_of(
+/// The errors to report from the imported modules' functions: those of the functions the
+/// program uses. An unused function with an error is removed from `modules`, together with the
+/// generic instances checking it created, because the code generator cannot compile it. See
+/// `imported_errors`.
+fn imported_errors_to_report(
     modules: &mut [VxModule],
     checks: &mut [FunctionCheck],
     entry: usize,
 ) -> Vec<crate::diagnostic::Diagnostic> {
-    let is_flawed = |c: &FunctionCheck| {
+    let has_error = |c: &FunctionCheck| {
         c.module_idx != entry
             && c.diagnostics
                 .iter()
@@ -1315,23 +1316,26 @@ fn imported_flaws_of(
                 .iter()
                 .any(|f| f.generics.is_empty() && f.name.as_ref() == c.function)
     };
-    let flawed: std::collections::HashSet<String> = checks
+    let with_errors: std::collections::HashSet<String> = checks
         .iter()
-        .filter(|c| is_flawed(c))
+        .filter(|c| has_error(c))
         .map(|c| c.function.clone())
         .collect();
-    if flawed.is_empty() {
+    if with_errors.is_empty() {
         return Vec::new();
     }
-    let reached = crate::hir::check::imported_flaws::reached(
+    let used = crate::hir::check::imported_errors::used_functions_with_errors(
         checks.iter().flat_map(|c| c.capacity_summaries.iter()),
-        &flawed,
+        &with_errors,
     );
     let mut errors = Vec::new();
-    for c in checks.iter_mut().filter(|c| flawed.contains(&c.function)) {
+    for c in checks
+        .iter_mut()
+        .filter(|c| with_errors.contains(&c.function))
+    {
         let module = modules[c.module_idx].module_path.to_string();
-        if reached.contains(&c.function) {
-            errors.extend(crate::hir::check::imported_flaws::errors_of(
+        if used.contains(&c.function) {
+            errors.extend(crate::hir::check::imported_errors::errors_to_report(
                 c.diagnostics.inner.clone(),
                 &module,
                 &c.function,
@@ -1343,7 +1347,7 @@ fn imported_flaws_of(
     errors.sort_by(|a, b| a.message.cmp(&b.message));
     for m in modules.iter_mut() {
         m.functions
-            .retain(|f| !flawed.contains(f.name.as_ref()) || reached.contains(f.name.as_ref()));
+            .retain(|f| !with_errors.contains(f.name.as_ref()) || used.contains(f.name.as_ref()));
     }
     errors
 }
@@ -1463,14 +1467,13 @@ fn type_check_phase(
             .collect()
     };
 
-    // An imported module's body diagnostics are dropped, not counted: they cannot fail this
-    // compile any more than they can be printed by it. The exception is a function whose body
-    // does not check and that something emitted calls: see `imported_flaws`. The whole-program
-    // fold below is separate -- it is about this program's call graph, so it always reports.
+    // Errors in an imported module's functions are reported only for the functions the program
+    // uses; see `imported_errors`. The whole-program fold below is separate -- it is about this
+    // program's call graph, so it always reports.
     let mut check_results = check_results;
-    let called_flaws = match reported_module {
+    let imported_errors = match reported_module {
         None => Vec::new(),
-        Some(entry) => imported_flaws_of(parsed_modules, &mut check_results, entry),
+        Some(entry) => imported_errors_to_report(parsed_modules, &mut check_results, entry),
     };
     let reported: Vec<&crate::diagnostic::Diagnostic> = check_results
         .iter()
@@ -1479,7 +1482,7 @@ fn type_check_phase(
             Some(entry) => c.module_idx == entry,
         })
         .flat_map(|c| c.diagnostics.iter())
-        .chain(called_flaws.iter())
+        .chain(imported_errors.iter())
         .collect();
     let mut warnings: Vec<crate::diagnostic::Diagnostic> = reported
         .iter()

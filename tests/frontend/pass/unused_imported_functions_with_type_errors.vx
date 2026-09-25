@@ -1,0 +1,19 @@
+//===- unused_imported_functions_with_type_errors.vx - Vx Compiler *- Vx -*-===//
+// RUN: vxc --emit-mlir %s 2>&1 | FileCheck %s
+// RUN: vxc --legacy-codegen --emit-mlir %s 2>&1 | FileCheck %s
+// RUN: vxc -j 4 --emit-mlir %s 2>&1 | FileCheck %s --check-prefixes=CHECK,JOBS
+import tests::modules::library_with_type_errors;
+
+fn main() -> i32 {
+  return add_one(41);
+}
+
+// The program uses only `add_one`. The library's functions with type errors are not reported,
+// and no code is generated for them, so none of them appears in the generated code.
+// `calls_wrong_field` calls `wrong_field`, but nothing uses `calls_wrong_field`, so that call
+// does not count.
+// CHECK-NOT: used by this program
+// JOBS-NOT: using the sequential driver
+// CHECK: func.func @main
+// CHECK-NOT: wrong_field
+// CHECK-NOT: calls_a_missing_function
