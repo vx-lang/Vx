@@ -34,6 +34,18 @@ These keep commands clean and avoid unnecessary permission prompts:
   could only reach another by hand. Branch protection on GitHub is what actually enforces
   this — the rule here is so you do not have to discover it by being refused.
 - **CRITICAL** You are not allowed to edit .git/config
+- Branch every pull request from `main`. When a change needs another one that is not merged
+  yet, make them a GitHub stacked PR (`gh stack link <PR> <PR> ...`, bottom first), not
+  plain PRs whose base happens to be another PR's branch. The repository merges by squashing,
+  so a squash puts new commits on `main` that git cannot match to the copies in a hand-made
+  stack, and every PR above it then conflicts. A GitHub stack is rebased by GitHub itself
+  after each merge.
+- Keep each branch in a stack a few plain commits, with no merges from `main` in it:
+  GitHub's rebase replays every commit, and an old copy of a commit `main` already has will
+  conflict.
+- Do not run `gh stack rebase`, `sync` or `push`: they push with `--force-with-lease`, which is
+  a force-push. If a stack needs fixing, build fresh branches under new names and open new
+  PRs.
 - Commit changes whenever you make a meaningful change and it builds cleanly.
 - Always write detailed commit messages with a commit message body. If the change fixes a bug, indicate that this bug is fixed by the commit using 'Fixes: #<BUG-ID>' in the commit message body.
 - Always run formatters after doing `git add` and before `git commit`:
