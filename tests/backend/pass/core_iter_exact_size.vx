@@ -1,0 +1,100 @@
+//===- core_iter_exact_size.vx - Vx Compiler --------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `ExactSizeIterator`, and the `rev` it lets `take`, `skip`, `step_by`, `enumerate` and `zip` do.
+//
+//   108    `Range`'s `len`, before and after an item from each end
+//   432    `take(4).rev()`: four items, from 3 down
+//   3987e  `skip(7).rev()`: three items, from 9 down, then nothing
+//   496    `step_by(3)` over 0..10 is 0 3 6 9, four items, 9 and 6 from the back
+//   272    `enumerate().rev()` over 5..8: the last item is 7, at position 2, and two left
+//   3212   `zip` of five items and three: three pairs, the last (2, 12)
+//   111    ...and of two and five: the last pair (1, 11)
+//   3n     `len` and `is_empty` of a `Vec`'s mapped iterator
+//   039    `step_by(3)` over 0..11 after one `next`: 3 left, the last 9
+//   32     `take(5)` of three items: three, from 2 down
+//   4      `peekable` counts the item `peek` holds
+//   678    `map`, `inspect` and `fuse` have as many as they wrap
+import core::iter;
+import std::vec;
+
+fn main() -> i32 {
+  let mut a = range(0i64, 10i64);
+  print(a.len());
+  a.next();
+  a.next_back();
+  print(a.len());
+  print!(" ");
+  let mut t = range(0i64, 10i64).take(4i64).rev();
+  print(t.len());
+  print(t.next().unwrap());
+  print(t.next().unwrap());
+  print!(" ");
+  let mut s = range(0i64, 10i64).skip(7i64).rev();
+  print(s.len());
+  print(s.next().unwrap());
+  print(s.next().unwrap());
+  print(s.next().unwrap());
+  if s.next().is_none() {
+    print!("e");
+  }
+  print!(" ");
+  let mut st = range(0i64, 10i64).step_by(3i64);
+  print(st.len());
+  print(st.next_back().unwrap());
+  print(st.next_back().unwrap());
+  print!(" ");
+  let mut e = range(5i64, 8i64).enumerate().rev();
+  let p = e.next().unwrap();
+  print(p.0);
+  print(p.1);
+  print(e.len());
+  print!(" ");
+  let mut z = range(0i64, 5i64).zip(range(10i64, 13i64));
+  print(z.len());
+  let q = z.next_back().unwrap();
+  print(q.0);
+  print(q.1);
+  let mut zb = range(0i64, 2i64).zip(range(10i64, 15i64));
+  let w = zb.next_back().unwrap();
+  print(w.0);
+  print(w.1);
+  print!(" ");
+  let mut v : Vec<i32> = Vec<i32>::new ();
+  v.push(1);
+  v.push(2);
+  v.push(3);
+  let mut vi = v.iter().map(| x : i32 | x * 10);
+  print(vi.len());
+  if !vi.is_empty() {
+    print!("n");
+  }
+  print!(" ");
+  let mut late = range(0i64, 11i64).step_by(3i64);
+  print(late.next().unwrap());
+  print(late.len());
+  print(late.next_back().unwrap());
+  print!(" ");
+  let mut short = range(0i64, 3i64).take(5i64).rev();
+  print(short.len());
+  print(short.next().unwrap());
+  print!(" ");
+  let mut pk = range(0i64, 4i64).peekable();
+  pk.peek();
+  print(pk.len());
+  print!(" ");
+  let mut m = range(0i64, 6i64).map(| x : i64 | x * 2i64);
+  print(m.len());
+  let mut ins = range(0i64, 7i64).inspect(| x : &i64 | 0);
+  print(ins.len());
+  let mut fu = range(0i64, 8i64).fuse();
+  print(fu.len());
+  v.free();
+  return 0;
+}
+
+// EXPECT: 108 432 3987e 496 272 3212111 3n 039 32 4 678

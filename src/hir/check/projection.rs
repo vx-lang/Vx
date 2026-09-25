@@ -100,7 +100,45 @@ impl<'a> TypeChecker<'a> {
         ty: &Type,
         mapping: &mut HashMap<crate::symbol::Symbol, Type>,
     ) -> bool {
-        self.unify_types(&ib.target_type, ty, mapping) && self.bind_projections(mapping).is_ok()
+        self.unify_types(&ib.target_type, ty, mapping)
+            && self.bind_projections(mapping).is_ok()
+            && self.impl_bounds_hold(ib, mapping)
+    }
+
+    /// Whether every bound on the block's parameters, `impl<I : DoubleEndedIterator> ..`, holds
+    /// for what the parameter was bound to.
+    fn impl_bounds_hold(
+        &mut self,
+        ib: &decl::ImplBlock,
+        mapping: &HashMap<crate::symbol::Symbol, Type>,
+    ) -> bool {
+        for param in &ib.generics {
+            let decl::GenericParam::Type { bounds, .. } = param else {
+                continue;
+            };
+            let Some(bound_to) = mapping.get(param.name()) else {
+                continue;
+            };
+            for bound in bounds {
+                // `Float` and the like name no declared trait, so nothing here can decide them.
+                if !self.env.traits.contains_key(bound) {
+                    continue;
+                }
+                let blocks = self
+                    .env
+                    .impls
+                    .get(bound.as_ref())
+                    .cloned()
+                    .unwrap_or_default();
+                if !blocks
+                    .iter()
+                    .any(|b| self.impl_applies(b, bound_to, &mut HashMap::new()))
+                {
+                    return false;
+                }
+            }
+        }
+        true
     }
 
     /// Add an entry for `P::A` to `mapping` for every parameter `P` it binds and every associated

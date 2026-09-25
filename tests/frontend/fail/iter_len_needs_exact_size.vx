@@ -1,0 +1,12 @@
+//===- iter_len_needs_exact_size.vx - Vx Compiler ---------------*- Vx -*-===//
+// RUN: not vxc %s --action print-ast 2>&1 | FileCheck %s
+import core::iter;
+
+fn main() -> i32 {
+  let mut f = range(0i64, 10i64).filter(| x : &i64 | *x > 2i64);
+  print(f.len());
+  return 0;
+}
+
+// How many items `filter` keeps is not known until they are looked at.
+// CHECK: Cannot call len on Filter<Range, Closure1<&i64, bool>>

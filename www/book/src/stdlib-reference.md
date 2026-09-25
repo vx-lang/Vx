@@ -287,8 +287,7 @@ The iterators `Iterator`'s adaptor methods build: `Map`, `Filter`, `Chain` and t
 
 - `struct Map<I, F>`<br>
   An iterator over another one's items with `f` applied to each. Built by `map`.
-- `struct Filter<I, P>`<br>
-  An iterator over the items of another that `keep` accepts. Built by `filter`.
+- `struct Filter<I, P>`
 - `struct Take<I>`<br>
   An iterator over at most `left` items of another. Built by `take`.
 - `struct Skip<I>`<br>
@@ -343,6 +342,11 @@ The iterators `Iterator`'s adaptor methods build: `Map`, `Filter`, `Chain` and t
 - `fn next_back(self : &mut Map<I, Closure1<I :  : Item, U>>) -> Option<U>`<br>
   The inner iterator's last item with `f` applied.
 
+**`ExactSizeIterator for Map<I, Closure1<I :  : Item, U>>` methods**
+
+- `fn len(self : &Map<I, Closure1<I :  : Item, U>>) -> i64`<br>
+  As many as the inner iterator has.
+
 **`Iterator for Filter<I, Closure1<&I :  : Item, bool>>` methods**
 
 - `fn next(self : &mut Filter<I, Closure1<&I :  : Item, bool>>) -> Option<I :  : Item>`<br>
@@ -358,15 +362,46 @@ The iterators `Iterator`'s adaptor methods build: `Map`, `Filter`, `Chain` and t
 - `fn next(self : &mut Take<I>) -> Option<I :  : Item>`<br>
   The inner iterator's next item, until `left` of them have been handed out.
 
+**`ExactSizeIterator for Take<I>` methods**
+
+- `fn len(self : &Take<I>) -> i64`<br>
+  The inner iterator's count, up to `left`.
+
+**`DoubleEndedIterator for Take<I>` methods**
+
+- `fn next_back(self : &mut Take<I>) -> Option<I :  : Item>`<br>
+  The last of the items `next` would hand out, passing over the inner iterator's items
+  beyond them.
+
 **`Iterator for Skip<I>` methods**
 
 - `fn next(self : &mut Skip<I>) -> Option<I :  : Item>`<br>
   The inner iterator's next item, once the skipped ones have been consumed.
 
+**`ExactSizeIterator for Skip<I>` methods**
+
+- `fn len(self : &Skip<I>) -> i64`<br>
+  The inner iterator's count less the ones still to be skipped.
+
+**`DoubleEndedIterator for Skip<I>` methods**
+
+- `fn next_back(self : &mut Skip<I>) -> Option<I :  : Item>`<br>
+  The inner iterator's last item, while it is not one of the skipped ones.
+
 **`Iterator for StepBy<I>` methods**
 
 - `fn next(self : &mut StepBy<I>) -> Option<I :  : Item>`<br>
   The inner iterator's first item, and after that the one `step` places further on.
+
+**`ExactSizeIterator for StepBy<I>` methods**
+
+- `fn len(self : &StepBy<I>) -> i64`<br>
+  How many of the inner iterator's items land on a step.
+
+**`DoubleEndedIterator for StepBy<I>` methods**
+
+- `fn next_back(self : &mut StepBy<I>) -> Option<I :  : Item>`<br>
+  The last item that lands on a step, passing over the inner iterator's items after it.
 
 **`Iterator for Chain<A, B>` methods**
 
@@ -403,6 +438,11 @@ The iterators `Iterator`'s adaptor methods build: `Map`, `Filter`, `Chain` and t
 - `fn next_back(self : &mut Inspect<I, Closure1<&I :  : Item, i32>>) -> Option<I :  : Item>`<br>
   The inner iterator's last item, after `f` has seen it.
 
+**`ExactSizeIterator for Inspect<I, Closure1<&I :  : Item, i32>>` methods**
+
+- `fn len(self : &Inspect<I, Closure1<&I :  : Item, i32>>) -> i64`<br>
+  As many as the inner iterator has.
+
 **`Iterator for Scan<I, St, Closure2<&mut St, I :  : Item, Option<B>>>` methods**
 
 - `fn next(self : &mut Scan<I, St, Closure2<&mut St, I :  : Item, Option<B>>>) -> Option<B>`<br>
@@ -412,6 +452,11 @@ The iterators `Iterator`'s adaptor methods build: `Map`, `Filter`, `Chain` and t
 
 - `fn next(self : &mut Fuse<I>) -> Option<I :  : Item>`<br>
   The inner iterator's next item, or nothing for good once it has run out.
+
+**`ExactSizeIterator for Fuse<I>` methods**
+
+- `fn len(self : &Fuse<I>) -> i64`<br>
+  As many as the inner iterator has, and none once it has run out.
 
 **`Iterator for Peekable<I, I :  : Item>` methods**
 
@@ -425,6 +470,11 @@ The iterators `Iterator`'s adaptor methods build: `Map`, `Filter`, `Chain` and t
   Answers a copy where Rust answers a reference into the iterator.
 - `fn next_if(self : &mut Peekable<I, I :  : Item>, accept : Closure1<&I :  : Item, bool>) -> Option<I :  : Item>`<br>
   The next item if `accept` takes it, and otherwise nothing, with the item left in place.
+
+**`ExactSizeIterator for Peekable<I, I :  : Item>` methods**
+
+- `fn len(self : &Peekable<I, I :  : Item>) -> i64`<br>
+  As many as the inner iterator has, and the one `peek` holds.
 
 **`Iterator for FlatMap<I, Closure1<I :  : Item, U>, U>` methods**
 
@@ -446,15 +496,40 @@ The iterators `Iterator`'s adaptor methods build: `Map`, `Filter`, `Chain` and t
 - `fn next_back(self : &mut Rev<I>) -> Option<I :  : Item>`<br>
   The inner iterator's first item.
 
+**`ExactSizeIterator for Rev<I>` methods**
+
+- `fn len(self : &Rev<I>) -> i64`<br>
+  As many as the inner iterator has.
+
 **`Iterator for Zip<A, B>` methods**
 
 - `fn next(self : &mut Zip<A, B>) -> Option<(A :  : Item, B :  : Item)>`<br>
   The next item of each, paired, or nothing once either has run out.
 
+**`ExactSizeIterator for Zip<A, B>` methods**
+
+- `fn len(self : &Zip<A, B>) -> i64`<br>
+  As many as the shorter of the two has.
+
+**`DoubleEndedIterator for Zip<A, B>` methods**
+
+- `fn next_back(self : &mut Zip<A, B>) -> Option<(A :  : Item, B :  : Item)>`<br>
+  The last pair, once the longer iterator's extra items at the back have been dropped.
+
 **`Iterator for Enumerate<I>` methods**
 
 - `fn next(self : &mut Enumerate<I>) -> Option<(i64, I :  : Item)>`<br>
   The inner iterator's next item with its position.
+
+**`ExactSizeIterator for Enumerate<I>` methods**
+
+- `fn len(self : &Enumerate<I>) -> i64`<br>
+  As many as the inner iterator has.
+
+**`DoubleEndedIterator for Enumerate<I>` methods**
+
+- `fn next_back(self : &mut Enumerate<I>) -> Option<(i64, I :  : Item)>`<br>
+  The inner iterator's last item with its position, which is how many come before it.
 
 ## `core::iter::traits`
 
@@ -467,6 +542,10 @@ The `Iterator` trait: one required `next`, and the methods written over it.
   An iterator that can also answer from its far end, which is what `rev` needs.
   Rust declares it as a subtrait of `Iterator`; Vx has no subtraits, and `Self::Item` here is
   the one the type's `Iterator` impl binds.
+- `trait ExactSizeIterator`<br>
+  An iterator that knows how many items it has left, which is what `rev` needs from `take`,
+  `skip` and `step_by`.
+  Rust declares it as a subtrait of `Iterator`; Vx has no subtraits.
 - `trait FromIterator<A>`<br>
   A collection that can be built from an iterator's items, which is what `collect` builds.
 - `trait Extend<A>`<br>
@@ -599,6 +678,13 @@ The `Iterator` trait: one required `next`, and the methods written over it.
 - `fn nth_back(self : &mut Self, n : i64) -> Option<Self :  : Item>`<br>
   The item `n` places from the back, counting the last as zero.
 
+**`trait ExactSizeIterator` methods**
+
+- `fn len(self : &Self) -> i64`<br>
+  How many items are left.
+- `fn is_empty(self : &Self) -> bool`<br>
+  Whether no items are left.
+
 **`trait FromIterator<A>` methods**
 
 - `fn from_iter<I : Iterator>(iter : I) -> Self`<br>
@@ -654,6 +740,11 @@ T = `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `f32`, `f64`
 
 - `fn next_back(self : &mut Range) -> Option<i64>`<br>
   The last value in the span not yet handed out from either end.
+
+**`ExactSizeIterator for Range` methods**
+
+- `fn len(self : &Range) -> i64`<br>
+  How many values are left in the span.
 
 **Functions**
 
@@ -1877,6 +1968,11 @@ Clocks and durations.
 - `fn next_back(self : &mut VecIter<T>) -> Option<T>`<br>
   The last element not yet handed out from either end.
 
+**`ExactSizeIterator for VecIter<T>` methods**
+
+- `fn len(self : &VecIter<T>) -> i64`<br>
+  How many elements are left between the two ends.
+
 **`VecIter<T>` methods**
 
 - `fn map<NewItem>(self : VecIter<T>, f : Closure1<T, NewItem>) -> VecMap<T, NewItem>`<br>
@@ -1886,6 +1982,11 @@ Clocks and durations.
 
 - `fn next(self : &mut VecMap<T, NewItem>) -> Option<NewItem>`<br>
   The next element of the inner iterator with `f` applied.
+
+**`ExactSizeIterator for VecMap<T, NewItem>` methods**
+
+- `fn len(self : &VecMap<T, NewItem>) -> i64`<br>
+  As many as the inner iterator has.
 
 **`VecMap<T, NewItem>` methods**
 
@@ -1906,4 +2007,4 @@ Clocks and durations.
 
 ______________________________________________________________________
 
-688 functions across 32 modules.
+708 functions across 32 modules.

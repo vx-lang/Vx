@@ -52,6 +52,13 @@ impl<I : DoubleEndedIterator, U> DoubleEndedIterator for Map<I, Closure1<I::Item
 }
 
 /// An iterator over the items of another that `keep` accepts. Built by `filter`.
+impl<I : ExactSizeIterator, U> ExactSizeIterator for Map<I, Closure1<I::Item, U>> {
+  /// As many as the inner iterator has.
+  fn len(self : &Map<I, Closure1<I::Item, U>>) -> i64 {
+    return self.inner.len();
+  }
+}
+
 struct Filter<I, P> {
   inner : I,
   keep : P,
@@ -116,6 +123,37 @@ impl<I : Iterator> Iterator for Take<I> {
   }
 }
 
+impl<I : ExactSizeIterator> ExactSizeIterator for Take<I> {
+  /// The inner iterator's count, up to `left`.
+  fn len(self : &Take<I>) -> i64 {
+    let n = self.inner.len();
+    if self.left <= 0i64 {
+      return 0i64;
+    }
+    if n < self.left {
+      return n;
+    }
+    return self.left;
+  }
+}
+
+impl<I : DoubleEndedIterator + ExactSizeIterator> DoubleEndedIterator for Take<I> {
+  /// The last of the items `next` would hand out, passing over the inner iterator's items
+  /// beyond them.
+  fn next_back(self : &mut Take<I>) -> Option<I::Item> {
+    if self.left <= 0i64 {
+      return Option<I::Item>::None();
+    }
+    let n = self.inner.len();
+    let mut beyond = 0i64;
+    if n > self.left {
+      beyond = n - self.left;
+    }
+    self.left = self.left - 1i64;
+    return self.inner.nth_back(beyond);
+  }
+}
+
 /// An iterator over another's items with the first `drop` of them discarded. Built by `skip`.
 struct Skip<I> {
   inner : I,
@@ -141,6 +179,27 @@ impl<I : Iterator> Iterator for Skip<I> {
   }
 }
 
+impl<I : ExactSizeIterator> ExactSizeIterator for Skip<I> {
+  /// The inner iterator's count less the ones still to be skipped.
+  fn len(self : &Skip<I>) -> i64 {
+    let n = self.inner.len();
+    if n <= self.drop {
+      return 0i64;
+    }
+    return n - self.drop;
+  }
+}
+
+impl<I : DoubleEndedIterator + ExactSizeIterator> DoubleEndedIterator for Skip<I> {
+  /// The inner iterator's last item, while it is not one of the skipped ones.
+  fn next_back(self : &mut Skip<I>) -> Option<I::Item> {
+    if self.len() <= 0i64 {
+      return Option<I::Item>::None();
+    }
+    return self.inner.next_back();
+  }
+}
+
 /// An iterator over every `step`th item of another, starting with its first. Built by `step_by`.
 struct StepBy<I> {
   inner : I,
@@ -159,6 +218,35 @@ impl<I : Iterator> Iterator for StepBy<I> {
       return self.inner.next();
     }
     return self.inner.nth(self.gap);
+  }
+}
+
+impl<I : ExactSizeIterator> ExactSizeIterator for StepBy<I> {
+  /// How many of the inner iterator's items land on a step.
+  fn len(self : &StepBy<I>) -> i64 {
+    let n = self.inner.len();
+    if self.first {
+      if n == 0i64 {
+        return 0i64;
+      }
+      return 1i64 + (n - 1i64) / (self.gap + 1i64);
+    }
+    return n / (self.gap + 1i64);
+  }
+}
+
+impl<I : DoubleEndedIterator + ExactSizeIterator> DoubleEndedIterator for StepBy<I> {
+  /// The last item that lands on a step, passing over the inner iterator's items after it.
+  fn next_back(self : &mut StepBy<I>) -> Option<I::Item> {
+    let over = self.inner.len() % (self.gap + 1i64);
+    let mut beyond = over;
+    if self.first {
+      beyond = self.gap;
+      if over > 0i64 {
+        beyond = over - 1i64;
+      }
+    }
+    return self.inner.nth_back(beyond);
   }
 }
 
@@ -318,6 +406,13 @@ impl<I : DoubleEndedIterator> DoubleEndedIterator for Inspect<I, Closure1<&I::It
   }
 }
 
+impl<I : ExactSizeIterator> ExactSizeIterator for Inspect<I, Closure1<&I::Item, i32>> {
+  /// As many as the inner iterator has.
+  fn len(self : &Inspect<I, Closure1<&I::Item, i32>>) -> i64 {
+    return self.inner.len();
+  }
+}
+
 /// An iterator over what `f` answers for another's items while it carries a state between
 /// them, ending where `f` first answers nothing. Built by `scan`.
 struct Scan<I, St, F> {
@@ -366,6 +461,16 @@ impl<I : Iterator> Iterator for Fuse<I> {
       self.done = true;
     }
     return step;
+  }
+}
+
+impl<I : ExactSizeIterator> ExactSizeIterator for Fuse<I> {
+  /// As many as the inner iterator has, and none once it has run out.
+  fn len(self : &Fuse<I>) -> i64 {
+    if self.done {
+      return 0i64;
+    }
+    return self.inner.len();
   }
 }
 
@@ -418,6 +523,17 @@ impl<I : Iterator> Peekable<I, I::Item> {
       return ahead;
     }
     return Option<I::Item>::None();
+  }
+}
+
+impl<I : ExactSizeIterator> ExactSizeIterator for Peekable<I, I::Item> {
+  /// As many as the inner iterator has, and the one `peek` holds.
+  fn len(self : &Peekable<I, I::Item>) -> i64 {
+    let n = self.inner.len();
+    if self.has_peeked && self.peeked.is_some() {
+      return n + 1i64;
+    }
+    return n;
   }
 }
 
@@ -510,6 +626,13 @@ impl<I : DoubleEndedIterator> DoubleEndedIterator for Rev<I> {
   }
 }
 
+impl<I : DoubleEndedIterator + ExactSizeIterator> ExactSizeIterator for Rev<I> {
+  /// As many as the inner iterator has.
+  fn len(self : &Rev<I>) -> i64 {
+    return self.inner.len();
+  }
+}
+
 /// An iterator over pairs of two others' items, taken in step, ending when either does.
 /// Built by `zip`.
 struct Zip<A, B> {
@@ -534,6 +657,39 @@ impl<A : Iterator, B : Iterator> Iterator for Zip<A, B> {
   }
 }
 
+impl<A : ExactSizeIterator, B : ExactSizeIterator> ExactSizeIterator for Zip<A, B> {
+  /// As many as the shorter of the two has.
+  fn len(self : &Zip<A, B>) -> i64 {
+    let n = self.a.len();
+    let m = self.b.len();
+    if n < m {
+      return n;
+    }
+    return m;
+  }
+}
+
+impl<A : DoubleEndedIterator + ExactSizeIterator, B : DoubleEndedIterator + ExactSizeIterator>
+DoubleEndedIterator for Zip<A, B> {
+  /// The last pair, once the longer iterator's extra items at the back have been dropped.
+  fn next_back(self : &mut Zip<A, B>) -> Option<(A::Item, B::Item)> {
+    let n = self.a.len();
+    let m = self.b.len();
+    if n > m {
+      self.a.nth_back(n - m - 1i64);
+    }
+    if m > n {
+      self.b.nth_back(m - n - 1i64);
+    }
+    let x = self.a.next_back();
+    if x.is_none() {
+      return Option<(A::Item, B::Item)>::None();
+    }
+    let y = self.b.next_back();
+    return Option<(A::Item, B::Item)>::Some((x.unwrap(), y.unwrap()));
+  }
+}
+
 /// An iterator over another's items, each paired with how far along it is, counting from zero.
 /// Built by `enumerate`.
 struct Enumerate<I> {
@@ -552,6 +708,25 @@ impl<I : Iterator> Iterator for Enumerate<I> {
     }
     let at = self.count;
     self.count = self.count + 1i64;
+    return Option<(i64, I::Item)>::Some((at, step.unwrap()));
+  }
+}
+
+impl<I : ExactSizeIterator> ExactSizeIterator for Enumerate<I> {
+  /// As many as the inner iterator has.
+  fn len(self : &Enumerate<I>) -> i64 {
+    return self.inner.len();
+  }
+}
+
+impl<I : DoubleEndedIterator + ExactSizeIterator> DoubleEndedIterator for Enumerate<I> {
+  /// The inner iterator's last item with its position, which is how many come before it.
+  fn next_back(self : &mut Enumerate<I>) -> Option<(i64, I::Item)> {
+    let step = self.inner.next_back();
+    if step.is_none() {
+      return Option<(i64, I::Item)>::None();
+    }
+    let at = self.count + self.inner.len();
     return Option<(i64, I::Item)>::Some((at, step.unwrap()));
   }
 }
