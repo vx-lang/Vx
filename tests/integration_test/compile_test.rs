@@ -96,7 +96,7 @@ fn run_frontend_test(path: &Path, expect_pass: bool) -> Result<(), String> {
         }
         return Err(format!("Parse failed on {:?}: {}", path, e));
     }
-    let mut program_arr = loader.into_programs();
+    let mut program_arr = loader.into_programs().expect("the fixture should load");
 
     let syntax_idx = program_arr
         .iter()
@@ -239,7 +239,7 @@ fn run_middle_end_test(path: &Path) -> Result<(), String> {
     loader
         .load_main(path.to_str().unwrap())
         .expect("Failed to parse");
-    let mut program_arr = loader.into_programs();
+    let mut program_arr = loader.into_programs().expect("the fixture should load");
 
     let syntax_idx = program_arr
         .iter()
@@ -409,7 +409,7 @@ fn run_warning_test(path: &Path) -> Result<(), String> {
     loader
         .load_main(path.to_str().unwrap())
         .map_err(|e| format!("Parse failed on {:?}: {}", path, e))?;
-    let mut program_arr = loader.into_programs();
+    let mut program_arr = loader.into_programs().expect("the fixture should load");
     let syntax_idx = program_arr
         .iter()
         .position(|p| p.module_path.as_ref() == path.to_str().unwrap())
@@ -523,7 +523,7 @@ fn run_backend_test(path: &Path) -> Result<(), String> {
             e
         ));
     }
-    let mut program_arr = loader.into_programs();
+    let mut program_arr = loader.into_programs().expect("the fixture should load");
 
     let syntax_idx = program_arr
         .iter()
@@ -1204,7 +1204,7 @@ fn run_backend_autodiff_test(path: &Path) -> Result<(), String> {
             e
         ));
     }
-    let mut program_arr = loader.into_programs();
+    let mut program_arr = loader.into_programs().expect("the fixture should load");
 
     let syntax_idx = program_arr
         .iter()
@@ -1473,7 +1473,7 @@ fn test_melior_matmul() -> Result<(), String> {
     loader
         .load_main(path.to_str().unwrap())
         .expect("Failed to parse");
-    let mut program_arr = loader.into_programs();
+    let mut program_arr = loader.into_programs().expect("the fixture should load");
 
     let syntax_idx = program_arr
         .iter()

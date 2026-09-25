@@ -59,6 +59,10 @@ pub struct ModuleLoader {
     /// them here. Read by [`ModuleLoader::into_programs`], so that asking this loader for modules
     /// it never kept is a crash instead of an empty compile.
     returned_modules_directly: bool,
+    /// Where each parsed module was read from, to parse it again with its clashing names renamed.
+    paths: HashMap<Symbol, PathBuf>,
+    /// The modules loaded as roots rather than imported, in load order.
+    roots: Vec<Symbol>,
 }
 
 impl ModuleLoader {
@@ -95,11 +99,15 @@ impl ModuleLoader {
             loaded_modules: HashMap::new(),
             loaded_interfaces: HashMap::new(),
             returned_modules_directly: false,
+            paths: HashMap::new(),
+            roots: Vec::new(),
         }
     }
 
     pub fn load_main(&mut self, filename: &str) -> Result<(), ModuleError> {
         let main_program = Self::parse_file(Path::new(filename), filename.into())?;
+        self.paths.insert(filename.into(), PathBuf::from(filename));
+        self.roots.push(filename.into());
 
         let imports = main_program.imports.clone();
         self.loaded_modules
@@ -136,6 +144,7 @@ impl ModuleLoader {
         for root in roots {
             if seen.insert(root.as_str().into()) {
                 wave.push((root.as_str().into(), PathBuf::from(root)));
+                self.roots.push(root.as_str().into());
             }
         }
         while !wave.is_empty() {
@@ -165,6 +174,9 @@ impl ModuleLoader {
             } else {
                 pending.par_iter().map(resolve).collect()
             };
+            for (module_name, path) in &wave {
+                self.paths.insert(module_name.clone(), path.clone());
+            }
             wave = Vec::new();
             for ((module_name, _), found) in pending.into_iter().zip(resolved) {
                 match found? {
@@ -175,7 +187,29 @@ impl ModuleLoader {
                 }
             }
         }
+        self.rename_clashes(&mut programs)?;
         Ok(programs)
+    }
+
+    /// Parse again each module that declares or sees a name another module also declares, with
+    /// that name renamed where it is not the declaration the whole compile keeps.
+    fn rename_clashes(&self, programs: &mut [Program]) -> Result<(), ModuleError> {
+        let plan =
+            crate::name_clashes::plan(programs, &self.roots).map_err(ModuleError::Resolution)?;
+        for program in programs.iter_mut() {
+            let Some(renames) = plan.get(&program.module_path) else {
+                continue;
+            };
+            let path = &self.paths[&program.module_path];
+            let renamed = Self::parse_file_renaming(path, program.module_path.clone(), renames)?;
+            // The imports were already followed as first parsed.
+            assert_eq!(
+                renamed.imports, program.imports,
+                "renaming a clashing name changed an import path"
+            );
+            *program = renamed;
+        }
+        Ok(())
     }
 
     /// Where an import leads: a source file to parse, or a precompiled interface, which is
@@ -203,13 +237,15 @@ impl ModuleLoader {
     /// leaves nothing here. Calling this after it used to return an empty `Vec`, and a caller
     /// following the older shape -- `load_all(..)?; let programs = loader.into_programs();` --
     /// compiled nothing at all, with no error anywhere to say so.
-    pub fn into_programs(self) -> Vec<Program> {
+    pub fn into_programs(self) -> Result<Vec<Program>, ModuleError> {
         assert!(
             !self.returned_modules_directly,
             "load_all already returned the modules it loaded; this loader kept none, so asking \
              it for them would compile an empty program"
         );
-        self.loaded_modules.into_values().collect()
+        let mut programs: Vec<Program> = self.loaded_modules.values().cloned().collect();
+        self.rename_clashes(&mut programs)?;
+        Ok(programs)
     }
 
     /// The name a module is known by: its import path joined with `::`.
@@ -224,11 +260,23 @@ impl ModuleLoader {
 
     /// Read and parse one file as the module `module_path`.
     fn parse_file(path: &Path, module_path: Symbol) -> Result<Program, ModuleError> {
+        Self::parse_file_renaming(path, module_path, &HashMap::new())
+    }
+
+    fn parse_file_renaming(
+        path: &Path,
+        module_path: Symbol,
+        renames: &HashMap<Symbol, crate::name_clashes::Rename>,
+    ) -> Result<Program, ModuleError> {
         let name = path.to_string_lossy().into_owned();
         let source = fs::read_to_string(path).map_err(|e| ModuleError::IO(name.clone(), e))?;
 
         let mut lexer = Lexer::new(&source);
-        let tokens = lexer.tokenize();
+        let mut tokens = lexer.tokenize();
+        if !renames.is_empty() {
+            crate::name_clashes::rename_tokens(&mut tokens, renames)
+                .map_err(|e| ModuleError::Resolution(format!("{name}: {e}")))?;
+        }
         let mut parser = Parser::new(&tokens, &source);
 
         let mut program = parser
@@ -295,6 +343,7 @@ impl ModuleLoader {
         };
 
         let program = Self::parse_file(&resolved_path, module_name.clone())?;
+        self.paths.insert(module_name.clone(), resolved_path);
 
         let imports = program.imports.clone();
         self.loaded_modules.insert(module_name, program);
@@ -350,7 +399,7 @@ mod tests {
 
         let mut recursive = ModuleLoader::new();
         recursive.load_main(entry).expect("the fixture should load");
-        let from_load_main = names(recursive.into_programs());
+        let from_load_main = names(recursive.into_programs().unwrap());
 
         let mut waves = ModuleLoader::new();
         let from_load_all = names(
@@ -377,7 +426,7 @@ mod tests {
             .load_main("tests/modules/jobs_wave_b.vx")
             .expect("the fixture module should parse");
         assert!(
-            !loader.into_programs().is_empty(),
+            !loader.into_programs().unwrap().is_empty(),
             "load_main kept nothing, so a compile through this loader would be empty"
         );
     }
