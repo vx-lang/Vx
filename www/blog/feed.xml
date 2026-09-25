@@ -63,7 +63,7 @@
   </entry>
 
   <entry>
-    <title>What writing core taught the compiler</title>
+    <title>The compiler bugs we found by writing Vx's core library</title>
     <link href="https://vxlang.org/blog/what-writing-core-taught-the-compiler.html"/>
     <id>https://vxlang.org/blog/what-writing-core-taught-the-compiler.html</id>
     <updated>2026-09-21T18:00:00Z</updated>

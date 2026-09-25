@@ -3,18 +3,18 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>What writing core taught the compiler</title>
+<title>The compiler bugs we found by writing Vx's core library</title>
 <meta name="author" content="Aditya Kumar">
 <meta name="description" content="A week ago Vx had no core library. Now it has eight modules, a reproducible random-number library, and the compiler fixes that writing them forced. Every module is written in pure Vx, with zero externs in sight.">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 
-<meta property="og:title" content="What writing core taught the compiler">
+<meta property="og:title" content="The compiler bugs we found by writing Vx's core library">
 <meta property="og:description" content="A week ago Vx had no core library. Now it has eight modules, a reproducible random-number library, and the compiler fixes that writing them forced.">
 <meta property="og:type" content="article">
 <meta property="article:published_time" content="2026-09-21T18:00:00Z">
 <meta property="og:url" content="https://vxlang.org/blog/what-writing-core-taught-the-compiler.html">
 <meta property="og:image" content="https://vxlang.org/cards/blog-what-writing-core-taught-the-compiler.png">
-<meta property="og:image:alt" content="What writing core taught the compiler: eight modules, one library, and the fixes that writing them forced.">
+<meta property="og:image:alt" content="The compiler bugs we found by writing Vx's core library: eight modules, one library, and the fixes that writing them forced.">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:image" content="https://vxlang.org/cards/blog-what-writing-core-taught-the-compiler.png">
 
@@ -40,7 +40,7 @@
 
 <article class="post">
 
-<h1>What writing core taught the compiler</h1>
+<h1>The compiler bugs we found by writing Vx's core library</h1>
 <p class="post-meta">Aditya Kumar &middot; 21 September 2026</p>
 
 <blockquote class="tldr"><strong>TL;DR:</strong> Vx v0.0.2 includes a brand new <code>stdlib/core/</code> library. It contains eight modules (<code>cmp</code>, <code>option</code>, <code>result</code>, <code>num</code>, <code>ops</code>, <code>iter</code>, <code>clone</code>, and <code>default</code>) and a reproducible random-number library (<code>std::rand</code>). Every line is written in pure Vx with zero <code>extern</code> calls (external C functions). Building this library tested our compiler across many features at once. This post covers what we built, how we tested it, and the compiler bugs we fixed along the way.</blockquote>
