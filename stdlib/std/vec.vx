@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
+import core::default;
 import core::iter::traits;
 import core::ops;
 
@@ -148,6 +149,33 @@ Vec<T> {
     return VecIter<T> {
       vec : self, current : 0, back : self.len
     };
+  }
+}
+
+impl<T> Extend<T> for Vec<T> {
+  /// Push every item `iter` has left, in order.
+  fn extend<I : Iterator>(self : &mut Vec<T>, iter : I) -> i32 {
+    let mut it = iter;
+    loop {
+      let step = it.next();
+      if step.is_none() {
+        return 0;
+      }
+      self.push(step.unwrap());
+    }
+    return 0;
+  }
+
+  /// Push `item`.
+  fn extend_one(self : &mut Vec<T>, item : T) -> i32 {
+    return self.push(item);
+  }
+}
+
+impl<T> Default for Vec<T> {
+  /// An empty `Vec`, as `new` makes.
+  fn default() -> Vec<T> {
+    return Vec<T>::new ();
   }
 }
 

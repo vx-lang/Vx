@@ -442,6 +442,10 @@ impl<'a> TypeChecker<'a> {
                 span,
             }) => {
                 let resolved_name = name.clone();
+                // Calling a local, `p(env, x)` with `p` a closure's function, uses it.
+                if self.lookup(&resolved_name).is_some() {
+                    self.used_vars.insert(resolved_name.clone());
+                }
                 let mut base_name = resolved_name.clone();
                 let mut explicit_generic_args = type_args.clone().unwrap_or_default();
                 if explicit_generic_args.is_empty() {
