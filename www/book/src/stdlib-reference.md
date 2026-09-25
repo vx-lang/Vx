@@ -286,6 +286,11 @@ The `Iterator` trait: one required `next`, and the methods written over it.
 - `trait Iterator`
 - `trait FromIterator<A>`<br>
   A collection that can be built from an iterator's items, which is what `collect` builds.
+- `trait Sum<A>`<br>
+  A type whose values can be added up from an iterator's items, which is what `sum` does.
+- `trait Product<A>`<br>
+  A type whose values can be multiplied together from an iterator's items, which is what
+  `product` does.
 
 **`trait Iterator` methods**
 
@@ -320,21 +325,63 @@ The `Iterator` trait: one required `next`, and the methods written over it.
   `f` over every item, carrying a value from one to the next: `init` goes in with the
   first item, and what `f` answers goes in with the next. The last answer is the result,
   or `init` for a sequence that is already finished.
+- `fn sum(self : &mut Self) -> Self :  : Item`<br>
+  Every item added up, consuming the sequence. Zero for one that is already finished.
+  The item type says how, by implementing `Sum`. Rust also lets the caller choose a result
+  type other than the item's; here the two are the same.
+- `fn product(self : &mut Self) -> Self :  : Item`<br>
+  Every item multiplied together, consuming the sequence. One for one already finished.
+  The item type says how, by implementing `Product`.
+- `fn max(self : &mut Self) -> Option<Self :  : Item>`<br>
+  The greatest item, or nothing for a sequence already finished. Of several equal greatest
+  items, the last.
+- `fn min(self : &mut Self) -> Option<Self :  : Item>`<br>
+  The least item, or nothing for a sequence already finished. Of several equal least items,
+  the first.
+- `fn max_by(self : &mut Self, compare : Closure2<&Self :  : Item, &Self :  : Item, Ordering>) -> Option<Self :  : Item>`<br>
+  The greatest item as `compare` orders them, `compare(a, b)` saying where `a` sits against
+  `b`. Of several equal greatest items, the last.
+- `fn min_by(self : &mut Self, compare : Closure2<&Self :  : Item, &Self :  : Item, Ordering>) -> Option<Self :  : Item>`<br>
+  The least item as `compare` orders them. Of several equal least items, the first.
+- `fn max_by_key<B>(self : &mut Self, key : Closure1<&Self :  : Item, B>) -> Option<Self :  : Item>`<br>
+  The item whose `key` is greatest. Of several with equal greatest keys, the last.
+- `fn min_by_key<B>(self : &mut Self, key : Closure1<&Self :  : Item, B>) -> Option<Self :  : Item>`<br>
+  The item whose `key` is least. Of several with equal least keys, the first.
+- `fn reduce(self : &mut Self, f : Closure2<Self :  : Item, Self :  : Item, Self :  : Item>) -> Option<Self :  : Item>`<br>
+  `fold` with the first item as the starting value, so nothing for a sequence already
+  finished.
 - `fn collect<B>(self : &mut Self) -> B`<br>
   Every item, gathered into a new collection of whatever type the result is assigned to:
   `let v : Vec<i64> = it.collect();`. That type says how, by implementing `FromIterator`.
-
-**`and lets the caller choose the result's type. Both agree for the numbers. fn sum(self : &mut Self) -> Self :  : Item` methods**
-
-- `fn sum(self : &mut Self) -> Self :  : Item`<br>
-  Every item added up, consuming the sequence. Zero for one that is already finished.
-  Answers the item type, and asks it for `+` and a `Default`, where Rust asks for a `Sum`
-  impl and lets the caller choose the result's type. Both agree for the numbers.
 
 **`trait FromIterator<A>` methods**
 
 - `fn from_iter<I : Iterator>(iter : I) -> Self`<br>
   A new collection holding every item `iter` has left, in order.
+
+**`trait Sum<A>` methods**
+
+- `fn sum<I : Iterator>(iter : I) -> Self`<br>
+  Every item `iter` has left, added up. Zero when it has none.
+
+**`trait Product<A>` methods**
+
+- `fn product<I : Iterator>(iter : I) -> Self`<br>
+  Every item `iter` has left, multiplied together. One when it has none.
+
+**`Sum<T> for T` methods**, stamped for 10 instantiations
+
+- `fn sum<I : Iterator>(iter : I) -> T`<br>
+  Every item added up, from zero.
+
+T = `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `f32`, `f64`
+
+**`Product<T> for T` methods**, stamped for 10 instantiations
+
+- `fn product<I : Iterator>(iter : I) -> T`<br>
+  Every item multiplied together, from one.
+
+T = `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `f32`, `f64`
 
 ## `core::iter`
 
@@ -1608,4 +1655,4 @@ Clocks and durations.
 
 ______________________________________________________________________
 
-609 functions across 30 modules.
+639 functions across 30 modules.

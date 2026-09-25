@@ -15,7 +15,7 @@
 //
 // A method whose `loop` only ever leaves by `return` still needs a return after it: the checker
 // does not treat such a loop as diverging (E3028). Those are unreachable.
-import core::default;
+import core::cmp;
 import core::ops;
 import core::option;
 
@@ -175,18 +175,172 @@ trait Iterator {
 
   /// Every item added up, consuming the sequence. Zero for one that is already finished.
   ///
-  /// Answers the item type, and asks it for `+` and a `Default`, where Rust asks for a `Sum`
-  /// impl and lets the caller choose the result's type. Both agree for the numbers.
+  /// The item type says how, by implementing `Sum`. Rust also lets the caller choose a result
+  /// type other than the item's; here the two are the same.
   fn sum(self : &mut Self) -> Self::Item {
-    let mut total : Self::Item = Self::Item::default();
+    return Self::Item::sum(self);
+  }
+
+  /// Every item multiplied together, consuming the sequence. One for one already finished.
+  ///
+  /// The item type says how, by implementing `Product`.
+  fn product(self : &mut Self) -> Self::Item {
+    return Self::Item::product(self);
+  }
+
+  /// The greatest item, or nothing for a sequence already finished. Of several equal greatest
+  /// items, the last.
+  fn max(self : &mut Self) -> Option<Self::Item> {
+    let first = self.next();
+    if first.is_none() {
+      return first;
+    }
+    let mut best = first.unwrap();
     loop {
       let step = self.next();
       if step.is_none() {
-        return total;
+        return Option<Self::Item>::Some(best);
       }
-      total = total + step.unwrap();
+      let v = step.unwrap();
+      if !v.cmp(&best).is_lt() {
+        best = v;
+      }
     }
-    return total;
+    return first;
+  }
+
+  /// The least item, or nothing for a sequence already finished. Of several equal least items,
+  /// the first.
+  fn min(self : &mut Self) -> Option<Self::Item> {
+    let first = self.next();
+    if first.is_none() {
+      return first;
+    }
+    let mut best = first.unwrap();
+    loop {
+      let step = self.next();
+      if step.is_none() {
+        return Option<Self::Item>::Some(best);
+      }
+      let v = step.unwrap();
+      if v.cmp(&best).is_lt() {
+        best = v;
+      }
+    }
+    return first;
+  }
+
+  /// The greatest item as `compare` orders them, `compare(a, b)` saying where `a` sits against
+  /// `b`. Of several equal greatest items, the last.
+  fn max_by(self : &mut Self, compare : Closure2<&Self::Item, &Self::Item, Ordering>)
+  -> Option<Self::Item> {
+    let first = self.next();
+    if first.is_none() {
+      return first;
+    }
+    let mut best = first.unwrap();
+    let p = compare.func;
+    loop {
+      let step = self.next();
+      if step.is_none() {
+        return Option<Self::Item>::Some(best);
+      }
+      let v = step.unwrap();
+      if !p(compare.env, &v, &best).is_lt() {
+        best = v;
+      }
+    }
+    return first;
+  }
+
+  /// The least item as `compare` orders them. Of several equal least items, the first.
+  fn min_by(self : &mut Self, compare : Closure2<&Self::Item, &Self::Item, Ordering>)
+  -> Option<Self::Item> {
+    let first = self.next();
+    if first.is_none() {
+      return first;
+    }
+    let mut best = first.unwrap();
+    let p = compare.func;
+    loop {
+      let step = self.next();
+      if step.is_none() {
+        return Option<Self::Item>::Some(best);
+      }
+      let v = step.unwrap();
+      if p(compare.env, &v, &best).is_lt() {
+        best = v;
+      }
+    }
+    return first;
+  }
+
+  /// The item whose `key` is greatest. Of several with equal greatest keys, the last.
+  fn max_by_key<B>(self : &mut Self, key : Closure1<&Self::Item, B>) -> Option<Self::Item> {
+    let first = self.next();
+    if first.is_none() {
+      return first;
+    }
+    let mut best = first.unwrap();
+    let p = key.func;
+    let mut best_key : B = p(key.env, &best);
+    loop {
+      let step = self.next();
+      if step.is_none() {
+        return Option<Self::Item>::Some(best);
+      }
+      let v = step.unwrap();
+      let k : B = p(key.env, &v);
+      if !k.cmp(&best_key).is_lt() {
+        best = v;
+        best_key = k;
+      }
+    }
+    return first;
+  }
+
+  /// The item whose `key` is least. Of several with equal least keys, the first.
+  fn min_by_key<B>(self : &mut Self, key : Closure1<&Self::Item, B>) -> Option<Self::Item> {
+    let first = self.next();
+    if first.is_none() {
+      return first;
+    }
+    let mut best = first.unwrap();
+    let p = key.func;
+    let mut best_key : B = p(key.env, &best);
+    loop {
+      let step = self.next();
+      if step.is_none() {
+        return Option<Self::Item>::Some(best);
+      }
+      let v = step.unwrap();
+      let k : B = p(key.env, &v);
+      if k.cmp(&best_key).is_lt() {
+        best = v;
+        best_key = k;
+      }
+    }
+    return first;
+  }
+
+  /// `fold` with the first item as the starting value, so nothing for a sequence already
+  /// finished.
+  fn reduce(self : &mut Self, f : Closure2<Self::Item, Self::Item, Self::Item>)
+  -> Option<Self::Item> {
+    let first = self.next();
+    if first.is_none() {
+      return first;
+    }
+    let mut acc = first.unwrap();
+    let p = f.func;
+    loop {
+      let step = self.next();
+      if step.is_none() {
+        return Option<Self::Item>::Some(acc);
+      }
+      acc = p(f.env, acc, step.unwrap());
+    }
+    return first;
   }
 
   /// Every item, gathered into a new collection of whatever type the result is assigned to:
@@ -201,3 +355,64 @@ trait FromIterator<A> {
   /// A new collection holding every item `iter` has left, in order.
   fn from_iter<I : Iterator>(iter : I) -> Self;
 }
+
+/// A type whose values can be added up from an iterator's items, which is what `sum` does.
+trait Sum<A> {
+  /// Every item `iter` has left, added up. Zero when it has none.
+  fn sum<I : Iterator>(iter : I) -> Self;
+}
+
+/// A type whose values can be multiplied together from an iterator's items, which is what
+/// `product` does.
+trait Product<A> {
+  /// Every item `iter` has left, multiplied together. One when it has none.
+  fn product<I : Iterator>(iter : I) -> Self;
+}
+
+/// `Sum` and `Product` for one number type, starting from its zero and its one.
+macro_rules stamp_accumulate {
+  ($t : ident , $zero : expr , $one : expr) => {
+    impl Sum<$t> for $t {
+      /// Every item added up, from zero.
+      fn sum<I : Iterator>(iter : I) -> $t {
+        let mut it = iter;
+        let mut total : $t = $zero;
+        loop {
+          let step = it.next();
+          if step.is_none() {
+            return total;
+          }
+          total = total + step.unwrap();
+        }
+        return total;
+      }
+    }
+
+    impl Product<$t> for $t {
+      /// Every item multiplied together, from one.
+      fn product<I : Iterator>(iter : I) -> $t {
+        let mut it = iter;
+        let mut total : $t = $one;
+        loop {
+          let step = it.next();
+          if step.is_none() {
+            return total;
+          }
+          total = total * step.unwrap();
+        }
+        return total;
+      }
+    }
+  };
+}
+
+stamp_accumulate!(i8 , 0 , 1);
+stamp_accumulate!(i16 , 0 , 1);
+stamp_accumulate!(i32 , 0 , 1);
+stamp_accumulate!(i64 , 0 , 1);
+stamp_accumulate!(u8 , 0 , 1);
+stamp_accumulate!(u16 , 0 , 1);
+stamp_accumulate!(u32 , 0 , 1);
+stamp_accumulate!(u64 , 0 , 1);
+stamp_accumulate!(f32 , 0.0 , 1.0);
+stamp_accumulate!(f64 , 0.0 , 1.0);

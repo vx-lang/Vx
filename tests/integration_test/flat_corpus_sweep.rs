@@ -20,6 +20,8 @@ use std::process::Command;
 const KNOWN_DECLINES: &[&str] = &[
     "backend/pass/custom_topology_user_lowering.vx",
     "backend/pass/matmul_assign_alias.vx",
+    // "A borrow of something that is not a tensor": the flat path borrows tensors only.
+    "backend/pass/borrow_of_a_value.vx",
     // `Option::or` and its neighbours, which answer with an `Option<T>`. The flat path
     // declines them as "a non-scalar default return" -- the same shape as the file below,
     // and the AST path handles both. The module's other methods answer with a `T` or a
@@ -32,8 +34,8 @@ const KNOWN_DECLINES: &[&str] = &[
     "backend/pass/iter_adaptors_chain.vx",
     // Same decline as `core_iter.vx`: `main` builds adaptors before consuming them.
     "backend/pass/core_iter_fold_sum_collect.vx",
-    // "A borrow of something that is not a tensor": the flat path borrows tensors only.
-    "backend/pass/borrow_of_a_value.vx",
+    // Same decline again, for the same reason.
+    "backend/pass/core_iter_consumers.vx",
     // Same decline again: two chains whose `Map`s differ, for a name clash in the AST path.
     "backend/pass/generic_struct_instances_nested.vx",
     // A generic struct, `Cap<Count>`, which the flat path declines as "a struct with no GID".
