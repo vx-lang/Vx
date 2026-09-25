@@ -589,6 +589,18 @@ The `Iterator` trait: one required `next`, and the methods written over it.
   `f` over every item, carrying a value from one to the next: `init` goes in with the
   first item, and what `f` answers goes in with the next. The last answer is the result,
   or `init` for a sequence that is already finished.
+- `fn try_fold<Acc, R>(self : &mut Self, init : Acc, f : Closure2<Acc, Self :  : Item, R>) -> R`<br>
+  `fold` that can stop early. `f` answers an `Option` or a `Result`: `Some` or `Ok` carries
+  its value on to the next item, and the first `None` or `Err` is returned at once, leaving
+  the rest of the sequence unconsumed. When every item carries on, the answer is the last
+  value wrapped the same way, or `init` wrapped for a sequence that is already finished.
+- `fn try_for_each<R>(self : &mut Self, f : Closure1<Self :  : Item, R>) -> R`<br>
+  `for_each` that can stop early: the first `None` or `Err` that `f` answers is returned at
+  once, and the rest of the sequence is left unconsumed. Otherwise the answer is `Some(0)`
+  or `Ok(0)`.
+  `f` answers an `Option<i32>` or `Result<i32, E>` whose value is discarded, where Rust's
+  answers `()`, because no closure literal can return void yet. It becomes Rust's when it
+  can.
 - `fn sum(self : &mut Self) -> Self :  : Item`<br>
   Every item added up, consuming the sequence. Zero for one that is already finished.
   The item type says how, by implementing `Sum`. Rust also lets the caller choose a result
@@ -1040,6 +1052,20 @@ The callable types a closure literal lowers into.
 - `struct Closure1<Arg, Ret>`
 - `struct Closure2<Arg1, Arg2, Ret>`
 - `struct Closure3<Arg1, Arg2, Arg3, Ret>`
+- `trait Try`<br>
+  A value that either carries on, holding an output, or stops early. It is what
+  `Iterator::try_fold` reads from its closure's answers, and `Option` and `Result` implement
+  it: `Some` and `Ok` carry on, `None` and `Err` stop. Rust's `Try` cut down to what those
+  two need, with no residual type and no `?`.
+
+**`trait Try` methods**
+
+- `fn is_continue(self : &Self) -> bool`<br>
+  Does this carry on? False means stop here and hand this value back.
+- `fn into_output(self : Self) -> Self :  : Output`<br>
+  The output of one that carries on.
+- `fn from_output(output : Self :  : Output) -> Self`<br>
+  One that carries on, holding `output`.
 
 ## `core::option`
 
@@ -1048,6 +1074,15 @@ The callable types a closure literal lowers into.
 **Types**
 
 - `enum Option<T>`
+
+**`Try for Option<T>` methods**
+
+- `fn is_continue(self : &Option<T>) -> bool`<br>
+  Is there a value?
+- `fn into_output(self : Option<T>) -> T`<br>
+  The value.
+- `fn from_output(output : T) -> Option<T>`<br>
+  `Some(output)`.
 
 **`Option<T>` methods**
 
@@ -1120,6 +1155,15 @@ Raw pointers: making one, and reading or writing through it.
 **Types**
 
 - `enum Result<T, E>`
+
+**`Try for Result<T, E>` methods**
+
+- `fn is_continue(self : &Result<T, E>) -> bool`<br>
+  Is this `Ok`?
+- `fn into_output(self : Result<T, E>) -> T`<br>
+  The `Ok` value.
+- `fn from_output(output : T) -> Result<T, E>`<br>
+  `Ok(output)`.
 
 **`Result<T, E>` methods**
 
@@ -2007,4 +2051,4 @@ Clocks and durations.
 
 ______________________________________________________________________
 
-708 functions across 32 modules.
+719 functions across 32 modules.
