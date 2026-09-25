@@ -1,0 +1,13 @@
+//===- name_the_compiler_uses_is_declared_again.vx - Vx Compiler *- Vx -*-===//
+// RUN: not vxc %s --action print-ast 2>&1 | FileCheck %s
+import core::iter;
+
+struct Option {
+  v : i32,
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK: `Option` is declared by both `{{.*}}name_the_compiler_uses_is_declared_again.vx` and `core::option`; the compiler looks up the standard library's `Option` by name

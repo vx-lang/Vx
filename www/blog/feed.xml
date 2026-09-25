@@ -18,7 +18,7 @@
   </entry>
 
   <entry>
-    <title>Two allocators, one type</title>
+    <title>float * of C/C++/Rust Fails to Distinguish Host DRAM from GPU HBM</title>
     <link href="https://vxlang.org/blog/two-allocators-one-type.html"/>
     <id>https://vxlang.org/blog/two-allocators-one-type.html</id>
     <updated>2026-09-23T12:00:00Z</updated>
@@ -27,7 +27,7 @@
   </entry>
 
   <entry>
-    <title>Asking the other compiler</title>
+    <title>Reverse engineering trait implementation to fix the Vx's</title>
     <link href="https://vxlang.org/blog/asking-the-other-compiler.html"/>
     <id>https://vxlang.org/blog/asking-the-other-compiler.html</id>
     <updated>2026-09-22T17:00:00Z</updated>
@@ -45,7 +45,7 @@
   </entry>
 
   <entry>
-    <title>The 43 gigabytes that are never there</title>
+    <title>Vx can model peak memory pressure at compile time</title>
     <link href="https://vxlang.org/blog/the-43-gigabytes-that-are-never-there.html"/>
     <id>https://vxlang.org/blog/the-43-gigabytes-that-are-never-there.html</id>
     <updated>2026-09-21T23:00:00Z</updated>
@@ -63,7 +63,7 @@
   </entry>
 
   <entry>
-    <title>What writing core taught the compiler</title>
+    <title>The compiler bugs we found by writing Vx's core library</title>
     <link href="https://vxlang.org/blog/what-writing-core-taught-the-compiler.html"/>
     <id>https://vxlang.org/blog/what-writing-core-taught-the-compiler.html</id>
     <updated>2026-09-21T18:00:00Z</updated>

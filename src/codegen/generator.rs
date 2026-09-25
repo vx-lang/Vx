@@ -2093,7 +2093,11 @@ impl<'c> MeliorGenerator<'c> {
                 span: _,
             }) => {
                 let (base_val, base_ty, mut indices, block) = self.flatten_indices(base, block)?;
-                let (idx_val, _, block) = self.generate_expr(idx, block).ok()?;
+                // The index is a value even when the element is wanted as a place: `&a[*i]`.
+                let prev_lvalue = std::mem::replace(&mut self.is_lvalue_context, false);
+                let lowered = self.generate_expr(idx, block);
+                self.is_lvalue_context = prev_lvalue;
+                let (idx_val, _, block) = lowered.ok()?;
 
                 let idx_ty_str = idx_val.r#type().to_string();
                 let actual_idx = if idx_ty_str != "index" {

@@ -1,0 +1,23 @@
+//===- a_library_shadows_an_imported_name.vx - Vx Compiler ------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `clash_left` declares `Range` as core::iter does, so this program, which imports core::iter
+// only through it, sees its `Range`. Both imports declare `Point`, which is fine while unused.
+import tests::modules::clash_left;
+import tests::modules::clash_right;
+
+fn main() -> i32 {
+  let r = Range {
+    lo : 7i64
+  };
+  print(r.lo + left_count());
+  print!(" ");
+  print(left_x() + right_z());
+  return 0;
+}
+
+// EXPECT: 10 21
