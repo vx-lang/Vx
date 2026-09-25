@@ -1,0 +1,62 @@
+//===- shadowed_by_the_program.vx - Vx Compiler -----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Declares `Count`, `count`, `iter` and `core`, which the importing program declares too, and
+// uses each name where only a top-level use should be renamed.
+import core::iter;
+
+struct Count {
+  count : i64,
+}
+
+enum Kind {
+  Count,
+  Other,
+}
+
+impl Count {
+  fn count(self : Count) -> i64 {
+    return self.count;
+  }
+}
+
+fn count(n : i64) -> Count {
+  return Count {
+    count : n
+  };
+}
+
+fn iter() -> i64 {
+  let mut n = 0i64;
+  let mut it = range(0i64, 4i64);
+  for x in it {
+    n = n + x;
+  }
+  return n;
+}
+
+fn core() -> i64 {
+  return 1000i64;
+}
+
+fn kind_value(k : Kind) -> i64 {
+  let mut v = 0i64;
+  match k {
+    Kind::Count() => {
+      v = 100i64;
+    },
+    Kind::Other() => {
+      v = 1i64;
+    },
+  }
+  return v;
+}
+
+fn library_total() -> i64 {
+  let c = count(5i64);
+  return c.count() + c.count + iter() + kind_value(Kind::Count()) + core();
+}

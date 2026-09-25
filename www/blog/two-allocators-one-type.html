@@ -3,18 +3,18 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Two allocators, one type</title>
+<title>float * of C/C++/Rust Fails to Distinguish Host DRAM from GPU HBM</title>
 <meta name="author" content="Aditya Kumar">
 <meta name="description" content="malloc and cudaMalloc hand back memory with different owners, different sizes and different readers, and C, C++ and Rust give both the same type. Vx records the memory space in the type, so the difference the allocator knew stays in the program.">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 
-<meta property="og:title" content="Two allocators, one type">
+<meta property="og:title" content="float * of C/C++/Rust Fails to Distinguish Host DRAM from GPU HBM">
 <meta property="og:description" content="malloc and cudaMalloc hand back different memory, and C, C++ and Rust give both the same type. Vx records the memory space in the type.">
 <meta property="og:type" content="article">
 <meta property="article:published_time" content="2026-09-23T12:00:00Z">
 <meta property="og:url" content="https://vxlang.org/blog/two-allocators-one-type.html">
 <meta property="og:image" content="https://vxlang.org/cards/blog-two-allocators-one-type.png">
-<meta property="og:image:alt" content="Two allocators, one type: a float* from malloc and a float* from cudaMalloc look the same to C, C++ and Rust.">
+<meta property="og:image:alt" content="A float* from malloc and a float* from cudaMalloc look the same to C, C++ and Rust.">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:image" content="https://vxlang.org/cards/blog-two-allocators-one-type.png">
 
@@ -40,19 +40,19 @@
 
 <article class="post">
 
-<h1>Two allocators, one type</h1>
+<h1>float * of C/C++/Rust Fails to Distinguish Host DRAM from GPU HBM</h1>
 <p class="post-meta">Aditya Kumar &middot; 23 September 2026</p>
 
 <blockquote class="tldr"><strong>TL;DR</strong> — <code>malloc</code> and <code>cudaMalloc</code>
-return memory that lives in different places, is read by different processors, and runs out at
-different sizes. C, C++ and Rust give both results the same type. Vx makes the memory space part of
+return memory that lives in different places. They are supposed to be read by different processors, and run out at
+different sizes. C, C++ and Rust give both results the same type. Vx makes the memory space (placement) part of
 the type, so a value from device memory cannot be passed, assigned or read as if it were host
 memory.</blockquote>
 
 <p class="lede">An allocator knows exactly one thing better than anyone else in the program: which
 memory it just handed out. The first thing the language does with that answer is throw it away.</p>
 
-<h2>Two lines of C</h2>
+<h2>Here is a simple example in C to demonstrate the problem</h2>
 
 <pre><code><span class="t">float</span> *a = (<span class="t">float</span> *)<span class="f">malloc</span>(<span class="n">16</span> * <span class="k">sizeof</span>(<span class="t">float</span>));
 <span class="t">float</span> *b;
@@ -61,9 +61,65 @@ memory it just handed out. The first thing the language does with that answer is
 a = b;              <span class="c">// compiles</span>
 <span class="t">float</span> x = b[<span class="n">0</span>];    <span class="c">// compiles; faults on a discrete GPU</span></code></pre>
 
-<p><code>a</code> points into host DRAM. <code>b</code> points into the GPU's HBM, which the host
-thread cannot address at all. They are the same type, they assign to each other, and reading
+<p><code>a</code> points into host DRAM. <code>b</code> points into the GPU's HBM, which a host
+thread on a discrete GPU cannot address at all. They are the same type, they assign to each other, and reading
 through either is a well-formed expression.</p>
+
+<figure>
+<div class="fig-panels">
+<svg class="diagram" viewBox="0 0 400 300" role="img" aria-label="In C, C++ and Rust, malloc and cudaMalloc both return float *, and that one type points into either host DRAM or GPU HBM; a host read of device memory compiles and faults.">
+  <defs><marker id="fig1-arrow-c" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="d-head" d="M0 0L10 5L0 10z"/></marker></defs>
+  <text class="d-title" x="200" y="18" text-anchor="middle">C, C++, Rust</text>
+  <rect class="d-box" x="14" y="32" width="172" height="34" rx="4"/>
+  <text class="d-mono" x="100" y="54" text-anchor="middle">malloc(64)</text>
+  <rect class="d-box" x="214" y="32" width="172" height="34" rx="4"/>
+  <text class="d-mono" x="300" y="54" text-anchor="middle">cudaMalloc(&amp;b, 64)</text>
+  <line class="d-line" x1="100" y1="66" x2="168" y2="120" marker-end="url(#fig1-arrow-c)"/>
+  <line class="d-line" x1="300" y1="66" x2="232" y2="120" marker-end="url(#fig1-arrow-c)"/>
+  <text class="d-small" x="200" y="92" text-anchor="middle">returns</text>
+  <rect class="d-box" x="130" y="122" width="140" height="34" rx="4"/>
+  <text class="d-mono" x="200" y="144" text-anchor="middle">float *</text>
+  <line class="d-line d-dashed" x1="180" y1="156" x2="104" y2="204" marker-end="url(#fig1-arrow-c)"/>
+  <line class="d-line d-dashed" x1="220" y1="156" x2="296" y2="204" marker-end="url(#fig1-arrow-c)"/>
+  <text class="d-small" x="200" y="182" text-anchor="middle">either</text>
+  <rect class="d-mem" x="14" y="206" width="172" height="40" rx="4"/>
+  <text x="100" y="231" text-anchor="middle">Host DRAM</text>
+  <rect class="d-mem" x="214" y="206" width="172" height="40" rx="4"/>
+  <text x="300" y="231" text-anchor="middle">GPU HBM</text>
+  <line class="d-line" x1="186" y1="226" x2="214" y2="226"/>
+  <text class="d-small" x="200" y="262" text-anchor="middle">PCIe</text>
+  <text class="d-danger" x="200" y="290" text-anchor="middle">host reads b[0]: compiles, then faults</text>
+</svg>
+<svg class="diagram" viewBox="0 0 400 300" role="img" aria-label="In Vx, a host tensor and a tensor in GPU_HBM have different types, each pointing into its own memory; a host read of the device tensor is refused at compile time with E6003.">
+  <defs><marker id="fig1-arrow-vx" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="d-head" d="M0 0L10 5L0 10z"/></marker></defs>
+  <text class="d-title" x="200" y="18" text-anchor="middle">Vx</text>
+  <rect class="d-box" x="14" y="32" width="172" height="34" rx="4"/>
+  <text class="d-mono" x="100" y="54" text-anchor="middle">Tensor::new()</text>
+  <rect class="d-box" x="214" y="32" width="172" height="34" rx="4"/>
+  <text class="d-mono" x="300" y="54" text-anchor="middle">transfer(t, GPU_HBM)</text>
+  <line class="d-line" x1="100" y1="66" x2="100" y2="120" marker-end="url(#fig1-arrow-vx)"/>
+  <line class="d-line" x1="300" y1="66" x2="300" y2="120" marker-end="url(#fig1-arrow-vx)"/>
+  <text class="d-small" x="200" y="97" text-anchor="middle">returns</text>
+  <rect class="d-box" x="14" y="122" width="172" height="34" rx="4"/>
+  <text class="d-mono" x="100" y="144" text-anchor="middle">Tensor&lt;f32, [4, 4]&gt;</text>
+  <rect class="d-box d-accent-stroke" x="214" y="122" width="172" height="34" rx="4"/>
+  <text class="d-mono" x="300" y="144" text-anchor="middle" style="font-size:10.5px">Tensor&lt;f32,[4,4],GPU_HBM&gt;</text>
+  <line class="d-line" x1="100" y1="156" x2="100" y2="204" marker-end="url(#fig1-arrow-vx)"/>
+  <line class="d-line" x1="300" y1="156" x2="300" y2="204" marker-end="url(#fig1-arrow-vx)"/>
+  <text class="d-small" x="200" y="184" text-anchor="middle">lives in</text>
+  <rect class="d-mem" x="14" y="206" width="172" height="40" rx="4"/>
+  <text x="100" y="231" text-anchor="middle">Host DRAM</text>
+  <rect class="d-mem" x="214" y="206" width="172" height="40" rx="4"/>
+  <text x="300" y="231" text-anchor="middle">GPU HBM</text>
+  <line class="d-line" x1="186" y1="226" x2="214" y2="226"/>
+  <text class="d-small" x="200" y="262" text-anchor="middle">PCIe</text>
+  <text class="d-accent-text" x="200" y="290" text-anchor="middle">host reads it: refused at compile time, E6003</text>
+</svg>
+</div>
+<figcaption>The same two allocations. On the left, both results collapse into one type, so a host
+read of GPU memory compiles. On the right, each keeps a type that names its memory, and the host
+read is a compile error.</figcaption>
+</figure>
 
 <p>Look at where the difference <em>is</em> written down. The signature is</p>
 
@@ -89,15 +145,15 @@ pointer per mutability, and its foreign-function declarations come out identical
 <em>provenance</em>: which allocation the pointer was derived from. It does not track which memory
 that allocation is in, because in its abstract machine there is only one.</p>
 
-<h2>The libraries noticed</h2>
+<h2>Popular libraries have made efforts to address this</h2>
 
-<p>People who write GPU code hit this early, and the libraries built the missing type themselves.
+<p>People who write GPU code hit this early, so the libraries built the missing type themselves.
 Thrust has <code>thrust::device_ptr&lt;T&gt;</code>. SYCL has
 <code>multi_ptr&lt;T, address_space&gt;</code>. In Rust, <code>cudarc</code> has
 <code>CudaSlice&lt;T&gt;</code> and <code>cust</code> has <code>DeviceBuffer&lt;T&gt;</code>. Inside
-one of these libraries, a device buffer and a host buffer are different types, and that works.</p>
+one of these libraries, a device buffer and a host buffer are different types.</p>
 
-<p>Each one is a private vocabulary, though, and they meet at the raw pointer. cuBLAS takes
+<p>Each one is their own vocabulary, though, and they meet at the raw pointer. cuBLAS takes
 <code>const float *</code>. A kernel launch takes <code>float *</code>. Thrust's way out is
 <code>thrust::raw_pointer_cast</code>, and the Rust crates have their own equivalents. Every time a
 buffer crosses from one library to another, it crosses as a bare pointer, and the space is gone
@@ -109,6 +165,60 @@ NVPTX pipeline runs a pass called <em>InferAddressSpaces</em> whose job is to wo
 fact, which space each generic pointer points into. The allocator knew. The type dropped it. A
 compiler pass spends its time guessing it back, and it gives up at any call it cannot see
 through.</p>
+
+<h2>The bugs highlight the underlying problem</h2>
+
+<p>This is a mistake people make often enough to leave a trail. A few from public trackers:</p>
+
+<table>
+<tr><th>Where</th><th>What happened</th></tr>
+<tr><td><a href="https://github.com/pytorch/pytorch/issues/49814">PyTorch #49814</a> (2020)</td>
+<td>A user took <code>data_ptr()</code> from a CUDA tensor and wrapped it with
+<code>from_blob</code>. The new tensor said <code>device=cpu</code>, and printing it was a SIGSEGV.
+The user's own comment on the pointer: <em>&ldquo;I believe &lsquo;p&rsquo; is a gpu
+pointer?&rdquo;</em></td></tr>
+<tr><td><a href="https://forums.developer.nvidia.com/t/cublassasum-fails-if-result-is-on-device/139805/2">cuBLAS
+pointer mode</a> (2020)</td>
+<td><code>cublasSasum</code> writes its result through a <code>float *</code> that means host memory
+or device memory depending on a setting on the library handle, made at run time with
+<code>cublasSetPointerMode</code>. A device result pointer in the default host mode fails.</td></tr>
+<tr><td><a href="https://github.com/ORNL/HeCBench/pull/351">HeCBench #351</a> (2026)</td>
+<td>A GPU memory tester reset its error counter with <code>cudaMemset(&amp;err, ...)</code>, the
+address of a host stack variable, where it meant the device counter. Nothing crashed; later tests
+inherited a stale error count. The same bug was in the HIP version.</td></tr>
+<tr><td><a href="https://github.com/llnl/hiop/issues/774">HiOp #774</a> (2026)</td>
+<td>A sparse solver backend converted a matrix with plain host loads. With
+<code>mem_space=device</code> the arrays were device allocations, and the solver crashed before
+its first factorization.</td></tr>
+<tr><td><a href="https://github.com/AMReX-Codes/amrex/issues/5706">AMReX #5706</a> (2026)</td>
+<td>Four particle-tile vectors fell through to the default arena, which is device memory on GPU
+builds, and host code read them while writing a plot file.</td></tr>
+<tr><td><a href="https://github.com/pytorch/pytorch/issues/196969">PyTorch #196969</a> (2026)</td>
+<td>PyTorch's own compiler generated a CUDA kernel call that received a CPU tensor pointer. Eager
+mode ran correctly.</td></tr>
+</table>
+
+<p>The cuBLAS row is the clearest. The library's authors knew exactly which memory a result pointer
+names, and the only place they could record it was a mode flag on a handle, because the parameter's
+type has nowhere to put it. The last row is a compiler making the same mistake a person does.</p>
+
+<h2>Prior art in programming languages</h2>
+
+<p>Putting the space in the pointer's type is an old idea. OpenCL C writes
+<code>__global float *</code> and <code>__local float *</code> as distinct types. ISO/IEC TR 18037
+gave C named address spaces for embedded targets, and clang accepts
+<code>__attribute__((address_space(N)))</code> in C and C++. Sequoia, Chapel's locales, X10's places
+and Legion's regions all built placement into the language.</p>
+
+<p>CUDA went the other way on purpose. Unified virtual addressing, since CUDA 4.0, gives every
+allocation a distinct address across host and device, so one generic pointer can reach any memory
+and <code>cudaPointerGetAttributes</code> reports at run time where it points. That buys one kernel
+for every memory, and it moves the question of where a pointer points from the compiler to the run
+time.</p>
+
+<p>Vx keeps the space in the type and adds a description of the machine to check it against: which
+spaces each processor can see, how large each space is, and which links join them. The check runs
+at compile time, and the error names the transfer that fixes it.</p>
 
 <h2>In Vx, the space is in the type</h2>
 
@@ -156,7 +266,7 @@ pointer is refused at the same read.</p>
 <p>That compiles and runs. Nothing about it needs a GPU on the machine doing the compiling: which
 spaces a CPU can see comes from the machine description the compiler checks against.</p>
 
-<h2>Where the space goes when two memories are one</h2>
+<h2>Where the space goes in a unified memory system</h2>
 
 <p>On Apple silicon the CPU and the neural engine share physical memory, and the built-in CPU
 description lists <code>NPU_HBM</code> among the spaces it can see. A host read of a tensor in
@@ -164,13 +274,32 @@ description lists <code>NPU_HBM</code> among the spaces it can see. A host read 
 still written, and compiles to almost nothing. The type records where a value lives; the machine
 description decides who may read it.</p>
 
-<h2>What is not built</h2>
+<p>Hardware is moving this way. On Grace Hopper the CPU reads the GPU's HBM directly over
+NVLink-C2C, and MI300A puts CPU and GPU on one pool of HBM. Where a read is legal it still has a
+price: a remote read runs at the link's bandwidth, and on a two-socket host a remote NUMA access
+measured
+<a href="/blog/the-numa-that-wasnt-there.html">2.35&times; the cost of a local one</a>. The machine
+file records both facts: <code>visible:</code> says who may read a space, and the transfer edges
+say what moving data costs.</p>
 
-<p>The space lives on <code>Tensor</code> (and on <code>Pinned</code>). Vx's own raw pointers,
-<code>*const T</code> and <code>*mut T</code>, have no space slot yet. From host code that gap is
-closed today because forming such a pointer to device memory already reads the element, and the
-read is refused. A raw pointer that carries its space the way a tensor does is the obvious next
-step, and it is not there.</p>
+<h2>Even in Vx raw pointers mean CPU memory</h2>
+
+<p>Vx has raw pointers too, <code>*const T</code> and <code>*mut T</code>, and they carry no space
+parameter. That is deliberate: a raw pointer points into the default CPU memory, which is what a
+<code>float *</code> means to C, C++ and Rust code today. A pointer passed to or from a C library
+keeps the meaning it had there, so existing code and <code>extern</code> declarations work
+unchanged.</p>
+
+<p>Memory anywhere else is reached through a type that names its space: <code>Tensor</code> or
+<code>Pinned</code>. That is why taking the address of a device element from host code is refused.
+The pointer it would produce claims CPU memory, and the element is in HBM.</p>
+
+<p>That leaves a question for GPU libraries: how does a device tensor reach cuBLAS? Today the
+runtime does it. Its CUDA dispatch calls cuBLAS for matrix products, with the buffers it already
+holds on the device. User code cannot yet pass a device tensor to a C library through its own
+<code>extern</code> declaration. That needs a way to spell a device-memory parameter in an
+<code>extern</code> signature, and Vx does not have one yet; it is tracked in
+<a href="https://github.com/vx-lang/Vx/issues/742">issue #742</a>.</p>
 
 <p class="post-foot">An earlier post, <a href="/blog/what-a-pointer-forgets.html">What a pointer
 forgets</a>, follows the same fact across a function return. The
