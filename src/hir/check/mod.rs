@@ -19,6 +19,7 @@ pub mod autodiff;
 pub mod calls;
 pub mod capacity_fold;
 pub mod control;
+pub mod imported_flaws;
 pub mod literals;
 pub mod operators;
 pub mod projection;

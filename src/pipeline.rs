@@ -543,6 +543,8 @@ fn name_resolution_phase(
 /// Emitting one as the other would produce a silently empty `func.func`, so the flag is what makes
 /// the emitter decline instead (#311).
 struct FunctionCheck {
+    /// The function checked, as declared.
+    function: String,
     diagnostics: crate::diagnostic::DiagnosticsVec,
     monomorphs: Vec<(syntax::Function, u64)>,
     worker: LocalWorkerState,
@@ -1207,6 +1209,7 @@ fn check_one_function(
     global_env: &GlobalAstEnv,
     lowering_edge: Option<(syntax::MemorySpace, syntax::MemorySpace, String)>,
 ) -> FunctionCheck {
+    let function = func.name.to_string();
     let mut worker = LocalWorkerState::new(global_session.clone());
     let mut checker = TypeChecker::new(global_env, &mut worker);
     // Inside an `impl transfer` body the eight `raw::` primitives resolve; everywhere
@@ -1231,6 +1234,7 @@ fn check_one_function(
     emit_function_type_gids(func, &mut worker);
 
     FunctionCheck {
+        function,
         diagnostics: errors,
         monomorphs: monos,
         worker,
@@ -1291,6 +1295,57 @@ pub fn report_warnings(warnings: &[crate::diagnostic::Diagnostic]) {
     for diag in warnings {
         eprintln!("{diag}");
     }
+}
+
+/// The errors of the imported free functions that something emitted calls. The flawed ones
+/// nothing calls are taken out of `modules`, with what checking them instantiated, since code
+/// generation cannot compile them.
+fn imported_flaws_of(
+    modules: &mut [VxModule],
+    checks: &mut [FunctionCheck],
+    entry: usize,
+) -> Vec<crate::diagnostic::Diagnostic> {
+    let is_flawed = |c: &FunctionCheck| {
+        c.module_idx != entry
+            && c.diagnostics
+                .iter()
+                .any(|d| d.level == DiagnosticLevel::Error)
+            && modules[c.module_idx]
+                .functions
+                .iter()
+                .any(|f| f.generics.is_empty() && f.name.as_ref() == c.function)
+    };
+    let flawed: std::collections::HashSet<String> = checks
+        .iter()
+        .filter(|c| is_flawed(c))
+        .map(|c| c.function.clone())
+        .collect();
+    if flawed.is_empty() {
+        return Vec::new();
+    }
+    let reached = crate::hir::check::imported_flaws::reached(
+        checks.iter().flat_map(|c| c.capacity_summaries.iter()),
+        &flawed,
+    );
+    let mut errors = Vec::new();
+    for c in checks.iter_mut().filter(|c| flawed.contains(&c.function)) {
+        let module = modules[c.module_idx].module_path.to_string();
+        if reached.contains(&c.function) {
+            errors.extend(crate::hir::check::imported_flaws::errors_of(
+                c.diagnostics.inner.clone(),
+                &module,
+                &c.function,
+            ));
+        } else {
+            c.monomorphs.clear();
+        }
+    }
+    errors.sort_by(|a, b| a.message.cmp(&b.message));
+    for m in modules.iter_mut() {
+        m.functions
+            .retain(|f| !flawed.contains(f.name.as_ref()) || reached.contains(f.name.as_ref()));
+    }
+    errors
 }
 
 /// Per-function checks. The whole-program declaration checks run once in
@@ -1409,8 +1464,14 @@ fn type_check_phase(
     };
 
     // An imported module's body diagnostics are dropped, not counted: they cannot fail this
-    // compile any more than they can be printed by it. The whole-program fold below is separate --
-    // it is about this program's call graph, so it always reports.
+    // compile any more than they can be printed by it. The exception is a function whose body
+    // does not check and that something emitted calls: see `imported_flaws`. The whole-program
+    // fold below is separate -- it is about this program's call graph, so it always reports.
+    let mut check_results = check_results;
+    let called_flaws = match reported_module {
+        None => Vec::new(),
+        Some(entry) => imported_flaws_of(parsed_modules, &mut check_results, entry),
+    };
     let reported: Vec<&crate::diagnostic::Diagnostic> = check_results
         .iter()
         .filter(|c| match reported_module {
@@ -1418,6 +1479,7 @@ fn type_check_phase(
             Some(entry) => c.module_idx == entry,
         })
         .flat_map(|c| c.diagnostics.iter())
+        .chain(called_flaws.iter())
         .collect();
     let mut warnings: Vec<crate::diagnostic::Diagnostic> = reported
         .iter()
@@ -1972,6 +2034,7 @@ mod gid_stream_tests {
                 worker.local_type_stream.push(id);
             }
             let mut results = vec![FunctionCheck {
+                function: "main".to_string(),
                 diagnostics: crate::diagnostic::DiagnosticsVec::new(),
                 monomorphs: Vec::new(),
                 worker,

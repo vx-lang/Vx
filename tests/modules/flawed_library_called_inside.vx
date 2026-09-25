@@ -1,0 +1,23 @@
+//===- flawed_library_called_inside.vx - Vx Compiler ------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A function that checks and calls one that does not.
+
+struct Count {
+  n : i64,
+}
+
+fn inner_flawed() -> i64 {
+  let c = Count {
+    n : 5i64
+  };
+  return c.m;
+}
+
+fn outer_good() -> i64 {
+  return inner_flawed() + 1i64;
+}

@@ -1,0 +1,17 @@
+//===- a_called_library_flaw_is_reported.vx - Vx Compiler -------*- Vx -*-===//
+// RUN: not vxc --emit-mlir %s 2>&1 | FileCheck %s
+// RUN: not vxc --legacy-codegen --emit-mlir %s 2>&1 | FileCheck %s
+// RUN: not vxc -j 4 --emit-mlir %s 2>&1 | FileCheck %s --check-prefixes=CHECK,JOBS
+import tests::modules::flawed_library_called_inside;
+
+fn main() -> i32 {
+  print(outer_good());
+  return 0;
+}
+
+// The parallel driver reports it itself rather than falling back to the sequential one.
+// JOBS-NOT: using the sequential driver
+// `outer_good` checks and is compiled, and it calls `inner_flawed`, which does not check. Code
+// generation crashed on that body; its error is reported instead.
+// CHECK: in `inner_flawed` of the imported module `tests::modules::flawed_library_called_inside`, which the compiled code calls: Struct 'Count' has no field 'm'
+// JOBS: Compilation failed with 1 semantic errors

@@ -1,0 +1,31 @@
+//===- flawed_library.vx - Vx Compiler --------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Functions whose bodies do not check, which nothing in this module calls except each other.
+
+struct Count {
+  n : i64,
+}
+
+fn uncalled_flawed() -> i64 {
+  return only_called_by_flawed() + no_such_function(1i64);
+}
+
+fn only_called_by_flawed() -> i64 {
+  let c = Count {
+    n : 1i64
+  };
+  return c.m;
+}
+
+fn closure_target(x : i64) -> i64 {
+  return missing_function(x);
+}
+
+fn library_good(x : i32) -> i32 {
+  return x + 1;
+}
