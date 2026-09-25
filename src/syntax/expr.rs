@@ -1035,6 +1035,14 @@ impl Expr {
                     }
                 } else if new_name.contains('<') {
                     new_name = crate::syntax::substitute_type_name(&new_name, mapping).into();
+                } else if let Some(ty) = new_name
+                    .rsplit_once("::")
+                    .and_then(|(owner, method)| Some((mapping.get(owner)?, method)))
+                    .map(|(ty, method)| format!("{ty}::{method}"))
+                {
+                    // `T::default()`, `Self::Item::default()`: a static call on a type variable
+                    // is a static call on what the variable stands for.
+                    new_name = ty.into();
                 }
                 let substituted_type_args = e
                     .type_args

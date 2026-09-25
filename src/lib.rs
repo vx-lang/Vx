@@ -34,6 +34,7 @@ pub mod lexer;
 pub mod metadata;
 pub mod mlir_ty;
 pub mod module_loader;
+pub mod name_clashes;
 pub mod parallel_architecture_verifier;
 pub mod parser;
 pub mod pipeline;

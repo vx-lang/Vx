@@ -30,6 +30,8 @@ const KNOWN_DECLINES: &[&str] = &[
     "backend/pass/core_iter.vx",
     // Same decline as `core_iter.vx`, one adaptor deeper: the answers come from the AST path.
     "backend/pass/iter_adaptors_chain.vx",
+    // Same decline as `core_iter.vx`: `main` builds adaptors before consuming them.
+    "backend/pass/core_iter_fold_sum_collect.vx",
     // "A borrow of something that is not a tensor": the flat path borrows tensors only.
     "backend/pass/borrow_of_a_value.vx",
     // Same decline again: two chains whose `Map`s differ, for a name clash in the AST path.

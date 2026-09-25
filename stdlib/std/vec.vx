@@ -151,6 +151,22 @@ Vec<T> {
   }
 }
 
+impl<T> FromIterator<T> for Vec<T> {
+  /// A new `Vec` holding every item `iter` has left, which the caller owns and must `free`.
+  fn from_iter<I : Iterator>(iter : I) -> Vec<T> {
+    let mut out = Vec<T>::new ();
+    let mut it = iter;
+    loop {
+      let step = it.next();
+      if step.is_none() {
+        return out;
+      }
+      out.push(step.unwrap());
+    }
+    return out;
+  }
+}
+
 /// An iterator over a `Vec<T>`'s elements, holding a pointer to the vector it walks.
 ///
 /// Growing or freeing that vector while this exists leaves the iterator pointing at the old

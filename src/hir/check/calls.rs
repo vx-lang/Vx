@@ -2059,6 +2059,11 @@ impl<'a> TypeChecker<'a> {
                 self.unify_types(expected_param, arg_ty, &mut mapping);
             }
         }
+        // A method parameter only the return type names, `collect<B>`, from what the call is
+        // assigned to, as a generic function's is.
+        if let Some(expected) = self.expected_type.clone() {
+            self.unify_types(&generic_method.return_type, &expected, &mut mapping);
+        }
         let params: Vec<&Type> = generic_method.params.iter().map(|(_, t)| t).collect();
         self.resolve_projections_for(
             generic_method.name.as_ref(),

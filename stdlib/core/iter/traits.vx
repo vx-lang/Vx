@@ -15,6 +15,7 @@
 //
 // A method whose `loop` only ever leaves by `return` still needs a return after it: the checker
 // does not treat such a loop as diverging (E3028). Those are unreachable.
+import core::default;
 import core::ops;
 import core::option;
 
@@ -155,4 +156,48 @@ trait Iterator {
     }
     return 0;
   }
+
+  /// `f` over every item, carrying a value from one to the next: `init` goes in with the
+  /// first item, and what `f` answers goes in with the next. The last answer is the result,
+  /// or `init` for a sequence that is already finished.
+  fn fold<B>(self : &mut Self, init : B, f : Closure2<B, Self::Item, B>) -> B {
+    let mut acc : B = init;
+    loop {
+      let step = self.next();
+      if step.is_none() {
+        return acc;
+      }
+      let p = f.func;
+      acc = p(f.env, acc, step.unwrap());
+    }
+    return acc;
+  }
+
+  /// Every item added up, consuming the sequence. Zero for one that is already finished.
+  ///
+  /// Answers the item type, and asks it for `+` and a `Default`, where Rust asks for a `Sum`
+  /// impl and lets the caller choose the result's type. Both agree for the numbers.
+  fn sum(self : &mut Self) -> Self::Item {
+    let mut total : Self::Item = Self::Item::default();
+    loop {
+      let step = self.next();
+      if step.is_none() {
+        return total;
+      }
+      total = total + step.unwrap();
+    }
+    return total;
+  }
+
+  /// Every item, gathered into a new collection of whatever type the result is assigned to:
+  /// `let v : Vec<i64> = it.collect();`. That type says how, by implementing `FromIterator`.
+  fn collect<B>(self : &mut Self) -> B {
+    return B::from_iter(self);
+  }
+}
+
+/// A collection that can be built from an iterator's items, which is what `collect` builds.
+trait FromIterator<A> {
+  /// A new collection holding every item `iter` has left, in order.
+  fn from_iter<I : Iterator>(iter : I) -> Self;
 }
