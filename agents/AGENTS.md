@@ -3,6 +3,21 @@
 Keep all your attention on this repository and the tasks related to it. If I need help with other repositories, I will open a separate chat session.
 Use simple English everywhere (comments, logs, chat sessions) not cryptic. It should be understood by a junior engineer.
 
+This covers commit messages, PR descriptions, error messages, test file names and test
+comments too. Vx is a programming language, and its tests are read by its users: an undergrad
+should understand what a test checks from the test file alone, without reading the compiler.
+
+- Use the words a programmer already knows: "a function with a type error", "a function the
+  program uses", "generates code". Do not invent terms from the implementation ("flawed
+  function", "reached", "emitted") and then use them as if the reader knew them.
+- Explain a compiler term the first time the reader needs it, or use a plainer one: "a normal
+  compile and a parallel compile (`-j`)" rather than "the sequential and parallel drivers".
+- Name test files and the functions inside them for what they are: `wrong_field`, `add_one`,
+  `unused_imported_functions_with_type_errors.vx`.
+- Read the draft again as someone who has seen only that file. Another agent (for example
+  `agy -p "<text and question>"`) can review the wording; it is good at catching double
+  negatives, internal terms and ambiguous words like "output".
+
 ## Tool usage
 
 These keep commands clean and avoid unnecessary permission prompts:
