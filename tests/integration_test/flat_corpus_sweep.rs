@@ -42,6 +42,7 @@ const KNOWN_DECLINES: &[&str] = &[
     "backend/pass/core_iter_zip.vx",
     "backend/pass/core_iter_extend.vx",
     "backend/pass/core_iter_exact_size.vx",
+    "backend/pass/core_iter_compare.vx",
     // Generic functions answering generic instances: "a callee return type", as above.
     "backend/pass/bounds_with_type_arguments.vx",
     // A closure passed to a generic function: the flat emitter has no path for the call yet.
