@@ -93,7 +93,9 @@ Transitions take the form $\\langle e, \\mu, S \\rangle \\longrightarrow \\langl
 > landed checker treats `spawn` as yielding a value *located* on $\\tau$ (type
 > $\\text{Pinned}\\langle T, \\tau \\rangle$, §2.3); that located value, not a task
 > handle, is what flows to a subsequent read. The rules here describe where the
-> fallibility layer will hook in.
+> fallibility layer will hook in. The $\\text{TaskHandle}$ in E-SPAWN is the
+> runtime's future id and never becomes a language value; the host waits on it at
+> its first read of the result, as [`../spawn_on.md`](../spawn_on.md) describes.
 
 $$
 \\frac{

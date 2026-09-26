@@ -8,15 +8,15 @@ Vx does not assume a single, flat instruction stream executing on a monolithic C
 
 ### 1.1 The `spawn on(Topology)` Operation
 
-The `spawn on(Topology)` statement transitions the execution context from the current hardware unit to the specified hardware topology.
+The `spawn on(Topology)` expression transitions the execution context from the current hardware unit to the specified hardware topology.
 
 **Operational Rule:**
 Let $E[ \\text{spawn on}(\\tau) { B } ]$ be a program state evaluated on an active hardware unit $\\rho$.
 
 1. The runtime checks if the topology $\\tau$ is reachable from $\\rho$.
 1. The runtime reserves resources on $\\tau$.
-1. Execution of the block $B$ is enqueued on $\\tau$.
-1. The spawning unit $\\rho$ continues asynchronously unless a data dependency explicitly synchronizes the contexts.
+1. The block $B$ runs on $\\tau$ and produces a value $v$.
+1. The spawning unit $\\rho$ continues with $v$, which lives on $\\tau$ (type `Pinned<T, τ>`). Everything after the spawn observes $B$ as complete. The runtime may overlap $B$ with later work on $\\rho$ as long as $\\rho$ cannot tell the difference; see [`../spawn_on.md`](../spawn_on.md).
 1. All variables captured within $B$ that are not in a shared or transferred memory space relative to $\\tau$ will result in a compiler error.
 1. **Index scope rule**: If $\\tau$ contains an index expression (e.g., `NPU[i]` or `NPU[0..4]`), the index expression is evaluated in the **calling** scope $\\rho$, not in $\\tau$. This ensures loop variables and other outer-scope identifiers are accessible.
 

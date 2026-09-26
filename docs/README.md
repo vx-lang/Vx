@@ -54,13 +54,22 @@ disagrees with the specification, the specification wins.
 | [`std_library_design.md`](std_library_design.md) | Why the standard library is layered over a Rust core |
 | [`generics_design.md`](generics_design.md) | Monomorphization |
 | [`ast_reference.md`](ast_reference.md) | The AST, for people working on the frontend |
-| [`spawn_on.md`](spawn_on.md) | The intended asynchronous design — **not implemented** |
+| [`spawn_on.md`](spawn_on.md) | Why `spawn on` keeps sequential meaning, and how the runtime is meant to overlap it anyway |
 
 ## Plans
 
 Documents named `*_plan.md` or `*_implementation_plan.md` are working plans for a piece of work.
 They describe an intended end state and are the most likely of anything here to have drifted from
 the code. Read them for intent, not as a description of what exists.
+
+## Discussions
+
+Notes under [`discussions/`](discussions/) record a decision while it is being made: the problem,
+the proposal, and what was considered and rejected. Like the plans, they describe intent.
+
+| Document | Covers |
+| --- | --- |
+| [`discussions/size_type.md`](discussions/size_type.md) | A size type whose overflow is a bug rather than a value |
 
 ## A note on accuracy
 

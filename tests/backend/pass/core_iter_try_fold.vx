@@ -1,0 +1,82 @@
+//===- core_iter_try_fold.vx - Vx Compiler ----------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `try_fold` and `try_for_each`, which stop at the first `None` or `Err` the closure answers.
+//
+//   10 7      `try_fold` with `Option`: 1..5 added through `checked_add`; an empty range
+//             answers `Some(init)`
+//   1 1       an overflow answers `None`, and the one item after it is left unconsumed
+//   3 34      `try_fold` with `Result`: `Ok` of 0 + 1 + 2 when every item is below three; on
+//             0..10 it stops with `Err(3)`, and 4 is the next item left
+//   0 26      `try_for_each` with `Option`: `Some(0)` when every item is under five; on 0..10
+//             it answers `None` (printed as 2) at 5, and 6 is the next item left
+//   7         `try_for_each` with `Result`: `Err(7)` from the first item not below seven
+import core::iter;
+import core::num;
+import core::result;
+
+fn below_three(acc : i64, x : i64) -> Result<i64, i64> {
+  if x < 3i64 {
+    return Result<i64, i64>::Ok(acc + x);
+  }
+  return Result<i64, i64>::Err(x);
+}
+
+fn under_five(x : i64) -> Option<i32> {
+  if x < 5i64 {
+    return Option<i32>::Some(1);
+  }
+  return Option<i32>::None();
+}
+
+fn below_seven(x : i64) -> Result<i32, i64> {
+  if x < 7i64 {
+    return Result<i32, i64>::Ok(1);
+  }
+  return Result<i32, i64>::Err(x);
+}
+
+fn main() -> i32 {
+  let mut a = range(1i64, 5i64);
+  print(a.try_fold(0i64, | acc : i64, x : i64 | acc.checked_add(x)).unwrap());
+  print!(" ");
+  let mut b = range(0i64, 0i64);
+  print(b.try_fold(7i64, | acc : i64, x : i64 | acc.checked_add(x)).unwrap());
+  print!(" ");
+
+  let mut c = range(0i64, 3i64).map(| x : i64 | 4611686018427387904i64);
+  if c.try_fold(0i64, | acc : i64, x : i64 | acc.checked_add(x)).is_none() {
+    print(1);
+  }
+  print!(" ");
+  print(c.count());
+  print!(" ");
+
+  let mut d = range(0i64, 3i64);
+  print(d.try_fold(0i64, | acc : i64, x : i64 | below_three(acc, x)).unwrap());
+  print!(" ");
+  let mut e = range(0i64, 10i64);
+  let stopped = e.try_fold(0i64, | acc : i64, x : i64 | below_three(acc, x));
+  print(stopped.unwrap_err() * 10i64 + e.next().unwrap());
+  print!(" ");
+
+  let mut f = range(0i64, 5i64);
+  print(f.try_for_each(| x : i64 | under_five(x)).unwrap());
+  print!(" ");
+  let mut g = range(0i64, 10i64);
+  if g.try_for_each(| x : i64 | under_five(x)).is_none() {
+    print(2);
+  }
+  print(g.next().unwrap());
+  print!(" ");
+
+  let mut h = range(0i64, 10i64);
+  print(h.try_for_each(| x : i64 | below_seven(x)).unwrap_err());
+  return 0;
+}
+
+// EXPECT: 10 7 1 1 3 34 0 26 7
