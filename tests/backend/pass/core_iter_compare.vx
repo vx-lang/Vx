@@ -1,0 +1,98 @@
+//===- core_iter_compare.vx - Vx Compiler -----------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Comparing two iterators item by item. An `Ordering` prints as 0 1 2 for Less Equal Greater,
+// and a `bool` as 0 or 1.
+//
+//   1022     `cmp`: equal; a prefix is Less; the longer is Greater; 0 2 4 against 1 2 3 is
+//            Less, because the first pair that differs decides
+//   11       `partial_cmp`: a NaN pair answers nothing; integers always answer
+//   10011    `eq` on equal, longer and shorter sequences, then `ne` on unequal and equal
+//   1100     `lt` `le` `gt` `ge` of a prefix against the longer sequence
+//   0101     the same four on equal sequences
+//   0000     the same four with a NaN pair, which does not compare
+import core::cmp;
+import core::iter;
+
+fn ord(o : Ordering) -> i32 {
+  if o.is_lt() {
+    return 0;
+  }
+  if o.is_eq() {
+    return 1;
+  }
+  return 2;
+}
+
+fn flag(v : bool) -> i32 {
+  if v {
+    return 1;
+  }
+  return 0;
+}
+
+fn main() -> i32 {
+  let mut a = range(0i64, 3i64);
+  print(ord(a.cmp(range(0i64, 3i64))));
+  let mut b = range(0i64, 2i64);
+  print(ord(b.cmp(range(0i64, 3i64))));
+  let mut c = range(0i64, 3i64);
+  print(ord(c.cmp(range(0i64, 2i64))));
+  let mut d = range(0i64, 3i64).map(| x : i64 | x * 2i64);
+  print(ord(d.cmp(range(0i64, 3i64).map(| x : i64 | x + 1i64))));
+  print!(" ");
+
+  let mut e = range(0i64, 2i64).map(| x : i64 | (x as f64) / (x as f64));
+  print(flag(e.partial_cmp(range(0i64, 2i64).map(| x : i64 | 1.0f64)).is_none()));
+  let mut f = range(0i64, 2i64);
+  print(ord(f.partial_cmp(range(0i64, 2i64)).unwrap()));
+  print!(" ");
+
+  let mut g = range(0i64, 3i64);
+  print(flag(g.eq(range(0i64, 3i64))));
+  let mut h = range(0i64, 3i64);
+  print(flag(h.eq(range(0i64, 2i64))));
+  let mut i = range(0i64, 2i64);
+  print(flag(i.eq(range(0i64, 3i64))));
+  let mut j = range(0i64, 2i64);
+  print(flag(j.ne(range(0i64, 3i64))));
+  let mut k = range(0i64, 3i64);
+  print(flag(k.ne(range(0i64, 3i64))));
+  print!(" ");
+
+  let mut l1 = range(0i64, 2i64);
+  print(flag(l1.lt(range(0i64, 3i64))));
+  let mut l2 = range(0i64, 2i64);
+  print(flag(l2.le(range(0i64, 3i64))));
+  let mut l3 = range(0i64, 2i64);
+  print(flag(l3.gt(range(0i64, 3i64))));
+  let mut l4 = range(0i64, 2i64);
+  print(flag(l4.ge(range(0i64, 3i64))));
+  print!(" ");
+
+  let mut m1 = range(0i64, 3i64);
+  print(flag(m1.lt(range(0i64, 3i64))));
+  let mut m2 = range(0i64, 3i64);
+  print(flag(m2.le(range(0i64, 3i64))));
+  let mut m3 = range(0i64, 3i64);
+  print(flag(m3.gt(range(0i64, 3i64))));
+  let mut m4 = range(0i64, 3i64);
+  print(flag(m4.ge(range(0i64, 3i64))));
+  print!(" ");
+
+  let mut n1 = range(0i64, 2i64).map(| x : i64 | (x as f64) / (x as f64));
+  print(flag(n1.lt(range(0i64, 2i64).map(| x : i64 | 1.0f64))));
+  let mut n2 = range(0i64, 2i64).map(| x : i64 | (x as f64) / (x as f64));
+  print(flag(n2.le(range(0i64, 2i64).map(| x : i64 | 1.0f64))));
+  let mut n3 = range(0i64, 2i64).map(| x : i64 | (x as f64) / (x as f64));
+  print(flag(n3.gt(range(0i64, 2i64).map(| x : i64 | 1.0f64))));
+  let mut n4 = range(0i64, 2i64).map(| x : i64 | (x as f64) / (x as f64));
+  print(flag(n4.ge(range(0i64, 2i64).map(| x : i64 | 1.0f64))));
+  return 0;
+}
+
+// EXPECT: 1020 11 10010 1100 0101 0000

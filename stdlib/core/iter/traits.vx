@@ -541,6 +541,129 @@ trait Iterator {
     }
     return (left, right);
   }
+
+  // This method and the seven after it name their type parameter `Other`, not `I`: a method
+  // parameter that shares a name with one of the receiver's (`Map<I, F>`) takes its type.
+
+  /// These items against `other`'s, in step, by their `Ord`: the first pair that differs
+  /// decides. When one sequence runs out first and every pair so far was equal, the shorter
+  /// one is Less, as for words in a dictionary.
+  fn cmp<Other>(self : &mut Self, other : Other) -> Ordering {
+    let mut rest = other;
+    loop {
+      let x = self.next();
+      let y = rest.next();
+      if x.is_none() {
+        if y.is_none() {
+          return Ordering::Equal();
+        }
+        return Ordering::Less();
+      }
+      if y.is_none() {
+        return Ordering::Greater();
+      }
+      let a = x.unwrap();
+      let b = y.unwrap();
+      let order = a.cmp(&b);
+      if !order.is_eq() {
+        return order;
+      }
+    }
+    return Ordering::Equal();
+  }
+
+  /// `cmp` by the items' `PartialOrd`, so nothing as soon as a pair does not compare, which is
+  /// what a NaN does.
+  fn partial_cmp<Other>(self : &mut Self, other : Other) -> Option<Ordering> {
+    let mut rest = other;
+    loop {
+      let x = self.next();
+      let y = rest.next();
+      if x.is_none() {
+        if y.is_none() {
+          return Option<Ordering>::Some(Ordering::Equal());
+        }
+        return Option<Ordering>::Some(Ordering::Less());
+      }
+      if y.is_none() {
+        return Option<Ordering>::Some(Ordering::Greater());
+      }
+      let a = x.unwrap();
+      let b = y.unwrap();
+      let order = a.partial_cmp(&b);
+      if order.is_none() {
+        return order;
+      }
+      let decided = order.unwrap();
+      if !decided.is_eq() {
+        return Option<Ordering>::Some(decided);
+      }
+    }
+    return Option<Ordering>::None();
+  }
+
+  /// Are these items equal to `other`'s, one for one and as many of them?
+  fn eq<Other>(self : &mut Self, other : Other) -> bool {
+    let mut rest = other;
+    loop {
+      let x = self.next();
+      let y = rest.next();
+      if x.is_none() {
+        return y.is_none();
+      }
+      if y.is_none() {
+        return false;
+      }
+      let a = x.unwrap();
+      let b = y.unwrap();
+      if !a.eq(&b) {
+        return false;
+      }
+    }
+    return false;
+  }
+
+  /// Do these items differ from `other`'s anywhere, or in how many there are?
+  fn ne<Other>(self : &mut Self, other : Other) -> bool {
+    return !self.eq(other);
+  }
+
+  /// Are these items less than `other`'s, in the order `partial_cmp` gives? False when some
+  /// pair does not compare.
+  fn lt<Other>(self : &mut Self, other : Other) -> bool {
+    let order = self.partial_cmp(other);
+    if order.is_none() {
+      return false;
+    }
+    return order.unwrap().is_lt();
+  }
+
+  /// Less than or equal, by `partial_cmp`. False when some pair does not compare.
+  fn le<Other>(self : &mut Self, other : Other) -> bool {
+    let order = self.partial_cmp(other);
+    if order.is_none() {
+      return false;
+    }
+    return order.unwrap().is_le();
+  }
+
+  /// Greater than, by `partial_cmp`. False when some pair does not compare.
+  fn gt<Other>(self : &mut Self, other : Other) -> bool {
+    let order = self.partial_cmp(other);
+    if order.is_none() {
+      return false;
+    }
+    return order.unwrap().is_gt();
+  }
+
+  /// Greater than or equal, by `partial_cmp`. False when some pair does not compare.
+  fn ge<Other>(self : &mut Self, other : Other) -> bool {
+    let order = self.partial_cmp(other);
+    if order.is_none() {
+      return false;
+    }
+    return order.unwrap().is_ge();
+  }
 }
 
 /// An iterator that can also answer from its far end, which is what `rev` needs.
