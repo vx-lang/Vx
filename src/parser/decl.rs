@@ -60,13 +60,7 @@ impl<'a> Parser<'a> {
                     let mut bounds = Vec::new();
                     if self.match_token(&TokenType::Colon) {
                         loop {
-                            let bound = match self.advance().kind.clone() {
-                                TokenType::Identifier(s) => s.to_string(),
-                                // `<D: Topology>` -- `Topology` is a keyword, not an identifier.
-                                TokenType::Topology => "Topology".to_string(),
-                                _ => return Err(self.error("Expected trait bound identifier")),
-                            };
-                            bounds.push(bound.into());
+                            bounds.push(self.parse_trait_bound()?);
                             if !self.match_token(&TokenType::Plus) {
                                 break;
                             }
@@ -87,6 +81,47 @@ impl<'a> Parser<'a> {
             )?;
         }
         Ok(generics)
+    }
+
+    /// One bound after a type parameter's `:`: a trait name, then optionally its type arguments
+    /// and associated-type bindings in angle brackets, as in `Sum<i64>` or `Iterator<Item = T>`.
+    /// A `Name =` inside the brackets starts a binding; anything else is a type argument.
+    fn parse_trait_bound(&mut self) -> ParseResult<'a, crate::syntax::TraitBound> {
+        let trait_name = match self.advance().kind.clone() {
+            TokenType::Identifier(s) => s.to_string(),
+            // `<D: Topology>` -- `Topology` is a keyword, not an identifier.
+            TokenType::Topology => "Topology".to_string(),
+            _ => return Err(self.error("Expected trait bound identifier")),
+        };
+        let mut bound = crate::syntax::TraitBound::named(&trait_name);
+        if self.match_token(&TokenType::LeftAngle) {
+            while !self.check(&TokenType::RightAngle) && !self.check(&TokenType::Eof) {
+                let binding_name = match &self.peek().kind {
+                    TokenType::Identifier(s)
+                        if matches!(self.peek_n(1).kind, TokenType::Equals) =>
+                    {
+                        Some(s.to_string())
+                    }
+                    _ => None,
+                };
+                match binding_name {
+                    Some(name) => {
+                        self.advance();
+                        self.advance();
+                        bound.bindings.push((name.into(), self.parse_type()?));
+                    }
+                    None => bound.args.push(self.parse_type()?),
+                }
+                if !self.match_token(&TokenType::Comma) {
+                    break;
+                }
+            }
+            self.consume(
+                &TokenType::RightAngle,
+                "Expected '>' after the trait bound's arguments",
+            )?;
+        }
+        Ok(bound)
     }
 
     /// Whether a function declaration starts here: `fn`, or `unsafe fn`.

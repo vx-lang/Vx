@@ -70,6 +70,16 @@ fn describe<T : Doubles + Tags>(x : T) -> i32 {
 }
 ```
 
+A bound can give the trait type arguments, or say what its associated types must be. A
+bound may also name another parameter's associated type:
+
+<!-- vx-doctest: skip -- a signature, not a program -->
+
+```rust
+fn first<I : Iterator<Item = i64>>(it : I) -> i64 { /* ... */ }
+fn total<I : Iterator, S : Sum<I::Item>>(it : I) -> S { /* ... */ }
+```
+
 Every bound has to hold at the call site, and each one that does not is reported. Note
 that a bound constrains *callers*, not the body: a generic body is checked after
 monomorphization against the concrete type, so it can call any method that type has,

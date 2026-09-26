@@ -1,0 +1,59 @@
+//===- bounds_with_type_arguments.vx - Vx Compiler --------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Trait bounds that give the trait type arguments or bind its associated types.
+//
+//   10   `S : Sum<i64>`: 0..5 added up into the caller's `i64`
+//   42   `I : Iterator<Item = i64>`: the first item of 42..50
+//   20   `S : Sum<I::Item>`, a bound naming another parameter's associated type: 0 2 4 6 8
+//   7    `impl<T : Iterator<Item = i64>>`: the impl applies to a holder of `i64` items
+import core::iter;
+
+fn total<S : Sum<i64>>(it : Range) -> S {
+  return S::sum(it);
+}
+
+fn first<I : Iterator<Item = i64>>(it : I) -> i64 {
+  let mut x = it;
+  return x.next().unwrap();
+}
+
+fn total_of<I : Iterator, S : Sum<I::Item>>(it : I) -> S {
+  return S::sum(it);
+}
+
+trait Seven {
+  fn seven(self : &Self) -> i64;
+}
+
+struct Holder<T> {
+  v : T,
+}
+
+impl<T : Iterator<Item = i64>> Seven for Holder<T> {
+  fn seven(self : &Holder<T>) -> i64 {
+    return 7i64;
+  }
+}
+
+fn main() -> i32 {
+  let a : i64 = total(range(0i64, 5i64));
+  print(a);
+  print!(" ");
+  print(first(range(42i64, 50i64)));
+  print!(" ");
+  let b : i64 = total_of(range(0i64, 5i64).map(| v : i64 | v * 2i64));
+  print(b);
+  print!(" ");
+  let h = Holder {
+    v : range(0i64, 3i64)
+  };
+  print(h.seven());
+  return 0;
+}
+
+// EXPECT: 10 42 20 7

@@ -19,12 +19,49 @@ pub enum GenericParam {
     /// `T : A + B`, and all of them have to hold; an unconstrained parameter has none.
     Type {
         name: Symbol,
-        bounds: Vec<Symbol>,
+        bounds: Vec<TraitBound>,
     },
     Const {
         name: Symbol,
         ty: Type,
     },
+}
+
+/// One bound on a type parameter: the trait, with the type arguments it is given and what its
+/// associated types must be. `Sum<i64>` has one argument, `Iterator<Item = i64>` one binding,
+/// and a plain `Ord` neither.
+#[derive(Debug, PartialEq, Clone)]
+pub struct TraitBound {
+    pub trait_name: Symbol,
+    pub args: Vec<Type>,
+    pub bindings: Vec<(Symbol, Type)>,
+}
+
+impl TraitBound {
+    /// A bound that names a trait and nothing more.
+    pub fn named(trait_name: &str) -> Self {
+        Self {
+            trait_name: trait_name.into(),
+            args: Vec::new(),
+            bindings: Vec::new(),
+        }
+    }
+}
+
+impl std::fmt::Display for TraitBound {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.trait_name)?;
+        if self.args.is_empty() && self.bindings.is_empty() {
+            return Ok(());
+        }
+        let args = self.args.iter().map(|a| a.to_string());
+        let bindings = self.bindings.iter().map(|(n, t)| format!("{n} = {t}"));
+        write!(
+            f,
+            "<{}>",
+            args.chain(bindings).collect::<Vec<_>>().join(", ")
+        )
+    }
 }
 
 impl GenericParam {
