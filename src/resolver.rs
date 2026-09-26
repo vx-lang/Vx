@@ -259,6 +259,7 @@ pub fn fill_trait_defaults_in(program: &mut crate::syntax::Program, defaults: &T
                 .cloned()
                 .collect();
             generics.extend(signature.generics.iter().cloned());
+            block.copied_defaults.push(signature.name.clone());
             block.methods.push(crate::syntax::Function {
                 name: signature.name.clone(),
                 generics,

@@ -1,0 +1,67 @@
+//===- iterator_over_structs.vx - Vx Compiler -------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A user iterator whose items are a struct. Its `Point` has no `Sum`, `Product` or `Ord`, so
+// `Iterator`'s `sum`, `product`, `max` and `min` cannot work for it. They are defaults the impl
+// never calls, and the program compiles anyway.
+//
+//   3    `count` of the three points (3, 30), (2, 20), (1, 10)
+//   11   `last`, summed across its fields
+//   22   `nth(1)`, likewise
+//   66   the points mapped to numbers, which do have `Sum`, then summed
+import core::iter;
+
+struct Point {
+  x : i64,
+  y : i64,
+}
+
+struct Walk {
+  left : i64,
+}
+
+impl Iterator for Walk {
+  type Item = Point;
+
+  fn next(self : &mut Walk) -> Option<Point> {
+    if self.left == 0i64 {
+      return Option<Point>::None();
+    }
+    let p = Point {
+      x : self.left, y : self.left * 10i64
+    };
+    self.left = self.left - 1i64;
+    return Option<Point>::Some(p);
+  }
+}
+
+fn main() -> i32 {
+  let mut a = Walk {
+    left : 3i64
+  };
+  print(a.count());
+  print!(" ");
+  let mut b = Walk {
+    left : 3i64
+  };
+  let last = b.last().unwrap();
+  print(last.x + last.y);
+  print!(" ");
+  let mut c = Walk {
+    left : 3i64
+  };
+  let second = c.nth(1i64).unwrap();
+  print(second.x + second.y);
+  print!(" ");
+  let mut d = Walk {
+    left : 3i64
+  }.map(| p : Point | p.x + p.y);
+  print(d.sum());
+  return 0;
+}
+
+// EXPECT: 3 11 22 66

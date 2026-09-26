@@ -1,0 +1,44 @@
+//===- iterator_default_checked_when_called.vx - Vx Compiler ----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+// `Iterator::sum` is a default an impl only gets checked for when it calls it. This one does,
+// and `Point` has no `Sum`, so the error is still reported.
+import core::iter;
+
+struct Point {
+  x : i64,
+  y : i64,
+}
+
+struct Walk {
+  left : i64,
+}
+
+impl Iterator for Walk {
+  type Item = Point;
+
+  fn next(self : &mut Walk) -> Option<Point> {
+    if self.left == 0i64 {
+      return Option<Point>::None();
+    }
+    self.left = self.left - 1i64;
+    return Option<Point>::Some(Point {
+      x : 1i64, y : 2i64
+    });
+  }
+}
+
+fn main() -> i32 {
+  let mut w = Walk {
+    left : 3i64
+  };
+  // CHECK: Undefined static method 'Point::sum'
+  let total = w.sum();
+  return (total.x + total.y) as i32;
+}

@@ -1387,10 +1387,16 @@ fn type_check_phase(
                     .iter_mut()
                     .map(|f| check_one_function(f, module_idx, global_session, global_env, None))
                     .collect();
+                // A copied default is checked as the instance a call creates, as in the driver.
                 let impl_results: Vec<FunctionCheck> = module
                     .impls
                     .iter_mut()
-                    .flat_map(|i| i.methods.iter_mut())
+                    .flat_map(|i| {
+                        let copied = &i.copied_defaults;
+                        i.methods
+                            .iter_mut()
+                            .filter(move |f| !copied.contains(&f.name))
+                    })
                     .map(|f| check_one_function(f, module_idx, global_session, global_env, None))
                     .collect();
                 results.extend(impl_results);
@@ -1435,9 +1441,13 @@ fn type_check_phase(
                     .impls
                     .par_iter_mut()
                     .flat_map(|i| {
-                        i.methods.par_iter_mut().map(|f| {
-                            check_one_function(f, module_idx, global_session, global_env, None)
-                        })
+                        let copied = &i.copied_defaults;
+                        i.methods
+                            .par_iter_mut()
+                            .filter(move |f| !copied.contains(&f.name))
+                            .map(|f| {
+                                check_one_function(f, module_idx, global_session, global_env, None)
+                            })
                     })
                     .collect();
                 results.extend(impl_results);
