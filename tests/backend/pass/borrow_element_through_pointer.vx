@@ -1,0 +1,69 @@
+//===- borrow_element_through_pointer.vx - Vx Compiler ----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `&(*p).data[i]` borrows an element of a Vec through a pointer to the Vec, and `&(*p).len`
+// one of its fields. Elements of different sizes check that each step is one element.
+//
+//   42  i64 elements
+//   42  i32 elements
+//   47  struct elements, fields 40 and 7
+//   43  `*f = 31` reached the Vec, plus 12
+//   42  `&(*m).len` read 3, and `*g = 39` wrote `capacity`
+import std::vec;
+
+struct Pt {
+  x : i32,
+  y : i64,
+  z : i32,
+}
+
+fn main() -> i32 {
+  let mut v = Vec<i64>::new();
+  v.push(40i64);
+  v.push(2i64);
+  let p : *const Vec<i64> = &v;
+  let a : &i64 = unsafe { &(*p).data[0] };
+  let b : &i64 = unsafe { &(*p).data[1] };
+  print((*a) + (*b));
+  print!(" ");
+
+  let mut w = Vec<i32>::new();
+  w.push(1);
+  w.push(30);
+  w.push(12);
+  let q : *const Vec<i32> = &w;
+  let c : &i32 = unsafe { &(*q).data[1] };
+  let d : &i32 = unsafe { &(*q).data[2] };
+  print((*c) + (*d));
+  print!(" ");
+
+  let mut pts = Vec<Pt>::new();
+  pts.push(Pt {
+    x : 1, y : 2i64, z : 3
+  });
+  pts.push(Pt {
+    x : 40, y : 5i64, z : 7
+  });
+  let r : *const Vec<Pt> = &pts;
+  let e : &Pt = unsafe { &(*r).data[1] };
+  print((*e).x + (*e).z);
+  print!(" ");
+
+  let m : *mut Vec<i32> = &mut w;
+  let f : &mut i32 = unsafe { &mut (*m).data[0] };
+  *f = 31;
+  let l : &i32 = unsafe { &(*m).len };
+  let len = *l;
+  let g : &mut i32 = unsafe { &mut (*m).capacity };
+  *g = 39;
+  print(w.get(0) + w.get(2));
+  print!(" ");
+  print(len + w.capacity);
+  return 0;
+}
+
+// EXPECT: 42 42 47 43 42

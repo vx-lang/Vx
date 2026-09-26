@@ -2055,6 +2055,12 @@ impl<'c> MeliorGenerator<'c> {
             // `transfer(x, space)` relocates x but preserves its shape, so a slice of a
             // transferred tensor (`q[i]` inside a spawn) can still recover its static dims.
             Expr::Transfer(e) => self.infer_ast_type(&e.expr),
+            Expr::Dereference(d) => match self.infer_ast_type(&d.expr)? {
+                syntax::Type::Pointer(inner, ..)
+                | syntax::Type::Borrow { inner, .. }
+                | syntax::Type::Ref(inner, ..) => Some(*inner),
+                _ => None,
+            },
             Expr::MethodCall(mc) => {
                 let mut base_ty = self.infer_ast_type(&mc.base)?;
                 if let syntax::Type::Borrow { inner, .. } = base_ty {
@@ -2118,7 +2124,15 @@ impl<'c> MeliorGenerator<'c> {
                 Some((base_val, base_ty, indices, block))
             }
             _ => {
-                let (val, ty, block) = self.generate_expr(expr, block).ok()?;
+                // A raw pointer is indexed through its value, so `&(*p).data[i]` loads `data`
+                // even when the element is wanted as a place.
+                let is_raw_ptr =
+                    matches!(self.infer_ast_type(expr), Some(syntax::Type::Pointer(..)));
+                let prev_lvalue = self.is_lvalue_context;
+                self.is_lvalue_context &= !is_raw_ptr;
+                let lowered = self.generate_expr(expr, block);
+                self.is_lvalue_context = prev_lvalue;
+                let (val, ty, block) = lowered.ok()?;
                 Some((val, ty, Vec::new(), block))
             }
         }
