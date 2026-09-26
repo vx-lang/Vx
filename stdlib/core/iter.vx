@@ -11,6 +11,7 @@
 //
 // A `for` loop consumes the iterator it drives, so an adaptor takes its inner iterator by
 // value and the chain is built before the loop.
+import core::clone;
 import core::iter::traits;
 import core::ops;
 import core::option;
@@ -54,6 +55,15 @@ impl ExactSizeIterator for Range {
       return 0i64;
     }
     return self.end - self.at;
+  }
+}
+
+impl Clone for Range {
+  /// A second span over the same values, which is what `cycle` restarts from.
+  fn clone(self : &Range) -> Range {
+    return Range {
+      at : self.at, end : self.end
+    };
   }
 }
 

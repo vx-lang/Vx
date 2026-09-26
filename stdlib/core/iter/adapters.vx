@@ -13,6 +13,7 @@
 //
 // `core::iter::traits` imports this module, since the trait's methods return these types, and
 // every program that imports the trait therefore sees these names.
+import core::clone;
 import core::iter::traits;
 import core::ops;
 import core::option;
@@ -728,5 +729,37 @@ impl<I : DoubleEndedIterator + ExactSizeIterator> DoubleEndedIterator for Enumer
     }
     let at = self.count + self.inner.len();
     return Option<(i64, I::Item)>::Some((at, step.unwrap()));
+  }
+}
+
+/// An iterator over another one's items, again and again. Built by `cycle`.
+///
+/// `orig` is kept untouched. Each pass runs over a clone of it held in `cur`, made when the
+/// pass starts. The clone is taken here rather than in `cycle`, because a default method of
+/// `Iterator` is checked for every iterator type, and most of them are not `Clone`; this impl
+/// is only checked for the types that are actually cycled.
+struct Cycle<I> {
+  orig : I,
+  cur : Option<I>,
+}
+
+impl<I : Iterator + Clone> Iterator for Cycle<I> {
+  type Item = I::Item;
+
+  /// The next item of the current pass, or the first of a new pass once it has run out.
+  /// Nothing, forever, when the original iterator has no items at all.
+  fn next(self : &mut Cycle<I>) -> Option<I::Item> {
+    if self.cur.is_some() {
+      let mut pass = self.cur.unwrap();
+      let step = pass.next();
+      if step.is_some() {
+        self.cur = Option<I>::Some(pass);
+        return step;
+      }
+    }
+    let mut fresh = self.orig.clone();
+    let first = fresh.next();
+    self.cur = Option<I>::Some(fresh);
+    return first;
   }
 }
