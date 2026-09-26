@@ -331,6 +331,12 @@ The iterators `Iterator`'s adaptor methods build: `Map`, `Filter`, `Chain` and t
 - `struct Enumerate<I>`<br>
   An iterator over another's items, each paired with how far along it is, counting from zero.
   Built by `enumerate`.
+- `struct Cycle<I>`<br>
+  An iterator over another one's items, again and again. Built by `cycle`.
+  `orig` is kept untouched. Each pass runs over a clone of it held in `cur`, made when the
+  pass starts. The clone is taken here rather than in `cycle`, because a default method of
+  `Iterator` is checked for every iterator type, and most of them are not `Clone`; this impl
+  is only checked for the types that are actually cycled.
 
 **`Iterator for Map<I, Closure1<I :  : Item, U>>` methods**
 
@@ -531,6 +537,12 @@ The iterators `Iterator`'s adaptor methods build: `Map`, `Filter`, `Chain` and t
 - `fn next_back(self : &mut Enumerate<I>) -> Option<(i64, I :  : Item)>`<br>
   The inner iterator's last item with its position, which is how many come before it.
 
+**`Iterator for Cycle<I>` methods**
+
+- `fn next(self : &mut Cycle<I>) -> Option<I :  : Item>`<br>
+  The next item of the current pass, or the first of a new pass once it has run out.
+  Nothing, forever, when the original iterator has no items at all.
+
 ## `core::iter::traits`
 
 The `Iterator` trait: one required `next`, and the methods written over it.
@@ -649,6 +661,10 @@ The `Iterator` trait: one required `next`, and the methods written over it.
 - `fn scan<St, B>(self : Self, initial : St, f : Closure2<&mut St, Self :  : Item, Option<B>>) -> Scan<Self, St, Closure2<&mut St, Self :  : Item, Option<B>>>`<br>
   An iterator over what `f` answers for each item, with `f` given `initial` to keep and
   change from one item to the next. Ends where `f` first answers nothing.
+- `fn cycle(self : Self) -> Cycle<Self>`<br>
+  An iterator over these items, repeated forever. Each pass restarts from a clone of this
+  iterator as it was when `cycle` was called, so the type must implement `Clone`. An
+  iterator with no items gives one with none.
 - `fn fuse(self : Self) -> Fuse<Self>`<br>
   An iterator that answers nothing forever once these items have run out.
 - `fn peekable(self : Self) -> Peekable<Self, Self :  : Item>`<br>
@@ -777,6 +793,11 @@ T = `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `f32`, `f64`
 
 - `fn len(self : &Range) -> i64`<br>
   How many values are left in the span.
+
+**`Clone for Range` methods**
+
+- `fn clone(self : &Range) -> Range`<br>
+  A second span over the same values, which is what `cycle` restarts from.
 
 **Functions**
 
@@ -2071,4 +2092,4 @@ Clocks and durations.
 
 ______________________________________________________________________
 
-727 functions across 32 modules.
+730 functions across 32 modules.
