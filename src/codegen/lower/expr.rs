@@ -150,11 +150,10 @@ impl<'c> LowerToMelior<'c> for BorrowExpr {
                     let ptr_ty = gen.ptr_ty;
                     if gen.is_memref(val_ty) {
                         return Ok((*val, *val_ty, block));
-                    } else if *val_ty == ptr_ty {
-                        return Ok((*val, ptr_ty, block));
                     } else {
-                        // Cast from val to ptr_ty if necessary? No, just return val_ty.
-                        return Ok((*val, *val_ty, block));
+                        // The slot's address. Typing it as the slot's contents made `(*p).f`
+                        // in a place context extract from a pointer as if it were a struct.
+                        return Ok((*val, ptr_ty, block));
                     }
                 }
             } else if let Some((val, val_ty)) = gen.env.get(&*id.name).map(|(v, t)| (*v, *t)) {

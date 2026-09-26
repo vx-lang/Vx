@@ -22,6 +22,7 @@ const KNOWN_DECLINES: &[&str] = &[
     "backend/pass/matmul_assign_alias.vx",
     // "A borrow of something that is not a tensor": the flat path borrows tensors only.
     "backend/pass/borrow_of_a_value.vx",
+    "backend/pass/borrow_element_through_pointer.vx",
     // `Option::or` and its neighbours, which answer with an `Option<T>`. The flat path
     // declines them as "a non-scalar default return" -- the same shape as the file below,
     // and the AST path handles both. The module's other methods answer with a `T` or a
