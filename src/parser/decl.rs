@@ -1115,6 +1115,7 @@ impl<'a> Parser<'a> {
             target_type,
             methods,
             assoc_bindings,
+            copied_defaults: Vec::new(),
         })
     }
 

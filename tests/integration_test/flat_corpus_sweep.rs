@@ -44,6 +44,8 @@ const KNOWN_DECLINES: &[&str] = &[
     "backend/pass/core_iter_exact_size.vx",
     "backend/pass/core_iter_compare.vx",
     "backend/pass/core_iter_try_fold.vx",
+    // A user iterator over a struct, which `main` builds and consumes: "a callee return type".
+    "backend/pass/iterator_over_structs.vx",
     // A closure passed to a generic function: the flat emitter has no path for the call yet.
     "warnings/pass/w1001_a_called_local_is_used.vx",
     // "An enum with no modelled instance layout": `Option` of a tuple.
@@ -101,6 +103,8 @@ const KNOWN_DECLINES: &[&str] = &[
     // The same shape again, with a warning added: it states that a program checked by both
     // frontends has its warnings reported once, which needs a program that declines.
     "frontend/pass/jobs_warns_once_when_it_falls_back.vx",
+    // Same decline as `backend/pass/iterator_over_structs.vx`, through `vxc -j`.
+    "frontend/pass/jobs_iterator_over_structs.vx",
     "frontend/pass/trait_topologies.vx",
     // A parameter with run-time extents (Vx#409). It used to compile through the flat path
     // while the dims-less spelling let it read as rank-0: `topology.vx` got a `memref<f32>`

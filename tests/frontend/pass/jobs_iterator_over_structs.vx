@@ -1,0 +1,45 @@
+//===- jobs_iterator_over_structs.vx - Vx Compiler --------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: (vxc -j 2 --emit-mlir %s 2>&1; echo "exit=$?") | FileCheck %s
+
+// The parallel frontend, like the driver, checks `Iterator`'s copied defaults only when they
+// are called. `Point` has no `Sum`, and nothing calls `sum`.
+// CHECK-NOT: Error
+// CHECK: exit=0
+import core::iter;
+
+struct Point {
+  x : i64,
+  y : i64,
+}
+
+struct Walk {
+  left : i64,
+}
+
+impl Iterator for Walk {
+  type Item = Point;
+
+  fn next(self : &mut Walk) -> Option<Point> {
+    if self.left == 0i64 {
+      return Option<Point>::None();
+    }
+    self.left = self.left - 1i64;
+    return Option<Point>::Some(Point {
+      x : 1i64, y : 2i64
+    });
+  }
+}
+
+fn main() -> i32 {
+  let mut w = Walk {
+    left : 3i64
+  };
+  let p = w.next().unwrap();
+  return (p.x + p.y) as i32;
+}

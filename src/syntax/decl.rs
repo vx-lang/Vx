@@ -145,6 +145,11 @@ pub struct ImplBlock {
     pub methods: Vec<Function>,
     /// `type Item = i64;`. What this impl binds each of the trait's associated types to.
     pub assoc_bindings: Vec<(Symbol, Type)>,
+    /// The methods in `methods` that were copied from the trait's default bodies rather than
+    /// written in this impl. They are checked only when something calls them, as Rust checks a
+    /// default's bounds only at the call: `Iterator::sum` needs `Sum` on the item type, and an
+    /// iterator over structs must still compile when it never calls `sum`.
+    pub copied_defaults: Vec<Symbol>,
 }
 
 impl ImplBlock {
@@ -155,6 +160,7 @@ impl ImplBlock {
             trait_args: self.trait_args.clone(),
             target_type: self.target_type.clone(),
             assoc_bindings: self.assoc_bindings.clone(),
+            copied_defaults: self.copied_defaults.clone(),
             // Always preserve method bodies: methods only exist in impl blocks, so
             // method-call monomorphization clones the body from the type-check env
             // (env.impls). Dropping it (as the signature clone does for free
