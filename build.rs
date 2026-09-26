@@ -173,7 +173,7 @@ fn main() {
         const VX_ANE_DIMS: &str = "512,1024";
 
         // --- Automate ANE Primitive Generation ---
-        println!("cargo:warning=Building ANE primitive models via CoreML...");
+        eprintln!("Building ANE primitive models via CoreML...");
 
         // The interpreter has to be one that can actually *build* a model, which
         // the first `python3` on PATH generally cannot: this checkout keeps
@@ -215,7 +215,7 @@ fn main() {
             });
 
         match &python {
-            Some(p) => println!("cargo:warning=ANE models: generating with {p}"),
+            Some(p) => eprintln!("ANE models: generating with {p}"),
             None => println!(
                 "cargo:warning=No interpreter can build the ANE models: none of $VX_PYTHON, \
                  venv/bin/python3, python3, python3.13, python3.12 or python3.11 has a working \
@@ -308,10 +308,7 @@ fn main() {
                                 .status();
 
                             if cp_status.is_ok() && cp_status.unwrap().success() {
-                                println!(
-                                    "cargo:warning=Successfully compiled {}.mlmodelc",
-                                    model_name
-                                );
+                                eprintln!("Successfully compiled {}.mlmodelc", model_name);
                             }
                         } else {
                             println!(
@@ -506,13 +503,13 @@ fn main() {
             lib_shared_path.display()
         );
         match &cuda {
-            Some((root, _)) => println!(
-                "cargo:warning=Built the CUDA dispatch backend against {}; \
+            Some((root, _)) => eprintln!(
+                "Built the CUDA dispatch backend against {}; \
                  recognised matmuls run on the GPU, everything else on the CPU.",
                 root.display()
             ),
-            None => println!(
-                "cargo:warning=Built the {} dispatch backend; kernels run on the CPU via libffi.",
+            None => eprintln!(
+                "Built the {} dispatch backend; kernels run on the CPU via libffi.",
                 source
             ),
         }
