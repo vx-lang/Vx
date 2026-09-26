@@ -27,3 +27,21 @@ struct Closure2<Arg1, Arg2, Ret> {
 struct Closure3<Arg1, Arg2, Arg3, Ret> {
   env : *mut i8, func : fn(*mut i8, Arg1, Arg2, Arg3)->Ret,
 }
+
+/// A value that either carries on, holding an output, or stops early. It is what
+/// `Iterator::try_fold` reads from its closure's answers, and `Option` and `Result` implement
+/// it: `Some` and `Ok` carry on, `None` and `Err` stop. Rust's `Try` cut down to what those
+/// two need, with no residual type and no `?`.
+trait Try {
+  /// What one that carries on holds.
+  type Output;
+
+  /// Does this carry on? False means stop here and hand this value back.
+  fn is_continue(self : &Self) -> bool;
+
+  /// The output of one that carries on.
+  fn into_output(self : Self) -> Self::Output;
+
+  /// One that carries on, holding `output`.
+  fn from_output(output : Self::Output) -> Self;
+}
