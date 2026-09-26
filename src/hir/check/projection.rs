@@ -121,19 +121,11 @@ impl<'a> TypeChecker<'a> {
             };
             for bound in bounds {
                 // `Float` and the like name no declared trait, so nothing here can decide them.
-                if !self.env.traits.contains_key(bound) {
+                if !self.env.traits.contains_key(&bound.trait_name) {
                     continue;
                 }
-                let blocks = self
-                    .env
-                    .impls
-                    .get(bound.as_ref())
-                    .cloned()
-                    .unwrap_or_default();
-                if !blocks
-                    .iter()
-                    .any(|b| self.impl_applies(b, bound_to, &mut HashMap::new()))
-                {
+                let bound = self.substitute_bound(bound, mapping);
+                if !self.bound_holds(&bound, bound_to) {
                     return false;
                 }
             }
@@ -209,5 +201,60 @@ impl<'a> TypeChecker<'a> {
             }
         }
         Ok(out)
+    }
+
+    /// `bound` with the generic parameters it names replaced by what `mapping` binds them to,
+    /// since a bound can name them: `S : Sum<T>`, `I : Iterator<Item = T>`, or `Sum<I::Item>`.
+    pub(crate) fn substitute_bound(
+        &mut self,
+        bound: &decl::TraitBound,
+        mapping: &HashMap<crate::symbol::Symbol, Type>,
+    ) -> decl::TraitBound {
+        // The projections a bound can name, `I::Item`, are not in the mapping until bound. An
+        // error here is reported where the call's own projections are resolved.
+        let mut mapping = mapping.clone();
+        let _ = self.bind_projections(&mut mapping);
+        decl::TraitBound {
+            trait_name: bound.trait_name.clone(),
+            args: bound.args.iter().map(|a| a.substitute(&mapping)).collect(),
+            bindings: bound
+                .bindings
+                .iter()
+                .map(|(n, t)| (n.clone(), t.substitute(&mapping)))
+                .collect(),
+        }
+    }
+
+    /// Does `ty` meet `bound`, already substituted? Some impl of the bound's trait has to apply
+    /// to `ty`, and when the bound gives the trait type arguments or associated-type bindings,
+    /// that impl's have to be the same.
+    pub(crate) fn bound_holds(&mut self, bound: &decl::TraitBound, ty: &Type) -> bool {
+        let wanted_args = &bound.args;
+        let wanted_bindings = &bound.bindings;
+        let blocks = self
+            .env
+            .impls
+            .get(bound.trait_name.as_ref())
+            .cloned()
+            .unwrap_or_default();
+        blocks.iter().any(|ib| {
+            let mut impl_mapping = HashMap::new();
+            if !self.impl_applies(ib, ty, &mut impl_mapping) {
+                return false;
+            }
+            let args_agree = wanted_args.is_empty()
+                || (ib.trait_args.len() == wanted_args.len()
+                    && ib
+                        .trait_args
+                        .iter()
+                        .zip(wanted_args)
+                        .all(|(have, want)| have.substitute(&impl_mapping) == *want));
+            let bindings_agree = wanted_bindings.iter().all(|(name, want)| {
+                ib.assoc_bindings
+                    .iter()
+                    .any(|(n, have)| n == name && have.substitute(&impl_mapping) == *want)
+            });
+            args_agree && bindings_agree
+        })
     }
 }

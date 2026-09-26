@@ -1,0 +1,22 @@
+//===- bound_binding_unmet.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+// The iterator's `Item` is `f64`, and the bound binds it to `i64`.
+import core::iter;
+
+fn first<I : Iterator<Item = i64>>(it : I) -> i64 {
+  let mut x = it;
+  return x.next().unwrap();
+}
+
+fn main() -> i32 {
+  // CHECK: Type 'Map<Range, Closure1<i64, f64>>' does not implement trait 'Iterator<Item = i64>' required by parameter 'I'
+  let v = first(range(0i64, 5i64).map(| x : i64 | 1.5f64));
+  return 0;
+}

@@ -44,6 +44,8 @@ const KNOWN_DECLINES: &[&str] = &[
     "backend/pass/core_iter_exact_size.vx",
     "backend/pass/core_iter_compare.vx",
     "backend/pass/core_iter_try_fold.vx",
+    // Generic functions answering generic instances: "a callee return type", as above.
+    "backend/pass/bounds_with_type_arguments.vx",
     // A closure passed to a generic function: the flat emitter has no path for the call yet.
     "warnings/pass/w1001_a_called_local_is_used.vx",
     // "An enum with no modelled instance layout": `Option` of a tuple.

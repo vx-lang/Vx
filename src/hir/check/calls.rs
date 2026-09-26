@@ -876,7 +876,7 @@ impl<'a> TypeChecker<'a> {
             let decl::GenericParam::Type { name, bounds } = param else {
                 continue;
             };
-            if bounds.iter().any(|b| b.as_ref() == "Topology") {
+            if bounds.iter().any(|b| b.trait_name.as_ref() == "Topology") {
                 continue;
             }
             // A dimension parameter (`<N>` in `Tensor<f32, [N]>`) binds to its extent as a
@@ -1336,7 +1336,7 @@ impl<'a> TypeChecker<'a> {
             .iter()
             .filter_map(|g| match g {
                 decl::GenericParam::Type { name, bounds }
-                    if bounds.iter().any(|b| b.as_ref() == "Topology") =>
+                    if bounds.iter().any(|b| b.trait_name.as_ref() == "Topology") =>
                 {
                     Some(name.clone())
                 }
@@ -1418,22 +1418,14 @@ impl<'a> TypeChecker<'a> {
                 };
                 // Every bound has to hold, and every failing one is reported: told about
                 // only the first, a caller fixes it and is handed the next.
-                for bound_name in bounds {
-                    if let Some(concrete_ty) = mapping.get(g_name) {
-                        let mut implements_trait = false;
-                        if let Some(impl_blocks) = self.env.impls.get(bound_name.as_ref()) {
-                            for ib in impl_blocks {
-                                if self.impl_applies(ib, concrete_ty, &mut HashMap::new()) {
-                                    implements_trait = true;
-                                    break;
-                                }
-                            }
-                        }
-                        if !implements_trait {
+                for bound in bounds {
+                    if let Some(concrete_ty) = mapping.get(g_name).cloned() {
+                        let bound = self.substitute_bound(&bound, &mapping);
+                        if !self.bound_holds(&bound, &concrete_ty) {
                             if !self.speculating {
                                 self.errors.push(format!(
                                     "Type '{}' does not implement trait '{}' required by parameter '{}'",
-                                    concrete_ty, bound_name, g_name
+                                    concrete_ty, bound, g_name
                                 ));
                             }
                             success = false;

@@ -1,0 +1,21 @@
+//===- bound_type_argument_unmet.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+// `i32` has `Sum<i32>`, not the `Sum<i64>` the bound asks for.
+import core::iter;
+
+fn total<S : Sum<i64>>(it : Range) -> S {
+  return S::sum(it);
+}
+
+fn main() -> i32 {
+  // CHECK: Type 'i32' does not implement trait 'Sum<i64>' required by parameter 'S'
+  let t : i32 = total(range(0i64, 5i64));
+  return t;
+}
