@@ -1,0 +1,23 @@
+//===- comptime_unreachable_outer_write.vx - Vx Compiler -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: module
+
+fn main() -> i32 {
+  let mut outside : i32 = 0i32;
+  let value = comptime {
+    let chosen = if true {
+      1i32
+    } else {
+      outside = 4i32;
+      2i32
+    };
+    chosen
+  };
+  return value;
+}

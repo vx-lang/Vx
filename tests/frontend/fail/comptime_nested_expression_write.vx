@@ -1,0 +1,24 @@
+//===- comptime_nested_expression_write.vx - Vx Compiler -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+// A write in an expression nested under a `comptime` block still disappears with the block.
+fn main() -> i32 {
+  let mut outside : i64 = 0i64;
+  // CHECK: Error[E3033]{{.*}}writes to 'outside'
+  let _ignored = comptime {
+    let value = if true {
+      outside = 4i64;
+      1i64
+    } else {
+      2i64
+    };
+    value
+  };
+  return 0;
+}

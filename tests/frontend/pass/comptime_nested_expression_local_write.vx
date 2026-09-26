@@ -1,0 +1,23 @@
+//===- comptime_nested_expression_local_write.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: module
+
+fn main() -> i32 {
+  let result = comptime {
+    let value = if true {
+      let mut inner : i32 = 0i32;
+      inner = 4i32;
+      inner
+    } else {
+      2i32
+    };
+    value
+  };
+  return result;
+}

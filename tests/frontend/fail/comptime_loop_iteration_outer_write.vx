@@ -1,0 +1,26 @@
+//===- comptime_loop_iteration_outer_write.vx - Vx Compiler -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+fn main() -> i32 {
+  let mut outside : i32 = 0i32;
+  // CHECK: Error[E3033]{{.*}}writes to 'outside'
+  let value = comptime {
+    let mut i : i32 = 0i32;
+    loop {
+      if i == 1i32 {
+        outside = 5i32;
+        break;
+      }
+      let outside : i32 = 0i32;
+      i = i + 1i32;
+    }
+    7i32
+  };
+  return value;
+}

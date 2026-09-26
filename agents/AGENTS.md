@@ -47,7 +47,7 @@ These keep commands clean and avoid unnecessary permission prompts:
   a force-push. If a stack needs fixing, build fresh branches under new names and open new
   PRs.
 - Commit changes whenever you make a meaningful change and it builds cleanly.
-- Always write detailed commit messages with a commit message body. If the change fixes a bug, indicate that this bug is fixed by the commit using 'Fixes: #<BUG-ID>' in the commit message body.
+- Always write detailed commit messages with a commit message body. Wrap body lines at 72 columns. If the change fixes a bug, indicate that this bug is fixed by the commit using 'Fixes: #<BUG-ID>' in the commit message body.
 - Always run formatters after doing `git add` and before `git commit`:
   - 'clang-format' for C++ code
   - 'cargo run --bin vx-format -- <file>' for .vx code.

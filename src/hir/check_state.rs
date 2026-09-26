@@ -47,6 +47,9 @@ pub struct ConstEvalState {
     /// Set when a called body held a statement the evaluator cannot run. The call then has
     /// no value, rather than whatever the statements it *could* run happened to leave behind.
     pub unsupported_stmt: std::cell::Cell<bool>,
+    /// Effects observed while folding one `comptime` block. The evaluator owns this state so it
+    /// records only writes on the path it actually runs.
+    pub comptime_effects: std::cell::RefCell<Option<ComptimeEffects>>,
     /// How many loop iterations the current evaluation has run. A `Cell` because evaluation
     /// runs behind `&self`, and the count has to rise as the loops turn.
     pub loop_steps: std::cell::Cell<u64>,
@@ -67,6 +70,13 @@ pub struct ConstEvalState {
     /// time walking a trip count that belongs to the program. What still happens everywhere
     /// is the settling up: see `settle_loop_consteval`.
     pub comptime_depth: u32,
+}
+
+/// The bindings visible before a `comptime` block and the locals it creates while running.
+pub struct ComptimeEffects {
+    pub outer_bindings: HashSet<Symbol>,
+    pub local_scopes: Vec<HashSet<Symbol>>,
+    pub escaping_write: Option<Symbol>,
 }
 
 /// How many nested calls compile-time evaluation will follow. A recursion that does not
@@ -91,6 +101,7 @@ impl Default for ConstEvalState {
             call_depth: std::cell::Cell::new(0),
             depth_exceeded: std::cell::Cell::new(false),
             unsupported_stmt: std::cell::Cell::new(false),
+            comptime_effects: std::cell::RefCell::new(None),
             loop_steps: std::cell::Cell::new(0),
             steps_exceeded: std::cell::Cell::new(false),
             comptime_depth: 0,
