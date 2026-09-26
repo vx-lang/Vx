@@ -45,6 +45,26 @@ enum Result<T, E> {
 /// nothing until a generic enum is treated as linear (Vx#715).
 impl<T : Copy, E : Copy> Copy for Result<T, E> {}
 
+/// `Ok` carries on and `Err` stops, which is how `try_fold` reads a `Result`.
+impl<T, E> Try for Result<T, E> {
+  type Output = T;
+
+  /// Is this `Ok`?
+  fn is_continue(self : &Result<T, E>) -> bool {
+    return self.is_ok();
+  }
+
+  /// The `Ok` value.
+  fn into_output(self : Result<T, E>) -> T {
+    return self.unwrap();
+  }
+
+  /// `Ok(output)`.
+  fn from_output(output : T) -> Result<T, E> {
+    return Result<T, E>::Ok(output);
+  }
+}
+
 impl<T, E> Result<T, E> {
   /// Did it succeed?
   fn is_ok(self : &Result<T, E>) -> bool {

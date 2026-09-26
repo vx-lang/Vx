@@ -174,6 +174,49 @@ trait Iterator {
     return acc;
   }
 
+  /// `fold` that can stop early. `f` answers an `Option` or a `Result`: `Some` or `Ok` carries
+  /// its value on to the next item, and the first `None` or `Err` is returned at once, leaving
+  /// the rest of the sequence unconsumed. When every item carries on, the answer is the last
+  /// value wrapped the same way, or `init` wrapped for a sequence that is already finished.
+  fn try_fold<Acc, R>(self : &mut Self, init : Acc, f : Closure2<Acc, Self::Item, R>) -> R {
+    let mut acc : Acc = init;
+    let p = f.func;
+    loop {
+      let step = self.next();
+      if step.is_none() {
+        return R::from_output(acc);
+      }
+      let answer : R = p(f.env, acc, step.unwrap());
+      if !answer.is_continue() {
+        return answer;
+      }
+      acc = answer.into_output();
+    }
+    return R::from_output(acc);
+  }
+
+  /// `for_each` that can stop early: the first `None` or `Err` that `f` answers is returned at
+  /// once, and the rest of the sequence is left unconsumed. Otherwise the answer is `Some(0)`
+  /// or `Ok(0)`.
+  ///
+  /// `f` answers an `Option<i32>` or `Result<i32, E>` whose value is discarded, where Rust's
+  /// answers `()`, because no closure literal can return void yet. It becomes Rust's when it
+  /// can.
+  fn try_for_each<R>(self : &mut Self, f : Closure1<Self::Item, R>) -> R {
+    let p = f.func;
+    loop {
+      let step = self.next();
+      if step.is_none() {
+        return R::from_output(0);
+      }
+      let answer : R = p(f.env, step.unwrap());
+      if !answer.is_continue() {
+        return answer;
+      }
+    }
+    return R::from_output(0);
+  }
+
   /// Every item added up, consuming the sequence. Zero for one that is already finished.
   ///
   /// The item type says how, by implementing `Sum`. Rust also lets the caller choose a result

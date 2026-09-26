@@ -99,11 +99,11 @@ the host, and calling it from inside a device region is a compile error
 doing its job. Code meant to run on a device is written in the region, or in a function declared
 for that topology.
 
-> **Not implemented yet.** `spawn on` is a statement today. The design intends it to be an
-> *expression* yielding a `Future`, so a host thread could fan work out across several
-> accelerators and join them later — but there is no `await` in the language at present, and no
-> future type. Treat any document describing that shape as design intent rather than as
-> something you can call.
+> `spawn on` is an expression. A last line without a semicolon is the block's value, typed
+> `Pinned<T, Topology::...>` for the target topology, and the caller continues once the block is
+> done. The runtime is meant to overlap the block with later host work and wait only when the
+> host first reads the result. That overlap is still to be built, so today every dispatch
+> blocks. There is no future type and no `await`. See [`spawn_on.md`](spawn_on.md).
 
 ### Built-in topologies
 

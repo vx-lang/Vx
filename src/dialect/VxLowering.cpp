@@ -561,8 +561,8 @@ static void useStackScratchIn(Region &kernel, PatternRewriter &rewriter) {
   }
 }
 
-// Lower `vx.spawn` to `async.execute` for CPU topologies, or an outlined
-// kernel + `vx.launch` for NPU/AccCore topologies.
+// Inline `vx.spawn` in place for the CPU topology, or outline it into a
+// kernel + `vx.launch` for device topologies.
 struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
   using OpRewritePattern<SpawnOp>::OpRewritePattern;
 
