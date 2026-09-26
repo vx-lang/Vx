@@ -2,8 +2,10 @@
 
 > **Status: architecture specification, partly unimplemented.** This describes the intended
 > plugin architecture. The code sketches use `spawn on` as an expression returning a future
-> and `.await` to join it; neither exists in the language today (`spawn on` is a statement,
-> and there is no `await` token). Read the sketches as intent, not as callable API.
+> and `.await` to join it. There is no future type and no `await` token, and none is planned:
+> `spawn on` keeps sequential meaning and the runtime overlaps it, as
+> [`spawn_on.md`](spawn_on.md) describes. Read the sketches for the plugin boundary and ignore
+> the `.await` calls.
 
 ## 1. Objective
 

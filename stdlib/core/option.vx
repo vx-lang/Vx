@@ -43,6 +43,26 @@ enum Option<T> {
 /// not this is written (Vx#715). It is here to be right when that is fixed.
 impl<T : Copy> Copy for Option<T> {}
 
+/// `Some` carries on and `None` stops, which is how `try_fold` reads an `Option`.
+impl<T> Try for Option<T> {
+  type Output = T;
+
+  /// Is there a value?
+  fn is_continue(self : &Option<T>) -> bool {
+    return self.is_some();
+  }
+
+  /// The value.
+  fn into_output(self : Option<T>) -> T {
+    return self.unwrap();
+  }
+
+  /// `Some(output)`.
+  fn from_output(output : T) -> Option<T> {
+    return Option<T>::Some(output);
+  }
+}
+
 impl<T> Option<T> {
   /// Is there a value?
   fn is_some(self : &Option<T>) -> Bool {

@@ -2528,9 +2528,8 @@ impl<'r> Lowerer<'r> {
     /// Lower `spawn on (<topology>) { body }` into a `Spawn`/`SpawnEnd`-delimited region carrying the
     /// topology dispatch id. The body may use control flow (`for`/`loop`/`if`) and the enclosing
     /// function may be in memory mode — the flat emitter materializes the body as the `vx.spawn` op's
-    /// nested MLIR region, so the region's blocks are self-contained (#226). A *value-producing* spawn
-    /// (a yielded result) still declines: it needs `vx.yield` with a result plus threading the spawn's
-    /// result value, which the statement-form device corpus doesn't use.
+    /// nested MLIR region, so the region's blocks are self-contained (#226). A value-producing spawn
+    /// yields its tail expression as the `SpawnEnd` value.
     ///
     /// The region's outermost loop is additionally offered to `parallel_outer_for`: when its
     /// iterations are provably disjoint, the loop is tagged for the device pipeline to grid-stride

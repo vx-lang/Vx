@@ -43,6 +43,7 @@ const KNOWN_DECLINES: &[&str] = &[
     "backend/pass/core_iter_extend.vx",
     "backend/pass/core_iter_exact_size.vx",
     "backend/pass/core_iter_compare.vx",
+    "backend/pass/core_iter_try_fold.vx",
     // A user iterator over a struct, which `main` builds and consumes: "a callee return type".
     "backend/pass/iterator_over_structs.vx",
     // A closure passed to a generic function: the flat emitter has no path for the call yet.
