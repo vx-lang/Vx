@@ -1,0 +1,84 @@
+//===- heap_buffers_are_freed.vx - Vx Compiler -------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A tensor too big for the stack lives in heap memory, which the program asks for with `malloc`
+// and must give back with `free`. The compiler adds each `free` after the tensor's last use, so
+// a program that makes tensors in a loop keeps using the same amount of memory instead of growing
+// until it runs out (#642).
+//
+// Each function below makes its tensors in a different way, and each one has to be freed:
+//
+// - `fill_and_read` fills a 1 MiB tensor and reads one element back. Freed in the same function.
+// - `make` returns a tensor whose size is only known when the program runs. `make` must NOT free
+//   it -- the caller is still going to read it -- so the `free` belongs to `main`, after the read.
+// - `pick` makes a different tensor on each side of an `if`. Whichever side ran, its tensor is
+//   freed.
+//
+// So there are four `malloc` calls in the generated code, and there must be exactly four `free`
+// calls. The checks count them on `--action emit-llvm`: the frees are added on the way to machine
+// code, so `--action emit-mlir` would show neither.
+//
+// REQUIRES: flat-codegen
+// Only because the older code generator cannot build `make`'s tensor: a size known only at run
+// time gives it a one-element buffer, and the program fails to compile (#646).
+//
+// RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s --check-prefix=MALLOC
+// RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s --check-prefix=FREE
+
+// MALLOC-COUNT-4: llvm.call @malloc
+// MALLOC-NOT: llvm.call @malloc
+
+// FREE-COUNT-4: llvm.call @free
+// FREE-NOT: llvm.call @free
+
+// Every read happens before its tensor is freed, so every answer is the value that was written:
+// fill_and_read() = 1.0 each time, make(..)[0] = 3.0 each time, pick() = 5.0 or 6.0 alternately.
+// 1000 * 1.0, 1000 * 3.0, 500 * 5.0 + 500 * 6.0.
+// EXPECT: 1000 3000 5500
+
+import std::tensor;
+
+fn fill_and_read() -> f32 {
+  let t = Tensor<f32, [ 512, 512 ]>::fill(1.0);
+  return t[0][0];
+}
+
+fn make(n : i32) -> Tensor<f32, [ ? ]> {
+  let t = Tensor<f32>(n);
+  t[0] = 3.0;
+  return t;
+}
+
+fn pick(k : i32) -> f32 {
+  let mut r = 0.0;
+  if k > 0 {
+    let a = Tensor<f32, [ 512, 512 ]>::fill(5.0);
+    r = a[1][1];
+  } else {
+    let b = Tensor<f32, [ 256, 256 ]>::fill(6.0);
+    r = b[1][1];
+  }
+  return r;
+}
+
+fn main() -> i32 {
+  let mut filled = 0.0;
+  let mut made = 0.0;
+  let mut picked = 0.0;
+  for i in 0..1000 {
+    filled = filled + fill_and_read();
+    let t = make(65536);
+    made = made + t[0];
+    picked = picked + pick(i % 2);
+  }
+  print(filled);
+  print!(" ");
+  print(made);
+  print!(" ");
+  print(picked);
+  return 0;
+}

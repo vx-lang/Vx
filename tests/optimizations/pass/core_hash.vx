@@ -18,9 +18,10 @@
 // `write_u64` is also asked against eight `write_u8` calls, which is what pins the byte
 // order: a big-endian `write_u64` agrees with neither.
 //
-// The flat path only. `write_u64` peels bytes with `>>`, which the AST path lowers as an
-// arithmetic shift on an unsigned value (Vx#818), so every answer there is wrong. The
-// marker keeps this runner's legacy replay off.
+// The flat path only, and now for a smaller reason than before: both paths compute the
+// same bits, but a large `u64` still prints as a negative number on the AST path
+// (Vx#824), so one set of expected values cannot serve both. The marker keeps this
+// runner's legacy replay off.
 // REQUIRES: flat-codegen
 // RUN: vxc %s --run 2>&1 | FileCheck %s
 // CHECK: 15130871412783076140 4952851536318644461 16921169381604339434 8471974163824919394 7364705619221056123 7364705619221056123 3395815149532668813 4937302869039560226 16699709016824109085 12211324669098738792 4335449030516364311 5871781006564002453

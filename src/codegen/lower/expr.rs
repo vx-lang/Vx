@@ -4003,8 +4003,25 @@ impl<'c> LowerToMelior<'c> for syntax::expr::AsCastExpr {
             fat_ptr_val = insert_env_ref.result(0)?.into();
 
             return Ok((fat_ptr_val, fat_ptr_ty, block));
-        } else if let syntax::Type::Scalar(_) = &self.target_ty {
+        } else if let syntax::Type::Scalar(target_elem) = &self.target_ty {
             let target_ty_mlir = gen.lower_type(&self.target_ty)?;
+            // Widening an unsigned number brings in zeroes, not copies of its top bit.
+            // `coerce_type` cannot tell: it sees only the printed MLIR type, which has no
+            // sign. The cast does know, because it kept the type it started from.
+            if let Some(syntax::Type::Scalar(source_elem)) = self.source_ty.as_ref() {
+                let widening = matches!(
+                    (source_elem.int_bits(), target_elem.int_bits()),
+                    (Some(from), Some(to)) if from < to
+                );
+                if widening && !source_elem.is_signed_int() {
+                    let ext = OperationBuilder::new("arith.extui", gen.loc())
+                        .add_operands(&[source_val])
+                        .add_results(&[target_ty_mlir])
+                        .build()?;
+                    let widened = block.append_operation(ext).result(0)?.into();
+                    return Ok((widened, target_ty_mlir, block));
+                }
+            }
             let coerced_val = gen.coerce_type(&block, source_val, _source_ty, target_ty_mlir)?;
             return Ok((coerced_val, target_ty_mlir, block));
         } else if let syntax::Type::Pointer(..) = &self.target_ty {

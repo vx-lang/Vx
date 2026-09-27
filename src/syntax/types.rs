@@ -961,6 +961,22 @@ impl Type {
 }
 
 impl ElementType {
+    /// The width in bits of an integer element type. `None` for a float or anything that
+    /// is not an integer.
+    pub fn int_bits(&self) -> Option<u32> {
+        use ElementType::*;
+        Some(match self {
+            Bool => 1,
+            I4 | U4 => 4,
+            I8 | U8 => 8,
+            I16 | U16 => 16,
+            I32 | U32 => 32,
+            I64 | U64 => 64,
+            I128 | U128 => 128,
+            _ => return None,
+        })
+    }
+
     /// Whether this is a signed integer. `bool` and the unsigned widths are not; ask
     /// `is_float` about the floating-point ones.
     pub fn is_signed_int(&self) -> bool {
