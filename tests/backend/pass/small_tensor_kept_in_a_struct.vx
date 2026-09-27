@@ -1,0 +1,66 @@
+//===- small_tensor_kept_in_a_struct.vx - Vx Compiler ------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A small tensor that a function makes and then hands out inside a struct has to outlive the
+// function, so it must not be put on that function's stack.
+//
+// The compiler moves small tensors (up to 4 KiB) onto the stack when they never leave their
+// function. It could not see a tensor leave through a struct field, so both functions below got
+// their tensor on their own stack, and the struct pointed into memory that the next call reused:
+// this program printed `7 0 7 -0.00000000019` instead of `3 7 3 7`.
+//
+// - `make_holder` returns its tensor inside a `Holder`.
+// - `fill` stores its tensor into a `Holder` that belongs to the caller.
+//
+// Each is called twice with the same stack layout, so if the first call's tensor were on the
+// stack, the second call would overwrite it. Only running the program shows that, which is why
+// the check is the printed answer.
+//
+// REQUIRES: flat-codegen
+// Only because the older code generator cannot compile a tensor inside a struct at all.
+//
+// EXPECT: 3 7 3 7
+
+struct Holder {
+  t : Tensor<f32, [ 4 ]>,
+}
+
+fn make_holder(v : f32) -> Holder {
+  let a : Tensor<f32, [ 4 ]> = [ v, v, v, v ];
+  return Holder {
+    t: a
+  };
+}
+
+fn fill(h : &mut Holder, v : f32) -> void {
+  let a : Tensor<f32, [ 4 ]> = [ v, v, v, v ];
+  h.t = a;
+}
+
+fn main() -> i32 {
+  let first = make_holder(3.0);
+  let second = make_holder(7.0);
+  print(first.t[2]);
+  print!(" ");
+  print(second.t[2]);
+  print!(" ");
+
+  let z : Tensor<f32, [ 4 ]> = [ 0.0, 0.0, 0.0, 0.0 ];
+  let w : Tensor<f32, [ 4 ]> = [ 0.0, 0.0, 0.0, 0.0 ];
+  let mut third = Holder {
+    t: z
+  };
+  let mut fourth = Holder {
+    t: w
+  };
+  fill(&mut third, 3.0);
+  fill(&mut fourth, 7.0);
+  print(third.t[2]);
+  print!(" ");
+  print(fourth.t[2]);
+  return 0;
+}

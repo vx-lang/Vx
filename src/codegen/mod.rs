@@ -142,11 +142,11 @@ pub fn lower_to_llvm<'c>(context: &'c Context, module: &mut Module<'c>) -> Resul
     // per allocation site, none of which resolves at link time. Importing
     // std::vec was enough to trigger it. Dropping dead declarations first lets
     // the lowering define `@malloc` under its own name.
-    // `promote-buffers-to-stack` + `vx-normalize-stack-buffers`: a small buffer that does not escape
+    // `vx-promote-buffers-to-stack` + `vx-normalize-stack-buffers`: a small buffer that does not escape
     // belongs on the stack rather than in a `malloc` nothing frees, and the hoist is what makes
     // the promoted allocation a frame slot instead of per-iteration stack growth (#641). See the
     // fuller note on the copy of this pipeline in src/driver.rs.
-    pipeline.push_str("symbol-dce,func.func(convert-linalg-to-loops,lower-affine),convert-scf-to-cf,expand-strided-metadata,func.func(promote-buffers-to-stack{max-alloc-size-in-bytes=4096}),func.func(vx-normalize-stack-buffers),convert-vector-to-llvm,finalize-memref-to-llvm,convert-func-to-llvm,convert-index-to-llvm,convert-math-to-llvm,convert-math-to-libm,convert-cf-to-llvm,convert-arith-to-llvm,reconcile-unrealized-casts)");
+    pipeline.push_str("symbol-dce,func.func(convert-linalg-to-loops,lower-affine),convert-scf-to-cf,expand-strided-metadata,func.func(vx-promote-buffers-to-stack),func.func(vx-normalize-stack-buffers),convert-vector-to-llvm,finalize-memref-to-llvm,convert-func-to-llvm,convert-index-to-llvm,convert-math-to-llvm,convert-math-to-libm,convert-cf-to-llvm,convert-arith-to-llvm,reconcile-unrealized-casts)");
 
     melior::utility::parse_pass_pipeline(pass_manager.as_operation_pass_manager(), &pipeline)
         .map_err(|e| format!("Failed to parse pass pipeline: {}", e))?;

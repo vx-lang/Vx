@@ -1756,8 +1756,9 @@ fn get_optimization_pipeline(
         // hoist, a loop running a million times segfaulted -- strictly worse than the leak.
         // Both must precede finalize-memref-to-llvm, which is what turns what is left into
         // `malloc`. Keep in sync with the pipeline in src/codegen/mod.rs.
-        passes
-            .push("func.func(promote-buffers-to-stack{max-alloc-size-in-bytes=4096})".to_string());
+        // The wrapper keeps upstream's promotion out of a function where a buffer can leave
+        // through a cast or a store, which its escape analysis cannot see.
+        passes.push("func.func(vx-promote-buffers-to-stack)".to_string());
         passes.push("func.func(vx-normalize-stack-buffers)".to_string());
         // Must precede finalize-memref-to-llvm: an unused `extern` lands as
         // `func.func private @malloc`, which memref finalization cannot reuse

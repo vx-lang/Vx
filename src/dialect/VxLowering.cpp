@@ -25,6 +25,7 @@
 #include "mlir/InitAllPasses.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
+#include "mlir/Pass/PassRegistry.h"
 #include "mlir/Target/LLVM/NVVM/Target.h"
 #include "mlir/Target/LLVMIR/Dialect/All.h"
 #include "mlir/Transforms/DialectConversion.h"
@@ -2746,6 +2747,73 @@ struct ConvertVxToLLVMPass
   }
 };
 
+// Move a small heap buffer onto the stack, in a function where nothing can
+// carry a buffer out of sight of the escape analysis.
+//
+// `promote-buffers-to-stack` decides that a buffer stays inside its function by
+// following it through views and returns. It does not follow it through a
+// `builtin.unrealized_conversion_cast`, which is how a tensor becomes the field
+// of a struct, or into memory with a `memref.store`. A function that built a
+// small tensor and returned it inside a struct therefore got the tensor on its
+// own stack, and the struct it returned pointed into a dead frame: a second
+// call overwrote the first one's values.
+//
+// So upstream's pass runs only on a function with neither, and a function that
+// has one keeps its buffers on the heap, as it did before promotion existed.
+// That costs a leak, which #642's deallocation deals with, never a wrong
+// answer.
+struct PromoteBuffersToStackPass
+    : public PassWrapper<PromoteBuffersToStackPass,
+                         OperationPass<func::FuncOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(PromoteBuffersToStackPass)
+
+  llvm::StringRef getArgument() const override {
+    return "vx-promote-buffers-to-stack";
+  }
+
+  llvm::StringRef getDescription() const override {
+    return "Moves small heap buffers to the stack, in functions where no "
+           "buffer "
+           "can leave through a cast or a store";
+  }
+
+  void getDependentDialects(DialectRegistry &registry) const override {
+    registry.insert<memref::MemRefDialect>();
+  }
+
+  // Why buffers in this function must stay on the heap, or null if they need
+  // not.
+  static const char *reasonToKeepOnHeap(func::FuncOp func) {
+    const char *reason = nullptr;
+    auto isMemRef = [](Type t) { return isa<BaseMemRefType>(t); };
+    func.walk([&](Operation *op) {
+      if (isa<UnrealizedConversionCastOp>(op) &&
+          llvm::any_of(op->getOperandTypes(), isMemRef))
+        reason = "a buffer is converted into a value the analysis cannot "
+                 "follow, such as a struct field";
+      else if (auto store = dyn_cast<memref::StoreOp>(op);
+               store && isMemRef(store.getValueToStore().getType()))
+        reason = "a buffer is stored into memory";
+      return reason ? WalkResult::interrupt() : WalkResult::advance();
+    });
+    return reason;
+  }
+
+  void runOnOperation() override {
+    func::FuncOp func = getOperation();
+    if (reasonToKeepOnHeap(func))
+      return;
+    OpPassManager pm(func::FuncOp::getOperationName());
+    if (failed(parsePassPipeline(
+            "promote-buffers-to-stack{max-alloc-size-in-bytes=4096}", pm))) {
+      signalPassFailure();
+      return;
+    }
+    if (failed(runPipeline(pm, func)))
+      signalPassFailure();
+  }
+};
+
 // Make a stack buffer behave like the heap buffer it replaced:
 // `malloc`-compatible alignment, and in the entry block.
 //
@@ -2849,6 +2917,9 @@ void registerVxPasses() {
   });
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return std::make_unique<NormalizeStackBuffersPass>();
+  });
+  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+    return std::make_unique<PromoteBuffersToStackPass>();
   });
 }
 } // namespace vx
