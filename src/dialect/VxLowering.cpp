@@ -8,6 +8,7 @@
 #include "mlir/Conversion/Passes.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Async/IR/Async.h"
+#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
@@ -16,6 +17,7 @@
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinDialect.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -25,6 +27,7 @@
 #include "mlir/InitAllPasses.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
+#include "mlir/Pass/PassRegistry.h"
 #include "mlir/Target/LLVM/NVVM/Target.h"
 #include "mlir/Target/LLVMIR/Dialect/All.h"
 #include "mlir/Transforms/DialectConversion.h"
@@ -2822,6 +2825,96 @@ struct NormalizeStackBuffersPass
   }
 };
 
+// Free every heap buffer after its last use, for a program that places nothing.
+//
+// MLIR's `buffer-deallocation-pipeline` does the work: it follows ownership
+// across function boundaries, so a function that returns a buffer leaves it for
+// the caller, and the caller frees it after its last read. Around it:
+//
+// - The ownership analysis refuses a loop written as branches, which is how
+//   every loop reaches this point, so they are lifted back into `scf` for it
+//   and lowered again afterwards.
+// - Where ownership is ambiguous it copies with `bufferization.clone`, which
+//   `convert-bufferization-to-memref` lowers.
+//
+// A program that places data on a device or in a memory sub-space is left
+// exactly as it was. That code already manages its memory by hand -- the
+// transfer lowering writes its own frees -- and the two schemes collide: the
+// analysis refuses input that already frees, cannot see through the casts that
+// hand memory to the plugin calls, and would put a host `free` on memory in
+// another address space. Giving the `vx` ops real memory effects and deleting
+// the hand-written frees is the way to bring those programs in; until then the
+// whole module is skipped, because the analysis works on the whole module.
+struct FreeHeapBuffersPass
+    : public PassWrapper<FreeHeapBuffersPass, OperationPass<ModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(FreeHeapBuffersPass)
+
+  llvm::StringRef getArgument() const override {
+    return "vx-free-heap-buffers";
+  }
+
+  llvm::StringRef getDescription() const override {
+    return "Frees each heap buffer after its last use, in a module that "
+           "places nothing on a device or in a memory sub-space";
+  }
+
+  // The passes run below create ops from these dialects, and a pipeline run
+  // from inside a pass can only use dialects its parent declared.
+  void getDependentDialects(DialectRegistry &registry) const override {
+    registry.insert<arith::ArithDialect, bufferization::BufferizationDialect,
+                    cf::ControlFlowDialect, memref::MemRefDialect,
+                    scf::SCFDialect, ub::UBDialect>();
+  }
+
+  // Why this module has to be left alone, or null if it does not.
+  static const char *reasonToSkip(ModuleOp module) {
+    const char *reason = nullptr;
+    auto placed = [](Type type) {
+      auto memref = llvm::dyn_cast<BaseMemRefType>(type);
+      return memref && memref.getMemorySpace();
+    };
+    module.walk([&](Operation *op) {
+      if (op->getDialect() && op->getDialect()->getNamespace() == "vx")
+        reason = "a vx operation is still present";
+      else if (isa<memref::DeallocOp>(op))
+        reason = "a buffer is already freed by hand";
+      else if (llvm::any_of(op->getOperandTypes(), placed) ||
+               llvm::any_of(op->getResultTypes(), placed))
+        reason = "a buffer lives in another memory space";
+      else if (isa<UnrealizedConversionCastOp>(op) &&
+               llvm::any_of(op->getOperandTypes(),
+                            [](Type t) { return isa<BaseMemRefType>(t); }))
+        reason = "a buffer is handed to code outside the memref dialect";
+      // The analysis's own precondition: every op inside a function must say
+      // how it touches memory. `llvm.intr.assume`, which carries a proven
+      // `assert` to LLVM, touches none but does not say so.
+      else if (op->getParentOfType<func::FuncOp>() &&
+               !isa<MemoryEffectOpInterface, CallOpInterface,
+                    BranchOpInterface>(op) &&
+               !op->hasTrait<OpTrait::HasRecursiveMemoryEffects>())
+        reason = "an operation does not declare its memory effects";
+      return reason ? WalkResult::interrupt() : WalkResult::advance();
+    });
+    return reason;
+  }
+
+  void runOnOperation() override {
+    ModuleOp module = getOperation();
+    if (reasonToSkip(module))
+      return;
+    OpPassManager pm(ModuleOp::getOperationName());
+    if (failed(parsePassPipeline(
+            "lift-cf-to-scf,buffer-deallocation-pipeline,"
+            "convert-bufferization-to-memref,convert-scf-to-cf",
+            pm))) {
+      signalPassFailure();
+      return;
+    }
+    if (failed(runPipeline(pm, module)))
+      signalPassFailure();
+  }
+};
+
 } // namespace
 
 extern "C" {
@@ -2849,6 +2942,9 @@ void registerVxPasses() {
   });
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return std::make_unique<NormalizeStackBuffersPass>();
+  });
+  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+    return std::make_unique<FreeHeapBuffersPass>();
   });
 }
 } // namespace vx

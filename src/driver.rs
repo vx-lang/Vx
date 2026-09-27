@@ -1758,15 +1758,9 @@ fn get_optimization_pipeline(
         // `malloc`. Keep in sync with the pipeline in src/codegen/mod.rs.
         passes
             .push("func.func(promote-buffers-to-stack{max-alloc-size-in-bytes=4096})".to_string());
-        // Everything left on the heap gets a `free` after its last use (#642). The ownership
-        // analysis only understands structured loops and refuses a function with a loop written
-        // as branches -- which is how the flat path writes every loop -- so the branches are
-        // lifted back into `scf` for it, and lowered again once the frees are in place.
-        passes.push("lift-cf-to-scf".to_string());
-        passes.push("buffer-deallocation-pipeline".to_string());
-        // Where ownership is ambiguous the pass copies with `bufferization.clone`; lower it.
-        passes.push("convert-bufferization-to-memref".to_string());
-        passes.push("convert-scf-to-cf".to_string());
+        // Everything left on the heap gets a `free` after its last use (#642), in a program that
+        // places nothing; see the pass for why placement programs are left alone for now.
+        passes.push("vx-free-heap-buffers".to_string());
         passes.push("func.func(vx-normalize-stack-buffers)".to_string());
         // Must precede finalize-memref-to-llvm: an unused `extern` lands as
         // `func.func private @malloc`, which memref finalization cannot reuse
