@@ -227,8 +227,19 @@ impl<'a> TypeChecker<'a> {
 
     pub(crate) fn check_binaryop_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
         match expr {
-            Expr::BinaryOp(BinaryOpExpr { lhs, op, rhs, span }) => {
+            Expr::BinaryOp(BinaryOpExpr {
+                lhs,
+                op,
+                rhs,
+                span,
+                operand_ty,
+            }) => {
                 let (lhs_ty, rhs_ty) = self.check_operand_pair(lhs, rhs, consume);
+                // Recorded for code generation: `/`, `%` and `>>` need the sign, and an
+                // MLIR integer does not carry one.
+                if let Type::Scalar(e) = &lhs_ty {
+                    *operand_ty = Some(e.clone());
+                }
 
                 // Tensor operator overloading (A * B) -> Matmul.
                 //

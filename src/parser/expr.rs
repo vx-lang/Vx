@@ -171,6 +171,7 @@ impl<'a> Parser<'a> {
                     op,
                     rhs: Box::new(right),
                     span: Span::default(),
+                    operand_ty: None,
                 });
                 continue;
             }
@@ -255,6 +256,7 @@ impl<'a> Parser<'a> {
                         op: BinaryOp::Add,
                         rhs: Box::new(right),
                         span: Span::default(),
+                        operand_ty: None,
                     });
                 }
                 TokenType::Minus => {
@@ -264,6 +266,7 @@ impl<'a> Parser<'a> {
                         op: BinaryOp::Sub,
                         rhs: Box::new(right),
                         span: Span::default(),
+                        operand_ty: None,
                     });
                 }
                 TokenType::Star => {
@@ -273,6 +276,7 @@ impl<'a> Parser<'a> {
                         op: BinaryOp::Mul,
                         rhs: Box::new(right),
                         span: Span::default(),
+                        operand_ty: None,
                     });
                 }
                 TokenType::At => {
@@ -282,6 +286,7 @@ impl<'a> Parser<'a> {
                         op: BinaryOp::MatMul,
                         rhs: Box::new(right),
                         span: Span::default(),
+                        operand_ty: None,
                     });
                 }
                 TokenType::Slash => {
@@ -291,6 +296,7 @@ impl<'a> Parser<'a> {
                         op: BinaryOp::Div,
                         rhs: Box::new(right),
                         span: Span::default(),
+                        operand_ty: None,
                     });
                 }
                 TokenType::Percent => {
@@ -300,6 +306,7 @@ impl<'a> Parser<'a> {
                         op: BinaryOp::Rem,
                         rhs: Box::new(right),
                         span: Span::default(),
+                        operand_ty: None,
                     });
                 }
                 TokenType::Ampersand => {
@@ -309,6 +316,7 @@ impl<'a> Parser<'a> {
                         op: BinaryOp::BitAnd,
                         rhs: Box::new(right),
                         span: Span::default(),
+                        operand_ty: None,
                     });
                 }
                 TokenType::Pipe => {
@@ -318,6 +326,7 @@ impl<'a> Parser<'a> {
                         op: BinaryOp::BitOr,
                         rhs: Box::new(right),
                         span: Span::default(),
+                        operand_ty: None,
                     });
                 }
                 TokenType::Caret => {
@@ -327,6 +336,7 @@ impl<'a> Parser<'a> {
                         op: BinaryOp::BitXor,
                         rhs: Box::new(right),
                         span: Span::default(),
+                        operand_ty: None,
                     });
                 }
                 TokenType::DoubleDot => {

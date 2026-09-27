@@ -111,10 +111,19 @@ pub struct CompoundAssignStmt {
     pub op: BinaryOp,
     pub rhs: Expr,
     pub span: Span,
+    /// The accumulator's element type, filled in by the checker, for the same reason
+    /// `BinaryOpExpr` carries one: `/=`, `%=` and `>>=` need the sign.
+    pub operand_ty: Option<crate::syntax::ElementType>,
 }
 impl CompoundAssignStmt {
     pub fn new(lhs: Expr, op: BinaryOp, rhs: Expr, span: Span) -> Self {
-        Self { lhs, op, rhs, span }
+        Self {
+            lhs,
+            op,
+            rhs,
+            span,
+            operand_ty: None,
+        }
     }
 }
 
@@ -271,6 +280,7 @@ impl Statement {
                 op: e.op.clone(),
                 rhs: e.rhs.substitute(mapping),
                 span: e.span,
+                operand_ty: e.operand_ty.clone(),
             }),
             Statement::Assert(e) => Statement::Assert(AssertStmt {
                 expr: Box::new(e.expr.substitute(mapping)),

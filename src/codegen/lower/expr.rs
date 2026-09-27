@@ -717,6 +717,7 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
             op,
             rhs,
             span: _,
+            operand_ty,
         } = self;
         // Claim the return slot before lowering the operands, so a nested operator inside them
         // does not take it and build its intermediate in the caller's buffer.
@@ -1134,7 +1135,7 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
                 || el_ty_str.contains("f64")
                 || el_ty_str.contains("f16")
                 || el_ty_str.contains("bf16");
-            let arith_op_name = op.get_op_name(is_float);
+            let arith_op_name = op.get_op_name(is_float, false);
 
             let region = Region::new();
             let block_inner = melior::ir::Block::new(&[
@@ -1237,7 +1238,10 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
             || final_ty.to_string().contains("f16")
             || final_ty.to_string().contains("bf16");
 
-        let mut builder = OperationBuilder::new(op.get_op_name(is_float), gen.loc());
+        // The checker recorded the operands' element type. An MLIR integer has no
+        // sign, so this is the only thing that tells `/`, `%` and `>>` which form to use.
+        let is_unsigned = matches!(operand_ty, Some(e) if !e.is_float() && !e.is_signed_int());
+        let mut builder = OperationBuilder::new(op.get_op_name(is_float, is_unsigned), gen.loc());
         builder = builder.add_operands(&[lhs_val, rhs_val]);
 
         let ret_ty = if let Some(pred_val) = op.get_predicate(is_float) {
@@ -1296,7 +1300,7 @@ impl<'c> LowerToMelior<'c> for RelationalOpExpr {
             || final_ty.to_string().contains("f16")
             || final_ty.to_string().contains("bf16");
 
-        let mut builder = OperationBuilder::new(op.get_op_name(is_float), gen.loc());
+        let mut builder = OperationBuilder::new(op.get_op_name(is_float, false), gen.loc());
         builder = builder.add_operands(&[lhs_val, rhs_val]);
 
         let ret_ty = if let Some(pred_val) = op.get_predicate(is_float) {
@@ -1336,7 +1340,7 @@ impl<'c> LowerToMelior<'c> for LogicalOpExpr {
 
         let final_ty = gen.i1_ty;
 
-        let builder = OperationBuilder::new(op.get_op_name(false), gen.loc())
+        let builder = OperationBuilder::new(op.get_op_name(false, false), gen.loc())
             .add_operands(&[lhs_val, rhs_val])
             .add_results(&[final_ty]);
 

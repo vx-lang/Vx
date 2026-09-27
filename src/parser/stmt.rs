@@ -57,6 +57,7 @@ impl<'a> Parser<'a> {
                 op,
                 rhs,
                 span: Span::default(),
+                operand_ty: None,
             }))
         } else {
             let mut has_semicolon = true;

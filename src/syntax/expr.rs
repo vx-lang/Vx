@@ -332,10 +332,20 @@ pub struct BinaryOpExpr {
     pub op: BinaryOp,
     pub rhs: Box<Expr>,
     pub span: Span,
+    /// The operands' element type, filled in by the checker. An MLIR integer carries no
+    /// sign, so `/`, `%` and `>>` cannot be lowered without it. `None` until the checker
+    /// has run, and for an operand that is not a number.
+    pub operand_ty: Option<ElementType>,
 }
 impl BinaryOpExpr {
     pub fn new(lhs: Box<Expr>, op: BinaryOp, rhs: Box<Expr>, span: Span) -> Self {
-        Self { lhs, op, rhs, span }
+        Self {
+            lhs,
+            op,
+            rhs,
+            span,
+            operand_ty: None,
+        }
     }
 }
 
@@ -1094,6 +1104,7 @@ impl Expr {
                 op: e.op.clone(),
                 rhs: Box::new(e.rhs.substitute(mapping)),
                 span: e.span,
+                operand_ty: None,
             }),
             Expr::RelationalOp(e) => Expr::RelationalOp(RelationalOpExpr {
                 lhs: Box::new(e.lhs.substitute(mapping)),

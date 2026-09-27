@@ -1,0 +1,61 @@
+//===- unsigned_divide_shift_and_remainder.vx - Vx Compiler -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `/`, `%` and `>>` on an unsigned number use the unsigned machine instruction.
+//
+// An MLIR integer carries no sign, so the compiler has to pick between the signed and
+// unsigned form from the Vx type. It always picked the signed one here, so `u64::MAX >> 8`
+// answered -1 instead of 72057594037927935.
+//
+// Every value below has its top bit set, which is the only case where the two forms differ.
+// The signed answers are asked too, so a fix that just swapped the two would be caught.
+//
+// The `x op= y` forms are asked as well: they are a separate piece of the compiler and were
+// wrong in the same way.
+import core::num;
+
+fn main() -> i32 {
+  let all_ones : u64 = 18446744073709551615u64;
+  let top_bit : u64 = 9223372036854775808u64;
+
+  print(all_ones >> 8u64);
+  print!(" ");
+  print(top_bit >> 1u64);
+  print!(" ");
+  print(all_ones / 3u64);
+  print!(" ");
+  print(all_ones % 10u64);
+  print!(" ");
+
+  // The same three the other way round, on a signed number.
+  let minus_sixteen : i64 = -16i64;
+  print(minus_sixteen >> 2i64);
+  print!(" ");
+  print(minus_sixteen / 3i64);
+  print!(" ");
+  print(minus_sixteen % 10i64);
+  print!(" ");
+
+  let mut a : u64 = 18446744073709551615u64;
+  a >>= 8u64;
+  print(a);
+  print!(" ");
+  let mut b : u64 = 18446744073709551615u64;
+  b /= 3u64;
+  print(b);
+  print!(" ");
+  let mut c : u64 = 18446744073709551615u64;
+  c %= 10u64;
+  print(c);
+  print!(" ");
+  let mut d : i64 = -16i64;
+  d >>= 2i64;
+  print(d);
+  return 0;
+}
+
+// EXPECT: 72057594037927935 4611686018427387904 6148914691236517205 5 -4 -5 -6 72057594037927935 6148914691236517205 5 -4

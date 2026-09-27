@@ -782,6 +782,7 @@ impl<'c> LowerToMelior<'c> for CompoundAssignStmt {
             op,
             rhs,
             span: _,
+            operand_ty,
         } = self;
         let (lhs_val, ty, block) = gen.generate_expr(lhs, block)?;
         let prev_expected = gen.expected_type;
@@ -802,7 +803,8 @@ impl<'c> LowerToMelior<'c> for CompoundAssignStmt {
             || ty.to_string().contains("f64")
             || ty.to_string().contains("f16")
             || ty.to_string().contains("bf16");
-        let bin_op = OperationBuilder::new(op.get_op_name(is_float), gen.loc())
+        let is_unsigned = matches!(operand_ty, Some(e) if !e.is_float() && !e.is_signed_int());
+        let bin_op = OperationBuilder::new(op.get_op_name(is_float, is_unsigned), gen.loc())
             .add_operands(&[lhs_val, actual_rhs])
             .add_results(&[ty])
             .build()?;

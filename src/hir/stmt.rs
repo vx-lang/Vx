@@ -132,16 +132,17 @@ impl<'a> TypeChecker<'a> {
             Statement::Break(_) => {}
             Statement::Continue(_) => {}
             Statement::Assign(AssignStmt { lhs, rhs, span: _ }) => {
-                self.check_assign_stmt(lhs, None, rhs, consume)
+                self.check_assign_stmt(lhs, None, rhs, consume, None)
             }
             Statement::CompoundAssign(CompoundAssignStmt {
                 lhs,
                 op,
                 rhs,
                 span: _,
+                operand_ty,
             }) => {
                 let op = op.clone();
-                self.check_assign_stmt(lhs, Some(&op), rhs, consume)
+                self.check_assign_stmt(lhs, Some(&op), rhs, consume, Some(operand_ty))
             }
             Statement::Return(ret) => self.check_return_stmt(ret, consume, return_type),
             Statement::ExprStmt(ExprStmtStmt {
@@ -515,6 +516,7 @@ impl<'a> TypeChecker<'a> {
         op: Option<&BinaryOp>,
         rhs: &mut Expr,
         consume: bool,
+        operand_ty: Option<&mut Option<crate::syntax::ElementType>>,
     ) {
         // Assigning to a moved variable gives it a value again. A write does not read what
         // was there, so the move stops being in the way -- and the mark has to go before the
@@ -531,6 +533,12 @@ impl<'a> TypeChecker<'a> {
         self.checking_assign_lhs = true;
         let lhs_ty = self.check_expr_type_flag(lhs, false);
         self.checking_assign_lhs = false;
+
+        // Recorded for code generation, as for a plain binary operator: `/=`, `%=` and
+        // `>>=` need the sign that an MLIR integer does not carry.
+        if let (Some(slot), Type::Scalar(e)) = (operand_ty, &lhs_ty) {
+            *slot = Some(e.clone());
+        }
 
         // Determine target name for NLL
         if let Expr::Identifier(id) = lhs {
@@ -1006,12 +1014,7 @@ impl<'a> TypeChecker<'a> {
             }
 
             Expr::Identifier(IdentifierExpr { name: n, span: _ }) => env.get(n.as_ref()).cloned(),
-            Expr::BinaryOp(BinaryOpExpr {
-                lhs,
-                op,
-                rhs,
-                span: _,
-            }) => {
+            Expr::BinaryOp(BinaryOpExpr { lhs, op, rhs, .. }) => {
                 let l = self.eval_expr(lhs, env)?;
                 let r = self.eval_expr(rhs, env)?;
                 // Two integers stay integers, so `/` truncates the way the emitted code does
@@ -1680,12 +1683,15 @@ impl<'a> TypeChecker<'a> {
             }
             // `x op= v` is `x = x op v`. Run as that, so the arithmetic and the overflow
             // rules are the ones `eval_expr` already applies rather than a second copy.
-            Statement::CompoundAssign(CompoundAssignStmt { lhs, op, rhs, span }) => {
+            Statement::CompoundAssign(CompoundAssignStmt {
+                lhs, op, rhs, span, ..
+            }) => {
                 let folded = Expr::BinaryOp(BinaryOpExpr {
                     lhs: Box::new(lhs.clone()),
                     op: op.clone(),
                     rhs: Box::new(rhs.clone()),
                     span: *span,
+                    operand_ty: None,
                 });
                 self.eval_statement(
                     &Statement::Assign(AssignStmt {

@@ -1831,12 +1831,8 @@ fn distributed_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>, b: Ref<Tens
         let tokens = Lexer::new(input).tokenize();
         let mut parser = Parser::new(&tokens, input);
         let program = parser.parse().unwrap();
-        if let Statement::CompoundAssign(CompoundAssignStmt {
-            lhs,
-            op,
-            rhs,
-            span: _,
-        }) = &program.functions[0].body[0]
+        if let Statement::CompoundAssign(CompoundAssignStmt { lhs, op, rhs, .. }) =
+            &program.functions[0].body[0]
         {
             assert_eq!(*op, BinaryOp::Add);
             if let Expr::IndexAccess(IndexAccessExpr {
@@ -1865,7 +1861,7 @@ fn distributed_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>, b: Ref<Tens
                 lhs: left,
                 op: binop,
                 rhs: right,
-                span: _,
+                ..
             }) = rhs
             {
                 assert_eq!(*binop, BinaryOp::Mul);

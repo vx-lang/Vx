@@ -778,6 +778,7 @@ mod tests {
             op: crate::syntax::BinaryOp::Mul,
             rhs: Box::new(r),
             span: crate::syntax::Span::default(),
+            operand_ty: None,
         })
     }
 

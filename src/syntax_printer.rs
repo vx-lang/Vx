@@ -202,6 +202,7 @@ impl AstPrinter {
                 op,
                 rhs,
                 span: _,
+                operand_ty: _,
             }) => {
                 indent.print(w)?;
                 writeln!(w, "{}BinaryOp({:?})", prefix, op)?;

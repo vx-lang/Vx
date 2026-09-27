@@ -37,12 +37,12 @@ pub trait LowerToMelior<'c> {
 }
 
 pub trait MeliorOpInfo {
-    fn get_op_name(&self, is_float: bool) -> &'static str;
+    fn get_op_name(&self, is_float: bool, is_unsigned: bool) -> &'static str;
     fn get_predicate(&self, is_float: bool) -> Option<i64>;
 }
 
 impl MeliorOpInfo for BinaryOp {
-    fn get_op_name(&self, is_float: bool) -> &'static str {
+    fn get_op_name(&self, is_float: bool, is_unsigned: bool) -> &'static str {
         match self {
             BinaryOp::Add => {
                 if is_float {
@@ -68,17 +68,17 @@ impl MeliorOpInfo for BinaryOp {
             BinaryOp::Div => {
                 if is_float {
                     "arith.divf"
+                } else if is_unsigned {
+                    "arith.divui"
                 } else {
                     "arith.divsi"
                 }
             }
-            // Signed, like `Div` above, because an MLIR integer is signless and the Vx element
-            // type has been lost by this point -- all this path is handed is the printed MLIR
-            // type. The flat path keeps the element type and picks `remui` for an unsigned
-            // operand; only `--legacy-codegen` reaches this arm.
             BinaryOp::Rem => {
                 if is_float {
                     "arith.remf"
+                } else if is_unsigned {
+                    "arith.remui"
                 } else {
                     "arith.remsi"
                 }
@@ -89,10 +89,15 @@ impl MeliorOpInfo for BinaryOp {
             BinaryOp::BitOr => "arith.ori",
             BinaryOp::BitXor => "arith.xori",
             BinaryOp::Shl => "arith.shli",
-            // Signed, for the same reason `Rem` is: this path is handed the printed MLIR
-            // type, which is signless. The flat path keeps the element type and picks
-            // `shrui` for an unsigned operand.
-            BinaryOp::Shr => "arith.shrsi",
+            // Arithmetic for a signed operand and logical for an unsigned one: the sign bit
+            // is copied only when there is a sign bit to copy.
+            BinaryOp::Shr => {
+                if is_unsigned {
+                    "arith.shrui"
+                } else {
+                    "arith.shrsi"
+                }
+            }
         }
     }
 
@@ -102,7 +107,7 @@ impl MeliorOpInfo for BinaryOp {
 }
 
 impl MeliorOpInfo for RelationalOp {
-    fn get_op_name(&self, is_float: bool) -> &'static str {
+    fn get_op_name(&self, is_float: bool, _is_unsigned: bool) -> &'static str {
         if is_float {
             "arith.cmpf"
         } else {
@@ -136,7 +141,7 @@ impl MeliorOpInfo for RelationalOp {
 }
 
 impl MeliorOpInfo for LogicalOp {
-    fn get_op_name(&self, _is_float: bool) -> &'static str {
+    fn get_op_name(&self, _is_float: bool, _is_unsigned: bool) -> &'static str {
         match self {
             LogicalOp::And => "arith.andi",
             LogicalOp::Or => "arith.ori",
