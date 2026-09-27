@@ -2746,6 +2746,59 @@ struct ConvertVxToLLVMPass
   }
 };
 
+// Move every fixed-size `memref.alloca` to the front of its function's entry block.
+//
+// `promote-buffers-to-stack` turns a heap buffer that does not escape into a stack one, but it
+// rewrites the allocation where it stands. An allocation inside a loop therefore becomes an
+// `alloca` inside a loop -- and LLVM only gives a constant-size `alloca` a fixed frame slot when
+// it sits in the entry block. Anywhere else it is a dynamic stack adjustment, and nothing gives
+// the stack pointer back until the function returns, so a loop running a few million times
+// exhausts the stack and the program dies having compiled cleanly. InstCombine hoists these at
+// -O1 and above, but `--run` compiles at -O0, where nothing does.
+//
+// Hoisting is always valid for an allocation that takes no operands: it depends on nothing, so
+// the entry block dominates every use, and a buffer that was just allocated holds nothing an
+// iteration could carry forward. One that takes a run-time extent is left where it is, because
+// its size operand may not dominate the entry block.
+//
+// This runs late, after device regions have been outlined into `gpu.module`, so a kernel's own
+// scratch is never lifted out into the host frame.
+struct HoistStaticAllocasPass
+    : public PassWrapper<HoistStaticAllocasPass, OperationPass<func::FuncOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(HoistStaticAllocasPass)
+
+  llvm::StringRef getArgument() const override {
+    return "vx-hoist-static-allocas";
+  }
+
+  llvm::StringRef getDescription() const override {
+    return "Moves fixed-size memref.alloca operations to their function's entry "
+           "block, so they become frame slots rather than per-iteration stack growth";
+  }
+
+  void runOnOperation() override {
+    func::FuncOp func = getOperation();
+    if (func.isExternal() || func.getBody().empty())
+      return;
+    // A `func.func` inside a device module keeps its own allocations.
+    if (func->getParentOfType<gpu::GPUModuleOp>())
+      return;
+
+    Block &entry = func.getBody().front();
+    llvm::SmallVector<memref::AllocaOp, 8> toHoist;
+    func.walk([&](memref::AllocaOp alloca) {
+      if (alloca->getBlock() == &entry)
+        return;
+      if (!alloca->getOperands().empty())
+        return; // a run-time extent: its operand may not reach the entry block
+      toHoist.push_back(alloca);
+    });
+
+    for (memref::AllocaOp alloca : toHoist)
+      alloca->moveBefore(&entry, entry.begin());
+  }
+};
+
 } // namespace
 
 extern "C" {
@@ -2770,6 +2823,9 @@ void registerVxPasses() {
   });
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return std::make_unique<ConvertVxToLLVMPass>();
+  });
+  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+    return std::make_unique<HoistStaticAllocasPass>();
   });
 }
 } // namespace vx

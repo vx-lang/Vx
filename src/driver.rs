@@ -1745,6 +1745,20 @@ fn get_optimization_pipeline(
         passes.push("func.func(convert-linalg-to-loops,lower-affine)".to_string());
         passes.push("convert-scf-to-cf".to_string());
         passes.push("expand-strided-metadata".to_string());
+        // A buffer that does not escape its function and is small enough belongs on the stack,
+        // not in a `malloc` nothing frees (#641). The limit is per buffer: a program's tensors
+        // run to megabytes and the default stack is 8 MiB, so only the small ones -- array
+        // literals, rank-0 buffers, little tiles -- are worth moving.
+        //
+        // The hoist that follows is not optional. `promote-buffers-to-stack` rewrites an
+        // allocation where it stands, so one inside a loop becomes an `alloca` inside a loop,
+        // which LLVM treats as a dynamic stack adjustment rather than a frame slot. Without the
+        // hoist, a loop running a million times segfaulted -- strictly worse than the leak.
+        // Both must precede finalize-memref-to-llvm, which is what turns what is left into
+        // `malloc`. Keep in sync with the pipeline in src/codegen/mod.rs.
+        passes
+            .push("func.func(promote-buffers-to-stack{max-alloc-size-in-bytes=4096})".to_string());
+        passes.push("func.func(vx-hoist-static-allocas)".to_string());
         // Must precede finalize-memref-to-llvm: an unused `extern` lands as
         // `func.func private @malloc`, which memref finalization cannot reuse
         // (it looks for an llvm.func), so it creates its own and the symbol
