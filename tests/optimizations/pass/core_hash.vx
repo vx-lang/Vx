@@ -1,0 +1,106 @@
+//===- core_hash.vx - Vx Compiler ---------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `core::hash`: the `Hasher` and `Hash` traits, SipHash-1-3 and Fx.
+//
+// The SipHash numbers come from Rust's `DefaultHasher`, which is SipHash-1-3, fed the same
+// bytes one at a time. The Fx numbers come from a separate implementation of the same
+// recurrence. So these are not this module's own output written down.
+//
+// Four values a wrong implementation would likely still pass are asked on purpose: the
+// empty input, one byte, exactly one full block, and one byte past a block -- the last two
+// being where the buffering decides whether a block is mixed in early or late.
+//
+// `write_u64` is also asked against eight `write_u8` calls, which is what pins the byte
+// order: a big-endian `write_u64` agrees with neither.
+//
+// The flat path only. `write_u64` peels bytes with `>>`, which the AST path lowers as an
+// arithmetic shift on an unsigned value (Vx#818), so every answer there is wrong. The
+// marker keeps this runner's legacy replay off.
+// REQUIRES: flat-codegen
+// RUN: vxc %s --run 2>&1 | FileCheck %s
+// CHECK: 15130871412783076140 4952851536318644461 16921169381604339434 8471974163824919394 7364705619221056123 7364705619221056123 3395815149532668813 4937302869039560226 16699709016824109085 12211324669098738792 4335449030516364311 5871781006564002453
+import core::hash;
+
+fn sip_bytes(n : i64) -> u64 {
+  let mut h : SipHasher13 = SipHasher13::new();
+  let mut i : i64 = 0i64;
+  loop {
+    if i >= n {
+      break;
+    }
+    h.write_u8(i as u8);
+    i = i + 1i64;
+  }
+  return h.finish();
+}
+
+fn main() -> i32 {
+  let mut e : SipHasher13 = SipHasher13::new();
+  print(e.finish());
+  print!(" ");
+  let mut o : SipHasher13 = SipHasher13::new();
+  o.write_u8(1u8);
+  print(o.finish());
+  print!(" ");
+  print(sip_bytes(8i64));
+  print!(" ");
+  print(sip_bytes(9i64));
+  print!(" ");
+
+  // write_u64 is the little-endian bytes of 7, so it must agree with feeding them.
+  let mut a : SipHasher13 = SipHasher13::new();
+  a.write_u64(7u64);
+  print(a.finish());
+  print!(" ");
+  let mut b : SipHasher13 = SipHasher13::new();
+  b.write_u8(7u8);
+  b.write_u8(0u8);
+  b.write_u8(0u8);
+  b.write_u8(0u8);
+  b.write_u8(0u8);
+  b.write_u8(0u8);
+  b.write_u8(0u8);
+  b.write_u8(0u8);
+  print(b.finish());
+  print!(" ");
+
+  let mut m : SipHasher13 = SipHasher13::new();
+  let big : u64 = 18446744073709551615u64;
+  m.write_u64(big);
+  print(m.finish());
+  print!(" ");
+
+  // A key changes the answer, so the keys are not being dropped.
+  let mut k : SipHasher13 = SipHasher13::with_keys(1u64, 2u64);
+  k.write_u8(1u8);
+  print(k.finish());
+  print!(" ");
+
+  // Hash dispatches to the matching write_.
+  let mut hu : FxHasher = FxHasher::new();
+  let v : u64 = 7u64;
+  v.hash(&mut hu);
+  print(hu.finish());
+  print!(" ");
+  let mut hb : FxHasher = FxHasher::new();
+  let one : u8 = 200u8;
+  one.hash(&mut hb);
+  print(hb.finish());
+  print!(" ");
+  let mut hi : FxHasher = FxHasher::new();
+  let neg : i32 = -1;
+  neg.hash(&mut hi);
+  print(hi.finish());
+  print!(" ");
+  let mut hl : FxHasher = FxHasher::new();
+  let yes : bool = true;
+  yes.hash(&mut hl);
+  print(hl.finish());
+  return 0;
+}
+

@@ -29,6 +29,7 @@ friends.
 - [`core::cmp`](#corecmp) — Ordering and equality: `PartialEq`, `Ord`, `PartialOrd` and `Ordering`.
 - [`core::convert`](#coreconvert) — `From`, the conversions that cannot fail and lose nothing.
 - [`core::default`](#coredefault) — `Default`, the value a type starts from.
+- [`core::hash`](#corehash) —
 - [`core::iter::adapters`](#coreiteradapters) — The iterators `Iterator`'s adaptor methods build: `Map`, `Filter`, `Chain` and the rest.
 - [`core::iter::traits`](#coreitertraits) — The `Iterator` trait: one required `next`, and the methods written over it.
 - [`core::iter`](#coreiter) — `Range` and `range`; importing it brings the trait and the adaptors too.
@@ -278,6 +279,69 @@ T = `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `bool`
   Zero, spelled at this width.
 
 T = `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `f32`, `f64`, `bool`
+
+## `core::hash`
+
+**Types**
+
+- `trait Hasher`
+- `trait Hash`
+- `struct FxHasher`<br>
+  rustc's hasher: fast, not resistant to a chosen-key attack.
+- `struct SipState`
+- `struct SipHasher13`<br>
+  SipHash-1-3: one round per block, three to finish. Rust's default hasher.
+  Bytes are gathered into `buf` and a block is mixed in once eight are there, so the
+  answer depends on how many bytes were written, not on how they were grouped.
+  The four words are held here rather than as a `SipState` field: assigning a
+  struct-typed field through `&mut self` does not lower (Vx#817).
+
+**`trait Hasher` methods**
+
+- `fn write_u8(self : &mut Self, b : u8) -> i32`
+- `fn finish(self : &Self) -> u64`
+- `fn write_u16(self : &mut Self, v : u16) -> i32`
+- `fn write_u32(self : &mut Self, v : u32) -> i32`
+- `fn write_u64(self : &mut Self, v : u64) -> i32`
+- `fn write_i8(self : &mut Self, v : i8) -> i32`
+- `fn write_i16(self : &mut Self, v : i16) -> i32`
+- `fn write_i32(self : &mut Self, v : i32) -> i32`
+- `fn write_i64(self : &mut Self, v : i64) -> i32`
+- `fn write_bool(self : &mut Self, v : bool) -> i32`
+
+**`trait Hash` methods**
+
+- `fn hash<H : Hasher>(self : &Self, state : &mut H) -> i32`
+
+**`FxHasher` methods**
+
+- `fn new() -> FxHasher`
+
+**`Hasher for FxHasher` methods**
+
+- `fn write_u8(self : &mut FxHasher, b : u8) -> i32`
+- `fn finish(self : &FxHasher) -> u64`
+
+**Functions**
+
+- `fn sip_round(s : SipState) -> SipState`<br>
+  One SipRound. Taken and returned by value because four results do not fit a return.
+
+**`SipHasher13` methods**
+
+- `fn with_keys(k0 : u64, k1 : u64) -> SipHasher13`
+- `fn new() -> SipHasher13`
+
+**`Hasher for SipHasher13` methods**
+
+- `fn write_u8(self : &mut SipHasher13, b : u8) -> i32`
+- `fn finish(self : &SipHasher13) -> u64`
+
+**`Hash for T` methods**, stamped for 9 instantiations
+
+- `fn hash<H : Hasher>(self : &T, state : &mut H) -> i32`
+
+T = `u8`, `u16`, `u32`, `u64`, `i8`, `i16`, `i32`, `i64`, `bool`
 
 ## `core::iter::adapters`
 
@@ -2092,4 +2156,4 @@ Clocks and durations.
 
 ______________________________________________________________________
 
-730 functions across 32 modules.
+758 functions across 33 modules.

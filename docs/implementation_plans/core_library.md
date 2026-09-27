@@ -825,7 +825,7 @@ live docs, not this table.
 | `char` | `core::char` | 2 | — | A15 | Unicode case tables phase 4; ASCII + Latin-1 first |
 | `ascii` | `core::ascii` | 2 | — | — | |
 | `fmt` | `core::fmt` | 2 | — | — | generic writer, not `dyn`; `Arguments`/`format_args!`/`write!` excluded until a format-string macro |
-| `hash` | `core::hash` | 2 | — | A5 | SipHash-1-3 and Fx in Vx |
+| `hash` | `core::hash` | 2 | partial | Vx#818 | `Hasher` over a required `write_u8` with `write_u16`/`u32`/`u64`, the signed forms and `write_bool` as defaults, little-endian; `Hash` with `hash<H : Hasher>`, implemented for every integer width and `bool`; `SipHasher13`, which agrees with Rust's `DefaultHasher` byte for byte, and `FxHasher`. No `write` over a slice (wants `str`/slices), no `Hash` for aggregates (no derive). The fixture is flat-path only: `>>` on an unsigned value sign-extends on the AST path |
 | `cell` | `core::cell` | 3 | — | A13, A19 for guards | `RefCell` guards need Drop |
 | `sync::atomic` | `core::sync::atomic` | 3 | — | — | via `mlir!` `llvm.atomicrmw`/`cmpxchg`/`fence` |
 | `time` | `core::time` | 3 | — | A11 | |
