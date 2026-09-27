@@ -1,0 +1,75 @@
+//===- assign_field_of_struct_local.vx - Vx Compiler --------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Assigning to one field of a `let mut` struct, then reading the struct again.
+//
+// A `let mut` struct is kept behind a pointer. Writing a field replaced that pointer with
+// the updated struct value, so the next read tried to load through a struct and the
+// program failed to compile: "'llvm.load' op operand #0 must be LLVM pointer type".
+//
+// Each case reads the struct back after writing it, which is what failed. The loop writes
+// the same field five times, so a write that was only kept until the next one would show.
+import core::marker;
+
+struct Pair {
+  a : u64,
+  b : u64,
+}
+
+struct Inner {
+  v : u64,
+}
+
+impl Copy for Inner {}
+
+struct Outer {
+  inner : Inner,
+  count : u64,
+}
+
+impl Outer {
+  fn bump(self : &mut Outer) -> i32 {
+    let mut x : Inner = self.inner;
+    x.v = x.v + 1u64;
+    self.inner = x;
+    return 0;
+  }
+}
+
+fn main() -> i32 {
+  let mut p : Pair = Pair {
+    a : 1u64, b : 2u64
+  };
+  p.a = p.a + 10u64;
+  print(p.a);
+  print!(" ");
+  // The other field is untouched.
+  print(p.b);
+  print!(" ");
+
+  let mut total : Pair = Pair {
+    a : 0u64, b : 0u64
+  };
+  for i in 0..5 {
+    total.a = total.a + 3u64;
+  }
+  print(total.a);
+  print!(" ");
+
+  // A struct-typed field, written through `&mut self`.
+  let mut o : Outer = Outer {
+    inner : Inner {
+      v : 5u64
+    }, count : 0u64
+  };
+  o.bump();
+  o.bump();
+  print(o.inner.v);
+  return 0;
+}
+
+// EXPECT: 11 2 15 7

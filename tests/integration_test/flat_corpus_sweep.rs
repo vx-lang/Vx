@@ -23,6 +23,9 @@ const KNOWN_DECLINES: &[&str] = &[
     // "A borrow of something that is not a tensor": the flat path borrows tensors only.
     "backend/pass/borrow_of_a_value.vx",
     "backend/pass/borrow_element_through_pointer.vx",
+    // "A store to a nested nominal field": `self.inner = x` puts a struct into a struct's
+    // field, which the flat path does not model. The file is about the AST path anyway.
+    "backend/pass/assign_field_of_struct_local.vx",
     // `Option::or` and its neighbours, which answer with an `Option<T>`. The flat path
     // declines them as "a non-scalar default return" -- the same shape as the file below,
     // and the AST path handles both. The module's other methods answer with a `T` or a

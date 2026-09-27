@@ -750,6 +750,17 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                                                 .build()
                                                 .unwrap();
                                         new_b.append_operation(store_op);
+                                    } else if gen.allocs.contains(base_name.as_ref()) {
+                                        // A `let mut` struct lives behind a pointer. Store the
+                                        // updated struct through it, as a plain `x = v` does;
+                                        // replacing the pointer with the value made the next
+                                        // read load from a struct.
+                                        let store_op =
+                                            OperationBuilder::new("llvm.store", gen.loc())
+                                                .add_operands(&[new_struct_val, mem_val])
+                                                .build()
+                                                .unwrap();
+                                        new_b.append_operation(store_op);
                                     } else {
                                         gen.env.insert(
                                             base_name.to_string().into(),
