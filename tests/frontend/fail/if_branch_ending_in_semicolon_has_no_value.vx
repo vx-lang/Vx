@@ -1,0 +1,21 @@
+//===- if_branch_ending_in_semicolon_has_no_value.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `2;` is a statement, so a branch ending in it has no value to give the `if`.
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: Error[E3007]{{.*}}incompatible types: Scalar(I32) and Struct("void", None)
+// CHECK: 1 error(s) emitted
+
+fn main() -> i32 {
+  let c = true;
+  let y = if c {
+    40
+  } else {
+    2;
+  };
+  return y;
+}

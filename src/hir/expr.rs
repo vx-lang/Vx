@@ -97,9 +97,11 @@ impl<'a> TypeChecker<'a> {
                 break;
             }
 
+            // Only a last expression with no `;` gives the block its value.
+            ret_ty = Type::Struct("void".into(), None);
             if let Statement::ExprStmt(ExprStmtStmt {
                 ref mut expr,
-                has_semi: _,
+                has_semi,
                 span: _,
             }) = s
             {
@@ -108,7 +110,10 @@ impl<'a> TypeChecker<'a> {
                 let before = self.consteval_snapshot();
                 let scopes = self.consteval_scopes();
                 let saved_borrows = self.borrow.snapshot();
-                ret_ty = self.check_expr_type_flag(expr, consume);
+                let ty = self.check_expr_type_flag(expr, consume);
+                if !*has_semi {
+                    ret_ty = ty;
+                }
                 self.borrow.restore(saved_borrows);
                 self.settle_mut_borrow_call(expr, &before, &scopes);
             } else {
