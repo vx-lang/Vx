@@ -293,8 +293,6 @@ T = `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `f32`, `f64`, `bool`
   SipHash-1-3: one round per block, three to finish. Rust's default hasher.
   Bytes are gathered into `buf` and a block is mixed in once eight are there, so the
   answer depends on how many bytes were written, not on how they were grouped.
-  The four words are held here rather than as a `SipState` field: assigning a
-  struct-typed field through `&mut self` does not lower (Vx#817).
 
 **`trait Hasher` methods**
 
