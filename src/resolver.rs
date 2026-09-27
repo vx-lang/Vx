@@ -235,11 +235,10 @@ pub fn fill_trait_defaults_in(program: &mut crate::syntax::Program, defaults: &T
             {
                 continue;
             }
-            // `Self` in the body too, where an adaptor names its own type: `Map<Self, ..> {..}`.
-            let self_subst: std::collections::HashMap<crate::symbol::Symbol, crate::syntax::Type> =
-                [("Self".into(), block.target_type.clone())]
-                    .into_iter()
-                    .collect();
+            // `Self` in the body too, where an adaptor names its own type: `Map<Self, ..> {..}`,
+            // and the trait's own parameters, as the signature gets them: `Option<Item>::None()`.
+            let mut self_subst = trait_subst.clone();
+            self_subst.insert("Self".into(), block.target_type.clone());
             let body = signature
                 .default_body
                 .clone()

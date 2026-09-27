@@ -1,0 +1,77 @@
+//===- trait_default_names_trait_parameter.vx - Vx Compiler -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A default method body can name the trait's own type parameter.
+//
+// `Option<Item>::None()` inside the default used to keep the letter `Item` after the
+// default was copied into `impl Maker<i64> for Wide`, and the checker then refused it:
+// "Expected Option<i64>, got Option<Item>".
+//
+// Two impls use the trait at different types, so each copy has to get its own type. The
+// `i64` value is the largest there is, which a copy given a narrower type would cut short.
+import core::option;
+
+trait Maker<Item> {
+  fn one(self : &Self) -> Item;
+
+  fn none_of(self : &Self) -> Option<Item> {
+    return Option<Item>::None();
+  }
+
+  fn some_of(self : &Self) -> Option<Item> {
+    return Option<Item>::Some(self.one());
+  }
+}
+
+struct Wide {
+  n : i64,
+}
+
+impl Maker<i64> for Wide {
+  fn one(self : &Wide) -> i64 {
+    return self.n;
+  }
+}
+
+struct Flag {
+  b : bool,
+}
+
+impl Maker<bool> for Flag {
+  fn one(self : &Flag) -> bool {
+    return self.b;
+  }
+}
+
+fn show(b : bool) -> i32 {
+  if b {
+    print(1);
+  } else {
+    print(0);
+  }
+  return 0;
+}
+
+fn main() -> i32 {
+  let w : Wide = Wide {
+    n : 9223372036854775807i64
+  };
+  print(w.some_of().unwrap());
+  print!(" ");
+  show(w.none_of().is_none());
+  print!(" ");
+
+  let f : Flag = Flag {
+    b : true
+  };
+  show(f.some_of().unwrap());
+  print!(" ");
+  show(f.none_of().is_none());
+  return 0;
+}
+
+// EXPECT: 9223372036854775807 1 1 1
