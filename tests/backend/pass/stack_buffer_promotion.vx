@@ -1,0 +1,83 @@
+//===- stack_buffer_promotion.vx - Vx Compiler -------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A small buffer that does not escape its function goes on the stack instead of into a `malloc`
+// nothing frees (#641). The checks are on `--action emit-llvm`, because the passes that do this
+// run only on the paths that generate code -- `--action emit-mlir` still shows the memrefs.
+//
+// `small` is the case the issue was filed about: sixteen bytes, never leaving the frame.
+// The other three are the limits, and each is here because it must NOT be promoted.
+//
+// REQUIRES: flat-codegen
+// The convention is not path-specific -- the passes run on whatever memrefs reach them -- but
+// the oracle allocates a tensor local dynamically shaped (the observation in #634), and a
+// `memref<?x?xf32>` has no size to check against the limit and no shape to promote. It keeps
+// three `malloc`s where the flat path keeps two. That is the oracle's allocation shape, not a
+// difference in this rule.
+//
+// RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s
+
+// Exactly two `malloc` calls survive in the whole module, and they are `big`'s and
+// `passes_it_on`'s. The buffers in `small`, in `reduced`, and in `main`'s loop are all on the
+// stack; if any of them regressed, the count goes up.
+// CHECK-COUNT-2: llvm.call @malloc
+// CHECK-NOT: llvm.call @malloc
+
+// small() = 1 + 4, the loop's last read = 1, passes_it_on() = 4, reduced() = sum([1,2,3,4]).
+// EXPECT: 5 1 4 10
+
+fn small() -> i32 {
+  let l = [ 1, 2, 3, 4 ];
+  return l[0] + l[3];
+}
+
+// A megabyte is not stack storage. Over the 4 KiB limit, so it keeps its `malloc`.
+fn big() -> f32 {
+  let t = Tensor<f32, [ 512, 512 ]>::uninit();
+  t[0][0] = 1.0;
+  return t[0][0];
+}
+
+// Handed to a callee, which the promotion treats as an escape: also still a `malloc`.
+fn takes(t : Tensor<i32, [ 4 ]>) -> i32 {
+  return t[0];
+}
+
+fn passes_it_on() -> i32 {
+  let l = [ 4, 3, 2, 1 ];
+  return takes(l);
+}
+
+// A promoted buffer is read by a `vector.load` a row at a time, which assumes the alignment
+// `malloc` used to guarantee. Without that declared this aborts rather than answering.
+fn reduced() -> f32 {
+  let mut q = Tensor<f32>([ 2, 4 ]);
+  q[0][0] = 1.0;
+  q[0][1] = 2.0;
+  q[0][2] = 3.0;
+  q[0][3] = 4.0;
+  return sum(q[0]);
+}
+
+fn main() -> i32 {
+  print(small());
+  print!(" ");
+  // A million iterations, allocating in the loop body. A promoted buffer that stayed in the
+  // loop is a stack adjustment nothing undoes, and this is the shape that exhausts the stack
+  // and dies -- so this has to run, not just compile.
+  let mut seen = 0;
+  for i in 0..1000000 {
+    let l = [ 1, 2, 3, 4 ];
+    seen = l[0];
+  }
+  print(seen);
+  print!(" ");
+  print(passes_it_on());
+  print!(" ");
+  print(reduced());
+  return 0;
+}
