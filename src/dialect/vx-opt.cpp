@@ -35,10 +35,11 @@ int run_vx_opt(int argc, char **argv) {
 }
 
 void registerVxPassesC() {
-  // The compiler's own pass registry, not `vx-opt`'s. It held only the Vx passes, so a pipeline
-  // naming an upstream pass -- `promote-buffers-to-stack`, say -- had nothing to resolve it to.
-  // Register the upstream passes here too, exactly as `run_vx_opt` does, so the pipelines in
-  // driver.rs and codegen/mod.rs can name any of them.
+  // The compiler's own pass registry, not `vx-opt`'s. It held only the Vx
+  // passes, so a pipeline naming an upstream pass --
+  // `promote-buffers-to-stack`, say -- had nothing to resolve it to. Register
+  // the upstream passes here too, exactly as `run_vx_opt` does, so the
+  // pipelines in driver.rs and codegen/mod.rs can name any of them.
   mlir::registerAllPasses();
   mlir::vx::registerVxPasses();
 }
