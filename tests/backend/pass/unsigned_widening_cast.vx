@@ -1,0 +1,44 @@
+//===- unsigned_widening_cast.vx - Vx Compiler --------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Widening an unsigned number with `as` brings in zeroes, not copies of its top bit.
+//
+// An MLIR integer carries no sign, so the compiler chose sign extension for every
+// widening. `200u8 as u64` came out as 200 with 56 one-bits in front of it.
+//
+// Every unsigned value here has its top bit set, which is the only case where the two
+// extensions differ. The signed widenings are asked too, so a fix that just swapped them
+// would be caught: `-1i8 as i64` has to stay -1.
+//
+// The results are read as `i64` rather than printed as `u64`, because a large `u64` still
+// prints as a negative number on this path (Vx#824) and the point here is the value.
+fn main() -> i32 {
+  let byte : u8 = 200u8;
+  print(byte as i64);
+  print!(" ");
+  let half : u16 = 65535u16;
+  print(half as i64);
+  print!(" ");
+  let word : u32 = 4294967295u32;
+  print(word as i64);
+  print!(" ");
+
+  // Signed sources keep sign extension.
+  let neg_byte : i8 = -1i8;
+  print(neg_byte as i64);
+  print!(" ");
+  let neg_word : i32 = -2000000000;
+  print(neg_word as i64);
+  print!(" ");
+
+  // Narrowing is unaffected by the sign.
+  let big : u64 = 511u64;
+  print(big as u8 as i64);
+  return 0;
+}
+
+// EXPECT: 200 65535 4294967295 -1 -2000000000 255
