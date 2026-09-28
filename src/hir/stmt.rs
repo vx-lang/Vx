@@ -974,6 +974,43 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// `v as to`, with the answer the emitted code gives: an integer wraps to the target
+    /// width. No value when the answer does not fit the evaluator's `i64`, or for a float
+    /// outside the target's range, which the emitted code leaves undefined.
+    fn cast_value(value: Value, to: &ElementType) -> Option<Value> {
+        if to.is_float() {
+            let x = value.as_f64()?;
+            return Some(Value::Number(if *to == ElementType::F32 {
+                x as f32 as f64
+            } else {
+                x
+            }));
+        }
+        let bits = to.bits().filter(|b| *b <= 64 && *to != ElementType::Bool)?;
+        let modulus = 1i128 << bits;
+        let whole = match value {
+            Value::Int(i) => i as i128,
+            Value::Number(n) if n.is_finite() => {
+                let t = n.trunc() as i128;
+                let (lo, hi) = if to.is_signed_int() {
+                    (-(modulus / 2), modulus / 2 - 1)
+                } else {
+                    (0, modulus - 1)
+                };
+                if t < lo || t > hi {
+                    return None;
+                }
+                t
+            }
+            _ => return None,
+        };
+        let mut wrapped = whole.rem_euclid(modulus);
+        if to.is_signed_int() && wrapped >= modulus / 2 {
+            wrapped -= modulus;
+        }
+        i64::try_from(wrapped).ok().map(Value::Int)
+    }
+
     pub(crate) fn eval_expr(
         &self,
         expr: &Expr,
@@ -1129,6 +1166,37 @@ impl<'a> TypeChecker<'a> {
                 } else {
                     None
                 }
+            }
+            // No value for the one negation that overflows, as for the other operators.
+            Expr::UnaryOp(UnaryOpExpr {
+                op: UnaryOp::Neg,
+                expr: inner,
+                span: _,
+            }) => match self.eval_expr(inner, env)? {
+                Value::Int(i) => i.checked_neg().map(Value::Int),
+                Value::Number(n) => Some(Value::Number(-n)),
+                _ => None,
+            },
+            Expr::AsCast(AsCastExpr {
+                expr: inner,
+                target_ty: Type::Scalar(to),
+                ..
+            }) => Self::cast_value(self.eval_expr(inner, env)?, to),
+            // `unsafe { .. }` as a value. It runs on a copy, so a write to a variable declared
+            // outside it would be lost; such a block is not run rather than run wrongly.
+            Expr::UnsafeBlock(UnsafeBlockExpr {
+                stmts,
+                ret,
+                span: _,
+            }) => {
+                let mut local_env = env.clone();
+                if !matches!(self.eval_block(stmts, &mut local_env), EvalFlow::Normal)
+                    || env.iter().any(|(k, v)| local_env.get(k) != Some(v))
+                {
+                    self.consteval.unsupported_stmt.set(true);
+                    return None;
+                }
+                self.eval_expr(ret.as_deref()?, &local_env)
             }
             // `[ a, b, c ]`. Every element has to be known, or the whole array is unknown:
             // a half-built array would let a later index read a value that was never there.
@@ -1807,6 +1875,31 @@ impl<'a> TypeChecker<'a> {
                 } else {
                     EvalFlow::Normal
                 }
+            }
+            // `unsafe { .. }` as a statement runs in place, like an `if` statement, so its
+            // writes stay and a `return` inside it leaves the function.
+            Statement::ExprStmt(ExprStmtStmt {
+                expr:
+                    Expr::UnsafeBlock(UnsafeBlockExpr {
+                        stmts,
+                        ret,
+                        span: _,
+                    }),
+                has_semi: _,
+                span: _,
+            }) => {
+                let flow = self.eval_block(stmts, env);
+                if let (EvalFlow::Normal, Some(ret)) = (&flow, ret) {
+                    return self.eval_statement(
+                        &Statement::ExprStmt(ExprStmtStmt {
+                            expr: (**ret).clone(),
+                            has_semi: true,
+                            span: ret.span(),
+                        }),
+                        env,
+                    );
+                }
+                flow
             }
             // Anything else: not run. Say so, so the call this body belongs to gives no
             // value rather than a half-executed one.

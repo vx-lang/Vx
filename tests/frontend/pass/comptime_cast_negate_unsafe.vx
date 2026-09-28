@@ -1,0 +1,86 @@
+//===- comptime_cast_negate_unsafe.vx - Vx Compiler ----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `as`, unary `-`, `unsafe { }` and a method on a number, worked out while compiling.
+// Each value is its own `comptime` block, so one the evaluator cannot work out is an error
+// rather than an `assert` quietly left to run time. A cast wraps as the emitted code does.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s
+// CHECK: u8_300=44; i8_200=-56; u32_minus_one=4294967295; i32_2pow31=-2147483648;
+// CHECK-SAME: f_to_i=3; neg_f_to_i=-3; neg=-5; unsafe_value=8; unsafe_return=0; unsafe_through=4;
+// CHECK-SAME: method=5;
+import core::num;
+
+fn clamp_at_zero(v : i64) -> i64 {
+  unsafe { if v < 0i64 { return 0i64; } }
+  return v;
+}
+
+fn show(name : *const i8, v : i64) -> i32 {
+  print!(name);
+  print!("=");
+  print(v);
+  print!("; ");
+  return 0;
+}
+
+fn main() -> i32 {
+  let a = comptime {
+    let big : i32 = 300;
+    (big as u8) as i64
+  };
+  show("u8_300", a);
+  let b = comptime {
+    let two_hundred : i32 = 200;
+    (two_hundred as i8) as i64
+  };
+  show("i8_200", b);
+  let c = comptime {
+    let minus_one : i32 = -1;
+    (minus_one as u32) as i64
+  };
+  show("u32_minus_one", c);
+  let d = comptime {
+    let past_i32 : i64 = 2147483648i64;
+    (past_i32 as i32) as i64
+  };
+  show("i32_2pow31", d);
+  let e = comptime {
+    let pos : f64 = 3.9;
+    pos as i64
+  };
+  show("f_to_i", e);
+  let f = comptime {
+    let neg : f64 = -3.9;
+    neg as i64
+  };
+  show("neg_f_to_i", f);
+  let g = comptime {
+    let five : i64 = 5i64;
+    -five
+  };
+  show("neg", g);
+  let h = comptime {
+    let five : i64 = 5i64;
+    unsafe { five + 3i64 }
+  };
+  show("unsafe_value", h);
+  let i = comptime {
+    clamp_at_zero(-3i64)
+  };
+  show("unsafe_return", i);
+  let j = comptime {
+    clamp_at_zero(4i64)
+  };
+  show("unsafe_through", j);
+  let k = comptime {
+    let n : i64 = 12345i64;
+    n.decimal_len()
+  };
+  show("method", k);
+  return 0;
+}
