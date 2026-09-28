@@ -31,14 +31,24 @@ def Vx_SpawnOp : Vx_Op<"spawn"> {
 // A transfer operation to move memory/execution context between topologies
 // It reads the source and allocates the copy. The general write is the copy
 // into the target's memory, and keeps an unused transfer from being deleted.
-// The copy is freed by the transfer lowering, so the buffer-deallocation
-// analysis must not see this op until that free moves out of the lowering.
+// The copy is freed by a `vx.free` that convert-vx-to-standard places after
+// its last use, so the buffer-deallocation analysis must not free it too.
 def Vx_TransferOp : Vx_Op<"transfer", [MemoryEffects<[MemWrite]>]> {
     let summary = "Transfers a tensor to a target topology.";
     let arguments = (ins Arg<AnyType, "the value to copy", [MemRead]>:$src,
                          I32Attr:$target_topology);
     let results = (outs Res<AnyType, "the copy on the target topology",
                             [MemAlloc]>:$dst);
+}
+
+// Frees the buffer a transfer allocated, after its last use. On the host it
+// becomes `memref.dealloc`; on a device it becomes `vx_plugin_free`, which must
+// run after the work already given to that device.
+def Vx_FreeOp : Vx_Op<"free"> {
+    let summary = "Frees the buffer a vx.transfer allocated.";
+    let arguments = (ins Arg<AnyType, "the buffer to free", [MemFree]>:$buffer,
+                         I32Attr:$topology);
+    let assemblyFormat = "$buffer attr-dict `:` type($buffer)";
 }
 
 // A yield operation to terminate vx.spawn regions
