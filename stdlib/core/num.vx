@@ -765,8 +765,9 @@ stamp_decimal_unsigned!(u16 , u32);
 
 /// The decimal writer for a signed width: a `-`, then the magnitude as `$unsigned`.
 ///
-/// `$signed` is the width the arithmetic happens in. The magnitude is `-(x + 1) + 1`, so the
-/// smallest value, whose negation does not fit, never overflows.
+/// `$signed` is the width the arithmetic happens in. The smallest value's magnitude does not
+/// fit it, so a negative number has its last digit split off first: `-(x / 10)` always fits.
+/// That also keeps the compile-time evaluator, whose integers are `i64`, able to run it.
 macro_rules stamp_decimal_signed {
   ($t : ident , $signed : ident , $unsigned : ident) => {
     impl $t {
@@ -774,7 +775,11 @@ macro_rules stamp_decimal_signed {
       fn decimal_len(self : $t) -> i64 {
         let x = self as $signed;
         if x < (0 as $signed) {
-          return 1i64 + ((-(x + (1 as $signed))) as $unsigned + (1 as $unsigned)).decimal_len();
+          let head = (-(x / (10 as $signed))) as $unsigned;
+          if head == (0 as $unsigned) {
+            return 2i64;
+          }
+          return 2i64 + head.decimal_len();
         }
         return (x as $unsigned).decimal_len();
       }
@@ -784,10 +789,17 @@ macro_rules stamp_decimal_signed {
       unsafe fn write_decimal(self : $t, buf : *mut i8, at : i64) -> i64 {
         let x = self as $signed;
         if x < (0 as $signed) {
-          let magnitude = (-(x + (1 as $signed))) as $unsigned + (1 as $unsigned);
+          let head = (-(x / (10 as $signed))) as $unsigned;
+          let last = (48 as $signed - x % (10 as $signed)) as i8;
           unsafe {
             buf[at] = 45i8;
-            return 1i64 + magnitude.write_decimal(buf, at + 1i64);
+            if head == (0 as $unsigned) {
+              buf[at + 1i64] = last;
+              return 2i64;
+            }
+            let n = head.write_decimal(buf, at + 1i64);
+            buf[at + 1i64 + n] = last;
+            return 2i64 + n;
           }
         }
         return unsafe { (x as $unsigned).write_decimal(buf, at) };

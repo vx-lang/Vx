@@ -11,21 +11,21 @@
 
 fn main() -> i32 {
   // -1 as a u64 is 2^64 - 1, which the evaluator's i64 cannot hold.
-  // CHECK: Error[E3033] at 15:{{.*}}cannot be evaluated
+  // CHECK: Error[E3033] at [[@LINE+1]]:{{.*}}cannot be evaluated
   let a = comptime {
     let minus_one : i64 = -1i64;
     minus_one as u64
   };
 
   // 1e30 is past the top of an i64, where the emitted code's answer is undefined.
-  // CHECK: Error[E3033] at 22:{{.*}}cannot be evaluated
+  // CHECK: Error[E3033] at [[@LINE+1]]:{{.*}}cannot be evaluated
   let b = comptime {
     let huge : f64 = 1000000000000000000000000000000.0;
     huge as i64
   };
 
   // The `unsafe` block runs on a copy of what it can see, so its write to `x` would be lost.
-  // CHECK: Error[E3033] at 29:{{.*}}cannot be evaluated
+  // CHECK: Error[E3033] at [[@LINE+1]]:{{.*}}cannot be evaluated
   let c = comptime {
     let mut x : i64 = 1i64;
     let y = unsafe { x = 2i64; x };

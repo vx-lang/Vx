@@ -36,6 +36,12 @@ pub enum Value {
     /// A fixed-size array of scalars, known at compile time. The length is set when the
     /// array is built and never changes, so an index past the end is a compile error.
     Array(Vec<Value>),
+    /// A pointer into a byte buffer on the evaluator's heap, which only exists while a
+    /// `comptime` fold is running. Every copy of the pointer sees the same bytes.
+    Ptr {
+        block: usize,
+        offset: i64,
+    },
 }
 
 impl Value {

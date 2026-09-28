@@ -65,6 +65,20 @@ impl<'a> TypeChecker<'a> {
             );
             return ComptimeFold::Refused;
         }
+        self.begin_fold();
+        let folded = self.fold_comptime_block_body(stmts, ret, before, block_span);
+        self.end_fold();
+        folded
+    }
+
+    /// The part of `fold_comptime_block` that runs inside the fold, while the heap is live.
+    fn fold_comptime_block_body(
+        &mut self,
+        stmts: &[Statement],
+        ret: Option<&Expr>,
+        before: &HashMap<crate::symbol::Symbol, Value>,
+        block_span: Span,
+    ) -> ComptimeFold {
         let mut env = before.clone();
         let outer_unsupported = self.consteval.unsupported_stmt.replace(false);
         let flow = self.eval_block(stmts, &mut env);
@@ -99,7 +113,7 @@ impl<'a> TypeChecker<'a> {
             self.report_comptime_block_failure("its value cannot be worked out", span);
             return ComptimeFold::Refused;
         };
-        match Self::value_to_expr(&value, span) {
+        match self.constant_expr(&value, span) {
             Some(expr) => ComptimeFold::Folded(Box::new(expr)),
             None => {
                 self.report_comptime_block_failure(
@@ -189,6 +203,18 @@ impl<'a> TypeChecker<'a> {
             return false;
         };
         matches!(&*closure.body, Expr::ComptimeBlock(_))
+    }
+
+    /// Write a computed value back as a constant expression, a pointer included: its text
+    /// becomes a string literal. Call before the fold ends, while the heap still holds it.
+    pub(crate) fn constant_expr(&self, value: &Value, span: &Span) -> Option<Expr> {
+        if let Value::Ptr { .. } = value {
+            return Some(Expr::StringLiteral(StringLiteralExpr {
+                value: self.heap_c_str(value)?.into(),
+                span: *span,
+            }));
+        }
+        Self::value_to_expr(value, span)
     }
 
     /// Write a computed value back as a constant expression.

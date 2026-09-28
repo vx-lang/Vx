@@ -67,7 +67,18 @@ pub struct ConstEvalState {
     /// time walking a trip count that belongs to the program. What still happens everywhere
     /// is the settling up: see `settle_loop_consteval`.
     pub comptime_depth: u32,
+    /// The byte buffers a `comptime` fold has made, indexed by `Value::Ptr::block`. Emptied
+    /// when the outermost fold ends: its result has been written out as a constant by then.
+    pub heap: std::cell::RefCell<Vec<Vec<u8>>>,
+    /// How many bytes `heap` holds, kept as it grows rather than summed on every allocation.
+    pub heap_bytes: std::cell::Cell<usize>,
+    /// How many folds are running. A string literal is a heap pointer only inside one, so
+    /// run-time code never holds a pointer the evaluator could read stale bytes through.
+    pub folding: std::cell::Cell<u32>,
 }
+
+/// How many bytes one `comptime` fold may put on the evaluator's heap.
+pub const MAX_HEAP_BYTES: usize = 1 << 20;
 
 /// How many nested calls compile-time evaluation will follow. A recursion that does not
 /// terminate used to take the compiler's stack down with it; this turns that into a
@@ -95,6 +106,9 @@ impl Default for ConstEvalState {
             steps_exceeded: std::cell::Cell::new(false),
             comptime_depth: 0,
             closure_body_depth: 0,
+            heap: std::cell::RefCell::new(Vec::new()),
+            heap_bytes: std::cell::Cell::new(0),
+            folding: std::cell::Cell::new(0),
         }
     }
 }

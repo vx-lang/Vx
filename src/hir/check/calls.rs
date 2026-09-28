@@ -922,9 +922,11 @@ impl<'a> TypeChecker<'a> {
             return;
         }
         let env = self.consteval_snapshot();
+        self.begin_fold();
         let folded = self
             .eval_expr(expr, &env)
-            .and_then(|value| Self::value_to_expr(&value, span));
+            .and_then(|value| self.constant_expr(&value, span));
+        self.end_fold();
         match folded {
             Some(constant) => *expr = constant,
             None => {
