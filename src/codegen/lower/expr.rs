@@ -1509,6 +1509,14 @@ impl<'c> LowerToMelior<'c> for StructInitExpr {
                     .add_results(&[field_ty])
                     .build()?;
                 field_val = block.append_operation(cast_op).result(0)?.into();
+            } else if expr_ty != field_ty {
+                // A closure literal given to a `ClosureK` field: build the `{env, func}` pair,
+                // as a function argument of that type already gets.
+                if let Some(adapted) =
+                    gen.adapt_closure_to_nominal(&block, field_val, expr_ty, field_ty)?
+                {
+                    field_val = adapted;
+                }
             }
 
             let pos_attr = melior::ir::attribute::DenseI64ArrayAttribute::new(

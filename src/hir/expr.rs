@@ -506,6 +506,25 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
+        // A closure literal checks to `Closure_N`, a struct with no call signature in its
+        // type. The signature is recorded when the literal is checked, so compare that
+        // against `ClosureK<Args.., Ret>`, as inference already does. Without this a
+        // literal was accepted as a call argument but refused as a struct field's value.
+        if let (Type::GenericInstance(inner, args), Type::Struct(cn, _)) = (target, source) {
+            if cn.starts_with("Closure_")
+                && matches!(&**inner, Type::Struct(n, _) if n.starts_with("Closure"))
+            {
+                if let Some((params, ret)) = self.mono.closure_signatures.get(cn) {
+                    return args.len() == params.len() + 1
+                        && args
+                            .iter()
+                            .zip(params.iter())
+                            .all(|(a, p)| self.is_assignable(a, p))
+                        && self.is_assignable(&args[args.len() - 1], ret);
+                }
+            }
+        }
+
         // Allow Closure to map to ClosureN struct (if tests use it)
         if let Type::GenericInstance(inner, args) = target {
             if let Type::Struct(name, _) = &**inner {
