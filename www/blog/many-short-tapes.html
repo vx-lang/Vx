@@ -3,18 +3,18 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Many short tapes</title>
+<title>Nonlinear Turing tape</title>
 <meta name="author" content="Aditya Kumar">
 <meta name="description" content="Mainstream languages define themselves against an abstract machine with one unbounded memory, which is Turing's tape with a pointer size on it. Real machines have many memories, each finite, each readable by some processors and not others. Vx describes the machine as a finite graph of memories and checks programs against it.">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 
-<meta property="og:title" content="Many short tapes">
+<meta property="og:title" content="Nonlinear Turing tape">
 <meta property="og:description" content="Languages assume one unbounded memory. Machines have many bounded ones. Vx checks programs against the machine they will run on.">
 <meta property="og:type" content="article">
 <meta property="article:published_time" content="2026-09-23T18:00:00Z">
 <meta property="og:url" content="https://vxlang.org/blog/many-short-tapes.html">
 <meta property="og:image" content="https://vxlang.org/cards/blog-many-short-tapes.png">
-<meta property="og:image:alt" content="Many short tapes: real memories are bounded, disaggregated, and not one linear address space.">
+<meta property="og:image:alt" content="Nonlinear Turing tape: real memories are bounded, disaggregated, and not one linear address space.">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:image" content="https://vxlang.org/cards/blog-many-short-tapes.png">
 
@@ -40,7 +40,7 @@
 
 <article class="post">
 
-<h1>Many short tapes</h1>
+<h1>Nonlinear Turing tape</h1>
 <p class="post-meta">Aditya Kumar &middot; 23 September 2026</p>
 
 <blockquote class="tldr"><strong>TL;DR</strong> — C, C++, Rust, Java and Python each define
@@ -49,9 +49,8 @@ kind of integer, large enough for whatever is asked of it. That is Turing's tape
 run on have many memories, each with a size, each reachable from some processors and not others.
 Vx takes a description of those memories as input and checks programs against it.</blockquote>
 
-<p class="lede">Turing needed a tape that never runs out, because his question was what can be
-computed at all. Ours is what can be computed on <em>this</em> machine, and the answer depends on
-sizes.</p>
+<p class="lede">Turing tape was designed to model a simple computing machine. Vx models what can
+be computed on a specific machine; the answer depends on sizes and topology.</p>
 
 <h2>The tape</h2>
 
