@@ -1,0 +1,72 @@
+//===- reference_that_stays_valid_may_leave.vx - Vx Compiler ------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// References that the escape check (E4005) must still allow out of a function, each read
+// after another call has reused the stack so a dangling one would show.
+//
+// `from_parameter` returns, inside a struct, a reference it was given: the caller owns
+// what it points at. `from_heap` returns a slice of a `Vec` it made: the slice points at
+// heap memory that nothing frees, so it outlives the `Vec` variable. That second one is
+// safe only for as long as a `Vec` is never freed when its scope ends (#495).
+//
+// `kept_past_its_block` keeps a reference to an inner block's variable after the block.
+// Every local has a slot for the whole call, so the value is still there.
+import std::vec;
+
+struct View {
+  r : &i32,
+}
+
+struct Slice {
+  s : &mut f32,
+}
+
+fn from_parameter(p : &i32) -> View {
+  return View {
+    r : p
+  };
+}
+
+fn from_heap(n : i32) -> Slice {
+  let mut v : Vec<f32> = Vec<f32>::with_capacity(n);
+  v.push(2.5);
+  return Slice {
+    s : v.as_mut_slice()
+  };
+}
+
+fn kept_past_its_block(k : i32) -> i32 {
+  let seed : i32 = 1;
+  let mut r : &i32 = &seed;
+  if k > 0 {
+    let inner : i32 = k + 4;
+    r = &inner;
+  }
+  return *r;
+}
+
+fn reuse_the_stack(a : i32, b : i32, c : i32, d : i32) -> i32 {
+  let e : i32 = a * 7 + b * 11;
+  let g : i32 = c * 13 + d * 17;
+  return e + g;
+}
+
+fn main() -> i32 {
+  let owned : i32 = 14;
+  let v : View = from_parameter(&owned);
+  let s : Slice = from_heap(4);
+  print(reuse_the_stack(100, 200, 300, 400));
+  print!(" ");
+  print(*v.r);
+  print!(" ");
+  print(*s.s);
+  print!(" ");
+  print(kept_past_its_block(10));
+  return 0;
+}
+
+// EXPECT: 13600 14 2.5 14

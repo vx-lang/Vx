@@ -843,6 +843,12 @@ impl<'a> TypeChecker<'a> {
             // *through* a caller-owned reference parameter (e.g. `&m.slot` for `m: &Map`).
             // Borrowing a by-value parameter, a local, or a temporary all yield stack-local refs.
             Expr::Borrow(b) => {
+                // `&mut *p` borrows whatever `p` points at, not a temporary: it points
+                // wherever `p` does. Through a raw pointer that is nowhere the checker
+                // tracks, which is the pointer's design.
+                if let Expr::Dereference(d) = &*b.expr {
+                    return self.ref_provenance_of(&d.expr);
+                }
                 if let Some((base, _path)) = Self::extract_base_and_path(&b.expr) {
                     match self.borrow.current_params.get(base.as_str()) {
                         Some(pty) if Self::is_ref_type(pty) => Some(RefProvenance::External),
@@ -876,6 +882,18 @@ impl<'a> TypeChecker<'a> {
                 // `|| &x`) or a body local is an escape — keep the env so its `Local` provenance is
                 // seen. The closure's own return summary tells them apart.
                 let name = fc.name.as_ref();
+                // A callee whose every `return` is `&*p` or `&mut *p` of a raw pointer hands
+                // back raw memory -- a `Vec`'s heap, through `as_mut_slice` -- which no
+                // argument's lifetime constrains, since a raw pointer has none. Without this
+                // the `&mut tmp` the checker passes as a method's receiver made the result
+                // look like a borrow of the temporary.
+                //
+                // Safe today only because nothing frees that memory early. Once a `Vec` is
+                // dropped at the end of its scope (#495), a slice that outlives it is a
+                // use-after-free, and this rule has to go.
+                if self.callee_returns_through_raw_pointer(name) {
+                    return Some(RefProvenance::External);
+                }
                 let is_closure_call =
                     name.starts_with("Closure_") && name.ends_with("_call") && !fc.args.is_empty();
                 let skip_env = is_closure_call
@@ -906,8 +924,293 @@ impl<'a> TypeChecker<'a> {
                 provs.extend(mc.args.iter());
                 self.join_arg_provenance_exprs(&provs)
             }
+            // A value that holds references points wherever they point. A struct literal
+            // is local if any field value is; the same for an enum payload. Without this a
+            // `&local` returned inside a `View { r : &local }` was never looked at (#860).
+            Expr::StructInit(s) => {
+                // A closure literal has become a struct of the variables it uses. Turning it
+                // into a `ClosureK` keeps a pointer to a copy in this frame, so one that uses
+                // anything points here. One that uses nothing points nowhere.
+                if s.name.starts_with("Closure_") {
+                    return if s.fields.is_empty() {
+                        None
+                    } else {
+                        Some(RefProvenance::Local)
+                    };
+                }
+                self.join_value_provenance(s.fields.iter().map(|(_, e)| e))
+            }
+            Expr::EnumVariant(v) => self.join_value_provenance(v.payload.iter().flatten()),
+            // Reading a field or an element gives a piece of the value read from.
+            Expr::MemberAccess(m) => self.ref_provenance_of(&m.base),
+            Expr::IndexAccess(i) => self.ref_provenance_of(&i.base),
+            Expr::AsCast(c) => self.ref_provenance_of(&c.expr),
+            // `*p` copies out what `p` points at, so it points wherever that does.
+            Expr::Dereference(d) => self.ref_provenance_of(&d.expr),
+            // A branch used as a value: the join of what each branch can produce.
+            Expr::If(i) => {
+                let mut parts = self.block_value_provenance(&i.then_block);
+                if let Some(eb) = &i.else_block {
+                    parts.push(self.block_value_provenance_joined(eb));
+                }
+                Self::join_provenances(parts)
+            }
+            Expr::Match(m) => Self::join_provenances(
+                m.arms
+                    .iter()
+                    .map(|a| self.block_value_provenance_joined(&a.body))
+                    .collect(),
+            ),
+            Expr::UnsafeBlock(u) => {
+                let mut parts = self.block_value_provenance(&u.stmts);
+                if let Some(r) = &u.ret {
+                    parts.push(self.ref_provenance_of(r));
+                }
+                Self::join_provenances(parts)
+            }
             _ => None,
         }
+    }
+
+    /// Does every `return` in `name`'s body reborrow through a raw pointer (`&*p`,
+    /// `&mut *p`, with `p` a raw-pointer parameter or local)? Then its result points at raw
+    /// memory and not at any argument. Unknown callees answer no.
+    fn callee_returns_through_raw_pointer(&self, name: &str) -> bool {
+        let Some((func, _)) = self
+            .mono
+            .functions
+            .iter()
+            .find(|f| f.0.name.as_ref() == name)
+        else {
+            return false;
+        };
+        let mut raw: std::collections::HashSet<String> = func
+            .params
+            .iter()
+            .filter(|(_, t)| matches!(t, Type::Pointer(..)))
+            .map(|(n, _)| n.to_string())
+            .collect();
+        let mut returns: Vec<&Expr> = Vec::new();
+        Self::collect_returns_and_raw_locals(&func.body, &mut raw, &mut returns);
+        !returns.is_empty()
+            && returns
+                .iter()
+                .all(|e| Self::is_reborrow_of_raw_pointer(e, &raw))
+    }
+
+    fn collect_returns_and_raw_locals<'e>(
+        stmts: &'e [Statement],
+        raw: &mut std::collections::HashSet<String>,
+        returns: &mut Vec<&'e Expr>,
+    ) {
+        for s in stmts {
+            match s {
+                Statement::LetDecl(l) => {
+                    if matches!(l.ty_ann, Some(Type::Pointer(..))) {
+                        raw.insert(l.name.to_string());
+                    }
+                }
+                Statement::Return(r) => {
+                    if let Some(e) = &r.expr {
+                        returns.push(e);
+                    }
+                }
+                Statement::Loop(l) => Self::collect_returns_and_raw_locals(&l.body, raw, returns),
+                Statement::ForLoop(f) => {
+                    Self::collect_returns_and_raw_locals(&f.body, raw, returns)
+                }
+                Statement::ExprStmt(e) => match &e.expr {
+                    Expr::If(i) => {
+                        Self::collect_returns_and_raw_locals(&i.then_block, raw, returns);
+                        if let Some(eb) = &i.else_block {
+                            Self::collect_returns_and_raw_locals(eb, raw, returns);
+                        }
+                    }
+                    Expr::Match(m) => {
+                        for arm in &m.arms {
+                            Self::collect_returns_and_raw_locals(&arm.body, raw, returns);
+                        }
+                    }
+                    _ => {}
+                },
+                _ => {}
+            }
+        }
+    }
+
+    fn is_reborrow_of_raw_pointer(expr: &Expr, raw: &std::collections::HashSet<String>) -> bool {
+        match expr {
+            Expr::UnsafeBlock(u) => match (&u.ret, u.stmts.last()) {
+                (Some(r), _) => Self::is_reborrow_of_raw_pointer(r, raw),
+                (None, Some(Statement::ExprStmt(e))) if !e.has_semi => {
+                    Self::is_reborrow_of_raw_pointer(&e.expr, raw)
+                }
+                _ => false,
+            },
+            Expr::Borrow(b) => match &*b.expr {
+                Expr::Dereference(d) => {
+                    matches!(&*d.expr, Expr::Identifier(id) if raw.contains(id.name.as_ref()))
+                }
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
+    /// Join the provenance of the parts of one value: local if any part is local, external
+    /// if any part is known and none is local, nothing if nothing is known. Unlike a call's
+    /// arguments, a value with no known part is not assumed to point anywhere.
+    fn join_value_provenance<'e>(
+        &self,
+        parts: impl Iterator<Item = &'e Expr>,
+    ) -> Option<crate::hir::env::RefProvenance> {
+        Self::join_provenances(parts.map(|e| self.ref_provenance_of(e)).collect())
+    }
+
+    fn join_provenances(
+        parts: Vec<Option<crate::hir::env::RefProvenance>>,
+    ) -> Option<crate::hir::env::RefProvenance> {
+        use crate::hir::env::RefProvenance;
+        if parts.contains(&Some(RefProvenance::Local)) {
+            Some(RefProvenance::Local)
+        } else if parts.iter().any(|p| p.is_some()) {
+            Some(RefProvenance::External)
+        } else {
+            None
+        }
+    }
+
+    /// The provenance of each value a block can end with: a `return`, or a final expression
+    /// with no `;`. Nested branches are looked into through `ref_provenance_of`.
+    fn block_value_provenance(
+        &self,
+        stmts: &[Statement],
+    ) -> Vec<Option<crate::hir::env::RefProvenance>> {
+        stmts
+            .iter()
+            .filter_map(|s| match s {
+                Statement::Return(r) => r.expr.as_ref().map(|e| self.ref_provenance_of(e)),
+                Statement::ExprStmt(e) if !e.has_semi => Some(self.ref_provenance_of(&e.expr)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn block_value_provenance_joined(
+        &self,
+        stmts: &[Statement],
+    ) -> Option<crate::hir::env::RefProvenance> {
+        Self::join_provenances(self.block_value_provenance(stmts))
+    }
+
+    /// Could a value of type `ty` hold a reference into a stack frame? This is the gate for
+    /// the escape checks: a returned `View { r : &i32 }` needs looking at, a returned `i32`
+    /// does not.
+    ///
+    /// A raw pointer is left out on purpose -- it has no lifetime, by design -- except the
+    /// one inside a `ClosureK`, which points at the frame that made the closure. A type this
+    /// cannot see into, such as a type parameter, is assumed to.
+    pub(crate) fn type_can_hold_reference(&self, ty: &Type) -> bool {
+        self.type_can_hold_reference_in(ty, &mut std::collections::HashSet::new())
+    }
+
+    fn type_can_hold_reference_in(
+        &self,
+        ty: &Type,
+        seen: &mut std::collections::HashSet<String>,
+    ) -> bool {
+        let is_closure_k = |name: &str| {
+            name.strip_prefix("Closure")
+                .and_then(|rest| rest.chars().next())
+                .is_some_and(|c| c.is_ascii_digit())
+        };
+        match ty {
+            Type::Borrow { .. } | Type::Ref(..) | Type::Closure(..) => true,
+            Type::Generic(..) | Type::Unknown => true,
+            Type::Struct(name, _) | Type::Enum(name, _) if is_closure_k(name) => true,
+            // The struct a closure literal became. Its fields are the variables it uses, by
+            // value, so it holds no reference yet -- but it is one pointer away from being a
+            // `ClosureK` that points at this frame, and is tracked as if it were.
+            Type::Struct(name, _) if name.starts_with("Closure_") => self
+                .mono
+                .generated_structs
+                .iter()
+                .any(|s| s.name == *name && !s.fields.is_empty()),
+            Type::Struct(name, _) | Type::Enum(name, _) => {
+                if !seen.insert(name.to_string()) {
+                    return false;
+                }
+                self.declared_part_types(name, &[])
+                    .iter()
+                    .any(|t| self.type_can_hold_reference_in(t, seen))
+            }
+            // `Option<Ordering>` is asked about `Ordering`, not about the declared `T`,
+            // which as a bare parameter would count as "could hold one".
+            Type::GenericInstance(base, args) => match &**base {
+                Type::Struct(name, _) | Type::Enum(name, _) if !is_closure_k(name) => {
+                    if !seen.insert(format!("{name}<{}>", args.len())) {
+                        return false;
+                    }
+                    self.declared_part_types(name, args)
+                        .iter()
+                        .any(|t| self.type_can_hold_reference_in(t, seen))
+                }
+                _ => {
+                    self.type_can_hold_reference_in(base, seen)
+                        || args
+                            .iter()
+                            .any(|a| self.type_can_hold_reference_in(a, seen))
+                }
+            },
+            // A raw pointer has no lifetime of its own, but what it points at may hold
+            // references: `Vec<&i32>` keeps them behind its `*mut T`.
+            Type::Pointer(inner, ..) | Type::Pinned(inner, _) | Type::Verified(inner) => {
+                self.type_can_hold_reference_in(inner, seen)
+            }
+            _ => false,
+        }
+    }
+
+    /// The field types of a struct, or the payload types of an enum, by base name, with the
+    /// declaration's type parameters replaced by `args` when given.
+    fn declared_part_types(&self, name: &crate::symbol::Symbol, args: &[Type]) -> Vec<Type> {
+        let base = name.split('<').next().unwrap_or(name);
+        let (generics, parts): (Vec<String>, Vec<Type>) =
+            if let Some(s) = self.env.structs.get(base) {
+                (
+                    s.generics.iter().map(|g| g.name().to_string()).collect(),
+                    s.fields.iter().map(|(_, t)| t.clone()).collect(),
+                )
+            } else if let Some(s) = self
+                .mono
+                .generated_structs
+                .iter()
+                .find(|s| s.name.as_ref() == base)
+            {
+                (
+                    s.generics.iter().map(|g| g.name().to_string()).collect(),
+                    s.fields.iter().map(|(_, t)| t.clone()).collect(),
+                )
+            } else if let Some(e) = self.env.enums.get(base) {
+                (
+                    e.generics.iter().map(|g| g.name().to_string()).collect(),
+                    e.variants
+                        .iter()
+                        .flat_map(|(_, p)| p.clone().unwrap_or_default())
+                        .collect(),
+                )
+            } else {
+                return Vec::new();
+            };
+        if args.is_empty() {
+            return parts;
+        }
+        let mapping: std::collections::HashMap<crate::symbol::Symbol, Type> = generics
+            .iter()
+            .zip(args.iter())
+            .map(|(g, a)| (g.as_str().into(), a.clone()))
+            .collect();
+        parts.iter().map(|t| t.substitute(&mapping)).collect()
     }
 
     pub(crate) fn join_arg_provenance(

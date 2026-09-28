@@ -9,7 +9,7 @@
 //
 // `fill` writes a closure that uses its parameter `k` into a struct the caller owns. The
 // caller keeps the struct after `fill` returns, and `k` does not survive that.
-// CHECK: Error[E4006] at 20:7: this stores a closure that uses a variable of this function through a reference
+// CHECK: Error[E4005] at 20:7: this stores a value that points into this function's stack frame through a reference
 import core::ops;
 
 struct Holder {

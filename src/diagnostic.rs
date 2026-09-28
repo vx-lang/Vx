@@ -333,12 +333,11 @@ pub enum DiagnosticCode {
     E4003,
     /// Cannot borrow (already mutably borrowed)
     E4004,
-    /// A returned reference escapes the function borrowing a function-local (dangling return)
+    /// A value that points into this function's stack frame would outlive the function: a
+    /// reference to a local, or a closure that uses one, returned (on its own or inside a
+    /// struct), stored through a reference, or passed to a call that could store it there.
+    /// What it points at is gone once the function returns.
     E4005,
-    /// A closure that uses a variable of the function that made it would outlive that
-    /// function: returned, stored through a reference, or passed to a call that could store it
-    /// there. The variable is gone once the function returns.
-    E4006,
 
     // --- Safety Errors (E5xxx) ---
     /// Unsafe function call outside unsafe block
