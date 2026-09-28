@@ -13,8 +13,8 @@
 // In `into_callers` the reference points at the caller's struct, which outlives the call,
 // so the call is refused. In `into_a_local_then_return` it points at a local, which is
 // fine until that local is returned.
-// CHECK-DAG: Error[E4006] at 30:3: this call is given a closure that uses a variable of this function, and a reference through `out`
-// CHECK-DAG: Error[E4006] at 39:3: this returns a closure that uses a variable
+// CHECK-DAG: Error[E4005] at 30:3: this call is given a value that points into this function's stack frame, and a reference through `out`
+// CHECK-DAG: Error[E4005] at 39:3: this returns a value that points into this function's stack frame
 import core::ops;
 
 struct Holder {

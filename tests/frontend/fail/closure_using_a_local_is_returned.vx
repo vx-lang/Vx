@@ -13,9 +13,9 @@
 //
 // Three ways of returning it, one per function: through a generic call that wraps it,
 // straight in a struct literal, and after passing through two variables.
-// CHECK-DAG: Error[E4006] at 32:3: this returns a closure that uses a variable
-// CHECK-DAG: Error[E4006] at 36:3: this returns a closure that uses a variable
-// CHECK-DAG: Error[E4006] at 46:3: this returns a closure that uses a variable
+// CHECK-DAG: Error[E4005] at 32:3: this returns a value that points into this function's stack frame
+// CHECK-DAG: Error[E4005] at 36:3: this returns a value that points into this function's stack frame
+// CHECK-DAG: Error[E4005] at 46:3: this returns a value that points into this function's stack frame
 import core::ops;
 
 struct Holder<T> {

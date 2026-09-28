@@ -166,7 +166,7 @@ impl<'a> TypeChecker<'a> {
             }
             Statement::Error(_) => {}
         }
-        self.check_closure_escape(stmt, return_type);
+        self.check_frame_escape(stmt);
     }
 
     /// Check a `let` binding: type the initializer, bind the name (annotation wins), record the
@@ -255,12 +255,16 @@ impl<'a> TypeChecker<'a> {
             ty
         };
 
-        // Record where a reference binding roots, so a later `return` of it can be
-        // checked for escape (#243). A binding whose provenance we can't determine is
+        // Record where a binding points, so a later `return` of it can be checked for
+        // escape (#243): a reference, or any value that can hold one -- a `View { r : &x }`
+        // or a closure that uses a local. A binding whose provenance we can't determine is
         // left unrecorded rather than assumed safe-or-unsafe.
-        if Self::is_ref_type(&binding_ty) {
+        if self.type_can_hold_reference(&binding_ty) {
             if let Some(prov) = self.ref_provenance_of(expr) {
                 self.borrow.ref_provenance.insert(name.clone(), prov);
+            } else {
+                // A new binding of the name holds something else now.
+                self.borrow.ref_provenance.remove(name.as_ref());
             }
         }
 
@@ -864,17 +868,16 @@ impl<'a> TypeChecker<'a> {
         // caller-owned memory. Returning a reference to a function-local — `return &x`
         // for a local `x`, or a binding that reborrows one — leaves a dangling pointer
         // once this frame unwinds.
+        //
+        // Any value that can hold a reference is asked, not only a bare one: a `&local`
+        // returned inside a struct, or a closure that uses a local, dangles the same way.
         if !self.speculating
-            && Self::is_ref_type(&ty)
+            && self.type_can_hold_reference(&ty)
             && self.ref_provenance_of(expr) == Some(crate::hir::env::RefProvenance::Local)
         {
-            self.errors.error_with_code(
-                crate::diagnostic::DiagnosticCode::E4005,
-                "Cannot return a reference to a local value: it would dangle after the \
-                         function returns. A returned reference must borrow from a reference \
-                         parameter, not a local."
-                    .to_string(),
-                Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+            self.report_frame_escape(
+                "this returns a value that points into this function's stack frame",
+                span,
             );
         }
 
