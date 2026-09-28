@@ -1,0 +1,29 @@
+// RUN: vx-opt %s --pass-pipeline="builtin.module(buffer-deallocation-pipeline)" | FileCheck %s
+
+// A buffer handed to a kernel is freed after its last use. MLIR's analysis
+// refuses a function with an op that does not say how it uses memory, so this
+// needs `vx.launch` and `vx.barrier` to say it.
+// CHECK-LABEL: func.func @first_after_launch
+// CHECK: %[[A:.*]] = memref.alloc()
+// CHECK-NEXT: vx.launch @add_one(%[[A]])
+// CHECK-NEXT: vx.barrier
+// CHECK-NEXT: %[[X:.*]] = memref.load %[[A]]
+// CHECK-NEXT: memref.dealloc %[[A]]
+// CHECK-NEXT: return %[[X]]
+
+module {
+  vx.kernel @add_one(100) : (memref<4xf32>) -> () {
+  ^bb0(%a: memref<4xf32>):
+    vx.return
+  }
+
+  func.func @first_after_launch() -> f32 {
+    %c0 = arith.constant 0 : index
+    %a = memref.alloc() : memref<4xf32>
+    vx.launch @add_one(%a) {topology = 100 : i32} : (memref<4xf32>) -> ()
+    vx.barrier
+    %x = memref.load %a[%c0] : memref<4xf32>
+    return %x : f32
+  }
+}
+

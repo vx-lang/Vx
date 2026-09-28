@@ -1,0 +1,24 @@
+// RUN: vx-opt %s --pass-pipeline="builtin.module(canonicalize,cse)" | FileCheck %s
+
+// Each transfer makes its own copy on the device, so two transfers of the same
+// value stay two, and a transfer whose copy nobody reads is kept.
+// CHECK-LABEL: func.func @three_transfers
+// CHECK-NEXT: "vx.transfer"
+// CHECK-NEXT: %[[A:.*]] = "vx.transfer"
+// CHECK-NEXT: %[[B:.*]] = "vx.transfer"
+// CHECK-NEXT: call @use(%[[A]])
+// CHECK-NEXT: call @use(%[[B]])
+
+module {
+  func.func private @use(memref<4xf32>)
+
+  func.func @three_transfers(%h: memref<4xf32>) {
+    %unused = "vx.transfer"(%h) {target_topology = 100 : i32} : (memref<4xf32>) -> memref<4xf32>
+    %a = "vx.transfer"(%h) {target_topology = 100 : i32} : (memref<4xf32>) -> memref<4xf32>
+    %b = "vx.transfer"(%h) {target_topology = 100 : i32} : (memref<4xf32>) -> memref<4xf32>
+    func.call @use(%a) : (memref<4xf32>) -> ()
+    func.call @use(%b) : (memref<4xf32>) -> ()
+    return
+  }
+}
+

@@ -29,21 +29,28 @@ def Vx_SpawnOp : Vx_Op<"spawn"> {
 }
 
 // A transfer operation to move memory/execution context between topologies
-def Vx_TransferOp : Vx_Op<"transfer"> {
+// It reads the source and allocates the copy. The general write is the copy
+// into the target's memory, and keeps an unused transfer from being deleted.
+// The copy is freed by the transfer lowering, so the buffer-deallocation
+// analysis must not see this op until that free moves out of the lowering.
+def Vx_TransferOp : Vx_Op<"transfer", [MemoryEffects<[MemWrite]>]> {
     let summary = "Transfers a tensor to a target topology.";
-    let arguments = (ins AnyType:$src, I32Attr:$target_topology);
-    let results = (outs AnyType:$dst);
+    let arguments = (ins Arg<AnyType, "the value to copy", [MemRead]>:$src,
+                         I32Attr:$target_topology);
+    let results = (outs Res<AnyType, "the copy on the target topology",
+                            [MemAlloc]>:$dst);
 }
 
 // A yield operation to terminate vx.spawn regions
-def Vx_YieldOp : Vx_Op<"yield", [Terminator, ReturnLike]> {
+def Vx_YieldOp : Vx_Op<"yield", [Pure, Terminator, ReturnLike]> {
     let summary = "Terminates a vx.spawn region.";
     let arguments = (ins Variadic<AnyType>:$results);
     let assemblyFormat = "($results^ `:` type($results))? attr-dict";
 }
 
 // A dispatch operation to execute an outlined kernel
-def Vx_DispatchOp : Vx_Op<"dispatch"> {
+// The kernel may read and write any buffer it is given.
+def Vx_DispatchOp : Vx_Op<"dispatch", [MemoryEffects<[MemRead, MemWrite]>]> {
     let summary = "Dispatches an outlined kernel.";
     let arguments = (ins FlatSymbolRefAttr:$callee, Variadic<AnyType>:$operands);
     let results = (outs Variadic<AnyType>:$results);
@@ -51,7 +58,8 @@ def Vx_DispatchOp : Vx_Op<"dispatch"> {
 }
 
 // A launch operation to launch a hardware kernel
-def Vx_LaunchOp : Vx_Op<"launch"> {
+// The kernel may read and write any buffer it is given.
+def Vx_LaunchOp : Vx_Op<"launch", [MemoryEffects<[MemRead, MemWrite]>]> {
     let summary = "Launches an outlined hardware kernel.";
     // `topology` is the device this launch targets, the same id `vx.kernel`
     // carries. The launch is what becomes the call into a plugin, so a plugin
@@ -92,7 +100,7 @@ def Vx_BlockIdOp : Vx_Op<"block_id", [Pure]> {
 }
 
 // A return operation to terminate vx.spawn regions from anywhere
-def Vx_ReturnOp : Vx_Op<"return", [Terminator, ReturnLike]> {
+def Vx_ReturnOp : Vx_Op<"return", [Pure, Terminator, ReturnLike]> {
     let summary = "Returns from a vx.spawn region.";
     let arguments = (ins Variadic<AnyType>:$results);
     let assemblyFormat = "($results^ `:` type($results))? attr-dict";
@@ -102,8 +110,8 @@ def Vx_ReturnOp : Vx_Op<"return", [Terminator, ReturnLike]> {
 // clone rewrites it to gpu.barrier; the host lowering erases it, because a
 // serial loop already provides the ordering a barrier asks for. Deliberately
 // NOT Pure: a pure no-result op would be folded away before the device clone
-// ever saw it.
-def Vx_BarrierOp : Vx_Op<"barrier"> {
+// ever saw it. It orders memory, so it reads and writes it.
+def Vx_BarrierOp : Vx_Op<"barrier", [MemoryEffects<[MemRead, MemWrite]>]> {
     let summary = "All threads of a block reach this point before any proceeds.";
     let assemblyFormat = "attr-dict";
 }
