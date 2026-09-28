@@ -5,8 +5,17 @@
   <link href="https://vxlang.org/blog/feed.xml" rel="self"/>
   <link href="https://vxlang.org/blog/"/>
   <id>https://vxlang.org/blog/</id>
-  <updated>2026-09-23T18:00:00Z</updated>
+  <updated>2026-09-28T18:00:00Z</updated>
   <author><name>Aditya Kumar</name></author>
+
+  <entry>
+    <title>Premature de-optimization is the root of all evil</title>
+    <link href="https://vxlang.org/blog/premature-de-optimization.html"/>
+    <id>https://vxlang.org/blog/premature-de-optimization.html</id>
+    <updated>2026-09-28T18:00:00Z</updated>
+    <author><name>Aditya Kumar</name></author>
+    <summary>Popular languages hide where memory is, hide the machine's topology, and lower to a low-level IR early. Each choice throws away something the programmer knew, so programs are slow before they are written, and tools such as perf, numactl and Nsight exist to win the speed back. C++ allocators help with NUMA and little else. Vx puts memory placement in the type, reads the machine from a declaration file, and keeps both until code generation.</summary>
+  </entry>
 
   <entry>
     <title>Many short tapes</title>

@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Premature de-optimization is the root of all evil</title>
+<meta name="author" content="Aditya Kumar">
+<meta name="description" content="Popular languages hide where memory is, hide the machine's topology, and lower to a low-level IR early. Together those three choices lose performance before the first line of code is written, and a set of specialist tools exists to win it back. Vx keeps memory, topology and structure in the program until code generation.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+
+<meta property="og:title" content="Premature de-optimization is the root of all evil">
+<meta property="og:description" content="Languages hide memory and topology and lower early, so programs are slow before they are written. Vx keeps all three.">
+<meta property="og:type" content="article">
+<meta property="article:published_time" content="2026-09-28T18:00:00Z">
+<meta property="og:url" content="https://vxlang.org/blog/premature-de-optimization.html">
+<meta property="og:image" content="https://vxlang.org/cards/blog-premature-de-optimization.png">
+<meta property="og:image:alt" content="Premature de-optimization: hidden memory, hidden topology and early lowering cost performance before a program is written.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://vxlang.org/cards/blog-premature-de-optimization.png">
+
+<link rel="alternate" type="application/atom+xml" title="Vx" href="/blog/feed.xml">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header class="nav">
+  <a class="brand" href="/">
+    <span class="mark">Vx</span>
+  </a>
+  <nav>
+    <a href="/docs/getting-started.html">Install</a>
+    <a href="/docs/tour.html">Language tour</a>
+    <a href="/docs/">Docs</a>
+    <a href="/blog/">Blog</a>
+    <a href="https://github.com/vx-lang/Vx">GitHub</a>
+  </nav>
+</header>
+
+<main>
+
+<article class="post">
+
+<h1>Premature de-optimization is the root of all evil</h1>
+<p class="post-meta">Aditya Kumar &middot; 28 September 2026</p>
+
+<blockquote class="tldr"><strong>TL;DR</strong> — Popular languages make three choices for you:
+memory has no location, the machine has no shape, and the source is lowered to a low-level IR
+almost at once. Each choice throws away something the programmer knew. Together they make programs
+slow before anyone writes them, and a set of tools that few engineers master exists to win the
+speed back. Vx puts memory and topology in the program and keeps them there until code
+generation.</blockquote>
+
+<p class="lede">Knuth warned against optimizing before you know where the time goes. The more
+common mistake today is choosing, before you start, a language that cannot say where the time
+goes.</p>
+
+<h2>Three choices made before the first line</h2>
+
+<p><strong>Memory is hidden.</strong> In C, C++, Rust, Go, Java and Python, memory is one flat
+array of bytes. A <code>float *</code> does not say whether the floats are in the local socket's
+DRAM, the other socket's DRAM, a GPU's HBM across PCIe, or a CXL pool across the rack. Those
+differ in latency by orders of magnitude, and the type system treats them as one thing. The
+programmer cannot write down &ldquo;this is small and hot, keep it close&rdquo;, and the compiler
+cannot ask &ldquo;does this even fit?&rdquo;</p>
+
+<p><strong>Topology is hidden.</strong> A server has sockets, NUMA domains, cores that share some
+caches and not others, GPUs behind particular PCIe switches, and NVLink or InfiniBand between
+boxes. None of it appears in the language. A thread is a thread, and where it runs is decided by
+the OS scheduler, a runtime, or an environment variable in a launch script. Code cannot say
+&ldquo;run next to that data&rdquo;, so it runs wherever it lands and the data travels to meet
+it.</p>
+
+<p><strong>Lowering happens early.</strong> Clang turns C++ into LLVM IR in one walk over the
+syntax tree. Rust keeps MIR for borrow checking and then hands the same optimizer LLVM IR. Java and
+Python become bytecode. From then on the optimizer sees loads, stores, pointer arithmetic and
+branches, and spends much of its effort rebuilding what the source already said: loop analysis
+finds the loops again, scalar evolution finds the induction variables again, alias analysis
+guesses which pointers overlap. LLVM even has a pass, <em>InferAddressSpaces</em>, whose job is to
+work out which GPU memory a generic pointer points into, after the language
+<a href="/blog/two-allocators-one-type.html">dropped that fact from the type</a>. When a guess
+fails, the optimizer has to assume the worst, and assuming the worst is slow.</p>
+
+<h2>All of them model a tape</h2>
+
+<p>Put the three together and every mainstream language targets the same machine: Turing's tape.
+One line of cells, one head, every cell the same distance away and the line never ending. The
+hardware is a tree of memories of very different sizes and speeds, joined by links of very
+different bandwidths, with compute scattered across the leaves. An
+<a href="/blog/many-short-tapes.html">earlier post</a> walks through that tree for one H100
+node.</p>
+
+<p>A program written for the tape and run on the tree is slow from the start. That is the
+de-optimization in the title, and no programmer chose it. The language chose it for every program
+at once.</p>
+
+<h2>The tools that win it back</h2>
+
+<p>The information the language will not carry is recovered afterwards, by hand:</p>
+
+<ul>
+<li><strong>Measuring:</strong> <code>perf</code>, <code>perf c2c</code> for false sharing, VTune,
+Nsight Systems and Nsight Compute, likwid, cachegrind.</li>
+<li><strong>Placing:</strong> <code>numactl</code>, <code>taskset</code>, <code>hwloc</code>,
+<code>libnuma</code>, <code>CUDA_VISIBLE_DEVICES</code>, and first-touch page placement that
+depends on which thread happened to write a page first.</li>
+<li><strong>Arranging:</strong> hand-padded structs, <code>alignas(64)</code>, arrays of structs
+rewritten as structs of arrays, huge pages switched on by an administrator.</li>
+</ul>
+
+<p>These tools are good, and few engineers use them well. The usual cycle is to ship, profile,
+find half the time going to remote memory or PCIe copies, add <code>numactl --membind</code> to a
+launch script, and hope nobody changes the machine. The knowledge ends up in scripts, wiki pages
+and people's heads. The compiler never sees it, cannot check it, and the next refactor can break
+it without a warning.</p>
+
+<h2>C++ allocators go part of the way</h2>
+
+<p>C++ is the one mainstream language that tries. <code>std::allocator</code>, and later
+<code>std::pmr</code> memory resources, let a container ask a chosen allocator for memory. You can
+write one that calls <code>numa_alloc_onnode</code>, or one that hands out pinned host memory. For
+NUMA placement that helps. Beyond it, very little:</p>
+
+<ul>
+<li>The allocator decides where memory comes from, and returns a plain <code>T *</code>. From then
+on nothing in the type says where the memory is, so nothing stops a thread on socket 1 from
+hammering pages on socket 0.</li>
+<li><code>std::pmr</code> reaches its resource through a virtual call, so the compiler learns even
+less than before.</li>
+<li>Nothing says where code runs, or what moving data between two places costs.</li>
+<li>Nothing checks capacity. A working set that is too large shows up as a failed
+<code>cudaMalloc</code>, or as the OOM killer a few hours into a job.</li>
+</ul>
+
+<p>Libraries go further, and stop at the same place. SYCL and Kokkos type the memory region inside a
+device. Neither can make where a function runs part of the function's type, because C++ has
+nowhere to put it. Kokkos shows the limit plainly: when
+<code>SpaceAccessibility&lt;...&gt;::accessible</code> is a compile-time <code>false</code>, meaning
+the compiler has already proved the access illegal, the library can only emit a run-time
+<code>Kokkos::abort</code>. A language can do better, so Vx is one.</p>
+
+<h2>What Vx does with each of the three</h2>
+
+<h3>Memory has a location, and it is part of the type</h3>
+
+<p>A Vx tensor's type names the memory it lives in, and moving it is an explicit
+<code>transfer</code> that produces a value of a new type:</p>
+
+<pre><code><span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+  <span class="k">let</span> a = <span class="t">Tensor</span>&lt;<span class="t">f32</span>, [<span class="n">4</span>, <span class="n">4</span>]&gt;::<span class="f">fill</span>(<span class="n">2.0</span>);
+  <span class="k">let</span> b = <span class="t">Tensor</span>&lt;<span class="t">f32</span>, [<span class="n">4</span>, <span class="n">4</span>]&gt;::<span class="f">fill</span>(<span class="n">3.0</span>);
+  <span class="k">let</span> <span class="k">mut</span> c = <span class="t">Tensor</span>&lt;<span class="t">f32</span>, [<span class="n">4</span>, <span class="n">4</span>], <span class="t">Memory</span>::<span class="t">NPU_HBM</span>&gt;::<span class="f">uninit</span>();
+
+  <span class="k">let</span> a_npu = <span class="f">transfer</span>(a, <span class="t">Memory</span>::<span class="t">NPU_HBM</span>);
+  <span class="k">let</span> b_npu = <span class="f">transfer</span>(b, <span class="t">Memory</span>::<span class="t">NPU_HBM</span>);
+
+  <span class="k">spawn</span> <span class="k">on</span>(<span class="t">Topology</span>::<span class="t">NPU</span>[<span class="n">0</span>]) {
+    c = a_npu @ b_npu;
+  }
+
+  <span class="k">let</span> c_host = <span class="f">transfer</span>(c, <span class="t">Memory</span>::<span class="t">CPU_DRAM</span>);
+  <span class="f">print</span>(c_host[<span class="n">0</span>][<span class="n">0</span>]);
+  <span class="k">return</span> <span class="n">0</span>;
+}</code></pre>
+
+<p>The allocator's answer is kept for the value's whole life, where C++ drops it at the first
+<code>T *</code>. So every later use can be checked, and mistakes the tape model compiles are
+refused on a laptop:</p>
+
+<table>
+<tr><th>Mistake</th><th>C++ / CUDA</th><th>Vx</th></tr>
+<tr><td>Host reads device memory</td><td>segfault or <code>cudaErrorIllegalAddress</code></td><td><a href="/errors/E6003/">E6003</a>, naming the missing transfer and its cost</td></tr>
+<tr><td>Working set larger than the memory</td><td>failed <code>cudaMalloc</code>, or OOM hours in</td><td><a href="/errors/E6009/">E6009</a> / E6010, against the declared capacity</td></tr>
+<tr><td>Copy between memories with no link</td><td>run-time error or a slow fallback</td><td>E6002, no path exists</td></tr>
+</table>
+
+<p>The program prints 24. Replace <code>transfer(a, Memory::NPU_HBM)</code> with plain
+<code>a</code>, and the compiler refuses it:</p>
+
+<pre><code>Error[E6003] at 10:9: 'a_npu' lives in CPU_DRAM but NPU[0] sees only [NPU_HBM];
+  insert an explicit transfer to NPU_HBM (cost 50 on the declared path)</code></pre>
+
+<h3>The machine is an input, and code says where it runs</h3>
+
+<p>Vx reads the machine from a declaration file. This is the H100 description that ships in
+<code>fleet/</code>, without its citations:</p>
+
+<pre><code><span class="t">Memory</span> <span class="t">HBM</span> {
+  capacity: <span class="n">80 GiB</span>, bandwidth: <span class="n">3.35 TB/s</span>, managed: explicit, scope: device
+}
+<span class="t">Memory</span> <span class="t">L2</span> {
+  within: <span class="t">Memory</span>::<span class="t">HBM</span>, capacity: <span class="n">50 MiB</span>, bandwidth: <span class="n">12 TB/s</span>, managed: cached, scope: device
+}
+<span class="t">Memory</span> <span class="t">SMEM</span> {
+  within: <span class="t">Memory</span>::<span class="t">L2</span>, capacity: <span class="n">228 KiB</span>, bandwidth: <span class="n">128 B/cyc</span>, clock: <span class="n">1.98 GHz</span>,
+  granule: <span class="n">1 KiB</span>, managed: explicit, scope: sm, replicas: <span class="n">132</span>
+}
+<span class="t">Topology</span> <span class="t">Device</span> {
+  arch: nvptx64,
+  memory: <span class="t">Memory</span>::<span class="t">HBM</span>,
+  visible: [<span class="t">Memory</span>::<span class="t">HBM</span>, <span class="t">Memory</span>::<span class="t">L2</span>, <span class="t">Memory</span>::<span class="t">SMEM</span>],
+  transfer <span class="t">Memory</span>::<span class="t">CPU_DRAM</span> -&gt; <span class="t">Memory</span>::<span class="t">HBM</span> : <span class="n">63 GB/s</span>,
+  transfer <span class="t">Memory</span>::<span class="t">HBM</span> -&gt; <span class="t">Memory</span>::<span class="t">CPU_DRAM</span> : <span class="n">63 GB/s</span>,
+  transfer <span class="t">Memory</span>::<span class="t">HBM</span> -&gt; <span class="t">Memory</span>::<span class="t">L2</span>,
+  transfer <span class="t">Memory</span>::<span class="t">L2</span> -&gt; <span class="t">Memory</span>::<span class="t">SMEM</span> copy_engine
+}</code></pre>
+
+<p>That is the tree the tape leaves out, written as data: how big each memory is, which sits
+inside which, who can see it, how many copies exist, and which links join them at what speed.
+<code>spawn on(Topology::NPU[0])</code> names where a block runs in the same vocabulary. With both
+declared, the compiler does ahead of time what the tools above do afterwards:</p>
+
+<ul>
+<li>A block can read only the memories its topology lists as <code>visible</code>.</li>
+<li>A transfer that crosses several hops is routed by the lowest predicted cost, from the declared
+bandwidths.</li>
+<li><code>--diagnostics-json</code> reports the bytes each transfer and each <code>spawn</code>
+region reads and writes, per memory and per buffer, derived from the generated code.</li>
+<li><code>vxc --machine fleet/h100-sxm.vx</code> checks a program against an H100 from a MacBook.
+Swapping the file checks it against an A100, a B200, an MI300X, or a Cortex-M7 whose
+tightly-coupled memory plays the part of shared memory.</li>
+</ul>
+
+<p>NUMA, the case C++ allocators are built for, is the same relation as two GPUs on one node: a
+memory some cores reach directly and others reach across a priced link. A <code>Memory</code> space
+declares <code>node: N</code>, the runtime binds its pages there with <code>mbind</code>, and the
+model predicted a remote access at 2.26&times; a local one against 2.35&times; measured.
+<a href="/blog/the-numa-that-wasnt-there.html">The NUMA that wasn't there</a> has the numbers, and
+the machine that lied about them.</p>
+
+<h3>The facts survive until code generation</h3>
+
+<p>Declaring placement is worth little if the code generator never sees it. The Vx front end
+lowers to a flat HIR and then to its own MLIR dialect, where placements and <code>spawn</code>
+regions are still visible. Only after that does code go down to LLVM IR
+for CPUs, NVVM and PTX for NVIDIA GPUs, or CoreML for the Apple Neural Engine. Because the
+structure is still there, the backend reads facts where a C++ backend would have to infer them:</p>
+
+<ul>
+<li>A tile placed in <code>Memory::SMEM</code> becomes <code>.shared</code> storage in the PTX,
+and the launch geometry comes straight from the loop bounds. See
+<a href="/blog/tiles-without-a-tile-type.html">Tiles, without a tile type</a>.</li>
+<li>A placed region that is one <code>linalg.matmul</code> is still a matrix product when it
+reaches the runtime, so the runtime hands it to cuBLAS instead of running generated loops.</li>
+<li>Whether the host may read a memory (<code>managed:</code> in the machine file) is passed as an
+argument to the runtime call that allocates and copies, so the allocator and the type checker
+agree about which memory the host can touch.</li>
+<li>A space's <code>node: N</code> reaches the runtime as a number it binds pages to.</li>
+</ul>
+
+<p>No pass has to guess where a value lives, because nothing ever threw that away.</p>
+
+<h2>What is not built yet</h2>
+
+<p>This post argues that hiding costs is expensive, so here is what Vx does not do yet:</p>
+
+<ul>
+<li><strong>The cost model has no fixed per-transfer cost.</strong> It prices a copy as bytes over
+bandwidth. On an A100 that is 98% low for a 4 KiB copy, the size of decode-step traffic. Adding the
+constant makes the cheapest route depend on the size of the transfer.</li>
+<li><strong>The programmer still chooses placements.</strong> The compiler checks and prices them.
+Choosing them automatically needs the
+program as a graph of which region produces the bytes another consumes. The per-region byte counts
+exist. The edges between them do not.</li>
+<li><strong>The host backend runs a kernel on one thread.</strong> NUMA placement per node measured
+1.34&times; over interleaving with threads placed too; through today's single-threaded dispatch it
+is worth about 1.5&times; local against remote, and no more.</li>
+<li><strong>Raw pointers carry no memory space.</strong> <code>*mut T</code> means host memory, as
+it does in C, and a device tensor cannot yet be passed to a C library through an
+<code>extern</code> declaration
+(<a href="https://github.com/vx-lang/Vx/issues/742">#742</a>).</li>
+<li><strong>Loop-invariant code motion and vectorization</strong> still come from LLVM, after
+lowering.</li>
+</ul>
+
+<p>Each of these is work on the compiler. None needs the language to say more than it already
+says. A tape-model language can't be patched into seeing the tree, because the facts have to be in
+the source from the start; once they are, improving what the compiler does with them is ordinary
+work.</p>
+
+<h2>The point</h2>
+
+<p>Premature optimization spends an afternoon on speed before you know where the time goes.
+Premature de-optimization picks a language that can never say where the time goes, and so gives up
+speed in every program written in it, then pays for a set of tools to win part of it back.</p>
+
+<p>On current hardware the time goes to moving data. Training runs sit around 40% of peak FLOPs,
+and decode on large models is in single digits, because the arithmetic units are waiting on
+memory. A language that cannot talk about memory and topology cannot talk about most of what its
+programs cost. Vx is at 0.0.2 and the list above is long, but it starts from the machine the
+program will actually run on.</p>
+
+<p class="post-foot"><a href="/docs/machine-files.html">Machine files</a> covers every field and
+what the compiler derives from it, and the <a href="/docs/heterogeneous.html">heterogeneous
+model</a> covers placement and transfer. For the pieces of this argument in more depth, see
+<a href="/blog/many-short-tapes.html">Many short tapes</a>,
+<a href="/blog/two-allocators-one-type.html">float * of C/C++/Rust fails to distinguish host DRAM
+from GPU HBM</a> and <a href="/blog/what-a-pointer-forgets.html">What a pointer forgets</a>.</p>
+
+</article>
+
+</main>
+
+<footer>
+  <p>Vx is Apache 2.0 with the LLVM exception. <a href="https://github.com/vx-lang/Vx">Source</a>. Questions and discussion: <a href="https://www.reddit.com/r/vxlang">r/vxlang</a>.</p>
+</footer>
+
+</body>
+</html>
