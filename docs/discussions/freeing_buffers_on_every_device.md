@@ -80,8 +80,8 @@ no drop today (`TYPE_NEEDS_DROP` exists and is never set).
 
 - It cannot see buffers the compiler makes after the frontend: the result of an elementwise op,
   of a `map`, a transpose, tiling scratch. These never have a name in the source.
-- It needs language design (drop, moves of tensors, what a copy of a tensor means) before it
-  frees anything.
+- It needs drop for tensors and `Vec` in the language before it frees anything. The rules are
+  settled (see "Decisions" below); the work is building them.
 - It frees at the end of a variable's life in the source, which can be later than the last use
   in the optimized code.
 
@@ -139,14 +139,17 @@ Suggested order, each step useful on its own:
    launches stop waiting.
 1. **Design B for programs that place data.** Removes the whole-module skip; temporaries in
    those programs stop leaking.
-1. **Design A for named values**, together with drop for `Vec` (#495). This is the step that
-   needs language decisions, so it goes last and can be argued in its own issue.
+1. **Design A for named values**, together with drop for `Vec` (#495). This step needs the
+   most new work in the frontend, so it goes last.
+
+## Decisions
+
+- **`let b = a;` moves the buffer**, as in Rust, unless the type's `Copy` implementation does
+  something custom. There is no reference count, so an assignment costs nothing.
+- **The programmer can end a lifetime early** with `drop(t)`, as in Rust, and can ask the
+  compiler why a buffer is still alive.
 
 ## Open questions
 
-- Does a tensor copy (`let b = a;`) move the buffer or share it? Design A needs this answered;
-  sharing needs a reference count, which is a cost on every copy.
-- Should the programmer be able to end a lifetime early (`drop(t)`), and to ask the compiler why
-  a buffer is still alive?
 - How does a remote worker report that its queue has finished with a buffer, so a free on
   another device can wait for it?
