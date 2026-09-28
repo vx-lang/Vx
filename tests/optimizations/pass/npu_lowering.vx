@@ -20,12 +20,15 @@ fn process(t : Tensor<f32, [?, ?]>) -> Tensor<f32, [?, ?]> {
 // CHECK: vx.spawn topology(100)
 
 // A device spawn is outlined: the site becomes a vx.launch naming a vx.kernel that carries
-// the topology, and the body moves into it.
+// the topology, and the body moves into it. The region's value comes back through a slot
+// the host allocates, never as a launch result.
 // NPU-LABEL: func.func @process(%arg0: memref<?x?xf32>) -> memref<?x?xf32> {
-// NPU: vx.launch @[[K:[a-z0-9_]+]]() {topology = 100 : i32, vx.topology_name = "NPU[0]"} : () -> i32
+// NPU: %[[SLOT:.*]] = memref.alloca() : memref<i32>
+// NPU: vx.launch @[[K:[a-z0-9_]+]](%[[SLOT]]) {topology = 100 : i32, vx.topology_name = "NPU[0]"} : (memref<i32>) -> ()
 // NPU: return %arg0 : memref<?x?xf32>
-// NPU: vx.kernel @[[K]](100) : () -> i32 {
-// NPU: func.call @dummy(%{{.*}}) : (i32) -> i32
+// NPU: vx.kernel @[[K]](100) {vx.result_slot} : (memref<i32>) -> () {
+// NPU: %[[V:.*]] = func.call @dummy(%{{.*}}) : (i32) -> i32
+// NPU: memref.store %[[V]], %arg0[] : memref<i32>
 // NPU: vx.return
 
 // vx-to-llvm replaces the launch with the vendor-neutral plugin call, passing a descriptor
@@ -35,5 +38,5 @@ fn process(t : Tensor<f32, [?, ?]>) -> Tensor<f32, [?, ?]> {
 // VXLLVM: llvm.mlir.global internal constant @[[S:[a-z0-9_]+]]_str("vx_npu_kernel_0\00topo=100\00toponame=NPU[0]\00")
 // VXLLVM: %[[D:.*]] = llvm.mlir.addressof @[[S]]_str : !llvm.ptr
 // VXLLVM: llvm.call @vx_plugin_dispatch_async(%[[D]], %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, i64, !llvm.ptr, !llvm.ptr, i64) -> i64
-// VXLLVM: @vx_npu_kernel_0() -> i32 attributes {llvm.emit_c_interface}
+// VXLLVM: @vx_npu_kernel_0(%arg0: {{.*}}) attributes {llvm.emit_c_interface}
 // VXLLVM-NOT: vx.launch

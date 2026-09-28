@@ -633,6 +633,37 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
       return success();
     }
 
+    // A dispatched kernel is called with no return value, so a region that
+    // yields one hands it back through a slot the host owns: the region stores
+    // into it and the host loads it after the launch. Done before captures are
+    // collected, so the slot is passed like any other captured memref.
+    Value resultSlot;
+    SmallVector<vx::YieldOp> valueYields;
+    spawnBody.walk([&](vx::YieldOp y) {
+      if (y.getNumOperands() > 0)
+        valueYields.push_back(y);
+    });
+    if (!valueYields.empty()) {
+      assert(op.getNumResults() == 1 &&
+             "a device spawn yields exactly one value");
+      // In the function's entry block, so a spawn inside a loop reuses one
+      // slot instead of growing the stack every iteration.
+      Operation *scope =
+          op->getParentWithTrait<OpTrait::AutomaticAllocationScope>();
+      assert(scope && "a spawn sits inside a function");
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(&scope->getRegion(0).front());
+      resultSlot = rewriter.create<memref::AllocaOp>(
+          op.getLoc(), MemRefType::get({}, op.getResult(0).getType()));
+      for (vx::YieldOp y : valueYields) {
+        assert(y.getNumOperands() == 1 && "a spawn yields one value");
+        rewriter.setInsertionPoint(y);
+        rewriter.create<memref::StoreOp>(y.getLoc(), y.getOperand(0),
+                                         resultSlot);
+        rewriter.modifyOpInPlace(y, [&] { y->setOperands({}); });
+      }
+    }
+
     SetVector<Value> captures;
     getUsedValuesDefinedAbove(spawnBody, captures);
 
@@ -711,6 +742,9 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
     // [500, 600)).
     if (auto arch = op->getAttrOfType<StringAttr>("arch"))
       kernelOp->setAttr("arch", arch);
+    // Keeps the kernel off the GPU device image: the slot is host stack.
+    if (resultSlot)
+      kernelOp->setAttr("vx.result_slot", rewriter.getUnitAttr());
 
     // The trip count `parallel_outer_for` proved for the region's outermost
     // loop, when it proved one. Carried to the kernel so the device clone can
@@ -843,7 +877,12 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
       launchOp->setAttr("vx.topology_name", topoName);
     }
 
-    rewriter.replaceOp(op, launchOp.getResults());
+    if (resultSlot) {
+      Value result = rewriter.create<memref::LoadOp>(op.getLoc(), resultSlot);
+      rewriter.replaceOp(op, result);
+    } else {
+      rewriter.replaceOp(op, launchOp.getResults());
+    }
     return success();
   }
 };
@@ -1220,6 +1259,10 @@ struct ConvertVxToStandardPass
         // giving them an NVVM twin would be claiming something untrue.
         return;
       }
+      // A kernel that hands back a value writes it into a host stack slot,
+      // which a GPU cannot address; the runtime runs it on the host instead.
+      if (k->hasAttr("vx.result_slot"))
+        return;
       // Only a body the device pipeline can actually compile.
       //
       // Two things get excluded, for two different reasons, and both are
@@ -2251,24 +2294,12 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
         loc, dispatchFunc,
         ValueRange{globalPtr, payloadSize, argsArray, tagsArray, numArgsVal});
 
-    // 5. Handle return type
-    // If the original operation had a result, we must provide it.
-    // Since this is a stub for now, we provide a dummy value (e.g., 0) casted
-    // to the expected LLVM type.
-    if (op.getNumResults() > 0) {
-      Type resultTy = typeConverter.convertType(op.getResultTypes()[0]);
-      if (resultTy.isInteger(32)) {
-        Value zero = rewriter.create<LLVM::ConstantOp>(
-            loc, resultTy, rewriter.getI32IntegerAttr(0));
-        rewriter.replaceOp(op, zero);
-      } else {
-        // Fallback to undef for other types (e.g. memref returns)
-        Value undef = rewriter.create<LLVM::UndefOp>(loc, resultTy);
-        rewriter.replaceOp(op, undef);
-      }
-    } else {
-      rewriter.eraseOp(op);
-    }
+    // 5. A kernel's value comes back through a result slot (SpawnOpLowering),
+    // never as a launch result.
+    if (op.getNumResults() > 0)
+      return op.emitOpError("a launch cannot return a value; the kernel's "
+                            "result must be passed back through a slot");
+    rewriter.eraseOp(op);
 
     return success();
   }

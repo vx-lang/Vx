@@ -1,0 +1,33 @@
+// A device region's last value reaches the host. The launch used to replace it
+// with a constant 0, so every line below would have printed 0.
+// EXPECT: int=42;
+// EXPECT: float=3.25;
+// EXPECT: loop=7;7;7;
+
+fn main() -> i32 {
+  let a = spawn on(Topology::NPU[0]) {
+    40 + 2
+  };
+  let ha = transfer(a, Memory::CPU_DRAM);
+  print!("int={}; ", ha);
+
+  let mut h = Tensor<f32, [1, 2]>::new();
+  h[0][0] = 1.5;
+  h[0][1] = 2.0;
+  let d = transfer(h, Memory::NPU_HBM);
+  let f = spawn on(Topology::NPU[0]) {
+    d[0][0] * d[0][1] + 0.25
+  };
+  let hf = transfer(f, Memory::CPU_DRAM);
+  print!("float={}; ", hf);
+
+  print!("loop=");
+  for _i in 0..3 {
+    let s = spawn on(Topology::NPU[0]) {
+      7
+    };
+    let hs = transfer(s, Memory::CPU_DRAM);
+    print!("{};", hs);
+  }
+  return 0;
+}

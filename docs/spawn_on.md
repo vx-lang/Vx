@@ -146,7 +146,7 @@ decision.
 | Runtime dispatch (`cuda`, `npu`, host) | blocks before returning | returns a future id |
 | `vx_plugin_await_future` | no-op in every backend | blocks on that id |
 | Wait insertion in the compiler | none | at first host use (§3) |
-| Value of a device spawn | the `vx.launch` result is replaced by `0` or `undef` in `LaunchOpLowering` | the kernel's result, through the future |
+| Value of a device spawn | the kernel stores it in a host slot and the host loads it after the launch; such a kernel gets no GPU device image and runs on the host | the slot staged to device memory, so the GPU twin can run |
 | Runtime device index `NPU[i]` | W1030, device 0 | separate issue |
 
 Order of work: the value stub first, since any model needs it; then non-blocking dispatch plus
