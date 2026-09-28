@@ -1,0 +1,32 @@
+//===- pointer_const_mut_cast.vx - Vx Compiler ---------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `*mut T as *const T` and back keep the address: what is written through one is read
+// through the other.
+import std::string;
+import std::alloc;
+
+fn main() -> i32 {
+  let buf : *mut i8 = unsafe { malloc(4i64) };
+  unsafe { buf[0i64] = 104i8; buf[1i64] = 105i8; buf[2i64] = 0i8; }
+  let mut s = unsafe { String::from_c_str(buf as *const i8) };
+  print!("from_mut=");
+  print!(s.as_c_str());
+  print!("; ");
+  s.drop();
+
+  let lit : *const i8 = "xyz";
+  let back : *mut i8 = lit as *mut i8;
+  print!("second_byte=");
+  unsafe { print(back[1i64] as i64); }
+  print!(";");
+  unsafe { free(buf); }
+  return 0;
+}
+
+// EXPECT: from_mut=hi;
+// EXPECT: second_byte=121;
