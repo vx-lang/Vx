@@ -5,6 +5,8 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
+import core::num;
+
 extern {
   /// The Rust core behind `String::new`.
   fn vx_string_new() -> *mut i8;
@@ -21,8 +23,10 @@ extern {
   fn vx_string_free_c_str(ptr : *const i8) -> i32;
   /// The Rust core behind `String::drop`.
   fn vx_string_drop(ptr : *mut i8) -> i32;
-  /// The Rust core behind `i32::to_string`.
-  fn vx_i32_to_string(val : i32)->*mut i8;
+  /// A string of `len` NUL bytes, for `to_string` to overwrite with digits.
+  fn vx_string_with_len(len : i64) -> *mut i8;
+  /// The bytes of a string made by `vx_string_with_len`, writable.
+  fn vx_string_as_mut_ptr(ptr : *mut i8) -> *mut i8;
 }
 
 /// A growable, owned string, held by the Rust core behind an opaque pointer.
@@ -80,15 +84,32 @@ impl String {
   }
 }
 
-impl i32 {
-  /// This number in decimal, as an owned `String` the caller must `drop`.
-  fn to_string(self : i32) -> String {
-    let ptr = unsafe { vx_i32_to_string(self) };
-    return String {
-      ptr : ptr
-    };
-  }
+/// Stamps `to_string` for one integer width.
+///
+/// One allocation of the exact length, filled in place by `core::num`'s `write_decimal`.
+macro_rules stamp_to_string {
+  ($t : ident) => {
+    impl $t {
+      /// This number in decimal, as an owned `String` the caller must `drop`.
+      fn to_string(self : $t) -> String {
+        let ptr = unsafe { vx_string_with_len(self.decimal_len()) };
+        unsafe { self.write_decimal(vx_string_as_mut_ptr(ptr), 0i64) };
+        return String {
+          ptr : ptr
+        };
+      }
+    }
+  };
 }
+
+stamp_to_string!(i8);
+stamp_to_string!(i16);
+stamp_to_string!(i32);
+stamp_to_string!(i64);
+stamp_to_string!(u8);
+stamp_to_string!(u16);
+stamp_to_string!(u32);
+stamp_to_string!(u64);
 
 // Returns the length of a null-terminated string
 /// The number of bytes before the NUL, found by scanning.

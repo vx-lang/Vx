@@ -670,6 +670,137 @@ stamp_unsigned_int!(u16 , i16 , 16 , 65535);
 stamp_unsigned_int!(u32 , i32 , 32 , 4294967295);
 stamp_unsigned_int!(u64 , i64 , 64 , 18446744073709551615);
 
+/// "00" to "99" back to back, so the pair for `k` starts at byte `2 * k`.
+fn decimal_digit_pairs() -> *const i8 {
+  return "00010203040506070809101112131415161718192021222324252627282930313233343536373839404142434445464748495051525354555657585960616263646566676869707172737475767778798081828384858687888990919293949596979899";
+}
+
+/// Stamps the decimal writer for `u32` and `u64`; the other widths convert to one of them.
+///
+/// The same method as C++'s `std::to_chars`: count the digits, then fill the buffer from its
+/// last byte, two digits per step from `decimal_digit_pairs`.
+macro_rules stamp_decimal_core {
+  ($t : ident) => {
+    impl $t {
+      /// How many bytes the decimal form takes.
+      fn decimal_len(self : $t) -> i64 {
+        let mut n = 1i64;
+        let mut x = self;
+        loop {
+          if x < (10 as $t) {
+            return n;
+          }
+          if x < (100 as $t) {
+            return n + 1i64;
+          }
+          if x < (1000 as $t) {
+            return n + 2i64;
+          }
+          if x < (10000 as $t) {
+            return n + 3i64;
+          }
+          x = x / (10000 as $t);
+          n = n + 4i64;
+        }
+        return n;
+      }
+
+      /// Write the decimal form to `buf[at..]` and return how many bytes that took.
+      ///
+      /// Unsafe because nothing checks that the buffer has room: 20 bytes past `at` holds
+      /// every integer of every width. No NUL is written.
+      unsafe fn write_decimal(self : $t, buf : *mut i8, at : i64) -> i64 {
+        let len = self.decimal_len();
+        let table = decimal_digit_pairs();
+        let mut x = self;
+        let mut pos = at + len - 1i64;
+        unsafe {
+          loop {
+            if x < (100 as $t) {
+              break;
+            }
+            let k = ((x % (100 as $t)) * (2 as $t)) as i64;
+            x = x / (100 as $t);
+            buf[pos] = table[k + 1i64];
+            buf[pos - 1i64] = table[k];
+            pos = pos - 2i64;
+          }
+          if x >= (10 as $t) {
+            let k = (x * (2 as $t)) as i64;
+            buf[at + 1i64] = table[k + 1i64];
+            buf[at] = table[k];
+          } else {
+            buf[at] = (x + (48 as $t)) as i8;
+          }
+        }
+        return len;
+      }
+    }
+  };
+}
+
+stamp_decimal_core!(u32);
+stamp_decimal_core!(u64);
+
+/// The decimal writer for an unsigned width narrower than `$wide`, by widening.
+macro_rules stamp_decimal_unsigned {
+  ($t : ident , $wide : ident) => {
+    impl $t {
+      /// How many bytes the decimal form takes.
+      fn decimal_len(self : $t) -> i64 {
+        return (self as $wide).decimal_len();
+      }
+
+      /// Write the decimal form to `buf[at..]` and return how many bytes that took.
+      /// Unsafe for the reason `u64::write_decimal` is.
+      unsafe fn write_decimal(self : $t, buf : *mut i8, at : i64) -> i64 {
+        return unsafe { (self as $wide).write_decimal(buf, at) };
+      }
+    }
+  };
+}
+
+stamp_decimal_unsigned!(u8 , u32);
+stamp_decimal_unsigned!(u16 , u32);
+
+/// The decimal writer for a signed width: a `-`, then the magnitude as `$unsigned`.
+///
+/// `$signed` is the width the arithmetic happens in. The magnitude is `-(x + 1) + 1`, so the
+/// smallest value, whose negation does not fit, never overflows.
+macro_rules stamp_decimal_signed {
+  ($t : ident , $signed : ident , $unsigned : ident) => {
+    impl $t {
+      /// How many bytes the decimal form takes, counting the `-`.
+      fn decimal_len(self : $t) -> i64 {
+        let x = self as $signed;
+        if x < (0 as $signed) {
+          return 1i64 + ((-(x + (1 as $signed))) as $unsigned + (1 as $unsigned)).decimal_len();
+        }
+        return (x as $unsigned).decimal_len();
+      }
+
+      /// Write the decimal form to `buf[at..]` and return how many bytes that took.
+      /// Unsafe for the reason `u64::write_decimal` is.
+      unsafe fn write_decimal(self : $t, buf : *mut i8, at : i64) -> i64 {
+        let x = self as $signed;
+        if x < (0 as $signed) {
+          let magnitude = (-(x + (1 as $signed))) as $unsigned + (1 as $unsigned);
+          unsafe {
+            buf[at] = 45i8;
+            return 1i64 + magnitude.write_decimal(buf, at + 1i64);
+          }
+        }
+        return unsafe { (x as $unsigned).write_decimal(buf, at) };
+      }
+    }
+  };
+}
+
+stamp_decimal_signed!(i8 , i32 , u32);
+stamp_decimal_signed!(i16 , i32 , u32);
+stamp_decimal_signed!(i32 , i32 , u32);
+stamp_decimal_signed!(i64 , i64 , u64);
+
 /// Stamps the float methods for one width.
 ///
 /// Every body is one `math` dialect op, so nothing here needs libm at the source level and

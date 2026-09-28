@@ -177,11 +177,6 @@ Ordering and equality: `PartialEq`, `Ord`, `PartialOrd` and `Ordering`.
   and the integer widths implement it that way so a body written over `PartialOrd` works
   for every number.
 
-**`PartialOrd for $t` methods**
-
-- `fn partial_cmp(self : &$t, other : &$t) -> Option<Ordering>`<br>
-  Always an answer, since this type is totally ordered.
-
 **Functions**
 
 - `fn max_by<T>(a : T, b : T, f : Closure2<T, T, Ordering>) -> T`<br>
@@ -206,19 +201,26 @@ T = `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `bool`
 
 T = `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `bool`
 
-**`PartialEq for T` methods**, stamped for 9 instantiations
+**`PartialOrd for T` methods**, stamped for 9 instantiations
+
+- `fn partial_cmp(self : &T, other : &T) -> Option<Ordering>`<br>
+  Always an answer, since this type is totally ordered.
+
+T = `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `bool`
+
+**`PartialEq for T` methods**, stamped for 2 instantiations
 
 - `fn eq(self : &T, other : &T) -> bool`<br>
   Equality at this width. A NaN is equal to nothing, itself included.
 
-T = `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `bool`
+T = `f32`, `f64`
 
-**`PartialOrd for T` methods**, stamped for 9 instantiations
+**`PartialOrd for T` methods**, stamped for 2 instantiations
 
 - `fn partial_cmp(self : &T, other : &T) -> Option<Ordering>`<br>
   The comparison, or nothing when either side is a NaN.
 
-T = `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `bool`
+T = `f32`, `f64`
 
 ## `core::convert`
 
@@ -921,143 +923,10 @@ Moving values around without looking at what they are.
 
 The integer and float methods, stamped over every width.
 
-**`$t` methods**
+**Functions**
 
-- `fn min_value(self : $t) -> $t`<br>
-  Zero, at every unsigned width.
-- `fn max_value(self : $t) -> $t`<br>
-  The largest value of this width.
-- `fn bits(self : $t) -> $t`<br>
-  How many bits this width has.
-- `fn count_ones(self : $t) -> $t`<br>
-  How many bits are set.
-- `fn count_zeros(self : $t) -> $t`<br>
-  How many bits are clear.
-- `fn leading_zeros(self : $t) -> $t`<br>
-  Zero bits above the highest set bit. All of them, for zero.
-- `fn trailing_zeros(self : $t) -> $t`<br>
-  Zero bits below the lowest set bit. All of them, for zero.
-- `fn is_power_of_two(self : $t) -> bool`<br>
-  Zero is not a power of two.
-- `fn abs_diff(self : $t, other : $t) -> $t`<br>
-  The distance between two values, which is never negative and so always fits.
-- `fn pow(self : $t, exp : $t) -> $t`<br>
-  By squaring. Overflow wraps, as every arithmetic operator here does.
-- `fn div_euclid(self : $t, rhs : $t) -> $t`<br>
-  Plain division: an unsigned quotient is already the Euclidean one.
-- `fn rem_euclid(self : $t, rhs : $t) -> $t`<br>
-  Plain remainder, which at this width is never negative.
-- `fn ilog2(self : $t) -> $t`<br>
-  Rounded down. Refused at zero, which has no logarithm.
-- `fn next_power_of_two(self : $t) -> $t`<br>
-  One for anything at or below one. Refused above the top power of two, which is the
-  half of the range that has no next power to reach.
-- `fn rotate_left(self : $t, n : $t) -> $t`<br>
-  Wrapping round. No mask, unlike the signed rotate: `>>` brings in zeros here.
-- `fn rotate_right(self : $t, n : $t) -> $t`<br>
-  The bits rotated right.
-- `fn swap_bytes(self : $t) -> $t`<br>
-  The bytes reversed.
-- `fn reverse_bits(self : $t) -> $t`<br>
-  The bits reversed.
-- `fn checked_add(self : $t, rhs : $t) -> Option<$t>`<br>
-  Nothing if it would not fit. The bound is rearranged so the check cannot overflow.
-- `fn checked_sub(self : $t, rhs : $t) -> Option<$t>`<br>
-  Nothing if it would go below zero, which is where an unsigned width ends.
-- `fn checked_mul(self : $t, rhs : $t) -> Option<$t>`<br>
-  Checked by dividing back out, exact when the product fit.
-- `fn checked_div(self : $t, rhs : $t) -> Option<$t>`<br>
-  Nothing on division by zero, which is the only division that fails here.
-- `fn checked_rem(self : $t, rhs : $t) -> Option<$t>`<br>
-  Refused on a zero divisor, as `checked_div` is.
-- `fn saturating_add(self : $t, rhs : $t) -> $t`<br>
-  Held at the top of the range instead of wrapping past it.
-- `fn saturating_sub(self : $t, rhs : $t) -> $t`<br>
-  Held at zero instead of wrapping below it.
-- `fn wrapping_add(self : $t, rhs : $t) -> $t`<br>
-  The sum, wrapping round at the width. Vx's `+` already wraps.
-- `fn wrapping_sub(self : $t, rhs : $t) -> $t`<br>
-  The difference, wrapping round at the width, so subtracting past zero lands near
-  the top.
-- `fn wrapping_mul(self : $t, rhs : $t) -> $t`<br>
-  The product, keeping the low bits and discarding the rest.
-- `fn wrapping_neg(self : $t) -> $t`<br>
-  Zero minus this, wrapping.
-- `fn saturating_mul(self : $t, rhs : $t) -> $t`<br>
-  Clamped to the top of the width rather than wrapping. There is no other end to
-  clamp to without a sign.
-- `fn leading_ones(self : $t) -> $t`<br>
-  How many set bits the value starts with, counting from the top.
-- `fn trailing_ones(self : $t) -> $t`<br>
-  How many set bits the value ends with, counting from the bottom.
-- `fn sqrt(self : $t) -> $t`<br>
-  The positive square root.
-- `fn abs(self : $t) -> $t`<br>
-  The distance from zero, so the sign is dropped.
-- `fn exp(self : $t) -> $t`<br>
-  e raised to this.
-- `fn exp2(self : $t) -> $t`<br>
-  Two raised to this.
-- `fn exp_m1(self : $t) -> $t`<br>
-  `exp` minus one, kept accurate for a small argument where the subtraction would
-  lose every significant digit.
-- `fn ln(self : $t) -> $t`<br>
-  The natural logarithm.
-- `fn log2(self : $t) -> $t`<br>
-  The logarithm to base two.
-- `fn log10(self : $t) -> $t`<br>
-  The logarithm to base ten.
-- `fn ln_1p(self : $t) -> $t`<br>
-  `ln` of one plus this, kept accurate for a small argument.
-- `fn sin(self : $t) -> $t`<br>
-  The sine of this many radians.
-- `fn cos(self : $t) -> $t`<br>
-  The cosine of this many radians.
-- `fn tan(self : $t) -> $t`<br>
-  The tangent of this many radians.
-- `fn asin(self : $t) -> $t`<br>
-  The angle in radians whose sine is this, between -pi/2 and pi/2.
-- `fn acos(self : $t) -> $t`<br>
-  The angle in radians whose cosine is this, between 0 and pi.
-- `fn atan(self : $t) -> $t`<br>
-  The angle in radians whose tangent is this. `atan2` is the form that keeps the quadrant.
-- `fn sinh(self : $t) -> $t`<br>
-  The hyperbolic sine.
-- `fn cosh(self : $t) -> $t`<br>
-  The hyperbolic cosine.
-- `fn tanh(self : $t) -> $t`<br>
-  The hyperbolic tangent.
-- `fn floor(self : $t) -> $t`<br>
-  The largest whole number no greater than this.
-- `fn ceil(self : $t) -> $t`<br>
-  The smallest whole number no less than this.
-- `fn round(self : $t) -> $t`<br>
-  The nearest whole number, halves going away from zero.
-- `fn trunc(self : $t) -> $t`<br>
-  The whole part, so the fraction is dropped and the sign is kept.
-- `fn fract(self : $t) -> $t`<br>
-  The fractional part, which carries this value's sign.
-- `fn powf(self : $t, n : $t) -> $t`<br>
-  This raised to `n`.
-- `fn atan2(self : $t, x : $t) -> $t`<br>
-  The angle to the point (`x`, this), which is `atan` with the quadrant kept.
-- `fn copysign(self : $t, sign : $t) -> $t`<br>
-  This value's magnitude with `sign`'s sign.
-- `fn recip(self : $t) -> $t`<br>
-  One divided by this.
-- `fn to_degrees(self : $t) -> $t`<br>
-  This many radians in degrees.
-- `fn to_radians(self : $t) -> $t`<br>
-  This many degrees in radians.
-- `fn is_nan(self : $t) -> bool`<br>
-  Is this the value that is equal to nothing, itself included?
-- `fn signum(self : $t) -> $t`<br>
-  One with this value's sign, or the value itself when it is a NaN. Zero answers 1
-  rather than 0, which is Rust's rule and not `signum`'s in every language.
-- `fn is_finite(self : $t) -> bool`<br>
-  Is this a real number, rather than an infinity or a NaN?
-- `fn is_infinite(self : $t) -> bool`<br>
-  Is this an infinity, of either sign?
+- `fn decimal_digit_pairs() -> *const i8`<br>
+  "00" to "99" back to back, so the pair for `k` starts at byte `2 * k`.
 
 **`T` methods**, stamped for 4 instantiations
 
@@ -1146,6 +1015,182 @@ The integer and float methods, stamped over every width.
   How many set bits the value ends with, counting from the bottom.
 
 T = `i8`, `i16`, `i32`, `i64`
+
+**`T` methods**, stamped for 4 instantiations
+
+- `fn min_value(self : T) -> T`<br>
+  Zero, at every unsigned width.
+- `fn max_value(self : T) -> T`<br>
+  The largest value of this width.
+- `fn bits(self : T) -> T`<br>
+  How many bits this width has.
+- `fn count_ones(self : T) -> T`<br>
+  How many bits are set.
+- `fn count_zeros(self : T) -> T`<br>
+  How many bits are clear.
+- `fn leading_zeros(self : T) -> T`<br>
+  Zero bits above the highest set bit. All of them, for zero.
+- `fn trailing_zeros(self : T) -> T`<br>
+  Zero bits below the lowest set bit. All of them, for zero.
+- `fn is_power_of_two(self : T) -> bool`<br>
+  Zero is not a power of two.
+- `fn abs_diff(self : T, other : T) -> T`<br>
+  The distance between two values, which is never negative and so always fits.
+- `fn pow(self : T, exp : T) -> T`<br>
+  By squaring. Overflow wraps, as every arithmetic operator here does.
+- `fn div_euclid(self : T, rhs : T) -> T`<br>
+  Plain division: an unsigned quotient is already the Euclidean one.
+- `fn rem_euclid(self : T, rhs : T) -> T`<br>
+  Plain remainder, which at this width is never negative.
+- `fn ilog2(self : T) -> T`<br>
+  Rounded down. Refused at zero, which has no logarithm.
+- `fn next_power_of_two(self : T) -> T`<br>
+  One for anything at or below one. Refused above the top power of two, which is the
+  half of the range that has no next power to reach.
+- `fn rotate_left(self : T, n : T) -> T`<br>
+  Wrapping round. No mask, unlike the signed rotate: `>>` brings in zeros here.
+- `fn rotate_right(self : T, n : T) -> T`<br>
+  The bits rotated right.
+- `fn swap_bytes(self : T) -> T`<br>
+  The bytes reversed.
+- `fn reverse_bits(self : T) -> T`<br>
+  The bits reversed.
+- `fn checked_add(self : T, rhs : T) -> Option<T>`<br>
+  Nothing if it would not fit. The bound is rearranged so the check cannot overflow.
+- `fn checked_sub(self : T, rhs : T) -> Option<T>`<br>
+  Nothing if it would go below zero, which is where an unsigned width ends.
+- `fn checked_mul(self : T, rhs : T) -> Option<T>`<br>
+  Checked by dividing back out, exact when the product fit.
+- `fn checked_div(self : T, rhs : T) -> Option<T>`<br>
+  Nothing on division by zero, which is the only division that fails here.
+- `fn checked_rem(self : T, rhs : T) -> Option<T>`<br>
+  Refused on a zero divisor, as `checked_div` is.
+- `fn saturating_add(self : T, rhs : T) -> T`<br>
+  Held at the top of the range instead of wrapping past it.
+- `fn saturating_sub(self : T, rhs : T) -> T`<br>
+  Held at zero instead of wrapping below it.
+- `fn wrapping_add(self : T, rhs : T) -> T`<br>
+  The sum, wrapping round at the width. Vx's `+` already wraps.
+- `fn wrapping_sub(self : T, rhs : T) -> T`<br>
+  The difference, wrapping round at the width, so subtracting past zero lands near
+  the top.
+- `fn wrapping_mul(self : T, rhs : T) -> T`<br>
+  The product, keeping the low bits and discarding the rest.
+- `fn wrapping_neg(self : T) -> T`<br>
+  Zero minus this, wrapping.
+- `fn saturating_mul(self : T, rhs : T) -> T`<br>
+  Clamped to the top of the width rather than wrapping. There is no other end to
+  clamp to without a sign.
+- `fn leading_ones(self : T) -> T`<br>
+  How many set bits the value starts with, counting from the top.
+- `fn trailing_ones(self : T) -> T`<br>
+  How many set bits the value ends with, counting from the bottom.
+
+T = `u8`, `u16`, `u32`, `u64`
+
+**`T` methods**, stamped for 2 instantiations
+
+- `fn decimal_len(self : T) -> i64`<br>
+  How many bytes the decimal form takes.
+- `unsafe fn write_decimal(self : T, buf : *mut i8, at : i64) -> i64`<br>
+  Write the decimal form to `buf[at..]` and return how many bytes that took.
+  Unsafe because nothing checks that the buffer has room: 20 bytes past `at` holds
+  every integer of every width. No NUL is written.
+
+T = `u32`, `u64`
+
+**`T` methods**, stamped for 2 instantiations
+
+- `fn decimal_len(self : T) -> i64`<br>
+  How many bytes the decimal form takes.
+- `unsafe fn write_decimal(self : T, buf : *mut i8, at : i64) -> i64`<br>
+  Write the decimal form to `buf[at..]` and return how many bytes that took.
+  Unsafe for the reason `u64::write_decimal` is.
+
+T = `u8`, `u16`
+
+**`T` methods**, stamped for 4 instantiations
+
+- `fn decimal_len(self : T) -> i64`<br>
+  How many bytes the decimal form takes, counting the `-`.
+- `unsafe fn write_decimal(self : T, buf : *mut i8, at : i64) -> i64`<br>
+  Write the decimal form to `buf[at..]` and return how many bytes that took.
+  Unsafe for the reason `u64::write_decimal` is.
+
+T = `i8`, `i16`, `i32`, `i64`
+
+**`T` methods**, stamped for 2 instantiations
+
+- `fn sqrt(self : T) -> T`<br>
+  The positive square root.
+- `fn abs(self : T) -> T`<br>
+  The distance from zero, so the sign is dropped.
+- `fn exp(self : T) -> T`<br>
+  e raised to this.
+- `fn exp2(self : T) -> T`<br>
+  Two raised to this.
+- `fn exp_m1(self : T) -> T`<br>
+  `exp` minus one, kept accurate for a small argument where the subtraction would
+  lose every significant digit.
+- `fn ln(self : T) -> T`<br>
+  The natural logarithm.
+- `fn log2(self : T) -> T`<br>
+  The logarithm to base two.
+- `fn log10(self : T) -> T`<br>
+  The logarithm to base ten.
+- `fn ln_1p(self : T) -> T`<br>
+  `ln` of one plus this, kept accurate for a small argument.
+- `fn sin(self : T) -> T`<br>
+  The sine of this many radians.
+- `fn cos(self : T) -> T`<br>
+  The cosine of this many radians.
+- `fn tan(self : T) -> T`<br>
+  The tangent of this many radians.
+- `fn asin(self : T) -> T`<br>
+  The angle in radians whose sine is this, between -pi/2 and pi/2.
+- `fn acos(self : T) -> T`<br>
+  The angle in radians whose cosine is this, between 0 and pi.
+- `fn atan(self : T) -> T`<br>
+  The angle in radians whose tangent is this. `atan2` is the form that keeps the quadrant.
+- `fn sinh(self : T) -> T`<br>
+  The hyperbolic sine.
+- `fn cosh(self : T) -> T`<br>
+  The hyperbolic cosine.
+- `fn tanh(self : T) -> T`<br>
+  The hyperbolic tangent.
+- `fn floor(self : T) -> T`<br>
+  The largest whole number no greater than this.
+- `fn ceil(self : T) -> T`<br>
+  The smallest whole number no less than this.
+- `fn round(self : T) -> T`<br>
+  The nearest whole number, halves going away from zero.
+- `fn trunc(self : T) -> T`<br>
+  The whole part, so the fraction is dropped and the sign is kept.
+- `fn fract(self : T) -> T`<br>
+  The fractional part, which carries this value's sign.
+- `fn powf(self : T, n : T) -> T`<br>
+  This raised to `n`.
+- `fn atan2(self : T, x : T) -> T`<br>
+  The angle to the point (`x`, this), which is `atan` with the quadrant kept.
+- `fn copysign(self : T, sign : T) -> T`<br>
+  This value's magnitude with `sign`'s sign.
+- `fn recip(self : T) -> T`<br>
+  One divided by this.
+- `fn to_degrees(self : T) -> T`<br>
+  This many radians in degrees.
+- `fn to_radians(self : T) -> T`<br>
+  This many degrees in radians.
+- `fn is_nan(self : T) -> bool`<br>
+  Is this the value that is equal to nothing, itself included?
+- `fn signum(self : T) -> T`<br>
+  One with this value's sign, or the value itself when it is a NaN. Zero answers 1
+  rather than 0, which is Rust's rule and not `signum`'s in every language.
+- `fn is_finite(self : T) -> bool`<br>
+  Is this a real number, rather than an infinity or a NaN?
+- `fn is_infinite(self : T) -> bool`<br>
+  Is this an infinity, of either sign?
+
+T = `f32`, `f64`
 
 ## `core::ops`
 
@@ -1919,11 +1964,6 @@ SIMD vector types and operations.
 - `fn drop(self : *mut String) -> i32`<br>
   Release the string. Reading it afterwards reads freed memory.
 
-**`i32` methods**
-
-- `fn to_string(self : i32) -> String`<br>
-  This number in decimal, as an owned `String` the caller must `drop`.
-
 **Functions**
 
 - `unsafe fn string_length(s : *const i8) -> i32`<br>
@@ -1940,6 +1980,13 @@ SIMD vector types and operations.
   `"abc"` is 0 -- there is no way to tell that second case from a genuine zero. A leading `-`
   is not a sign, it is a stop. Nothing checks for overflow: a run longer than `i32` holds
   wraps. `core::str`'s `parse` replaces it (Vx#532).
+
+**`T` methods**, stamped for 8 instantiations
+
+- `fn to_string(self : T) -> String`<br>
+  This number in decimal, as an owned `String` the caller must `drop`.
+
+T = `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`
 
 **C bindings** *(the native functions this module is built on)*
 
@@ -1958,8 +2005,10 @@ SIMD vector types and operations.
   Release what `vx_string_as_c_str` returned. Nothing in Vx calls this yet.
 - `fn vx_string_drop(ptr : *mut i8) -> i32`<br>
   The Rust core behind `String::drop`.
-- `fn vx_i32_to_string(val : i32) -> *mut i8`<br>
-  The Rust core behind `i32::to_string`.
+- `fn vx_string_with_len(len : i64) -> *mut i8`<br>
+  A string of `len` NUL bytes, for `to_string` to overwrite with digits.
+- `fn vx_string_as_mut_ptr(ptr : *mut i8) -> *mut i8`<br>
+  The bytes of a string made by `vx_string_with_len`, writable.
 
 ## `std::tensor`
 
@@ -2156,4 +2205,4 @@ Clocks and durations.
 
 ______________________________________________________________________
 
-758 functions across 33 modules.
+906 functions across 33 modules.
