@@ -25,7 +25,7 @@ echo "Running Pre-commit Checks for Vx..."
 echo "======================================"
 
 # Rule 1: Markdown Formatting
-echo "[1/4] Checking Markdown Formatting (mdformat)..."
+echo "[1/6] Checking Markdown Formatting (mdformat)..."
 STAGED_MD=$(git diff --cached --name-only --diff-filter=ACM | grep '\.md$' || true)
 if [ -n "$STAGED_MD" ]; then
     if git diff --name-only | grep -q '\.md$'; then
@@ -44,12 +44,12 @@ else
 fi
 
 # Rule 2: Rust Formatting Check
-echo "[2/5] Checking Code Formatting (cargo fmt)..."
+echo "[2/6] Checking Code Formatting (cargo fmt)..."
 cargo fmt --all -- --check
 echo "✅ Rust Formatting is perfect!"
 
 # Rule 3: Vx Formatting Check
-echo "[3/5] Checking Vx Formatting (vx-format)..."
+echo "[3/6] Checking Vx Formatting (vx-format)..."
 STAGED_VX=$(git diff --cached --name-only --diff-filter=ACM | grep '\.vx$' || true)
 if [ -n "$STAGED_VX" ]; then
     if git diff --name-only | grep -q '\.vx$'; then
@@ -66,13 +66,25 @@ else
     echo "✅ No Vx files to format."
 fi
 
-# Rule 4: Linting Check
-echo "[4/5] Checking Lints (cargo clippy)..."
+# Rule 4: Generated pages are current
+# The error index and the stdlib reference are built from src/diagnostic.rs and the `///`
+# comments in stdlib/. CI refuses a commit that changes either source without rebuilding
+# the page, so check here rather than after a push. Run from the checkout's top, as CI does.
+echo "[4/6] Checking generated pages are current..."
+if ! python3 scripts/tools/gen_error_index.py --check \
+    || ! python3 scripts/tools/gen_stdlib_reference.py --check; then
+    echo "❌ Rebuild with: python3 scripts/tools/gen_error_index.py && python3 scripts/tools/gen_stdlib_reference.py"
+    exit 1
+fi
+echo "✅ Generated pages are current!"
+
+# Rule 5: Linting Check
+echo "[5/6] Checking Lints (cargo clippy)..."
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 echo "✅ No clippy warnings found!"
 
-# Rule 5: Test Suite
-echo "[5/5] Running Test Suite (cargo test)..."
+# Rule 6: Test Suite
+echo "[6/6] Running Test Suite (cargo test)..."
 cargo test
 echo "✅ All tests passed!"
 
