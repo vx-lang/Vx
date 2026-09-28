@@ -208,6 +208,7 @@ mod tests {
             op: RelationalOp::Gt,
             rhs: Box::new(r),
             span: sp(),
+            operand_ty: None,
         })
     }
 

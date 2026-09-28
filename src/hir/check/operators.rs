@@ -497,7 +497,10 @@ impl<'a> TypeChecker<'a> {
     pub(crate) fn check_relationalop_expr(&mut self, expr: &mut Expr) -> Type {
         // A placement query compares at check time: `x.topology()` is a fact of `x`'s type,
         // and nothing at run time holds one. The comparison becomes its answer.
-        if let Expr::RelationalOp(RelationalOpExpr { lhs, op, rhs, span }) = expr {
+        if let Expr::RelationalOp(RelationalOpExpr {
+            lhs, op, rhs, span, ..
+        }) = expr
+        {
             let span = *span;
             if let Some(answer) = self.fold_placement_query(lhs, rhs, op, span) {
                 *expr = Expr::Identifier(IdentifierExpr::new(
@@ -513,8 +516,14 @@ impl<'a> TypeChecker<'a> {
                 op: _,
                 rhs,
                 span,
+                operand_ty,
             }) => {
                 let (lhs_ty, rhs_ty) = self.check_operand_pair(lhs, rhs, false);
+                // Recorded for code generation: `<` needs the sign, which an MLIR integer
+                // does not carry.
+                if let Type::Scalar(e) = &lhs_ty {
+                    *operand_ty = Some(e.clone());
+                }
                 // A relational compares element *values*, so wrapper differences
                 // (Pinned/Ref/Tensor vs a bare Scalar) are fine as long as the element
                 // types agree -- e.g. comparing a device-resident scalar to a constant.

@@ -381,6 +381,7 @@ impl<'a> TypeChecker<'a> {
                     op: RelationalOp::Ge,
                     rhs: Box::new(Self::number_expr(0)),
                     span: Span::default(),
+                    operand_ty: None,
                 })),
                 op: LogicalOp::And,
                 rhs: Box::new(Expr::RelationalOp(RelationalOpExpr {
@@ -388,6 +389,7 @@ impl<'a> TypeChecker<'a> {
                     op: RelationalOp::Lt,
                     rhs: Box::new(Self::number_expr(extent as i64)),
                     span: Span::default(),
+                    operand_ty: None,
                 })),
                 span: Span::default(),
             });
@@ -1340,6 +1342,7 @@ impl<'a> TypeChecker<'a> {
                         span: Span::default(),
                     })),
                     span: Span::default(),
+                    operand_ty: None,
                 });
             }
         }

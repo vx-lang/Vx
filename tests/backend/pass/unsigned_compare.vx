@@ -1,0 +1,53 @@
+//===- unsigned_compare.vx - Vx Compiler ---------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `<`, `<=`, `>` and `>=` on an unsigned number use the unsigned comparison.
+//
+// Each big value has its top bit set, the only case where signed and unsigned disagree.
+// Signed numbers are asked too, so a fix that made every comparison unsigned is caught.
+
+fn show(name : *const i8, answer : bool) -> i32 {
+  print!(name);
+  if answer {
+    print!("=1; ");
+  } else {
+    print!("=0; ");
+  }
+  return 0;
+}
+
+fn main() -> i32 {
+  let big64 : u64 = 9223372036854775808u64;
+  show("u64_gt", big64 > 5u64);
+  show("u64_ge", big64 >= 5u64);
+  show("u64_lt", big64 < 5u64);
+  show("u64_le", big64 <= 5u64);
+
+  let big32 : u32 = 4000000000u32;
+  show("u32_gt", big32 > 5u32);
+  show("u32_lt", big32 < 5u32);
+
+  let big8 : u8 = 200u8;
+  show("u8_gt", big8 > 5u8);
+  show("u8_lt", big8 < 5u8);
+
+  let minus_one : i64 = -1i64;
+  show("i64_lt", minus_one < 0i64);
+  show("i64_gt", minus_one > 0i64);
+  return 0;
+}
+
+// EXPECT: u64_gt=1;
+// EXPECT: u64_ge=1;
+// EXPECT: u64_lt=0;
+// EXPECT: u64_le=0;
+// EXPECT: u32_gt=1;
+// EXPECT: u32_lt=0;
+// EXPECT: u8_gt=1;
+// EXPECT: u8_lt=0;
+// EXPECT: i64_lt=1;
+// EXPECT: i64_gt=0;

@@ -1244,7 +1244,7 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
         let mut builder = OperationBuilder::new(op.get_op_name(is_float, is_unsigned), gen.loc());
         builder = builder.add_operands(&[lhs_val, rhs_val]);
 
-        let ret_ty = if let Some(pred_val) = op.get_predicate(is_float) {
+        let ret_ty = if let Some(pred_val) = op.get_predicate(is_float, is_unsigned) {
             let i1_ty = gen.i1_ty;
             let i64_ty = gen.i64_ty;
             builder = builder.add_results(&[i1_ty]).add_attributes(&[(
@@ -1275,6 +1275,7 @@ impl<'c> LowerToMelior<'c> for RelationalOpExpr {
             op,
             rhs,
             span: _,
+            operand_ty,
         } = self;
         let (lhs_val, lhs_ty, block) = gen.generate_expr(lhs, block)?;
         let prev_expected = gen.expected_type;
@@ -1300,10 +1301,11 @@ impl<'c> LowerToMelior<'c> for RelationalOpExpr {
             || final_ty.to_string().contains("f16")
             || final_ty.to_string().contains("bf16");
 
+        let is_unsigned = matches!(operand_ty, Some(e) if !e.is_float() && !e.is_signed_int());
         let mut builder = OperationBuilder::new(op.get_op_name(is_float, false), gen.loc());
         builder = builder.add_operands(&[lhs_val, rhs_val]);
 
-        let ret_ty = if let Some(pred_val) = op.get_predicate(is_float) {
+        let ret_ty = if let Some(pred_val) = op.get_predicate(is_float, is_unsigned) {
             let i1_ty = gen.i1_ty;
             let i64_ty = gen.i64_ty;
             builder = builder.add_results(&[i1_ty]).add_attributes(&[(

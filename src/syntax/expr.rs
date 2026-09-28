@@ -367,10 +367,19 @@ pub struct RelationalOpExpr {
     pub op: RelationalOp,
     pub rhs: Box<Expr>,
     pub span: Span,
+    /// The operands' element type, filled in by the checker, as on `BinaryOpExpr`: `<` on
+    /// an unsigned number needs the unsigned predicate. `None` until the checker has run.
+    pub operand_ty: Option<ElementType>,
 }
 impl RelationalOpExpr {
     pub fn new(lhs: Box<Expr>, op: RelationalOp, rhs: Box<Expr>, span: Span) -> Self {
-        Self { lhs, op, rhs, span }
+        Self {
+            lhs,
+            op,
+            rhs,
+            span,
+            operand_ty: None,
+        }
     }
 }
 
@@ -1111,6 +1120,7 @@ impl Expr {
                 op: e.op.clone(),
                 rhs: Box::new(e.rhs.substitute(mapping)),
                 span: e.span,
+                operand_ty: None,
             }),
             Expr::LogicalOp(e) => Expr::LogicalOp(LogicalOpExpr {
                 lhs: Box::new(e.lhs.substitute(mapping)),

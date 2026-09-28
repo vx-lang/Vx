@@ -202,6 +202,7 @@ impl<'a> Parser<'a> {
                         op: RelationalOp::Eq,
                         rhs: Box::new(right),
                         span: Span::default(),
+                        operand_ty: None,
                     });
                 }
                 TokenType::NotEq => {
@@ -211,6 +212,7 @@ impl<'a> Parser<'a> {
                         op: RelationalOp::NotEq,
                         rhs: Box::new(right),
                         span: Span::default(),
+                        operand_ty: None,
                     });
                 }
                 TokenType::LessEq => {
@@ -220,6 +222,7 @@ impl<'a> Parser<'a> {
                         op: RelationalOp::Le,
                         rhs: Box::new(right),
                         span: Span::default(),
+                        operand_ty: None,
                     });
                 }
                 TokenType::GreaterEq => {
@@ -229,6 +232,7 @@ impl<'a> Parser<'a> {
                         op: RelationalOp::Ge,
                         rhs: Box::new(right),
                         span: Span::default(),
+                        operand_ty: None,
                     });
                 }
                 TokenType::LeftAngle => {
@@ -238,6 +242,7 @@ impl<'a> Parser<'a> {
                         op: RelationalOp::Lt,
                         rhs: Box::new(right),
                         span: Span::default(),
+                        operand_ty: None,
                     });
                 }
                 TokenType::RightAngle => {
@@ -247,6 +252,7 @@ impl<'a> Parser<'a> {
                         op: RelationalOp::Gt,
                         rhs: Box::new(right),
                         span: Span::default(),
+                        operand_ty: None,
                     });
                 }
                 TokenType::Plus => {

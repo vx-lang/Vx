@@ -38,7 +38,7 @@ pub trait LowerToMelior<'c> {
 
 pub trait MeliorOpInfo {
     fn get_op_name(&self, is_float: bool, is_unsigned: bool) -> &'static str;
-    fn get_predicate(&self, is_float: bool) -> Option<i64>;
+    fn get_predicate(&self, is_float: bool, is_unsigned: bool) -> Option<i64>;
 }
 
 impl MeliorOpInfo for BinaryOp {
@@ -101,7 +101,7 @@ impl MeliorOpInfo for BinaryOp {
         }
     }
 
-    fn get_predicate(&self, _is_float: bool) -> Option<i64> {
+    fn get_predicate(&self, _is_float: bool, _is_unsigned: bool) -> Option<i64> {
         None
     }
 }
@@ -115,7 +115,7 @@ impl MeliorOpInfo for RelationalOp {
         }
     }
 
-    fn get_predicate(&self, is_float: bool) -> Option<i64> {
+    fn get_predicate(&self, is_float: bool, is_unsigned: bool) -> Option<i64> {
         use melior::dialect::arith::{CmpfPredicate as F, CmpiPredicate as I};
         Some(if is_float {
             (match self {
@@ -126,6 +126,15 @@ impl MeliorOpInfo for RelationalOp {
                 RelationalOp::Le => F::Ole,
                 // Unordered: `!=` is the negation of `==`, so a NaN on either side makes it true.
                 RelationalOp::NotEq => F::Une,
+            }) as i64
+        } else if is_unsigned {
+            (match self {
+                RelationalOp::Eq => I::Eq,
+                RelationalOp::NotEq => I::Ne,
+                RelationalOp::Lt => I::Ult,
+                RelationalOp::Le => I::Ule,
+                RelationalOp::Gt => I::Ugt,
+                RelationalOp::Ge => I::Uge,
             }) as i64
         } else {
             (match self {
@@ -148,7 +157,7 @@ impl MeliorOpInfo for LogicalOp {
         }
     }
 
-    fn get_predicate(&self, _is_float: bool) -> Option<i64> {
+    fn get_predicate(&self, _is_float: bool, _is_unsigned: bool) -> Option<i64> {
         None
     }
 }

@@ -282,6 +282,7 @@ impl<'a> TypeChecker<'a> {
                 op: RelationalOp::Eq,
                 rhs: Box::new(self.fold_raw_extent(expr)),
                 span: Span::default(),
+                operand_ty: None,
             });
             self.consteval.constraints.push(eq_expr);
         }
@@ -412,6 +413,7 @@ impl<'a> TypeChecker<'a> {
                             op: RelationalOp::Ge,
                             rhs: Box::new(lo),
                             span: Span::default(),
+                            operand_ty: None,
                         }));
                 }
                 if crate::hir::check::raw::prover_expressible(&hi) {
@@ -422,6 +424,7 @@ impl<'a> TypeChecker<'a> {
                             op: RelationalOp::Lt,
                             rhs: Box::new(hi),
                             span: Span::default(),
+                            operand_ty: None,
                         }));
                 }
             }
@@ -884,6 +887,7 @@ impl<'a> TypeChecker<'a> {
             op: RelationalOp::Eq,
             rhs: Box::new(expr.clone()),
             span: *span,
+            operand_ty: None,
         });
         self.consteval.return_constraints.push(return_eq);
     }
@@ -1061,12 +1065,7 @@ impl<'a> TypeChecker<'a> {
                     BinaryOp::MatMul => None,
                 }
             }
-            Expr::RelationalOp(RelationalOpExpr {
-                lhs,
-                op,
-                rhs,
-                span: _,
-            }) => {
+            Expr::RelationalOp(RelationalOpExpr { lhs, op, rhs, .. }) => {
                 let l = self.eval_expr(lhs, env)?;
                 let r = self.eval_expr(rhs, env)?;
                 // Two integers compare as integers. Comparing them as floats makes every
