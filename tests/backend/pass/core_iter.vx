@@ -17,9 +17,6 @@
 //
 // Every adaptor is driven by a `for` loop, which is the shape a user writes and which
 // consumes the iterator.
-//
-// One adaptor deep: chaining two is Vx#647. Each adaptor is bound before its loop
-// because a closure literal is not coerced inside a `for` header either (Vx#648).
 import core::iter;
 import core::option;
 

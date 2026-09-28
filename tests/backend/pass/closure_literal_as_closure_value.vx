@@ -1,0 +1,58 @@
+//===- closure_literal_as_closure_value.vx - Vx Compiler ----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A closure literal can be written straight into a `Closure1` struct field, or passed to
+// an ordinary function that takes a `Closure1`.
+//
+// Both were refused ("Expected Closure1<i32, i32>, got Closure_1"). Only a call to a
+// generic function accepted a closure literal there.
+//
+// The closures capture a local, so the value that reaches the call has to carry the
+// captured variable as well as the function. Two fields of different closure types are
+// asked, so each has to be matched to its own function.
+import core::ops;
+
+struct Rules {
+  add : Closure1<i32, i32>,
+  big : Closure1<i32, bool>,
+}
+
+fn apply(f : Closure1<i32, i32>, v : i32) -> i32 {
+  let p = f.func;
+  return p(f.env, v);
+}
+
+fn show(b : bool) -> i32 {
+  if b {
+    print(1);
+  } else {
+    print(0);
+  }
+  return 0;
+}
+
+fn main() -> i32 {
+  let k : i32 = 10;
+  let r : Rules = Rules {
+    add : | x : i32 | x + k, big : | x : i32 | x > k
+  };
+
+  let add = r.add.func;
+  print(add(r.add.env, 4));
+  print!(" ");
+  let big = r.big.func;
+  show(big(r.big.env, 11));
+  print!(" ");
+  show(big(r.big.env, 9));
+  print!(" ");
+
+  // Passed as an ordinary argument.
+  print(apply(| x : i32 | x * k, 3));
+  return 0;
+}
+
+// EXPECT: 14 1 0 30
