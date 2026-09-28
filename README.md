@@ -19,7 +19,8 @@
     <a href="#four-core-pillars">Core Pillars</a> •
     <a href="#how-it-compiles">Architecture</a> •
     <a href="#current-status--known-limitations">Status & Limitations</a> •
-    <a href="https://vxlang.org/docs/">Documentation</a>
+    <a href="https://vxlang.org/docs/">Documentation</a> •
+    <a href="https://discord.gg/2w62dCg2Y">Discord</a>
   </p>
 </div>
 
@@ -309,6 +310,7 @@ ______________________________________________________________________
 
 ## Community
 
+- [Discord](https://discord.gg/2w62dCg2Y): chat with the Vx community, ask questions, and discuss the language and compiler.
 - [r/vxlang](https://www.reddit.com/r/vxlang): questions, design discussion, and anything that is not a bug report.
 - [Issue tracker](https://github.com/vx-lang/Vx/issues): bugs, and diagnostics that fired when they should not have. A program that reproduces it is worth more than a description of it.
 
