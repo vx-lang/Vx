@@ -393,6 +393,9 @@ pub struct TypeChecker<'a> {
     pub(crate) used_vars: std::collections::HashSet<crate::symbol::Symbol>,
     /// Tracks declared variables with their spans (for unused variable warnings).
     pub(crate) declared_vars: Vec<(crate::symbol::Symbol, crate::syntax::Span)>,
+    /// Locals of the function being checked that may hold a closure pointing at this
+    /// function's own variables, so they must not leave it. See `check/closure_escape.rs`.
+    pub(crate) closure_borrowers: std::collections::HashSet<crate::symbol::Symbol>,
     /// Expected type of the expression currently being checked, from a `let x: T = …` or a
     /// `return` in a typed function. Lets a generic call deduce a *return-only* topology (or
     /// type) variable — e.g. `D` in `-> Pinned<T, D>` — from the call's context.
@@ -437,6 +440,7 @@ impl<'a> TypeChecker<'a> {
             current_assignment_target: None,
             used_vars: std::collections::HashSet::new(),
             declared_vars: Vec::new(),
+            closure_borrowers: std::collections::HashSet::new(),
             expected_type: None,
             consteval: Default::default(),
             mono: Default::default(),
@@ -1305,6 +1309,7 @@ impl<'a> TypeChecker<'a> {
         // method call.
         let prev_used_vars = std::mem::take(&mut self.used_vars);
         let prev_declared_vars = std::mem::take(&mut self.declared_vars);
+        let prev_closure_borrowers = std::mem::take(&mut self.closure_borrowers);
         self.push_scope();
 
         let prev_top = self.active_topology.clone();
@@ -1426,6 +1431,7 @@ impl<'a> TypeChecker<'a> {
         self.borrow.ref_provenance = prev_provenance;
         self.used_vars = prev_used_vars;
         self.declared_vars = prev_declared_vars;
+        self.closure_borrowers = prev_closure_borrowers;
     }
 
     pub fn parse_ty_str(&self, s: &str) -> Type {

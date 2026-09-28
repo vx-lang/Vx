@@ -166,6 +166,7 @@ impl<'a> TypeChecker<'a> {
             }
             Statement::Error(_) => {}
         }
+        self.check_closure_escape(stmt, return_type);
     }
 
     /// Check a `let` binding: type the initializer, bind the name (annotation wins), record the

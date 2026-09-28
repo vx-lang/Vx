@@ -652,9 +652,12 @@ impl<'a> TypeChecker<'a> {
                 // whose body is a `comptime` block, written inside another one, is two
                 // separate functions and is ordinary.
                 let outer_comptime = std::mem::take(&mut self.consteval.comptime_depth);
+                // The body is a function of its own, with its own locals.
+                let outer_borrowers = std::mem::take(&mut self.closure_borrowers);
                 self.consteval.closure_body_depth += 1;
                 let expr_ret_ty = self.check_expr_type(&mut b);
                 self.consteval.closure_body_depth -= 1;
+                self.closure_borrowers = outer_borrowers;
                 self.consteval.comptime_depth = outer_comptime;
 
                 let mut ret_ty = expr_ret_ty;

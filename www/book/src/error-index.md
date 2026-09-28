@@ -18,7 +18,7 @@ the test suite has one, a program that triggers it.
 - [Parser Errors](#parser-errors) — `E1001`–`E1013` (13 codes)
 - [Name Resolution Errors](#name-resolution-errors) — `E2001`–`E2007` (7 codes)
 - [Type Errors](#type-errors) — `E3001`–`E3041` (41 codes)
-- [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4005` (5 codes)
+- [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4006` (6 codes)
 - [Safety Errors](#safety-errors) — `E5001`–`E5002` (2 codes)
 - [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6028` (28 codes)
 - [Tensor/Math Errors](#tensormath-errors) — `E7001`–`E7004` (4 codes)
@@ -147,6 +147,7 @@ Raised by the borrow checker and the linear-type rules. These rule out use-after
 | [`E4003`](/errors/E4003/) | Cannot borrow as mutable (already immutably borrowed) |
 | [`E4004`](/errors/E4004/) | Cannot borrow (already mutably borrowed) |
 | [`E4005`](/errors/E4005/) | A returned reference escapes the function borrowing a function-local (dangling return) |
+| [`E4006`](/errors/E4006/) | A closure that uses a variable of the function that made it would outlive that function: returned, stored through a reference, or passed to a call that could store it there. The variable is gone once the function returns. |
 
 ## Safety Errors
 
@@ -217,4 +218,4 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 
 ______________________________________________________________________
 
-128 diagnostics.
+129 diagnostics.

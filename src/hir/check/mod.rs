@@ -18,6 +18,7 @@ pub mod access;
 pub mod autodiff;
 pub mod calls;
 pub mod capacity_fold;
+pub mod closure_escape;
 pub mod control;
 pub mod imported_errors;
 pub mod literals;
