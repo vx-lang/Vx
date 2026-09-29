@@ -17,7 +17,7 @@ the test suite has one, a program that triggers it.
 - [Warnings](#warnings) — `W1001`–`W1031` (23 codes)
 - [Parser Errors](#parser-errors) — `E1001`–`E1013` (13 codes)
 - [Name Resolution Errors](#name-resolution-errors) — `E2001`–`E2007` (7 codes)
-- [Type Errors](#type-errors) — `E3001`–`E3041` (41 codes)
+- [Type Errors](#type-errors) — `E3001`–`E3042` (42 codes)
 - [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4005` (5 codes)
 - [Safety Errors](#safety-errors) — `E5001`–`E5002` (2 codes)
 - [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6028` (28 codes)
@@ -135,6 +135,7 @@ Raised by the type checker. Vx performs no implicit numeric conversion, so many 
 | [`E3039`](/errors/E3039/) | `I::Item` disagrees with the impl for what `I` is: an argument bound it to one type and that impl binds `Item` to another. |
 | [`E3040`](/errors/E3040/) | `I::Item` where no impl for what `I` is binds an associated type named `Item`: `I` has no such bound, or the name is misspelled. |
 | [`E3041`](/errors/E3041/) | A struct field that names `I::Item`. Fields are laid out from the struct's parameters alone, so the projection is made a parameter instead, as `Map<I, F>` does with its closure. |
+| [`E3042`](/errors/E3042/) | A bound on a type parameter, `T : Name`, where no trait called `Name` is declared or imported. Usually a misspelling or a missing `import`. |
 
 ## Borrow/Ownership Errors
 
@@ -217,4 +218,4 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 
 ______________________________________________________________________
 
-128 diagnostics.
+129 diagnostics.

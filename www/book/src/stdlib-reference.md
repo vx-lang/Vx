@@ -1963,6 +1963,11 @@ SIMD vector types and operations.
 
 Operations on `Tensor`, including shape queries and elementwise maths.
 
+**Types**
+
+- `trait Float`<br>
+  A floating-point element type, the only kind these tensor methods are written for.
+
 **`Tensor<T, [?, ?]>` methods**
 
 - `fn from_ptr_1d(ptr : *mut T, d1 : i32) -> Tensor<T, [?, ?]>`<br>

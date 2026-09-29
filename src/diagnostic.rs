@@ -323,6 +323,9 @@ pub enum DiagnosticCode {
     /// alone, so the projection is made a parameter instead, as `Map<I, F>` does with its
     /// closure.
     E3041,
+    /// A bound on a type parameter, `T : Name`, where no trait called `Name` is declared or
+    /// imported. Usually a misspelling or a missing `import`.
+    E3042,
 
     // --- Borrow/Ownership Errors (E4xxx) ---
     /// Use of moved or consumed linear variable
