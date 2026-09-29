@@ -1,0 +1,43 @@
+//===- arithmetic_on_a_reference_to_a_number.vx - Vx Compiler ----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Arithmetic reads the number a reference points at, as in Rust: `r + 2`, `2 + r`, `r - q`
+// with both sides references, a parameter `r * 2`, an unsigned divide (which must stay
+// unsigned), a float, and `s += r`. An untyped literal next to a reference takes the
+// number's type, `i64` or `f64`, not its own default.
+//
+// EXPECT: 42 42 33 14 2000000000 3 41
+fn twice(r : &i64) -> i64 {
+  return r * 2i64;
+}
+
+fn main() -> i32 {
+  let a : i64 = 40i64;
+  let b : i64 = 7i64;
+  let r : &i64 = &a;
+  let q : &i64 = &b;
+  print(r + 2i64);
+  print!(" ");
+  print(2 + r);
+  print!(" ");
+  print(r - q);
+  print!(" ");
+  print(twice(&b));
+  print!(" ");
+  let u : u32 = 4000000000u32;
+  let ru : &u32 = &u;
+  print(ru / 2u32);
+  print!(" ");
+  let f : f64 = 1.5;
+  let rf : &f64 = &f;
+  print(rf * 2.0);
+  print!(" ");
+  let mut s : i64 = 1i64;
+  s += r;
+  print(s);
+  return 0;
+}

@@ -566,8 +566,14 @@ impl<'a> TypeChecker<'a> {
         // Check the RHS expecting the target's type, so an untyped literal is born at that
         // type (`a[i] = 1.0` into a bf16 tensor, `r = 5` into an i64 slot) rather than
         // defaulting and mismatching (#240).
-        let rhs_ty = self.check_expr_expecting(rhs, Some(lhs_ty.clone()), consume);
+        let mut rhs_ty = self.check_expr_expecting(rhs, Some(lhs_ty.clone()), consume);
         self.current_assignment_target = None;
+        // `s += r` with `r : &i64` adds the number `r` points at, as `s + r` does.
+        if op.is_some() && matches!(lhs_ty, Type::Scalar(_)) {
+            if let Some(t) = Self::deref_number_operand(rhs, &rhs_ty) {
+                rhs_ty = t;
+            }
+        }
 
         // Again, because the right-hand side may have moved the very variable being
         // assigned: in `w = transform(w)` the call consumes `w` and the result is then put
