@@ -813,6 +813,36 @@ stamp_decimal_signed!(i16 , i32 , u32);
 stamp_decimal_signed!(i32 , i32 , u32);
 stamp_decimal_signed!(i64 , i64 , u64);
 
+/// Stamps `decimal_c_str`, the decimal form worked out while compiling.
+macro_rules stamp_decimal_c_str {
+  ($t : ident) => {
+    impl $t {
+      /// This number in decimal, as a string constant in the program: no work and no
+      /// allocation at run time.
+      ///
+      /// A comptime function, so the number has to be known while compiling, and a call with
+      /// a run-time value is an error. A `u64` from 2^63 up cannot be worked out yet: the
+      /// evaluator's integers are `i64`.
+      fn decimal_c_str(self : $t) -> *const i8 {
+        return comptime {
+          let buf = "                    " as *mut i8;
+          unsafe { buf[self.write_decimal(buf, 0i64)] = 0i8; }
+          buf as *const i8
+        };
+      }
+    }
+  };
+}
+
+stamp_decimal_c_str!(i8);
+stamp_decimal_c_str!(i16);
+stamp_decimal_c_str!(i32);
+stamp_decimal_c_str!(i64);
+stamp_decimal_c_str!(u8);
+stamp_decimal_c_str!(u16);
+stamp_decimal_c_str!(u32);
+stamp_decimal_c_str!(u64);
+
 /// Stamps the float methods for one width.
 ///
 /// Every body is one `math` dialect op, so nothing here needs libm at the source level and

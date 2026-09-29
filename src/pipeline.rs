@@ -1225,7 +1225,10 @@ fn check_one_function(
         .mono
         .functions
         .into_iter()
-        .filter(|(f, _)| !crate::hir::TypeChecker::is_comptime_lambda_body(f))
+        .filter(|(f, _)| {
+            !crate::hir::TypeChecker::is_comptime_lambda_body(f)
+                && !crate::hir::TypeChecker::is_comptime_fn(f)
+        })
         .collect();
     let gen_structs = checker.mono.generated_structs;
     let capacity_summaries = std::mem::take(&mut checker.traffic.capacity_summaries);

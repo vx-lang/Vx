@@ -1,0 +1,27 @@
+//===- comptime_decimal_c_str_refused.vx - Vx Compiler -------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A comptime function called with a value known only at run time is an error, not a
+// run-time call. So is a u64 from 2^63 up, which the evaluator's i64 cannot hold: its
+// literal used to be read as a float, and this call folded to 18446744073791552016.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+import core::num;
+
+fn show(n : i64) -> i32 {
+  // CHECK: Error[E3033] at [[@LINE+1]]:{{.*}}every argument has to be known
+  print!(n.decimal_c_str());
+  return 0;
+}
+
+fn main() -> i32 {
+  show(7i64);
+  let big : u64 = 18446744073709551615u64;
+  // CHECK: Error[E3033] at [[@LINE+1]]:{{.*}}every argument has to be known
+  print!(big.decimal_c_str());
+  return 0;
+}

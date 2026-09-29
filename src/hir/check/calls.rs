@@ -912,15 +912,15 @@ impl<'a> TypeChecker<'a> {
         &mut self,
         expr: &mut Expr,
         span: &crate::syntax::Span,
+        ret_ty: &Type,
     ) {
         let Expr::FunctionCall(call) = expr else {
             return;
         };
-        if !Self::is_closure_body(call.name.as_ref())
-            || !self.callee_is_comptime(call.name.as_ref())
-        {
+        if !self.callee_is_comptime(call.name.as_ref()) {
             return;
         }
+        let callee = call.name.clone();
         let env = self.consteval_snapshot();
         self.begin_fold();
         let folded = self
@@ -928,13 +928,23 @@ impl<'a> TypeChecker<'a> {
             .and_then(|value| self.constant_expr(&value, span));
         self.end_fold();
         match folded {
-            Some(constant) => *expr = constant,
+            Some(constant) => {
+                *expr = constant;
+                // The literal takes the call's type, as a folded `comptime` block's does.
+                if let (Expr::Number(n), Type::Scalar(e)) = (&mut *expr, ret_ty) {
+                    n.ty.get_or_insert_with(|| e.clone());
+                }
+            }
             None => {
+                // Kept for `report_unfolded_comptime_calls`, which reports it if the call is
+                // still there once the function is checked: some calls are only ever checked
+                // speculatively, with diagnostics off.
+                self.consteval.unfolded_comptime_calls.push((callee, *span));
                 if !self.speculating {
                     self.errors.error_with_code(
                         crate::diagnostic::DiagnosticCode::E3033,
-                        "this call to a `comptime` lambda cannot be evaluated: a comptime \
-                         lambda runs while compiling, so every argument has to be known then"
+                        "this call to a `comptime` function cannot be evaluated: it runs \
+                         while compiling, so every argument has to be known then"
                             .to_string(),
                         Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                     );
@@ -953,8 +963,19 @@ impl<'a> TypeChecker<'a> {
             })
     }
 
-    /// Whether a generated closure body is a `comptime` one.
-    fn callee_is_comptime(&self, name: &str) -> bool {
+    /// Whether a function is a comptime function: its whole body is `return comptime { .. };`.
+    /// It runs only while compiling, so every call folds and the function is never emitted.
+    pub fn is_comptime_fn(func: &Function) -> bool {
+        !Self::is_closure_body(func.name.as_ref())
+            && matches!(func.body.as_slice(),
+                [Statement::Return(r)] if matches!(&r.expr, Some(Expr::ComptimeBlock(_))))
+    }
+
+    /// Whether a callee is a comptime lambda's body or a comptime function.
+    pub(crate) fn callee_is_comptime(&self, name: &str) -> bool {
+        if !Self::is_closure_body(name) {
+            return self.callee_body(name).is_some_and(Self::is_comptime_fn);
+        }
         let Some(func) = self.comptime_closure_body(name) else {
             return false;
         };
@@ -2047,6 +2068,7 @@ impl<'a> TypeChecker<'a> {
         args: &[Expr],
         checked_arg_types: &[Type],
         consume: bool,
+        span: Span,
     ) -> (Type, Expr) {
         // Infer method-level generics from argument types. Reuse the types from the
         // single check above: re-checking here would re-consume linear args (a closure
@@ -2140,11 +2162,12 @@ impl<'a> TypeChecker<'a> {
             call_args.push(a.clone());
         }
 
+        // The method call's position, so a diagnostic about the call has a place.
         let mut func_call = Expr::FunctionCall(FunctionCallExpr {
             name: crate::symbol::Symbol::from(mangled_name.as_str()),
             type_args: None,
             args: call_args,
-            span: Span::default(),
+            span,
         });
         // Probe the synthesized call *speculatively* to recover its return type without
         // emitting diagnostics or committing borrow/move side effects: the method-call
@@ -2350,6 +2373,7 @@ impl<'a> TypeChecker<'a> {
                         args.as_slice(),
                         &checked_arg_types,
                         consume,
+                        method_span,
                     );
                     *expr = func_call;
                     return ret_ty;

@@ -14,7 +14,7 @@
 //! so they compose with the parallel pipeline's phase isolation.
 
 use crate::symbol::Symbol;
-use crate::syntax::{Expr, MemorySpace, StructDecl, Topology, Type};
+use crate::syntax::{Expr, MemorySpace, Span, StructDecl, Topology, Type};
 use crate::{hir::env::Value, syntax::Function};
 use std::collections::{HashMap, HashSet};
 
@@ -75,6 +75,9 @@ pub struct ConstEvalState {
     /// How many folds are running. A string literal is a heap pointer only inside one, so
     /// run-time code never holds a pointer the evaluator could read stale bytes through.
     pub folding: std::cell::Cell<u32>,
+    /// Calls to a comptime function that could not fold, with where they are, collected
+    /// while checking the current function.
+    pub unfolded_comptime_calls: Vec<(Symbol, Span)>,
 }
 
 /// How many bytes one `comptime` fold may put on the evaluator's heap.
@@ -109,6 +112,7 @@ impl Default for ConstEvalState {
             heap: std::cell::RefCell::new(Vec::new()),
             heap_bytes: std::cell::Cell::new(0),
             folding: std::cell::Cell::new(0),
+            unfolded_comptime_calls: Vec::new(),
         }
     }
 }

@@ -1126,6 +1126,8 @@ impl CompilerDriver {
             .filter(|f| !crate::hir::TypeChecker::is_comptime_lambda_body(f))
             .collect();
         new_functions.extend(orig_functions);
+        // Every call to a comptime function has folded, so it is never emitted.
+        new_functions.retain(|f| !crate::hir::TypeChecker::is_comptime_fn(f));
         ast.functions = new_functions;
         ast.structs.extend(checker.mono.generated_structs);
 

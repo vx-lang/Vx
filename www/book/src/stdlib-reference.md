@@ -1119,6 +1119,17 @@ T = `u8`, `u16`
 
 T = `i8`, `i16`, `i32`, `i64`
 
+**`T` methods**, stamped for 8 instantiations
+
+- `fn decimal_c_str(self : T) -> *const i8`<br>
+  This number in decimal, as a string constant in the program: no work and no
+  allocation at run time.
+  A comptime function, so the number has to be known while compiling, and a call with
+  a run-time value is an error. A `u64` from 2^63 up cannot be worked out yet: the
+  evaluator's integers are `i64`.
+
+T = `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`
+
 **`T` methods**, stamped for 2 instantiations
 
 - `fn sqrt(self : T) -> T`<br>
@@ -2205,4 +2216,4 @@ Clocks and durations.
 
 ______________________________________________________________________
 
-906 functions across 33 modules.
+914 functions across 33 modules.

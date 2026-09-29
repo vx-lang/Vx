@@ -311,6 +311,10 @@ impl<'a> GlobalAstEnv<'a> {
                 for stmt in &func.body {
                     collect_comptime_seeds(stmt, &mut pending);
                 }
+                // A comptime function runs only while compiling, wherever it is called from.
+                if TypeChecker::is_comptime_fn(func) {
+                    pending.push(func.name.to_string());
+                }
             }
         }
 
@@ -1191,6 +1195,33 @@ impl<'a> TypeChecker<'a> {
         path.replace("/", "_").replace(".", "_")
     }
 
+    /// Report a call to a comptime function that is still in a checked body.
+    ///
+    /// Every such call folds or is refused where it is checked, but some calls -- the one a
+    /// method call is rewritten into, among them -- are only ever checked speculatively, with
+    /// diagnostics off. Left in, the call reaches code generation, where the function does not
+    /// exist. Reported at the statement holding it.
+    fn report_unfolded_comptime_calls(&mut self, body: &[Statement]) {
+        let mut uses = std::collections::HashSet::new();
+        for stmt in body {
+            Self::extract_uses_stmt(stmt, &mut uses);
+        }
+        let mut reported = std::collections::HashSet::new();
+        let unfolded = std::mem::take(&mut self.consteval.unfolded_comptime_calls);
+        for (name, span) in unfolded {
+            if !uses.contains(name.as_ref()) || !reported.insert((span.line, span.column)) {
+                continue;
+            }
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E3033,
+                "this call to a `comptime` function cannot be evaluated: it runs while \
+                 compiling, so every argument has to be known then"
+                    .to_string(),
+                Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
+            );
+        }
+    }
+
     pub fn check_function(&mut self, func: &mut Function) {
         if !func.generics.is_empty() {
             return;
@@ -1348,7 +1379,25 @@ impl<'a> TypeChecker<'a> {
             Self::collect_assert_contracts(&func.body, &mut self.seam.contracts);
         }
 
+        // A comptime function folds at each call, where its parameters have values, so its
+        // block is not folded here -- the same as a comptime lambda's body.
+        let comptime_fn = Self::is_comptime_fn(func);
+        let errors_before = self.errors.error_count();
+        let outer_unfolded = std::mem::take(&mut self.consteval.unfolded_comptime_calls);
+        let outer_comptime = if comptime_fn {
+            self.consteval.closure_body_depth += 1;
+            std::mem::take(&mut self.consteval.comptime_depth)
+        } else {
+            self.consteval.comptime_depth
+        };
         self.check_block(&mut func.body, &func.return_type.clone());
+        if comptime_fn {
+            self.consteval.closure_body_depth -= 1;
+            self.consteval.comptime_depth = outer_comptime;
+        } else if !self.speculating && self.errors.error_count() == errors_before {
+            self.report_unfolded_comptime_calls(&func.body);
+        }
+        self.consteval.unfolded_comptime_calls = outer_unfolded;
         Self::drop_spent_comptime_lambdas(&mut func.body);
 
         self.seam.contracts = prev_contracts;

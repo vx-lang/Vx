@@ -1081,10 +1081,10 @@ impl<'a> TypeChecker<'a> {
                     Some(t) => t.is_float(),
                     None => n_str.contains('.') || n_str.contains('e') || n_str.contains('E'),
                 };
+                // An integer too big for the evaluator's i64 has no value. Read as a float it
+                // would lose its low digits, and `u64::MAX` was worked out as 18446744073791552016.
                 if !is_float {
-                    if let Ok(i) = n_str.parse::<i64>() {
-                        return Some(Value::Int(i));
-                    }
+                    return n_str.parse::<i64>().ok().map(Value::Int);
                 }
                 n_str.parse::<f64>().ok().map(Value::Number)
             }
@@ -1509,7 +1509,7 @@ impl<'a> TypeChecker<'a> {
         self.callee_body(name)
     }
 
-    fn callee_body(&self, name: &str) -> Option<&Function> {
+    pub(crate) fn callee_body(&self, name: &str) -> Option<&Function> {
         if let Some(func) = self.env.syntax_functions.get(name) {
             if !func.body.is_empty() {
                 return Some(func);
