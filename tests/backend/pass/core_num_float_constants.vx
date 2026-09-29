@@ -1,0 +1,141 @@
+//===- core_num_float_constants.vx - Vx Compiler ------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The float constants, `f64::pi()` and the rest of Rust's `consts`, and the limits
+// `max_value`, `min_value`, `epsilon`, `min_positive`, `infinity`, `neg_infinity` and
+// `nan`, at both widths.
+//
+// Each constant is printed, so a wrong digit shows. The limits are checked by what defines
+// them: doubling the largest value overflows, one plus epsilon is not one but one plus half
+// of it is, and half the smallest normal value is still above zero.
+//
+// EXPECT: 3.141592653589793 6.283185307179586 2.718281828459045 1.5707963267948966 1.0471975511965979 0.7853981633974483 0.5235987755982989 0.39269908169872414 0.3183098861837907 0.6366197723675814 1.1283791670955126 1.4142135623730951 0.7071067811865476 0.6931471805599453 2.302585092994046 1.4426950408889634 0.4342944819032518 3.321928094887362 0.3010299956639812 | 0.0000000000000002220446049250313 1 1 1 1 1 1 1 inf -inf NaN | 3.1415927 6.2831855 2.7182817 1.5707964 1.0471976 0.7853982 0.5235988 0.3926991 0.31830987 0.63661975 1.1283792 1.4142135 0.70710677 0.6931472 2.3025851 1.442695 0.4342945 3.321928 0.30103 | 0.00000011920929 1 1 1 1 1 1 1 inf -inf NaN
+import core::num;
+
+fn show(b : bool) -> i32 {
+  if b {
+    print!("1 ");
+  } else {
+    print!("0 ");
+  }
+  return 0;
+}
+
+fn main() -> i32 {
+  print(f64::pi());
+  print!(" ");
+  print(f64::tau());
+  print!(" ");
+  print(f64::e());
+  print!(" ");
+  print(f64::frac_pi_2());
+  print!(" ");
+  print(f64::frac_pi_3());
+  print!(" ");
+  print(f64::frac_pi_4());
+  print!(" ");
+  print(f64::frac_pi_6());
+  print!(" ");
+  print(f64::frac_pi_8());
+  print!(" ");
+  print(f64::frac_1_pi());
+  print!(" ");
+  print(f64::frac_2_pi());
+  print!(" ");
+  print(f64::frac_2_sqrt_pi());
+  print!(" ");
+  print(f64::sqrt_2());
+  print!(" ");
+  print(f64::frac_1_sqrt_2());
+  print!(" ");
+  print(f64::ln_2());
+  print!(" ");
+  print(f64::ln_10());
+  print!(" ");
+  print(f64::log2_e());
+  print!(" ");
+  print(f64::log10_e());
+  print!(" ");
+  print(f64::log2_10());
+  print!(" ");
+  print(f64::log10_2());
+  print!(" ");
+  print!("| ");
+  print(f64::epsilon());
+  print!(" ");
+  let one_f64 : f64 = 1.0;
+  let two_f64 : f64 = 2.0;
+  show(f64::max_value().is_finite());
+  show((f64::max_value() * two_f64).is_infinite());
+  show(f64::min_value() == -f64::max_value());
+  show(one_f64 + f64::epsilon() != one_f64);
+  show(one_f64 + f64::epsilon() / two_f64 == one_f64);
+  show(f64::min_positive() / two_f64 > (0.0 as f64));
+  show(f64::min_positive() > (0.0 as f64));
+  print(f64::infinity());
+  print!(" ");
+  print(f64::neg_infinity());
+  print!(" ");
+  print(f64::nan());
+  print!(" | ");
+  print(f32::pi());
+  print!(" ");
+  print(f32::tau());
+  print!(" ");
+  print(f32::e());
+  print!(" ");
+  print(f32::frac_pi_2());
+  print!(" ");
+  print(f32::frac_pi_3());
+  print!(" ");
+  print(f32::frac_pi_4());
+  print!(" ");
+  print(f32::frac_pi_6());
+  print!(" ");
+  print(f32::frac_pi_8());
+  print!(" ");
+  print(f32::frac_1_pi());
+  print!(" ");
+  print(f32::frac_2_pi());
+  print!(" ");
+  print(f32::frac_2_sqrt_pi());
+  print!(" ");
+  print(f32::sqrt_2());
+  print!(" ");
+  print(f32::frac_1_sqrt_2());
+  print!(" ");
+  print(f32::ln_2());
+  print!(" ");
+  print(f32::ln_10());
+  print!(" ");
+  print(f32::log2_e());
+  print!(" ");
+  print(f32::log10_e());
+  print!(" ");
+  print(f32::log2_10());
+  print!(" ");
+  print(f32::log10_2());
+  print!(" ");
+  print!("| ");
+  print(f32::epsilon());
+  print!(" ");
+  let one_f32 : f32 = 1.0;
+  let two_f32 : f32 = 2.0;
+  show(f32::max_value().is_finite());
+  show((f32::max_value() * two_f32).is_infinite());
+  show(f32::min_value() == -f32::max_value());
+  show(one_f32 + f32::epsilon() != one_f32);
+  show(one_f32 + f32::epsilon() / two_f32 == one_f32);
+  show(f32::min_positive() / two_f32 > (0.0 as f32));
+  show(f32::min_positive() > (0.0 as f32));
+  print(f32::infinity());
+  print!(" ");
+  print(f32::neg_infinity());
+  print!(" ");
+  print(f32::nan());
+  return 0;
+}

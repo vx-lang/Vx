@@ -10,7 +10,7 @@
 // `push` is given a reference to a local and a `Vec` the caller owns, so the reference
 // can end up in the `Vec` and be read after the local is gone. The call is refused: the
 // checker does not know what `push` does with its arguments, only that it could keep one.
-// CHECK: Error[E4005] at 18:3: this call is given a value that points into this function's stack frame, and a reference through `out`
+// CHECK: Error[E4005] at 18:7: this call is given a value that points into this function's stack frame, and a reference through `out`
 import std::vec;
 
 fn fill(out : &mut Vec<&i32>, k : i32) -> i32 {

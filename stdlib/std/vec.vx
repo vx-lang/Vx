@@ -172,6 +172,19 @@ impl<T> Extend<T> for Vec<T> {
   }
 }
 
+impl<T> IntoIterator for Vec<T> {
+  type Item = T;
+  type IntoIter = VecIntoIter<T>;
+
+  /// An iterator that takes the vector over and hands out its elements by value.
+  fn into_iter(self : Vec<T>) -> VecIntoIter<T> {
+    let n = self.len;
+    return VecIntoIter<T> {
+      vec : self, current : 0, back : n
+    };
+  }
+}
+
 impl<T> Default for Vec<T> {
   /// An empty `Vec`, as `new` makes.
   fn default() -> Vec<T> {
@@ -204,6 +217,53 @@ struct VecIter<T> {
   current: i32,
   // One past the last element not yet handed out from the back.
   back: i32,
+}
+
+/// An iterator that owns a `Vec<T>` and hands out its elements by value. Built by
+/// `into_iter`, which is what `for x in v` calls.
+///
+/// It holds the vector itself rather than a pointer to it, as `VecIter` does: the vector was
+/// moved into `into_iter`, so a pointer to it would point at a variable of a function that has
+/// returned.
+struct VecIntoIter<T> {
+  vec: Vec<T>,
+  current: i32,
+  // One past the last element not yet handed out from the back.
+  back: i32,
+}
+
+impl<T> Iterator for VecIntoIter<T> {
+  type Item = T;
+
+  /// The next element, or nothing once the end is reached.
+  fn next(self : &mut VecIntoIter<T>) -> Option<T> {
+    let mut ret = Option<T>::None();
+    if self.current < self.back {
+      let val : T = unsafe { self.vec.data[self.current] };
+      self.current = self.current + 1;
+      ret = Option<T>::Some(val);
+    }
+    return ret;
+  }
+}
+
+impl<T> DoubleEndedIterator for VecIntoIter<T> {
+  /// The last element not yet handed out from either end.
+  fn next_back(self : &mut VecIntoIter<T>) -> Option<T> {
+    if self.back <= self.current {
+      return Option<T>::None();
+    }
+    self.back = self.back - 1;
+    let val : T = unsafe { self.vec.data[self.back] };
+    return Option<T>::Some(val);
+  }
+}
+
+impl<T> ExactSizeIterator for VecIntoIter<T> {
+  /// How many elements are left between the two ends.
+  fn len(self : &VecIntoIter<T>) -> i64 {
+    return (self.back - self.current) as i64;
+  }
 }
 
 impl<T> Iterator for VecIter<T> {
