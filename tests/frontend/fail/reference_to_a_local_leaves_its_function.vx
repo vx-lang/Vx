@@ -1,0 +1,54 @@
+//===- reference_to_a_local_leaves_its_function.vx - Vx Compiler --*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A reference to a local variable cannot leave the function that owns the variable. Each
+// of these compiled and read a dead stack frame: `0` where `14` was written.
+//
+// `return &local` on its own was already refused. These are the ways round it: inside a
+// struct, stored through a `&mut` parameter, through a reference variable that was pointed
+// at a parameter first, and read back out of a struct variable's field.
+// CHECK-DAG: Error[E4005] at 26:3: this returns a value that points into this function's stack frame
+// CHECK-DAG: Error[E4005] at 33:7: this stores a value that points into this function's stack frame through a reference
+// CHECK-DAG: Error[E4005] at 41:3: this returns a value that points into this function's stack frame
+// CHECK-DAG: Error[E4005] at 49:3: this returns a value that points into this function's stack frame
+struct View {
+  r : &i32,
+}
+
+fn inside_a_struct(k : i32) -> View {
+  let local : i32 = k + 4;
+  return View {
+    r : &local
+  };
+}
+
+fn through_a_parameter(out : &mut View, k : i32) -> i32 {
+  let local : i32 = k + 4;
+  out.r = &local;
+  return 0;
+}
+
+fn through_a_reassigned_variable(p : &i32, k : i32) -> &i32 {
+  let mut r : &i32 = p;
+  let local : i32 = k + 4;
+  r = &local;
+  return r;
+}
+
+fn out_of_a_field(k : i32) -> &i32 {
+  let local : i32 = k + 4;
+  let v : View = View {
+    r : &local
+  };
+  return v.r;
+}
+
+fn main() -> i32 {
+  return 0;
+}

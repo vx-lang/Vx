@@ -494,6 +494,9 @@ impl<'a> TypeChecker<'a> {
                 }
 
                 self.commit_reference_arg_reborrows(&reborrow_plan, &arg_types, span);
+                if resolved_name == "print".into() && args.len() == 1 {
+                    Self::mark_unsigned_print_operand(&mut args[0], &arg_types[0]);
+                }
                 if let Some(intrinsic_ty) = self.resolve_intrinsic_function(
                     &resolved_name,
                     args,
@@ -1515,6 +1518,33 @@ impl<'a> TypeChecker<'a> {
         } else {
             None
         }
+    }
+
+    /// MLIR integers carry no sign, so the AST code generator cannot tell a `u64` from an
+    /// `i64` when it picks the runtime print function. An unsigned operand is wrapped in a
+    /// cast to its own type (`x as u64`), which changes no value and tells it which to pick.
+    pub(crate) fn mark_unsigned_print_operand(arg: &mut Expr, ty: &Type) {
+        let (arg, ty) = match (arg, ty) {
+            (Expr::Borrow(b), Type::Borrow { inner, .. }) => (&mut *b.expr, &**inner),
+            (arg, ty) => (arg, ty),
+        };
+        let Type::Scalar(e) = ty else { return };
+        if !matches!(
+            e,
+            ElementType::U8 | ElementType::U16 | ElementType::U32 | ElementType::U64
+        ) {
+            return;
+        }
+        if matches!(arg, Expr::AsCast(c) if c.target_ty == *ty) {
+            return;
+        }
+        let span = arg.span();
+        *arg = Expr::AsCast(crate::syntax::expr::AsCastExpr {
+            expr: Box::new(arg.clone()),
+            target_ty: ty.clone(),
+            source_ty: Some(ty.clone()),
+            span,
+        });
     }
 
     /// `print` reads its operand where the program is running, so a value the active topology

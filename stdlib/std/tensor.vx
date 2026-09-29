@@ -6,6 +6,15 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
+
+/// A floating-point element type, the only kind these tensor methods are written for.
+trait Float {}
+
+impl Float for f16 {}
+impl Float for bf16 {}
+impl Float for f32 {}
+impl Float for f64 {}
+
 impl<T : Float> Tensor<T, [?, ?]> {
   /// A 1-by-`d1` tensor holding a copy of `d1` elements read from `ptr`.
   ///

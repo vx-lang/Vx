@@ -843,78 +843,13 @@ pub(crate) fn lower_print_call<'c>(
 
     let (mut arg_val, arg_ty, block) = gen.generate_expr(print_arg, block)?;
 
-    // Scalar fast-path (#185): `printMemref*` only accepts ranked memrefs/tensors,
-    // so a bare scalar (`print(x)` where x : f32/f64/i32/i64) must route through the
-    // scalar `print_*` runtime helpers instead of the memref path below.
-    // Narrow scalars have no print helper of their own, so widen to one that
-    // does rather than falling through to the memref path, which rejects a bare
-    // scalar type and reports it as an unsupported element type (#320). f16
-    // arithmetic, tensors and matmul all execute; only printing was missing.
-    let mut arg_ty_str = arg_ty.to_string();
-    let widened: Option<(&str, &str)> = match arg_ty_str.as_str() {
-        "f16" | "bf16" => Some(("arith.extf", "f32")),
-        "i8" | "i16" => Some(("arith.extsi", "i32")),
-        _ => None,
-    };
-    if let Some((op_name, wide_ty_str)) = widened {
-        let wide_ty = Type::parse(gen.context, wide_ty_str)
-            .ok_or_else(|| LowerError::ParseType(wide_ty_str.to_string()))?;
-        let cast_op = OperationBuilder::new(op_name, gen.loc())
-            .add_operands(&[arg_val])
-            .add_results(&[wide_ty])
-            .build()?;
-        arg_val = block.append_operation(cast_op).result(0)?.into();
-        arg_ty_str = wide_ty_str.to_string();
-    }
-
-    let scalar_print_fn = match arg_ty_str.as_str() {
-        "i32" => Some("print_i32"),
-        "i64" => Some("print_i64"),
-        "f32" => Some("print_f32"),
-        "f64" => Some("print_f64"),
-        _ => None,
-    };
-    if let Some(fn_name) = scalar_print_fn {
-        if !gen.functions.contains_key(fn_name) {
-            let func_ty = Type::parse(gen.context, &format!("({}) -> i32", arg_ty_str))
-                .ok_or_else(|| LowerError::ParseType(format!("({}) -> i32", arg_ty_str)))?;
-            let func_decl = OperationBuilder::new("func.func", gen.loc())
-                .add_attributes(&[
-                    (
-                        Identifier::new(gen.context, "sym_name"),
-                        StringAttribute::new(gen.context, fn_name).into(),
-                    ),
-                    (
-                        Identifier::new(gen.context, "function_type"),
-                        TypeAttribute::new(func_ty).into(),
-                    ),
-                    (
-                        Identifier::new(gen.context, "sym_visibility"),
-                        StringAttribute::new(gen.context, "private").into(),
-                    ),
-                ])
-                .add_regions([melior::ir::Region::new()])
-                .build()?;
-            gen.module.body().append_operation(func_decl);
-            // Record the widened parameter type, not the source scalar's, or a
-            // later call would be checked against a signature the declaration
-            // does not have.
-            let recorded_ty = Type::parse(gen.context, &arg_ty_str)
-                .ok_or_else(|| LowerError::ParseType(arg_ty_str.clone()))?;
-            gen.functions
-                .insert(fn_name.to_string().into(), (gen.i32_ty, vec![recorded_ty]));
-        }
-        let call_op = block.append_operation(
-            OperationBuilder::new("func.call", gen.loc())
-                .add_operands(&[arg_val])
-                .add_results(&[gen.i32_ty])
-                .add_attributes(&[(
-                    Identifier::new(gen.context, "callee"),
-                    FlatSymbolRefAttribute::new(gen.context, fn_name).into(),
-                )])
-                .build()?,
-        );
-        return Ok((call_op.result(0)?.into(), gen.none_ty, block));
+    // Scalar fast-path (#185): `printMemref*` only accepts ranked memrefs/tensors, so a
+    // bare scalar must route through the scalar `print_*` runtime helpers instead.
+    if let Some((fn_name, arg_val, arg_ty_str)) =
+        pick_scalar_print(gen, block, print_arg, arg_val, arg_ty)?
+    {
+        let result = call_scalar_print(gen, block, fn_name, arg_val, &arg_ty_str)?;
+        return Ok((result, gen.none_ty, block));
     }
 
     let el_ty_str = extract_mlir_element_type(&arg_ty.to_string())?;
@@ -970,6 +905,109 @@ pub(crate) fn lower_print_call<'c>(
         Some(gen.none_ty).ok_or_else(|| LowerError::ParseType("none".to_string()))?,
         block,
     ))
+}
+
+/// Picks the runtime `print_*` function for a scalar and returns it with the value to pass
+/// and that value's MLIR type. MLIR integers carry no sign, so an unsigned value is known by
+/// the `x as u64` cast the checker wraps it in. Narrow signed integers and `f16`/`bf16` have
+/// no helper of their own and are widened (#320). `None` for anything that is not a scalar.
+pub(crate) fn pick_scalar_print<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+    arg: &Expr,
+    arg_val: Value<'c, 'c>,
+    arg_ty: Type<'c>,
+) -> Result<Option<(&'static str, Value<'c, 'c>, String)>, LowerError> {
+    use crate::syntax::types::{ElementType, Type as VxType};
+    let arg = match arg {
+        Expr::Borrow(b) => &*b.expr,
+        other => other,
+    };
+    let unsigned = match arg {
+        Expr::AsCast(c) => match &c.target_ty {
+            VxType::Scalar(e) => matches!(
+                e,
+                ElementType::U8 | ElementType::U16 | ElementType::U32 | ElementType::U64
+            ),
+            _ => false,
+        },
+        _ => false,
+    };
+    let ty_str = arg_ty.to_string();
+    let (fn_name, widen): (&'static str, Option<(&str, &str)>) = match (ty_str.as_str(), unsigned) {
+        ("i8", true) => ("print_u8", None),
+        ("i16", true) => ("print_u16", None),
+        ("i32", true) => ("print_u32", None),
+        ("i64", true) => ("print_u64", None),
+        ("i8" | "i16", false) => ("print_i32", Some(("arith.extsi", "i32"))),
+        ("i32", false) => ("print_i32", None),
+        ("i64", false) => ("print_i64", None),
+        ("f16" | "bf16", _) => ("print_f32", Some(("arith.extf", "f32"))),
+        ("f32", _) => ("print_f32", None),
+        ("f64", _) => ("print_f64", None),
+        _ => return Ok(None),
+    };
+    let Some((op_name, wide_ty_str)) = widen else {
+        return Ok(Some((fn_name, arg_val, ty_str)));
+    };
+    let wide_ty = Type::parse(gen.context, wide_ty_str)
+        .ok_or_else(|| LowerError::ParseType(wide_ty_str.to_string()))?;
+    let cast_op = OperationBuilder::new(op_name, gen.loc())
+        .add_operands(&[arg_val])
+        .add_results(&[wide_ty])
+        .build()?;
+    let wide_val = block.append_operation(cast_op).result(0)?.into();
+    Ok(Some((fn_name, wide_val, wide_ty_str.to_string())))
+}
+
+/// Declares the runtime print helper `fn_name` on first use and calls it with `arg_val`.
+pub(crate) fn call_scalar_print<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+    fn_name: &str,
+    arg_val: Value<'c, 'c>,
+    arg_ty_str: &str,
+) -> Result<Value<'c, 'c>, LowerError> {
+    if !gen.functions.contains_key(fn_name) {
+        let func_ty = Type::parse(gen.context, &format!("({}) -> i32", arg_ty_str))
+            .ok_or_else(|| LowerError::ParseType(format!("({}) -> i32", arg_ty_str)))?;
+        let func_decl = OperationBuilder::new("func.func", gen.loc())
+            .add_attributes(&[
+                (
+                    Identifier::new(gen.context, "sym_name"),
+                    StringAttribute::new(gen.context, fn_name).into(),
+                ),
+                (
+                    Identifier::new(gen.context, "function_type"),
+                    TypeAttribute::new(func_ty).into(),
+                ),
+                (
+                    Identifier::new(gen.context, "sym_visibility"),
+                    StringAttribute::new(gen.context, "private").into(),
+                ),
+            ])
+            .add_regions([melior::ir::Region::new()])
+            .build()?;
+        gen.module.body().append_operation(func_decl);
+        // Record the widened parameter type, not the source scalar's, or a
+        // later call would be checked against a signature the declaration
+        // does not have.
+        let recorded_ty = Type::parse(gen.context, arg_ty_str)
+            .ok_or_else(|| LowerError::ParseType(arg_ty_str.to_string()))?;
+        gen.functions
+            .insert(fn_name.to_string().into(), (gen.i32_ty, vec![recorded_ty]));
+    }
+    let call_op = block.append_operation(
+        OperationBuilder::new("func.call", gen.loc())
+            .add_operands(&[arg_val])
+            .add_results(&[gen.i32_ty])
+            .add_attributes(&[(
+                Identifier::new(gen.context, "callee"),
+                FlatSymbolRefAttribute::new(gen.context, fn_name).into(),
+            )])
+            .build()?,
+    );
+    Ok(call_op.result(0)?.into())
 }
 
 /// The eight `raw::` transfer-lowering primitives (#353), emitted in place.

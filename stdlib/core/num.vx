@@ -184,6 +184,54 @@ macro_rules stamp_signed_int {
         return self.bits() - 1 - self.leading_zeros();
       }
 
+      /// The square root, rounded down. Refused below zero.
+      ///
+      /// Digit by digit in base four, so nothing overflows and no float is involved.
+      fn isqrt(self : $t) -> $t {
+        assert(self >= (0 as $t), "isqrt of a negative value has no answer");
+        let two : $t = 2;
+        let mut rest : $t = self;
+        let mut root : $t = 0;
+        let mut bit : $t = (1 as $t) << (self.bits() - two);
+        loop {
+          if bit <= rest {
+            break;
+          }
+          bit = bit >> two;
+        }
+        loop {
+          if bit == (0 as $t) {
+            break;
+          }
+          if rest >= root + bit {
+            rest = rest - (root + bit);
+            root = (root >> (1 as $t)) + bit;
+          } else {
+            root = root >> (1 as $t);
+          }
+          bit = bit >> two;
+        }
+        return root;
+      }
+
+      /// The square root rounded down, or nothing below zero.
+      fn checked_isqrt(self : $t) -> Option<$t> {
+        if self < (0 as $t) {
+          return Option<$t>::None();
+        }
+        return Option<$t>::Some(self.isqrt());
+      }
+
+      /// Halfway between two values, rounded towards zero, without overflowing.
+      /// `>>` rounds down, so a negative answer with a half left over is moved up by one.
+      fn midpoint(self : $t, rhs : $t) -> $t {
+        let down = (self & rhs) + ((self ^ rhs) >> (1 as $t));
+        if down < (0 as $t) && ((self ^ rhs) & (1 as $t)) == (1 as $t) {
+          return down + 1;
+        }
+        return down;
+      }
+
       /// One for anything at or below one. The top power of two does not fit in a
       /// signed width, so a value beyond it is refused.
       fn next_power_of_two(self : $t) -> $t {
@@ -500,6 +548,48 @@ macro_rules stamp_unsigned_int {
       fn ilog2(self : $t) -> $t {
         assert(self > (0 as $t), "ilog2 needs a positive value");
         return self.bits() - 1 - self.leading_zeros();
+      }
+
+      /// The square root, rounded down, digit by digit in base four.
+      fn isqrt(self : $t) -> $t {
+        let two : $t = 2;
+        let mut rest : $t = self;
+        let mut root : $t = 0;
+        let mut bit : $t = (1 as $t) << (self.bits() - two);
+        loop {
+          if bit <= rest {
+            break;
+          }
+          bit = bit >> two;
+        }
+        loop {
+          if bit == (0 as $t) {
+            break;
+          }
+          if rest >= root + bit {
+            rest = rest - (root + bit);
+            root = (root >> (1 as $t)) + bit;
+          } else {
+            root = root >> (1 as $t);
+          }
+          bit = bit >> two;
+        }
+        return root;
+      }
+
+      /// Halfway between two values, rounded down, without overflowing.
+      fn midpoint(self : $t, rhs : $t) -> $t {
+        return (self & rhs) + ((self ^ rhs) >> (1 as $t));
+      }
+
+      /// The quotient rounded up. Refused on a zero divisor.
+      fn div_ceil(self : $t, rhs : $t) -> $t {
+        assert(rhs != (0 as $t), "div_ceil by zero");
+        let q = self / rhs;
+        if self % rhs != (0 as $t) {
+          return q + 1;
+        }
+        return q;
       }
 
       /// One for anything at or below one. Refused above the top power of two, which is the

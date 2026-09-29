@@ -16,6 +16,10 @@
 // CHECK: call @Tensor$f32$2x2$which
 // CHECK: call @Tensor$f32$_x_$which
 
+// `Float` as `std::tensor` declares it.
+trait Float {}
+impl Float for f32 {}
+
 // The static pattern is declared first so that the dynamic receiver resolving to the
 // `[?, ?]` impl is a choice by specificity and not by declaration order.
 impl<T : Float, const N : i32, const M : i32> Tensor<T, [N, M]> {

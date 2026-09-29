@@ -17,6 +17,10 @@
 // CHECK: linalg.generic {{.*}} ins(%arg0, %arg1 : memref<2x2xf32>, memref<2x2xf32>) outs(%[[ACC]] : memref<i1>)
 // CHECK: arith.cmpf oeq
 // CHECK: linalg.yield
+// `Float` as `std::tensor` declares it.
+trait Float {}
+impl Float for f32 {}
+
 impl<T : Float, const N : i32, const M : i32> Tensor<T, [N, M]> {
   fn compare(self : Tensor<T, [N, M]>, other : Tensor<T, [N, M]>) -> bool {
     let res = mlir!(inputs : (%lhs = self : memref<N x M x f32>,
