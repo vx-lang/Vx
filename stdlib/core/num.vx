@@ -388,6 +388,52 @@ macro_rules stamp_signed_int {
       fn trailing_ones(self : $t) -> $t {
         return (!self).trailing_zeros();
       }
+
+      /// The wrapped sum, and whether it wrapped.
+      fn overflowing_add(self : $t, rhs : $t) -> ($t, bool) {
+        return (self + rhs, self.checked_add(rhs).is_none());
+      }
+
+      /// The wrapped difference, and whether it wrapped.
+      fn overflowing_sub(self : $t, rhs : $t) -> ($t, bool) {
+        return (self - rhs, self.checked_sub(rhs).is_none());
+      }
+
+      /// The wrapped product, and whether it wrapped.
+      fn overflowing_mul(self : $t, rhs : $t) -> ($t, bool) {
+        return (self * rhs, self.checked_mul(rhs).is_none());
+      }
+
+      /// The negation, and whether it wrapped: only the smallest value does, to itself.
+      fn overflowing_neg(self : $t) -> ($t, bool) {
+        return ((0 as $t) - self, self == self.min_value());
+      }
+
+      /// The absolute value, and whether it wrapped: only the smallest value does, to itself.
+      fn overflowing_abs(self : $t) -> ($t, bool) {
+        if self == self.min_value() {
+          return (self, true);
+        }
+        return (self.abs(), false);
+      }
+
+      /// The quotient, and whether it wrapped: the smallest value divided by -1 gives
+      /// itself. Refused on a zero divisor, as `/` is.
+      fn overflowing_div(self : $t, rhs : $t) -> ($t, bool) {
+        if self == self.min_value() && rhs == (-1 as $t) {
+          return (self, true);
+        }
+        return (self / rhs, false);
+      }
+
+      /// The remainder, and whether it wrapped: the smallest value by -1 gives 0 and says
+      /// so, since the division beside it overflows.
+      fn overflowing_rem(self : $t, rhs : $t) -> ($t, bool) {
+        if self == self.min_value() && rhs == (-1 as $t) {
+          return (0 as $t, true);
+        }
+        return (self % rhs, false);
+      }
     }
   };
 }
@@ -660,6 +706,36 @@ macro_rules stamp_unsigned_int {
       /// How many set bits the value ends with, counting from the bottom.
       fn trailing_ones(self : $t) -> $t {
         return (!self).trailing_zeros();
+      }
+
+      /// The wrapped sum, and whether it wrapped.
+      fn overflowing_add(self : $t, rhs : $t) -> ($t, bool) {
+        return (self + rhs, self.checked_add(rhs).is_none());
+      }
+
+      /// The wrapped difference, and whether it went below zero.
+      fn overflowing_sub(self : $t, rhs : $t) -> ($t, bool) {
+        return (self - rhs, self < rhs);
+      }
+
+      /// The wrapped product, and whether it wrapped.
+      fn overflowing_mul(self : $t, rhs : $t) -> ($t, bool) {
+        return (self * rhs, self.checked_mul(rhs).is_none());
+      }
+
+      /// Zero minus this, wrapping, and whether it wrapped: every value but zero does.
+      fn overflowing_neg(self : $t) -> ($t, bool) {
+        return (0 - self, self != (0 as $t));
+      }
+
+      /// The quotient, which never wraps at an unsigned width.
+      fn overflowing_div(self : $t, rhs : $t) -> ($t, bool) {
+        return (self / rhs, false);
+      }
+
+      /// The remainder, which never wraps at an unsigned width.
+      fn overflowing_rem(self : $t, rhs : $t) -> ($t, bool) {
+        return (self % rhs, false);
       }
     }
   };
