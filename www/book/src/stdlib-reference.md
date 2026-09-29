@@ -370,9 +370,15 @@ The iterators `Iterator`'s adaptor methods build: `Map`, `Filter`, `Chain` and t
 - `struct Scan<I, St, F>`<br>
   An iterator over what `f` answers for another's items while it carries a state between
   them, ending where `f` first answers nothing. Built by `scan`.
-- `struct Fuse<I>`<br>
+- `struct Copied<I>`<br>
   An iterator that answers nothing forever once another has answered nothing once. Built by
   `fuse`.
+  An iterator over copies of the values another iterator's references point at. Built by
+  `copied`.
+- `struct Cloned<I>`<br>
+  An iterator over clones of the values another iterator's references point at. Built by
+  `cloned`.
+- `struct Fuse<I>`
 - `struct Peekable<I, T>`<br>
   An iterator whose next item can be looked at without taking it. Built by `peekable`.
   `T` is always `I::Item`: a struct field cannot name `I::Item`, so the item it holds on to
@@ -515,6 +521,16 @@ The iterators `Iterator`'s adaptor methods build: `Map`, `Filter`, `Chain` and t
 
 - `fn next(self : &mut Scan<I, St, Closure2<&mut St, I :  : Item, Option<B>>>) -> Option<B>`<br>
   `f` of the state and the inner iterator's next item.
+
+**`> Iterator for Copied<I>` methods**
+
+- `fn next(self : &mut Copied<I>) -> Option<T>`<br>
+  A copy of what the inner iterator's next reference points at.
+
+**`> Iterator for Cloned<I>` methods**
+
+- `fn next(self : &mut Cloned<I>) -> Option<T>`<br>
+  A clone of what the inner iterator's next reference points at.
 
 **`Iterator for Fuse<I>` methods**
 
@@ -727,6 +743,12 @@ The `Iterator` trait: one required `next`, and the methods written over it.
   An iterator over these items, repeated forever. Each pass restarts from a clone of this
   iterator as it was when `cycle` was called, so the type must implement `Clone`. An
   iterator with no items gives one with none.
+- `fn copied(self : Self) -> Copied<Self>`<br>
+  An iterator over copies of what these items point at, for an iterator that hands out
+  references to a `Copy` type, as `Vec::iter` does.
+- `fn cloned(self : Self) -> Cloned<Self>`<br>
+  An iterator over clones of what these items point at, for an iterator that hands out
+  references to a `Clone` type.
 - `fn fuse(self : Self) -> Fuse<Self>`<br>
   An iterator that answers nothing forever once these items have run out.
 - `fn peekable(self : Self) -> Peekable<Self, Self :  : Item>`<br>
@@ -2063,7 +2085,12 @@ Clocks and durations.
   alignment and the `capacity * elem_size` overflow check belong to Rust. There is no `Drop`
   in the language, so the buffer is released by calling `free` and not before.
 - `struct VecIter<T>`<br>
-  An iterator over a `Vec<T>`'s elements, holding a pointer to the vector it walks.
+  An iterator over references to a `Vec<T>`'s elements, holding a pointer to the vector it
+  walks.
+  Growing or freeing that vector while this exists leaves the iterator pointing at the old
+  buffer.
+- `struct VecIterMut<T>`<br>
+  An iterator over mutable references to a `Vec<T>`'s elements. Built by `iter_mut`.
   Growing or freeing that vector while this exists leaves the iterator pointing at the old
   buffer.
 - `struct VecMap<T, NewItem>`<br>
@@ -2105,7 +2132,11 @@ Clocks and durations.
 - `fn len(self : &Vec<T>) -> i32`<br>
   How many elements are in the vector, which is not its capacity.
 - `fn iter(self : &Vec<T>) -> VecIter<T>`<br>
-  An iterator over the elements, borrowing the vector rather than consuming it.
+  An iterator over references to the elements, borrowing the vector rather than
+  consuming it. `.copied()` turns it into one over copies.
+- `fn iter_mut(self : &mut Vec<T>) -> VecIterMut<T>`<br>
+  An iterator over mutable references to the elements, through which each can be changed
+  in place.
 
 **`Extend<T> for Vec<T>` methods**
 
@@ -2126,23 +2157,38 @@ Clocks and durations.
 
 **`Iterator for VecIter<T>` methods**
 
-- `fn next(self : &mut VecIter<T>) -> Option<T>`<br>
-  The next element, or nothing once the end is reached.
+- `fn next(self : &mut VecIter<T>) -> Option<&T>`<br>
+  A reference to the next element, or nothing once the end is reached.
 
 **`DoubleEndedIterator for VecIter<T>` methods**
 
-- `fn next_back(self : &mut VecIter<T>) -> Option<T>`<br>
-  The last element not yet handed out from either end.
+- `fn next_back(self : &mut VecIter<T>) -> Option<&T>`<br>
+  A reference to the last element not yet handed out from either end.
 
 **`ExactSizeIterator for VecIter<T>` methods**
 
 - `fn len(self : &VecIter<T>) -> i64`<br>
   How many elements are left between the two ends.
 
+**`Iterator for VecIterMut<T>` methods**
+
+- `fn next(self : &mut VecIterMut<T>) -> Option<&mut T>`<br>
+  A mutable reference to the next element, or nothing once the end is reached.
+
+**`DoubleEndedIterator for VecIterMut<T>` methods**
+
+- `fn next_back(self : &mut VecIterMut<T>) -> Option<&mut T>`<br>
+  A mutable reference to the last element not yet handed out from either end.
+
+**`ExactSizeIterator for VecIterMut<T>` methods**
+
+- `fn len(self : &VecIterMut<T>) -> i64`<br>
+  How many elements are left between the two ends.
+
 **`VecIter<T>` methods**
 
-- `fn map<NewItem>(self : VecIter<T>, f : Closure1<T, NewItem>) -> VecMap<T, NewItem>`<br>
-  An iterator over these elements with `f` applied to each.
+- `fn map<NewItem>(self : VecIter<T>, f : Closure1<&T, NewItem>) -> VecMap<T, NewItem>`<br>
+  An iterator over these elements with `f` applied to a reference to each.
 
 **`Iterator for VecMap<T, NewItem>` methods**
 
@@ -2173,4 +2219,4 @@ Clocks and durations.
 
 ______________________________________________________________________
 
-773 functions across 33 modules.
+781 functions across 33 modules.

@@ -15,6 +15,7 @@
 // every program that imports the trait therefore sees these names.
 import core::clone;
 import core::iter::traits;
+import core::marker;
 import core::ops;
 import core::option;
 
@@ -444,6 +445,46 @@ impl<I : Iterator, St, B> Iterator for Scan<I, St, Closure2<&mut St, I::Item, Op
 
 /// An iterator that answers nothing forever once another has answered nothing once. Built by
 /// `fuse`.
+/// An iterator over copies of the values another iterator's references point at. Built by
+/// `copied`.
+struct Copied<I> {
+  inner : I,
+}
+
+impl<T : Copy, I : Iterator<Item = &T>> Iterator for Copied<I> {
+  type Item = T;
+
+  /// A copy of what the inner iterator's next reference points at.
+  fn next(self : &mut Copied<I>) -> Option<T> {
+    let step = self.inner.next();
+    if step.is_none() {
+      return Option<T>::None();
+    }
+    let r : &T = step.unwrap();
+    return Option<T>::Some(*r);
+  }
+}
+
+/// An iterator over clones of the values another iterator's references point at. Built by
+/// `cloned`.
+struct Cloned<I> {
+  inner : I,
+}
+
+impl<T : Clone, I : Iterator<Item = &T>> Iterator for Cloned<I> {
+  type Item = T;
+
+  /// A clone of what the inner iterator's next reference points at.
+  fn next(self : &mut Cloned<I>) -> Option<T> {
+    let step = self.inner.next();
+    if step.is_none() {
+      return Option<T>::None();
+    }
+    let r : &T = step.unwrap();
+    return Option<T>::Some(r.clone());
+  }
+}
+
 struct Fuse<I> {
   inner : I,
   done : bool,

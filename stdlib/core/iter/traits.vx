@@ -467,6 +467,22 @@ trait Iterator {
     };
   }
 
+  /// An iterator over copies of what these items point at, for an iterator that hands out
+  /// references to a `Copy` type, as `Vec::iter` does.
+  fn copied(self : Self) -> Copied<Self> {
+    return Copied<Self> {
+      inner : self
+    };
+  }
+
+  /// An iterator over clones of what these items point at, for an iterator that hands out
+  /// references to a `Clone` type.
+  fn cloned(self : Self) -> Cloned<Self> {
+    return Cloned<Self> {
+      inner : self
+    };
+  }
+
   /// An iterator that answers nothing forever once these items have run out.
   fn fuse(self : Self) -> Fuse<Self> {
     return Fuse<Self> {

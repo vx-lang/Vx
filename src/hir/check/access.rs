@@ -846,8 +846,15 @@ impl<'a> TypeChecker<'a> {
                 // `&mut *p` borrows whatever `p` points at, not a temporary: it points
                 // wherever `p` does. Through a raw pointer that is nowhere the checker
                 // tracks, which is the pointer's design.
-                if let Expr::Dereference(d) = &*b.expr {
-                    return self.ref_provenance_of(&d.expr);
+                // The same for a place reached through one, `&(*p).data[i]`.
+                let mut place = &*b.expr;
+                loop {
+                    match place {
+                        Expr::Dereference(d) => return self.ref_provenance_of(&d.expr),
+                        Expr::MemberAccess(m) => place = &m.base,
+                        Expr::IndexAccess(i) => place = &i.base,
+                        _ => break,
+                    }
                 }
                 if let Some((base, _path)) = Self::extract_base_and_path(&b.expr) {
                     match self.borrow.current_params.get(base.as_str()) {

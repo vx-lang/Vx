@@ -48,6 +48,12 @@ const KNOWN_DECLINES: &[&str] = &[
     "backend/pass/core_iter_adapters.vx",
     "backend/pass/core_iter_stateful_adapters.vx",
     "backend/pass/core_iter_rev.vx",
+    // `Vec::iter()` hands out `&T`: the flat path has no layout for `Option<&T>` and cannot
+    // read through a `for` variable that is a reference (#889).
+    "backend/pass/closure_map.vx",
+    "backend/pass/vec_iter_is_core_iterator.vx",
+    "backend/pass/vec_leaves_iter_names_free.vx",
+    "backend/pass/vec_iter_hands_out_references.vx",
     "backend/pass/core_iter_zip.vx",
     "backend/pass/core_iter_extend.vx",
     "backend/pass/core_iter_exact_size.vx",

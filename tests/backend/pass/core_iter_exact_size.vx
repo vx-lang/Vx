@@ -68,7 +68,7 @@ fn main() -> i32 {
   v.push(1);
   v.push(2);
   v.push(3);
-  let mut vi = v.iter().map(| x : i32 | x * 10);
+  let mut vi = v.iter().map(| x : &i32 | x * 10);
   print(vi.len());
   if !vi.is_empty() {
     print!("n");

@@ -102,7 +102,34 @@ impl<'a> TypeChecker<'a> {
     ) -> bool {
         self.unify_types(&ib.target_type, ty, mapping)
             && self.bind_projections(mapping).is_ok()
+            && self.bind_from_bound_bindings(ib, mapping)
             && self.impl_bounds_hold(ib, mapping)
+    }
+
+    /// Bind a parameter that only a bound's binding names, `T` in
+    /// `impl<T, I : Iterator<Item = &T>>`, from what `I`'s impl binds that associated type to.
+    /// False when the two cannot agree: the block does not apply.
+    fn bind_from_bound_bindings(
+        &mut self,
+        ib: &decl::ImplBlock,
+        mapping: &mut HashMap<crate::symbol::Symbol, Type>,
+    ) -> bool {
+        for param in &ib.generics {
+            let decl::GenericParam::Type { name, bounds } = param else {
+                continue;
+            };
+            for bound in bounds {
+                for (assoc, want) in &bound.bindings {
+                    let key = crate::symbol::Symbol::from(format!("{name}::{assoc}").as_str());
+                    if let Some(have) = mapping.get(&key).cloned() {
+                        if !self.unify_types(want, &have, mapping) {
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+        true
     }
 
     /// Whether every bound on the block's parameters, `impl<I : DoubleEndedIterator> ..`, holds

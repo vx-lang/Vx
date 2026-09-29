@@ -261,14 +261,14 @@ impl<'a> TypeChecker<'a> {
             Expr::Print(p) => {
                 for arg in &mut p.args {
                     let ty = self.check_expr_type_flag(arg, consume);
-                    Self::mark_unsigned_print_operand(arg, &ty);
+                    Self::prepare_print_operand(arg, &ty);
                 }
                 Type::Scalar(ElementType::I32) // Assuming print returns 0 as i32 for C compatibility
             }
             Expr::Println(p) => {
                 for arg in &mut p.args {
                     let ty = self.check_expr_type_flag(arg, consume);
-                    Self::mark_unsigned_print_operand(arg, &ty);
+                    Self::prepare_print_operand(arg, &ty);
                 }
                 Type::Scalar(ElementType::I32)
             }
