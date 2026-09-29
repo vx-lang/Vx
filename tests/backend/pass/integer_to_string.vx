@@ -1,0 +1,112 @@
+//===- integer_to_string.vx - Vx Compiler --------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `to_string` at every integer width: zero, the smallest and largest value, and each
+// power-of-ten boundary, where the digit count changes. Then `write_decimal` at an offset.
+import std::string;
+import std::alloc;
+
+fn show(name : *const i8, s : String) -> i32 {
+  let mut t = s;
+  print!(name);
+  print!("=");
+  print!(t.as_c_str());
+  print!("/");
+  print(t.len());
+  print!("; ");
+  t.drop();
+  return 0;
+}
+
+fn main() -> i32 {
+  let i8_min : i8 = -127i8 - 1i8;
+  let i8_max : i8 = 127i8;
+  show("i8_min", i8_min.to_string());
+  show("i8_max", i8_max.to_string());
+  let i16_min : i16 = -32767i16 - 1i16;
+  show("i16_min", i16_min.to_string());
+  let i32_min : i32 = -2147483647 - 1;
+  let i32_max : i32 = 2147483647;
+  show("i32_min", i32_min.to_string());
+  show("i32_max", i32_max.to_string());
+  let i64_min : i64 = -9223372036854775807i64 - 1i64;
+  let i64_max : i64 = 9223372036854775807i64;
+  show("i64_min", i64_min.to_string());
+  show("i64_max", i64_max.to_string());
+  let minus_one : i64 = -1i64;
+  show("i64_minus_one", minus_one.to_string());
+  let zero : i32 = 0;
+  show("i32_zero", zero.to_string());
+
+  let u8_max : u8 = 255u8;
+  show("u8_max", u8_max.to_string());
+  let u16_max : u16 = 65535u16;
+  show("u16_max", u16_max.to_string());
+  let u32_max : u32 = 4294967295u32;
+  show("u32_max", u32_max.to_string());
+  let u64_max : u64 = 18446744073709551615u64;
+  show("u64_max", u64_max.to_string());
+  let u64_zero : u64 = 0u64;
+  show("u64_zero", u64_zero.to_string());
+
+  // Each 10^k - 1 and 10^k, as a length pair: "9,10" is 1 then 2 digits.
+  print!("u64_boundaries=");
+  let mut p : u64 = 10u64;
+  let mut k = 1i64;
+  loop {
+    let mut below = (p - 1u64).to_string();
+    let mut at = p.to_string();
+    print(below.len());
+    print!(",");
+    print(at.len());
+    print!(" ");
+    below.drop();
+    at.drop();
+    if k == 19i64 {
+      break;
+    }
+    p = p * 10u64;
+    k = k + 1i64;
+  }
+  print!("; ");
+
+  // Written three bytes in, after "ab:", with the terminating NUL added by hand.
+  let buf : *mut i8 = unsafe { malloc(32i64) };
+  let n = unsafe {
+    buf[0i64] = 97i8;
+    buf[1i64] = 98i8;
+    buf[2i64] = 58i8;
+    i64_min.write_decimal(buf, 3i64)
+  };
+  unsafe { buf[3i64 + n] = 0i8; }
+  let mut back = unsafe { String::from_c_str(buf) };
+  print!("at_offset=");
+  print!(back.as_c_str());
+  print!("/");
+  print(n);
+  print!(";");
+  back.drop();
+  unsafe { free(buf); }
+  return 0;
+}
+
+// EXPECT: i8_min=-128/4;
+// EXPECT: i8_max=127/3;
+// EXPECT: i16_min=-32768/6;
+// EXPECT: i32_min=-2147483648/11;
+// EXPECT: i32_max=2147483647/10;
+// EXPECT: i64_min=-9223372036854775808/20;
+// EXPECT: i64_max=9223372036854775807/19;
+// EXPECT: i64_minus_one=-1/2;
+// EXPECT: i32_zero=0/1;
+// EXPECT: u8_max=255/3;
+// EXPECT: u16_max=65535/5;
+// EXPECT: u32_max=4294967295/10;
+// EXPECT: u64_max=18446744073709551615/20;
+// EXPECT: u64_zero=0/1;
+// EXPECT: u64_boundaries=1,2 2,3 3,4 4,5 5,6 6,7 7,8 8,9 9,10 10,11 11,12 12,13 13,14 14,15 15,16 16,17 17,18 18,19 19,20 ;
+// EXPECT: at_offset=ab:-9223372036854775808/20;
