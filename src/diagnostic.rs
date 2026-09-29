@@ -323,6 +323,13 @@ pub enum DiagnosticCode {
     /// alone, so the projection is made a parameter instead, as `Map<I, F>` does with its
     /// closure.
     E3041,
+    /// A bound on a type parameter, `T : Name`, where no trait called `Name` is declared or
+    /// imported. Usually a misspelling or a missing `import`.
+    E3042,
+    /// A `for` loop over a reference to a collection, `for x in &v`. Rust hands out
+    /// references to the items there, which no iterator here does yet: write `v.iter()` to
+    /// read the items, or `for x in v` to consume the collection.
+    E3043,
 
     // --- Borrow/Ownership Errors (E4xxx) ---
     /// Use of moved or consumed linear variable
@@ -333,7 +340,12 @@ pub enum DiagnosticCode {
     E4003,
     /// Cannot borrow (already mutably borrowed)
     E4004,
-    /// A returned reference escapes the function borrowing a function-local (dangling return)
+    /// A value that points into this function's stack frame would outlive the function: a
+    /// reference to a local, or a closure that uses one, returned (on its own or inside a
+    /// struct), stored through a reference, or passed to a call that could store it there.
+    /// What it points at is gone once the function returns. The same holds inside a function
+    /// for a block: a variable declared outside a block cannot be given a value that points
+    /// at a variable declared inside it.
     E4005,
 
     // --- Safety Errors (E5xxx) ---

@@ -19,11 +19,6 @@
 // The reflexive impl is called where the value already has the target type, which is the
 // one case a per-pair impl cannot serve.
 //
-// Flat-only, and the three unsigned lines are why: the AST path widens a `u8`, a `u32` and
-// a `bool` by sign-extending them, so it prints -56, -294967296 and -1 where this file
-// expects 200, 4000000000 and 1. The casts alone show it, with no library in the way.
-//
-// REQUIRES: flat-codegen
 // EXPECT: -5 300 100000 | 200 4000000000 | 16777217 0.5 1 | 5 7 42
 import core::convert;
 import core::option;

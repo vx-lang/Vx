@@ -14,6 +14,7 @@
 use super::*;
 
 mod assoc_types;
+mod bounds;
 mod conflicts;
 mod copy_impls;
 mod memory;
@@ -41,6 +42,8 @@ impl TypeChecker<'_> {
         // this: the binding is substituted into the signatures before name resolution runs.
         self.check_associated_type_bindings();
         self.check_no_projections_in_fields();
+        // `T : NoSuchTrait` on any declaration, called or not.
+        self.check_bounds_name_a_trait();
         // Structural validity of transfer lowerings: duplicate edge, empty body.
         self.check_transfer_impls();
         // Declared topologies, read from the env rather than one program: a topology arriving via

@@ -778,6 +778,19 @@ trait ExactSizeIterator {
   }
 }
 
+/// A value that can be turned into an iterator, which is what a `for` loop does with what it
+/// is given when that is not an iterator already: `for x in v` over a `Vec`.
+trait IntoIterator {
+  /// What the iterator hands out.
+  type Item;
+
+  /// The iterator `into_iter` makes.
+  type IntoIter;
+
+  /// An iterator over this value's items, consuming the value.
+  fn into_iter(self : Self) -> Self::IntoIter;
+}
+
 /// A collection that can be built from an iterator's items, which is what `collect` builds.
 trait FromIterator<A> {
   /// A new collection holding every item `iter` has left, in order.

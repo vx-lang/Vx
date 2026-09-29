@@ -1,0 +1,44 @@
+//===- closure_using_a_local_is_passed_with_a_reference.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A call given both a closure that uses a local variable and a reference could store the
+// closure through the reference. `put` does exactly that.
+//
+// In `into_callers` the reference points at the caller's struct, which outlives the call,
+// so the call is refused. In `into_a_local_then_return` it points at a local, which is
+// fine until that local is returned.
+// CHECK-DAG: Error[E4005] at 30:3: this call is given a value that points into this function's stack frame, and a reference through `out`
+// CHECK-DAG: Error[E4005] at 39:3: this returns a value that points into this function's stack frame
+import core::ops;
+
+struct Holder {
+  f : Closure1<i32, i32>,
+}
+
+fn put(out : &mut Holder, f : Closure1<i32, i32>) -> i32 {
+  out.f = f;
+  return 0;
+}
+
+fn into_callers(out : &mut Holder, k : i32) -> i32 {
+  put(out, | x : i32 | x + k);
+  return 0;
+}
+
+fn into_a_local_then_return(k : i32) -> Holder {
+  let mut h : Holder = Holder {
+    f : | x : i32 | x
+  };
+  put(&mut h, | x : i32 | x + k);
+  return h;
+}
+
+fn main() -> i32 {
+  return 0;
+}

@@ -29,6 +29,8 @@ const KNOWN_DECLINES: &[&str] = &[
     // Reading a closure back out of a struct field: the flat path loads only plain numbers
     // there ("an emitter gap" in memory.rs).
     "backend/pass/closure_literal_as_closure_value.vx",
+    // "A store to a nested nominal field": `out.f = f` puts a closure into a struct's field.
+    "backend/pass/closure_using_a_local_stays_in_its_function.vx",
     // `Option::or` and its neighbours, which answer with an `Option<T>`. The flat path
     // declines them as "a non-scalar default return" -- the same shape as the file below,
     // and the AST path handles both. The module's other methods answer with a `T` or a
@@ -46,6 +48,8 @@ const KNOWN_DECLINES: &[&str] = &[
     "backend/pass/core_iter_adapters.vx",
     "backend/pass/core_iter_stateful_adapters.vx",
     "backend/pass/core_iter_rev.vx",
+    // Same decline as `core_iter.vx`: `map` answers with a generic adaptor struct.
+    "backend/pass/closure_literal_in_a_for_header.vx",
     "backend/pass/core_iter_zip.vx",
     "backend/pass/core_iter_extend.vx",
     "backend/pass/core_iter_exact_size.vx",

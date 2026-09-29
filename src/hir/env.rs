@@ -352,8 +352,21 @@ pub enum RefProvenance {
     /// Roots in caller-owned memory: a reference *parameter* (or `'static`). Safe to return.
     External,
     /// Roots in a function-local slot: a `let` binding, a by-value parameter, or a
-    /// temporary. Returning it dangles.
-    Local,
+    /// temporary. Returning it dangles. The number is the scope depth of the innermost block
+    /// it points into: the value is gone once that block ends.
+    Local(usize),
+}
+
+impl RefProvenance {
+    /// Of two values, the one gone soonest: local beats external, a deeper block beats a
+    /// shallower one.
+    pub(crate) fn join(a: Self, b: Self) -> Self {
+        match (a, b) {
+            (Self::Local(x), Self::Local(y)) => Self::Local(x.max(y)),
+            (Self::Local(x), _) | (_, Self::Local(x)) => Self::Local(x),
+            _ => Self::External,
+        }
+    }
 }
 
 pub struct TypeChecker<'a> {
@@ -1115,7 +1128,11 @@ impl<'a> TypeChecker<'a> {
         topo_mapping: &std::collections::HashMap<crate::symbol::Symbol, Topology>,
     ) -> Function {
         let mut mangled_name = generic_func.name.to_string();
-        let mut sorted_keys: Vec<&crate::symbol::Symbol> = mapping.keys().collect();
+        // `T::Item` follows from `T`, so it adds nothing to the name.
+        let mut sorted_keys: Vec<&crate::symbol::Symbol> = mapping
+            .keys()
+            .filter(|k| !k.as_ref().contains("::"))
+            .collect();
         sorted_keys.sort();
         for g_name in sorted_keys {
             if let Some(ty) = mapping.get(g_name) {

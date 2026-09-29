@@ -225,6 +225,24 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// When `expr` is a reference to a number, rewrite it to `*expr` and return the number's
+    /// type. Both code generators already read through a `*`.
+    pub(crate) fn deref_number_operand(expr: &mut Expr, ty: &Type) -> Option<Type> {
+        let Type::Borrow { inner, .. } = ty else {
+            return None;
+        };
+        if !matches!(**inner, Type::Scalar(_)) {
+            return None;
+        }
+        let span = expr.span();
+        *expr = Expr::Dereference(DereferenceExpr {
+            expr: Box::new(expr.clone()),
+            ty: Some((**inner).clone()),
+            span,
+        });
+        Some((**inner).clone())
+    }
+
     pub(crate) fn check_binaryop_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
         match expr {
             Expr::BinaryOp(BinaryOpExpr {
@@ -234,7 +252,26 @@ impl<'a> TypeChecker<'a> {
                 span,
                 operand_ty,
             }) => {
-                let (lhs_ty, rhs_ty) = self.check_operand_pair(lhs, rhs, consume);
+                let lhs_untyped_lit = crate::hir::expr::is_untyped_numeric_literal(lhs);
+                let rhs_untyped_lit = crate::hir::expr::is_untyped_numeric_literal(rhs);
+                let (mut lhs_ty, mut rhs_ty) = self.check_operand_pair(lhs, rhs, consume);
+                // `r + 1` with `r : &i64` adds the number `r` points at, as Rust's operator
+                // impls for references do. An untyped literal on the other side was typed
+                // against the reference, so it is typed again against the number.
+                if let Some(t) = Self::deref_number_operand(lhs, &lhs_ty) {
+                    lhs_ty = t;
+                    if rhs_untyped_lit {
+                        crate::hir::expr::clear_literal_type(rhs);
+                        rhs_ty = self.check_expr_expecting(rhs, Some(lhs_ty.clone()), consume);
+                    }
+                }
+                if let Some(t) = Self::deref_number_operand(rhs, &rhs_ty) {
+                    rhs_ty = t;
+                    if lhs_untyped_lit {
+                        crate::hir::expr::clear_literal_type(lhs);
+                        lhs_ty = self.check_expr_expecting(lhs, Some(rhs_ty.clone()), consume);
+                    }
+                }
                 // Recorded for code generation: `/`, `%` and `>>` need the sign, and an
                 // MLIR integer does not carry one.
                 if let Type::Scalar(e) = &lhs_ty {
