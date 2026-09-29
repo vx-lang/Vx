@@ -352,7 +352,17 @@ impl<'a> TypeChecker<'a> {
             // `Enum` *or* `Struct` after resolution — accept both, else the element type is
             // lost and the loop variable wrongly falls back to `i64` (E3004 against an i32
             // body, the for-over-iterator typing bug, #242).
-            let opt_ty = self.check_expr_type_flag(&mut next_call, consume);
+            //
+            // Its receiver is the iterable, already checked above, so it is only probed here:
+            // checking it again would report each of the iterable's errors a second time. Only
+            // a `next` that could not be found is checked for real, to report that.
+            let saved_speculating = self.speculating;
+            self.speculating = true;
+            let mut opt_ty = self.check_expr_type_flag(&mut next_call, consume);
+            self.speculating = saved_speculating;
+            if matches!(next_call, Expr::MethodCall(_)) {
+                opt_ty = self.check_expr_type_flag(&mut next_call, consume);
+            }
             if let Expr::FunctionCall(call) = &next_call {
                 *next_fn = Some(call.name.clone());
             }

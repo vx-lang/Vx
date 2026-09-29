@@ -1,0 +1,65 @@
+//===- method_argument_of_the_wrong_type.vx - Vx Compiler --------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A method's arguments are checked against its parameters, as a function's are: on a
+// struct, on a generic struct, through a trait, in a `for` loop header, and by count.
+// Each is reported once, at the call. So is a `for` over a struct with no `next`.
+// CHECK: Error[E3003] at 50:13: Type mismatch in argument 1 for function 'S::add'. Expected i64, got bool
+// CHECK-NEXT: Error[E3003] at 54:13: Type mismatch in argument 1 for function 'G<i64>::add'. Expected i64, got bool
+// CHECK-NEXT: Error[E3003] at 55:13: Type mismatch in argument 1 for function 'S::pick'. Expected i64, got bool
+// CHECK-NEXT: Error[E3010] at 56:13: Function 'S::add' expects 1 arguments, got 2
+// CHECK-NEXT: Error[E3003] at 57:30: Type mismatch in argument 1 for function 'Range::skip'. Expected i64, got bool
+// CHECK-NEXT: Error: Method 'next' not found on type S
+// CHECK-NEXT: Semantic check failed
+import core::iter;
+
+struct S {
+  v : i64,
+}
+impl S {
+  fn add(self : &S, n : i64) -> i64 {
+    return self.v + n;
+  }
+}
+struct G<T> {
+  v : T,
+}
+impl<T> G<T> {
+  fn add(self : &G<T>, n : i64) -> i64 {
+    return n;
+  }
+}
+trait Pick {
+  fn pick(self : &Self, n : i64) -> i64;
+}
+impl Pick for S {
+  fn pick(self : &S, n : i64) -> i64 {
+    return n;
+  }
+}
+fn main() -> i32 {
+  let s = S {
+    v : 1i64
+  };
+  let a = s.add(true);
+  let g = G<i64> {
+    v : 1i64
+  };
+  let b = g.add(true);
+  let c = s.pick(true);
+  let d = s.add(1i64, 2i64);
+  for x in range(0i64, 4i64).skip(true) {
+    print(x);
+  }
+  for y in s {
+    print(y);
+  }
+  print(a + b + c + d);
+  return 0;
+}
