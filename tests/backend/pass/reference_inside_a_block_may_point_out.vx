@@ -1,0 +1,65 @@
+//===- reference_inside_a_block_may_point_out.vx - Vx Compiler ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// References the block rule of E4005 must still allow: each points at a variable that
+// lives at least as long as the reference does.
+//
+// `same_block` moves a reference to another variable of the same block. `points_out`
+// takes references inside a block to variables outside it. `used_in_the_loop` makes a
+// struct and a closure from a loop body's variable and uses them in that same body.
+//
+// EXPECT: 4 5 6
+import core::ops;
+
+struct View {
+  r : &i32,
+}
+
+fn same_block(k : i32) -> i32 {
+  let a : i32 = k;
+  let mut r : &i32 = &a;
+  let b : i32 = k + 1;
+  r = &b;
+  return *r;
+}
+
+fn points_out(k : i32) -> i32 {
+  let a : i32 = k;
+  let mut total : i32 = 0;
+  if k > 0 {
+    let r : &i32 = &a;
+    let mut s : &i32 = r;
+    let c : i32 = 2;
+    s = &c;
+    total = *r + *s;
+  }
+  return total;
+}
+
+fn used_in_the_loop(k : i32) -> i32 {
+  let mut total : i32 = 0;
+  let mut w : i32 = 0;
+  while w < k {
+    let x : i32 = w;
+    let v = View {
+      r : &x
+    };
+    let add = | y : i32 | y + x;
+    total = add(total) + *v.r;
+    w = w + 1;
+  }
+  return total;
+}
+
+fn main() -> i32 {
+  print(same_block(3));
+  print!(" ");
+  print(points_out(3));
+  print!(" ");
+  print(used_in_the_loop(3));
+  return 0;
+}
