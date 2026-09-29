@@ -178,6 +178,149 @@ macro_rules stamp_signed_int {
         return q;
       }
 
+      /// This raised to `exp`, or nothing if the answer does not fit.
+      fn checked_pow(self : $t, exp : $t) -> Option<$t> {
+        assert(exp >= (0 as $t), "checked_pow takes a non-negative exponent");
+        // By squaring. The last square is never taken, so a base whose square would not
+        // fit still gives an answer when that square is not needed.
+        if exp == (0 as $t) {
+          return Option<$t>::Some(1 as $t);
+        }
+        let mut result : $t = 1;
+        let mut base : $t = self;
+        let mut e : $t = exp;
+        loop {
+          if (e & (1 as $t)) == (1 as $t) {
+            let product = result.checked_mul(base);
+            if product.is_none() {
+              return Option<$t>::None();
+            }
+            result = product.unwrap();
+            if e == (1 as $t) {
+              return Option<$t>::Some(result);
+            }
+          }
+          e = e >> (1 as $t);
+          let square = base.checked_mul(base);
+          if square.is_none() {
+            return Option<$t>::None();
+          }
+          base = square.unwrap();
+        }
+        return Option<$t>::Some(result);
+      }
+
+      /// This raised to `exp`, wrapping round at the width. The same as `pow`, under the
+      /// name that says so.
+      fn wrapping_pow(self : $t, exp : $t) -> $t {
+        return self.pow(exp);
+      }
+
+      /// The logarithm to `base`, rounded down. Refused at zero and below, and for a base
+      /// below two.
+      fn ilog(self : $t, base : $t) -> $t {
+        assert(self > (0 as $t), "ilog needs a positive value");
+        assert(base >= (2 as $t), "ilog needs a base of at least two");
+        let mut n : $t = 0;
+        let mut rest : $t = self;
+        loop {
+          if rest < base {
+            break;
+          }
+          rest = rest / base;
+          n = n + (1 as $t);
+        }
+        return n;
+      }
+
+      /// The logarithm to base ten, rounded down. Refused at zero and below.
+      fn ilog10(self : $t) -> $t {
+        return self.ilog(10);
+      }
+
+      /// The logarithm to `base`, or nothing at zero and below or for a base below two.
+      fn checked_ilog(self : $t, base : $t) -> Option<$t> {
+        if self <= (0 as $t) || base < (2 as $t) {
+          return Option<$t>::None();
+        }
+        return Option<$t>::Some(self.ilog(base));
+      }
+
+      /// The logarithm to base two, or nothing at zero and below.
+      fn checked_ilog2(self : $t) -> Option<$t> {
+        if self <= (0 as $t) {
+          return Option<$t>::None();
+        }
+        return Option<$t>::Some(self.ilog2());
+      }
+
+      /// The logarithm to base ten, or nothing at zero and below.
+      fn checked_ilog10(self : $t) -> Option<$t> {
+        return self.checked_ilog(10);
+      }
+
+      /// This raised to `exp`, held at the end of the range it overflows towards: the
+      /// bottom for a negative base to an odd power, the top otherwise.
+      fn saturating_pow(self : $t, exp : $t) -> $t {
+        let r = self.checked_pow(exp);
+        if r.is_some() {
+          return r.unwrap();
+        }
+        if self < (0 as $t) && (exp & (1 as $t)) == (1 as $t) {
+          return self.min_value();
+        }
+        return self.max_value();
+      }
+
+      /// The absolute value, or nothing for the smallest value, whose positive does not fit.
+      fn checked_abs(self : $t) -> Option<$t> {
+        if self == self.min_value() {
+          return Option<$t>::None();
+        }
+        return Option<$t>::Some(self.abs());
+      }
+
+      /// The absolute value, wrapping: the smallest value gives itself.
+      fn wrapping_abs(self : $t) -> $t {
+        if self == self.min_value() {
+          return self;
+        }
+        return self.abs();
+      }
+
+      /// The absolute value, held at the largest value for the smallest.
+      fn saturating_abs(self : $t) -> $t {
+        if self == self.min_value() {
+          return self.max_value();
+        }
+        return self.abs();
+      }
+
+      /// The negation, held at the largest value for the smallest.
+      fn saturating_neg(self : $t) -> $t {
+        if self == self.min_value() {
+          return self.max_value();
+        }
+        return -self;
+      }
+
+      /// The quotient, wrapping: the smallest value divided by -1 gives itself. Refused on
+      /// a zero divisor, as `/` is.
+      fn wrapping_div(self : $t, rhs : $t) -> $t {
+        if self == self.min_value() && rhs == (-1 as $t) {
+          return self;
+        }
+        return self / rhs;
+      }
+
+      /// The remainder, wrapping: the smallest value by -1 gives 0.
+      fn wrapping_rem(self : $t, rhs : $t) -> $t {
+        if self == self.min_value() && rhs == (-1 as $t) {
+          return 0;
+        }
+        return self % rhs;
+      }
+
       /// Rounded down. Refused at zero and below.
       fn ilog2(self : $t) -> $t {
         assert(self > (0 as $t), "ilog2 needs a positive value");
@@ -494,6 +637,135 @@ macro_rules stamp_unsigned_int {
       /// Plain remainder, which at this width is never negative.
       fn rem_euclid(self : $t, rhs : $t) -> $t {
         return self % rhs;
+      }
+
+      /// This raised to `exp`, or nothing if the answer does not fit.
+      fn checked_pow(self : $t, exp : $t) -> Option<$t> {
+        assert(exp >= (0 as $t), "checked_pow takes a non-negative exponent");
+        // By squaring. The last square is never taken, so a base whose square would not
+        // fit still gives an answer when that square is not needed.
+        if exp == (0 as $t) {
+          return Option<$t>::Some(1 as $t);
+        }
+        let mut result : $t = 1;
+        let mut base : $t = self;
+        let mut e : $t = exp;
+        loop {
+          if (e & (1 as $t)) == (1 as $t) {
+            let product = result.checked_mul(base);
+            if product.is_none() {
+              return Option<$t>::None();
+            }
+            result = product.unwrap();
+            if e == (1 as $t) {
+              return Option<$t>::Some(result);
+            }
+          }
+          e = e >> (1 as $t);
+          let square = base.checked_mul(base);
+          if square.is_none() {
+            return Option<$t>::None();
+          }
+          base = square.unwrap();
+        }
+        return Option<$t>::Some(result);
+      }
+
+      /// This raised to `exp`, wrapping round at the width. The same as `pow`, under the
+      /// name that says so.
+      fn wrapping_pow(self : $t, exp : $t) -> $t {
+        return self.pow(exp);
+      }
+
+      /// The logarithm to `base`, rounded down. Refused at zero and below, and for a base
+      /// below two.
+      fn ilog(self : $t, base : $t) -> $t {
+        assert(self > (0 as $t), "ilog needs a positive value");
+        assert(base >= (2 as $t), "ilog needs a base of at least two");
+        let mut n : $t = 0;
+        let mut rest : $t = self;
+        loop {
+          if rest < base {
+            break;
+          }
+          rest = rest / base;
+          n = n + (1 as $t);
+        }
+        return n;
+      }
+
+      /// The logarithm to base ten, rounded down. Refused at zero and below.
+      fn ilog10(self : $t) -> $t {
+        return self.ilog(10);
+      }
+
+      /// The logarithm to `base`, or nothing at zero and below or for a base below two.
+      fn checked_ilog(self : $t, base : $t) -> Option<$t> {
+        if self <= (0 as $t) || base < (2 as $t) {
+          return Option<$t>::None();
+        }
+        return Option<$t>::Some(self.ilog(base));
+      }
+
+      /// The logarithm to base two, or nothing at zero and below.
+      fn checked_ilog2(self : $t) -> Option<$t> {
+        if self <= (0 as $t) {
+          return Option<$t>::None();
+        }
+        return Option<$t>::Some(self.ilog2());
+      }
+
+      /// The logarithm to base ten, or nothing at zero and below.
+      fn checked_ilog10(self : $t) -> Option<$t> {
+        return self.checked_ilog(10);
+      }
+
+      /// This raised to `exp`, held at the largest value if it overflows.
+      fn saturating_pow(self : $t, exp : $t) -> $t {
+        return self.checked_pow(exp).unwrap_or(self.max_value());
+      }
+
+      /// Does `rhs` divide this exactly? Zero is a multiple only of zero, and every value of
+      /// one.
+      fn is_multiple_of(self : $t, rhs : $t) -> bool {
+        if rhs == (0 as $t) {
+          return self == (0 as $t);
+        }
+        return self % rhs == (0 as $t);
+      }
+
+      /// The smallest multiple of `rhs` at or above this. Refused on a zero `rhs`, and when
+      /// the answer does not fit.
+      fn next_multiple_of(self : $t, rhs : $t) -> $t {
+        let r = self.checked_next_multiple_of(rhs);
+        assert(r.is_some(), "next_multiple_of has no answer here");
+        return r.unwrap();
+      }
+
+      /// The smallest multiple of `rhs` at or above this, or nothing on a zero `rhs` or when
+      /// the answer does not fit.
+      fn checked_next_multiple_of(self : $t, rhs : $t) -> Option<$t> {
+        if rhs == (0 as $t) {
+          return Option<$t>::None();
+        }
+        let r = self % rhs;
+        if r == (0 as $t) {
+          return Option<$t>::Some(self);
+        }
+        return self.checked_add(rhs - r);
+      }
+
+      /// The smallest power of two at or above this, or nothing above the top power of two.
+      fn checked_next_power_of_two(self : $t) -> Option<$t> {
+        if self <= (1 as $t) {
+          return Option<$t>::Some(1 as $t);
+        }
+        let one : $t = 1;
+        let shift = self.bits() - (self - one).leading_zeros();
+        if shift >= self.bits() {
+          return Option<$t>::None();
+        }
+        return Option<$t>::Some(one << shift);
       }
 
       /// Rounded down. Refused at zero, which has no logarithm.

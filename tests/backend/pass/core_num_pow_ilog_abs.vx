@@ -1,0 +1,176 @@
+//===- core_num_pow_ilog_abs.vx - Vx Compiler ---------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The checked, saturating and wrapping forms of `pow`, the integer logarithms, the signed
+// `abs`/`neg`/division forms, and the unsigned multiple-of methods.
+//
+// Each is asked on both sides of the point where it stops fitting. `(-2).checked_pow(31)`
+// is the smallest `i32` and fits, while `2.checked_pow(31)` does not. `1.checked_pow` of a
+// billion must finish, which it does only if the power is taken by squaring. -1 in an
+// answer below means "nothing" (`None`).
+//
+// Flat path only, for the unsigned half: the legacy code generator compares a `u8` as
+// signed.
+//
+// REQUIRES: flat-codegen
+// EXPECT: 81 -1 1073741824 -2147483648 1 -1 -1 2147395600 | 2147483647 -2147483648 2147483647 | 0 1870418611 | 4 3 2 3 9 -1 -1 -1 10 | -1 5 -2147483648 2147483647 2147483647 -5 -2147483648 -3 0 -1 | 1 128 243 255 10000000000000000000 1 19 | 1 0 1 0 | 15 15 252 1 1 | 1 128 1 1
+import core::num;
+import core::option;
+
+fn show(b : bool) -> i32 {
+  if b {
+    print!("1 ");
+  } else {
+    print!("0 ");
+  }
+  return 0;
+}
+
+fn signed() -> i32 {
+  let three : i32 = 3;
+  let two : i32 = 2;
+  let minus_two : i32 = -2;
+  let one : i32 = 1;
+  let minus_one : i32 = -1;
+  let min : i32 = -2147483647 - 1;
+  let max : i32 = 2147483647;
+  let a : i32 = 46341;
+  let b : i32 = 46340;
+  print(three.checked_pow(4).unwrap_or(-1));
+  print!(" ");
+  print(two.checked_pow(31).unwrap_or(-1));
+  print!(" ");
+  print(two.checked_pow(30).unwrap_or(-1));
+  print!(" ");
+  print(minus_two.checked_pow(31).unwrap_or(-1));
+  print!(" ");
+  print(one.checked_pow(1000000000).unwrap_or(-1));
+  print!(" ");
+  print(minus_one.checked_pow(999999999).unwrap_or(0));
+  print!(" ");
+  print(a.checked_pow(2).unwrap_or(-1));
+  print!(" ");
+  print(b.checked_pow(2).unwrap_or(-1));
+  print!(" | ");
+  print(two.saturating_pow(31));
+  print!(" ");
+  print(minus_two.saturating_pow(33));
+  print!(" ");
+  let minus_three : i32 = -3;
+  print(minus_three.saturating_pow(20));
+  print!(" | ");
+  print(two.wrapping_pow(32));
+  print!(" ");
+  print(three.wrapping_pow(21));
+  print!(" | ");
+  let e81 : i32 = 81;
+  let e80 : i32 = 80;
+  let e999 : i32 = 999;
+  let e1000 : i32 = 1000;
+  let zero : i32 = 0;
+  let minus_five : i32 = -5;
+  let eight : i32 = 8;
+  let e1024 : i32 = 1024;
+  print(e81.ilog(3));
+  print!(" ");
+  print(e80.ilog(3));
+  print!(" ");
+  print(e999.ilog10());
+  print!(" ");
+  print(e1000.ilog10());
+  print!(" ");
+  print(max.ilog10());
+  print!(" ");
+  print(zero.checked_ilog10().unwrap_or(-1));
+  print!(" ");
+  print(minus_five.checked_ilog2().unwrap_or(-1));
+  print!(" ");
+  print(eight.checked_ilog(1).unwrap_or(-1));
+  print!(" ");
+  print(e1024.checked_ilog2().unwrap_or(-1));
+  print!(" | ");
+  let five : i32 = 5;
+  let minus_seven : i32 = -7;
+  print(min.checked_abs().unwrap_or(-1));
+  print!(" ");
+  print(minus_five.checked_abs().unwrap_or(-1));
+  print!(" ");
+  print(min.wrapping_abs());
+  print!(" ");
+  print(min.saturating_abs());
+  print!(" ");
+  print(min.saturating_neg());
+  print!(" ");
+  print(five.saturating_neg());
+  print!(" ");
+  print(min.wrapping_div(-1));
+  print!(" ");
+  print(minus_seven.wrapping_div(2));
+  print!(" ");
+  print(min.wrapping_rem(-1));
+  print!(" ");
+  print(minus_seven.wrapping_rem(2));
+  return 0;
+}
+
+fn unsigned() -> i32 {
+  let two8 : u8 = 2;
+  let three8 : u8 = 3;
+  let ten : u64 = 10;
+  let max64 : u64 = 18446744073709551615;
+  let none8 : u8 = 0;
+  show(two8.checked_pow(8).is_none());
+  print(two8.checked_pow(7).unwrap_or(none8));
+  print!(" ");
+  print(three8.checked_pow(5).unwrap_or(none8));
+  print!(" ");
+  print(two8.saturating_pow(8));
+  print!(" ");
+  print(ten.checked_pow(19).unwrap_or(0));
+  print!(" ");
+  show(ten.checked_pow(20).is_none());
+  print(max64.ilog10());
+  print!(" | ");
+  let twelve : u32 = 12;
+  let zero : u32 = 0;
+  let five : u32 = 5;
+  show(twelve.is_multiple_of(4));
+  show(twelve.is_multiple_of(5));
+  show(zero.is_multiple_of(0));
+  show(five.is_multiple_of(0));
+  print!("| ");
+  let thirteen : u32 = 13;
+  let fifteen : u32 = 15;
+  let b250 : u8 = 250;
+  let b253 : u8 = 253;
+  print(thirteen.next_multiple_of(5));
+  print!(" ");
+  print(fifteen.next_multiple_of(5));
+  print!(" ");
+  print(b250.checked_next_multiple_of(7).unwrap_or(none8));
+  print!(" ");
+  show(b253.checked_next_multiple_of(7).is_none());
+  show(b250.checked_next_multiple_of(0).is_none());
+  print!("| ");
+  let b129 : u8 = 129;
+  let b100 : u8 = 100;
+  let big : u64 = 9223372036854775809;
+  show(b129.checked_next_power_of_two().is_none());
+  print(b100.checked_next_power_of_two().unwrap_or(none8));
+  print!(" ");
+  print(none8.checked_next_power_of_two().unwrap_or(none8));
+  print!(" ");
+  show(big.checked_next_power_of_two().is_none());
+  return 0;
+}
+
+fn main() -> i32 {
+  signed();
+  print!(" | ");
+  unsigned();
+  return 0;
+}
