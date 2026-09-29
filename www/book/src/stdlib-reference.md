@@ -963,6 +963,12 @@ The integer and float methods, stamped over every width.
   Plain remainder, which at this width is never negative.
 - `fn ilog2(self : $t) -> $t`<br>
   Rounded down. Refused at zero, which has no logarithm.
+- `fn isqrt(self : $t) -> $t`<br>
+  The square root, rounded down, digit by digit in base four.
+- `fn midpoint(self : $t, rhs : $t) -> $t`<br>
+  Halfway between two values, rounded down, without overflowing.
+- `fn div_ceil(self : $t, rhs : $t) -> $t`<br>
+  The quotient rounded up. Refused on a zero divisor.
 - `fn next_power_of_two(self : $t) -> $t`<br>
   One for anything at or below one. Refused above the top power of two, which is the
   half of the range that has no next power to reach.
@@ -1110,6 +1116,14 @@ The integer and float methods, stamped over every width.
   The quotient pairing with `rem_euclid`.
 - `fn ilog2(self : T) -> T`<br>
   Rounded down. Refused at zero and below.
+- `fn isqrt(self : T) -> T`<br>
+  The square root, rounded down. Refused below zero.
+  Digit by digit in base four, so nothing overflows and no float is involved.
+- `fn checked_isqrt(self : T) -> Option<T>`<br>
+  The square root rounded down, or nothing below zero.
+- `fn midpoint(self : T, rhs : T) -> T`<br>
+  Halfway between two values, rounded towards zero, without overflowing.
+  `>>` rounds down, so a negative answer with a half left over is moved up by one.
 - `fn next_power_of_two(self : T) -> T`<br>
   One for anything at or below one. The top power of two does not fit in a
   signed width, so a value beyond it is refused.
@@ -1979,6 +1993,11 @@ SIMD vector types and operations.
 
 Operations on `Tensor`, including shape queries and elementwise maths.
 
+**Types**
+
+- `trait Float`<br>
+  A floating-point element type, the only kind these tensor methods are written for.
+
 **`Tensor<T, [?, ?]>` methods**
 
 - `fn from_ptr_1d(ptr : *mut T, d1 : i32) -> Tensor<T, [?, ?]>`<br>
@@ -2170,4 +2189,4 @@ Clocks and durations.
 
 ______________________________________________________________________
 
-761 functions across 34 modules.
+776 functions across 34 modules.

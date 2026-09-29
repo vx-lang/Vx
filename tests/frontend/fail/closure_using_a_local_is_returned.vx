@@ -1,0 +1,51 @@
+//===- closure_using_a_local_is_returned.vx - Vx Compiler ---------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A closure that uses `k`, a parameter of the function that made it, cannot be returned:
+// `k` is gone once that function returns, and the closure would read whatever is left in
+// its place. This used to compile and print a wrong answer.
+//
+// Three ways of returning it, one per function: through a generic call that wraps it,
+// straight in a struct literal, and after passing through two variables.
+// CHECK-DAG: Error[E4005] at 32:3: this returns a value that points into this function's stack frame
+// CHECK-DAG: Error[E4005] at 36:3: this returns a value that points into this function's stack frame
+// CHECK-DAG: Error[E4005] at 46:3: this returns a value that points into this function's stack frame
+import core::ops;
+
+struct Holder<T> {
+  f : Closure1<T, T>,
+}
+
+fn wrap<T>(f : Closure1<T, T>) -> Holder<T> {
+  return Holder<T> {
+    f : f
+  };
+}
+
+fn through_a_call(k : i32) -> Holder<i32> {
+  return wrap(| x : i32 | x + k);
+}
+
+fn in_a_struct(k : i32) -> Holder<i32> {
+  return Holder<i32> {
+    f : | x : i32 | x + k
+  };
+}
+
+fn through_variables(k : i32) -> Holder<i32> {
+  let h : Holder<i32> = Holder<i32> {
+    f : | x : i32 | x + k
+  };
+  let g : Holder<i32> = h;
+  return g;
+}
+
+fn main() -> i32 {
+  return 0;
+}

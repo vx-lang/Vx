@@ -1,0 +1,68 @@
+//===- bound_names_no_trait.vx - Vx Compiler --------------------*- Vx -*-===//
+// RUN: not vxc %s --action print-ast 2>&1 | FileCheck %s
+//
+// A bound that names a trait nobody declared is refused wherever it is written, even on a
+// function nobody calls. Each `NoSuch` name below is reported once; `Size` exists and is not.
+
+trait Size {
+  fn size(self : &Self) -> i32;
+}
+
+struct Holder<T : NoSuchA> {
+  v : T,
+}
+
+enum Pick<T : NoSuchB> {
+  One(T),
+}
+
+fn never_called<T : NoSuchC>(v : T) -> i32 {
+  return 1;
+}
+
+fn mixed<T : Size + NoSuchD>(v : T) -> i32 {
+  return 1;
+}
+
+// A default body is copied into each impl of the trait, and reported only here.
+trait Shape {
+  fn area<T : NoSuchE>(self : &Self, t : T) -> i32 {
+    return 0;
+  }
+}
+
+struct Twice<T> {
+  inner : T,
+}
+
+impl<T : NoSuchF> Size for Twice<T> {
+  fn size(self : &Twice<T>) -> i32 {
+    return 2;
+  }
+}
+
+impl<T> Shape for Twice<T> {}
+
+// `Topology` is a keyword that marks a topology parameter, not a trait.
+fn on_any<D : Topology>(x : i32) -> i32 {
+  return x;
+}
+
+impl<T> Twice<T> {
+  fn scaled<U : NoSuchG>(self : &Twice<T>, u : U) -> i32 {
+    return 3;
+  }
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK: Error[E3042]: the bound `T : NoSuchB` on `enum Pick` names no trait
+// CHECK-NEXT: Error[E3042]: the bound `T : NoSuchD` on `fn mixed` names no trait
+// CHECK-NEXT: Error[E3042]: the bound `T : NoSuchC` on `fn never_called` names no trait
+// CHECK-NEXT: Error[E3042]: the bound `T : NoSuchF` on `impl Size for Twice<T>` names no trait
+// CHECK-NEXT: Error[E3042]: the bound `T : NoSuchE` on `method Shape::area` names no trait
+// CHECK-NEXT: Error[E3042]: the bound `U : NoSuchG` on `method Twice<T>::scaled` names no trait
+// CHECK-NEXT: Error[E3042]: the bound `T : NoSuchA` on `struct Holder` names no trait
+// CHECK-NEXT: 7 error(s) emitted

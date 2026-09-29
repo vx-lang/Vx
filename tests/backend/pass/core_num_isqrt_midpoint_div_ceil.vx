@@ -1,0 +1,177 @@
+//===- core_num_isqrt_midpoint_div_ceil.vx - Vx Compiler ----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `isqrt`, `checked_isqrt`, `midpoint` and `div_ceil` from `core::num`.
+//
+// `isqrt` is asked for the largest value of each width, where a root that overflowed on the
+// way would show. A signed `midpoint` rounds towards zero, so -3 and 0 give -1 while 3 and 0
+// give 1; the smallest and largest values together give 0 rather than overflowing. The
+// unsigned values are above the signed range, so a signed shift or compare would print a
+// different answer. `div_ceil` is unsigned only, as it is stable in Rust.
+//
+// Flat path only: the legacy code generator shifts and compares an unsigned value as signed.
+//
+// REQUIRES: flat-codegen
+// EXPECT: 0 1 9 11 181 46340 3037000499 1 7 | -1 1 0 0 -4 4 0 2147483647 -2147483648 127 0 -128 9223372036854775806 | 15 14 255 65535 4294967295 3513641828 | 255 127 150 15396211487472059752 | 4 4 0 128 1 1763668414462081128
+import core::num;
+import core::option;
+
+fn show(b : bool) -> i32 {
+  if b {
+    print(1);
+  } else {
+    print(0);
+  }
+  return 0;
+}
+
+fn signed_isqrt() -> i32 {
+  let zero : i8 = 0;
+  let one : i8 = 1;
+  let ninety_nine : i8 = 99;
+  let max8 : i8 = 127;
+  let max16 : i16 = 32767;
+  let max32 : i32 = 2147483647;
+  let max64 : i64 = 9223372036854775807;
+  let negative : i32 = -1;
+  let forty_nine : i32 = 49;
+  print(zero.isqrt() as i32);
+  print!(" ");
+  print(one.isqrt() as i32);
+  print!(" ");
+  print(ninety_nine.isqrt() as i32);
+  print!(" ");
+  print(max8.isqrt() as i32);
+  print!(" ");
+  print(max16.isqrt() as i32);
+  print!(" ");
+  print(max32.isqrt());
+  print!(" ");
+  print(max64.isqrt());
+  print!(" ");
+  show(negative.checked_isqrt().is_none());
+  print!(" ");
+  print(forty_nine.checked_isqrt().unwrap_or(-1));
+  return 0;
+}
+
+fn signed_midpoint() -> i32 {
+  let a : i32 = -3;
+  let b : i32 = 3;
+  let c : i32 = -1;
+  let d : i32 = -2;
+  let e : i32 = -7;
+  let f : i32 = 7;
+  let zero : i32 = 0;
+  let one : i32 = 1;
+  let two : i32 = 2;
+  let minus_two : i32 = -2;
+  let min32 : i32 = -2147483647 - 1;
+  let max32 : i32 = 2147483647;
+  let min8 : i8 = -127 - 1;
+  let max8 : i8 = 127;
+  let max64 : i64 = 9223372036854775807;
+  let near64 : i64 = 9223372036854775805;
+  print(a.midpoint(zero));
+  print!(" ");
+  print(b.midpoint(zero));
+  print!(" ");
+  print(c.midpoint(zero));
+  print!(" ");
+  print(d.midpoint(one));
+  print!(" ");
+  print(e.midpoint(minus_two));
+  print!(" ");
+  print(f.midpoint(two));
+  print!(" ");
+  print(min32.midpoint(max32));
+  print!(" ");
+  print(max32.midpoint(max32));
+  print!(" ");
+  print(min32.midpoint(min32));
+  print!(" ");
+  print(max8.midpoint(max8) as i32);
+  print!(" ");
+  print(min8.midpoint(max8) as i32);
+  print!(" ");
+  print(min8.midpoint(min8) as i32);
+  print!(" ");
+  print(max64.midpoint(near64));
+  return 0;
+}
+
+fn unsigned_isqrt() -> i32 {
+  let max8 : u8 = 255;
+  let two_hundred : u8 = 200;
+  let max16 : u16 = 65535;
+  let max32 : u32 = 4294967295;
+  let max64 : u64 = 18446744073709551615;
+  let wide : u64 = 12345678901234567890;
+  print(max8.isqrt());
+  print!(" ");
+  print(two_hundred.isqrt());
+  print!(" ");
+  print(max16.isqrt());
+  print!(" ");
+  print(max32.isqrt());
+  print!(" ");
+  print(max64.isqrt());
+  print!(" ");
+  print(wide.isqrt());
+  return 0;
+}
+
+fn unsigned_midpoint() -> i32 {
+  let max8 : u8 = 255;
+  let zero8 : u8 = 0;
+  let two_hundred : u8 = 200;
+  let hundred : u8 = 100;
+  let max64 : u64 = 18446744073709551615;
+  let wide : u64 = 12345678901234567890;
+  print(max8.midpoint(max8));
+  print!(" ");
+  print(max8.midpoint(zero8));
+  print!(" ");
+  print(two_hundred.midpoint(hundred));
+  print!(" ");
+  print(max64.midpoint(wide));
+  return 0;
+}
+
+fn unsigned_div_ceil() -> i32 {
+  let seven : u8 = 7;
+  let eight : u8 = 8;
+  let zero : u8 = 0;
+  let max8 : u8 = 255;
+  let max32 : u32 = 4294967295;
+  let wide : u64 = 12345678901234567890;
+  print(seven.div_ceil(2));
+  print!(" ");
+  print(eight.div_ceil(2));
+  print!(" ");
+  print(zero.div_ceil(5));
+  print!(" ");
+  print(max8.div_ceil(2));
+  print!(" ");
+  print(max32.div_ceil(max32));
+  print!(" ");
+  print(wide.div_ceil(7));
+  return 0;
+}
+
+fn main() -> i32 {
+  signed_isqrt();
+  print!(" | ");
+  signed_midpoint();
+  print!(" | ");
+  unsigned_isqrt();
+  print!(" | ");
+  unsigned_midpoint();
+  print!(" | ");
+  unsigned_div_ceil();
+  return 0;
+}
