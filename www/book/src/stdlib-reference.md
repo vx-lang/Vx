@@ -988,18 +988,6 @@ The integer and float methods, stamped over every width.
   How many set bits the value starts with, counting from the top.
 - `fn trailing_ones(self : $t) -> $t`<br>
   How many set bits the value ends with, counting from the bottom.
-- `fn overflowing_add(self : $t, rhs : $t) -> ($t, bool)`<br>
-  The wrapped sum, and whether it wrapped.
-- `fn overflowing_sub(self : $t, rhs : $t) -> ($t, bool)`<br>
-  The wrapped difference, and whether it went below zero.
-- `fn overflowing_mul(self : $t, rhs : $t) -> ($t, bool)`<br>
-  The wrapped product, and whether it wrapped.
-- `fn overflowing_neg(self : $t) -> ($t, bool)`<br>
-  Zero minus this, wrapping, and whether it wrapped: every value but zero does.
-- `fn overflowing_div(self : $t, rhs : $t) -> ($t, bool)`<br>
-  The quotient, which never wraps at an unsigned width.
-- `fn overflowing_rem(self : $t, rhs : $t) -> ($t, bool)`<br>
-  The remainder, which never wraps at an unsigned width.
 - `fn sqrt(self : $t) -> $t`<br>
   The positive square root.
 - `fn abs(self : $t) -> $t`<br>
@@ -1154,22 +1142,6 @@ The integer and float methods, stamped over every width.
   How many set bits the value starts with, counting from the top.
 - `fn trailing_ones(self : T) -> T`<br>
   How many set bits the value ends with, counting from the bottom.
-- `fn overflowing_add(self : T, rhs : T) -> (T, bool)`<br>
-  The wrapped sum, and whether it wrapped.
-- `fn overflowing_sub(self : T, rhs : T) -> (T, bool)`<br>
-  The wrapped difference, and whether it wrapped.
-- `fn overflowing_mul(self : T, rhs : T) -> (T, bool)`<br>
-  The wrapped product, and whether it wrapped.
-- `fn overflowing_neg(self : T) -> (T, bool)`<br>
-  The negation, and whether it wrapped: only the smallest value does, to itself.
-- `fn overflowing_abs(self : T) -> (T, bool)`<br>
-  The absolute value, and whether it wrapped: only the smallest value does, to itself.
-- `fn overflowing_div(self : T, rhs : T) -> (T, bool)`<br>
-  The quotient, and whether it wrapped: the smallest value divided by -1 gives
-  itself. Refused on a zero divisor, as `/` is.
-- `fn overflowing_rem(self : T, rhs : T) -> (T, bool)`<br>
-  The remainder, and whether it wrapped: the smallest value by -1 gives 0 and says
-  so, since the division beside it overflows.
 
 T = `i8`, `i16`, `i32`, `i64`
 
@@ -2182,4 +2154,4 @@ Clocks and durations.
 
 ______________________________________________________________________
 
-792 functions across 33 modules.
+758 functions across 33 modules.
