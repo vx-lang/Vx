@@ -1,0 +1,106 @@
+//===- ascii.vx - Vx Standard Library -----------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The ASCII methods on `u8`: the character classes and the case changes.
+//
+// Rust has these as inherent methods on `u8` in `core::num`. They live in their own module
+// here, so a program imports `core::ascii` to get them; they need no `char` or `str`, and
+// the `char` versions can be written over them later.
+//
+// The byte values are written as numbers, with the character in the comment, because a
+// byte literal does not exist yet. Right on the flat path only: the legacy code generator
+// compares a `u8` as signed, so a byte of 128 or more reads as negative there.
+
+impl u8 {
+  /// Is this byte in the ASCII range, 0 to 127?
+  fn is_ascii(self : u8) -> bool {
+    return self <= 127;
+  }
+
+  /// Is this `A` to `Z` (65 to 90)?
+  fn is_ascii_uppercase(self : u8) -> bool {
+    return self >= 65 && self <= 90;
+  }
+
+  /// Is this `a` to `z` (97 to 122)?
+  fn is_ascii_lowercase(self : u8) -> bool {
+    return self >= 97 && self <= 122;
+  }
+
+  /// Is this a letter, of either case?
+  fn is_ascii_alphabetic(self : u8) -> bool {
+    return self.is_ascii_uppercase() || self.is_ascii_lowercase();
+  }
+
+  /// Is this `0` to `9` (48 to 57)?
+  fn is_ascii_digit(self : u8) -> bool {
+    return self >= 48 && self <= 57;
+  }
+
+  /// Is this a letter or a digit?
+  fn is_ascii_alphanumeric(self : u8) -> bool {
+    return self.is_ascii_alphabetic() || self.is_ascii_digit();
+  }
+
+  /// Is this a digit, or `A` to `F` (65 to 70), or `a` to `f` (97 to 102)?
+  fn is_ascii_hexdigit(self : u8) -> bool {
+    return self.is_ascii_digit() || (self >= 65 && self <= 70) || (self >= 97 && self <= 102);
+  }
+
+  /// Is this one of the 32 punctuation marks: `!` to `/`, `:` to `@`, `[` to the backtick,
+  /// or `{` to `~`?
+  fn is_ascii_punctuation(self : u8) -> bool {
+    return (self >= 33 && self <= 47) || (self >= 58 && self <= 64) || (self >= 91 && self <= 96) || (self >= 123 && self <= 126);
+  }
+
+  /// Is this a visible character, `!` (33) to `~` (126)? The space is not one.
+  fn is_ascii_graphic(self : u8) -> bool {
+    return self >= 33 && self <= 126;
+  }
+
+  /// Is this a space (32), tab (9), line feed (10), form feed (12) or carriage return
+  /// (13)? The vertical tab (11) is not, as in Rust.
+  fn is_ascii_whitespace(self : u8) -> bool {
+    return self == 32 || self == 9 || self == 10 || self == 12 || self == 13;
+  }
+
+  /// Is this a control character, 0 to 31 or delete (127)?
+  fn is_ascii_control(self : u8) -> bool {
+    return self <= 31 || self == 127;
+  }
+
+  /// The uppercase letter for a lowercase one; any other byte unchanged.
+  fn to_ascii_uppercase(self : u8) -> u8 {
+    if self.is_ascii_lowercase() {
+      return self - 32;
+    }
+    return self;
+  }
+
+  /// The lowercase letter for an uppercase one; any other byte unchanged.
+  fn to_ascii_lowercase(self : u8) -> u8 {
+    if self.is_ascii_uppercase() {
+      return self + 32;
+    }
+    return self;
+  }
+
+  /// Are the two bytes the same once letters are put in one case?
+  fn eq_ignore_ascii_case(self : u8, other : &u8) -> bool {
+    return self.to_ascii_lowercase() == (*other).to_ascii_lowercase();
+  }
+
+  /// Turns this byte into its uppercase letter, if it is a lowercase one.
+  fn make_ascii_uppercase(self : &mut u8) -> void {
+    *self = (*self).to_ascii_uppercase();
+  }
+
+  /// Turns this byte into its lowercase letter, if it is an uppercase one.
+  fn make_ascii_lowercase(self : &mut u8) -> void {
+    *self = (*self).to_ascii_lowercase();
+  }
+}

@@ -1,0 +1,198 @@
+//===- core_ascii.vx - Vx Compiler --------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The ASCII methods on `u8`, asked of all 256 byte values.
+//
+// For each character class the test prints how many bytes are in it and the sum of those
+// bytes, so a class that moved one of its ends by one byte changes the sum even when the
+// count stays. The expected numbers come from Python's `string` module. The last three are
+// the sums of `to_ascii_uppercase` and `to_ascii_lowercase` over every byte, and how many
+// of the 65536 pairs `eq_ignore_ascii_case` accepts.
+//
+// Flat path only: the legacy code generator compares a `u8` as signed.
+//
+// REQUIRES: flat-codegen
+// EXPECT: 128 8128 | 26 2015 | 26 2847 | 52 4862 | 10 525 | 62 5387 | 22 1527 | 32 2086 | 94 7473 | 5 76 | 33 623 | 31808 33472 308 | 72 65
+import core::ascii;
+
+fn main() -> i32 {
+  let mut count : i32 = 0;
+  let mut total : i32 = 0;
+  count = 0;
+  total = 0;
+  for i in 0..256 {
+    let b : u8 = i as u8;
+    if b.is_ascii() {
+      count += 1;
+      total += i;
+    }
+  }
+  print(count);
+  print!(" ");
+  print(total);
+  print!(" | ");
+  count = 0;
+  total = 0;
+  for i in 0..256 {
+    let b : u8 = i as u8;
+    if b.is_ascii_uppercase() {
+      count += 1;
+      total += i;
+    }
+  }
+  print(count);
+  print!(" ");
+  print(total);
+  print!(" | ");
+  count = 0;
+  total = 0;
+  for i in 0..256 {
+    let b : u8 = i as u8;
+    if b.is_ascii_lowercase() {
+      count += 1;
+      total += i;
+    }
+  }
+  print(count);
+  print!(" ");
+  print(total);
+  print!(" | ");
+  count = 0;
+  total = 0;
+  for i in 0..256 {
+    let b : u8 = i as u8;
+    if b.is_ascii_alphabetic() {
+      count += 1;
+      total += i;
+    }
+  }
+  print(count);
+  print!(" ");
+  print(total);
+  print!(" | ");
+  count = 0;
+  total = 0;
+  for i in 0..256 {
+    let b : u8 = i as u8;
+    if b.is_ascii_digit() {
+      count += 1;
+      total += i;
+    }
+  }
+  print(count);
+  print!(" ");
+  print(total);
+  print!(" | ");
+  count = 0;
+  total = 0;
+  for i in 0..256 {
+    let b : u8 = i as u8;
+    if b.is_ascii_alphanumeric() {
+      count += 1;
+      total += i;
+    }
+  }
+  print(count);
+  print!(" ");
+  print(total);
+  print!(" | ");
+  count = 0;
+  total = 0;
+  for i in 0..256 {
+    let b : u8 = i as u8;
+    if b.is_ascii_hexdigit() {
+      count += 1;
+      total += i;
+    }
+  }
+  print(count);
+  print!(" ");
+  print(total);
+  print!(" | ");
+  count = 0;
+  total = 0;
+  for i in 0..256 {
+    let b : u8 = i as u8;
+    if b.is_ascii_punctuation() {
+      count += 1;
+      total += i;
+    }
+  }
+  print(count);
+  print!(" ");
+  print(total);
+  print!(" | ");
+  count = 0;
+  total = 0;
+  for i in 0..256 {
+    let b : u8 = i as u8;
+    if b.is_ascii_graphic() {
+      count += 1;
+      total += i;
+    }
+  }
+  print(count);
+  print!(" ");
+  print(total);
+  print!(" | ");
+  count = 0;
+  total = 0;
+  for i in 0..256 {
+    let b : u8 = i as u8;
+    if b.is_ascii_whitespace() {
+      count += 1;
+      total += i;
+    }
+  }
+  print(count);
+  print!(" ");
+  print(total);
+  print!(" | ");
+  count = 0;
+  total = 0;
+  for i in 0..256 {
+    let b : u8 = i as u8;
+    if b.is_ascii_control() {
+      count += 1;
+      total += i;
+    }
+  }
+  print(count);
+  print!(" ");
+  print(total);
+  print!(" | ");
+  let mut up : i32 = 0;
+  let mut low : i32 = 0;
+  let mut same : i32 = 0;
+  for i in 0..256 {
+    let b : u8 = i as u8;
+    up += b.to_ascii_uppercase() as i32;
+    low += b.to_ascii_lowercase() as i32;
+    for j in 0..256 {
+      let c : u8 = j as u8;
+      if b.eq_ignore_ascii_case(&c) {
+        same += 1;
+      }
+    }
+  }
+  print(up);
+  print!(" ");
+  print(low);
+  print!(" ");
+  print(same);
+  print!(" | ");
+  let mut h : u8 = 104;
+  h.make_ascii_uppercase();
+  let mut a : u8 = 65;
+  a.make_ascii_lowercase();
+  a.make_ascii_uppercase();
+  a.make_ascii_uppercase();
+  print(h as i32);
+  print!(" ");
+  print(a as i32);
+  return 0;
+}

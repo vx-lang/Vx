@@ -823,7 +823,7 @@ live docs, not this table.
 | `slice` | `core::slice` | 2 | — | A17 for `&[T]` spelling | library `Slice`/`SliceMut` first; `sort` (stable) is alloc |
 | `str` | `core::str` | 2 | — | A15 | float `parse` in phase 3 |
 | `char` | `core::char` | 2 | — | A15 | Unicode case tables phase 4; ASCII + Latin-1 first |
-| `ascii` | `core::ascii` | 2 | — | — | |
+| `ascii` | `core::ascii` | 2 | partial | — | the `u8` methods Rust has in `core::num`: the eleven `is_ascii_*` classes, `to_ascii_uppercase`/`lowercase`, `make_ascii_uppercase`/`lowercase`, `eq_ignore_ascii_case`; imported from `core::ascii` rather than always present. No `escape_default`/`escape_ascii` (want an iterator over bytes) or `ascii::Char` (unstable). Flat path only: the legacy code generator compares a `u8` as signed |
 | `fmt` | `core::fmt` | 2 | — | — | generic writer, not `dyn`; `Arguments`/`format_args!`/`write!` excluded until a format-string macro |
 | `hash` | `core::hash` | 2 | partial | Vx#818 | `Hasher` over a required `write_u8` with `write_u16`/`u32`/`u64`, the signed forms and `write_bool` as defaults, little-endian; `Hash` with `hash<H : Hasher>`, implemented for every integer width and `bool`; `SipHasher13`, which agrees with Rust's `DefaultHasher` byte for byte, and `FxHasher`. No `write` over a slice (wants `str`/slices), no `Hash` for aggregates (no derive). The fixture is flat-path only: `>>` on an unsigned value sign-extends on the AST path |
 | `cell` | `core::cell` | 3 | — | A13, A19 for guards | `RefCell` guards need Drop |
