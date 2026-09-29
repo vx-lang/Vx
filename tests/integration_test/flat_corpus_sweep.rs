@@ -104,6 +104,9 @@ const KNOWN_DECLINES: &[&str] = &[
     "backend/pass/user_lowering_name_collisions.vx",
     "backend/pass/user_lowering_uncountable.vx",
     "backend/pass/user_lowering_waste.vx",
+    // `min_by` over a struct: the flat path declines it as "an indirect callee returning a
+    // non-scalar". The answers come from the AST path.
+    "backend/pass/core_cmp_ties_and_keys.vx",
     "frontend/pass/closure_fat_ptr.vx",
     "frontend/pass/control_flow_rigorous.vx",
     // The `vxc -j` fallback fixture: a program the flat path declines, chosen so the parallel

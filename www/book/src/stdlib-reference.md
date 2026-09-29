@@ -103,6 +103,10 @@ Ordering and equality: `PartialEq`, `Ord`, `PartialOrd` and `Ordering`.
 
 - `enum Ordering`
 - `trait PartialEq`
+- `trait Eq`<br>
+  Equality that is reflexive: every value equals itself. A marker, since Vx has no
+  supertraits yet to tie it to `PartialEq`. The floats do not implement it, because a NaN
+  is not equal to itself.
 - `trait Ord`
 - `trait PartialOrd`<br>
   A comparison that may answer with nothing, which is what a float needs: NaN is neither
@@ -158,11 +162,12 @@ Ordering and equality: `PartialEq`, `Ord`, `PartialOrd` and `Ordering`.
 - `fn ge(self : &Self, other : &Self) -> bool`<br>
   Is this value greater than or equal to the other?
 - `fn max(self : Self, other : Self) -> Self`<br>
-  The greater of the two, taking both by value and handing one back.
+  The greater of the two, taking both by value and handing one back: `other` when they
+  compare equal, as in Rust.
   A method rather than the free function Rust also has, because the compiler reads the
   bare names `max` and `min` as the tensor reductions (Vx#223).
 - `fn min(self : Self, other : Self) -> Self`<br>
-  The lesser of the two.
+  The lesser of the two: `self` when they compare equal, as in Rust.
 - `fn clamp(self : Self, lo : Self, hi : Self) -> Self`<br>
   This value brought inside the range, so `lo` below it and `hi` above it.
   # Panics
@@ -185,12 +190,16 @@ Ordering and equality: `PartialEq`, `Ord`, `PartialOrd` and `Ordering`.
 **Functions**
 
 - `fn max_by<T>(a : T, b : T, f : Closure2<T, T, Ordering>) -> T`<br>
-  The greater of two values by `f`, and the lesser. They are free functions because they
-  take the comparison rather than reading it off the type. Rust spells them `max_by` and
-  `min_by`; the plain `max` and `min` are `Ord` methods here, since those two names are
-  the compiler's tensor reductions.
+  The greater of two values by `f`, answering `b` when they compare equal, as Rust does.
+  A free function because it takes the comparison rather than reading it off the type.
+  The plain `max` and `min` are `Ord` methods here, since those two names are the
+  compiler's tensor reductions.
 - `fn min_by<T>(a : T, b : T, f : Closure2<T, T, Ordering>) -> T`<br>
   The lesser of the two by `f`, answering `a` when they compare equal.
+- `fn max_by_key<T, K : Ord>(a : T, b : T, f : Closure1<T, K>) -> T`<br>
+  The greater of two values by the key `f` gives each, answering `b` on equal keys.
+- `fn min_by_key<T, K : Ord>(a : T, b : T, f : Closure1<T, K>) -> T`<br>
+  The lesser of two values by the key `f` gives each, answering `a` on equal keys.
 
 **`PartialEq for T` methods**, stamped for 9 instantiations
 
@@ -2154,4 +2163,4 @@ Clocks and durations.
 
 ______________________________________________________________________
 
-758 functions across 33 modules.
+760 functions across 33 modules.

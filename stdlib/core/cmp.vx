@@ -174,6 +174,11 @@ trait PartialEq {
   }
 }
 
+/// Equality that is reflexive: every value equals itself. A marker, since Vx has no
+/// supertraits yet to tie it to `PartialEq`. The floats do not implement it, because a NaN
+/// is not equal to itself.
+trait Eq {}
+
 trait Ord {
   /// Where this value sits relative to the other: Less, Equal or Greater.
   ///
@@ -204,20 +209,21 @@ trait Ord {
     return self.cmp(other).is_ge();
   }
 
-  /// The greater of the two, taking both by value and handing one back.
+  /// The greater of the two, taking both by value and handing one back: `other` when they
+  /// compare equal, as in Rust.
   ///
   /// A method rather than the free function Rust also has, because the compiler reads the
   /// bare names `max` and `min` as the tensor reductions (Vx#223).
   fn max(self : Self, other : Self) -> Self {
-    if self.lt(&other) {
-      return other;
+    if self.gt(&other) {
+      return self;
     }
-    return self;
+    return other;
   }
 
-  /// The lesser of the two.
+  /// The lesser of the two: `self` when they compare equal, as in Rust.
   fn min(self : Self, other : Self) -> Self {
-    if self.lt(&other) {
+    if self.le(&other) {
       return self;
     }
     return other;
@@ -249,6 +255,8 @@ macro_rules stamp_cmp {
         return *self == *other;
       }
     }
+
+    impl Eq for $t {}
 
     impl Ord for $t {
       /// The three-way comparison at this width.
@@ -342,22 +350,44 @@ macro_rules stamp_float_cmp {
 stamp_float_cmp!(f32);
 stamp_float_cmp!(f64);
 
-/// The greater of two values by `f`, and the lesser. They are free functions because they
-/// take the comparison rather than reading it off the type. Rust spells them `max_by` and
-/// `min_by`; the plain `max` and `min` are `Ord` methods here, since those two names are
-/// the compiler's tensor reductions.
+/// The greater of two values by `f`, answering `b` when they compare equal, as Rust does.
+/// A free function because it takes the comparison rather than reading it off the type.
+/// The plain `max` and `min` are `Ord` methods here, since those two names are the
+/// compiler's tensor reductions.
 fn max_by<T>(a : T, b : T, f : Closure2<T, T, Ordering>) -> T {
   let p = f.func;
-  if p(f.env, a, b).is_lt() {
-    return b;
+  if p(f.env, a, b).is_gt() {
+    return a;
   }
-  return a;
+  return b;
 }
 
 /// The lesser of the two by `f`, answering `a` when they compare equal.
 fn min_by<T>(a : T, b : T, f : Closure2<T, T, Ordering>) -> T {
   let p = f.func;
   if p(f.env, a, b).is_gt() {
+    return b;
+  }
+  return a;
+}
+
+/// The greater of two values by the key `f` gives each, answering `b` on equal keys.
+fn max_by_key<T, K : Ord>(a : T, b : T, f : Closure1<T, K>) -> T {
+  let p = f.func;
+  let ka = p(f.env, a);
+  let kb = p(f.env, b);
+  if ka.cmp(&kb).is_gt() {
+    return a;
+  }
+  return b;
+}
+
+/// The lesser of two values by the key `f` gives each, answering `a` on equal keys.
+fn min_by_key<T, K : Ord>(a : T, b : T, f : Closure1<T, K>) -> T {
+  let p = f.func;
+  let ka = p(f.env, a);
+  let kb = p(f.env, b);
+  if ka.cmp(&kb).is_gt() {
     return b;
   }
   return a;

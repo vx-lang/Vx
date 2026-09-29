@@ -1,0 +1,63 @@
+//===- core_cmp_ties_and_keys.vx - Vx Compiler --------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Which value `max`, `min`, `max_by`, `min_by`, `max_by_key` and `min_by_key` return when
+// the two compare equal, and the `_by_key` functions on unequal keys.
+//
+// Rust answers the second value from the `max` family and the first from the `min` family.
+// Two numbers that compare equal are the same number, so the test uses `Item`, which is
+// ordered by `key` alone: two items with one key and different tags show which was
+// returned. `Eq` is checked by a function that accepts only an `Eq` type.
+//
+// EXPECT: 2 1 2 1 | 2 1 | 9 3 | 1
+import core::cmp;
+import core::marker;
+
+struct Item {
+  key : i32,
+  tag : i32,
+}
+
+impl Copy for Item {}
+
+impl Ord for Item {
+  fn cmp(self : &Item, other : &Item) -> Ordering {
+    return self.key.cmp(&other.key);
+  }
+}
+
+fn only_eq<T : Eq>(value : T) -> T {
+  return value;
+}
+
+fn main() -> i32 {
+  let first = Item {
+    key: 5, tag: 1
+  };
+  let second = Item {
+    key: 5, tag: 2
+  };
+  print(first.max(second).tag);
+  print!(" ");
+  print(first.min(second).tag);
+  print!(" ");
+  print(max_by<Item>(first, second, | a : Item , b : Item | a.cmp(&b)).tag);
+  print!(" ");
+  print(min_by<Item>(first, second, | a : Item , b : Item | a.cmp(&b)).tag);
+  print!(" | ");
+  print(max_by_key<Item, i32>(first, second, | x : Item | x.key).tag);
+  print!(" ");
+  print(min_by_key<Item, i32>(first, second, | x : Item | x.key).tag);
+  print!(" | ");
+  print(max_by_key<i32, i32>(3, 9, | x : i32 | x));
+  print!(" ");
+  print(min_by_key<i32, i32>(3, 9, | x : i32 | x));
+  print!(" | ");
+  let seven : i32 = 7;
+  print(only_eq(seven) / 7);
+  return 0;
+}
