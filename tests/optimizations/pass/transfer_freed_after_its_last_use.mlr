@@ -1,0 +1,100 @@
+// RUN: vx-opt %s --pass-pipeline="builtin.module(convert-vx-to-standard)" | FileCheck %s
+
+// The buffer a transfer makes is freed once, after its last use, on every
+// path. A transfer to topology 0 stays on the host, so the free is a
+// `memref.dealloc`.
+
+module {
+  func.func private @use(memref<4xf32>)
+
+  // Read inside a loop: freed once, when the loop exits.
+  // CHECK-LABEL: func.func @read_in_a_loop
+  // CHECK: %[[D:.*]] = memref.alloc()
+  // CHECK-NOT: memref.dealloc
+  // CHECK: call @use(%[[D]])
+  // CHECK-NOT: memref.dealloc
+  // CHECK: ^bb3:
+  // CHECK-NEXT: %[[C:.*]] = memref.memory_space_cast %[[D]]
+  // CHECK-NEXT: memref.dealloc %[[C]]
+  // CHECK-NEXT: return
+  func.func @read_in_a_loop(%h: memref<4xf32>, %n: index) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %d = "vx.transfer"(%h) {target_topology = 0 : i32} : (memref<4xf32>) -> memref<4xf32>
+    cf.br ^head(%c0 : index)
+  ^head(%i: index):
+    %more = arith.cmpi slt, %i, %n : index
+    cf.cond_br %more, ^body, ^exit
+  ^body:
+    func.call @use(%d) : (memref<4xf32>) -> ()
+    %next = arith.addi %i, %c1 : index
+    cf.br ^head(%next : index)
+  ^exit:
+    return
+  }
+
+  // Returned to the caller: not freed here.
+  // CHECK-LABEL: func.func @returned
+  // CHECK-NOT: memref.dealloc
+  // CHECK: return
+  func.func @returned(%h: memref<4xf32>) -> memref<4xf32> {
+    %d = "vx.transfer"(%h) {target_topology = 0 : i32} : (memref<4xf32>) -> memref<4xf32>
+    return %d : memref<4xf32>
+  }
+
+  // Used on one branch only: freed after the use there, and on a new block on
+  // the other branch, so each path frees it once.
+  // CHECK-LABEL: func.func @used_on_one_branch
+  // CHECK: %[[D:.*]] = memref.alloc()
+  // CHECK: cf.cond_br %{{.*}}, ^bb1, ^bb2
+  // CHECK: ^bb1:
+  // CHECK-NEXT: call @use(%[[D]])
+  // CHECK-NEXT: memref.memory_space_cast %[[D]]
+  // CHECK-NEXT: memref.dealloc
+  // CHECK-NEXT: cf.br ^bb3
+  // CHECK: ^bb2:
+  // CHECK-NEXT: memref.memory_space_cast %[[D]]
+  // CHECK-NEXT: memref.dealloc
+  // CHECK-NEXT: cf.br ^bb3
+  // CHECK: ^bb3:
+  // CHECK-NEXT: return
+  func.func @used_on_one_branch(%h: memref<4xf32>, %c: i1) {
+    %d = "vx.transfer"(%h) {target_topology = 0 : i32} : (memref<4xf32>) -> memref<4xf32>
+    cf.cond_br %c, ^a, ^join
+  ^a:
+    func.call @use(%d) : (memref<4xf32>) -> ()
+    cf.br ^join
+  ^join:
+    return
+  }
+
+  // Kept in a `let mut` variable and read after a loop that does not touch
+  // it: freed after that read, not when the loop starts.
+  // CHECK-LABEL: func.func @kept_in_a_variable
+  // CHECK: %[[D:.*]] = memref.alloc()
+  // CHECK-NOT: memref.dealloc
+  // CHECK: ^bb3:
+  // CHECK-NEXT: %[[L:.*]] = memref.load
+  // CHECK-NEXT: call @use(%[[L]])
+  // CHECK-NEXT: memref.memory_space_cast %[[D]]
+  // CHECK-NEXT: memref.dealloc
+  // CHECK-NEXT: return
+  func.func @kept_in_a_variable(%h: memref<4xf32>, %n: index) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %slot = memref.alloca() : memref<memref<4xf32>>
+    %d = "vx.transfer"(%h) {target_topology = 0 : i32} : (memref<4xf32>) -> memref<4xf32>
+    memref.store %d, %slot[] : memref<memref<4xf32>>
+    cf.br ^head(%c0 : index)
+  ^head(%i: index):
+    %more = arith.cmpi slt, %i, %n : index
+    cf.cond_br %more, ^body, ^exit
+  ^body:
+    %next = arith.addi %i, %c1 : index
+    cf.br ^head(%next : index)
+  ^exit:
+    %v = memref.load %slot[] : memref<memref<4xf32>>
+    func.call @use(%v) : (memref<4xf32>) -> ()
+    return
+  }
+}

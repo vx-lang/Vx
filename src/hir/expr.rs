@@ -116,6 +116,8 @@ impl<'a> TypeChecker<'a> {
                 }
                 self.borrow.restore(saved_borrows);
                 self.settle_mut_borrow_call(expr, &before, &scopes);
+                // `check_statement` asks this of every other statement.
+                self.check_frame_escape(s);
             } else {
                 let expected_ret = self.current_return_type.clone().unwrap_or(Type::Tensor(
                     ElementType::F32,
@@ -244,13 +246,15 @@ impl<'a> TypeChecker<'a> {
             Expr::AsCast(e) => self.check_ascast_expr(e, consume),
             Expr::Print(p) => {
                 for arg in &mut p.args {
-                    self.check_expr_type_flag(arg, consume);
+                    let ty = self.check_expr_type_flag(arg, consume);
+                    Self::mark_unsigned_print_operand(arg, &ty);
                 }
                 Type::Scalar(ElementType::I32) // Assuming print returns 0 as i32 for C compatibility
             }
             Expr::Println(p) => {
                 for arg in &mut p.args {
-                    self.check_expr_type_flag(arg, consume);
+                    let ty = self.check_expr_type_flag(arg, consume);
+                    Self::mark_unsigned_print_operand(arg, &ty);
                 }
                 Type::Scalar(ElementType::I32)
             }
@@ -502,6 +506,25 @@ impl<'a> TypeChecker<'a> {
                     if all_match {
                         return true;
                     }
+                }
+            }
+        }
+
+        // A closure literal checks to `Closure_N`, a struct with no call signature in its
+        // type. The signature is recorded when the literal is checked, so compare that
+        // against `ClosureK<Args.., Ret>`, as inference already does. Without this a
+        // literal was accepted as a call argument but refused as a struct field's value.
+        if let (Type::GenericInstance(inner, args), Type::Struct(cn, _)) = (target, source) {
+            if cn.starts_with("Closure_")
+                && matches!(&**inner, Type::Struct(n, _) if n.starts_with("Closure"))
+            {
+                if let Some((params, ret)) = self.mono.closure_signatures.get(cn) {
+                    return args.len() == params.len() + 1
+                        && args
+                            .iter()
+                            .zip(params.iter())
+                            .all(|(a, p)| self.is_assignable(a, p))
+                        && self.is_assignable(&args[args.len() - 1], ret);
                 }
             }
         }

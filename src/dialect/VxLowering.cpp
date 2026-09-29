@@ -1,6 +1,7 @@
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
 #include "VxDialect.h"
+#include "mlir/Analysis/Liveness.h"
 #include "mlir/CAPI/IR.h"
 #include "mlir/CAPI/Pass.h"
 #include "mlir/Conversion/LLVMCommon/Pattern.h"
@@ -467,14 +468,15 @@ static StringRef libmSymbolBehind(StringRef callee, ModuleOp module) {
   return inner.getCallee();
 }
 
-// The `math` op a call ultimately performs, for a wrapper that already holds one.
+// The `math` op a call ultimately performs, for a wrapper that already holds
+// one.
 //
 // `core::num` writes `x.exp()` as an `mlir!` block over `math.exp`, and the
 // flattener outlines that block into a function of its own: `@f32$exp` calls
-// `@vx_macro_mlir_...`, whose body is the single `math.exp`. So the op is already
-// the portable spelling and only needs to be found, one call deeper than the libm
-// shape above. Following the chain by shape rather than by name means the
-// generated wrapper can be called whatever it likes.
+// `@vx_macro_mlir_...`, whose body is the single `math.exp`. So the op is
+// already the portable spelling and only needs to be found, one call deeper
+// than the libm shape above. Following the chain by shape rather than by name
+// means the generated wrapper can be called whatever it likes.
 //
 // Bounded, so a recursive wrapper cannot spin here.
 static StringRef mathOpBehind(StringRef callee, ModuleOp module) {
@@ -1064,38 +1066,193 @@ struct TransferOpLowering : public OpRewritePattern<TransferOp> {
     // Emit memref.copy from src to alloc
     rewriter.create<memref::CopyOp>(op.getLoc(), src, allocOp);
 
-    // Enforce Zero Memory Leaks:
-    // We must emit a memref.dealloc at the end of the current scope (block)
-    // so that the allocated memory behaves like a C++ RAII object.
-    Block *currentBlock = op->getBlock();
-    if (!currentBlock->empty() &&
-        currentBlock->back().hasTrait<OpTrait::IsTerminator>()) {
-      // Temporarily move insertion point to just before the terminator
-      OpBuilder::InsertionGuard guard(rewriter);
-      rewriter.setInsertionPoint(&currentBlock->back());
-      // Cast to memory space 0 so memref-to-llvm can use standard `free`
-      auto defaultType =
-          MemRefType::get(targetType.getShape(), targetType.getElementType());
-      auto castOp = rewriter.create<memref::MemorySpaceCastOp>(
-          op.getLoc(), defaultType, allocOp);
-      rewriter.create<memref::DeallocOp>(op.getLoc(), castOp);
-    } else {
-      // If there is no terminator yet, just append it to the block
-      OpBuilder::InsertionGuard guard(rewriter);
-      rewriter.setInsertionPointToEnd(currentBlock);
-      // Cast to memory space 0 so memref-to-llvm can use standard `free`
-      auto defaultType =
-          MemRefType::get(targetType.getShape(), targetType.getElementType());
-      auto castOp = rewriter.create<memref::MemorySpaceCastOp>(
-          op.getLoc(), defaultType, allocOp);
-      rewriter.create<memref::DeallocOp>(op.getLoc(), castOp);
-    }
-
-    // Replace transfer with the allocated memref
+    // The `vx.free` that placeTransferFrees put after its last use becomes a
+    // `memref.dealloc` in lowerHostFrees.
     rewriter.replaceOp(op, allocOp.getResult());
     return success();
   }
 };
+
+// Every value that names the same memory as `buffer`: the buffer and its views
+// and casts. Returns false if the memory can outlive the function's own uses:
+// returned, yielded, stored, passed to a block argument, or converted into a
+// value the analysis cannot follow, such as a struct field.
+static bool collectAliases(Value buffer, SmallVectorImpl<Value> &aliases) {
+  SmallVector<Value> work{buffer};
+  llvm::DenseSet<Value> seen;
+  while (!work.empty()) {
+    Value value = work.pop_back_val();
+    if (!seen.insert(value).second)
+      continue;
+    aliases.push_back(value);
+    for (OpOperand &use : value.getUses()) {
+      Operation *user = use.getOwner();
+      if (user->hasTrait<OpTrait::ReturnLike>() ||
+          isa<BranchOpInterface, UnrealizedConversionCastOp, LLVM::StoreOp>(
+              user))
+        return false;
+      if (auto store = dyn_cast<memref::StoreOp>(user);
+          store && store.getValueToStore() == value) {
+        // A `let mut` variable is a stack slot holding the buffer. If nothing
+        // else is ever stored there, each read of the slot is the buffer.
+        Value slot = store.getMemref();
+        const bool onlyThisStoreAndReads =
+            slot.getDefiningOp<memref::AllocaOp>() &&
+            llvm::all_of(slot.getUsers(), [&](Operation *u) {
+              return u == user || isa<memref::LoadOp>(u);
+            });
+        if (!onlyThisStoreAndReads)
+          return false;
+        // The slot keeps the buffer live between the store and a read.
+        if (seen.insert(slot).second)
+          aliases.push_back(slot);
+        for (Operation *u : slot.getUsers())
+          if (auto load = dyn_cast<memref::LoadOp>(u))
+            work.push_back(load.getResult());
+        continue;
+      }
+      if (isa<ViewLikeOpInterface, CastOpInterface>(user))
+        for (Value result : user->getResults())
+          if (isa<BaseMemRefType>(result.getType()))
+            work.push_back(result);
+    }
+  }
+  return true;
+}
+
+// Put a `vx.free` where the buffer made by `transfer` dies.
+//
+// It dies inside a block that uses it and does not pass it on: the free goes
+// after the last use there. It also dies on an edge from a block that passes
+// it on to a block that does not need it, such as the exit of a loop that read
+// it: the free goes at the start of that block, or on a new block on the edge
+// when other paths reach it too. A buffer that escapes is not freed.
+static void placeTransferFree(vx::TransferOp transfer) {
+  Value buffer = transfer.getResult();
+  SmallVector<Value> aliases;
+  if (!collectAliases(buffer, aliases))
+    return;
+
+  Operation *scope =
+      transfer->getParentWithTrait<OpTrait::IsIsolatedFromAbove>();
+  Liveness liveness(scope);
+  // A `let mut` slot is live before the transfer too; only blocks the
+  // transfer dominates can free what it made.
+  DominanceInfo dominance(scope);
+  auto liveIn = [&](Block *block) {
+    return llvm::any_of(aliases, [&](Value a) {
+      return liveness.getLiveness(block)->isLiveIn(a);
+    });
+  };
+  auto liveOut = [&](Block *block) {
+    return llvm::any_of(aliases, [&](Value a) {
+      return liveness.getLiveness(block)->isLiveOut(a);
+    });
+  };
+
+  Location loc = transfer.getLoc();
+  IntegerAttr topology = transfer.getTargetTopologyAttr();
+  OpBuilder builder(transfer);
+  auto freeAt = [&](Block *block, Block::iterator at) {
+    builder.setInsertionPoint(block, at);
+    builder.create<vx::FreeOp>(loc, buffer, topology);
+  };
+
+  Region *region = buffer.getParentRegion();
+  llvm::SmallSetVector<Block *, 4> deadOnEntry;
+  llvm::SmallSetVector<std::pair<Block *, Block *>, 4> deadEdges;
+  for (Block &block : *region) {
+    const bool defined = buffer.getParentBlock() == &block;
+    if (!dominance.dominates(buffer.getParentBlock(), &block) ||
+        (!defined && !liveIn(&block)))
+      continue;
+    if (liveOut(&block)) {
+      for (Block *succ : block.getSuccessors())
+        if (!liveIn(succ)) {
+          deadOnEntry.insert(succ);
+          deadEdges.insert({&block, succ});
+        }
+      continue;
+    }
+    Operation *last = defined ? transfer.getOperation() : nullptr;
+    for (Value alias : aliases)
+      for (Operation *user : alias.getUsers())
+        if (Operation *inBlock = block.findAncestorOpInBlock(*user))
+          if (!last || last->isBeforeInBlock(inBlock))
+            last = inBlock;
+    assert((!last || !last->hasTrait<OpTrait::IsTerminator>()) &&
+           "a terminator that uses the buffer keeps it live out of the block");
+    freeAt(&block, last ? std::next(Block::iterator(last)) : block.begin());
+  }
+
+  for (Block *succ : deadOnEntry) {
+    // Every way into `succ` carries the buffer: free it once, on entry.
+    const bool everyPredCarriesIt =
+        llvm::all_of(succ->getPredecessors(), [&](Block *pred) {
+          return deadEdges.contains({pred, succ});
+        });
+    if (everyPredCarriesIt) {
+      freeAt(succ, succ->begin());
+      continue;
+    }
+    // Otherwise free it on a new block on each edge that carries it.
+    for (auto [pred, target] : deadEdges) {
+      if (target != succ)
+        continue;
+      SmallVector<Location> argLocs(succ->getNumArguments(), loc);
+      Block *edge =
+          builder.createBlock(succ, succ->getArgumentTypes(), argLocs);
+      builder.create<vx::FreeOp>(loc, buffer, topology);
+      builder.create<cf::BranchOp>(loc, succ, edge->getArguments());
+      Operation *term = pred->getTerminator();
+      for (unsigned i = 0; i < term->getNumSuccessors(); ++i)
+        if (term->getSuccessor(i) == succ)
+          term->setSuccessor(edge, i);
+    }
+  }
+}
+
+// Give every buffer a transfer allocates a `vx.free` after its last use.
+//
+// Runs before the transfers are lowered, while it is still clear which values
+// they made. A shared-memory tile is scratch on the stack and needs no free,
+// and a transfer of a scalar allocates nothing.
+static void placeTransferFrees(ModuleOp module) {
+  SmallVector<vx::TransferOp> transfers;
+  module.walk([&](vx::TransferOp t) {
+    auto scope = t->getAttrOfType<StringAttr>("scope");
+    if (isa<MemRefType>(t.getResult().getType()) &&
+        !(scope && scope.getValue() == "sm"))
+      transfers.push_back(t);
+  });
+  for (vx::TransferOp t : transfers)
+    placeTransferFree(t);
+}
+
+// Turn a `vx.free` of a host buffer into a `memref.dealloc`. A free of a
+// buffer that is still a `vx.transfer` is on a device, and waits for the LLVM
+// stage, which lowers it with the transfer.
+static LogicalResult lowerHostFrees(ModuleOp module) {
+  SmallVector<vx::FreeOp> frees;
+  module.walk([&](vx::FreeOp f) { frees.push_back(f); });
+  for (vx::FreeOp f : frees) {
+    Operation *def = f.getBuffer().getDefiningOp();
+    if (isa_and_nonnull<vx::TransferOp>(def))
+      continue;
+    auto alloc = dyn_cast_or_null<memref::AllocOp>(def);
+    if (!alloc)
+      return f.emitError("vx.free of a buffer that no transfer allocated");
+    OpBuilder builder(f);
+    // Memory space 0, so memref-to-llvm can call the standard `free`.
+    MemRefType type = alloc.getType();
+    auto hostType = MemRefType::get(type.getShape(), type.getElementType());
+    Value host =
+        builder.create<memref::MemorySpaceCastOp>(f.getLoc(), hostType, alloc);
+    builder.create<memref::DeallocOp>(f.getLoc(), host);
+    f.erase();
+  }
+  return success();
+}
 
 /// Reject a placed region the target cannot run and the host cannot either.
 ///
@@ -1204,9 +1361,9 @@ struct ConvertVxToStandardPass
   }
 
   void getDependentDialects(DialectRegistry &registry) const override {
-    registry
-        .insert<async::AsyncDialect, func::FuncDialect, memref::MemRefDialect,
-                arith::ArithDialect, gpu::GPUDialect, math::MathDialect>();
+    registry.insert<async::AsyncDialect, cf::ControlFlowDialect,
+                    func::FuncDialect, memref::MemRefDialect,
+                    arith::ArithDialect, gpu::GPUDialect, math::MathDialect>();
   }
 
   /// Give every device kernel a `gpu.func` beside its `vx.kernel`.
@@ -1605,11 +1762,14 @@ struct ConvertVxToStandardPass
       return;
     }
 
+    placeTransferFrees(getOperation());
+
     RewritePatternSet patterns(&getContext());
     patterns.add<SpawnOpLowering, TransferOpLowering>(&getContext());
 
     if (failed(applyPatternsAndFoldGreedily(getOperation(),
-                                            std::move(patterns)))) {
+                                            std::move(patterns))) ||
+        failed(lowerHostFrees(getOperation()))) {
       signalPassFailure();
       return;
     }
@@ -1790,8 +1950,8 @@ struct TransferToPluginLowering : public OpRewritePattern<vx::TransferOp> {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(module.getBody());
       auto fnTy = LLVM::LLVMFunctionType::get(
-          llvmPtrType,
-          {llvmI64Type, llvmPtrType, llvmI32Type, llvmI32Type}, false);
+          llvmPtrType, {llvmI64Type, llvmPtrType, llvmI32Type, llvmI32Type},
+          false);
       rewriter.create<LLVM::LLVMFuncOp>(loc, allocName, fnTy);
     }
     // What the model claims about host access to the target space, carried down
@@ -1891,11 +2051,42 @@ struct TransferToPluginLowering : public OpRewritePattern<vx::TransferOp> {
                            loc, op.getResult().getType(), newDesc)
                        .getResult(0);
 
-    // Release it through the same ABI that allocated it. The host transfer path
-    // emits `memref.dealloc`, which becomes a libc `free` -- correct for a host
-    // allocation and heap corruption for one that came from cudaMalloc. An
-    // allocator and its free have to be the same backend, so the compiler names
-    // neither and calls the plugin.
+    // The `vx.free` placeTransferFrees put after its last use becomes a
+    // `vx_plugin_free` in FreeOpLowering.
+    rewriter.replaceOp(op, result);
+    return success();
+  }
+};
+
+// Free a buffer that TransferToPluginLowering allocated, through the same
+// plugin. A libc `free` is heap corruption for memory that came from
+// cudaMalloc; only the backend that allocated it can release it.
+struct FreeOpLowering : public OpRewritePattern<vx::FreeOp> {
+  const LLVMTypeConverter &typeConverter;
+
+  FreeOpLowering(const LLVMTypeConverter &typeConverter, MLIRContext *context)
+      : OpRewritePattern<vx::FreeOp>(context), typeConverter(typeConverter) {}
+
+  LogicalResult matchAndRewrite(vx::FreeOp op,
+                                PatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    auto type = cast<MemRefType>(op.getBuffer().getType());
+    // The descriptor layout does not depend on the memory space, and the
+    // converter cannot convert every space a placed buffer carries.
+    Type descType = typeConverter.convertType(
+        MemRefType::get(type.getShape(), type.getElementType()));
+    Value desc =
+        rewriter
+            .create<UnrealizedConversionCastOp>(loc, descType, op.getBuffer())
+            .getResult(0);
+    auto llvmPtrType = LLVM::LLVMPointerType::get(getContext());
+    auto llvmI32Type = IntegerType::get(getContext(), 32);
+    Value ptr = rewriter.create<LLVM::ExtractValueOp>(loc, llvmPtrType, desc,
+                                                      ArrayRef<int64_t>{0});
+    Value topology = rewriter.create<LLVM::ConstantOp>(
+        loc, llvmI32Type, rewriter.getI32IntegerAttr(op.getTopology()));
+
+    ModuleOp module = op->getParentOfType<ModuleOp>();
     StringRef freeName = "vx_plugin_free";
     if (!module.lookupSymbol<LLVM::LLVMFuncOp>(freeName)) {
       OpBuilder::InsertionGuard guard(rewriter);
@@ -1905,119 +2096,10 @@ struct TransferToPluginLowering : public OpRewritePattern<vx::TransferOp> {
                                       {llvmPtrType, llvmI32Type}, false);
       rewriter.create<LLVM::LLVMFuncOp>(loc, freeName, freeTy);
     }
-    // *Where* the free goes is the whole question, and the end of the defining
-    // block is the wrong answer whenever any control flow follows.
-    //
-    //   let a = transfer(a_h, Memory::GPU_HBM);
-    //   for step in 0..8 { spawn on(Topology::GPU) { ... a ... } }
-    //
-    // The loop opens a new block, so the transfer's block ends at the branch
-    // into it and the free was emitted there -- before a single iteration ran.
-    // Against a fleet worker that is visible and fatal: the trace is three
-    // TRANSFERs, three FREEs, and then a dispatch refused because "an argument
-    // named no live region". Locally it is neither, because freed host memory
-    // still reads, so every placed test passed while doing this.
-    //
-    // A transfer whose block dominates the function's exits is live until one
-    // of them, so the free belongs there. One that does not -- a transfer
-    // inside a loop -- keeps the old placement: its result is a different
-    // allocation each iteration, the SSA value does not reach the return, and
-    // the end of its own block is where that allocation's life actually ends.
-    {
-      OpBuilder::InsertionGuard guard(rewriter);
-      Block *defBlock = op->getBlock();
-
-      // Dominance is a proxy for the thing that actually decides this, which is the
-      // tile's lifetime, and it is wrong in both directions. It frees too late for a
-      // tile nobody reads -- a `spawn` region ends in an unconditional branch, so it
-      // dominates the exits and its tile was held to the return although the binding
-      // is not visible past the region. Block-end, which it replaced, frees too early
-      // for a tile read inside a later loop.
-      //
-      // Where the uses are answers both. A result with no users cannot be read, so it
-      // dies where it is made; one whose users all sit in the defining block dies with
-      // that block. Anything else -- a use in a loop, a use down a branch -- keeps the
-      // dominance placement, which is conservative and is what the loop case needs.
-      SmallVector<Operation *> users(op->getResult(0).getUsers().begin(),
-                                     op->getResult(0).getUsers().end());
-      bool noUsers = users.empty();
-      bool usesConfinedToDefBlock = true;
-      for (Operation *user : users) {
-        if (user->getBlock() != defBlock) {
-          usesConfinedToDefBlock = false;
-          break;
-        }
-      }
-
-      if (noUsers) {
-        // Nothing reads it: release it where it is produced, so it never joins the
-        // residency of anything placed after it.
-        rewriter.setInsertionPointAfter(op);
-        rewriter.create<LLVM::CallOp>(
-            loc, TypeRange{},
-            SymbolRefAttr::get(rewriter.getContext(), freeName),
-            ValueRange{devicePtr, topoVal});
-        rewriter.replaceOp(op, result);
-        return success();
-      }
-      if (usesConfinedToDefBlock) {
-        if (!defBlock->empty() &&
-            defBlock->back().hasTrait<OpTrait::IsTerminator>())
-          rewriter.setInsertionPoint(&defBlock->back());
-        else
-          rewriter.setInsertionPointToEnd(defBlock);
-        rewriter.create<LLVM::CallOp>(
-            loc, TypeRange{},
-            SymbolRefAttr::get(rewriter.getContext(), freeName),
-            ValueRange{devicePtr, topoVal});
-        rewriter.replaceOp(op, result);
-        return success();
-      }
-
-      Operation *parentFn = op->getParentOfType<LLVM::LLVMFuncOp>();
-      if (!parentFn)
-        parentFn = op->getParentOfType<func::FuncOp>();
-
-      SmallVector<Block *> exits;
-      bool dominatesAllExits = parentFn != nullptr;
-      if (parentFn) {
-        DominanceInfo dom(parentFn);
-        for (Region &region : parentFn->getRegions()) {
-          for (Block &block : region) {
-            if (block.empty())
-              continue;
-            Operation &term = block.back();
-            if (!isa<func::ReturnOp, LLVM::ReturnOp>(term))
-              continue;
-            exits.push_back(&block);
-            if (!dom.dominates(defBlock, &block))
-              dominatesAllExits = false;
-          }
-        }
-      }
-
-      if (dominatesAllExits && !exits.empty()) {
-        for (Block *exit : exits) {
-          rewriter.setInsertionPoint(&exit->back());
-          rewriter.create<LLVM::CallOp>(
-              loc, TypeRange{},
-              SymbolRefAttr::get(rewriter.getContext(), freeName),
-              ValueRange{devicePtr, topoVal});
-        }
-      } else {
-        if (!defBlock->empty() &&
-            defBlock->back().hasTrait<OpTrait::IsTerminator>())
-          rewriter.setInsertionPoint(&defBlock->back());
-        else
-          rewriter.setInsertionPointToEnd(defBlock);
-        rewriter.create<LLVM::CallOp>(
-            loc, TypeRange{},
-            SymbolRefAttr::get(rewriter.getContext(), freeName),
-            ValueRange{devicePtr, topoVal});
-      }
-    }
-
-    rewriter.replaceOp(op, result);
+    rewriter.create<LLVM::CallOp>(
+        loc, TypeRange{}, SymbolRefAttr::get(rewriter.getContext(), freeName),
+        ValueRange{ptr, topology});
+    rewriter.eraseOp(op);
     return success();
   }
 };
@@ -2756,6 +2838,7 @@ struct ConvertVxToLLVMPass
     // stage defers it); marking it illegal is what makes the pattern run. Host
     // transfers were already lowered there, so none should be left.
     target.addIllegalOp<vx::TransferOp>();
+    target.addIllegalOp<vx::FreeOp>();
     target.addIllegalOp<vx::LaunchOp>();
     target.addIllegalOp<vx::KernelOp>();
     target.addIllegalOp<vx::ReturnOp>();
@@ -2769,6 +2852,7 @@ struct ConvertVxToLLVMPass
     RewritePatternSet patterns(&getContext());
     patterns.add<LaunchOpLowering>(typeConverter, &getContext(), &deviceImages);
     patterns.add<TransferToPluginLowering>(typeConverter, &getContext());
+    patterns.add<FreeOpLowering>(typeConverter, &getContext());
     patterns.add<KernelOpLowering>(&getContext());
     patterns.add<ReturnOpLowering>(&getContext());
     patterns.add<BarrierOpLowering>(&getContext());
@@ -2936,13 +3020,13 @@ struct NormalizeStackBuffersPass
 //   `convert-bufferization-to-memref` lowers.
 //
 // A program that places data on a device or in a memory sub-space is left
-// exactly as it was. That code already manages its memory by hand -- the
-// transfer lowering writes its own frees -- and the two schemes collide: the
-// analysis refuses input that already frees, cannot see through the casts that
-// hand memory to the plugin calls, and would put a host `free` on memory in
-// another address space. Giving the `vx` ops real memory effects and deleting
-// the hand-written frees is the way to bring those programs in; until then the
-// whole module is skipped, because the analysis works on the whole module.
+// exactly as it was. Its transfers are already freed, by the `vx.free` that
+// convert-vx-to-standard places -- and the two schemes collide: the analysis
+// refuses input that already frees, cannot see through the casts that hand
+// memory to the plugin calls, and would put a host `free` on memory in another
+// address space. Running the analysis before the `vx` ops are lowered is the
+// way to bring those programs in; until then the whole module is skipped,
+// because the analysis works on the whole module.
 struct FreeHeapBuffersPass
     : public PassWrapper<FreeHeapBuffersPass, OperationPass<ModuleOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(FreeHeapBuffersPass)

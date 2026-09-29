@@ -1,0 +1,47 @@
+//===- print_unsigned_numbers.vx - Vx Compiler -------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Each unsigned width at its largest value prints as a positive number, through `print`
+// and through `print!`, and so does one read through a reference and one computed by an
+// addition. Negative signed numbers of each width still print with their sign.
+//
+// EXPECT: 255 65535 4294967295 18446744073709551615 | 255 65535 4294967295 18446744073709551615 | 18446744073709551615 18446744073709551615 | -5 -300 -70000 -9000000000 | -5 -300 -70000 -9000000000
+fn main() -> i32 {
+  let a : u8 = 255u8;
+  let b : u16 = 65535u16;
+  let c : u32 = 4294967295u32;
+  let d : u64 = 18446744073709551615u64;
+  print(a);
+  print!(" ");
+  print(b);
+  print!(" ");
+  print(c);
+  print!(" ");
+  print(d);
+  print!(" | ");
+  print!(a, " ", b, " ", c, " ", d, " | ");
+  let r : &u64 = &d;
+  print(*r);
+  print!(" ");
+  print(d + 0u64);
+  print!(" | ");
+
+  let e : i8 = -5i8;
+  let f : i16 = -300i16;
+  let g : i32 = -70000;
+  let h : i64 = -9000000000i64;
+  print(e);
+  print!(" ");
+  print(f);
+  print!(" ");
+  print(g);
+  print!(" ");
+  print(h);
+  print!(" | ");
+  print!(e, " ", f, " ", g, " ", h);
+  return 0;
+}

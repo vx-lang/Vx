@@ -1,0 +1,29 @@
+//===- closure_literal_wrong_type_for_field.vx - Vx Compiler ------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A closure literal is accepted for a `Closure1` field only when its parameter and result
+// types match. `add` returns a `bool` where an `i32` is wanted; `wide` takes an `i32`
+// where an `i64` is wanted.
+// CHECK-DAG: Type mismatch in struct initialization for field 'add'
+// CHECK-DAG: Type mismatch in struct initialization for field 'wide'
+import core::ops;
+
+struct Rules {
+  add : Closure1<i32, i32>,
+  wide : Closure1<i64, i32>,
+}
+
+fn main() -> i32 {
+  let r : Rules = Rules {
+    add : | x : i32 | x > 1, wide : | x : i32 | x
+  };
+  let p = r.add.func;
+  print(p(r.add.env, 4));
+  return 0;
+}

@@ -26,6 +26,11 @@ const KNOWN_DECLINES: &[&str] = &[
     // "A store to a nested nominal field": `self.inner = x` puts a struct into a struct's
     // field, which the flat path does not model. The file is about the AST path anyway.
     "backend/pass/assign_field_of_struct_local.vx",
+    // Reading a closure back out of a struct field: the flat path loads only plain numbers
+    // there ("an emitter gap" in memory.rs).
+    "backend/pass/closure_literal_as_closure_value.vx",
+    // "A store to a nested nominal field": `out.f = f` puts a closure into a struct's field.
+    "backend/pass/closure_using_a_local_stays_in_its_function.vx",
     // `Option::or` and its neighbours, which answer with an `Option<T>`. The flat path
     // declines them as "a non-scalar default return" -- the same shape as the file below,
     // and the AST path handles both. The module's other methods answer with a `T` or a
