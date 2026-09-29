@@ -261,6 +261,12 @@ impl<'a> TypeChecker<'a> {
         // left unrecorded rather than assumed safe-or-unsafe.
         if self.type_can_hold_reference(&binding_ty) {
             if let Some(prov) = self.ref_provenance_of(expr) {
+                // `let r = if c { let t = 1; &t } else { .. }`: `t`'s block has ended.
+                if let crate::hir::env::RefProvenance::Local(depth) = prov {
+                    if depth > self.current_scope_depth() && !self.speculating {
+                        self.report_block_escape(name.as_ref(), span);
+                    }
+                }
                 self.borrow.ref_provenance.insert(name.clone(), prov);
             } else {
                 // A new binding of the name holds something else now.
@@ -873,7 +879,10 @@ impl<'a> TypeChecker<'a> {
         // returned inside a struct, or a closure that uses a local, dangles the same way.
         if !self.speculating
             && self.type_can_hold_reference(&ty)
-            && self.ref_provenance_of(expr) == Some(crate::hir::env::RefProvenance::Local)
+            && matches!(
+                self.ref_provenance_of(expr),
+                Some(crate::hir::env::RefProvenance::Local(_))
+            )
         {
             self.report_frame_escape(
                 "this returns a value that points into this function's stack frame",

@@ -146,7 +146,7 @@ Raised by the borrow checker and the linear-type rules. These rule out use-after
 | [`E4002`](/errors/E4002/) | Cannot access mutably borrowed variable |
 | [`E4003`](/errors/E4003/) | Cannot borrow as mutable (already immutably borrowed) |
 | [`E4004`](/errors/E4004/) | Cannot borrow (already mutably borrowed) |
-| [`E4005`](/errors/E4005/) | A value that points into this function's stack frame would outlive the function: a reference to a local, or a closure that uses one, returned (on its own or inside a struct), stored through a reference, or passed to a call that could store it there. What it points at is gone once the function returns. |
+| [`E4005`](/errors/E4005/) | A value that points into this function's stack frame would outlive the function: a reference to a local, or a closure that uses one, returned (on its own or inside a struct), stored through a reference, or passed to a call that could store it there. What it points at is gone once the function returns. The same holds inside a function for a block: a variable declared outside a block cannot be given a value that points at a variable declared inside it. |
 
 ## Safety Errors
 

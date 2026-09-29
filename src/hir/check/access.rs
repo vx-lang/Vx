@@ -852,11 +852,11 @@ impl<'a> TypeChecker<'a> {
                 if let Some((base, _path)) = Self::extract_base_and_path(&b.expr) {
                     match self.borrow.current_params.get(base.as_str()) {
                         Some(pty) if Self::is_ref_type(pty) => Some(RefProvenance::External),
-                        _ => Some(RefProvenance::Local),
+                        _ => Some(RefProvenance::Local(self.scope_depth_of(&base))),
                     }
                 } else {
                     // `&5`, `&(a + b)`, `&f()` — borrows an unnamed temporary.
-                    Some(RefProvenance::Local)
+                    Some(RefProvenance::Local(self.current_scope_depth()))
                 }
             }
             // A bare reference variable: a reference parameter is external; a local binding carries
@@ -935,7 +935,7 @@ impl<'a> TypeChecker<'a> {
                     return if s.fields.is_empty() {
                         None
                     } else {
-                        Some(RefProvenance::Local)
+                        Some(RefProvenance::Local(self.current_scope_depth()))
                     };
                 }
                 self.join_value_provenance(s.fields.iter().map(|(_, e)| e))
@@ -1067,17 +1067,27 @@ impl<'a> TypeChecker<'a> {
         Self::join_provenances(parts.map(|e| self.ref_provenance_of(e)).collect())
     }
 
+    /// The depth of the innermost scope open now; the function's parameters are at 0 or 1.
+    pub(crate) fn current_scope_depth(&self) -> usize {
+        self.scopes.len().saturating_sub(1)
+    }
+
+    /// The depth of the scope `name` was declared in. Vx has no globals, so a name that is
+    /// not open any more was declared in a block that has already ended, deeper than here.
+    pub(crate) fn scope_depth_of(&self, name: &str) -> usize {
+        self.scopes
+            .iter()
+            .rposition(|s| s.contains_key(name))
+            .unwrap_or(self.current_scope_depth() + 1)
+    }
+
     fn join_provenances(
         parts: Vec<Option<crate::hir::env::RefProvenance>>,
     ) -> Option<crate::hir::env::RefProvenance> {
-        use crate::hir::env::RefProvenance;
-        if parts.contains(&Some(RefProvenance::Local)) {
-            Some(RefProvenance::Local)
-        } else if parts.iter().any(|p| p.is_some()) {
-            Some(RefProvenance::External)
-        } else {
-            None
-        }
+        parts
+            .into_iter()
+            .flatten()
+            .reduce(crate::hir::env::RefProvenance::join)
     }
 
     /// The provenance of each value a block can end with: a `return`, or a final expression
@@ -1229,12 +1239,11 @@ impl<'a> TypeChecker<'a> {
         args: &[&Expr],
     ) -> Option<crate::hir::env::RefProvenance> {
         use crate::hir::env::RefProvenance;
-        for a in args {
-            if self.ref_provenance_of(a) == Some(RefProvenance::Local) {
-                return Some(RefProvenance::Local);
-            }
-        }
-        Some(RefProvenance::External)
+        let joined = args
+            .iter()
+            .filter_map(|a| self.ref_provenance_of(a))
+            .fold(RefProvenance::External, RefProvenance::join);
+        Some(joined)
     }
 
     /// Track a reborrow created by passing an existing reference *by name* to a reference

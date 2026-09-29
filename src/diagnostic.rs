@@ -336,7 +336,9 @@ pub enum DiagnosticCode {
     /// A value that points into this function's stack frame would outlive the function: a
     /// reference to a local, or a closure that uses one, returned (on its own or inside a
     /// struct), stored through a reference, or passed to a call that could store it there.
-    /// What it points at is gone once the function returns.
+    /// What it points at is gone once the function returns. The same holds inside a function
+    /// for a block: a variable declared outside a block cannot be given a value that points
+    /// at a variable declared inside it.
     E4005,
 
     // --- Safety Errors (E5xxx) ---

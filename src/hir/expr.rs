@@ -116,6 +116,8 @@ impl<'a> TypeChecker<'a> {
                 }
                 self.borrow.restore(saved_borrows);
                 self.settle_mut_borrow_call(expr, &before, &scopes);
+                // `check_statement` asks this of every other statement.
+                self.check_frame_escape(s);
             } else {
                 let expected_ret = self.current_return_type.clone().unwrap_or(Type::Tensor(
                     ElementType::F32,

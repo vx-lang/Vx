@@ -13,8 +13,8 @@
 // heap memory that nothing frees, so it outlives the `Vec` variable. That second one is
 // safe only for as long as a `Vec` is never freed when its scope ends (#495).
 //
-// `kept_past_its_block` keeps a reference to an inner block's variable after the block.
-// Every local has a slot for the whole call, so the value is still there.
+// `set_in_a_block` points a reference at another variable from inside a block. Both
+// variables are declared outside the block, so both outlive it.
 import std::vec;
 
 struct View {
@@ -39,12 +39,12 @@ fn from_heap(n : i32) -> Slice {
   };
 }
 
-fn kept_past_its_block(k : i32) -> i32 {
+fn set_in_a_block(k : i32) -> i32 {
   let seed : i32 = 1;
+  let other : i32 = k + 4;
   let mut r : &i32 = &seed;
   if k > 0 {
-    let inner : i32 = k + 4;
-    r = &inner;
+    r = &other;
   }
   return *r;
 }
@@ -65,7 +65,7 @@ fn main() -> i32 {
   print!(" ");
   print(*s.s);
   print!(" ");
-  print(kept_past_its_block(10));
+  print(set_in_a_block(10));
   return 0;
 }
 

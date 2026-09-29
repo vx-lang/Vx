@@ -40,11 +40,22 @@ impl<'a> TypeChecker<'a> {
                 } else {
                     span
                 };
-                let stored_ty = self.check_expr_type_probe(rhs);
+                // The place's type is the value's, and is known more often: a variant built
+                // inside a generic instance can still read as `Unknown`.
+                let stored_ty = match self.check_expr_type_probe(lhs) {
+                    Type::Unknown => self.check_expr_type_probe(rhs),
+                    known => known,
+                };
                 let provenance = self.ref_provenance_of(rhs);
-                if !self.type_can_hold_reference(&stored_ty)
-                    || provenance != Some(RefProvenance::Local)
-                {
+                let local_depth = match provenance {
+                    Some(RefProvenance::Local(depth))
+                        if self.type_can_hold_reference(&stored_ty) =>
+                    {
+                        Some(depth)
+                    }
+                    _ => None,
+                };
+                let Some(depth) = local_depth else {
                     // `r = p` makes `r` point wherever `p` does now; a stale "local" would
                     // refuse a later `return r` that is fine.
                     if let Expr::Identifier(id) = lhs {
@@ -58,7 +69,7 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                     return;
-                }
+                };
                 // `r = &x` gives the variable `r` a new value, even when `r` is itself a
                 // reference; only a path through a field, an index or a `*` writes into
                 // whatever the reference points at.
@@ -73,9 +84,8 @@ impl<'a> TypeChecker<'a> {
                             );
                         } else {
                             // The local now holds it; returning that local is caught later.
-                            self.borrow
-                                .ref_provenance
-                                .insert(root, RefProvenance::Local);
+                            // A field store adds to what the local already points at.
+                            self.hold_in_local(root, depth, is_path, span);
                         }
                     }
                     None => self.report_frame_escape(
@@ -110,6 +120,42 @@ impl<'a> TypeChecker<'a> {
         );
     }
 
+    /// Record that the local `root` now holds a value pointing into the block at `depth`.
+    /// When `root` was declared in an outer block, the value would outlive the block it
+    /// points into, and is refused. `adds` keeps what `root` pointed at before: a field
+    /// store or a call adds a value, a plain `root = ..` replaces it.
+    fn hold_in_local(
+        &mut self,
+        root: crate::symbol::Symbol,
+        depth: usize,
+        adds: bool,
+        span: &crate::syntax::Span,
+    ) {
+        if depth > self.scope_depth_of(&root) {
+            self.report_block_escape(&root, span);
+            return;
+        }
+        let mut held = RefProvenance::Local(depth);
+        if adds {
+            if let Some(old) = self.borrow.ref_provenance.get(&root) {
+                held = RefProvenance::join(*old, held);
+            }
+        }
+        self.borrow.ref_provenance.insert(root, held);
+    }
+
+    pub(crate) fn report_block_escape(&mut self, root: &str, span: &crate::syntax::Span) {
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E4005,
+            format!(
+                "`{root}` is given a value that points at a variable of an inner block, and \
+                 `{root}` outlives that block. What it points at is gone once the block ends. \
+                 Declare that variable outside the block, where `{root}` is"
+            ),
+            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+        );
+    }
+
     /// A call can store an argument through any mutable reference it is given whose target
     /// can hold a reference. So when an argument points into this frame, every such
     /// reference among the other arguments must point into this frame too: one into memory
@@ -138,17 +184,27 @@ impl<'a> TypeChecker<'a> {
         // A method call may carry no position of its own; its receiver or first argument
         // does.
         let span = if span == crate::syntax::Span::default() {
-            all.first().map(|e| e.span()).unwrap_or(span)
+            all.iter()
+                .map(|e| match e {
+                    Expr::Borrow(b) => b.expr.span(),
+                    e => e.span(),
+                })
+                .find(|s| *s != crate::syntax::Span::default())
+                .unwrap_or(span)
         } else {
             span
         };
 
-        let holders: Vec<usize> = (0..all.len())
-            .filter(|&i| {
-                self.ref_provenance_of(all[i]) == Some(RefProvenance::Local)
-                    && self.type_can_hold_reference(&self.check_expr_type_probe(all[i]))
-            })
-            .collect();
+        let mut holders: Vec<usize> = Vec::new();
+        let mut depth = 0;
+        for (i, arg) in all.iter().enumerate() {
+            if let Some(RefProvenance::Local(d)) = self.ref_provenance_of(arg) {
+                if self.type_can_hold_reference(&self.check_expr_type_probe(arg)) {
+                    holders.push(i);
+                    depth = depth.max(d);
+                }
+            }
+        }
         if holders.is_empty() {
             return;
         }
@@ -177,9 +233,7 @@ impl<'a> TypeChecker<'a> {
                         &span,
                     );
                 } else {
-                    self.borrow
-                        .ref_provenance
-                        .insert(root, RefProvenance::Local);
+                    self.hold_in_local(root, depth, true, &span);
                 }
             }
         }
