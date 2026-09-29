@@ -1,0 +1,59 @@
+//===- for_loop_over_a_vec.vx - Vx Compiler ----------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `for x in v` over a `Vec` itself, and over a `Vec` a call returns: the loop calls
+// `into_iter()` on what it is given when that is not an iterator already. An iterator is
+// still driven directly. `into_iter` is also called by hand, from both ends.
+//
+// EXPECT: 42 21 3 | 40 5 1
+import core::iter;
+import std::vec;
+
+fn make(n : i64) -> Vec<i64> {
+  let mut v = Vec<i64>::new();
+  v.push(n);
+  v.push(n + 1i64);
+  return v;
+}
+
+fn main() -> i32 {
+  let mut v = Vec<i64>::new();
+  v.push(40i64);
+  v.push(2i64);
+  let mut s = 0i64;
+  for x in v {
+    s = s + x;
+  }
+  print(s);
+  print!(" ");
+  let mut t = 0i64;
+  for x in make(10i64) {
+    t = t + x;
+  }
+  print(t);
+  print!(" ");
+  let mut n = 0i64;
+  for x in range(0i64, 3i64) {
+    n = n + 1i64;
+  }
+  print(n);
+  print!(" | ");
+
+  let mut w = Vec<i64>::new();
+  w.push(40i64);
+  w.push(2i64);
+  w.push(5i64);
+  let mut it = w.into_iter();
+  let a = it.next().unwrap();
+  let b = it.next_back().unwrap();
+  print(a);
+  print!(" ");
+  print(b);
+  print!(" ");
+  print(it.len());
+  return 0;
+}

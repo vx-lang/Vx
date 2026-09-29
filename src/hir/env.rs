@@ -1128,7 +1128,11 @@ impl<'a> TypeChecker<'a> {
         topo_mapping: &std::collections::HashMap<crate::symbol::Symbol, Topology>,
     ) -> Function {
         let mut mangled_name = generic_func.name.to_string();
-        let mut sorted_keys: Vec<&crate::symbol::Symbol> = mapping.keys().collect();
+        // `T::Item` follows from `T`, so it adds nothing to the name.
+        let mut sorted_keys: Vec<&crate::symbol::Symbol> = mapping
+            .keys()
+            .filter(|k| !k.as_ref().contains("::"))
+            .collect();
         sorted_keys.sort();
         for g_name in sorted_keys {
             if let Some(ty) = mapping.get(g_name) {

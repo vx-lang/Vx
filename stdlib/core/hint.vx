@@ -1,0 +1,39 @@
+//===- hint.vx - Vx Standard Library ------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Hints to the optimizer, as in Rust's `core::hint`.
+//
+// Not here yet: `black_box` needs an opaque operation over any type, which `mlir!` cannot
+// name for a type parameter; `spin_loop` is `pause` on x86 and `yield` on ARM, and `core`
+// has no way yet to pick an instruction by target; `unreachable_unchecked` needs a function
+// that never returns, which is blocked with `core::panic`.
+
+/// Tells the optimizer that `cond` is true, so it may drop checks that follow from it.
+/// Nothing checks it: if `cond` is false, the program's behaviour is undefined.
+///
+/// A module that uses this is skipped by the pass that frees heap buffers, because the
+/// `llvm.intr.assume` it becomes does not declare its memory effects.
+unsafe fn assert_unchecked(cond : bool) -> void {
+  let _kept : bool = mlir!( inputs : (%c = cond : i1), returns : bool, dialects : ["llvm"]) {
+    llvm.intr.assume %c : i1
+    macro.yield %c : i1
+  };
+}
+
+/// Returns `value` unchanged. Rust uses it to mark a value that should not be ignored.
+fn must_use<T>(value : T) -> T {
+  return value;
+}
+
+/// `true_val` if `condition` holds, otherwise `false_val`. Both are already computed, so
+/// the answer can be a select rather than a branch the processor must predict.
+fn select_unpredictable<T>(condition : bool, true_val : T, false_val : T) -> T {
+  if condition {
+    return true_val;
+  }
+  return false_val;
+}

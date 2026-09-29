@@ -1,0 +1,35 @@
+//===- closure_literal_in_a_for_header.vx - Vx Compiler ----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A closure literal passed to `map` inside a `for` loop header, on a `Range` and on an
+// adapter (`fuse`), and a closure bound with `let` and then passed to an ordinary function
+// that takes a `Closure1`. Each was refused with "Expected Closure1<..>, got Closure_1".
+//
+// EXPECT: 60 1020 7
+import core::iter;
+import core::ops;
+
+fn apply(f : Closure1<i32, i32>, x : i32) -> i32 {
+  let p = f.func;
+  return p(f.env, x);
+}
+
+fn main() -> i32 {
+  let mut total = 0i64;
+  for x in range(0i64, 4i64).map(| x : i64 | x * 10i64) {
+    total = total + x;
+  }
+  print(total);
+  print!(" ");
+  for x in range(1i64, 3i64).fuse().map(| v : i64 | v * 10i64) {
+    print(x);
+  }
+  print!(" ");
+  let inc = | x : i32 | x + 5;
+  print(apply(inc, 2));
+  return 0;
+}
