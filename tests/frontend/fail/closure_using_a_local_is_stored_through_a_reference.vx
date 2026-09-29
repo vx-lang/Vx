@@ -1,0 +1,30 @@
+//===- closure_using_a_local_is_stored_through_a_reference.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// `fill` writes a closure that uses its parameter `k` into a struct the caller owns. The
+// caller keeps the struct after `fill` returns, and `k` does not survive that.
+// CHECK: Error[E4005] at 20:7: this stores a value that points into this function's stack frame through a reference
+import core::ops;
+
+struct Holder {
+  f : Closure1<i32, i32>,
+}
+
+fn fill(out : &mut Holder, k : i32) -> i32 {
+  out.f = | x : i32 | x + k;
+  return 0;
+}
+
+fn main() -> i32 {
+  let mut h : Holder = Holder {
+    f : | x : i32 | x
+  };
+  fill(&mut h, 10);
+  return 0;
+}

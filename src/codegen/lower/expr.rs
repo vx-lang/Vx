@@ -3697,11 +3697,14 @@ impl<'c> LowerToMelior<'c> for syntax::expr::PrintExpr {
     ) -> Self::Output {
         for arg in &self.args {
             let (arg_val, arg_ty, block) = gen.generate_expr(arg, block)?;
+            if let Some((fn_name, arg_val, arg_ty_str)) =
+                super::pick_scalar_print(gen, block, arg, arg_val, arg_ty)?
+            {
+                super::call_scalar_print(gen, block, fn_name, arg_val, &arg_ty_str)?;
+                continue;
+            }
 
             let func_name = match arg_ty.to_string().as_ref() {
-                "i32" => "print_i32",
-                "f32" => "print_f32",
-                "f64" => "print_f64",
                 "!llvm.ptr" | "!llvm.ptr<i8>" => "print_str",
                 _ => {
                     // Fallback or warning
