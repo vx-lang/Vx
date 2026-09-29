@@ -1,0 +1,46 @@
+//===- core_hint.vx - Vx Compiler ---------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `core::hint`: `assert_unchecked` reaches LLVM as an `llvm.intr.assume`, and
+// `must_use` and `select_unpredictable` give back the value they are handed, for an
+// integer, a float and a struct.
+//
+// RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s
+// CHECK: llvm.intr.assume
+// EXPECT: 7 2.5 3 | 10 20 1.5 4
+import core::hint;
+
+struct Point {
+  x : i32,
+  y : i32,
+}
+
+fn main() -> i32 {
+  let n : i32 = 7;
+  unsafe { assert_unchecked(n > 0); }
+  let half : f64 = 2.5;
+  let p = Point {
+    x: 3, y: 4
+  };
+  print(must_use(n));
+  print!(" ");
+  print(must_use(half));
+  print!(" ");
+  print(must_use(p).x);
+  print!(" | ");
+  print(select_unpredictable(n > 5, 10, 20));
+  print!(" ");
+  print(select_unpredictable(n > 9, 10, 20));
+  print!(" ");
+  print(select_unpredictable(n > 5, 1.5, 0.5));
+  print!(" ");
+  let q = Point {
+    x: 0, y: 0
+  };
+  print(select_unpredictable(n > 5, p, q).y);
+  return 0;
+}
