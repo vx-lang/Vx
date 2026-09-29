@@ -144,10 +144,20 @@ Vec<T> {
     return self.len;
   }
 
-  /// An iterator over the elements, borrowing the vector rather than consuming it.
+  /// An iterator over references to the elements, borrowing the vector rather than
+  /// consuming it. `.copied()` turns it into one over copies.
   fn iter(self : &Vec<T>) -> VecIter<T> {
     return VecIter<T> {
       vec : self, current : 0, back : self.len
+    };
+  }
+
+  /// An iterator over mutable references to the elements, through which each can be changed
+  /// in place.
+  fn iter_mut(self : &mut Vec<T>) -> VecIterMut<T> {
+    let n = self.len;
+    return VecIterMut<T> {
+      vec : self, current : 0, back : n
     };
   }
 }
@@ -208,7 +218,8 @@ impl<T> FromIterator<T> for Vec<T> {
   }
 }
 
-/// An iterator over a `Vec<T>`'s elements, holding a pointer to the vector it walks.
+/// An iterator over references to a `Vec<T>`'s elements, holding a pointer to the vector it
+/// walks.
 ///
 /// Growing or freeing that vector while this exists leaves the iterator pointing at the old
 /// buffer.
@@ -267,30 +278,30 @@ impl<T> ExactSizeIterator for VecIntoIter<T> {
 }
 
 impl<T> Iterator for VecIter<T> {
-  type Item = T;
+  type Item = &T;
 
-  /// The next element, or nothing once the end is reached.
-  fn next(self : &mut VecIter<T>) -> Option<T> {
-    let mut ret = Option<T>::None();
+  /// A reference to the next element, or nothing once the end is reached.
+  fn next(self : &mut VecIter<T>) -> Option<&T> {
+    let mut ret = Option<&T>::None();
     if self
     .current < self.back {
-      let val : T = unsafe { (*self.vec).data[self.current] };
+      let r : &T = unsafe { &(*self.vec).data[self.current] };
       self.current = self.current + 1;
-      ret = Option<T>::Some(val);
+      ret = Option<&T>::Some(r);
     }
     return ret;
   }
 }
 
 impl<T> DoubleEndedIterator for VecIter<T> {
-  /// The last element not yet handed out from either end.
-  fn next_back(self : &mut VecIter<T>) -> Option<T> {
+  /// A reference to the last element not yet handed out from either end.
+  fn next_back(self : &mut VecIter<T>) -> Option<&T> {
     if self.back <= self.current {
-      return Option<T>::None();
+      return Option<&T>::None();
     }
     self.back = self.back - 1;
-    let val : T = unsafe { (*self.vec).data[self.back] };
-    return Option<T>::Some(val);
+    let r : &T = unsafe { &(*self.vec).data[self.back] };
+    return Option<&T>::Some(r);
   }
 }
 
@@ -301,10 +312,54 @@ impl<T> ExactSizeIterator for VecIter<T> {
   }
 }
 
+/// An iterator over mutable references to a `Vec<T>`'s elements. Built by `iter_mut`.
+///
+/// Growing or freeing that vector while this exists leaves the iterator pointing at the old
+/// buffer.
+struct VecIterMut<T> {
+  vec: *mut Vec<T>,
+  current: i32,
+  // One past the last element not yet handed out from the back.
+  back: i32,
+}
+
+impl<T> Iterator for VecIterMut<T> {
+  type Item = &mut T;
+
+  /// A mutable reference to the next element, or nothing once the end is reached.
+  fn next(self : &mut VecIterMut<T>) -> Option<&mut T> {
+    if self.current >= self.back {
+      return Option<&mut T>::None();
+    }
+    let r : &mut T = unsafe { &mut (*self.vec).data[self.current] };
+    self.current = self.current + 1;
+    return Option<&mut T>::Some(r);
+  }
+}
+
+impl<T> DoubleEndedIterator for VecIterMut<T> {
+  /// A mutable reference to the last element not yet handed out from either end.
+  fn next_back(self : &mut VecIterMut<T>) -> Option<&mut T> {
+    if self.back <= self.current {
+      return Option<&mut T>::None();
+    }
+    self.back = self.back - 1;
+    let r : &mut T = unsafe { &mut (*self.vec).data[self.back] };
+    return Option<&mut T>::Some(r);
+  }
+}
+
+impl<T> ExactSizeIterator for VecIterMut<T> {
+  /// How many elements are left between the two ends.
+  fn len(self : &VecIterMut<T>) -> i64 {
+    return (self.back - self.current) as i64;
+  }
+}
+
 impl<T>
 VecIter<T> {
-  /// An iterator over these elements with `f` applied to each.
-  fn map<NewItem>(self : VecIter<T>, f : Closure1<T, NewItem>)
+  /// An iterator over these elements with `f` applied to a reference to each.
+  fn map<NewItem>(self : VecIter<T>, f : Closure1<&T, NewItem>)
   -> VecMap<T, NewItem> {
     return VecMap<T, NewItem> {
       iter : self, f : f
@@ -315,7 +370,7 @@ VecIter<T> {
 /// The iterator `VecIter::map` builds: the inner walk plus the function applied to each item.
 struct VecMap<T, NewItem> {
   iter: VecIter<T>,
-  f: Closure1<T, NewItem>,
+  f: Closure1<&T, NewItem>,
 }
 
 impl<T, NewItem> Iterator for VecMap<T, NewItem> {

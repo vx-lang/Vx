@@ -495,7 +495,7 @@ impl<'a> TypeChecker<'a> {
 
                 self.commit_reference_arg_reborrows(&reborrow_plan, &arg_types, span);
                 if resolved_name == "print".into() && args.len() == 1 {
-                    Self::mark_unsigned_print_operand(&mut args[0], &arg_types[0]);
+                    Self::prepare_print_operand(&mut args[0], &arg_types[0]);
                 }
                 if let Some(intrinsic_ty) = self.resolve_intrinsic_function(
                     &resolved_name,
@@ -1520,10 +1520,30 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    fn deref_number_operand_unless_borrow(arg: &mut Expr, ty: &Type) -> Option<Type> {
+        if matches!(arg, Expr::Borrow(_)) {
+            return None;
+        }
+        Self::deref_number_operand(arg, ty)
+    }
+
+    /// Get a `print` operand ready for code generation.
+    ///
+    /// A reference to a number prints the number, as in Rust: `x` becomes `*x`. A written
+    /// `&x` is left alone, since `print` already looks through it.
+    ///
     /// MLIR integers carry no sign, so the AST code generator cannot tell a `u64` from an
     /// `i64` when it picks the runtime print function. An unsigned operand is wrapped in a
     /// cast to its own type (`x as u64`), which changes no value and tells it which to pick.
-    pub(crate) fn mark_unsigned_print_operand(arg: &mut Expr, ty: &Type) {
+    pub(crate) fn prepare_print_operand(arg: &mut Expr, ty: &Type) {
+        let read_through;
+        let ty = match Self::deref_number_operand_unless_borrow(arg, ty) {
+            Some(t) => {
+                read_through = t;
+                &read_through
+            }
+            None => ty,
+        };
         let (arg, ty) = match (arg, ty) {
             (Expr::Borrow(b), Type::Borrow { inner, .. }) => (&mut *b.expr, &**inner),
             (arg, ty) => (arg, ty),

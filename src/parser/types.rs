@@ -148,6 +148,18 @@ impl<'a> Parser<'a> {
     }
 
     pub(crate) fn parse_type(&mut self) -> ParseResult<'a, Type> {
+        // `&&T` is a reference to a reference; the lexer made the two `&`s one token.
+        if self.match_token(&TokenType::AndAnd) {
+            let is_mut = self.match_token(&TokenType::Mut);
+            let inner = self.parse_type()?;
+            let reference = |inner: Type, is_mut: bool| Type::Borrow {
+                inner: Box::new(inner),
+                mem_space: None,
+                is_mut,
+                region_id: crate::syntax::REGION_UNSET as usize,
+            };
+            return Ok(reference(reference(inner, is_mut), false));
+        }
         if self.match_token(&TokenType::Ampersand) {
             let is_mut = self.match_token(&TokenType::Mut);
             let inner = self.parse_type()?;

@@ -1,0 +1,84 @@
+//===- vec_iter_hands_out_references.vx - Vx Compiler ------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `Vec::iter()` hands out a reference to each element and `iter_mut()` a mutable one, as
+// in Rust. A reference is summed and printed as the number it points at. `copied()` and
+// `cloned()` turn references into values; `Pt`'s `clone` adds one, to show it was called.
+// `filter` over references takes a `&&i64`.
+//
+// EXPECT: 49 7 | 490 | 490 490 | 470 1 | 2 1
+import core::clone;
+import core::iter;
+import std::vec;
+
+struct Pt {
+  x : i64,
+}
+
+impl Clone for Pt {
+  fn clone(self : &Pt) -> Pt {
+    return Pt {
+      x : self.x + 1i64
+    };
+  }
+}
+
+fn main() -> i32 {
+  let mut v = Vec<i64>::new();
+  v.push(40i64);
+  v.push(2i64);
+  v.push(7i64);
+  let mut s = 0i64;
+  for x in v.iter() {
+    s = s + x;
+  }
+  print(s);
+  print!(" ");
+  let mut back = v.iter();
+  print(back.next_back().unwrap());
+  print!(" | ");
+
+  for x in v.iter_mut() {
+    *x = *x * 10i64;
+  }
+  let mut t = 0i64;
+  for x in v.iter() {
+    t = t + x;
+  }
+  print(t);
+  print!(" | ");
+
+  let c : i64 = v.iter().copied().sum();
+  print(c);
+  print!(" ");
+  let d : i64 = v.iter().cloned().sum();
+  print(d);
+  print!(" | ");
+
+  let mut big = 0i64;
+  for x in v.iter().filter(| x : &&i64 | **x > 50i64) {
+    big = big + x;
+  }
+  print(big);
+  print!(" ");
+  let n = v.iter().copied().filter(| x : &i64 | *x < 50i64).count();
+  print(n);
+  print!(" | ");
+
+  let mut ps = Vec<Pt>::new();
+  ps.push(Pt {
+    x : 1i64
+  });
+  ps.push(Pt {
+    x : 0i64
+  });
+  let mut first = ps.iter().cloned();
+  print(first.next().unwrap().x);
+  print!(" ");
+  print(first.next().unwrap().x);
+  return 0;
+}
