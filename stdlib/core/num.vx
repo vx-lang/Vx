@@ -977,6 +977,117 @@ macro_rules stamp_float {
         };
       }
 
+      /// `self * a + b` with one rounding instead of two.
+      fn mul_add(self : $t, a : $t, b : $t) -> $t {
+        return mlir!( inputs : (%x = self : $t, %y = a : $t, %z = b : $t), returns : $t, dialects : ["math"]) {
+          %r = math.fma %x, %y, %z : $t
+          macro.yield %r : $t
+        };
+      }
+
+      /// The length of the hypotenuse, the square root of `self * self + other * other`.
+      /// The smaller side is divided by the larger first, so neither square overflows or
+      /// underflows. Not the libm routine, so the last bit can differ from Rust's answer.
+      fn hypot(self : $t, other : $t) -> $t {
+        let a = self.abs();
+        let b = other.abs();
+        let infinity : $t = $one / $zero;
+        if a == infinity || b == infinity {
+          return infinity;
+        }
+        if a.is_nan() || b.is_nan() {
+          return a + b;
+        }
+        let mut big = a;
+        let mut small = b;
+        if b > a {
+          big = b;
+          small = a;
+        }
+        if big == $zero {
+          return $zero;
+        }
+        let ratio = small / big;
+        return big * ($one + ratio * ratio).sqrt();
+      }
+
+      /// Never negative, whatever the signs: -7.0 % 4.0 is -3.0 where this is 1.0.
+      fn rem_euclid(self : $t, rhs : $t) -> $t {
+        let r = self % rhs;
+        if r < $zero {
+          return r + rhs.abs();
+        }
+        return r;
+      }
+
+      /// The whole quotient pairing with `rem_euclid`.
+      fn div_euclid(self : $t, rhs : $t) -> $t {
+        let q = (self / rhs).trunc();
+        if self % rhs < $zero {
+          if rhs > $zero {
+            return q - $one;
+          }
+          return q + $one;
+        }
+        return q;
+      }
+
+      /// This raised to a whole power, by squaring. A negative power gives the reciprocal.
+      fn powi(self : $t, n : i32) -> $t {
+        // In `i64`, so the smallest `i32` can be negated.
+        let mut e : i64 = n as i64;
+        if e < 0 {
+          e = -e;
+        }
+        let mut result : $t = $one;
+        let mut base : $t = self;
+        loop {
+          if e == 0 {
+            break;
+          }
+          if (e & 1) == 1 {
+            result = result * base;
+          }
+          base = base * base;
+          e = e >> 1;
+        }
+        if n < 0 {
+          return $one / result;
+        }
+        return result;
+      }
+
+      /// The larger of the two. A NaN is ignored: the other value is the answer. A NaN on the
+      /// left fails the comparison, so only the right needs a test.
+      fn max(self : $t, other : $t) -> $t {
+        if other.is_nan() || self > other {
+          return self;
+        }
+        return other;
+      }
+
+      /// The smaller of the two. A NaN is ignored: the other value is the answer.
+      fn min(self : $t, other : $t) -> $t {
+        if other.is_nan() || self < other {
+          return self;
+        }
+        return other;
+      }
+
+      /// Held between `lo` and `hi`. A NaN stays a NaN. Refused when `lo` is above `hi`
+      /// or either bound is a NaN.
+      fn clamp(self : $t, lo : $t, hi : $t) -> $t {
+        assert(lo <= hi, "clamp needs lo at or below hi, and neither a NaN");
+        let mut x = self;
+        if x < lo {
+          x = lo;
+        }
+        if x > hi {
+          x = hi;
+        }
+        return x;
+      }
+
       /// One divided by this.
       fn recip(self : $t) -> $t {
         return $one / self;
