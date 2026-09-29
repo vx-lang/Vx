@@ -945,35 +945,6 @@ The integer and float methods, stamped over every width.
   Plain division: an unsigned quotient is already the Euclidean one.
 - `fn rem_euclid(self : $t, rhs : $t) -> $t`<br>
   Plain remainder, which at this width is never negative.
-- `fn checked_pow(self : $t, exp : $t) -> Option<$t>`<br>
-  This raised to `exp`, or nothing if the answer does not fit.
-- `fn wrapping_pow(self : $t, exp : $t) -> $t`<br>
-  This raised to `exp`, wrapping round at the width. The same as `pow`, under the
-  name that says so.
-- `fn ilog(self : $t, base : $t) -> $t`<br>
-  The logarithm to `base`, rounded down. Refused at zero and below, and for a base
-  below two.
-- `fn ilog10(self : $t) -> $t`<br>
-  The logarithm to base ten, rounded down. Refused at zero and below.
-- `fn checked_ilog(self : $t, base : $t) -> Option<$t>`<br>
-  The logarithm to `base`, or nothing at zero and below or for a base below two.
-- `fn checked_ilog2(self : $t) -> Option<$t>`<br>
-  The logarithm to base two, or nothing at zero and below.
-- `fn checked_ilog10(self : $t) -> Option<$t>`<br>
-  The logarithm to base ten, or nothing at zero and below.
-- `fn saturating_pow(self : $t, exp : $t) -> $t`<br>
-  This raised to `exp`, held at the largest value if it overflows.
-- `fn is_multiple_of(self : $t, rhs : $t) -> bool`<br>
-  Does `rhs` divide this exactly? Zero is a multiple only of zero, and every value of
-  one.
-- `fn next_multiple_of(self : $t, rhs : $t) -> $t`<br>
-  The smallest multiple of `rhs` at or above this. Refused on a zero `rhs`, and when
-  the answer does not fit.
-- `fn checked_next_multiple_of(self : $t, rhs : $t) -> Option<$t>`<br>
-  The smallest multiple of `rhs` at or above this, or nothing on a zero `rhs` or when
-  the answer does not fit.
-- `fn checked_next_power_of_two(self : $t) -> Option<$t>`<br>
-  The smallest power of two at or above this, or nothing above the top power of two.
 - `fn ilog2(self : $t) -> $t`<br>
   Rounded down. Refused at zero, which has no logarithm.
 - `fn next_power_of_two(self : $t) -> $t`<br>
@@ -1121,38 +1092,6 @@ The integer and float methods, stamped over every width.
   Never negative, whatever the signs: -7 % 4 is -3 where this is 1.
 - `fn div_euclid(self : T, rhs : T) -> T`<br>
   The quotient pairing with `rem_euclid`.
-- `fn checked_pow(self : T, exp : T) -> Option<T>`<br>
-  This raised to `exp`, or nothing if the answer does not fit.
-- `fn wrapping_pow(self : T, exp : T) -> T`<br>
-  This raised to `exp`, wrapping round at the width. The same as `pow`, under the
-  name that says so.
-- `fn ilog(self : T, base : T) -> T`<br>
-  The logarithm to `base`, rounded down. Refused at zero and below, and for a base
-  below two.
-- `fn ilog10(self : T) -> T`<br>
-  The logarithm to base ten, rounded down. Refused at zero and below.
-- `fn checked_ilog(self : T, base : T) -> Option<T>`<br>
-  The logarithm to `base`, or nothing at zero and below or for a base below two.
-- `fn checked_ilog2(self : T) -> Option<T>`<br>
-  The logarithm to base two, or nothing at zero and below.
-- `fn checked_ilog10(self : T) -> Option<T>`<br>
-  The logarithm to base ten, or nothing at zero and below.
-- `fn saturating_pow(self : T, exp : T) -> T`<br>
-  This raised to `exp`, held at the end of the range it overflows towards: the
-  bottom for a negative base to an odd power, the top otherwise.
-- `fn checked_abs(self : T) -> Option<T>`<br>
-  The absolute value, or nothing for the smallest value, whose positive does not fit.
-- `fn wrapping_abs(self : T) -> T`<br>
-  The absolute value, wrapping: the smallest value gives itself.
-- `fn saturating_abs(self : T) -> T`<br>
-  The absolute value, held at the largest value for the smallest.
-- `fn saturating_neg(self : T) -> T`<br>
-  The negation, held at the largest value for the smallest.
-- `fn wrapping_div(self : T, rhs : T) -> T`<br>
-  The quotient, wrapping: the smallest value divided by -1 gives itself. Refused on
-  a zero divisor, as `/` is.
-- `fn wrapping_rem(self : T, rhs : T) -> T`<br>
-  The remainder, wrapping: the smallest value by -1 gives 0.
 - `fn ilog2(self : T) -> T`<br>
   Rounded down. Refused at zero and below.
 - `fn next_power_of_two(self : T) -> T`<br>
@@ -2215,4 +2154,4 @@ Clocks and durations.
 
 ______________________________________________________________________
 
-826 functions across 33 modules.
+758 functions across 33 modules.
