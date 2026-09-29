@@ -1,0 +1,46 @@
+//===- core_option_flatten_unzip.vx - Vx Compiler -----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `Option::flatten` and `Option::unzip`, the methods on an `Option` of an `Option` and of
+// a pair. Each is asked every shape its input can have, since a method that mixed up two
+// of them would still compile. The pair is two `i32`s: an `Option` of a tuple of two
+// different types does not compile yet.
+//
+// EXPECT: 5 -1 -1 | 1 2 1
+import core::option;
+
+fn show(b : bool) -> i32 {
+  if b {
+    print(1);
+  } else {
+    print(0);
+  }
+  return 0;
+}
+
+fn main() -> i32 {
+  let some_some = Option<Option<i32>>::Some(Option<i32>::Some(5));
+  let some_none = Option<Option<i32>>::Some(Option<i32>::None());
+  let none = Option<Option<i32>>::None();
+  print(some_some.flatten().unwrap_or(-1));
+  print!(" ");
+  print(some_none.flatten().unwrap_or(-1));
+  print!(" ");
+  print(none.flatten().unwrap_or(-1));
+  print!(" | ");
+
+  let pair = Option<(i32, i32)>::Some((1, 2));
+  let split = pair.unzip();
+  print(split._0.unwrap_or(-1));
+  print!(" ");
+  print(split._1.unwrap_or(-1));
+  print!(" ");
+  let no_pair = Option<(i32, i32)>::None();
+  let empty = no_pair.unzip();
+  show(empty._0.is_none() && empty._1.is_none());
+  return 0;
+}

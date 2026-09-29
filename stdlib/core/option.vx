@@ -308,3 +308,32 @@ impl<T> Option<T> {
     return old;
   }
 }
+
+impl<T> Option<Option<T>> {
+  /// One level of `Option` removed: `Some(Some(x))` is `Some(x)`, anything else is `None`.
+  fn flatten(self : Option<Option<T>>) -> Option<T> {
+    match self {
+      Option<Option<T>>::Some(inner) => {
+        return inner;
+      }
+      Option<Option<T>>::None() => {
+        return Option<T>::None();
+      }
+    }
+  }
+}
+
+impl<T, U> Option<(T, U)> {
+  /// A pair split in two: `Some((a, b))` gives `(Some(a), Some(b))`, and `None` gives two
+  /// `None`s. The reverse of `zip`.
+  fn unzip(self : Option<(T, U)>) -> (Option<T>, Option<U>) {
+    match self {
+      Option<(T, U)>::Some(pair) => {
+        return (Option<T>::Some(pair._0), Option<U>::Some(pair._1));
+      }
+      Option<(T, U)>::None() => {
+        return (Option<T>::None(), Option<U>::None());
+      }
+    }
+  }
+}

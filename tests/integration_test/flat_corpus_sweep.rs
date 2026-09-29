@@ -34,6 +34,9 @@ const KNOWN_DECLINES: &[&str] = &[
     // and the AST path handles both. The module's other methods answer with a `T` or a
     // `bool` and compile through the flat path; adding these three is what moved the file.
     "backend/pass/core_option.vx",
+    // An `Option` of an `Option` and of a pair: the flat path declines `main` as "an enum
+    // with no modelled instance layout". The answers come from the AST path.
+    "backend/pass/core_option_flatten_unzip.vx",
     // The flat path declines `main` here as "a callee return type": the adaptors it
     // builds answer with a generic struct. Its answers come from the AST path.
     "backend/pass/core_iter.vx",
