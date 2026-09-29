@@ -25,7 +25,6 @@ friends.
 
 ## Contents
 
-- [`core::ascii`](#coreascii) —
 - [`core::clone`](#coreclone) — `Clone`, an explicit duplicate of a value.
 - [`core::cmp`](#corecmp) — Ordering and equality: `PartialEq`, `Ord`, `PartialOrd` and `Ordering`.
 - [`core::convert`](#coreconvert) — `From`, the conversions that cannot fail and lose nothing.
@@ -59,45 +58,6 @@ friends.
 - [`std::tensor`](#stdtensor) — Operations on `Tensor`, including shape queries and elementwise maths.
 - [`std::time`](#stdtime) — Clocks and durations.
 - [`std::vec`](#stdvec) — `Vec<T>`, a growable array.
-
-## `core::ascii`
-
-**`u8` methods**
-
-- `fn is_ascii(self : u8) -> bool`<br>
-  Is this byte in the ASCII range, 0 to 127?
-- `fn is_ascii_uppercase(self : u8) -> bool`<br>
-  Is this `A` to `Z` (65 to 90)?
-- `fn is_ascii_lowercase(self : u8) -> bool`<br>
-  Is this `a` to `z` (97 to 122)?
-- `fn is_ascii_alphabetic(self : u8) -> bool`<br>
-  Is this a letter, of either case?
-- `fn is_ascii_digit(self : u8) -> bool`<br>
-  Is this `0` to `9` (48 to 57)?
-- `fn is_ascii_alphanumeric(self : u8) -> bool`<br>
-  Is this a letter or a digit?
-- `fn is_ascii_hexdigit(self : u8) -> bool`<br>
-  Is this a digit, or `A` to `F` (65 to 70), or `a` to `f` (97 to 102)?
-- `fn is_ascii_punctuation(self : u8) -> bool`<br>
-  Is this one of the 32 punctuation marks: `!` to `/`, `:` to `@`, `[` to the backtick,
-  or `{` to `~`?
-- `fn is_ascii_graphic(self : u8) -> bool`<br>
-  Is this a visible character, `!` (33) to `~` (126)? The space is not one.
-- `fn is_ascii_whitespace(self : u8) -> bool`<br>
-  Is this a space (32), tab (9), line feed (10), form feed (12) or carriage return
-  (13)? The vertical tab (11) is not, as in Rust.
-- `fn is_ascii_control(self : u8) -> bool`<br>
-  Is this a control character, 0 to 31 or delete (127)?
-- `fn to_ascii_uppercase(self : u8) -> u8`<br>
-  The uppercase letter for a lowercase one; any other byte unchanged.
-- `fn to_ascii_lowercase(self : u8) -> u8`<br>
-  The lowercase letter for an uppercase one; any other byte unchanged.
-- `fn eq_ignore_ascii_case(self : u8, other : &u8) -> bool`<br>
-  Are the two bytes the same once letters are put in one case?
-- `fn make_ascii_uppercase(self : &mut u8) -> void`<br>
-  Turns this byte into its uppercase letter, if it is a lowercase one.
-- `fn make_ascii_lowercase(self : &mut u8) -> void`<br>
-  Turns this byte into its lowercase letter, if it is an uppercase one.
 
 ## `core::clone`
 
@@ -2233,4 +2193,4 @@ Clocks and durations.
 
 ______________________________________________________________________
 
-797 functions across 34 modules.
+781 functions across 33 modules.
