@@ -620,6 +620,9 @@ The `Iterator` trait: one required `next`, and the methods written over it.
   An iterator that knows how many items it has left, which is what `rev` needs from `take`,
   `skip` and `step_by`.
   Rust declares it as a subtrait of `Iterator`; Vx has no subtraits.
+- `trait IntoIterator`<br>
+  A value that can be turned into an iterator, which is what a `for` loop does with what it
+  is given when that is not an iterator already: `for x in v` over a `Vec`.
 - `trait FromIterator<A>`<br>
   A collection that can be built from an iterator's items, which is what `collect` builds.
 - `trait Extend<A>`<br>
@@ -794,6 +797,11 @@ The `Iterator` trait: one required `next`, and the methods written over it.
   How many items are left.
 - `fn is_empty(self : &Self) -> bool`<br>
   Whether no items are left.
+
+**`trait IntoIterator` methods**
+
+- `fn into_iter(self : Self) -> Self :  : IntoIter`<br>
+  An iterator over this value's items, consuming the value.
 
 **`trait FromIterator<A>` methods**
 
@@ -2047,6 +2055,12 @@ Clocks and durations.
   An iterator over a `Vec<T>`'s elements, holding a pointer to the vector it walks.
   Growing or freeing that vector while this exists leaves the iterator pointing at the old
   buffer.
+- `struct VecIntoIter<T>`<br>
+  An iterator that owns a `Vec<T>` and hands out its elements by value. Built by
+  `into_iter`, which is what `for x in v` calls.
+  It holds the vector itself rather than a pointer to it, as `VecIter` does: the vector was
+  moved into `into_iter`, so a pointer to it would point at a variable of a function that has
+  returned.
 - `struct VecMap<T, NewItem>`<br>
   The iterator `VecIter::map` builds: the inner walk plus the function applied to each item.
 
@@ -2095,6 +2109,11 @@ Clocks and durations.
 - `fn extend_one(self : &mut Vec<T>, item : T) -> i32`<br>
   Push `item`.
 
+**`IntoIterator for Vec<T>` methods**
+
+- `fn into_iter(self : Vec<T>) -> VecIntoIter<T>`<br>
+  An iterator that takes the vector over and hands out its elements by value.
+
 **`Default for Vec<T>` methods**
 
 - `fn default() -> Vec<T>`<br>
@@ -2104,6 +2123,21 @@ Clocks and durations.
 
 - `fn from_iter<I : Iterator>(iter : I) -> Vec<T>`<br>
   A new `Vec` holding every item `iter` has left, which the caller owns and must `free`.
+
+**`Iterator for VecIntoIter<T>` methods**
+
+- `fn next(self : &mut VecIntoIter<T>) -> Option<T>`<br>
+  The next element, or nothing once the end is reached.
+
+**`DoubleEndedIterator for VecIntoIter<T>` methods**
+
+- `fn next_back(self : &mut VecIntoIter<T>) -> Option<T>`<br>
+  The last element not yet handed out from either end.
+
+**`ExactSizeIterator for VecIntoIter<T>` methods**
+
+- `fn len(self : &VecIntoIter<T>) -> i64`<br>
+  How many elements are left between the two ends.
 
 **`Iterator for VecIter<T>` methods**
 
@@ -2154,4 +2188,4 @@ Clocks and durations.
 
 ______________________________________________________________________
 
-758 functions across 33 modules.
+763 functions across 33 modules.

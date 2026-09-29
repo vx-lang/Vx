@@ -323,6 +323,10 @@ pub enum DiagnosticCode {
     /// alone, so the projection is made a parameter instead, as `Map<I, F>` does with its
     /// closure.
     E3041,
+    /// A `for` loop over a reference to a collection, `for x in &v`. Rust hands out
+    /// references to the items there, which no iterator here does yet: write `v.iter()` to
+    /// read the items, or `for x in v` to consume the collection.
+    E3043,
 
     // --- Borrow/Ownership Errors (E4xxx) ---
     /// Use of moved or consumed linear variable

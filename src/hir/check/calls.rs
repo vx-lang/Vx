@@ -1936,7 +1936,7 @@ impl<'a> TypeChecker<'a> {
     /// the matching method + its impl block, or `None`. In debug builds also asserts the frozen
     /// registry's `ModuleInterface` resolves the same concrete `(receiver GID, method)` — the #219
     /// keep-green parity gate. Split out of `check_methodcall_expr` (R4, #279).
-    fn resolve_method_in_impls(
+    pub(crate) fn resolve_method_in_impls(
         &mut self,
         base_ty: &Type,
         method: &crate::symbol::Symbol,

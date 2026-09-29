@@ -327,7 +327,45 @@ impl<'a> TypeChecker<'a> {
                 ),
                 _ => false,
             };
-        let iterable_ty = self.check_expr_type_flag(iterable, consume && !defers_consume);
+        let mut iterable_ty = self.check_expr_type_flag(iterable, consume && !defers_consume);
+
+        // A value that is not an iterator but can be turned into one, as a `Vec` can: the
+        // loop drives `iterable.into_iter()`, as Rust's does.
+        if matches!(iterable_ty, Type::GenericInstance(..) | Type::Struct(..))
+            && self
+                .resolve_method_in_impls(&iterable_ty, &"into_iter".into(), &mut HashMap::new())
+                .is_some()
+        {
+            let span = iterable.span();
+            **iterable = Expr::MethodCall(syntax::expr::MethodCallExpr {
+                base: Box::new((**iterable).clone()),
+                method_name: "into_iter".into(),
+                type_args: None,
+                args: vec![],
+                span,
+            });
+            iterable_ty = self.check_expr_type_flag(iterable, consume && !defers_consume);
+        }
+        // Over a reference to a collection Rust hands out references to the items, which
+        // no iterator here does yet (#808). Refused rather than left to crash codegen.
+        if let Type::Borrow { inner, .. } = &iterable_ty {
+            if matches!(**inner, Type::GenericInstance(..) | Type::Struct(..)) && !self.speculating
+            {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E3043,
+                    format!(
+                        "a `for` loop cannot go over a reference to {inner} yet; write \
+                         `for x in v.iter()` to read the items, or `for x in v` to consume `v`"
+                    ),
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(
+                        &match &**iterable {
+                            Expr::Borrow(b) => b.expr.span(),
+                            other => other.span(),
+                        },
+                    )),
+                );
+            }
+        }
         self.push_releasing_scope();
 
         // If it's Range, it's I64. If it's Iterator, we extract from Option<T>

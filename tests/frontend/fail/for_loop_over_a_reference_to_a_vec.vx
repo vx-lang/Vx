@@ -1,0 +1,26 @@
+//===- for_loop_over_a_reference_to_a_vec.vx - Vx Compiler -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// `for x in &v` is refused with a pointer to what to write instead. In Rust it hands out
+// a reference to each item, which no iterator here does yet. It used to crash the compiler.
+// CHECK: Error[E3043] at 21:13: a `for` loop cannot go over a reference to Vec<i64> yet
+import core::iter;
+import std::vec;
+
+fn main() -> i32 {
+  let mut v = Vec<i64>::new();
+  v.push(40i64);
+  v.push(2i64);
+  let mut s = 0i64;
+  for x in &v {
+    s = s + x;
+  }
+  print(s);
+  return 0;
+}
