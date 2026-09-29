@@ -30,6 +30,7 @@ friends.
 - [`core::convert`](#coreconvert) — `From`, the conversions that cannot fail and lose nothing.
 - [`core::default`](#coredefault) — `Default`, the value a type starts from.
 - [`core::hash`](#corehash) —
+- [`core::hint`](#corehint) —
 - [`core::iter::adapters`](#coreiteradapters) — The iterators `Iterator`'s adaptor methods build: `Map`, `Filter`, `Chain` and the rest.
 - [`core::iter::traits`](#coreitertraits) — The `Iterator` trait: one required `next`, and the methods written over it.
 - [`core::iter`](#coreiter) — `Range` and `range`; importing it brings the trait and the adaptors too.
@@ -340,6 +341,21 @@ T = `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `f32`, `f64`, `bool`
 - `fn hash<H : Hasher>(self : &T, state : &mut H) -> i32`
 
 T = `u8`, `u16`, `u32`, `u64`, `i8`, `i16`, `i32`, `i64`, `bool`
+
+## `core::hint`
+
+**Functions**
+
+- `unsafe fn assert_unchecked(cond : bool) -> void`<br>
+  Tells the optimizer that `cond` is true, so it may drop checks that follow from it.
+  Nothing checks it: if `cond` is false, the program's behaviour is undefined.
+  A module that uses this is skipped by the pass that frees heap buffers, because the
+  `llvm.intr.assume` it becomes does not declare its memory effects.
+- `fn must_use<T>(value : T) -> T`<br>
+  Returns `value` unchanged. Rust uses it to mark a value that should not be ignored.
+- `fn select_unpredictable<T>(condition : bool, true_val : T, false_val : T) -> T`<br>
+  `true_val` if `condition` holds, otherwise `false_val`. Both are already computed, so
+  the answer can be a select rather than a branch the processor must predict.
 
 ## `core::iter::adapters`
 
@@ -2154,4 +2170,4 @@ Clocks and durations.
 
 ______________________________________________________________________
 
-758 functions across 33 modules.
+761 functions across 34 modules.
