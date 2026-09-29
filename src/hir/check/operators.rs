@@ -177,6 +177,13 @@ impl<'a> TypeChecker<'a> {
             (Type::Scalar(_), Type::Scalar(_)) => {
                 return target_ty;
             }
+            // `*const T` to `*mut T` and back: the same address, only the promise changes.
+            // A different pointee would reinterpret memory, which stays refused.
+            (Type::Pointer(from, from_space, _), Type::Pointer(to, to_space, _))
+                if from == to && from_space == to_space =>
+            {
+                return target_ty;
+            }
             (Type::Scalar(_), Type::Pointer(_, _, _)) => {
                 // Allow casting integers to pointers (e.g. 0 as *mut T)
                 if !self.in_unsafe_block && !self.speculating {

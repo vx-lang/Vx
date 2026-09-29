@@ -153,7 +153,11 @@ impl<'a> Parser<'a> {
                     expr: Expr::ComptimeBlock(ComptimeBlockExpr {
                         stmts,
                         ret,
-                        span: Span::default(),
+                        span: Span {
+                            line: token_line,
+                            column: token_col,
+                            length: "comptime".len(),
+                        },
                     }),
                     has_semi: true,
                     span: Span::default(),

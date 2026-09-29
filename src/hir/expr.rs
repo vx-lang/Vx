@@ -196,7 +196,7 @@ impl<'a> TypeChecker<'a> {
                 // A comptime lambda runs while compiling, so its calls fold here. With every
                 // call folded the lambda is unused, and the `let` that bound it is dropped.
                 let span = expr.span();
-                self.fold_comptime_lambda_call(expr, &span);
+                self.fold_comptime_lambda_call(expr, &span, &ty);
                 ty
             }
             Expr::IndirectCall(..) => self.check_indirectcall_expr(expr, consume),

@@ -51,6 +51,7 @@ impl<'a> TypeChecker<'a> {
         stmts: &[Statement],
         ret: Option<&Expr>,
         before: &HashMap<crate::symbol::Symbol, Value>,
+        block_span: Span,
     ) -> ComptimeFold {
         // Anything it writes that outlives it would have to survive, and the block does not.
         if let Some(name) = Self::escaping_write(stmts) {
@@ -60,17 +61,33 @@ impl<'a> TypeChecker<'a> {
                      so the write would have to disappear with it",
                     name
                 ),
-                &ret.map(|r| r.span()).unwrap_or_default(),
+                &block_span,
             );
             return ComptimeFold::Refused;
         }
+        self.begin_fold();
+        let folded = self.fold_comptime_block_body(stmts, ret, before, block_span);
+        self.end_fold();
+        folded
+    }
+
+    /// The part of `fold_comptime_block` that runs inside the fold, while the heap is live.
+    fn fold_comptime_block_body(
+        &mut self,
+        stmts: &[Statement],
+        ret: Option<&Expr>,
+        before: &HashMap<crate::symbol::Symbol, Value>,
+        block_span: Span,
+    ) -> ComptimeFold {
         let mut env = before.clone();
         let outer_unsupported = self.consteval.unsupported_stmt.replace(false);
         let flow = self.eval_block(stmts, &mut env);
         let ran = !self.consteval.unsupported_stmt.get();
         self.consteval.unsupported_stmt.set(outer_unsupported);
 
-        let span = ret.map(|r| r.span()).unwrap_or_default();
+        // The block's own span: its trailing expression often has none, which put the
+        // error at 0:0.
+        let span = block_span;
         if !ran {
             self.report_comptime_block_failure(
                 "it holds a statement the evaluator cannot run",
@@ -96,7 +113,7 @@ impl<'a> TypeChecker<'a> {
             self.report_comptime_block_failure("its value cannot be worked out", span);
             return ComptimeFold::Refused;
         };
-        match Self::value_to_expr(&value, span) {
+        match self.constant_expr(&value, span) {
             Some(expr) => ComptimeFold::Folded(Box::new(expr)),
             None => {
                 self.report_comptime_block_failure(
@@ -188,6 +205,18 @@ impl<'a> TypeChecker<'a> {
         matches!(&*closure.body, Expr::ComptimeBlock(_))
     }
 
+    /// Write a computed value back as a constant expression, a pointer included: its text
+    /// becomes a string literal. Call before the fold ends, while the heap still holds it.
+    pub(crate) fn constant_expr(&self, value: &Value, span: &Span) -> Option<Expr> {
+        if let Value::Ptr { .. } = value {
+            return Some(Expr::StringLiteral(StringLiteralExpr {
+                value: self.heap_c_str(value)?.into(),
+                span: *span,
+            }));
+        }
+        Self::value_to_expr(value, span)
+    }
+
     /// Write a computed value back as a constant expression.
     ///
     /// Only immutable values: numbers, booleans and arrays of them. Anything else has no
@@ -255,7 +284,7 @@ impl<'a> TypeChecker<'a> {
                 }
                 self.consteval.comptime_depth -= 1;
                 self.pop_scope();
-                let folded = self.fold_comptime_block(stmts, ret.as_deref(), &before);
+                let folded = self.fold_comptime_block(stmts, ret.as_deref(), &before, block_span);
                 // An assertion the placement fold answered `true` is discharged here: nothing
                 // at run time holds a placement, so nothing is left to check. (A false one
                 // was reported by the assert check.) Asserts on anything else stay, as the
@@ -270,7 +299,15 @@ impl<'a> TypeChecker<'a> {
                 // the statement walk then drops.
                 match folded {
                     // The value it worked out replaces it.
-                    ComptimeFold::Folded(value) => *expr = *value,
+                    ComptimeFold::Folded(value) => {
+                        *expr = *value;
+                        // The literal takes the block's type. Left bare it would be an `i32`
+                        // wherever the block was an `i64`, and the call it is passed to no
+                        // longer matches.
+                        if let (Expr::Number(n), Type::Scalar(e)) = (&mut *expr, &ret_ty) {
+                            n.ty.get_or_insert_with(|| e.clone());
+                        }
+                    }
                     // It ran and produced nothing, so nothing is left to emit.
                     ComptimeFold::NoValue => {
                         *expr = Expr::ComptimeBlock(ComptimeBlockExpr {

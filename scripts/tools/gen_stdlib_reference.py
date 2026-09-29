@@ -231,11 +231,13 @@ def take_macros(text):
     of `$t` and report it as a function on a type called `$t`.
     """
     macros = []
-    for m in list(re.finditer(r"\bmacro_rules\s+([A-Za-z_]\w*)\s*\{", text)):
+    # Searched afresh each time round: removing a macro shifts every position after it.
+    while m := re.search(r"\bmacro_rules\s+([A-Za-z_]\w*)\s*\{", text):
         name = m.group(1)
         whole, _ = balanced_block(text, m.end() - 1)
         rule = re.search(r"\(([^)]*)\)\s*=>\s*\{", whole)
         if not rule:
+            text = text.replace(text[m.start() : m.end() - 1 + len(whole) + 1], "")
             continue
         params = [p.strip() for p in re.findall(r"(\$\w+)\s*:", rule.group(1))]
         body, _ = balanced_block(whole, rule.end() - 1)

@@ -1,0 +1,48 @@
+//===- comptime_byte_buffer_refused.vx - Vx Compiler ---------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Byte buffers the evaluator must refuse rather than answer wrongly.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+fn fresh() -> *mut i8 {
+  return "twenty bytes of text" as *mut i8;
+}
+
+fn main() -> i32 {
+  // A write past the end of the buffer.
+  // CHECK: Error[E3033] at [[@LINE+1]]:{{.*}}a statement the evaluator cannot run
+  let a = comptime {
+    let buf = "ab" as *mut i8;
+    unsafe { buf[5i64] = 0i8; }
+    buf as *const i8
+  };
+
+  // Its NUL is overwritten, so the text has no end to be written out with.
+  // CHECK: Error[E3033] at [[@LINE+1]]:{{.*}}not one that can be written as a constant
+  let b = comptime {
+    let buf = "ab" as *mut i8;
+    unsafe { buf[2i64] = 65i8; }
+    buf as *const i8
+  };
+
+  // 100000 buffers of 21 bytes is past what one fold may allocate.
+  // CHECK: Error[E3033] at [[@LINE+1]]:{{.*}}its value cannot be worked out
+  let c = comptime {
+    let mut i = 0i64;
+    let mut last = fresh();
+    loop {
+      if i == 100000i64 {
+        break;
+      }
+      last = fresh();
+      i = i + 1i64;
+    }
+    last as *const i8
+  };
+  return 0;
+}

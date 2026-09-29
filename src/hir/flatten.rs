@@ -935,6 +935,10 @@ impl<'r> Lowerer<'r> {
                 // emits `llvm.inttoptr` -- the same op the AST path uses. Only integer sources:
                 // inttoptr of a float is not valid IR on either path.
                 if matches!(c.target_ty, Type::Pointer(..)) {
+                    // Between `*const T` and `*mut T` the address is unchanged.
+                    if matches!(v.ty, LoweredTy::Ptr) {
+                        return Ok(v);
+                    }
                     if let LoweredTy::Scalar(src) = &v.ty {
                         if !src.is_float() {
                             return Ok(self.emit_typed(
@@ -1517,6 +1521,7 @@ impl<'r> Lowerer<'r> {
             Expr::UnaryOp(u) => self.infer_expr_ty(&u.expr),
             Expr::RelationalOp(_) => Some(LoweredTy::Scalar(ElementType::Bool)),
             Expr::Topology(_) => Some(LoweredTy::Scalar(ElementType::I32)),
+            Expr::AsCast(c) if matches!(c.target_ty, Type::Pointer(..)) => Some(LoweredTy::Ptr),
             Expr::AsCast(c) => Some(LoweredTy::Scalar(scalar_of(&c.target_ty)?)),
             Expr::FunctionCall(fc) => {
                 let sig = self.registry.fn_sigs.get(&fc.name)?;

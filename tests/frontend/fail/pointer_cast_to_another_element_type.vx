@@ -1,0 +1,17 @@
+//===- pointer_cast_to_another_element_type.vx - Vx Compiler -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A pointer cast may change `const` to `mut`, not what the pointer points at.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+fn main() -> i32 {
+  let lit : *const i8 = "xyz";
+  // CHECK: Unsupported cast: cannot cast from Pointer(Scalar(I8), None, false) to Pointer(Scalar(I64), None, false)
+  let wide : *const i64 = lit as *const i64;
+  return 0;
+}

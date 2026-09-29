@@ -974,6 +974,95 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Start a `comptime` fold. Inside one a string literal is a buffer on the heap.
+    pub(crate) fn begin_fold(&self) {
+        self.consteval.folding.set(self.consteval.folding.get() + 1);
+    }
+
+    /// End a fold. The outermost one empties the heap: its result is a constant by now.
+    pub(crate) fn end_fold(&self) {
+        let depth = self.consteval.folding.get() - 1;
+        self.consteval.folding.set(depth);
+        if depth == 0 {
+            self.consteval.heap.borrow_mut().clear();
+            self.consteval.heap_bytes.set(0);
+        }
+    }
+
+    /// A new heap buffer holding `bytes`, or `None` past `MAX_HEAP_BYTES`.
+    fn heap_alloc(&self, bytes: Vec<u8>) -> Option<Value> {
+        let used = self.consteval.heap_bytes.get() + bytes.len();
+        if used > crate::hir::check_state::MAX_HEAP_BYTES {
+            return None;
+        }
+        self.consteval.heap_bytes.set(used);
+        let mut heap = self.consteval.heap.borrow_mut();
+        heap.push(bytes);
+        Some(Value::Ptr {
+            block: heap.len() - 1,
+            offset: 0,
+        })
+    }
+
+    /// Where `ptr[index]` is: its buffer and the byte in it, or `None` outside the buffer.
+    fn heap_place(&self, ptr: &Value, index: &Value) -> Option<(usize, usize)> {
+        let (Value::Ptr { block, offset }, Value::Int(i)) = (ptr, index) else {
+            return None;
+        };
+        let at = usize::try_from(offset.checked_add(*i)?).ok()?;
+        let len = self.consteval.heap.borrow().get(*block)?.len();
+        (at < len).then_some((*block, at))
+    }
+
+    /// The NUL-terminated text a pointer starts, as the constant it will be written out as.
+    /// `None` without a NUL inside the buffer, or for bytes that are not UTF-8.
+    pub(crate) fn heap_c_str(&self, value: &Value) -> Option<String> {
+        let Value::Ptr { block, offset } = value else {
+            return None;
+        };
+        let heap = self.consteval.heap.borrow();
+        let bytes = heap.get(*block)?.get(usize::try_from(*offset).ok()?..)?;
+        let end = bytes.iter().position(|b| *b == 0)?;
+        String::from_utf8(bytes[..end].to_vec()).ok()
+    }
+
+    /// `v as to`, with the answer the emitted code gives: an integer wraps to the target
+    /// width. No value when the answer does not fit the evaluator's `i64`, or for a float
+    /// outside the target's range, which the emitted code leaves undefined.
+    fn cast_value(value: Value, to: &ElementType) -> Option<Value> {
+        if to.is_float() {
+            let x = value.as_f64()?;
+            return Some(Value::Number(if *to == ElementType::F32 {
+                x as f32 as f64
+            } else {
+                x
+            }));
+        }
+        let bits = to.bits().filter(|b| *b <= 64 && *to != ElementType::Bool)?;
+        let modulus = 1i128 << bits;
+        let whole = match value {
+            Value::Int(i) => i as i128,
+            Value::Number(n) if n.is_finite() => {
+                let t = n.trunc() as i128;
+                let (lo, hi) = if to.is_signed_int() {
+                    (-(modulus / 2), modulus / 2 - 1)
+                } else {
+                    (0, modulus - 1)
+                };
+                if t < lo || t > hi {
+                    return None;
+                }
+                t
+            }
+            _ => return None,
+        };
+        let mut wrapped = whole.rem_euclid(modulus);
+        if to.is_signed_int() && wrapped >= modulus / 2 {
+            wrapped -= modulus;
+        }
+        i64::try_from(wrapped).ok().map(Value::Int)
+    }
+
     pub(crate) fn eval_expr(
         &self,
         expr: &Expr,
@@ -992,10 +1081,10 @@ impl<'a> TypeChecker<'a> {
                     Some(t) => t.is_float(),
                     None => n_str.contains('.') || n_str.contains('e') || n_str.contains('E'),
                 };
+                // An integer too big for the evaluator's i64 has no value. Read as a float it
+                // would lose its low digits, and `u64::MAX` was worked out as 18446744073791552016.
                 if !is_float {
-                    if let Ok(i) = n_str.parse::<i64>() {
-                        return Some(Value::Int(i));
-                    }
+                    return n_str.parse::<i64>().ok().map(Value::Int);
                 }
                 n_str.parse::<f64>().ok().map(Value::Number)
             }
@@ -1130,6 +1219,55 @@ impl<'a> TypeChecker<'a> {
                     None
                 }
             }
+            // No value for the one negation that overflows, as for the other operators.
+            Expr::UnaryOp(UnaryOpExpr {
+                op: UnaryOp::Neg,
+                expr: inner,
+                span: _,
+            }) => match self.eval_expr(inner, env)? {
+                Value::Int(i) => i.checked_neg().map(Value::Int),
+                Value::Number(n) => Some(Value::Number(-n)),
+                _ => None,
+            },
+            Expr::AsCast(AsCastExpr {
+                expr: inner,
+                target_ty: Type::Scalar(to),
+                ..
+            }) => Self::cast_value(self.eval_expr(inner, env)?, to),
+            // `*const T` to `*mut T` and back: the same pointer.
+            Expr::AsCast(AsCastExpr {
+                expr: inner,
+                target_ty: Type::Pointer(..),
+                ..
+            }) => match self.eval_expr(inner, env)? {
+                ptr @ Value::Ptr { .. } => Some(ptr),
+                _ => None,
+            },
+            // A literal is a fresh buffer each time it is evaluated, with its NUL. Only
+            // inside a fold: see `ConstEvalState::folding`.
+            Expr::StringLiteral(StringLiteralExpr { value, span: _ })
+                if self.consteval.folding.get() > 0 =>
+            {
+                let mut bytes = value.as_bytes().to_vec();
+                bytes.push(0);
+                self.heap_alloc(bytes)
+            }
+            // `unsafe { .. }` as a value. It runs on a copy, so a write to a variable declared
+            // outside it would be lost; such a block is not run rather than run wrongly.
+            Expr::UnsafeBlock(UnsafeBlockExpr {
+                stmts,
+                ret,
+                span: _,
+            }) => {
+                let mut local_env = env.clone();
+                if !matches!(self.eval_block(stmts, &mut local_env), EvalFlow::Normal)
+                    || env.iter().any(|(k, v)| local_env.get(k) != Some(v))
+                {
+                    self.consteval.unsupported_stmt.set(true);
+                    return None;
+                }
+                self.eval_expr(ret.as_deref()?, &local_env)
+            }
             // `[ a, b, c ]`. Every element has to be known, or the whole array is unknown:
             // a half-built array would let a later index read a value that was never there.
             Expr::Array(ArrayExpr { elements, span: _ }) => {
@@ -1146,12 +1284,20 @@ impl<'a> TypeChecker<'a> {
                 index,
                 span: _,
             }) => {
-                let Value::Array(items) = self.eval_expr(base, env)? else {
-                    return None;
-                };
                 let index_val = self.eval_expr(index, env)?;
-                let i = Self::array_index(&index_val, items.len())?;
-                Some(items[i].clone())
+                match self.eval_expr(base, env)? {
+                    Value::Array(items) => {
+                        let i = Self::array_index(&index_val, items.len())?;
+                        Some(items[i].clone())
+                    }
+                    // A byte through a pointer reads as the `i8` it is.
+                    ptr @ Value::Ptr { .. } => {
+                        let (block, at) = self.heap_place(&ptr, &index_val)?;
+                        let byte = self.consteval.heap.borrow()[block][at];
+                        Some(Value::Int(byte as i8 as i64))
+                    }
+                    _ => None,
+                }
             }
             Expr::FunctionCall(FunctionCallExpr {
                 name,
@@ -1363,7 +1509,7 @@ impl<'a> TypeChecker<'a> {
         self.callee_body(name)
     }
 
-    fn callee_body(&self, name: &str) -> Option<&Function> {
+    pub(crate) fn callee_body(&self, name: &str) -> Option<&Function> {
         if let Some(func) = self.env.syntax_functions.get(name) {
             if !func.body.is_empty() {
                 return Some(func);
@@ -1713,6 +1859,26 @@ impl<'a> TypeChecker<'a> {
                 rhs,
                 span: _,
             }) => {
+                // A write through a pointer changes the buffer, not the variable. One that
+                // cannot be carried out is not run, since the byte it leaves is stale.
+                let base_val = match &**base {
+                    Expr::Identifier(IdentifierExpr { name, span: _ }) => env.get(name).cloned(),
+                    other => self.eval_expr(other, env),
+                };
+                if let Some(ptr @ Value::Ptr { .. }) = base_val {
+                    let stored = (|| {
+                        let place = self.heap_place(&ptr, &self.eval_expr(index, env)?)?;
+                        let Value::Int(v) = self.eval_expr(rhs, env)? else {
+                            return None;
+                        };
+                        self.consteval.heap.borrow_mut()[place.0][place.1] = v as u8;
+                        Some(())
+                    })();
+                    if stored.is_none() {
+                        self.consteval.unsupported_stmt.set(true);
+                    }
+                    return EvalFlow::Normal;
+                }
                 if let Some(root) = Self::place_root(lhs) {
                     // Only a write straight into a variable is carried out. A nested place
                     // like `a[i][j]` is not, so the array it belongs to becomes unknown.
@@ -1760,6 +1926,21 @@ impl<'a> TypeChecker<'a> {
                     Some(func) => Self::mut_borrow_args(func, &call.args),
                     None => Vec::new(),
                 };
+                // A callee handed a `*mut` writes through it, so it is run for that. Its
+                // value is thrown away, and a call with no value is taken as not run.
+                let writes_through_pointer =
+                    self.callee_body(call.name.as_ref()).is_some_and(|func| {
+                        func.params
+                            .iter()
+                            .any(|(_, ty)| matches!(ty, Type::Pointer(_, _, true)))
+                    });
+                if borrowed.is_empty() && writes_through_pointer {
+                    let call_expr = Expr::FunctionCall(call.clone());
+                    if self.eval_expr(&call_expr, env).is_none() {
+                        self.consteval.unsupported_stmt.set(true);
+                    }
+                    return EvalFlow::Normal;
+                }
                 if borrowed.is_empty() {
                     self.consteval.unsupported_stmt.set(true);
                     return EvalFlow::Normal;
@@ -1807,6 +1988,31 @@ impl<'a> TypeChecker<'a> {
                 } else {
                     EvalFlow::Normal
                 }
+            }
+            // `unsafe { .. }` as a statement runs in place, like an `if` statement, so its
+            // writes stay and a `return` inside it leaves the function.
+            Statement::ExprStmt(ExprStmtStmt {
+                expr:
+                    Expr::UnsafeBlock(UnsafeBlockExpr {
+                        stmts,
+                        ret,
+                        span: _,
+                    }),
+                has_semi: _,
+                span: _,
+            }) => {
+                let flow = self.eval_block(stmts, env);
+                if let (EvalFlow::Normal, Some(ret)) = (&flow, ret) {
+                    return self.eval_statement(
+                        &Statement::ExprStmt(ExprStmtStmt {
+                            expr: (**ret).clone(),
+                            has_semi: true,
+                            span: ret.span(),
+                        }),
+                        env,
+                    );
+                }
+                flow
             }
             // Anything else: not run. Say so, so the call this body belongs to gives no
             // value rather than a half-executed one.

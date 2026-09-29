@@ -4027,6 +4027,10 @@ impl<'c> LowerToMelior<'c> for syntax::expr::AsCastExpr {
             let coerced_val = gen.coerce_type(&block, source_val, _source_ty, target_ty_mlir)?;
             return Ok((coerced_val, target_ty_mlir, block));
         } else if let syntax::Type::Pointer(..) = &self.target_ty {
+            // Between `*const T` and `*mut T` the address is unchanged.
+            if let Some(syntax::Type::Pointer(..)) = self.source_ty.as_ref() {
+                return Ok((source_val, _source_ty, block));
+            }
             if let Some(syntax::Type::Scalar(_)) = self.source_ty.as_ref() {
                 let ptr_ty = gen.ptr_ty;
                 let cast_op = OperationBuilder::new("llvm.inttoptr", gen.loc())

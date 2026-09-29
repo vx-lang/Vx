@@ -1130,7 +1130,12 @@ impl<'a> Parser<'a> {
                         Expr::ComptimeBlock(ComptimeBlockExpr {
                             stmts,
                             ret: ret_expr,
-                            span: Span::default(),
+                            // The `comptime` keyword, so an error about the block has a place.
+                            span: Span {
+                                line: token.line,
+                                column: token.column,
+                                length: "comptime".len(),
+                            },
                         })
                     }
                     TokenType::Pipe | TokenType::OrOr => {
