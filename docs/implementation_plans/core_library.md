@@ -841,5 +841,5 @@ live docs, not this table.
 | `intrinsics` | (`mlir!`) | — | excluded | | `mlir!` is the intrinsic layer |
 | `prelude` | `core::prelude` | 1 | — | A12 for implicitness | |
 | `primitive`, `unicode`, `arch`, `simd` (unstable) | — | — | excluded | | `<N x T>` vectors are a language feature (Vx#482), not a library |
-| `f32`/`f64` (consts) | `core::num` | 2 | — | — | `consts::PI` etc. as functions until `const` items |
+| `f32`/`f64` (consts) | `core::num` | 2 | partial | — | all nineteen stable `consts` and the value limits, as static functions until `const` items: `f64::pi()`, `f64::nan()`. No `RADIX`, `DIGITS`, `MANTISSA_DIGITS` or the exponent limits yet |
 | `i8`..`u128` (legacy modules) | — | — | excluded | | deprecated in Rust |
