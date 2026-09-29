@@ -1,0 +1,98 @@
+//===- reference_to_a_variable_of_an_inner_block.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// Each function gives a variable declared outside a block a value that points at a
+// variable declared inside it: by `=`, by a field store, by `push`, as the value of an
+// `if`, and as a closure that uses the inner variable. The inner variable is gone once
+// its block ends, and the outer one is still there.
+// CHECK-DAG: Error[E4005] at 32:5: `r` is given a value that points at a variable of an inner block
+// CHECK-DAG: Error[E4005] at 43:5: `r` is given a value that points at a variable of an inner block
+// CHECK-DAG: Error[E4005] at 56:7: `v` is given a value that points at a variable of an inner block
+// CHECK-DAG: Error[E4005] at 65:5: `v` is given a value that points at a variable of an inner block
+// CHECK-DAG: Error[E4005] at 72:3: `r` is given a value that points at a variable of an inner block
+// CHECK-DAG: Error[E4005] at 91:7: `h` is given a value that points at a variable of an inner block
+import core::ops;
+import std::vec;
+
+struct View {
+  r : &i32,
+}
+
+fn assign_in_if(k : i32) -> i32 {
+  let seed : i32 = 1;
+  let mut r : &i32 = &seed;
+  if k > 0 {
+    let inner : i32 = k + 4;
+    r = &inner;
+  }
+  return *r;
+}
+
+fn assign_in_loop(k : i32) -> i32 {
+  let seed : i32 = 1;
+  let mut r : &i32 = &seed;
+  let mut i : i32 = 0;
+  while i < k {
+    let step : i32 = i;
+    r = &step;
+    i = i + 1;
+  }
+  return *r;
+}
+
+fn field_in_block(k : i32) -> i32 {
+  let seed : i32 = 1;
+  let mut v = View {
+    r : &seed
+  };
+  if k > 0 {
+    let inner : i32 = k;
+    v.r = &inner;
+  }
+  return *v.r;
+}
+
+fn push_in_block(k : i32) -> i32 {
+  let mut v : Vec<&i32> = Vec<&i32>::new();
+  if k > 0 {
+    let inner : i32 = k;
+    v.push(&inner);
+  }
+  return 0;
+}
+
+fn value_of_an_if(k : i32) -> i32 {
+  let seed : i32 = 1;
+  let r : &i32 = if k > 0 {
+    let t : i32 = k;
+    &t
+  } else {
+    &seed
+  };
+  return *r;
+}
+
+struct Holder {
+  f : Closure1<i32, i32>,
+}
+
+fn closure_in_block(k : i32) -> i32 {
+  let mut h : Holder = Holder {
+    f : | x : i32 | x
+  };
+  if k > 0 {
+    let step : i32 = k;
+    h.f = | x : i32 | x + step;
+  }
+  return 0;
+}
+
+fn main() -> i32 {
+  return 0;
+}
