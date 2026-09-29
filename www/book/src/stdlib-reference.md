@@ -1056,6 +1056,26 @@ The integer and float methods, stamped over every width.
   The angle to the point (`x`, this), which is `atan` with the quadrant kept.
 - `fn copysign(self : $t, sign : $t) -> $t`<br>
   This value's magnitude with `sign`'s sign.
+- `fn mul_add(self : $t, a : $t, b : $t) -> $t`<br>
+  `self * a + b` with one rounding instead of two.
+- `fn hypot(self : $t, other : $t) -> $t`<br>
+  The length of the hypotenuse, the square root of `self * self + other * other`.
+  The smaller side is divided by the larger first, so neither square overflows or
+  underflows. Not the libm routine, so the last bit can differ from Rust's answer.
+- `fn rem_euclid(self : $t, rhs : $t) -> $t`<br>
+  Never negative, whatever the signs: -7.0 % 4.0 is -3.0 where this is 1.0.
+- `fn div_euclid(self : $t, rhs : $t) -> $t`<br>
+  The whole quotient pairing with `rem_euclid`.
+- `fn powi(self : $t, n : i32) -> $t`<br>
+  This raised to a whole power, by squaring. A negative power gives the reciprocal.
+- `fn max(self : $t, other : $t) -> $t`<br>
+  The larger of the two. A NaN is ignored: the other value is the answer. A NaN on the
+  left fails the comparison, so only the right needs a test.
+- `fn min(self : $t, other : $t) -> $t`<br>
+  The smaller of the two. A NaN is ignored: the other value is the answer.
+- `fn clamp(self : $t, lo : $t, hi : $t) -> $t`<br>
+  Held between `lo` and `hi`. A NaN stays a NaN. Refused when `lo` is above `hi`
+  or either bound is a NaN.
 - `fn recip(self : $t) -> $t`<br>
   One divided by this.
 - `fn to_degrees(self : $t) -> $t`<br>
@@ -2182,4 +2202,4 @@ Clocks and durations.
 
 ______________________________________________________________________
 
-775 functions across 33 modules.
+783 functions across 33 modules.
