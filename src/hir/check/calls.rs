@@ -2075,6 +2075,7 @@ impl<'a> TypeChecker<'a> {
         args: &[Expr],
         checked_arg_types: &[Type],
         consume: bool,
+        span: Span,
     ) -> (Type, Expr) {
         // Infer method-level generics from argument types. Reuse the types from the
         // single check above: re-checking here would re-consume linear args (a closure
@@ -2168,11 +2169,28 @@ impl<'a> TypeChecker<'a> {
             call_args.push(a.clone());
         }
 
+        // The arguments after the receiver, against the instance's parameters. The call below
+        // is only probed speculatively, which reports nothing, so this is where they are asked.
+        let params: Vec<Type> = method_func
+            .params
+            .iter()
+            .skip(1)
+            .map(|(_, t)| t.clone())
+            .collect();
+        let callee = format!("{}::{}", base_ty, generic_method.name);
+        self.check_call_args(
+            &callee,
+            &params,
+            &mut call_args[1..],
+            checked_arg_types,
+            &span,
+        );
+
         let mut func_call = Expr::FunctionCall(FunctionCallExpr {
             name: crate::symbol::Symbol::from(mangled_name.as_str()),
             type_args: None,
             args: call_args,
-            span: Span::default(),
+            span,
         });
         // Probe the synthesized call *speculatively* to recover its return type without
         // emitting diagnostics or committing borrow/move side effects: the method-call
@@ -2378,6 +2396,7 @@ impl<'a> TypeChecker<'a> {
                         args.as_slice(),
                         &checked_arg_types,
                         consume,
+                        method_span,
                     );
                     *expr = func_call;
                     return ret_ty;
@@ -2466,7 +2485,7 @@ impl<'a> TypeChecker<'a> {
                             self.errors.push(format!("Cannot call len on {}", base_ty));
                         }
                     }
-                } else {
+                } else if !self.speculating {
                     self.errors.push(format!(
                         "Method '{}' not found on type {}",
                         _method, base_ty

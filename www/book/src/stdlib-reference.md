@@ -30,6 +30,7 @@ friends.
 - [`core::convert`](#coreconvert) — `From`, the conversions that cannot fail and lose nothing.
 - [`core::default`](#coredefault) — `Default`, the value a type starts from.
 - [`core::hash`](#corehash) —
+- [`core::hint`](#corehint) —
 - [`core::iter::adapters`](#coreiteradapters) — The iterators `Iterator`'s adaptor methods build: `Map`, `Filter`, `Chain` and the rest.
 - [`core::iter::traits`](#coreitertraits) — The `Iterator` trait: one required `next`, and the methods written over it.
 - [`core::iter`](#coreiter) — `Range` and `range`; importing it brings the trait and the adaptors too.
@@ -340,6 +341,21 @@ T = `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `f32`, `f64`, `bool`
 - `fn hash<H : Hasher>(self : &T, state : &mut H) -> i32`
 
 T = `u8`, `u16`, `u32`, `u64`, `i8`, `i16`, `i32`, `i64`, `bool`
+
+## `core::hint`
+
+**Functions**
+
+- `unsafe fn assert_unchecked(cond : bool) -> void`<br>
+  Tells the optimizer that `cond` is true, so it may drop checks that follow from it.
+  Nothing checks it: if `cond` is false, the program's behaviour is undefined.
+  A module that uses this is skipped by the pass that frees heap buffers, because the
+  `llvm.intr.assume` it becomes does not declare its memory effects.
+- `fn must_use<T>(value : T) -> T`<br>
+  Returns `value` unchanged. Rust uses it to mark a value that should not be ignored.
+- `fn select_unpredictable<T>(condition : bool, true_val : T, false_val : T) -> T`<br>
+  `true_val` if `condition` holds, otherwise `false_val`. Both are already computed, so
+  the answer can be a select rather than a branch the processor must predict.
 
 ## `core::iter::adapters`
 
@@ -1002,6 +1018,44 @@ The integer and float methods, stamped over every width.
   How many set bits the value starts with, counting from the top.
 - `fn trailing_ones(self : $t) -> $t`<br>
   How many set bits the value ends with, counting from the bottom.
+- `fn pi() -> $t`<br>
+  Pi.
+- `fn tau() -> $t`<br>
+  2 pi, a full turn in radians.
+- `fn e() -> $t`<br>
+  Euler's number.
+- `fn frac_pi_2() -> $t`<br>
+  Pi / 2.
+- `fn frac_pi_3() -> $t`<br>
+  Pi / 3.
+- `fn frac_pi_4() -> $t`<br>
+  Pi / 4.
+- `fn frac_pi_6() -> $t`<br>
+  Pi / 6.
+- `fn frac_pi_8() -> $t`<br>
+  Pi / 8.
+- `fn frac_1_pi() -> $t`<br>
+  1 / pi.
+- `fn frac_2_pi() -> $t`<br>
+  2 / pi.
+- `fn frac_2_sqrt_pi() -> $t`<br>
+  2 / sqrt(pi).
+- `fn sqrt_2() -> $t`<br>
+  Sqrt(2).
+- `fn frac_1_sqrt_2() -> $t`<br>
+  1 / sqrt(2).
+- `fn ln_2() -> $t`<br>
+  Ln(2).
+- `fn ln_10() -> $t`<br>
+  Ln(10).
+- `fn log2_e() -> $t`<br>
+  Log2(e).
+- `fn log10_e() -> $t`<br>
+  Log10(e).
+- `fn log2_10() -> $t`<br>
+  Log2(10).
+- `fn log10_2() -> $t`<br>
+  Log10(2).
 - `fn sqrt(self : $t) -> $t`<br>
   The positive square root.
 - `fn abs(self : $t) -> $t`<br>
@@ -1055,6 +1109,26 @@ The integer and float methods, stamped over every width.
   The angle to the point (`x`, this), which is `atan` with the quadrant kept.
 - `fn copysign(self : $t, sign : $t) -> $t`<br>
   This value's magnitude with `sign`'s sign.
+- `fn mul_add(self : $t, a : $t, b : $t) -> $t`<br>
+  `self * a + b` with one rounding instead of two.
+- `fn hypot(self : $t, other : $t) -> $t`<br>
+  The length of the hypotenuse, the square root of `self * self + other * other`.
+  The smaller side is divided by the larger first, so neither square overflows or
+  underflows. Not the libm routine, so the last bit can differ from Rust's answer.
+- `fn rem_euclid(self : $t, rhs : $t) -> $t`<br>
+  Never negative, whatever the signs: -7.0 % 4.0 is -3.0 where this is 1.0.
+- `fn div_euclid(self : $t, rhs : $t) -> $t`<br>
+  The whole quotient pairing with `rem_euclid`.
+- `fn powi(self : $t, n : i32) -> $t`<br>
+  This raised to a whole power, by squaring. A negative power gives the reciprocal.
+- `fn max(self : $t, other : $t) -> $t`<br>
+  The larger of the two. A NaN is ignored: the other value is the answer. A NaN on the
+  left fails the comparison, so only the right needs a test.
+- `fn min(self : $t, other : $t) -> $t`<br>
+  The smaller of the two. A NaN is ignored: the other value is the answer.
+- `fn clamp(self : $t, lo : $t, hi : $t) -> $t`<br>
+  Held between `lo` and `hi`. A NaN stays a NaN. Refused when `lo` is above `hi`
+  or either bound is a NaN.
 - `fn recip(self : $t) -> $t`<br>
   One divided by this.
 - `fn to_degrees(self : $t) -> $t`<br>
@@ -1070,6 +1144,40 @@ The integer and float methods, stamped over every width.
   Is this a real number, rather than an infinity or a NaN?
 - `fn is_infinite(self : $t) -> bool`<br>
   Is this an infinity, of either sign?
+
+**`f64` methods**
+
+- `fn max_value() -> f64`<br>
+  The largest finite value.
+- `fn min_value() -> f64`<br>
+  The most negative finite value.
+- `fn epsilon() -> f64`<br>
+  The gap between 1.0 and the next larger value.
+- `fn min_positive() -> f64`<br>
+  The smallest positive normal value.
+- `fn infinity() -> f64`<br>
+  Positive infinity.
+- `fn neg_infinity() -> f64`<br>
+  Negative infinity.
+- `fn nan() -> f64`<br>
+  A quiet NaN.
+
+**`f32` methods**
+
+- `fn max_value() -> f32`<br>
+  The largest finite value.
+- `fn min_value() -> f32`<br>
+  The most negative finite value.
+- `fn epsilon() -> f32`<br>
+  The gap between 1.0 and the next larger value.
+- `fn min_positive() -> f32`<br>
+  The smallest positive normal value.
+- `fn infinity() -> f32`<br>
+  Positive infinity.
+- `fn neg_infinity() -> f32`<br>
+  Negative infinity.
+- `fn nan() -> f32`<br>
+  A quiet NaN.
 
 **`T` methods**, stamped for 4 instantiations
 
@@ -2207,4 +2315,4 @@ Clocks and durations.
 
 ______________________________________________________________________
 
-778 functions across 33 modules.
+822 functions across 34 modules.
