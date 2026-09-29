@@ -1,0 +1,74 @@
+//===- closure_using_a_local_stays_in_its_function.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Closures that the escape check (E4006) must still allow, each giving the right answer.
+//
+// `used_here` keeps a closure that uses a local inside the function that made it.
+// `into_a_local` hands it to a call along with a reference to a local struct, which dies
+// with the function too. `captures_nothing` returns a closure that uses no variable at all:
+// it has nothing that can go stale, so returning it is safe.
+//
+// The last call runs after another function has reused the stack, so a closure that still
+// pointed into a finished call would read the wrong value.
+import core::ops;
+
+struct Holder<T> {
+  f : Closure1<T, T>,
+}
+
+fn wrap<T>(f : Closure1<T, T>) -> Holder<T> {
+  return Holder<T> {
+    f : f
+  };
+}
+
+fn put(out : &mut Holder<i32>, f : Closure1<i32, i32>) -> i32 {
+  out.f = f;
+  return 0;
+}
+
+fn used_here(k : i32) -> i32 {
+  let h : Holder<i32> = Holder<i32> {
+    f : | x : i32 | x + k
+  };
+  let p = h.f.func;
+  return p(h.f.env, 4);
+}
+
+fn into_a_local(k : i32) -> i32 {
+  let mut h : Holder<i32> = Holder<i32> {
+    f : | x : i32 | x
+  };
+  put(&mut h, | x : i32 | x * k);
+  let p = h.f.func;
+  return p(h.f.env, 4);
+}
+
+fn captures_nothing() -> Holder<i32> {
+  return wrap(| x : i32 | x + 100);
+}
+
+fn reuse_the_stack(a : i32, b : i32, c : i32, d : i32) -> i32 {
+  let e : i32 = a * 7 + b * 11;
+  let g : i32 = c * 13 + d * 17;
+  return e + g;
+}
+
+fn main() -> i32 {
+  print(used_here(10));
+  print!(" ");
+  print(into_a_local(10));
+  print!(" ");
+  let h : Holder<i32> = captures_nothing();
+  print(reuse_the_stack(100, 200, 300, 400));
+  print!(" ");
+  let p = h.f.func;
+  print(p(h.f.env, 4));
+  return 0;
+}
+
+// EXPECT: 14 40 13600 104
