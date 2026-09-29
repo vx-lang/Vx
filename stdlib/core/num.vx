@@ -771,6 +771,105 @@ stamp_unsigned_int!(u64 , i64 , 64 , 18446744073709551615);
 macro_rules stamp_float {
   ($t : ident , $one : expr , $zero : expr , $half_circle : expr) => {
     impl $t {
+      // The constants of Rust's `consts` module, as functions until Vx has `const` items:
+      // `f64::pi()` where Rust writes `f64::consts::PI`. The literal takes this width from
+      // the return type.
+
+      /// Pi.
+      fn pi() -> $t {
+        return 3.14159265358979323846264338327950288;
+      }
+
+      /// 2 pi, a full turn in radians.
+      fn tau() -> $t {
+        return 6.28318530717958647692528676655900577;
+      }
+
+      /// Euler's number.
+      fn e() -> $t {
+        return 2.71828182845904523536028747135266250;
+      }
+
+      /// Pi / 2.
+      fn frac_pi_2() -> $t {
+        return 1.57079632679489661923132169163975144;
+      }
+
+      /// Pi / 3.
+      fn frac_pi_3() -> $t {
+        return 1.04719755119659774615421446109316763;
+      }
+
+      /// Pi / 4.
+      fn frac_pi_4() -> $t {
+        return 0.785398163397448309615660845819875721;
+      }
+
+      /// Pi / 6.
+      fn frac_pi_6() -> $t {
+        return 0.52359877559829887307710723054658381;
+      }
+
+      /// Pi / 8.
+      fn frac_pi_8() -> $t {
+        return 0.39269908169872415480783042290993786;
+      }
+
+      /// 1 / pi.
+      fn frac_1_pi() -> $t {
+        return 0.318309886183790671537767526745028724;
+      }
+
+      /// 2 / pi.
+      fn frac_2_pi() -> $t {
+        return 0.636619772367581343075535053490057448;
+      }
+
+      /// 2 / sqrt(pi).
+      fn frac_2_sqrt_pi() -> $t {
+        return 1.12837916709551257389615890312154517;
+      }
+
+      /// Sqrt(2).
+      fn sqrt_2() -> $t {
+        return 1.41421356237309504880168872420969808;
+      }
+
+      /// 1 / sqrt(2).
+      fn frac_1_sqrt_2() -> $t {
+        return 0.707106781186547524400844362104849039;
+      }
+
+      /// Ln(2).
+      fn ln_2() -> $t {
+        return 0.693147180559945309417232121458176568;
+      }
+
+      /// Ln(10).
+      fn ln_10() -> $t {
+        return 2.30258509299404568401799145468436421;
+      }
+
+      /// Log2(e).
+      fn log2_e() -> $t {
+        return 1.44269504088896340735992468100189214;
+      }
+
+      /// Log10(e).
+      fn log10_e() -> $t {
+        return 0.434294481903251827651128918916605082;
+      }
+
+      /// Log2(10).
+      fn log2_10() -> $t {
+        return 3.32192809488736234787031942948939018;
+      }
+
+      /// Log10(2).
+      fn log10_2() -> $t {
+        return 0.301029995663981195213738894724493027;
+      }
+
       /// The positive square root.
       fn sqrt(self : $t) -> $t {
         return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
@@ -1142,3 +1241,122 @@ macro_rules stamp_float {
 
 stamp_float!(f32 , 1.0 , 0.0 , 180.0);
 stamp_float!(f64 , 1.0 , 0.0 , 180.0);
+
+// The limits of each float width. Written as `arith.constant`, since a Vx literal has no
+// exponent and cannot spell an infinity or a NaN. Static, as the constants are: `f64::nan()`.
+// The integer widths still ask for theirs through a value, `x.max_value()`.
+impl f64 {
+  /// The largest finite value.
+  fn max_value() -> f64 {
+    return mlir!( inputs : (), returns : f64, dialects : ["arith"]) {
+      %r = arith.constant 1.7976931348623157e+308 : f64
+      macro.yield %r : f64
+    };
+  }
+
+  /// The most negative finite value.
+  fn min_value() -> f64 {
+    return mlir!( inputs : (), returns : f64, dialects : ["arith"]) {
+      %r = arith.constant -1.7976931348623157e+308 : f64
+      macro.yield %r : f64
+    };
+  }
+
+  /// The gap between 1.0 and the next larger value.
+  fn epsilon() -> f64 {
+    return mlir!( inputs : (), returns : f64, dialects : ["arith"]) {
+      %r = arith.constant 2.220446049250313e-16 : f64
+      macro.yield %r : f64
+    };
+  }
+
+  /// The smallest positive normal value.
+  fn min_positive() -> f64 {
+    return mlir!( inputs : (), returns : f64, dialects : ["arith"]) {
+      %r = arith.constant 2.2250738585072014e-308 : f64
+      macro.yield %r : f64
+    };
+  }
+
+  /// Positive infinity.
+  fn infinity() -> f64 {
+    return mlir!( inputs : (), returns : f64, dialects : ["arith"]) {
+      %r = arith.constant 0x7FF0000000000000 : f64
+      macro.yield %r : f64
+    };
+  }
+
+  /// Negative infinity.
+  fn neg_infinity() -> f64 {
+    return mlir!( inputs : (), returns : f64, dialects : ["arith"]) {
+      %r = arith.constant 0xFFF0000000000000 : f64
+      macro.yield %r : f64
+    };
+  }
+
+  /// A quiet NaN.
+  fn nan() -> f64 {
+    return mlir!( inputs : (), returns : f64, dialects : ["arith"]) {
+      %r = arith.constant 0x7FF8000000000000 : f64
+      macro.yield %r : f64
+    };
+  }
+}
+
+impl f32 {
+  /// The largest finite value.
+  fn max_value() -> f32 {
+    return mlir!( inputs : (), returns : f32, dialects : ["arith"]) {
+      %r = arith.constant 3.40282347e+38 : f32
+      macro.yield %r : f32
+    };
+  }
+
+  /// The most negative finite value.
+  fn min_value() -> f32 {
+    return mlir!( inputs : (), returns : f32, dialects : ["arith"]) {
+      %r = arith.constant -3.40282347e+38 : f32
+      macro.yield %r : f32
+    };
+  }
+
+  /// The gap between 1.0 and the next larger value.
+  fn epsilon() -> f32 {
+    return mlir!( inputs : (), returns : f32, dialects : ["arith"]) {
+      %r = arith.constant 1.1920929e-07 : f32
+      macro.yield %r : f32
+    };
+  }
+
+  /// The smallest positive normal value.
+  fn min_positive() -> f32 {
+    return mlir!( inputs : (), returns : f32, dialects : ["arith"]) {
+      %r = arith.constant 1.17549435e-38 : f32
+      macro.yield %r : f32
+    };
+  }
+
+  /// Positive infinity.
+  fn infinity() -> f32 {
+    return mlir!( inputs : (), returns : f32, dialects : ["arith"]) {
+      %r = arith.constant 0x7F800000 : f32
+      macro.yield %r : f32
+    };
+  }
+
+  /// Negative infinity.
+  fn neg_infinity() -> f32 {
+    return mlir!( inputs : (), returns : f32, dialects : ["arith"]) {
+      %r = arith.constant 0xFF800000 : f32
+      macro.yield %r : f32
+    };
+  }
+
+  /// A quiet NaN.
+  fn nan() -> f32 {
+    return mlir!( inputs : (), returns : f32, dialects : ["arith"]) {
+      %r = arith.constant 0x7FC00000 : f32
+      macro.yield %r : f32
+    };
+  }
+}

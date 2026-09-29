@@ -327,7 +327,45 @@ impl<'a> TypeChecker<'a> {
                 ),
                 _ => false,
             };
-        let iterable_ty = self.check_expr_type_flag(iterable, consume && !defers_consume);
+        let mut iterable_ty = self.check_expr_type_flag(iterable, consume && !defers_consume);
+
+        // A value that is not an iterator but can be turned into one, as a `Vec` can: the
+        // loop drives `iterable.into_iter()`, as Rust's does.
+        if matches!(iterable_ty, Type::GenericInstance(..) | Type::Struct(..))
+            && self
+                .resolve_method_in_impls(&iterable_ty, &"into_iter".into(), &mut HashMap::new())
+                .is_some()
+        {
+            let span = iterable.span();
+            **iterable = Expr::MethodCall(syntax::expr::MethodCallExpr {
+                base: Box::new((**iterable).clone()),
+                method_name: "into_iter".into(),
+                type_args: None,
+                args: vec![],
+                span,
+            });
+            iterable_ty = self.check_expr_type_flag(iterable, consume && !defers_consume);
+        }
+        // Over a reference to a collection Rust hands out references to the items, which
+        // no iterator here does yet (#808). Refused rather than left to crash codegen.
+        if let Type::Borrow { inner, .. } = &iterable_ty {
+            if matches!(**inner, Type::GenericInstance(..) | Type::Struct(..)) && !self.speculating
+            {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E3043,
+                    format!(
+                        "a `for` loop cannot go over a reference to {inner} yet; write \
+                         `for x in v.iter()` to read the items, or `for x in v` to consume `v`"
+                    ),
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(
+                        &match &**iterable {
+                            Expr::Borrow(b) => b.expr.span(),
+                            other => other.span(),
+                        },
+                    )),
+                );
+            }
+        }
         self.push_releasing_scope();
 
         // If it's Range, it's I64. If it's Iterator, we extract from Option<T>
@@ -352,7 +390,17 @@ impl<'a> TypeChecker<'a> {
             // `Enum` *or* `Struct` after resolution — accept both, else the element type is
             // lost and the loop variable wrongly falls back to `i64` (E3004 against an i32
             // body, the for-over-iterator typing bug, #242).
-            let opt_ty = self.check_expr_type_flag(&mut next_call, consume);
+            //
+            // Its receiver is the iterable, already checked above, so it is only probed here:
+            // checking it again would report each of the iterable's errors a second time. Only
+            // a `next` that could not be found is checked for real, to report that.
+            let saved_speculating = self.speculating;
+            self.speculating = true;
+            let mut opt_ty = self.check_expr_type_flag(&mut next_call, consume);
+            self.speculating = saved_speculating;
+            if matches!(next_call, Expr::MethodCall(_)) {
+                opt_ty = self.check_expr_type_flag(&mut next_call, consume);
+            }
             if let Expr::FunctionCall(call) = &next_call {
                 *next_fn = Some(call.name.clone());
             }
@@ -566,8 +614,14 @@ impl<'a> TypeChecker<'a> {
         // Check the RHS expecting the target's type, so an untyped literal is born at that
         // type (`a[i] = 1.0` into a bf16 tensor, `r = 5` into an i64 slot) rather than
         // defaulting and mismatching (#240).
-        let rhs_ty = self.check_expr_expecting(rhs, Some(lhs_ty.clone()), consume);
+        let mut rhs_ty = self.check_expr_expecting(rhs, Some(lhs_ty.clone()), consume);
         self.current_assignment_target = None;
+        // `s += r` with `r : &i64` adds the number `r` points at, as `s + r` does.
+        if op.is_some() && matches!(lhs_ty, Type::Scalar(_)) {
+            if let Some(t) = Self::deref_number_operand(rhs, &rhs_ty) {
+                rhs_ty = t;
+            }
+        }
 
         // Again, because the right-hand side may have moved the very variable being
         // assigned: in `w = transform(w)` the call consumes `w` and the result is then put

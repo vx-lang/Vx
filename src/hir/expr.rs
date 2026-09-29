@@ -69,6 +69,20 @@ pub(crate) fn is_untyped_numeric_literal(e: &Expr) -> bool {
     }
 }
 
+/// Forget the type an untyped numeric literal was given when it was checked, so it can be
+/// checked again against another expected type.
+pub(crate) fn clear_literal_type(e: &mut Expr) {
+    match e {
+        Expr::Number(n) => n.ty = None,
+        Expr::UnaryOp(UnaryOpExpr {
+            op: UnaryOp::Neg,
+            expr: inner,
+            ..
+        }) => clear_literal_type(inner),
+        _ => {}
+    }
+}
+
 impl<'a> TypeChecker<'a> {
     pub fn check_expr_type(&mut self, expr: &mut Expr) -> Type {
         // A "fresh", non-speculative check. Force `speculating` off for the duration so a probe

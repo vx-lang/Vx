@@ -17,7 +17,7 @@ the test suite has one, a program that triggers it.
 - [Warnings](#warnings) — `W1001`–`W1031` (23 codes)
 - [Parser Errors](#parser-errors) — `E1001`–`E1013` (13 codes)
 - [Name Resolution Errors](#name-resolution-errors) — `E2001`–`E2007` (7 codes)
-- [Type Errors](#type-errors) — `E3001`–`E3042` (42 codes)
+- [Type Errors](#type-errors) — `E3001`–`E3043` (43 codes)
 - [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4005` (5 codes)
 - [Safety Errors](#safety-errors) — `E5001`–`E5002` (2 codes)
 - [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6028` (28 codes)
@@ -136,6 +136,7 @@ Raised by the type checker. Vx performs no implicit numeric conversion, so many 
 | [`E3040`](/errors/E3040/) | `I::Item` where no impl for what `I` is binds an associated type named `Item`: `I` has no such bound, or the name is misspelled. |
 | [`E3041`](/errors/E3041/) | A struct field that names `I::Item`. Fields are laid out from the struct's parameters alone, so the projection is made a parameter instead, as `Map<I, F>` does with its closure. |
 | [`E3042`](/errors/E3042/) | A bound on a type parameter, `T : Name`, where no trait called `Name` is declared or imported. Usually a misspelling or a missing `import`. |
+| [`E3043`](/errors/E3043/) | A `for` loop over a reference to a collection, `for x in &v`. Rust hands out references to the items there, which no iterator here does yet: write `v.iter()` to read the items, or `for x in v` to consume the collection. |
 
 ## Borrow/Ownership Errors
 
@@ -218,4 +219,4 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 
 ______________________________________________________________________
 
-129 diagnostics.
+130 diagnostics.

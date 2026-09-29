@@ -48,6 +48,8 @@ const KNOWN_DECLINES: &[&str] = &[
     "backend/pass/core_iter_adapters.vx",
     "backend/pass/core_iter_stateful_adapters.vx",
     "backend/pass/core_iter_rev.vx",
+    // Same decline as `core_iter.vx`: `map` answers with a generic adaptor struct.
+    "backend/pass/closure_literal_in_a_for_header.vx",
     "backend/pass/core_iter_zip.vx",
     "backend/pass/core_iter_extend.vx",
     "backend/pass/core_iter_exact_size.vx",
