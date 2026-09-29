@@ -1270,17 +1270,6 @@ The callable types a closure literal lowers into.
 - `fn replace(self : &mut Option<T>, v : T) -> Option<T>`<br>
   The value, leaving `v` behind.
 
-**`Option<Option<T>>` methods**
-
-- `fn flatten(self : Option<Option<T>>) -> Option<T>`<br>
-  One level of `Option` removed: `Some(Some(x))` is `Some(x)`, anything else is `None`.
-
-**`Option<(T, U)>` methods**
-
-- `fn unzip(self : Option<(T, U) -> void`<br>
-  A pair split in two: `Some((a, b))` gives `(Some(a), Some(b))`, and `None` gives two
-  `None`s. The reverse of `zip`.
-
 ## `core::ptr`
 
 Raw pointers: making one, and reading or writing through it.
@@ -2204,4 +2193,4 @@ Clocks and durations.
 
 ______________________________________________________________________
 
-783 functions across 33 modules.
+781 functions across 33 modules.
