@@ -1,0 +1,54 @@
+//===- use_after_move_is_refused.vx - Vx Compiler ----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// `S` is not `Copy`, so assigning it or passing it by value moves it, and the old name can
+// no longer be used. A move in one branch counts after the `if`: the other path did not
+// move it, but this one may have.
+
+struct S {
+  v : i64,
+}
+
+fn take(s : S) -> i64 {
+  return s.v;
+}
+
+fn use_after_assignment() -> i64 {
+  let a = S {
+    v : 1i64
+  };
+  let b = a;
+  return a.v + b.v;
+}
+
+fn use_after_call() -> i64 {
+  let a = S {
+    v : 1i64
+  };
+  take(a);
+  return a.v;
+}
+
+fn use_after_a_move_in_one_branch(n : i32) -> i64 {
+  let a = S {
+    v : 1i64
+  };
+  if n > 0 {
+    take(a);
+  }
+  return a.v;
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK-DAG: Error[E4001] at 27:10: Use of moved or consumed linear variable: a
+// CHECK-DAG: Error[E4001] at 35:10: Use of moved or consumed linear variable: a
+// CHECK-DAG: Error[E4001] at 45:10: Use of moved or consumed linear variable: a

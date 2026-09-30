@@ -1,0 +1,77 @@
+//===- borrow_conflicts_are_refused.vx - Vx Compiler -------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// Each function uses a variable in a way its live borrow forbids. A `&mut` borrow excludes
+// every other use of the variable until its last use; a `&` borrow excludes a `&mut` one.
+// One conflict per function, so each error is independent of the others. Calls and fields
+// are in borrow_conflicts_in_calls_and_fields.vx: the compiler stops after ten errors.
+
+// E4002: `x` is read while `m`, a `&mut` borrow of it, is still used afterwards.
+fn read_while_mutably_borrowed() -> i32 {
+  let mut x : i64 = 1i64;
+  let m = &mut x;
+  print(x);
+  *m = 2i64;
+  return 0;
+}
+// E4003: `&mut x` while the `&x` in `r` is still used afterwards.
+fn mutable_borrow_while_shared() -> i32 {
+  let mut x : i64 = 1i64;
+  let r = &x;
+  let m = &mut x;
+  *m = 2i64;
+  print(*r);
+  return 0;
+}
+// E4004: `&x` while the `&mut x` in `m` is still used afterwards.
+fn shared_borrow_while_mutable() -> i32 {
+  let mut x : i64 = 1i64;
+  let m = &mut x;
+  let r = &x;
+  print(*r);
+  *m = 2i64;
+  return 0;
+}
+// E4004: two `&mut` borrows of `x` alive at once.
+fn two_mutable_borrows() -> i32 {
+  let mut x : i64 = 1i64;
+  let a = &mut x;
+  let b = &mut x;
+  *a = 1i64;
+  *b = 2i64;
+  return 0;
+}
+fn keep(p : &mut i64) -> &mut i64 {
+  return p;
+}
+
+fn bump(p : &mut i64) -> i32 {
+  *p = *p + 1i64;
+  return 0;
+}
+
+// E4004: `k` keeps a `&mut` reborrow through `m`, so `m` cannot be passed on while `k` is used.
+fn passing_a_reference_while_its_reborrow_is_kept() -> i32 {
+  let mut x : i64 = 1i64;
+  let m = &mut x;
+  let k = keep(m);
+  bump(m);
+  *k = 5i64;
+  return 0;
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK-DAG: Error[E4002] at 19:9: Cannot access 'x' because it is mutably borrowed.
+// CHECK-DAG: Error[E4003] at 27:11: Cannot borrow 'x' as mutable because it is also borrowed as immutable.
+// CHECK-DAG: Error[E4004] at 36:11: Cannot borrow 'x' because it is already borrowed as mutable.
+// CHECK-DAG: Error[E4004] at 45:11: Cannot borrow 'x' because it is already borrowed as mutable.
+// CHECK-DAG: Error[E4004] at 64:3: Cannot borrow 'm' because it is already borrowed as mutable.
