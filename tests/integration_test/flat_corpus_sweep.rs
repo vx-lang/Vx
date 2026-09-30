@@ -63,6 +63,8 @@ const KNOWN_DECLINES: &[&str] = &[
     "backend/pass/for_loop_over_a_reference_to_a_vec.vx",
     // "A borrow of something that is not a tensor": the flat path does not model `&(&a)`.
     "backend/pass/borrow_of_a_borrow.vx",
+    // "A compound assignment to something other than a simple name" is not modelled.
+    "backend/pass/compound_assignment_through_a_reference.vx",
     "backend/pass/core_iter_zip.vx",
     "backend/pass/core_iter_extend.vx",
     "backend/pass/core_iter_exact_size.vx",
