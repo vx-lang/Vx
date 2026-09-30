@@ -1,0 +1,72 @@
+//===- assignments_near_a_borrow.vx - Vx Compiler ----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Assignments the rule against writing to a borrowed variable must still allow, each with its
+// value: a different field from the one borrowed, a write after the borrow's last use, a
+// write through a `&mut`, giving a reference variable a new target, and a write after a
+// call that borrowed the variable only for the call (as `core::iter`'s `max` does).
+//
+// EXPECT: 7 3 7 3 2
+import core::iter;
+
+struct Pair {
+  a : i64,
+  b : i64,
+}
+
+fn other_field_while_one_is_borrowed() -> i64 {
+  let mut p = Pair {
+    a : 2i64, b : 2i64
+  };
+  let r = &p.a;
+  p.b = 5i64;
+  return *r + p.b;
+}
+
+fn after_the_last_use() -> i64 {
+  let mut x : i64 = 1i64;
+  let r = &x;
+  let seen = *r;
+  x = 2i64;
+  return seen + x;
+}
+
+fn through_a_mutable_reference() -> i64 {
+  let mut p = Pair {
+    a : 1i64, b : 2i64
+  };
+  let m = &mut p;
+  m.a = 7i64;
+  return p.a;
+}
+
+fn the_reference_variable_itself() -> i64 {
+  let x : i64 = 1i64;
+  let y : i64 = 2i64;
+  let mut r = &x;
+  let s = &x;
+  r = &y;
+  return *r + *s;
+}
+
+// `max` keeps `best` and writes it after `v.cmp(&best)` has borrowed it for the call.
+fn after_a_call_that_borrowed_it() -> i64 {
+  return range(0i64, 3i64).max().unwrap();
+}
+
+fn main() -> i32 {
+  print(other_field_while_one_is_borrowed());
+  print!(" ");
+  print(after_the_last_use());
+  print!(" ");
+  print(through_a_mutable_reference());
+  print!(" ");
+  print(the_reference_variable_itself());
+  print!(" ");
+  print(after_a_call_that_borrowed_it());
+  return 0;
+}

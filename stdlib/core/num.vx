@@ -34,7 +34,17 @@
 //
 // `cbrt` and `erf` are absent. Their `math` ops lower to a libm declaration the pipeline
 // then rejects, and neither is in Rust's `core` either.
+import core::cmp;
 import core::option;
+
+/// The five kinds of float value `classify` tells apart, as in Rust.
+enum FpCategory {
+  Nan,
+  Infinite,
+  Zero,
+  Subnormal,
+  Normal,
+}
 
 /// Stamps the integer methods for one signed width.
 ///
@@ -1252,11 +1262,22 @@ macro_rules stamp_float {
 
       /// `exp` minus one, kept accurate for a small argument where the subtraction would
       /// lose every significant digit.
+      ///
+      /// Not `math.expm1`, which lowers to exactly that subtraction. This is Kahan's method:
+      /// with `u = exp(x)`, `(u - 1) * x / ln(u)`, whose two rounding errors cancel.
       fn exp_m1(self : $t) -> $t {
-        return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
-          %r = math.expm1 %a : $t
-          macro.yield %r : $t
-        };
+        let u = self.exp();
+        if u == $one {
+          return self;
+        }
+        let um1 = u - $one;
+        if um1 == -$one {
+          return um1;
+        }
+        if u.is_infinite() {
+          return u;
+        }
+        return um1 * self / u.ln();
       }
 
       /// The natural logarithm.
@@ -1284,11 +1305,18 @@ macro_rules stamp_float {
       }
 
       /// `ln` of one plus this, kept accurate for a small argument.
+      ///
+      /// Not `math.log1p`, which lowers to `ln(1 + x)` and loses the small argument in the
+      /// addition. With `u = 1 + x`, `ln(u) * x / (u - 1)` corrects for that rounding.
       fn ln_1p(self : $t) -> $t {
-        return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
-          %r = math.log1p %a : $t
-          macro.yield %r : $t
-        };
+        let u = $one + self;
+        if u == $one {
+          return self;
+        }
+        if u.is_infinite() {
+          return u;
+        }
+        return u.ln() * self / (u - $one);
       }
 
       /// The sine of this many radians.
@@ -1561,7 +1589,8 @@ macro_rules stamp_float {
         if self.is_nan() {
           return self;
         }
-        return $one.copysign(self);
+        let one : $t = $one;
+        return one.copysign(self);
       }
 
       /// Is this a real number, rather than an infinity or a NaN?
@@ -1582,6 +1611,110 @@ macro_rules stamp_float {
         let infinity : $t = $one / $zero;
         let magnitude : $t = self.abs();
         return magnitude == infinity;
+      }
+
+      /// The logarithm to `base`, as `ln(self) / ln(base)`.
+      fn log(self : $t, base : $t) -> $t {
+        return self.ln() / base.ln();
+      }
+
+      /// The nearest whole number, halves going to the even neighbour: 2.5 gives 2.0.
+      fn round_ties_even(self : $t) -> $t {
+        return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
+          %r = math.roundeven %a : $t
+          macro.yield %r : $t
+        };
+      }
+
+      /// The sine and the cosine, as a pair.
+      fn sin_cos(self : $t) -> ($t, $t) {
+        return (self.sin(), self.cos());
+      }
+
+      /// The inverse hyperbolic sine. Rust's formula, not a libm call: it goes through
+      /// `ln_1p`, so it stays accurate near zero.
+      fn asinh(self : $t) -> $t {
+        let ax = self.abs();
+        let one : $t = $one;
+        let ix = one / ax;
+        return (ax + (ax / (one.hypot(ix) + ix))).ln_1p().copysign(self);
+      }
+
+      /// The inverse hyperbolic cosine, NaN below one. Rust's formula, except below two:
+      /// there `ln` of a number just above one loses digits, so with `t = x - 1` this takes
+      /// `ln_1p(t + sqrt(2t + t * t))` instead, which keeps them.
+      fn acosh(self : $t) -> $t {
+        if self < $one {
+          return $zero / $zero;
+        }
+        let t = self - $one;
+        if t < $one {
+          return (t + (2.0 * t + t * t).sqrt()).ln_1p();
+        }
+        return (self + (t.sqrt() * (self + $one).sqrt())).ln();
+      }
+
+      /// The inverse hyperbolic tangent. Rust's formula, through `ln_1p`.
+      fn atanh(self : $t) -> $t {
+        return 0.5 * ((2.0 * self) / ($one - self)).ln_1p();
+      }
+
+      /// Halfway between two values, without overflowing near the largest value or losing
+      /// the answer to underflow near the smallest. Rust's rule.
+      fn midpoint(self : $t, other : $t) -> $t {
+        let lo : $t = $t::min_positive() * 2.0;
+        let hi : $t = $t::max_value() / 2.0;
+        let abs_a = self.abs();
+        let abs_b = other.abs();
+        if abs_a <= hi && abs_b <= hi {
+          return (self + other) / 2.0;
+        }
+        if abs_a < lo {
+          return self + other / 2.0;
+        }
+        if abs_b < lo {
+          return self / 2.0 + other;
+        }
+        return self / 2.0 + other / 2.0;
+      }
+
+      /// Is the sign bit set? True for -0.0, and for a NaN whose sign bit is set.
+      fn is_sign_negative(self : $t) -> bool {
+        let one : $t = $one;
+        return one.copysign(self) < $zero;
+      }
+
+      /// Is the sign bit clear? True for 0.0, and for a NaN whose sign bit is clear.
+      fn is_sign_positive(self : $t) -> bool {
+        return !self.is_sign_negative();
+      }
+
+      /// Is this neither zero, infinite, subnormal nor a NaN?
+      fn is_normal(self : $t) -> bool {
+        return self.is_finite() && self.abs() >= $t::min_positive();
+      }
+
+      /// Is this nonzero but smaller in size than the smallest normal value?
+      fn is_subnormal(self : $t) -> bool {
+        let m = self.abs();
+        return m != $zero && m < $t::min_positive();
+      }
+
+      /// Which of the five kinds of float value this is.
+      fn classify(self : $t) -> FpCategory {
+        if self.is_nan() {
+          return FpCategory::Nan();
+        }
+        if self.is_infinite() {
+          return FpCategory::Infinite();
+        }
+        if self == $zero {
+          return FpCategory::Zero();
+        }
+        if self.is_subnormal() {
+          return FpCategory::Subnormal();
+        }
+        return FpCategory::Normal();
       }
     }
   };
@@ -1708,3 +1841,132 @@ impl f32 {
     };
   }
 }
+
+/// Stamps what needs a float width's integer twin: the bits, the neighbouring values, the
+/// total order, and the constants about the format.
+///
+/// `$u` is the unsigned integer of the same width and `$m` the signed one, which is also
+/// the MLIR type the bits are cast to. `$neg_tiny` is the bits of the negative value
+/// nearest zero, and `$smax` the largest `$m`.
+macro_rules stamp_float_bits {
+  ($t : ident , $u : ident , $m : ident , $neg_tiny : expr , $smax : expr , $mantissa : expr , $digits : expr , $min_exp : expr , $max_exp : expr , $min_10 : expr , $max_10 : expr) => {
+    impl $t {
+      /// The bits of this value, as an unsigned integer of the same width.
+      fn to_bits(self : $t) -> $u {
+        return mlir!( inputs : (%a = self : $t), returns : $u, dialects : ["arith"]) {
+          %r = "arith.bitcast"(%a) : ($t) -> $m
+          macro.yield %r : $m
+        };
+      }
+
+      /// The value these bits spell. Static: `f32::from_bits(1065353216)` is 1.0.
+      fn from_bits(v : $u) -> $t {
+        return mlir!( inputs : (%v = v : $m), returns : $t, dialects : ["arith"]) {
+          %r = "arith.bitcast"(%v) : ($m) -> $t
+          macro.yield %r : $t
+        };
+      }
+
+      /// The smallest value greater than this one. A NaN and positive infinity give
+      /// themselves, and either zero gives the smallest positive value.
+      fn next_up(self : $t) -> $t {
+        if self.is_nan() || self == $t::infinity() {
+          return self;
+        }
+        if self == 0.0 {
+          return $t::from_bits(1);
+        }
+        let bits = self.to_bits();
+        if self > 0.0 {
+          return $t::from_bits(bits + 1);
+        }
+        return $t::from_bits(bits - 1);
+      }
+
+      /// The largest value less than this one. A NaN and negative infinity give themselves,
+      /// and either zero gives the negative value nearest zero.
+      fn next_down(self : $t) -> $t {
+        if self.is_nan() || self == $t::neg_infinity() {
+          return self;
+        }
+        if self == 0.0 {
+          return $t::from_bits($neg_tiny);
+        }
+        let bits = self.to_bits();
+        if self > 0.0 {
+          return $t::from_bits(bits - 1);
+        }
+        return $t::from_bits(bits + 1);
+      }
+
+      /// Rust's total order over every value, NaNs included: negative NaNs, negative
+      /// infinity, the negatives, -0.0, 0.0, the positives, positive infinity, positive NaNs.
+      /// It compares the bits as signed integers, with the bits of a negative value turned
+      /// round so that more negative sorts lower.
+      fn total_cmp(self : &$t, other : &$t) -> Ordering {
+        let x : $t = *self;
+        let y : $t = *other;
+        let smax : $m = $smax;
+        let mut a : $m = mlir!( inputs : (%v = x : $t), returns : $m, dialects : ["arith"]) {
+          %r = "arith.bitcast"(%v) : ($t) -> $m
+          macro.yield %r : $m
+        };
+        let mut b : $m = mlir!( inputs : (%v = y : $t), returns : $m, dialects : ["arith"]) {
+          %r = "arith.bitcast"(%v) : ($t) -> $m
+          macro.yield %r : $m
+        };
+        if a < 0 {
+          a = a ^ smax;
+        }
+        if b < 0 {
+          b = b ^ smax;
+        }
+        if a < b {
+          return Ordering::Less();
+        }
+        if a > b {
+          return Ordering::Greater();
+        }
+        return Ordering::Equal();
+      }
+
+      /// The base the format counts in: 2.
+      fn radix() -> u32 {
+        return 2;
+      }
+
+      /// How many binary digits the significand holds, the leading one included.
+      fn mantissa_digits() -> u32 {
+        return $mantissa;
+      }
+
+      /// How many decimal digits survive a round trip through this width.
+      fn digits() -> u32 {
+        return $digits;
+      }
+
+      /// One more than the smallest power of two a normal value can have.
+      fn min_exp() -> i32 {
+        return $min_exp;
+      }
+
+      /// One more than the largest power of two a finite value can have.
+      fn max_exp() -> i32 {
+        return $max_exp;
+      }
+
+      /// The smallest power of ten that is a normal value.
+      fn min_10_exp() -> i32 {
+        return $min_10;
+      }
+
+      /// The largest power of ten that is a finite value.
+      fn max_10_exp() -> i32 {
+        return $max_10;
+      }
+    }
+  };
+}
+
+stamp_float_bits!(f32 , u32 , i32 , 2147483649 , 2147483647 , 24 , 6 , -125 , 128 , -37 , 38);
+stamp_float_bits!(f64 , u64 , i64 , 9223372036854775809 , 9223372036854775807 , 53 , 15 , -1021 , 1024 , -307 , 308);

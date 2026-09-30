@@ -1,0 +1,119 @@
+//===- moves_in_loops_and_under_borrows.vx - Vx Compiler ---------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// `S` is not `Copy`. A value moved inside a loop is used again on the next pass unless it is
+// given a new value first (E4001, at the loop); a `continue` goes round again too, and a
+// `break` carries the move out of the loop. A move in one `match` arm counts after the
+// `match`. A value cannot move while a borrow of it is still used (E4007), and a reference
+// cannot give away what it points at (E4008).
+
+struct S {
+  v : i64,
+}
+
+fn take(s : S) -> i64 {
+  return s.v;
+}
+
+fn moved_in_a_while(n : i32) -> i32 {
+  let a = S {
+    v : 1i64
+  };
+  let mut i = 0;
+  while i < n {
+    take(a);
+    i = i + 1;
+  }
+  return 0;
+}
+
+fn moved_then_continue(n : i32) -> i32 {
+  let a = S {
+    v : 1i64
+  };
+  let mut i = 0;
+  while i < n {
+    i = i + 1;
+    if i == 2 {
+      take(a);
+      continue;
+    }
+  }
+  return 0;
+}
+
+fn moved_in_a_for(n : i32) -> i32 {
+  let a = S {
+    v : 1i64
+  };
+  for i in 0..n {
+    take(a);
+  }
+  return 0;
+}
+
+fn used_after_a_loop_that_moved_it(n : i32) -> i64 {
+  let a = S {
+    v : 1i64
+  };
+  let mut i = 0;
+  while i < n {
+    if i == 2 {
+      take(a);
+      break;
+    }
+    i = i + 1;
+  }
+  return take(a);
+}
+
+fn used_after_a_match_arm_moved_it(n : i32) -> i64 {
+  let a = S {
+    v : 1i64
+  };
+  match n {
+    0 => {
+      take(a);
+    }
+    _ => {
+      print(1);
+    }
+  }
+  return take(a);
+}
+
+fn moved_while_borrowed() -> i64 {
+  let a = S {
+    v : 1i64
+  };
+  let r = &a;
+  let b = a;
+  return r.v + take(b);
+}
+
+fn moved_out_of_a_reference() -> i64 {
+  let a = S {
+    v : 1i64
+  };
+  let r = &a;
+  let b = *r;
+  return take(b);
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK-DAG: Error[E4001] at 29:3: `a` is moved inside this loop and not given a new value before the loop goes round again
+// CHECK-DAG: Error[E4001] at 41:3: `a` is moved inside this loop
+// CHECK-DAG: Error[E4001] at 55:3: `a` is moved inside this loop
+// CHECK-DAG: Error[E4001] at 73:15: Use of moved or consumed linear variable: a
+// CHECK-DAG: Error[E4001] at 88:15: Use of moved or consumed linear variable: a
+// CHECK-DAG: Error[E4007] at 96:11: `a` is moved while it is borrowed, and the borrow is used after the move
+// CHECK-DAG: Error[E4008] at 105:11: this moves a value of type `S` out from behind a reference

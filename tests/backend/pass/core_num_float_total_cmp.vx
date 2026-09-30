@@ -1,0 +1,61 @@
+//===- core_num_float_total_cmp.vx - Vx Compiler ------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `total_cmp` puts every f64 value in one order, NaNs included: a negative NaN, negative
+// infinity, -1, -0.0, 0.0, 1, infinity, a positive NaN. The test counts the neighbouring
+// pairs it orders correctly, and checks equality with itself and one pair the other way.
+//
+// EXPECT: 8 1 1
+import core::cmp;
+import core::num;
+
+fn show(b : bool) -> i32 {
+  if b {
+    print!(" 1");
+  } else {
+    print!(" 0");
+  }
+  return 0;
+}
+
+fn main() -> i32 {
+  let one : f64 = 1.0;
+  let zero : f64 = 0.0;
+  let neg_zero : f64 = -0.0;
+  // total_cmp puts every value in order, NaNs included; count the pairs in order.
+  let neg_nan : f64 = f64::from_bits(18444492273895866368);
+  let mut in_order : i32 = 0;
+  if neg_nan.total_cmp(&f64::neg_infinity()).is_lt() {
+    in_order += 1;
+  }
+  if f64::neg_infinity().total_cmp(&(-one)).is_lt() {
+    in_order += 1;
+  }
+  if (-one).total_cmp(&neg_zero).is_lt() {
+    in_order += 1;
+  }
+  if neg_zero.total_cmp(&zero).is_lt() {
+    in_order += 1;
+  }
+  if zero.total_cmp(&one).is_lt() {
+    in_order += 1;
+  }
+  if one.total_cmp(&f64::infinity()).is_lt() {
+    in_order += 1;
+  }
+  if f64::infinity().total_cmp(&f64::nan()).is_lt() {
+    in_order += 1;
+  }
+  if f64::nan().total_cmp(&f64::nan()).is_eq() {
+    in_order += 1;
+  }
+  print(in_order);
+  show(one.total_cmp(&zero).is_gt());
+  show(neg_zero.total_cmp(&neg_zero).is_eq());
+
+  return 0;
+}

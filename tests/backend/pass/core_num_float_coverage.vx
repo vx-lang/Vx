@@ -1,0 +1,245 @@
+//===- core_num_float_coverage.vx - Vx Compiler -------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The float methods that bring `core::num` level with Rust's: `exp_m1` and `ln_1p` done
+// accurately, the inverse hyperbolic functions, `log`, `round_ties_even`, `sin_cos`,
+// `midpoint`, the classification methods, the bit-level ones and the format constants.
+// `total_cmp` is in core_num_float_total_cmp.vx: it takes a reference to a number, which
+// only the legacy code generator compiles, and that one cannot lower `sin_cos`'s pair,
+// so this file is flat path only.
+//
+// `exp_m1`, `ln_1p` and the inverse hyperbolic functions are checked by their largest
+// relative error against exact values computed in Python, over inputs that include tiny
+// ones. The bounds are a few units in the last place; `exp(x) - 1` misses them by orders of
+// magnitude for a small `x`, which is what these two computed before. Everything else
+// prints an exact answer.
+//
+// REQUIRES: flat-codegen
+// EXPECT: 1 1 1 1 1 1 1 | 3 1 | 2 4 -2 1 1 | 2 1 1 1 | 2 2 4 3 0 1 | 1 0 0 1 0 | 0 0 0 1 1 | 1065353216 4612811918334230528 9223372036854775808 1 | 4607182418800017409 1 9223372036854775809 1 1065353215 9223372036854775808 | 2 53 15 -1021 1024 -307 308 2 24 6 -125 128 -37 38
+import core::num;
+
+fn show(b : bool) -> i32 {
+  if b {
+    print!("1 ");
+  } else {
+    print!("0 ");
+  }
+  return 0;
+}
+
+fn rel(got : f64, want : f64) -> f64 {
+  return ((got - want) / want).abs();
+}
+
+// 0 to 4 for Nan, Infinite, Zero, Subnormal, Normal.
+fn category(c : FpCategory) -> i32 {
+  match c {
+    FpCategory::Nan() => {
+      return 0;
+    }
+    FpCategory::Infinite() => {
+      return 1;
+    }
+    FpCategory::Zero() => {
+      return 2;
+    }
+    FpCategory::Subnormal() => {
+      return 3;
+    }
+    FpCategory::Normal() => {
+      return 4;
+    }
+  }
+}
+
+fn main() -> i32 {
+  // exp_m1_f64: the largest relative error over the inputs, at most 1e-15.
+  let mut worst_exp_m1_f64 : f64 = 0.0;
+  worst_exp_m1_f64 = worst_exp_m1_f64.max(rel((((0.0000000001 as f64).exp_m1()) as f64), 0.000000000100000000005));
+  worst_exp_m1_f64 = worst_exp_m1_f64.max(rel((((-0.0000000001 as f64).exp_m1()) as f64), -0.00000000009999999999500001));
+  worst_exp_m1_f64 = worst_exp_m1_f64.max(rel((((0.00001 as f64).exp_m1()) as f64), 0.000010000050000166668));
+  worst_exp_m1_f64 = worst_exp_m1_f64.max(rel((((-0.00001 as f64).exp_m1()) as f64), -0.000009999950000166666));
+  worst_exp_m1_f64 = worst_exp_m1_f64.max(rel((((0.5 as f64).exp_m1()) as f64), 0.6487212707001282));
+  worst_exp_m1_f64 = worst_exp_m1_f64.max(rel((((-0.5 as f64).exp_m1()) as f64), -0.3934693402873666));
+  worst_exp_m1_f64 = worst_exp_m1_f64.max(rel((((3.0 as f64).exp_m1()) as f64), 19.085536923187668));
+  show(worst_exp_m1_f64 <= 0.000000000000001);
+  // ln_1p_f64: the largest relative error over the inputs, at most 1e-15.
+  let mut worst_ln_1p_f64 : f64 = 0.0;
+  worst_ln_1p_f64 = worst_ln_1p_f64.max(rel((((0.0000000001 as f64).ln_1p()) as f64), 0.00000000009999999999500001));
+  worst_ln_1p_f64 = worst_ln_1p_f64.max(rel((((-0.0000000001 as f64).ln_1p()) as f64), -0.000000000100000000005));
+  worst_ln_1p_f64 = worst_ln_1p_f64.max(rel((((0.00001 as f64).ln_1p()) as f64), 0.000009999950000333332));
+  worst_ln_1p_f64 = worst_ln_1p_f64.max(rel((((-0.00001 as f64).ln_1p()) as f64), -0.000010000050000333337));
+  worst_ln_1p_f64 = worst_ln_1p_f64.max(rel((((0.5 as f64).ln_1p()) as f64), 0.4054651081081644));
+  worst_ln_1p_f64 = worst_ln_1p_f64.max(rel((((-0.5 as f64).ln_1p()) as f64), -0.6931471805599453));
+  worst_ln_1p_f64 = worst_ln_1p_f64.max(rel((((3.0 as f64).ln_1p()) as f64), 1.3862943611198906));
+  worst_ln_1p_f64 = worst_ln_1p_f64.max(rel((((1000.0 as f64).ln_1p()) as f64), 6.90875477931522));
+  show(worst_ln_1p_f64 <= 0.000000000000001);
+  // exp_m1_f32: the largest relative error over the inputs, at most 1e-06.
+  let mut worst_exp_m1_f32 : f64 = 0.0;
+  worst_exp_m1_f32 = worst_exp_m1_f32.max(rel((((0.00009999999747378752 as f32).exp_m1()) as f64), 0.00010000499764020572));
+  worst_exp_m1_f32 = worst_exp_m1_f32.max(rel((((-0.00009999999747378752 as f32).exp_m1()) as f64), -0.00009999499764070263));
+  worst_exp_m1_f32 = worst_exp_m1_f32.max(rel((((0.0010000000474974513 as f32).exp_m1()) as f64), 0.0010005002142533142));
+  worst_exp_m1_f32 = worst_exp_m1_f32.max(rel((((0.5 as f32).exp_m1()) as f64), 0.6487212707001282));
+  worst_exp_m1_f32 = worst_exp_m1_f32.max(rel((((-0.5 as f32).exp_m1()) as f64), -0.3934693402873666));
+  worst_exp_m1_f32 = worst_exp_m1_f32.max(rel((((3.0 as f32).exp_m1()) as f64), 19.085536923187668));
+  show(worst_exp_m1_f32 <= 0.000001);
+  // ln_1p_f32: the largest relative error over the inputs, at most 1e-06.
+  let mut worst_ln_1p_f32 : f64 = 0.0;
+  worst_ln_1p_f32 = worst_ln_1p_f32.max(rel((((0.00009999999747378752 as f32).ln_1p()) as f64), 0.00009999499780734844));
+  worst_ln_1p_f32 = worst_ln_1p_f32.max(rel((((-0.00009999999747378752 as f32).ln_1p()) as f64), -0.00010000499780689321));
+  worst_ln_1p_f32 = worst_ln_1p_f32.max(rel((((0.0010000000474974513 as f32).ln_1p()) as f64), 0.0009995003805335345));
+  worst_ln_1p_f32 = worst_ln_1p_f32.max(rel((((0.5 as f32).ln_1p()) as f64), 0.4054651081081644));
+  worst_ln_1p_f32 = worst_ln_1p_f32.max(rel((((-0.5 as f32).ln_1p()) as f64), -0.6931471805599453));
+  worst_ln_1p_f32 = worst_ln_1p_f32.max(rel((((3.0 as f32).ln_1p()) as f64), 1.3862943611198906));
+  worst_ln_1p_f32 = worst_ln_1p_f32.max(rel((((1000.0 as f32).ln_1p()) as f64), 6.90875477931522));
+  show(worst_ln_1p_f32 <= 0.000001);
+  // asinh_f64: the largest relative error over the inputs, at most 1e-14.
+  let mut worst_asinh_f64 : f64 = 0.0;
+  worst_asinh_f64 = worst_asinh_f64.max(rel((((0.00000001 as f64).asinh()) as f64), 0.00000001));
+  worst_asinh_f64 = worst_asinh_f64.max(rel((((-0.00000001 as f64).asinh()) as f64), -0.00000001));
+  worst_asinh_f64 = worst_asinh_f64.max(rel((((0.5 as f64).asinh()) as f64), 0.48121182505960347));
+  worst_asinh_f64 = worst_asinh_f64.max(rel((((-2.0 as f64).asinh()) as f64), -1.4436354751788103));
+  worst_asinh_f64 = worst_asinh_f64.max(rel((((100.0 as f64).asinh()) as f64), 5.298342365610589));
+  show(worst_asinh_f64 <= 0.00000000000001);
+  // acosh_f64: the largest relative error over the inputs, at most 1e-14.
+  let mut worst_acosh_f64 : f64 = 0.0;
+  worst_acosh_f64 = worst_acosh_f64.max(rel((((1.0000001 as f64).acosh()) as f64), 0.0004472135919037347));
+  worst_acosh_f64 = worst_acosh_f64.max(rel((((1.5 as f64).acosh()) as f64), 0.9624236501192069));
+  worst_acosh_f64 = worst_acosh_f64.max(rel((((10.0 as f64).acosh()) as f64), 2.993222846126381));
+  worst_acosh_f64 = worst_acosh_f64.max(rel((((1000.0 as f64).acosh()) as f64), 7.600902209541989));
+  show(worst_acosh_f64 <= 0.00000000000001);
+  // atanh_f64: the largest relative error over the inputs, at most 1e-14.
+  let mut worst_atanh_f64 : f64 = 0.0;
+  worst_atanh_f64 = worst_atanh_f64.max(rel((((0.00000001 as f64).atanh()) as f64), 0.00000001));
+  worst_atanh_f64 = worst_atanh_f64.max(rel((((-0.00000001 as f64).atanh()) as f64), -0.00000001));
+  worst_atanh_f64 = worst_atanh_f64.max(rel((((0.5 as f64).atanh()) as f64), 0.5493061443340549));
+  worst_atanh_f64 = worst_atanh_f64.max(rel((((-0.9 as f64).atanh()) as f64), -1.4722194895832204));
+  worst_atanh_f64 = worst_atanh_f64.max(rel((((0.999 as f64).atanh()) as f64), 3.8002011672501994));
+  show(worst_atanh_f64 <= 0.00000000000001);
+  print!("| ");
+
+  // log to a base, and its exactness where the answer is a whole number.
+  let eight : f64 = 8.0;
+  print(eight.log(2.0).round() as i32);
+  print!(" ");
+  show((eight.log(2.0) - 3.0).abs() < 0.000000000000001);
+  print!("| ");
+
+  // round_ties_even: halves go to the even neighbour.
+  let a : f64 = 2.5;
+  let b : f64 = 3.5;
+  let c : f64 = -2.5;
+  let d : f32 = 1.4;
+  print(a.round_ties_even() as i32);
+  print!(" ");
+  print(b.round_ties_even() as i32);
+  print!(" ");
+  print(c.round_ties_even() as i32);
+  print!(" ");
+  print(d.round_ties_even() as i32);
+  print!(" ");
+  let half : f64 = 0.5;
+  let sc = half.sin_cos();
+  show(sc._0 == half.sin() && sc._1 == half.cos());
+  print!("| ");
+
+  // midpoint: plain, at the largest value (no overflow), across zero, and between two
+  // subnormals (no underflow to zero).
+  let one : f64 = 1.0;
+  let big : f64 = f64::max_value();
+  let tiny1 : f64 = f64::from_bits(1);
+  print(one.midpoint(3.0) as i32);
+  print!(" ");
+  show(big.midpoint(big) == big);
+  show((-big).midpoint(big) == 0.0);
+  show(tiny1.midpoint(f64::from_bits(3)).to_bits() == 2);
+  print!("| ");
+
+  // classify, over zero, -0.0, a subnormal, infinity, one, and a NaN.
+  let zero : f64 = 0.0;
+  let neg_zero : f64 = -0.0;
+  print(category(zero.classify()));
+  print!(" ");
+  print(category(neg_zero.classify()));
+  print!(" ");
+  print(category(one.classify()));
+  print!(" ");
+  print(category(tiny1.classify()));
+  print!(" ");
+  print(category(f64::nan().classify()));
+  print!(" ");
+  print(category(f64::infinity().classify()));
+  print!(" | ");
+  show(one.is_normal());
+  show(tiny1.is_normal());
+  show(zero.is_normal());
+  show(tiny1.is_subnormal());
+  show(zero.is_subnormal());
+  print!("| ");
+  show(zero.is_sign_negative());
+  show(one.is_sign_negative());
+  show(f64::nan().is_sign_negative());
+  show(neg_zero.is_sign_negative());
+  show((-one).is_sign_negative());
+  print!("| ");
+
+  // The bits, and back.
+  let one32 : f32 = 1.0;
+  let two_and_a_half : f64 = 2.5;
+  print(one32.to_bits());
+  print!(" ");
+  print(two_and_a_half.to_bits());
+  print!(" ");
+  print(neg_zero.to_bits());
+  print!(" ");
+  show(f32::from_bits(1065353216) == 1.0);
+  print!("| ");
+
+  // The neighbouring values, as bits: after 1.0, after 0.0, before -0.0 (the negative
+  // value nearest zero), infinity stays, before 1.0 in f32, and after that negative value.
+  print(one.next_up().to_bits());
+  print!(" ");
+  print(zero.next_up().to_bits());
+  print!(" ");
+  print(neg_zero.next_down().to_bits());
+  print!(" ");
+  show(f64::infinity().next_up() == f64::infinity());
+  print(one32.next_down().to_bits());
+  print!(" ");
+  print(f64::from_bits(9223372036854775809).next_up().to_bits());
+  print!(" | ");
+
+  // The format constants.
+  print(f64::radix());
+  print!(" ");
+  print(f64::mantissa_digits());
+  print!(" ");
+  print(f64::digits());
+  print!(" ");
+  print(f64::min_exp());
+  print!(" ");
+  print(f64::max_exp());
+  print!(" ");
+  print(f64::min_10_exp());
+  print!(" ");
+  print(f64::max_10_exp());
+  print!(" ");
+  print(f32::radix());
+  print!(" ");
+  print(f32::mantissa_digits());
+  print!(" ");
+  print(f32::digits());
+  print!(" ");
+  print(f32::min_exp());
+  print!(" ");
+  print(f32::max_exp());
+  print!(" ");
+  print(f32::min_10_exp());
+  print!(" ");
+  print(f32::max_10_exp());
+  return 0;
+}
