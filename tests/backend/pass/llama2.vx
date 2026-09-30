@@ -212,7 +212,7 @@ seq_len : i32, vocab_size : i32, topology_id : i32) -> TransformerWeights {
 // to be moved explicitly rather than simply being on the right device already.
 // Closing that is kernel emission (#251) and strided views of a placed tensor
 // (#344).
-fn transformer<const D : i32>(token : i32, pos : i32, p : &Config, s : &RunState,
+fn transformer<const D : i32>(token : i32, pos : i32, p : &Config, s : &mut RunState,
 w : &TransformerWeights) -> *mut f32 {
   unsafe {
     let x : *mut f32 = s.x;
@@ -621,10 +621,10 @@ fn main() -> i32 {
     // Two RunStates, and specifically two KV caches. See `handoff_kv`: decode's
     // cache starts empty and is filled only by the transfer, which is what
     // makes the transfer provable rather than decorative.
-    let prefill_state = malloc_run_state(
+    let mut prefill_state = malloc_run_state(
     config.dim, config.hidden_dim, config.n_layers, config.n_heads,
     config.n_kv_heads, config.seq_len, config.vocab_size);
-    let decode_state = malloc_run_state(
+    let mut decode_state = malloc_run_state(
     config.dim, config.hidden_dim, config.n_layers, config.n_heads,
     config.n_kv_heads, config.seq_len, config.vocab_size);
 
@@ -659,7 +659,7 @@ fn main() -> i32 {
     // --- Prefill, on GPU 0 ---------------------------------------------------
     for step in 0..prefill_iterations {
       let logits : *mut f32 =
-      transformer<0>(token, pos, &config, &prefill_state, &prefill_weights);
+      transformer<0>(token, pos, &config, &mut prefill_state, &prefill_weights);
 
       // Take the next token from the prompt (shifted by 1: index 0 is the
       // length).
@@ -701,10 +701,10 @@ fn main() -> i32 {
       let mut logits : *mut f32 = decode_state.logits;
       if disagg == 1 {
         logits =
-        transformer<1>(token, pos, &config, &decode_state, &decode_weights);
+        transformer<1>(token, pos, &config, &mut decode_state, &decode_weights);
       } else {
         logits =
-        transformer<0>(token, pos, &config, &decode_state, &decode_weights);
+        transformer<0>(token, pos, &config, &mut decode_state, &decode_weights);
       }
 
       let next : i32 = sample_argmax(logits, config.vocab_size);

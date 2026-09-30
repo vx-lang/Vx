@@ -572,6 +572,30 @@ impl<'a> TypeChecker<'a> {
     /// `op` is `Some` for a compound assignment, and carries the operator that sits between
     /// the two sides. It has to be checked here as well as in `check_binaryop_expr`: `a %= b`
     /// never builds a `BinaryOp` expression for that rule to see.
+    /// The expression a written place is reached through when that is a shared `&`
+    /// reference: `r` in `*r = v`, `r.f = v` or `r[i] = v` with `r : &T`. `None` when every
+    /// step is a variable, a field, an index, a `&mut` or a raw pointer.
+    fn shared_reference_in_place(&self, place: &Expr) -> Option<String> {
+        let is_shared = |ty: &Type| matches!(ty, Type::Borrow { is_mut: false, .. });
+        let mut place = place;
+        loop {
+            let base = match place {
+                Expr::Dereference(d) => &*d.expr,
+                Expr::MemberAccess(m) => &*m.base,
+                Expr::IndexAccess(i) => &*i.base,
+                _ => return None,
+            };
+            if is_shared(&self.check_expr_type_probe(base)) {
+                return Some(match Self::extract_base_and_path(base) {
+                    Some((root, path)) if path.is_empty() => root,
+                    Some((root, path)) => format!("{root}.{}", path.join(".")),
+                    None => "a reference".to_string(),
+                });
+            }
+            place = base;
+        }
+    }
+
     fn check_assign_stmt(
         &mut self,
         lhs: &mut Expr,
@@ -595,6 +619,18 @@ impl<'a> TypeChecker<'a> {
         self.checking_assign_lhs = true;
         let lhs_ty = self.check_expr_type_flag(lhs, false);
         self.checking_assign_lhs = false;
+        if let Some(shared) = self.shared_reference_in_place(lhs) {
+            if !self.speculating {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E4006,
+                    format!(
+                        "this assigns through `{shared}`, which is a shared reference (`&`); \
+                         only a `&mut` reference can be written through"
+                    ),
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(&lhs.span())),
+                );
+            }
+        }
 
         // Recorded for code generation, as for a plain binary operator: `/=`, `%=` and
         // `>>=` need the sign that an MLIR integer does not carry.

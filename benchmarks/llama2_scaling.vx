@@ -203,7 +203,7 @@ n_kv_heads : i32, head_size : i32, kv_dim : i32, l : i32) -> i32 {
   return 0;
 }
 
-fn transformer(token : i32, pos : i32, p : &Config, s : &RunState,
+fn transformer(token : i32, pos : i32, p : &Config, s : &mut RunState,
 w : &TransformerWeights) -> *mut f32 {
   unsafe {
     let x : *mut f32 = s.x;
@@ -469,7 +469,7 @@ fn main() -> i32 {
     weights_ptr, config.dim, config.hidden_dim, config.n_layers,
     config.n_heads, config.n_kv_heads, config.seq_len, config.vocab_size);
 
-    let state = malloc_run_state(config.dim, config.hidden_dim, config.n_layers,
+    let mut state = malloc_run_state(config.dim, config.hidden_dim, config.n_layers,
     config.n_heads, config.n_kv_heads,
     config.seq_len, config.vocab_size);
 
@@ -492,7 +492,7 @@ fn main() -> i32 {
     let iterations : i32 = max_tokens / steps;
     for step in 0..iterations {
       let logits : *mut f32 =
-      transformer(token, pos, &config, &state, &weights);
+      transformer(token, pos, &config, &mut state, &weights);
 
       let mut next : i32 = 0;
       if pos < num_prompt_tokens - 1 {

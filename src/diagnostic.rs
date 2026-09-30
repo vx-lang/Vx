@@ -347,6 +347,9 @@ pub enum DiagnosticCode {
     /// for a block: a variable declared outside a block cannot be given a value that points
     /// at a variable declared inside it.
     E4005,
+    /// An assignment through a shared reference: `*r = v`, `r.f = v` or `r[i] = v` where
+    /// `r` is a `&T`. A shared reference only reads; writing needs a `&mut T`.
+    E4006,
 
     // --- Safety Errors (E5xxx) ---
     /// Unsafe function call outside unsafe block

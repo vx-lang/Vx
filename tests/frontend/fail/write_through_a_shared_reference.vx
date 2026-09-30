@@ -1,0 +1,56 @@
+//===- write_through_a_shared_reference.vx - Vx Compiler ---------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// Each assignment writes through a shared reference (`&`), which can only be read through:
+// `*r = ..`, `*r += ..`, a field, an element, a `&mut` field reached through a `&`, a
+// parameter, and the `&i64` items of `v.iter()`.
+// CHECK-DAG: Error[E4006] at 30:3: this assigns through `p`
+// CHECK-DAG: Error[E4006] at 37:3: this assigns through `r`
+// CHECK-DAG: Error[E4006] at 38:3: this assigns through `r`
+// CHECK-DAG: Error[E4006] at 44:5: this assigns through `h`
+// CHECK-DAG: Error[E4006] at 47:4: this assigns through `t`
+// CHECK-DAG: Error[E4006] at 49:3: this assigns through `w`
+// CHECK-DAG: Error[E4006] at 53:5: this assigns through `x`
+// CHECK: 7 error(s) emitted
+import core::iter;
+import std::vec;
+
+struct Holder {
+  n : i64,
+  m : &mut i64,
+}
+
+fn set(p : &i64) -> i32 {
+  *p = 1i64;
+  return 0;
+}
+
+fn main() -> i32 {
+  let a : i64 = 1i64;
+  let r : &i64 = &a;
+  *r = 5i64;
+  *r += 1i64;
+  let mut b : i64 = 2i64;
+  let hv = Holder {
+    n : 1i64, m : &mut b
+  };
+  let h : &Holder = &hv;
+  h.n = 3i64;
+  let arr : Tensor<i64, [2]> = [ 1i64, 2i64 ];
+  let t : &Tensor<i64, [2]> = &arr;
+  t[0] = 4i64;
+  let w : &Holder = &hv;
+  *w.m = 9i64;
+  let mut v = Vec<i64>::new();
+  v.push(40i64);
+  for x in v.iter() {
+    *x = 7i64;
+  }
+  return 0;
+}

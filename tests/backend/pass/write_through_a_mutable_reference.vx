@@ -1,0 +1,40 @@
+//===- write_through_a_mutable_reference.vx - Vx Compiler --------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Writes the rule against writing through a shared reference must still allow: through a
+// `&mut` parameter, through the items of `iter_mut()`, and through a raw pointer inside
+// `unsafe`. A `&mut` field reached through a `&mut` is left out: the AST path cannot yet
+// store `&mut local` in a struct field (#812).
+//
+// EXPECT: 2 400 9
+import core::iter;
+import std::vec;
+
+// `*p = *p + 1`, not `*p += 1`, which has no effect through a parameter yet (#900).
+fn bump(p : &mut i64) -> i32 {
+  *p = *p + 1i64;
+  return 0;
+}
+
+fn main() -> i32 {
+  let mut a : i64 = 1i64;
+  bump(&mut a);
+  print(a);
+  print!(" ");
+  let mut v = Vec<i64>::new();
+  v.push(40i64);
+  for x in v.iter_mut() {
+    *x = *x * 10i64;
+  }
+  print(v.get(0));
+  print!(" ");
+  let mut c : i64 = 0i64;
+  let p : *mut i64 = &mut c;
+  unsafe { *p = 9i64; }
+  print(c);
+  return 0;
+}

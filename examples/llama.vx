@@ -170,7 +170,7 @@ fn argmax(probabilities : *mut f32, n : i32) -> i32 {
   return max_i;
 }
 
-fn transformer(token : i32, pos : i32, p : &Config, s : &RunState,
+fn transformer(token : i32, pos : i32, p : &Config, s : &mut RunState,
 w : &TransformerWeights) -> i32 {
   let dim : i32 = p.dim;
   let hidden_dim : i32 = p.hidden_dim;
@@ -455,7 +455,7 @@ fn main() -> i32 {
   let weights = load_weights(weights_ptr, config.dim, config.hidden_dim,
   config.n_layers, config.n_heads, config.n_kv_heads,
   config.seq_len, config.vocab_size);
-  let state = init_run_state(config.dim, config.hidden_dim, config.n_layers,
+  let mut state = init_run_state(config.dim, config.hidden_dim, config.n_layers,
   config.n_heads, config.n_kv_heads, config.seq_len,
   config.vocab_size);
   let tokenizer_ptr
@@ -467,7 +467,7 @@ fn main() -> i32 {
 
   // 3. Autoregressive Generation Loop
   for pos in 0..steps {
-    transformer(token, pos, &config, &state, &weights);
+    transformer(token, pos, &config, &mut state, &weights);
     next = argmax(state.logits, config.vocab_size);
     let piece : *mut i8 = unsafe {
       vx_decode_token(tokenizer_ptr, token, next)
