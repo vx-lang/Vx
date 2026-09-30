@@ -350,6 +350,10 @@ pub enum DiagnosticCode {
     /// An assignment through a shared reference: `*r = v`, `r.f = v` or `r[i] = v` where
     /// `r` is a `&T`. A shared reference only reads; writing needs a `&mut T`.
     E4006,
+    /// An assignment to a variable, or a field or element of it, while a `&` borrow of it is
+    /// still used afterwards: `let r = &x; x = 2;` and then a use of `r`. The borrow would see
+    /// the value change under it.
+    E4009,
 
     // --- Safety Errors (E5xxx) ---
     /// Unsafe function call outside unsafe block

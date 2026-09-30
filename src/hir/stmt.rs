@@ -637,6 +637,42 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Refuse writing to a variable, or a field or element of it, while a `&` borrow of that
+    /// part is still used afterwards (E4009): the borrow would see the value change under it.
+    /// A live `&mut` borrow is already refused as a use of the variable (E4002).
+    fn check_assign_while_borrowed(&mut self, lhs: &Expr) {
+        if self.speculating || self.borrow.skip_borrow_check {
+            return;
+        }
+        let Some((root, path)) = Self::extract_base_and_path(lhs) else {
+            return;
+        };
+        let shared = self
+            .borrow
+            .live_borrows(&root)
+            .iter()
+            // A borrow with no borrower is a temporary, `f(&x)`, over by the end of its statement.
+            .any(|b| {
+                !b.is_mut
+                    && b.borrower_name.is_some()
+                    && crate::hir::places::paths_may_alias(&path, &b.path)
+            });
+        if shared {
+            let place = std::iter::once(root)
+                .chain(path)
+                .collect::<Vec<_>>()
+                .join(".");
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E4009,
+                format!(
+                    "`{place}` is assigned while it is borrowed, and the borrow is used after the \
+                     assignment"
+                ),
+                Some(crate::diagnostic::SourceSpan::from_ast_span(&lhs.span())),
+            );
+        }
+    }
+
     fn check_assign_stmt(
         &mut self,
         lhs: &mut Expr,
@@ -657,6 +693,7 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
+        self.check_assign_while_borrowed(lhs);
         self.checking_assign_lhs = true;
         let lhs_ty = self.check_expr_type_flag(lhs, false);
         self.checking_assign_lhs = false;

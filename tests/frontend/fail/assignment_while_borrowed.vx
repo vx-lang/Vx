@@ -1,0 +1,58 @@
+//===- assignment_while_borrowed.vx - Vx Compiler ----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// Each function writes to a variable, a field of it, or an element of it while a `&` borrow
+// of that part is used afterwards, so the borrow would see the value change under it. A
+// reference variable is a variable too: `&r` stops `r` from being given another target.
+
+struct Pair {
+  a : i64,
+  b : i64,
+}
+
+fn the_variable() -> i64 {
+  let mut x : i64 = 1i64;
+  let r = &x;
+  x = 2i64;
+  return *r;
+}
+
+fn a_field_while_the_whole_is_borrowed() -> i64 {
+  let mut p = Pair {
+    a : 1i64, b : 2i64
+  };
+  let r = &p;
+  p.a = 9i64;
+  return r.a;
+}
+
+fn an_element_while_the_array_is_borrowed() -> i64 {
+  let mut t : Tensor<i64, [2]> = [ 1i64, 2i64 ];
+  let r = &t;
+  t[0] = 5i64;
+  return r[1];
+}
+
+fn a_reference_variable_while_it_is_borrowed() -> i64 {
+  let x : i64 = 1i64;
+  let y : i64 = 2i64;
+  let mut r = &x;
+  let rr = &r;
+  r = &y;
+  return **rr;
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK-DAG: Error[E4009] at 22:3: `x` is assigned while it is borrowed, and the borrow is used after the assignment
+// CHECK-DAG: Error[E4009] at 31:5: `p.a` is assigned while it is borrowed
+// CHECK-DAG: Error[E4009] at 38:4: `t` is assigned while it is borrowed
+// CHECK-DAG: Error[E4009] at 47:3: `r` is assigned while it is borrowed

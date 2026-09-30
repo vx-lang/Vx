@@ -18,7 +18,7 @@ the test suite has one, a program that triggers it.
 - [Parser Errors](#parser-errors) — `E1001`–`E1013` (13 codes)
 - [Name Resolution Errors](#name-resolution-errors) — `E2001`–`E2007` (7 codes)
 - [Type Errors](#type-errors) — `E3001`–`E3043` (43 codes)
-- [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4006` (6 codes)
+- [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4009` (7 codes)
 - [Safety Errors](#safety-errors) — `E5001`–`E5002` (2 codes)
 - [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6028` (28 codes)
 - [Tensor/Math Errors](#tensormath-errors) — `E7001`–`E7004` (4 codes)
@@ -150,6 +150,7 @@ Raised by the borrow checker and the linear-type rules. These rule out use-after
 | [`E4004`](/errors/E4004/) | Cannot borrow (already mutably borrowed) |
 | [`E4005`](/errors/E4005/) | A value that points into this function's stack frame would outlive the function: a reference to a local, or a closure that uses one, returned (on its own or inside a struct), stored through a reference, or passed to a call that could store it there. What it points at is gone once the function returns. The same holds inside a function for a block: a variable declared outside a block cannot be given a value that points at a variable declared inside it. |
 | [`E4006`](/errors/E4006/) | An assignment through a shared reference: `*r = v`, `r.f = v` or `r[i] = v` where `r` is a `&T`. A shared reference only reads; writing needs a `&mut T`. |
+| [`E4009`](/errors/E4009/) | An assignment to a variable, or a field or element of it, while a `&` borrow of it is still used afterwards: `let r = &x; x = 2;` and then a use of `r`. The borrow would see the value change under it. |
 
 ## Safety Errors
 
@@ -220,4 +221,4 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 
 ______________________________________________________________________
 
-131 diagnostics.
+132 diagnostics.
