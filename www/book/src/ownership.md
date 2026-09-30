@@ -25,6 +25,61 @@ fn append(v : &mut Vec<i32>, x : i32) { /* ... */ }
 borrows, or exactly one exclusive borrow, never both at once. The checker tracks variance and
 regions, so a borrow cannot outlive what it points into.
 
+## The rules the checker enforces
+
+Each rule below is a compile error, with the code the error index lists it under.
+
+**A moved value cannot be used (E4001).** Assigning a value, or passing it by value, moves it
+unless its type is `Copy`; numbers are. A move in one branch of an `if` counts after the `if`.
+Giving the variable a new value makes it usable again. A `Vec` is not tracked this way yet
+(#495).
+
+```rust
+let a = S { v : 1 };
+let b = a;          // a is moved
+print(a.v);         // E4001
+```
+
+**Shared or exclusive, never both (E4002, E4003, E4004).** While a `&mut` borrow of `x` is still
+going to be used, `x` cannot be read, written or borrowed again. While a `&` borrow is still going
+to be used, `x` cannot be borrowed `&mut`. Two borrows passed to one call count as alive together.
+
+```rust
+let m = &mut x;
+print(x);           // E4002: m is used below
+*m = 2;
+```
+
+**A borrow ends at its last use.** It does not last to the end of the block, so this is fine:
+
+```rust
+let m = &mut x;
+*m = 2;
+print(x);           // m is not used again
+```
+
+**Different fields are borrowed separately.** `&mut p.a` and `&mut p.b` can be alive together;
+`&mut p.a` twice, or `&p.a` while `&mut p` is alive, cannot.
+
+**A reborrow borrows the reference (E4002, E4004).** `let n = &mut *m;` borrows `m` for as long as
+`n` is used. Until then `m` cannot be read, written or reborrowed `&mut` again. After `n`'s last use,
+`m` works as before.
+
+```rust
+let m = &mut x;
+let n = &mut *m;
+*m = 4;             // E4002: n is used below
+*n = 5;
+```
+
+**Only a `&mut` can be written through (E4006).** `*r = v`, `r.f = v` and `r[i] = v` need `r` to be
+a `&mut`. So does a `&mut` field reached through a `&`.
+
+**A reference cannot outlive what it points at (E4005).** A reference to a local, or a value or
+closure holding one, cannot be returned, stored through a reference, or passed to a call that could
+store it. Inside a function, a variable declared outside a block cannot be given a reference to a
+variable declared inside it.
+
 ## Linear values
 
 Some values are *linear*: they must be consumed exactly once, and the checker enforces it. Device

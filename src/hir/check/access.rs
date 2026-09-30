@@ -740,7 +740,9 @@ impl<'a> TypeChecker<'a> {
             }) => {
                 let inner_ty = self.check_expr_type_flag(inner, false);
 
-                if let Some((name, path)) = Self::extract_base_and_path(inner) {
+                let place = Self::extract_base_and_path(inner)
+                    .or_else(|| self.reborrow_base_and_path(inner));
+                if let Some((name, path)) = place {
                     // NLL: `live_borrows` sweeps dead borrows before the shared-XOR-mutable conflict
                     // check, so a borrow whose borrower is dead no longer blocks a new one (#276). This
                     // was the hand-copied sweep duplicate the R1 refactor removed.
@@ -792,6 +794,32 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             _ => panic!("Expected IndexAccess, got {:?}", expr),
+        }
+    }
+
+    /// A place reached through a reference variable, `*m`, `(*m).f` or `(*m)[i]`, rooted at that
+    /// variable: `&mut *m` borrows `m`, so `m` cannot be used while the reborrow is. A raw
+    /// pointer has no borrows to track.
+    fn reborrow_base_and_path(&self, e: &Expr) -> Option<(String, Vec<String>)> {
+        match e {
+            Expr::Dereference(d) => match &*d.expr {
+                Expr::Identifier(id)
+                    if matches!(
+                        self.lookup(id.name.as_ref()).map(|(t, _)| t),
+                        Some(Type::Borrow { .. })
+                    ) =>
+                {
+                    Some((id.name.to_string(), Vec::new()))
+                }
+                _ => None,
+            },
+            Expr::MemberAccess(m) => {
+                let (root, mut path) = self.reborrow_base_and_path(&m.base)?;
+                path.push(m.member.to_string());
+                Some((root, path))
+            }
+            Expr::IndexAccess(i) => self.reborrow_base_and_path(&i.base),
+            _ => None,
         }
     }
 

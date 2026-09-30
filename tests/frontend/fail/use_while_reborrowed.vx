@@ -1,0 +1,47 @@
+//===- use_while_reborrowed.vx - Vx Compiler ---------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// `let n = &mut *m;` borrows `m` for as long as `n` is used. Until `n`'s last use, `m`
+// cannot be written, read, or reborrowed again.
+
+fn write_the_original() -> i32 {
+  let mut x : i64 = 1i64;
+  let m = &mut x;
+  let n = &mut *m;
+  *m = 4i64;
+  *n = 5i64;
+  return 0;
+}
+
+fn read_the_original() -> i64 {
+  let mut x : i64 = 1i64;
+  let m = &mut x;
+  let n = &mut *m;
+  let seen = *m;
+  *n = 5i64;
+  return seen;
+}
+
+fn reborrow_twice() -> i32 {
+  let mut x : i64 = 1i64;
+  let m = &mut x;
+  let a = &mut *m;
+  let b = &mut *m;
+  *a = 1i64;
+  *b = 2i64;
+  return 0;
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK-DAG: Error[E4002] at 17:4: Cannot access 'm' because it is mutably borrowed.
+// CHECK-DAG: Error[E4002] at 26:15: Cannot access 'm' because it is mutably borrowed.
+// CHECK-DAG: Error[E4004] at 35:11: Cannot borrow 'm' because it is already borrowed as mutable.
