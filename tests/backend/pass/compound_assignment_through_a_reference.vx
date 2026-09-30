@@ -1,0 +1,56 @@
+//===- compound_assignment_through_a_reference.vx - Vx Compiler --*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A compound assignment (`+=`, `*=`, `/=`) stores its result wherever the place is: through
+// a `&mut` parameter, into a field, into a field through a `&mut` parameter, into a tensor
+// element, through a raw pointer, and through a `&mut` to a mutable local. `*p += 1` used
+// to compute the sum and drop it. The unsigned divide must stay unsigned.
+//
+// EXPECT: 2 3 13 7 13 2000000000
+struct S {
+  f : i64,
+}
+
+fn bump(p : &mut i64) -> i32 {
+  *p += 1i64;
+  return 0;
+}
+
+fn bump_field(s : &mut S) -> i32 {
+  s.f += 10i64;
+  return 0;
+}
+
+fn main() -> i32 {
+  let mut a : i64 = 1i64;
+  bump(&mut a);
+  print(a);
+  print!(" ");
+  let mut s = S {
+    f : 1i64
+  };
+  s.f += 2i64;
+  print(s.f);
+  print!(" ");
+  bump_field(&mut s);
+  print(s.f);
+  print!(" ");
+  let mut t : Tensor<i64, [2]> = [ 1i64, 2i64 ];
+  t[1] += 5i64;
+  print(t[1]);
+  print!(" ");
+  let mut c : i64 = 3i64;
+  let p : *mut i64 = &mut c;
+  unsafe { *p *= 4i64; p[0] += 1i64; }
+  print(c);
+  print!(" ");
+  let mut u : u32 = 4000000000u32;
+  let pu : &mut u32 = &mut u;
+  *pu /= 2u32;
+  print(u);
+  return 0;
+}
