@@ -1,0 +1,37 @@
+//===- borrow_of_a_borrow.vx - Vx Compiler -----------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Borrowing a value that is itself a reference gives a reference to a reference: `&(&a)`,
+// `&&a`, a borrow of a call that returns a reference, and `&&mut b`, written through. The
+// outer `&` used to be dropped, so `**q` read `a` as an address and crashed. A borrow of
+// an ordinary value, `&(a + 1)`, is checked alongside.
+//
+// EXPECT: 5 5 5 7 6
+fn first(p : &i64) -> &i64 {
+  return p;
+}
+
+fn main() -> i32 {
+  let a : i64 = 5i64;
+  let q : &&i64 = &(&a);
+  print(**q);
+  print!(" ");
+  let w : &&i64 = &&a;
+  print(**w);
+  print!(" ");
+  let f : &&i64 = &first(&a);
+  print(**f);
+  print!(" ");
+  let mut b : i64 = 1i64;
+  let m : &&mut i64 = &&mut b;
+  **m = 7i64;
+  print(b);
+  print!(" ");
+  let t : &i64 = &(a + 1i64);
+  print(*t);
+  return 0;
+}

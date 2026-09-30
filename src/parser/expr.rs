@@ -763,6 +763,19 @@ impl<'a> Parser<'a> {
                 is_mut,
                 span: Span::default(),
             }));
+        } else if self.match_token(&TokenType::AndAnd) {
+            // `&&x` borrows a borrow; the lexer made the two `&`s one token.
+            let is_mut = self.match_token(&TokenType::Mut);
+            let inner = self.parse_primary_expr()?;
+            return Ok(Expr::Borrow(BorrowExpr {
+                expr: Box::new(Expr::Borrow(BorrowExpr {
+                    expr: Box::new(inner),
+                    is_mut,
+                    span: Span::default(),
+                })),
+                is_mut: false,
+                span: Span::default(),
+            }));
         } else if self.check(&TokenType::Star) {
             // The `*` token, so a diagnostic about the dereference points at it.
             let star_span = crate::syntax::Span {

@@ -136,6 +136,42 @@ impl<'c> LowerToMelior<'c> for IdentifierExpr {
     }
 }
 
+/// The aligned data pointer of a scalar memref, as a bare `!llvm.ptr`.
+fn memref_data_pointer<'c>(
+    gen: &MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+    val: Value<'c, 'c>,
+) -> Result<Value<'c, 'c>, LowerError> {
+    let idx_ty = Type::index(gen.context);
+    let raw_idx = block
+        .append_operation(
+            OperationBuilder::new("memref.extract_aligned_pointer_as_index", gen.loc())
+                .add_operands(&[val])
+                .add_results(&[idx_ty])
+                .build()?,
+        )
+        .result(0)?
+        .into();
+    let raw_i64 = block
+        .append_operation(
+            OperationBuilder::new("arith.index_cast", gen.loc())
+                .add_operands(&[raw_idx])
+                .add_results(&[gen.i64_ty])
+                .build()?,
+        )
+        .result(0)?
+        .into();
+    Ok(block
+        .append_operation(
+            OperationBuilder::new("llvm.inttoptr", gen.loc())
+                .add_operands(&[raw_i64])
+                .add_results(&[gen.ptr_ty])
+                .build()?,
+        )
+        .result(0)?
+        .into())
+}
+
 impl<'c> LowerToMelior<'c> for BorrowExpr {
     type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
     fn lower(
@@ -180,38 +216,7 @@ impl<'c> LowerToMelior<'c> for BorrowExpr {
                     let ptr_val = if is_bare_ptr {
                         val
                     } else {
-                        let idx_ty = Type::index(gen.context);
-                        let raw_idx = block
-                            .append_operation(
-                                OperationBuilder::new(
-                                    "memref.extract_aligned_pointer_as_index",
-                                    gen.loc(),
-                                )
-                                .add_operands(&[val])
-                                .add_results(&[idx_ty])
-                                .build()?,
-                            )
-                            .result(0)?
-                            .into();
-                        let i64_ty = gen.i64_ty;
-                        let raw_i64 = block
-                            .append_operation(
-                                OperationBuilder::new("arith.index_cast", gen.loc())
-                                    .add_operands(&[raw_idx])
-                                    .add_results(&[i64_ty])
-                                    .build()?,
-                            )
-                            .result(0)?
-                            .into();
-                        block
-                            .append_operation(
-                                OperationBuilder::new("llvm.inttoptr", gen.loc())
-                                    .add_operands(&[raw_i64])
-                                    .add_results(&[ptr_ty])
-                                    .build()?,
-                            )
-                            .result(0)?
-                            .into()
+                        memref_data_pointer(gen, block, val)?
                     };
                     let i32_ty = gen.i32_ty;
                     let c1 = block
@@ -262,12 +267,24 @@ impl<'c> LowerToMelior<'c> for BorrowExpr {
         let (val, ty, block) = gen.generate_expr(expr, block)?;
         gen.is_lvalue_context = prev_lvalue;
         let ptr_ty = gen.ptr_ty;
-        if ty == ptr_ty {
+        // A place lowered to its address. A value that is itself a pointer, `&a` in `&(&a)`,
+        // gets a slot below like any other value, or the outer `&` would be lost.
+        if ty == ptr_ty && is_place {
             return Ok((val, ptr_ty, block));
         }
         if ty.to_string().starts_with("memref<memref<") {
             return Ok((val, ty, block));
         }
+        // `&(&mut b)`: the inner `&mut` of a local is that local's scalar memref. Keep only its
+        // data pointer, as `&r` does above, so `**` reads through plain pointers.
+        let (val, ty) = if matches!(&**expr, Expr::Borrow(_))
+            && ty.to_string().starts_with("memref<")
+            && !ty.to_string().contains('x')
+        {
+            (memref_data_pointer(gen, block, val)?, ptr_ty)
+        } else {
+            (val, ty)
+        };
         if gen.is_memref(&ty) {
             // Allocate a pointer to the memref
             let alloca_op = block.append_operation(
