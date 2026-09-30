@@ -1,0 +1,48 @@
+//===- for_loop_over_a_reference_to_a_vec.vx - Vx Compiler -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `for x in &v` reads each element through `v.iter()`, and `for x in &mut v` changes each
+// one through `v.iter_mut()`, as in Rust. A parameter that is a reference to a `Vec` works
+// the same way. `v` can still be used after both loops.
+//
+// Until a write through a `&` is refused (#897), the output alone cannot tell `iter()` from
+// `iter_mut()`, so the calls are checked too: `total`'s loop, then `main`'s two.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: call @ref$const$Vec$i64$iter$i64
+// CHECK: call @Vec$i64$iter$i64
+// CHECK: call @Vec$i64$iter_mut$i64
+// EXPECT: 42 420 2
+import core::iter;
+import std::vec;
+
+fn total(v : &Vec<i64>) -> i64 {
+  let mut s = 0i64;
+  for x in v {
+    s = s + x;
+  }
+  return s;
+}
+
+fn main() -> i32 {
+  let mut v = Vec<i64>::new();
+  v.push(40i64);
+  v.push(2i64);
+  let mut s = 0i64;
+  for x in &v {
+    s = s + x;
+  }
+  print(s);
+  print!(" ");
+  for x in &mut v {
+    *x = *x * 10i64;
+  }
+  print(total(&v));
+  print!(" ");
+  print(v.len());
+  return 0;
+}
