@@ -1,0 +1,41 @@
+//===- powi.vx - Vx Compiler --------------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `f64::powi` from `core::num`, summed over 10^8 pairs: x just above 1, n from -20 to 20.
+// powi.cpp computes the same sum three ways in C++.
+import core::num;
+import std::time;
+
+fn kernel(n_items : i32, seed : i32) -> f64 {
+  let mut acc : f64 = 0.0;
+  for i in 0..n_items {
+    let x : f64 = 1.0 + (((i + seed) & 1023) as f64) * 0.000001;
+    let n : i32 = (i % 41) - 20;
+    acc += x.powi(n);
+  }
+  return acc;
+}
+
+fn main() -> i32 {
+  let n_items : i32 = 100000000;
+  let mut best : f32 = 1000000.0;
+  let mut total : f64 = 0.0;
+  for rep in 0..5 {
+    let t0 = now();
+    let r = kernel(n_items, rep);
+    let dt = now() - t0;
+    total += r;
+    if dt < best {
+      best = dt;
+    }
+  }
+  unsafe {
+    bench_report("powi/core_num", "seconds", best);
+    bench_report("powi/core_num", "result", total as f32);
+  }
+  return 0;
+}
