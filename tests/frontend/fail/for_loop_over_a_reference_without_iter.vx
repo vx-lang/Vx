@@ -1,0 +1,35 @@
+//===- for_loop_over_a_reference_without_iter.vx - Vx Compiler ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// `for x in &b` calls `b.iter()`, and `Bag` has no such method, so the loop is refused.
+// The same through a variable that holds the reference.
+// CHECK: Error[E3043] at 24:13: a `for` loop over a reference to Bag calls its `iter()` method, and Bag has none
+// CHECK-NEXT: Error[E3043] at 31:12: a `for` loop over a reference to Bag calls its `iter_mut()` method, and Bag has none
+
+struct Bag {
+  n : i64,
+}
+
+fn main() -> i32 {
+  let mut b = Bag {
+    n : 3i64
+  };
+  let mut s = 0i64;
+  for x in &b {
+    s = s + 1i64;
+  }
+  let mut c = Bag {
+    n : 4i64
+  };
+  let r = &mut c;
+  for x in r {
+    s = s + 1i64;
+  }
+  return 0;
+}

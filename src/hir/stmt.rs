@@ -301,6 +301,31 @@ impl<'a> TypeChecker<'a> {
 
     /// Check a `for` loop: type the iterable, bind the induction variable's element type, prove
     /// loop invariants on entry, and check the body.
+    fn iter_method_name(is_mut: bool) -> &'static str {
+        if is_mut {
+            "iter_mut"
+        } else {
+            "iter"
+        }
+    }
+
+    fn has_iter_method(&mut self, collection: &Type, method: &str) -> bool {
+        matches!(collection, Type::GenericInstance(..) | Type::Struct(..))
+            && self
+                .resolve_method_in_impls(collection, &method.into(), &mut HashMap::new())
+                .is_some()
+    }
+
+    fn method_call_on(base: Expr, method: &str, span: syntax::Span) -> Expr {
+        Expr::MethodCall(syntax::expr::MethodCallExpr {
+            base: Box::new(base),
+            method_name: method.into(),
+            type_args: None,
+            args: vec![],
+            span,
+        })
+    }
+
     fn check_for_loop_stmt(&mut self, floop: &mut ForLoopStmt, consume: bool, return_type: &Type) {
         let ForLoopStmt {
             iter,
@@ -327,6 +352,17 @@ impl<'a> TypeChecker<'a> {
                 ),
                 _ => false,
             };
+        // `for x in &c` reads the items through `c.iter()`, and `for x in &mut c` changes them
+        // through `c.iter_mut()`, as Rust's collections do. Rewritten before `&c` is checked,
+        // so the only borrow of `c` is the method call's, as when `c.iter()` is written.
+        if let Expr::Borrow(b) = &**iterable {
+            let method = Self::iter_method_name(b.is_mut);
+            let collection = self.check_expr_type_probe(&b.expr);
+            if self.has_iter_method(&collection, method) {
+                let span = iterable.span();
+                **iterable = Self::method_call_on((*b.expr).clone(), method, span);
+            }
+        }
         let mut iterable_ty = self.check_expr_type_flag(iterable, consume && !defers_consume);
 
         // A value that is not an iterator but can be turned into one, as a `Vec` can: the
@@ -346,24 +382,29 @@ impl<'a> TypeChecker<'a> {
             });
             iterable_ty = self.check_expr_type_flag(iterable, consume && !defers_consume);
         }
-        // Over a reference to a collection Rust hands out references to the items, which
-        // no iterator here does yet (#808). Refused rather than left to crash codegen.
-        if let Type::Borrow { inner, .. } = &iterable_ty {
-            if matches!(**inner, Type::GenericInstance(..) | Type::Struct(..)) && !self.speculating
-            {
-                self.errors.error_with_code(
-                    crate::diagnostic::DiagnosticCode::E3043,
-                    format!(
-                        "a `for` loop cannot go over a reference to {inner} yet; write \
-                         `for x in v.iter()` to read the items, or `for x in v` to consume `v`"
-                    ),
-                    Some(crate::diagnostic::SourceSpan::from_ast_span(
-                        &match &**iterable {
-                            Expr::Borrow(b) => b.expr.span(),
-                            other => other.span(),
-                        },
-                    )),
-                );
+        // The same for a variable that holds a reference to a collection.
+        if let Type::Borrow { inner, is_mut, .. } = iterable_ty.clone() {
+            if matches!(*inner, Type::GenericInstance(..) | Type::Struct(..)) {
+                let method = Self::iter_method_name(is_mut);
+                if self.has_iter_method(&inner, method) {
+                    let span = iterable.span();
+                    **iterable = Self::method_call_on((**iterable).clone(), method, span);
+                    iterable_ty = self.check_expr_type_flag(iterable, false);
+                } else if !self.speculating {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E3043,
+                        format!(
+                            "a `for` loop over a reference to {inner} calls its `{method}()` \
+                             method, and {inner} has none"
+                        ),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(
+                            &match &**iterable {
+                                Expr::Borrow(b) => b.expr.span(),
+                                other => other.span(),
+                            },
+                        )),
+                    );
+                }
             }
         }
         self.push_releasing_scope();

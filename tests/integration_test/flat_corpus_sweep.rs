@@ -60,6 +60,9 @@ const KNOWN_DECLINES: &[&str] = &[
     "backend/pass/vec_leaves_iter_names_free.vx",
     "backend/pass/vec_iter_hands_out_references.vx",
     "backend/pass/write_through_a_mutable_reference.vx",
+    "backend/pass/for_loop_over_a_reference_to_a_vec.vx",
+    // "A borrow of something that is not a tensor": the flat path does not model `&(&a)`.
+    "backend/pass/borrow_of_a_borrow.vx",
     "backend/pass/core_iter_zip.vx",
     "backend/pass/core_iter_extend.vx",
     "backend/pass/core_iter_exact_size.vx",
