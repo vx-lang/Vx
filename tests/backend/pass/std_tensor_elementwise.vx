@@ -1,0 +1,174 @@
+//===- std_tensor_elementwise.vx - Vx Compiler --------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The element-wise operations of `std::tensor` over 1-D tensors of f64 and f32, at lengths
+// 1, 37 and 100: on both sides of the vector width, and with a remainder after it. For each
+// operation the test prints the sum of the result, then its first and last elements.
+// `map_inplace` is in std_tensor_map_inplace.vx, since the flat path declines a closure call.
+//
+// The inputs are multiples of 0.25, powers of two for the divisor and perfect squares for
+// the square root, so every result is exact. The expected values were computed in Python.
+//
+// EXPECT: -15.25 -15.25 -15.25 -9.75 -9.75 -9.75 34.375 34.375 34.375 -50 -50 -50 -11 -11 -11 25 25 25 -13.875 -13.875 -13.875 12.5 12.5 12.5 0 0 0 -3 -3 -3 -3.75 -15.25 -9.25 -13.25 -9.75 -6.25 35.3125 34.375 11.625 -3.5 -50 -15.5 47 -11 -6.25 17 25 15.5 -6.125 -13.875 -8.5 238 12.5 7.75 105.5 0 5 -4 -3 -3 -0.25 -15.25 -6.5 -6.75 -9.75 -5 -25.1875 34.375 4.3125 32.6875 -50 -1.4375 146.5 -11 -4.25 7 25 11.5 -1.875 -13.875 -6.125 634 12.5 5.75 291 0 4 -3 -3 -3 | -15.25 -15.25 -15.25 -9.75 -9.75 -9.75 34.375 34.375 34.375 -50 -50 -50 -11 -11 -11 25 25 25 -13.875 -13.875 -13.875 12.5 12.5 12.5 0 0 0 -3 -3 -3 -3.75 -15.25 -9.25 -13.25 -9.75 -6.25 35.3125 34.375 11.625 -3.5 -50 -15.5 47 -11 -6.25 17 25 15.5 -6.125 -13.875 -8.5 238 12.5 7.75 105.5 0 5 -4 -3 -3 -0.25 -15.25 -6.5 -6.75 -9.75 -5 -25.1875 34.375 4.3125 32.6875 -50 -1.4375 146.5 -11 -4.25 7 25 11.5 -1.875 -13.875 -6.125 634 12.5 5.75 291 0 4 -3 -3 -3 |
+import core::num;
+import std::tensor;
+
+fn fill_f64(n : i32, which : i32) -> Tensor<f64, [?]> {
+  let mut v = Tensor<f64>([n]);
+  for i in 0..n {
+    if which == 0 {
+      v[i] = ((((i * 37) % 101) - 50) as f64) * 0.25;
+    }
+    if which == 1 {
+      v[i] = ((((i * 11) % 23) - 11) as f64) * 0.25;
+    }
+    if which == 2 {
+      let two : f64 = 2.0;
+      v[i] = two.powi((i % 5) - 2);
+    }
+    if which == 3 {
+      let h : f64 = ((i % 13) as f64) * 0.5;
+      v[i] = h * h;
+    }
+  }
+  return v;
+}
+
+// The sum of the elements, then the first and the last.
+fn show_f64(v : &Tensor<f64, [?]>) -> i32 {
+  let mut s : f64 = 0.0;
+  for i in 0..v.len() {
+    s = s + v[i];
+  }
+  print(s);
+  print!(" ");
+  print(v[0]);
+  print!(" ");
+  print(v[v.len() - 1]);
+  print!(" ");
+  return 0;
+}
+
+fn run_f64(n : i32) -> i32 {
+  let b = fill_f64(n, 1);
+  let p = fill_f64(n, 2);
+  let mut y1 = fill_f64(n, 0);
+  y1.add_assign(&b);
+  show_f64(&y1);
+  let mut y2 = fill_f64(n, 0);
+  y2.sub_assign(&b);
+  show_f64(&y2);
+  let mut y3 = fill_f64(n, 0);
+  y3.mul_assign(&b);
+  show_f64(&y3);
+  let mut y4 = fill_f64(n, 0);
+  y4.div_assign(&p);
+  show_f64(&y4);
+  let mut y5 = fill_f64(n, 0);
+  y5.add_scalar(1.5);
+  show_f64(&y5);
+  let mut y6 = fill_f64(n, 0);
+  y6.scale(-2.0);
+  show_f64(&y6);
+  let mut y7 = fill_f64(n, 0);
+  y7.scaled_add(0.5, &b);
+  show_f64(&y7);
+  let mut y9 = fill_f64(n, 0);
+  y9.abs_inplace();
+  show_f64(&y9);
+  let mut y10 = fill_f64(n, 3);
+  y10.sqrt_inplace();
+  show_f64(&y10);
+  let mut y11 = fill_f64(n, 0);
+  y11.clamp_inplace(-3.0, 3.0);
+  show_f64(&y11);
+  return 0;
+}
+
+fn fill_f32(n : i32, which : i32) -> Tensor<f32, [?]> {
+  let mut v = Tensor<f32>([n]);
+  for i in 0..n {
+    if which == 0 {
+      v[i] = ((((i * 37) % 101) - 50) as f32) * 0.25;
+    }
+    if which == 1 {
+      v[i] = ((((i * 11) % 23) - 11) as f32) * 0.25;
+    }
+    if which == 2 {
+      let two : f32 = 2.0;
+      v[i] = two.powi((i % 5) - 2);
+    }
+    if which == 3 {
+      let h : f32 = ((i % 13) as f32) * 0.5;
+      v[i] = h * h;
+    }
+  }
+  return v;
+}
+
+// The sum of the elements, then the first and the last.
+fn show_f32(v : &Tensor<f32, [?]>) -> i32 {
+  let mut s : f32 = 0.0;
+  for i in 0..v.len() {
+    s = s + v[i];
+  }
+  print(s);
+  print!(" ");
+  print(v[0]);
+  print!(" ");
+  print(v[v.len() - 1]);
+  print!(" ");
+  return 0;
+}
+
+fn run_f32(n : i32) -> i32 {
+  let b = fill_f32(n, 1);
+  let p = fill_f32(n, 2);
+  let mut y1 = fill_f32(n, 0);
+  y1.add_assign(&b);
+  show_f32(&y1);
+  let mut y2 = fill_f32(n, 0);
+  y2.sub_assign(&b);
+  show_f32(&y2);
+  let mut y3 = fill_f32(n, 0);
+  y3.mul_assign(&b);
+  show_f32(&y3);
+  let mut y4 = fill_f32(n, 0);
+  y4.div_assign(&p);
+  show_f32(&y4);
+  let mut y5 = fill_f32(n, 0);
+  y5.add_scalar(1.5);
+  show_f32(&y5);
+  let mut y6 = fill_f32(n, 0);
+  y6.scale(-2.0);
+  show_f32(&y6);
+  let mut y7 = fill_f32(n, 0);
+  y7.scaled_add(0.5, &b);
+  show_f32(&y7);
+  let mut y9 = fill_f32(n, 0);
+  y9.abs_inplace();
+  show_f32(&y9);
+  let mut y10 = fill_f32(n, 3);
+  y10.sqrt_inplace();
+  show_f32(&y10);
+  let mut y11 = fill_f32(n, 0);
+  y11.clamp_inplace(-3.0, 3.0);
+  show_f32(&y11);
+  return 0;
+}
+
+fn main() -> i32 {
+  run_f64(1);
+  run_f64(37);
+  run_f64(100);
+  print!("| ");
+  run_f32(1);
+  run_f32(37);
+  run_f32(100);
+  print!("| ");
+  return 0;
+}

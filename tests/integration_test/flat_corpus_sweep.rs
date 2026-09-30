@@ -124,6 +124,10 @@ const KNOWN_DECLINES: &[&str] = &[
     // `min_by` over a struct: the flat path declines it as "an indirect callee returning a
     // non-scalar". The answers come from the AST path.
     "backend/pass/core_cmp_ties_and_keys.vx",
+    // `map_inplace` calls the closure it is given, reading the function and its environment
+    // out of the closure value, which the flat path does not load. The answers come from the
+    // AST path.
+    "backend/pass/std_tensor_map_inplace.vx",
     "frontend/pass/closure_fat_ptr.vx",
     "frontend/pass/control_flow_rigorous.vx",
     // The `vxc -j` fallback fixture: a program the flat path declines, chosen so the parallel

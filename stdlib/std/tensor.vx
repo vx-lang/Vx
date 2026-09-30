@@ -7,6 +7,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+import core::num;
+
 /// A floating-point element type, the only kind these tensor methods are written for.
 trait Float {}
 
@@ -14,6 +16,104 @@ impl Float for f16 {}
 impl Float for bf16 {}
 impl Float for f32 {}
 impl Float for f64 {}
+
+/// Stamps the element-wise operations over a 1-D tensor of one float width. Each changes
+/// the tensor in place, so a chain of them allocates nothing. They are plain loops: with no
+/// order to relax, the compiler turns them into vector code as they are. The names are
+/// ndarray's, Rust's tensor crate, and the `_assign` ones stand in for `+=` and its kin,
+/// which Vx cannot overload yet.
+macro_rules stamp_tensor_elementwise {
+  ($t : ident) => {
+    impl Tensor<$t, [?]> {
+      /// Adds `other` to this tensor, element by element. Refused for different lengths.
+      fn add_assign(self : &mut Tensor<$t, [?]>, other : &Tensor<$t, [?]>) -> void {
+        assert(self.len() == other.len(), "add_assign needs two tensors of the same length");
+        for i in 0..self.len() {
+          self[i] = self[i] + other[i];
+        }
+      }
+
+      /// Subtracts `other` from this tensor, element by element.
+      fn sub_assign(self : &mut Tensor<$t, [?]>, other : &Tensor<$t, [?]>) -> void {
+        assert(self.len() == other.len(), "sub_assign needs two tensors of the same length");
+        for i in 0..self.len() {
+          self[i] = self[i] - other[i];
+        }
+      }
+
+      /// Multiplies this tensor by `other`, element by element.
+      fn mul_assign(self : &mut Tensor<$t, [?]>, other : &Tensor<$t, [?]>) -> void {
+        assert(self.len() == other.len(), "mul_assign needs two tensors of the same length");
+        for i in 0..self.len() {
+          self[i] = self[i] * other[i];
+        }
+      }
+
+      /// Divides this tensor by `other`, element by element.
+      fn div_assign(self : &mut Tensor<$t, [?]>, other : &Tensor<$t, [?]>) -> void {
+        assert(self.len() == other.len(), "div_assign needs two tensors of the same length");
+        for i in 0..self.len() {
+          self[i] = self[i] / other[i];
+        }
+      }
+
+      /// Adds `a` to every element.
+      fn add_scalar(self : &mut Tensor<$t, [?]>, a : $t) -> void {
+        for i in 0..self.len() {
+          self[i] = self[i] + a;
+        }
+      }
+
+      /// Multiplies every element by `a`.
+      fn scale(self : &mut Tensor<$t, [?]>, a : $t) -> void {
+        for i in 0..self.len() {
+          self[i] = self[i] * a;
+        }
+      }
+
+      /// Adds `a` times `x` to this tensor: BLAS's `axpy`. Refused for different lengths.
+      fn scaled_add(self : &mut Tensor<$t, [?]>, a : $t, x : &Tensor<$t, [?]>) -> void {
+        assert(self.len() == x.len(), "scaled_add needs two tensors of the same length");
+        for i in 0..self.len() {
+          self[i] = self[i] + a * x[i];
+        }
+      }
+
+      /// Replaces every element by `f` of it. A call per element, so the named operations
+      /// below are faster where one fits.
+      fn map_inplace(self : &mut Tensor<$t, [?]>, f : Closure1<$t, $t>) -> void {
+        let p = f.func;
+        for i in 0..self.len() {
+          self[i] = p(f.env, self[i]);
+        }
+      }
+
+      /// Replaces every element by its absolute value.
+      fn abs_inplace(self : &mut Tensor<$t, [?]>) -> void {
+        for i in 0..self.len() {
+          self[i] = self[i].abs();
+        }
+      }
+
+      /// Replaces every element by its square root.
+      fn sqrt_inplace(self : &mut Tensor<$t, [?]>) -> void {
+        for i in 0..self.len() {
+          self[i] = self[i].sqrt();
+        }
+      }
+
+      /// Holds every element between `lo` and `hi`, as `clamp` on a number does.
+      fn clamp_inplace(self : &mut Tensor<$t, [?]>, lo : $t, hi : $t) -> void {
+        for i in 0..self.len() {
+          self[i] = self[i].clamp(lo, hi);
+        }
+      }
+    }
+  };
+}
+
+stamp_tensor_elementwise!(f32);
+stamp_tensor_elementwise!(f64);
 
 impl<T : Float> Tensor<T, [?, ?]> {
   /// A 1-by-`d1` tensor holding a copy of `d1` elements read from `ptr`.
