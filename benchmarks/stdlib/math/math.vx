@@ -1,0 +1,365 @@
+//===- math.vx - Vx Compiler --------------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Every float method of `core::num` that computes a value, at f32 and f64: the sum of
+// the method over 10^6 inputs spread evenly over a range where it is defined. math.cpp
+// sums the `<cmath>` counterpart over the same inputs.
+//
+// The two macros stamp a kernel and a function that runs it and reports; the table at
+// the bottom lists the methods and their ranges. `y` is the second operand, spread over
+// its own range in another order.
+import core::num;
+import std::time;
+
+macro_rules unary_bench {
+  ($kernel : ident, $run : ident, $t : ident, $lo : expr, $hi : expr, $method : ident, $label : expr) => {
+    fn $kernel(n : i32, seed : i32) -> $t {
+      let mut acc : $t = 0.0;
+      let lo : $t = $lo;
+      let step : $t = ($hi - $lo) / 1024.0;
+      for i in 0..n {
+        let x : $t = lo + (((i + seed) & 1023) as $t) * step;
+        acc += x.$method();
+      }
+      return acc;
+    }
+
+    fn $run() -> i32 {
+      let mut best : f32 = 1000.0;
+      let mut total : f64 = 0.0;
+      for rep in 0..5 {
+        let t0 = now();
+        let r = $kernel(1000000, rep);
+        let dt = now() - t0;
+        total += r as f64;
+        if dt < best {
+          best = dt;
+        }
+      }
+      unsafe {
+        bench_report($label, "seconds", best);
+        bench_report($label, "result", total as f32);
+      }
+      return 0;
+    }
+  };
+}
+
+macro_rules binary_bench {
+  ($kernel : ident, $run : ident, $t : ident, $lo : expr, $hi : expr, $ylo : expr, $yhi : expr, $method : ident, $label : expr) => {
+    fn $kernel(n : i32, seed : i32) -> $t {
+      let mut acc : $t = 0.0;
+      let lo : $t = $lo;
+      let step : $t = ($hi - $lo) / 1024.0;
+      let ylo : $t = $ylo;
+      let ystep : $t = ($yhi - $ylo) / 1024.0;
+      for i in 0..n {
+        let x : $t = lo + (((i + seed) & 1023) as $t) * step;
+        let y : $t = ylo + (((i * 7 + seed) & 1023) as $t) * ystep;
+        acc += x.$method(y);
+      }
+      return acc;
+    }
+
+    fn $run() -> i32 {
+      let mut best : f32 = 1000.0;
+      let mut total : f64 = 0.0;
+      for rep in 0..5 {
+        let t0 = now();
+        let r = $kernel(1000000, rep);
+        let dt = now() - t0;
+        total += r as f64;
+        if dt < best {
+          best = dt;
+        }
+      }
+      unsafe {
+        bench_report($label, "seconds", best);
+        bench_report($label, "result", total as f32);
+      }
+      return 0;
+    }
+  };
+}
+
+// `mul_add` takes two operands and `clamp` two bounds, so they are written out here, in the
+// shape the macros produce: `x.mul_add(y, x)` and `x.clamp(-1.0, 1.0)`.
+
+fn mul_add_f32(n : i32, seed : i32) -> f32 {
+  let mut acc : f32 = 0.0;
+  let lo : f32 = -10.0;
+  let step : f32 = (10.0 - -10.0) / 1024.0;
+  let ylo : f32 = -10.0;
+  let ystep : f32 = (10.0 - -10.0) / 1024.0;
+  for i in 0..n {
+    let x : f32 = lo + (((i + seed) & 1023) as f32) * step;
+    let y : f32 = ylo + (((i * 7 + seed) & 1023) as f32) * ystep;
+    acc += x.mul_add(y, x);
+  }
+  return acc;
+}
+
+fn clamp_f32(n : i32, seed : i32) -> f32 {
+  let mut acc : f32 = 0.0;
+  let lo : f32 = -10.0;
+  let step : f32 = (10.0 - -10.0) / 1024.0;
+  for i in 0..n {
+    let x : f32 = lo + (((i + seed) & 1023) as f32) * step;
+    acc += x.clamp(-1.0, 1.0);
+  }
+  return acc;
+}
+
+fn run_mul_add_f32() -> i32 {
+  let mut best : f32 = 1000.0;
+  let mut total : f64 = 0.0;
+  for rep in 0..5 {
+    let t0 = now();
+    let r = mul_add_f32(1000000, rep);
+    let dt = now() - t0;
+    total += r as f64;
+    if dt < best {
+      best = dt;
+    }
+  }
+  unsafe {
+    bench_report("mul_add_f32/core_num", "seconds", best);
+    bench_report("mul_add_f32/core_num", "result", total as f32);
+  }
+  return 0;
+}
+
+fn run_clamp_f32() -> i32 {
+  let mut best : f32 = 1000.0;
+  let mut total : f64 = 0.0;
+  for rep in 0..5 {
+    let t0 = now();
+    let r = clamp_f32(1000000, rep);
+    let dt = now() - t0;
+    total += r as f64;
+    if dt < best {
+      best = dt;
+    }
+  }
+  unsafe {
+    bench_report("clamp_f32/core_num", "seconds", best);
+    bench_report("clamp_f32/core_num", "result", total as f32);
+  }
+  return 0;
+}
+
+fn mul_add_f64(n : i32, seed : i32) -> f64 {
+  let mut acc : f64 = 0.0;
+  let lo : f64 = -10.0;
+  let step : f64 = (10.0 - -10.0) / 1024.0;
+  let ylo : f64 = -10.0;
+  let ystep : f64 = (10.0 - -10.0) / 1024.0;
+  for i in 0..n {
+    let x : f64 = lo + (((i + seed) & 1023) as f64) * step;
+    let y : f64 = ylo + (((i * 7 + seed) & 1023) as f64) * ystep;
+    acc += x.mul_add(y, x);
+  }
+  return acc;
+}
+
+fn clamp_f64(n : i32, seed : i32) -> f64 {
+  let mut acc : f64 = 0.0;
+  let lo : f64 = -10.0;
+  let step : f64 = (10.0 - -10.0) / 1024.0;
+  for i in 0..n {
+    let x : f64 = lo + (((i + seed) & 1023) as f64) * step;
+    acc += x.clamp(-1.0, 1.0);
+  }
+  return acc;
+}
+
+fn run_mul_add_f64() -> i32 {
+  let mut best : f32 = 1000.0;
+  let mut total : f64 = 0.0;
+  for rep in 0..5 {
+    let t0 = now();
+    let r = mul_add_f64(1000000, rep);
+    let dt = now() - t0;
+    total += r as f64;
+    if dt < best {
+      best = dt;
+    }
+  }
+  unsafe {
+    bench_report("mul_add_f64/core_num", "seconds", best);
+    bench_report("mul_add_f64/core_num", "result", total as f32);
+  }
+  return 0;
+}
+
+fn run_clamp_f64() -> i32 {
+  let mut best : f32 = 1000.0;
+  let mut total : f64 = 0.0;
+  for rep in 0..5 {
+    let t0 = now();
+    let r = clamp_f64(1000000, rep);
+    let dt = now() - t0;
+    total += r as f64;
+    if dt < best {
+      best = dt;
+    }
+  }
+  unsafe {
+    bench_report("clamp_f64/core_num", "seconds", best);
+    bench_report("clamp_f64/core_num", "result", total as f32);
+  }
+  return 0;
+}
+
+unary_bench!(sqrt_f32, run_sqrt_f32, f32, 0.5, 1000.0, sqrt, "sqrt_f32/core_num");
+unary_bench!(abs_f32, run_abs_f32, f32, -100.0, 100.0, abs, "abs_f32/core_num");
+unary_bench!(exp_f32, run_exp_f32, f32, -10.0, 10.0, exp, "exp_f32/core_num");
+unary_bench!(exp2_f32, run_exp2_f32, f32, -10.0, 10.0, exp2, "exp2_f32/core_num");
+unary_bench!(exp_m1_f32, run_exp_m1_f32, f32, -1.0, 1.0, exp_m1, "exp_m1_f32/core_num");
+unary_bench!(ln_f32, run_ln_f32, f32, 0.5, 1000.0, ln, "ln_f32/core_num");
+unary_bench!(log2_f32, run_log2_f32, f32, 0.5, 1000.0, log2, "log2_f32/core_num");
+unary_bench!(log10_f32, run_log10_f32, f32, 0.5, 1000.0, log10, "log10_f32/core_num");
+unary_bench!(ln_1p_f32, run_ln_1p_f32, f32, -0.5, 10.0, ln_1p, "ln_1p_f32/core_num");
+unary_bench!(sin_f32, run_sin_f32, f32, -3.0, 3.0, sin, "sin_f32/core_num");
+unary_bench!(cos_f32, run_cos_f32, f32, -3.0, 3.0, cos, "cos_f32/core_num");
+unary_bench!(tan_f32, run_tan_f32, f32, -1.5, 1.5, tan, "tan_f32/core_num");
+unary_bench!(asin_f32, run_asin_f32, f32, -0.99, 0.99, asin, "asin_f32/core_num");
+unary_bench!(acos_f32, run_acos_f32, f32, -0.99, 0.99, acos, "acos_f32/core_num");
+unary_bench!(atan_f32, run_atan_f32, f32, -100.0, 100.0, atan, "atan_f32/core_num");
+unary_bench!(sinh_f32, run_sinh_f32, f32, -5.0, 5.0, sinh, "sinh_f32/core_num");
+unary_bench!(cosh_f32, run_cosh_f32, f32, -5.0, 5.0, cosh, "cosh_f32/core_num");
+unary_bench!(tanh_f32, run_tanh_f32, f32, -5.0, 5.0, tanh, "tanh_f32/core_num");
+unary_bench!(floor_f32, run_floor_f32, f32, -100.0, 100.0, floor, "floor_f32/core_num");
+unary_bench!(ceil_f32, run_ceil_f32, f32, -100.0, 100.0, ceil, "ceil_f32/core_num");
+unary_bench!(round_f32, run_round_f32, f32, -100.0, 100.0, round, "round_f32/core_num");
+unary_bench!(trunc_f32, run_trunc_f32, f32, -100.0, 100.0, trunc, "trunc_f32/core_num");
+unary_bench!(fract_f32, run_fract_f32, f32, -100.0, 100.0, fract, "fract_f32/core_num");
+unary_bench!(recip_f32, run_recip_f32, f32, 0.5, 100.0, recip, "recip_f32/core_num");
+unary_bench!(signum_f32, run_signum_f32, f32, -100.0, 100.0, signum, "signum_f32/core_num");
+unary_bench!(to_degrees_f32, run_to_degrees_f32, f32, -3.0, 3.0, to_degrees, "to_degrees_f32/core_num");
+unary_bench!(to_radians_f32, run_to_radians_f32, f32, -180.0, 180.0, to_radians, "to_radians_f32/core_num");
+binary_bench!(powf_f32, run_powf_f32, f32, 0.5, 2.0, -4.0, 4.0, powf, "powf_f32/core_num");
+binary_bench!(atan2_f32, run_atan2_f32, f32, -10.0, 10.0, -10.0, 10.0, atan2, "atan2_f32/core_num");
+binary_bench!(copysign_f32, run_copysign_f32, f32, -100.0, 100.0, -1.0, 1.0, copysign, "copysign_f32/core_num");
+binary_bench!(hypot_f32, run_hypot_f32, f32, -100.0, 100.0, -100.0, 100.0, hypot, "hypot_f32/core_num");
+binary_bench!(rem_euclid_f32, run_rem_euclid_f32, f32, -100.0, 100.0, 0.5, 10.0, rem_euclid, "rem_euclid_f32/core_num");
+binary_bench!(div_euclid_f32, run_div_euclid_f32, f32, -100.0, 100.0, 0.5, 10.0, div_euclid, "div_euclid_f32/core_num");
+binary_bench!(max_f32, run_max_f32, f32, -10.0, 10.0, -10.0, 10.0, max, "max_f32/core_num");
+binary_bench!(min_f32, run_min_f32, f32, -10.0, 10.0, -10.0, 10.0, min, "min_f32/core_num");
+unary_bench!(sqrt_f64, run_sqrt_f64, f64, 0.5, 1000.0, sqrt, "sqrt_f64/core_num");
+unary_bench!(abs_f64, run_abs_f64, f64, -100.0, 100.0, abs, "abs_f64/core_num");
+unary_bench!(exp_f64, run_exp_f64, f64, -10.0, 10.0, exp, "exp_f64/core_num");
+unary_bench!(exp2_f64, run_exp2_f64, f64, -10.0, 10.0, exp2, "exp2_f64/core_num");
+unary_bench!(exp_m1_f64, run_exp_m1_f64, f64, -1.0, 1.0, exp_m1, "exp_m1_f64/core_num");
+unary_bench!(ln_f64, run_ln_f64, f64, 0.5, 1000.0, ln, "ln_f64/core_num");
+unary_bench!(log2_f64, run_log2_f64, f64, 0.5, 1000.0, log2, "log2_f64/core_num");
+unary_bench!(log10_f64, run_log10_f64, f64, 0.5, 1000.0, log10, "log10_f64/core_num");
+unary_bench!(ln_1p_f64, run_ln_1p_f64, f64, -0.5, 10.0, ln_1p, "ln_1p_f64/core_num");
+unary_bench!(sin_f64, run_sin_f64, f64, -3.0, 3.0, sin, "sin_f64/core_num");
+unary_bench!(cos_f64, run_cos_f64, f64, -3.0, 3.0, cos, "cos_f64/core_num");
+unary_bench!(tan_f64, run_tan_f64, f64, -1.5, 1.5, tan, "tan_f64/core_num");
+unary_bench!(asin_f64, run_asin_f64, f64, -0.99, 0.99, asin, "asin_f64/core_num");
+unary_bench!(acos_f64, run_acos_f64, f64, -0.99, 0.99, acos, "acos_f64/core_num");
+unary_bench!(atan_f64, run_atan_f64, f64, -100.0, 100.0, atan, "atan_f64/core_num");
+unary_bench!(sinh_f64, run_sinh_f64, f64, -5.0, 5.0, sinh, "sinh_f64/core_num");
+unary_bench!(cosh_f64, run_cosh_f64, f64, -5.0, 5.0, cosh, "cosh_f64/core_num");
+unary_bench!(tanh_f64, run_tanh_f64, f64, -5.0, 5.0, tanh, "tanh_f64/core_num");
+unary_bench!(floor_f64, run_floor_f64, f64, -100.0, 100.0, floor, "floor_f64/core_num");
+unary_bench!(ceil_f64, run_ceil_f64, f64, -100.0, 100.0, ceil, "ceil_f64/core_num");
+unary_bench!(round_f64, run_round_f64, f64, -100.0, 100.0, round, "round_f64/core_num");
+unary_bench!(trunc_f64, run_trunc_f64, f64, -100.0, 100.0, trunc, "trunc_f64/core_num");
+unary_bench!(fract_f64, run_fract_f64, f64, -100.0, 100.0, fract, "fract_f64/core_num");
+unary_bench!(recip_f64, run_recip_f64, f64, 0.5, 100.0, recip, "recip_f64/core_num");
+unary_bench!(signum_f64, run_signum_f64, f64, -100.0, 100.0, signum, "signum_f64/core_num");
+unary_bench!(to_degrees_f64, run_to_degrees_f64, f64, -3.0, 3.0, to_degrees, "to_degrees_f64/core_num");
+unary_bench!(to_radians_f64, run_to_radians_f64, f64, -180.0, 180.0, to_radians, "to_radians_f64/core_num");
+binary_bench!(powf_f64, run_powf_f64, f64, 0.5, 2.0, -4.0, 4.0, powf, "powf_f64/core_num");
+binary_bench!(atan2_f64, run_atan2_f64, f64, -10.0, 10.0, -10.0, 10.0, atan2, "atan2_f64/core_num");
+binary_bench!(copysign_f64, run_copysign_f64, f64, -100.0, 100.0, -1.0, 1.0, copysign, "copysign_f64/core_num");
+binary_bench!(hypot_f64, run_hypot_f64, f64, -100.0, 100.0, -100.0, 100.0, hypot, "hypot_f64/core_num");
+binary_bench!(rem_euclid_f64, run_rem_euclid_f64, f64, -100.0, 100.0, 0.5, 10.0, rem_euclid, "rem_euclid_f64/core_num");
+binary_bench!(div_euclid_f64, run_div_euclid_f64, f64, -100.0, 100.0, 0.5, 10.0, div_euclid, "div_euclid_f64/core_num");
+binary_bench!(max_f64, run_max_f64, f64, -10.0, 10.0, -10.0, 10.0, max, "max_f64/core_num");
+binary_bench!(min_f64, run_min_f64, f64, -10.0, 10.0, -10.0, 10.0, min, "min_f64/core_num");
+
+fn main() -> i32 {
+  run_sqrt_f32();
+  run_abs_f32();
+  run_exp_f32();
+  run_exp2_f32();
+  run_exp_m1_f32();
+  run_ln_f32();
+  run_log2_f32();
+  run_log10_f32();
+  run_ln_1p_f32();
+  run_sin_f32();
+  run_cos_f32();
+  run_tan_f32();
+  run_asin_f32();
+  run_acos_f32();
+  run_atan_f32();
+  run_sinh_f32();
+  run_cosh_f32();
+  run_tanh_f32();
+  run_floor_f32();
+  run_ceil_f32();
+  run_round_f32();
+  run_trunc_f32();
+  run_fract_f32();
+  run_recip_f32();
+  run_signum_f32();
+  run_to_degrees_f32();
+  run_to_radians_f32();
+  run_powf_f32();
+  run_atan2_f32();
+  run_copysign_f32();
+  run_hypot_f32();
+  run_rem_euclid_f32();
+  run_div_euclid_f32();
+  run_max_f32();
+  run_min_f32();
+  run_mul_add_f32();
+  run_clamp_f32();
+  run_sqrt_f64();
+  run_abs_f64();
+  run_exp_f64();
+  run_exp2_f64();
+  run_exp_m1_f64();
+  run_ln_f64();
+  run_log2_f64();
+  run_log10_f64();
+  run_ln_1p_f64();
+  run_sin_f64();
+  run_cos_f64();
+  run_tan_f64();
+  run_asin_f64();
+  run_acos_f64();
+  run_atan_f64();
+  run_sinh_f64();
+  run_cosh_f64();
+  run_tanh_f64();
+  run_floor_f64();
+  run_ceil_f64();
+  run_round_f64();
+  run_trunc_f64();
+  run_fract_f64();
+  run_recip_f64();
+  run_signum_f64();
+  run_to_degrees_f64();
+  run_to_radians_f64();
+  run_powf_f64();
+  run_atan2_f64();
+  run_copysign_f64();
+  run_hypot_f64();
+  run_rem_euclid_f64();
+  run_div_euclid_f64();
+  run_max_f64();
+  run_min_f64();
+  run_mul_add_f64();
+  run_clamp_f64();
+  return 0;
+}
