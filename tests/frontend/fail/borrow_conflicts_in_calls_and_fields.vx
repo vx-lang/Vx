@@ -1,0 +1,71 @@
+//===- borrow_conflicts_in_calls_and_fields.vx - Vx Compiler -------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// Borrow conflicts inside one call's arguments and between fields of one struct. The
+// same rules as borrow_conflicts_are_refused.vx, one conflict per function.
+
+struct Pair {
+  a : i64,
+  b : i64,
+}
+
+fn both(a : &mut i64, b : &i64) -> i32 {
+  *a = *b;
+  return 0;
+}
+
+fn two(a : &mut i64, b : &mut i64) -> i32 {
+  *a = 1i64;
+  *b = 2i64;
+  return 0;
+}
+
+// E4004: one call given `&mut x` and `&x`.
+fn mutable_and_shared_in_one_call() -> i32 {
+  let mut x : i64 = 1i64;
+  both(&mut x, &x);
+  return 0;
+}
+// E4004: one call given `&mut x` twice.
+fn two_mutable_in_one_call() -> i32 {
+  let mut x : i64 = 1i64;
+  two(&mut x, &mut x);
+  return 0;
+}
+// E4004: the same field borrowed `&mut` twice.
+fn same_field_twice() -> i32 {
+  let mut p = Pair {
+    a : 1i64, b : 2i64
+  };
+  let x = &mut p.a;
+  let y = &mut p.a;
+  *x = 3i64;
+  *y = 4i64;
+  return 0;
+}
+// E4004: a field borrowed while the whole struct is borrowed `&mut`.
+fn field_while_whole_is_mutably_borrowed() -> i32 {
+  let mut p = Pair {
+    a : 1i64, b : 2i64
+  };
+  let w = &mut p;
+  let x = &p.a;
+  print(*x);
+  w.b = 9i64;
+  return 0;
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK-DAG: Error[E4004] at 32:16: Cannot borrow 'x' because it is already borrowed as mutable.
+// CHECK-DAG: Error[E4004] at 38:15: Cannot borrow 'x' because it is already borrowed as mutable.
+// CHECK-DAG: Error[E4004] at 47:11: Cannot borrow 'p' because it is already borrowed as mutable.
+// CHECK-DAG: Error[E4004] at 58:11: Cannot borrow 'p' because it is already borrowed as mutable.
