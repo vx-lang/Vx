@@ -34,6 +34,5 @@ fn main() -> i32 {
 }
 
 // CHECK-DAG: Use of moved or consumed linear variable: cap
-// CHECK-DAG: Member access on non-struct type
 // CHECK-DAG: Closure 'f' expects 1 arguments, got 2
 // CHECK-DAG: E3001{{.*}}'my_closure_type' is declared i32 but its initializer is Closure_3

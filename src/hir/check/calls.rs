@@ -846,7 +846,11 @@ impl<'a> TypeChecker<'a> {
         }
         for (i, param_ty) in params.iter().enumerate() {
             let arg_ty = self.refine_literal_arg(&mut args[i], param_ty, &arg_types[i]);
-            if !self.is_assignable(param_ty, &arg_ty) && !self.speculating {
+            // An `Unknown` argument already has its error, a use of a moved value say.
+            if !self.is_assignable(param_ty, &arg_ty)
+                && arg_ty != Type::Unknown
+                && !self.speculating
+            {
                 self.errors.error_with_code(
                     crate::diagnostic::DiagnosticCode::E3003,
                     format!(

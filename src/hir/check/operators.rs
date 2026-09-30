@@ -427,7 +427,11 @@ impl<'a> TypeChecker<'a> {
                     return lhs_ty;
                 }
 
-                if !self.is_assignable(&lhs_ty, &rhs_ty) {
+                // An `Unknown` side already has its error, a use of a moved value say.
+                if !self.is_assignable(&lhs_ty, &rhs_ty)
+                    && lhs_ty != Type::Unknown
+                    && rhs_ty != Type::Unknown
+                {
                     self.errors.error_with_code(
                         crate::diagnostic::DiagnosticCode::E3004,
                         format!(
@@ -569,7 +573,8 @@ impl<'a> TypeChecker<'a> {
                         (Self::scalar_elem(&lhs_ty), Self::scalar_elem(&rhs_ty)),
                         (Some(a), Some(b)) if a == b
                     );
-                if !compatible {
+                // An `Unknown` side already has its error, a use of a moved value say.
+                if !compatible && lhs_ty != Type::Unknown && rhs_ty != Type::Unknown {
                     self.errors.error_with_code(
                         crate::diagnostic::DiagnosticCode::E3005,
                         format!(

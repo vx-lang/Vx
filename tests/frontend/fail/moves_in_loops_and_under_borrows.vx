@@ -117,3 +117,4 @@ fn main() -> i32 {
 // CHECK-DAG: Error[E4001] at 88:15: Use of moved or consumed linear variable: a
 // CHECK-DAG: Error[E4007] at 96:11: `a` is moved while it is borrowed, and the borrow is used after the move
 // CHECK-DAG: Error[E4008] at 105:11: this moves a value of type `S` out from behind a reference
+// CHECK: 7 error(s) emitted

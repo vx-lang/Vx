@@ -391,10 +391,14 @@ impl<'a> TypeChecker<'a> {
                         // `return p.x` after `*r = 42` (#276). Gated on `!self.speculating` like the identifier arm.
                         for b in self.borrow.live_borrows(&name) {
                             if b.is_mut && crate::hir::places::paths_may_alias(&path, &b.path) {
-                                self.errors.push(format!(
-                                    "Cannot access '{}' because it is mutably borrowed.",
-                                    name
-                                ));
+                                self.errors.error_with_code(
+                                    crate::diagnostic::DiagnosticCode::E4002,
+                                    format!(
+                                        "Cannot access '{}' because it is mutably borrowed.",
+                                        name
+                                    ),
+                                    Some(crate::diagnostic::SourceSpan::from_ast_span(&ma_span)),
+                                );
                                 break;
                             }
                         }
@@ -544,7 +548,9 @@ impl<'a> TypeChecker<'a> {
                             .to_string(),
                         Some(crate::diagnostic::SourceSpan::from_ast_span(&ma_span)),
                     );
-                } else {
+                } else if base_ty != Type::Unknown {
+                    // `Unknown` is what an error already reported leaves behind, such as a
+                    // use of a moved value; a second message about it only adds noise.
                     self.errors
                         .push("Member access on non-struct type".to_string());
                 }
@@ -756,6 +762,7 @@ impl<'a> TypeChecker<'a> {
                     // NLL: `live_borrows` sweeps dead borrows before the shared-XOR-mutable conflict
                     // check, so a borrow whose borrower is dead no longer blocks a new one (#276). This
                     // was the hand-copied sweep duplicate the R1 refactor removed.
+                    let mut conflict_reported = false;
                     for b in self.borrow.live_borrows(&name) {
                         // Split borrows: skip a record whose path is disjoint from this borrow's.
                         if !crate::hir::places::paths_may_alias(&path, &b.path) {
@@ -763,6 +770,7 @@ impl<'a> TypeChecker<'a> {
                         }
                         if b.is_mut {
                             if !self.speculating {
+                                conflict_reported = true;
                                 self.errors.error_with_code(
                                     crate::diagnostic::DiagnosticCode::E4004,
                                     format!("Cannot borrow '{}' because it is already borrowed as mutable.", name),
@@ -770,12 +778,16 @@ impl<'a> TypeChecker<'a> {
                                 );
                             }
                         } else if *is_mut && !self.speculating {
+                            conflict_reported = true;
                             self.errors.error_with_code(
                                 crate::diagnostic::DiagnosticCode::E4003,
                                 format!("Cannot borrow '{}' as mutable because it is also borrowed as immutable.", name),
                                 Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                             );
                         }
+                    }
+                    if conflict_reported {
+                        self.drop_access_error_for(&name, span);
                     }
                     if !self.speculating {
                         self.borrow.record(
@@ -1276,6 +1288,17 @@ impl<'a> TypeChecker<'a> {
     /// behind. Persist only when the reborrow outlives the call (the callee returns a reference);
     /// a value/void call borrows only for its own duration.
     #[allow(clippy::too_many_arguments)]
+    /// Drop the E4002 already reported for reading `name` on this line. A borrow conflict on
+    /// the same variable, E4003 or E4004, says the same thing more precisely.
+    fn drop_access_error_for(&mut self, name: &str, at: &crate::syntax::Span) {
+        let quoted = format!("'{name}'");
+        self.errors.inner.retain(|d| {
+            !(d.code == Some(crate::diagnostic::DiagnosticCode::E4002)
+                && d.message.contains(&quoted)
+                && d.source_span.as_ref().is_some_and(|s| s.line == at.line))
+        });
+    }
+
     pub(crate) fn track_reference_arg_borrow(
         &mut self,
         base: &str,
@@ -1290,12 +1313,14 @@ impl<'a> TypeChecker<'a> {
         }
         // NLL: `live_borrows` drops records whose borrower is no longer used past this point (the same
         // sweep the access checks run, #276) before the shared-XOR-mutable conflict check.
+        let mut mutable_conflict = false;
         for b in self.borrow.live_borrows(base) {
             // Overlapping-path conflict, shared with `check_borrow_expr` (#275 §16.2).
             if !crate::hir::places::paths_may_alias(&path, &b.path) {
                 continue;
             }
             if b.is_mut {
+                mutable_conflict = true;
                 self.errors.error_with_code(
                     crate::diagnostic::DiagnosticCode::E4004,
                     format!(
@@ -1314,6 +1339,9 @@ impl<'a> TypeChecker<'a> {
                     Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                 );
             }
+        }
+        if mutable_conflict {
+            self.drop_access_error_for(base, span);
         }
         if persist {
             self.borrow.record(

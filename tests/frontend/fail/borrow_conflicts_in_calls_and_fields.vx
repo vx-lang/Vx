@@ -69,3 +69,4 @@ fn main() -> i32 {
 // CHECK-DAG: Error[E4004] at 38:15: Cannot borrow 'x' because it is already borrowed as mutable.
 // CHECK-DAG: Error[E4004] at 47:11: Cannot borrow 'p' because it is already borrowed as mutable.
 // CHECK-DAG: Error[E4004] at 58:11: Cannot borrow 'p' because it is already borrowed as mutable.
+// CHECK: 4 error(s) emitted

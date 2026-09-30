@@ -52,3 +52,4 @@ fn main() -> i32 {
 // CHECK-DAG: Error[E4001] at 27:10: Use of moved or consumed linear variable: a
 // CHECK-DAG: Error[E4001] at 35:10: Use of moved or consumed linear variable: a
 // CHECK-DAG: Error[E4001] at 45:10: Use of moved or consumed linear variable: a
+// CHECK: 3 error(s) emitted
