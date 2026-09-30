@@ -350,6 +350,13 @@ pub enum DiagnosticCode {
     /// An assignment through a shared reference: `*r = v`, `r.f = v` or `r[i] = v` where
     /// `r` is a `&T`. A shared reference only reads; writing needs a `&mut T`.
     E4006,
+    /// A value moved while a borrow of it is still used afterwards: `let r = &a; let b = a;`
+    /// followed by a use of `r`. The borrow would point at a value that has moved away.
+    E4007,
+    /// A value moved out from behind a reference: `let b = *r;` where `r` is a reference to a
+    /// type that is not `Copy`. The reference does not own the value, so it cannot give it
+    /// away; copy or clone it instead.
+    E4008,
 
     // --- Safety Errors (E5xxx) ---
     /// Unsafe function call outside unsafe block

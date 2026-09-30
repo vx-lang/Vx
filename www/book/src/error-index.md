@@ -18,7 +18,7 @@ the test suite has one, a program that triggers it.
 - [Parser Errors](#parser-errors) — `E1001`–`E1013` (13 codes)
 - [Name Resolution Errors](#name-resolution-errors) — `E2001`–`E2007` (7 codes)
 - [Type Errors](#type-errors) — `E3001`–`E3043` (43 codes)
-- [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4006` (6 codes)
+- [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4008` (8 codes)
 - [Safety Errors](#safety-errors) — `E5001`–`E5002` (2 codes)
 - [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6028` (28 codes)
 - [Tensor/Math Errors](#tensormath-errors) — `E7001`–`E7004` (4 codes)
@@ -150,6 +150,8 @@ Raised by the borrow checker and the linear-type rules. These rule out use-after
 | [`E4004`](/errors/E4004/) | Cannot borrow (already mutably borrowed) |
 | [`E4005`](/errors/E4005/) | A value that points into this function's stack frame would outlive the function: a reference to a local, or a closure that uses one, returned (on its own or inside a struct), stored through a reference, or passed to a call that could store it there. What it points at is gone once the function returns. The same holds inside a function for a block: a variable declared outside a block cannot be given a value that points at a variable declared inside it. |
 | [`E4006`](/errors/E4006/) | An assignment through a shared reference: `*r = v`, `r.f = v` or `r[i] = v` where `r` is a `&T`. A shared reference only reads; writing needs a `&mut T`. |
+| [`E4007`](/errors/E4007/) | A value moved while a borrow of it is still used afterwards: `let r = &a; let b = a;` followed by a use of `r`. The borrow would point at a value that has moved away. |
+| [`E4008`](/errors/E4008/) | A value moved out from behind a reference: `let b = *r;` where `r` is a reference to a type that is not `Copy`. The reference does not own the value, so it cannot give it away; copy or clone it instead. |
 
 ## Safety Errors
 
@@ -220,4 +222,4 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 
 ______________________________________________________________________
 
-131 diagnostics.
+133 diagnostics.

@@ -279,6 +279,11 @@ impl<'a> Parser<'a> {
                 }))
             }
             TokenType::For => {
+                let for_span = Span {
+                    line: token_line,
+                    column: token_col,
+                    length: token_len,
+                };
                 self.advance();
                 let iter = match &self.advance().kind {
                     TokenType::Identifier(s) => s.to_string(),
@@ -301,7 +306,7 @@ impl<'a> Parser<'a> {
                     iterable: Box::new(iterable),
                     invariants,
                     body: stmts,
-                    span: Span::default(),
+                    span: for_span,
                     next_fn: None,
                 }))
             }

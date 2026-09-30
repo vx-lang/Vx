@@ -326,6 +326,18 @@ impl<'a> TypeChecker<'a> {
                             }
                         }
                         if consume && ty.is_linear() && !self.is_copy(&ty) && !self.speculating {
+                            if !self.borrow.skip_borrow_check
+                                && !self.borrow.live_borrows(name.as_ref()).is_empty()
+                            {
+                                self.errors.error_with_code(
+                                    crate::diagnostic::DiagnosticCode::E4007,
+                                    format!(
+                                        "`{name}` is moved while it is borrowed, and the borrow \
+                                         is used after the move"
+                                    ),
+                                    Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
+                                );
+                            }
                             self.consume(name.as_ref());
                         }
                         ty.clone()
@@ -1319,7 +1331,26 @@ impl<'a> TypeChecker<'a> {
     pub(crate) fn check_dereference_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
         match expr {
             Expr::Dereference(e) => {
-                let inner_ty = self.check_expr_type_flag(&mut e.expr, consume);
+                let inner_ty = self.check_expr_type_flag(&mut e.expr, false);
+                // Taking the value out of `*r` moves it, and a reference cannot give away
+                // what it points at.
+                if let Type::Borrow { inner, .. } = &inner_ty {
+                    if consume
+                        && inner.is_linear()
+                        && !self.is_copy(inner)
+                        && !self.checking_assign_lhs
+                        && !self.speculating
+                    {
+                        self.errors.error_with_code(
+                            crate::diagnostic::DiagnosticCode::E4008,
+                            format!(
+                                "this moves a value of type `{inner}` out from behind a \
+                                 reference, which does not own it; copy or clone it instead"
+                            ),
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(&e.span)),
+                        );
+                    }
+                }
                 let resolved_ty = match inner_ty.clone() {
                     Type::Pointer(t, _, _) => {
                         let verb = if self.checking_assign_lhs {
