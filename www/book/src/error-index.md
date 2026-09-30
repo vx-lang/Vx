@@ -136,7 +136,7 @@ Raised by the type checker. Vx performs no implicit numeric conversion, so many 
 | [`E3040`](/errors/E3040/) | `I::Item` where no impl for what `I` is binds an associated type named `Item`: `I` has no such bound, or the name is misspelled. |
 | [`E3041`](/errors/E3041/) | A struct field that names `I::Item`. Fields are laid out from the struct's parameters alone, so the projection is made a parameter instead, as `Map<I, F>` does with its closure. |
 | [`E3042`](/errors/E3042/) | A bound on a type parameter, `T : Name`, where no trait called `Name` is declared or imported. Usually a misspelling or a missing `import`. |
-| [`E3043`](/errors/E3043/) | A `for` loop over a reference to a collection, `for x in &v`. Rust hands out references to the items there, which no iterator here does yet: write `v.iter()` to read the items, or `for x in v` to consume the collection. |
+| [`E3043`](/errors/E3043/) | A `for` loop over a reference to a type with no method to iterate it by. The loop calls `iter()` for `for x in &c` and `iter_mut()` for `for x in &mut c`, as Rust's collections do, so the type needs the one the loop asks for. |
 
 ## Borrow/Ownership Errors
 
