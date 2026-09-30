@@ -1,0 +1,100 @@
+//===- std_tensor_reductions.vx - Vx Compiler ---------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `sum`, `dot`, `max`, `min`, `mean` and `norm` over 1-D tensors of f64 and f32, at lengths
+// on both sides of the vector widths (16 and 64 elements for f32, 8 and 32 for f64), from
+// empty to 1000.
+//
+// The elements are multiples of 0.25 with small magnitudes, so every sum and product is
+// exact whatever order the elements are added in: the reductions may reorder, and these
+// answers do not depend on it. The expected values were computed in Python. The last line
+// checks that `max` and `min` ignore a NaN.
+//
+// EXPECT: 0 0 -inf inf NaN 0 -12.5 34.375 -12.5 -12.5 -12.5 12.5 -24.25 52.75 11 -12.5 -1.6166666666666667 29.570889401571947 -24.25 52.75 11 -12.5 -1.515625 29.570889401571947 6.75 -4.1875 12.5 -12.5 0.10714285714285714 58.15012897664114 -3.75 16.8125 12.5 -12.5 -0.05859375 59.09050262097963 -5 15.875 12.5 -12.5 -0.07692307692307693 59.10372238700368 -3.5 -25.1875 12.5 -12.5 -0.035 73.16676157928543 2.5 6.625 12.5 -12.5 0.0025 230.68457902512685 | 0 0 -inf inf NaN 0 -12.5 34.375 -12.5 -12.5 -12.5 12.5 -24.25 52.75 11 -12.5 -1.6166667 29.570889 -24.25 52.75 11 -12.5 -1.515625 29.570889 6.75 -4.1875 12.5 -12.5 0.10714286 58.150127 -3.75 16.8125 12.5 -12.5 -0.05859375 59.090504 -5 15.875 12.5 -12.5 -0.07692308 59.10372 -3.5 -25.1875 12.5 -12.5 -0.035 73.16676 2.5 6.625 12.5 -12.5 0.0025 230.68459 | 3 -1
+import std::tensor;
+
+// Builds two tensors of length `n` and prints sum, dot, max, min, mean and norm.
+fn report_f64(n : i32) -> i32 {
+  let mut a = Tensor<f64>([n]);
+  let mut b = Tensor<f64>([n]);
+  for i in 0..n {
+    a[i] = ((((i * 37) % 101) - 50) as f64) * 0.25;
+    b[i] = ((((i * 11) % 23) - 11) as f64) * 0.25;
+  }
+  print(a.sum());
+  print!(" ");
+  print(a.dot(&b));
+  print!(" ");
+  print(a.max());
+  print!(" ");
+  print(a.min());
+  print!(" ");
+  print(a.mean());
+  print!(" ");
+  print(a.norm());
+  print!(" ");
+  return 0;
+}
+
+// Builds two tensors of length `n` and prints sum, dot, max, min, mean and norm.
+fn report_f32(n : i32) -> i32 {
+  let mut a = Tensor<f32>([n]);
+  let mut b = Tensor<f32>([n]);
+  for i in 0..n {
+    a[i] = ((((i * 37) % 101) - 50) as f32) * 0.25;
+    b[i] = ((((i * 11) % 23) - 11) as f32) * 0.25;
+  }
+  print(a.sum());
+  print!(" ");
+  print(a.dot(&b));
+  print!(" ");
+  print(a.max());
+  print!(" ");
+  print(a.min());
+  print!(" ");
+  print(a.mean());
+  print!(" ");
+  print(a.norm());
+  print!(" ");
+  return 0;
+}
+
+fn main() -> i32 {
+  report_f64(0);
+  report_f64(1);
+  report_f64(15);
+  report_f64(16);
+  report_f64(63);
+  report_f64(64);
+  report_f64(65);
+  report_f64(100);
+  report_f64(1000);
+  print!("| ");
+  report_f32(0);
+  report_f32(1);
+  report_f32(15);
+  report_f32(16);
+  report_f32(63);
+  report_f32(64);
+  report_f32(65);
+  report_f32(100);
+  report_f32(1000);
+  print!("| ");
+
+  // A NaN in the middle is passed over.
+  let mut c = Tensor<f64>([5]);
+  let zero : f64 = 0.0;
+  c[0] = 1.0;
+  c[1] = -1.0;
+  c[2] = zero / zero;
+  c[3] = 3.0;
+  c[4] = 2.0;
+  print(c.max());
+  print!(" ");
+  print(c.min());
+  return 0;
+}
