@@ -301,8 +301,31 @@ impl<'a> TypeChecker<'a> {
     /// A block that ends some other way is answered `false`, including one whose last
     /// statement is an `if` both of whose arms return. That is the conservative direction:
     /// the mark is kept and the program refused, rather than a moved value let through.
-    fn block_returns(stmts: &[Statement]) -> bool {
-        stmts.iter().any(|s| matches!(s, Statement::Return(_)))
+    /// The moves at the end of a branch that was just checked, when it reaches the code after
+    /// it. A branch that ends in `break` or `continue` instead hands its moves to the loop it
+    /// leaves or restarts; one that ends in `return` hands them to nobody.
+    pub(crate) fn branch_end(
+        &mut self,
+        stmts: &[Statement],
+    ) -> Option<Vec<std::collections::HashSet<String>>> {
+        let exit = stmts.iter().find_map(|s| match s {
+            Statement::Return(_) => Some(0),
+            Statement::Break(_) => Some(1),
+            Statement::Continue(_) => Some(2),
+            _ => None,
+        });
+        let marks = self.moved_snapshot();
+        let slot = match (exit, self.borrow.loop_exits.last_mut()) {
+            (None, _) => return Some(marks),
+            (Some(1), Some(l)) => &mut l.at_break,
+            (Some(2), Some(l)) => &mut l.at_continue,
+            _ => return None,
+        };
+        *slot = Some(match slot.take() {
+            Some(j) => Self::union_moved(j, marks),
+            None => marks,
+        });
+        None
     }
 
     pub(crate) fn check_if_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
@@ -331,29 +354,29 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
-        let marks_before_then = self.moved_snapshot();
+        // Each branch starts from the moves made before the `if`. Afterwards a variable is
+        // moved if a branch that reaches the code after the `if` moved it; a branch that
+        // returns or breaks does not count.
+        let marks_before = self.moved_snapshot();
         self.push_releasing_scope();
         let mut then_ty = Type::Struct("void".into(), None);
         if !self.speculating && !if_expr.then_block.is_empty() {
             then_ty = self.check_expr_block(&mut if_expr.then_block, consume);
         }
         self.pop_scope();
-        if Self::block_returns(&if_expr.then_block) {
-            self.restore_moved(marks_before_then);
-        }
+        let marks_after_then = self.branch_end(&if_expr.then_block);
+        self.restore_moved(marks_before.clone());
+        let mut marks_after_else = Some(marks_before.clone());
 
         let mut else_ty = Type::Struct("void".into(), None);
         if let Some(else_b) = if_expr.else_block.as_mut() {
             if !else_b.is_empty() {
-                let marks_before_else = self.moved_snapshot();
                 self.push_releasing_scope();
                 if !self.speculating {
                     else_ty = self.check_expr_block(else_b, consume);
                 }
                 self.pop_scope();
-                if Self::block_returns(else_b) {
-                    self.restore_moved(marks_before_else);
-                }
+                marks_after_else = self.branch_end(else_b);
 
                 if !if_expr.is_comptime && then_ty != else_ty {
                     self.errors.error_with_code(
@@ -370,6 +393,12 @@ impl<'a> TypeChecker<'a> {
             // Without else block, it evaluates to unit (represented as dummy Tensor)
             then_ty = Type::Struct("void".into(), None);
         }
+        let joined = match (marks_after_then, marks_after_else) {
+            (Some(a), Some(b)) => Self::union_moved(a, b),
+            (Some(a), None) | (None, Some(a)) => a,
+            (None, None) => marks_before,
+        };
+        self.restore_moved(joined);
 
         // If it was comptime evaluated to false, the return type should just be the else block type
         if if_expr.is_comptime {
@@ -535,7 +564,12 @@ impl<'a> TypeChecker<'a> {
                 let mut match_ty: Option<Type> = None;
                 let mut covered: Vec<crate::symbol::Symbol> = Vec::new();
                 let mut has_wildcard = false;
+                // Each arm starts from the moves made before the `match`; afterwards a
+                // variable is moved if an arm that reaches the following code moved it.
+                let marks_before = self.moved_snapshot();
+                let mut joined: Option<Vec<std::collections::HashSet<String>>> = None;
                 for arm in arms {
+                    self.restore_moved(marks_before.clone());
                     match &arm.pattern {
                         Pattern::Wildcard | Pattern::Identifier(_) => has_wildcard = true,
                         Pattern::EnumVariant(_, variant, _) => covered.push(variant.clone()),
@@ -551,6 +585,12 @@ impl<'a> TypeChecker<'a> {
                         Type::Struct("void".into(), None)
                     };
                     self.pop_scope();
+                    if let Some(after) = self.branch_end(&arm.body) {
+                        joined = Some(match joined.take() {
+                            Some(j) => Self::union_moved(j, after),
+                            None => after,
+                        });
+                    }
 
                     // An arm contributes to the match's value type only if its block
                     // ends in a tail expression (a non-semicolon `ExprStmt`). Arms that
@@ -569,6 +609,7 @@ impl<'a> TypeChecker<'a> {
                         match_ty = Some(arm_ty);
                     }
                 }
+                self.restore_moved(joined.unwrap_or(marks_before));
 
                 // Coverage. An enum scrutinee can be enumerated, so a missing variant is a fact
                 // about the match wherever it sits: the uncovered value falls through, and if

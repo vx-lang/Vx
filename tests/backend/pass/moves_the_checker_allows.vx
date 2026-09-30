@@ -1,0 +1,130 @@
+//===- moves_the_checker_allows.vx - Vx Compiler -----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Moves the checker must accept, each with its value. Each branch of an `if` and each arm of
+// a `match` may move the same value, since only one of them runs; this used to be refused.
+// Inside a loop a value may be moved just before `break`, or moved and then given a new
+// value before the next pass, and a variable declared inside the loop is fresh on every
+// pass. A value may move once the last use of its borrow is behind it, and a number is
+// copied, not moved, out of a reference.
+//
+// EXPECT: 1 2 3 6 3 10 7
+
+struct S {
+  v : i64,
+}
+
+fn take(s : S) -> i64 {
+  return s.v;
+}
+
+fn moved_in_both_branches(n : i32) -> i64 {
+  let a = S {
+    v : 1i64
+  };
+  let mut got = 0i64;
+  if n > 0 {
+    got = take(a);
+  } else {
+    got = take(a) + 100i64;
+  }
+  return got;
+}
+
+fn moved_in_each_arm(n : i32) -> i64 {
+  let a = S {
+    v : 2i64
+  };
+  let mut got = 0i64;
+  match n {
+    0 => {
+      got = take(a);
+    }
+    _ => {
+      got = take(a) + 100i64;
+    }
+  }
+  return got;
+}
+
+fn moved_then_break() -> i64 {
+  let a = S {
+    v : 3i64
+  };
+  let mut got = 0i64;
+  let mut i = 0;
+  while i < 5 {
+    if i == 2 {
+      got = take(a);
+      break;
+    }
+    i = i + 1;
+  }
+  return got;
+}
+
+fn moved_then_given_a_new_value() -> i64 {
+  let mut a = S {
+    v : 1i64
+  };
+  let mut total = 0i64;
+  let mut i = 0;
+  while i < 3 {
+    let next = a.v + 1i64;
+    total = total + take(a);
+    a = S {
+      v : next
+    };
+    i = i + 1;
+  }
+  return total;
+}
+
+fn fresh_on_every_pass() -> i64 {
+  let mut total = 0i64;
+  for i in 0..3 {
+    let a = S {
+      v : i as i64
+    };
+    total = total + take(a);
+  }
+  return total;
+}
+
+fn moved_after_the_borrow_is_done() -> i64 {
+  let a = S {
+    v : 5i64
+  };
+  let r = &a;
+  let seen = r.v;
+  let b = a;
+  return seen + take(b);
+}
+
+fn number_copied_through_a_reference() -> i64 {
+  let n : i64 = 7i64;
+  let r = &n;
+  let m : i64 = *r;
+  return m;
+}
+
+fn main() -> i32 {
+  print(moved_in_both_branches(1));
+  print!(" ");
+  print(moved_in_each_arm(0));
+  print!(" ");
+  print(moved_then_break());
+  print!(" ");
+  print(moved_then_given_a_new_value());
+  print!(" ");
+  print(fresh_on_every_pass());
+  print!(" ");
+  print(moved_after_the_borrow_is_done());
+  print!(" ");
+  print(number_copied_through_a_reference());
+  return 0;
+}

@@ -407,6 +407,7 @@ impl<'a> TypeChecker<'a> {
                 }
             }
         }
+        let outer_depth = self.scopes.len();
         self.push_releasing_scope();
 
         // If it's Range, it's I64. If it's Iterator, we extract from Option<T>
@@ -543,7 +544,10 @@ impl<'a> TypeChecker<'a> {
         let before = self.consteval_snapshot();
         let scopes = self.consteval_scopes();
 
+        let marks_before = self.moved_snapshot();
+        self.borrow.loop_exits.push(Default::default());
         self.check_block(body, return_type);
+        self.settle_loop_moves(marks_before, outer_depth, body, &loop_span);
 
         // Check invariants hold after the loop iteration (we don't strictly prove induction here, just checking at end of block)
         for inv in invariants.iter() {
@@ -566,6 +570,51 @@ impl<'a> TypeChecker<'a> {
 
     /// Check an infinite `loop`: prove invariants on entry, check the body, then re-prove them
     /// across iterations.
+    /// After a loop body: a variable from outside the loop that the body moves, on a path that
+    /// goes round again, is used after the move on the next pass (E4001). After the loop, a
+    /// variable is moved if any path out of it moved it.
+    fn settle_loop_moves(
+        &mut self,
+        marks_before: Vec<std::collections::HashSet<String>>,
+        outer_depth: usize,
+        body: &[Statement],
+        span: &syntax::Span,
+    ) {
+        let end = self.branch_end(body);
+        let exits = self.borrow.loop_exits.pop().expect("pushed by the loop");
+        let next_pass = [end.clone(), exits.at_continue.clone()]
+            .into_iter()
+            .flatten()
+            .reduce(Self::union_moved);
+        if let Some(next_pass) = next_pass {
+            let mut moved: Vec<String> = next_pass
+                .iter()
+                .zip(&marks_before)
+                .take(outer_depth)
+                .flat_map(|(after, before)| after.difference(before).cloned())
+                .collect();
+            moved.sort();
+            for name in moved {
+                if !self.speculating {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E4001,
+                        format!(
+                            "`{name}` is moved inside this loop and not given a new value \
+                             before the loop goes round again, so the next pass uses it after \
+                             the move"
+                        ),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                    );
+                }
+            }
+        }
+        let after = [end, exits.at_continue, exits.at_break]
+            .into_iter()
+            .flatten()
+            .fold(marks_before, Self::union_moved);
+        self.restore_moved(after);
+    }
+
     fn check_loop_stmt(&mut self, lp: &mut LoopStmt, return_type: &Type) {
         let LoopStmt {
             body,
@@ -573,6 +622,8 @@ impl<'a> TypeChecker<'a> {
             invariants,
         } = lp;
         let loop_span = *loop_span;
+        // Only variables declared before the loop can be used again on its next pass.
+        let outer_depth = self.scopes.len();
         self.push_releasing_scope();
 
         let prev_constraints_len = self.consteval.constraints.len();
@@ -589,7 +640,10 @@ impl<'a> TypeChecker<'a> {
         let before = self.consteval_snapshot();
         let scopes = self.consteval_scopes();
 
+        let marks_before = self.moved_snapshot();
+        self.borrow.loop_exits.push(Default::default());
         self.check_block(body, return_type);
+        self.settle_loop_moves(marks_before, outer_depth, body, &loop_span);
 
         for inv in invariants.iter() {
             if !self.prove_expr(inv) {

@@ -1,0 +1,152 @@
+//===- reduce.vx - Vx Compiler ------------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The f32 sum of a 16M-element tensor, and the dot product of two, each written two
+// ways: a plain loop, and an `mlir!` loop that keeps four 16-lane partial sums and adds
+// them in whatever order is fastest. The second is what a `sum` whose order the language
+// leaves open could compile to. reduce.cpp computes the same with the C++ library.
+import std::time;
+
+// The sum of the first `m` elements, 64 at a time. `m` must be a multiple of 64.
+fn vector_sum(a : &Tensor<f32, [?]>, m : i32) -> f32 {
+  return mlir!( inputs : (%a = a : memref<?xf32>, %m = m : i32), returns : f32, dialects : ["arith", "memref", "scf", "vector"]) {
+    %c0 = arith.constant 0 : index
+    %c16 = arith.constant 16 : index
+    %c32 = arith.constant 32 : index
+    %c48 = arith.constant 48 : index
+    %c64 = arith.constant 64 : index
+    %n = arith.index_cast %m : i32 to index
+    %z = arith.constant dense<0.0> : vector<16xf32>
+    %r:4 = scf.for %i = %c0 to %n step %c64 iter_args(%v0 = %z, %v1 = %z, %v2 = %z, %v3 = %z) -> (vector<16xf32>, vector<16xf32>, vector<16xf32>, vector<16xf32>) {
+      %i1 = arith.addi %i, %c16 : index
+      %i2 = arith.addi %i, %c32 : index
+      %i3 = arith.addi %i, %c48 : index
+      %x0 = vector.load %a[%i] : memref<?xf32>, vector<16xf32>
+      %x1 = vector.load %a[%i1] : memref<?xf32>, vector<16xf32>
+      %x2 = vector.load %a[%i2] : memref<?xf32>, vector<16xf32>
+      %x3 = vector.load %a[%i3] : memref<?xf32>, vector<16xf32>
+      %s0 = arith.addf %v0, %x0 : vector<16xf32>
+      %s1 = arith.addf %v1, %x1 : vector<16xf32>
+      %s2 = arith.addf %v2, %x2 : vector<16xf32>
+      %s3 = arith.addf %v3, %x3 : vector<16xf32>
+      scf.yield %s0, %s1, %s2, %s3 : vector<16xf32>, vector<16xf32>, vector<16xf32>, vector<16xf32>
+    }
+    %p0 = arith.addf %r#0, %r#1 : vector<16xf32>
+    %p1 = arith.addf %r#2, %r#3 : vector<16xf32>
+    %p = arith.addf %p0, %p1 : vector<16xf32>
+    %t = vector.reduction <add>, %p fastmath<reassoc> : vector<16xf32> into f32
+    macro.yield %t : f32
+  };
+}
+
+// The dot product of the first `m` elements, 64 at a time, with a fused multiply-add per
+// lane. `m` must be a multiple of 64.
+fn vector_dot(a : &Tensor<f32, [?]>, b : &Tensor<f32, [?]>, m : i32) -> f32 {
+  return mlir!( inputs : (%a = a : memref<?xf32>, %b = b : memref<?xf32>, %m = m : i32), returns : f32, dialects : ["arith", "memref", "scf", "vector"]) {
+    %c0 = arith.constant 0 : index
+    %c16 = arith.constant 16 : index
+    %c32 = arith.constant 32 : index
+    %c48 = arith.constant 48 : index
+    %c64 = arith.constant 64 : index
+    %n = arith.index_cast %m : i32 to index
+    %z = arith.constant dense<0.0> : vector<16xf32>
+    %r:4 = scf.for %i = %c0 to %n step %c64 iter_args(%v0 = %z, %v1 = %z, %v2 = %z, %v3 = %z) -> (vector<16xf32>, vector<16xf32>, vector<16xf32>, vector<16xf32>) {
+      %i1 = arith.addi %i, %c16 : index
+      %i2 = arith.addi %i, %c32 : index
+      %i3 = arith.addi %i, %c48 : index
+      %x0 = vector.load %a[%i] : memref<?xf32>, vector<16xf32>
+      %x1 = vector.load %a[%i1] : memref<?xf32>, vector<16xf32>
+      %x2 = vector.load %a[%i2] : memref<?xf32>, vector<16xf32>
+      %x3 = vector.load %a[%i3] : memref<?xf32>, vector<16xf32>
+      %y0 = vector.load %b[%i] : memref<?xf32>, vector<16xf32>
+      %y1 = vector.load %b[%i1] : memref<?xf32>, vector<16xf32>
+      %y2 = vector.load %b[%i2] : memref<?xf32>, vector<16xf32>
+      %y3 = vector.load %b[%i3] : memref<?xf32>, vector<16xf32>
+      %s0 = vector.fma %x0, %y0, %v0 : vector<16xf32>
+      %s1 = vector.fma %x1, %y1, %v1 : vector<16xf32>
+      %s2 = vector.fma %x2, %y2, %v2 : vector<16xf32>
+      %s3 = vector.fma %x3, %y3, %v3 : vector<16xf32>
+      scf.yield %s0, %s1, %s2, %s3 : vector<16xf32>, vector<16xf32>, vector<16xf32>, vector<16xf32>
+    }
+    %p0 = arith.addf %r#0, %r#1 : vector<16xf32>
+    %p1 = arith.addf %r#2, %r#3 : vector<16xf32>
+    %p = arith.addf %p0, %p1 : vector<16xf32>
+    %t = vector.reduction <add>, %p fastmath<reassoc> : vector<16xf32> into f32
+    macro.yield %t : f32
+  };
+}
+
+fn loop_sum(a : &Tensor<f32, [?]>, m : i32) -> f32 {
+  let mut s : f32 = 0.0;
+  for i in 0..m {
+    s += a[i];
+  }
+  return s;
+}
+
+fn loop_dot(a : &Tensor<f32, [?]>, b : &Tensor<f32, [?]>, m : i32) -> f32 {
+  let mut s : f32 = 0.0;
+  for i in 0..m {
+    s += a[i] * b[i];
+  }
+  return s;
+}
+
+fn main() -> i32 {
+  let n : i32 = 16777216;
+  let mut a = Tensor<f32>([n]);
+  let mut b = Tensor<f32>([n]);
+  for i in 0..n {
+    a[i] = (((i % 1000) + 1) as f32) * 0.001;
+    b[i] = ((((i * 7) % 1000) + 1) as f32) * 0.001;
+  }
+
+  // Each repetition is 64 elements shorter, so none repeats the one before it.
+  let mut best_vs : f32 = 1000.0;
+  let mut best_vd : f32 = 1000.0;
+  let mut best_ls : f32 = 1000.0;
+  let mut best_ld : f32 = 1000.0;
+  let mut total_vs : f64 = 0.0;
+  let mut total_vd : f64 = 0.0;
+  let mut total_ls : f64 = 0.0;
+  let mut total_ld : f64 = 0.0;
+  for rep in 0..20 {
+    let m : i32 = n - rep * 64;
+    let t0 = now();
+    total_vs += vector_sum(&a, m) as f64;
+    let t1 = now();
+    total_vd += vector_dot(&a, &b, m) as f64;
+    let t2 = now();
+    total_ls += loop_sum(&a, m) as f64;
+    let t3 = now();
+    total_ld += loop_dot(&a, &b, m) as f64;
+    let t4 = now();
+    if t1 - t0 < best_vs {
+      best_vs = t1 - t0;
+    }
+    if t2 - t1 < best_vd {
+      best_vd = t2 - t1;
+    }
+    if t3 - t2 < best_ls {
+      best_ls = t3 - t2;
+    }
+    if t4 - t3 < best_ld {
+      best_ld = t4 - t3;
+    }
+  }
+  unsafe {
+    bench_report("sum/vector_mlir", "seconds", best_vs);
+    bench_report("sum/vector_mlir", "result", total_vs as f32);
+    bench_report("dot/vector_mlir", "seconds", best_vd);
+    bench_report("dot/vector_mlir", "result", total_vd as f32);
+    bench_report("sum/loop", "seconds", best_ls);
+    bench_report("sum/loop", "result", total_ls as f32);
+    bench_report("dot/loop", "seconds", best_ld);
+    bench_report("dot/loop", "result", total_ld as f32);
+  }
+  return 0;
+}

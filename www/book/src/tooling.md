@@ -59,7 +59,7 @@ one. Regenerate them when you upgrade the toolchain rather than keeping them in 
 | `vx-format` | The canonical source formatter |
 | `vx-opt` | MLIR pass driver for the Vx dialect |
 | `vx-analyzer` | Language server |
-| `cargo vx-bench` | Benchmark harness that injects timing into the AST to measure real hardware execution time |
+| `cargo vx-bench` | Runs the programs in `benchmarks/manifest.txt` and collects the times they report; `cargo vx-bench compare` runs the Vx-against-C++ suite in `benchmarks/stdlib` |
 
 `vx-format` has no options worth learning: there is one canonical style, and it applies it.
 

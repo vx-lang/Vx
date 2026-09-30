@@ -40,6 +40,16 @@ pub(crate) struct BorrowCx {
     /// function; lets the return-escape analysis tell a caller-owned reference parameter apart from a
     /// local binding of the same reference type.
     pub(crate) current_params: HashMap<Symbol, Type>,
+    /// The moves at each `break` and `continue` of the loops being checked, innermost last.
+    pub(crate) loop_exits: Vec<LoopExits>,
+}
+
+/// What a loop's `break`s carry out of it and its `continue`s carry into its next pass: the
+/// moved marks, joined over every such statement.
+#[derive(Default)]
+pub(crate) struct LoopExits {
+    pub(crate) at_break: Option<Vec<HashSet<String>>>,
+    pub(crate) at_continue: Option<Vec<HashSet<String>>>,
 }
 
 impl Default for BorrowCx {
@@ -53,6 +63,7 @@ impl Default for BorrowCx {
             moved_vars: vec![HashSet::new()],
             ref_provenance: HashMap::new(),
             current_params: HashMap::new(),
+            loop_exits: Vec::new(),
         }
     }
 }
