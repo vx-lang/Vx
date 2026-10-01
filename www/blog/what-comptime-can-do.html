@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>What comptime can do in Vx</title>
+<meta name="author" content="Aditya Kumar">
+<meta name="description" content="A comptime block in Vx is ordinary Vx code that the compiler runs while it compiles. Examples: a program that folds to one number, lookup tables, a register machine run inside the compiler, structs changed through &amp;mut helpers, unit tests that run on every build, and the errors the compiler gives when a block cannot run.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+
+<meta property="og:title" content="What comptime can do in Vx">
+<meta property="og:description" content="Ordinary Vx code, run by the compiler. The answer goes into the program as a constant, and a block that cannot run is an error.">
+<meta property="og:type" content="article">
+<meta property="article:published_time" content="2026-10-01T18:00:00Z">
+<meta property="og:url" content="https://vxlang.org/blog/what-comptime-can-do.html">
+<meta property="og:image" content="https://vxlang.org/cards/blog-what-comptime-can-do.png">
+<meta property="og:image:alt" content="What comptime can do in Vx: ordinary code run by the compiler, folded into the program as a constant.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://vxlang.org/cards/blog-what-comptime-can-do.png">
+
+<link rel="alternate" type="application/atom+xml" title="Vx" href="/blog/feed.xml">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header class="nav">
+  <a class="brand" href="/">
+    <span class="mark">Vx</span>
+  </a>
+  <nav>
+    <a href="/docs/getting-started.html">Install</a>
+    <a href="/docs/tour.html">Language tour</a>
+    <a href="/docs/">Docs</a>
+    <a href="/blog/">Blog</a>
+    <a href="https://github.com/vx-lang/Vx">GitHub</a>
+  </nav>
+</header>
+
+<main>
+
+<article class="post">
+
+<h1>What <code>comptime</code> can do in Vx</h1>
+<p class="post-meta">Aditya Kumar &middot; 1 October 2026</p>
+
+<blockquote class="tldr"><strong>TL;DR</strong> — A <code>comptime</code> block runs ordinary Vx
+code inside the compiler: loops, recursion, structs, arrays and helpers that take
+<code>&amp;mut</code>. Its value goes into the program as a constant, and the block itself is
+removed. A false <code>assert</code> stops the build, and a block the compiler cannot finish is an
+error, so nothing quietly becomes run-time code. <a href="https://github.com/vx-lang/Vx/pull/858">PR #858</a> rebuilt this on one interpreter that works
+out a block's value and tracks its writes at the same time. For facts about every input, contracts
+hand the proof to the z3 theorem prover.</blockquote>
+
+<p>A <code>comptime</code> block in Vx is ordinary Vx code that the compiler runs while it compiles your program. Loops, recursion, structs, arrays, helper functions that take <code>&amp;mut</code>: all of it runs inside the compiler, and the answer goes into your program as a constant.</p>
+
+<p>Vx PR <a href="https://github.com/vx-lang/Vx/pull/858">#858</a> rebuilt this on a single interpreter. It works out the value of a block and, at the same time, tracks every write the block makes. This post shows what that makes possible. Every example below was compiled and run with <code>vxc</code> built from commit 4a6a58a3 on <code>main</code>.</p>
+
+<p>There are two forms, and two rules.</p>
+
+<pre><code><span class="k">let</span> x = <span class="k">comptime</span> { ... };   <span class="c">// the block's value becomes a constant</span>
+<span class="k">comptime</span> { <span class="f">assert</span>(...); }   <span class="c">// checked while compiling, then removed</span></code></pre>
+
+<ol>
+<li><strong>A false <code>assert</code> stops the build.</strong> It never becomes a run-time check.</li>
+<li><strong>A block the compiler cannot finish is an error.</strong> It never quietly turns into run-time code, so a block that compiled really did run.</li>
+</ol>
+
+<h2>A whole program that becomes one number</h2>
+
+<pre><code><span class="k">fn</span> <span class="f">is_prime</span>(n : <span class="t">i64</span>) -&gt; <span class="t">bool</span> {
+  <span class="k">if</span> n &lt; <span class="n">2i64</span> {
+    <span class="k">return</span> <span class="k">false</span>;
+  }
+  <span class="k">let</span> <span class="k">mut</span> d : <span class="t">i64</span> = <span class="n">2i64</span>;
+  <span class="k">while</span> d * d &lt;= n {
+    <span class="k">if</span> n % d == <span class="n">0i64</span> {
+      <span class="k">return</span> <span class="k">false</span>;
+    }
+    d = d + <span class="n">1i64</span>;
+  }
+  <span class="k">return</span> <span class="k">true</span>;
+}
+
+<span class="k">fn</span> <span class="f">count_primes_below</span>(limit : <span class="t">i64</span>) -&gt; <span class="t">i64</span> {
+  <span class="k">let</span> <span class="k">mut</span> count : <span class="t">i64</span> = <span class="n">0i64</span>;
+  <span class="k">for</span> n <span class="k">in</span> <span class="n">0i64</span>..limit {
+    <span class="k">if</span> <span class="f">is_prime</span>(n) {
+      count = count + <span class="n">1i64</span>;
+    }
+  }
+  <span class="k">return</span> count;
+}
+
+<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+  <span class="k">let</span> primes = <span class="k">comptime</span> {
+    <span class="f">count_primes_below</span>(<span class="n">10000i64</span>)
+  };
+  <span class="f">print</span>(primes);
+  <span class="k">return</span> <span class="n">0</span>;
+}</code></pre>
+
+<p>This prints <code>1229</code>. Here is <code>main</code> as the compiler generates it (<code>vxc primes.vx --action emit-mlir</code>):</p>
+
+<pre><code>func.func @main() -&gt; i32 {
+  call @vx_init_signals() : () -&gt; ()
+  %c1229_i32 = arith.constant 1229 : i32
+  %0 = call @print_i32(%c1229_i32) : (i32) -&gt; i32
+  %c0_i32 = arith.constant 0 : i32
+  return %c0_i32 : i32
+}</code></pre>
+
+<p>The compiler tested ten thousand numbers for primality. The program tests none.</p>
+
+<h2>Lookup tables, built while compiling</h2>
+
+<p>A block can produce a whole tensor, which makes lookup tables easy. This one holds the first 16 primes, found by the same <code>is_prime</code> as above:</p>
+
+<pre><code><span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+  <span class="k">let</span> table : <span class="t">Tensor</span>&lt;<span class="t">i64</span>, [<span class="n">16</span>]&gt; = <span class="k">comptime</span> {
+    <span class="k">let</span> <span class="k">mut</span> t : <span class="t">Tensor</span>&lt;<span class="t">i64</span>, [<span class="n">16</span>]&gt; = [ <span class="n">0i64</span>, <span class="n">0i64</span>, <span class="n">0i64</span>, <span class="n">0i64</span>, <span class="n">0i64</span>, <span class="n">0i64</span>, <span class="n">0i64</span>, <span class="n">0i64</span>,
+                                      <span class="n">0i64</span>, <span class="n">0i64</span>, <span class="n">0i64</span>, <span class="n">0i64</span>, <span class="n">0i64</span>, <span class="n">0i64</span>, <span class="n">0i64</span>, <span class="n">0i64</span> ];
+    <span class="k">let</span> <span class="k">mut</span> found : <span class="t">i64</span> = <span class="n">0i64</span>;
+    <span class="k">let</span> <span class="k">mut</span> n : <span class="t">i64</span> = <span class="n">2i64</span>;
+    <span class="k">while</span> found &lt; <span class="n">16i64</span> {
+      <span class="k">if</span> <span class="f">is_prime</span>(n) {
+        t[found] = n;
+        found = found + <span class="n">1i64</span>;
+      }
+      n = n + <span class="n">1i64</span>;
+    }
+    t
+  };
+  <span class="f">print</span>(table[<span class="n">15</span>]);
+  <span class="k">return</span> <span class="n">0</span>;
+}</code></pre>
+
+<p>It prints <code>53</code>. In the generated code the table is sixteen constants, <code>2</code> through <code>53</code>, stored into an array. No search runs at run time.</p>
+
+<h2>A small computer, inside the compiler</h2>
+
+<p>The code a comptime block calls is not limited to simple arithmetic. Here is a tiny register machine: a <code>loop</code> that fetches instructions from an array, decodes them, and jumps.</p>
+
+<pre><code><span class="c">// A tiny register machine. Each instruction is three numbers: opcode, a, b.</span>
+<span class="c">//   0 halt   1 set r[a] = b   2 add r[a] += r[b]   3 mul r[a] *= r[b]</span>
+<span class="c">//   4 dec r[a] -= 1           5 jump to b if r[a] != 0</span>
+<span class="k">fn</span> <span class="f">run</span>(code : <span class="t">Tensor</span>&lt;<span class="t">i64</span>, [<span class="n">18</span>]&gt;) -&gt; <span class="t">i64</span> {
+  <span class="k">let</span> <span class="k">mut</span> r : <span class="t">Tensor</span>&lt;<span class="t">i64</span>, [<span class="n">4</span>]&gt; = [ <span class="n">0i64</span>, <span class="n">0i64</span>, <span class="n">0i64</span>, <span class="n">0i64</span> ];
+  <span class="k">let</span> <span class="k">mut</span> pc : <span class="t">i64</span> = <span class="n">0i64</span>;
+  <span class="k">loop</span> {
+    <span class="k">let</span> op : <span class="t">i64</span> = code[pc];
+    <span class="k">let</span> a : <span class="t">i64</span> = code[pc + <span class="n">1i64</span>];
+    <span class="k">let</span> b : <span class="t">i64</span> = code[pc + <span class="n">2i64</span>];
+    pc = pc + <span class="n">3i64</span>;
+    <span class="k">if</span> op == <span class="n">0i64</span> {
+      <span class="k">break</span>;
+    } <span class="k">else</span> <span class="k">if</span> op == <span class="n">1i64</span> {
+      r[a] = b;
+    } <span class="k">else</span> <span class="k">if</span> op == <span class="n">2i64</span> {
+      r[a] = r[a] + r[b];
+    } <span class="k">else</span> <span class="k">if</span> op == <span class="n">3i64</span> {
+      r[a] = r[a] * r[b];
+    } <span class="k">else</span> <span class="k">if</span> op == <span class="n">4i64</span> {
+      r[a] = r[a] - <span class="n">1i64</span>;
+    } <span class="k">else</span> <span class="k">if</span> r[a] != <span class="n">0i64</span> {
+      pc = b;
+    }
+  }
+  <span class="k">return</span> r[<span class="n">0</span>];
+}
+
+<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+  <span class="k">let</span> answer = <span class="k">comptime</span> {
+    <span class="c">// r0 = 1; r1 = 10; do { r0 *= r1; r1 -= 1 } while r1 != 0</span>
+    <span class="k">let</span> factorial_10 : <span class="t">Tensor</span>&lt;<span class="t">i64</span>, [<span class="n">18</span>]&gt; = [
+      <span class="n">1i64</span>, <span class="n">0i64</span>, <span class="n">1i64</span>,
+      <span class="n">1i64</span>, <span class="n">1i64</span>, <span class="n">10i64</span>,
+      <span class="n">3i64</span>, <span class="n">0i64</span>, <span class="n">1i64</span>,
+      <span class="n">4i64</span>, <span class="n">1i64</span>, <span class="n">0i64</span>,
+      <span class="n">5i64</span>, <span class="n">1i64</span>, <span class="n">6i64</span>,
+      <span class="n">0i64</span>, <span class="n">0i64</span>, <span class="n">0i64</span>
+    ];
+    <span class="f">run</span>(factorial_10)
+  };
+  <span class="f">print</span>(answer);
+  <span class="k">return</span> <span class="n">0</span>;
+}</code></pre>
+
+<p>The compiler runs one interpreter inside another and generates a program that prints <code>3628800</code>, which is 10!. <code>main</code> contains that single constant.</p>
+
+<h2>Structs and <code>&amp;mut</code> helpers</h2>
+
+<p>Compile-time code can be written the same way as run-time code. Helpers take <code>&amp;mut</code>, change struct fields, and loop:</p>
+
+<pre><code><span class="k">struct</span> Account {
+  balance : <span class="t">i64</span>,
+  deposits : <span class="t">i64</span>,
+}
+
+<span class="k">fn</span> <span class="f">deposit</span>(acct : &amp;<span class="k">mut</span> Account, amount : <span class="t">i64</span>) -&gt; <span class="t">void</span> {
+  acct.balance = acct.balance + amount;
+  acct.deposits = acct.deposits + <span class="n">1i64</span>;
+}
+
+<span class="k">fn</span> <span class="f">add_interest</span>(acct : &amp;<span class="k">mut</span> Account, percent : <span class="t">i64</span>, years : <span class="t">i64</span>) -&gt; <span class="t">void</span> {
+  <span class="k">for</span> y <span class="k">in</span> <span class="n">0i64</span>..years {
+    acct.balance = acct.balance + acct.balance * percent / <span class="n">100i64</span>;
+  }
+}
+
+<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+  <span class="k">let</span> final_balance = <span class="k">comptime</span> {
+    <span class="k">let</span> <span class="k">mut</span> acct = Account {
+      balance : <span class="n">0i64</span>,
+      deposits : <span class="n">0i64</span>
+    };
+    <span class="f">deposit</span>(&amp;<span class="k">mut</span> acct, <span class="n">1000i64</span>);
+    <span class="f">deposit</span>(&amp;<span class="k">mut</span> acct, <span class="n">500i64</span>);
+    <span class="f">add_interest</span>(&amp;<span class="k">mut</span> acct, <span class="n">5i64</span>, <span class="n">10i64</span>);
+    acct.balance
+  };
+  <span class="f">print</span>(final_balance);
+  <span class="k">return</span> <span class="n">0</span>;
+}</code></pre>
+
+<p>It prints <code>2438</code>: 1500 at 5% for ten years, rounded down each year. Before <a href="https://github.com/vx-lang/Vx/pull/858">#858</a> the compiler refused this block. The new interpreter follows each write through each <code>&amp;mut</code>, so it can run it.</p>
+
+<h2>Tests that run in the compiler</h2>
+
+<p>A <code>comptime</code> block of asserts is a unit test that runs on every build:</p>
+
+<pre><code><span class="k">fn</span> <span class="f">gcd</span>(a : <span class="t">i64</span>, b : <span class="t">i64</span>) -&gt; <span class="t">i64</span> {
+  <span class="k">let</span> <span class="k">mut</span> x : <span class="t">i64</span> = a;
+  <span class="k">let</span> <span class="k">mut</span> y : <span class="t">i64</span> = b;
+  <span class="k">while</span> y != <span class="n">0i64</span> {
+    <span class="k">let</span> t : <span class="t">i64</span> = x % y;
+    x = y;
+    y = t;
+  }
+  <span class="k">return</span> x;
+}
+
+<span class="k">fn</span> <span class="f">pow_mod</span>(base : <span class="t">i64</span>, exp : <span class="t">i64</span>, m : <span class="t">i64</span>) -&gt; <span class="t">i64</span> {
+  <span class="k">let</span> <span class="k">mut</span> result : <span class="t">i64</span> = <span class="n">1i64</span>;
+  <span class="k">let</span> <span class="k">mut</span> b : <span class="t">i64</span> = base % m;
+  <span class="k">let</span> <span class="k">mut</span> e : <span class="t">i64</span> = exp;
+  <span class="k">while</span> e &gt; <span class="n">0i64</span> {
+    <span class="k">if</span> e % <span class="n">2i64</span> == <span class="n">1i64</span> {
+      result = result * b % m;
+    }
+    b = b * b % m;
+    e = e / <span class="n">2i64</span>;
+  }
+  <span class="k">return</span> result;
+}
+
+<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+  <span class="k">comptime</span> {
+    <span class="f">assert</span>(<span class="f">gcd</span>(<span class="n">1071i64</span>, <span class="n">462i64</span>) == <span class="n">21i64</span>, "gcd");
+    <span class="f">assert</span>(<span class="f">pow_mod</span>(<span class="n">2i64</span>, <span class="n">10i64</span>, <span class="n">1000i64</span>) == <span class="n">24i64</span>, "2^10 mod 1000");
+    <span class="f">assert</span>(<span class="f">pow_mod</span>(<span class="n">7i64</span>, <span class="n">1000002i64</span>, <span class="n">1000003i64</span>) == <span class="n">1i64</span>, "Fermat's little theorem");
+  }
+  <span class="k">return</span> <span class="n">0</span>;
+}</code></pre>
+
+<p>1000003 is prime, so Fermat's little theorem says the last line holds. Change the expected value to <code>2i64</code> and the program no longer compiles:</p>
+
+<pre class="diag"><code>Error[E8002] at 0:0: Comptime assert failed: Fermat's little theorem</code></pre>
+
+<p>The same idea scales to a real algorithm. This file checks, on every build, that <code>insertion_sort</code> returns its input in order and loses no numbers:</p>
+
+<pre><code><span class="k">fn</span> <span class="f">insertion_sort</span>&lt;const N : <span class="t">i32</span>&gt;(a : <span class="t">Tensor</span>&lt;<span class="t">i64</span>, [N]&gt;) -&gt; <span class="t">Tensor</span>&lt;<span class="t">i64</span>, [N]&gt; {
+  <span class="k">let</span> <span class="k">mut</span> w : <span class="t">Tensor</span>&lt;<span class="t">i64</span>, [N]&gt; = a;
+  <span class="k">for</span> i <span class="k">in</span> <span class="n">1</span>..N {
+    <span class="k">let</span> key : <span class="t">i64</span> = w[i];
+    <span class="k">let</span> <span class="k">mut</span> j : <span class="t">i32</span> = i - <span class="n">1</span>;
+    <span class="k">while</span> j &gt;= <span class="n">0</span> &amp;&amp; w[j] &gt; key {
+      w[j + <span class="n">1</span>] = w[j];
+      j = j - <span class="n">1</span>;
+    }
+    w[j + <span class="n">1</span>] = key;
+  }
+  <span class="k">return</span> w;
+}
+
+<span class="k">fn</span> <span class="f">is_sorted</span>&lt;const N : <span class="t">i32</span>&gt;(a : &amp;<span class="t">Tensor</span>&lt;<span class="t">i64</span>, [N]&gt;) -&gt; <span class="t">bool</span> {
+  <span class="k">for</span> i <span class="k">in</span> <span class="n">1</span>..N {
+    <span class="k">if</span> a[i - <span class="n">1</span>] &gt; a[i] {
+      <span class="k">return</span> <span class="k">false</span>;
+    }
+  }
+  <span class="k">return</span> <span class="k">true</span>;
+}
+
+<span class="c">// Two lists with the same sum and the same sum of squares almost always hold the same numbers.</span>
+<span class="k">fn</span> <span class="f">checksum</span>&lt;const N : <span class="t">i32</span>&gt;(a : &amp;<span class="t">Tensor</span>&lt;<span class="t">i64</span>, [N]&gt;) -&gt; <span class="t">i64</span> {
+  <span class="k">let</span> <span class="k">mut</span> sum : <span class="t">i64</span> = <span class="n">0i64</span>;
+  <span class="k">let</span> <span class="k">mut</span> squares : <span class="t">i64</span> = <span class="n">0i64</span>;
+  <span class="k">for</span> i <span class="k">in</span> <span class="n">0</span>..N {
+    sum = sum + a[i];
+    squares = squares + a[i] * a[i];
+  }
+  <span class="k">return</span> sum * <span class="n">1000003i64</span> + squares;
+}
+
+<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+  <span class="k">let</span> sorted_ok = <span class="k">comptime</span> {
+    <span class="k">let</span> input : <span class="t">Tensor</span>&lt;<span class="t">i64</span>, [<span class="n">10</span>]&gt; = [ <span class="n">42i64</span>, -<span class="n">7i64</span>, <span class="n">19i64</span>, <span class="n">0i64</span>, <span class="n">42i64</span>, <span class="n">3i64</span>, -<span class="n">100i64</span>, <span class="n">8i64</span>, <span class="n">8i64</span>, <span class="n">1i64</span> ];
+    <span class="k">let</span> expected : <span class="t">i64</span> = <span class="f">checksum</span>(&amp;input);
+    <span class="k">let</span> out : <span class="t">Tensor</span>&lt;<span class="t">i64</span>, [<span class="n">10</span>]&gt; = <span class="f">insertion_sort</span>(input);
+    <span class="f">is_sorted</span>(&amp;out) &amp;&amp; <span class="f">checksum</span>(&amp;out) == expected
+  };
+  <span class="k">comptime</span> {
+    <span class="f">assert</span>(sorted_ok, "insertion_sort sorts and keeps every number");
+  }
+  <span class="k">return</span> <span class="n">0</span>;
+}</code></pre>
+
+<p>Flip <code>w[j] &gt; key</code> to <code>w[j] &lt; key</code>, or overwrite an element by mistake, and the build fails with <code>Comptime assert failed: insertion_sort sorts and keeps every number</code>. The sort is generic over its length <code>N</code>, and the compiler made the <code>N = 10</code> copy and ran it.</p>
+
+<h2>Proofs for every input, with z3</h2>
+
+<p>A <code>comptime</code> test checks the inputs you write down. A contract checks every input. Vx functions can state what they need (<code>requires</code>) and what they promise (<code>ensures</code>), and the compiler hands both to the z3 theorem prover while it compiles.</p>
+
+<p>Here is the index arithmetic for a 64 × 64 matrix stored row by row and cut into 16 × 16 tiles. The promise is that the index never leaves the matrix:</p>
+
+<pre><code><span class="c">// The element (row, col) of tile (tr, tc) in a 64 x 64 matrix stored row by row,</span>
+<span class="c">// cut into 16 x 16 tiles.</span>
+<span class="k">fn</span> <span class="f">tiled_index</span>(tr : <span class="t">i32</span>, tc : <span class="t">i32</span>, row : <span class="t">i32</span>, col : <span class="t">i32</span>) -&gt; <span class="t">i32</span>
+requires tr &gt;= <span class="n">0</span> &amp;&amp; tr &lt; <span class="n">4</span> &amp;&amp; tc &gt;= <span class="n">0</span> &amp;&amp; tc &lt; <span class="n">4</span>
+requires row &gt;= <span class="n">0</span> &amp;&amp; row &lt; <span class="n">16</span> &amp;&amp; col &gt;= <span class="n">0</span> &amp;&amp; col &lt; <span class="n">16</span>
+ensures <span class="k">return</span> &gt;= <span class="n">0</span> &amp;&amp; <span class="k">return</span> &lt; <span class="n">4096</span> {
+  <span class="k">let</span> r = tr * <span class="n">16</span> + row;
+  <span class="k">let</span> c = tc * <span class="n">16</span> + col;
+  <span class="k">return</span> r * <span class="n">64</span> + c;
+}
+
+<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+  <span class="f">print</span>(<span class="f">tiled_index</span>(<span class="n">3</span>, <span class="n">3</span>, <span class="n">15</span>, <span class="n">15</span>));
+  <span class="k">return</span> <span class="n">0</span>;
+}</code></pre>
+
+<p>The compiler turns the body into equations, adds the <code>requires</code> as facts, and asks z3 for any input that breaks the <code>ensures</code>. z3 finds none, for all 4,096 inputs, without trying them one by one. Each of these one-character mistakes stops the build:</p>
+
+<ul>
+<li><code>row &lt; 17</code> in the <code>requires</code></li>
+<li><code>r * 65</code> instead of <code>r * 64</code></li>
+<li><code>tc * 16 + col + 1</code></li>
+<li><code>return &lt; 4095</code> in the <code>ensures</code>. The last element really is index 4095, and z3 finds the input that reaches it.</li>
+</ul>
+
+<pre class="diag"><code>Error[E8001]: Function 'tiled_index' cannot prove postcondition (ensures) at compile time</code></pre>
+
+<p>Without z3 installed, the build fails rather than skipping the proof.</p>
+
+<p>The prover is young, and it is worth knowing where it stops today:</p>
+
+<ul>
+<li>It proves straight-line code built from <code>let</code> bindings, <code>+</code>, <code>-</code>, multiplication by a constant, comparisons, <code>&amp;&amp;</code> and <code>||</code>. Code that reassigns a variable or returns from inside an <code>if</code> is refused, even when the promise is true.</li>
+<li>z3 treats integers as unbounded, while an <code>i32</code> wraps at 2^31. Bound every input in <code>requires</code>, as above, so no step can overflow; otherwise a proof can hold for z3's integers and fail for the machine's.</li>
+<li>The compiler does not yet check that callers meet <code>requires</code>. The proof says "if the inputs are in range, the result is in range", and making sure they are in range is still the caller's job.</li>
+</ul>
+
+<h2>Generic code that recurses on its own parameter</h2>
+
+<p>A constant generic parameter can drive recursion, with <code>if comptime</code> choosing the base case:</p>
+
+<pre><code><span class="k">fn</span> <span class="f">fib</span>&lt;const N : <span class="t">i32</span>&gt;() -&gt; <span class="t">i64</span> {
+  <span class="k">if</span> <span class="k">comptime</span> N &lt; <span class="n">2</span> {
+    <span class="k">return</span> <span class="n">1i64</span>;
+  } <span class="k">else</span> {
+    <span class="k">return</span> <span class="f">fib</span>&lt;N - <span class="n">1</span>&gt;() + <span class="f">fib</span>&lt;N - <span class="n">2</span>&gt;();
+  }
+}
+
+<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+  <span class="k">comptime</span> {
+    <span class="f">assert</span>(<span class="f">fib</span>&lt;<span class="n">20</span>&gt;() == <span class="n">10946i64</span>, "fib 20");
+  }
+  <span class="k">return</span> <span class="n">0</span>;
+}</code></pre>
+
+<p><code>fib&lt;20&gt;</code> makes the compiler create <code>fib&lt;19&gt;</code>, <code>fib&lt;18&gt;</code>, and so on down to <code>fib&lt;0&gt;</code>, then run them. Change <code>10946</code> to <code>10945</code> and the build fails with <code>Comptime assert failed: fib 20</code>.</p>
+
+<h2>Functions that only run while compiling</h2>
+
+<p>A closure whose body is a <code>comptime</code> block is a function that only exists at compile time, like C++'s <code>consteval</code>:</p>
+
+<pre><code><span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+  <span class="k">let</span> cube = |x : <span class="t">i32</span>| <span class="k">comptime</span> {
+    x * x * x
+  };
+  <span class="f">print</span>(<span class="f">cube</span>(<span class="n">3i32</span>) + <span class="f">cube</span>(<span class="n">4i32</span>));
+  <span class="k">return</span> <span class="n">0</span>;
+}</code></pre>
+
+<p>This prints <code>91</code>. Each call became its answer (<code>27</code> and <code>64</code>), and <code>cube</code> itself is gone from the generated code. Call it with a value only known at run time, and the compiler says so:</p>
+
+<pre><code><span class="k">fn</span> <span class="f">main</span>(argc : <span class="t">i32</span>) -&gt; <span class="t">i32</span> {
+  <span class="k">let</span> cube = |x : <span class="t">i32</span>| <span class="k">comptime</span> {
+    x * x * x
+  };
+  <span class="k">return</span> <span class="f">cube</span>(argc);
+}</code></pre>
+
+<pre class="diag"><code>Error[E3033] at 0:0: this call to a `comptime` lambda cannot be evaluated: a comptime lambda runs while compiling, so every argument has to be known then</code></pre>
+
+<p>C++'s <code>constexpr</code> would quietly make this an ordinary run-time call. Vx stops instead.</p>
+
+<h2>Facts about the hardware</h2>
+
+<p>Vx knows which device a function runs on and which memory a tensor lives in, and both are known while compiling. So you can assert them:</p>
+
+<pre><code><span class="k">fn</span> <span class="f">on_gpu</span>() <span class="k">on</span> <span class="t">Topology</span>::GPU -&gt; <span class="t">void</span> {
+  <span class="k">let</span> data : <span class="t">Tensor</span>&lt;<span class="t">f32</span>, [<span class="n">128</span>]&gt; = <span class="t">Tensor</span>&lt;<span class="t">f32</span>, [<span class="n">128</span>]&gt;::<span class="f">new</span>();
+  <span class="k">let</span> moved = <span class="f">transfer</span>(data, <span class="t">Memory</span>::GPU_HBM);
+  <span class="k">comptime</span> {
+    <span class="f">assert</span>(<span class="t">Topology</span>::Current == <span class="t">Topology</span>::GPU, "this function runs on the GPU");
+    <span class="f">assert</span>(moved.<span class="f">topology</span>() == <span class="t">Some</span>(<span class="t">Topology</span>::GPU), "the tensor now lives in GPU memory");
+  }
+}
+
+<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+  <span class="k">spawn</span> <span class="k">on</span>(<span class="t">Topology</span>::GPU) {
+    <span class="f">on_gpu</span>();
+  };
+  <span class="k">return</span> <span class="n">0</span>;
+}</code></pre>
+
+<p>If a later change moves that tensor somewhere else, this file stops compiling, and the message says which assumption broke. The check costs nothing at run time.</p>
+
+<h2>It refuses rather than guess</h2>
+
+<p>A <code>comptime</code> block is removed from the program once it has run. So a block that writes to a variable declared outside it would lose that write. Vx makes this an error:</p>
+
+<pre><code><span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+  <span class="k">let</span> <span class="k">mut</span> hits : <span class="t">i32</span> = <span class="n">0i32</span>;
+  <span class="k">let</span> answer = <span class="k">comptime</span> {
+    hits = hits + <span class="n">1i32</span>;
+    <span class="n">42i32</span>
+  };
+  <span class="k">return</span> answer + hits;
+}</code></pre>
+
+<pre class="diag"><code>Error[E3033] at 0:0: this `comptime` block cannot be evaluated: it writes to 'hits', which is declared outside it -- the block disappears, so the write would have to disappear with it</code></pre>
+
+<p>This is the bug class <a href="https://github.com/vx-lang/Vx/pull/858">#858</a> was written to close. The old compiler had two separate passes: one worked out a block's value and another looked for writes. When they disagreed about which parts of the block ran, a write could vanish without a word. Now one interpreter does both jobs. It follows writes through <code>&amp;mut</code> references, struct fields, array elements, closures, and branches it cannot decide. Every kind of expression in the language has to be handled explicitly, so new syntax cannot slip through unnoticed.</p>
+
+<p>Integer overflow is refused too. 25! does not fit in an <code>i64</code>:</p>
+
+<pre><code><span class="k">fn</span> <span class="f">factorial</span>(n : <span class="t">i64</span>) -&gt; <span class="t">i64</span> {
+  <span class="k">let</span> <span class="k">mut</span> acc : <span class="t">i64</span> = <span class="n">1i64</span>;
+  <span class="k">for</span> i <span class="k">in</span> <span class="n">1i64</span>..n + <span class="n">1i64</span> {
+    acc = acc * i;
+  }
+  <span class="k">return</span> acc;
+}
+
+<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+  <span class="k">let</span> f = <span class="k">comptime</span> {
+    <span class="f">factorial</span>(<span class="n">25i64</span>)
+  };
+  <span class="k">return</span> (f % <span class="n">100i64</span>) as <span class="t">i32</span>;
+}</code></pre>
+
+<pre class="diag"><code>Error[E3033] at 11:5: this `comptime` block cannot be evaluated: its value cannot be worked out</code></pre>
+
+<p>A wrapped-around number would be put into the program as if it were the answer. Vx does not produce one.</p>
+
+<h2>Fast enough to use</h2>
+
+<p>This block finds the start below 10,000 with the longest Collatz sequence. That is 849,637 loop steps in total:</p>
+
+<pre><code><span class="k">fn</span> <span class="f">collatz_steps</span>(start : <span class="t">i64</span>) -&gt; <span class="t">i64</span> {
+  <span class="k">let</span> <span class="k">mut</span> n : <span class="t">i64</span> = start;
+  <span class="k">let</span> <span class="k">mut</span> steps : <span class="t">i64</span> = <span class="n">0i64</span>;
+  <span class="k">while</span> n != <span class="n">1i64</span> {
+    <span class="k">if</span> n % <span class="n">2i64</span> == <span class="n">0i64</span> {
+      n = n / <span class="n">2i64</span>;
+    } <span class="k">else</span> {
+      n = <span class="n">3i64</span> * n + <span class="n">1i64</span>;
+    }
+    steps = steps + <span class="n">1i64</span>;
+  }
+  <span class="k">return</span> steps;
+}
+
+<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+  <span class="k">let</span> best = <span class="k">comptime</span> {
+    <span class="k">let</span> <span class="k">mut</span> best_start : <span class="t">i64</span> = <span class="n">1i64</span>;
+    <span class="k">let</span> <span class="k">mut</span> best_steps : <span class="t">i64</span> = <span class="n">0i64</span>;
+    <span class="k">for</span> s <span class="k">in</span> <span class="n">1i64</span>..<span class="n">10000i64</span> {
+      <span class="k">let</span> steps : <span class="t">i64</span> = <span class="f">collatz_steps</span>(s);
+      <span class="k">if</span> steps &gt; best_steps {
+        best_steps = steps;
+        best_start = s;
+      }
+    }
+    best_start
+  };
+  <span class="f">print</span>(best);
+  <span class="k">return</span> <span class="n">0</span>;
+}</code></pre>
+
+<p>It prints <code>6171</code>, and the whole compile takes about 1.5 seconds on an Apple M4. The compiler from just before <a href="https://github.com/vx-lang/Vx/pull/858">#858</a> printed <code>1161</code> for this program, which is wrong. The new interpreter gets it right.</p>
+
+<h2>What it cannot do yet</h2>
+
+<ul>
+<li>An <code>assert</code> that comes after a <code>&amp;mut</code> call or a struct field write, in the same block, is not checked yet, and neither is one that calls a function with a borrowed tensor. Until that is fixed, compute the result as the block's value and assert on that value, as the sort example above does.</li>
+<li>A block's value can be a number, a <code>bool</code> or a tensor of numbers. It cannot be a struct yet.</li>
+<li>Inside a block there are no <code>as</code> casts, strings or <code>print</code>. Do the cast outside the block, as the overflow example above does.</li>
+<li>A function call cannot yet be used as a tensor's size or as a constant generic argument (<code>total&lt;square(2)&gt;(xs)</code>). Arithmetic like <code>fib&lt;N - 1&gt;</code> works.</li>
+</ul>
+
+<p>Apart from the first, each of these is refused with an error, so a program that compiles does not rely on one of them without saying so.</p>
+
+<p class="post-foot">The <a href="/docs/comptime.html">compile-time evaluation</a> chapter of the
+docs covers the rules in full. The design is discussed in
+<a href="https://github.com/vx-lang/Vx/discussions/857">discussion #857</a>, and the change itself is
+<a href="https://github.com/vx-lang/Vx/pull/858">PR #858</a>.</p>
+
+</article>
+
+</main>
+
+<footer>
+  <p>Vx is Apache 2.0 with the LLVM exception. <a href="https://github.com/vx-lang/Vx">Source</a>. Questions and discussion: <a href="https://www.reddit.com/r/vxlang">r/vxlang</a>.</p>
+</footer>
+
+</body>
+</html>

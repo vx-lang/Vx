@@ -5,8 +5,17 @@
   <link href="https://vxlang.org/blog/feed.xml" rel="self"/>
   <link href="https://vxlang.org/blog/"/>
   <id>https://vxlang.org/blog/</id>
-  <updated>2026-09-28T18:00:00Z</updated>
+  <updated>2026-10-01T18:00:00Z</updated>
   <author><name>Aditya Kumar</name></author>
+
+  <entry>
+    <title>What comptime can do in Vx</title>
+    <link href="https://vxlang.org/blog/what-comptime-can-do.html"/>
+    <id>https://vxlang.org/blog/what-comptime-can-do.html</id>
+    <updated>2026-10-01T18:00:00Z</updated>
+    <author><name>Aditya Kumar</name></author>
+    <summary>A comptime block in Vx is ordinary Vx code that the compiler runs while it compiles: loops, recursion, structs, arrays and helpers that take &amp;mut. Its value goes into the program as a constant. Examples include a program that folds to one number, a lookup table, a register machine run inside the compiler, a sort checked on every build, and a z3 proof that a tiled index stays inside its matrix for every input. A block the compiler cannot finish, or one that writes outside itself, is an error.</summary>
+  </entry>
 
   <entry>
     <title>Premature de-optimization is the root of all evil</title>
