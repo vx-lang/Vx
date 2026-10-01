@@ -275,7 +275,7 @@ fn adjust_spacing(tokens: Vec<Token>) -> Vec<Token> {
 
             if ws.contains('\n') {
                 if let Some(prev) = &last_non_ws {
-                    if matches!(prev, TokenType::For | TokenType::If) {
+                    if matches!(prev, TokenType::For | TokenType::If | TokenType::While) {
                         *ws = " ";
                     }
                 }
@@ -438,6 +438,15 @@ mod tests {
         let expected = "for i in 0..10 {\n  if sum_idx == 0 {\n    a = 1;\n  }\n}";
         let formatted = format_file(input, 2);
         assert_eq!(formatted, expected);
+    }
+
+    #[test]
+    fn test_format_while_loop() {
+        let input = "while \n keep_going { step(); }";
+        let expected = "while keep_going {\n  step();\n}";
+        let formatted = format_file(input, 2);
+        assert_eq!(formatted, expected);
+        assert_eq!(format_file(&formatted, 2), formatted);
     }
 
     #[test]
