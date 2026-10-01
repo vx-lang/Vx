@@ -66,11 +66,15 @@ impl<'a> TypeChecker<'a> {
         // The interpreter mutates its value environment, but function bodies are immutable.
         // Borrow the three existing registries instead of rebuilding and cloning their complete
         // union for every comptime block (and for every speculative branch it explores).
+        // The interpreter runs on its own thread, and the checker is not thread-safe, so it is
+        // handed only the type definitions this question needs.
+        let types = self.mut_reference_types();
+        let carries_mut_reference = move |ty: &Type| types.can_carry(ty);
         let function_bodies = ComptimeFunctionBodies::new(
             &self.env.comptime_bodies,
             &self.env.syntax_functions,
             &self.mono.functions,
-            |ty| self.type_can_carry_mut_reference(ty),
+            &carries_mut_reference,
         );
         let mut interpreter = ComptimeInterpreter::new(
             before,
@@ -92,72 +96,16 @@ impl<'a> TypeChecker<'a> {
     /// value is inside the interpreter, provenance moves with that value rather than with its
     /// spelling or declared type.
     pub(crate) fn type_can_carry_mut_reference(&self, ty: &Type) -> bool {
-        fn visit(
-            checker: &TypeChecker<'_>,
-            ty: &Type,
-            seen: &mut HashSet<crate::symbol::Symbol>,
-        ) -> bool {
-            match ty {
-                Type::Borrow { inner, is_mut, .. } => *is_mut || visit(checker, inner, seen),
-                Type::Pointer(inner, _, is_mut) => *is_mut || visit(checker, inner, seen),
-                Type::Ref(inner, _) | Type::Verified(inner) | Type::Pinned(inner, _) => {
-                    visit(checker, inner, seen)
-                }
-                Type::GenericInstance(base, args) => {
-                    visit(checker, base, seen) || args.iter().any(|arg| visit(checker, arg, seen))
-                }
-                Type::Struct(name, _) | Type::Enum(name, _) => {
-                    if !seen.insert(name.clone()) {
-                        return false;
-                    }
-                    let result = checker
-                        .env
-                        .structs
-                        .get(name)
-                        .map(|decl| {
-                            decl.fields
-                                .iter()
-                                .any(|(_, field)| visit(checker, field, seen))
-                        })
-                        .or_else(|| {
-                            checker
-                                .mono
-                                .generated_structs
-                                .iter()
-                                .find(|decl| decl.name == *name)
-                                .map(|decl| {
-                                    decl.fields
-                                        .iter()
-                                        .any(|(_, field)| visit(checker, field, seen))
-                                })
-                        })
-                        .or_else(|| {
-                            checker.env.enums.get(name).map(|decl| {
-                                decl.variants.iter().any(|(_, payload)| {
-                                    payload.as_ref().is_some_and(|fields| {
-                                        fields.iter().any(|field| visit(checker, field, seen))
-                                    })
-                                })
-                            })
-                        })
-                        .unwrap_or(false);
-                    seen.remove(name);
-                    result
-                }
-                Type::Unknown => true,
-                Type::Tensor(..)
-                | Type::Matrix
-                | Type::Scalar(..)
-                | Type::Generic(..)
-                | Type::Module(..)
-                | Type::Simd(..)
-                | Type::Function(..)
-                | Type::Closure(..)
-                | Type::Const(..) => false,
-            }
-        }
+        self.mut_reference_types().can_carry(ty)
+    }
 
-        visit(self, ty, &mut HashSet::new())
+    /// The type definitions `type_can_carry_mut_reference` looks through.
+    pub(crate) fn mut_reference_types(&self) -> MutReferenceTypes<'_> {
+        MutReferenceTypes {
+            structs: &self.env.structs,
+            enums: &self.env.enums,
+            generated_structs: &self.mono.generated_structs,
+        }
     }
 
     /// Performs semantic analysis on a block of statements.
@@ -2243,5 +2191,84 @@ impl<'a> TypeChecker<'a> {
             ) => na == nb,
             _ => false,
         }
+    }
+}
+
+/// The type definitions `TypeChecker::type_can_carry_mut_reference` looks through, apart from the
+/// rest of the checker so the comptime interpreter's worker thread can ask the same question.
+#[derive(Clone, Copy)]
+pub(crate) struct MutReferenceTypes<'t> {
+    structs: &'t HashMap<crate::symbol::Symbol, &'t StructDecl>,
+    enums: &'t HashMap<crate::symbol::Symbol, &'t EnumDecl>,
+    generated_structs: &'t [StructDecl],
+}
+
+impl MutReferenceTypes<'_> {
+    /// Whether a value of this type can carry a mutable reference.
+    pub(crate) fn can_carry(&self, ty: &Type) -> bool {
+        fn visit(
+            types: &MutReferenceTypes<'_>,
+            ty: &Type,
+            seen: &mut HashSet<crate::symbol::Symbol>,
+        ) -> bool {
+            match ty {
+                Type::Borrow { inner, is_mut, .. } => *is_mut || visit(types, inner, seen),
+                Type::Pointer(inner, _, is_mut) => *is_mut || visit(types, inner, seen),
+                Type::Ref(inner, _) | Type::Verified(inner) | Type::Pinned(inner, _) => {
+                    visit(types, inner, seen)
+                }
+                Type::GenericInstance(base, args) => {
+                    visit(types, base, seen) || args.iter().any(|arg| visit(types, arg, seen))
+                }
+                Type::Struct(name, _) | Type::Enum(name, _) => {
+                    if !seen.insert(name.clone()) {
+                        return false;
+                    }
+                    let result = types
+                        .structs
+                        .get(name)
+                        .map(|decl| {
+                            decl.fields
+                                .iter()
+                                .any(|(_, field)| visit(types, field, seen))
+                        })
+                        .or_else(|| {
+                            types
+                                .generated_structs
+                                .iter()
+                                .find(|decl| decl.name == *name)
+                                .map(|decl| {
+                                    decl.fields
+                                        .iter()
+                                        .any(|(_, field)| visit(types, field, seen))
+                                })
+                        })
+                        .or_else(|| {
+                            types.enums.get(name).map(|decl| {
+                                decl.variants.iter().any(|(_, payload)| {
+                                    payload.as_ref().is_some_and(|fields| {
+                                        fields.iter().any(|field| visit(types, field, seen))
+                                    })
+                                })
+                            })
+                        })
+                        .unwrap_or(false);
+                    seen.remove(name);
+                    result
+                }
+                Type::Unknown => true,
+                Type::Tensor(..)
+                | Type::Matrix
+                | Type::Scalar(..)
+                | Type::Generic(..)
+                | Type::Module(..)
+                | Type::Simd(..)
+                | Type::Function(..)
+                | Type::Closure(..)
+                | Type::Const(..) => false,
+            }
+        }
+
+        visit(self, ty, &mut HashSet::new())
     }
 }

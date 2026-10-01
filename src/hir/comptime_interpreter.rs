@@ -6,7 +6,6 @@
 //! compile error instead of a silently pure catch-all.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use crate::arch::TransferCostGraph;
 use crate::hir::check_state::{
@@ -38,7 +37,10 @@ pub(crate) struct ComptimeFunctionBodies<'bodies> {
     comptime_bodies: &'bodies HashMap<Symbol, Function>,
     syntax_functions: &'bodies HashMap<Symbol, &'bodies Function>,
     mono_functions: &'bodies [(Function, u64)],
-    mutable_reference_params: Arc<HashMap<Symbol, Vec<bool>>>,
+    /// Whether a parameter type can carry a mutable reference out of a call. Asked per call,
+    /// for the function actually called, rather than for every function in the program each
+    /// time a comptime block is checked.
+    type_can_carry_mut_reference: &'bodies (dyn Fn(&Type) -> bool + Sync),
 }
 
 impl<'bodies> ComptimeFunctionBodies<'bodies> {
@@ -46,35 +48,13 @@ impl<'bodies> ComptimeFunctionBodies<'bodies> {
         comptime_bodies: &'bodies HashMap<Symbol, Function>,
         syntax_functions: &'bodies HashMap<Symbol, &'bodies Function>,
         mono_functions: &'bodies [(Function, u64)],
-        type_can_carry_mut_reference: impl Fn(&Type) -> bool,
+        type_can_carry_mut_reference: &'bodies (dyn Fn(&Type) -> bool + Sync),
     ) -> Self {
-        let parameter_flags = |function: &Function| {
-            function
-                .params
-                .iter()
-                .map(|(_, ty)| type_can_carry_mut_reference(ty))
-                .collect::<Vec<_>>()
-        };
-        let mut mutable_reference_params = HashMap::new();
-        // `get` selects the first monomorphized body, then lets a comptime body and a non-empty
-        // syntax body override it. Build the parameter facts with the same precedence.
-        for (function, _) in mono_functions.iter().rev() {
-            mutable_reference_params.insert(function.name.clone(), parameter_flags(function));
-        }
-        for function in comptime_bodies.values() {
-            mutable_reference_params.insert(function.name.clone(), parameter_flags(function));
-        }
-        for function in syntax_functions
-            .values()
-            .filter(|function| !function.body.is_empty())
-        {
-            mutable_reference_params.insert(function.name.clone(), parameter_flags(function));
-        }
         Self {
             comptime_bodies,
             syntax_functions,
             mono_functions,
-            mutable_reference_params: Arc::new(mutable_reference_params),
+            type_can_carry_mut_reference,
         }
     }
 
@@ -96,11 +76,17 @@ impl<'bodies> ComptimeFunctionBodies<'bodies> {
         self.get(name).is_some()
     }
 
-    fn mutable_reference_params(&self, name: &Symbol) -> &[bool] {
-        self.mutable_reference_params
+    /// For each parameter of the body `get` returns for `name`, whether it can carry a mutable
+    /// reference out of the call.
+    fn mutable_reference_params(&self, name: &Symbol) -> Vec<bool> {
+        let function = self
             .get(name)
-            .map(Vec::as_slice)
-            .expect("every comptime function body must have mutable-reference parameter facts")
+            .expect("mutable-reference parameter facts are asked only for a known function");
+        function
+            .params
+            .iter()
+            .map(|(_, ty)| (self.type_can_carry_mut_reference)(ty))
+            .collect()
     }
 }
 
@@ -1137,10 +1123,7 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
         let Some(function) = self.function_bodies.get(target).cloned() else {
             return self.unsupported_after(args);
         };
-        let mutable_reference_params = self
-            .function_bodies
-            .mutable_reference_params(target)
-            .to_vec();
+        let mutable_reference_params = self.function_bodies.mutable_reference_params(target);
         if function.params.len() != args.len()
             || (!writebacks.is_empty() && writebacks.len() != args.len())
             || mutable_reference_params.len() != function.params.len()
@@ -1319,10 +1302,8 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
         mut args: Vec<ComptimeEvalOutcome>,
     ) -> ComptimeEvalOutcome {
         if let Some(function) = self.function_bodies.get(&call.name).cloned() {
-            let mutable_reference_params = self
-                .function_bodies
-                .mutable_reference_params(&call.name)
-                .to_vec();
+            let mutable_reference_params =
+                self.function_bodies.mutable_reference_params(&call.name);
             let writebacks = call
                 .args
                 .iter()
@@ -2339,7 +2320,7 @@ mod tests {
                 &comptime_bodies,
                 &syntax_functions,
                 &mono_functions,
-                |_| false,
+                &|_| false,
             ),
             &graph,
             Topology::CPU,
@@ -2402,7 +2383,7 @@ mod tests {
                     &comptime_bodies,
                     &syntax_functions,
                     &mono_functions,
-                    |_| false,
+                    &|_| false,
                 ),
                 &graph,
                 Topology::CPU,
@@ -2429,7 +2410,7 @@ mod tests {
                 &comptime_bodies,
                 &syntax_functions,
                 &mono_functions,
-                |_| false,
+                &|_| false,
             ),
             &graph,
             Topology::CPU,
@@ -2465,7 +2446,7 @@ mod tests {
                 &comptime_bodies,
                 &syntax_functions,
                 &mono_functions,
-                |_| false,
+                &|_| false,
             ),
             &graph,
             Topology::CPU,
