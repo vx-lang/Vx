@@ -25,6 +25,7 @@ friends.
 
 ## Contents
 
+- [`core::ascii`](#coreascii) —
 - [`core::clone`](#coreclone) — `Clone`, an explicit duplicate of a value.
 - [`core::cmp`](#corecmp) — Ordering and equality: `PartialEq`, `Ord`, `PartialOrd` and `Ordering`.
 - [`core::convert`](#coreconvert) — `From`, the conversions that cannot fail and lose nothing.
@@ -59,6 +60,45 @@ friends.
 - [`std::tensor`](#stdtensor) — Operations on `Tensor`, including shape queries and elementwise maths.
 - [`std::time`](#stdtime) — Clocks and durations.
 - [`std::vec`](#stdvec) — `Vec<T>`, a growable array.
+
+## `core::ascii`
+
+**`u8` methods**
+
+- `fn is_ascii(self : u8) -> bool`<br>
+  Is this byte in the ASCII range, 0 to 127?
+- `fn is_ascii_uppercase(self : u8) -> bool`<br>
+  Is this `A` to `Z` (65 to 90)?
+- `fn is_ascii_lowercase(self : u8) -> bool`<br>
+  Is this `a` to `z` (97 to 122)?
+- `fn is_ascii_alphabetic(self : u8) -> bool`<br>
+  Is this a letter, of either case?
+- `fn is_ascii_digit(self : u8) -> bool`<br>
+  Is this `0` to `9` (48 to 57)?
+- `fn is_ascii_alphanumeric(self : u8) -> bool`<br>
+  Is this a letter or a digit?
+- `fn is_ascii_hexdigit(self : u8) -> bool`<br>
+  Is this a digit, or `A` to `F` (65 to 70), or `a` to `f` (97 to 102)?
+- `fn is_ascii_punctuation(self : u8) -> bool`<br>
+  Is this one of the 32 punctuation marks: `!` to `/`, `:` to `@`, `[` to the backtick,
+  or `{` to `~`?
+- `fn is_ascii_graphic(self : u8) -> bool`<br>
+  Is this a visible character, `!` (33) to `~` (126)? The space is not one.
+- `fn is_ascii_whitespace(self : u8) -> bool`<br>
+  Is this a space (32), tab (9), line feed (10), form feed (12) or carriage return
+  (13)? The vertical tab (11) is not, as in Rust.
+- `fn is_ascii_control(self : u8) -> bool`<br>
+  Is this a control character, 0 to 31 or delete (127)?
+- `fn to_ascii_uppercase(self : u8) -> u8`<br>
+  The uppercase letter for a lowercase one; any other byte unchanged.
+- `fn to_ascii_lowercase(self : u8) -> u8`<br>
+  The lowercase letter for an uppercase one; any other byte unchanged.
+- `fn eq_ignore_ascii_case(self : u8, other : &u8) -> bool`<br>
+  Are the two bytes the same once letters are put in one case?
+- `fn make_ascii_uppercase(self : &mut u8) -> void`<br>
+  Turns this byte into its uppercase letter, if it is a lowercase one.
+- `fn make_ascii_lowercase(self : &mut u8) -> void`<br>
+  Turns this byte into its lowercase letter, if it is an uppercase one.
 
 ## `core::clone`
 
@@ -104,6 +144,10 @@ Ordering and equality: `PartialEq`, `Ord`, `PartialOrd` and `Ordering`.
 
 - `enum Ordering`
 - `trait PartialEq`
+- `trait Eq`<br>
+  Equality that is reflexive: every value equals itself. A marker, since Vx has no
+  supertraits yet to tie it to `PartialEq`. The floats do not implement it, because a NaN
+  is not equal to itself.
 - `trait Ord`
 - `trait PartialOrd`<br>
   A comparison that may answer with nothing, which is what a float needs: NaN is neither
@@ -159,11 +203,12 @@ Ordering and equality: `PartialEq`, `Ord`, `PartialOrd` and `Ordering`.
 - `fn ge(self : &Self, other : &Self) -> bool`<br>
   Is this value greater than or equal to the other?
 - `fn max(self : Self, other : Self) -> Self`<br>
-  The greater of the two, taking both by value and handing one back.
+  The greater of the two, taking both by value and handing one back: `other` when they
+  compare equal, as in Rust.
   A method rather than the free function Rust also has, because the compiler reads the
   bare names `max` and `min` as the tensor reductions (Vx#223).
 - `fn min(self : Self, other : Self) -> Self`<br>
-  The lesser of the two.
+  The lesser of the two: `self` when they compare equal, as in Rust.
 - `fn clamp(self : Self, lo : Self, hi : Self) -> Self`<br>
   This value brought inside the range, so `lo` below it and `hi` above it.
   # Panics
@@ -186,12 +231,16 @@ Ordering and equality: `PartialEq`, `Ord`, `PartialOrd` and `Ordering`.
 **Functions**
 
 - `fn max_by<T>(a : T, b : T, f : Closure2<T, T, Ordering>) -> T`<br>
-  The greater of two values by `f`, and the lesser. They are free functions because they
-  take the comparison rather than reading it off the type. Rust spells them `max_by` and
-  `min_by`; the plain `max` and `min` are `Ord` methods here, since those two names are
-  the compiler's tensor reductions.
+  The greater of two values by `f`, answering `b` when they compare equal, as Rust does.
+  A free function because it takes the comparison rather than reading it off the type.
+  The plain `max` and `min` are `Ord` methods here, since those two names are the
+  compiler's tensor reductions.
 - `fn min_by<T>(a : T, b : T, f : Closure2<T, T, Ordering>) -> T`<br>
   The lesser of the two by `f`, answering `a` when they compare equal.
+- `fn max_by_key<T, K : Ord>(a : T, b : T, f : Closure1<T, K>) -> T`<br>
+  The greater of two values by the key `f` gives each, answering `b` on equal keys.
+- `fn min_by_key<T, K : Ord>(a : T, b : T, f : Closure1<T, K>) -> T`<br>
+  The lesser of two values by the key `f` gives each, answering `a` on equal keys.
 
 **`PartialEq for T` methods**, stamped for 9 instantiations
 
@@ -386,9 +435,15 @@ The iterators `Iterator`'s adaptor methods build: `Map`, `Filter`, `Chain` and t
 - `struct Scan<I, St, F>`<br>
   An iterator over what `f` answers for another's items while it carries a state between
   them, ending where `f` first answers nothing. Built by `scan`.
-- `struct Fuse<I>`<br>
+- `struct Copied<I>`<br>
   An iterator that answers nothing forever once another has answered nothing once. Built by
   `fuse`.
+  An iterator over copies of the values another iterator's references point at. Built by
+  `copied`.
+- `struct Cloned<I>`<br>
+  An iterator over clones of the values another iterator's references point at. Built by
+  `cloned`.
+- `struct Fuse<I>`
 - `struct Peekable<I, T>`<br>
   An iterator whose next item can be looked at without taking it. Built by `peekable`.
   `T` is always `I::Item`: a struct field cannot name `I::Item`, so the item it holds on to
@@ -531,6 +586,16 @@ The iterators `Iterator`'s adaptor methods build: `Map`, `Filter`, `Chain` and t
 
 - `fn next(self : &mut Scan<I, St, Closure2<&mut St, I :  : Item, Option<B>>>) -> Option<B>`<br>
   `f` of the state and the inner iterator's next item.
+
+**`> Iterator for Copied<I>` methods**
+
+- `fn next(self : &mut Copied<I>) -> Option<T>`<br>
+  A copy of what the inner iterator's next reference points at.
+
+**`> Iterator for Cloned<I>` methods**
+
+- `fn next(self : &mut Cloned<I>) -> Option<T>`<br>
+  A clone of what the inner iterator's next reference points at.
 
 **`Iterator for Fuse<I>` methods**
 
@@ -746,6 +811,12 @@ The `Iterator` trait: one required `next`, and the methods written over it.
   An iterator over these items, repeated forever. Each pass restarts from a clone of this
   iterator as it was when `cycle` was called, so the type must implement `Clone`. An
   iterator with no items gives one with none.
+- `fn copied(self : Self) -> Copied<Self>`<br>
+  An iterator over copies of what these items point at, for an iterator that hands out
+  references to a `Copy` type, as `Vec::iter` does.
+- `fn cloned(self : Self) -> Cloned<Self>`<br>
+  An iterator over clones of what these items point at, for an iterator that hands out
+  references to a `Clone` type.
 - `fn fuse(self : Self) -> Fuse<Self>`<br>
   An iterator that answers nothing forever once these items have run out.
 - `fn peekable(self : Self) -> Peekable<Self, Self :  : Item>`<br>
@@ -943,6 +1014,11 @@ Moving values around without looking at what they are.
 
 The integer and float methods, stamped over every width.
 
+**Types**
+
+- `enum FpCategory`<br>
+  The five kinds of float value `classify` tells apart, as in Rust.
+
 **`$t` methods**
 
 - `fn min_value(self : $t) -> $t`<br>
@@ -969,6 +1045,35 @@ The integer and float methods, stamped over every width.
   Plain division: an unsigned quotient is already the Euclidean one.
 - `fn rem_euclid(self : $t, rhs : $t) -> $t`<br>
   Plain remainder, which at this width is never negative.
+- `fn checked_pow(self : $t, exp : $t) -> Option<$t>`<br>
+  This raised to `exp`, or nothing if the answer does not fit.
+- `fn wrapping_pow(self : $t, exp : $t) -> $t`<br>
+  This raised to `exp`, wrapping round at the width. The same as `pow`, under the
+  name that says so.
+- `fn ilog(self : $t, base : $t) -> $t`<br>
+  The logarithm to `base`, rounded down. Refused at zero and below, and for a base
+  below two.
+- `fn ilog10(self : $t) -> $t`<br>
+  The logarithm to base ten, rounded down. Refused at zero and below.
+- `fn checked_ilog(self : $t, base : $t) -> Option<$t>`<br>
+  The logarithm to `base`, or nothing at zero and below or for a base below two.
+- `fn checked_ilog2(self : $t) -> Option<$t>`<br>
+  The logarithm to base two, or nothing at zero and below.
+- `fn checked_ilog10(self : $t) -> Option<$t>`<br>
+  The logarithm to base ten, or nothing at zero and below.
+- `fn saturating_pow(self : $t, exp : $t) -> $t`<br>
+  This raised to `exp`, held at the largest value if it overflows.
+- `fn is_multiple_of(self : $t, rhs : $t) -> bool`<br>
+  Does `rhs` divide this exactly? Zero is a multiple only of zero, and every value of
+  one.
+- `fn next_multiple_of(self : $t, rhs : $t) -> $t`<br>
+  The smallest multiple of `rhs` at or above this. Refused on a zero `rhs`, and when
+  the answer does not fit.
+- `fn checked_next_multiple_of(self : $t, rhs : $t) -> Option<$t>`<br>
+  The smallest multiple of `rhs` at or above this, or nothing on a zero `rhs` or when
+  the answer does not fit.
+- `fn checked_next_power_of_two(self : $t) -> Option<$t>`<br>
+  The smallest power of two at or above this, or nothing above the top power of two.
 - `fn ilog2(self : $t) -> $t`<br>
   Rounded down. Refused at zero, which has no logarithm.
 - `fn isqrt(self : $t) -> $t`<br>
@@ -1018,6 +1123,18 @@ The integer and float methods, stamped over every width.
   How many set bits the value starts with, counting from the top.
 - `fn trailing_ones(self : $t) -> $t`<br>
   How many set bits the value ends with, counting from the bottom.
+- `fn overflowing_add(self : $t, rhs : $t) -> ($t, bool)`<br>
+  The wrapped sum, and whether it wrapped.
+- `fn overflowing_sub(self : $t, rhs : $t) -> ($t, bool)`<br>
+  The wrapped difference, and whether it went below zero.
+- `fn overflowing_mul(self : $t, rhs : $t) -> ($t, bool)`<br>
+  The wrapped product, and whether it wrapped.
+- `fn overflowing_neg(self : $t) -> ($t, bool)`<br>
+  Zero minus this, wrapping, and whether it wrapped: every value but zero does.
+- `fn overflowing_div(self : $t, rhs : $t) -> ($t, bool)`<br>
+  The quotient, which never wraps at an unsigned width.
+- `fn overflowing_rem(self : $t, rhs : $t) -> ($t, bool)`<br>
+  The remainder, which never wraps at an unsigned width.
 - `fn pi() -> $t`<br>
   Pi.
 - `fn tau() -> $t`<br>
@@ -1067,6 +1184,8 @@ The integer and float methods, stamped over every width.
 - `fn exp_m1(self : $t) -> $t`<br>
   `exp` minus one, kept accurate for a small argument where the subtraction would
   lose every significant digit.
+  Not `math.expm1`, which lowers to exactly that subtraction. This is Kahan's method:
+  with `u = exp(x)`, `(u - 1) * x / ln(u)`, whose two rounding errors cancel.
 - `fn ln(self : $t) -> $t`<br>
   The natural logarithm.
 - `fn log2(self : $t) -> $t`<br>
@@ -1075,6 +1194,8 @@ The integer and float methods, stamped over every width.
   The logarithm to base ten.
 - `fn ln_1p(self : $t) -> $t`<br>
   `ln` of one plus this, kept accurate for a small argument.
+  Not `math.log1p`, which lowers to `ln(1 + x)` and loses the small argument in the
+  addition. With `u = 1 + x`, `ln(u) * x / (u - 1)` corrects for that rounding.
 - `fn sin(self : $t) -> $t`<br>
   The sine of this many radians.
 - `fn cos(self : $t) -> $t`<br>
@@ -1144,6 +1265,34 @@ The integer and float methods, stamped over every width.
   Is this a real number, rather than an infinity or a NaN?
 - `fn is_infinite(self : $t) -> bool`<br>
   Is this an infinity, of either sign?
+- `fn log(self : $t, base : $t) -> $t`<br>
+  The logarithm to `base`, as `ln(self) / ln(base)`.
+- `fn round_ties_even(self : $t) -> $t`<br>
+  The nearest whole number, halves going to the even neighbour: 2.5 gives 2.0.
+- `fn sin_cos(self : $t) -> ($t, $t)`<br>
+  The sine and the cosine, as a pair.
+- `fn asinh(self : $t) -> $t`<br>
+  The inverse hyperbolic sine. Rust's formula, not a libm call: it goes through
+  `ln_1p`, so it stays accurate near zero.
+- `fn acosh(self : $t) -> $t`<br>
+  The inverse hyperbolic cosine, NaN below one. Rust's formula, except below two:
+  there `ln` of a number just above one loses digits, so with `t = x - 1` this takes
+  `ln_1p(t + sqrt(2t + t * t))` instead, which keeps them.
+- `fn atanh(self : $t) -> $t`<br>
+  The inverse hyperbolic tangent. Rust's formula, through `ln_1p`.
+- `fn midpoint(self : $t, other : $t) -> $t`<br>
+  Halfway between two values, without overflowing near the largest value or losing
+  the answer to underflow near the smallest. Rust's rule.
+- `fn is_sign_negative(self : $t) -> bool`<br>
+  Is the sign bit set? True for -0.0, and for a NaN whose sign bit is set.
+- `fn is_sign_positive(self : $t) -> bool`<br>
+  Is the sign bit clear? True for 0.0, and for a NaN whose sign bit is clear.
+- `fn is_normal(self : $t) -> bool`<br>
+  Is this neither zero, infinite, subnormal nor a NaN?
+- `fn is_subnormal(self : $t) -> bool`<br>
+  Is this nonzero but smaller in size than the smallest normal value?
+- `fn classify(self : $t) -> FpCategory`<br>
+  Which of the five kinds of float value this is.
 
 **`f64` methods**
 
@@ -1159,25 +1308,33 @@ The integer and float methods, stamped over every width.
   Positive infinity.
 - `fn neg_infinity() -> f64`<br>
   Negative infinity.
-- `fn nan() -> f64`<br>
-  A quiet NaN.
-
-**`f32` methods**
-
-- `fn max_value() -> f32`<br>
-  The largest finite value.
-- `fn min_value() -> f32`<br>
-  The most negative finite value.
-- `fn epsilon() -> f32`<br>
-  The gap between 1.0 and the next larger value.
-- `fn min_positive() -> f32`<br>
-  The smallest positive normal value.
-- `fn infinity() -> f32`<br>
-  Positive infinity.
-- `fn neg_infinity() -> f32`<br>
-  Negative infinity.
-- `fn nan() -> f32`<br>
-  A quiet NaN.
+- `fn from_bits(v : $u) -> $t`<br>
+  The value these bits spell. Static: `f32::from_bits(1065353216)` is 1.0.
+- `fn next_up(self : $t) -> $t`<br>
+  The smallest value greater than this one. A NaN and positive infinity give
+  themselves, and either zero gives the smallest positive value.
+- `fn next_down(self : $t) -> $t`<br>
+  The largest value less than this one. A NaN and negative infinity give themselves,
+  and either zero gives the negative value nearest zero.
+- `fn total_cmp(self : &$t, other : &$t) -> Ordering`<br>
+  Rust's total order over every value, NaNs included: negative NaNs, negative
+  infinity, the negatives, -0.0, 0.0, the positives, positive infinity, positive NaNs.
+  It compares the bits as signed integers, with the bits of a negative value turned
+  round so that more negative sorts lower.
+- `fn radix() -> u32`<br>
+  The base the format counts in: 2.
+- `fn mantissa_digits() -> u32`<br>
+  How many binary digits the significand holds, the leading one included.
+- `fn digits() -> u32`<br>
+  How many decimal digits survive a round trip through this width.
+- `fn min_exp() -> i32`<br>
+  One more than the smallest power of two a normal value can have.
+- `fn max_exp() -> i32`<br>
+  One more than the largest power of two a finite value can have.
+- `fn min_10_exp() -> i32`<br>
+  The smallest power of ten that is a normal value.
+- `fn max_10_exp() -> i32`<br>
+  The largest power of ten that is a finite value.
 
 **`T` methods**, stamped for 4 instantiations
 
@@ -1214,6 +1371,38 @@ The integer and float methods, stamped over every width.
   Never negative, whatever the signs: -7 % 4 is -3 where this is 1.
 - `fn div_euclid(self : T, rhs : T) -> T`<br>
   The quotient pairing with `rem_euclid`.
+- `fn checked_pow(self : T, exp : T) -> Option<T>`<br>
+  This raised to `exp`, or nothing if the answer does not fit.
+- `fn wrapping_pow(self : T, exp : T) -> T`<br>
+  This raised to `exp`, wrapping round at the width. The same as `pow`, under the
+  name that says so.
+- `fn ilog(self : T, base : T) -> T`<br>
+  The logarithm to `base`, rounded down. Refused at zero and below, and for a base
+  below two.
+- `fn ilog10(self : T) -> T`<br>
+  The logarithm to base ten, rounded down. Refused at zero and below.
+- `fn checked_ilog(self : T, base : T) -> Option<T>`<br>
+  The logarithm to `base`, or nothing at zero and below or for a base below two.
+- `fn checked_ilog2(self : T) -> Option<T>`<br>
+  The logarithm to base two, or nothing at zero and below.
+- `fn checked_ilog10(self : T) -> Option<T>`<br>
+  The logarithm to base ten, or nothing at zero and below.
+- `fn saturating_pow(self : T, exp : T) -> T`<br>
+  This raised to `exp`, held at the end of the range it overflows towards: the
+  bottom for a negative base to an odd power, the top otherwise.
+- `fn checked_abs(self : T) -> Option<T>`<br>
+  The absolute value, or nothing for the smallest value, whose positive does not fit.
+- `fn wrapping_abs(self : T) -> T`<br>
+  The absolute value, wrapping: the smallest value gives itself.
+- `fn saturating_abs(self : T) -> T`<br>
+  The absolute value, held at the largest value for the smallest.
+- `fn saturating_neg(self : T) -> T`<br>
+  The negation, held at the largest value for the smallest.
+- `fn wrapping_div(self : T, rhs : T) -> T`<br>
+  The quotient, wrapping: the smallest value divided by -1 gives itself. Refused on
+  a zero divisor, as `/` is.
+- `fn wrapping_rem(self : T, rhs : T) -> T`<br>
+  The remainder, wrapping: the smallest value by -1 gives 0.
 - `fn ilog2(self : T) -> T`<br>
   Rounded down. Refused at zero and below.
 - `fn isqrt(self : T) -> T`<br>
@@ -1272,8 +1461,31 @@ The integer and float methods, stamped over every width.
   How many set bits the value starts with, counting from the top.
 - `fn trailing_ones(self : T) -> T`<br>
   How many set bits the value ends with, counting from the bottom.
+- `fn overflowing_add(self : T, rhs : T) -> (T, bool)`<br>
+  The wrapped sum, and whether it wrapped.
+- `fn overflowing_sub(self : T, rhs : T) -> (T, bool)`<br>
+  The wrapped difference, and whether it wrapped.
+- `fn overflowing_mul(self : T, rhs : T) -> (T, bool)`<br>
+  The wrapped product, and whether it wrapped.
+- `fn overflowing_neg(self : T) -> (T, bool)`<br>
+  The negation, and whether it wrapped: only the smallest value does, to itself.
+- `fn overflowing_abs(self : T) -> (T, bool)`<br>
+  The absolute value, and whether it wrapped: only the smallest value does, to itself.
+- `fn overflowing_div(self : T, rhs : T) -> (T, bool)`<br>
+  The quotient, and whether it wrapped: the smallest value divided by -1 gives
+  itself. Refused on a zero divisor, as `/` is.
+- `fn overflowing_rem(self : T, rhs : T) -> (T, bool)`<br>
+  The remainder, and whether it wrapped: the smallest value by -1 gives 0 and says
+  so, since the division beside it overflows.
 
 T = `i8`, `i16`, `i32`, `i64`
+
+**`T` methods**, stamped for 2 instantiations
+
+- `fn to_bits(self : T) -> U`<br>
+  The bits of this value, as an unsigned integer of the same width.
+
+(T, U) = `f32 → 1.0`, `f64 → 1.0`
 
 ## `core::ops`
 
@@ -1365,6 +1577,17 @@ The callable types a closure literal lowers into.
   The value, leaving nothing behind.
 - `fn replace(self : &mut Option<T>, v : T) -> Option<T>`<br>
   The value, leaving `v` behind.
+
+**`Option<Option<T>>` methods**
+
+- `fn flatten(self : Option<Option<T>>) -> Option<T>`<br>
+  One level of `Option` removed: `Some(Some(x))` is `Some(x)`, anything else is `None`.
+
+**`Option<(T, U)>` methods**
+
+- `fn unzip(self : Option<(T, U) -> void`<br>
+  A pair split in two: `Some((a, b))` gives `(Some(a), Some(b))`, and `None` gives two
+  `None`s. The reverse of `zip`.
 
 ## `core::ptr`
 
@@ -2136,6 +2359,54 @@ Operations on `Tensor`, including shape queries and elementwise maths.
   Set every element of a statically shaped tensor to `val`.
   The shape is known at compile time here, so the emitted loop has constant bounds.
 
+**`Tensor<$t, [?]>` methods**
+
+- `fn sum(self : &Tensor<$t, [?]>) -> $t`<br>
+  The sum of the elements. 0 for an empty tensor.
+- `fn dot(self : &Tensor<$t, [?]>, other : &Tensor<$t, [?]>) -> $t`<br>
+  The sum of the products of matching elements. Refused for tensors of different
+  lengths.
+- `fn max(self : &Tensor<$t, [?]>) -> $t`<br>
+  The largest element. A NaN is ignored, as `max` on a number does; negative
+  infinity for an empty tensor.
+- `fn min(self : &Tensor<$t, [?]>) -> $t`<br>
+  The smallest element. A NaN is ignored; positive infinity for an empty tensor.
+- `fn mean(self : &Tensor<$t, [?]>) -> $t`<br>
+  The average of the elements. NaN for an empty tensor. The loop of `sum`, written out
+  rather than calling `self.sum()`, which the legacy code generator cannot compile.
+- `fn norm(self : &Tensor<$t, [?]>) -> $t`<br>
+  The Euclidean length: the square root of the sum of the squares. The loop of `dot`
+  with the tensor on both sides, written out rather than calling `self.dot(self)`,
+  which the legacy code generator cannot compile.
+
+**`Tensor<T, [?]>` methods**, stamped for 2 instantiations
+
+- `fn add_assign(self : &mut Tensor<T, [?]>, other : &Tensor<T, [?]>) -> void`<br>
+  Adds `other` to this tensor, element by element. Refused for different lengths.
+- `fn sub_assign(self : &mut Tensor<T, [?]>, other : &Tensor<T, [?]>) -> void`<br>
+  Subtracts `other` from this tensor, element by element.
+- `fn mul_assign(self : &mut Tensor<T, [?]>, other : &Tensor<T, [?]>) -> void`<br>
+  Multiplies this tensor by `other`, element by element.
+- `fn div_assign(self : &mut Tensor<T, [?]>, other : &Tensor<T, [?]>) -> void`<br>
+  Divides this tensor by `other`, element by element.
+- `fn add_scalar(self : &mut Tensor<T, [?]>, a : T) -> void`<br>
+  Adds `a` to every element.
+- `fn scale(self : &mut Tensor<T, [?]>, a : T) -> void`<br>
+  Multiplies every element by `a`.
+- `fn scaled_add(self : &mut Tensor<T, [?]>, a : T, x : &Tensor<T, [?]>) -> void`<br>
+  Adds `a` times `x` to this tensor: BLAS's `axpy`. Refused for different lengths.
+- `fn map_inplace(self : &mut Tensor<T, [?]>, f : Closure1<T, T>) -> void`<br>
+  Replaces every element by `f` of it. A call per element, so the named operations
+  below are faster where one fits.
+- `fn abs_inplace(self : &mut Tensor<T, [?]>) -> void`<br>
+  Replaces every element by its absolute value.
+- `fn sqrt_inplace(self : &mut Tensor<T, [?]>) -> void`<br>
+  Replaces every element by its square root.
+- `fn clamp_inplace(self : &mut Tensor<T, [?]>, lo : T, hi : T) -> void`<br>
+  Holds every element between `lo` and `hi`, as `clamp` on a number does.
+
+T = `f32`, `f64`
+
 ## `std::time`
 
 Clocks and durations.
@@ -2179,7 +2450,8 @@ Clocks and durations.
   alignment and the `capacity * elem_size` overflow check belong to Rust. There is no `Drop`
   in the language, so the buffer is released by calling `free` and not before.
 - `struct VecIter<T>`<br>
-  An iterator over a `Vec<T>`'s elements, holding a pointer to the vector it walks.
+  An iterator over references to a `Vec<T>`'s elements, holding a pointer to the vector it
+  walks.
   Growing or freeing that vector while this exists leaves the iterator pointing at the old
   buffer.
 - `struct VecIntoIter<T>`<br>
@@ -2188,6 +2460,10 @@ Clocks and durations.
   It holds the vector itself rather than a pointer to it, as `VecIter` does: the vector was
   moved into `into_iter`, so a pointer to it would point at a variable of a function that has
   returned.
+- `struct VecIterMut<T>`<br>
+  An iterator over mutable references to a `Vec<T>`'s elements. Built by `iter_mut`.
+  Growing or freeing that vector while this exists leaves the iterator pointing at the old
+  buffer.
 - `struct VecMap<T, NewItem>`<br>
   The iterator `VecIter::map` builds: the inner walk plus the function applied to each item.
 
@@ -2227,7 +2503,11 @@ Clocks and durations.
 - `fn len(self : &Vec<T>) -> i32`<br>
   How many elements are in the vector, which is not its capacity.
 - `fn iter(self : &Vec<T>) -> VecIter<T>`<br>
-  An iterator over the elements, borrowing the vector rather than consuming it.
+  An iterator over references to the elements, borrowing the vector rather than
+  consuming it. `.copied()` turns it into one over copies.
+- `fn iter_mut(self : &mut Vec<T>) -> VecIterMut<T>`<br>
+  An iterator over mutable references to the elements, through which each can be changed
+  in place.
 
 **`Extend<T> for Vec<T>` methods**
 
@@ -2268,23 +2548,38 @@ Clocks and durations.
 
 **`Iterator for VecIter<T>` methods**
 
-- `fn next(self : &mut VecIter<T>) -> Option<T>`<br>
-  The next element, or nothing once the end is reached.
+- `fn next(self : &mut VecIter<T>) -> Option<&T>`<br>
+  A reference to the next element, or nothing once the end is reached.
 
 **`DoubleEndedIterator for VecIter<T>` methods**
 
-- `fn next_back(self : &mut VecIter<T>) -> Option<T>`<br>
-  The last element not yet handed out from either end.
+- `fn next_back(self : &mut VecIter<T>) -> Option<&T>`<br>
+  A reference to the last element not yet handed out from either end.
 
 **`ExactSizeIterator for VecIter<T>` methods**
 
 - `fn len(self : &VecIter<T>) -> i64`<br>
   How many elements are left between the two ends.
 
+**`Iterator for VecIterMut<T>` methods**
+
+- `fn next(self : &mut VecIterMut<T>) -> Option<&mut T>`<br>
+  A mutable reference to the next element, or nothing once the end is reached.
+
+**`DoubleEndedIterator for VecIterMut<T>` methods**
+
+- `fn next_back(self : &mut VecIterMut<T>) -> Option<&mut T>`<br>
+  A mutable reference to the last element not yet handed out from either end.
+
+**`ExactSizeIterator for VecIterMut<T>` methods**
+
+- `fn len(self : &VecIterMut<T>) -> i64`<br>
+  How many elements are left between the two ends.
+
 **`VecIter<T>` methods**
 
-- `fn map<NewItem>(self : VecIter<T>, f : Closure1<T, NewItem>) -> VecMap<T, NewItem>`<br>
-  An iterator over these elements with `f` applied to each.
+- `fn map<NewItem>(self : VecIter<T>, f : Closure1<&T, NewItem>) -> VecMap<T, NewItem>`<br>
+  An iterator over these elements with `f` applied to a reference to each.
 
 **`Iterator for VecMap<T, NewItem>` methods**
 
@@ -2315,4 +2610,4 @@ Clocks and durations.
 
 ______________________________________________________________________
 
-822 functions across 34 modules.
+997 functions across 35 modules.
