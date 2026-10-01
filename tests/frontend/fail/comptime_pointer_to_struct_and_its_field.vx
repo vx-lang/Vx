@@ -1,0 +1,31 @@
+//===- comptime_pointer_to_struct_and_its_field.vx - Vx --------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+struct Holder {
+  n : i32
+}
+
+// `n` points into `*h`. Run as a program, `holder.n` ends as 13. The comptime evaluator does
+// not track one argument pointing inside another, so it must refuse rather than fold a wrong 3.
+fn set_field_then_add(h : *mut Holder, n : *mut i32) -> i32 {
+  unsafe { *n = 3i32; (*h).n = (*h).n + 10i32; }
+  return 0i32;
+}
+
+fn main() -> i32 {
+  // CHECK: Error[E3033]{{.*}}cannot be evaluated
+  let value = comptime {
+    let mut holder = Holder {
+      n: 5i32
+    };
+    let _ignored = set_field_then_add(&mut holder, &mut holder.n);
+    holder.n
+  };
+  return value;
+}

@@ -633,6 +633,25 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
         }
     }
 
+    /// Whether two places share storage: the same root, and one's path a prefix of the other's.
+    fn places_overlap(a: &ComptimeWritePlace, b: &ComptimeWritePlace) -> bool {
+        fn path(place: &ComptimeWritePlace) -> Option<(&Symbol, &[ComptimePlaceProjection])> {
+            match place {
+                ComptimeWritePlace::Binding(root) => Some((root, &[])),
+                ComptimeWritePlace::Projection { root, projections } => {
+                    Some((root, projections.as_slice()))
+                }
+                ComptimeWritePlace::Unknown => None,
+            }
+        }
+        match (path(a), path(b)) {
+            (Some((root_a, path_a)), Some((root_b, path_b))) => {
+                root_a == root_b && (path_a.starts_with(path_b) || path_b.starts_with(path_a))
+            }
+            _ => true,
+        }
+    }
+
     fn place_root(place: &ComptimeWritePlace) -> Option<&Symbol> {
         match place {
             ComptimeWritePlace::Binding(root) | ComptimeWritePlace::Projection { root, .. } => {
@@ -1178,6 +1197,10 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
             .map(|(place, target)| (place.clone(), target.clone()))
             .collect();
         self.context.push_scope();
+        // A caller place passed to more than one parameter, as in `poke2(p, p)`, is one value:
+        // every such parameter after the first reaches the first one's binding, so a write
+        // through either is seen through both, and only the first is written back.
+        let mut parameter_for_place: HashMap<ComptimeWritePlace, Symbol> = HashMap::new();
         for ((((parameter, _), parameter_can_carry_mut_reference), argument), writeback) in function
             .params
             .iter()
@@ -1188,13 +1211,18 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
             self.context
                 .declare(parameter.clone(), argument.value.facts.clone());
             self.env.insert(parameter.clone(), argument.value.clone());
-            if *parameter_can_carry_mut_reference && writeback.is_some() {
+            if let Some(place) = writeback
+                .as_ref()
+                .filter(|_| *parameter_can_carry_mut_reference)
+            {
                 // The parameter's private binding is its lvalue inside this call. When the call
                 // returns, its final value is copied to the caller's tracked place below.
-                self.reference_places.insert(
-                    parameter.clone(),
-                    ComptimeWritePlace::Binding(parameter.clone()),
-                );
+                let owner = parameter_for_place
+                    .entry(place.clone())
+                    .or_insert_with(|| parameter.clone())
+                    .clone();
+                self.reference_places
+                    .insert(parameter.clone(), ComptimeWritePlace::Binding(owner));
             }
         }
         let body = self.block(&function.body);
@@ -1353,6 +1381,18 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
                 .any(|place| matches!(place, ComptimeWritePlace::Unknown))
             {
                 return self.refusal_after(args);
+            }
+            // The same place passed twice is shared inside the call. A place and a part of it,
+            // such as `&mut h` and `&mut h.n`, would need one copy nested in the other, which
+            // this interpreter does not model; that call is not folded.
+            let places = writebacks.iter().flatten().collect::<Vec<_>>();
+            let partly_overlapping = places.iter().enumerate().any(|(i, a)| {
+                places[i + 1..]
+                    .iter()
+                    .any(|b| a != b && Self::places_overlap(a, b))
+            });
+            if partly_overlapping {
+                return self.unsupported_after(args);
             }
             // The borrow outcome deliberately has no scalar `Value`: `comptime { &mut x }`
             // cannot replace itself with `x`. A known direct callee, however, needs the current

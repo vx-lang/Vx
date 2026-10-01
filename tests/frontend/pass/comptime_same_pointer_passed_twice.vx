@@ -1,0 +1,49 @@
+//===- comptime_same_pointer_passed_twice.vx - Vx --------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+
+// Each function is given the same pointer twice, so a write through `a` is seen through `b`.
+fn set_one_then_add_ten(a : *mut i32, b : *mut i32) -> i32 {
+  unsafe { *a = 1i32; *b = *b + 10i32; }
+  return 0i32;
+}
+
+fn add_ten_then_set_one(a : *mut i32, b : *mut i32) -> i32 {
+  unsafe { *b = *b + 10i32; *a = 1i32; }
+  return 0i32;
+}
+
+// 5 -> 1 -> 11.
+fn add_ten_last() -> i32 {
+  return comptime {
+    let mut local = 5i32;
+    let pointer : *mut i32 = &mut local;
+    let _ignored = set_one_then_add_ten(pointer, pointer);
+    local
+  };
+}
+
+// 5 -> 15 -> 1.
+fn set_one_last() -> i32 {
+  return comptime {
+    let mut local = 5i32;
+    let _ignored = add_ten_then_set_one(&mut local, &mut local);
+    local
+  };
+}
+
+fn main() -> i32 {
+  return add_ten_last() + set_one_last();
+}
+
+// CHECK-LABEL: func.func @set_one_last() -> i32
+// CHECK: %[[ONE:.*]] = arith.constant 1 : i32
+// CHECK-NEXT: return %[[ONE]] : i32
+// CHECK-LABEL: func.func @add_ten_last() -> i32
+// CHECK: %[[ELEVEN:.*]] = arith.constant 11 : i32
+// CHECK-NEXT: return %[[ELEVEN]] : i32
