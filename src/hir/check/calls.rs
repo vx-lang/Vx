@@ -2175,6 +2175,25 @@ impl<'a> TypeChecker<'a> {
             };
 
             let obj_is_ref = matches!(base_ty, Type::Borrow { .. } | Type::Pointer(_, _, _));
+            if param_is_ref && is_mut {
+                let method = generic_method.name.to_string();
+                if !obj_is_ref {
+                    if let Some(root) = self.read_only_root(obj) {
+                        let what = format!("`{method}`, which takes `&mut self`, cannot change it");
+                        self.report_read_only(&root, &what, &span);
+                    }
+                } else if matches!(base_ty, Type::Borrow { is_mut: false, .. }) && !self.speculating
+                {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E4006,
+                        format!(
+                            "`{method}` takes `&mut self`, and this calls it through a shared \
+                             reference (`&`), which only allows reading"
+                        ),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
+                    );
+                }
+            }
 
             if param_is_ref && !obj_is_ref {
                 call_args.push(Expr::Borrow(BorrowExpr {

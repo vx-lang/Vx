@@ -1,0 +1,97 @@
+//===- read_only_variables.vx - Vx Compiler ----------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A variable or parameter declared without `mut` is read-only, as in Rust: it cannot be
+// assigned, nor can a field or element of it, it cannot be borrowed `&mut`, and a method
+// that takes `&mut self` cannot be called on it (E4010). A shared reference cannot be
+// turned into a `&mut` one, by `&mut *r` or by such a method call (E4006).
+
+struct Counter {
+  n : i64,
+}
+
+impl Counter {
+  fn bump(self : &mut Counter) -> i32 {
+    self.n = self.n + 1i64;
+    return 0;
+  }
+}
+
+fn assign() -> i64 {
+  let x : i64 = 1i64;
+  x = 2i64;
+  return x;
+}
+
+fn compound_assign() -> i64 {
+  let x : i64 = 1i64;
+  x += 2i64;
+  return x;
+}
+
+fn assign_a_field() -> i64 {
+  let c = Counter {
+    n : 1i64
+  };
+  c.n = 2i64;
+  return c.n;
+}
+
+fn assign_an_element() -> i64 {
+  let t : Tensor<i64, [2]> = [ 1i64, 2i64 ];
+  t[0] = 5i64;
+  return t[0];
+}
+
+fn borrow_mutably() -> i64 {
+  let x : i64 = 1i64;
+  let m = &mut x;
+  *m = 2i64;
+  return x;
+}
+
+fn call_a_mutating_method() -> i64 {
+  let c = Counter {
+    n : 1i64
+  };
+  c.bump();
+  return c.n;
+}
+
+fn assign_a_parameter(n : i64) -> i64 {
+  n = n + 1i64;
+  return n;
+}
+
+fn mutable_borrow_through_a_shared_reference() -> i64 {
+  let x : i64 = 1i64;
+  let r = &x;
+  let m = &mut *r;
+  return *m;
+}
+
+fn mutating_method_through_a_shared_reference(c : &Counter) -> i64 {
+  c.bump();
+  return c.n;
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK-DAG: Error[E4010] at 28:3: `x` is not declared `mut`, so it cannot be assigned; declare it `let mut x`
+// CHECK-DAG: Error[E4010] at 34:3: `x` is not declared `mut`, so it cannot be assigned
+// CHECK-DAG: Error[E4010] at 42:5: `c` is not declared `mut`, so it cannot be assigned
+// CHECK-DAG: Error[E4010] at 48:4: `t` is not declared `mut`, so it cannot be assigned
+// CHECK-DAG: Error[E4010] at 54:11: `x` is not declared `mut`, so it cannot be borrowed `&mut`
+// CHECK-DAG: Error[E4010] at 63:5: `c` is not declared `mut`, so `bump`, which takes `&mut self`, cannot change it
+// CHECK-DAG: Error[E4010] at 68:3: `n` is not declared `mut`, so it cannot be assigned; write the parameter as `mut n`
+// CHECK-DAG: Error[E4006] at 75:11: this borrows `&mut` through a shared reference
+// CHECK-DAG: Error[E4006] at 80:5: `bump` takes `&mut self`, and this calls it through a shared reference
+// CHECK: 9 error(s) emitted

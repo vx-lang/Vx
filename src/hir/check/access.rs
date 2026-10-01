@@ -757,6 +757,27 @@ impl<'a> TypeChecker<'a> {
                 span,
             }) => {
                 let inner_ty = self.check_expr_type_flag(inner, false);
+                if *is_mut {
+                    if let Some(root) = self.read_only_root(inner) {
+                        self.report_read_only(&root, "it cannot be borrowed `&mut`", span);
+                    }
+                    // `&mut *r` through a shared `r` would make a `&mut` out of a `&`.
+                    if let Expr::Dereference(d) = &**inner {
+                        if matches!(
+                            self.check_expr_type_probe(&d.expr),
+                            Type::Borrow { is_mut: false, .. }
+                        ) && !self.speculating
+                        {
+                            self.errors.error_with_code(
+                                crate::diagnostic::DiagnosticCode::E4006,
+                                "this borrows `&mut` through a shared reference (`&`), which only \
+                                 allows reading"
+                                    .to_string(),
+                                Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                            );
+                        }
+                    }
+                }
 
                 let place = Self::extract_base_and_path(inner)
                     .or_else(|| self.reborrow_base_and_path(inner));
@@ -1316,6 +1337,36 @@ impl<'a> TypeChecker<'a> {
     /// behind. Persist only when the reborrow outlives the call (the callee returns a reference);
     /// a value/void call borrows only for its own duration.
     #[allow(clippy::too_many_arguments)]
+    /// The read-only variable that changing `place` would change: `x` for `x`, `x.f` or `x[i]`.
+    /// A place reached through a reference variable, `r.f` or `r[i]`, changes what `r` points
+    /// at rather than `r`; `None` then, and for a variable declared `mut`.
+    pub(crate) fn read_only_root(&self, place: &Expr) -> Option<String> {
+        let (root, _) = Self::extract_base_and_path(place)?;
+        let through_reference = !matches!(place, Expr::Identifier(_))
+            && matches!(
+                self.lookup(&root).map(|(t, _)| t),
+                Some(Type::Borrow { .. } | Type::Pointer(..) | Type::Ref(..))
+            );
+        (!through_reference && !self.is_mutable(&root)).then_some(root)
+    }
+
+    /// E4010: `name` was declared without `mut` and `what` would change it.
+    pub(crate) fn report_read_only(&mut self, name: &str, what: &str, span: &crate::syntax::Span) {
+        if self.speculating {
+            return;
+        }
+        let fix = if self.borrow.current_params.contains_key(name) {
+            format!("write the parameter as `mut {name}`")
+        } else {
+            format!("declare it `let mut {name}`")
+        };
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E4010,
+            format!("`{name}` is not declared `mut`, so {what}; {fix}"),
+            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+        );
+    }
+
     /// Drop the E4002 already reported for reading `name` on this line. A borrow conflict on
     /// the same variable, E4003 or E4004, says the same thing more precisely.
     fn drop_access_error_for(&mut self, name: &str, at: &crate::syntax::Span) {

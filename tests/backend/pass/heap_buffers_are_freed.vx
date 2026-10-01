@@ -48,7 +48,7 @@ fn fill_and_read() -> f32 {
 }
 
 fn make(n : i32) -> Tensor<f32, [ ? ]> {
-  let t = Tensor<f32>(n);
+  let mut t = Tensor<f32>(n);
   t[0] = 3.0;
   return t;
 }

@@ -272,6 +272,7 @@ pub fn fill_trait_defaults_in(program: &mut crate::syntax::Program, defaults: &T
                         )
                     })
                     .collect(),
+                mut_params: signature.mut_params.clone(),
                 topology: crate::syntax::Topology::CPU,
                 return_type: substitute_self(
                     &signature.return_type.substitute(&trait_subst),

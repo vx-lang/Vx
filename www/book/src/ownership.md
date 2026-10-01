@@ -65,6 +65,21 @@ print(r.v);
 **A reference cannot give away what it points at (E4008).** `let b = *r;` would move the value out
 of `r`, which only borrows it. Copy or clone it instead; for a number, `*r` is a copy and is fine.
 
+**A variable without `mut` is read-only (E4010).** As in Rust, `let x = ..` and a parameter `x : T`
+cannot be assigned, nor can a field or element of `x`; `x` cannot be borrowed `&mut`; and a method
+that takes `&mut self` cannot be called on it. Write `let mut x = ..`, or `mut x : T` for a
+parameter (`mut self : T` for a method that takes `self` by value). A `&mut` held in a variable
+without `mut` can still be written through, since that changes what it points at, not the variable.
+
+```rust
+let x = 1;
+x = 2;              // E4010
+let mut y = 1;
+y = 2;              // fine
+let r = &mut y;
+*r = 3;             // fine: writes y, not r
+```
+
 **Shared or exclusive, never both (E4002, E4003, E4004).** While a `&mut` borrow of `x` is still
 going to be used, `x` cannot be read, written or borrowed again. While a `&` borrow is still going
 to be used, `x` cannot be borrowed `&mut`. Two borrows passed to one call count as alive together.
@@ -108,7 +123,8 @@ print(*r);
 ```
 
 **Only a `&mut` can be written through (E4006).** `*r = v`, `r.f = v` and `r[i] = v` need `r` to be
-a `&mut`. So does a `&mut` field reached through a `&`.
+a `&mut`. So does a `&mut` field reached through a `&`. A `&` cannot be turned into a `&mut` either:
+`&mut *r`, or calling a method that takes `&mut self` through `r`, needs `r` to be a `&mut`.
 
 **A reference cannot outlive what it points at (E4005).** A reference to a local, or a value or
 closure holding one, cannot be returned, stored through a reference, or passed to a call that could

@@ -37,7 +37,7 @@ fn small() -> i32 {
 
 // A megabyte is not stack storage. Over the 4 KiB limit, so it keeps its `malloc`.
 fn big() -> f32 {
-  let t = Tensor<f32, [ 512, 512 ]>::uninit();
+  let mut t = Tensor<f32, [ 512, 512 ]>::uninit();
   t[0][0] = 1.0;
   return t[0][0];
 }

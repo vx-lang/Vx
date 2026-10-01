@@ -45,7 +45,7 @@ fn args() -> Args {
 }
 
 impl Iterator<Args, *mut i8> for Args {
-  fn next(self : Args) -> Option<*mut i8> {
+  fn next(mut self : Args) -> Option<*mut i8> {
     if self.current < self.count {
       let val : *mut i8 = arg(self.current);
       self.current = self.current + 1;

@@ -278,6 +278,7 @@ impl<'a> TypeChecker<'a> {
         // facts about the name are now about a dead binding and must not participate in
         // proofs (a stale `i == 1` beside a new `i == 9` proves anything). Neutralized
         // for mutable bindings too -- they record no new fact, but they still shadow.
+        self.set_mutable(name.as_ref(), *_is_mut);
         self.neutralize_facts_mentioning(name.as_ref());
         if !*_is_mut {
             let id_expr = Expr::Identifier(IdentifierExpr {
@@ -748,6 +749,9 @@ impl<'a> TypeChecker<'a> {
         }
 
         self.check_assign_while_borrowed(lhs);
+        if let Some(root) = self.read_only_root(lhs) {
+            self.report_read_only(&root, "it cannot be assigned", &lhs.span());
+        }
         self.checking_assign_lhs = true;
         let lhs_ty = self.check_expr_type_flag(lhs, false);
         self.checking_assign_lhs = false;

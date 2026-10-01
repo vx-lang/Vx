@@ -361,6 +361,10 @@ pub enum DiagnosticCode {
     /// still used afterwards: `let r = &x; x = 2;` and then a use of `r`. The borrow would see
     /// the value change under it.
     E4009,
+    /// A change to a variable declared without `mut`: assigning it, or a field or element of
+    /// it, borrowing it `&mut`, or calling a method that takes `&mut self` on it. Declare it
+    /// `let mut x`, or for a parameter `mut x : T`.
+    E4010,
 
     // --- Safety Errors (E5xxx) ---
     /// Unsafe function call outside unsafe block

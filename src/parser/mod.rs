@@ -71,6 +71,8 @@ pub struct Parser<'a> {
     tokens: &'a [Token<'a>],
     pos: usize,
     generic_params: Vec<String>, // Tracks generic parameters in scope
+    /// The parameters written `mut` in the parameter list parsed last.
+    mut_params: Vec<crate::symbol::Symbol>,
     source: &'a str,
     /// Set once tuple syntax is seen: the module then imports `core::tuple`, where the structs
     /// it stands for are declared.
@@ -98,6 +100,7 @@ impl<'a> Parser<'a> {
             tokens,
             pos: 0,
             generic_params: Vec::new(),
+            mut_params: Vec::new(),
             source,
             uses_tuples: false,
             pending_stmts: Vec::new(),

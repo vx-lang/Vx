@@ -1,0 +1,107 @@
+//===- mutable_variables.vx - Vx Compiler ------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Changes that are allowed, each with its value. A `let mut` variable and a `mut` parameter
+// can be assigned and borrowed `&mut`, and can have a `&mut self` method called on them;
+// `mut self` works for a method that takes `self` by value. A `&mut` held in a variable
+// without `mut` can still be written through: the write changes what it points at, not
+// the variable. One name of a tuple can be `mut`, and a `let mut` can shadow a plain `let`.
+//
+// EXPECT: 4 6 3 7 8 2 20 3
+
+struct Counter {
+  n : i64,
+}
+
+impl Counter {
+  fn bump(self : &mut Counter) -> i32 {
+    self.n = self.n + 1i64;
+    return 0;
+  }
+
+  fn plus_ten(mut self : Counter) -> i64 {
+    self.n = self.n + 10i64;
+    return self.n;
+  }
+}
+
+fn let_mut() -> i64 {
+  let mut x : i64 = 1i64;
+  x = 2i64;
+  x += 2i64;
+  return x;
+}
+
+fn mut_parameter(mut n : i64) -> i64 {
+  n = n + 1i64;
+  return n;
+}
+
+fn method_on_let_mut() -> i64 {
+  let mut c = Counter {
+    n : 1i64
+  };
+  c.bump();
+  c.bump();
+  return c.n;
+}
+
+fn through_a_mutable_reference() -> i64 {
+  let mut x : i64 = 1i64;
+  let r = &mut x;
+  *r = 7i64;
+  return x;
+}
+
+fn field_and_method_through_a_reference() -> i64 {
+  let mut c = Counter {
+    n : 1i64
+  };
+  let p = &mut c;
+  p.n = 7i64;
+  p.bump();
+  return c.n;
+}
+
+fn one_mut_name_in_a_tuple() -> i64 {
+  let (mut a, b) : (i64, i64) = (1i64, 1i64);
+  a = a + b;
+  return a;
+}
+
+fn shadowed_by_let_mut() -> i64 {
+  let x : i64 = 1i64;
+  let mut x = x + 1i64;
+  x = x * 10i64;
+  return x;
+}
+
+fn mut_self_by_value() -> i64 {
+  let c = Counter {
+    n : -7i64
+  };
+  return c.plus_ten();
+}
+
+fn main() -> i32 {
+  print(let_mut());
+  print!(" ");
+  print(mut_parameter(5i64));
+  print!(" ");
+  print(method_on_let_mut());
+  print!(" ");
+  print(through_a_mutable_reference());
+  print!(" ");
+  print(field_and_method_through_a_reference());
+  print!(" ");
+  print(one_mut_name_in_a_tuple());
+  print!(" ");
+  print(shadowed_by_let_mut());
+  print!(" ");
+  print(mut_self_by_value());
+  return 0;
+}

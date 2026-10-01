@@ -1613,6 +1613,7 @@ impl CompilerDriver {
                         )
                     })
                     .collect(),
+                mut_params: Vec::new(),
                 topology: crate::syntax::Topology::CPU,
                 return_type: body.ret_ty.clone(),
                 requires: vec![],

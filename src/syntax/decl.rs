@@ -78,6 +78,9 @@ pub struct Function {
     pub name: Symbol,
     pub generics: Vec<GenericParam>,
     pub params: Vec<(Symbol, Type)>,
+    /// The parameters written `mut x : T`. The others, like a `let` without `mut`, cannot be
+    /// assigned or borrowed `&mut`.
+    pub mut_params: Vec<Symbol>,
     pub topology: Topology,
     pub return_type: Type,
     pub requires: Vec<Expr>,
@@ -100,6 +103,7 @@ impl Function {
             name: self.name.clone(),
             generics: self.generics.clone(),
             params: self.params.clone(),
+            mut_params: self.mut_params.clone(),
             topology: self.topology.clone(),
             return_type: self.return_type.clone(),
             requires: self.requires.clone(),
@@ -151,6 +155,8 @@ pub struct MethodSignature {
     /// The method's own type parameters, as in `fn fold<B>(..)`. Separate from the trait's.
     pub generics: Vec<GenericParam>,
     pub params: Vec<(Symbol, Type)>,
+    /// The parameters written `mut`, as for a [`Function`].
+    pub mut_params: Vec<Symbol>,
     pub return_type: Type,
     /// The default body, when the trait writes one instead of a `;`. An impl that does not
     /// provide the method gets a copy of this, with `Self` replaced by the type it is

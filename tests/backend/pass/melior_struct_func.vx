@@ -21,7 +21,7 @@ struct Config {
   : i32
 }
 
-fn mutate_config(conf: Config) -> Config {
+fn mutate_config(mut conf: Config) -> Config {
   conf.dim = 512;
   return conf;
 }

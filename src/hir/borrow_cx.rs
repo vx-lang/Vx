@@ -33,6 +33,9 @@ pub(crate) struct BorrowCx {
     /// `TypeChecker::scopes` (pushed/popped together). Innermost is `.last()`; starts with one scope
     /// so a top-level `consume` always has a slot to mark.
     pub(crate) moved_vars: Vec<HashSet<String>>,
+    /// The bindings declared `mut`, one set per lexical scope, kept in step with `moved_vars`.
+    /// Every other binding is read-only.
+    pub(crate) mutable_vars: Vec<HashSet<String>>,
     /// Provenance of each reference-typed *local* binding (#243): does it root in caller memory
     /// (`External`) or a function-local slot (`Local`)? Reset per function.
     pub(crate) ref_provenance: HashMap<Symbol, RefProvenance>,
@@ -61,6 +64,7 @@ impl Default for BorrowCx {
             skip_borrow_check: false,
             // One scope so `consume`'s `moved_vars.last_mut()` is always `Some` at top level.
             moved_vars: vec![HashSet::new()],
+            mutable_vars: vec![HashSet::new()],
             ref_provenance: HashMap::new(),
             current_params: HashMap::new(),
             loop_exits: Vec::new(),

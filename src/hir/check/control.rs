@@ -777,6 +777,7 @@ impl<'a> TypeChecker<'a> {
                     name: func_name.clone().into(),
                     generics: vec![],
                     params: env_params,
+                    mut_params: Vec::new(),
                     topology: self.active_topology.clone(),
                     return_type: ret_ty.clone(),
                     requires: vec![],

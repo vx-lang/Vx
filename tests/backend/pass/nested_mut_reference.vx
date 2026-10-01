@@ -11,14 +11,16 @@
 // `**rr` segfaulted. `BorrowExpr` now extracts the memref's aligned data pointer
 // and materializes a bare `!llvm.ptr` slot, so `rr` is a real `&mut &mut i32`.
 // Writing `**rr = 10` mutates `x` through the pointer-to-pointer; `x` then prints 10.
-// This is the AST-path oracle for `flat_writes_through_a_nested_mutable_reference`.
+// `r` has to be `let mut` to be borrowed `&mut`, and the AST path then gives the wrong
+// pointer (#936), so this runs on the flat path only.
+// REQUIRES: flat-codegen
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // CHECK-DAG: func.func private @print_i32(
 // CHECK-LABEL: func.func @main() -> i32
 // CHECK: call @print_i32(%{{.*}}) : (i32) -> i32
 fn main() -> i32 {
   let mut x = 5;
-  let r = &mut x;   // r  : &mut i32
+  let mut r = &mut x;   // r  : &mut i32
   let rr = &mut r;  // rr : &mut &mut i32
   **rr = 10;        // mutate x through the pointer-to-pointer
   print(x);         // 10

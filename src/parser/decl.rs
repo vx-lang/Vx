@@ -27,7 +27,11 @@ impl<'a> Parser<'a> {
         let mut params: Vec<(crate::symbol::Symbol, crate::syntax::types::Type)> = Vec::new();
         if !self.check(&TokenType::RightParen) {
             loop {
+                let is_mut = self.match_token(&TokenType::Mut);
                 let name = self.expect_identifier("Expected parameter name")?;
+                if is_mut {
+                    self.mut_params.push(name.clone().into());
+                }
                 self.consume(&TokenType::Colon, "Expected ':'")?;
                 let ty = self.parse_type()?;
                 params.push((name.into(), ty));
@@ -139,7 +143,9 @@ impl<'a> Parser<'a> {
         let generics = self.parse_generic_params()?;
 
         self.consume(&TokenType::LeftParen, "Expected '(' after function name")?;
+        self.mut_params.clear();
         let params = self.parse_comma_separated_params()?;
+        let mut_params = std::mem::take(&mut self.mut_params);
         self.consume(&TokenType::RightParen, "Expected ')'")?;
 
         let mut topology = Topology::CPU;
@@ -242,6 +248,7 @@ impl<'a> Parser<'a> {
             name: name.into(),
             generics,
             params,
+            mut_params,
             topology,
             return_type,
             requires,
@@ -984,7 +991,9 @@ impl<'a> Parser<'a> {
             // this signature only, so they are popped once its body or `;` is read.
             let method_generics = self.parse_generic_params()?;
             self.consume(&TokenType::LeftParen, "Expected '('")?;
+            self.mut_params.clear();
             let params = self.parse_comma_separated_params()?;
+            let mut_params = std::mem::take(&mut self.mut_params);
             self.consume(&TokenType::RightParen, "Expected ')'")?;
             self.consume(&TokenType::Arrow, "Expected '->'")?;
             let return_type = self.parse_type()?;
@@ -1014,6 +1023,7 @@ impl<'a> Parser<'a> {
                 name: method_name.into(),
                 generics: method_generics,
                 params,
+                mut_params,
                 return_type,
                 default_body,
                 doc_comment,

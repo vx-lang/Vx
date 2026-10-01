@@ -467,6 +467,9 @@ impl<'a> TypeChecker<'a> {
         self.borrow
             .moved_vars
             .push(std::collections::HashSet::new());
+        self.borrow
+            .mutable_vars
+            .push(std::collections::HashSet::new());
         self.consteval.env.push(std::collections::HashMap::new());
     }
 
@@ -486,6 +489,9 @@ impl<'a> TypeChecker<'a> {
         self.borrow
             .moved_vars
             .push(std::collections::HashSet::new());
+        self.borrow
+            .mutable_vars
+            .push(std::collections::HashSet::new());
         self.consteval.env.push(std::collections::HashMap::new());
     }
 
@@ -496,6 +502,7 @@ impl<'a> TypeChecker<'a> {
         let depth = self.scopes.len();
         self.scopes.pop();
         self.borrow.moved_vars.pop();
+        self.borrow.mutable_vars.pop();
         self.consteval.env.pop();
 
         // Lexical Lifetime cleanup: Remove borrows originating in this scope
@@ -727,6 +734,29 @@ impl<'a> TypeChecker<'a> {
             scope.extend(marks);
         }
         a
+    }
+
+    /// Record whether the binding of `name` now in scope was declared `mut`.
+    pub(crate) fn set_mutable(&mut self, name: &str, is_mut: bool) {
+        let Some(scope) = self.scope_of(name) else {
+            return;
+        };
+        if let Some(set) = self.borrow.mutable_vars.get_mut(scope) {
+            if is_mut {
+                set.insert(name.to_string());
+            } else {
+                set.remove(name);
+            }
+        }
+    }
+
+    /// Whether the binding of `name` in scope was declared `mut`. A name with no binding here
+    /// is not this check's business, so it answers yes.
+    pub(crate) fn is_mutable(&self, name: &str) -> bool {
+        match self.scope_of(name) {
+            Some(scope) => self.borrow.mutable_vars[scope].contains(name),
+            None => true,
+        }
     }
 
     /// The innermost scope binding `name`. `moved_vars` is pushed and popped alongside
@@ -1190,6 +1220,7 @@ impl<'a> TypeChecker<'a> {
             name: mangled_name.into(),
             generics: Vec::new(),
             params: new_params,
+            mut_params: generic_func.mut_params.clone(),
             topology: Self::substitute_topology(generic_func.topology.clone(), topo_mapping),
             return_type: new_ret,
             requires: generic_func
@@ -1350,6 +1381,7 @@ impl<'a> TypeChecker<'a> {
         for (name, ty) in &func.params {
             self.insert(name.to_string(), ty.clone());
             self.borrow.current_params.insert(name.clone(), ty.clone());
+            self.set_mutable(name.as_ref(), func.mut_params.contains(name));
         }
         // Inside a transfer lowering, the raw:: primitives may only touch tiles the
         // transfer was given -- record the parameter names they are allowed to name.
