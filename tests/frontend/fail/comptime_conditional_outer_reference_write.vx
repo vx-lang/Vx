@@ -1,0 +1,93 @@
+//===- comptime_conditional_outer_reference_write.vx - Vx ------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+// A call writes back to a reference from outside the comptime block only when its body wrote
+// through the parameter. These bodies write only on one branch of an `if` whose condition is not
+// known, only inside a loop, only by passing the reference on to another function, or before
+// calling a function that only reads it. Each of those is still a write, so each block must be
+// refused rather than folded.
+
+fn set_unless(value : &mut i32, keep : bool) -> i32 {
+  if keep {
+    return *value;
+  } else {
+    *value = 9i32;
+  }
+  return 0i32;
+}
+
+fn set_in_loop(value : &mut i32, times : i32) -> i32 {
+  for i in 0..times {
+    *value = i;
+  }
+  return 0i32;
+}
+
+fn touch(value : &mut i32) -> i32 {
+  *value = 9i32;
+  return 1i32;
+}
+
+fn forward(value : &mut i32) -> i32 {
+  return touch(value);
+}
+
+fn get(value : &mut i32) -> i32 {
+  return *value;
+}
+
+fn set_then_read(value : &mut i32) -> i32 {
+  *value = 9i32;
+  return get(value);
+}
+
+fn on_one_branch(p : &mut i32, keep : bool) -> i32 {
+  // CHECK: Error[E3033]{{.*}}writes to 'p'
+  let value = comptime {
+    let _result = set_unless(p, keep);
+    7i32
+  };
+  return value;
+}
+
+fn in_a_loop(q : &mut i32, times : i32) -> i32 {
+  // CHECK: Error[E3033]{{.*}}writes to 'q'
+  let value = comptime {
+    let _result = set_in_loop(q, times);
+    7i32
+  };
+  return value;
+}
+
+fn passed_on(r : &mut i32) -> i32 {
+  // CHECK: Error[E3033]{{.*}}writes to 'r'
+  let value = comptime {
+    let _result = forward(r);
+    7i32
+  };
+  return value;
+}
+
+fn before_a_read(s : &mut i32) -> i32 {
+  // CHECK: Error[E3033]{{.*}}writes to 's'
+  let value = comptime {
+    let _result = set_then_read(s);
+    7i32
+  };
+  return value;
+}
+
+fn main() -> i32 {
+  let mut x = 0i32;
+  let a = on_one_branch(&mut x, false);
+  let b = in_a_loop(&mut x, 3i32);
+  let c = passed_on(&mut x);
+  let d = before_a_read(&mut x);
+  return a + b + c + d;
+}

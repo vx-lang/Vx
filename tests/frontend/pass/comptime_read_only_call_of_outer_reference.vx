@@ -1,0 +1,66 @@
+//===- comptime_read_only_call_of_outer_reference.vx - Vx ------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --run 2>&1 | FileCheck %s
+
+// A comptime block may pass a mutable reference from outside the block to a function that only
+// reads through it: nothing outside the block changes, so the block still folds. Each block below
+// folds to 7, and the program prints `y * 10 + 7` for each, with `y` unchanged.
+
+struct Holder {
+  r : &mut i32,
+}
+
+fn get(value : &mut i32) -> i32 {
+  return *value;
+}
+
+fn peek(pointer : *mut i32) -> i32 {
+  return unsafe { *pointer };
+}
+
+fn through_reference(p : &mut i32) -> i32 {
+  let value = comptime {
+    let _read = get(p);
+    7i32
+  };
+  return value;
+}
+
+fn through_field(holder : Holder) -> i32 {
+  let value = comptime {
+    let _read = get(holder.r);
+    7i32
+  };
+  return value;
+}
+
+fn through_pointer(pointer : *mut i32) -> i32 {
+  let value = comptime {
+    let _read = peek(pointer);
+    7i32
+  };
+  return value;
+}
+
+fn main() -> i32 {
+  let mut y = 5i32;
+  let a = through_reference(&mut y);
+  print(y * 10i32 + a);
+  print!(" ");
+  let b = through_field(Holder {
+    r: &mut y
+  });
+  print(y * 10i32 + b);
+  print!(" ");
+  let pointer : *mut i32 = &mut y;
+  let c = through_pointer(pointer);
+  print(y * 10i32 + c);
+  return 0;
+}
+
+// CHECK: 57 57 57
