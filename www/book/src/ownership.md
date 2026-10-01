@@ -25,6 +25,96 @@ fn append(v : &mut Vec<i32>, x : i32) { /* ... */ }
 borrows, or exactly one exclusive borrow, never both at once. The checker tracks variance and
 regions, so a borrow cannot outlive what it points into.
 
+## The rules the checker enforces
+
+Each rule below is a compile error, with the code the error index lists it under.
+
+**A moved value cannot be used (E4001).** Assigning a value, or passing it by value, moves it
+unless its type is `Copy`; numbers are. Giving the variable a new value makes it usable again. A
+`Vec` is not tracked this way yet (#495).
+
+```rust
+let a = S { v : 1 };
+let b = a;          // a is moved
+print(a.v);         // E4001
+```
+
+Only one branch of an `if` or arm of a `match` runs, so each may move the same value. After the
+`if`, the value counts as moved if any branch that reaches the next line moved it.
+
+Inside a loop, a value moved in the body is used again on the next pass, so it is refused at the
+loop unless the body gives it a new value first. A `continue` goes round again as well. A move
+just before `break` is fine; the value then counts as moved after the loop.
+
+```rust
+let a = S { v : 1 };
+while more() {      // E4001: a is moved on every pass
+    take(a);
+}
+```
+
+**A value cannot move while it is borrowed (E4007).** If a borrow of `a` is used after `a` moves,
+the borrow would point at a value that has gone.
+
+```rust
+let r = &a;
+let b = a;          // E4007: r is used below
+print(r.v);
+```
+
+**A reference cannot give away what it points at (E4008).** `let b = *r;` would move the value out
+of `r`, which only borrows it. Copy or clone it instead; for a number, `*r` is a copy and is fine.
+
+**Shared or exclusive, never both (E4002, E4003, E4004).** While a `&mut` borrow of `x` is still
+going to be used, `x` cannot be read, written or borrowed again. While a `&` borrow is still going
+to be used, `x` cannot be borrowed `&mut`. Two borrows passed to one call count as alive together.
+
+```rust
+let m = &mut x;
+print(x);           // E4002: m is used below
+*m = 2;
+```
+
+**A borrow ends at its last use.** It does not last to the end of the block, so this is fine:
+
+```rust
+let m = &mut x;
+*m = 2;
+print(x);           // m is not used again
+```
+
+**Different fields are borrowed separately.** `&mut p.a` and `&mut p.b` can be alive together;
+`&mut p.a` twice, or `&p.a` while `&mut p` is alive, cannot.
+
+**A reborrow borrows the reference (E4002, E4004).** `let n = &mut *m;` borrows `m` for as long as
+`n` is used. Until then `m` cannot be read, written or reborrowed `&mut` again. After `n`'s last use,
+`m` works as before.
+
+```rust
+let m = &mut x;
+let n = &mut *m;
+*m = 4;             // E4002: n is used below
+*n = 5;
+```
+
+**A borrowed variable cannot be assigned (E4009).** While a `&` borrow of `x`, or of a field or
+element of it, is still going to be used, that part of `x` cannot be given a new value. A borrow
+passed only to a call, as in `v.cmp(&best)`, ends with the call.
+
+```rust
+let r = &x;
+x = 2;              // E4009: r is used below
+print(*r);
+```
+
+**Only a `&mut` can be written through (E4006).** `*r = v`, `r.f = v` and `r[i] = v` need `r` to be
+a `&mut`. So does a `&mut` field reached through a `&`.
+
+**A reference cannot outlive what it points at (E4005).** A reference to a local, or a value or
+closure holding one, cannot be returned, stored through a reference, or passed to a call that could
+store it. Inside a function, a variable declared outside a block cannot be given a reference to a
+variable declared inside it.
+
 ## Linear values
 
 Some values are *linear*: they must be consumed exactly once, and the checker enforces it. Device

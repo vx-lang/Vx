@@ -326,6 +326,18 @@ impl<'a> TypeChecker<'a> {
                             }
                         }
                         if consume && ty.is_linear() && !self.is_copy(&ty) && !self.speculating {
+                            if !self.borrow.skip_borrow_check
+                                && !self.borrow.live_borrows(name.as_ref()).is_empty()
+                            {
+                                self.errors.error_with_code(
+                                    crate::diagnostic::DiagnosticCode::E4007,
+                                    format!(
+                                        "`{name}` is moved while it is borrowed, and the borrow \
+                                         is used after the move"
+                                    ),
+                                    Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
+                                );
+                            }
                             self.consume(name.as_ref());
                         }
                         ty.clone()
@@ -379,10 +391,14 @@ impl<'a> TypeChecker<'a> {
                         // `return p.x` after `*r = 42` (#276). Gated on `!self.speculating` like the identifier arm.
                         for b in self.borrow.live_borrows(&name) {
                             if b.is_mut && crate::hir::places::paths_may_alias(&path, &b.path) {
-                                self.errors.push(format!(
-                                    "Cannot access '{}' because it is mutably borrowed.",
-                                    name
-                                ));
+                                self.errors.error_with_code(
+                                    crate::diagnostic::DiagnosticCode::E4002,
+                                    format!(
+                                        "Cannot access '{}' because it is mutably borrowed.",
+                                        name
+                                    ),
+                                    Some(crate::diagnostic::SourceSpan::from_ast_span(&ma_span)),
+                                );
                                 break;
                             }
                         }
@@ -532,7 +548,9 @@ impl<'a> TypeChecker<'a> {
                             .to_string(),
                         Some(crate::diagnostic::SourceSpan::from_ast_span(&ma_span)),
                     );
-                } else {
+                } else if base_ty != Type::Unknown {
+                    // `Unknown` is what an error already reported leaves behind, such as a
+                    // use of a moved value; a second message about it only adds noise.
                     self.errors
                         .push("Member access on non-struct type".to_string());
                 }
@@ -740,10 +758,13 @@ impl<'a> TypeChecker<'a> {
             }) => {
                 let inner_ty = self.check_expr_type_flag(inner, false);
 
-                if let Some((name, path)) = Self::extract_base_and_path(inner) {
+                let place = Self::extract_base_and_path(inner)
+                    .or_else(|| self.reborrow_base_and_path(inner));
+                if let Some((name, path)) = place {
                     // NLL: `live_borrows` sweeps dead borrows before the shared-XOR-mutable conflict
                     // check, so a borrow whose borrower is dead no longer blocks a new one (#276). This
                     // was the hand-copied sweep duplicate the R1 refactor removed.
+                    let mut conflict_reported = false;
                     for b in self.borrow.live_borrows(&name) {
                         // Split borrows: skip a record whose path is disjoint from this borrow's.
                         if !crate::hir::places::paths_may_alias(&path, &b.path) {
@@ -751,6 +772,7 @@ impl<'a> TypeChecker<'a> {
                         }
                         if b.is_mut {
                             if !self.speculating {
+                                conflict_reported = true;
                                 self.errors.error_with_code(
                                     crate::diagnostic::DiagnosticCode::E4004,
                                     format!("Cannot borrow '{}' because it is already borrowed as mutable.", name),
@@ -758,12 +780,16 @@ impl<'a> TypeChecker<'a> {
                                 );
                             }
                         } else if *is_mut && !self.speculating {
+                            conflict_reported = true;
                             self.errors.error_with_code(
                                 crate::diagnostic::DiagnosticCode::E4003,
                                 format!("Cannot borrow '{}' as mutable because it is also borrowed as immutable.", name),
                                 Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                             );
                         }
+                    }
+                    if conflict_reported {
+                        self.drop_access_error_for(&name, span);
                     }
                     if !self.speculating {
                         self.borrow.record(
@@ -792,6 +818,32 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             _ => panic!("Expected IndexAccess, got {:?}", expr),
+        }
+    }
+
+    /// A place reached through a reference variable, `*m`, `(*m).f` or `(*m)[i]`, rooted at that
+    /// variable: `&mut *m` borrows `m`, so `m` cannot be used while the reborrow is. A raw
+    /// pointer has no borrows to track.
+    fn reborrow_base_and_path(&self, e: &Expr) -> Option<(String, Vec<String>)> {
+        match e {
+            Expr::Dereference(d) => match &*d.expr {
+                Expr::Identifier(id)
+                    if matches!(
+                        self.lookup(id.name.as_ref()).map(|(t, _)| t),
+                        Some(Type::Borrow { .. })
+                    ) =>
+                {
+                    Some((id.name.to_string(), Vec::new()))
+                }
+                _ => None,
+            },
+            Expr::MemberAccess(m) => {
+                let (root, mut path) = self.reborrow_base_and_path(&m.base)?;
+                path.push(m.member.to_string());
+                Some((root, path))
+            }
+            Expr::IndexAccess(i) => self.reborrow_base_and_path(&i.base),
+            _ => None,
         }
     }
 
@@ -1264,6 +1316,17 @@ impl<'a> TypeChecker<'a> {
     /// behind. Persist only when the reborrow outlives the call (the callee returns a reference);
     /// a value/void call borrows only for its own duration.
     #[allow(clippy::too_many_arguments)]
+    /// Drop the E4002 already reported for reading `name` on this line. A borrow conflict on
+    /// the same variable, E4003 or E4004, says the same thing more precisely.
+    fn drop_access_error_for(&mut self, name: &str, at: &crate::syntax::Span) {
+        let quoted = format!("'{name}'");
+        self.errors.inner.retain(|d| {
+            !(d.code == Some(crate::diagnostic::DiagnosticCode::E4002)
+                && d.message.contains(&quoted)
+                && d.source_span.as_ref().is_some_and(|s| s.line == at.line))
+        });
+    }
+
     pub(crate) fn track_reference_arg_borrow(
         &mut self,
         base: &str,
@@ -1278,12 +1341,14 @@ impl<'a> TypeChecker<'a> {
         }
         // NLL: `live_borrows` drops records whose borrower is no longer used past this point (the same
         // sweep the access checks run, #276) before the shared-XOR-mutable conflict check.
+        let mut mutable_conflict = false;
         for b in self.borrow.live_borrows(base) {
             // Overlapping-path conflict, shared with `check_borrow_expr` (#275 §16.2).
             if !crate::hir::places::paths_may_alias(&path, &b.path) {
                 continue;
             }
             if b.is_mut {
+                mutable_conflict = true;
                 self.errors.error_with_code(
                     crate::diagnostic::DiagnosticCode::E4004,
                     format!(
@@ -1303,6 +1368,9 @@ impl<'a> TypeChecker<'a> {
                 );
             }
         }
+        if mutable_conflict {
+            self.drop_access_error_for(base, span);
+        }
         if persist {
             self.borrow.record(
                 base,
@@ -1319,7 +1387,26 @@ impl<'a> TypeChecker<'a> {
     pub(crate) fn check_dereference_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
         match expr {
             Expr::Dereference(e) => {
-                let inner_ty = self.check_expr_type_flag(&mut e.expr, consume);
+                let inner_ty = self.check_expr_type_flag(&mut e.expr, false);
+                // Taking the value out of `*r` moves it, and a reference cannot give away
+                // what it points at.
+                if let Type::Borrow { inner, .. } = &inner_ty {
+                    if consume
+                        && inner.is_linear()
+                        && !self.is_copy(inner)
+                        && !self.checking_assign_lhs
+                        && !self.speculating
+                    {
+                        self.errors.error_with_code(
+                            crate::diagnostic::DiagnosticCode::E4008,
+                            format!(
+                                "this moves a value of type `{inner}` out from behind a \
+                                 reference, which does not own it; copy or clone it instead"
+                            ),
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(&e.span)),
+                        );
+                    }
+                }
                 let resolved_ty = match inner_ty.clone() {
                     Type::Pointer(t, _, _) => {
                         let verb = if self.checking_assign_lhs {

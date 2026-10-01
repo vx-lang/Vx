@@ -718,6 +718,17 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// The moves of two paths joined: moved if either path moved it.
+    pub fn union_moved(
+        mut a: Vec<std::collections::HashSet<String>>,
+        b: Vec<std::collections::HashSet<String>>,
+    ) -> Vec<std::collections::HashSet<String>> {
+        for (scope, marks) in a.iter_mut().zip(b) {
+            scope.extend(marks);
+        }
+        a
+    }
+
     /// The innermost scope binding `name`. `moved_vars` is pushed and popped alongside
     /// `scopes`, so the index means the same thing in both.
     fn scope_of(&self, name: &str) -> Option<usize> {

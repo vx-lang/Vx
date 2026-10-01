@@ -604,8 +604,15 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
             // assignment fell through to the no-op tail below and was **silently dropped** (`Box`'s
             // `*p = val` never wrote, so a read-back saw uninitialized memory). The store type comes
             // from the RHS value, so there's no pointee-type guesswork. (#242)
-            let (ptr_val, _ptr_ty, new_b) = gen.generate_expr(d.expr.as_ref(), block)?;
-            let store_op = OperationBuilder::new("llvm.store", gen.loc())
+            let (ptr_val, ptr_ty, new_b) = gen.generate_expr(d.expr.as_ref(), block)?;
+            // A `&mut` to a mutable local holds that local's scalar memref.
+            let ptr_ty_str = ptr_ty.to_string();
+            let op_name = if ptr_ty_str.starts_with("memref<") && !ptr_ty_str.contains('x') {
+                "memref.store"
+            } else {
+                "llvm.store"
+            };
+            let store_op = OperationBuilder::new(op_name, gen.loc())
                 .add_operands(&[rhs_val, ptr_val])
                 .build()?;
             new_b.append_operation(store_op);
@@ -792,9 +799,32 @@ impl<'c> LowerToMelior<'c> for CompoundAssignStmt {
             lhs,
             op,
             rhs,
-            span: _,
+            span,
             operand_ty,
         } = self;
+        // `*p op= v`, `s.f op= v` and `p[i] op= v` through a raw pointer are lowered as
+        // `lhs = lhs op v`, which stores through the place the way a plain assignment does.
+        // Reading such a place twice has no effect.
+        let through_raw_pointer = match lhs {
+            Expr::IndexAccess(i) => {
+                matches!(gen.infer_ast_type(&i.base), Some(syntax::Type::Pointer(..)))
+            }
+            _ => false,
+        };
+        if matches!(lhs, Expr::Dereference(_) | Expr::MemberAccess(_)) || through_raw_pointer {
+            let assign = AssignStmt {
+                lhs: lhs.clone(),
+                rhs: Expr::BinaryOp(syntax::BinaryOpExpr {
+                    lhs: Box::new(lhs.clone()),
+                    op: op.clone(),
+                    rhs: Box::new(rhs.clone()),
+                    span: *span,
+                    operand_ty: operand_ty.clone(),
+                }),
+                span: *span,
+            };
+            return assign.lower(gen, block);
+        }
         let (lhs_val, ty, block) = gen.generate_expr(lhs, block)?;
         let prev_expected = gen.expected_type;
         gen.expected_type = Some(ty);
@@ -833,6 +863,7 @@ impl<'c> LowerToMelior<'c> for CompoundAssignStmt {
                 } else {
                     gen.env.insert(name.to_string().into(), (result_val, ty));
                 }
+                return Ok(Some(block));
             }
         } else if let Expr::IndexAccess(syntax::IndexAccessExpr {
             base,
@@ -862,11 +893,14 @@ impl<'c> LowerToMelior<'c> for CompoundAssignStmt {
                         .add_operands(&operands)
                         .build()?;
                     new_b.append_operation(store_op);
+                    return Ok(Some(new_b));
                 }
-                return Ok(Some(new_b));
             }
         }
-        Ok(Some(block))
+        // Computing the new value and dropping it is how `*p += 1` used to do nothing.
+        Err(LowerError::from(format!(
+            "a compound assignment to this place is not stored: {lhs:?}"
+        )))
     }
 }
 

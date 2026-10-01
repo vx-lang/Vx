@@ -3071,14 +3071,15 @@ fn flat_runs_a_reference_returning_call_over_scalar_locals() {
     );
 }
 
-/// #273 companion: the call returns the *first* reference argument (`return a`), so `*r` observes the
-/// mutation through the same storage — `let mut x = 10; …; x = 99; return *r` yields 99. Proves the
-/// extracted aligned pointer aliases `x`'s real memref cell across the call boundary, on both paths.
+/// #273 companion: the call returns the *first* reference argument (`return a`), so a write through
+/// `r` changes `x` — `let r = pick(&mut x, &y); *r = 99; return x` yields 99. Proves the extracted
+/// aligned pointer aliases `x`'s real memref cell across the call boundary, on both paths. (Writing
+/// `x` while `r` still reads it is refused now, E4009, as in Rust.)
 #[test]
 fn flat_reference_returning_call_aliases_the_mutated_local() {
     assert_parity(
-        "fn pick(a : &i32, b : &i32) -> &i32 { return a; }\n\
-         fn main() -> i32 { let mut x = 10; let y = 20; let r = pick(&x, &y); x = 99; return *r; }",
+        "fn pick(a : &mut i32, b : &i32) -> &mut i32 { return a; }\n\
+         fn main() -> i32 { let mut x = 10; let y = 20; let r = pick(&mut x, &y); *r = 99; return x; }",
         99,
     );
 }

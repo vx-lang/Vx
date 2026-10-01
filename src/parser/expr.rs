@@ -755,13 +755,20 @@ impl<'a> Parser<'a> {
                 expr: Box::new(inner),
                 span: Span::default(),
             }));
-        } else if self.match_token(&TokenType::Ampersand) {
+        } else if self.check(&TokenType::Ampersand) {
+            // The `&` token, so a borrow conflict is reported where the borrow is written.
+            let amp_span = crate::syntax::Span {
+                line: self.peek().line,
+                column: self.peek().column,
+                length: self.peek().length,
+            };
+            self.advance();
             let is_mut = self.match_token(&TokenType::Mut);
             let inner = self.parse_primary_expr()?;
             return Ok(Expr::Borrow(BorrowExpr {
                 expr: Box::new(inner),
                 is_mut,
-                span: Span::default(),
+                span: amp_span,
             }));
         } else if self.match_token(&TokenType::AndAnd) {
             // `&&x` borrows a borrow; the lexer made the two `&`s one token.

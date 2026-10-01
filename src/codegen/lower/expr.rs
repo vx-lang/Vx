@@ -482,6 +482,19 @@ impl<'c> LowerToMelior<'c> for DereferenceExpr {
             return Ok((ptr_val, ptr_ty, block));
         }
 
+        // A `&mut` to a mutable local holds that local's scalar memref, not a bare pointer.
+        if ptr_ty_str.starts_with("memref<") && !ptr_ty_str.contains('x') {
+            let load_op = OperationBuilder::new("memref.load", gen.loc())
+                .add_operands(&[ptr_val])
+                .add_results(&[inner_ty])
+                .build()?;
+            return Ok((
+                block.append_operation(load_op).result(0)?.into(),
+                inner_ty,
+                block,
+            ));
+        }
+
         let load_op = OperationBuilder::new("llvm.load", gen.loc())
             .add_operands(&[ptr_val])
             .add_results(&[inner_ty])

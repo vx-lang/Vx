@@ -63,6 +63,8 @@ const KNOWN_DECLINES: &[&str] = &[
     "backend/pass/for_loop_over_a_reference_to_a_vec.vx",
     // "A borrow of something that is not a tensor": the flat path does not model `&(&a)`.
     "backend/pass/borrow_of_a_borrow.vx",
+    // "A compound assignment to something other than a simple name" is not modelled.
+    "backend/pass/compound_assignment_through_a_reference.vx",
     "backend/pass/core_iter_zip.vx",
     "backend/pass/core_iter_extend.vx",
     "backend/pass/core_iter_exact_size.vx",
@@ -124,6 +126,9 @@ const KNOWN_DECLINES: &[&str] = &[
     // `min_by` over a struct: the flat path declines it as "an indirect callee returning a
     // non-scalar". The answers come from the AST path.
     "backend/pass/core_cmp_ties_and_keys.vx",
+    // `total_cmp` takes a reference to a number, which the flat path declines as "a borrow of
+    // something that is not a tensor". The answers come from the AST path.
+    "backend/pass/core_num_float_total_cmp.vx",
     // `map_inplace` calls the closure it is given, reading the function and its environment
     // out of the closure value, which the flat path does not load. The answers come from the
     // AST path.

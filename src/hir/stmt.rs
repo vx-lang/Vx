@@ -407,6 +407,7 @@ impl<'a> TypeChecker<'a> {
                 }
             }
         }
+        let outer_depth = self.scopes.len();
         self.push_releasing_scope();
 
         // If it's Range, it's I64. If it's Iterator, we extract from Option<T>
@@ -543,7 +544,10 @@ impl<'a> TypeChecker<'a> {
         let before = self.consteval_snapshot();
         let scopes = self.consteval_scopes();
 
+        let marks_before = self.moved_snapshot();
+        self.borrow.loop_exits.push(Default::default());
         self.check_block(body, return_type);
+        self.settle_loop_moves(marks_before, outer_depth, body, &loop_span);
 
         // Check invariants hold after the loop iteration (we don't strictly prove induction here, just checking at end of block)
         for inv in invariants.iter() {
@@ -566,6 +570,51 @@ impl<'a> TypeChecker<'a> {
 
     /// Check an infinite `loop`: prove invariants on entry, check the body, then re-prove them
     /// across iterations.
+    /// After a loop body: a variable from outside the loop that the body moves, on a path that
+    /// goes round again, is used after the move on the next pass (E4001). After the loop, a
+    /// variable is moved if any path out of it moved it.
+    fn settle_loop_moves(
+        &mut self,
+        marks_before: Vec<std::collections::HashSet<String>>,
+        outer_depth: usize,
+        body: &[Statement],
+        span: &syntax::Span,
+    ) {
+        let end = self.branch_end(body);
+        let exits = self.borrow.loop_exits.pop().expect("pushed by the loop");
+        let next_pass = [end.clone(), exits.at_continue.clone()]
+            .into_iter()
+            .flatten()
+            .reduce(Self::union_moved);
+        if let Some(next_pass) = next_pass {
+            let mut moved: Vec<String> = next_pass
+                .iter()
+                .zip(&marks_before)
+                .take(outer_depth)
+                .flat_map(|(after, before)| after.difference(before).cloned())
+                .collect();
+            moved.sort();
+            for name in moved {
+                if !self.speculating {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E4001,
+                        format!(
+                            "`{name}` is moved inside this loop and not given a new value \
+                             before the loop goes round again, so the next pass uses it after \
+                             the move"
+                        ),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                    );
+                }
+            }
+        }
+        let after = [end, exits.at_continue, exits.at_break]
+            .into_iter()
+            .flatten()
+            .fold(marks_before, Self::union_moved);
+        self.restore_moved(after);
+    }
+
     fn check_loop_stmt(&mut self, lp: &mut LoopStmt, return_type: &Type) {
         let LoopStmt {
             body,
@@ -573,6 +622,8 @@ impl<'a> TypeChecker<'a> {
             invariants,
         } = lp;
         let loop_span = *loop_span;
+        // Only variables declared before the loop can be used again on its next pass.
+        let outer_depth = self.scopes.len();
         self.push_releasing_scope();
 
         let prev_constraints_len = self.consteval.constraints.len();
@@ -589,7 +640,10 @@ impl<'a> TypeChecker<'a> {
         let before = self.consteval_snapshot();
         let scopes = self.consteval_scopes();
 
+        let marks_before = self.moved_snapshot();
+        self.borrow.loop_exits.push(Default::default());
         self.check_block(body, return_type);
+        self.settle_loop_moves(marks_before, outer_depth, body, &loop_span);
 
         for inv in invariants.iter() {
             if !self.prove_expr(inv) {
@@ -637,6 +691,42 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Refuse writing to a variable, or a field or element of it, while a `&` borrow of that
+    /// part is still used afterwards (E4009): the borrow would see the value change under it.
+    /// A live `&mut` borrow is already refused as a use of the variable (E4002).
+    fn check_assign_while_borrowed(&mut self, lhs: &Expr) {
+        if self.speculating || self.borrow.skip_borrow_check {
+            return;
+        }
+        let Some((root, path)) = Self::extract_base_and_path(lhs) else {
+            return;
+        };
+        let shared = self
+            .borrow
+            .live_borrows(&root)
+            .iter()
+            // A borrow with no borrower is a temporary, `f(&x)`, over by the end of its statement.
+            .any(|b| {
+                !b.is_mut
+                    && b.borrower_name.is_some()
+                    && crate::hir::places::paths_may_alias(&path, &b.path)
+            });
+        if shared {
+            let place = std::iter::once(root)
+                .chain(path)
+                .collect::<Vec<_>>()
+                .join(".");
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E4009,
+                format!(
+                    "`{place}` is assigned while it is borrowed, and the borrow is used after the \
+                     assignment"
+                ),
+                Some(crate::diagnostic::SourceSpan::from_ast_span(&lhs.span())),
+            );
+        }
+    }
+
     fn check_assign_stmt(
         &mut self,
         lhs: &mut Expr,
@@ -657,6 +747,7 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
+        self.check_assign_while_borrowed(lhs);
         self.checking_assign_lhs = true;
         let lhs_ty = self.check_expr_type_flag(lhs, false);
         self.checking_assign_lhs = false;

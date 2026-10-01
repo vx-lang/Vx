@@ -1,0 +1,54 @@
+//===- reborrows_the_checker_allows.vx - Vx Compiler -------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Reborrows the checker must accept, each with its value: the original `&mut` used again
+// after the reborrow's last use, two `&` reborrows at once, and a reborrowed field next to a
+// write to another field.
+//
+// EXPECT: 5 2 10
+
+struct Pair {
+  a : i64,
+  b : i64,
+}
+
+fn the_original_after_the_reborrow() -> i64 {
+  let mut x : i64 = 1i64;
+  let m = &mut x;
+  let n = &mut *m;
+  *n = 4i64;
+  *m = *m + 1i64;
+  return x;
+}
+
+fn two_shared_reborrows() -> i64 {
+  let mut x : i64 = 1i64;
+  let m = &mut x;
+  let a = &*m;
+  let b = &*m;
+  return *a + *b;
+}
+
+fn a_field_next_to_another_field() -> i64 {
+  let mut p = Pair {
+    a : 1i64, b : 2i64
+  };
+  let m = &mut p;
+  let fa = &mut (*m).a;
+  m.b = 7i64;
+  *fa = 3i64;
+  return p.a + p.b;
+}
+
+fn main() -> i32 {
+  print(the_original_after_the_reborrow());
+  print!(" ");
+  print(two_shared_reborrows());
+  print!(" ");
+  print(a_field_next_to_another_field());
+  return 0;
+}

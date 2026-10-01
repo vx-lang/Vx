@@ -14,9 +14,8 @@
 import core::iter;
 import std::vec;
 
-// `*p = *p + 1`, not `*p += 1`, which has no effect through a parameter yet (#900).
 fn bump(p : &mut i64) -> i32 {
-  *p = *p + 1i64;
+  *p += 1i64;
   return 0;
 }
 
