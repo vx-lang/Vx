@@ -5,7 +5,7 @@
 //! concrete semantics here one family at a time; the exhaustive dispatch below makes omission a
 //! compile error instead of a silently pure catch-all.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::arch::TransferCostGraph;
@@ -115,6 +115,10 @@ pub(crate) struct ComptimeInterpreter<'graph, 'bodies> {
     /// Mutable references stored inside a local aggregate, keyed by the aggregate projection
     /// which contains the reference (for example `holder.value`).
     reference_projection_places: HashMap<ComptimeWritePlace, ComptimeWritePlace>,
+    /// The variables written in the current call frame, by the root of each place stored to.
+    /// A call writes back to its caller only the parameters its body wrote, so a function that
+    /// only reads through a mutable reference does not count as writing to it.
+    written_roots: HashSet<Symbol>,
     function_bodies: ComptimeFunctionBodies<'bodies>,
     transfer_cost_graph: &'graph TransferCostGraph,
     active_topology: Topology,
@@ -154,6 +158,7 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
                 .collect(),
             reference_places: HashMap::new(),
             reference_projection_places: HashMap::new(),
+            written_roots: HashSet::new(),
             function_bodies,
             transfer_cost_graph,
             active_topology,
@@ -712,6 +717,7 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
             return false;
         };
         let known = self.env.contains_key(&root) || self.root_write_escapes(&root);
+        self.written_roots.insert(root.clone());
         self.invalidate_binding(&root);
         known
     }
@@ -721,6 +727,9 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
         place: ComptimeWritePlace,
         value: ComptimeEvalValue,
     ) -> bool {
+        if let Some(root) = Self::place_root(&place) {
+            self.written_roots.insert(root.clone());
+        }
         match place {
             ComptimeWritePlace::Binding(name) => {
                 self.store_binding(name, value);
@@ -1155,6 +1164,7 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
         let saved_reference_places = std::mem::take(&mut self.reference_places);
         let saved_reference_projection_places =
             std::mem::take(&mut self.reference_projection_places);
+        let saved_written_roots = std::mem::take(&mut self.written_roots);
         self.reference_projection_places = saved_reference_projection_places
             .iter()
             .filter(|(place, _)| {
@@ -1195,7 +1205,7 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
             .zip(writebacks.into_iter().chain(std::iter::repeat(None)))
             .filter_map(
                 |(((parameter, _), parameter_can_carry_mut_reference), caller)| {
-                    parameter_can_carry_mut_reference
+                    (*parameter_can_carry_mut_reference && self.written_roots.contains(parameter))
                         .then_some(caller)
                         .flatten()
                         .map(|caller| (caller, self.env.get(parameter).cloned()))
@@ -1206,6 +1216,8 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
         self.env = saved_env;
         self.reference_places = saved_reference_places;
         self.reference_projection_places = saved_reference_projection_places;
+        // The write-backs below are writes in the caller's frame, so they are recorded there.
+        self.written_roots = saved_written_roots;
         let mut writebacks_supported = true;
         for (caller, value) in caller_updates {
             match value {
@@ -1304,12 +1316,14 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
                 merged.reference_projection_places,
                 &branch.reference_projection_places,
             );
+            merged.written_roots.extend(branch.written_roots);
             outcome.merge_from(&branch_outcome);
         }
         self.context = merged.context;
         self.env = merged.env;
         self.reference_places = merged.reference_places;
         self.reference_projection_places = merged.reference_projection_places;
+        self.written_roots = merged.written_roots;
         outcome
     }
 
@@ -1533,6 +1547,8 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
             then_interpreter.reference_projection_places,
             &else_interpreter.reference_projection_places,
         );
+        self.written_roots = then_interpreter.written_roots;
+        self.written_roots.extend(else_interpreter.written_roots);
 
         let mut outcome = then_outcome;
         outcome.merge_from(&else_outcome);
@@ -1713,12 +1729,14 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
                 merged.reference_projection_places,
                 &branch.reference_projection_places,
             );
+            merged.written_roots.extend(branch.written_roots);
             outcome.merge_from(&branch_outcome);
         }
         self.context = merged.context;
         self.env = merged.env;
         self.reference_places = merged.reference_places;
         self.reference_projection_places = merged.reference_projection_places;
+        self.written_roots = merged.written_roots;
 
         // Known scalar patterns have a concrete selected arm. Unknown and enum-pattern cases
         // still need pattern/value modelling before their value can fold, but their effects have
@@ -1841,6 +1859,7 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
             self.reference_projection_places.clone(),
             &one_iteration.reference_projection_places,
         );
+        self.written_roots.extend(one_iteration.written_roots);
         let mut outcome = ComptimeEvalOutcome::unsupported();
         outcome.support.merge_from(iterable.support);
         outcome
