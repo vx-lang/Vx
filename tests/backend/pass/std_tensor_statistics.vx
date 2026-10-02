@@ -15,9 +15,12 @@
 // (no argmax, NaN variance) and [NaN, 2, NaN, -4] (NaN is skipped). Last, the variance and
 // standard deviation of 1000 elements in f64 and f32, long enough for the vector loops: the
 // elements come in pairs x and -x, so the mean is exactly 0 and every sum is exact. Then the
-// f32 argmax and argmin of the same elements.
+// f32 argmax and argmin of the same elements. Then an f32 softmax long enough for its vector
+// `exp`: 40 elements around 100, one of them negative infinity (0 after softmax), printing four
+// elements and the sum; and one holding a NaN, which makes every element NaN. Last, how many of
+// 65536 values of that `exp` are more than 4 ulp from `f32::exp` (none).
 //
-// EXPECT: 1 2 4.201388888888888 2.049728979374807 0.090031 0.244728 0.665241 | 1 2 4.201389 2.0497289 0.090031 0.244728 0.665241 | 1 2 4.201389 2.0497289 | none NaN 1 3 | 53.217375 7.295023988994141 53.217377 7.295024 30 0
+// EXPECT: 1 2 4.201388888888888 2.049728979374807 0.090031 0.244728 0.665241 | 1 2 4.201389 2.0497289 0.090031 0.244728 0.665241 | 1 2 4.201389 2.0497289 | none NaN 1 3 | 53.217375 7.295023988994141 53.217377 7.295024 30 0 0.003959 0 0.017743 0.029254 1 NaN 0
 import std::tensor;
 
 fn print_index(index : Option<i32>) -> i32 {
@@ -139,6 +142,61 @@ fn report_long() -> i32 {
   print!(" ");
   let _max = print_index(b.argmax());
   let _min = print_index(b.argmin());
+  let mut s = Tensor<f32>([40]);
+  let mut total : f64 = 0.0;
+  for i in 0..40 {
+    s[i] = 100.0 + (((i % 7) - 3) as f32) * 0.5;
+  }
+  s[5] = f32::neg_infinity();
+  let _done = s.softmax_inplace();
+  for i in 0..40 {
+    total += s[i] as f64;
+  }
+  print(((s[0] as f64) * 1000000.0).round() / 1000000.0);
+  print!(" ");
+  print(((s[5] as f64) * 1000000.0).round() / 1000000.0);
+  print!(" ");
+  print(((s[17] as f64) * 1000000.0).round() / 1000000.0);
+  print!(" ");
+  print(((s[39] as f64) * 1000000.0).round() / 1000000.0);
+  print!(" ");
+  print((total * 1000000.0).round() / 1000000.0);
+  print!(" ");
+  let mut with_nan = Tensor<f32>([20]);
+  for i in 0..20 {
+    with_nan[i] = i as f32;
+  }
+  let zero : f32 = 0.0;
+  with_nan[3] = zero / zero;
+  let _nan_done = with_nan.softmax_inplace();
+  print(with_nan[0]);
+  print!(" ");
+  let _sweep = report_exp_accuracy();
+  return 0;
+}
+
+// The f32 softmax's vector `exp` against `f32::exp`. Element 0 is 0, the largest, so its `exp`
+// is 1 and `s[i] / s[0]` is `exp(x[i])` up to two roundings. Prints how many of 65536 inputs
+// spread over [-80, 0] are off by more than 4 ulp (a relative 2^-21).
+fn report_exp_accuracy() -> i32 {
+  let n : i32 = 65536;
+  let mut x = Tensor<f32>([n]);
+  let mut s = Tensor<f32>([n]);
+  for i in 0..n {
+    x[i] = -80.0 * ((i as f32) / (n as f32));
+    s[i] = x[i];
+  }
+  let _done = s.softmax_inplace();
+  let mut off : i32 = 0;
+  for i in 1..n {
+    let want = x[i].exp();
+    let got = s[i] / s[0];
+    let error = (got - want).abs() / want;
+    if error > 0.000000477 {
+      off = off + 1;
+    }
+  }
+  print(off);
   return 0;
 }
 
