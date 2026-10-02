@@ -351,6 +351,9 @@ enum Binding {
     Place { place: Expr },
 }
 
+/// A name a `let` in a block shadows, with the binding and type it had before the block.
+type Shadowed = (Symbol, Option<Binding>, Option<Type>);
+
 /// Per-function lowering accumulator. Instructions and their result-type GIDs are built into local
 /// buffers and only committed to the worker on full success, so a partial (aborted) lowering leaves
 /// no trace.
@@ -384,6 +387,9 @@ struct Lowerer<'r> {
     /// `*mut i32` for a `self.data[i]` index needs `self : &mut Vec<i32>`'s type substituted into the
     /// base struct's `data : *mut T` field. See `infer_ast_type` (#242).
     ast_types: HashMap<Symbol, Type>,
+    /// One frame per block being lowered: what each name a `let` in the block shadows meant
+    /// before it, put back when the block ends.
+    block_frames: Vec<Vec<Shadowed>>,
     /// Locals bound to a tensor the compiler allocated, as against a view over memory it does
     /// not control. Only these can be filled in place by `c = a @ b` (Vx#391).
     owned_tensors: std::collections::HashSet<Symbol>,
@@ -458,6 +464,7 @@ impl<'r> Lowerer<'r> {
             tensor_types: Vec::new(),
             strings: Vec::new(),
             ast_types: HashMap::new(),
+            block_frames: Vec::new(),
             owned_tensors: std::collections::HashSet::new(),
             agg_layouts: Vec::new(),
             inline_blocks: Vec::new(),
@@ -718,6 +725,68 @@ impl<'r> Lowerer<'r> {
             args.len() as u64,
         ));
         Some(Val { reg, ty: ret })
+    }
+
+    /// Lower `body` as a block: a `let` in it hides an outer variable of the same name only
+    /// until the block ends, as in Rust.
+    fn scoped<T>(&mut self, body: impl FnOnce(&mut Self) -> Lowered<T>) -> Lowered<T> {
+        let depth = self.open_block();
+        let lowered = body(self);
+        self.close_blocks_to(depth);
+        lowered
+    }
+
+    /// Lower a block's statements, with `scoped`'s rule for the names it declares.
+    fn lower_block(&mut self, stmts: &[Statement]) -> Lowered<()> {
+        self.scoped(|me| {
+            for s in stmts {
+                me.lower_stmt(s)?;
+            }
+            Ok(())
+        })
+    }
+
+    /// Start a block, returning the depth to close it back to.
+    fn open_block(&mut self) -> usize {
+        self.block_frames.push(Vec::new());
+        self.block_frames.len() - 1
+    }
+
+    /// End every block opened above `depth`, restoring what the names its `let`s shadowed meant.
+    fn close_blocks_to(&mut self, depth: usize) {
+        while self.block_frames.len() > depth {
+            let frame = self.block_frames.pop().expect("a frame above depth");
+            for (name, binding, ty) in frame {
+                match binding {
+                    Some(b) => self.scope.insert(name.clone(), b),
+                    None => self.scope.remove(&name),
+                };
+                match ty {
+                    Some(t) => self.ast_types.insert(name, t),
+                    None => self.ast_types.remove(&name),
+                };
+            }
+        }
+    }
+
+    /// Called before a `let` or a pattern binds `name`: the first time in a block, remember what
+    /// the name meant, for `close_blocks_to` to put back.
+    fn note_shadow(&mut self, name: &Symbol) {
+        let Some(frame) = self.block_frames.last() else {
+            return;
+        };
+        if frame.iter().any(|(n, _, _)| n == name) {
+            return;
+        }
+        let before = (
+            name.clone(),
+            self.scope.get(name).cloned(),
+            self.ast_types.get(name).cloned(),
+        );
+        self.block_frames
+            .last_mut()
+            .expect("a frame, checked above")
+            .push(before);
     }
 
     fn bind_local(&mut self, name: Symbol, v: Val) {
@@ -1163,16 +1232,16 @@ impl<'r> Lowerer<'r> {
             // `unsafe { .. }` in value position (e.g. a stdlib wrapper's `return unsafe { sqrtf(self) }`).
             // Safety was checked upstream, so `unsafe` is transparent to lowering: run the block's
             // statements, then yield its trailing value expression.
-            Expr::UnsafeBlock(u) => {
+            Expr::UnsafeBlock(u) => self.scoped(|me| {
                 for s in &u.stmts {
-                    self.lower_stmt(s)?;
+                    me.lower_stmt(s)?;
                 }
                 match u.ret.as_deref() {
-                    Some(e) => self.lower_expr(e),
+                    Some(e) => me.lower_expr(e),
                     // No trailing value: the block is an effect, which is what a nested
                     // `unsafe { unsafe { .. } }` parses to. Hand back a constant for the value
                     // position nobody should be using it in, as `barrier()` does.
-                    None => Ok(self.emit_value(
+                    None => Ok(me.emit_value(
                         Opcode::Const,
                         Register(0),
                         Register(0),
@@ -1180,7 +1249,7 @@ impl<'r> Lowerer<'r> {
                         0,
                     )),
                 }
-            }
+            }),
             // A struct literal in value position (e.g. `return P { .. }`, #215): construct it in a slot
             // (the `let x = P { .. }` form is handled directly in `lower_stmt`). The `Val` is the slot,
             // which a `Ret` loads + returns by value.
@@ -1189,20 +1258,20 @@ impl<'r> Lowerer<'r> {
             // folds to a constant and its `assert`s are runtime no-ops), so at runtime a compile-time
             // block produces no observable effect. Mirror that — lower the inner statements, then the
             // trailing value (or a discarded dummy for a statement-position block). #228
-            Expr::ComptimeBlock(cb) => {
+            Expr::ComptimeBlock(cb) => self.scoped(|me| {
                 for s in &cb.stmts {
-                    self.lower_stmt(s)?;
+                    me.lower_stmt(s)?;
                 }
                 match &cb.ret {
-                    Some(r) => self.lower_expr(r),
+                    Some(r) => me.lower_expr(r),
                     // No trailing value. When the block's own statements already returned, do
                     // not materialize the placeholder either -- a constant after a terminator
                     // is invalid in the block, and nothing can read it.
-                    None if self.block_terminated() => Ok(Val {
+                    None if me.block_terminated() => Ok(Val {
                         reg: Register(0),
                         ty: LoweredTy::Scalar(ElementType::I32),
                     }),
-                    None => Ok(self.emit_value(
+                    None => Ok(me.emit_value(
                         Opcode::Const,
                         Register(0),
                         Register(0),
@@ -1210,7 +1279,7 @@ impl<'r> Lowerer<'r> {
                         0,
                     )),
                 }
-            }
+            }),
             // `sizeof<T>()`: a compile-time constant `i64` of `T`'s byte size. Scalars/pointers get
             // their precise size (as the AST codegen does), and an *aggregate* gets its **real layout
             // size** from the registry — NOT the oracle's `SizeOfExpr::lower` `_ => 8` fallback, which
@@ -1692,10 +1761,7 @@ impl<'r> Lowerer<'r> {
         // A folded `comptime` `if` is its surviving statements; the condition, which may be a
         // predicate only the checker decides (`Reachable<..>`), is not lowered.
         if let Some(block) = comptime_survivor(e) {
-            for s in block {
-                self.lower_stmt(s)?;
-            }
-            return Ok(());
+            return self.lower_block(block);
         }
         let cond = self.lower_expr(&e.cond)?;
         let then_b = self.new_block();
@@ -1715,9 +1781,7 @@ impl<'r> Lowerer<'r> {
 
         // then block
         self.emit_effect(Opcode::BlockStart, Register(0), Register(0), then_b as u64);
-        for s in &e.then_block {
-            self.lower_stmt(s)?;
-        }
+        self.lower_block(&e.then_block)?;
         if !self.block_terminated() {
             self.emit_effect(Opcode::Br, Register(0), Register(0), merge_b as u64);
         }
@@ -1725,9 +1789,7 @@ impl<'r> Lowerer<'r> {
         // else block (only when distinct from the merge)
         if let Some(else_stmts) = &e.else_block {
             self.emit_effect(Opcode::BlockStart, Register(0), Register(0), else_b as u64);
-            for s in else_stmts {
-                self.lower_stmt(s)?;
-            }
+            self.lower_block(else_stmts)?;
             if !self.block_terminated() {
                 self.emit_effect(Opcode::Br, Register(0), Register(0), merge_b as u64);
             }
@@ -1755,9 +1817,7 @@ impl<'r> Lowerer<'r> {
             pack_targets(body_b, next_b),
         );
         self.emit_effect(Opcode::BlockStart, Register(0), Register(0), body_b as u64);
-        for s in &arm.body {
-            self.lower_stmt(s)?;
-        }
+        self.lower_block(&arm.body)?;
         if !self.block_terminated() {
             self.emit_effect(Opcode::Br, Register(0), Register(0), merge as u64);
         }
@@ -1805,7 +1865,11 @@ impl<'r> Lowerer<'r> {
             }); // only payload-free enums (a bare i32 discriminant)
         }
         let merge = self.new_block();
+        // Each arm is a block: its pattern's names and its `let`s end with it.
+        let depth = self.block_frames.len();
         for arm in &m.arms {
+            self.close_blocks_to(depth);
+            self.open_block();
             match &arm.pattern {
                 crate::syntax::Pattern::EnumVariant(enum_name, variant, payload) => {
                     if payload.as_ref().is_some_and(|p| !p.is_empty()) {
@@ -1869,6 +1933,7 @@ impl<'r> Lowerer<'r> {
                 }
                 // An identifier arm is the default with the subject bound under the name.
                 crate::syntax::Pattern::Identifier(name) => {
+                    self.note_shadow(name);
                     self.scope.insert(name.clone(), Binding::Reg(subj.clone()));
                     for s in &arm.body {
                         self.lower_stmt(s)?;
@@ -1880,6 +1945,7 @@ impl<'r> Lowerer<'r> {
                 }
             }
         }
+        self.close_blocks_to(depth);
         // No wildcard matched: the final else block falls through to the merge.
         if !self.block_terminated() {
             self.emit_effect(Opcode::Br, Register(0), Register(0), merge as u64);
@@ -1953,7 +2019,11 @@ impl<'r> Lowerer<'r> {
             subst.insert(g.clone(), a.clone());
         }
         let merge = self.new_block();
+        // Each arm is a block: its pattern's names and its `let`s end with it.
+        let depth = self.block_frames.len();
         for arm in &m.arms {
+            self.close_blocks_to(depth);
+            self.open_block();
             match &arm.pattern {
                 crate::syntax::Pattern::EnumVariant(_, variant, payload_pats) => {
                     let ordinal = data
@@ -2026,6 +2096,7 @@ impl<'r> Lowerer<'r> {
                                     lty,
                                     poff,
                                 );
+                                self.note_shadow(pname);
                                 self.bind_local(pname.clone(), pval);
                             }
                         }
@@ -2054,6 +2125,7 @@ impl<'r> Lowerer<'r> {
                 }
             }
         }
+        self.close_blocks_to(depth);
         if !self.block_terminated() {
             self.emit_effect(Opcode::Br, Register(0), Register(0), merge as u64);
         }
@@ -2105,6 +2177,10 @@ impl<'r> Lowerer<'r> {
     /// types a literal branch to the result (no implicit conversion, #240) — so the value is stored
     /// directly.
     fn lower_block_into_slot(&mut self, stmts: &[Statement], slot: Register) -> Lowered<()> {
+        self.scoped(|me| me.lower_statements_into_slot(stmts, slot))
+    }
+
+    fn lower_statements_into_slot(&mut self, stmts: &[Statement], slot: Register) -> Lowered<()> {
         let n = stmts.len();
         for (i, s) in stmts.iter().enumerate() {
             if i + 1 == n {
@@ -2197,9 +2273,7 @@ impl<'r> Lowerer<'r> {
         self.emit_effect(Opcode::Br, Register(0), Register(0), header as u64);
         self.emit_effect(Opcode::BlockStart, Register(0), Register(0), header as u64);
         self.loop_stack.push((header, exit)); // continue -> header, break -> exit
-        for s in body {
-            self.lower_stmt(s)?;
-        }
+        self.lower_block(body)?;
         self.loop_stack.pop();
         // Back-edge, unless the body already terminated every path (e.g. ended in `break`/`return`).
         if !self.block_terminated() {
@@ -2215,19 +2289,12 @@ impl<'r> Lowerer<'r> {
     /// The loop variable is a binding of its own: an outer variable of the same name is out of
     /// sight in the body and means what it did before once the loop ends, as in Rust.
     fn lower_for(&mut self, f: &crate::syntax::ForLoopStmt) -> Lowered<()> {
-        let name: Symbol = f.iter.as_str().into();
-        let outer = self.scope.get(&name).cloned();
-        let outer_ty = self.ast_types.remove(&name);
-        let lowered = self.lower_for_loop(f);
-        match outer {
-            Some(b) => self.scope.insert(name.clone(), b),
-            None => self.scope.remove(&name),
-        };
-        match outer_ty {
-            Some(t) => self.ast_types.insert(name, t),
-            None => self.ast_types.remove(&name),
-        };
-        lowered
+        self.scoped(|me| {
+            let name: Symbol = f.iter.as_str().into();
+            me.note_shadow(&name);
+            me.ast_types.remove(&name);
+            me.lower_for_loop(f)
+        })
     }
 
     fn lower_for_loop(&mut self, f: &crate::syntax::ForLoopStmt) -> Lowered<()> {
@@ -2312,9 +2379,7 @@ impl<'r> Lowerer<'r> {
         // body
         self.emit_effect(Opcode::BlockStart, Register(0), Register(0), body_b as u64);
         self.loop_stack.push((latch, exit)); // continue -> latch, break -> exit
-        for s in &f.body {
-            self.lower_stmt(s)?;
-        }
+        self.lower_block(&f.body)?;
         self.loop_stack.pop();
         if !self.block_terminated() {
             self.emit_effect(Opcode::Br, Register(0), Register(0), latch as u64);
@@ -2469,9 +2534,7 @@ impl<'r> Lowerer<'r> {
         );
         self.bind_local(f.iter.as_str().into(), x);
         self.loop_stack.push((header, exit)); // continue -> header, break -> exit
-        for s in &f.body {
-            self.lower_stmt(s)?;
-        }
+        self.lower_block(&f.body)?;
         self.loop_stack.pop();
         if !self.block_terminated() {
             self.emit_effect(Opcode::Br, Register(0), Register(0), header as u64);
@@ -2533,6 +2596,8 @@ impl<'r> Lowerer<'r> {
         // silently trade the proven launch for an unmeasured one. `parallel_two_level` gets
         // what flat cannot express at all: barriers, shared tiles, affine and block-row
         // ownership. Failing both, the region lowers serially -- rejection is always free.
+        // The region is a block: its `let`s end with it.
+        let depth = self.open_block();
         let par = parallel_outer_for(&s.stmts);
         let end_imm = if par.is_some() {
             for (i, stmt) in s.stmts.iter().enumerate() {
@@ -2559,6 +2624,7 @@ impl<'r> Lowerer<'r> {
                 what: "a spawn expression whose region has no value",
             })?;
             let v = self.lower_expr(tail)?;
+            self.close_blocks_to(depth);
             let ty = v.ty.clone();
             return Ok(Some(self.emit_typed(
                 Opcode::SpawnEnd,
@@ -2579,6 +2645,7 @@ impl<'r> Lowerer<'r> {
             }
             None => {}
         }
+        self.close_blocks_to(depth);
         self.emit_effect(Opcode::SpawnEnd, Register(0), Register(0), end_imm);
         Ok(None)
     }
@@ -4087,6 +4154,7 @@ impl<'r> Lowerer<'r> {
         }
         match s {
             Statement::LetDecl(l) => {
+                self.note_shadow(&l.name);
                 // Record the local's concrete AST type for `infer_ast_type` (a pointer local like
                 // `let ptr : *mut T = ...` -> its pointee element for a later index, #242). The
                 // annotation is authoritative; else fall back to inferring the initializer's type.
@@ -4371,24 +4439,24 @@ impl<'r> Lowerer<'r> {
                 // trailing value): safety was checked upstream, so `unsafe` is transparent — lower the
                 // inner statements, and its trailing value expression if any. (The value-position form,
                 // `return unsafe { … }`, is the `Expr::UnsafeBlock` arm in `lower_expr`.)
-                Expr::UnsafeBlock(ub) => {
+                Expr::UnsafeBlock(ub) => self.scoped(|me| {
                     for s in &ub.stmts {
-                        self.lower_stmt(s)?;
+                        me.lower_stmt(s)?;
                     }
                     // A trailing block-`if` (or match) here is the parser's reading of
                     // `if c { .. }` with no semicolon: in statement position nothing consumes a
                     // value, so lower it as the statement it is rather than through the
                     // value-position arm, which would demand a branch type it does not have.
                     match ub.ret.as_deref() {
-                        Some(Expr::If(iff)) => self.lower_if(iff)?,
-                        Some(Expr::Match(m)) => self.lower_match(m)?,
+                        Some(Expr::If(iff)) => me.lower_if(iff)?,
+                        Some(Expr::Match(m)) => me.lower_match(m)?,
                         Some(r) => {
-                            self.lower_expr(r)?;
+                            me.lower_expr(r)?;
                         }
                         None => {}
                     }
                     Ok(())
-                }
+                }),
                 // `print(x)` is a statement-level effect (no result): lower its one argument and emit
                 // a `Print`, whose `type_idx` carries the argument's type (scalar or tensor) so codegen
                 // routes to the right `print_*`/`printMemref*` runtime helper.
@@ -6156,8 +6224,13 @@ impl ParallelScan {
         true
     }
 
+    /// A block's statements. A name its `let`s declare is region-local only until the block
+    /// ends; after it, the name is whatever it was before, often a captured variable.
     fn stmts(&mut self, stmts: &[Statement], depth: u32) -> bool {
-        stmts.iter().all(|s| self.stmt(s, depth))
+        let outer = self.declared.clone();
+        let ok = stmts.iter().all(|s| self.stmt(s, depth));
+        self.declared = outer;
+        ok
     }
 
     fn stmt(&mut self, s: &Statement, depth: u32) -> bool {
@@ -6174,6 +6247,8 @@ impl ParallelScan {
                 if *inner.iter == *self.iv {
                     return false; // shadowing the strided IV would defeat the first-index rule
                 }
+                // The loop variable, like a `let` in the body, ends with the loop.
+                let outer = self.declared.clone();
                 if !(self.expr(&r.start) && self.expr(&r.end) && self.declare(&inner.iter)) {
                     return false;
                 }
@@ -6194,6 +6269,7 @@ impl ParallelScan {
                 let ok = self.stmts(&inner.body, depth + 1)
                     && (!synchronizes || self.stmts(&inner.body, depth + 1));
                 self.loop_barrier_stack.pop();
+                self.declared = outer;
                 ok
             }
             S::Loop(l) => {
@@ -8276,6 +8352,35 @@ mod tests {
                 .any(|i| i.opcode == Opcode::Store && i.imm == IMM_PARALLEL_INIT),
             "no stride tags either"
         );
+    }
+
+    #[test]
+    fn a_captured_scalar_written_after_an_inner_let_of_its_name_keeps_the_region_serial() {
+        // The `acc` declared inside the `if` ends with it, so the write after the `if` is to the
+        // captured `acc`, which every strided thread would race on: the analysis must reject.
+        let (did, w) = lower_with_registry(
+            "fn main() -> i32 {\n\
+               let mut o = Tensor<f32>([4, 8]);\n\
+               let mut acc : f32 = 0.0;\n\
+               spawn on (Topology::GPU) {\n\
+                 for i in 0..4 {\n\
+                   if i > 10 {\n\
+                     let acc : f32 = 1.0;\n\
+                   }\n\
+                   acc = o[i][0];\n\
+                 }\n\
+               };\n\
+               return 0;\n\
+             }",
+            "main",
+        );
+        assert!(did, "the rejected region still lowers");
+        let end = w
+            .local_hir_stream
+            .iter()
+            .find(|i| i.opcode == Opcode::SpawnEnd)
+            .expect("a SpawnEnd");
+        assert_eq!(end.imm, 0, "no trip count for a racy region");
     }
 
     #[test]
