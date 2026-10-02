@@ -1,0 +1,48 @@
+//===- std_vec_pop.vx - Vx Compiler -------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `Vec::pop` takes elements off the end, last first, and answers `None` once the vector is
+// empty; a `push` after that reuses the space. Printed: the three pops of [40, 2, 99] with the
+// length after each, a pop of the empty vector, then a push and the element it put back.
+//
+// EXPECT: 99 2 2 1 40 0 empty none 7 1
+import std::vec;
+import core::option;
+
+fn show(value : Option<i32>) -> i32 {
+  match value {
+    Option<i32>::Some(x) => {
+      print(x);
+    }
+    Option<i32>::None => {
+      print!("none");
+    }
+  }
+  print!(" ");
+  return 0;
+}
+
+fn main() -> i32 {
+  let mut v = Vec<i32>::new();
+  v.push(40);
+  v.push(2);
+  v.push(99);
+  for _i in 0..3 {
+    let _shown = show(v.pop());
+    print(v.len());
+    print!(" ");
+  }
+  if v.is_empty() {
+    print!("empty ");
+  }
+  let _none = show(v.pop());
+  v.push(7);
+  print(v.get(0));
+  print!(" ");
+  print(v.len());
+  return 0;
+}

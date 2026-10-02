@@ -144,6 +144,21 @@ Vec<T> {
     return self.len;
   }
 
+  /// Whether the vector has no elements.
+  fn is_empty(self : &Vec<T>) -> bool {
+    return self.len == 0;
+  }
+
+  /// Removes the last element and returns it, or `None` when the vector is empty. The
+  /// capacity stays, so a later `push` reuses the slot.
+  fn pop(self : &mut Vec<T>) -> Option<T> {
+    if self.len == 0 {
+      return Option<T>::None();
+    }
+    self.len = self.len - 1;
+    return Option<T>::Some(unsafe { self.data[self.len] });
+  }
+
   /// An iterator over references to the elements, borrowing the vector rather than
   /// consuming it. `.copied()` turns it into one over copies.
   fn iter(self : &Vec<T>) -> VecIter<T> {
