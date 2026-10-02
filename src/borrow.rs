@@ -74,9 +74,6 @@ use crate::syntax::{
     REGION_MASK, REGION_MASK_0, REGION_MAX, REGION_MAX_0, REGION_UNSET, REGION_UNSET_0,
 };
 
-const VARIANCE_MASK: u64 = 0xF000;
-const PARAM_MASK: u64 = 0xFFFF;
-
 /// The slot-0 analogue of [`region_for_depth`] (#265): map a lexical scope depth to the region stored
 /// in the **return slot**, whose field is 9 bits. The [`REGION_UNSET`] sentinel maps to the slot-0
 /// sentinel [`REGION_UNSET_0`]; any real depth is clamped to [`REGION_MAX_0`] so it can neither reach
@@ -124,64 +121,11 @@ pub fn verify_subtyping_bounds(
         worker.resolve_lifetime(type_b),
     ) {
         (LifetimeSignature::FastPath(bits_a), LifetimeSignature::FastPath(bits_b)) => {
-            // FAST PATH: Check lifetime compatibility using register operations
+            // Identical words are common and need no slot-by-slot look.
             if bits_a == bits_b {
-                return true; // Exact structural match, exit instantly
+                return true;
             }
-
-            // Iterate through all 4 active slots in Word 2
-            for i in 0..4 {
-                let shift = i * 16;
-                let slot_a = (bits_a >> shift) & PARAM_MASK;
-                let slot_b = (bits_b >> shift) & PARAM_MASK;
-
-                let variance_a = (slot_a & VARIANCE_MASK) >> 12;
-                let variance_b = (slot_b & VARIANCE_MASK) >> 12;
-
-                if variance_a != variance_b {
-                    return false;
-                }
-
-                // Slot 0 is the return slot: its top 3 region bits carry the provenance code (#265),
-                // so its region is 9 bits with its own unset sentinel; slots 1-3 keep the 12-bit
-                // field. The mask must be slot-dependent — reading slot 0 with the wide `REGION_MASK`
-                // would fold the provenance bits into the lifetime and corrupt the comparison.
-                let (region_mask, region_unset) = if i == 0 {
-                    (REGION_MASK_0, REGION_UNSET_0)
-                } else {
-                    (REGION_MASK, REGION_UNSET)
-                };
-                let region_a = slot_a & region_mask;
-                let region_b = slot_b & region_mask;
-
-                // An unset region (a parse-time placeholder not yet bound to a scope depth) does not
-                // constrain subtyping: treat it as a wildcard rather than a concrete very-short-lived
-                // region. Recognising it explicitly — instead of relying on its numeric position —
-                // is what keeps the check correct if the region field is ever narrowed (#267/#265).
-                if region_a == region_unset || region_b == region_unset {
-                    continue;
-                }
-
-                let valid = match variance_a {
-                    // 0x0 represents Invariance (typically used for the inner type of &mut T)
-                    // Invariant: Lifetimes must match EXACTLY.
-                    0x0 => region_a == region_b,
-                    // 0x1 represents Covariance (typically used for the outer lifetime of references: &'a)
-                    // Covariant: Source lifetime must outlive or equal target lifetime.
-                    // Because Region 0 is 'static, a smaller Region ID actually lives longer.
-                    // Therefore, region_a (source) <= region_b (target).
-                    0x1 => region_a <= region_b,
-                    // 0x2 represents Contravariance (typically used for function pointer arguments)
-                    // Contravariant: Target must outlive source.
-                    0x2 => region_a >= region_b,
-                    _ => false,
-                };
-
-                if !valid {
-                    return false;
-                }
-            }
-            true
+            fast_path_slots_compatible(bits_a, bits_b)
         }
         (LifetimeSignature::SlowPath(meta_a), LifetimeSignature::SlowPath(meta_b)) => {
             // SLOW PATH: Iterate through deep vector elements sequentially
@@ -189,6 +133,50 @@ pub fn verify_subtyping_bounds(
         }
         _ => false, // Incompatible layout paths
     }
+}
+
+// Each slot's "unset" sentinel is its region mask with every bit set, so one comparison against
+// the mask finds it in either kind of slot.
+const _: () = assert!(REGION_UNSET == REGION_MASK && REGION_UNSET_0 == REGION_MASK_0);
+
+/// The region mask of each slot. Slot 0 is the return slot: the 3 bits above its 9-bit region
+/// carry the provenance code, and must not be read as part of the lifetime.
+const SLOT_REGION_MASKS: [u16; 4] = [
+    REGION_MASK_0 as u16,
+    REGION_MASK as u16,
+    REGION_MASK as u16,
+    REGION_MASK as u16,
+];
+
+/// Whether one 16-bit slot of `a` may stand in for the same slot of `b`.
+///
+/// The variances must match. An unset region (a placeholder not yet bound to a scope depth)
+/// matches any region. Otherwise invariant (0) needs equal regions, covariant (1) needs the source
+/// to live at least as long (`a <= b`, as region 0 is `'static`), and contravariant (2) the reverse.
+#[inline(always)]
+fn slot_compatible(a: u16, b: u16, region_mask: u16) -> bool {
+    let (variance_a, variance_b) = (a >> 12, b >> 12);
+    let (region_a, region_b) = (a & region_mask, b & region_mask);
+    let unset = (region_a == region_mask) | (region_b == region_mask);
+    let ordered = ((variance_a == 0) & (region_a == region_b))
+        | ((variance_a == 1) & (region_a <= region_b))
+        | ((variance_a == 2) & (region_a >= region_b));
+    (variance_a == variance_b) & (unset | ordered)
+}
+
+/// Whether all four slots of `bits_a` may stand in for those of `bits_b`.
+///
+/// Every slot is checked and the answers are combined with `&`, with no early exit. That gives no
+/// data-dependent branches to mispredict, and lets LLVM put the four slots in one SIMD register.
+#[inline]
+fn fast_path_slots_compatible(bits_a: u64, bits_b: u64) -> bool {
+    let mut all = true;
+    for (i, &region_mask) in SLOT_REGION_MASKS.iter().enumerate() {
+        let a = (bits_a >> (16 * i)) as u16;
+        let b = (bits_b >> (16 * i)) as u16;
+        all &= slot_compatible(a, b, region_mask);
+    }
+    all
 }
 
 fn evaluate_slow_path_variance(
@@ -209,6 +197,121 @@ mod tests {
 
     fn worker() -> LocalWorkerState {
         LocalWorkerState::new(Arc::new(GlobalSession::new(1)))
+    }
+
+    /// The slot check as a loop that returns at the first slot that fails. This is how the fast
+    /// path was written before it was made branch-free, and the branch-free version must give the
+    /// same answer for every pair of words.
+    fn slots_compatible_reference(bits_a: u64, bits_b: u64) -> bool {
+        const VARIANCE_MASK: u64 = 0xF000;
+        const PARAM_MASK: u64 = 0xFFFF;
+        for i in 0..4 {
+            let slot_a = (bits_a >> (i * 16)) & PARAM_MASK;
+            let slot_b = (bits_b >> (i * 16)) & PARAM_MASK;
+            let variance_a = (slot_a & VARIANCE_MASK) >> 12;
+            if variance_a != (slot_b & VARIANCE_MASK) >> 12 {
+                return false;
+            }
+            let (region_mask, region_unset) = if i == 0 {
+                (REGION_MASK_0, REGION_UNSET_0)
+            } else {
+                (REGION_MASK, REGION_UNSET)
+            };
+            let (region_a, region_b) = (slot_a & region_mask, slot_b & region_mask);
+            if region_a == region_unset || region_b == region_unset {
+                continue;
+            }
+            let valid = match variance_a {
+                0x0 => region_a == region_b,
+                0x1 => region_a <= region_b,
+                0x2 => region_a >= region_b,
+                _ => false,
+            };
+            if !valid {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Every variance (all 16 values of the 4-bit field) against every variance, with regions at
+    /// the edges of each field: 0, 1, a middle value, one below the sentinel, the sentinel, and,
+    /// for slot 0, the same values with provenance bits set above the 9-bit region.
+    #[test]
+    fn branch_free_slots_agree_with_the_loop_on_every_edge_case() {
+        let regions_slot0: Vec<u16> = [0u16, 1, 5, 255, 509, 510, 511]
+            .iter()
+            .flat_map(|&r| [r, r | 0x200, r | 0xE00])
+            .collect();
+        let regions_wide: Vec<u16> = vec![0, 1, 5, 510, 511, 2047, 4093, 4094, 4095];
+        for slot in 0..4 {
+            let regions = if slot == 0 {
+                &regions_slot0
+            } else {
+                &regions_wide
+            };
+            for va in 0u16..16 {
+                for vb in 0u16..16 {
+                    for &ra in regions {
+                        for &rb in regions {
+                            let a = (((va << 12) | ra) as u64) << (16 * slot);
+                            let b = (((vb << 12) | rb) as u64) << (16 * slot);
+                            assert_eq!(
+                                fast_path_slots_compatible(a, b),
+                                slots_compatible_reference(a, b),
+                                "slot {slot}: a = {a:#018x}, b = {b:#018x}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Whole words, so that slots disagreeing in different places are covered too: a million
+    /// pseudo-random words, and a million built like real ones (variances 0 to 2, small regions,
+    /// sometimes unset).
+    #[test]
+    fn branch_free_slots_agree_with_the_loop_on_whole_words() {
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for _ in 0..1_000_000 {
+            let (a, b) = (next(), next());
+            assert_eq!(
+                fast_path_slots_compatible(a, b),
+                slots_compatible_reference(a, b),
+                "a = {a:#018x}, b = {b:#018x}"
+            );
+        }
+        let mut realistic = || {
+            let mut w = 0u64;
+            for i in 0..4 {
+                let unset = if i == 0 { REGION_UNSET_0 } else { REGION_UNSET };
+                let region = if next() % 16 == 0 { unset } else { next() % 8 };
+                w |= (((next() % 3) << 12) | region) << (16 * i);
+            }
+            w
+        };
+        let mut passed = 0;
+        for _ in 0..1_000_000 {
+            let (a, b) = (realistic(), realistic());
+            let expected = slots_compatible_reference(a, b);
+            passed += expected as u32;
+            assert_eq!(
+                fast_path_slots_compatible(a, b),
+                expected,
+                "a = {a:#018x}, b = {b:#018x}"
+            );
+        }
+        assert!(
+            passed > 0,
+            "no pair passed, so the passing side was never compared"
+        );
     }
 
     /// A fast-path lifetime GID: param 0 packs `(region, variance)` into word 2 -- exactly what the
