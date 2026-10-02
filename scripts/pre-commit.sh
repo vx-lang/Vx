@@ -67,18 +67,14 @@ else
 fi
 
 # Rule 4: Generated pages are current
-# The error index and the stdlib reference are built from src/diagnostic.rs and the `///`
-# comments in stdlib/. CI refuses a commit that changes src/diagnostic.rs without rebuilding
-# the error index, so check here rather than after a push. Run from the checkout's top, as CI
-# does. A stale stdlib reference only warns: it is rebuilt after merge, so PRs do not
-# conflict in it.
+# The error index is built from src/diagnostic.rs. CI refuses a commit that changes
+# src/diagnostic.rs without rebuilding it, so check here rather than after a push. Run from the
+# checkout's top, as CI does. The stdlib reference is not committed: the site's deploy
+# generates it.
 echo "[4/6] Checking generated pages are current..."
 if ! python3 scripts/tools/gen_error_index.py --check; then
     echo "❌ Rebuild with: python3 scripts/tools/gen_error_index.py"
     exit 1
-fi
-if ! python3 scripts/tools/gen_stdlib_reference.py --check; then
-    echo "⚠️  The stdlib reference is out of date; it is rebuilt after merge (#894)."
 fi
 echo "✅ Generated pages are current!"
 

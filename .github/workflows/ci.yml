@@ -105,19 +105,18 @@ jobs:
       - name: Check documentation examples compile
         run: python3 scripts/tools/check_doc_examples.py
 
-      # The standard-library and diagnostic references are generated from the sources they
-      # describe. Regenerating and diffing catches the case where someone adds a diagnostic or a
-      # stdlib function and the published reference silently stops being complete.
-      # mdformat is already on PATH from the markdown-formatting step above; the generators shell
-      # out to it so their output is in the shape that step would demand.
+      # The diagnostic reference is generated from the source it describes. Regenerating and
+      # diffing catches the case where someone adds a diagnostic and the published reference
+      # silently stops being complete. mdformat is already on PATH from the markdown-formatting
+      # step above; the generator shells out to it so its output is in the shape that step would
+      # demand.
       #
-      # A stale stdlib reference is only a warning: every library PR edited that one generated
-      # file, so each merge left the others in conflict. It is to be rebuilt after merge.
+      # The stdlib reference is not committed: the site's deploy generates it. Running the
+      # generator here only checks that it still reads every module in stdlib/.
       - name: Check generated references are current
         run: |
           python3 scripts/tools/gen_error_index.py --check
-          python3 scripts/tools/gen_stdlib_reference.py --check \
-            || echo "::warning file=www/book/src/stdlib-reference.md::The stdlib reference is out of date; it is rebuilt after merge (#894)."
+          python3 scripts/tools/gen_stdlib_reference.py
 
       - name: Run tests
         run: cargo test --release --workspace --verbose

@@ -13,6 +13,9 @@ on:
       - 'tests/**'
       - 'scripts/tools/gen_error_pages.py'
       - 'scripts/tools/gen_site_metadata.py'
+      # The standard library reference is generated from the `///` comments in stdlib/.
+      - 'stdlib/**'
+      - 'scripts/tools/gen_stdlib_reference.py'
       - '.github/workflows/pages.yml'
   workflow_dispatch:
 
@@ -43,6 +46,11 @@ jobs:
           mkdir -p "$HOME/.local/bin"
           curl -fsSL "$url" | tar -xz -C "$HOME/.local/bin"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # Generated here rather than committed: every library PR used to edit this one page, so
+      # each merge left the others in conflict, and the committed copy went stale.
+      - name: Generate the standard library reference
+        run: python3 scripts/tools/gen_stdlib_reference.py
 
       - name: Build the book
         run: mdbook build www/book
