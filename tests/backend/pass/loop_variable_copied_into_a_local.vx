@@ -1,0 +1,43 @@
+//===- loop_variable_copied_into_a_local.vx - Vx Compiler ---------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `for` loop's variable copied into a `let mut`, with and without a type written, and the
+// copy passed to a function as `&mut i32`. `bump` adds 10 to it each time:
+// (0 + 10) + (1 + 10) + (2 + 10) = 33, twice.
+//
+// EXPECT: 33 33
+fn bump(p : &mut i32, v : i32) -> i32 {
+  *p = *p + v;
+  return 0;
+}
+
+fn with_type() -> i32 {
+  let mut s = 0;
+  for x in 0..3 {
+    let mut b : i32 = x;
+    bump(&mut b, 10);
+    s = s + b;
+  }
+  return s;
+}
+
+fn without_type() -> i32 {
+  let mut s = 0;
+  for x in 0..3 {
+    let mut b = x;
+    bump(&mut b, 10);
+    s = s + b;
+  }
+  return s;
+}
+
+fn main() -> i32 {
+  print(with_type());
+  print!(" ");
+  print(without_type());
+  return 0;
+}

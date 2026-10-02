@@ -162,6 +162,23 @@ impl<'c> LowerToMelior<'c> for LetDeclStmt {
                 (val, ty)
             };
 
+        // A loop variable is an `index` in MLIR and an integer in Vx. A local made from one
+        // holds the integer -- the declared type, or `i32` -- so `&mut` of it is a pointer to
+        // that integer, as the function it is passed to expects.
+        let (val, ty) = if ty == gen.index_ty {
+            let int_ty = match ty_ann {
+                Some(ann) => gen.lower_type(ann)?,
+                None => gen.i32_ty,
+            };
+            let cast = OperationBuilder::new("arith.index_cast", gen.loc())
+                .add_operands(&[val])
+                .add_results(&[int_ty])
+                .build()?;
+            (block.append_operation(cast).result(0)?.into(), int_ty)
+        } else {
+            (val, ty)
+        };
+
         if *is_mut {
             let ty_str = ty.to_string();
             if ty_str.contains("!llvm.struct") || ty_str.contains("!llvm.ptr") {
