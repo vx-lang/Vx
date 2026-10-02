@@ -3096,16 +3096,34 @@ struct FreeHeapBuffersPass
     ModuleOp module = getOperation();
     if (reasonToSkip(module))
       return;
-    OpPassManager pm(ModuleOp::getOperationName());
-    if (failed(parsePassPipeline(
-            "lift-cf-to-scf,buffer-deallocation-pipeline,"
-            "convert-bufferization-to-memref,convert-scf-to-cf",
-            pm))) {
-      signalPassFailure();
+    if (failed(run(module, "lift-cf-to-scf")))
+      return signalPassFailure();
+    // Lifting writes `ub.poison` for a value a path does not define, such as
+    // the result of a function that returns a buffer early from inside nested
+    // blocks, on the paths that have not returned yet. A poison buffer reaching
+    // the analysis makes its run-time alias checks compare garbage, and a
+    // buffer is freed twice; so such a module is lowered back, unfreed.
+    bool poisonBuffer = false;
+    module.walk([&](ub::PoisonOp poison) {
+      if (isa<BaseMemRefType>(poison.getType()))
+        poisonBuffer = true;
+    });
+    if (poisonBuffer) {
+      if (failed(run(module, "convert-scf-to-cf")))
+        signalPassFailure();
       return;
     }
-    if (failed(runPipeline(pm, module)))
+    if (failed(run(module,
+                   "buffer-deallocation-pipeline,"
+                   "convert-bufferization-to-memref,convert-scf-to-cf")))
       signalPassFailure();
+  }
+
+  LogicalResult run(ModuleOp module, StringRef pipeline) {
+    OpPassManager pm(ModuleOp::getOperationName());
+    if (failed(parsePassPipeline(pipeline, pm)))
+      return failure();
+    return runPipeline(pm, module);
   }
 };
 
