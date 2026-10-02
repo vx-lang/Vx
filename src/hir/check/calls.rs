@@ -365,6 +365,72 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Two `&mut` arguments of one call, or a `&mut` and a `&`, must not reach the same variable,
+    /// as in `f(&mut x, &mut x)` or `f(&mut h, &h.n)`: the callee would see one value through two
+    /// names that it may assume are separate. Raw pointer parameters (`*mut`) may alias, as in Rust.
+    fn check_overlapping_reference_args(
+        &mut self,
+        plan: &ReborrowPlan,
+        errors_before_args: usize,
+        span: &Span,
+    ) {
+        let Some((param_types, _)) = &plan.callee_sig else {
+            return;
+        };
+        if self.speculating {
+            return;
+        }
+        let borrows = plan
+            .ref_args
+            .iter()
+            .filter(|(i, ..)| matches!(param_types.get(*i), Some(Type::Borrow { .. })))
+            .map(|(_, base, path, is_mut, _)| (base, path, *is_mut))
+            .collect::<Vec<_>>();
+        for (i, (base, path, is_mut)) in borrows.iter().enumerate() {
+            for (other_base, other_path, other_is_mut) in &borrows[i + 1..] {
+                if base != other_base || !crate::hir::places::paths_may_alias(path, other_path) {
+                    continue;
+                }
+                let (code, message) = if *is_mut && *other_is_mut {
+                    (
+                        crate::diagnostic::DiagnosticCode::E4004,
+                        format!("Cannot borrow '{}' as mutable twice in one call.", base),
+                    )
+                } else if *is_mut || *other_is_mut {
+                    (
+                        crate::diagnostic::DiagnosticCode::E4003,
+                        format!(
+                            "Cannot borrow '{}' as mutable and as immutable in one call.",
+                            base
+                        ),
+                    )
+                } else {
+                    continue;
+                };
+                // A borrow still held after this statement is already reported by the argument's
+                // own borrow check.
+                let quoted = format!("'{base}'");
+                let already_reported = self.errors.inner[errors_before_args..].iter().any(|d| {
+                    matches!(
+                        d.code,
+                        Some(
+                            crate::diagnostic::DiagnosticCode::E4003
+                                | crate::diagnostic::DiagnosticCode::E4004
+                        )
+                    ) && d.message.contains(&quoted)
+                });
+                if already_reported {
+                    continue;
+                }
+                self.errors.error_with_code(
+                    code,
+                    message,
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                );
+            }
+        }
+    }
+
     /// After the argument loop, decide which reference-argument reborrows persist past the call
     /// and revert the rest (#243). A reborrow outlives the call iff the callee returns a reference
     /// the argument's slot derives from; every other base is restored to the borrows it had before
@@ -489,10 +555,12 @@ impl<'a> TypeChecker<'a> {
                 // one the return keeps alive.
                 let reborrow_plan =
                     self.prepare_reference_arg_reborrows(resolved_name.clone(), args.as_slice());
+                let errors_before_args = self.errors.inner.len();
                 for arg in args.iter_mut() {
                     arg_types.push(self.check_expr_type_flag(arg, arg_consume));
                 }
 
+                self.check_overlapping_reference_args(&reborrow_plan, errors_before_args, span);
                 self.commit_reference_arg_reborrows(&reborrow_plan, &arg_types, span);
                 if resolved_name == "print".into() && args.len() == 1 {
                     Self::prepare_print_operand(&mut args[0], &arg_types[0]);

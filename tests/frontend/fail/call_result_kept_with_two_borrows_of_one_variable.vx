@@ -1,0 +1,67 @@
+//===- call_result_kept_with_two_borrows_of_one_variable.vx - Vx ---------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// One call must not get a `&mut` and another borrow of the same variable, as in Rust. These
+// calls keep their result in an unused `let`, which used to hide the conflict.
+
+struct Holder {
+  n : i32,
+}
+
+fn set_both(a : &mut i32, b : &mut i32) -> i32 {
+  *a = 1i32;
+  *b = 2i32;
+  return 0i32;
+}
+
+fn set_from(a : &mut i32, b : &i32) -> i32 {
+  *a = *b;
+  return 0i32;
+}
+
+fn set_holder_and_field(h : &mut Holder, n : &mut i32) -> i32 {
+  *n = 3i32;
+  return 0i32;
+}
+
+fn same_variable_twice() -> i32 {
+  let mut x = 5i32;
+  // CHECK: Error[E4004]{{.*}}Cannot borrow 'x' as mutable twice in one call.
+  let _result = set_both(&mut x, &mut x);
+  return x;
+}
+
+fn mutable_and_shared() -> i32 {
+  let mut x = 5i32;
+  // CHECK: Error[E4003]{{.*}}Cannot borrow 'x' as mutable and as immutable in one call.
+  let _result = set_from(&mut x, &x);
+  return x;
+}
+
+fn struct_and_its_field() -> i32 {
+  let mut holder = Holder {
+    n: 5i32
+  };
+  // CHECK: Error[E4004]{{.*}}Cannot borrow 'holder' as mutable twice in one call.
+  let _result = set_holder_and_field(&mut holder, &mut holder.n);
+  return holder.n;
+}
+
+fn same_reference_twice(x : &mut i32) -> i32 {
+  // CHECK: Error[E4004]{{.*}}Cannot borrow 'x' as mutable twice in one call.
+  let _result = set_both(x, x);
+  return 0i32;
+}
+
+fn main() -> i32 {
+  let mut x = 0i32;
+  return same_variable_twice() + mutable_and_shared() + struct_and_its_field()
+  + same_reference_twice(&mut x);
+}
+// CHECK: 4 error(s) emitted

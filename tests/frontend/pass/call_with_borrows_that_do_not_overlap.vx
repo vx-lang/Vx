@@ -1,0 +1,49 @@
+//===- call_with_borrows_that_do_not_overlap.vx - Vx ---------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+//
+// Calls whose borrows do not overlap are accepted: two different fields, two shared
+// borrows, and raw pointers, which may point to the same variable.
+
+struct Pair {
+  a : i32,
+  b : i32,
+}
+
+fn set_both(a : &mut i32, b : &mut i32) -> i32 {
+  *a = 1i32;
+  *b = 2i32;
+  return 0i32;
+}
+
+fn add(a : &i32, b : &i32) -> i32 {
+  return *a + *b;
+}
+
+fn set_through_pointers(a : *mut i32, b : *mut i32) -> i32 {
+  unsafe { *a = 1i32; *b = 2i32; }
+  return 0i32;
+}
+
+fn main() -> i32 {
+  let mut pair = Pair {
+    a: 0i32, b: 0i32
+  };
+  let _set = set_both(&mut pair.a, &mut pair.b);
+  let mut x = 5i32;
+  let _sum = add(&x, &x);
+  let pointer : *mut i32 = &mut x;
+  let _pointers = set_through_pointers(pointer, pointer);
+  let _borrows_as_pointers = set_through_pointers(&mut x, &mut x);
+  return pair.a + pair.b + x;
+}
+
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: call @set_both
+// CHECK: call @add
+// CHECK: call @set_through_pointers
