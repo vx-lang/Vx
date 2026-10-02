@@ -1,0 +1,20 @@
+//===- comptime_error_at_a_number_literal.vx - Vx --------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+// A refused `comptime` block is reported at its last expression. A number literal has no
+// position of its own, so this one is reported at the `comptime` keyword.
+fn main() -> i32 {
+  let mut outer = 1i32;
+  // CHECK: Error[E3033] at [[@LINE+1]]:15:{{.*}}writes to 'outer'
+  let value = comptime {
+    outer = 2i32;
+    7i32
+  };
+  return outer + value;
+}

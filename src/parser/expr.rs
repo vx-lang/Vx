@@ -1150,7 +1150,11 @@ impl<'a> Parser<'a> {
                         Expr::ComptimeBlock(ComptimeBlockExpr {
                             stmts,
                             ret: ret_expr,
-                            span: Span::default(),
+                            span: Span {
+                                line: token.line,
+                                column: token.column,
+                                length: token.length,
+                            },
                         })
                     }
                     TokenType::Pipe | TokenType::OrOr => {

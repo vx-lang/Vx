@@ -50,10 +50,16 @@ impl<'a> TypeChecker<'a> {
         &mut self,
         stmts: &[Statement],
         ret: Option<&Expr>,
+        block_span: Span,
         before: &HashMap<crate::symbol::Symbol, Value>,
     ) -> ComptimeFold {
         let interpretation = self.observe_comptime_block(stmts, ret, before);
-        let span = ret.map(|r| r.span()).unwrap_or_default();
+        // At the block's last expression; at the `comptime` keyword when there is none, or when
+        // it has no position of its own, as a number literal does.
+        let span = ret
+            .map(|r| r.span())
+            .filter(|span| *span != Span::default())
+            .unwrap_or(block_span);
 
         // Anything it writes that outlives it would have to survive, and the block does not.
         if let Some(name) = interpretation.escaping_write {
@@ -230,7 +236,7 @@ impl<'a> TypeChecker<'a> {
                 }
                 self.consteval.comptime_depth -= 1;
                 self.pop_scope();
-                let folded = self.fold_comptime_block(stmts, ret.as_deref(), &before);
+                let folded = self.fold_comptime_block(stmts, ret.as_deref(), block_span, &before);
                 // An assertion the placement fold answered `true` is discharged here: nothing
                 // at run time holds a placement, so nothing is left to check. (A false one
                 // was reported by the assert check.) Asserts on anything else stay, as the

@@ -131,7 +131,7 @@ impl<'a> Parser<'a> {
                 }))
             }
             TokenType::Comptime => {
-                self.advance();
+                let keyword = self.advance().clone();
                 self.consume(&TokenType::LeftBrace, "Expected '{' after 'comptime'")?;
                 let mut stmts = Vec::new();
                 while self.peek().kind != TokenType::RightBrace
@@ -153,7 +153,11 @@ impl<'a> Parser<'a> {
                     expr: Expr::ComptimeBlock(ComptimeBlockExpr {
                         stmts,
                         ret,
-                        span: Span::default(),
+                        span: Span {
+                            line: keyword.line,
+                            column: keyword.column,
+                            length: keyword.length,
+                        },
                     }),
                     has_semi: true,
                     span: Span::default(),
