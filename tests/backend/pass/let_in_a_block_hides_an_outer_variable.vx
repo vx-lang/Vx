@@ -14,12 +14,10 @@
 // keeps its variables in memory rather than registers), a loop body, an `unsafe` block, a
 // `match` arm, and the branch of an `if` used as a value. Also: an inner `let mut` assigned
 // inside its block, an assignment to the outer variable inside a block (which must stay),
-// a shadow of another type, and three blocks nested in a loop.
+// a shadow of another type, and three blocks nested in a loop. Last, `same_block` shadows a
+// `let mut` with a `let` in the same block, which must read the new variable.
 //
-// The AST code generator does not scope blocks yet.
-//
-// REQUIRES: flat-codegen
-// EXPECT: 2 1 3 1 2 1 7 6 11 3 2 1 9 1 2.5 4 133 22
+// EXPECT: 2 1 3 1 2 1 7 6 11 3 2 1 9 1 2.5 4 133 22 20
 fn in_if_branch(c : bool) -> i32 {
   let x = 1;
   if c {
@@ -139,6 +137,13 @@ fn in_value_if(c : bool) -> i32 {
   return x + y;
 }
 
+fn same_block() -> i32 {
+  let mut x = 1;
+  x = x + 1;
+  let x = x * 10;
+  return x;
+}
+
 fn main() -> i32 {
   print(in_if_branch(true));
   print!(" ");
@@ -161,5 +166,7 @@ fn main() -> i32 {
   print(nested(3));
   print!(" ");
   print(in_value_if(true));
+  print!(" ");
+  print(same_block());
   return 0;
 }

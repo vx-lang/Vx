@@ -23,6 +23,15 @@ fn parse_llvm_struct_name(ty_str: &str) -> Option<String> {
     Some(rest[..end].to_string())
 }
 
+/// A name a `let` in a block shadows, with everything the generator knew about it before.
+pub(crate) struct Shadowed<'c> {
+    name: crate::symbol::Symbol,
+    value: Option<(Value<'c, 'c>, Type<'c>)>,
+    in_a_slot: bool,
+    ast_ty: Option<syntax::Type>,
+    owned: bool,
+}
+
 pub struct MeliorGenerator<'c> {
     pub(crate) context: &'c Context,
     pub(crate) module: Module<'c>,
@@ -80,6 +89,9 @@ pub struct MeliorGenerator<'c> {
     pub break_blocks: Vec<*const melior::ir::Block<'c>>,
     pub continue_blocks: Vec<*const melior::ir::Block<'c>>,
     pub allocs: std::collections::HashSet<String>,
+    /// One frame per block being lowered: what each name a `let` in the block shadows meant
+    /// before it, put back when the block ends.
+    pub(crate) blocks: Vec<Vec<Shadowed<'c>>>,
     pub(crate) is_lvalue_context: bool,
     pub(crate) mlir_block_counter: usize,
     pub(crate) has_returned: bool,
@@ -172,6 +184,63 @@ fn scalar_type_bits(ty_text: &str) -> Option<u32> {
 }
 
 impl<'c> MeliorGenerator<'c> {
+    /// Start a block: a `let` in it hides an outer variable of the same name only until the
+    /// block ends, as in Rust. Returns the depth `close_blocks_to` takes it back to.
+    pub(crate) fn open_block(&mut self) -> usize {
+        self.blocks.push(Vec::new());
+        self.blocks.len() - 1
+    }
+
+    /// End every block opened above `depth`, restoring what the names its `let`s shadowed meant.
+    pub(crate) fn close_blocks_to(&mut self, depth: usize) {
+        while self.blocks.len() > depth {
+            let frame = self.blocks.pop().expect("a frame above depth");
+            for s in frame {
+                match s.value {
+                    Some(v) => self.env.insert(s.name.clone(), v),
+                    None => self.env.remove(&s.name),
+                };
+                match s.ast_ty {
+                    Some(t) => self.ast_env.insert(s.name.clone(), t),
+                    None => self.ast_env.remove(&s.name),
+                };
+                if s.in_a_slot {
+                    self.allocs.insert(s.name.to_string());
+                } else {
+                    self.allocs.remove(s.name.as_ref());
+                }
+                if s.owned {
+                    self.owned_tensors.insert(s.name);
+                } else {
+                    self.owned_tensors.remove(&s.name);
+                }
+            }
+        }
+    }
+
+    /// Called before a `let` or a pattern binds `name`: the first time in a block, remember what
+    /// the name meant, for `close_blocks_to` to put back.
+    pub(crate) fn note_shadow(&mut self, name: &str) {
+        let Some(frame) = self.blocks.last() else {
+            return;
+        };
+        if frame.iter().any(|s| s.name.as_ref() == name) {
+            return;
+        }
+        let name: crate::symbol::Symbol = name.into();
+        let before = Shadowed {
+            value: self.env.get(&name).copied(),
+            in_a_slot: self.allocs.contains(name.as_ref()),
+            ast_ty: self.ast_env.get(&name).cloned(),
+            owned: self.owned_tensors.contains(&name),
+            name,
+        };
+        self.blocks
+            .last_mut()
+            .expect("a frame, checked above")
+            .push(before);
+    }
+
     pub fn loc(&self) -> melior::ir::Location<'c> {
         melior::ir::Location::new(
             self.context,
@@ -677,6 +746,7 @@ impl<'c> MeliorGenerator<'c> {
             break_blocks: Vec::new(),
             continue_blocks: Vec::new(),
             allocs: std::collections::HashSet::new(),
+            blocks: Vec::new(),
             is_lvalue_context: false,
             mlir_block_counter: 0,
             has_returned: false,

@@ -122,6 +122,7 @@ impl<'c> LowerToMelior<'c> for LetDeclStmt {
             expr,
             span: _,
         } = self;
+        gen.note_shadow(name.as_ref());
         let prev_expected = gen.expected_type;
         if let Some(ann) = ty_ann {
             gen.expected_type = gen.lower_type(ann).ok();
@@ -213,6 +214,8 @@ impl<'c> LowerToMelior<'c> for LetDeclStmt {
             }
         } else {
             gen.env.insert(name.to_string().into(), (val, ty));
+            // A value, not a stack slot, even if an outer `let mut` of this name had one.
+            gen.allocs.remove(name.as_ref());
         }
         Ok(Some(block))
     }

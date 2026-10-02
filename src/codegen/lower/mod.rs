@@ -435,8 +435,11 @@ pub fn generate_match_chain<'c>(
 
     let arm = &arms[0];
 
+    // Each arm is a block: its pattern's names and its `let`s end with it.
+    let depth = gen.open_block();
     if let Pattern::Wildcard = arm.pattern {
         lower_match_arm_body(gen, &arm.body, block, merge_block, value_ty)?;
+        gen.close_blocks_to(depth);
         return Ok(block);
     }
 
@@ -609,6 +612,7 @@ pub fn generate_match_chain<'c>(
                     }
                     None => (payload_val, payload_ty),
                 };
+                gen.note_shadow(name.as_ref());
                 gen.env
                     .insert(name.to_string().into(), (payload_val, payload_ty));
             }
@@ -616,6 +620,7 @@ pub fn generate_match_chain<'c>(
     }
 
     lower_match_arm_body(gen, &arm.body, then_block, merge_block, value_ty)?;
+    gen.close_blocks_to(depth);
 
     generate_match_chain(
         gen,

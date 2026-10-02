@@ -9,168 +9,177 @@ use melior::ir::{
 
 impl<'c> LowerToMelior<'c> for syntax::SpawnOnExpr {
     type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
+    /// A block: a `let` in it hides an outer variable of the same name only until it ends.
     fn lower(
         &self,
         gen: &mut MeliorGenerator<'c>,
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Self::Output {
-        let location = gen.loc();
-        let region = melior::ir::Region::new();
-        let mut body_block = region.append_block(melior::ir::Block::new(&[]));
-        let prev_in_spawn = gen.in_spawn;
-        gen.in_spawn = true;
+        let depth = gen.open_block();
+        let lowered = lower_spawn_region(self, gen, block);
+        gen.close_blocks_to(depth);
+        lowered
+    }
+}
 
-        // Whether anything is waiting on a value from this region. A spawn in
-        // statement position is asked for `none`, and its tail expression is
-        // then the last thing the region does rather than something it returns
-        // -- which is what a trailing `if` is. Reading it as a result gave the
-        // region a `vx.yield` of the condition against a declared result type of
-        // `none`, a mismatch nothing looked at because the result went unused.
-        let wants_value = gen.expected_type != Some(gen.none_ty);
+fn lower_spawn_region<'c>(
+    this: &syntax::SpawnOnExpr,
+    gen: &mut MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+) -> Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError> {
+    let location = gen.loc();
+    let region = melior::ir::Region::new();
+    let mut body_block = region.append_block(melior::ir::Block::new(&[]));
+    let prev_in_spawn = gen.in_spawn;
+    gen.in_spawn = true;
 
-        // Transport host-proven `assert` facts into the device kernel as
-        // `llvm.intr.assume` certificates before the body is lowered, so they dominate
-        // the guard they let the device backend fold. Host targets get nothing (the
-        // relation never crossed a launch boundary). Off unless `--emit-seam-certs`.
-        let is_device = !matches!(
-            self.top,
-            Topology::CPU | Topology::CpuAvx512 | Topology::CpuNeon | Topology::Current
-        );
-        if gen.emit_seam_certs && is_device {
-            body_block =
-                super::seam_cert::emit_seam_certificates(gen, &self.stmts, &self.ret, body_block)?;
+    // Whether anything is waiting on a value from this region. A spawn in
+    // statement position is asked for `none`, and its tail expression is
+    // then the last thing the region does rather than something it returns
+    // -- which is what a trailing `if` is. Reading it as a result gave the
+    // region a `vx.yield` of the condition against a declared result type of
+    // `none`, a mismatch nothing looked at because the result went unused.
+    let wants_value = gen.expected_type != Some(gen.none_ty);
+
+    // Transport host-proven `assert` facts into the device kernel as
+    // `llvm.intr.assume` certificates before the body is lowered, so they dominate
+    // the guard they let the device backend fold. Host targets get nothing (the
+    // relation never crossed a launch boundary). Off unless `--emit-seam-certs`.
+    let is_device = !matches!(
+        this.top,
+        Topology::CPU | Topology::CpuAvx512 | Topology::CpuNeon | Topology::Current
+    );
+    if gen.emit_seam_certs && is_device {
+        body_block =
+            super::seam_cert::emit_seam_certificates(gen, &this.stmts, &this.ret, body_block)?;
+    }
+
+    for stmt in &this.stmts {
+        if let Some(b) = gen.generate_statement(stmt, body_block)? {
+            body_block = b;
         }
+    }
 
-        for stmt in &self.stmts {
-            if let Some(b) = gen.generate_statement(stmt, body_block)? {
-                body_block = b;
+    let mut result_types = vec![];
+    let mut ret_val = None;
+
+    // The region's tail expression -- its value is the region's value. The
+    // block it hands back is where the terminator has to go: an `if` (or a
+    // `match`, or anything else that branches) leaves the insertion point in
+    // a fresh merge block, and appending `vx.yield` to the block we started
+    // in would put it after that block's `cf.cond_br`. That is invalid IR
+    // rather than a wrong answer, and it is why a spawn whose last statement
+    // is an `if` did not compile: the parser reads a trailing `if` as the
+    // tail expression whether or not a semicolon follows it, so
+    // `spawn on(...) { ...; if c { o[0][0] = 1.0; } }` came through here.
+    if let Some(r) = &this.ret {
+        let (val, ty, tail_block) = gen.generate_expr(r, body_block)?;
+        body_block = tail_block;
+        if wants_value {
+            result_types.push(ty);
+            ret_val = Some(val);
+        }
+    }
+
+    let mut needs_yield = true;
+    if let Some(syntax::Statement::Return(_)) = this.stmts.last() {
+        needs_yield = false;
+    }
+
+    if needs_yield {
+        let mut yield_builder = OperationBuilder::new("vx.yield", location);
+        if let Some(v) = ret_val {
+            yield_builder = yield_builder.add_operands(&[v]);
+        }
+        let yield_op = yield_builder
+            .build()
+            .expect("Failed to build vx.yield operation");
+        body_block.append_operation(yield_op);
+    }
+
+    gen.in_spawn = prev_in_spawn;
+
+    let topology_id = topology_to_i32(&this.top);
+    let top_attr = IntegerAttribute::new(gen.i32_ty, topology_id as i64).into();
+
+    // The topology's declared spelling, alongside its id.
+    //
+    // The id is a hash for a name declared in a machine file --
+    // `1000 + fnv32(name) % 1000` -- so it is one-way and only 1000 wide. A plugin holding
+    // `topo=1113` cannot recover `DecodeWorker`, so it cannot look the worker up in a fleet
+    // manifest and discover where it lives, which is the whole of resolving a placement to a
+    // machine (#348). Two names can also collide onto one id, and nothing would notice.
+    //
+    // Carrying the name makes it the identity and the id an optimisation. It costs a few bytes
+    // per kernel and lets the compiler stay out of the business of knowing endpoints: the
+    // program names a role, the machine file says what the role is, and the plugin maps the
+    // name to an address.
+    let name_attr =
+        melior::ir::attribute::StringAttribute::new(gen.context, &this.top.display_name()).into();
+
+    let mut spawn_builder = OperationBuilder::new("vx.spawn", location)
+        .add_attributes(&[
+            (Identifier::new(gen.context, "topology"), top_attr),
+            (Identifier::new(gen.context, "topology_name"), name_attr),
+        ])
+        .add_regions([region]);
+
+    // The declared arch travels on the spawn here exactly as on the flat path (Vx#352):
+    // without it, the same source lost its device image whenever flat codegen declined and
+    // this path took over -- silently, since the eligibility gate saw no attribute and a
+    // custom topology's id cannot enter the band fallback. Custom topologies only: built-ins
+    // declare no arch and ride the band, same asymmetry as the flat emitter.
+    if let syntax::Topology::Custom(name) = &this.top {
+        if let Some(desc) = gen.topologies.get(name) {
+            if let Some(arch) = &desc.arch {
+                let arch_attr =
+                    melior::ir::attribute::StringAttribute::new(gen.context, arch.as_ref()).into();
+                spawn_builder = spawn_builder
+                    .add_attributes(&[(Identifier::new(gen.context, "arch"), arch_attr)]);
             }
         }
+    }
 
-        let mut result_types = vec![];
-        let mut ret_val = None;
+    // Topology → plugin selection: if a hardware plugin claims this topology, record its
+    // identity on the op so the emitted IR reflects which backend owns the region (a
+    // later lowering / the runtime dispatcher can route on it). This is the point where
+    // the `VxHardwarePlugin` trait is actually consulted during compilation.
+    if let Some(plugin) = crate::plugin::plugin_for(topology_id as u32) {
+        let plugin_attr =
+            melior::ir::attribute::StringAttribute::new(gen.context, &plugin.plugin_name()).into();
+        spawn_builder =
+            spawn_builder.add_attributes(&[(Identifier::new(gen.context, "plugin"), plugin_attr)]);
+    }
 
-        // The region's tail expression -- its value is the region's value. The
-        // block it hands back is where the terminator has to go: an `if` (or a
-        // `match`, or anything else that branches) leaves the insertion point in
-        // a fresh merge block, and appending `vx.yield` to the block we started
-        // in would put it after that block's `cf.cond_br`. That is invalid IR
-        // rather than a wrong answer, and it is why a spawn whose last statement
-        // is an `if` did not compile: the parser reads a trailing `if` as the
-        // tail expression whether or not a semicolon follows it, so
-        // `spawn on(...) { ...; if c { o[0][0] = 1.0; } }` came through here.
-        if let Some(r) = &self.ret {
-            let (val, ty, tail_block) = gen.generate_expr(r, body_block)?;
-            body_block = tail_block;
-            if wants_value {
-                result_types.push(ty);
-                ret_val = Some(val);
-            }
-        }
+    if !result_types.is_empty() {
+        spawn_builder = spawn_builder.add_results(&result_types);
+    }
 
-        let mut needs_yield = true;
-        if let Some(syntax::Statement::Return(_)) = self.stmts.last() {
-            needs_yield = false;
-        }
+    let spawn_op = spawn_builder.build()?;
+    let spawn_ref = block.append_operation(spawn_op);
 
-        if needs_yield {
-            let mut yield_builder = OperationBuilder::new("vx.yield", location);
-            if let Some(v) = ret_val {
-                yield_builder = yield_builder.add_operands(&[v]);
-            }
-            let yield_op = yield_builder
-                .build()
-                .expect("Failed to build vx.yield operation");
-            body_block.append_operation(yield_op);
-        }
-
-        gen.in_spawn = prev_in_spawn;
-
-        let topology_id = topology_to_i32(&self.top);
-        let top_attr = IntegerAttribute::new(gen.i32_ty, topology_id as i64).into();
-
-        // The topology's declared spelling, alongside its id.
-        //
-        // The id is a hash for a name declared in a machine file --
-        // `1000 + fnv32(name) % 1000` -- so it is one-way and only 1000 wide. A plugin holding
-        // `topo=1113` cannot recover `DecodeWorker`, so it cannot look the worker up in a fleet
-        // manifest and discover where it lives, which is the whole of resolving a placement to a
-        // machine (#348). Two names can also collide onto one id, and nothing would notice.
-        //
-        // Carrying the name makes it the identity and the id an optimisation. It costs a few bytes
-        // per kernel and lets the compiler stay out of the business of knowing endpoints: the
-        // program names a role, the machine file says what the role is, and the plugin maps the
-        // name to an address.
-        let name_attr =
-            melior::ir::attribute::StringAttribute::new(gen.context, &self.top.display_name())
-                .into();
-
-        let mut spawn_builder = OperationBuilder::new("vx.spawn", location)
-            .add_attributes(&[
-                (Identifier::new(gen.context, "topology"), top_attr),
-                (Identifier::new(gen.context, "topology_name"), name_attr),
-            ])
-            .add_regions([region]);
-
-        // The declared arch travels on the spawn here exactly as on the flat path (Vx#352):
-        // without it, the same source lost its device image whenever flat codegen declined and
-        // this path took over -- silently, since the eligibility gate saw no attribute and a
-        // custom topology's id cannot enter the band fallback. Custom topologies only: built-ins
-        // declare no arch and ride the band, same asymmetry as the flat emitter.
-        if let syntax::Topology::Custom(name) = &self.top {
-            if let Some(desc) = gen.topologies.get(name) {
-                if let Some(arch) = &desc.arch {
-                    let arch_attr =
-                        melior::ir::attribute::StringAttribute::new(gen.context, arch.as_ref())
-                            .into();
-                    spawn_builder = spawn_builder
-                        .add_attributes(&[(Identifier::new(gen.context, "arch"), arch_attr)]);
-                }
-            }
-        }
-
-        // Topology → plugin selection: if a hardware plugin claims this topology, record its
-        // identity on the op so the emitted IR reflects which backend owns the region (a
-        // later lowering / the runtime dispatcher can route on it). This is the point where
-        // the `VxHardwarePlugin` trait is actually consulted during compilation.
-        if let Some(plugin) = crate::plugin::plugin_for(topology_id as u32) {
-            let plugin_attr =
-                melior::ir::attribute::StringAttribute::new(gen.context, &plugin.plugin_name())
-                    .into();
-            spawn_builder = spawn_builder
-                .add_attributes(&[(Identifier::new(gen.context, "plugin"), plugin_attr)]);
-        }
-
+    if !needs_yield {
+        let mut ret_builder = OperationBuilder::new("func.return", location);
         if !result_types.is_empty() {
-            spawn_builder = spawn_builder.add_results(&result_types);
+            ret_builder = ret_builder.add_operands(&[spawn_ref.result(0)?.into()]);
         }
+        let ret_op = ret_builder.build()?;
+        block.append_operation(ret_op);
+    }
 
-        let spawn_op = spawn_builder.build()?;
-        let spawn_ref = block.append_operation(spawn_op);
-
-        if !needs_yield {
-            let mut ret_builder = OperationBuilder::new("func.return", location);
-            if !result_types.is_empty() {
-                ret_builder = ret_builder.add_operands(&[spawn_ref.result(0)?.into()]);
-            }
-            let ret_op = ret_builder.build()?;
-            block.append_operation(ret_op);
-        }
-
-        if !result_types.is_empty() {
-            Ok((spawn_ref.result(0)?.into(), result_types[0], block))
-        } else {
-            let _none_ty = gen.none_ty;
-            let dummy_op = OperationBuilder::new("arith.constant", location)
-                .add_attributes(&[(
-                    Identifier::new(gen.context, "value"),
-                    IntegerAttribute::new(Type::index(gen.context), 0).into(),
-                )])
-                .add_results(&[Type::index(gen.context)])
-                .build()?;
-            let dummy_ref = block.append_operation(dummy_op);
-            Ok((dummy_ref.result(0)?.into(), Type::index(gen.context), block))
-        }
+    if !result_types.is_empty() {
+        Ok((spawn_ref.result(0)?.into(), result_types[0], block))
+    } else {
+        let _none_ty = gen.none_ty;
+        let dummy_op = OperationBuilder::new("arith.constant", location)
+            .add_attributes(&[(
+                Identifier::new(gen.context, "value"),
+                IntegerAttribute::new(Type::index(gen.context), 0).into(),
+            )])
+            .add_results(&[Type::index(gen.context)])
+            .build()?;
+        let dummy_ref = block.append_operation(dummy_op);
+        Ok((dummy_ref.result(0)?.into(), Type::index(gen.context), block))
     }
 }
 

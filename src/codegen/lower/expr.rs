@@ -398,39 +398,51 @@ impl<'c> LowerToMelior<'c> for StringLiteralExpr {
 
 impl<'c> LowerToMelior<'c> for ComptimeBlockExpr {
     type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
+    /// A block: a `let` in it hides an outer variable of the same name only until it ends.
     fn lower(
         &self,
         gen: &mut MeliorGenerator<'c>,
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Self::Output {
-        // Same rule as everywhere else a block of statements is spliced inline:
-        // the block a statement hands back is the one the next statement goes
-        // in. Dropping it left `comptime { for ... }` appending past the loop's
-        // own branch, which the verifier rejects outright.
-        let mut cur = block;
-        for stmt in &self.stmts {
-            match gen.generate_statement(stmt, cur)? {
-                Some(b) => cur = b,
-                None => {
-                    cur = super::dead_continuation(cur);
-                    break;
-                }
+        let depth = gen.open_block();
+        let lowered = lower_comptime_block(self, gen, block);
+        gen.close_blocks_to(depth);
+        lowered
+    }
+}
+
+fn lower_comptime_block<'c>(
+    this: &ComptimeBlockExpr,
+    gen: &mut MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+) -> Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError> {
+    // Same rule as everywhere else a block of statements is spliced inline:
+    // the block a statement hands back is the one the next statement goes
+    // in. Dropping it left `comptime { for ... }` appending past the loop's
+    // own branch, which the verifier rejects outright.
+    let mut cur = block;
+    for stmt in &this.stmts {
+        match gen.generate_statement(stmt, cur)? {
+            Some(b) => cur = b,
+            None => {
+                cur = super::dead_continuation(cur);
+                break;
             }
         }
-        if let Some(ret_expr) = &self.ret {
-            gen.generate_expr(ret_expr, cur)
-        } else {
-            let none_ty = gen.none_ty;
-            let dummy_val = OperationBuilder::new("arith.constant", gen.loc())
-                .add_attributes(&[(
-                    Identifier::new(gen.context, "value"),
-                    IntegerAttribute::new(Type::index(gen.context), 0).into(),
-                )])
-                .add_results(&[Type::index(gen.context)])
-                .build()?;
-            let dummy_ref = cur.append_operation(dummy_val);
-            Ok((dummy_ref.result(0)?.into(), none_ty, cur))
-        }
+    }
+    if let Some(ret_expr) = &this.ret {
+        gen.generate_expr(ret_expr, cur)
+    } else {
+        let none_ty = gen.none_ty;
+        let dummy_val = OperationBuilder::new("arith.constant", gen.loc())
+            .add_attributes(&[(
+                Identifier::new(gen.context, "value"),
+                IntegerAttribute::new(Type::index(gen.context), 0).into(),
+            )])
+            .add_results(&[Type::index(gen.context)])
+            .build()?;
+        let dummy_ref = cur.append_operation(dummy_val);
+        Ok((dummy_ref.result(0)?.into(), none_ty, cur))
     }
 }
 
@@ -1572,36 +1584,48 @@ impl<'c> LowerToMelior<'c> for StructInitExpr {
 
 impl<'c> LowerToMelior<'c> for UnsafeBlockExpr {
     type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
+    /// A block: a `let` in it hides an outer variable of the same name only until it ends.
     fn lower(
         &self,
         gen: &mut MeliorGenerator<'c>,
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Self::Output {
-        let mut current_block = block;
-        for stmt in &self.stmts {
-            if let Some(b) = gen.generate_statement(stmt, current_block)? {
-                current_block = b;
-            } else {
-                // Block was terminated (e.g., by break/continue/return). The
-                // tail expression and the placeholder below still have to be
-                // emitted somewhere, and it cannot be after that terminator.
-                current_block = super::dead_continuation(current_block);
-                break;
-            }
-        }
-        if let Some(ret_expr) = &self.ret {
-            gen.generate_expr(ret_expr, current_block)
+        let depth = gen.open_block();
+        let lowered = lower_unsafe_block(self, gen, block);
+        gen.close_blocks_to(depth);
+        lowered
+    }
+}
+
+fn lower_unsafe_block<'c>(
+    this: &UnsafeBlockExpr,
+    gen: &mut MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+) -> Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError> {
+    let mut current_block = block;
+    for stmt in &this.stmts {
+        if let Some(b) = gen.generate_statement(stmt, current_block)? {
+            current_block = b;
         } else {
-            // Return an i32 0 or something empty if no return type is expected.
-            let i32_ty = gen.i32_ty;
-            let zero_attr = IntegerAttribute::new(i32_ty, 0).into();
-            let zero_op = OperationBuilder::new("arith.constant", gen.loc())
-                .add_results(&[i32_ty])
-                .add_attributes(&[(Identifier::new(gen.context, "value"), zero_attr)])
-                .build()?;
-            let zero_val = current_block.append_operation(zero_op).result(0)?.into();
-            Ok((zero_val, i32_ty, current_block))
+            // Block was terminated (e.g., by break/continue/return). The
+            // tail expression and the placeholder below still have to be
+            // emitted somewhere, and it cannot be after that terminator.
+            current_block = super::dead_continuation(current_block);
+            break;
         }
+    }
+    if let Some(ret_expr) = &this.ret {
+        gen.generate_expr(ret_expr, current_block)
+    } else {
+        // Return an i32 0 or something empty if no return type is expected.
+        let i32_ty = gen.i32_ty;
+        let zero_attr = IntegerAttribute::new(i32_ty, 0).into();
+        let zero_op = OperationBuilder::new("arith.constant", gen.loc())
+            .add_results(&[i32_ty])
+            .add_attributes(&[(Identifier::new(gen.context, "value"), zero_attr)])
+            .build()?;
+        let zero_val = current_block.append_operation(zero_op).result(0)?.into();
+        Ok((zero_val, i32_ty, current_block))
     }
 }
 

@@ -23,6 +23,7 @@ impl<'c> LowerToMelior<'c> for IfExpr {
         } = self;
 
         if *is_comptime {
+            let depth = gen.open_block();
             let mut last_val = None;
             let target_block = if !then_block.is_empty() {
                 Some(then_block)
@@ -71,6 +72,7 @@ impl<'c> LowerToMelior<'c> for IfExpr {
             if terminated {
                 cur = super::dead_continuation(cur);
             }
+            gen.close_blocks_to(depth);
 
             if let Some((val, ty)) = last_val {
                 return Ok((val, ty, cur));
@@ -205,6 +207,25 @@ impl<'c> LowerToMelior<'c> for IfExpr {
 fn lower_branch<'c>(
     gen: &mut MeliorGenerator<'c>,
     stmts: &[syntax::Statement],
+    b: melior::ir::BlockRef<'c, 'c>,
+    has_ret: bool,
+) -> Result<
+    (
+        Option<melior::ir::BlockRef<'c, 'c>>,
+        Option<(Value<'c, 'c>, Type<'c>)>,
+    ),
+    LowerError,
+> {
+    let depth = gen.open_block();
+    let lowered = lower_branch_statements(gen, stmts, b, has_ret);
+    gen.close_blocks_to(depth);
+    lowered
+}
+
+#[allow(clippy::type_complexity)]
+fn lower_branch_statements<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    stmts: &[syntax::Statement],
     mut b: melior::ir::BlockRef<'c, 'c>,
     has_ret: bool,
 ) -> Result<
@@ -247,21 +268,11 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
         gen: &mut MeliorGenerator<'c>,
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Self::Output {
-        let name = self.iter.to_string();
-        let outer_value = gen.env.get(name.as_str()).copied();
-        let outer_slot = gen.allocs.remove(&name);
+        let depth = gen.open_block();
+        gen.note_shadow(self.iter.as_str());
+        gen.allocs.remove(self.iter.as_str());
         let result = lower_for_loop(self, gen, block);
-        match outer_value {
-            Some(v) => {
-                gen.env.insert(name.clone().into(), v);
-            }
-            None => {
-                gen.env.remove(name.as_str());
-            }
-        }
-        if outer_slot {
-            gen.allocs.insert(name);
-        }
+        gen.close_blocks_to(depth);
         result
     }
 }
@@ -809,57 +820,69 @@ fn lower_for_loop<'c>(
 
 impl<'c> LowerToMelior<'c> for LoopStmt {
     type Output = Result<Option<melior::ir::BlockRef<'c, 'c>>, LowerError>;
+    /// A block: a `let` in it hides an outer variable of the same name only until it ends.
     fn lower(
         &self,
         gen: &mut MeliorGenerator<'c>,
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Self::Output {
-        let LoopStmt {
-            invariants: _,
-            body,
-            span: _,
-        } = self;
+        let depth = gen.open_block();
+        let lowered = lower_loop_body(self, gen, block);
+        gen.close_blocks_to(depth);
+        lowered
+    }
+}
 
-        let parent_region = block.parent_region().unwrap();
-        let mut body_block = parent_region.append_block(melior::ir::Block::new(&[]));
-        let loop_entry_block_ref = body_block; // separate variable
-        let merge_block = parent_region.append_block(melior::ir::Block::new(&[]));
+fn lower_loop_body<'c>(
+    this: &LoopStmt,
+    gen: &mut MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+) -> Result<Option<melior::ir::BlockRef<'c, 'c>>, LowerError> {
+    let LoopStmt {
+        invariants: _,
+        body,
+        span: _,
+    } = this;
 
-        let loop_entry_block = &*loop_entry_block_ref as *const melior::ir::Block<'c>;
+    let parent_region = block.parent_region().unwrap();
+    let mut body_block = parent_region.append_block(melior::ir::Block::new(&[]));
+    let loop_entry_block_ref = body_block; // separate variable
+    let merge_block = parent_region.append_block(melior::ir::Block::new(&[]));
 
-        block.append_operation(
+    let loop_entry_block = &*loop_entry_block_ref as *const melior::ir::Block<'c>;
+
+    block.append_operation(
+        OperationBuilder::new("cf.br", gen.loc())
+            .add_successors(&[&*body_block])
+            .build()?,
+    );
+
+    gen.break_blocks.push(&*merge_block as *const _);
+    gen.continue_blocks.push(loop_entry_block);
+
+    let mut body_terminated = false;
+    for stmt in body {
+        if let Some(b) = gen.generate_statement(stmt, body_block)? {
+            body_block = b;
+        } else {
+            body_terminated = true;
+            break;
+        }
+    }
+
+    gen.break_blocks.pop();
+    gen.continue_blocks.pop();
+
+    if !body_terminated {
+        let entry_b: &melior::ir::Block<'c> = unsafe { &*loop_entry_block };
+        body_block.append_operation(
             OperationBuilder::new("cf.br", gen.loc())
-                .add_successors(&[&*body_block])
+                .add_successors(&[entry_b])
                 .build()?,
         );
-
-        gen.break_blocks.push(&*merge_block as *const _);
-        gen.continue_blocks.push(loop_entry_block);
-
-        let mut body_terminated = false;
-        for stmt in body {
-            if let Some(b) = gen.generate_statement(stmt, body_block)? {
-                body_block = b;
-            } else {
-                body_terminated = true;
-                break;
-            }
-        }
-
-        gen.break_blocks.pop();
-        gen.continue_blocks.pop();
-
-        if !body_terminated {
-            let entry_b: &melior::ir::Block<'c> = unsafe { &*loop_entry_block };
-            body_block.append_operation(
-                OperationBuilder::new("cf.br", gen.loc())
-                    .add_successors(&[entry_b])
-                    .build()?,
-            );
-        }
-
-        Ok(Some(merge_block))
     }
+
+    Ok(Some(merge_block))
 }
 
 impl<'c> LowerToMelior<'c> for BreakStmt {
