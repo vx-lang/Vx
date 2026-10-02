@@ -187,13 +187,19 @@ impl<'c> LowerToMelior<'c> for IfExpr {
         // needs a terminator of its own, because a block without one fails the MLIR verifier. That
         // is what a body ending in `if c { return a; } else { return b; }` produced: an empty block
         // the verifier rejected, after the frontend had accepted the program.
-        if then_end.is_none() && else_end.is_none() {
+        // What follows the `if` then goes in a block of its own, since nothing may come after the
+        // terminator: `while true { ..; break; }` lowers to an `if` both of whose arms `break`,
+        // and the loop's back-edge used to land after the `llvm.unreachable`.
+        let next = if then_end.is_none() && else_end.is_none() {
             merge_b.append_operation(OperationBuilder::new("llvm.unreachable", gen.loc()).build()?);
-        }
+            super::dead_continuation(merge_b)
+        } else {
+            merge_b
+        };
 
         match merge_arg {
-            Some(res) => Ok((res, ret_ty, merge_b)),
-            None => Ok((cond_val, ret_ty, merge_b)),
+            Some(res) => Ok((res, ret_ty, next)),
+            None => Ok((cond_val, ret_ty, next)),
         }
     }
 }

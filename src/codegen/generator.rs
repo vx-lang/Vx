@@ -1272,7 +1272,21 @@ impl<'c> MeliorGenerator<'c> {
             Statement::ExprStmt(s) => {
                 let diverges = crate::syntax::expr::diverges_on_every_path(&s.expr);
                 let out = LowerToMelior::lower(s, self, block)?;
-                Ok(if diverges { None } else { out })
+                if !diverges {
+                    return Ok(out);
+                }
+                // The block the statement hands back is never reached, and nothing will be
+                // lowered into it, but it still needs a terminator.
+                if let Some(b) = out.filter(|b| b.first_operation().is_none()) {
+                    b.append_operation(
+                        melior::ir::operation::OperationBuilder::new(
+                            "llvm.unreachable",
+                            self.loc(),
+                        )
+                        .build()?,
+                    );
+                }
+                Ok(None)
             }
             Statement::ForLoop(s) => LowerToMelior::lower(s, self, block),
             Statement::Assert(s) => {

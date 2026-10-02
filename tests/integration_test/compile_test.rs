@@ -635,6 +635,15 @@ fn run_backend_test(path: &Path) -> Result<(), String> {
         .unwrap();
     println!("DEBUG: codegen.into_module");
     let mut module = codegen.into_module();
+    // `vxc --legacy-codegen` verifies the module before lowering it, and so does this: the
+    // lowering can clean up an op the verifier rejects, and a test then passes on a path no
+    // user takes.
+    if !melior::ir::operation::OperationLike::verify(&module.as_operation()) {
+        return Err(format!(
+            "MLIR verification failed for {} before lowering",
+            path.display()
+        ));
+    }
     println!("DEBUG: lower_to_llvm");
     if let Err(e) = vxc::codegen::lower_to_llvm(&context, &mut module) {
         println!("MLIR Before Lowering Error:\n{}", module.as_operation());
