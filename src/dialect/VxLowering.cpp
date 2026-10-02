@@ -3051,6 +3051,10 @@ struct FreeHeapBuffersPass
   // Why this module has to be left alone, or null if it does not.
   static const char *reasonToSkip(ModuleOp module) {
     const char *reason = nullptr;
+    auto holdsBuffer = [](Type type) {
+      auto cell = llvm::dyn_cast<MemRefType>(type);
+      return cell && isa<BaseMemRefType>(cell.getElementType());
+    };
     auto placed = [](Type type) {
       auto memref = llvm::dyn_cast<BaseMemRefType>(type);
       return memref && memref.getMemorySpace();
@@ -3060,6 +3064,14 @@ struct FreeHeapBuffersPass
         reason = "a vx operation is still present";
       else if (isa<memref::DeallocOp>(op))
         reason = "a buffer is already freed by hand";
+      // A cell holding a buffer (`memref<memref<..>>`, how the AST code
+      // generator keeps a tensor local) passed between blocks, which is what
+      // merging two `return`s produces. The analysis then frees the buffer in
+      // the block before the merged return, without knowing the value the
+      // return loads from the cell is that buffer, and returns freed memory.
+      else if (auto branch = dyn_cast<BranchOpInterface>(op);
+               branch && llvm::any_of(op->getOperandTypes(), holdsBuffer))
+        reason = "a cell holding a buffer is passed between blocks";
       else if (llvm::any_of(op->getOperandTypes(), placed) ||
                llvm::any_of(op->getResultTypes(), placed))
         reason = "a buffer lives in another memory space";

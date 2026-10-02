@@ -1,0 +1,56 @@
+//===- tensor_returned_after_an_early_return_with_a_loop.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A function that returns one tensor early from inside an `if` whose block has a loop, and
+// another at its end. Each returned tensor has to stay alive for the caller, which reads it.
+// `axis` 1 returns three 1s from the `if`; `axis` 0 returns the means of the columns of
+// [[0, 1, 2, 3], [4, 5, 6, 7], [8, 9, 10, 11]].
+//
+// EXPECT: 1 1 1 | 4 5 6 7
+fn column_means(t : &Tensor<f64, [?, ?]>, axis : i32) -> Tensor<f64, [?]> {
+  if axis == 1 {
+    let mut rows = Tensor<f64>([ t.extent(0) ]);
+    for r in 0..rows.len() {
+      rows[r] = 1.0;
+    }
+    return rows;
+  }
+  let mut columns = Tensor<f64>([ t.extent(1) ]);
+  for j in 0..columns.len() {
+    columns[j] = 0.0;
+  }
+  for i in 0..t.extent(0) {
+    for j in 0..columns.len() {
+      columns[j] = columns[j] + t[i][j];
+    }
+  }
+  for j in 0..columns.len() {
+    columns[j] = columns[j] / 3.0;
+  }
+  return columns;
+}
+
+fn main() -> i32 {
+  let mut a = Tensor<f64>([ 3, 4 ]);
+  for i in 0..3 {
+    for j in 0..4 {
+      a[i][j] = (i * 4 + j) as f64;
+    }
+  }
+  let r = column_means(&a, 1);
+  for k in 0..3 {
+    print(r[k]);
+    print!(" ");
+  }
+  print!("| ");
+  let m = column_means(&a, 0);
+  for k in 0..4 {
+    print(m[k]);
+    print!(" ");
+  }
+  return 0;
+}
