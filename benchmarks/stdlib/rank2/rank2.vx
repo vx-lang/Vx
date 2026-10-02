@@ -1,0 +1,67 @@
+//===- rank2.vx - Vx Compiler -------------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// std::tensor's reductions over a 2048-by-2048 f32 tensor: the sum and the largest element of
+// all of it, and the sums along each axis. rank2.cpp computes the same with plain C++ loops.
+// Each repetition changes one element first, so none repeats the one before.
+import std::tensor;
+import std::time;
+
+fn main() -> i32 {
+  let n : i32 = 2048;
+  let mut a = Tensor<f32>([ n, n ]);
+  for i in 0..n {
+    for j in 0..n {
+      a[i][j] = ((((i * 31) + (j * 17)) % 1000) as f32) * 0.001;
+    }
+  }
+  let mut best_sum : f32 = 1000.0;
+  let mut best_max : f32 = 1000.0;
+  let mut best_columns : f32 = 1000.0;
+  let mut best_rows : f32 = 1000.0;
+  let mut total_sum : f64 = 0.0;
+  let mut total_max : f64 = 0.0;
+  let mut total_columns : f64 = 0.0;
+  let mut total_rows : f64 = 0.0;
+  for rep in 0..20 {
+    a[n - 1][n - 1 - rep] = 2.0 + (rep as f32);
+    let t0 = now();
+    total_sum += a.sum() as f64;
+    let t1 = now();
+    total_max += a.max() as f64;
+    let t2 = now();
+    let columns = a.sum_axis(0);
+    let t3 = now();
+    let rows = a.sum_axis(1);
+    let t4 = now();
+    total_columns += columns[n - 1 - rep] as f64;
+    total_rows += rows[n - 1] as f64;
+    if t1 - t0 < best_sum {
+      best_sum = t1 - t0;
+    }
+    if t2 - t1 < best_max {
+      best_max = t2 - t1;
+    }
+    if t3 - t2 < best_columns {
+      best_columns = t3 - t2;
+    }
+    if t4 - t3 < best_rows {
+      best_rows = t4 - t3;
+    }
+  }
+  unsafe {
+    bench_report("sum/std_tensor", "seconds", best_sum);
+    bench_report("sum/std_tensor", "result", total_sum as f32);
+    bench_report("max/std_tensor", "seconds", best_max);
+    bench_report("max/std_tensor", "result", total_max as f32);
+    bench_report("sum_axis_0/std_tensor", "seconds", best_columns);
+    bench_report("sum_axis_0/std_tensor", "result", total_columns as f32);
+    bench_report("sum_axis_1/std_tensor", "seconds", best_rows);
+    bench_report("sum_axis_1/std_tensor", "result", total_rows as f32);
+  }
+  return 0;
+}
