@@ -1,0 +1,63 @@
+//===- tensor_row_passed_by_reference.vx - Vx Compiler ------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A row of a tensor, `q[i]`, handed on as a whole: to a `&Tensor<f32, [?]>` parameter, to an
+// `mlir!` block, and to a `&mut` parameter. Row 0 holds 1s and row 1 holds 100 to 103, so a
+// function that wrongly reads row 0 prints 1s, and a wrong write changes row 0.
+//
+// The rows are picked by a parameter, so the compiler cannot see which row it is, and once by
+// the constant 1. The AST code generator cannot compile a row passed this way yet.
+//
+// REQUIRES: flat-codegen
+// EXPECT: 406 406 100 5 1
+fn total(r : &Tensor<f32, [?]>) -> f32 {
+  let mut s : f32 = 0.0;
+  for j in 0..r.len() {
+    s = s + r[j];
+  }
+  return s;
+}
+
+fn total_of_row(q : &Tensor<f32, [2, 4]>, i : i32) -> f32 {
+  return total(&q[i]);
+}
+
+fn first_of_row(q : &Tensor<f32, [2, 4]>, i : i32) -> f32 {
+  return mlir!(inputs : (%a = q[i] : memref<?xf32>), returns : f32, dialects : ["arith", "memref"]) {
+    %c0 = arith.constant 0 : index
+    %x = memref.load %a[%c0] : memref<?xf32>
+    macro.yield %x : f32
+  };
+}
+
+fn set_first(r : &mut Tensor<f32, [?]>) -> i32 {
+  r[0] = 5.0;
+  return 0;
+}
+
+fn set_first_of_row(q : &mut Tensor<f32, [2, 4]>, i : i32) -> i32 {
+  return set_first(&mut q[i]);
+}
+
+fn main() -> i32 {
+  let mut q = Tensor<f32>([2, 4]);
+  for j in 0..4 {
+    q[0][j] = 1.0;
+    q[1][j] = 100.0 + (j as f32);
+  }
+  print(total_of_row(&q, 1));
+  print!(" ");
+  print(total(&q[1]));
+  print!(" ");
+  print(first_of_row(&q, 1));
+  print!(" ");
+  set_first_of_row(&mut q, 1);
+  print(q[1][0]);
+  print!(" ");
+  print(q[0][0]);
+  return 0;
+}

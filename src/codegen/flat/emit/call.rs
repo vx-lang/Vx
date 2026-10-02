@@ -172,8 +172,8 @@ impl FnEmit<'_> {
             };
             let same = actual.replace(' ', "") == declared.replace(' ', "");
             if !same && actual.starts_with("memref<") {
-                let c = format!("%imc{idx}_{k}");
-                self.body += &format!("  {c} = memref.cast {name} : {actual} to {declared}\n");
+                let c =
+                    self.cast_memref_value(&format!("imc{idx}_{k}"), &name, &actual, declared)?;
                 operands.push(c);
             } else {
                 operands.push(name);

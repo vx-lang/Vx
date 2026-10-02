@@ -16,6 +16,86 @@ fn memref_element(memty: &str) -> Option<&str> {
 }
 
 impl FnEmit<'_> {
+    /// Give `val`, of memref type `src_ty`, the type `dst_ty`, and return the new value's name.
+    ///
+    /// A `memref.cast` is enough unless `val` is a strided view (a row, `memref<4xf32,
+    /// strided<[1], offset: ?>>`) and `dst_ty` has no layout. A plain memref's offset is 0 by its
+    /// type, so the code using it never reads the descriptor's offset, and a cast would hand it
+    /// the start of the tensor rather than the row. Instead the descriptor's data pointer is
+    /// moved to the row and its offset set to 0. The view must be contiguous: a plain memref has
+    /// row-major strides. A view in a GPU memory space is refused, as its pointers are not `ptr`.
+    pub(crate) fn cast_memref_value(
+        &mut self,
+        tag: &str,
+        val: &str,
+        src_ty: &str,
+        dst_ty: &str,
+    ) -> Lowered<String> {
+        if src_ty == dst_ty {
+            return Ok(val.to_string());
+        }
+        if !src_ty.contains("strided<") || dst_ty.contains("strided<") {
+            let c = format!("%{tag}");
+            self.body += &format!("  {c} = memref.cast {val} : {src_ty} to {dst_ty}\n");
+            return Ok(c);
+        }
+        if !src_ty.ends_with("offset: ?>>") && !src_ty.ends_with("offset: 0>>") {
+            return Err(crate::emitter_gap!());
+        }
+        let (dims_x, et) = memref_lead_dims_and_elem(src_ty).ok_or(crate::emitter_gap!())?;
+        let dims: Vec<&str> = dims_x.split('x').filter(|d| !d.is_empty()).collect();
+        let strides: Vec<&str> = src_ty
+            .split("strided<[")
+            .nth(1)
+            .and_then(|s| s.split(']').next())
+            .ok_or(crate::emitter_gap!())?
+            .split(',')
+            .map(|s| s.trim())
+            .collect();
+        if dims.is_empty() || strides.len() != dims.len() {
+            return Err(crate::emitter_gap!());
+        }
+        // Each stride must be the product of the sizes after it. A `?` cannot be checked here;
+        // only indexing a row out of a tensor makes one, and a row of a tensor is contiguous.
+        let mut expect = Some(1i64);
+        for k in (0..dims.len()).rev() {
+            if let (Some(e), Ok(s)) = (expect, strides[k].parse::<i64>()) {
+                if s != e {
+                    return Err(crate::emitter_gap!());
+                }
+            }
+            expect = expect.zip(dims[k].parse::<i64>().ok()).map(|(e, d)| e * d);
+        }
+        let desc = memref_descriptor_ty(dims.len());
+        let plain = format!("memref<{dims_x}{et}>");
+        let d = format!("%{tag}_d");
+        let al = format!("%{tag}_al");
+        let off = format!("%{tag}_off");
+        let p = format!("%{tag}_p");
+        let z = format!("%{tag}_z");
+        let d1 = format!("%{tag}_d1");
+        let d2 = format!("%{tag}_d2");
+        let r = format!("%{tag}_r");
+        self.body +=
+            &format!("  {d} = builtin.unrealized_conversion_cast {val} : {src_ty} to {desc}\n");
+        self.body += &format!("  {al} = llvm.extractvalue {d}[1] : {desc}\n");
+        self.body += &format!("  {off} = llvm.extractvalue {d}[2] : {desc}\n");
+        self.body += &format!(
+            "  {p} = llvm.getelementptr {al}[{off}] : (!llvm.ptr, i64) -> !llvm.ptr, {et}\n"
+        );
+        self.body += &format!("  {z} = llvm.mlir.constant(0 : i64) : i64\n");
+        self.body += &format!("  {d1} = llvm.insertvalue {p}, {d}[1] : {desc}\n");
+        self.body += &format!("  {d2} = llvm.insertvalue {z}, {d1}[2] : {desc}\n");
+        self.body +=
+            &format!("  {r} = builtin.unrealized_conversion_cast {d2} : {desc} to {plain}\n");
+        if plain == dst_ty {
+            return Ok(r);
+        }
+        let c = format!("%{tag}");
+        self.body += &format!("  {c} = memref.cast {r} : {plain} to {dst_ty}\n");
+        Ok(c)
+    }
+
     // Allocate a tensor buffer (`Tensor<T>([..])`): a static `memref` of the shape recovered
     // from the side table by GID. Its register is tracked in `mem_of` for later index/store.
     pub(crate) fn op_tensor_alloc(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {

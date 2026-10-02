@@ -394,13 +394,7 @@ impl FnEmit<'_> {
             .clone()
             .ok_or(crate::emitter_gap!())?;
         let dst_ty = tensor_memref_ty(elem, shape).ok_or(crate::emitter_gap!())?;
-        if src_ty == dst_ty {
-            self.names[idx] = a;
-        } else {
-            let n = format!("%v{idx}");
-            self.body += &format!("  {n} = memref.cast {a} : {src_ty} to {dst_ty}\n");
-            self.names[idx] = n;
-        }
+        self.names[idx] = self.cast_memref_value(&format!("v{idx}"), &a, &src_ty, &dst_ty)?;
         self.mem_of[idx] = Some(dst_ty);
         Ok(())
     }
