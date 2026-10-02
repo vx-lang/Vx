@@ -1,0 +1,32 @@
+//===- core_num_half_float_limits.vx - Vx Compiler ----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The limits `core::num` gives f16 and bf16: the largest value, the gap above 1.0, the
+// smallest positive normal value, and an infinity and a NaN. The expected values were
+// computed in Python from the bit patterns.
+//
+// EXPECT: 65504 0.0009765625 0.000061035156 -inf 338953140000000000000000000000000000000 0.0078125 0.000000000000000000000000000000000000011754944 NaN
+import core::num;
+
+fn main() -> i32 {
+  print(f16::max_value());
+  print!(" ");
+  print(f16::epsilon());
+  print!(" ");
+  print(f16::min_positive());
+  print!(" ");
+  print(f16::neg_infinity());
+  print!(" ");
+  print(bf16::max_value());
+  print!(" ");
+  print(bf16::epsilon());
+  print!(" ");
+  print(bf16::min_positive());
+  print!(" ");
+  print(bf16::nan());
+  return 0;
+}

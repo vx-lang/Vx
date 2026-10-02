@@ -1722,6 +1722,8 @@ macro_rules stamp_float {
 
 stamp_float!(f32 , 1.0 , 0.0 , 180.0);
 stamp_float!(f64 , 1.0 , 0.0 , 180.0);
+stamp_float!(f16 , 1.0 , 0.0 , 180.0);
+stamp_float!(bf16 , 1.0 , 0.0 , 180.0);
 
 // The limits of each float width. Written as `arith.constant`, since a Vx literal has no
 // exponent and cannot spell an infinity or a NaN. Static, as the constants are: `f64::nan()`.
@@ -1838,6 +1840,124 @@ impl f32 {
     return mlir!( inputs : (), returns : f32, dialects : ["arith"]) {
       %r = arith.constant 0x7FC00000 : f32
       macro.yield %r : f32
+    };
+  }
+}
+
+// The same limits for f16, written as bits.
+impl f16 {
+  /// The largest finite value.
+  fn max_value() -> f16 {
+    return mlir!( inputs : (), returns : f16, dialects : ["arith"]) {
+      %r = arith.constant 0x7BFF : f16
+      macro.yield %r : f16
+    };
+  }
+
+  /// The most negative finite value.
+  fn min_value() -> f16 {
+    return mlir!( inputs : (), returns : f16, dialects : ["arith"]) {
+      %r = arith.constant 0xFBFF : f16
+      macro.yield %r : f16
+    };
+  }
+
+  /// The gap between 1.0 and the next larger value.
+  fn epsilon() -> f16 {
+    return mlir!( inputs : (), returns : f16, dialects : ["arith"]) {
+      %r = arith.constant 0x1400 : f16
+      macro.yield %r : f16
+    };
+  }
+
+  /// The smallest positive normal value.
+  fn min_positive() -> f16 {
+    return mlir!( inputs : (), returns : f16, dialects : ["arith"]) {
+      %r = arith.constant 0x0400 : f16
+      macro.yield %r : f16
+    };
+  }
+
+  /// Positive infinity.
+  fn infinity() -> f16 {
+    return mlir!( inputs : (), returns : f16, dialects : ["arith"]) {
+      %r = arith.constant 0x7C00 : f16
+      macro.yield %r : f16
+    };
+  }
+
+  /// Negative infinity.
+  fn neg_infinity() -> f16 {
+    return mlir!( inputs : (), returns : f16, dialects : ["arith"]) {
+      %r = arith.constant 0xFC00 : f16
+      macro.yield %r : f16
+    };
+  }
+
+  /// A quiet NaN.
+  fn nan() -> f16 {
+    return mlir!( inputs : (), returns : f16, dialects : ["arith"]) {
+      %r = arith.constant 0x7E00 : f16
+      macro.yield %r : f16
+    };
+  }
+}
+
+// The same limits for bf16, written as bits.
+impl bf16 {
+  /// The largest finite value.
+  fn max_value() -> bf16 {
+    return mlir!( inputs : (), returns : bf16, dialects : ["arith"]) {
+      %r = arith.constant 0x7F7F : bf16
+      macro.yield %r : bf16
+    };
+  }
+
+  /// The most negative finite value.
+  fn min_value() -> bf16 {
+    return mlir!( inputs : (), returns : bf16, dialects : ["arith"]) {
+      %r = arith.constant 0xFF7F : bf16
+      macro.yield %r : bf16
+    };
+  }
+
+  /// The gap between 1.0 and the next larger value.
+  fn epsilon() -> bf16 {
+    return mlir!( inputs : (), returns : bf16, dialects : ["arith"]) {
+      %r = arith.constant 0x3C00 : bf16
+      macro.yield %r : bf16
+    };
+  }
+
+  /// The smallest positive normal value.
+  fn min_positive() -> bf16 {
+    return mlir!( inputs : (), returns : bf16, dialects : ["arith"]) {
+      %r = arith.constant 0x0080 : bf16
+      macro.yield %r : bf16
+    };
+  }
+
+  /// Positive infinity.
+  fn infinity() -> bf16 {
+    return mlir!( inputs : (), returns : bf16, dialects : ["arith"]) {
+      %r = arith.constant 0x7F80 : bf16
+      macro.yield %r : bf16
+    };
+  }
+
+  /// Negative infinity.
+  fn neg_infinity() -> bf16 {
+    return mlir!( inputs : (), returns : bf16, dialects : ["arith"]) {
+      %r = arith.constant 0xFF80 : bf16
+      macro.yield %r : bf16
+    };
+  }
+
+  /// A quiet NaN.
+  fn nan() -> bf16 {
+    return mlir!( inputs : (), returns : bf16, dialects : ["arith"]) {
+      %r = arith.constant 0x7FC0 : bf16
+      macro.yield %r : bf16
     };
   }
 }
