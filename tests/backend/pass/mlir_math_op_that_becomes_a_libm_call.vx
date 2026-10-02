@@ -1,0 +1,51 @@
+//===- mlir_math_op_that_becomes_a_libm_call.vx - Vx Compiler ------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `math` ops that LLVM has no instruction for become calls to the C math library: `asinh`,
+// `acosh`, `atanh` and `erf` here. The expected values are glibc's `asinhf`, `acoshf`,
+// `atanhf` and `erff`. (`expm1` and `log1p` are not among them: `convert-math-to-llvm`
+// writes them as `exp(x) - 1` and `log(1 + x)` before the library is asked.)
+//
+// EXPECT: 0.8813736 1.316958 0.54930615 0.8427008
+fn asinh(x : f32) -> f32 {
+  return mlir!( inputs : (%a = x : f32), returns : f32, dialects : ["math"]) {
+    %r = math.asinh %a : f32
+    macro.yield %r : f32
+  };
+}
+
+fn acosh(x : f32) -> f32 {
+  return mlir!( inputs : (%a = x : f32), returns : f32, dialects : ["math"]) {
+    %r = math.acosh %a : f32
+    macro.yield %r : f32
+  };
+}
+
+fn atanh(x : f32) -> f32 {
+  return mlir!( inputs : (%a = x : f32), returns : f32, dialects : ["math"]) {
+    %r = math.atanh %a : f32
+    macro.yield %r : f32
+  };
+}
+
+fn erf(x : f32) -> f32 {
+  return mlir!( inputs : (%a = x : f32), returns : f32, dialects : ["math"]) {
+    %r = math.erf %a : f32
+    macro.yield %r : f32
+  };
+}
+
+fn main() -> i32 {
+  print(asinh(1.0));
+  print!(" ");
+  print(acosh(2.0));
+  print!(" ");
+  print(atanh(0.5));
+  print!(" ");
+  print(erf(1.0));
+  return 0;
+}

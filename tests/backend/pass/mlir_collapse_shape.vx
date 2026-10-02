@@ -1,0 +1,37 @@
+//===- mlir_collapse_shape.vx - Vx Compiler -----------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `memref.collapse_shape` in an `mlir!` block: a 3 by 50 tensor read as one row of 150 and
+// summed. The elements are 0 to 149, so the sum is 149 * 150 / 2.
+//
+// EXPECT: 11175
+fn flat_sum(m : &Tensor<f32, [?, ?]>) -> f32 {
+  return mlir!( inputs : (%m = m : memref<?x?xf32>), returns : f32, dialects : ["arith", "memref", "scf"]) {
+    %a = memref.collapse_shape %m [[0, 1]] : memref<?x?xf32> into memref<?xf32>
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %n = memref.dim %a, %c0 : memref<?xf32>
+    %z = arith.constant 0.0 : f32
+    %t = scf.for %i = %c0 to %n step %c1 iter_args(%acc = %z) -> (f32) {
+      %x = memref.load %a[%i] : memref<?xf32>
+      %y = arith.addf %acc, %x : f32
+      scf.yield %y : f32
+    }
+    macro.yield %t : f32
+  };
+}
+
+fn main() -> i32 {
+  let mut m = Tensor<f32>([3, 50]);
+  for i in 0..3 {
+    for j in 0..50 {
+      m[i][j] = (i * 50 + j) as f32;
+    }
+  }
+  print(flat_sum(&m));
+  return 0;
+}
