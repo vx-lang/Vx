@@ -1,15 +1,18 @@
-#!/usr/bin/env python3
-"""Random functions that build and return tensors, with early returns from nested blocks.
+"""Functions that build tensors in nested blocks and return one, often early.
 
-`g(n, k)` makes one or more tensors of length `n`, fills and changes them in loops, and returns
-one of them, possibly early from inside an `if` or a loop. `main` calls it for a few `k`, after
-making and dropping other tensors, and prints every element. The Rust twin uses `Vec<i32>`.
+`g(n, k)` makes tensors of length `n` in nested `if`s and `for` loops, adds to them, and
+returns one, possibly from inside a block. `main` calls it for four values of `k` and prints
+every element. The Rust twin uses `Vec<i32>`. Aimed at the freeing of heap buffers: an early
+return from nested blocks is where #993 and #1014 were.
 
 Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 See LICENSE for license information.
 SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 """
-import random, sys
+
+import random
+
+from fuzzlib import Program
 
 class Gen:
     def __init__(self, rng):
@@ -84,34 +87,29 @@ def render(stmts, lang, ind):
             L.append(f"{pad}}}")
     return L
 
-def program(seed):
+
+def generate(seed):
     rng = random.Random(seed)
     g = Gen(rng)
-    body = g.body([], ["k"], 0)
-    last = rng.choice([s[1] for s in body if s[0] == "new"] or ["NONE"])
+    tree = g.body([], ["k"], 0)
+    last = rng.choice([s[1] for s in tree if s[0] == "new"] or ["NONE"])
     if last == "NONE":
-        body = [("new", "v0")] + body
+        tree.insert(0, ("new", "v0"))
         last = "v0"
-    vx = ["fn g(n : i32, k : i32) -> Tensor<i32, [?]> {"] + render(body, "vx", 1) + [f"  return {last};", "}", "",
-          "fn main() -> i32 {",
-          "  for k in 0..4 {",
-          "    let r = g(3, k);",
-          "    for j in 0..3 {",
-          "      print(r[j]);",
-          "      print!(\" \");",
-          "    }",
-          "  }",
-          "  return 0;",
-          "}", ""]
-    rs = ["#![allow(unused, unused_mut, unused_variables, unreachable_code)]",
-          "fn g(n: i32, k: i32) -> Vec<i32> {"] + render(body, "rs", 1) + [f"  return {last};", "}",
-          "fn main() {", "  let mut s = String::new();",
-          "  for k in 0..4 { let r = g(3, k); for j in 0..3 { s += &format!(\"{} \", r[j]); } }",
-          "  print!(\"{}\", s);", "}", ""]
-    return "\n".join(vx), "\n".join(rs)
+    returned = next(s for s in tree if s[0] == "new" and s[1] == last)
 
-if __name__ == "__main__":
-    seed = int(sys.argv[1]); out = sys.argv[2]
-    vx, rs = program(seed)
-    open(f"{out}/p{seed}.vx", "w").write(vx)
-    open(f"{out}/p{seed}.rs", "w").write(rs)
+    def source(stmts, lang):
+        if lang == "vx":
+            return "\n".join(
+                ["fn g(n : i32, k : i32) -> Tensor<i32, [?]> {"] + render(stmts, "vx", 1)
+                + [f"  return {last};", "}", "", "fn main() -> i32 {", "  for k in 0..4 {",
+                   "    let r = g(3, k);", "    for j in 0..3 {", "      print(r[j]);",
+                   "      print!(\" \");", "    }", "  }", "  return 0;", "}", ""])
+        return "\n".join(
+            ["#![allow(unused, unused_mut, unused_variables, unreachable_code)]",
+             "fn g(n: i32, k: i32) -> Vec<i32> {"] + render(stmts, "rs", 1)
+            + [f"  return {last};", "}", "fn main() {", "  let mut s = String::new();",
+               "  for k in 0..4 { let r = g(3, k); for j in 0..3 { s += &format!(\"{} \", r[j]); } }",
+               "  print!(\"{}\", s);", "}", ""])
+
+    return Program(tree, source, keep=lambda stmt, block: stmt is returned)

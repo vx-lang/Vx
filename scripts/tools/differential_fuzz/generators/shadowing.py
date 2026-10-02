@@ -1,15 +1,19 @@
-#!/usr/bin/env python3
-"""Random programs that shadow names across blocks, written in both Vx and Rust.
+"""Functions whose blocks reuse a few names.
 
-Each program is one function `f(c: bool, n: i32) -> i32` built from lets, assignments,
-`if`/`else`, `for` loops and `unsafe` blocks over a small set of names, plus a `main`
-that prints `f` for a few inputs. Values stay small and wrap-free.
+One function `f() -> i32` built from `let`, assignment, `if`/`else`, value `if`, `for`, `while`,
+`loop`, `match` and `unsafe` blocks over the names `a`, `b`, `x`, plus a 4-element `i32` tensor
+`t`, a helper taking `&mut i32`, and `break`/`continue`/`return` behind conditions. `main`
+prints `f()`. The Rust twin indexes `t` through a small wrapper type, so one expression string
+is valid in both languages. Values stay small, and both sides wrap on overflow.
 
 Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 See LICENSE for license information.
 SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 """
-import random, sys
+
+import random
+
+from fuzzlib import Program
 
 NAMES = ["a", "b", "x"]
 
@@ -181,30 +185,34 @@ def render(stmts, lang, ind):
             lines.append(f"{pad}}}")
     return lines
 
-def program(seed):
+
+def generate(seed):
     rng = random.Random(seed)
     g = Gen(rng)
-    # The outer names are all mutable so any nested assignment to them type-checks.
+    # The outer names are all mutable, so an assignment to one anywhere type-checks.
     prologue = [("let", n, True, str(rng.randint(0, 9))) for n in NAMES]
-    body = prologue + g.block(set(NAMES) | {"t"}, set(NAMES), 0)
+    tree = prologue + g.block(set(NAMES) | {"t"}, set(NAMES), 0)
     ret = " + ".join(f"{n} * {10 ** i}" for i, n in enumerate(NAMES))
     ret += " + (t[0] + t[1] * 3 + t[2] * 5 + t[3] * 7) * 1000"
-    vx = ["fn bump(p : &mut i32, v : i32) -> i32 {", "  *p = *p + v;", "  return 0;", "}", "",
-          "fn f() -> i32 {", "  let mut t = Tensor<i32>([4]);", "  for i in 0..4 {", "    t[i] = 0;", "  }"] \
-        + render(body, "vx", 1) + [f"  return {ret};", "}", "",
-          "fn main() -> i32 {", "  print(f());", "  return 0;", "}", ""]
-    rs = ["#![allow(unused, unused_mut, unused_assignments, unused_unsafe, unused_variables)]",
-          "use std::ops::{Index, IndexMut};",
-          "struct T([i32; 4]);",
-          "impl Index<i32> for T { type Output = i32; fn index(&self, i: i32) -> &i32 { &self.0[i as usize] } }",
-          "impl IndexMut<i32> for T { fn index_mut(&mut self, i: i32) -> &mut i32 { &mut self.0[i as usize] } }",
-          "fn bump(p: &mut i32, v: i32) -> i32 { *p = p.wrapping_add(v); 0 }",
-          "fn f() -> i32 {", "  let mut t = T([0; 4]);"] + render(body, "rs", 1) + [f"  {ret}", "}",
-          "fn main() { println!(\"{}\", f()); }", ""]
-    return "\n".join(vx), "\n".join(rs)
 
-if __name__ == "__main__":
-    seed = int(sys.argv[1]); out = sys.argv[2]
-    vx, rs = program(seed)
-    open(f"{out}/p{seed}.vx", "w").write(vx)
-    open(f"{out}/p{seed}.rs", "w").write(rs)
+    def source(stmts, lang):
+        if lang == "vx":
+            return "\n".join(
+                ["fn bump(p : &mut i32, v : i32) -> i32 {", "  *p = *p + v;", "  return 0;", "}", "",
+                 "fn f() -> i32 {", "  let mut t = Tensor<i32>([4]);", "  for i in 0..4 {",
+                 "    t[i] = 0;", "  }"]
+                + render(stmts, "vx", 1)
+                + [f"  return {ret};", "}", "", "fn main() -> i32 {", "  print(f());",
+                   "  return 0;", "}", ""])
+        return "\n".join(
+            ["#![allow(unused, unused_mut, unused_assignments, unused_unsafe, unused_variables)]",
+             "use std::ops::{Index, IndexMut};",
+             "struct T([i32; 4]);",
+             "impl Index<i32> for T { type Output = i32; fn index(&self, i: i32) -> &i32 { &self.0[i as usize] } }",
+             "impl IndexMut<i32> for T { fn index_mut(&mut self, i: i32) -> &mut i32 { &mut self.0[i as usize] } }",
+             "fn bump(p: &mut i32, v: i32) -> i32 { *p = p.wrapping_add(v); 0 }",
+             "fn f() -> i32 {", "  let mut t = T([0; 4]);"]
+            + render(stmts, "rs", 1)
+            + [f"  {ret}", "}", "fn main() { println!(\"{}\", f()); }", ""])
+
+    return Program(tree, source, keep=lambda stmt, block: block is tree and stmt in prologue)
