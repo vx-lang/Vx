@@ -1,0 +1,28 @@
+//===- loop_variable_in_an_option.vx - Vx Compiler ----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `for` loop's variable returned inside an `Option`, with no cast written: the first
+// index whose square is at least `limit`, or `None` when the loop ends first.
+//
+// EXPECT: 4 -1
+import core::option;
+
+fn first_square_reaching(limit : i32, n : i32) -> Option<i32> {
+  for i in 0..n {
+    if i * i >= limit {
+      return Option<i32>::Some(i);
+    }
+  }
+  return Option<i32>::None;
+}
+
+fn main() -> i32 {
+  print(first_square_reaching(10, 8).unwrap());
+  print!(" ");
+  print(first_square_reaching(100, 8).unwrap_or(-1));
+  return 0;
+}
