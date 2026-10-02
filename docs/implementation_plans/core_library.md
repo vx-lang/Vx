@@ -828,7 +828,7 @@ live docs, not this table.
 | `hash` | `core::hash` | 2 | partial | Vx#818 | `Hasher` over a required `write_u8` with `write_u16`/`u32`/`u64`, the signed forms and `write_bool` as defaults, little-endian; `Hash` with `hash<H : Hasher>`, implemented for every integer width and `bool`; `SipHasher13`, which agrees with Rust's `DefaultHasher` byte for byte, and `FxHasher`. No `write` over a slice (wants `str`/slices), no `Hash` for aggregates (no derive). The fixture is flat-path only: `>>` on an unsigned value sign-extends on the AST path |
 | `cell` | `core::cell` | 3 | — | A13, A19 for guards | `RefCell` guards need Drop |
 | `sync::atomic` | `core::sync::atomic` | 3 | — | — | via `mlir!` `llvm.atomicrmw`/`cmpxchg`/`fence` |
-| `time` | `core::time` | 3 | — | A11 | |
+| `time` | `core::time` | 3 | partial | A11 for the operators, `fmt` for `Debug`, Vx#1005 for `u128` | `Duration` (Copy): `new`, `from_secs/millis/micros/nanos`, `from_secs_f32/f64`, `zero`/`max_value` for `ZERO`/`MAX`, `is_zero`, `as_secs`, `subsec_*`, `as_millis/micros/nanos` (`u64`, refused when they do not fit), `as_secs_f32/f64`, `mul_f*`, `div_f*`, `div_duration_f*`, `checked_*`, `saturating_*`, `abs_diff`, `PartialEq`/`Eq`/`Ord`/`PartialOrd`, `Hash`. No `+`/`-`/`*`/`/`, no `Debug`; `std::time::now()` still returns `f32` seconds |
 | `alloc` | `core::alloc` | 3 | — | — | `GlobalAlloc` excluded (no global allocator attribute) |
 | `ffi` | `core::ffi` | 3 | — | — | `c_*` aliases excluded (no type aliases); `CStr` in |
 | `error` | `core::error` | 3 | — | — | `source` returns `Option<&Self>`, no `dyn` |

@@ -1,0 +1,321 @@
+//===- time.vx - Vx Standard Library ------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A span of time, as in Rust's `core::time`.
+//
+// Not here yet: `+`, `-`, `*` and `/` on durations need operator dispatch to traits; `Debug`
+// and `Display` need `core::fmt`. Rust's `ZERO` and `MAX` are the functions `zero` and
+// `max_value` here, as the float constants are functions. `as_millis`, `as_micros` and `as_nanos` return `u64` rather than
+// `u128` (Vx#1005), and stop with an assertion when the answer does not fit.
+import core::cmp;
+import core::hash;
+import core::num;
+import core::option;
+
+/// A span of time: whole seconds and the nanoseconds past them, always below one second.
+struct Duration {
+  secs : u64,
+  nanos : u32,
+}
+
+impl Copy for Duration {}
+
+impl Duration {
+  /// `secs` seconds and `nanos` nanoseconds. Nanoseconds of a second or more carry into the
+  /// seconds; refused when the seconds then overflow.
+  fn new(secs : u64, nanos : u32) -> Duration {
+    let carry = (nanos / 1000000000) as u64;
+    assert(secs <= 18446744073709551615u64 - carry, "Duration::new overflows its seconds");
+    return Duration {
+      secs: secs + carry, nanos: nanos % 1000000000
+    };
+  }
+
+  fn from_secs(secs : u64) -> Duration {
+    return Duration {
+      secs: secs, nanos: 0
+    };
+  }
+
+  fn from_millis(millis : u64) -> Duration {
+    return Duration {
+      secs: millis / 1000, nanos: ((millis % 1000) * 1000000) as u32
+    };
+  }
+
+  fn from_micros(micros : u64) -> Duration {
+    return Duration {
+      secs: micros / 1000000, nanos: ((micros % 1000000) * 1000) as u32
+    };
+  }
+
+  fn from_nanos(nanos : u64) -> Duration {
+    return Duration {
+      secs: nanos / 1000000000, nanos: (nanos % 1000000000) as u32
+    };
+  }
+
+  /// No time at all.
+  fn zero() -> Duration {
+    return Duration {
+      secs: 0, nanos: 0
+    };
+  }
+
+  /// The longest duration: the largest `u64` of seconds and 999,999,999 nanoseconds.
+  fn max_value() -> Duration {
+    return Duration {
+      secs: 18446744073709551615u64, nanos: 999999999
+    };
+  }
+
+  fn is_zero(self : &Duration) -> bool {
+    return self.secs == 0 && self.nanos == 0;
+  }
+
+  /// The whole seconds, without the fraction.
+  fn as_secs(self : &Duration) -> u64 {
+    return self.secs;
+  }
+
+  /// The fraction of a second, in whole milliseconds.
+  fn subsec_millis(self : &Duration) -> u32 {
+    return self.nanos / 1000000;
+  }
+
+  /// The fraction of a second, in whole microseconds.
+  fn subsec_micros(self : &Duration) -> u32 {
+    return self.nanos / 1000;
+  }
+
+  /// The fraction of a second, in nanoseconds.
+  fn subsec_nanos(self : &Duration) -> u32 {
+    return self.nanos;
+  }
+
+  /// The whole duration in milliseconds, rounded down.
+  fn as_millis(self : &Duration) -> u64 {
+    assert(self.secs <= 18446744073709551615u64 / 1000, "as_millis does not fit in a u64");
+    return self.secs * 1000 + ((self.nanos / 1000000) as u64);
+  }
+
+  /// The whole duration in microseconds, rounded down.
+  fn as_micros(self : &Duration) -> u64 {
+    assert(self.secs <= 18446744073709551615u64 / 1000000, "as_micros does not fit in a u64");
+    return self.secs * 1000000 + ((self.nanos / 1000) as u64);
+  }
+
+  /// The whole duration in nanoseconds.
+  fn as_nanos(self : &Duration) -> u64 {
+    assert(self.secs <= 18446744073708, "as_nanos does not fit in a u64");
+    return self.secs * 1000000000 + (self.nanos as u64);
+  }
+
+  fn as_secs_f64(self : &Duration) -> f64 {
+    return (self.secs as f64) + (self.nanos as f64) / 1000000000.0;
+  }
+
+  fn as_secs_f32(self : &Duration) -> f32 {
+    return (self.secs as f32) + (self.nanos as f32) / 1000000000.0;
+  }
+
+  /// `secs` seconds, to the nearest nanosecond. Refused when `secs` is negative, NaN or too
+  /// large for a `Duration`.
+  fn from_secs_f64(secs : f64) -> Duration {
+    assert(secs >= 0.0, "from_secs_f64 needs a number of seconds that is not negative or NaN");
+    assert(secs < 18446744073709551616.0, "from_secs_f64 overflows a Duration");
+    let whole = secs.floor();
+    let mut nanos = ((secs - whole) * 1000000000.0).round() as u32;
+    let mut whole_secs = whole as u64;
+    if nanos >= 1000000000 {
+      nanos = nanos - 1000000000;
+      whole_secs = whole_secs + 1;
+    }
+    return Duration {
+      secs: whole_secs, nanos: nanos
+    };
+  }
+
+  /// As `from_secs_f64`, from an `f32`.
+  fn from_secs_f32(secs : f32) -> Duration {
+    return Duration::from_secs_f64(secs as f64);
+  }
+
+  /// This duration times `rhs`, through `f64` seconds.
+  fn mul_f64(self : &Duration, rhs : f64) -> Duration {
+    return Duration::from_secs_f64(rhs * self.as_secs_f64());
+  }
+
+  fn mul_f32(self : &Duration, rhs : f32) -> Duration {
+    return Duration::from_secs_f64((rhs as f64) * self.as_secs_f64());
+  }
+
+  /// This duration divided by `rhs`, through `f64` seconds.
+  fn div_f64(self : &Duration, rhs : f64) -> Duration {
+    return Duration::from_secs_f64(self.as_secs_f64() / rhs);
+  }
+
+  fn div_f32(self : &Duration, rhs : f32) -> Duration {
+    return Duration::from_secs_f64(self.as_secs_f64() / (rhs as f64));
+  }
+
+  /// How many times `other` fits in this duration, as an `f64`.
+  fn div_duration_f64(self : &Duration, other : &Duration) -> f64 {
+    return self.as_secs_f64() / other.as_secs_f64();
+  }
+
+  fn div_duration_f32(self : &Duration, other : &Duration) -> f32 {
+    return (self.as_secs_f64() / other.as_secs_f64()) as f32;
+  }
+
+  /// The sum, or `None` when it would overflow.
+  fn checked_add(self : &Duration, other : &Duration) -> Option<Duration> {
+    let mut nanos = self.nanos + other.nanos;
+    let mut carry : u64 = 0;
+    if nanos >= 1000000000 {
+      nanos = nanos - 1000000000;
+      carry = 1;
+    }
+    if self.secs > 18446744073709551615u64 - other.secs {
+      return Option<Duration>::None;
+    }
+    let secs = self.secs + other.secs;
+    if secs > 18446744073709551615u64 - carry {
+      return Option<Duration>::None;
+    }
+    return Option<Duration>::Some(Duration {
+      secs: secs + carry, nanos: nanos
+    });
+  }
+
+  /// The difference, or `None` when `other` is longer than this duration.
+  fn checked_sub(self : &Duration, other : &Duration) -> Option<Duration> {
+    if self.secs < other.secs || (self.secs == other.secs && self.nanos < other.nanos) {
+      return Option<Duration>::None;
+    }
+    if self.nanos >= other.nanos {
+      return Option<Duration>::Some(Duration {
+        secs: self.secs - other.secs, nanos: self.nanos - other.nanos
+      });
+    }
+    return Option<Duration>::Some(Duration {
+      secs: self.secs - other.secs - 1, nanos: self.nanos + 1000000000 - other.nanos
+    });
+  }
+
+  /// This duration times `rhs`, or `None` when it would overflow.
+  fn checked_mul(self : &Duration, rhs : u32) -> Option<Duration> {
+    let total_nanos = (self.nanos as u64) * (rhs as u64);
+    let carry = total_nanos / 1000000000;
+    let nanos = (total_nanos % 1000000000) as u32;
+    if rhs != 0 && self.secs > 18446744073709551615u64 / (rhs as u64) {
+      return Option<Duration>::None;
+    }
+    let secs = self.secs * (rhs as u64);
+    if secs > 18446744073709551615u64 - carry {
+      return Option<Duration>::None;
+    }
+    return Option<Duration>::Some(Duration {
+      secs: secs + carry, nanos: nanos
+    });
+  }
+
+  /// This duration divided by `rhs`, rounded down to a nanosecond, or `None` when `rhs` is 0.
+  fn checked_div(self : &Duration, rhs : u32) -> Option<Duration> {
+    if rhs == 0 {
+      return Option<Duration>::None;
+    }
+    let divisor = rhs as u64;
+    let secs = self.secs / divisor;
+    let left_secs = self.secs % divisor;
+    let nanos = self.nanos / rhs;
+    let left_nanos = self.nanos % rhs;
+    let extra = (left_secs * 1000000000 + (left_nanos as u64)) / divisor;
+    return Option<Duration>::Some(Duration {
+      secs: secs, nanos: nanos + (extra as u32)
+    });
+  }
+
+  /// The sum, or the longest duration when it would overflow.
+  fn saturating_add(self : &Duration, other : &Duration) -> Duration {
+    match self.checked_add(other) {
+      Option<Duration>::Some(d) => {
+        return d;
+      }
+      Option<Duration>::None => {
+        return Duration::max_value();
+      }
+    }
+  }
+
+  /// The difference, or no time when `other` is longer.
+  fn saturating_sub(self : &Duration, other : &Duration) -> Duration {
+    match self.checked_sub(other) {
+      Option<Duration>::Some(d) => {
+        return d;
+      }
+      Option<Duration>::None => {
+        return Duration::zero();
+      }
+    }
+  }
+
+  /// This duration times `rhs`, or the longest duration when it would overflow.
+  fn saturating_mul(self : &Duration, rhs : u32) -> Duration {
+    match self.checked_mul(rhs) {
+      Option<Duration>::Some(d) => {
+        return d;
+      }
+      Option<Duration>::None => {
+        return Duration::max_value();
+      }
+    }
+  }
+
+  /// How far apart the two durations are.
+  fn abs_diff(self : &Duration, other : &Duration) -> Duration {
+    match self.checked_sub(other) {
+      Option<Duration>::Some(d) => {
+        return d;
+      }
+      Option<Duration>::None => {
+        return other.saturating_sub(self);
+      }
+    }
+  }
+}
+
+impl PartialEq for Duration {
+  fn eq(self : &Duration, other : &Duration) -> bool {
+    return self.secs == other.secs && self.nanos == other.nanos;
+  }
+}
+
+impl Eq for Duration {}
+
+/// Longer is greater: seconds first, then nanoseconds.
+impl Ord for Duration {
+  fn cmp(self : &Duration, other : &Duration) -> Ordering {
+    if self.secs != other.secs {
+      return self.secs.cmp(&other.secs);
+    }
+    return self.nanos.cmp(&other.nanos);
+  }
+}
+
+impl PartialOrd for Duration {
+  fn partial_cmp(self : &Duration, other : &Duration) -> Option<Ordering> {
+    return Option<Ordering>::Some(self.cmp(other));
+  }
+}
+
+impl Hash for Duration {
+  fn hash<H : Hasher>(self : &Duration, state : &mut H) -> i32 {
+    let _secs = state.write_u64(self.secs);
+    return state.write_u32(self.nanos);
+  }
+}

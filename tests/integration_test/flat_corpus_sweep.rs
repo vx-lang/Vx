@@ -98,6 +98,9 @@ const KNOWN_DECLINES: &[&str] = &[
     // These live apart from `core_cmp.vx` so that file keeps compiling through the flat
     // path; putting them together would have moved it here instead.
     "backend/pass/core_cmp_partial.vx",
+    // `checked_add` and the other checked methods answer with an `Option<Duration>`, which
+    // the flat path declines as "a callee return type". The answers come from the AST path.
+    "backend/pass/core_time_duration.vx",
     // `right_opt` and `left_opt` answer with an `Option<T>`, which the flat path declines
     // as "a non-scalar default return" -- the same shape as the file above. Those two
     // methods are the point of the file: a parameter only reaches the code that binds it

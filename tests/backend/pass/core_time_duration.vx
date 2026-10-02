@@ -1,0 +1,144 @@
+//===- core_time_duration.vx - Vx Compiler -------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `core::time::Duration`. The expected line is what the same calls on Rust's
+// `std::time::Duration` print, with a duration shown as `seconds:nanoseconds`, `none` for
+// `None`, and the hash checks as `true`/`false`.
+//
+// In order: construction and carrying (`new`, `from_*`, `zero`, `max_value`), the parts
+// (`as_*`, `subsec_*`), conversions to and from float seconds, float multiply and divide,
+// checked and saturating arithmetic at and away from the limits, `abs_diff`, comparison, and
+// whether equal durations hash equally and different ones differently.
+//
+// EXPECT: 6:500000000 2:500000000 1:1000 3:7 0:0 18446744073709551615:999999999 | true false 6 500 500000 500000000 6500 6500000 6500000000 | 2.5 2.5 2:500000000 1:250000000 0:1 | 2:500000000 1:250000000 2 | none 3:200000000 none 0:600000000 4:500000000 none 0:333333333 none 2:750000000 | 18446744073709551615:999999999 0:0 18446744073709551615:999999999 1:500000000 1:500000000 | less greater equal true false | true false
+import core::time;
+import core::hash;
+
+fn show(d : Duration) -> i32 {
+  print(d.as_secs());
+  print!(":");
+  print(d.subsec_nanos());
+  print!(" ");
+  return 0;
+}
+
+fn show_option(d : Option<Duration>) -> i32 {
+  match d {
+    Option<Duration>::Some(value) => {
+      let _shown = show(value);
+    }
+    Option<Duration>::None => {
+      print!("none ");
+    }
+  }
+  return 0;
+}
+
+// `print` does not take a bool yet.
+fn show_bool(b : bool) -> i32 {
+  if b {
+    print!("true");
+  } else {
+    print!("false");
+  }
+  return 0;
+}
+
+fn show_ordering(o : Ordering) -> i32 {
+  if o.is_lt() {
+    print!("less ");
+  } else if o.is_gt() {
+    print!("greater ");
+  } else {
+    print!("equal ");
+  }
+  return 0;
+}
+
+fn hash_of(d : &Duration) -> u64 {
+  let mut state = FxHasher::new();
+  let _hashed = d.hash(&mut state);
+  return state.finish();
+}
+
+fn main() -> i32 {
+  let _a = show(Duration::new(5, 1500000000));
+  let _b = show(Duration::from_millis(2500));
+  let _c = show(Duration::from_micros(1000001));
+  let _d = show(Duration::from_nanos(3000000007));
+  let _e = show(Duration::zero());
+  let _f = show(Duration::max_value());
+  print!("| ");
+
+  let six = Duration::new(6, 500000000);
+  let _zero_is_zero = show_bool(Duration::zero().is_zero());
+  print!(" ");
+  let _six_is_zero = show_bool(six.is_zero());
+  print!(" ");
+  print(six.as_secs());
+  print!(" ");
+  print(six.subsec_millis());
+  print!(" ");
+  print(six.subsec_micros());
+  print!(" ");
+  print(six.subsec_nanos());
+  print!(" ");
+  print(six.as_millis());
+  print!(" ");
+  print(six.as_micros());
+  print!(" ");
+  print(six.as_nanos());
+  print!(" | ");
+
+  let two_half = Duration::new(2, 500000000);
+  print(two_half.as_secs_f64());
+  print!(" ");
+  print(two_half.as_secs_f32());
+  print!(" ");
+  let _k = show(Duration::from_secs_f64(2.5));
+  let _l = show(Duration::from_secs_f32(1.25));
+  let _m = show(Duration::from_secs_f64(0.000000001));
+  print!("| ");
+
+  let one = Duration::from_secs(1);
+  let five = Duration::from_secs(5);
+  let _n = show(one.mul_f64(2.5));
+  let _o = show(five.div_f32(4.0));
+  print(Duration::from_secs(3).div_duration_f64(&Duration::from_millis(1500)));
+  print!(" | ");
+
+  let _p = show_option(Duration::max_value().checked_add(&Duration::from_nanos(1)));
+  let _q = show_option(Duration::from_millis(1600).checked_add(&Duration::from_millis(1600)));
+  let _r = show_option(one.checked_sub(&Duration::from_secs(2)));
+  let _s = show_option(Duration::from_millis(2100).checked_sub(&Duration::from_millis(1500)));
+  let _t = show_option(Duration::from_millis(1500).checked_mul(3));
+  let _u = show_option(Duration::max_value().checked_mul(2));
+  let _v = show_option(one.checked_div(3));
+  let _w = show_option(one.checked_div(0));
+  let _x = show_option(Duration::from_millis(5500).checked_div(2));
+  print!("| ");
+
+  let _y = show(Duration::max_value().saturating_add(&one));
+  let _z = show(one.saturating_sub(&Duration::from_secs(2)));
+  let _aa = show(Duration::max_value().saturating_mul(2));
+  let _ab = show(one.abs_diff(&Duration::from_millis(2500)));
+  let _ac = show(Duration::from_millis(2500).abs_diff(&one));
+  print!("| ");
+
+  let _ad = show_ordering(one.cmp(&Duration::from_millis(1001)));
+  let _ae = show_ordering(Duration::new(2, 0).cmp(&Duration::new(1, 999999999)));
+  let _af = show_ordering(Duration::from_millis(1000).cmp(&one));
+  let _equal = show_bool(one.eq(&Duration::from_nanos(1000000000)));
+  print!(" ");
+  let _unequal = show_bool(one.eq(&Duration::from_nanos(1000000001)));
+  print!(" | ");
+
+  let _same_hash = show_bool(hash_of(&one) == hash_of(&Duration::from_millis(1000)));
+  print!(" ");
+  let _other_hash = show_bool(hash_of(&one) == hash_of(&Duration::new(1, 1)));
+  return 0;
+}
