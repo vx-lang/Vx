@@ -1,0 +1,29 @@
+//===- comptime_write_through_a_function_value.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+//
+// `cb` holds the function `set_to_41`, and calling it writes through `&mut x`. The block must
+// fold to the value written, 41, and not to the value `x` started with, 7.
+//
+// CHECK-LABEL: func.func @main
+// CHECK: %[[VALUE:.*]] = arith.constant 41 : i32
+// CHECK-NEXT: return %[[VALUE]] : i32
+
+fn set_to_41(p : &mut i32) -> void {
+  *p = 41i32;
+}
+
+fn main() -> i32 {
+  let value = comptime {
+    let mut x = 7i32;
+    let cb = set_to_41;
+    cb(&mut x);
+    x
+  };
+  return value;
+}

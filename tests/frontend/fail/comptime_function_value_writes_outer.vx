@@ -1,0 +1,26 @@
+//===- comptime_function_value_writes_outer.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// Calling a function through a value, `cb(&mut outer)`, writes to a variable declared outside
+// the block. The block cannot fold, because the write would disappear with it.
+
+fn set_to_9(p : &mut i32) -> void {
+  *p = 9i32;
+}
+
+fn main() -> i32 {
+  let mut outer : i32 = 0i32;
+  // CHECK: Error[E3033]{{.*}}writes to 'outer'
+  let value = comptime {
+    let cb = set_to_9;
+    cb(&mut outer);
+    7i32
+  };
+  return value + outer;
+}

@@ -593,6 +593,21 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
         })
     }
 
+    /// A struct or array literal holding a mutable reference, as in `Holder { value: &mut x }`.
+    /// Passed to a call, the callee can write through it, and there is no place to write back.
+    fn literal_holds_mut_reference(&self, expr: &Expr) -> bool {
+        let holds = |value: &Expr| {
+            self.reference_source_place(value).is_some()
+                || self.makes_mut_reference(value)
+                || self.literal_holds_mut_reference(value)
+        };
+        match expr {
+            Expr::StructInit(init) => init.fields.iter().any(|(_, value)| holds(value)),
+            Expr::Array(array) => array.elements.iter().any(holds),
+            _ => false,
+        }
+    }
+
     /// Whether a call, `if` or `match` can produce a mutable reference: a call to a function
     /// whose return type can carry one, or a branch whose value can.
     fn makes_mut_reference(&self, expr: &Expr) -> bool {
@@ -1369,77 +1384,115 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
     fn function_call(
         &mut self,
         call: &FunctionCallExpr,
+        args: Vec<ComptimeEvalOutcome>,
+    ) -> ComptimeEvalOutcome {
+        if self.function_bodies.contains(&call.name) {
+            return self.direct_call(&call.name, &call.args, args);
+        }
+        let facts = self.identifier_facts(&call.name);
+        // A function value naming one function, `let cb = touch; cb(&mut x)`, is that call.
+        if let (1, Some(target)) = (
+            facts.callable_targets.len(),
+            facts.callable_targets.iter().next().cloned(),
+        ) {
+            if !facts.unknown_callable
+                && !facts.callable_environments.contains_key(&target)
+                && self.function_bodies.contains(&target)
+            {
+                return self.direct_call(&target, &call.args, args);
+            }
+        }
+        // Through a closure or a choice of functions, writes through a `&mut` argument have no
+        // write-back here, so such a call is not folded.
+        let writes_through_argument = facts.callable_targets.iter().any(|target| {
+            self.function_bodies.contains(target)
+                && self
+                    .function_bodies
+                    .mutable_reference_params(target)
+                    .contains(&true)
+        });
+        if writes_through_argument {
+            self.note_opaque_callable(&facts, &args);
+            return self.refusal_after(args);
+        }
+        self.callable_call(facts, args)
+    }
+
+    /// A call to the function `name`, whose body is known, with `&mut` arguments written back.
+    fn direct_call(
+        &mut self,
+        name: &Symbol,
+        arg_exprs: &[Expr],
         mut args: Vec<ComptimeEvalOutcome>,
     ) -> ComptimeEvalOutcome {
-        if let Some(function) = self.function_bodies.get(&call.name).cloned() {
-            let mutable_reference_params =
-                self.function_bodies.mutable_reference_params(&call.name);
-            let writebacks = call
-                .args
-                .iter()
-                .zip(&mutable_reference_params)
-                .map(|(arg, parameter_can_carry_mut_reference)| {
-                    // A reference made by a call or an `if`, `touch(pass(&mut x))`, has no place
-                    // this evaluator can write back to, so the call is refused.
-                    parameter_can_carry_mut_reference
-                        .then(|| {
-                            self.mutable_argument_place(arg).or_else(|| {
-                                self.makes_mut_reference(arg)
-                                    .then_some(ComptimeWritePlace::Unknown)
-                            })
+        let function = self
+            .function_bodies
+            .get(name)
+            .cloned()
+            .expect("direct_call is made only for a function with a known body");
+        let mutable_reference_params = self.function_bodies.mutable_reference_params(name);
+        let writebacks = arg_exprs
+            .iter()
+            .zip(&mutable_reference_params)
+            .map(|(arg, parameter_can_carry_mut_reference)| {
+                // A reference made by a call, an `if` or a literal, `touch(pass(&mut x))` or
+                // `f(Holder { value: &mut x })`, has no place this evaluator can write back
+                // to, so the call is refused.
+                parameter_can_carry_mut_reference
+                    .then(|| {
+                        self.mutable_argument_place(arg).or_else(|| {
+                            (self.makes_mut_reference(arg) || self.literal_holds_mut_reference(arg))
+                                .then_some(ComptimeWritePlace::Unknown)
                         })
-                        .flatten()
-                })
-                .collect::<Vec<_>>();
-            if writebacks
-                .iter()
-                .flatten()
-                .any(|place| matches!(place, ComptimeWritePlace::Unknown))
-            {
+                    })
+                    .flatten()
+            })
+            .collect::<Vec<_>>();
+        if writebacks
+            .iter()
+            .flatten()
+            .any(|place| matches!(place, ComptimeWritePlace::Unknown))
+        {
+            return self.refusal_after(args);
+        }
+        // Each parameter gets its own copy of what it points to, so two arguments reaching
+        // the same variable, as in `f(p, p)` or `f(&mut h, &mut h.n)`, would not see each
+        // other's writes. Such a call is not folded.
+        let places = writebacks.iter().flatten().collect::<Vec<_>>();
+        let overlapping = places
+            .iter()
+            .enumerate()
+            .any(|(i, a)| places[i + 1..].iter().any(|b| Self::places_overlap(a, b)));
+        if overlapping {
+            return self.unsupported_after(args);
+        }
+        // The borrow outcome deliberately has no scalar `Value`: `comptime { &mut x }`
+        // cannot replace itself with `x`. A known direct callee, however, needs the current
+        // pointee value in its private parameter frame so `*param = ...` can compute a
+        // write-back. Preserve the borrow's provenance and support state while supplying
+        // only that frame-local value.
+        for (argument, place) in args.iter_mut().zip(writebacks.iter()) {
+            let Some(place) = place.as_ref() else {
+                continue;
+            };
+            if let Some(value) = self.read_place(place) {
+                argument.value.concrete = value.concrete.clone();
+                argument.value.aggregate = value.aggregate.clone();
+                argument.value.facts.merge_from(&value.facts);
+            } else if !Self::place_root(place).is_some_and(|root| self.root_write_escapes(root)) {
                 return self.refusal_after(args);
             }
-            // Each parameter gets its own copy of what it points to, so two arguments reaching
-            // the same variable, as in `f(p, p)` or `f(&mut h, &mut h.n)`, would not see each
-            // other's writes. Such a call is not folded.
-            let places = writebacks.iter().flatten().collect::<Vec<_>>();
-            let overlapping = places
-                .iter()
-                .enumerate()
-                .any(|(i, a)| places[i + 1..].iter().any(|b| Self::places_overlap(a, b)));
-            if overlapping {
-                return self.unsupported_after(args);
-            }
-            // The borrow outcome deliberately has no scalar `Value`: `comptime { &mut x }`
-            // cannot replace itself with `x`. A known direct callee, however, needs the current
-            // pointee value in its private parameter frame so `*param = ...` can compute a
-            // write-back. Preserve the borrow's provenance and support state while supplying
-            // only that frame-local value.
-            for (argument, place) in args.iter_mut().zip(writebacks.iter()) {
-                let Some(place) = place.as_ref() else {
-                    continue;
-                };
-                if let Some(value) = self.read_place(place) {
-                    argument.value.concrete = value.concrete.clone();
-                    argument.value.aggregate = value.aggregate.clone();
-                    argument.value.facts.merge_from(&value.facts);
-                } else if !Self::place_root(place).is_some_and(|root| self.root_write_escapes(root))
-                {
-                    return self.refusal_after(args);
-                }
-            }
-            let temporary_projection_places = self.forward_projection_reference_places(
-                &function.params,
-                &mutable_reference_params,
-                &call.args,
-            );
-            let outcome = self.known_function_call_with_writebacks(&call.name, args, writebacks);
-            for place in temporary_projection_places {
-                self.reference_projection_places.remove(&place);
-            }
-            outcome
-        } else {
-            self.callable_call(self.identifier_facts(&call.name), args)
         }
+        let temporary_projection_places = self.forward_projection_reference_places(
+            &function.params,
+            &mutable_reference_params,
+            arg_exprs,
+        );
+        let outcome = self.known_function_call_with_writebacks(name, args, writebacks);
+        for place in temporary_projection_places {
+            self.reference_projection_places.remove(&place);
+        }
+        outcome
     }
 
     /// A borrowed aggregate parameter retains the reference destinations of fields inside it.
@@ -1830,13 +1883,11 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
                 let mut index = *start_index;
                 let end_index = *end_index;
                 let mut outcome = self.unknown_after([start, end]);
-                let mut steps = 0u64;
                 while index < end_index {
-                    if steps >= crate::hir::check_state::MAX_LOOP_STEPS {
+                    if !self.context.take_loop_step() {
                         outcome.mark_unsupported();
                         break;
                     }
-                    steps += 1;
                     self.env.insert(
                         iterator.clone(),
                         ComptimeEvalValue::known(Value::Int(index)),
@@ -1929,7 +1980,7 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
         // `return`; the shared budget gives an unproven recurrence the same fail-closed outcome
         // as the legacy evaluator's loop-step cap.
         let mut outcome = ComptimeEvalOutcome::unknown();
-        for _ in 0..crate::hir::check_state::MAX_LOOP_STEPS {
+        while self.context.take_loop_step() {
             let body = self.block(&loop_stmt.body);
             outcome.support.merge_from(body.support);
             outcome

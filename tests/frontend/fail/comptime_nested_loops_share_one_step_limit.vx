@@ -1,0 +1,27 @@
+//===- comptime_nested_loops_share_one_step_limit.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// Compile-time evaluation stops after 1,000,000 loop iterations in total. Each loop here runs
+// 1,500 times, but together they run 2,250,000, so the block is not evaluated. A limit counted
+// per loop never stops nested loops, and three loops of 1,000 then hang the compiler.
+
+fn main() -> i32 {
+  // CHECK: Error[E8005]{{.*}}more than 1000000 loop iterations
+  // CHECK: Error[E3033]{{.*}}cannot be evaluated
+  let value = comptime {
+    let mut n = 0i32;
+    for i in 0..1500 {
+      for j in 0..1500 {
+        n = n + 1i32;
+      }
+    }
+    n
+  };
+  return value;
+}

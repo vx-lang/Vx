@@ -316,6 +316,9 @@ pub(crate) struct ComptimeEvalContext {
     analysis_call_depth: u32,
     call_depth_exceeded: bool,
     escaping_writes: HashSet<Symbol>,
+    /// Loop iterations run so far in this block, by every loop together, so nested loops share
+    /// one `MAX_LOOP_STEPS` budget.
+    loop_steps: u64,
 }
 
 impl ComptimeEvalContext {
@@ -332,7 +335,17 @@ impl ComptimeEvalContext {
             analysis_call_depth: 0,
             call_depth_exceeded: false,
             escaping_writes: HashSet::new(),
+            loop_steps: 0,
         }
+    }
+
+    /// Counts one loop iteration, or returns false when the block has used its whole budget.
+    pub(crate) fn take_loop_step(&mut self) -> bool {
+        if self.loop_steps >= MAX_LOOP_STEPS {
+            return false;
+        }
+        self.loop_steps += 1;
+        true
     }
 
     pub(crate) fn push_scope(&mut self) {
@@ -437,6 +450,7 @@ impl ComptimeEvalContext {
         self.escaping_writes
             .extend(branch.escaping_writes.iter().cloned());
         self.call_depth_exceeded |= branch.call_depth_exceeded;
+        self.loop_steps = self.loop_steps.max(branch.loop_steps);
         debug_assert_eq!(self.analysis_call_depth, branch.analysis_call_depth);
     }
 }
