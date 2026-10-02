@@ -1,12 +1,11 @@
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// A slice reduction loads its operand with a single-index `vector.load`, so it is defined only
-// for rank 1. The predicate that admits the operand answered on the element type alone and let
-// a rank-2 tensor through, and the program then failed in the MLIR verifier with
-// "'vector.load' op requires 2 indices" -- no code, no span, nothing naming the real mistake.
-// CHECK: expects a rank-1 float slice
-// CHECK: got a rank-2 f32 tensor
+// `std::tensor`'s `sum` is a method of 1-D tensors only. Called on a rank-2 tensor, it is
+// reported as a method that type does not have, naming the type.
+// CHECK: Method 'sum' not found on type Tensor<f32, [2, 4]>
+import std::tensor;
+
 fn reduce_all(m : Tensor<f32, [2, 4]>) -> f32 {
-  return sum(m);
+  return m.sum();
 }
 
 fn main() -> i32 {

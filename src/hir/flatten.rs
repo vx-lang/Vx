@@ -1096,9 +1096,7 @@ impl<'r> Lowerer<'r> {
                 let mem_id = crate::arch::memory_space_dispatch_id(&t.space) as u64;
                 Ok(self.emit_typed(Opcode::Transfer, src.reg, Register(0), result_ty, mem_id))
             }
-            // Slice reductions `dot`/`sum`/`max`/`min` over rank-1 tensor slices -> a scalar. `dot`
-            // takes two slices (fused multiply then reduce-add); the rest take one. `Tensor<T>([..])`
-            // allocates a buffer. Any other name is an ordinary function call.
+            // `Tensor<T>([..])` allocates a buffer. Any other name is an ordinary function call.
             Expr::FunctionCall(fc) => {
                 if is_tensor_alloc_call(fc) {
                     return self.lower_tensor_alloc(fc).ok_or(Decline::TypeNotModelled {
@@ -1160,53 +1158,7 @@ impl<'r> Lowerer<'r> {
                         0,
                     ));
                 }
-                let kind = match fc.name.as_ref() {
-                    "dot" => 0u64,
-                    "sum" => 1,
-                    "max" => 2,
-                    "min" => 3,
-                    _ => return self.lower_call(fc),
-                };
-                let arity = if kind == 0 { 2 } else { 1 };
-                if fc.args.len() != arity {
-                    return Err(Decline::BuiltinShape {
-                        builtin: "a reduction",
-                        why: "the wrong number of arguments",
-                    });
-                }
-                let mut regs = [Register(0); 2];
-                for (n, arg) in fc.args.iter().enumerate() {
-                    let v = self.lower_expr(arg)?;
-                    let LoweredTy::Tensor { elem: e, shape } = &v.ty else {
-                        return Err(Decline::BuiltinShape {
-                            builtin: "a reduction",
-                            why: "an operand that is not a tensor slice",
-                        }); // reductions are over tensor slices
-                    };
-                    if shape.len() != 1 {
-                        return Err(Decline::BuiltinShape {
-                            builtin: "a reduction",
-                            why: "a slice that is not rank 1",
-                        }); // a rank-1 slice reduces to a scalar; higher ranks don't
-                    }
-                    if !matches!(e, ElementType::F32 | ElementType::F16 | ElementType::BF16) {
-                        return Err(Decline::BuiltinShape {
-                            builtin: "a reduction",
-                            why: "a slice whose elements are not float",
-                        }); // float slices only; halves widen on load (Vx#320)
-                    }
-                    regs[n] = v.reg;
-                }
-                // The result is f32 REGARDLESS of the slices' storage: a reduction's precision
-                // is its accumulator's, and codegen widens half-precision rows on load (Vx#320).
-                // The checker types the call the same way; mixed f16/f32 dots are welcome.
-                Ok(self.emit_typed(
-                    Opcode::Reduce,
-                    regs[0],
-                    regs[1],
-                    LoweredTy::Scalar(ElementType::F32),
-                    kind,
-                ))
+                self.lower_call(fc)
             }
             // `unsafe { .. }` in value position (e.g. a stdlib wrapper's `return unsafe { sqrtf(self) }`).
             // Safety was checked upstream, so `unsafe` is transparent to lowering: run the block's
@@ -5580,9 +5532,7 @@ pub fn verify_hir_stream(worker: &LocalWorkerState) {
             | Opcode::TensorDim
             // `PtrIndex` reads base+index; `PtrStore` reads place+value (#242).
             | Opcode::PtrIndex
-            | Opcode::PtrStore
-            // `Reduce`'s operand2 is a real slice for `dot`, else the dominated `Register(0)`.
-            | Opcode::Reduce => {
+            | Opcode::PtrStore => {
                 assert!(
                     ins.operand1.0 < i && ins.operand2.0 < i,
                     "HIR operand not dominated at instruction {i}"
@@ -6454,14 +6404,8 @@ impl ParallelScan {
             // runs, so calls are the shape scalar math arrives in. Only the known-pure intrinsics
             // pass; any other call could write through an argument and rejects the region. A
             // `Borrow` shows up when such an intrinsic takes `&self` — harmless only immutably.
-            //
-            // The builtin slice reductions (`dot`/`sum`/`max`/`min` over rank-1 slices, the
-            // `Reduce` opcode) are pure by the same standard: they read their slices and yield a
-            // scalar. They are also the vector-load path (Vx#378 R1), so a stridable kernel that
-            // uses them is exactly the intended shape.
             Expr::FunctionCall(fc) => {
-                (parallel_pure_call(&fc.name) || matches!(&*fc.name, "dot" | "sum" | "max" | "min"))
-                    && fc.args.iter().all(|a| self.expr(a))
+                parallel_pure_call(&fc.name) && fc.args.iter().all(|a| self.expr(a))
             }
             Expr::Borrow(b) => !b.is_mut && self.expr(&b.expr),
             // Belt for the pre-rewrite spelling, should this walk ever run on an unchecked AST: a
@@ -6948,13 +6892,6 @@ mod tests {
         verify_hir_stream(&w);
     }
 
-    fn reduce_imm(w: &LocalWorkerState) -> Option<u64> {
-        w.local_hir_stream
-            .iter()
-            .find(|i| i.opcode == Opcode::Reduce)
-            .map(|i| i.imm)
-    }
-
     /// The result-type GID of the first instruction with `op`.
     fn result_gid(w: &LocalWorkerState, op: Opcode) -> TypeId {
         let ins = w
@@ -6998,61 +6935,17 @@ mod tests {
     }
 
     #[test]
-    fn slice_dot_reduces_two_slices_to_a_scalar() {
-        // `dot(q, k)` over two rank-1 slices -> one Reduce (kind 0 = dot), scalar f32 result.
+    fn broadcast_write_path_composes() {
+        // Allocate the output, weight v by a scaled score, and store the row back -- alloc +
+        // elementwise + index + store, the whole non-scalar surface in one flat stream.
         let f = parse_fn(
-            "fn dotp(q: Tensor<f32, [4]>, k: Tensor<f32, [4]>) -> f32 { return dot(q, k); }",
-        );
-        let mut w = worker();
-        lower_function_to_hir(&f, &mut w).expect("dot should lower");
-        assert_eq!(count(&w, Opcode::Reduce), 1);
-        assert_eq!(reduce_imm(&w), Some(0), "dot kind");
-        assert!(
-            w.local_type_stream.contains(&scalar_gid(&ElementType::F32)),
-            "scalar result GID present"
-        );
-        verify_hir_stream(&w);
-    }
-
-    #[test]
-    fn slice_sum_reduces_one_slice_to_a_scalar() {
-        let f = parse_fn("fn s(q: Tensor<f32, [4]>) -> f32 { return sum(q); }");
-        let mut w = worker();
-        lower_function_to_hir(&f, &mut w).expect("sum should lower");
-        assert_eq!(count(&w, Opcode::Reduce), 1);
-        assert_eq!(reduce_imm(&w), Some(1), "sum kind");
-        verify_hir_stream(&w);
-    }
-
-    #[test]
-    fn dot_of_indexed_rows_lowers() {
-        // `dot(q[i], k[j])` -> index each rank-2 tensor to a row, then
-        // reduce. Two TensorIndex feed one Reduce.
-        let f = parse_fn(
-            "fn score(q: Tensor<f32, [2, 4]>, k: Tensor<f32, [2, 4]>) -> f32 { return dot(q[0], k[0]); }",
-        );
-        let mut w = worker();
-        lower_function_to_hir(&f, &mut w).expect("dot of rows should lower");
-        assert_eq!(count(&w, Opcode::TensorIndex), 2, "one index per operand");
-        assert_eq!(count(&w, Opcode::Reduce), 1);
-        assert_eq!(reduce_imm(&w), Some(0));
-        verify_hir_stream(&w);
-    }
-
-    #[test]
-    fn dot_broadcast_write_path_composes() {
-        // Allocate the output, weight v by a scaled score, and store the row back -- alloc + index +
-        // dot(reduce) + elementwise + store, the whole non-scalar surface in one flat stream.
-        let f = parse_fn(
-            "fn attn(q: Tensor<f32, [2, 4]>, k: Tensor<f32, [2, 4]>, v: Tensor<f32, [4]>, scale: f32) \
-             -> Tensor<f32, [2, 4]> \
-             { let o = Tensor<f32>([2, 4]); o[0] = v * (dot(q[0], k[0]) * scale); return o; }",
+            "fn attn(score: f32, v: Tensor<f32, [4]>, scale: f32) -> Tensor<f32, [2, 4]> \
+             { let o = Tensor<f32>([2, 4]); o[0] = v * (score * scale); return o; }",
         );
         let mut w = worker();
         lower_function_to_hir(&f, &mut w).expect("the FA write path should lower");
         assert_eq!(count(&w, Opcode::TensorAlloc), 1, "output buffer");
-        assert_eq!(count(&w, Opcode::TensorIndex), 3, "q[0], k[0], o[0]");
-        assert_eq!(count(&w, Opcode::Reduce), 1, "the dot");
+        assert_eq!(count(&w, Opcode::TensorIndex), 1, "o[0]");
         assert_eq!(count(&w, Opcode::Mul), 2, "scale the score, then weight v");
         assert_eq!(count(&w, Opcode::TensorStore), 1, "o[0] = ...");
         verify_hir_stream(&w);
@@ -7122,27 +7015,6 @@ mod tests {
         verify_hir_stream(&w);
     }
 
-    #[test]
-    fn dot_scale_expression_composes() {
-        // `dot(q[i], k[j]) * scale`: index -> reduce -> scalar multiply, proving
-        // the tensor pieces compose end to end into one flat stream.
-        let f = parse_fn(
-            "fn score(q: Tensor<f32, [2, 4]>, k: Tensor<f32, [2, 4]>, scale: f32) -> f32 \
-             { return dot(q[0], k[0]) * scale; }",
-        );
-        let mut w = worker();
-        lower_function_to_hir(&f, &mut w).expect("the FA score expression should lower");
-        assert_eq!(count(&w, Opcode::TensorIndex), 2, "q[0] and k[0]");
-        assert_eq!(count(&w, Opcode::Reduce), 1, "the dot");
-        assert_eq!(count(&w, Opcode::Mul), 1, "the scale multiply");
-        assert_eq!(
-            result_gid(&w, Opcode::Mul),
-            scalar_gid(&ElementType::F32),
-            "the score is a scalar"
-        );
-        verify_hir_stream(&w);
-    }
-
     fn op_imm(w: &LocalWorkerState, op: Opcode) -> Option<u64> {
         w.local_hir_stream
             .iter()
@@ -7190,7 +7062,7 @@ mod tests {
     fn scalar_element_store_into_rank1_marks_a_place() {
         // `q[0] = 1.0` into a rank-1 tensor: the whole tensor is the base, the index is a scalar-
         // element *place* (imm 1), and one `TensorStore` writes the scalar through it.
-        let f = parse_fn("fn f() -> f32 { let q = Tensor<f32>([4]); q[0] = 1.0; return sum(q); }");
+        let f = parse_fn("fn f() -> f32 { let q = Tensor<f32>([4]); q[0] = 1.0; return q[1]; }");
         let mut w = worker();
         lower_function_to_hir(&f, &mut w).expect("scalar-element store should lower");
         assert_eq!(count(&w, Opcode::TensorStore), 1);
@@ -8240,38 +8112,6 @@ mod tests {
             0,
             "no two-level bit: imm={:#x}",
             end.imm
-        );
-    }
-
-    #[test]
-    fn a_half_slice_dot_lowers_flat_with_an_f32_result() {
-        // The storage/arithmetic split (Vx#320): reductions over f16 slices stay on the flat
-        // path and reduce into f32 -- codegen widens the rows on load. The regression this
-        // pins: rejecting the half slice sent the whole program to the AST path, which has
-        // no Reduce at all.
-        let (did, w) = lower_with_registry(
-            "fn main() -> i32 {\n\
-               let mut a = Tensor<f16>([4, 8]);\n\
-               let mut b = Tensor<f16>([4, 8]);\n\
-               let mut acc = Tensor<f32>([1, 8]);\n\
-               a[0][0] = 0.5;\n\
-               let s : f32 = dot(a[0], b[1]);\n\
-               acc[0] = acc[0] + b[2] * 0.5;\n\
-               print(s);\n\
-               return 0;\n\
-             }",
-            "main",
-        );
-        assert!(did, "half-slice reductions lower on the flat path");
-        let red = w
-            .local_hir_stream
-            .iter()
-            .find(|i| i.opcode == Opcode::Reduce)
-            .expect("a Reduce");
-        assert_eq!(
-            w.local_type_stream[red.type_idx.0 as usize],
-            scalar_gid(&ElementType::F32),
-            "the reduction result is f32 regardless of storage"
         );
     }
 

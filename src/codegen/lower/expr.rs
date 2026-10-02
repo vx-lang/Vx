@@ -621,7 +621,7 @@ impl<'c> LowerToMelior<'c> for syntax::IndexAccessExpr {
             // of the remaining dimensions (e.g. `q[i]` on Tensor<f32,[N,D]> is row i, a
             // Tensor<f32,[D]>). The memref lowers to `?x?` but the Vx type carries the static
             // shape, so we emit a `memref.reinterpret_cast` with a static row size at the flat
-            // offset `sum_m idx_m * stride_m`. This is what makes `dot(q[i], k[j])` (S2) possible.
+            // offset `sum_m idx_m * stride_m`. This is what lets a row be used as a tensor of its own.
             let base_ty = gen.infer_ast_type(self.base.as_ref());
             let base_ty = match &base_ty {
                 Some(syntax::Type::Borrow { inner, .. }) => Some(&**inner),
@@ -1761,90 +1761,6 @@ impl<'c> LowerToMelior<'c> for MemberAccessExpr {
     }
 }
 
-/// Lower a slice reduction (`dot`/`sum`/`max`/`min`, S2) to the `vector` dialect.
-///
-/// Each rank-1 slice operand (a strided `memref<Dxf32, ...>` from S1, or a contiguous 1-D
-/// tensor) is `vector.load`ed into a `vector<Dxf32>`; `dot` first `arith.mulf`s the two
-/// vectors, then all reduce via `vector.reduction` (`add` for dot/sum, `maximumf`/`minimumf`
-/// for max/min). The pipeline's convert-vector-to-llvm turns these into `@llvm.vector.reduce.*`.
-fn lower_slice_reduction<'c>(
-    gen: &mut MeliorGenerator<'c>,
-    op: &str,
-    args: &[Expr],
-    block: melior::ir::BlockRef<'c, 'c>,
-) -> Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError> {
-    let index_ty = Type::index(gen.context);
-    let f32_ty =
-        Type::parse(gen.context, "f32").ok_or_else(|| LowerError::ParseType("f32".to_string()))?;
-
-    // A constant `0 : index` to address the first (only) memref dimension for vector.load.
-    let c0_op = OperationBuilder::new("arith.constant", gen.loc())
-        .add_attributes(&[(
-            Identifier::new(gen.context, "value"),
-            IntegerAttribute::new(index_ty, 0).into(),
-        )])
-        .add_results(&[index_ty])
-        .build()?;
-    let c0: Value = block.append_operation(c0_op).result(0)?.into();
-
-    // Load each slice operand into a vector<Dxf32>. `len` is the static row length D,
-    // parsed from the operand's memref type (`memref<Dx...`), shared across all operands.
-    let mut vecs: Vec<Value> = Vec::new();
-    let mut len: Option<i64> = None;
-    let mut cur = block;
-    for arg in args {
-        let (base_val, base_ty, nb) = gen.generate_expr(arg, cur)?;
-        cur = nb;
-        let ty_str = base_ty.to_string();
-        let d: i64 = ty_str
-            .strip_prefix("memref<")
-            .and_then(|s| s.split('x').next())
-            .and_then(|s| s.parse::<i64>().ok())
-            .ok_or_else(|| LowerError::ParseType(format!("slice length from {}", ty_str)))?;
-        len = Some(d);
-        let vec_ty_str = format!("vector<{}xf32>", d);
-        let vec_ty = Type::parse(gen.context, &vec_ty_str)
-            .ok_or_else(|| LowerError::ParseType(vec_ty_str.clone()))?;
-        let load_op = OperationBuilder::new("vector.load", gen.loc())
-            .add_operands(&[base_val, c0])
-            .add_results(&[vec_ty])
-            .build()?;
-        vecs.push(cur.append_operation(load_op).result(0)?.into());
-    }
-
-    let d = len.ok_or_else(|| LowerError::ParseType("empty slice reduction".to_string()))?;
-    let vec_ty = Type::parse(gen.context, &format!("vector<{}xf32>", d))
-        .ok_or_else(|| LowerError::ParseType(format!("vector<{}xf32>", d)))?;
-
-    // For `dot`, fuse the two operands with an elementwise multiply before reducing.
-    let (reduce_in, kind) = if op == "dot" {
-        let mul_op = OperationBuilder::new("arith.mulf", gen.loc())
-            .add_operands(&[vecs[0], vecs[1]])
-            .add_results(&[vec_ty])
-            .build()?;
-        let prod: Value = cur.append_operation(mul_op).result(0)?.into();
-        (prod, "add")
-    } else {
-        let kind = match op {
-            "sum" => "add",
-            "max" => "maximumf",
-            "min" => "minimumf",
-            _ => unreachable!("slice reduction op {}", op),
-        };
-        (vecs[0], kind)
-    };
-
-    let kind_attr = Attribute::parse(gen.context, &format!("#vector.kind<{}>", kind))
-        .ok_or_else(|| LowerError::ParseType(format!("#vector.kind<{}>", kind)))?;
-    let red_op = OperationBuilder::new("vector.reduction", gen.loc())
-        .add_operands(&[reduce_in])
-        .add_attributes(&[(Identifier::new(gen.context, "kind"), kind_attr)])
-        .add_results(&[f32_ty])
-        .build()?;
-    let result: Value = cur.append_operation(red_op).result(0)?.into();
-    Ok((result, f32_ty, cur))
-}
-
 /// Lower a tensor initializer list (`Tensor<T>([[..],[..]])`): allocate a buffer of the shape
 /// inferred from the nesting and store each constant element in row-major order. The buffer keeps
 /// the dynamic `memref<?x..xT>` type (with constant sizes) that the rest of codegen expects.
@@ -2498,12 +2414,6 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
         // kernel its device twin (`isDeviceLowerableDialect` excludes func).
         if let Some(prim) = name.as_ref().strip_prefix("raw::") {
             return lower_raw_primitive(gen, block, prim, args);
-        }
-        // Slice reductions (S2): dot/sum/max/min over rank-1 f32 slices lower to
-        // `vector.load` + (`arith.mulf` for dot) + `vector.reduction`, which the pipeline's
-        // convert-vector-to-llvm turns into real SIMD (`@llvm.vector.reduce.*`).
-        if matches!(name.as_ref(), "dot" | "sum" | "max" | "min") {
-            return lower_slice_reduction(gen, name.as_ref(), args, block);
         }
         // `tensor_view_2d(ptr, rows, cols)` -- a rank-2 tensor over memory it
         // does not own, with no copy (#336).

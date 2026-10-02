@@ -22,13 +22,13 @@
 // RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s
 
 // Exactly two `malloc` calls survive in the whole module, and they are `big`'s and
-// `passes_it_on`'s. The buffers in `small`, in `reduced`, and in `main`'s loop are all on the
+// `passes_it_on`'s. The buffers in `small`, in `doubled`, and in `main`'s loop are all on the
 // stack; if any of them regressed, the count goes up.
 // CHECK-COUNT-2: llvm.call @malloc
 // CHECK-NOT: llvm.call @malloc
 
-// small() = 1 + 4, the loop's last read = 1, passes_it_on() = 4, reduced() = sum([1,2,3,4]).
-// EXPECT: 5 1 4 10
+// small() = 1 + 4, the loop's last read = 1, passes_it_on() = 4, doubled() = 2 * 4.
+// EXPECT: 5 1 4 8
 
 fn small() -> i32 {
   let l = [ 1, 2, 3, 4 ];
@@ -54,13 +54,15 @@ fn passes_it_on() -> i32 {
 
 // A promoted buffer is read by a `vector.load` a row at a time, which assumes the alignment
 // `malloc` used to guarantee. Without that declared this aborts rather than answering.
-fn reduced() -> f32 {
+fn doubled() -> f32 {
   let mut q = Tensor<f32>([ 2, 4 ]);
   q[0][0] = 1.0;
   q[0][1] = 2.0;
   q[0][2] = 3.0;
   q[0][3] = 4.0;
-  return sum(q[0]);
+  let mut o = Tensor<f32>([ 2, 4 ]);
+  o[0] = q[0] * 2.0;
+  return o[0][3];
 }
 
 fn main() -> i32 {
@@ -78,6 +80,6 @@ fn main() -> i32 {
   print!(" ");
   print(passes_it_on());
   print!(" ");
-  print(reduced());
+  print(doubled());
   return 0;
 }

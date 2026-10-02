@@ -5,19 +5,15 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// S2: slice reductions over the
-// rank-1 row views from S1. `dot(a,b)`, `sum(a)`, `max(a)`, `min(a)` lower to `vector.load`
-// (+ `arith.mulf` for dot) + `vector.reduction`, which the pipeline's convert-vector-to-llvm
-// turns into `@llvm.intr.vector.reduce.*` -- SIMD by construction, not by hoping the
-// autovectorizer recovers a scalar loop. The reductions *read* their operands (a zero-copy
-// view), so a slice can feed several reductions and is not consumed.
-//
-// Correctness: `dot(a,b)` must equal the hand-written scalar reduction loop.
+// `dot`, `sum`, `max` and `min` from `std::tensor` on rows of a tensor, `q[0]` and `q[1]`
+// copied into tensors of their own. The rows are only read, so one row can feed several of
+// them. The dot product is checked against a loop written out by hand.
 //   a = [1,2,3,4], b = [5,6,7,8]
-//   dot = 1*5+2*6+3*7+4*8 = 70;  sum(a) = 10;  max(b) = 8;  min(a) = 1.
+//   a.dot(&b) = 1*5+2*6+3*7+4*8 = 70;  a.sum() = 10;  b.max() = 8;  a.min() = 1.
 //
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // CHECK: vector.reduction
+import std::tensor;
 
 fn main() -> i32 {
   let mut q = Tensor<f32, [2, 4]>::uninit();
@@ -27,9 +23,9 @@ fn main() -> i32 {
   let a : Tensor<f32,[4]> = q[0];
   let b : Tensor<f32,[4]> = q[1];
 
-  let d : f32 = dot(a, b);   // vectorized
+  let d : f32 = a.dot(&b);
 
-  // Scalar-loop oracle for the same dot product.
+  // The same dot product, written out.
   let mut d_scalar : f32 = 0.0;
   for k in 0..4 {
     d_scalar = d_scalar + q[0][k] * q[1][k];
@@ -38,9 +34,9 @@ fn main() -> i32 {
   let mut o = Tensor<f32, [1, 5]>::uninit();
   o[0][0] = d;
   o[0][1] = d_scalar;   // must equal o[0][0]
-  o[0][2] = sum(a);
-  o[0][3] = max(b);
-  o[0][4] = min(a);
+  o[0][2] = a.sum();
+  o[0][3] = b.max();
+  o[0][4] = a.min();
   print(o);
   return 0;
 }
