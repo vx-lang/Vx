@@ -1,0 +1,75 @@
+//===- tensors_returned_early_from_nested_blocks.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A function that makes several tensors in nested blocks and returns one of them, early from
+// inside an `if` or at its end. Every element is 0, so the line is twelve zeros. The program
+// is a fuzzer's, a sibling of tensor_returned_early_beside_other_tensors.vx: before the fix
+// it died with "double free" in CI though not on every machine, since what the poison buffer
+// holds depends on the state of the heap.
+//
+// EXPECT: 0 0 0 0 0 0 0 0 0 0 0 0
+fn g(n : i32, k : i32) -> Tensor<i32, [?]> {
+  let mut v1 = Tensor<i32>([n]);
+  for j in 0..n {
+    v1[j] = 0;
+  }
+  let mut v2 = Tensor<i32>([n]);
+  for j in 0..n {
+    v2[j] = 0;
+  }
+  if ((k + 2)) % 2 == 0 {
+    let mut v3 = Tensor<i32>([n]);
+    for j in 0..n {
+      v3[j] = 0;
+    }
+    if (1) % 2 == 0 {
+    } else {
+      let mut v4 = Tensor<i32>([n]);
+      for j in 0..n {
+        v4[j] = 0;
+      }
+      if (4) % 2 == 0 {
+        if ((k + 2)) % 3 == 0 {
+          return v4;
+        }
+        for j in 0..n {
+          v3[j] = v3[j] + v2[j];
+        }
+      } else {
+      }
+      let mut v7 = Tensor<i32>([n]);
+      for j in 0..n {
+        v7[j] = 0;
+      }
+    }
+    let mut v8 = Tensor<i32>([n]);
+    for j in 0..n {
+      v8[j] = 0;
+    }
+  } else {
+    let mut v11 = Tensor<i32>([n]);
+    for j in 0..n {
+      v11[j] = 0;
+    }
+    for j in 0..n {
+      v11[j] = v11[j] + v11[j];
+    }
+  }
+  return v2;
+}
+
+fn main() -> i32 {
+  for k in 0..4 {
+    let r = g(3, k);
+    for j in 0..3 {
+      print(r[j]);
+      print!(" ");
+    }
+  }
+  return 0;
+}
+
