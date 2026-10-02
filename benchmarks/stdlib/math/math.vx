@@ -246,6 +246,14 @@ binary_bench!(powf_f32, run_powf_f32, f32, 0.5, 2.0, -4.0, 4.0, powf, "powf_f32/
 binary_bench!(atan2_f32, run_atan2_f32, f32, -10.0, 10.0, -10.0, 10.0, atan2, "atan2_f32/core_num");
 binary_bench!(copysign_f32, run_copysign_f32, f32, -100.0, 100.0, -1.0, 1.0, copysign, "copysign_f32/core_num");
 binary_bench!(hypot_f32, run_hypot_f32, f32, -100.0, 100.0, -100.0, 100.0, hypot, "hypot_f32/core_num");
+unary_bench!(asinh_f32, run_asinh_f32, f32, -10.0, 10.0, asinh, "asinh_f32/core_num");
+unary_bench!(acosh_f32, run_acosh_f32, f32, 1.0, 100.0, acosh, "acosh_f32/core_num");
+unary_bench!(atanh_f32, run_atanh_f32, f32, -0.99, 0.99, atanh, "atanh_f32/core_num");
+unary_bench!(round_ties_even_f32, run_round_ties_even_f32, f32, -100.0, 100.0, round_ties_even, "round_ties_even_f32/core_num");
+unary_bench!(next_up_f32, run_next_up_f32, f32, -100.0, 100.0, next_up, "next_up_f32/core_num");
+unary_bench!(next_down_f32, run_next_down_f32, f32, -100.0, 100.0, next_down, "next_down_f32/core_num");
+binary_bench!(log_f32, run_log_f32, f32, 0.5, 1000.0, 2.0, 10.0, log, "log_f32/core_num");
+binary_bench!(midpoint_f32, run_midpoint_f32, f32, -100.0, 100.0, -100.0, 100.0, midpoint, "midpoint_f32/core_num");
 binary_bench!(rem_euclid_f32, run_rem_euclid_f32, f32, -100.0, 100.0, 0.5, 10.0, rem_euclid, "rem_euclid_f32/core_num");
 binary_bench!(div_euclid_f32, run_div_euclid_f32, f32, -100.0, 100.0, 0.5, 10.0, div_euclid, "div_euclid_f32/core_num");
 binary_bench!(max_f32, run_max_f32, f32, -10.0, 10.0, -10.0, 10.0, max, "max_f32/core_num");
@@ -281,6 +289,14 @@ binary_bench!(powf_f64, run_powf_f64, f64, 0.5, 2.0, -4.0, 4.0, powf, "powf_f64/
 binary_bench!(atan2_f64, run_atan2_f64, f64, -10.0, 10.0, -10.0, 10.0, atan2, "atan2_f64/core_num");
 binary_bench!(copysign_f64, run_copysign_f64, f64, -100.0, 100.0, -1.0, 1.0, copysign, "copysign_f64/core_num");
 binary_bench!(hypot_f64, run_hypot_f64, f64, -100.0, 100.0, -100.0, 100.0, hypot, "hypot_f64/core_num");
+unary_bench!(asinh_f64, run_asinh_f64, f64, -10.0, 10.0, asinh, "asinh_f64/core_num");
+unary_bench!(acosh_f64, run_acosh_f64, f64, 1.0, 100.0, acosh, "acosh_f64/core_num");
+unary_bench!(atanh_f64, run_atanh_f64, f64, -0.99, 0.99, atanh, "atanh_f64/core_num");
+unary_bench!(round_ties_even_f64, run_round_ties_even_f64, f64, -100.0, 100.0, round_ties_even, "round_ties_even_f64/core_num");
+unary_bench!(next_up_f64, run_next_up_f64, f64, -100.0, 100.0, next_up, "next_up_f64/core_num");
+unary_bench!(next_down_f64, run_next_down_f64, f64, -100.0, 100.0, next_down, "next_down_f64/core_num");
+binary_bench!(log_f64, run_log_f64, f64, 0.5, 1000.0, 2.0, 10.0, log, "log_f64/core_num");
+binary_bench!(midpoint_f64, run_midpoint_f64, f64, -100.0, 100.0, -100.0, 100.0, midpoint, "midpoint_f64/core_num");
 binary_bench!(rem_euclid_f64, run_rem_euclid_f64, f64, -100.0, 100.0, 0.5, 10.0, rem_euclid, "rem_euclid_f64/core_num");
 binary_bench!(div_euclid_f64, run_div_euclid_f64, f64, -100.0, 100.0, 0.5, 10.0, div_euclid, "div_euclid_f64/core_num");
 binary_bench!(max_f64, run_max_f64, f64, -10.0, 10.0, -10.0, 10.0, max, "max_f64/core_num");
@@ -324,6 +340,14 @@ fn main() -> i32 {
   run_min_f32();
   run_mul_add_f32();
   run_clamp_f32();
+  run_asinh_f32();
+  run_acosh_f32();
+  run_atanh_f32();
+  run_round_ties_even_f32();
+  run_next_up_f32();
+  run_next_down_f32();
+  run_log_f32();
+  run_midpoint_f32();
   run_sqrt_f64();
   run_abs_f64();
   run_exp_f64();
@@ -361,5 +385,13 @@ fn main() -> i32 {
   run_min_f64();
   run_mul_add_f64();
   run_clamp_f64();
+  run_asinh_f64();
+  run_acosh_f64();
+  run_atanh_f64();
+  run_round_ties_even_f64();
+  run_next_up_f64();
+  run_next_down_f64();
+  run_log_f64();
+  run_midpoint_f64();
   return 0;
 }

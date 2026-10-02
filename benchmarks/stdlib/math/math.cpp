@@ -8,7 +8,10 @@
 //
 // The sums math.vx computes, with the <cmath> counterpart of each core::num
 // float method, over the same inputs. rem_euclid and div_euclid follow Rust's
-// definitions, as core::num does; <cmath> has neither.
+// definitions, as core::num does; <cmath> has neither. round_ties_even is
+// std::nearbyint in the default rounding mode, next_up and next_down are
+// std::nextafter towards an infinity, and log(x, base) is log(x) / log(base),
+// which is how core::num computes it.
 //
 //===----------------------------------------------------------------------===//
 
@@ -16,6 +19,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <numeric>
 
 template <class T> static inline T rem_euclid(T x, T y) {
   T r = std::fmod(x, y);
@@ -92,6 +96,14 @@ BINARY(powf_f32, float, 0.5, 2.0, -4.0, 4.0, std::pow(x, y))
 BINARY(atan2_f32, float, -10.0, 10.0, -10.0, 10.0, std::atan2(x, y))
 BINARY(copysign_f32, float, -100.0, 100.0, -1.0, 1.0, std::copysign(x, y))
 BINARY(hypot_f32, float, -100.0, 100.0, -100.0, 100.0, std::hypot(x, y))
+UNARY(asinh_f32, float, -10.0, 10.0, std::asinh(x))
+UNARY(acosh_f32, float, 1.0, 100.0, std::acosh(x))
+UNARY(atanh_f32, float, -0.99, 0.99, std::atanh(x))
+UNARY(round_ties_even_f32, float, -100.0, 100.0, std::nearbyint(x))
+UNARY(next_up_f32, float, -100.0, 100.0, std::nextafter(x, (T)INFINITY))
+UNARY(next_down_f32, float, -100.0, 100.0, std::nextafter(x, -(T)INFINITY))
+BINARY(log_f32, float, 0.5, 1000.0, 2.0, 10.0, std::log(x) / std::log(y))
+BINARY(midpoint_f32, float, -100.0, 100.0, -100.0, 100.0, std::midpoint(x, y))
 BINARY(rem_euclid_f32, float, -100.0, 100.0, 0.5, 10.0, rem_euclid(x, y))
 BINARY(div_euclid_f32, float, -100.0, 100.0, 0.5, 10.0, div_euclid(x, y))
 BINARY(max_f32, float, -10.0, 10.0, -10.0, 10.0, std::fmax(x, y))
@@ -132,6 +144,14 @@ BINARY(powf_f64, double, 0.5, 2.0, -4.0, 4.0, std::pow(x, y))
 BINARY(atan2_f64, double, -10.0, 10.0, -10.0, 10.0, std::atan2(x, y))
 BINARY(copysign_f64, double, -100.0, 100.0, -1.0, 1.0, std::copysign(x, y))
 BINARY(hypot_f64, double, -100.0, 100.0, -100.0, 100.0, std::hypot(x, y))
+UNARY(asinh_f64, double, -10.0, 10.0, std::asinh(x))
+UNARY(acosh_f64, double, 1.0, 100.0, std::acosh(x))
+UNARY(atanh_f64, double, -0.99, 0.99, std::atanh(x))
+UNARY(round_ties_even_f64, double, -100.0, 100.0, std::nearbyint(x))
+UNARY(next_up_f64, double, -100.0, 100.0, std::nextafter(x, (T)INFINITY))
+UNARY(next_down_f64, double, -100.0, 100.0, std::nextafter(x, -(T)INFINITY))
+BINARY(log_f64, double, 0.5, 1000.0, 2.0, 10.0, std::log(x) / std::log(y))
+BINARY(midpoint_f64, double, -100.0, 100.0, -100.0, 100.0, std::midpoint(x, y))
 BINARY(rem_euclid_f64, double, -100.0, 100.0, 0.5, 10.0, rem_euclid(x, y))
 BINARY(div_euclid_f64, double, -100.0, 100.0, 0.5, 10.0, div_euclid(x, y))
 BINARY(max_f64, double, -10.0, 10.0, -10.0, 10.0, std::fmax(x, y))
@@ -214,6 +234,22 @@ int main() {
                    [](int rep) { return mul_add_f32(1000000, rep); });
   vxbench::measure("clamp_f32/std", 5,
                    [](int rep) { return clamp_f32(1000000, rep); });
+  vxbench::measure("asinh_f32/std", 5,
+                   [](int rep) { return asinh_f32(1000000, rep); });
+  vxbench::measure("acosh_f32/std", 5,
+                   [](int rep) { return acosh_f32(1000000, rep); });
+  vxbench::measure("atanh_f32/std", 5,
+                   [](int rep) { return atanh_f32(1000000, rep); });
+  vxbench::measure("round_ties_even_f32/std", 5,
+                   [](int rep) { return round_ties_even_f32(1000000, rep); });
+  vxbench::measure("next_up_f32/std", 5,
+                   [](int rep) { return next_up_f32(1000000, rep); });
+  vxbench::measure("next_down_f32/std", 5,
+                   [](int rep) { return next_down_f32(1000000, rep); });
+  vxbench::measure("log_f32/std", 5,
+                   [](int rep) { return log_f32(1000000, rep); });
+  vxbench::measure("midpoint_f32/std", 5,
+                   [](int rep) { return midpoint_f32(1000000, rep); });
   vxbench::measure("sqrt_f64/std", 5,
                    [](int rep) { return sqrt_f64(1000000, rep); });
   vxbench::measure("abs_f64/std", 5,
@@ -288,4 +324,20 @@ int main() {
                    [](int rep) { return mul_add_f64(1000000, rep); });
   vxbench::measure("clamp_f64/std", 5,
                    [](int rep) { return clamp_f64(1000000, rep); });
+  vxbench::measure("asinh_f64/std", 5,
+                   [](int rep) { return asinh_f64(1000000, rep); });
+  vxbench::measure("acosh_f64/std", 5,
+                   [](int rep) { return acosh_f64(1000000, rep); });
+  vxbench::measure("atanh_f64/std", 5,
+                   [](int rep) { return atanh_f64(1000000, rep); });
+  vxbench::measure("round_ties_even_f64/std", 5,
+                   [](int rep) { return round_ties_even_f64(1000000, rep); });
+  vxbench::measure("next_up_f64/std", 5,
+                   [](int rep) { return next_up_f64(1000000, rep); });
+  vxbench::measure("next_down_f64/std", 5,
+                   [](int rep) { return next_down_f64(1000000, rep); });
+  vxbench::measure("log_f64/std", 5,
+                   [](int rep) { return log_f64(1000000, rep); });
+  vxbench::measure("midpoint_f64/std", 5,
+                   [](int rep) { return midpoint_f64(1000000, rep); });
 }
