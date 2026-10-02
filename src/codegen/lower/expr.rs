@@ -3464,7 +3464,10 @@ impl<'c> LowerToMelior<'c> for MatchExpr {
         // type could not be inferred. Applying it to a match with no tail expression at all
         // would make a statement-position match look value-producing, and every arm would then
         // have to yield something it never had.
-        let value_ty = tail_expr.and_then(|e| {
+        // A statement `match` produces no value, whatever its arms end in: a trailing `if` or
+        // `unsafe { }` there is a statement too.
+        let in_statement = outer_expected == Some(gen.none_ty);
+        let value_ty = tail_expr.filter(|_| !in_statement).and_then(|e| {
             match e {
                 // `infer_ast_type` has no arm for a bare literal, and an arm body is usually
                 // exactly that. Read the literal's own type, which the checker stamps, and fall

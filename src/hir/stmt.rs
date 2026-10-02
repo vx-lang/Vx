@@ -229,6 +229,7 @@ impl<'a> TypeChecker<'a> {
                 let before = self.consteval_snapshot();
                 let scopes = self.consteval_scopes();
                 let saved_borrows = self.borrow.snapshot();
+                self.value_unused = true;
                 self.check_expr_type_flag(expr, consume);
                 self.borrow.restore(saved_borrows);
                 self.settle_mut_borrow_call(expr, &before, &scopes);

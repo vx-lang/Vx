@@ -392,6 +392,12 @@ pub struct TypeChecker<'a> {
     /// "fresh check" entry points (`check_expr_type`, `check_block`) force it back off, so the
     /// field's dynamic scope reproduces the old parameter's exactly.
     pub(crate) speculating: bool,
+    /// Set just before checking an expression whose value nothing uses: an expression statement,
+    /// or the last expression of a block whose own value is unused. Blocks, `if`, `match` and
+    /// `unsafe`/`comptime` blocks pass it on to the blocks inside them; `match` reads it, so a
+    /// statement `match` whose arms yield nothing has no value rather than the function's
+    /// return type. Every expression check takes it back to `false` on entry.
+    pub(crate) value_unused: bool,
     /// Set while checking the left-hand side of an assignment (plain or compound): a container
     /// index there is a *store* place, so the `v[i]` -> `v.get(i)` read rewrite must not fire.
     pub(crate) checking_assign_lhs: bool,
@@ -443,6 +449,7 @@ impl<'a> TypeChecker<'a> {
             transfer_cost_graph,
             borrow: crate::hir::borrow_cx::BorrowCx::default(),
             speculating: false,
+            value_unused: false,
             checking_assign_lhs: false,
             next_id: 1,
             current_return_type: None,

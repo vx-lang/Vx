@@ -198,6 +198,7 @@ impl<'a> TypeChecker<'a> {
     }
 
     pub(crate) fn check_comptimeblock_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
+        let unused = std::mem::replace(&mut self.value_unused, false);
         match expr {
             Expr::ComptimeBlock(ComptimeBlockExpr {
                 stmts,
@@ -224,6 +225,7 @@ impl<'a> TypeChecker<'a> {
                 let before = self.consteval_snapshot();
                 self.push_scope();
                 self.consteval.comptime_depth += 1;
+                self.value_unused = unused;
                 let mut ret_ty = self.check_expr_block(stmts, consume);
                 if let Some(r) = ret {
                     ret_ty = self.check_expr_type(r);
@@ -304,6 +306,7 @@ impl<'a> TypeChecker<'a> {
     }
 
     pub(crate) fn check_if_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
+        let unused = std::mem::replace(&mut self.value_unused, false);
         let if_expr = match expr {
             Expr::If(e) => e,
             _ => panic!("Expected IndexAccess, got {:?}", expr),
@@ -336,6 +339,7 @@ impl<'a> TypeChecker<'a> {
         self.push_releasing_scope();
         let mut then_ty = Type::Struct("void".into(), None);
         if !self.speculating && !if_expr.then_block.is_empty() {
+            self.value_unused = unused;
             then_ty = self.check_expr_block(&mut if_expr.then_block, consume);
         }
         self.pop_scope();
@@ -348,6 +352,7 @@ impl<'a> TypeChecker<'a> {
             if !else_b.is_empty() {
                 self.push_releasing_scope();
                 if !self.speculating {
+                    self.value_unused = unused;
                     else_ty = self.check_expr_block(else_b, consume);
                 }
                 self.pop_scope();
@@ -388,6 +393,7 @@ impl<'a> TypeChecker<'a> {
     }
 
     pub(crate) fn check_unsafeblock_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
+        let unused = std::mem::replace(&mut self.value_unused, false);
         match expr {
             Expr::UnsafeBlock(UnsafeBlockExpr {
                 stmts,
@@ -397,8 +403,10 @@ impl<'a> TypeChecker<'a> {
                 let prev_unsafe = self.in_unsafe_block;
                 self.in_unsafe_block = true;
                 self.push_scope();
+                self.value_unused = unused;
                 let mut ret_ty = self.check_expr_block(stmts, consume);
                 if let Some(r) = ret_expr {
+                    self.value_unused = unused;
                     ret_ty = self.check_expr_type_flag(r, consume);
                 }
                 self.pop_scope();
@@ -528,6 +536,7 @@ impl<'a> TypeChecker<'a> {
     }
 
     pub(crate) fn check_match_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
+        let unused = std::mem::replace(&mut self.value_unused, false);
         match expr {
             Expr::Match(MatchExpr {
                 expr: match_expr,
@@ -555,6 +564,7 @@ impl<'a> TypeChecker<'a> {
                     self.bind_pattern_variables(&arm.pattern, &expr_ty);
 
                     let arm_ty = if !self.speculating {
+                        self.value_unused = unused;
                         self.check_expr_block(&mut arm.body, consume)
                     } else {
                         Type::Struct("void".into(), None)
@@ -629,7 +639,11 @@ impl<'a> TypeChecker<'a> {
                 // When no arm yields a value the match sits in diverging/statement
                 // position (every arm returns or aborts). Type it as the expected return
                 // type so an implicit `return match { ... }` type-checks; fall back to the
-                // historical placeholder when there is no expected return type.
+                // historical placeholder when there is no expected return type. A match
+                // whose value nothing uses is a statement, and has no value at all.
+                if unused && match_ty.is_none() {
+                    return Type::Struct("void".into(), None);
+                }
                 match_ty.unwrap_or_else(|| {
                     self.current_return_type.clone().unwrap_or(Type::Tensor(
                         ElementType::F32,

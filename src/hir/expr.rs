@@ -97,10 +97,12 @@ impl<'a> TypeChecker<'a> {
     }
 
     pub(crate) fn check_expr_block(&mut self, stmts: &mut [Statement], consume: bool) -> Type {
+        let block_unused = std::mem::replace(&mut self.value_unused, false);
         let mut ret_ty = Type::Struct("void".into(), None);
         let mut terminated = false;
+        let last = stmts.len().saturating_sub(1);
 
-        for s in stmts.iter_mut() {
+        for (i, s) in stmts.iter_mut().enumerate() {
             if terminated && !self.speculating {
                 let stmt_span = s.span();
                 self.errors.warn(
@@ -124,6 +126,7 @@ impl<'a> TypeChecker<'a> {
                 let before = self.consteval_snapshot();
                 let scopes = self.consteval_scopes();
                 let saved_borrows = self.borrow.snapshot();
+                self.value_unused = *has_semi || i != last || block_unused;
                 let ty = self.check_expr_type_flag(expr, consume);
                 if !*has_semi {
                     ret_ty = ty;
@@ -152,6 +155,7 @@ impl<'a> TypeChecker<'a> {
     }
 
     pub fn check_expr_type_flag(&mut self, expr: &mut Expr, consume: bool) -> Type {
+        let value_unused = std::mem::replace(&mut self.value_unused, false);
         let mut is_enum_variant = false;
         if let Expr::FunctionCall(fc) = expr {
             if let Some((enum_name, _)) = fc.name.split_once("::") {
@@ -203,9 +207,15 @@ impl<'a> TypeChecker<'a> {
             Expr::Transfer(..) => self.check_transfer_expr(expr, consume),
             // `Reachable<A, B>` is a comptime boolean.
             Expr::TransferPredicate(..) => Type::Scalar(ElementType::Bool),
-            Expr::ComptimeBlock(..) => self.check_comptimeblock_expr(expr, consume),
+            Expr::ComptimeBlock(..) => {
+                self.value_unused = value_unused;
+                self.check_comptimeblock_expr(expr, consume)
+            }
             Expr::SpawnOn(..) => self.check_spawnon_expr(expr, consume),
-            Expr::If(..) => self.check_if_expr(expr, consume),
+            Expr::If(..) => {
+                self.value_unused = value_unused;
+                self.check_if_expr(expr, consume)
+            }
             Expr::SizeOf(..) => Type::Scalar(ElementType::I64),
             Expr::FunctionCall(..) => {
                 let ty = self.check_functioncall_expr(expr, consume);
@@ -248,13 +258,19 @@ impl<'a> TypeChecker<'a> {
             Expr::UnaryOp(..) => self.check_unaryop_expr(expr),
             Expr::Borrow(..) => self.check_borrow_expr(expr),
             Expr::Dereference(..) => self.check_dereference_expr(expr, consume),
-            Expr::UnsafeBlock(..) => self.check_unsafeblock_expr(expr, consume),
+            Expr::UnsafeBlock(..) => {
+                self.value_unused = value_unused;
+                self.check_unsafeblock_expr(expr, consume)
+            }
             Expr::StructInit(..) => self.check_structinit_expr(expr, consume),
             Expr::Grad(..) => self.check_grad_expr(expr),
             Expr::Vjp(..) => self.check_vjp_expr(expr),
             Expr::Jvp(..) => self.check_jvp_expr(expr),
             Expr::Range(..) => self.check_range_expr(expr),
-            Expr::Match(..) => self.check_match_expr(expr, consume),
+            Expr::Match(..) => {
+                self.value_unused = value_unused;
+                self.check_match_expr(expr, consume)
+            }
             Expr::VecMacro(..) => self.check_vecmacro_expr(expr),
             Expr::Closure(..) => self.check_closure_expr(expr, consume),
             Expr::AsCast(e) => self.check_ascast_expr(e, consume),

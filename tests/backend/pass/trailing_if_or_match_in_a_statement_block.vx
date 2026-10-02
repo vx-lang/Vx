@@ -1,0 +1,81 @@
+//===- trailing_if_or_match_in_a_statement_block.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// An `if`, `match` or `unsafe` block with no semicolon after it, at the end of a block whose
+// value nothing uses, is a statement, as in Rust: its branches or arms need not produce a
+// value, nor agree on one. Each function adds 1 to `n` in the branch or arm that runs.
+//
+// EXPECT: 1 4 8 3
+fn else_ends_in_a_match(a : i32) -> i32 {
+  let mut n = 0;
+  if a > 0 {
+    n = n + 1;
+  } else {
+    match a {
+      0 => {
+      }
+      _ => {
+      }
+    }
+  }
+  return n;
+}
+
+fn arm_ends_in_an_if(a : i32) -> i32 {
+  let mut n = a;
+  match a % 3 {
+    0 => {
+      if a % 2 == 0 {
+      } else {
+        n = n + 1;
+      }
+    }
+    _ => {
+    }
+  }
+  return n;
+}
+
+fn arm_ends_in_an_unsafe_block(a : i32) -> i32 {
+  let mut n = a;
+  match a % 3 {
+    1 => {
+      unsafe { n = n + 1; }
+    }
+    _ => {
+    }
+  }
+  return n;
+}
+
+fn unsafe_block_ends_in_an_if(a : i32) -> i32 {
+  let mut n = a;
+  unsafe {
+    if a % 2 == 0 {
+      match a {
+        _ => {
+          n = n + 1;
+        }
+      }
+    } else {
+      for i in 0..0 {
+      }
+    }
+  }
+  return n;
+}
+
+fn main() -> i32 {
+  print(else_ends_in_a_match(1));
+  print!(" ");
+  print(arm_ends_in_an_if(3));
+  print!(" ");
+  print(arm_ends_in_an_unsafe_block(7));
+  print!(" ");
+  print(unsafe_block_ends_in_an_if(2));
+  return 0;
+}
