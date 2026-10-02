@@ -622,7 +622,12 @@ impl<'c> LowerToMelior<'c> for syntax::IndexAccessExpr {
             // Tensor<f32,[D]>). The memref lowers to `?x?` but the Vx type carries the static
             // shape, so we emit a `memref.reinterpret_cast` with a static row size at the flat
             // offset `sum_m idx_m * stride_m`. This is what makes `dot(q[i], k[j])` (S2) possible.
-            let base_dims: Vec<i64> = match gen.infer_ast_type(self.base.as_ref()) {
+            let base_ty = gen.infer_ast_type(self.base.as_ref());
+            let base_ty = match &base_ty {
+                Some(syntax::Type::Borrow { inner, .. }) => Some(&**inner),
+                other => other.as_ref(),
+            };
+            let base_dims: Vec<i64> = match base_ty {
                 Some(syntax::Type::Tensor(_, dims, _)) => dims
                     .iter()
                     .map(|d| d.literal().and_then(|v| v.parse::<i64>().ok()))
@@ -2255,6 +2260,175 @@ pub(super) fn load_tensor_slot<'c>(
     Ok(loaded)
 }
 
+/// A reference to a tensor, `memref<memref<A>>`, passed where `memref<memref<B>>` is expected.
+///
+/// A `memref.cast` cannot change what a memref holds, so the descriptor is loaded, given type
+/// `B`, and stored in a new slot. It still points at the same data, so writes through a `&mut`
+/// reach the tensor. A row (`memref<4xf32, strided<[1], offset: ?>>`) passed as a plain memref
+/// has its data pointer moved to the row: a plain memref's offset is 0 by its type, so the code
+/// using it never reads the offset, and a cast would hand it row 0.
+fn retype_tensor_reference<'c>(
+    gen: &MeliorGenerator<'c>,
+    block: &melior::ir::BlockRef<'c, 'c>,
+    val: Value<'c, 'c>,
+    from: Type<'c>,
+    to: Type<'c>,
+) -> Result<Value<'c, 'c>, LowerError> {
+    let mut src_ty = from;
+    let desc = load_tensor_slot(gen, block, val, &mut src_ty)?;
+    let to_str = to.to_string();
+    let dst_str = &to_str["memref<".len()..to_str.len() - 1];
+    let dst_ty =
+        Type::parse(gen.context, dst_str).ok_or_else(|| LowerError::ParseType(dst_str.into()))?;
+    let src_str = src_ty.to_string();
+    let mut desc = desc;
+    let mut desc_ty = src_ty;
+    if src_str.contains("strided<") && !dst_str.contains("strided<") {
+        let plain = contiguous_view_as_plain(&src_str).ok_or_else(|| {
+            LowerError::from(format!("cannot pass a {src_str} view as a {dst_str}"))
+        })?;
+        desc_ty = Type::parse(gen.context, &plain).ok_or(LowerError::ParseType(plain))?;
+        desc = move_view_pointer(gen, block, desc, src_ty, desc_ty)?;
+    }
+    if desc_ty != dst_ty {
+        let cast = OperationBuilder::new("memref.cast", gen.loc())
+            .add_operands(&[desc])
+            .add_results(&[dst_ty])
+            .build()?;
+        desc = block.append_operation(cast).result(0)?.into();
+    }
+    let slot: Value = block
+        .append_operation(
+            OperationBuilder::new("memref.alloca", gen.loc())
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "operandSegmentSizes"),
+                    DenseI32ArrayAttribute::new(gen.context, &[0, 0]).into(),
+                )])
+                .add_results(&[to])
+                .build()?,
+        )
+        .result(0)?
+        .into();
+    block.append_operation(
+        OperationBuilder::new("memref.store", gen.loc())
+            .add_operands(&[desc, slot])
+            .build()?,
+    );
+    Ok(slot)
+}
+
+/// The plain memref type with the same shape as a contiguous strided view, or `None` when the
+/// view's strides are not row-major or it is in a GPU memory space. `memref<4xf32, strided<[1],
+/// offset: ?>>` gives `memref<4xf32>`. A `?` stride cannot be checked here; only indexing a row
+/// out of a tensor makes one, and a row of a tensor is contiguous.
+fn contiguous_view_as_plain(memty: &str) -> Option<String> {
+    if !memty.ends_with("offset: ?>>") && !memty.ends_with("offset: 0>>") {
+        return None;
+    }
+    let (shape, layout) = memty.strip_prefix("memref<")?.split_once(", strided<[")?;
+    let dims: Vec<&str> = shape.split('x').collect();
+    let dims = &dims[..dims.len() - 1];
+    let strides: Vec<&str> = layout
+        .split(']')
+        .next()?
+        .split(',')
+        .map(str::trim)
+        .collect();
+    if dims.is_empty() || strides.len() != dims.len() {
+        return None;
+    }
+    let mut expect = Some(1i64);
+    for k in (0..dims.len()).rev() {
+        if let (Some(e), Ok(s)) = (expect, strides[k].parse::<i64>()) {
+            if s != e {
+                return None;
+            }
+        }
+        expect = expect.zip(dims[k].parse::<i64>().ok()).map(|(e, d)| e * d);
+    }
+    Some(format!("memref<{shape}>"))
+}
+
+/// A view's descriptor with its data pointer moved forward by its offset and the offset set to
+/// 0, retyped as `plain`, the same shape with no layout.
+fn move_view_pointer<'c>(
+    gen: &MeliorGenerator<'c>,
+    block: &melior::ir::BlockRef<'c, 'c>,
+    view: Value<'c, 'c>,
+    view_ty: Type<'c>,
+    plain: Type<'c>,
+) -> Result<Value<'c, 'c>, LowerError> {
+    let view_str = view_ty.to_string();
+    let shape = view_str
+        .strip_prefix("memref<")
+        .and_then(|s| s.split(',').next())
+        .ok_or_else(|| LowerError::ParseType(view_str.clone()))?;
+    let (dims, elem) = shape.rsplit_once('x').unwrap_or(("", shape));
+    let rank = if dims.is_empty() {
+        0
+    } else {
+        dims.split('x').count()
+    };
+    let desc_str = crate::codegen::flat::memref_descriptor_ty(rank);
+    let desc_ty = Type::parse(gen.context, &desc_str).ok_or(LowerError::ParseType(desc_str))?;
+    let elem_ty =
+        Type::parse(gen.context, elem).ok_or_else(|| LowerError::ParseType(elem.into()))?;
+    let op = |b: OperationBuilder<'c>| -> Result<Value<'c, 'c>, LowerError> {
+        Ok(block.append_operation(b.build()?).result(0)?.into())
+    };
+    let position = |n: i64| {
+        (
+            Identifier::new(gen.context, "position"),
+            melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &[n]).into(),
+        )
+    };
+    let desc = op(
+        OperationBuilder::new("builtin.unrealized_conversion_cast", gen.loc())
+            .add_operands(&[view])
+            .add_results(&[desc_ty]),
+    )?;
+    let aligned = op(OperationBuilder::new("llvm.extractvalue", gen.loc())
+        .add_operands(&[desc])
+        .add_attributes(&[position(1)])
+        .add_results(&[gen.ptr_ty]))?;
+    let offset = op(OperationBuilder::new("llvm.extractvalue", gen.loc())
+        .add_operands(&[desc])
+        .add_attributes(&[position(2)])
+        .add_results(&[gen.i64_ty]))?;
+    let moved = op(OperationBuilder::new("llvm.getelementptr", gen.loc())
+        .add_operands(&[aligned, offset])
+        .add_attributes(&[
+            (
+                Identifier::new(gen.context, "rawConstantIndices"),
+                DenseI32ArrayAttribute::new(gen.context, &[i32::MIN]).into(),
+            ),
+            (
+                Identifier::new(gen.context, "elem_type"),
+                TypeAttribute::new(elem_ty).into(),
+            ),
+        ])
+        .add_results(&[gen.ptr_ty]))?;
+    let zero = op(OperationBuilder::new("llvm.mlir.constant", gen.loc())
+        .add_attributes(&[(
+            Identifier::new(gen.context, "value"),
+            IntegerAttribute::new(gen.i64_ty, 0).into(),
+        )])
+        .add_results(&[gen.i64_ty]))?;
+    let desc = op(OperationBuilder::new("llvm.insertvalue", gen.loc())
+        .add_operands(&[desc, moved])
+        .add_attributes(&[position(1)])
+        .add_results(&[desc_ty]))?;
+    let desc = op(OperationBuilder::new("llvm.insertvalue", gen.loc())
+        .add_operands(&[desc, zero])
+        .add_attributes(&[position(2)])
+        .add_results(&[desc_ty]))?;
+    op(
+        OperationBuilder::new("builtin.unrealized_conversion_cast", gen.loc())
+            .add_operands(&[desc])
+            .add_results(&[plain]),
+    )
+}
+
 /// Whether an operand should drive the slice-elementwise (S3) vector path: a `vector<...>`
 /// value or a strided slice view (`memref<..., strided<...>>`, as produced by S1). A plain
 /// contiguous `memref<Nxf32>` (a whole 1-D tensor) is deliberately excluded -- those keep the
@@ -2718,7 +2892,12 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                 current_b = new_b;
                 gen.expected_type = prev_expected;
                 if expr_ty != field_ty {
-                    if gen.is_memref(&expr_ty) && gen.is_memref(&field_ty) {
+                    if expr_ty.to_string().starts_with("memref<memref<")
+                        && field_ty.to_string().starts_with("memref<memref<")
+                    {
+                        arg_val =
+                            retype_tensor_reference(gen, &current_b, arg_val, expr_ty, field_ty)?;
+                    } else if gen.is_memref(&expr_ty) && gen.is_memref(&field_ty) {
                         let cast_op = OperationBuilder::new("memref.cast", gen.loc())
                             .add_operands(&[arg_val])
                             .add_results(&[field_ty])
