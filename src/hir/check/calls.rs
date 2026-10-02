@@ -377,20 +377,56 @@ impl<'a> TypeChecker<'a> {
         let Some((param_types, _)) = &plan.callee_sig else {
             return;
         };
-        if self.speculating {
-            return;
-        }
         let borrows = plan
             .ref_args
             .iter()
             .filter(|(i, ..)| matches!(param_types.get(*i), Some(Type::Borrow { .. })))
-            .map(|(_, base, path, is_mut, _)| (base, path, *is_mut))
+            .map(|(_, base, path, is_mut, _)| (base.clone(), path.clone(), *is_mut))
             .collect::<Vec<_>>();
-        for (i, (base, path, is_mut)) in borrows.iter().enumerate() {
-            for (other_base, other_path, other_is_mut) in &borrows[i + 1..] {
-                if base != other_base || !crate::hir::places::paths_may_alias(path, other_path) {
-                    continue;
+        self.check_overlapping_borrows(&borrows, &plan.base_snapshots, errors_before_args, span);
+    }
+
+    /// The shared part of the check above, also used for a method's receiver and arguments.
+    /// `borrows` holds each borrowed argument's variable, field path and whether it is `&mut`;
+    /// `snapshots` holds the borrows of those variables from before the arguments were checked.
+    fn check_overlapping_borrows(
+        &mut self,
+        borrows: &[(String, Vec<String>, bool)],
+        snapshots: &HashMap<String, Option<Vec<BorrowRecord>>>,
+        errors_before_args: usize,
+        span: &Span,
+    ) {
+        if self.speculating {
+            return;
+        }
+        let borrows = borrows
+            .iter()
+            .map(|(base, path, is_mut)| {
+                // An argument that is a reference variable, `a` after `let a = &mut x`, also
+                // reaches `x`: the call's other arguments must not borrow `x` either.
+                let mut places = vec![(base.clone(), path.clone())];
+                for (borrowed, records) in snapshots {
+                    for record in records.iter().flatten() {
+                        if record.borrower_name.as_deref() == Some(base.as_str()) {
+                            let mut through = record.path.clone();
+                            through.extend(path.iter().cloned());
+                            places.push((borrowed.clone(), through));
+                        }
+                    }
                 }
+                (places, *is_mut)
+            })
+            .collect::<Vec<_>>();
+        for (i, (places, is_mut)) in borrows.iter().enumerate() {
+            for (other_places, other_is_mut) in &borrows[i + 1..] {
+                let shared = places.iter().find(|(base, path)| {
+                    other_places.iter().any(|(other_base, other_path)| {
+                        base == other_base && crate::hir::places::paths_may_alias(path, other_path)
+                    })
+                });
+                let Some((base, _)) = shared else {
+                    continue;
+                };
                 let (code, message) = if *is_mut && *other_is_mut {
                     (
                         crate::diagnostic::DiagnosticCode::E4004,
@@ -2347,6 +2383,15 @@ impl<'a> TypeChecker<'a> {
                 // Check each argument once, keeping its type. A linear arg (e.g. a closure
                 // struct passed to `.map`) is consumed by this pass, so re-checking it later for
                 // generic deduction would see it moved and yield `Unknown` — reuse these instead.
+                let mut borrowed_snapshots = HashMap::new();
+                for operand in std::iter::once(&**obj).chain(args.iter()) {
+                    if let Some((base, _)) = Self::arg_reborrow_base(operand) {
+                        borrowed_snapshots
+                            .entry(base.clone())
+                            .or_insert_with(|| self.borrow.snapshot_base(base.as_str()));
+                    }
+                }
+                let errors_before_args = self.errors.inner.len();
                 let mut checked_arg_types: Vec<Type> = Vec::with_capacity(args.len());
                 for arg in args.iter_mut() {
                     checked_arg_types.push(self.check_expr_type(arg));
@@ -2503,6 +2548,22 @@ impl<'a> TypeChecker<'a> {
                             Some(crate::diagnostic::SourceSpan::from_ast_span(&method_span)),
                         );
                     }
+                    // The receiver counts as the first borrowed argument when `self` is a reference.
+                    let borrows = std::iter::once(&**obj)
+                        .chain(args.iter())
+                        .zip(generic_method.params.iter())
+                        .filter_map(|(operand, (_, param_ty))| match param_ty {
+                            Type::Borrow { is_mut, .. } => Self::arg_reborrow_base(operand)
+                                .map(|(base, path)| (base, path, *is_mut)),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>();
+                    self.check_overlapping_borrows(
+                        &borrows,
+                        &borrowed_snapshots,
+                        errors_before_args,
+                        &method_span,
+                    );
                     let (ret_ty, func_call) = self.instantiate_method_call_rewrite(
                         generic_method,
                         mapping,

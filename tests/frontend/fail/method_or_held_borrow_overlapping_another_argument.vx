@@ -1,0 +1,74 @@
+//===- method_or_held_borrow_overlapping_another_argument.vx - Vx --------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// One call must not get a `&mut` and another borrow of the same variable, as in Rust. Here
+// one of the two is a method's `self`, or a reference kept in a variable.
+
+struct Holder {
+  n : i32,
+}
+
+impl Holder {
+  fn set(self : &mut Holder, n : &mut i32) -> i32 {
+    *n = 3i32;
+    return 0i32;
+  }
+
+  fn add(self : &mut Holder, n : &i32) -> i32 {
+    return *n;
+  }
+}
+
+fn set_both(a : &mut i32, b : &mut i32) -> i32 {
+  *a = 1i32;
+  *b = 2i32;
+  return 0i32;
+}
+
+fn method_and_its_own_field() -> i32 {
+  let mut holder = Holder {
+    n: 5i32
+  };
+  // CHECK: Error[E4004]{{.*}}Cannot borrow 'holder' as mutable twice in one call.
+  let _result = holder.set(&mut holder.n);
+  return holder.n;
+}
+
+fn method_and_a_shared_borrow_of_its_field() -> i32 {
+  let mut holder = Holder {
+    n: 5i32
+  };
+  // CHECK: Error[E4003]{{.*}}Cannot borrow 'holder' as mutable and as immutable in one call.
+  let _result = holder.add(&holder.n);
+  return holder.n;
+}
+
+fn kept_reference_and_new_borrow() -> i32 {
+  let mut x = 5i32;
+  let kept = &mut x;
+  // CHECK: Error[E4004]{{.*}}Cannot borrow 'x' as mutable twice in one call.
+  let _result = set_both(kept, &mut x);
+  return x;
+}
+
+fn kept_reference_as_receiver() -> i32 {
+  let mut holder = Holder {
+    n: 5i32
+  };
+  let kept = &mut holder;
+  // CHECK: Error[E4004]{{.*}}Cannot borrow 'holder' as mutable twice in one call.
+  let _result = kept.set(&mut holder.n);
+  return holder.n;
+}
+
+fn main() -> i32 {
+  return method_and_its_own_field() + method_and_a_shared_borrow_of_its_field()
+  + kept_reference_and_new_borrow() + kept_reference_as_receiver();
+}
+// CHECK: 4 error(s) emitted

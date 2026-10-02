@@ -8,11 +8,23 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 //
 // Calls whose borrows do not overlap are accepted: two different fields, two shared
-// borrows, and raw pointers, which may point to the same variable.
+// borrows, and raw pointers, which may point to the same variable. The same for a
+// method's `self` and its arguments, and for a reference kept in a variable.
 
 struct Pair {
   a : i32,
   b : i32,
+}
+
+impl Pair {
+  fn read_a(self : &Pair, n : &i32) -> i32 {
+    return self.a + *n;
+  }
+
+  fn set_a(self : &mut Pair, n : &i32) -> i32 {
+    self.a = *n;
+    return 0i32;
+  }
 }
 
 fn set_both(a : &mut i32, b : &mut i32) -> i32 {
@@ -40,6 +52,10 @@ fn main() -> i32 {
   let pointer : *mut i32 = &mut x;
   let _pointers = set_through_pointers(pointer, pointer);
   let _borrows_as_pointers = set_through_pointers(&mut x, &mut x);
+  let _read = pair.read_a(&pair.b);
+  let _set_a = pair.set_a(&x);
+  let kept = &mut pair.a;
+  let _kept = set_both(kept, &mut pair.b);
   return pair.a + pair.b + x;
 }
 
@@ -47,3 +63,6 @@ fn main() -> i32 {
 // CHECK: call @set_both
 // CHECK: call @add
 // CHECK: call @set_through_pointers
+// CHECK: call @Pair$read_a
+// CHECK: call @Pair$set_a
+// CHECK: call @set_both
