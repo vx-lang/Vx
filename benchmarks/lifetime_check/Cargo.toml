@@ -1,0 +1,12 @@
+# The experiment behind www/blog/can-the-borrow-checker-be-auto-vectorized.html. It is a crate
+# of its own, outside the compiler's workspace, so the compiler's build never compiles it.
+[package]
+name = "lifetime_check"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[profile.release]
+codegen-units = 1

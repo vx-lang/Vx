@@ -49,7 +49,7 @@ stand in for another is a loop over those slots that stops at the first failure,
 vectorize it. Rewritten without early exits, the same check gives the same answer on every input we
 could try, and LLVM turns it into SIMD code with no branches at all: four slots in one register for
 a single check, eight slots per instruction for a batch. In a batch it costs about 1 ns per check
-whatever the input, where the old loop takes 0.7 to 12 ns, depending on the input. The compiler now uses the
+whatever the input, where the old loop takes 0.7 to 12.5 ns, depending on the input. The compiler now uses the
 new check.</blockquote>
 
 <p>A borrow checker sounds like the last thing a CPU's vector unit could help with. It walks a
@@ -254,8 +254,8 @@ pass through the loop.</p>
 <p>The form of the code matters. Our first attempt kept the branch-free slot formula but
 walked all the slots of all the pairs in one flat loop, looking up each slot's mask with
 <code>MASKS[j % 4]</code>, and then ANDed each group of four in a second loop. It gave the same
-answers but took about 4.5 ns per check whatever the input. That is no better than the old
-loop, except on pairs that pass every slot. The version above, with the four slots written out per pair, is the fast one.</p>
+answers but took about 4.5 ns per check whatever the input. That beats the old loop only where
+the old loop is slowest, and loses to it on random and identical words. The version above, with the four slots written out per pair, is the fast one.</p>
 
 <h2>Same answers</h2>
 
@@ -284,23 +284,25 @@ its slots ANDed together, plus the whole-word equality, which the second test ex
 <p>Sometimes. Each version checked the same 1,048,576 pairs, best of 30 runs, on one core
 of an Apple M4. The made-up lifetime words have variances 0 to 2 and small regions, and almost all of
 them fail somewhere. The passing pairs pass every slot, and none of them are identical. Every time
-below is per check, and each range covers three separate runs.</p>
+below is per check, and each range covers three separate runs. The code, and the commands that
+produce every number in this post, are in
+<a href="https://github.com/vx-lang/Vx/tree/main/benchmarks/lifetime_check"><code>benchmarks/lifetime_check</code></a>.</p>
 
 <p>First, a loop over a batch, which lets the loop vectorizer work on many pairs at once:</p>
 
 <table>
 <thead><tr><th>Input</th><th>Old loop</th><th>Vectorized</th></tr></thead>
 <tbody>
-<tr><td>Pairs that pass every slot</td><td>11.7&ndash;11.9 ns</td><td>0.97&ndash;1.04 ns</td></tr>
-<tr><td>Made-up lifetime words</td><td>4.6&ndash;4.7 ns</td><td>0.97&ndash;1.04 ns</td></tr>
-<tr><td>Random 64-bit words</td><td>1.4&ndash;1.6 ns</td><td>1.03&ndash;1.04 ns</td></tr>
-<tr><td>Identical words</td><td>0.70 ns</td><td>1.03&ndash;1.05 ns</td></tr>
+<tr><td>Pairs that pass every slot</td><td>12.1&ndash;12.5 ns</td><td>1.07 ns</td></tr>
+<tr><td>Made-up lifetime words</td><td>4.8 ns</td><td>1.07 ns</td></tr>
+<tr><td>Random 64-bit words</td><td>1.5&ndash;1.6 ns</td><td>1.07 ns</td></tr>
+<tr><td>Identical words</td><td>0.70&ndash;0.74 ns</td><td>1.07 ns</td></tr>
 </tbody>
 </table>
 
 <p>The vectorized check costs the same for every input, because it never branches. The
 old loop depends on its input. Random words almost always fail at slot 0, the branch predictor
-learns that, and the loop costs little more than the new code. When it has to look at all four
+learns that, and the loop stays within about half a nanosecond of the new code. When it has to look at all four
 slots and the outcomes vary, mispredicted branches make it over ten times slower. When the two words
 are identical, its first line returns straight away and it beats the new code.</p>
 
@@ -311,10 +313,10 @@ still in one register, but nothing is shared between pairs:</p>
 <table>
 <thead><tr><th>Input</th><th>Old loop</th><th>Branch-free</th><th>Equality test, then branch-free</th></tr></thead>
 <tbody>
-<tr><td>Pairs that pass every slot</td><td>11.8&ndash;11.9 ns</td><td>2.2&ndash;2.4 ns</td><td>2.2&ndash;2.4 ns</td></tr>
-<tr><td>Made-up lifetime words</td><td>4.6&ndash;4.7 ns</td><td>2.4 ns</td><td>2.2&ndash;2.4 ns</td></tr>
-<tr><td>Random 64-bit words</td><td>1.6&ndash;1.7 ns</td><td>2.3&ndash;2.4 ns</td><td>2.4&ndash;2.5 ns</td></tr>
-<tr><td>Identical words</td><td>0.91&ndash;0.93 ns</td><td>2.2&ndash;2.4 ns</td><td>0.71&ndash;0.72 ns</td></tr>
+<tr><td>Pairs that pass every slot</td><td>12.5&ndash;12.7 ns</td><td>2.4 ns</td><td>2.4 ns</td></tr>
+<tr><td>Made-up lifetime words</td><td>4.8&ndash;5.0 ns</td><td>2.4 ns</td><td>2.4 ns</td></tr>
+<tr><td>Random 64-bit words</td><td>1.7&ndash;1.8 ns</td><td>2.3&ndash;2.4 ns</td><td>2.4 ns</td></tr>
+<tr><td>Identical words</td><td>0.94&ndash;0.99 ns</td><td>2.4 ns</td><td>0.74 ns</td></tr>
 </tbody>
 </table>
 
