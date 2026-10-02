@@ -12,9 +12,11 @@
 // Each group of values: argmax and argmin of [1, 3, -2, 3, -2, 0.5] (ties keep the first
 // index), its variance and standard deviation, then softmax of [1000, 1001, 1002], which
 // overflows `exp` unless the largest element is subtracted first. Then: an empty tensor
-// (no argmax, NaN variance) and [NaN, 2, NaN, -4] (NaN is skipped).
+// (no argmax, NaN variance) and [NaN, 2, NaN, -4] (NaN is skipped). Last, the variance and
+// standard deviation of 1000 elements in f64 and f32, long enough for the vector loops: the
+// elements come in pairs x and -x, so the mean is exactly 0 and every sum is exact.
 //
-// EXPECT: 1 2 4.201388888888888 2.049728979374807 0.090031 0.244728 0.665241 | 1 2 4.201389 2.0497289 0.090031 0.244728 0.665241 | 1 2 4.201389 2.0497289 | none NaN 1 3
+// EXPECT: 1 2 4.201388888888888 2.049728979374807 0.090031 0.244728 0.665241 | 1 2 4.201389 2.0497289 0.090031 0.244728 0.665241 | 1 2 4.201389 2.0497289 | none NaN 1 3 | 53.217375 7.295023988994141 53.217377 7.295024
 import std::tensor;
 
 fn print_index(index : Option<i32>) -> i32 {
@@ -116,6 +118,26 @@ fn report_edge_cases() -> i32 {
   return 0;
 }
 
+fn report_long() -> i32 {
+  let mut a = Tensor<f64>([1000]);
+  let mut b = Tensor<f32>([1000]);
+  for i in 0..500 {
+    let x = ((((i * 37) % 101) - 50) as f64) * 0.25;
+    a[i] = x;
+    a[999 - i] = -x;
+    b[i] = x as f32;
+    b[999 - i] = -(x as f32);
+  }
+  print(a.variance());
+  print!(" ");
+  print(a.std_dev());
+  print!(" ");
+  print(b.variance());
+  print!(" ");
+  print(b.std_dev());
+  return 0;
+}
+
 fn main() -> i32 {
   let _a = report_f64();
   print!("| ");
@@ -124,5 +146,7 @@ fn main() -> i32 {
   let _c = report_f16();
   print!("| ");
   let _d = report_edge_cases();
+  print!(" | ");
+  let _e = report_long();
   return 0;
 }

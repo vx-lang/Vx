@@ -1,0 +1,73 @@
+//===- statistics.vx - Vx Compiler --------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// std::tensor's `variance`, `argmax` and `softmax_inplace` on f32 tensors, and its vectorized
+// `sum` for scale: one fast pass over the same data. statistics.cpp computes the same with
+// plain C++ loops. Each repetition changes one element near the end first, so none repeats the
+// one before and `argmax` has to look at every element.
+import std::tensor;
+import std::time;
+
+fn main() -> i32 {
+  let n : i32 = 4194304;
+  let soft_n : i32 = 1048576;
+  let mut a = Tensor<f32>([n]);
+  for i in 0..n {
+    a[i] = (((i * 37) % 1000) as f32) * 0.001;
+  }
+  let mut s = Tensor<f32>([soft_n]);
+
+  let mut best_sum : f32 = 1000.0;
+  let mut best_var : f32 = 1000.0;
+  let mut best_arg : f32 = 1000.0;
+  let mut best_soft : f32 = 1000.0;
+  let mut total_sum : f64 = 0.0;
+  let mut total_var : f64 = 0.0;
+  let mut total_arg : f64 = 0.0;
+  let mut total_soft : f64 = 0.0;
+  for rep in 0..20 {
+    a[n - 1 - rep] = 2.0 + (rep as f32);
+    let t0 = now();
+    total_sum += a.sum() as f64;
+    let t1 = now();
+    total_var += a.variance() as f64;
+    let t2 = now();
+    let index = a.argmax().unwrap();
+    let t3 = now();
+    total_arg += index as f64;
+    // The copy into `s` is timed with the softmax, as in statistics.cpp.
+    for i in 0..soft_n {
+      s[i] = a[i];
+    }
+    let _done = s.softmax_inplace();
+    let t5 = now();
+    total_soft += s[rep] as f64;
+    if t1 - t0 < best_sum {
+      best_sum = t1 - t0;
+    }
+    if t2 - t1 < best_var {
+      best_var = t2 - t1;
+    }
+    if t3 - t2 < best_arg {
+      best_arg = t3 - t2;
+    }
+    if t5 - t3 < best_soft {
+      best_soft = t5 - t3;
+    }
+  }
+  unsafe {
+    bench_report("sum/std_tensor", "seconds", best_sum);
+    bench_report("sum/std_tensor", "result", total_sum as f32);
+    bench_report("variance/std_tensor", "seconds", best_var);
+    bench_report("variance/std_tensor", "result", total_var as f32);
+    bench_report("argmax/std_tensor", "seconds", best_arg);
+    bench_report("argmax/std_tensor", "result", total_arg as f32);
+    bench_report("softmax/std_tensor", "seconds", best_soft);
+    bench_report("softmax/std_tensor", "result", total_soft as f32);
+  }
+  return 0;
+}

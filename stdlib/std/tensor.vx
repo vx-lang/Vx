@@ -915,9 +915,9 @@ stamp_tensor_extrema!(f64 , 8 , 0xFFF0000000000000 , 0x7FF0000000000000);
 stamp_tensor_extrema!(f16 , 16 , 0xFC00 , 0x7C00);
 stamp_tensor_extrema!(bf16 , 16 , 0xFF80 , 0x7F80);
 
-/// Stamps `argmax`, `argmin`, `variance`, `std_dev` and `softmax_inplace` over a 1-D tensor of
-/// `$t`, computing in `$acc`: the same type for `f32` and `f64`, `f32` for `f16` and `bf16`, as
-/// their sums do. Plain loops: these are not yet vectorized.
+/// Stamps `argmax`, `argmin` and `softmax_inplace` over a 1-D tensor of `$t`, computing in
+/// `$acc`: the same type for `f32` and `f64`, `f32` for `f16` and `bf16`, as their sums do.
+/// Plain loops: these are not yet vectorized.
 macro_rules stamp_tensor_statistics {
   ($t : ident , $acc : ident) => {
     impl Tensor<$t, [?]> {
@@ -957,42 +957,6 @@ macro_rules stamp_tensor_statistics {
         return Option<i32>::Some(best);
       }
 
-      /// The average squared distance from the mean, dividing by the number of elements `n`
-      /// (numpy's `var`; divide by `n - 1` for the sample variance). It finds the mean first,
-      /// which is more accurate than the one-pass formula. NaN for an empty tensor.
-      fn variance(self : &Tensor<$t, [?]>) -> $acc {
-        let n = self.len();
-        let mut total : $acc = 0.0;
-        for i in 0..n {
-          total = total + (self[i] as $acc);
-        }
-        let mean = total / (n as $acc);
-        let mut squares : $acc = 0.0;
-        for i in 0..n {
-          let distance = (self[i] as $acc) - mean;
-          squares = squares + distance * distance;
-        }
-        return squares / (n as $acc);
-      }
-
-      /// The standard deviation: the square root of `variance`. The loops of `variance`,
-      /// written out rather than calling `self.variance()`, which the legacy code generator
-      /// cannot compile.
-      fn std_dev(self : &Tensor<$t, [?]>) -> $acc {
-        let n = self.len();
-        let mut total : $acc = 0.0;
-        for i in 0..n {
-          total = total + (self[i] as $acc);
-        }
-        let mean = total / (n as $acc);
-        let mut squares : $acc = 0.0;
-        for i in 0..n {
-          let distance = (self[i] as $acc) - mean;
-          squares = squares + distance * distance;
-        }
-        return (squares / (n as $acc)).sqrt();
-      }
-
       /// Replaces each element `x` with `exp(x) / (sum of exp over all elements)`, so the
       /// elements are positive and add up to 1. The largest element is subtracted before
       /// `exp`, which gives the same answer without overflowing.
@@ -1024,3 +988,172 @@ stamp_tensor_statistics!(f32 , f32);
 stamp_tensor_statistics!(f64 , f64);
 stamp_tensor_statistics!(f16 , f32);
 stamp_tensor_statistics!(bf16 , f32);
+
+/// The sum of a 1-D tensor `$a` of `$t`, as the vector loop of `sum`: four `$lanes`-wide
+/// partial sums, then the elements left over one at a time.
+macro_rules tensor_sum_loop {
+  ($a : expr , $t : ident , $lanes : expr) => {
+    mlir!( inputs : (%a = $a : memref<?x$t>), returns : $t, dialects : ["arith", "memref", "scf", "vector"]) {
+      %c0 = arith.constant 0 : index
+      %c1 = arith.constant 1 : index
+      %c2 = arith.constant 2 : index
+      %c3 = arith.constant 3 : index
+      %c4 = arith.constant 4 : index
+      %lanes = arith.constant $lanes : index
+      %l2 = arith.muli %lanes, %c2 : index
+      %l3 = arith.muli %lanes, %c3 : index
+      %step = arith.muli %lanes, %c4 : index
+      %n = memref.dim %a, %c0 : memref<?x$t>
+      %rem = arith.remui %n, %step : index
+      %body = arith.subi %n, %rem : index
+      %z = arith.constant dense<0.0> : vector<$lanes x $t>
+      %r:4 = scf.for %i0 = %c0 to %body step %step iter_args(%v0 = %z, %v1 = %z, %v2 = %z, %v3 = %z) -> (vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>) {
+        %i1 = arith.addi %i0, %lanes : index
+        %i2 = arith.addi %i0, %l2 : index
+        %i3 = arith.addi %i0, %l3 : index
+        %x0 = vector.load %a[%i0] : memref<?x$t>, vector<$lanes x $t>
+        %x1 = vector.load %a[%i1] : memref<?x$t>, vector<$lanes x $t>
+        %x2 = vector.load %a[%i2] : memref<?x$t>, vector<$lanes x $t>
+        %x3 = vector.load %a[%i3] : memref<?x$t>, vector<$lanes x $t>
+        %s0 = arith.addf %v0, %x0 : vector<$lanes x $t>
+        %s1 = arith.addf %v1, %x1 : vector<$lanes x $t>
+        %s2 = arith.addf %v2, %x2 : vector<$lanes x $t>
+        %s3 = arith.addf %v3, %x3 : vector<$lanes x $t>
+        scf.yield %s0, %s1, %s2, %s3 : vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>
+      }
+      %p0 = arith.addf %r#0, %r#1 : vector<$lanes x $t>
+      %p1 = arith.addf %r#2, %r#3 : vector<$lanes x $t>
+      %p = arith.addf %p0, %p1 : vector<$lanes x $t>
+      %head = vector.reduction <add>, %p fastmath<reassoc> : vector<$lanes x $t> into $t
+      %t = scf.for %i = %body to %n step %c1 iter_args(%acc = %head) -> ($t) {
+        %x = memref.load %a[%i] : memref<?x$t>
+        %y = arith.addf %acc, %x : $t
+        scf.yield %y : $t
+      }
+      macro.yield %t : $t
+    }
+  };
+}
+
+/// The sum of the squared distances of a 1-D tensor `$a` of `$t` from `$mean`, with the same
+/// loop shape as `tensor_sum_loop`.
+macro_rules tensor_squared_distance_loop {
+  ($a : expr , $mean : expr , $t : ident , $lanes : expr) => {
+    mlir!( inputs : (%a = $a : memref<?x$t>, %m = $mean : $t), returns : $t, dialects : ["arith", "math", "memref", "scf", "vector"]) {
+      %c0 = arith.constant 0 : index
+      %c1 = arith.constant 1 : index
+      %c2 = arith.constant 2 : index
+      %c3 = arith.constant 3 : index
+      %c4 = arith.constant 4 : index
+      %lanes = arith.constant $lanes : index
+      %l2 = arith.muli %lanes, %c2 : index
+      %l3 = arith.muli %lanes, %c3 : index
+      %step = arith.muli %lanes, %c4 : index
+      %n = memref.dim %a, %c0 : memref<?x$t>
+      %rem = arith.remui %n, %step : index
+      %body = arith.subi %n, %rem : index
+      %z = arith.constant dense<0.0> : vector<$lanes x $t>
+      %mv = "vector.broadcast"(%m) : ($t) -> vector<$lanes x $t>
+      %r:4 = scf.for %i0 = %c0 to %body step %step iter_args(%v0 = %z, %v1 = %z, %v2 = %z, %v3 = %z) -> (vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>) {
+        %i1 = arith.addi %i0, %lanes : index
+        %i2 = arith.addi %i0, %l2 : index
+        %i3 = arith.addi %i0, %l3 : index
+        %x0 = vector.load %a[%i0] : memref<?x$t>, vector<$lanes x $t>
+        %x1 = vector.load %a[%i1] : memref<?x$t>, vector<$lanes x $t>
+        %x2 = vector.load %a[%i2] : memref<?x$t>, vector<$lanes x $t>
+        %x3 = vector.load %a[%i3] : memref<?x$t>, vector<$lanes x $t>
+        %d0 = arith.subf %x0, %mv : vector<$lanes x $t>
+        %d1 = arith.subf %x1, %mv : vector<$lanes x $t>
+        %d2 = arith.subf %x2, %mv : vector<$lanes x $t>
+        %d3 = arith.subf %x3, %mv : vector<$lanes x $t>
+        %s0 = vector.fma %d0, %d0, %v0 : vector<$lanes x $t>
+        %s1 = vector.fma %d1, %d1, %v1 : vector<$lanes x $t>
+        %s2 = vector.fma %d2, %d2, %v2 : vector<$lanes x $t>
+        %s3 = vector.fma %d3, %d3, %v3 : vector<$lanes x $t>
+        scf.yield %s0, %s1, %s2, %s3 : vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>
+      }
+      %p0 = arith.addf %r#0, %r#1 : vector<$lanes x $t>
+      %p1 = arith.addf %r#2, %r#3 : vector<$lanes x $t>
+      %p = arith.addf %p0, %p1 : vector<$lanes x $t>
+      %head = vector.reduction <add>, %p fastmath<reassoc> : vector<$lanes x $t> into $t
+      %t = scf.for %i = %body to %n step %c1 iter_args(%acc = %head) -> ($t) {
+        %x = memref.load %a[%i] : memref<?x$t>
+        %d = arith.subf %x, %m : $t
+        %y = math.fma %d, %d, %acc : $t
+        scf.yield %y : $t
+      }
+      macro.yield %t : $t
+    }
+  };
+}
+
+/// Stamps `variance` and `std_dev` over a 1-D tensor of `f32` or `f64` as vector loops.
+macro_rules stamp_tensor_spread {
+  ($t : ident , $lanes : expr) => {
+    impl Tensor<$t, [?]> {
+      /// The average squared distance from the mean, dividing by the number of elements `n`
+      /// (numpy's `var`; divide by `n - 1` for the sample variance). It finds the mean first,
+      /// which is more accurate than the one-pass formula. NaN for an empty tensor.
+      fn variance(self : &Tensor<$t, [?]>) -> $t {
+        let total : $t = tensor_sum_loop!(self, $t, $lanes);
+        let mean = total / (self.len() as $t);
+        let squares : $t = tensor_squared_distance_loop!(self, mean, $t, $lanes);
+        return squares / (self.len() as $t);
+      }
+
+      /// The standard deviation: the square root of `variance`.
+      fn std_dev(self : &Tensor<$t, [?]>) -> $t {
+        let total : $t = tensor_sum_loop!(self, $t, $lanes);
+        let mean = total / (self.len() as $t);
+        let squares : $t = tensor_squared_distance_loop!(self, mean, $t, $lanes);
+        return (squares / (self.len() as $t)).sqrt();
+      }
+    }
+  };
+}
+
+/// Stamps `variance` and `std_dev` over a 1-D tensor of `f16` or `bf16`, adding up in `f32` as
+/// their sums do. Plain loops.
+macro_rules stamp_half_tensor_spread {
+  ($t : ident) => {
+    impl Tensor<$t, [?]> {
+      /// As `variance` on `f32`, computed in `f32`.
+      fn variance(self : &Tensor<$t, [?]>) -> f32 {
+        let n = self.len();
+        let mut total : f32 = 0.0;
+        for i in 0..n {
+          total = total + (self[i] as f32);
+        }
+        let mean = total / (n as f32);
+        let mut squares : f32 = 0.0;
+        for i in 0..n {
+          let distance = (self[i] as f32) - mean;
+          squares = squares + distance * distance;
+        }
+        return squares / (n as f32);
+      }
+
+      /// As `std_dev` on `f32`, computed in `f32`.
+      fn std_dev(self : &Tensor<$t, [?]>) -> f32 {
+        let n = self.len();
+        let mut total : f32 = 0.0;
+        for i in 0..n {
+          total = total + (self[i] as f32);
+        }
+        let mean = total / (n as f32);
+        let mut squares : f32 = 0.0;
+        for i in 0..n {
+          let distance = (self[i] as f32) - mean;
+          squares = squares + distance * distance;
+        }
+        return (squares / (n as f32)).sqrt();
+      }
+
+    }
+  };
+}
+
+stamp_tensor_spread!(f32 , 16);
+stamp_tensor_spread!(f64 , 8);
+stamp_half_tensor_spread!(f16);
+stamp_half_tensor_spread!(bf16);
