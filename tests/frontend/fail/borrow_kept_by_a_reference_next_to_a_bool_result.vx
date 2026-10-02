@@ -1,0 +1,38 @@
+//===- borrow_kept_by_a_reference_next_to_a_bool_result.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A method returning `bool` does not keep its argument borrowed, but a real reference still
+// does. `r` borrows `b` and is used after the assignment, so the assignment is refused.
+
+struct Num {
+  v : i32,
+}
+
+impl Num {
+  fn same_as(self : &Num, other : &Num) -> bool {
+    return self.v == other.v;
+  }
+}
+
+fn main() -> i32 {
+  let a = Num {
+    v : 1i32
+  };
+  let mut b = Num {
+    v : 1i32
+  };
+  let r = &b;
+  let same = a.same_as(&b);
+  // CHECK: Error[E4009]{{.*}}`b.v` is assigned while it is borrowed
+  b.v = 2i32;
+  if same {
+    return r.v;
+  }
+  return 0i32;
+}

@@ -2531,6 +2531,16 @@ impl<'a> TypeChecker<'a> {
                         consume,
                         method_span,
                     );
+                    // A number or `bool` result holds no reference, so the borrows its
+                    // arguments made end with the call, as they do for a function call:
+                    // `let same = a.compare(&b)` leaves `b` free to assign.
+                    let holds_no_reference = matches!(&ret_ty, Type::Scalar(el) if !matches!(el, ElementType::Generic(_)));
+                    if holds_no_reference && !self.speculating {
+                        for (base, snap) in &borrowed_snapshots {
+                            let prev: &[BorrowRecord] = snap.as_deref().unwrap_or(&[]);
+                            self.borrow.retain_present(base.as_str(), prev);
+                        }
+                    }
                     *expr = func_call;
                     return ret_ty;
                 }

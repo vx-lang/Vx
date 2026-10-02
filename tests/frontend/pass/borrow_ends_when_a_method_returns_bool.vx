@@ -1,0 +1,39 @@
+//===- borrow_ends_when_a_method_returns_bool.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+//
+// `a.same_as(&b)` borrows `b` only while the method runs. Its result is a `bool`, which
+// cannot hold a reference, so `b` can be assigned afterwards even though `same` is still used.
+//
+// CHECK-NOT: Error
+// CHECK-LABEL: func.func @main
+
+struct Num {
+  v : i32,
+}
+
+impl Num {
+  fn same_as(self : &Num, other : &Num) -> bool {
+    return self.v == other.v;
+  }
+}
+
+fn main() -> i32 {
+  let a = Num {
+    v : 1i32
+  };
+  let mut b = Num {
+    v : 1i32
+  };
+  let same = a.same_as(&b);
+  b.v = 2i32;
+  if same {
+    return b.v;
+  }
+  return 0i32;
+}
