@@ -1,0 +1,36 @@
+//===- comptime_value_from_call_or_if.vx - Vx ----------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+//
+// A plain value made by a call or an `if` still folds; only a `&mut` made that way is refused.
+
+fn touch(value : &mut i32) -> i32 {
+  *value = 9i32;
+  return 1i32;
+}
+
+fn pick() -> i32 {
+  return comptime {
+    let mut x = 1i32;
+    let from_call = touch(&mut x);
+    let from_if = if from_call > 0i32 {
+      20i32
+    } else {
+      30i32
+    };
+    from_call + from_if + x
+  };
+}
+
+fn main() -> i32 {
+  return pick();
+}
+
+// CHECK-LABEL: func.func @pick
+// CHECK: arith.constant 30 : i32
+// CHECK-NEXT: return

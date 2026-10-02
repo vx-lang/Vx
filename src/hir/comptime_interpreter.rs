@@ -76,6 +76,12 @@ impl<'bodies> ComptimeFunctionBodies<'bodies> {
         self.get(name).is_some()
     }
 
+    /// Whether the function `name` returns a type that can carry a mutable reference.
+    fn returns_mut_reference(&self, name: &Symbol) -> bool {
+        self.get(name)
+            .is_some_and(|function| (self.type_can_carry_mut_reference)(&function.return_type))
+    }
+
     /// For each parameter of the body `get` returns for `name`, whether it can carry a mutable
     /// reference out of the call.
     fn mutable_reference_params(&self, name: &Symbol) -> Vec<bool> {
@@ -416,7 +422,7 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
         match stmt {
             Statement::LetDecl(let_decl) => {
                 let outcome = self.expr(&let_decl.expr);
-                let reference_place = self.reference_source_place(&let_decl.expr);
+                let reference_place = self.binding_reference_place(&let_decl.expr);
                 self.context
                     .declare(let_decl.name.clone(), outcome.value.facts.clone());
                 self.env
@@ -577,6 +583,37 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
 
     /// `Some` means the argument is a mutable-reference argument. Its destination must be
     /// exact: `Some(Unknown)` deliberately makes the enclosing call refuse to fold.
+    /// The place a variable reaches after `let r = rhs` or `r = rhs`. A value that may borrow
+    /// something but comes from a call or an `if`, `pass(&mut x)`, reaches a place this evaluator
+    /// does not know, so writing through `r` or passing it on is refused.
+    fn binding_reference_place(&self, rhs: &Expr) -> Option<ComptimeWritePlace> {
+        self.reference_source_place(rhs).or_else(|| {
+            self.makes_mut_reference(rhs)
+                .then_some(ComptimeWritePlace::Unknown)
+        })
+    }
+
+    /// Whether a call, `if` or `match` can produce a mutable reference: a call to a function
+    /// whose return type can carry one, or a branch whose value can.
+    fn makes_mut_reference(&self, expr: &Expr) -> bool {
+        let tail_makes = |stmts: &[Statement]| match stmts.last() {
+            Some(Statement::ExprStmt(tail)) if !tail.has_semi => {
+                self.reference_source_place(&tail.expr).is_some()
+                    || self.makes_mut_reference(&tail.expr)
+            }
+            _ => false,
+        };
+        match expr {
+            Expr::FunctionCall(call) => self.function_bodies.returns_mut_reference(&call.name),
+            Expr::If(if_expr) => {
+                tail_makes(&if_expr.then_block)
+                    || if_expr.else_block.as_deref().is_some_and(tail_makes)
+            }
+            Expr::Match(match_expr) => match_expr.arms.iter().any(|arm| tail_makes(&arm.body)),
+            _ => false,
+        }
+    }
+
     fn mutable_argument_place(&self, expr: &Expr) -> Option<ComptimeWritePlace> {
         let direct = self.direct_place(expr);
         if let Some(place) = self.reference_projection_places.get(&direct) {
@@ -589,7 +626,7 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
         let Expr::Identifier(lhs) = lhs else {
             return;
         };
-        let place = self.reference_source_place(rhs);
+        let place = self.binding_reference_place(rhs);
         if let Some(place) = place {
             self.reference_places.insert(lhs.name.clone(), place);
         } else {
@@ -1342,8 +1379,15 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
                 .iter()
                 .zip(&mutable_reference_params)
                 .map(|(arg, parameter_can_carry_mut_reference)| {
+                    // A reference made by a call or an `if`, `touch(pass(&mut x))`, has no place
+                    // this evaluator can write back to, so the call is refused.
                     parameter_can_carry_mut_reference
-                        .then(|| self.mutable_argument_place(arg))
+                        .then(|| {
+                            self.mutable_argument_place(arg).or_else(|| {
+                                self.makes_mut_reference(arg)
+                                    .then_some(ComptimeWritePlace::Unknown)
+                            })
+                        })
                         .flatten()
                 })
                 .collect::<Vec<_>>();

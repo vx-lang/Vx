@@ -1,0 +1,89 @@
+//===- comptime_reference_from_call_or_if.vx - Vx ------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// The comptime evaluator cannot tell where a `&mut` made by a call or an `if` points, so it
+// refuses to write through one. Run as a program, each block below changes `x` to 9 or 4.
+
+fn touch(value : &mut i32) -> i32 {
+  *value = 9i32;
+  return 1i32;
+}
+
+fn pass(r : &mut i32) -> &mut i32 {
+  return r;
+}
+
+fn argument_from_call() -> i32 {
+  return comptime {
+    let mut x = 1i32;
+    let _result = touch(pass(&mut x));
+    // CHECK: Error[E3033] at [[@LINE+1]]:{{.*}}cannot be evaluated
+    x
+  };
+}
+
+fn argument_from_if() -> i32 {
+  return comptime {
+    let mut x = 1i32;
+    let _result = touch(if true {
+      &mut x
+    } else {
+      &mut x
+    });
+    // CHECK: Error[E3033] at [[@LINE+1]]:{{.*}}cannot be evaluated
+    x
+  };
+}
+
+fn variable_from_call() -> i32 {
+  return comptime {
+    let mut x = 1i32;
+    let r = pass(&mut x);
+    *r = 4i32;
+    // CHECK: Error[E3033] at [[@LINE+1]]:{{.*}}cannot be evaluated
+    x
+  };
+}
+
+fn variable_from_if_passed_on() -> i32 {
+  return comptime {
+    let mut x = 1i32;
+    let r = if true {
+      &mut x
+    } else {
+      &mut x
+    };
+    let _result = touch(r);
+    // CHECK: Error[E3033] at [[@LINE+1]]:{{.*}}cannot be evaluated
+    x
+  };
+}
+
+// `y` is outside the block, so the write could never be kept.
+fn outer_reference_from_if() -> i32 {
+  let mut y = 1i32;
+  let p = &mut y;
+  let seven = 7i32;
+  let value = comptime {
+    let _result = touch(if true {
+      p
+    } else {
+      p
+    });
+    // CHECK: Error[E3033] at [[@LINE+1]]:{{.*}}cannot be evaluated
+    seven
+  };
+  return y * 10i32 + value;
+}
+
+fn main() -> i32 {
+  return argument_from_call() + argument_from_if() + variable_from_call()
+  + variable_from_if_passed_on() + outer_reference_from_if();
+}
+// CHECK: 5 error(s) emitted
