@@ -929,11 +929,9 @@ macro_rules stamp_tensor_extrema {
       /// passes: the vector loop of `max`, then a search for the first element equal to it.
       fn argmax(self : &Tensor<$t, [?]>) -> Option<i32> {
         let largest : $t = tensor_max_loop!(self, $t, $lanes, $neg_inf);
-        // `i as i32`: without it the legacy code generator puts the loop counter's internal
-        // `index` type into the `Option`.
         for i in 0..self.len() {
           if self[i] == largest {
-            return Option<i32>::Some(i as i32);
+            return Option<i32>::Some(i);
           }
         }
         return Option<i32>::None;
@@ -945,7 +943,7 @@ macro_rules stamp_tensor_extrema {
         let smallest : $t = tensor_min_loop!(self, $t, $lanes, $pos_inf);
         for i in 0..self.len() {
           if self[i] == smallest {
-            return Option<i32>::Some(i as i32);
+            return Option<i32>::Some(i);
           }
         }
         return Option<i32>::None;
