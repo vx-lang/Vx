@@ -2212,7 +2212,25 @@ impl<'r> Lowerer<'r> {
     /// Lower `for i in a..b { body }` over a scalar exclusive range. The induction variable and the
     /// (once-evaluated) bound live in slots so they cross blocks; `continue` targets the increment
     /// latch (so it doesn't skip the step), `break` the exit.
+    /// The loop variable is a binding of its own: an outer variable of the same name is out of
+    /// sight in the body and means what it did before once the loop ends, as in Rust.
     fn lower_for(&mut self, f: &crate::syntax::ForLoopStmt) -> Lowered<()> {
+        let name: Symbol = f.iter.as_str().into();
+        let outer = self.scope.get(&name).cloned();
+        let outer_ty = self.ast_types.remove(&name);
+        let lowered = self.lower_for_loop(f);
+        match outer {
+            Some(b) => self.scope.insert(name.clone(), b),
+            None => self.scope.remove(&name),
+        };
+        match outer_ty {
+            Some(t) => self.ast_types.insert(name, t),
+            None => self.ast_types.remove(&name),
+        };
+        lowered
+    }
+
+    fn lower_for_loop(&mut self, f: &crate::syntax::ForLoopStmt) -> Lowered<()> {
         // Taken (not read) so the tag cannot leak into the nested loops this body lowers.
         let stride = std::mem::take(&mut self.stride_next_for);
         // The two-level plan addresses loops by node identity, so membership is exact and

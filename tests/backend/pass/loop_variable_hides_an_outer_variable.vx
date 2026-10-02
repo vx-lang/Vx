@@ -1,0 +1,53 @@
+//===- loop_variable_hides_an_outer_variable.vx - Vx Compiler ------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `for` loop's variable is a new variable, as in Rust: an outer variable of the same name
+// keeps its value, and means that value again after the loop.
+//
+// `after_loop` reads an outer `k` of 10 after `for k in 0..3`; `after_loop_mut` adds 1 to it
+// there. In `nested`, the inner `i` runs 0 to 2 and the outer `i` is read after the inner
+// loop: 2 * (0 + 1 + 2) from the inner loops, plus 10 * (0 + 1) from the outer.
+//
+// EXPECT: 1003 1103 16
+fn after_loop(n : i32) -> i32 {
+  let k = 10;
+  let mut s = 0;
+  for k in 0..n {
+    s = s + k;
+  }
+  return k * 100 + s;
+}
+
+fn after_loop_mut(n : i32) -> i32 {
+  let mut k = 10;
+  let mut s = 0;
+  for k in 0..n {
+    s = s + k;
+  }
+  k = k + 1;
+  return k * 100 + s;
+}
+
+fn nested() -> i32 {
+  let mut s = 0;
+  for i in 0..2 {
+    for i in 0..3 {
+      s = s + i;
+    }
+    s = s + i * 10;
+  }
+  return s;
+}
+
+fn main() -> i32 {
+  print(after_loop(3));
+  print!(" ");
+  print(after_loop_mut(3));
+  print!(" ");
+  print(nested());
+  return 0;
+}
