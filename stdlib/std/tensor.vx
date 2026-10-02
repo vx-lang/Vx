@@ -914,3 +914,113 @@ stamp_tensor_extrema!(f32 , 16 , 0xFF800000 , 0x7F800000);
 stamp_tensor_extrema!(f64 , 8 , 0xFFF0000000000000 , 0x7FF0000000000000);
 stamp_tensor_extrema!(f16 , 16 , 0xFC00 , 0x7C00);
 stamp_tensor_extrema!(bf16 , 16 , 0xFF80 , 0x7F80);
+
+/// Stamps `argmax`, `argmin`, `variance`, `std_dev` and `softmax_inplace` over a 1-D tensor of
+/// `$t`, computing in `$acc`: the same type for `f32` and `f64`, `f32` for `f16` and `bf16`, as
+/// their sums do. Plain loops: these are not yet vectorized.
+macro_rules stamp_tensor_statistics {
+  ($t : ident , $acc : ident) => {
+    impl Tensor<$t, [?]> {
+      /// The index of the largest element, the first one if several are equal. A NaN is
+      /// ignored, as `max` does; `None` for an empty tensor or one holding only NaN.
+      fn argmax(self : &Tensor<$t, [?]>) -> Option<i32> {
+        let mut best : i32 = -1;
+        let mut best_value : $acc = 0.0;
+        for i in 0..self.len() {
+          let x = self[i] as $acc;
+          if x == x && (best < 0 || x > best_value) {
+            best = i;
+            best_value = x;
+          }
+        }
+        if best < 0 {
+          return Option<i32>::None;
+        }
+        return Option<i32>::Some(best);
+      }
+
+      /// The index of the smallest element, the first one if several are equal. A NaN is
+      /// ignored; `None` for an empty tensor or one holding only NaN.
+      fn argmin(self : &Tensor<$t, [?]>) -> Option<i32> {
+        let mut best : i32 = -1;
+        let mut best_value : $acc = 0.0;
+        for i in 0..self.len() {
+          let x = self[i] as $acc;
+          if x == x && (best < 0 || x < best_value) {
+            best = i;
+            best_value = x;
+          }
+        }
+        if best < 0 {
+          return Option<i32>::None;
+        }
+        return Option<i32>::Some(best);
+      }
+
+      /// The average squared distance from the mean, dividing by the number of elements `n`
+      /// (numpy's `var`; divide by `n - 1` for the sample variance). It finds the mean first,
+      /// which is more accurate than the one-pass formula. NaN for an empty tensor.
+      fn variance(self : &Tensor<$t, [?]>) -> $acc {
+        let n = self.len();
+        let mut total : $acc = 0.0;
+        for i in 0..n {
+          total = total + (self[i] as $acc);
+        }
+        let mean = total / (n as $acc);
+        let mut squares : $acc = 0.0;
+        for i in 0..n {
+          let distance = (self[i] as $acc) - mean;
+          squares = squares + distance * distance;
+        }
+        return squares / (n as $acc);
+      }
+
+      /// The standard deviation: the square root of `variance`. The loops of `variance`,
+      /// written out rather than calling `self.variance()`, which the legacy code generator
+      /// cannot compile.
+      fn std_dev(self : &Tensor<$t, [?]>) -> $acc {
+        let n = self.len();
+        let mut total : $acc = 0.0;
+        for i in 0..n {
+          total = total + (self[i] as $acc);
+        }
+        let mean = total / (n as $acc);
+        let mut squares : $acc = 0.0;
+        for i in 0..n {
+          let distance = (self[i] as $acc) - mean;
+          squares = squares + distance * distance;
+        }
+        return (squares / (n as $acc)).sqrt();
+      }
+
+      /// Replaces each element `x` with `exp(x) / (sum of exp over all elements)`, so the
+      /// elements are positive and add up to 1. The largest element is subtracted before
+      /// `exp`, which gives the same answer without overflowing.
+      fn softmax_inplace(self : &mut Tensor<$t, [?]>) -> i32 {
+        let n = self.len();
+        let mut largest : $acc = 0.0;
+        for i in 0..n {
+          let x = self[i] as $acc;
+          if i == 0 || x > largest {
+            largest = x;
+          }
+        }
+        let mut total : $acc = 0.0;
+        for i in 0..n {
+          let e = ((self[i] as $acc) - largest).exp();
+          self[i] = e as $t;
+          total = total + e;
+        }
+        for i in 0..n {
+          self[i] = ((self[i] as $acc) / total) as $t;
+        }
+        return 0;
+      }
+    }
+  };
+}
+
+stamp_tensor_statistics!(f32 , f32);
+stamp_tensor_statistics!(f64 , f64);
+stamp_tensor_statistics!(f16 , f32);
+stamp_tensor_statistics!(bf16 , f32);

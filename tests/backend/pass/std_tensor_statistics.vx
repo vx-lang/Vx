@@ -1,0 +1,128 @@
+//===- std_tensor_statistics.vx - Vx Compiler ---------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `argmax`, `argmin`, `variance`, `std_dev` and `softmax_inplace` over 1-D tensors of f64,
+// f32 and f16. The expected values were computed in Python. Softmax results are
+// rounded to 6 decimal places, since `exp` may differ from Python's in the last digit.
+//
+// Each group of values: argmax and argmin of [1, 3, -2, 3, -2, 0.5] (ties keep the first
+// index), its variance and standard deviation, then softmax of [1000, 1001, 1002], which
+// overflows `exp` unless the largest element is subtracted first. Then: an empty tensor
+// (no argmax, NaN variance) and [NaN, 2, NaN, -4] (NaN is skipped).
+//
+// EXPECT: 1 2 4.201388888888888 2.049728979374807 0.090031 0.244728 0.665241 | 1 2 4.201389 2.0497289 0.090031 0.244728 0.665241 | 1 2 4.201389 2.0497289 | none NaN 1 3
+import std::tensor;
+
+fn print_index(index : Option<i32>) -> i32 {
+  match index {
+    Option<i32>::Some(i) => {
+      print(i);
+    }
+    Option<i32>::None => {
+      print!("none");
+    }
+  }
+  print!(" ");
+  return 0;
+}
+
+fn report_f64() -> i32 {
+  let mut a = Tensor<f64>([6]);
+  a[0] = 1.0;
+  a[1] = 3.0;
+  a[2] = -2.0;
+  a[3] = 3.0;
+  a[4] = -2.0;
+  a[5] = 0.5;
+  let _max = print_index(a.argmax());
+  let _min = print_index(a.argmin());
+  print(a.variance());
+  print!(" ");
+  print(a.std_dev());
+  print!(" ");
+  let mut s = Tensor<f64>([3]);
+  for i in 0..3 {
+    s[i] = 1000.0 + (i as f64);
+  }
+  let _done = s.softmax_inplace();
+  for i in 0..3 {
+    print((s[i] * 1000000.0).round() / 1000000.0);
+    print!(" ");
+  }
+  return 0;
+}
+
+fn report_f32() -> i32 {
+  let mut a = Tensor<f32>([6]);
+  a[0] = 1.0;
+  a[1] = 3.0;
+  a[2] = -2.0;
+  a[3] = 3.0;
+  a[4] = -2.0;
+  a[5] = 0.5;
+  let _max = print_index(a.argmax());
+  let _min = print_index(a.argmin());
+  print(a.variance());
+  print!(" ");
+  print(a.std_dev());
+  print!(" ");
+  let mut s = Tensor<f32>([3]);
+  for i in 0..3 {
+    s[i] = 1000.0 + (i as f32);
+  }
+  let _done = s.softmax_inplace();
+  for i in 0..3 {
+    print(((s[i] as f64) * 1000000.0).round() / 1000000.0);
+    print!(" ");
+  }
+  return 0;
+}
+
+// f16 computes in f32 and returns f32.
+fn report_f16() -> i32 {
+  let mut a = Tensor<f16>([6]);
+  a[0] = 1.0 as f16;
+  a[1] = 3.0 as f16;
+  a[2] = -2.0 as f16;
+  a[3] = 3.0 as f16;
+  a[4] = -2.0 as f16;
+  a[5] = 0.5 as f16;
+  let _max = print_index(a.argmax());
+  let _min = print_index(a.argmin());
+  print(a.variance());
+  print!(" ");
+  print(a.std_dev());
+  print!(" ");
+  return 0;
+}
+
+fn report_edge_cases() -> i32 {
+  let empty = Tensor<f64>([0]);
+  let _none = print_index(empty.argmax());
+  print(empty.variance());
+  print!(" ");
+  let mut b = Tensor<f64>([4]);
+  let zero : f64 = 0.0;
+  b[0] = zero / zero;
+  b[1] = 2.0;
+  b[2] = zero / zero;
+  b[3] = -4.0;
+  let _max = print_index(b.argmax());
+  print(b.argmin().unwrap());
+  return 0;
+}
+
+fn main() -> i32 {
+  let _a = report_f64();
+  print!("| ");
+  let _b = report_f32();
+  print!("| ");
+  let _c = report_f16();
+  print!("| ");
+  let _d = report_edge_cases();
+  return 0;
+}
