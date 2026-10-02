@@ -1293,21 +1293,8 @@ The integer and float methods, stamped over every width.
   Is this nonzero but smaller in size than the smallest normal value?
 - `fn classify(self : $t) -> FpCategory`<br>
   Which of the five kinds of float value this is.
-
-**`f64` methods**
-
-- `fn max_value() -> f64`<br>
-  The largest finite value.
-- `fn min_value() -> f64`<br>
-  The most negative finite value.
-- `fn epsilon() -> f64`<br>
-  The gap between 1.0 and the next larger value.
-- `fn min_positive() -> f64`<br>
-  The smallest positive normal value.
-- `fn infinity() -> f64`<br>
-  Positive infinity.
-- `fn neg_infinity() -> f64`<br>
-  Negative infinity.
+- `fn to_bits(self : $t) -> $u`<br>
+  The bits of this value, as an unsigned integer of the same width.
 - `fn from_bits(v : $u) -> $t`<br>
   The value these bits spell. Static: `f32::from_bits(1065353216)` is 1.0.
 - `fn next_up(self : $t) -> $t`<br>
@@ -1335,6 +1322,74 @@ The integer and float methods, stamped over every width.
   The smallest power of ten that is a normal value.
 - `fn max_10_exp() -> i32`<br>
   The largest power of ten that is a finite value.
+
+**`f64` methods**
+
+- `fn max_value() -> f64`<br>
+  The largest finite value.
+- `fn min_value() -> f64`<br>
+  The most negative finite value.
+- `fn epsilon() -> f64`<br>
+  The gap between 1.0 and the next larger value.
+- `fn min_positive() -> f64`<br>
+  The smallest positive normal value.
+- `fn infinity() -> f64`<br>
+  Positive infinity.
+- `fn neg_infinity() -> f64`<br>
+  Negative infinity.
+- `fn nan() -> f64`<br>
+  A quiet NaN.
+
+**`f32` methods**
+
+- `fn max_value() -> f32`<br>
+  The largest finite value.
+- `fn min_value() -> f32`<br>
+  The most negative finite value.
+- `fn epsilon() -> f32`<br>
+  The gap between 1.0 and the next larger value.
+- `fn min_positive() -> f32`<br>
+  The smallest positive normal value.
+- `fn infinity() -> f32`<br>
+  Positive infinity.
+- `fn neg_infinity() -> f32`<br>
+  Negative infinity.
+- `fn nan() -> f32`<br>
+  A quiet NaN.
+
+**`f16` methods**
+
+- `fn max_value() -> f16`<br>
+  The largest finite value.
+- `fn min_value() -> f16`<br>
+  The most negative finite value.
+- `fn epsilon() -> f16`<br>
+  The gap between 1.0 and the next larger value.
+- `fn min_positive() -> f16`<br>
+  The smallest positive normal value.
+- `fn infinity() -> f16`<br>
+  Positive infinity.
+- `fn neg_infinity() -> f16`<br>
+  Negative infinity.
+- `fn nan() -> f16`<br>
+  A quiet NaN.
+
+**`bf16` methods**
+
+- `fn max_value() -> bf16`<br>
+  The largest finite value.
+- `fn min_value() -> bf16`<br>
+  The most negative finite value.
+- `fn epsilon() -> bf16`<br>
+  The gap between 1.0 and the next larger value.
+- `fn min_positive() -> bf16`<br>
+  The smallest positive normal value.
+- `fn infinity() -> bf16`<br>
+  Positive infinity.
+- `fn neg_infinity() -> bf16`<br>
+  Negative infinity.
+- `fn nan() -> bf16`<br>
+  A quiet NaN.
 
 **`T` methods**, stamped for 4 instantiations
 
@@ -1479,13 +1534,6 @@ The integer and float methods, stamped over every width.
   so, since the division beside it overflows.
 
 T = `i8`, `i16`, `i32`, `i64`
-
-**`T` methods**, stamped for 2 instantiations
-
-- `fn to_bits(self : T) -> U`<br>
-  The bits of this value, as an unsigned integer of the same width.
-
-(T, U) = `f32 → 1.0`, `f64 → 1.0`
 
 ## `core::ops`
 
@@ -2366,11 +2414,6 @@ Operations on `Tensor`, including shape queries and elementwise maths.
 - `fn dot(self : &Tensor<$t, [?]>, other : &Tensor<$t, [?]>) -> $t`<br>
   The sum of the products of matching elements. Refused for tensors of different
   lengths.
-- `fn max(self : &Tensor<$t, [?]>) -> $t`<br>
-  The largest element. A NaN is ignored, as `max` on a number does; negative
-  infinity for an empty tensor.
-- `fn min(self : &Tensor<$t, [?]>) -> $t`<br>
-  The smallest element. A NaN is ignored; positive infinity for an empty tensor.
 - `fn mean(self : &Tensor<$t, [?]>) -> $t`<br>
   The average of the elements. NaN for an empty tensor. The loop of `sum`, written out
   rather than calling `self.sum()`, which the legacy code generator cannot compile.
@@ -2378,8 +2421,97 @@ Operations on `Tensor`, including shape queries and elementwise maths.
   The Euclidean length: the square root of the sum of the squares. The loop of `dot`
   with the tensor on both sides, written out rather than calling `self.dot(self)`,
   which the legacy code generator cannot compile.
+- `fn sum(self : &Tensor<$t, [?]>) -> f32`<br>
+  The sum of the elements. 0 for an empty tensor.
+- `fn dot(self : &Tensor<$t, [?]>, other : &Tensor<$t, [?]>) -> f32`<br>
+  The sum of the products of matching elements. Refused for tensors of different
+  lengths.
+- `fn mean(self : &Tensor<$t, [?]>) -> f32`<br>
+  The average of the elements. NaN for an empty tensor. The loop of `sum`, written out
+  rather than calling `self.sum()`, which the legacy code generator cannot compile.
+- `fn norm(self : &Tensor<$t, [?]>) -> f32`<br>
+  The Euclidean length: the square root of the sum of the squares. The loop of `dot`
+  with the tensor on both sides, written out rather than calling `self.dot(self)`,
+  which the legacy code generator cannot compile.
+- `fn softmax_inplace(self : &mut Tensor<$t, [?]>) -> i32`<br>
+  Replaces each element `x` with `exp(x) / (sum of exp over all elements)`, so the
+  elements are positive and add up to 1. The largest element is subtracted before
+  `exp`, which gives the same answer without overflowing.
 
-**`Tensor<T, [?]>` methods**, stamped for 2 instantiations
+**Functions**
+
+- `fn argmin(self : &Tensor<$t, [?]>) -> Option<i32>`<br>
+  The index of the smallest element, the first one if several are equal. A NaN is
+  ignored; `None` for an empty tensor or one holding only NaN.
+- `fn std_dev(self : &Tensor<$t, [?]>) -> f32`<br>
+  As `std_dev` on `f32`, computed in `f32`.
+
+**`Tensor<f32, [?]>` methods**
+
+- `fn softmax_inplace(self : &mut Tensor<f32, [?]>) -> i32`<br>
+  Replaces each element `x` with `exp(x) / (sum of exp over all elements)`, so the elements
+  are positive and add up to 1. The largest element is subtracted before `exp`, which gives
+  the same answer without overflowing. Vector loops, with the `exp` of
+  `tensor_exp_shifted_loop`: within 1 ulp of `f32::exp`.
+
+**`Tensor<$t, [?, ?]>` methods**
+
+- `fn add_assign(self : &mut Tensor<$t, [?, ?]>, other : &Tensor<$t, [?, ?]>) -> void`<br>
+  Adds `other` to this tensor, element by element. Refused for different shapes.
+- `fn sub_assign(self : &mut Tensor<$t, [?, ?]>, other : &Tensor<$t, [?, ?]>) -> void`<br>
+  Subtracts `other` from this tensor, element by element.
+- `fn mul_assign(self : &mut Tensor<$t, [?, ?]>, other : &Tensor<$t, [?, ?]>) -> void`<br>
+  Multiplies this tensor by `other`, element by element (not a matrix product).
+- `fn div_assign(self : &mut Tensor<$t, [?, ?]>, other : &Tensor<$t, [?, ?]>) -> void`<br>
+  Divides this tensor by `other`, element by element.
+- `fn add_scalar(self : &mut Tensor<$t, [?, ?]>, a : $t) -> void`<br>
+  Adds `a` to every element.
+- `fn scale(self : &mut Tensor<$t, [?, ?]>, a : $t) -> void`<br>
+  Multiplies every element by `a`.
+- `fn abs_inplace(self : &mut Tensor<$t, [?, ?]>) -> void`<br>
+  Replaces every element by its absolute value.
+- `fn sqrt_inplace(self : &mut Tensor<$t, [?, ?]>) -> void`<br>
+  Replaces every element by its square root.
+- `fn clamp_inplace(self : &mut Tensor<$t, [?, ?]>, lo : $t, hi : $t) -> void`<br>
+  Holds every element between `lo` and `hi`, as `clamp` on a number does.
+- `fn sum(self : &Tensor<$t, [?, ?]>) -> $t`<br>
+  The sum of every element. 0 for an empty tensor.
+- `fn mean(self : &Tensor<$t, [?, ?]>) -> $t`<br>
+  The average of every element. NaN for an empty tensor.
+- `fn max(self : &Tensor<$t, [?, ?]>) -> $t`<br>
+  The largest element. A NaN is ignored; negative infinity for an empty tensor.
+- `fn min(self : &Tensor<$t, [?, ?]>) -> $t`<br>
+  The smallest element. A NaN is ignored; positive infinity for an empty tensor.
+- `fn sum_axis(self : &Tensor<$t, [?, ?]>, axis : i32) -> Tensor<$t, [?]>`<br>
+  The sum along `axis`: of each column for axis 0, of each row for axis 1.
+- `fn mean_axis(self : &Tensor<$t, [?, ?]>, axis : i32) -> Tensor<$t, [?]>`<br>
+  The average along `axis`: of each column for axis 0, of each row for axis 1.
+- `fn max_axis(self : &Tensor<$t, [?, ?]>, axis : i32) -> Tensor<$t, [?]>`<br>
+  The largest element along `axis`: of each column for axis 0, of each row for axis 1.
+  A NaN is ignored.
+- `fn min_axis(self : &Tensor<$t, [?, ?]>, axis : i32) -> Tensor<$t, [?]>`<br>
+  The smallest element along `axis`: of each column for axis 0, of each row for axis 1.
+  A NaN is ignored.
+- `fn sum(self : &Tensor<$t, [?, ?]>) -> f32`<br>
+  The sum of every element. 0 for an empty tensor.
+- `fn mean(self : &Tensor<$t, [?, ?]>) -> f32`<br>
+  The average of every element. NaN for an empty tensor.
+- `fn max(self : &Tensor<$t, [?, ?]>) -> $t`<br>
+  The largest element. A NaN is ignored; negative infinity for an empty tensor.
+- `fn min(self : &Tensor<$t, [?, ?]>) -> $t`<br>
+  The smallest element. A NaN is ignored; positive infinity for an empty tensor.
+- `fn sum_axis(self : &Tensor<$t, [?, ?]>, axis : i32) -> Tensor<f32, [?]>`<br>
+  The sum along `axis`: of each column for axis 0, of each row for axis 1.
+- `fn mean_axis(self : &Tensor<$t, [?, ?]>, axis : i32) -> Tensor<f32, [?]>`<br>
+  The average along `axis`: of each column for axis 0, of each row for axis 1.
+- `fn max_axis(self : &Tensor<$t, [?, ?]>, axis : i32) -> Tensor<$t, [?]>`<br>
+  The largest element along `axis`: of each column for axis 0, of each row for axis 1.
+  A NaN is ignored.
+- `fn min_axis(self : &Tensor<$t, [?, ?]>, axis : i32) -> Tensor<$t, [?]>`<br>
+  The smallest element along `axis`: of each column for axis 0, of each row for axis 1.
+  A NaN is ignored.
+
+**`Tensor<T, [?]>` methods**, stamped for 4 instantiations
 
 - `fn add_assign(self : &mut Tensor<T, [?]>, other : &Tensor<T, [?]>) -> void`<br>
   Adds `other` to this tensor, element by element. Refused for different lengths.
@@ -2404,6 +2536,40 @@ Operations on `Tensor`, including shape queries and elementwise maths.
   Replaces every element by its square root.
 - `fn clamp_inplace(self : &mut Tensor<T, [?]>, lo : T, hi : T) -> void`<br>
   Holds every element between `lo` and `hi`, as `clamp` on a number does.
+
+T = `f32`, `f64`, `f16`, `bf16`
+
+**`Tensor<T, [?]>` methods**, stamped for 3 instantiations
+
+- `fn max(self : &Tensor<T, [?]>) -> T`<br>
+  The largest element. A NaN is ignored, as `max` on a number does; negative
+  infinity for an empty tensor.
+- `fn min(self : &Tensor<T, [?]>) -> T`<br>
+  The smallest element. A NaN is ignored; positive infinity for an empty tensor.
+- `fn argmax(self : &Tensor<T, [?]>) -> Option<i32>`<br>
+  The index of the largest element, the first one if several are equal. A NaN is
+  ignored, as `max` does; `None` for an empty tensor or one holding only NaN. Two
+  passes: the vector loop of `max`, then a search for the first element equal to it.
+
+T = `self`, `self`, `self`
+
+**`Tensor<T, [?]>` methods**, stamped for 3 instantiations
+
+- `fn variance(self : &Tensor<T, [?]>) -> T`<br>
+  The average squared distance from the mean, dividing by the number of elements `n`
+  (numpy's `var`; divide by `n - 1` for the sample variance). It finds the mean first,
+  which is more accurate than the one-pass formula. NaN for an empty tensor.
+- `fn std_dev(self : &Tensor<T, [?]>) -> T`<br>
+  The standard deviation: the square root of `variance`.
+
+T = `f64`, `f16`, `bf16`
+
+**`Tensor<T, [?, ?]>` methods**, stamped for 2 instantiations
+
+- `fn matmul(self : &Tensor<T, [?, ?]>, other : &Tensor<T, [?, ?]>) -> Tensor<T, [?, ?]>`<br>
+  The matrix product: a new tensor with as many rows as this one and as many columns as
+  `other`, element `[i][j]` the sum over `k` of `self[i][k] * other[k][j]`. Refused when
+  this tensor's column count differs from `other`'s row count.
 
 T = `f32`, `f64`
 
@@ -2610,4 +2776,4 @@ Clocks and durations.
 
 ______________________________________________________________________
 
-997 functions across 35 modules.
+1088 functions across 35 modules.
