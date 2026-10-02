@@ -2631,6 +2631,9 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                 )])
                 .add_results(&[tensor_ty])
                 .build()?;
+            // A size can end the block it started in (`[if c { 3 } else { 2 }]` lands in the
+            // `if`'s merge block), so what follows goes where the sizes left off.
+            let block = current_b;
             let alloc_ref = block.append_operation(alloc_op);
             let alloc_val: Value = alloc_ref.result(0)?.into();
             // `::new()` zeroes what `::uninit()` leaves as it was found. The same fill a matmul

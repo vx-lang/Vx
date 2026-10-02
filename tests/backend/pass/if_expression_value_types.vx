@@ -1,0 +1,77 @@
+//===- if_expression_value_types.vx - Vx Compiler ----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// An `if` used as a value where its branches produce integers of different kinds in MLIR:
+// `extent` and a loop variable are an `index`, a literal an `i32`. In `add_up` and
+// `loop_or_literal` the `let` holding the result has no type written. Last, an `if` as a
+// tensor's size. Each function is called with both conditions.
+//
+// EXPECT: 3 2 6 3 3 9 3 2
+fn other_extent(t : &Tensor<f32, [?, ?]>, axis : i32) -> i32 {
+  return if axis == 0 {
+    t.extent(1)
+  } else {
+    t.extent(0)
+  };
+}
+
+fn add_up(axis : i32) -> i32 {
+  let mut total = 0;
+  for i in 0..2 {
+    for j in 0..3 {
+      let k = if axis == 0 {
+        j
+      } else {
+        i
+      };
+      total = total + k;
+    }
+  }
+  return total;
+}
+
+fn loop_or_literal(use_loop : bool) -> i32 {
+  let mut total = 0;
+  for j in 0..3 {
+    let k = if use_loop {
+      j
+    } else {
+      3
+    };
+    total = total + k;
+  }
+  return total;
+}
+
+fn sized_by_if(axis : i32) -> i32 {
+  let t = Tensor<f32>([ if axis == 0 {
+    3
+  } else {
+    2
+  } ]);
+  return t.len();
+}
+
+fn main() -> i32 {
+  let a = Tensor<f32>([2, 3]);
+  print(other_extent(&a, 0));
+  print!(" ");
+  print(other_extent(&a, 1));
+  print!(" ");
+  print(add_up(0));
+  print!(" ");
+  print(add_up(1));
+  print!(" ");
+  print(loop_or_literal(true));
+  print!(" ");
+  print(loop_or_literal(false));
+  print!(" ");
+  print(sized_by_if(0));
+  print!(" ");
+  print(sized_by_if(1));
+  return 0;
+}

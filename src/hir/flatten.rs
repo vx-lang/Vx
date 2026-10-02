@@ -1523,6 +1523,10 @@ impl<'r> Lowerer<'r> {
                 lowered_ty(&sig.ret_ty, self.registry)
             }
             Expr::If(iff) => self.infer_block_ty(comptime_survivor(iff).unwrap_or(&iff.then_block)),
+            // `t.extent(k)`, as the checker rewrites it: an `i32`, as `lower_expr` emits it.
+            Expr::IndexAccess(ix) if matches!(&*ix.base, Expr::MemberAccess(ma) if ma.member.as_ref() == "$extent") => {
+                Some(LoweredTy::Scalar(ElementType::I32))
+            }
             // An inline `mlir!` block's value is its declared result.
             Expr::InlineMlir(im) => lowered_ty(im.returns.as_ref()?, self.registry),
             Expr::UnsafeBlock(ub) => self.infer_expr_ty(ub.ret.as_deref()?),

@@ -111,17 +111,17 @@ impl<'c> LowerToMelior<'c> for IfExpr {
 
         let (cond_val, _, block) = gen.generate_expr(cond, block)?;
 
-        let ret_ty = gen.expected_type.unwrap_or(gen.f32_ty);
+        let expected = gen.expected_type;
+        let has_ret = expected.is_none_or(|t| {
+            let t = t.to_string();
+            t != "none" && t != "void"
+        });
         let parent_region = block.parent_region().unwrap();
-        let mut then_b = parent_region.append_block(melior::ir::Block::new(&[]));
-        let mut else_b = parent_region.append_block(melior::ir::Block::new(&[]));
-
-        let has_ret = ret_ty.to_string() != "none" && ret_ty.to_string() != "void";
-        let merge_b = if has_ret {
-            parent_region.append_block(melior::ir::Block::new(&[(ret_ty, gen.loc())]))
-        } else {
-            parent_region.append_block(melior::ir::Block::new(&[]))
-        };
+        let then_b = parent_region.append_block(melior::ir::Block::new(&[]));
+        let else_b = parent_region.append_block(melior::ir::Block::new(&[]));
+        // The merge block's argument is added once both branches are lowered, because with no
+        // expected type the value's type is whatever the branches produce.
+        let merge_b = parent_region.append_block(melior::ir::Block::new(&[]));
 
         block.append_operation(
             OperationBuilder::new("cf.cond_br", gen.loc())
@@ -135,112 +135,47 @@ impl<'c> LowerToMelior<'c> for IfExpr {
                 .build()?,
         );
 
-        let mut then_terminated = false;
-        let mut then_val = None;
-        for (i, stmt) in then_block.iter().enumerate() {
-            let is_last = i == then_block.len() - 1;
-            if is_last && has_ret {
-                if let syntax::Statement::ExprStmt(syntax::stmt::ExprStmtStmt {
-                    expr,
-                    has_semi: false,
-                    ..
-                }) = stmt
-                {
-                    let (val, _, b) = gen.generate_expr(expr, then_b)?;
-                    then_b = b;
-                    then_val = Some(val);
-                } else {
-                    if let Some(b) = gen.generate_statement(stmt, then_b)? {
-                        then_b = b;
-                    } else {
-                        then_terminated = true;
-                        break;
-                    }
-                }
-            } else {
-                if let Some(b) = gen.generate_statement(stmt, then_b)? {
-                    then_b = b;
-                } else {
-                    then_terminated = true;
-                    break;
-                }
-            }
-        }
+        let empty = Vec::new();
+        let (then_end, then_val) = lower_branch(gen, then_block, then_b, has_ret)?;
+        let (else_end, else_val) = lower_branch(
+            gen,
+            else_block_opt.as_ref().unwrap_or(&empty),
+            else_b,
+            has_ret,
+        )?;
 
-        if !then_terminated {
+        // Without an expected type, the branches decide. A loop variable or an extent is an
+        // `index` in MLIR but an `i32` in Vx, so an `index` value is given the Vx type, and a
+        // branch that yields an `i32` and one that yields an `index` agree.
+        let ret_ty = match expected {
+            Some(t) => t,
+            None => match then_val.or(else_val).map(|(_, t)| t) {
+                Some(t) if t == gen.index_ty => gen.i32_ty,
+                Some(t) => t,
+                None => gen.f32_ty,
+            },
+        };
+        let merge_arg = has_ret.then(|| merge_b.add_argument(ret_ty, gen.loc()));
+
+        for (end, val) in [(then_end, then_val), (else_end, else_val)] {
+            let Some(end) = end else { continue };
             let mut yield_operands = vec![];
             if has_ret {
-                if let Some(val) = then_val {
-                    yield_operands.push(val);
-                } else {
-                    let dummy_op = OperationBuilder::new("arith.constant", gen.loc())
-                        .add_attributes(&[(
-                            Identifier::new(gen.context, "value"),
-                            melior::ir::attribute::IntegerAttribute::new(ret_ty, 0).into(),
-                        )])
-                        .build()?;
-                    let val = then_b.append_operation(dummy_op).result(0)?.into();
-                    yield_operands.push(val);
-                }
-            }
-            then_b.append_operation(
-                OperationBuilder::new("cf.br", gen.loc())
-                    .add_operands(&yield_operands)
-                    .add_successors(&[&*merge_b])
-                    .build()?,
-            );
-        }
-
-        let mut else_terminated = false;
-        let mut else_val = None;
-        if let Some(else_block) = else_block_opt {
-            for (i, stmt) in else_block.iter().enumerate() {
-                let is_last = i == else_block.len() - 1;
-                if is_last && has_ret {
-                    if let syntax::Statement::ExprStmt(syntax::stmt::ExprStmtStmt {
-                        expr,
-                        has_semi: false,
-                        ..
-                    }) = stmt
-                    {
-                        let (val, _, b) = gen.generate_expr(expr, else_b)?;
-                        else_b = b;
-                        else_val = Some(val);
-                    } else {
-                        if let Some(b) = gen.generate_statement(stmt, else_b)? {
-                            else_b = b;
-                        } else {
-                            else_terminated = true;
-                            break;
-                        }
+                let v = match val {
+                    Some((v, t)) => gen.coerce_type(&end, v, t, ret_ty)?,
+                    None => {
+                        let dummy_op = OperationBuilder::new("arith.constant", gen.loc())
+                            .add_attributes(&[(
+                                Identifier::new(gen.context, "value"),
+                                melior::ir::attribute::IntegerAttribute::new(ret_ty, 0).into(),
+                            )])
+                            .build()?;
+                        end.append_operation(dummy_op).result(0)?.into()
                     }
-                } else {
-                    if let Some(b) = gen.generate_statement(stmt, else_b)? {
-                        else_b = b;
-                    } else {
-                        else_terminated = true;
-                        break;
-                    }
-                }
+                };
+                yield_operands.push(v);
             }
-        }
-        if !else_terminated {
-            let mut yield_operands = vec![];
-            if has_ret {
-                if let Some(val) = else_val {
-                    yield_operands.push(val);
-                } else {
-                    let dummy_op = OperationBuilder::new("arith.constant", gen.loc())
-                        .add_attributes(&[(
-                            Identifier::new(gen.context, "value"),
-                            melior::ir::attribute::IntegerAttribute::new(ret_ty, 0).into(),
-                        )])
-                        .build()?;
-                    let val = else_b.append_operation(dummy_op).result(0)?.into();
-                    yield_operands.push(val);
-                }
-            }
-            else_b.append_operation(
+            end.append_operation(
                 OperationBuilder::new("cf.br", gen.loc())
                     .add_operands(&yield_operands)
                     .add_successors(&[&*merge_b])
@@ -252,22 +187,54 @@ impl<'c> LowerToMelior<'c> for IfExpr {
         // needs a terminator of its own, because a block without one fails the MLIR verifier. That
         // is what a body ending in `if c { return a; } else { return b; }` produced: an empty block
         // the verifier rejected, after the frontend had accepted the program.
-        if then_terminated && else_terminated {
+        if then_end.is_none() && else_end.is_none() {
             merge_b.append_operation(OperationBuilder::new("llvm.unreachable", gen.loc()).build()?);
         }
 
-        if has_ret {
-            let res = merge_b
-                .argument(0)
-                .map_err(|_| {
-                    crate::codegen::lower::LowerError::from(format!("Missing argument {} block", 0))
-                })?
-                .into();
-            Ok((res, ret_ty, merge_b))
-        } else {
-            Ok((cond_val, ret_ty, merge_b))
+        match merge_arg {
+            Some(res) => Ok((res, ret_ty, merge_b)),
+            None => Ok((cond_val, ret_ty, merge_b)),
         }
     }
+}
+
+/// Lower one branch of an `if` into `b`. Returns the block the branch ends in, or `None` when it
+/// ended in a terminator of its own (a `return`), and the value of its last expression when the
+/// `if` produces one.
+#[allow(clippy::type_complexity)]
+fn lower_branch<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    stmts: &[syntax::Statement],
+    mut b: melior::ir::BlockRef<'c, 'c>,
+    has_ret: bool,
+) -> Result<
+    (
+        Option<melior::ir::BlockRef<'c, 'c>>,
+        Option<(Value<'c, 'c>, Type<'c>)>,
+    ),
+    LowerError,
+> {
+    let mut val = None;
+    for (i, stmt) in stmts.iter().enumerate() {
+        if i == stmts.len() - 1 && has_ret {
+            if let syntax::Statement::ExprStmt(syntax::stmt::ExprStmtStmt {
+                expr,
+                has_semi: false,
+                ..
+            }) = stmt
+            {
+                let (v, t, next) = gen.generate_expr(expr, b)?;
+                b = next;
+                val = Some((v, t));
+                continue;
+            }
+        }
+        match gen.generate_statement(stmt, b)? {
+            Some(next) => b = next,
+            None => return Ok((None, None)),
+        }
+    }
+    Ok((Some(b), val))
 }
 
 impl<'c> LowerToMelior<'c> for ForLoopStmt {
