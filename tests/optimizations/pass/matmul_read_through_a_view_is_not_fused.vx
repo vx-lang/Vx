@@ -1,0 +1,53 @@
+//===- matmul_read_through_a_view_is_not_fused.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// REQUIRES: flat-codegen
+// RUN: vxc %s -O2 --run | FileCheck %s
+//
+// `c[0]` reads a row of `c` through a view, a second memref value for the same
+// buffer. Loop fusion cannot see that read. Both products read the same two
+// views of foreign memory, so fusion once merged them into one loop placed
+// after the prints, and `c` printed as uninitialized memory. The compiler now
+// skips fusion in a function like this.
+//
+// [[1,2,3],[4,5,6]] @ [[1,2],[3,4],[5,6]] = [[22,28],[49,64]].
+// CHECK: c=22 28 49 64;
+
+extern "C" {
+  fn vx_alloc_f32(n : i32) -> *mut f32;
+  fn vx_free_f32(p : *mut f32, n : i32) -> void;
+}
+
+fn main() -> i32 {
+  let pa : *mut f32 = unsafe { vx_alloc_f32(6) };
+  let pb : *mut f32 = unsafe { vx_alloc_f32(6) };
+  unsafe { for i in 0..6 { pa[i] = (i + 1) as f32; pb[i] = (i + 1) as f32; } }
+  let a = unsafe { tensor_view_2d(pa, 2, 3) };
+  let b = unsafe { tensor_view_2d(pb, 3, 2) };
+  let c = &a @ &b;
+  print!("c=");
+  print(c[0][0]);
+  print!(" ");
+  print(c[0][1]);
+  print!(" ");
+  print(c[1][0]);
+  print!(" ");
+  print(c[1][1]);
+  print!("; ");
+  let d = &a @ &b;
+  print!("d=");
+  print(d[0][0]);
+  print!(" ");
+  print(d[0][1]);
+  print!(" ");
+  print(d[1][0]);
+  print!(" ");
+  print(d[1][1]);
+  print!(";");
+  unsafe { vx_free_f32(pa, 6); vx_free_f32(pb, 6); }
+  return 0;
+}

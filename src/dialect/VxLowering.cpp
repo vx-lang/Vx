@@ -7,6 +7,7 @@
 #include "mlir/Conversion/LLVMCommon/Pattern.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Conversion/Passes.h"
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
@@ -2931,6 +2932,85 @@ struct PromoteBuffersToStackPass
   }
 };
 
+// Run `affine-loop-fusion` and `affine-loop-tile` only where they are sound.
+//
+// Both decide which loops depend on each other by comparing memref values, with
+// no alias analysis: two different values are taken to be two different
+// buffers. A buffer read through a `reinterpret_cast` view is a second value,
+// so fusion moved the loops that computed a matrix below the reads of its rows,
+// and the program printed uninitialized memory.
+//
+// So they run only in a function where every buffer is a fresh allocation, a
+// global, or an argument that is `noalias` (a `&mut`) or `readonly` (a `&`: two
+// of these may alias, but nothing writes through them). A buffer that is
+// viewed, cast, turned into a pointer or stored into memory skips the function.
+struct FuseAndTileLoopsPass
+    : public PassWrapper<FuseAndTileLoopsPass, OperationPass<func::FuncOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(FuseAndTileLoopsPass)
+
+  llvm::StringRef getArgument() const override {
+    return "vx-fuse-and-tile-loops";
+  }
+
+  llvm::StringRef getDescription() const override {
+    return "Runs affine loop fusion and tiling in functions where no two "
+           "memref values can name the same written buffer";
+  }
+
+  void getDependentDialects(DialectRegistry &registry) const override {
+    registry.insert<affine::AffineDialect, memref::MemRefDialect>();
+  }
+
+  // Why fusion and tiling would be unsound in this function, or null.
+  static const char *reasonToSkip(func::FuncOp func) {
+    auto isMemRef = [](Type t) { return isa<BaseMemRefType>(t); };
+    if (func.isExternal())
+      return "the function has no body";
+    for (BlockArgument arg : func.getArguments()) {
+      if (!isMemRef(arg.getType()))
+        continue;
+      unsigned i = arg.getArgNumber();
+      if (!func.getArgAttr(i, "llvm.noalias") &&
+          !func.getArgAttr(i, "llvm.readonly"))
+        return "an argument buffer may alias another buffer";
+    }
+    const char *reason = nullptr;
+    func.walk([&](Operation *op) {
+      // The entry block's arguments are the function's, checked above.
+      for (Region &region : op->getRegions())
+        for (Block &block : region)
+          if (&block != &func.getBody().front() &&
+              llvm::any_of(block.getArgumentTypes(), isMemRef))
+            reason = "a buffer is passed between blocks or loop iterations";
+      if (!isa<memref::AllocOp, memref::AllocaOp, memref::GetGlobalOp>(op) &&
+          llvm::any_of(op->getResultTypes(), isMemRef))
+        reason = "a buffer is made from another value, such as a view";
+      else if (isa<UnrealizedConversionCastOp,
+                   memref::ExtractAlignedPointerAsIndexOp>(op) &&
+               llvm::any_of(op->getOperandTypes(), isMemRef))
+        reason = "a buffer is turned into a pointer";
+      else if (auto store = dyn_cast<memref::StoreOp>(op);
+               store && isMemRef(store.getValueToStore().getType()))
+        reason = "a buffer is stored into memory";
+      return reason ? WalkResult::interrupt() : WalkResult::advance();
+    });
+    return reason;
+  }
+
+  void runOnOperation() override {
+    func::FuncOp func = getOperation();
+    if (reasonToSkip(func))
+      return;
+    OpPassManager pm(func::FuncOp::getOperationName());
+    if (failed(parsePassPipeline("affine-loop-fusion,affine-loop-tile", pm))) {
+      signalPassFailure();
+      return;
+    }
+    if (failed(runPipeline(pm, func)))
+      signalPassFailure();
+  }
+};
+
 // Make a stack buffer behave like the heap buffer it replaced:
 // `malloc`-compatible alignment, and in the entry block.
 //
@@ -3130,6 +3210,9 @@ void registerVxPasses() {
   });
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return std::make_unique<FreeHeapBuffersPass>();
+  });
+  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+    return std::make_unique<FuseAndTileLoopsPass>();
   });
 }
 } // namespace vx

@@ -1,0 +1,40 @@
+//===- fill_fill_compare_fuse_into_one_loop.vx - Vx Compiler ----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// REQUIRES: flat-codegen
+// RUN: vxc %s -O2 --emit-mlir | FileCheck %s
+// RUN: vxc %s -O2 --run | FileCheck %s --check-prefix=OUT
+//
+// `fill` and `compare` from std::tensor are inline MLIR blocks written with
+// linalg ops. At -O2 the compiler inlines them and fuses the three calls into
+// one loop: each element is written to `a`, written to `b` and compared, all in
+// the same iteration, so the data is walked once instead of three times.
+//
+// CHECK-LABEL: func.func @same_after_fill
+// CHECK: memref.store %{{.*}}, %arg0[
+// CHECK-NEXT: memref.store %{{.*}}, %arg1[
+// CHECK-NEXT: memref.load %arg0[
+// OUT: ok
+
+import std::tensor;
+
+fn same_after_fill(a : &mut Tensor<f32, [64, 64]>, b : &mut Tensor<f32, [64, 64]>) -> bool {
+  a.fill(1.5);
+  b.fill(1.5);
+  return a.compare(b);
+}
+
+fn main() -> i32 {
+  let mut a = Tensor<f32, [64, 64]>::uninit();
+  let mut b = Tensor<f32, [64, 64]>::uninit();
+  if same_after_fill(&mut a, &mut b) {
+    print!("ok");
+  } else {
+    print!("wrong");
+  }
+  return 0;
+}
