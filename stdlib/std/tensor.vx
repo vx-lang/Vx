@@ -957,9 +957,9 @@ stamp_tensor_extrema!(f64 , 8 , 0xFFF0000000000000 , 0x7FF0000000000000);
 stamp_tensor_extrema!(f16 , 16 , 0xFC00 , 0x7C00);
 stamp_tensor_extrema!(bf16 , 16 , 0xFF80 , 0x7F80);
 
-/// Stamps `softmax_inplace` over a 1-D tensor of `$t`, computing in `$acc`: the same type for
-/// `f32` and `f64`, `f32` for `f16` and `bf16`, as their sums do. A plain loop: not yet
-/// vectorized.
+/// Stamps `softmax_inplace` over a 1-D tensor of `$t`, computing in `$acc`: `f64` for `f64`,
+/// `f32` for `f16` and `bf16`, as their sums do. A plain loop; the `f32` one, below, is vector
+/// code.
 macro_rules stamp_tensor_statistics {
   ($t : ident , $acc : ident) => {
     impl Tensor<$t, [?]> {
@@ -990,7 +990,6 @@ macro_rules stamp_tensor_statistics {
   };
 }
 
-stamp_tensor_statistics!(f32 , f32);
 stamp_tensor_statistics!(f64 , f64);
 stamp_tensor_statistics!(f16 , f32);
 stamp_tensor_statistics!(bf16 , f32);
@@ -1157,6 +1156,95 @@ macro_rules stamp_half_tensor_spread {
 
     }
   };
+}
+
+/// Replaces every element `x` of a 1-D `f32` tensor `$a` with `exp(x - $m)`, and answers their
+/// sum. For `softmax_inplace` only, where `x - $m` is at most 0. `exp` is computed 16 lanes at a
+/// time as Cephes does: `x` is split into `k ln 2 + r`, `exp(r)` is a degree-6 polynomial, and
+/// `2^k` is built from its bits. Within 1 ulp of libm's `expf` over [-88, 0]; results below
+/// about 1e-38 may come out as 0. The clamp turns a NaN into a number, so converting it to an
+/// integer is defined, and the NaN is put back at the end. The leftover elements use `math.exp`.
+macro_rules tensor_exp_shifted_loop {
+  ($a : expr , $m : expr) => {
+    mlir!( inputs : (%a = $a : memref<?xf32>, %m = $m : f32), returns : f32, dialects : ["arith", "math", "memref", "scf", "vector"]) {
+      %c0 = arith.constant 0 : index
+      %c1 = arith.constant 1 : index
+      %c16 = arith.constant 16 : index
+      %n = memref.dim %a, %c0 : memref<?xf32>
+      %rem = arith.remui %n, %c16 : index
+      %body = arith.subi %n, %rem : index
+      %mv = "vector.broadcast"(%m) : (f32) -> vector<16xf32>
+      %hi = arith.constant dense<88.3762626647949> : vector<16xf32>
+      %lo = arith.constant dense<-88.3762626647949> : vector<16xf32>
+      %log2e = arith.constant dense<1.44269504088896341> : vector<16xf32>
+      %half = arith.constant dense<0.5> : vector<16xf32>
+      %neg_ln2_hi = arith.constant dense<-0.693359375> : vector<16xf32>
+      %neg_ln2_lo = arith.constant dense<2.12194440e-4> : vector<16xf32>
+      %p0 = arith.constant dense<1.9875691500e-4> : vector<16xf32>
+      %p1 = arith.constant dense<1.3981999507e-3> : vector<16xf32>
+      %p2 = arith.constant dense<8.3334519073e-3> : vector<16xf32>
+      %p3 = arith.constant dense<4.1665795894e-2> : vector<16xf32>
+      %p4 = arith.constant dense<1.6666665459e-1> : vector<16xf32>
+      %p5 = arith.constant dense<5.0000001201e-1> : vector<16xf32>
+      %one = arith.constant dense<1.0> : vector<16xf32>
+      %bias = arith.constant dense<127> : vector<16xi32>
+      %c23 = arith.constant dense<23> : vector<16xi32>
+      %z = arith.constant dense<0.0> : vector<16xf32>
+      %sums = scf.for %i = %c0 to %body step %c16 iter_args(%acc = %z) -> (vector<16xf32>) {
+        %v = vector.load %a[%i] : memref<?xf32>, vector<16xf32>
+        %x = arith.subf %v, %mv : vector<16xf32>
+        %x1 = arith.minnumf %x, %hi : vector<16xf32>
+        %xc = arith.maxnumf %x1, %lo : vector<16xf32>
+        %t = vector.fma %xc, %log2e, %half : vector<16xf32>
+        %fx = math.floor %t : vector<16xf32>
+        %ra = vector.fma %fx, %neg_ln2_hi, %xc : vector<16xf32>
+        %r = vector.fma %fx, %neg_ln2_lo, %ra : vector<16xf32>
+        %rr = arith.mulf %r, %r : vector<16xf32>
+        %y0 = vector.fma %p0, %r, %p1 : vector<16xf32>
+        %y1 = vector.fma %y0, %r, %p2 : vector<16xf32>
+        %y2 = vector.fma %y1, %r, %p3 : vector<16xf32>
+        %y3 = vector.fma %y2, %r, %p4 : vector<16xf32>
+        %y4 = vector.fma %y3, %r, %p5 : vector<16xf32>
+        %y5 = vector.fma %y4, %rr, %r : vector<16xf32>
+        %y = arith.addf %y5, %one : vector<16xf32>
+        %k = "arith.fptosi"(%fx) : (vector<16xf32>) -> vector<16xi32>
+        %kb = arith.addi %k, %bias : vector<16xi32>
+        %bits = arith.shli %kb, %c23 : vector<16xi32>
+        %pow = "arith.bitcast"(%bits) : (vector<16xi32>) -> vector<16xf32>
+        %ex = arith.mulf %y, %pow : vector<16xf32>
+        %nan = arith.cmpf uno, %x, %x : vector<16xf32>
+        %e = arith.select %nan, %x, %ex : vector<16xi1>, vector<16xf32>
+        vector.store %e, %a[%i] : memref<?xf32>, vector<16xf32>
+        %s = arith.addf %acc, %e : vector<16xf32>
+        scf.yield %s : vector<16xf32>
+      }
+      %head = vector.reduction <add>, %sums fastmath<reassoc> : vector<16xf32> into f32
+      %total = scf.for %i = %body to %n step %c1 iter_args(%acc = %head) -> (f32) {
+        %v = memref.load %a[%i] : memref<?xf32>
+        %x = arith.subf %v, %m : f32
+        %e = math.exp %x : f32
+        memref.store %e, %a[%i] : memref<?xf32>
+        %s = arith.addf %acc, %e : f32
+        scf.yield %s : f32
+      }
+      macro.yield %total : f32
+    }
+  };
+}
+
+impl Tensor<f32, [?]> {
+  /// Replaces each element `x` with `exp(x) / (sum of exp over all elements)`, so the elements
+  /// are positive and add up to 1. The largest element is subtracted before `exp`, which gives
+  /// the same answer without overflowing. Vector loops, with the `exp` of
+  /// `tensor_exp_shifted_loop`: within 1 ulp of `f32::exp`.
+  fn softmax_inplace(self : &mut Tensor<f32, [?]>) -> i32 {
+    let largest : f32 = tensor_max_loop!(self, f32, 16, 0xFF800000);
+    let total : f32 = tensor_exp_shifted_loop!(self, largest);
+    for i in 0..self.len() {
+      self[i] = self[i] / total;
+    }
+    return 0;
+  }
 }
 
 stamp_tensor_spread!(f32 , 16);
