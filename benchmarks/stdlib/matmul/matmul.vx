@@ -1,0 +1,53 @@
+//===- matmul.vx - Vx Compiler ------------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// std::tensor's `matmul` on f32 matrices of 1024 by 1024, and of 1000 by 1000, which leaves part
+// of a block over. matmul.cpp computes the same with the plain loop a C++ compiler vectorizes
+// best (i, k, j). Each repetition changes one element first, so none repeats the one before.
+//
+// The built-in `matmul_into` is not timed here: it takes about 6.5 s at 1024.
+import std::tensor;
+import std::time;
+
+fn run(n : i32) -> i32 {
+  let mut a = Tensor<f32>([ n, n ]);
+  let mut b = Tensor<f32>([ n, n ]);
+  for i in 0..n {
+    for j in 0..n {
+      a[i][j] = ((((i * 31) + (j * 17)) % 1000) as f32) * 0.001;
+      b[i][j] = ((((i * 7) + (j * 13)) % 1000) as f32) * 0.001;
+    }
+  }
+  let mut best : f32 = 1000.0;
+  let mut total : f64 = 0.0;
+  for rep in 0..5 {
+    a[1][rep] = 3.0 + (rep as f32);
+    let t0 = now();
+    let c = a.matmul(&b);
+    let t1 = now();
+    total += c[1][rep] as f64;
+    if t1 - t0 < best {
+      best = t1 - t0;
+    }
+  }
+  unsafe {
+    if n == 1024 {
+      bench_report("matmul_1024/std_tensor", "seconds", best);
+      bench_report("matmul_1024/std_tensor", "result", total as f32);
+    } else {
+      bench_report("matmul_1000/std_tensor", "seconds", best);
+      bench_report("matmul_1000/std_tensor", "result", total as f32);
+    }
+  }
+  return 0;
+}
+
+fn main() -> i32 {
+  let _a = run(1024);
+  let _b = run(1000);
+  return 0;
+}

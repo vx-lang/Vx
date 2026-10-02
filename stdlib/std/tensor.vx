@@ -1415,3 +1415,158 @@ stamp_tensor_rank2!(f32 , f32);
 stamp_tensor_rank2!(f64 , f64);
 stamp_tensor_rank2!(f16 , f32);
 stamp_tensor_rank2!(bf16 , f32);
+
+/// `$c = $a @ $b` for 2-D tensors of `$t`, `$c` already shaped `[rows of $a, columns of $b]`.
+/// A 4-row by `4 * $lanes`-column block of `$c` at a time, kept in 16 vector registers while `k`
+/// runs over the shared dimension, each step a fused multiply-add of one element of `$a`, made
+/// into a vector, with one vector of `$b`. Each column block of `$b` is first copied into a
+/// buffer, so the block's rows lie next to each other in memory instead of a whole row of `$b`
+/// apart; the last column block is padded with zeros, and only the columns of `$c` that exist
+/// are written. The last row block reads the last row again for the rows past the end, and does
+/// not write them. Each element adds its products in order of `k`, each one fused into the
+/// running sum with a single rounding.
+macro_rules tensor_matmul_kernel {
+  ($c : expr , $a : expr , $b : expr , $t : ident , $lanes : expr) => {
+    mlir!( inputs : (%c = $c : memref<?x?x$t>, %a = $a : memref<?x?x$t>, %b = $b : memref<?x?x$t>), returns : i32, dialects : ["arith", "memref", "scf", "vector"]) {
+      %c0 = arith.constant 0 : index
+      %c1 = arith.constant 1 : index
+      %lanes = arith.constant $lanes : index
+      %c4 = arith.constant 4 : index
+      %cnv = arith.constant 4 : index
+      %nr = arith.muli %lanes, %cnv : index
+      %m = memref.dim %a, %c0 : memref<?x?x$t>
+      %kk = memref.dim %a, %c1 : memref<?x?x$t>
+      %n = memref.dim %b, %c1 : memref<?x?x$t>
+      %last_row = arith.subi %m, %c1 : index
+      %z = arith.constant dense<0.0> : vector<$lanes x $t>
+      %pb = memref.alloc(%kk, %nr) : memref<?x?x$t>
+      %cv0 = arith.constant 0 : index
+      %po0 = arith.muli %lanes, %cv0 : index
+      %cv1 = arith.constant 1 : index
+      %po1 = arith.muli %lanes, %cv1 : index
+      %cv2 = arith.constant 2 : index
+      %po2 = arith.muli %lanes, %cv2 : index
+      %cv3 = arith.constant 3 : index
+      %po3 = arith.muli %lanes, %cv3 : index
+      scf.for %jb = %c0 to %n step %nr {
+        %left = arith.subi %n, %jb : index
+        %w0 = arith.subi %left, %po0 : index
+        %mask0 = vector.create_mask %w0 : vector<$lanes x i1>
+        %j0 = arith.addi %jb, %po0 : index
+        %w1 = arith.subi %left, %po1 : index
+        %mask1 = vector.create_mask %w1 : vector<$lanes x i1>
+        %j1 = arith.addi %jb, %po1 : index
+        %w2 = arith.subi %left, %po2 : index
+        %mask2 = vector.create_mask %w2 : vector<$lanes x i1>
+        %j2 = arith.addi %jb, %po2 : index
+        %w3 = arith.subi %left, %po3 : index
+        %mask3 = vector.create_mask %w3 : vector<$lanes x i1>
+        %j3 = arith.addi %jb, %po3 : index
+        scf.for %k = %c0 to %kk step %c1 {
+          %p0 = vector.maskedload %b[%k, %j0], %mask0, %z : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t> into vector<$lanes x $t>
+          vector.store %p0, %pb[%k, %po0] : memref<?x?x$t>, vector<$lanes x $t>
+          %p1 = vector.maskedload %b[%k, %j1], %mask1, %z : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t> into vector<$lanes x $t>
+          vector.store %p1, %pb[%k, %po1] : memref<?x?x$t>, vector<$lanes x $t>
+          %p2 = vector.maskedload %b[%k, %j2], %mask2, %z : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t> into vector<$lanes x $t>
+          vector.store %p2, %pb[%k, %po2] : memref<?x?x$t>, vector<$lanes x $t>
+          %p3 = vector.maskedload %b[%k, %j3], %mask3, %z : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t> into vector<$lanes x $t>
+          vector.store %p3, %pb[%k, %po3] : memref<?x?x$t>, vector<$lanes x $t>
+        }
+        scf.for %i0 = %c0 to %m step %c4 {
+          %i0c = arith.minui %i0, %last_row : index
+          %ro1 = arith.constant 1 : index
+          %iu1 = arith.addi %i0, %ro1 : index
+          %i1c = arith.minui %iu1, %last_row : index
+          %ro2 = arith.constant 2 : index
+          %iu2 = arith.addi %i0, %ro2 : index
+          %i2c = arith.minui %iu2, %last_row : index
+          %ro3 = arith.constant 3 : index
+          %iu3 = arith.addi %i0, %ro3 : index
+          %i3c = arith.minui %iu3, %last_row : index
+          %acc:16 = scf.for %k = %c0 to %kk step %c1 iter_args(%s0_0 = %z, %s0_1 = %z, %s0_2 = %z, %s0_3 = %z, %s1_0 = %z, %s1_1 = %z, %s1_2 = %z, %s1_3 = %z, %s2_0 = %z, %s2_1 = %z, %s2_2 = %z, %s2_3 = %z, %s3_0 = %z, %s3_1 = %z, %s3_2 = %z, %s3_3 = %z) -> (vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>) {
+            %b0 = vector.load %pb[%k, %po0] : memref<?x?x$t>, vector<$lanes x $t>
+            %b1 = vector.load %pb[%k, %po1] : memref<?x?x$t>, vector<$lanes x $t>
+            %b2 = vector.load %pb[%k, %po2] : memref<?x?x$t>, vector<$lanes x $t>
+            %b3 = vector.load %pb[%k, %po3] : memref<?x?x$t>, vector<$lanes x $t>
+            %x0 = memref.load %a[%i0c, %k] : memref<?x?x$t>
+            %a0 = "vector.broadcast"(%x0) : ($t) -> vector<$lanes x $t>
+            %t0_0 = vector.fma %a0, %b0, %s0_0 : vector<$lanes x $t>
+            %t0_1 = vector.fma %a0, %b1, %s0_1 : vector<$lanes x $t>
+            %t0_2 = vector.fma %a0, %b2, %s0_2 : vector<$lanes x $t>
+            %t0_3 = vector.fma %a0, %b3, %s0_3 : vector<$lanes x $t>
+            %x1 = memref.load %a[%i1c, %k] : memref<?x?x$t>
+            %a1 = "vector.broadcast"(%x1) : ($t) -> vector<$lanes x $t>
+            %t1_0 = vector.fma %a1, %b0, %s1_0 : vector<$lanes x $t>
+            %t1_1 = vector.fma %a1, %b1, %s1_1 : vector<$lanes x $t>
+            %t1_2 = vector.fma %a1, %b2, %s1_2 : vector<$lanes x $t>
+            %t1_3 = vector.fma %a1, %b3, %s1_3 : vector<$lanes x $t>
+            %x2 = memref.load %a[%i2c, %k] : memref<?x?x$t>
+            %a2 = "vector.broadcast"(%x2) : ($t) -> vector<$lanes x $t>
+            %t2_0 = vector.fma %a2, %b0, %s2_0 : vector<$lanes x $t>
+            %t2_1 = vector.fma %a2, %b1, %s2_1 : vector<$lanes x $t>
+            %t2_2 = vector.fma %a2, %b2, %s2_2 : vector<$lanes x $t>
+            %t2_3 = vector.fma %a2, %b3, %s2_3 : vector<$lanes x $t>
+            %x3 = memref.load %a[%i3c, %k] : memref<?x?x$t>
+            %a3 = "vector.broadcast"(%x3) : ($t) -> vector<$lanes x $t>
+            %t3_0 = vector.fma %a3, %b0, %s3_0 : vector<$lanes x $t>
+            %t3_1 = vector.fma %a3, %b1, %s3_1 : vector<$lanes x $t>
+            %t3_2 = vector.fma %a3, %b2, %s3_2 : vector<$lanes x $t>
+            %t3_3 = vector.fma %a3, %b3, %s3_3 : vector<$lanes x $t>
+            scf.yield %t0_0, %t0_1, %t0_2, %t0_3, %t1_0, %t1_1, %t1_2, %t1_3, %t2_0, %t2_1, %t2_2, %t2_3, %t3_0, %t3_1, %t3_2, %t3_3 : vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>
+          }
+          %in0 = arith.cmpi ult, %i0, %m : index
+          scf.if %in0 {
+            vector.maskedstore %c[%i0, %j0], %mask0, %acc#0 : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t>
+            vector.maskedstore %c[%i0, %j1], %mask1, %acc#1 : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t>
+            vector.maskedstore %c[%i0, %j2], %mask2, %acc#2 : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t>
+            vector.maskedstore %c[%i0, %j3], %mask3, %acc#3 : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t>
+          }
+          %in1 = arith.cmpi ult, %iu1, %m : index
+          scf.if %in1 {
+            vector.maskedstore %c[%iu1, %j0], %mask0, %acc#4 : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t>
+            vector.maskedstore %c[%iu1, %j1], %mask1, %acc#5 : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t>
+            vector.maskedstore %c[%iu1, %j2], %mask2, %acc#6 : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t>
+            vector.maskedstore %c[%iu1, %j3], %mask3, %acc#7 : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t>
+          }
+          %in2 = arith.cmpi ult, %iu2, %m : index
+          scf.if %in2 {
+            vector.maskedstore %c[%iu2, %j0], %mask0, %acc#8 : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t>
+            vector.maskedstore %c[%iu2, %j1], %mask1, %acc#9 : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t>
+            vector.maskedstore %c[%iu2, %j2], %mask2, %acc#10 : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t>
+            vector.maskedstore %c[%iu2, %j3], %mask3, %acc#11 : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t>
+          }
+          %in3 = arith.cmpi ult, %iu3, %m : index
+          scf.if %in3 {
+            vector.maskedstore %c[%iu3, %j0], %mask0, %acc#12 : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t>
+            vector.maskedstore %c[%iu3, %j1], %mask1, %acc#13 : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t>
+            vector.maskedstore %c[%iu3, %j2], %mask2, %acc#14 : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t>
+            vector.maskedstore %c[%iu3, %j3], %mask3, %acc#15 : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t>
+          }
+        }
+      }
+      memref.dealloc %pb : memref<?x?x$t>
+      %zero = arith.constant 0 : i32
+      macro.yield %zero : i32
+    }
+  };
+}
+
+/// Stamps `matmul` over 2-D tensors of `f32` or `f64`.
+macro_rules stamp_tensor_matmul {
+  ($t : ident , $lanes : expr) => {
+    impl Tensor<$t, [?, ?]> {
+      /// The matrix product: a new tensor with as many rows as this one and as many columns as
+      /// `other`, element `[i][j]` the sum over `k` of `self[i][k] * other[k][j]`. Refused when
+      /// this tensor's column count differs from `other`'s row count.
+      fn matmul(self : &Tensor<$t, [?, ?]>, other : &Tensor<$t, [?, ?]>) -> Tensor<$t, [?, ?]> {
+        assert(self.extent(1) == other.extent(0), "matmul needs as many columns on the left as rows on the right");
+        let mut out = Tensor<$t>([ self.extent(0), other.extent(1) ]);
+        let _done : i32 = tensor_matmul_kernel!(&mut out, self, other, $t, $lanes);
+        return out;
+      }
+    }
+  };
+}
+
+stamp_tensor_matmul!(f32 , 16);
+stamp_tensor_matmul!(f64 , 8);

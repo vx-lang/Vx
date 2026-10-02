@@ -1,0 +1,107 @@
+//===- std_tensor_matmul.vx - Vx Compiler -------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// std::tensor's `matmul` on f64 and f32, against a plain triple loop. The elements are small
+// multiples of 0.25 and 0.5, so every product and sum is exact and the two must agree exactly.
+// The sizes cover a single element, an empty shared dimension (all zeros), sizes that leave
+// part of a 4-row block and part of a column block over, and whole blocks.
+//
+// Each group: for every size, the largest difference from the plain loop (0) and one element
+// of the product; f64 first, then f32.
+//
+// EXPECT: 0 2.5 0 0 0 -4 0 -0.75 0 9.625 0 1.5 | 0 2.5 0 0 0 -4 0 -0.75 0 9.625 0 1.5
+import std::tensor;
+import core::num;
+
+fn left(i : i32, p : i32) -> f64 {
+  return ((((i * 7) + (p * 3)) % 11) - 5) as f64 * 0.5;
+}
+
+fn right(p : i32, j : i32) -> f64 {
+  return ((((p * 5) + (j * 2)) % 9) - 4) as f64 * 0.25;
+}
+
+// Prints the largest difference between `a.matmul(&b)` and the plain loop, then element
+// [m - 1][n - 1] of the product.
+fn check_f64(m : i32, k : i32, n : i32) -> i32 {
+  let mut a = Tensor<f64>([ m, k ]);
+  let mut b = Tensor<f64>([ k, n ]);
+  for i in 0..m {
+    for p in 0..k {
+      a[i][p] = left(i, p);
+    }
+  }
+  for p in 0..k {
+    for j in 0..n {
+      b[p][j] = right(p, j);
+    }
+  }
+  let c = a.matmul(&b);
+  let mut worst : f64 = 0.0;
+  for i in 0..m {
+    for j in 0..n {
+      let mut s : f64 = 0.0;
+      for p in 0..k {
+        s = s + a[i][p] * b[p][j];
+      }
+      worst = worst.max((c[i][j] - s).abs());
+    }
+  }
+  print(worst);
+  print!(" ");
+  print(c[m - 1][n - 1]);
+  print!(" ");
+  return 0;
+}
+
+fn check_f32(m : i32, k : i32, n : i32) -> i32 {
+  let mut a = Tensor<f32>([ m, k ]);
+  let mut b = Tensor<f32>([ k, n ]);
+  for i in 0..m {
+    for p in 0..k {
+      a[i][p] = left(i, p) as f32;
+    }
+  }
+  for p in 0..k {
+    for j in 0..n {
+      b[p][j] = right(p, j) as f32;
+    }
+  }
+  let c = a.matmul(&b);
+  let mut worst : f32 = 0.0;
+  for i in 0..m {
+    for j in 0..n {
+      let mut s : f32 = 0.0;
+      for p in 0..k {
+        s = s + a[i][p] * b[p][j];
+      }
+      worst = worst.max((c[i][j] - s).abs());
+    }
+  }
+  print(worst);
+  print!(" ");
+  print(c[m - 1][n - 1]);
+  print!(" ");
+  return 0;
+}
+
+fn main() -> i32 {
+  let _a1 = check_f64(1, 1, 1);
+  let _a2 = check_f64(3, 0, 4);
+  let _a3 = check_f64(5, 7, 129);
+  let _a4 = check_f64(17, 33, 100);
+  let _a5 = check_f64(64, 64, 64);
+  let _a6 = check_f64(8, 3, 70);
+  print!("| ");
+  let _b1 = check_f32(1, 1, 1);
+  let _b2 = check_f32(3, 0, 4);
+  let _b3 = check_f32(5, 7, 129);
+  let _b4 = check_f32(17, 33, 100);
+  let _b5 = check_f32(64, 64, 64);
+  let _b6 = check_f32(8, 3, 70);
+  return 0;
+}
