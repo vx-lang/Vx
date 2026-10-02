@@ -50,6 +50,12 @@ fn main() -> i32 {
   let mut im2col_host = Tensor<f32, [4, 4]>::uninit();
   let mut w_flat_host = Tensor<f32, [4, 4]>::uninit();
   let mut matmul_res_host = Tensor<f32, [4, 4]>::uninit();
+  // The multiply below adds into this tensor, so it starts at zero.
+  for i in 0..4 {
+    for j in 0..4 {
+      matmul_res_host[i][j] = 0.0;
+    }
+  }
 
   // Pad the 2x2 weights into a 4x1 vector, stored in the first column of a 4x4 matrix
   w_flat_host[0][0] = w_host[0][0];
