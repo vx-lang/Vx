@@ -1028,9 +1028,7 @@ stamp_tensor_statistics!(bf16 , f32);
 /// Stamps reductions and element-wise operations over a 2-D tensor of `$t`, adding up in
 /// `$acc` as the 1-D sums do. A reduction over the whole tensor answers one number. One along
 /// an axis answers a 1-D tensor, as numpy's `axis=` does: axis 0 reduces each column (one
-/// answer per column), axis 1 each row. Plain loops: these are not yet vectorized. The axis
-/// methods pick a length or index with `if` statements, since an `if` expression there does not
-/// compile yet.
+/// answer per column), axis 1 each row. Plain loops: these are not yet vectorized.
 macro_rules stamp_tensor_rank2 {
   ($t : ident , $acc : ident) => {
     impl Tensor<$t, [?, ?]> {
@@ -1081,21 +1079,22 @@ macro_rules stamp_tensor_rank2 {
       /// The sum along `axis`: of each column for axis 0, of each row for axis 1.
       fn sum_axis(self : &Tensor<$t, [?, ?]>, axis : i32) -> Tensor<$acc, [?]> {
         assert(axis == 0 || axis == 1, "sum_axis takes axis 0 or 1");
-        let mut length = self.extent(0);
-        if axis == 0 {
-          length = self.extent(1);
-        }
-        let mut out = Tensor<$acc>([ length ]);
+        let mut out = Tensor<$acc>([ if axis == 0 {
+          self.extent(1)
+        } else {
+          self.extent(0)
+        } ]);
         for k in 0..out.len() {
           out[k] = 0.0;
         }
         for i in 0..self.extent(0) {
           for j in 0..self.extent(1) {
-            let mut slot = i;
-            if axis == 0 {
-              slot = j;
-            }
-            out[slot] = out[slot] + (self[i][j] as $acc);
+            let k = if axis == 0 {
+              j
+            } else {
+              i
+            };
+            out[k] = out[k] + (self[i][j] as $acc);
           }
         }
         return out;
@@ -1104,27 +1103,29 @@ macro_rules stamp_tensor_rank2 {
       /// The average along `axis`: of each column for axis 0, of each row for axis 1.
       fn mean_axis(self : &Tensor<$t, [?, ?]>, axis : i32) -> Tensor<$acc, [?]> {
         assert(axis == 0 || axis == 1, "mean_axis takes axis 0 or 1");
-        let mut length = self.extent(0);
-        if axis == 0 {
-          length = self.extent(1);
-        }
-        let mut out = Tensor<$acc>([ length ]);
+        let mut out = Tensor<$acc>([ if axis == 0 {
+          self.extent(1)
+        } else {
+          self.extent(0)
+        } ]);
         for k in 0..out.len() {
           out[k] = 0.0;
         }
         for i in 0..self.extent(0) {
           for j in 0..self.extent(1) {
-            let mut slot = i;
-            if axis == 0 {
-              slot = j;
-            }
-            out[slot] = out[slot] + (self[i][j] as $acc);
+            let k = if axis == 0 {
+              j
+            } else {
+              i
+            };
+            out[k] = out[k] + (self[i][j] as $acc);
           }
         }
-        let mut count = self.extent(1);
-        if axis == 0 {
-          count = self.extent(0);
-        }
+        let count = if axis == 0 {
+          self.extent(0)
+        } else {
+          self.extent(1)
+        };
         for k in 0..out.len() {
           out[k] = out[k] / (count as $acc);
         }
@@ -1135,21 +1136,22 @@ macro_rules stamp_tensor_rank2 {
       /// A NaN is ignored.
       fn max_axis(self : &Tensor<$t, [?, ?]>, axis : i32) -> Tensor<$t, [?]> {
         assert(axis == 0 || axis == 1, "max_axis takes axis 0 or 1");
-        let mut length = self.extent(0);
-        if axis == 0 {
-          length = self.extent(1);
-        }
-        let mut out = Tensor<$t>([ length ]);
+        let mut out = Tensor<$t>([ if axis == 0 {
+          self.extent(1)
+        } else {
+          self.extent(0)
+        } ]);
         for k in 0..out.len() {
           out[k] = $t::neg_infinity();
         }
         for i in 0..self.extent(0) {
           for j in 0..self.extent(1) {
-            let mut slot = i;
-            if axis == 0 {
-              slot = j;
-            }
-            out[slot] = out[slot].max(self[i][j]);
+            let k = if axis == 0 {
+              j
+            } else {
+              i
+            };
+            out[k] = out[k].max(self[i][j]);
           }
         }
         return out;
@@ -1159,21 +1161,22 @@ macro_rules stamp_tensor_rank2 {
       /// A NaN is ignored.
       fn min_axis(self : &Tensor<$t, [?, ?]>, axis : i32) -> Tensor<$t, [?]> {
         assert(axis == 0 || axis == 1, "min_axis takes axis 0 or 1");
-        let mut length = self.extent(0);
-        if axis == 0 {
-          length = self.extent(1);
-        }
-        let mut out = Tensor<$t>([ length ]);
+        let mut out = Tensor<$t>([ if axis == 0 {
+          self.extent(1)
+        } else {
+          self.extent(0)
+        } ]);
         for k in 0..out.len() {
           out[k] = $t::infinity();
         }
         for i in 0..self.extent(0) {
           for j in 0..self.extent(1) {
-            let mut slot = i;
-            if axis == 0 {
-              slot = j;
-            }
-            out[slot] = out[slot].min(self[i][j]);
+            let k = if axis == 0 {
+              j
+            } else {
+              i
+            };
+            out[k] = out[k].min(self[i][j]);
           }
         }
         return out;
