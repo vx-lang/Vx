@@ -989,11 +989,11 @@ fn flat_lowers_rows_of_mixed_and_deeper_rank_dynamic_tensors() {
         57,
     );
     // A row of a `[?, 4]` tensor has a static shape, so it takes the literal-stride path over a
-    // dynamic base, and `dot` over two rows loads `vector<4xf32>`.
+    // dynamic base. Reading row 1 back catches an offset computed from the wrong stride.
     assert_flat_exit(
         "fn build(n : i32) -> Tensor<f32, [?, 4]> { \
            let mut m = Tensor<f32, [?, 4]>::new([n, 4]); m[0][2] = 2.0; m[1][2] = 5.0; return m; }\n\
-         fn main() -> i32 { let m = build(2); return dot(m[0], m[1]) as i32; }",
+         fn main() -> i32 { let m = build(2); let r = m[1]; return (r[2] * 2.0) as i32; }",
         10,
     );
     // A rank-3 dynamic tensor's row is a rank-2 view; both of its extents come from the base.
@@ -1818,20 +1818,6 @@ fn flat_matches_ast_tensor_param_passed_to_helper() {
 }
 
 #[test]
-fn flat_matches_ast_tensor_row_sum_reduction() {
-    // A float `sum` over a static-sized row (`q[0]`, a reinterpret_cast sub-view)
-    // fed into a compare so the exit code is an i32: sum([1,2,3,4]) = 10 > 9 sets
-    // r = 1. Exercises reinterpret_cast + vector.load + vector.reduction through
-    // the real JIT, flat-vs-AST. (The AST oracle can only reduce a static-sized
-    // slice, so the reduction is over a row, not the whole dynamic tensor.)
-    assert_parity(
-        "fn main() -> i32 { let mut q = Tensor<f32>([2, 4]); q[0][0] = 1.0; q[0][1] = 2.0; \
-         q[0][2] = 3.0; q[0][3] = 4.0; let mut r = 0; if sum(q[0]) > 9.0 { r = 1; } return r; }",
-        1,
-    );
-}
-
-#[test]
 fn flat_matches_ast_tensor_elementwise_row_store() {
     // The write-path shape: an elementwise scalar-broadcast multiply
     // over a row (`q[0] * 2.0`) stored back into a row (`o[0] = …`), then an element
@@ -1846,11 +1832,11 @@ fn flat_matches_ast_tensor_elementwise_row_store() {
 }
 
 #[test]
-fn flat_matches_ast_dot_scale_broadcast_write_path() {
-    // Capstone: a reduction feeding a scaled broadcast, composed end to end through
-    // the flat path -- `o[0] = v[0] * (dot(q[0], k[0]) * scale)`. dot([1,2,3,4],[1,1,1,1])
-    // = 10; * 0.5 = 5; v[0] * 5 = [10,10,10,10]; o[0][0] = 10 > 9 -> r = 1. Exercises
-    // reduction (dot) + scalar multiply + elementwise broadcast + row store + read,
+fn flat_matches_ast_score_scale_broadcast_write_path() {
+    // Capstone: a score feeding a scaled broadcast, composed end to end through the flat
+    // path -- `o[0] = v[0] * (d * scale)`, with `d` the dot product of q's and k's rows.
+    // d = [1,2,3,4] . [1,1,1,1] = 10; * 0.5 = 5; v[0] * 5 = [10,10,10,10]; o[0][0] = 10 > 9
+    // -> r = 1. Exercises a scalar multiply + elementwise broadcast + row store + read,
     // all together, flat-vs-AST.
     assert_parity(
         "fn main() -> i32 { \
@@ -1859,7 +1845,8 @@ fn flat_matches_ast_dot_scale_broadcast_write_path() {
            let mut v = Tensor<f32>([1, 4]); v[0][0] = 2.0; v[0][1] = 2.0; v[0][2] = 2.0; v[0][3] = 2.0; \
            let mut o = Tensor<f32>([1, 4]); \
            let scale = 0.5; \
-           o[0] = v[0] * (dot(q[0], k[0]) * scale); \
+           let mut d = 0.0; for j in 0..4 { d = d + q[0][j] * k[0][j]; } \
+           o[0] = v[0] * (d * scale); \
            let mut r = 0; if o[0][0] > 9.0 { r = 1; } return r; }",
         1,
     );
@@ -2691,15 +2678,6 @@ fn flat_lowers_value_array_literal() {
 fn corpus(name: &str) -> String {
     std::fs::read_to_string(format!("tests/backend/pass/{name}"))
         .unwrap_or_else(|e| panic!("read {name}: {e}"))
-}
-
-#[test]
-fn flat_matches_ast_corpus_slice_reductions() {
-    // A real corpus program end to end through the flat path: tensor alloc +
-    // scalar-element stores + typed row bindings + dot/sum/max/min reductions + a
-    // `for`-loop scalar oracle + scalar-element stores of the results + `print(o)`.
-    // The printed output must match the AST oracle.
-    assert_output_parity(&corpus("slice_reductions.vx"));
 }
 
 #[test]

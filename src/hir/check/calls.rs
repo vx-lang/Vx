@@ -573,17 +573,12 @@ impl<'a> TypeChecker<'a> {
 
                 // Mocking built-ins
                 let mut arg_types = Vec::new();
-                // Slice reductions (S2) read their operands (a zero-copy view); they do not
-                // consume the linear tensor, so the same slice can feed several reductions.
-                let is_slice_reduction =
-                    matches!(resolved_name.as_ref(), "dot" | "sum" | "max" | "min");
                 // A view reads the pointer it is handed and aliases the
                 // storage behind it; it takes nothing (#336).
                 let is_builtin_ref = resolved_name == "print".into()
                     || resolved_name == "Verified".into()
                     || resolved_name == "tensor_view_2d".into()
-                    || resolved_name == "matmul_into".into()
-                    || is_slice_reduction;
+                    || resolved_name == "matmul_into".into();
                 let arg_consume = if is_builtin_ref { false } else { consume };
 
                 // Reference-argument reborrow bookkeeping (#243): snapshot each base before the
@@ -2010,45 +2005,6 @@ impl<'a> TypeChecker<'a> {
                     Some(Type::Unknown)
                 }
             }
-        } else if resolved_name == "dot" {
-            // Slice reduction (S2): dot(a, b) over two rank-1 float slices -> scalar f32.
-            // Lowers to vector.load + arith.mulf + vector.reduction<add> (SIMD by construction).
-            // Half-precision slices are welcome, mixed with f32 freely: they widen on load and
-            // the accumulation is f32 regardless (Vx#320) -- a reduction's precision is the
-            // accumulator's, not the storage's.
-            if args.len() != 2 {
-                self.errors
-                    .push("Function 'dot' expects 2 slice arguments".to_string());
-            }
-            for t in arg_types.iter().take(2) {
-                if !Self::is_f32_slice(t) && !Self::is_half_slice(t) {
-                    self.errors.push(format!(
-                        "Function 'dot' expects rank-1 float slices (f32/f16/bf16), got {}",
-                        Self::describe_slice_operand(t)
-                    ));
-                }
-            }
-            Some(Type::Scalar(ElementType::F32))
-        } else if resolved_name == "sum" || resolved_name == "max" || resolved_name == "min" {
-            // Slice reduction (S2): sum/max/min(a) over a rank-1 float slice -> scalar f32.
-            // Lowers to vector.load + vector.reduction<add|maximumf|minimumf>. Half slices
-            // widen on load; the result is f32 like every reduction's (Vx#320).
-            if args.len() != 1 {
-                self.errors.push(format!(
-                    "Function '{}' expects 1 slice argument",
-                    resolved_name
-                ));
-            }
-            if let Some(t) = arg_types.first() {
-                if !Self::is_f32_slice(t) && !Self::is_half_slice(t) {
-                    self.errors.push(format!(
-                        "Function '{}' expects a rank-1 float slice (f32/f16/bf16), got {}",
-                        resolved_name,
-                        Self::describe_slice_operand(t)
-                    ));
-                }
-            }
-            Some(Type::Scalar(ElementType::F32))
         } else if resolved_name == "barrier" {
             // Block-level synchronization inside a spawn region (Vx#379): all threads of a
             // block reach it before any proceeds. Serial execution already provides that

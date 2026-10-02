@@ -98,11 +98,8 @@ pub enum Opcode {
     /// form — codegen loads the scalar element / views the sub-view); `1` = an element **place** on
     /// the left of an assignment, so the following `TensorStore` writes into it instead of loading.
     TensorIndex = 24,
-    /// Reduce a rank-1 tensor slice to a scalar. `operand1` is the slice (and `operand2` a second
-    /// slice for `dot`, else unused); `imm` is the reduction kind (0 = dot, 1 = sum, 2 = max,
-    /// 3 = min); `type_idx` is the scalar element type. Lowers to `vector.reduction` (with an
-    /// elementwise `mulf` first for `dot`).
-    Reduce = 25,
+    // 25 was the built-in `dot`/`sum`/`max`/`min`, which are `std::tensor` methods now. It is
+    // left unused on purpose: these numbers are the wire format of a serialized HIR body.
     /// Allocate storage for a tensor (`Tensor<T>([..])`): `type_idx` is the tensor type, `imm` its
     /// static byte size (element size × the product of the dims) — so the receiving side of a store
     /// has enough room. A `?` dimension's extent is the `operand1` of an `Arg` immediately before
@@ -310,7 +307,6 @@ impl Opcode {
             22 => FieldLoad,
             23 => FieldStore,
             24 => TensorIndex,
-            25 => Reduce,
             26 => TensorAlloc,
             27 => TensorStore,
             28 => Transfer,

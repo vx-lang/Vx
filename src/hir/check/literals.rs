@@ -325,16 +325,6 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    /// How to name an operand a slice builtin refused, for the diagnostic. `Display for Type`
-    /// has no tensor arm and falls through to `{:?}`, which prints every dimension's span --
-    /// unreadable, and the rank is the only part the reader needs.
-    pub(crate) fn describe_slice_operand(t: &Type) -> String {
-        match Self::as_tensor_operand(t) {
-            Some((elem, dims, _)) => format!("a rank-{} {} tensor", dims.len(), elem),
-            None => format!("{}", t),
-        }
-    }
-
     /// A rank-1 f32 tensor slice, as produced by `q[i]` (S1).
     ///
     /// The rank is part of the question. Every contract downstream of this reads the slice with

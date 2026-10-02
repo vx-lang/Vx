@@ -1340,10 +1340,10 @@ static LogicalResult diagnoseUnrunnableSpawns(Operation *root) {
 /// far end on whatever the worker says last.
 static bool isDeviceLowerableDialect(StringRef ns) {
   // `vector` entered the list with Vx#378 R1: the flat path's slice ops
-  // (`dot(q[i], k[j])`, `o[i] = o[i] + v[j] * p`) emit vector.load /
-  // vector.reduction / elementwise vector arith, and `convert-vector-to-llvm`
-  // in deviceImageOf turns those into LLVM vectors that NVPTX renders as wide
-  // (v4) loads -- the fix for the measured per-SM load-issue bound.
+  // (`o[i] = o[i] + v[j] * p`) emit vector.load / elementwise vector arith,
+  // and `convert-vector-to-llvm` in deviceImageOf turns those into LLVM
+  // vectors that NVPTX renders as wide (v4) loads -- the fix for the measured
+  // per-SM load-issue bound.
   return ns == "arith" || ns == "cf" || ns == "gpu" || ns == "math" ||
          ns == "memref" || ns == "scf" || ns == "vector";
 }

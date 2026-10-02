@@ -1912,7 +1912,6 @@ impl<'a> FnEmit<'a> {
             // slices; `imm` the kind (0 = dot, 1 = sum, 2 = max, 3 = min). Each slice is `vector.load`ed
             // to a `vector<Nxf32>`; `dot` fuses the two with `arith.mulf`; then `vector.reduction`.
             // Float only, matching the AST oracle (`vector<Nxf32>` → `f32`).
-            Opcode::Reduce => self.op_reduce(idx, ins),
             // `matmul_into(&mut dst, &a, &b)` (no result): `linalg.fill` + `linalg.matmul` on the
             // three whole-tensor memrefs, the same pair the AST path builds -- and the exact shape
             // `kernelKindOf` classifies, so a spawn whose whole job is this op still routes to
@@ -2495,18 +2494,6 @@ mod tests {
         assert!(mlir.contains("@get(%arg0: memref<4xi32>"), "{mlir}");
         assert!(mlir.contains("func.call @get("), "{mlir}");
         assert!(mlir.contains("(memref<4xi32>, i32) -> i32"), "{mlir}");
-    }
-
-    #[test]
-    fn emits_verifiable_tensor_sum_reduction() {
-        // A float `sum` reduction lowers to `vector.load` + `vector.reduction<add>`; the scalar result
-        // feeds a compare so the function still returns an i32.
-        let mlir = emit_module_and_verify(
-            "fn main() -> i32 { let mut q = Tensor<f32>([4]); q[0] = 1.0; q[1] = 2.0; q[2] = 3.0; \
-             q[3] = 4.0; let mut r = 0; if sum(q) > 9.0 { r = 1; } return r; }",
-        );
-        assert!(mlir.contains("vector.load"), "{mlir}");
-        assert!(mlir.contains("vector.reduction <add>"), "{mlir}");
     }
 
     #[test]
