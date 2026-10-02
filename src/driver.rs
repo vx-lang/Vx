@@ -1746,9 +1746,6 @@ fn get_optimization_pipeline(
         passes.push("func.func(convert-linalg-to-loops,lower-affine)".to_string());
         passes.push("convert-scf-to-cf".to_string());
         passes.push("expand-strided-metadata".to_string());
-        // `expand-strided-metadata` writes some offsets as `affine.apply`, so `lower-affine`
-        // runs again after it.
-        passes.push("func.func(lower-affine)".to_string());
         // A buffer that does not escape its function and is small enough belongs on the stack,
         // not in a `malloc` nothing frees (#641). The limit is per buffer: a program's tensors
         // run to megabytes and the default stack is 8 MiB, so only the small ones -- array
@@ -1767,6 +1764,9 @@ fn get_optimization_pipeline(
         // places nothing; see the pass for why placement programs are left alone for now.
         passes.push("vx-free-heap-buffers".to_string());
         passes.push("func.func(vx-normalize-stack-buffers)".to_string());
+        // `expand-strided-metadata` writes some offsets as `affine.apply`, so `lower-affine`
+        // runs again. After the buffer passes, so they see the module as they always have.
+        passes.push("func.func(lower-affine)".to_string());
         // Must precede finalize-memref-to-llvm: an unused `extern` lands as
         // `func.func private @malloc`, which memref finalization cannot reuse
         // (it looks for an llvm.func), so it creates its own and the symbol
@@ -1777,10 +1777,15 @@ fn get_optimization_pipeline(
         passes.push("convert-vector-to-llvm".to_string());
         // A math op with no LLVM intrinsic becomes a libm call, declared as a `func.func`, so
         // both math conversions run before `convert-func-to-llvm`.
-        passes.push("convert-math-to-llvm".to_string());
-        passes.push("convert-math-to-libm".to_string());
         passes.push("convert-func-to-llvm".to_string());
         passes.push("convert-index-to-llvm".to_string());
+        passes.push("convert-math-to-llvm".to_string());
+        passes.push("convert-math-to-libm".to_string());
+        // A math op with no LLVM intrinsic became a libm call just now, declared as a
+        // `func.func`, so `convert-func-to-llvm` runs again for those declarations. Moving the
+        // math passes ahead of the first one instead changed how the deallocation helper's
+        // arguments were lowered, and a program freed a buffer twice.
+        passes.push("convert-func-to-llvm".to_string());
         passes.push("convert-cf-to-llvm".to_string());
         passes.push("convert-arith-to-llvm".to_string());
         // `lift-cf-to-scf` leaves `ub.poison` placeholders behind; nothing else lowers them.

@@ -148,7 +148,7 @@ pub fn lower_to_llvm<'c>(context: &'c Context, module: &mut Module<'c>) -> Resul
     // stays on the heap is freed after its last use by `vx-free-heap-buffers`, in a program that
     // places nothing (#642).
     // See the fuller note on the copy of this pipeline in src/driver.rs.
-    pipeline.push_str("symbol-dce,func.func(convert-linalg-to-loops,lower-affine),convert-scf-to-cf,expand-strided-metadata,func.func(lower-affine),func.func(vx-promote-buffers-to-stack),vx-free-heap-buffers,func.func(vx-normalize-stack-buffers),convert-vector-to-llvm,finalize-memref-to-llvm,convert-math-to-llvm,convert-math-to-libm,convert-func-to-llvm,convert-index-to-llvm,convert-cf-to-llvm,convert-arith-to-llvm,convert-ub-to-llvm,reconcile-unrealized-casts)");
+    pipeline.push_str("symbol-dce,func.func(convert-linalg-to-loops,lower-affine),convert-scf-to-cf,expand-strided-metadata,func.func(vx-promote-buffers-to-stack),vx-free-heap-buffers,func.func(vx-normalize-stack-buffers),func.func(lower-affine),convert-vector-to-llvm,finalize-memref-to-llvm,convert-func-to-llvm,convert-index-to-llvm,convert-math-to-llvm,convert-math-to-libm,convert-func-to-llvm,convert-cf-to-llvm,convert-arith-to-llvm,convert-ub-to-llvm,reconcile-unrealized-casts)");
 
     melior::utility::parse_pass_pipeline(pass_manager.as_operation_pass_manager(), &pipeline)
         .map_err(|e| format!("Failed to parse pass pipeline: {}", e))?;
