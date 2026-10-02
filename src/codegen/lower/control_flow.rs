@@ -272,11 +272,39 @@ impl<'c> LowerToMelior<'c> for IfExpr {
 
 impl<'c> LowerToMelior<'c> for ForLoopStmt {
     type Output = Result<Option<melior::ir::BlockRef<'c, 'c>>, LowerError>;
+    /// The loop variable is a value, not a stack slot, so a `let mut` of the same name earlier
+    /// in the function must not make the body read it through that slot. What the name meant
+    /// before the loop is put back after it.
     fn lower(
         &self,
         gen: &mut MeliorGenerator<'c>,
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Self::Output {
+        let name = self.iter.to_string();
+        let outer_value = gen.env.get(name.as_str()).copied();
+        let outer_slot = gen.allocs.remove(&name);
+        let result = lower_for_loop(self, gen, block);
+        match outer_value {
+            Some(v) => {
+                gen.env.insert(name.clone().into(), v);
+            }
+            None => {
+                gen.env.remove(name.as_str());
+            }
+        }
+        if outer_slot {
+            gen.allocs.insert(name);
+        }
+        result
+    }
+}
+
+fn lower_for_loop<'c>(
+    for_loop: &ForLoopStmt,
+    gen: &mut MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+) -> Result<Option<melior::ir::BlockRef<'c, 'c>>, LowerError> {
+    {
         let ForLoopStmt {
             iter,
             iterable,
@@ -284,7 +312,7 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
             body,
             span: _,
             next_fn,
-        } = self;
+        } = for_loop;
 
         if let Expr::Range(syntax::expr::RangeExpr {
             start,
