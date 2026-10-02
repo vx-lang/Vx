@@ -5,8 +5,17 @@
   <link href="https://vxlang.org/blog/feed.xml" rel="self"/>
   <link href="https://vxlang.org/blog/"/>
   <id>https://vxlang.org/blog/</id>
-  <updated>2026-10-01T18:00:00Z</updated>
+  <updated>2026-10-01T20:00:00Z</updated>
   <author><name>Aditya Kumar</name></author>
+
+  <entry>
+    <title>Can the borrow checker algorithm be auto-vectorized? The answer is yes!</title>
+    <link href="https://vxlang.org/blog/can-the-borrow-checker-be-auto-vectorized.html"/>
+    <id>https://vxlang.org/blog/can-the-borrow-checker-be-auto-vectorized.html</id>
+    <updated>2026-10-01T20:00:00Z</updated>
+    <author><name>Aditya Kumar</name></author>
+    <summary>Vx's borrow checker packs up to four lifetimes into one 64-bit word, and checks that one lifetime may stand in for another with a loop that stops at the first failure. Rewritten without early exits, the check gives the same answers on every input tried, and LLVM vectorizes it without hand-written intrinsics: four slots in one NEON register for one check, eight per instruction for a batch. A batch then costs about 1 ns per check whatever the input, where the old loop takes 0.7 to 12 ns. The compiler now uses the new check, with the equality test kept first because identical words were faster with it.</summary>
+  </entry>
 
   <entry>
     <title>What comptime can do in Vx</title>

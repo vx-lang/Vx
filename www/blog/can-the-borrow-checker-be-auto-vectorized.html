@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Can the borrow checker algorithm be auto-vectorized? The answer is yes!</title>
+<meta name="author" content="Aditya Kumar">
+<meta name="description" content="Part of Vx's borrow checker packs four lifetimes into one 64-bit word. Rewritten without early exits, the check that one lifetime may stand in for another gives the same answers on every input tried, and LLVM vectorizes it on its own: four slots in one SIMD register, eight per instruction in a batch.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+
+<meta property="og:title" content="Can the borrow checker algorithm be auto-vectorized? The answer is yes!">
+<meta property="og:description" content="Rewritten without early exits, a lifetime check from Vx's borrow checker is vectorized by LLVM on its own, with no branches.">
+<meta property="og:type" content="article">
+<meta property="article:published_time" content="2026-10-01T20:00:00Z">
+<meta property="og:url" content="https://vxlang.org/blog/can-the-borrow-checker-be-auto-vectorized.html">
+<meta property="og:image" content="https://vxlang.org/cards/blog-can-the-borrow-checker-be-auto-vectorized.png">
+<meta property="og:image:alt" content="Can the borrow checker be auto-vectorized? Four lifetime slots in one SIMD register.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://vxlang.org/cards/blog-can-the-borrow-checker-be-auto-vectorized.png">
+
+<link rel="alternate" type="application/atom+xml" title="Vx" href="/blog/feed.xml">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header class="nav">
+  <a class="brand" href="/">
+    <span class="mark">Vx</span>
+  </a>
+  <nav>
+    <a href="/docs/getting-started.html">Install</a>
+    <a href="/docs/tour.html">Language tour</a>
+    <a href="/docs/">Docs</a>
+    <a href="/blog/">Blog</a>
+    <a href="https://github.com/vx-lang/Vx">GitHub</a>
+  </nav>
+</header>
+
+<main>
+
+<article class="post">
+
+<h1>Can the borrow checker algorithm be auto-vectorized? The answer is yes!</h1>
+<p class="post-meta">Aditya Kumar &middot; 1 October 2026</p>
+
+<blockquote class="tldr"><strong>TL;DR</strong> — Vx's borrow checker packs the lifetimes
+of a reference type into four 16-bit slots of one 64-bit word. The check that one lifetime may
+stand in for another is a loop over those slots that stops at the first failure, and LLVM does not
+vectorize it. Rewritten without early exits, the same check gives the same answer on every input we
+could try, and LLVM turns it into SIMD code with no branches at all: four slots in one register for
+a single check, eight slots per instruction for a batch. In a batch it costs about 1 ns per check
+whatever the input, where the old loop takes 0.7 to 12 ns, depending on the input. The compiler now uses the
+new check.</blockquote>
+
+<p>A borrow checker sounds like the last thing a CPU's vector unit could help with. It walks a
+program, follows references and asks questions like &ldquo;does this borrow outlive the value it
+points to?&rdquo; That is pointer chasing and branching, the opposite of the long, regular loops
+that SIMD instructions are built for.</p>
+
+<p>Part of it, though, is plain arithmetic on small integers, and Vx stores that part in a
+shape a vector unit likes. This post takes that one step of Vx's borrow checker and shows that LLVM
+vectorizes it on its own, once the code is written in a form it can vectorize. No hand-written
+SIMD intrinsics are involved.</p>
+
+<h2>Lifetimes as numbers</h2>
+
+<p>Vx gives every lexical block a <em>region</em>: its nesting depth. Region 0 is
+<code>'static</code>, region 1 is a function's body, and each block inside adds one. A smaller
+region lives longer. A reference type also carries a <em>variance</em>, which says how its
+lifetime may change when the reference is assigned:</p>
+
+<ul>
+<li><strong>Invariant</strong> (0), as for the inside of <code>&amp;mut T</code>: the regions must be equal.</li>
+<li><strong>Covariant</strong> (1), as for <code>&amp;'a T</code>: the source must live at least as long as the target, so its region must be smaller or equal.</li>
+<li><strong>Contravariant</strong> (2), as for a function argument: the other way round.</li>
+</ul>
+
+<p>The compiler gives a type a 256-bit identifier, and for a reference type one 64-bit word of
+it holds up to four lifetime parameters, 16 bits each:</p>
+
+<pre><code>bit:   63      48 47      32 31      16 15       0
+       [ slot 3  ] [ slot 2  ] [ slot 1  ] [ slot 0  ]
+
+one slot:  [ variance : 4 bits | region : 12 bits ]
+           slot 0 is the return slot: only 9 of its region bits are the region</code></pre>
+
+<p>A region field with every bit set means &ldquo;not decided yet&rdquo; and matches
+anything. When a reference of one type is assigned to a place of another type, the checker compares
+the two words slot by slot. Here is that check as it was in <code>src/borrow.rs</code>, in
+<code>verify_subtyping_bounds</code>, with the comments and the lookup around it taken out and a
+shorter name:</p>
+
+<!-- vx-doctest: skip: Rust, from the compiler -->
+<pre><code><span class="k">fn</span> <span class="f">check_scalar</span>(bits_a: <span class="t">u64</span>, bits_b: <span class="t">u64</span>) -&gt; <span class="t">bool</span> {
+    <span class="k">if</span> bits_a == bits_b {
+        <span class="k">return</span> <span class="k">true</span>;
+    }
+    <span class="k">for</span> i <span class="k">in</span> <span class="n">0</span>..<span class="n">4</span> {
+        <span class="k">let</span> shift = i * <span class="n">16</span>;
+        <span class="k">let</span> slot_a = (bits_a &gt;&gt; shift) &amp; PARAM_MASK;
+        <span class="k">let</span> slot_b = (bits_b &gt;&gt; shift) &amp; PARAM_MASK;
+        <span class="k">let</span> variance_a = (slot_a &amp; VARIANCE_MASK) &gt;&gt; <span class="n">12</span>;
+        <span class="k">let</span> variance_b = (slot_b &amp; VARIANCE_MASK) &gt;&gt; <span class="n">12</span>;
+        <span class="k">if</span> variance_a != variance_b {
+            <span class="k">return</span> <span class="k">false</span>;
+        }
+        <span class="k">let</span> (region_mask, region_unset) = <span class="k">if</span> i == <span class="n">0</span> {
+            (REGION_MASK_0, REGION_UNSET_0)
+        } <span class="k">else</span> {
+            (REGION_MASK, REGION_UNSET)
+        };
+        <span class="k">let</span> region_a = slot_a &amp; region_mask;
+        <span class="k">let</span> region_b = slot_b &amp; region_mask;
+        <span class="k">if</span> region_a == region_unset || region_b == region_unset {
+            <span class="k">continue</span>;
+        }
+        <span class="k">let</span> valid = <span class="k">match</span> variance_a {
+            <span class="n">0x0</span> =&gt; region_a == region_b,
+            <span class="n">0x1</span> =&gt; region_a &lt;= region_b,
+            <span class="n">0x2</span> =&gt; region_a &gt;= region_b,
+            _ =&gt; <span class="k">false</span>,
+        };
+        <span class="k">if</span> !valid {
+            <span class="k">return</span> <span class="k">false</span>;
+        }
+    }
+    <span class="k">true</span>
+}</code></pre>
+
+<p>It reads well, and it is fast when the answer comes early. But every <code>return</code>
+and <code>continue</code> inside the loop is a branch whose direction depends on the data. A loop
+that can leave in the middle is also a loop LLVM's vectorizer will not touch: to work on four slots
+at once, it has to know all four will be looked at.</p>
+
+<h2>The same check, with no way out of the loop</h2>
+
+<p>The fix is to stop asking questions one at a time. Work out every condition for every
+slot, combine them with <code>&amp;</code> and <code>|</code>, and decide at the end:</p>
+
+<!-- vx-doctest: skip: Rust, the rewritten check -->
+<pre><code><span class="k">const</span> MASKS: [<span class="t">u16</span>; <span class="n">4</span>] = [<span class="n">0x01FF</span>, <span class="n">0x0FFF</span>, <span class="n">0x0FFF</span>, <span class="n">0x0FFF</span>];
+
+<span class="c">// One slot. Every condition is computed, then combined with &amp; and |.</span>
+<span class="k">fn</span> <span class="f">slot_ok</span>(a: <span class="t">u16</span>, b: <span class="t">u16</span>, mask: <span class="t">u16</span>) -&gt; <span class="t">bool</span> {
+    <span class="k">let</span> (va, vb) = (a &gt;&gt; <span class="n">12</span>, b &gt;&gt; <span class="n">12</span>);
+    <span class="k">let</span> (ra, rb) = (a &amp; mask, b &amp; mask);
+    <span class="k">let</span> wildcard = (ra == mask) | (rb == mask);
+    <span class="k">let</span> order = ((va == <span class="n">0</span>) &amp; (ra == rb))
+              | ((va == <span class="n">1</span>) &amp; (ra &lt;= rb))
+              | ((va == <span class="n">2</span>) &amp; (ra &gt;= rb));
+    (va == vb) &amp; (wildcard | order)
+}
+
+<span class="c">// All four slots are checked, always, and the answers are ANDed.</span>
+<span class="k">fn</span> <span class="f">check_branchless</span>(bits_a: <span class="t">u64</span>, bits_b: <span class="t">u64</span>) -&gt; <span class="t">bool</span> {
+    <span class="k">let</span> <span class="k">mut</span> all = <span class="k">true</span>;
+    <span class="k">for</span> i <span class="k">in</span> <span class="n">0</span>..<span class="n">4</span> {
+        <span class="k">let</span> a = (bits_a &gt;&gt; (<span class="n">16</span> * i)) <span class="k">as</span> <span class="t">u16</span>;
+        <span class="k">let</span> b = (bits_b &gt;&gt; (<span class="n">16</span> * i)) <span class="k">as</span> <span class="t">u16</span>;
+        all &amp;= <span class="f">slot_ok</span>(a, b, MASKS[i]);
+    }
+    (bits_a == bits_b) | all
+}</code></pre>
+
+<p>The logic is the same, written as one formula per slot. The slot-0 mask goes in a small
+table instead of an <code>if</code>. The &ldquo;not decided yet&rdquo; value is the mask itself,
+so one comparison against the mask covers both slot kinds.</p>
+
+<h2>What LLVM makes of it</h2>
+
+<p>Compiled by rustc 1.95.0 with <code>--release</code> for an Apple M4, a single call to
+<code>check_branchless</code> becomes this. It is the complete function, with nothing left
+out:</p>
+
+<!-- vx-doctest: skip: AArch64 assembly -->
+<pre><code>dup.2d v0, x1
+adrp x8, lCPI6_0@PAGE
+ldr q1, [x8, lCPI6_0@PAGEOFF]
+ushl.2d v2, v0, v1
+adrp x8, lCPI6_1@PAGE
+ldr q3, [x8, lCPI6_1@PAGEOFF]
+ushl.2d v0, v0, v3
+uzp1.4s v2, v0, v2
+xtn.4h v2, v2
+xtn.2s v0, v0
+dup.2d v4, x0
+ushl.2d v1, v4, v1
+ushl.2d v3, v4, v3
+uzp1.4s v1, v3, v1
+xtn.4h v1, v1
+ushr.4h v3, v1, #12
+adrp x8, lCPI6_2@PAGE
+ldr d4, [x8, lCPI6_2@PAGEOFF]
+and.8b v1, v1, v4
+and.8b v5, v2, v4
+uzp1.4h v0, v0, v0
+mov.s v0[1], v2[1]
+ushr.4h v0, v0, #12
+cmeq.4h v2, v1, v4
+mvn.8b v2, v2
+cmeq.4h v4, v5, v4
+bic.8b v2, v2, v4
+movi.4h v4, #2
+cmeq.4h v4, v3, v4
+cmhi.4h v6, v5, v1
+orn.8b v4, v6, v4
+cmtst.4h v6, v3, v3
+cmeq.4h v7, v1, v5
+orn.8b v6, v6, v7
+movi.4h v7, #1
+cmeq.4h v7, v3, v7
+cmhi.4h v1, v1, v5
+orn.8b v1, v1, v7
+and.8b v1, v6, v1
+and.8b v1, v4, v1
+and.8b v1, v2, v1
+cmeq.4h v0, v3, v0
+orn.8b v0, v1, v0
+umaxv.4h h0, v0
+fmov w8, s0
+cmp x0, x1
+cset w9, eq
+orn w8, w9, w8
+and w0, w8, #0x1
+ret</code></pre>
+
+<p>It has no conditional branches. The <code>.4h</code> suffix means &ldquo;four 16-bit
+lanes&rdquo;: LLVM placed the four slots of each word side by side in one NEON register, the way
+they already sit in the <code>u64</code>. <code>ushr.4h #12</code> takes out all four variances at
+once. <code>cmeq.4h</code> and <code>cmhi.4h</code> compare all four regions at once, which covers
+the equal, smaller-or-equal and greater-or-equal tests. <code>umaxv.4h</code> folds the four answers
+into one. This is LLVM's SLP vectorizer at work: it found four copies of the same arithmetic in
+straight-line code and packed them into one register.</p>
+
+<p>A compiler can check many assignments, so the next question is a loop over many pairs:</p>
+
+<!-- vx-doctest: skip: Rust, a batch of checks -->
+<pre><code><span class="k">fn</span> <span class="f">batch_pairs</span>(a: &amp;[<span class="t">u64</span>], b: &amp;[<span class="t">u64</span>], out: &amp;<span class="k">mut</span> [<span class="t">bool</span>]) {
+    <span class="k">for</span> ((x, y), o) <span class="k">in</span> a.<span class="f">iter</span>().<span class="f">zip</span>(b).<span class="f">zip</span>(out.<span class="f">iter_mut</span>()) {
+        *o = <span class="f">check_branchless</span>(*x, *y);
+    }
+}</code></pre>
+
+<p>LLVM's loop vectorizer takes this one. The compiled function contains 434 vector
+instructions, working on eight slots per instruction (<code>ushr.8h</code>, <code>cmhs.8h</code>,
+<code>cmeq.8h</code>), with <code>cmeq.2d</code> testing two whole words for equality at once.
+The old <code>check_scalar</code> compiles to 98 instructions, 37 of them conditional branches,
+and no vector instructions.</p>
+
+<p>LLVM reports both steps itself. Built with <code>-C remark=all</code>, it names the SLP
+vectorizer for the single check and the loop vectorizer for the batch, which handles 16 pairs per
+pass through the loop.</p>
+
+<p>The form of the code matters. Our first attempt kept the branch-free slot formula but
+walked all the slots of all the pairs in one flat loop, looking up each slot's mask with
+<code>MASKS[j % 4]</code>, and then ANDed each group of four in a second loop. It gave the same
+answers but took about 4.5 ns per check whatever the input. That is no better than the old
+loop, except on pairs that pass every slot. The version above, with the four slots written out per pair, is the fast one.</p>
+
+<h2>Same answers</h2>
+
+<p>A faster check that gives a different answer is a broken borrow checker, so we compared
+the two versions three ways:</p>
+
+<ul>
+<li><strong>Every value of one slot.</strong> For each of the four slots, every pair of 16-bit
+values, 2<sup>32</sup> pairs per slot, with the other slots zero. That is 17.2 billion checks in
+6.6 seconds on eight threads, and no disagreements.</li>
+<li><strong>Whole words.</strong> 50 million pairs each of random 64-bit words, made-up lifetime
+words, words that pass every slot, and identical words, through every version timed below. No
+disagreements.</li>
+<li><strong>Breaking it on purpose.</strong> We made three mistakes in the new version, one at a
+time: <code>&lt;=</code> written as <code>&lt;</code>, the whole-word equality left out, and the
+wrong mask for slot 0. Each one produced thousands of disagreements or more, so the tests do
+catch mistakes.</li>
+</ul>
+
+<p>The first test cannot try every pair of whole words, since there are 2<sup>128</sup> of
+them. It does cover every input a single slot can see, and the result for a word is the results of
+its slots ANDed together, plus the whole-word equality, which the second test exercises.</p>
+
+<h2>Is it faster?</h2>
+
+<p>Sometimes. Each version checked the same 1,048,576 pairs, best of 30 runs, on one core
+of an Apple M4. The made-up lifetime words have variances 0 to 2 and small regions, and almost all of
+them fail somewhere. The passing pairs pass every slot, and none of them are identical. Every time
+below is per check, and each range covers three separate runs.</p>
+
+<p>First, a loop over a batch, which lets the loop vectorizer work on many pairs at once:</p>
+
+<table>
+<thead><tr><th>Input</th><th>Old loop</th><th>Vectorized</th></tr></thead>
+<tbody>
+<tr><td>Pairs that pass every slot</td><td>11.7&ndash;11.9 ns</td><td>0.97&ndash;1.04 ns</td></tr>
+<tr><td>Made-up lifetime words</td><td>4.6&ndash;4.7 ns</td><td>0.97&ndash;1.04 ns</td></tr>
+<tr><td>Random 64-bit words</td><td>1.4&ndash;1.6 ns</td><td>1.03&ndash;1.04 ns</td></tr>
+<tr><td>Identical words</td><td>0.70 ns</td><td>1.03&ndash;1.05 ns</td></tr>
+</tbody>
+</table>
+
+<p>The vectorized check costs the same for every input, because it never branches. The
+old loop depends on its input. Random words almost always fail at slot 0, the branch predictor
+learns that, and the loop costs little more than the new code. When it has to look at all four
+slots and the outcomes vary, mispredicted branches make it over ten times slower. When the two words
+are identical, its first line returns straight away and it beats the new code.</p>
+
+<p>The compiler does not check assignments in batches, though. It makes one call per
+assignment, so the second measurement keeps each check a separate call. Here the four slots are
+still in one register, but nothing is shared between pairs:</p>
+
+<table>
+<thead><tr><th>Input</th><th>Old loop</th><th>Branch-free</th><th>Equality test, then branch-free</th></tr></thead>
+<tbody>
+<tr><td>Pairs that pass every slot</td><td>11.8&ndash;11.9 ns</td><td>2.2&ndash;2.4 ns</td><td>2.2&ndash;2.4 ns</td></tr>
+<tr><td>Made-up lifetime words</td><td>4.6&ndash;4.7 ns</td><td>2.4 ns</td><td>2.2&ndash;2.4 ns</td></tr>
+<tr><td>Random 64-bit words</td><td>1.6&ndash;1.7 ns</td><td>2.3&ndash;2.4 ns</td><td>2.4&ndash;2.5 ns</td></tr>
+<tr><td>Identical words</td><td>0.91&ndash;0.93 ns</td><td>2.2&ndash;2.4 ns</td><td>0.71&ndash;0.72 ns</td></tr>
+</tbody>
+</table>
+
+<p>The last column keeps the old loop's first line, <code>if bits_a == bits_b { return
+true; }</code>, and runs the branch-free check after it. That one predictable branch gives back the
+fast case for identical words, and the result is the fastest or close to it for every input except
+random words. This is the version Vx now uses. We have not measured how often each kind of pair
+turns up in real Vx programs, so how much it saves in practice is still open.</p>
+
+<h2>What this does not show</h2>
+
+<ul>
+<li><strong>It is one step of the borrow checker.</strong> The other half, which tracks the live
+borrows of each variable and reports two <code>&amp;mut</code> borrows of the same value, keeps its
+records in hash maps. That part is not vectorized, and this post does not suggest how it could
+be.</li>
+<li><strong>The timings come from a copy of the check.</strong> The experiment copies it into a
+small crate, so that it can be tested on billions of inputs and timed apart from everything else.
+The compiler itself now runs the version with the equality test first
+(<a href="https://github.com/vx-lang/Vx/pull/961">#961</a>), and its tests compare it against
+the old loop. Disassembling the release <code>vxc</code> shows the same NEON slot code inside
+<code>verify_subtyping_bounds</code>.</li>
+<li><strong>It will not make Vx compile noticeably faster.</strong> The compiler runs this check
+once for each assignment of one reference to another, and a nanosecond or ten per assignment is far
+too small to see in a whole compile.</li>
+<li><strong>The timings are from one machine.</strong> They come from a microbenchmark on one Apple
+M4, and small changes to the surrounding code moved some of the old loop's times by as much as
+2.6 times between builds. The shape of the result held each time: the branch-free check costs the same
+on every input, and the old loop does not.</li>
+</ul>
+
+<p>The point is the answer to the question in the title. Part of a borrow checker can be put
+into a form that a vector unit can run, and the compiler does the vectorizing by itself, as long as
+the code gives it straight lines to work with. Packing lifetimes into fixed-width fields is what
+makes that possible: four slots of 16 bits are already four lanes of a vector register.</p>
+
+<p class="post-foot">The check lives in <code>src/borrow.rs</code>
+(<code>verify_subtyping_bounds</code>). For how Vx's borrow checker behaves from a programmer's
+side, see <a href="/docs/ownership.html">Ownership and borrowing</a>.</p>
+</article>
+
+</main>
+
+<footer>
+  <p>Vx is Apache 2.0 with the LLVM exception. <a href="https://github.com/vx-lang/Vx">Source</a>. Questions and discussion: <a href="https://www.reddit.com/r/vxlang">r/vxlang</a>.</p>
+</footer>
+
+</body>
+</html>

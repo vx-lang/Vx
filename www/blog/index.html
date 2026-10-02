@@ -43,6 +43,14 @@
 
   <ul class="posts">
     <li>
+      <a href="/blog/can-the-borrow-checker-be-auto-vectorized.html">Can the borrow checker algorithm be auto-vectorized? The answer is yes!</a>
+      <time datetime="2026-10-01">1 October 2026</time>
+      <p>Vx's borrow checker packs four lifetimes into one 64-bit word. Rewritten without early
+      exits, the check that one lifetime may stand in for another gives the same answers on every
+      input tried, and LLVM turns it into SIMD code with no branches. What it costs, and when the
+      old loop is still faster.</p>
+    </li>
+    <li>
       <a href="/blog/what-comptime-can-do.html">What comptime can do in Vx</a>
       <time datetime="2026-10-01">1 October 2026</time>
       <p>A <code>comptime</code> block runs ordinary Vx code inside the compiler and puts the
