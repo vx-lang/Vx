@@ -1,0 +1,26 @@
+//===- comptime_same_pointer_passed_twice.vx - Vx --------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+// Given the same pointer twice, a write through `a` is seen through `b`. Run as a program, this
+// gives 11. The comptime evaluator refuses a call whose arguments reach the same variable.
+fn set_one_then_add_ten(a : *mut i32, b : *mut i32) -> i32 {
+  unsafe { *a = 1i32; *b = *b + 10i32; }
+  return 0i32;
+}
+
+fn main() -> i32 {
+  // CHECK: Error[E3033]{{.*}}cannot be evaluated
+  let value = comptime {
+    let mut local = 5i32;
+    let pointer : *mut i32 = &mut local;
+    let _ignored = set_one_then_add_ten(pointer, pointer);
+    local
+  };
+  return value;
+}

@@ -1197,10 +1197,6 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
             .map(|(place, target)| (place.clone(), target.clone()))
             .collect();
         self.context.push_scope();
-        // A caller place passed to more than one parameter, as in `poke2(p, p)`, is one value:
-        // every such parameter after the first reaches the first one's binding, so a write
-        // through either is seen through both, and only the first is written back.
-        let mut parameter_for_place: HashMap<ComptimeWritePlace, Symbol> = HashMap::new();
         for ((((parameter, _), parameter_can_carry_mut_reference), argument), writeback) in function
             .params
             .iter()
@@ -1211,18 +1207,13 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
             self.context
                 .declare(parameter.clone(), argument.value.facts.clone());
             self.env.insert(parameter.clone(), argument.value.clone());
-            if let Some(place) = writeback
-                .as_ref()
-                .filter(|_| *parameter_can_carry_mut_reference)
-            {
+            if *parameter_can_carry_mut_reference && writeback.is_some() {
                 // The parameter's private binding is its lvalue inside this call. When the call
                 // returns, its final value is copied to the caller's tracked place below.
-                let owner = parameter_for_place
-                    .entry(place.clone())
-                    .or_insert_with(|| parameter.clone())
-                    .clone();
-                self.reference_places
-                    .insert(parameter.clone(), ComptimeWritePlace::Binding(owner));
+                self.reference_places.insert(
+                    parameter.clone(),
+                    ComptimeWritePlace::Binding(parameter.clone()),
+                );
             }
         }
         let body = self.block(&function.body);
@@ -1382,16 +1373,15 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
             {
                 return self.refusal_after(args);
             }
-            // The same place passed twice is shared inside the call. A place and a part of it,
-            // such as `&mut h` and `&mut h.n`, would need one copy nested in the other, which
-            // this interpreter does not model; that call is not folded.
+            // Each parameter gets its own copy of what it points to, so two arguments reaching
+            // the same variable, as in `f(p, p)` or `f(&mut h, &mut h.n)`, would not see each
+            // other's writes. Such a call is not folded.
             let places = writebacks.iter().flatten().collect::<Vec<_>>();
-            let partly_overlapping = places.iter().enumerate().any(|(i, a)| {
-                places[i + 1..]
-                    .iter()
-                    .any(|b| a != b && Self::places_overlap(a, b))
-            });
-            if partly_overlapping {
+            let overlapping = places
+                .iter()
+                .enumerate()
+                .any(|(i, a)| places[i + 1..].iter().any(|b| Self::places_overlap(a, b)));
+            if overlapping {
                 return self.unsupported_after(args);
             }
             // The borrow outcome deliberately has no scalar `Value`: `comptime { &mut x }`
