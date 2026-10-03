@@ -300,9 +300,6 @@ mod compare {
     }
 
     /// Compiles `src` with `vxc --action emit-obj -O3` and links it the way `--run` does.
-    ///
-    /// Not with `--run`: that path compiles for a generic CPU, which made the same program
-    /// about a quarter slower than this one.
     fn build_vx(vxc: &Path, src: &Path, out_dir: &Path, stem: &str) -> Result<PathBuf, String> {
         let obj = out_dir.join(format!("{stem}.o"));
         let exe = out_dir.join(format!("{stem}-vx"));

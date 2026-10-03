@@ -104,6 +104,21 @@ impl Drop for ObjectEmitter {
     }
 }
 
+/// The target triple of the machine running the compiler, from `llvm-config --host-target`.
+fn host_target_triple() -> Result<String, String> {
+    let llvm_config_path =
+        std::env::var("LLVM_CONFIG_PATH").unwrap_or_else(|_| "llvm-config".to_string());
+    let out = Command::new(&llvm_config_path)
+        .arg("--host-target")
+        .output()
+        .map_err(|e| format!("Failed to run {llvm_config_path}: {e}"))?;
+    let triple = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if !out.status.success() || triple.is_empty() {
+        return Err(format!("{llvm_config_path} --host-target gave no triple"));
+    }
+    Ok(triple)
+}
+
 /// The directory LLVM installs its runtime libraries in.
 ///
 /// Resolved through PATH by default (config.local puts the intended LLVM first), matching how
@@ -373,6 +388,12 @@ pub fn execute_mlir_streams(
         opt_level
     };
 
+    // The translated module names no target. Without one, `opt` has no target machine, so its
+    // vectorizer sees no vector registers and leaves every loop scalar.
+    let triple = host_target_triple()?;
+    opt_args.push(format!("-mtriple={triple}"));
+    opt_args.push("-mcpu=native".to_string());
+
     let mut passes = format!("default<O{}>", actual_opt_level);
 
     if let Ok(enzyme_lib) = std::env::var("ENZYME_LIB") {
@@ -401,6 +422,8 @@ pub fn execute_mlir_streams(
     let mut llc_cmd = Command::new(&llc_path);
     llc_cmd.args([
         &format!("-O={}", actual_opt_level),
+        &format!("-mtriple={triple}"),
+        "-mcpu=native",
         "-filetype=obj",
         "-relocation-model=pic",
         &temp_opt_ll,

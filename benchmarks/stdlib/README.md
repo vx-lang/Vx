@@ -12,8 +12,7 @@ cargo vx-bench compare powi --rounds 20 --json results.json
 ## What the harness does
 
 - Builds the Vx program with `vxc --action emit-obj -O3`, linked against the same libraries as
-  `vxc --run`. It does not use `--run`, which compiles for a generic CPU and made the same program
-  about a quarter slower.
+  `vxc --run`.
 - Builds the C++ program with each compiler in `--cxx` (default `clang++,g++`), with
   `-O3 -march=native`, once as is and once with `-ffast-math` (unless `--no-fast-math`).
 - Runs every program `--rounds` times (default 10), one program after another in each round, so a

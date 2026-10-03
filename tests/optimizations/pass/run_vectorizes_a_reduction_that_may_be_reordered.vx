@@ -1,0 +1,51 @@
+//===- run_vectorizes_a_reduction_that_may_be_reordered.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// REQUIRES: flat-codegen
+// RUN: vxc %s -O3 --run | FileCheck %s
+//
+// `--run` must optimize for the machine it runs on. A sum marked `fastmath<reassoc>` may add
+// in any order, and a vectorized loop adds its elements in several lanes at once.
+//
+// The first element is 1e8 and the other 4095 are 1. Added in order, each 1 is lost to
+// rounding (the gap between f32 values near 1e8 is 8), so the sum stays exactly 1e8. Added in
+// lanes, the 1s are summed together first and the total comes out above 1e8. `--run` once
+// optimized with no target machine, which leaves every loop scalar, and printed "in order".
+//
+// CHECK: reordered
+
+fn reassoc_sum(a : &Tensor<f32, [?]>) -> f32 {
+  return mlir!( inputs : (%a = a : memref<?xf32>), returns : f32, dialects : ["arith", "linalg", "memref"]) {
+    %acc = memref.alloca() : memref<f32>
+    %z = arith.constant 0.0 : f32
+    memref.store %z, %acc[] : memref<f32>
+    linalg.generic {
+      indexing_maps = [affine_map<(d0) -> (d0)>, affine_map<(d0) -> ()>], iterator_types = ["reduction"]
+    } ins(%a : memref<?xf32>) outs(%acc : memref<f32>) {
+      ^bb0(%x : f32, %s : f32):
+      %r = arith.addf %s, %x fastmath<reassoc> : f32
+      linalg.yield %r : f32
+    }
+    %t = memref.load %acc[] : memref<f32>
+    macro.yield %t : f32
+  };
+}
+
+fn main() -> i32 {
+  let n : i32 = 4096;
+  let mut a = Tensor<f32>([n]);
+  for i in 0..n {
+    a[i] = 1.0;
+  }
+  a[0] = 100000000.0;
+  if reassoc_sum(&a) > 100000000.0 {
+    print!("reordered");
+  } else {
+    print!("in order");
+  }
+  return 0;
+}
