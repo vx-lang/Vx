@@ -110,6 +110,8 @@ generator lowers each one to a `linalg.generic`, as it already does for `map`:
 Written with them, `sum` and `dot` are one line each, for every element type and rank. The
 `[..]` (a tensor of any rank) is proposed in phase 0 and does not exist yet:
 
+<!-- vx-doctest: skip -- proposed syntax, not yet compilable -->
+
 ```vx
 fn sum(self : &Tensor<T, [..]>) -> T {
   return self.reduce(0 as T, | acc, x | acc + x);
