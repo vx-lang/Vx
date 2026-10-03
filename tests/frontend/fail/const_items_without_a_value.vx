@@ -1,0 +1,28 @@
+//===- const_items_without_a_value.vx - Vx -----------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+fn two() -> i32 {
+  return 2;
+}
+
+// A function call has no value while compiling.
+// CHECK: Error[E3044] at [[@LINE+1]]:1: const 'CALLED' has no value known while compiling
+const CALLED : i32 = two();
+
+// Defined through itself.
+// CHECK: Error[E3044] at [[@LINE+1]]:1: const 'ITSELF' has no value known while compiling
+const ITSELF : i32 = ITSELF + 1;
+
+// A float for an integer type.
+// CHECK: Error[E3044] at [[@LINE+1]]:1: const 'HALF' has a value whose type differs from the declared one
+const HALF : i32 = 1.5;
+
+fn main() -> i32 {
+  return CALLED + ITSELF + HALF;
+}

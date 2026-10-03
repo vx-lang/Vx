@@ -10,9 +10,8 @@
 // One static method, called through the type: `i64::default()`, `Option<f32>::default()`.
 // A trait method with no `self` is what needed the static lookup to search trait impls.
 //
-// The answers are Rust's: zero for every number, `false`, `None`. `Ordering` has none in
-// Rust either, and none here. A struct gets one by writing the impl; deriving it is not
-// something the language does yet.
+// The answers: zero for every number, `false`, `None`. `Ordering` has none. A struct gets
+// one by writing the impl; deriving it is not something the language does yet.
 import core::option;
 
 trait Default {

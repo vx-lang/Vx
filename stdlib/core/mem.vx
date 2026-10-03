@@ -7,13 +7,13 @@
 //===----------------------------------------------------------------------===//
 // Moving values around without looking at what they are.
 //
-// `size_of` is the existing `sizeof<T>()` intrinsic under Rust's name. `swap` and
+// `size_of` is the existing `sizeof<T>()` intrinsic under another name. `swap` and
 // `replace` are the two ways to put a value where another one was, and both are safe: the
 // old value comes back rather than being lost.
 //
 // `drop` and `forget` do the same thing today, which is nothing beyond consuming their
-// argument. They differ in Rust because one runs a destructor and the other does not, and
-// Vx has no `Drop` (Vx#495). Both are here because a program that means "I am finished
+// argument. They will differ once Vx has `Drop` (Vx#495): `drop` runs the destructor and
+// `forget` does not. Both are here because a program that means "I am finished
 // with this" should be able to say so, and because their meaning will change under them
 // rather than their names appearing later.
 //

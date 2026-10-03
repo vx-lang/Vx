@@ -7,8 +7,8 @@
 //===----------------------------------------------------------------------===//
 // The iterators the adaptor methods of `Iterator` build: `it.map(f)` is a `Map`, and so on.
 //
-// Each names its inner iterator's item type as `I::Item`. As in Rust, an adaptor that holds a
-// closure takes it as a type parameter, because a struct field cannot name `I::Item`; the impl
+// Each names its inner iterator's item type as `I::Item`. An adaptor that holds a closure
+// takes it as a type parameter, because a struct field cannot name `I::Item`; the impl
 // states the closure's type, and applies only when that agrees with the inner iterator.
 //
 // `core::iter::traits` imports this module, since the trait's methods return these types, and
@@ -542,7 +542,7 @@ impl<I : Iterator> Iterator for Peekable<I, I::Item> {
 impl<I : Iterator> Peekable<I, I::Item> {
   /// The item `next` would answer, left where it is.
   ///
-  /// Answers a copy where Rust answers a reference into the iterator.
+  /// Answers a copy, not a reference into the iterator.
   fn peek(self : &mut Peekable<I, I::Item>) -> Option<I::Item> {
     if !self.has_peeked {
       self.peeked = self.inner.next();

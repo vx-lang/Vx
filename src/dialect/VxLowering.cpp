@@ -34,6 +34,7 @@
 #include "mlir/Target/LLVMIR/Dialect/All.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "mlir/Transforms/Mem2Reg.h"
 #include "mlir/Transforms/RegionUtils.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/Support/FileSystem.h"
@@ -1349,6 +1350,30 @@ static bool isDeviceLowerableDialect(StringRef ns) {
          ns == "memref" || ns == "scf" || ns == "vector";
 }
 
+// Turn each cell that holds a buffer into plain values. The AST code generator
+// keeps a tensor local in a cell (`memref<memref<..>>`), which the buffer
+// deallocation analysis cannot follow, and which stops being promotable once
+// identical blocks are merged and the cell becomes a block argument -- so this
+// runs before anything else is rewritten. Only those cells: promoting every
+// stack slot, as `mem2reg` does, also rewrote scalar locals, which changed
+// what kernel extraction saw. A cell that cannot be promoted (one passed to a
+// call) stays a cell.
+static void promoteBufferCells(ModuleOp module) {
+  module.walk([](func::FuncOp func) {
+    SmallVector<PromotableAllocationOpInterface> cells;
+    func.walk([&](memref::AllocaOp alloca) {
+      if (isa<BaseMemRefType>(alloca.getType().getElementType()))
+        cells.push_back(cast<PromotableAllocationOpInterface>(*alloca));
+    });
+    if (cells.empty())
+      return;
+    OpBuilder builder(func.getContext());
+    DominanceInfo dominance(func);
+    (void)tryToPromoteMemorySlots(cells, builder, DataLayout::closest(func),
+                                  dominance);
+  });
+}
+
 struct ConvertVxToStandardPass
     : public PassWrapper<ConvertVxToStandardPass, OperationPass<ModuleOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ConvertVxToStandardPass)
@@ -1764,6 +1789,7 @@ struct ConvertVxToStandardPass
     }
 
     placeTransferFrees(getOperation());
+    promoteBufferCells(getOperation());
 
     RewritePatternSet patterns(&getContext());
     patterns.add<SpawnOpLowering, TransferOpLowering>(&getContext());
@@ -3180,13 +3206,25 @@ struct FreeHeapBuffersPass
       return signalPassFailure();
     // Lifting writes `ub.poison` for a value a path does not define, such as
     // the result of a function that returns a buffer early from inside nested
-    // blocks, on the paths that have not returned yet. A poison buffer reaching
-    // the analysis makes its run-time alias checks compare garbage, and a
-    // buffer is freed twice; so such a module is lowered back, unfreed.
+    // blocks, on the paths that have not returned yet. Those paths never use
+    // it, but a poison buffer reaching the analysis makes its run-time alias
+    // checks compare garbage, and a buffer is freed twice. So each one becomes
+    // a placeholder with a real address; a module where that cannot be done is
+    // lowered back, unfreed.
     bool poisonBuffer = false;
     module.walk([&](ub::PoisonOp poison) {
-      if (isa<BaseMemRefType>(poison.getType()))
+      auto type = dyn_cast<MemRefType>(poison.getType());
+      if (!type && !isa<BaseMemRefType>(poison.getType()))
+        return;
+      OpBuilder builder(poison);
+      Value placeholder =
+          type ? placeholderFor(builder, poison.getLoc(), type) : Value();
+      if (!placeholder) {
         poisonBuffer = true;
+        return;
+      }
+      poison.replaceAllUsesWith(placeholder);
+      poison.erase();
     });
     if (poisonBuffer) {
       if (failed(run(module, "convert-scf-to-cf")))
@@ -3197,6 +3235,47 @@ struct FreeHeapBuffersPass
                    "buffer-deallocation-pipeline,"
                    "convert-bufferization-to-memref,convert-scf-to-cf")))
       signalPassFailure();
+  }
+
+  // A buffer of `type` that is never read: a view of one stack element with
+  // every run-time size and stride 0. It has a real address that no heap
+  // buffer shares, so an alias check against it answers correctly, and the
+  // analysis never frees memory on the stack. Null for a type whose layout is
+  // not strided.
+  static Value placeholderFor(OpBuilder &builder, Location loc,
+                              MemRefType type) {
+    SmallVector<int64_t> strides;
+    int64_t offset;
+    if (failed(type.getStridesAndOffset(strides, offset)))
+      return {};
+    auto cellType = MemRefType::get({1}, type.getElementType(), nullptr,
+                                    type.getMemorySpace());
+    Value cell = memref::AllocaOp::create(builder, loc, cellType);
+    auto fixed = [&](int64_t n) -> OpFoldResult {
+      if (ShapedType::isDynamic(n))
+        return builder.getIndexAttr(0);
+      return builder.getIndexAttr(n);
+    };
+    SmallVector<OpFoldResult> sizes, strideValues;
+    for (int64_t n : type.getShape())
+      sizes.push_back(
+          ShapedType::isDynamic(n)
+              ? OpFoldResult(
+                    arith::ConstantIndexOp::create(builder, loc, 0).getResult())
+              : fixed(n));
+    for (int64_t n : strides)
+      strideValues.push_back(
+          ShapedType::isDynamic(n)
+              ? OpFoldResult(
+                    arith::ConstantIndexOp::create(builder, loc, 0).getResult())
+              : fixed(n));
+    OpFoldResult offsetValue =
+        ShapedType::isDynamic(offset)
+            ? OpFoldResult(
+                  arith::ConstantIndexOp::create(builder, loc, 0).getResult())
+            : fixed(offset);
+    return memref::ReinterpretCastOp::create(builder, loc, type, cell,
+                                             offsetValue, sizes, strideValues);
   }
 
   LogicalResult run(ModuleOp module, StringRef pipeline) {

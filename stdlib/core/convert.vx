@@ -12,16 +12,16 @@
 // arguments to join the mangled method name. Before that every `From` impl for `i32`
 // claimed the name `i32$from` and all but one was dropped on the floor.
 //
-// Only the conversions Rust has. `u8 -> i16` is here because every `u8` value fits in an
+// Only conversions that lose nothing. `u8 -> i16` is here because every `u8` value fits in an
 // `i16`. `i32 -> f32` is absent because a 32-bit integer needs more mantissa than an `f32`
 // has, so the conversion would round. The narrowings belong to `TryFrom`.
 //
 // The reflexive case is stamped per type rather than written once as
 // `impl<T> From<T> for T`, because an impl whose `Self` is a bare type parameter is never
-// found: `i32::from(5)` reports an undefined static method. Rust's blanket impls stay out
-// of reach, and each one this module wants is short enough to stamp.
+// found: `i32::from(5)` reports an undefined static method. Blanket impls stay out of
+// reach, and each one this module wants is short enough to stamp.
 //
-// Three of Rust's items in this module are absent, each for its own reason:
+// Three items are absent, each for its own reason:
 //
 //   `Into`, `TryInto`  `x.into()` carries no argument to choose an impl by, and Vx does not
 //                      resolve a call from the type its result is assigned to. Stamping
@@ -56,7 +56,7 @@ macro_rules stamp_from {
 }
 
 // Every type converts from itself, which is the one case a pair of distinct types cannot
-// cover. In Rust this is a single blanket impl.
+// cover.
 stamp_from!(i8 , i8);
 stamp_from!(i16 , i16);
 stamp_from!(i32 , i32);

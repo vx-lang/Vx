@@ -267,6 +267,7 @@ impl<'a> MacroExpander<'a> {
                 module.traits.extend(produced.traits);
                 module.impls.extend(produced.impls);
                 module.functions.extend(produced.functions);
+                module.consts.extend(produced.consts);
                 module.externs.extend(produced.externs);
                 module.macros.extend(produced.macros);
                 module.transfer_impls.extend(produced.transfer_impls);

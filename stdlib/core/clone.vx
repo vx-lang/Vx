@@ -7,15 +7,15 @@
 //===----------------------------------------------------------------------===//
 // `Clone`: an explicit duplicate of a value.
 //
-// One required method, `clone`, and `clone_from` as a default written over it, which is
-// Rust's shape. A type that can duplicate itself more cheaply into an existing value than
-// by building a fresh one overrides `clone_from`; nothing here needs to.
+// One required method, `clone`, and `clone_from` as a default written over it. A type that
+// can duplicate itself more cheaply into an existing value than by building a fresh one
+// overrides `clone_from`; nothing here needs to.
 //
 // The scalars, `bool` and `Ordering` are stamped because Vx has no `Copy` yet: each is
 // copied on every read, so its `clone` is a read, but a generic body written over
 // `T : Clone` still has to be able to call it.
 //
-// `Option<T>` and `Result<T, E>` clone when what they hold does, as in Rust. The `Result`
+// `Option<T>` and `Result<T, E>` clone when what they hold does. The `Result`
 // impl was held back once on the grounds that two parameters with a bound each was a shape
 // the checker had not been asked for; it takes it.
 //

@@ -5,12 +5,13 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// A span of time, as in Rust's `core::time`.
+// A span of time.
 //
 // Not here yet: `+`, `-`, `*` and `/` on durations need operator dispatch to traits; `Debug`
-// and `Display` need `core::fmt`. Rust's `ZERO` and `MAX` are the functions `zero` and
-// `max_value` here, as the float constants are functions. `as_millis`, `as_micros` and `as_nanos` return `u64` rather than
-// `u128` (Vx#1005), and stop with an assertion when the answer does not fit.
+// and `Display` need `core::fmt`. The constants are the functions `zero` and `max_value`,
+// as the float constants are functions. `as_millis`, `as_micros` and `as_nanos` return
+// `u64` rather than `u128` (Vx#1005), and stop with an assertion when the answer does not
+// fit.
 import core::cmp;
 import core::hash;
 import core::num;

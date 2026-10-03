@@ -38,7 +38,7 @@ enum Option<T> {
   None,
 }
 
-/// An option copies when what it may hold copies, which is Rust's rule. It buys nothing
+/// An option copies when what it may hold copies. It buys nothing
 /// yet: a generic enum is not treated as linear, so an `Option` survives a move whether or
 /// not this is written (Vx#715). It is here to be right when that is fixed.
 impl<T : Copy> Copy for Option<T> {}
@@ -107,8 +107,8 @@ impl<T> Option<T> {
   }
 
   /// The value, or the given one. `default` is evaluated by the caller either way, so
-  /// keep it cheap; Rust's `unwrap_or_else` is the form that does not, and it takes a
-  /// closure whose type parameter this cannot yet spell.
+  /// keep it cheap. An `unwrap_or_else` that takes a closure instead needs a type parameter
+  /// this cannot yet spell.
   fn unwrap_or(self : Option<T>, default : T) -> T {
     match self {
       Option<T>::Some(v) => {

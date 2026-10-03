@@ -400,6 +400,17 @@ pub struct TransferImplDecl {
     pub doc_comment: Option<String>,
 }
 
+/// A top-level `const NAME : T = value;`. Its value is known while compiling, and each use
+/// of `NAME` is replaced by it, as a literal of type `T`.
+#[derive(Debug, PartialEq, Clone)]
+pub struct ConstDecl {
+    pub name: Symbol,
+    pub ty: Type,
+    pub expr: Expr,
+    pub span: Span,
+    pub doc_comment: Option<String>,
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub struct Program {
     /// Macro calls written where an item goes, rather than inside a function body. They are
@@ -415,6 +426,8 @@ pub struct Program {
     pub traits: Vec<TraitDecl>,
     pub impls: Vec<ImplBlock>,
     pub functions: Vec<Function>,
+    /// Top-level `const` items.
+    pub consts: Vec<ConstDecl>,
     /// User-defined topologies declared in this program (`Topology <Name> { ... }`). Like
     /// `memories`, the full descriptors live here on the AST — *not* a process-global registry —
     /// so declarations never leak between compilations and the parallel pipeline needs no lock.
@@ -456,6 +469,7 @@ impl Program {
                 .iter()
                 .map(|f| f.clone_signature(false))
                 .collect(),
+            consts: self.consts.clone(),
             topologies: self.topologies.clone(),
             memories: self.memories.clone(),
             // Lowering bodies are KEPT, unlike `functions`/`impls`. They used to be stripped

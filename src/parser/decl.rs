@@ -1272,6 +1272,42 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// `const NAME :` at the top level. `const` is not a keyword, because `*const T` spells
+    /// a pointer with it, so the name and colon after it are what mark the item.
+    fn at_const_item(&self) -> bool {
+        matches!(&self.peek().kind, TokenType::Identifier(s) if &**s == "const")
+            && matches!(self.peek_n(1).kind, TokenType::Identifier(_))
+            && matches!(self.peek_n(2).kind, TokenType::Colon)
+    }
+
+    /// `const NAME : T = value;`
+    fn parse_const_item(&mut self) -> ParseResult<'a, crate::syntax::ConstDecl> {
+        let keyword = self.advance().clone();
+        let name = match &self.advance().kind {
+            TokenType::Identifier(s) => s.to_string(),
+            _ => return Err(self.error("Expected a name after 'const'")),
+        };
+        self.consume(
+            &TokenType::Colon,
+            "Expected ':' and a type after the const's name",
+        )?;
+        let ty = self.parse_type()?;
+        self.consume(&TokenType::Equals, "Expected '=' and a value")?;
+        let expr = self.parse_expr()?;
+        self.consume(&TokenType::Semicolon, "Expected ';'")?;
+        Ok(crate::syntax::ConstDecl {
+            name: name.into(),
+            ty,
+            expr,
+            span: Span {
+                line: keyword.line,
+                column: keyword.column,
+                length: keyword.length,
+            },
+            doc_comment: None,
+        })
+    }
+
     pub fn parse(&mut self) -> ParseResult<'a, Program> {
         let mut imports = Vec::new();
         let mut externs = Vec::new();
@@ -1282,6 +1318,7 @@ impl<'a> Parser<'a> {
         let mut traits = Vec::new();
         let mut impls = Vec::new();
         let mut functions = Vec::new();
+        let mut consts = Vec::new();
         let mut macros = Vec::new();
         let mut transfer_impls = Vec::new();
         let mut item_macros = Vec::new();
@@ -1333,6 +1370,10 @@ impl<'a> Parser<'a> {
                 let mut e = self.parse_enum_decl()?;
                 e.doc_comment = doc_comment;
                 enums.push(e);
+            } else if self.at_const_item() {
+                let mut c = self.parse_const_item()?;
+                c.doc_comment = doc_comment;
+                consts.push(c);
             } else if self.at_fn_start() {
                 let mut f = self.parse_function()?;
                 f.doc_comment = doc_comment;
@@ -1382,6 +1423,7 @@ impl<'a> Parser<'a> {
             traits,
             impls,
             functions,
+            consts,
             topologies,
             memories,
             transfer_impls,

@@ -49,6 +49,106 @@ impl<'a> TypeChecker<'a> {
             .any(|target| self.unify_types(target, ty, &mut HashMap::new()))
     }
 
+    /// The value of the `const` `decl` as a literal of its declared type, placed at `span`.
+    /// A literal initializer is used as written, so a `u64` past `i64` and a float's digits
+    /// survive. Anything else is evaluated while compiling, in `i64` or `f64`, with the other
+    /// `const`s' values in scope. Reports E3044 and answers `None` when there is no value.
+    fn const_literal(&mut self, decl: &crate::syntax::ConstDecl, span: &Span) -> Option<Expr> {
+        let report = |checker: &mut Self, why: &str| {
+            if !checker.speculating {
+                checker.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E3044,
+                    format!("const '{}' {}", decl.name, why),
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(&decl.span)),
+                );
+            }
+            None
+        };
+        let elem = match &decl.ty {
+            Type::Scalar(elem) => elem.clone(),
+            _ => return report(self, "must have a number or bool type"),
+        };
+        let is_float = matches!(
+            elem,
+            ElementType::F16 | ElementType::BF16 | ElementType::F32 | ElementType::F64
+        );
+        if let Expr::Number(n) = &decl.expr {
+            let float_literal = n.value.contains('.');
+            if (n.ty.is_some() && n.ty.as_ref() != Some(&elem)) || (float_literal && !is_float) {
+                return report(self, "has a value whose type differs from the declared one");
+            }
+            return Some(Expr::Number(NumberExpr {
+                value: n.value.clone(),
+                ty: Some(elem),
+                span: *span,
+            }));
+        }
+        let mut visiting = vec![decl.name.clone()];
+        let value = match self.const_value(&decl.expr, &mut visiting) {
+            Some(value) => value,
+            None => {
+                return report(
+                    self,
+                    "has no value known while compiling: write a literal, or arithmetic on \
+                     literals and other consts",
+                )
+            }
+        };
+        match (value, elem == ElementType::Bool) {
+            (Value::Bool(b), true) => Some(Expr::Identifier(IdentifierExpr {
+                name: if b { "true".into() } else { "false".into() },
+                span: *span,
+            })),
+            (Value::Int(i), false) => Some(Expr::Number(NumberExpr {
+                value: i.to_string().into(),
+                ty: Some(elem),
+                span: *span,
+            })),
+            (Value::Number(f), false) if is_float && f.is_finite() => {
+                Some(Expr::Number(NumberExpr {
+                    value: f.to_string().into(),
+                    ty: Some(elem),
+                    span: *span,
+                }))
+            }
+            _ => report(self, "has a value that does not fit its declared type"),
+        }
+    }
+
+    /// `expr` evaluated while compiling, with the values of the `const`s it names. `visiting`
+    /// holds the `const`s being evaluated, so one defined through itself has no value.
+    fn const_value(&self, expr: &Expr, visiting: &mut Vec<crate::symbol::Symbol>) -> Option<Value> {
+        let mut env = HashMap::new();
+        let mut names = Vec::new();
+        Self::collect_identifiers(expr, &mut names);
+        for name in names {
+            if visiting.contains(&name) {
+                return None;
+            }
+            if let Some(decl) = self.env.consts.get(&name).copied() {
+                visiting.push(name.clone());
+                let value = self.const_value(&decl.expr, visiting);
+                visiting.pop();
+                env.insert(name, value?);
+            }
+        }
+        self.eval_expr(expr, &env)
+    }
+
+    /// Every identifier `expr` mentions, for `const_value`.
+    fn collect_identifiers(expr: &Expr, out: &mut Vec<crate::symbol::Symbol>) {
+        match expr {
+            Expr::Identifier(id) => out.push(id.name.clone()),
+            Expr::BinaryOp(b) => {
+                Self::collect_identifiers(&b.lhs, out);
+                Self::collect_identifiers(&b.rhs, out);
+            }
+            Expr::UnaryOp(u) => Self::collect_identifiers(&u.expr, out),
+            Expr::AsCast(c) => Self::collect_identifiers(&c.expr, out),
+            _ => {}
+        }
+    }
+
     pub(crate) fn check_identifier_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
         match expr {
             Expr::Identifier(id) => {
@@ -109,6 +209,17 @@ impl<'a> TypeChecker<'a> {
                     // anything so it does not spawn cascade errors downstream.
                     return Type::Unknown;
                 } else if lookup_res.is_none() {
+                    // A top-level `const`: the name is replaced by its value, a literal of the
+                    // declared type, which is then checked like any other literal.
+                    if let Some(decl) = self.env.consts.get(name.as_ref()).copied() {
+                        return match self.const_literal(decl, &span) {
+                            Some(literal) => {
+                                *expr = literal;
+                                self.check_expr_type_flag(expr, consume)
+                            }
+                            None => decl.ty.clone(),
+                        };
+                    }
                     if let Some((ret_ty, is_unsafe, params, _, _, _)) =
                         self.env.functions.get(name.as_ref())
                     {

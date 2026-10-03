@@ -7,37 +7,36 @@
 //===----------------------------------------------------------------------===//
 // The integer methods, stamped over the signed widths.
 //
-// These are inherent methods in Rust too, so no trait machinery is needed. One macro
-// stamps the set, as Rust's own `core::num` does.
+// They are inherent methods, so no trait machinery is needed: one macro stamps the set.
 //
-// `core` uses `mlir!` where Rust's uses `core::intrinsics`, and declares no `extern`, so
-// these work inside a `spawn on(..)` region on a device with no libc.
+// `core` uses `mlir!` and declares no `extern`, so these work inside a `spawn on(..)` region
+// on a device with no libc.
 //
 // There are two macros rather than one. A Vx `u32` is an MLIR `i32`, so the unsigned stamp
 // takes the MLIR type as a second parameter; and `abs`, `signum`, `is_positive`,
 // `is_negative` and `checked_neg` have nothing to answer without a sign, so they are absent
 // from it rather than stubbed.
 //
-// `min`, `max` and `clamp` are not here: they belong to `Ord` in `core::cmp`, as they do
-// in Rust, and a type gets them by implementing `cmp`.
+// `min`, `max` and `clamp` are not here: they belong to `Ord` in `core::cmp`, and a type
+// gets them by implementing `cmp`.
 //
 // The limits are methods because Vx has no `const` item, and because a bare literal is
 // born `i32` -- returning one from a method declared `-> $t` is what gives it the width.
 //
-// The float methods at the bottom are the ones Rust's `core` does not have: its only route
-// to `exp` is a libm call, so `exp` lives in Rust's `std`. A `math` dialect op is a route
-// that every backend lowers on its own terms, so they belong here.
+// The float methods at the bottom need no libm in the source: each is a `math` dialect op,
+// which every backend lowers on its own terms, or a call into `core::libm`.
 //
 // These replaced `std::math`, which declared the same names as a `Math` trait over a block
 // of libm externs. That module is gone and its callers import this one: the method names
 // are the same, so only the import line moved.
 //
 // `cbrt` and `erf` are absent. Their `math` ops lower to a libm declaration the pipeline
-// then rejects, and neither is in Rust's `core` either.
+// then rejects.
 import core::cmp;
 import core::option;
+import core::libm;
 
-/// The five kinds of float value `classify` tells apart, as in Rust.
+/// The five kinds of float value `classify` tells apart.
 enum FpCategory {
   Nan,
   Infinite,
@@ -1121,17 +1120,15 @@ stamp_unsigned_int!(u64 , i64 , 64 , 18446744073709551615);
 /// Stamps the float methods for one width.
 ///
 /// Every body is one `math` dialect op, so nothing here needs libm at the source level and
-/// each backend lowers the op its own way. That is the whole reason these are in `core`
-/// rather than in `std` as Rust's are: Rust's `core` cannot offer `exp` because its only
-/// route is a libm call, and the `math` dialect is a route that is not.
+/// each backend lowers the op its own way. That is why they can be in `core`: the `math`
+/// dialect reaches `exp` without a libm call.
 ///
 /// `$t` is both the Vx type and the MLIR type, as it is for the signed integers.
 macro_rules stamp_float {
   ($t : ident , $one : expr , $zero : expr , $half_circle : expr) => {
     impl $t {
-      // The constants of Rust's `consts` module, as functions until Vx has `const` items:
-      // `f64::pi()` where Rust writes `f64::consts::PI`. The literal takes this width from
-      // the return type.
+      // The mathematical constants, as functions until Vx has `const` items: `f64::pi()`.
+      // The literal takes this width from the return type.
 
       /// Pi.
       fn pi() -> $t {
@@ -1462,7 +1459,7 @@ macro_rules stamp_float {
 
       /// The length of the hypotenuse, the square root of `self * self + other * other`.
       /// The smaller side is divided by the larger first, so neither square overflows or
-      /// underflows. Not the libm routine, so the last bit can differ from Rust's answer.
+      /// underflows. Not the libm routine, so the last bit can differ from it.
       fn hypot(self : $t, other : $t) -> $t {
         let a = self.abs();
         let b = other.abs();
@@ -1583,8 +1580,8 @@ macro_rules stamp_float {
         return self != self;
       }
 
-      /// One with this value's sign, or the value itself when it is a NaN. Zero answers 1
-      /// rather than 0, which is Rust's rule and not `signum`'s in every language.
+      /// One with this value's sign, or the value itself when it is a NaN. A zero answers 1
+      /// with the zero's sign, not 0.
       fn signum(self : $t) -> $t {
         if self.is_nan() {
           return self;
@@ -1631,36 +1628,8 @@ macro_rules stamp_float {
         return (self.sin(), self.cos());
       }
 
-      /// The inverse hyperbolic sine. Rust's formula, not a libm call: it goes through
-      /// `ln_1p`, so it stays accurate near zero.
-      fn asinh(self : $t) -> $t {
-        let ax = self.abs();
-        let one : $t = $one;
-        let ix = one / ax;
-        return (ax + (ax / (one.hypot(ix) + ix))).ln_1p().copysign(self);
-      }
-
-      /// The inverse hyperbolic cosine, NaN below one. Rust's formula, except below two:
-      /// there `ln` of a number just above one loses digits, so with `t = x - 1` this takes
-      /// `ln_1p(t + sqrt(2t + t * t))` instead, which keeps them.
-      fn acosh(self : $t) -> $t {
-        if self < $one {
-          return $zero / $zero;
-        }
-        let t = self - $one;
-        if t < $one {
-          return (t + (2.0 * t + t * t).sqrt()).ln_1p();
-        }
-        return (self + (t.sqrt() * (self + $one).sqrt())).ln();
-      }
-
-      /// The inverse hyperbolic tangent. Rust's formula, through `ln_1p`.
-      fn atanh(self : $t) -> $t {
-        return 0.5 * ((2.0 * self) / ($one - self)).ln_1p();
-      }
-
       /// Halfway between two values, without overflowing near the largest value or losing
-      /// the answer to underflow near the smallest. Rust's rule.
+      /// the answer to underflow near the smallest.
       fn midpoint(self : $t, other : $t) -> $t {
         let lo : $t = $t::min_positive() * 2.0;
         let hi : $t = $t::max_value() / 2.0;
@@ -1724,6 +1693,64 @@ stamp_float!(f32 , 1.0 , 0.0 , 180.0);
 stamp_float!(f64 , 1.0 , 0.0 , 180.0);
 stamp_float!(f16 , 1.0 , 0.0 , 180.0);
 stamp_float!(bf16 , 1.0 , 0.0 , 180.0);
+
+/// Stamps `asinh`, `acosh` and `atanh` as formulas through `ln_1p` and `ln`, for the widths
+/// LLVM libc has no version of yet: `f64`, `f16` and `bf16`. `f32` uses `core::libm`'s, below.
+macro_rules stamp_float_inverse_hyperbolic {
+  ($t : ident , $one : expr , $zero : expr) => {
+    impl $t {
+      /// The inverse hyperbolic sine, `ln(|x| + sqrt(x^2 + 1))` with the sign of `x`, written
+      /// as `ln_1p` of `|x| + |x| / (hypot(1, 1/|x|) + 1/|x|)` so it stays accurate near zero.
+      fn asinh(self : $t) -> $t {
+        let ax = self.abs();
+        let one : $t = $one;
+        let ix = one / ax;
+        return (ax + (ax / (one.hypot(ix) + ix))).ln_1p().copysign(self);
+      }
+
+      /// The inverse hyperbolic cosine, NaN below one: `ln(x + sqrt(x - 1) * sqrt(x + 1))`.
+      /// Below two, `ln` of a number just above one loses digits, so with `t = x - 1` this
+      /// takes `ln_1p(t + sqrt(2t + t * t))` instead, which keeps them.
+      fn acosh(self : $t) -> $t {
+        if self < $one {
+          return $zero / $zero;
+        }
+        let t = self - $one;
+        if t < $one {
+          return (t + (2.0 * t + t * t).sqrt()).ln_1p();
+        }
+        return (self + (t.sqrt() * (self + $one).sqrt())).ln();
+      }
+
+      /// The inverse hyperbolic tangent, `ln_1p(2x / (1 - x)) / 2`.
+      fn atanh(self : $t) -> $t {
+        return 0.5 * ((2.0 * self) / ($one - self)).ln_1p();
+      }
+    }
+  };
+}
+
+stamp_float_inverse_hyperbolic!(f64 , 1.0 , 0.0);
+stamp_float_inverse_hyperbolic!(f16 , 1.0 , 0.0);
+stamp_float_inverse_hyperbolic!(bf16 , 1.0 , 0.0);
+
+impl f32 {
+  /// The inverse hyperbolic sine, correctly rounded (LLVM libc's `asinhf`).
+  fn asinh(self : f32) -> f32 {
+    return libm_asinhf(self);
+  }
+
+  /// The inverse hyperbolic cosine, correctly rounded; NaN below one (LLVM libc's `acoshf`).
+  fn acosh(self : f32) -> f32 {
+    return libm_acoshf(self);
+  }
+
+  /// The inverse hyperbolic tangent, correctly rounded; infinite at plus or minus one and NaN
+  /// beyond (LLVM libc's `atanhf`).
+  fn atanh(self : f32) -> f32 {
+    return libm_atanhf(self);
+  }
+}
 
 // The limits of each float width. Written as `arith.constant`, since a Vx literal has no
 // exponent and cannot spell an infinity or a NaN. Static, as the constants are: `f64::nan()`.
@@ -2019,7 +2046,7 @@ macro_rules stamp_float_bits {
         return $t::from_bits(bits + 1);
       }
 
-      /// Rust's total order over every value, NaNs included: negative NaNs, negative
+      /// A total order over every value, NaNs included: negative NaNs, negative
       /// infinity, the negatives, -0.0, 0.0, the positives, positive infinity, positive NaNs.
       /// It compares the bits as signed integers, with the bits of a negative value turned
       /// round so that more negative sorts lower.

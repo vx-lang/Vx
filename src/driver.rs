@@ -753,6 +753,7 @@ impl CompilerDriver {
             traits: Vec::new(),
             impls: Vec::new(),
             functions: Vec::new(),
+            consts: Vec::new(),
         }
     }
 
