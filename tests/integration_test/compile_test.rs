@@ -920,6 +920,10 @@ fn run_lit_test(path: &Path, force_legacy: bool) -> Result<(), String> {
     if source.contains("// REQUIRES: macos") && !cfg!(target_os = "macos") {
         return Ok(());
     }
+    // A check on an ELF object file's sections. Only the RUN lines are skipped elsewhere.
+    if source.contains("// REQUIRES: linux") && !cfg!(target_os = "linux") {
+        return Ok(());
+    }
 
     let run_lines: Vec<&str> = source
         .lines()

@@ -1,0 +1,40 @@
+//===- const_table_storage.vx - Vx Compiler -----------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `const` table in the object file: its bytes appear once, in a read-only data section
+// (`.rodata`, or `.lrodata` under the large code model), even though two functions read it,
+// and it exports no symbol. The values 11, 22, 33, 44 are easy to find in a hex dump.
+//
+// REQUIRES: linux
+// RUN: vxc %s --action emit-obj -o %t.o
+// RUN: llvm-nm %t.o | FileCheck %s --check-prefix=SYMBOLS --implicit-check-not=__vx_const
+// RUN: llvm-objdump -s %t.o | FileCheck %s
+// RUN: vxc %s -O2 --action emit-obj -o %t.o
+// RUN: llvm-objdump -s %t.o | FileCheck %s
+// RUN: vxc %s --legacy-codegen --action emit-obj -o %t.o
+// RUN: llvm-nm %t.o | FileCheck %s --check-prefix=SYMBOLS --implicit-check-not=__vx_const
+// RUN: llvm-objdump -s %t.o | FileCheck %s
+// RUN: vxc %s --legacy-codegen -O2 --action emit-obj -o %t.o
+// RUN: llvm-objdump -s %t.o | FileCheck %s
+// SYMBOLS: T main
+// CHECK: Contents of section .{{l?}}rodata{{(\.cst[0-9]+)?}}:
+// CHECK-NEXT: 0000 0b000000 00000000 16000000 00000000
+// CHECK-NOT: 0b000000 00000000 16000000 00000000
+const TABLE : Tensor<i64, [4]> = [11, 22, 33, 44];
+
+fn pick(i : i64) -> i64 {
+  return TABLE[i];
+}
+
+fn pick_again(i : i64) -> i64 {
+  return TABLE[i];
+}
+
+fn main() -> i32 {
+  print(pick(2i64) + pick_again(3i64));
+  return 0;
+}

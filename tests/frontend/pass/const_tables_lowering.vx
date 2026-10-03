@@ -1,0 +1,41 @@
+//===- const_tables_lowering.vx - Vx Compiler ---------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `const` table is one read-only global, and each use reads it, with nothing allocated or
+// copied. After lowering to LLVM it is a private constant, defined once. Checked on both
+// code generators.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --legacy-codegen --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=NO-HEAP
+// RUN: vxc %s --legacy-codegen --action emit-mlir 2>&1 | FileCheck %s --check-prefix=NO-HEAP
+// RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s --check-prefix=LLVM
+// RUN: vxc %s --legacy-codegen --action emit-llvm 2>&1 | FileCheck %s --check-prefix=LLVM
+// CHECK-DAG: memref.global "private" constant @__vx_const_POWERS : memref<4xi64> = dense<[1, 10, 100, -1000]>
+// CHECK-DAG: memref.global "private" constant @__vx_const_HALVES : memref<2xf64> = dense<[5.000000e-01, -2.500000e-01]>
+// CHECK: memref.get_global @__vx_const_
+// NO-HEAP-NOT: memref.alloc(
+// LLVM: llvm.mlir.global private constant @__vx_const_POWERS(dense<[1, 10, 100, -1000]>
+// LLVM-NOT: @__vx_const_POWERS(
+
+const POWERS : Tensor<i64, [4]> = [1, 10, 100, -1000];
+const HALVES : Tensor<f64, [2]> = [0.5, -0.25];
+
+fn power(i : i64) -> i64 {
+  return POWERS[i];
+}
+
+fn main() -> i32 {
+  let mut sum : i64 = 0i64;
+  for i in 0..4 {
+    sum = sum + POWERS[i];
+  }
+  print(sum + power(1i64));
+  print!(" ");
+  print(HALVES[1]);
+  return 0;
+}

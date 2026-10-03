@@ -5,22 +5,11 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// `const` tables: each is one read-only global, and every use reads from it, with nothing
-// allocated or copied. Printed, in order: the sum of an `i64` table with a negative entry;
-// the largest `u64`; an `f64` entry times 3, which an `f32` would print as 0.3; a negative
-// `f64` entry; two `f32` entries, one negative; a table read inside another function; a local named like a table; and a table
-// from an imported module, read directly and through that module's own function.
-//
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// RUN: vxc %s --legacy-codegen --action emit-mlir 2>&1 | FileCheck %s
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=NO-HEAP
-// RUN: vxc %s --legacy-codegen --action emit-mlir 2>&1 | FileCheck %s --check-prefix=NO-HEAP
-// CHECK-DAG: memref.global "private" constant @__vx_const_POWERS : memref<4xi64> = dense<[1, 10, 100, -1000]>
-// CHECK-DAG: memref.global "private" constant @__vx_const_BIG : memref<2xi64> = dense<[-1, 7]>
-// CHECK-DAG: memref.global "private" constant @__vx_const_HALVES : memref<3xf64> = dense<[5.000000e-01, -2.500000e-01, 1.000000e-01]>
-// CHECK-DAG: memref.global "private" constant @__vx_const_FACES : memref<6xi32> = dense<[1, 2, 3, 4, 5, 6]>
-// CHECK: memref.get_global @__vx_const_
-// NO-HEAP-NOT: memref.alloc(
+// The values `const` tables hold, on both code generators. Printed, in order: the sum of an
+// `i64` table with a negative entry; the largest `u64`; an `f64` entry times 3, which an `f32`
+// would print as 0.3; a negative `f64` entry; two `f32` entries, one negative; a table read
+// inside another function; a local named like a table; and a table from an imported module,
+// read directly and through that module's own function.
 //
 // EXPECT: -889 18446744073709551615 0.30000000000000004 -0.25 0.1 -2.5 16 7 7
 import tests::modules::a_module_with_consts;
