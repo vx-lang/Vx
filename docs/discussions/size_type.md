@@ -35,7 +35,7 @@ give that promise. This note proposes a size type that does.
 - Both code generators emit `arith.addi`, `arith.subi` and `arith.muli` with no flags
   (`src/codegen/flat.rs` and `src/codegen/lower/mod.rs`).
 - A `for i in a..b` loop keeps its counter in a stack slot of the range's element type, compares
-  with the signed `slt`, and increments with an unflagged add (`lower_for` in
+  with `slt` or `ult` as that type says, and increments with an unflagged add (`lower_for` in
   `src/hir/flatten.rs`). No `scf.for` is involved. Only LLVM's own passes, at `-O3`, move the slot
   into a register.
 - Tensor indexing converts the index with `arith.index_cast`, which sign-extends, even when the
@@ -72,7 +72,8 @@ defined result, and the compiler may assume it does not happen.
 Each `+`, `-` and `*` on `size` carries an obligation: the result is in range. The checker tries
 to discharge it with the prover it already has. An obligation it discharges costs nothing at run
 time. For one it cannot discharge, the compiler emits one compare and a branch to a trap, as
-Rust's debug builds do. Either way the emitted operation is marked as never wrapping, and the mark
+Rust's debug builds do, but in every build: trapping is the default, not a debug-only mode. Either
+way the emitted operation is marked as never wrapping, and the mark
 is sound: the value was either proved in range or the trap took the other path.
 
 What the prover sees in practice:
@@ -121,10 +122,37 @@ them. A loop step looks like this:
 Checked on the LLVM 22.1.4 this repository builds against: `mlir-opt --convert-arith-to-llvm`
 turns the first line into `llvm.add %i, %c1 overflow<nsw, nuw> : i64`.
 
-An unproved obligation lowers to the operation, then one signed compare of the result against
-zero, then a `cf.cond_br` to a trap block. Because both operands have their top bit clear, a
-result outside the range is exactly a result with its top bit set. Multiplication also needs the
-high word from `arith.mulsi_extended` to be zero.
+An unproved obligation is checked on the operands, before the flagged operation runs. Checking
+the result instead does not work: with `nsw` an overflowing add gives poison, a branch on poison
+is undefined behaviour, and LLVM may delete the trap. Both operands have their top bit clear, so
+the checks are:
+
+- `a + b` traps if `a > MAX - b`.
+- `a - b` traps if `a < b`.
+- `a * b` uses `arith.mulsi_extended` and traps if the high word is not zero or the low word has
+  its top bit set. The low word is then the result, so no flagged multiply is needed.
+
+`nsw` is the flag that carries the range: for two values with the top bit clear, an add that does
+not wrap as signed stays at or below the `size` maximum. `nuw` on that add holds anyway; it adds
+`a >= b` on a subtraction. The `wrapping_*` methods on `size` wrap on purpose, at `MAX`, and are
+emitted without the flags.
+
+The trap is the `cf.assert` that `assert` already lowers to, so it also works in a GPU kernel.
+
+`&`, `|`, `^`, `/` and `%` cannot leave the range and need no check. `<<` can, and is checked
+like `*`. Unary `-` on `size` is refused.
+
+### Proving obligations cheaply
+
+The prover is Z3, started as a new process for each query, and it reasons in linear integer
+arithmetic. Asking it about every `+`, `-` and `*` on `size` would start thousands of processes,
+and it cannot prove anything about `i * stride`. So the checker first tries a local rule:
+
+- every `size` value is at least zero;
+- `i + 1` fits inside `for i in lo..hi` when `hi` is a `size`, since the loop gives `i < hi`;
+- `x - k` fits when a known fact says `x >= k`.
+
+Anything the rule does not prove gets the run-time check. Asking Z3 is a later improvement.
 
 ### What the optimizer can then do
 
@@ -162,9 +190,16 @@ high word from `arith.mulsi_extended` to be zero.
   through `u128` as bit patterns is consistent with this proposal, and the obligation machinery
   extends to them later if wanted. Issue #794 asks the general question; this note answers it for
   `size` and leaves the rest open.
-- **Trap or undefined behaviour for an unproved obligation.** The flags are sound either way.
-  This note says trap: the project rule is to crash rather than fail silently, and a trap at the
-  subtraction names the bug where it happens.
+
+## Decided
+
+- **An unproved obligation traps, by default and in every build.** Undefined behaviour by default
+  was considered, with a flag to turn the trap on. It was rejected: it would be the only undefined
+  behaviour in safe Vx, where a `raw::` access that is not proved already needs `unsafe`, and most
+  programs never pass a flag. The common hot case, a loop counter, is proved and carries no check.
+  Whether an opt-out is needed is decided after measuring the checks on `benchmarks/stdlib`. If
+  one is, an `unsafe` block is preferred to a flag for the whole program, so that the place that
+  drops a check is visible in the code.
 
 ## Alternatives considered
 
