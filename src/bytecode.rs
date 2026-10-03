@@ -267,7 +267,7 @@ pub enum Opcode {
     TensorReduce = 58,
     /// A top-level `const` table, read-only: `imm` is its position in the registry's
     /// `const_tables`, and the result is the tensor its global holds.
-    ConstTable = 59,
+    ConstTable = 60,
 }
 
 /// Reverse mode for `Opcode::AutoDiff`: the gradient, through `__enzyme_autodiff_grad_*`.
@@ -299,7 +299,7 @@ impl Opcode {
             56 => Shl,
             57 => Shr,
             58 => TensorReduce,
-            59 => ConstTable,
+            60 => ConstTable,
             8 => Call,
             9 => Ret,
             10 => Matmul,
