@@ -252,8 +252,17 @@ impl<'a> TypeChecker<'a> {
                 // worked out replaces it. A block with no value becomes an empty one, which
                 // the statement walk then drops.
                 match folded {
-                    // The value it worked out replaces it.
-                    ComptimeFold::Folded(value) => *expr = *value,
+                    // The value it worked out replaces it, as a literal of the block's type:
+                    // an untyped literal is an `i32` to the legacy code generator, which cut
+                    // an `i64` like 20! down to its low 32 bits.
+                    ComptimeFold::Folded(mut value) => {
+                        if let (Expr::Number(n), Type::Scalar(elem)) = (&mut *value, &ret_ty) {
+                            if n.ty.is_none() {
+                                n.ty = Some(elem.clone());
+                            }
+                        }
+                        *expr = *value
+                    }
                     // It ran and produced nothing, so nothing is left to emit.
                     ComptimeFold::NoValue => {
                         *expr = Expr::ComptimeBlock(ComptimeBlockExpr {

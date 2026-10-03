@@ -364,6 +364,23 @@ fn assert_output_parity(src: &str) {
     );
 }
 
+/// A value folded from a `comptime` block keeps the block's type on both code generators:
+/// 20! is an `i64` and 0.1 * 3.0 an `f64`. The AST path used to read the folded literal as an
+/// `i32` or an `f32`, printing 20! as -2102132736 and the `f64` as 0.3.
+#[test]
+fn flat_matches_ast_comptime_fold_keeps_its_type() {
+    let src = "fn factorial(n : i64) -> i64 { let mut acc : i64 = 1i64; \
+               for i in 1i64..n + 1i64 { acc = acc * i; } return acc; }\n\
+               fn main() -> i32 { let f = comptime { factorial(20i64) }; print(f); print!(\" \"); \
+               let e : f64 = comptime { let x : f64 = 0.1; x * 3.0 }; print(e); return 0; }";
+    assert_output_parity(src);
+    let ast_out = run_output(&ast_llvm(src));
+    assert!(
+        ast_out.contains("2432902008176640000 0.30000000000000004"),
+        "the AST path printed `{ast_out}`"
+    );
+}
+
 /// The core parity assertion: the flat path lowers `main`, and its JIT exit code
 /// equals both the AST path's and the expected value.
 fn assert_parity(src: &str, expected: i32) {
