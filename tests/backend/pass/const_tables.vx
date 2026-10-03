@@ -1,0 +1,66 @@
+//===- const_tables.vx - Vx Compiler ------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `const` tables: each is one read-only global, and every use reads from it, with nothing
+// allocated or copied. Printed, in order: the sum of an `i64` table with a negative entry;
+// the largest `u64`; an `f64` entry times 3, which an `f32` would print as 0.3; a negative
+// `f64` entry; two `f32` entries, one negative; a table read inside another function; a local named like a table; and a table
+// from an imported module, read directly and through that module's own function.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --legacy-codegen --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=NO-HEAP
+// RUN: vxc %s --legacy-codegen --action emit-mlir 2>&1 | FileCheck %s --check-prefix=NO-HEAP
+// CHECK-DAG: memref.global "private" constant @__vx_const_POWERS : memref<4xi64> = dense<[1, 10, 100, -1000]>
+// CHECK-DAG: memref.global "private" constant @__vx_const_BIG : memref<2xi64> = dense<[-1, 7]>
+// CHECK-DAG: memref.global "private" constant @__vx_const_HALVES : memref<3xf64> = dense<[5.000000e-01, -2.500000e-01, 1.000000e-01]>
+// CHECK-DAG: memref.global "private" constant @__vx_const_FACES : memref<6xi32> = dense<[1, 2, 3, 4, 5, 6]>
+// CHECK: memref.get_global @__vx_const_
+// NO-HEAP-NOT: memref.alloc(
+//
+// EXPECT: -889 18446744073709551615 0.30000000000000004 -0.25 0.1 -2.5 16 7 7
+import tests::modules::a_module_with_consts;
+
+const POWERS : Tensor<i64, [4]> = [1, 10, 100, -1000];
+const BIG : Tensor<u64, [2]> = [18446744073709551615, 7];
+const HALVES : Tensor<f64, [3]> = [0.5, -0.25, 0.1];
+const SMALL : Tensor<f32, [2]> = [0.1, -2.5];
+const SQUARES : Tensor<i32, [5]> = [0, 1, 4, 9, 16];
+
+fn square(i : i64) -> i32 {
+  return SQUARES[i];
+}
+
+fn named_like_a_table() -> i32 {
+  let SQUARES = 7;
+  return SQUARES;
+}
+
+fn main() -> i32 {
+  let mut sum : i64 = 0i64;
+  for i in 0..4 {
+    sum = sum + POWERS[i];
+  }
+  print(sum);
+  print!(" ");
+  print(BIG[0]);
+  print!(" ");
+  print(HALVES[2] * 3.0);
+  print!(" ");
+  print(HALVES[1]);
+  print!(" ");
+  print(SMALL[0]);
+  print!(" ");
+  print(SMALL[1]);
+  print!(" ");
+  print(square(4i64));
+  print!(" ");
+  print(named_like_a_table());
+  print!(" ");
+  print(face(5i64) + FACES[0]);
+  return 0;
+}

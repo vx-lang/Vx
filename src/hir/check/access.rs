@@ -212,6 +212,38 @@ impl<'a> TypeChecker<'a> {
                     // A top-level `const`: the name is replaced by its value, a literal of the
                     // declared type, which is then checked like any other literal.
                     if let Some(decl) = self.env.consts.get(name.as_ref()).copied() {
+                        // A table stays a name, read one element at a time from its global.
+                        match crate::registry::ConstTable::from_decl(decl) {
+                            Ok(None) => {}
+                            Ok(Some(_)) if self.indexed_name.as_ref() == Some(&name) => {
+                                return decl.ty.clone();
+                            }
+                            Ok(Some(_)) => {
+                                if !self.speculating {
+                                    self.errors.error_with_code(
+                                        crate::diagnostic::DiagnosticCode::E3044,
+                                        format!(
+                                            "const '{name}' is a table: read it one number at a \
+                                             time, as `{name}[i]`"
+                                        ),
+                                        Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
+                                    );
+                                }
+                                return decl.ty.clone();
+                            }
+                            Err(why) => {
+                                if !self.speculating {
+                                    self.errors.error_with_code(
+                                        crate::diagnostic::DiagnosticCode::E3044,
+                                        format!("const '{name}' {why}"),
+                                        Some(crate::diagnostic::SourceSpan::from_ast_span(
+                                            &decl.span,
+                                        )),
+                                    );
+                                }
+                                return decl.ty.clone();
+                            }
+                        }
                         return match self.const_literal(decl, &span) {
                             Some(literal) => {
                                 *expr = literal;
@@ -723,7 +755,12 @@ impl<'a> TypeChecker<'a> {
                 span: ix_span,
             }) => {
                 let ix_span = *ix_span;
+                self.indexed_name = match &**obj {
+                    Expr::Identifier(id) => Some(id.name.clone()),
+                    _ => None,
+                };
                 let obj_ty = self.check_expr_type_flag(obj, false);
+                self.indexed_name = None;
 
                 // Enforce the topology boundary, reading where the value lives from
                 // either spelling: a placement carried on the tensor itself, or the
@@ -1476,12 +1513,21 @@ impl<'a> TypeChecker<'a> {
                 self.lookup(&root).map(|(t, _)| t),
                 Some(Type::Borrow { .. } | Type::Pointer(..) | Type::Ref(..))
             );
-        (!through_reference && !self.is_mutable(&root)).then_some(root)
+        let is_const = self.lookup(&root).is_none() && self.env.consts.contains_key(root.as_str());
+        (is_const || (!through_reference && !self.is_mutable(&root))).then_some(root)
     }
 
     /// E4010: `name` was declared without `mut` and `what` would change it.
     pub(crate) fn report_read_only(&mut self, name: &str, what: &str, span: &crate::syntax::Span) {
         if self.speculating {
+            return;
+        }
+        if self.lookup(name).is_none() && self.env.consts.contains_key(name) {
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E4010,
+                format!("`{name}` is a `const`, so {what}"),
+                Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+            );
             return;
         }
         let fix = if self.borrow.current_params.contains_key(name) {

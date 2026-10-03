@@ -407,6 +407,9 @@ pub struct TypeChecker<'a> {
     /// "fresh check" entry points (`check_expr_type`, `check_block`) force it back off, so the
     /// field's dynamic scope reproduces the old parameter's exactly.
     pub(crate) speculating: bool,
+    /// The name being indexed while the base of `name[i]` is checked: the one place a `const`
+    /// table may be named.
+    pub(crate) indexed_name: Option<crate::symbol::Symbol>,
     /// Set just before checking an expression whose value nothing uses: an expression statement,
     /// or the last expression of a block whose own value is unused. Blocks, `if`, `match` and
     /// `unsafe`/`comptime` blocks pass it on to the blocks inside them; `match` reads it, so a
@@ -464,6 +467,7 @@ impl<'a> TypeChecker<'a> {
             transfer_cost_graph,
             borrow: crate::hir::borrow_cx::BorrowCx::default(),
             speculating: false,
+            indexed_name: None,
             value_unused: false,
             checking_assign_lhs: false,
             next_id: 1,

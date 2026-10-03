@@ -127,4 +127,20 @@ impl FnEmit<'_> {
         self.ptr_of[idx] = true;
         Ok(())
     }
+
+    // A `const` table: its read-only global, as a memref that indexing reads like any tensor's.
+    // `emit_module_mlir` writes the global itself.
+    pub(crate) fn op_const_table(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let (symbol, memty) = self
+            .ctx
+            .const_tables
+            .get(ins.imm as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        let n = format!("%v{idx}");
+        self.body += &format!("  {n} = memref.get_global @{symbol} : {memty}\n");
+        self.names[idx] = n;
+        self.mem_of[idx] = Some(memty);
+        Ok(())
+    }
 }

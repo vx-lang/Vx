@@ -144,6 +144,10 @@ pub struct ImmutableGlobalRegistry {
     /// import-vs-import conflict (the name then resolves in *neither* artifact, whatever order
     /// they merged in). Merge-session state only — never serialized (#291).
     pub merge_state: MergeState,
+    /// The program's `const` tables, sorted by name, so that an instruction reading one can name
+    /// it by its position. Filled by `build_frozen_registry`; empty when deserialized from a
+    /// `.vxlib`.
+    pub const_tables: Vec<ConstTable>,
     /// Base name -> layout GID, for [`Self::layout_gid_by_base_name`]. Built wherever `layouts`
     /// is: at the freeze, after a merge, and when an interface is deserialized. Eager rather than
     /// on first use, because the registry is shared read-only across every worker and a compiler
@@ -182,6 +186,156 @@ impl LayoutNameIndex {
             built_from: layouts.len(),
             by_base_name,
         }
+    }
+}
+
+/// A top-level `const` tensor: a table of numbers known while compiling, such as
+/// `const POWERS : Tensor<i64, [4]> = [1, 10, 100, 1000];`. It becomes one read-only global in
+/// the module, which every use reads from.
+#[derive(Debug, Clone)]
+pub struct ConstTable {
+    pub name: crate::symbol::Symbol,
+    pub elem: crate::syntax::ElementType,
+    pub len: usize,
+    /// Each element as MLIR writes it inside `dense<[..]>`: a float as its bits in hex, so no
+    /// digit is rounded twice, and an integer as a signed decimal of its width.
+    pub values: Vec<String>,
+}
+
+impl ConstTable {
+    /// The table `decl` declares, `Ok(None)` when it declares a number or `bool` instead, and
+    /// `Err` with the reason when it is a tensor `const` this compiler cannot build yet.
+    pub fn from_decl(decl: &crate::syntax::ConstDecl) -> Result<Option<ConstTable>, String> {
+        use crate::syntax::{Dim, ElementType::*, Expr, Type, UnaryOp};
+        let Type::Tensor(elem, dims, placement) = &decl.ty else {
+            return Ok(None);
+        };
+        if placement.is_some() {
+            return Err("cannot be placed: a table lives with the program".into());
+        }
+        let len = match dims.as_slice() {
+            [Dim::Static(Expr::Number(n))] => n
+                .value
+                .parse::<usize>()
+                .map_err(|_| "must have a whole number as its length".to_string())?,
+            _ => return Err("must have one dimension whose length is a number".into()),
+        };
+        if !matches!(
+            elem,
+            F32 | F64 | I8 | I16 | I32 | I64 | U8 | U16 | U32 | U64
+        ) {
+            return Err("must hold whole numbers or `f32`/`f64` numbers for now".into());
+        }
+        let Expr::Array(array) = &decl.expr else {
+            return Err("must be written as a list of numbers, `[1, 2, 3]`".into());
+        };
+        if array.elements.len() != len {
+            return Err(format!(
+                "has {} numbers, but its type says {}",
+                array.elements.len(),
+                len
+            ));
+        }
+        let mut values = Vec::with_capacity(len);
+        for element in &array.elements {
+            let (negative, n) = match element {
+                Expr::Number(n) => (false, n),
+                Expr::UnaryOp(u) if u.op == UnaryOp::Neg => match &*u.expr {
+                    Expr::Number(n) => (true, n),
+                    _ => return Err("must hold only number literals".into()),
+                },
+                _ => return Err("must hold only number literals".into()),
+            };
+            if n.ty.as_ref().is_some_and(|t| t != elem) {
+                return Err("has a number whose type differs from the table's".into());
+            }
+            let text = n.value.replace('_', "");
+            let value = match elem {
+                F32 | F64 => {
+                    let f: f64 = text
+                        .parse()
+                        .map_err(|_| format!("has `{}`, which is not a number", n.value))?;
+                    let f = if negative { -f } else { f };
+                    if *elem == F32 {
+                        // Parsed straight to f32: rounding through f64 first could land one
+                        // step away from the nearest f32.
+                        let f: f32 = text.parse().map_err(|_| "is not a number".to_string())?;
+                        let f = if negative { -f } else { f };
+                        format!("0x{:08X}", f.to_bits())
+                    } else {
+                        format!("0x{:016X}", f.to_bits())
+                    }
+                }
+                I8 | I16 | I32 | I64 | U8 | U16 | U32 | U64 => {
+                    if text.contains('.') {
+                        return Err(format!("has `{}`, which is not a whole number", n.value));
+                    }
+                    let parsed = match text.strip_prefix("0x") {
+                        Some(hex) => i128::from_str_radix(hex, 16),
+                        None => text.parse::<i128>(),
+                    };
+                    let v =
+                        parsed.map_err(|_| format!("has `{}`, which is not a number", n.value))?;
+                    let v = if negative { -v } else { v };
+                    let (bits, signed) = match elem {
+                        I8 => (8, true),
+                        I16 => (16, true),
+                        I32 => (32, true),
+                        I64 => (64, true),
+                        U8 => (8, false),
+                        U16 => (16, false),
+                        U32 => (32, false),
+                        _ => (64, false),
+                    };
+                    let (lo, hi) = if signed {
+                        (-(1i128 << (bits - 1)), (1i128 << (bits - 1)) - 1)
+                    } else {
+                        (0, (1i128 << bits) - 1)
+                    };
+                    if v < lo || v > hi {
+                        return Err(format!("has `{}`, which does not fit in its type", n.value));
+                    }
+                    // MLIR's integers have no sign of their own: an unsigned value past the
+                    // signed range is written as the negative number with the same bits.
+                    let wrapped = if v > (1i128 << (bits - 1)) - 1 {
+                        v - (1i128 << bits)
+                    } else {
+                        v
+                    };
+                    wrapped.to_string()
+                }
+                _ => unreachable!("the element type was checked above"),
+            };
+            values.push(value);
+        }
+        Ok(Some(ConstTable {
+            name: decl.name.clone(),
+            elem: elem.clone(),
+            len,
+            values,
+        }))
+    }
+
+    /// The global's name in the module. The prefix keeps it apart from functions.
+    pub fn symbol(&self) -> String {
+        format!("__vx_const_{}", self.name)
+    }
+
+    /// The MLIR type of the table, `memref<64xf64>`.
+    pub fn memref_type(&self) -> String {
+        let elem =
+            crate::mlir_ty::mlir_scalar(&self.elem).expect("a table's element has an MLIR type");
+        format!("memref<{}x{}>", self.len, elem)
+    }
+
+    /// The table's read-only global, one line of MLIR.
+    pub fn global_op(&self) -> String {
+        format!(
+            "memref.global \"private\" constant @{} : {} = dense<[{}]>\n",
+            self.symbol(),
+            self.memref_type(),
+            self.values.join(", ")
+        )
     }
 }
 
@@ -335,8 +489,18 @@ impl ImmutableGlobalRegistry {
             structs: FxHashMap::default(),
             enum_data: FxHashMap::default(),
             merge_state: MergeState::default(),
+            const_tables: Vec::new(),
             layout_by_base_name,
         })
+    }
+
+    /// The `const` table named `name`, with its position in `const_tables`.
+    pub fn const_table(&self, name: &str) -> Option<(usize, &ConstTable)> {
+        let at = self
+            .const_tables
+            .binary_search_by(|t| t.name.as_ref().cmp(name))
+            .ok()?;
+        Some((at, &self.const_tables[at]))
     }
 
     /// The unique modelled layout of a struct or enum, by base name (`Vec<i32>` asks for `Vec`): the

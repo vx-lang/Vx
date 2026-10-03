@@ -818,6 +818,9 @@ pub struct EmitCtx {
     /// construction, and the GPU band is [500, 600)). Built-in topologies are not in this map and
     /// keep riding the band.
     pub topo_archs: HashMap<i64, String>,
+    /// The program's `const` tables as (global name, memref type), in the registry's order, which
+    /// is what a `ConstTable` instruction's `imm` counts in.
+    pub const_tables: Vec<(String, String)>,
 }
 
 /// The declared properties of a memory sub-space the flat emitter re-attaches to a `vx.transfer`,
@@ -963,6 +966,11 @@ impl EmitCtx {
             func_sigs: HashMap::new(),
             subspaces: HashMap::new(),
             topo_archs: HashMap::new(),
+            const_tables: registry
+                .const_tables
+                .iter()
+                .map(|t| (t.symbol(), t.memref_type()))
+                .collect(),
         }
     }
 
@@ -1286,6 +1294,9 @@ pub fn emit_module_mlir(
         for (li, s) in strs.iter().enumerate() {
             globals += &emit_string_global(str_bases[fi] + li, s);
         }
+    }
+    for table in &registry.const_tables {
+        globals += &format!("  {}", table.global_op());
     }
     // Prepend `private` declarations for any runtime print helpers the bodies call (the JIT links
     // their implementations; the AST path declares them the same way). Which ones were determined
@@ -1965,6 +1976,7 @@ impl<'a> FnEmit<'a> {
             // `!llvm.ptr` value — what a `let s = "…"` binds or a string argument passes. The global's
             // bytes are emitted by `emit_module_mlir` from the string side table.
             Opcode::StringConst => self.op_string_const(idx, ins),
+            Opcode::ConstTable => self.op_const_table(idx, ins),
             // Index a raw pointer `p[i]` (`p : *mut T`): GEP the element, then either load it (a value
             // read) or hand back the element pointer as a store place. `operand1` is the base pointer,
             // `operand2` the (scalar) index, `type_idx` the pointee element type. The GEP's base

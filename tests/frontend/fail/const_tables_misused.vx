@@ -1,0 +1,38 @@
+//===- const_tables_misused.vx - Vx -----------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+fn one() -> i8 {
+  return 1i8;
+}
+
+// CHECK: Error[E3044] at [[@LINE+1]]:1: const 'SHORT' has 2 numbers, but its type says 3
+const SHORT : Tensor<i8, [3]> = [1, 2];
+
+// CHECK: Error[E3044] at [[@LINE+1]]:1: const 'CALLED' must hold only number literals
+const CALLED : Tensor<i8, [2]> = [1, one()];
+
+// CHECK: Error[E3044] at [[@LINE+1]]:1: const 'TOO_BIG' has `300`, which does not fit in its type
+const TOO_BIG : Tensor<i8, [2]> = [1, 300];
+
+// CHECK: Error[E3044] at [[@LINE+1]]:1: const 'FLAGS' must hold whole numbers or `f32`/`f64` numbers for now
+const FLAGS : Tensor<bool, [1]> = [true];
+
+const GOOD : Tensor<i8, [2]> = [1, 2];
+
+fn main() -> i32 {
+  let a = SHORT[0] + CALLED[0] + TOO_BIG[0];
+  let b = FLAGS[0];
+  // A table is read-only.
+  // CHECK: Error[E4010] at [[@LINE+1]]:{{[0-9]+}}: `GOOD` is a `const`, so it cannot be assigned
+  GOOD[0] = 5i8;
+  // A table is read one number at a time, never bound or passed whole.
+  // CHECK: Error[E3044] at [[@LINE+1]]:11: const 'GOOD' is a table: read it one number at a time, as `GOOD[i]`
+  let c = GOOD;
+  return 0;
+}
