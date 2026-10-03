@@ -782,36 +782,7 @@ impl<'a> TypeChecker<'a> {
                 let place = Self::extract_base_and_path(inner)
                     .or_else(|| self.reborrow_base_and_path(inner));
                 if let Some((name, path)) = place {
-                    // NLL: `live_borrows` sweeps dead borrows before the shared-XOR-mutable conflict
-                    // check, so a borrow whose borrower is dead no longer blocks a new one (#276). This
-                    // was the hand-copied sweep duplicate the R1 refactor removed.
-                    let mut conflict_reported = false;
-                    for b in self.borrow.live_borrows(&name) {
-                        // Split borrows: skip a record whose path is disjoint from this borrow's.
-                        if !crate::hir::places::paths_may_alias(&path, &b.path) {
-                            continue;
-                        }
-                        if b.is_mut {
-                            if !self.speculating {
-                                conflict_reported = true;
-                                self.errors.error_with_code(
-                                    crate::diagnostic::DiagnosticCode::E4004,
-                                    format!("Cannot borrow '{}' because it is already borrowed as mutable.", name),
-                                    Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
-                                );
-                            }
-                        } else if *is_mut && !self.speculating {
-                            conflict_reported = true;
-                            self.errors.error_with_code(
-                                crate::diagnostic::DiagnosticCode::E4003,
-                                format!("Cannot borrow '{}' as mutable because it is also borrowed as immutable.", name),
-                                Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
-                            );
-                        }
-                    }
-                    if conflict_reported {
-                        self.drop_access_error_for(&name, span);
-                    }
+                    self.check_borrow_conflicts(&name, &path, *is_mut, span);
                     if !self.speculating {
                         self.borrow.record(
                             &name,
@@ -839,6 +810,53 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             _ => panic!("Expected IndexAccess, got {:?}", expr),
+        }
+    }
+
+    /// A new borrow of `name`'s `path` must not overlap a live one unless both are shared:
+    /// E4004 under a mutable borrow, E4003 for a mutable borrow under a shared one.
+    pub(crate) fn check_borrow_conflicts(
+        &mut self,
+        name: &str,
+        path: &[String],
+        is_mut: bool,
+        span: &crate::syntax::Span,
+    ) {
+        if self.speculating {
+            return;
+        }
+        // NLL: `live_borrows` sweeps dead borrows first, so a borrow whose borrower is no longer
+        // used does not block a new one (#276).
+        let mut conflict_reported = false;
+        for b in self.borrow.live_borrows(name) {
+            // Split borrows: skip a record whose path is disjoint from this borrow's.
+            if !crate::hir::places::paths_may_alias(path, &b.path) {
+                continue;
+            }
+            if b.is_mut {
+                conflict_reported = true;
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E4004,
+                    format!(
+                        "Cannot borrow '{}' because it is already borrowed as mutable.",
+                        name
+                    ),
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                );
+            } else if is_mut {
+                conflict_reported = true;
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E4003,
+                    format!(
+                        "Cannot borrow '{}' as mutable because it is also borrowed as immutable.",
+                        name
+                    ),
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                );
+            }
+        }
+        if conflict_reported {
+            self.drop_access_error_for(name, span);
         }
     }
 

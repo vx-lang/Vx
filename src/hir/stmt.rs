@@ -329,6 +329,8 @@ impl<'a> TypeChecker<'a> {
             ty
         };
 
+        self.bind_view(name.as_ref(), *_is_mut, expr, &binding_ty, span);
+
         // Record where a binding points, so a later `return` of it can be checked for
         // escape (#243): a reference, or any value that can hold one -- a `View { r : &x }`
         // or a closure that uses a local. A binding whose provenance we can't determine is
@@ -873,8 +875,10 @@ impl<'a> TypeChecker<'a> {
         // assigned: in `w = transform(w)` the call consumes `w` and the result is then put
         // back under the same name, which leaves it perfectly usable.
         if op.is_none() {
+            self.check_view_assign(lhs, rhs, &rhs_ty);
             if let Expr::Identifier(id) = lhs {
                 self.unconsume(id.name.as_ref());
+                self.borrow.views.remove(id.name.as_ref());
             }
         }
         if let Some(op) = op {
@@ -1177,6 +1181,7 @@ impl<'a> TypeChecker<'a> {
         //
         // Any value that can hold a reference is asked, not only a bare one: a `&local`
         // returned inside a struct, or a closure that uses a local, dangles the same way.
+        self.check_view_return(expr, &ty, span);
         if !self.speculating
             && self.type_can_hold_reference(&ty)
             && matches!(

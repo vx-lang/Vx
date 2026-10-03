@@ -45,6 +45,8 @@ pub(crate) struct BorrowCx {
     pub(crate) current_params: HashMap<Symbol, Type>,
     /// The moves at each `break` and `continue` of the loops being checked, innermost last.
     pub(crate) loop_exits: Vec<LoopExits>,
+    /// What each view variable (`let r = q[i]`) borrows. Reset per function.
+    pub(crate) views: HashMap<Symbol, crate::hir::check::views::View>,
 }
 
 /// What a loop's `break`s carry out of it and its `continue`s carry into its next pass: the
@@ -68,6 +70,7 @@ impl Default for BorrowCx {
             ref_provenance: HashMap::new(),
             current_params: HashMap::new(),
             loop_exits: Vec::new(),
+            views: HashMap::new(),
         }
     }
 }

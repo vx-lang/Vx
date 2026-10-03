@@ -1,0 +1,108 @@
+//===- tensor_views_borrow_their_owner.vx - Vx Compiler ----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A row `q[1]` or a tensor field `h.t` is a view of its owner's memory, not a copy, so it
+// borrows the owner as `&q` would. Each function below breaks one rule of that borrow.
+
+struct Holder {
+  t : Tensor<f32, [4]>,
+}
+
+fn take(t : Tensor<f32, [2, 4]>) -> f32 {
+  return t[0][0];
+}
+
+fn take_holder(h : Holder) -> f32 {
+  return h.t[0];
+}
+
+// The tensor is moved while its row is still used.
+fn owner_moved() -> f32 {
+  let q = Tensor<f32, [2, 4]>::new();
+  let r = q[1];
+  let s = take(q);
+  return r[0] + s;
+}
+
+// The struct is moved while a view of its field is still used.
+fn struct_moved() -> f32 {
+  let h = Holder {
+    t : Tensor<f32, [4]>::new()
+  };
+  let t = h.t;
+  let s = take_holder(h);
+  return t[0] + s;
+}
+
+// The tensor is written while its row is still used.
+fn owner_written() -> f32 {
+  let mut q = Tensor<f32, [2, 4]>::new();
+  let r = q[1];
+  q[1][0] = 5.0;
+  return r[0];
+}
+
+// The tensor is read while a row that can write it is still used.
+fn owner_read() -> f32 {
+  let mut q = Tensor<f32, [2, 4]>::new();
+  let mut r = q[1];
+  let x = q[1][0];
+  r[0] = 5.0;
+  return x + r[0];
+}
+
+// A row that can write is taken from a tensor that is not `mut`.
+fn row_of_read_only() -> f32 {
+  let q = Tensor<f32, [2, 4]>::new();
+  let mut r = q[1];
+  r[0] = 5.0;
+  return r[0];
+}
+
+// A row of a tensor the function owns is returned.
+fn row_of_a_local() -> Tensor<f32, [4]> {
+  let q = Tensor<f32, [2, 4]>::new();
+  return q[1];
+}
+
+// A parameter taken by value is owned by the function too.
+fn row_of_a_parameter(q : Tensor<f32, [2, 4]>) -> Tensor<f32, [4]> {
+  return q[1];
+}
+
+// A row is stored in a variable that already holds a tensor.
+fn stored_in_a_variable() -> f32 {
+  let q = Tensor<f32, [2, 4]>::new();
+  let mut keep = Tensor<f32, [4]>::new();
+  keep = q[1];
+  return keep[0];
+}
+
+// A row is stored in a struct field.
+fn stored_in_a_field() -> f32 {
+  let q = Tensor<f32, [2, 4]>::new();
+  let h = Holder {
+    t : q[1]
+  };
+  return h.t[0];
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK-DAG: Error[E4007] at 29:16: `q` is moved while it is borrowed
+// CHECK-DAG: Error[E4007] at 39:23: `h` is moved while it is borrowed
+// CHECK-DAG: Error[E4009] at 47:7: `q` is assigned while it is borrowed
+// CHECK-DAG: Error[E4002] at 55:11: Cannot access 'q' because it is mutably borrowed.
+// CHECK-DAG: Error[E4010] at 63:3: `q` is not declared `mut`, so a view of it cannot be declared `mut`
+// CHECK-DAG: Error[E4005] at 71:3: this returns a view of `q`, a tensor this function owns
+// CHECK-DAG: Error[E4005] at 76:3: this returns a view of `q`, a tensor this function owns
+// CHECK-DAG: Error[E4011] at 83:11: this stores a view of `q` in `keep`, which holds a tensor of its own
+// CHECK-DAG: Error[E4011] at 91:10: this stores a view of `q` in the field `t`

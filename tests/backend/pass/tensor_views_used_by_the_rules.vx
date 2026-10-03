@@ -1,0 +1,50 @@
+//===- tensor_views_used_by_the_rules.vx - Vx Compiler -----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// REQUIRES: flat-codegen
+// RUN: vxc %s --run 2>&1 | FileCheck %s
+//
+// A row `q[1]` borrows its tensor. These uses keep to the rules of that borrow, and are
+// accepted. (`--legacy-codegen` cannot compile a row declared `mut` yet.)
+
+fn take(t : Tensor<f32, [2, 4]>) -> f32 {
+  return t[1][0];
+}
+
+// A tensor taken by reference belongs to the caller, so its row can be returned.
+fn second_row(q : &Tensor<f32, [2, 4]>) -> Tensor<f32, [4]> {
+  return q[1];
+}
+
+fn main() -> i32 {
+  let mut q = Tensor<f32, [2, 4]>::new();
+  // A row declared `mut` writes into the tensor.
+  let mut r = q[1];
+  r[0] = 5.0;
+  // The row is not used again, so the tensor can be read and written.
+  print(q[1][0]);
+  print(" ");
+  q[1][1] = 6.0;
+  // Two rows that only read can be used together.
+  let a = q[1];
+  let b = q[1];
+  print(a[1] + b[1]);
+  print(" ");
+  print(second_row(&q)[0]);
+  print(" ");
+  // Writing a row into another tensor's row copies it.
+  let mut p = Tensor<f32, [2, 4]>::new();
+  p[0] = q[1];
+  q[1][0] = 9.0;
+  print(p[0][0]);
+  print(" ");
+  // The rows are no longer used, so the tensor can be moved.
+  print(take(q));
+  return 0;
+}
+
+// CHECK: 5 12 5 5 9

@@ -620,6 +620,11 @@ impl<'a> TypeChecker<'a> {
                                     Some(expected_type.clone()),
                                     consume,
                                 );
+                                self.check_view_stored(
+                                    &format!("the field `{expected_name}`"),
+                                    f_expr,
+                                    &f_type,
+                                );
                                 if !self.is_assignable(expected_type, &f_type) && !self.speculating
                                 {
                                     self.errors.push(format!(

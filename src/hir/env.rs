@@ -1411,6 +1411,7 @@ impl<'a> TypeChecker<'a> {
         // clobber the enclosing function's view.
         let prev_params = std::mem::take(&mut self.borrow.current_params);
         let prev_provenance = std::mem::take(&mut self.borrow.ref_provenance);
+        let prev_views = std::mem::take(&mut self.borrow.views);
         for (name, ty) in &func.params {
             self.insert(name.to_string(), ty.clone());
             self.borrow.current_params.insert(name.clone(), ty.clone());
@@ -1517,6 +1518,7 @@ impl<'a> TypeChecker<'a> {
         self.active_memory = prev_mem;
         self.borrow.current_params = prev_params;
         self.borrow.ref_provenance = prev_provenance;
+        self.borrow.views = prev_views;
         self.used_vars = prev_used_vars;
         self.declared_vars = prev_declared_vars;
     }
