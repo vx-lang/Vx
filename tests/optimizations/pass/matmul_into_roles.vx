@@ -20,6 +20,8 @@
 //
 // The roles still have to name which operand is which: `out` is the
 // destination, and for square operands nothing about the shapes could say so.
+// The numbers are positions in the kernel's arguments, which here are
+// `(y, w, x)`: its `linalg.matmul` reads arguments 1 and 2 and writes 0.
 //
 // RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s
 // CHECK: vx.launch @vx_npu_kernel_0
@@ -27,7 +29,7 @@
 // CHECK: vx.kernel_out_kind = "buffer"
 //
 // RUN: vxc %s --emit-llvm 2>&1 | FileCheck %s --check-prefix=PAYLOAD
-// PAYLOAD: \00kind=matmul\00roles=a:0,b:1,out:2\00outkind=buffer\00
+// PAYLOAD: \00kind=matmul\00roles=a:1,b:2,out:0\00outkind=buffer\00
 
 extern "C" {
   fn vx_alloc_f32(n : i32) -> *mut f32;

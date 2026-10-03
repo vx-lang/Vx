@@ -11,6 +11,12 @@
 // [[0, 1, 2, 3], [4, 5, 6, 7], [8, 9, 10, 11]].
 //
 // EXPECT: 1 1 1 | 4 5 6 7
+//
+// The tensors `column_means` does not return are freed in it.
+// RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s
+// CHECK-LABEL: llvm.func @column_means(
+// CHECK-NOT: llvm.func @
+// CHECK: llvm.call @free
 fn column_means(t : &Tensor<f64, [?, ?]>, axis : i32) -> Tensor<f64, [?]> {
   if axis == 1 {
     let mut rows = Tensor<f64>([ t.extent(0) ]);

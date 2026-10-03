@@ -11,6 +11,13 @@
 // with "double free".
 //
 // EXPECT: 0 0 0 0 0 0 0 0 0 0 0 0
+//
+// `g`'s tensors are freed. For a while the fix for that double free was to free nothing in
+// such a function; the placeholder for the not-yet-returned result made freeing safe again.
+// RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s
+// CHECK-LABEL: llvm.func @g(
+// CHECK-NOT: llvm.func @
+// CHECK: llvm.call @free
 fn g(n : i32, k : i32) -> Tensor<i32, [?]> {
   let mut v1 = Tensor<i32>([n]);
   for j in 0..n {

@@ -34,6 +34,7 @@
 #include "mlir/Target/LLVMIR/Dialect/All.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "mlir/Transforms/Mem2Reg.h"
 #include "mlir/Transforms/RegionUtils.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/Support/FileSystem.h"
@@ -1349,6 +1350,30 @@ static bool isDeviceLowerableDialect(StringRef ns) {
          ns == "memref" || ns == "scf" || ns == "vector";
 }
 
+// Turn each cell that holds a buffer into plain values. The AST code generator
+// keeps a tensor local in a cell (`memref<memref<..>>`), which the buffer
+// deallocation analysis cannot follow, and which stops being promotable once
+// identical blocks are merged and the cell becomes a block argument -- so this
+// runs before anything else is rewritten. Only those cells: promoting every
+// stack slot, as `mem2reg` does, also rewrote scalar locals, which changed
+// what kernel extraction saw. A cell that cannot be promoted (one passed to a
+// call) stays a cell.
+static void promoteBufferCells(ModuleOp module) {
+  module.walk([](func::FuncOp func) {
+    SmallVector<PromotableAllocationOpInterface> cells;
+    func.walk([&](memref::AllocaOp alloca) {
+      if (isa<BaseMemRefType>(alloca.getType().getElementType()))
+        cells.push_back(cast<PromotableAllocationOpInterface>(*alloca));
+    });
+    if (cells.empty())
+      return;
+    OpBuilder builder(func.getContext());
+    DominanceInfo dominance(func);
+    (void)tryToPromoteMemorySlots(cells, builder, DataLayout::closest(func),
+                                  dominance);
+  });
+}
+
 struct ConvertVxToStandardPass
     : public PassWrapper<ConvertVxToStandardPass, OperationPass<ModuleOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ConvertVxToStandardPass)
@@ -1764,6 +1789,7 @@ struct ConvertVxToStandardPass
     }
 
     placeTransferFrees(getOperation());
+    promoteBufferCells(getOperation());
 
     RewritePatternSet patterns(&getContext());
     patterns.add<SpawnOpLowering, TransferOpLowering>(&getContext());

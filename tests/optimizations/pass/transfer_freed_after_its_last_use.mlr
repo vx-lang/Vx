@@ -69,13 +69,13 @@ module {
   }
 
   // Kept in a `let mut` variable and read after a loop that does not touch
-  // it: freed after that read, not when the loop starts.
+  // it: freed after that read, not when the loop starts. The variable's cell
+  // becomes a plain value, so the read is the call itself.
   // CHECK-LABEL: func.func @kept_in_a_variable
   // CHECK: %[[D:.*]] = memref.alloc()
   // CHECK-NOT: memref.dealloc
   // CHECK: ^bb3:
-  // CHECK-NEXT: %[[L:.*]] = memref.load
-  // CHECK-NEXT: call @use(%[[L]])
+  // CHECK-NEXT: call @use(%[[D]])
   // CHECK-NEXT: memref.memory_space_cast %[[D]]
   // CHECK-NEXT: memref.dealloc
   // CHECK-NEXT: return
