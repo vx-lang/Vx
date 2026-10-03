@@ -1,6 +1,6 @@
 # Drop semantics: freeing what a program owns when its owner goes away
 
-**Status:** proposal, 2026-10-03. Tracking issue: Vx#1041, one issue per phase (Vx#1042 to Vx#1046). Decides Vx#495.
+**Status:** proposal, 2026-10-03. Tracking issue: Vx#1041, one issue per phase (Vx#1049, then Vx#1042 to Vx#1046). Decides Vx#495.
 
 ______________________________________________________________________
 
@@ -25,10 +25,17 @@ more shape".
 This plan gives Vx Rust's model instead: **a value that owns resources is dropped when its owner
 goes out of scope, unless it was moved first.** The decisions:
 
-1. **Scope-based drop, as in Rust.** A local that owns a value and has not been moved is dropped
-   at the end of the block that declared it, in reverse declaration order. Not "after the last
-   use": drop points must be predictable for `RefCell` guards, file handles and locks (A19 in
-   `core_library.md`).
+1. **Views are borrows, checked first.** A row `q[i]`, a tensor field read or a reshape borrows
+   its owner, as `&q` does: the owner cannot be moved or written while the view is used, and the
+   view cannot outlive the owner's block. Nothing below is sound until the borrow checker
+   enforces this (phase 0).
+1. **Memory is freed after its last use; other drops wait for the end of the scope.** An owner
+   whose drop only frees memory (a tensor, a `Vec` with no `Drop` of its own) is freed after the
+   last use of the owner *and of every view of it*. The borrow checker is what makes that safe: a
+   free too early is a borrow checker bug. A type with a `Drop` implementation is dropped at the
+   end of its block, in reverse declaration order, because its drop has effects whose timing is
+   part of the program (`RefCell` guards, locks, files; A19 in `core_library.md`). So is an
+   owner a raw pointer was taken from (`as_ptr`, `from_ptr`), which no borrow checker sees.
 1. **The checker decides, the code generators obey.** The checker already tracks moves per scope
    (`BorrowCx.moved_vars`). It gains the step it is missing, "which owners are still live when this
    scope ends", and writes explicit drop operations into the program. Both code generators lower
@@ -99,10 +106,12 @@ the corpus will measure how often it fires (phase 1).
 
 ### 2.2 Drop points
 
-At the end of every block, the checker computes the owners declared in that block that are not
-definitely moved:
+For an owner that only holds memory, the drop point is after the last use of the owner or of any
+view of it, on each path. For a type with `Drop`, and for an owner a raw pointer was taken from,
+it is the end of its block. In both cases the checker computes the owners declared in a block
+that are not definitely moved:
 
-- **definitely live**: dropped unconditionally at the block's end, in reverse declaration order;
+- **definitely live**: dropped unconditionally, at the drop point above;
 - **maybe moved** (moved on some paths reaching the end): dropped under a drop flag;
 - **definitely moved**: not dropped.
 
@@ -153,6 +162,12 @@ elaboration", done once, ahead of both code generators.
 
 Each phase is one or a few PRs, and every phase leaves the compiler working.
 
+**Phase 0: views are borrows.** `let r = q[i]`, a tensor field read and a reshape record a
+borrow of the owner, mutable when the view is declared `mut`. The existing errors then apply:
+moving the owner while the view is used (E4007), writing it (E4009), and letting the view
+outlive the owner's block or function (E4005). Assigning a view to an owning tensor
+(`keep = q[1]`) is refused until it can mean a copy; today it crashes both code generators.
+
 **Phase 1: provenance and drop points in the checker, reported only.** The checker classifies
 owners and views (§2.1), computes drop points and drop flags (§2.2), and refuses moving out of a
 field (§2.4). Nothing is emitted yet: a debug flag prints the drop points, and tests check them. The
@@ -200,5 +215,8 @@ paths are revisited.
    overwrite without freeing.
 1. **Drop order across a `spawn` boundary** when a region yields an owner: moved out to the
    enclosing function, like a return. To confirm in phase 5.
+1. **A view passed by value** (`norm(q[i])` for `fn norm(v : Tensor<f32, [4]>)`): once the
+   callee owns its by-value parameters, the caller must copy the view or the call is refused.
+   Phase 0 measures how common this is.
 1. **The view type (#400):** once it exists, provenance becomes a type distinction, and the
    restriction in §2.1 can go.
