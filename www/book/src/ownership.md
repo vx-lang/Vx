@@ -156,6 +156,10 @@ print(q[1][0]);     // fine: r is not used again
   (`keep = q[1]`) or a struct field (`h.t = q[1]`, `Holder { t : q[1] }`) (E4011). It would
   replace that tensor with a window onto another. Bind it to a new variable with `let` instead.
   Writing a row into another row, `p[0] = q[1]`, copies the elements and is fine.
+- A view cannot be passed to a function that takes a tensor by value (E4011): the function
+  would own memory that is the owner's. Pass a copy, `f(q[1].clone())`, or make the function
+  take the tensor by reference, `f(&q[1])`. `t.clone()` makes a new tensor of `t`'s type with
+  a copy of its elements.
 
 **Why views are checked this strictly.** Vx is moving to freeing memory automatically
 (`docs/implementation_plans/drop_semantics.md`). A tensor that only holds memory will be freed
@@ -170,7 +174,6 @@ not be:
 
 | Case | Issue |
 | --- | --- |
-| A row passed by value to a function (also crashes both code generators) | #1055 |
 | A view chosen by an `if` or a `match` used as a value | #1056 |
 | `t.reshape(..)`, which is a view of `t` | #1057 |
 | A view taken through a reference variable, `rq[1]` with `rq = &q` | #1058 |

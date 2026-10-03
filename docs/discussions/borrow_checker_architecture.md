@@ -201,12 +201,19 @@ decided:
 - **An owner that only holds memory** (a tensor, a `Vec` with no `Drop` of its own) **is freed after
   the last use of the owner and of every view of it.** Nothing in the program can observe the free,
   and it keeps peak memory low.
+
 - **A type with a `Drop` implementation is dropped at the end of its block**, in reverse
   declaration order, because its drop has effects whose timing is part of the program: a lock, a
   `RefCell` guard, a file. Nothing borrows a `let _lock = m.lock()` after that line, so a last-use
   rule would release it at once.
+
 - **An owner a raw pointer was taken from** (`as_ptr`, `from_ptr`) also waits for the end of its
   block. No borrow checker sees raw pointers.
+
+- **A view is never copied behind the programmer's back.** Where a tensor of its own is
+  needed, a function parameter taken by value for example, a view is refused and the error asks
+  for `.clone()`. An automatic copy would hide a copy of possibly large data in an ordinary
+  looking call; Rust makes the same choice.
 
 So for memory, **a free that comes too early is a borrow checker bug**, not a rule for the
 programmer to remember. That is why views come first: phase 0 of the plan.
@@ -224,6 +231,7 @@ checks apply unchanged:
 | Under a `mut` view, the owner cannot be read or borrowed again. | E4002 to E4004 |
 | A view of a local, or of a parameter taken by value, cannot be returned. A view of a parameter taken by reference can. | E4005 |
 | A view cannot be stored where a tensor of its own is held: a variable that already exists, or a struct field. `p[i] = q[j]` copies and is fine. | E4011 |
+| A view cannot be passed to a function that takes a tensor by value, since the function would own it. Pass `q[i].clone()`, or take `&Tensor`. | E4011 |
 
 A borrow ends at the view's last use, as for `&`.
 
@@ -244,7 +252,6 @@ A borrow ends at the view's last use, as for `&`.
 
 | Case | Issue |
 | --- | --- |
-| A row passed by value to a function. It also crashes both code generators. Under drop semantics it must be copied at the call, or refused. | #1055 |
 | A view chosen by an `if` or a `match` used as a value. | #1056 |
 | `t.reshape(..)`, which is a view of `t`. | #1057 |
 | A view taken through a reference variable, `rq[1]` with `rq = &q`: it stops borrowing when `rq` is last used. The same holds for any reborrow. | #1058 |
