@@ -9,7 +9,7 @@
 // RUN: vxc %s --run 2>&1 | FileCheck %s
 //
 // A row `q[1]` borrows its tensor. These uses keep to the rules of that borrow, and are
-// accepted. (`--legacy-codegen` cannot compile a row declared `mut` yet.)
+// accepted. (`--legacy-codegen` cannot yet compile `print` with a string, or a row copied into a row.)
 
 fn take(t : Tensor<f32, [2, 4]>) -> f32 {
   return t[1][0];

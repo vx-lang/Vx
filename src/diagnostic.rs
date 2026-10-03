@@ -369,10 +369,11 @@ pub enum DiagnosticCode {
     /// it, borrowing it `&mut`, or calling a method that takes `&mut self` on it. Declare it
     /// `let mut x`, or for a parameter `mut x : T`.
     E4010,
-    /// A view of a tensor (a row `q[i]` or a field `h.t`) stored where a tensor of its own is
-    /// held: a variable that already exists (`t = q[i]`) or a struct field (`h.t = q[i]`,
-    /// `Holder { t : q[i] }`). A view shares its owner's memory and is not a copy. Bind it to a
-    /// new variable with `let` instead.
+    /// A view of a tensor (a row `q[i]` or a field `h.t`) used where a tensor of its own is
+    /// held: stored in a variable that already exists (`t = q[i]`) or a struct field
+    /// (`h.t = q[i]`, `Holder { t : q[i] }`), or passed to a function that takes the tensor by
+    /// value (`f(q[i])`). A view shares its owner's memory and is not a copy. Bind it to a new
+    /// variable with `let`, pass `q[i].clone()`, or take the parameter by reference.
     E4011,
 
     // --- Safety Errors (E5xxx) ---

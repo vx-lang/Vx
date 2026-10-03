@@ -439,6 +439,9 @@ pub struct Callee {
     /// The memref spelling when the callee returns a statically shaped tensor (wrappers peeled) --
     /// the call's result is then a memref value tracked in `mem_of`.
     pub ret_tensor: Option<String>,
+    /// The memref spelling of each tensor parameter, by value or by reference; `None` for any
+    /// other parameter. A row passed in is a strided view, and is cast to this at the call.
+    pub param_tensors: Vec<Option<String>>,
 }
 
 /// GID → callee: the reverse of the registry's name-keyed `fn_sigs`. A `Call`'s `type_idx` resolves
@@ -553,6 +556,14 @@ pub fn build_callee_map(
                 ret_ptr: is_ptr_ty(&sig.ret_ty),
                 ret_void: is_void_ty(&sig.ret_ty),
                 ret_tensor: tensor_memref_of_type(&sig.ret_ty),
+                param_tensors: sig
+                    .params
+                    .iter()
+                    .map(|t| match peel_wrappers(t) {
+                        Type::Borrow { inner, .. } => tensor_memref_of_type(inner),
+                        other => tensor_memref_of_type(other),
+                    })
+                    .collect(),
             },
         )
     };
@@ -1902,6 +1913,7 @@ impl<'a> FnEmit<'a> {
             Opcode::TensorTranspose => self.op_tensor_transpose(idx, ins),
             Opcode::TensorMap => self.op_tensor_map(idx, ins),
             Opcode::TensorReduce => self.op_tensor_reduce(idx, ins),
+            Opcode::TensorClone => self.op_tensor_clone(idx, ins),
             // Index a tensor along its outermost dimension. `operand1` is the base tensor (memref),
             // `operand2` the index (`arith.index_cast` to `index`). A scalar-element result
             // (`type_idx` is a scalar GID) is a value read (`imm = 0` → `memref.load`) or an element

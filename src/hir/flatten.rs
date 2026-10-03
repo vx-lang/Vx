@@ -1495,6 +1495,9 @@ impl<'r> Lowerer<'r> {
             Expr::MethodCall(mc) if matches!(mc.method_name.as_ref(), "reshape" | "transpose") => {
                 self.lower_tensor_reshape(mc)
             }
+            Expr::MethodCall(mc) if mc.method_name.as_ref() == "clone" && mc.args.is_empty() => {
+                self.lower_tensor_clone(mc)
+            }
             Expr::MethodCall(mc) if mc.method_name.as_ref() == "map" => self.lower_tensor_map(mc),
             Expr::MethodCall(mc) if mc.method_name.as_ref() == "reduce" && mc.args.len() == 2 => {
                 self.lower_tensor_reduce(mc)
@@ -3281,6 +3284,17 @@ impl<'r> Lowerer<'r> {
             shape: permuted,
         };
         Ok(self.emit_typed(Opcode::TensorTranspose, src.reg, Register(0), ty, imm))
+    }
+
+    /// `t.clone()`: a fresh tensor holding a copy of `t`'s elements. `t` may be a row.
+    fn lower_tensor_clone(&mut self, mc: &crate::syntax::MethodCallExpr) -> Lowered<Val> {
+        let src = self.lower_expr(&mc.base)?;
+        let ty @ LoweredTy::Tensor { .. } = src.ty.clone() else {
+            return Err(Decline::TypeNotModelled {
+                what: "a clone of something that is not a tensor",
+            });
+        };
+        Ok(self.emit_typed(Opcode::TensorClone, src.reg, Register(0), ty, 0))
     }
 
     /// `t.map(|v| ..)`: a fresh tensor of the source's shape, each element the closure applied

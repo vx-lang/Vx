@@ -2722,6 +2722,10 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             return Ok((out_val, tgt_ty, block));
         }
 
+        if name.as_ref() == "clone" && args.len() == 1 {
+            return lower_clone_call(gen, block, &args[0]);
+        }
+
         if name.as_ref() == "map" {
             return lower_map_call(gen, block, args);
         }
@@ -4215,4 +4219,57 @@ impl<'c> LowerToMelior<'c> for syntax::expr::AsCastExpr {
 
         panic!("Unsupported cast operation in codegen");
     }
+}
+
+/// `t.clone()`: a new buffer of `t`'s shape and a `memref.copy` into it. The copy reads `t`
+/// through its own layout, so cloning a row copies that row.
+fn lower_clone_call<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+    src_expr: &Expr,
+) -> Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError> {
+    let (src, src_ty, block) = gen.generate_expr(src_expr, block)?;
+    let src_str = src_ty.to_string();
+    // "memref<2x?xf32, strided<..>>" -> sizes ["2", "?"] and element "f32".
+    let inner = src_str
+        .strip_prefix("memref<")
+        .and_then(|s| s.split([',', '>']).next())
+        .ok_or_else(|| format!("clone of something that is not a tensor: {src_str}"))?;
+    let mut parts: Vec<&str> = inner.split('x').collect();
+    let elem = parts
+        .pop()
+        .ok_or_else(|| format!("clone of a tensor with no element type: {src_str}"))?;
+    let index_ty = Type::index(gen.context);
+    let mut sizes = Vec::new();
+    for (k, d) in parts.iter().enumerate() {
+        if *d == "?" {
+            let attr = IntegerAttribute::new(index_ty, k as i64).into();
+            let c = OperationBuilder::new("arith.constant", gen.loc())
+                .add_results(&[index_ty])
+                .add_attributes(&[(Identifier::new(gen.context, "value"), attr)])
+                .build()?;
+            let c: Value = block.append_operation(c).result(0)?.into();
+            let dim = OperationBuilder::new("memref.dim", gen.loc())
+                .add_operands(&[src, c])
+                .add_results(&[index_ty])
+                .build()?;
+            sizes.push(block.append_operation(dim).result(0)?.into());
+        }
+    }
+    let dst_ty = Type::parse(gen.context, &format!("memref<{}x{elem}>", parts.join("x")))
+        .ok_or_else(|| format!("clone of a tensor with no memref type: {src_str}"))?;
+    let alloc = OperationBuilder::new("memref.alloc", gen.loc())
+        .add_operands(&sizes)
+        .add_attributes(&[(
+            Identifier::new(gen.context, "operandSegmentSizes"),
+            DenseI32ArrayAttribute::new(gen.context, &[sizes.len() as i32, 0]).into(),
+        )])
+        .add_results(&[dst_ty])
+        .build()?;
+    let dst: Value = block.append_operation(alloc).result(0)?.into();
+    let copy = OperationBuilder::new("memref.copy", gen.loc())
+        .add_operands(&[src, dst])
+        .build()?;
+    block.append_operation(copy);
+    Ok((dst, dst_ty, block))
 }
