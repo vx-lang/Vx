@@ -131,6 +131,52 @@ closure holding one, cannot be returned, stored through a reference, or passed t
 store it. Inside a function, a variable declared outside a block cannot be given a reference to a
 variable declared inside it.
 
+## Views of a tensor
+
+A row `q[i]`, a field `h.t` that holds a tensor, and a view of either are *views*: they share
+their owner's memory instead of copying it. Writing `r[0]` through a row `r = q[1]` changes
+`q[1][0]`, and the other way round. So a view is a borrow of its owner, exactly as `&q` is, and the
+rules above apply to it.
+
+```rust
+let mut q = Tensor<f32, [2, 4]>::new();
+let mut r = q[1];   // borrows q mutably, since r is `mut`
+r[0] = 5.0;         // writes q[1][0]
+print(q[1][0]);     // fine: r is not used again
+```
+
+- A view declared `mut` is a `&mut` borrow, and its owner must be `mut` (E4010). Any other view
+  is a `&` borrow, so two of them can be used together.
+- The owner cannot be moved (E4007), assigned (E4009) or, under a `mut` view, read (E4002) while
+  the view is still going to be used. As with `&`, the borrow ends at the view's last use.
+- A view of a tensor the function owns, a local or a parameter taken by value, cannot be
+  returned (E4005). A view of a tensor taken by reference (`q : &Tensor<..>`) can be: it points
+  into the caller's tensor.
+- A view cannot be stored where a tensor of its own is held: a variable that already exists
+  (`keep = q[1]`) or a struct field (`h.t = q[1]`, `Holder { t : q[1] }`) (E4011). It would
+  replace that tensor with a window onto another. Bind it to a new variable with `let` instead.
+  Writing a row into another row, `p[0] = q[1]`, copies the elements and is fine.
+
+**Why views are checked this strictly.** Vx is moving to freeing memory automatically
+(`docs/implementation_plans/drop_semantics.md`). A tensor that only holds memory will be freed
+after the last use of the tensor *and of every view of it*, and a type with a `Drop` of its own
+at the end of its block. Freeing at the last use is only safe if the checker sees every view, so
+a free that comes too early is a borrow checker bug, not a rule for the programmer to remember.
+The checker tells a view from an owner by where the value came from, since both have the type
+`Tensor`; a separate view type (#400) may replace this later.
+
+**Not checked yet.** These views are still invisible to the checker, or refused when they need
+not be:
+
+| Case | Issue |
+| --- | --- |
+| A row passed by value to a function (also crashes both code generators) | #1055 |
+| A view chosen by an `if` or a `match` used as a value | #1056 |
+| `t.reshape(..)`, which is a view of `t` | #1057 |
+| A view taken through a reference variable, `rq[1]` with `rq = &q` | #1058 |
+| A closure that uses a view | #1059 |
+| Two `mut` rows of different indices, refused because indices are not told apart | #1060 |
+
 ## Linear values
 
 Some values are *linear*: they must be consumed exactly once, and the checker enforces it. Device
