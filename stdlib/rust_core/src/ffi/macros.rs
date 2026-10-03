@@ -340,7 +340,17 @@ macro_rules! instantiate_file_ffi {
             if c_path.is_null() {
                 return std::ptr::null_mut();
             }
-            let path_str = unsafe { std::ffi::CStr::from_ptr(c_path) }.to_string_lossy();
+            let c_path = unsafe { std::ffi::CStr::from_ptr(c_path) };
+            #[cfg(unix)]
+            let path = {
+                use std::os::unix::ffi::OsStrExt;
+                std::ffi::OsStr::from_bytes(c_path.to_bytes())
+            };
+            #[cfg(not(unix))]
+            let path = match c_path.to_str() {
+                Ok(path) => path,
+                Err(_) => return std::ptr::null_mut(),
+            };
 
             // Mode flags: 0 = read, 1 = write, 2 = read/write (create)
             let mut opts = std::fs::OpenOptions::new();
@@ -352,7 +362,7 @@ macro_rules! instantiate_file_ffi {
                 opts.read(true).write(true).create(true);
             }
 
-            if let Ok(file) = opts.open(path_str.as_ref()) {
+            if let Ok(file) = opts.open(path) {
                 let boxed: Box<std::fs::File> = Box::new(file);
                 Box::into_raw(boxed) as *mut std::ffi::c_void
             } else {
@@ -364,28 +374,28 @@ macro_rules! instantiate_file_ffi {
         pub extern "C" fn vx_file_read(
             ptr: *mut std::ffi::c_void,
             buffer: *mut u8,
-            len: usize,
-        ) -> usize {
-            if ptr.is_null() || buffer.is_null() || len == 0 {
+            len: u64,
+        ) -> u64 {
+            if ptr.is_null() || buffer.is_null() || len == 0 || len > isize::MAX as u64 {
                 return 0;
             }
             let file = unsafe { &mut *(ptr as *mut std::fs::File) };
-            let buf_slice = unsafe { std::slice::from_raw_parts_mut(buffer, len) };
-            file.read(buf_slice).unwrap_or(0)
+            let buf_slice = unsafe { std::slice::from_raw_parts_mut(buffer, len as usize) };
+            file.read(buf_slice).unwrap_or(0) as u64
         }
 
         #[no_mangle]
         pub extern "C" fn vx_file_write(
             ptr: *mut std::ffi::c_void,
             buffer: *const u8,
-            len: usize,
-        ) -> usize {
-            if ptr.is_null() || buffer.is_null() || len == 0 {
+            len: u64,
+        ) -> u64 {
+            if ptr.is_null() || buffer.is_null() || len == 0 || len > isize::MAX as u64 {
                 return 0;
             }
             let file = unsafe { &mut *(ptr as *mut std::fs::File) };
-            let buf_slice = unsafe { std::slice::from_raw_parts(buffer, len) };
-            file.write(buf_slice).unwrap_or(0)
+            let buf_slice = unsafe { std::slice::from_raw_parts(buffer, len as usize) };
+            file.write(buf_slice).unwrap_or(0) as u64
         }
 
         #[no_mangle]
