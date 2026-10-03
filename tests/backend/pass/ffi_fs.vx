@@ -31,8 +31,8 @@
 import std::io;
 extern {
   fn vx_file_open(c_path : *const i8, mode : i32) -> *mut i8;
-  fn vx_file_read(ptr : *mut i8, buffer : *mut u8, len : i64) -> i64;
-  fn vx_file_write(ptr : *mut i8, buffer : *const i8, len : i64) -> i64;
+  fn vx_file_read(ptr : *mut i8, buffer : *mut u8, len : u64) -> u64;
+  fn vx_file_write(ptr : *mut i8, buffer : *const i8, len : u64) -> u64;
   fn vx_file_seek(ptr : *mut i8, offset : i64, whence : i32) -> i64;
   fn vx_file_drop(ptr : *mut i8) -> i32;
   fn malloc(size : i64)->*mut u8;

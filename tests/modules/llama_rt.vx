@@ -23,7 +23,7 @@ extern {
   fn vx_powf(x : f32, y : f32)->f32;
   fn vx_get_rope_freq(pos : i32, i : i32, head_size : i32)->f32;
   fn vx_file_open(c_path : *const i8, mode : i32) -> *mut i8;
-  fn vx_file_read(ptr : *mut i8, buffer : *mut f32, len : i32) -> i32;
+  fn vx_file_read(ptr : *mut i8, buffer : *mut u8, len : u64) -> u64;
   fn vx_file_drop(ptr : *mut i8) -> i32;
 
   fn vx_load_config(filepath : *const i8) -> *mut i32;
