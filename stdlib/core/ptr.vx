@@ -8,7 +8,7 @@
 // Raw pointers: making one, and reading or writing through it.
 //
 // `read` and `write` are `unsafe fn` because nothing here checks that the pointer is
-// valid, which is the same reason Rust's are. `null` and `null_mut` are safe: making a
+// valid. `null` and `null_mut` are safe: making a
 // null pointer is fine, and using one is what these two cannot promise.
 //
 // Still missing, and all of it for one reason:

@@ -19,9 +19,8 @@ impl Float for f64 {}
 
 /// Stamps the element-wise operations over a 1-D tensor of one float width. Each changes
 /// the tensor in place, so a chain of them allocates nothing. They are plain loops: with no
-/// order to relax, the compiler turns them into vector code as they are. The names are
-/// ndarray's, Rust's tensor crate, and the `_assign` ones stand in for `+=` and its kin,
-/// which Vx cannot overload yet.
+/// order to relax, the compiler turns them into vector code as they are. The `_assign` ones
+/// stand in for `+=` and its kin, which Vx cannot overload yet.
 macro_rules stamp_tensor_elementwise {
   ($t : ident) => {
     impl Tensor<$t, [?]> {

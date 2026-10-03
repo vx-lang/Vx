@@ -7,8 +7,8 @@
 //===----------------------------------------------------------------------===//
 // The ASCII methods on `u8`: the character classes and the case changes.
 //
-// Rust has these as inherent methods on `u8` in `core::num`. They live in their own module
-// here, so a program imports `core::ascii` to get them; they need no `char` or `str`, and
+// These are methods on `u8` in their own module, so a program imports `core::ascii` to get
+// them; they need no `char` or `str`, and
 // the `char` versions can be written over them later.
 //
 // The byte values are written as numbers, with the character in the comment, because a
@@ -63,7 +63,7 @@ impl u8 {
   }
 
   /// Is this a space (32), tab (9), line feed (10), form feed (12) or carriage return
-  /// (13)? The vertical tab (11) is not, as in Rust.
+  /// (13)? The vertical tab (11) is not.
   fn is_ascii_whitespace(self : u8) -> bool {
     return self == 32 || self == 9 || self == 10 || self == 12 || self == 13;
   }

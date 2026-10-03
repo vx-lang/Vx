@@ -8,10 +8,10 @@
 // Ordering and equality.
 //
 // This is the first module written as a trait tower rather than a set of inherent
-// methods: one required method per trait and the rest as defaults, which is the shape
-// Rust's `core::cmp` has. It works because default method bodies landed.
+// methods: one required method per trait and the rest as defaults. It works because
+// default method bodies landed.
 //
-// `min`, `max` and `clamp` belong to `Ord` rather than to `core::num`, again as in Rust.
+// `min`, `max` and `clamp` belong to `Ord` rather than to `core::num`.
 // A type gets them by implementing `cmp` and nothing else.
 //
 // A trait method carries no doc comment: the parser wants `fn` and does not skip one.
@@ -162,8 +162,8 @@ impl Ordering {
 trait PartialEq {
   /// Are the two values equal?
   ///
-  /// The only required method of this trait. "Partial" is Rust's name for the fact that
-  /// equality need not be reflexive: a NaN is not equal to itself, and `f32` implements this
+  /// The only required method of this trait. "Partial" means equality need not be
+  /// reflexive: a NaN is not equal to itself, and `f32` implements this
   /// and not `Ord` for that reason.
   fn eq(self : &Self, other : &Self) -> bool;
 
@@ -210,9 +210,9 @@ trait Ord {
   }
 
   /// The greater of the two, taking both by value and handing one back: `other` when they
-  /// compare equal, as in Rust.
+  /// compare equal.
   ///
-  /// A method rather than the free function Rust also has, because the compiler reads the
+  /// A method rather than a free function, because the compiler reads the
   /// bare names `max` and `min` as the tensor reductions (Vx#223).
   fn max(self : Self, other : Self) -> Self {
     if self.gt(&other) {
@@ -221,7 +221,7 @@ trait Ord {
     return other;
   }
 
-  /// The lesser of the two: `self` when they compare equal, as in Rust.
+  /// The lesser of the two: `self` when they compare equal.
   fn min(self : Self, other : Self) -> Self {
     if self.le(&other) {
       return self;
@@ -350,7 +350,7 @@ macro_rules stamp_float_cmp {
 stamp_float_cmp!(f32);
 stamp_float_cmp!(f64);
 
-/// The greater of two values by `f`, answering `b` when they compare equal, as Rust does.
+/// The greater of two values by `f`, answering `b` when they compare equal.
 /// A free function because it takes the comparison rather than reading it off the type.
 /// The plain `max` and `min` are `Ord` methods here, since those two names are the
 /// compiler's tensor reductions.

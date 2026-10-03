@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// Hints to the optimizer, as in Rust's `core::hint`.
+// Hints to the optimizer.
 //
 // Not here yet: `black_box` needs an opaque operation over any type, which `mlir!` cannot
 // name for a type parameter; `spin_loop` is `pause` on x86 and `yield` on ARM, and `core`
@@ -24,7 +24,7 @@ unsafe fn assert_unchecked(cond : bool) -> void {
   };
 }
 
-/// Returns `value` unchanged. Rust uses it to mark a value that should not be ignored.
+/// Returns `value` unchanged, marking a value that should not be ignored.
 fn must_use<T>(value : T) -> T {
   return value;
 }

@@ -30,8 +30,8 @@ struct Closure3<Arg1, Arg2, Arg3, Ret> {
 
 /// A value that either carries on, holding an output, or stops early. It is what
 /// `Iterator::try_fold` reads from its closure's answers, and `Option` and `Result` implement
-/// it: `Some` and `Ok` carry on, `None` and `Err` stop. Rust's `Try` cut down to what those
-/// two need, with no residual type and no `?`.
+/// it: `Some` and `Ok` carry on, `None` and `Err` stop. Only what those two need: no
+/// residual type and no `?`.
 trait Try {
   /// What one that carries on holds.
   type Output;

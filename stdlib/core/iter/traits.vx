@@ -10,8 +10,7 @@
 // Separate from `core::iter` because an import brings every name the module declares into the
 // importer, and so into everything that imports the importer. `std::vec` implements this trait;
 // importing all of `core::iter` there put `Range`, `Map` and the free `range`/`map` in front of
-// every program that uses a `Vec`, where a type of the same name crashes codegen. Rust keeps
-// its trait in `core::iter::traits` for the same reason of layering.
+// every program that uses a `Vec`, where a type of the same name crashes codegen.
 //
 // A method whose `loop` only ever leaves by `return` still needs a return after it: the checker
 // does not treat such a loop as diverging (E3028). Those are unreachable.
@@ -145,7 +144,7 @@ trait Iterator {
   /// Hand every item to `f`, consuming the sequence.
   ///
   /// `f` answers an `i32` rather than nothing, and this returns the last of them, because no
-  /// closure literal can return void yet (Vx#711). Both signatures become Rust's when it can.
+  /// closure literal can return void yet (Vx#711). Both will return nothing when it can.
   fn for_each(self : &mut Self, f : Closure1<Self::Item, i32>) -> i32 {
     loop {
       let step = self.next();
@@ -199,9 +198,8 @@ trait Iterator {
   /// once, and the rest of the sequence is left unconsumed. Otherwise the answer is `Some(0)`
   /// or `Ok(0)`.
   ///
-  /// `f` answers an `Option<i32>` or `Result<i32, E>` whose value is discarded, where Rust's
-  /// answers `()`, because no closure literal can return void yet. It becomes Rust's when it
-  /// can.
+  /// `f` answers an `Option<i32>` or `Result<i32, E>` whose value is discarded, because no
+  /// closure literal can return void yet.
   fn try_for_each<R>(self : &mut Self, f : Closure1<Self::Item, R>) -> R {
     let p = f.func;
     loop {
@@ -219,8 +217,7 @@ trait Iterator {
 
   /// Every item added up, consuming the sequence. Zero for one that is already finished.
   ///
-  /// The item type says how, by implementing `Sum`. Rust also lets the caller choose a result
-  /// type other than the item's; here the two are the same.
+  /// The item type says how, by implementing `Sum`, and the result has the item's type.
   fn sum(self : &mut Self) -> Self::Item {
     return Self::Item::sum(self);
   }
@@ -499,7 +496,7 @@ trait Iterator {
 
   /// An iterator over the items of each iterator `f` answers, in order.
   ///
-  /// `f` answers an iterator, where Rust accepts anything that can become one.
+  /// `f` answers an iterator.
   fn flat_map<U>(self : Self, f : Closure1<Self::Item, U>) -> FlatMap<Self, Closure1<Self::Item, U>, U> {
     return FlatMap<Self, Closure1<Self::Item, U>, U> {
       outer : self, f : f, front : Option<U>::None()
@@ -529,7 +526,7 @@ trait Iterator {
 
   /// An iterator over these items, each paired with its position, counting from zero.
   ///
-  /// The position is an `i64`, where Rust's is a `usize`.
+  /// The position is an `i64`.
   fn enumerate(self : Self) -> Enumerate<Self> {
     return Enumerate<Self> {
       inner : self, count : 0i64
@@ -727,8 +724,8 @@ trait Iterator {
 
 /// An iterator that can also answer from its far end, which is what `rev` needs.
 ///
-/// Rust declares it as a subtrait of `Iterator`; Vx has no subtraits, and `Self::Item` here is
-/// the one the type's `Iterator` impl binds.
+/// Not a subtrait of `Iterator`, because Vx has no subtraits; `Self::Item` here is the one
+/// the type's `Iterator` impl binds.
 trait DoubleEndedIterator {
   /// The last item not yet handed out from either end, or nothing once they meet.
   fn next_back(self : &mut Self) -> Option<Self::Item>;
@@ -783,7 +780,7 @@ trait DoubleEndedIterator {
 /// An iterator that knows how many items it has left, which is what `rev` needs from `take`,
 /// `skip` and `step_by`.
 ///
-/// Rust declares it as a subtrait of `Iterator`; Vx has no subtraits.
+/// Not a subtrait of `Iterator`, because Vx has no subtraits.
 trait ExactSizeIterator {
   /// How many items are left.
   fn len(self : &Self) -> i64;
