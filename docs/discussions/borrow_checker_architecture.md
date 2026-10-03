@@ -1,7 +1,7 @@
 # The Vx Borrow Checker Architecture
 
 > [!IMPORTANT]
-> **Companion document:** [`borrow_checker_precision_analysis.md`](borrow_checker_precision_analysis.md)
+> **Companion document:** `borrow_checker_precision_analysis.md` (no longer in the tree; see git history)
 > measures this design against Rust's NLL and Polonius on nine reduced cases
 > (tracked in [#243](https://github.com/hiraditya/Vx/issues/243)). Read it alongside
 > this one — it does not supersede this document, but it corrects and extends it in
@@ -34,13 +34,15 @@ ______________________________________________________________________
 
 ## 1. The Lexical Borrow Checker (Local Scope)
 
-**Location:** `src/sema.rs` (Inside the Semantic Analyzer)
+**Location:** `src/hir/borrow_cx.rs` (`BorrowCx`, the borrow table and liveness) and the checks in
+`src/hir/check/` (`access.rs`, `escape.rs`, `views.rs`)
 
 The Lexical Borrow Checker is responsible for enforcing **Strict Aliasing** (Shared XOR Mutable) rules within the local body of a function or block. It guarantees memory safety by ensuring you cannot have active mutable and immutable references to the same variable simultaneously.
 
 ### How it works:
 
-- **State Tracking:** The `TypeChecker` struct in `sema.rs` maintains an `active_borrows: HashMap<String, Vec<BorrowRecord>>`.
+- **State Tracking:** `BorrowCx` keeps a private `active_borrows: HashMap<Symbol, Vec<BorrowRecord>>`,
+  read only through `live_borrows`, which drops dead borrows first.
 - **AST Iteration:** As the compiler traverses the AST:
   - When a borrow is created (e.g., `&mut x`), a `BorrowRecord` is pushed onto `active_borrows` for `x`.
   - The compiler checks existing records: if a mutable borrow is requested while an immutable one exists, it throws a compile-time error.
@@ -56,12 +58,12 @@ This approach handles local variable lifetimes without the overhead of tracking 
 > mutation. The lexical `scope_depth`/`pop_scope` machinery is the *outer* bound on a loan's life;
 > use-based liveness is the *tighter* one that actually decides conflicts. This is NLL-grade for
 > named locals; the fast-path region encoding (§2) means NLL-grade is also the ceiling (no Polonius
-> location sensitivity). See [`borrow_checker_precision_analysis.md`](borrow_checker_precision_analysis.md).
+> location sensitivity). See `borrow_checker_precision_analysis.md` in git history.
 
 > **The access checks run the same sweep (#276).** The dead-borrow cleanup above once ran *only* on
 > the borrow-*creation* path, so reborrowing worked but *reading* the owner while a semantically dead
 > loan was still lexically in scope was over-rejected (`let r = &mut p.x; *r = 42; return p.x;` — E4002,
-> spuriously). The sweep is now factored into `sweep_dead_borrows` and run before **both** the
+> spuriously). The sweep is now part of `BorrowCx::live_borrows` and runs before **both** the
 > identifier access (`check_identifier_expr`) and the field access (member-access arm) tests, so a read
 > after a loan's last use is accepted exactly as a new borrow after it was. Removing a dead record can
 > only *withdraw* a diagnostic, never admit an unsound access, so the change is one-directional (the
@@ -183,10 +185,81 @@ fixtures.
 > lowered to the `vx.transfer` op (`memref.alloc` + `memref.copy`), not an FFI call — see
 > [`docs/topology_representation.md`](../topology_representation.md).
 
+## 4. Views of a tensor, and why the checker must see them (#1041, #1049)
+
+A row `q[i]`, a field `h.t` that holds a tensor, and a view of either share their owner's memory:
+writing through one changes the other. Before #1049 the checker treated such a value as an
+unrelated tensor, so it accepted using a row after its tensor was moved, writing the tensor under a
+row, and returning a row of a tensor the function owns.
+
+### The decision: freeing memory depends on this checker
+
+Vx is moving from MLIR's buffer deallocation, which rebuilds ownership from IR and skips what it
+cannot follow, to drops the checker decides (`docs/implementation_plans/drop_semantics.md`). We
+decided:
+
+- **An owner that only holds memory** (a tensor, a `Vec` with no `Drop` of its own) **is freed after
+  the last use of the owner and of every view of it.** Nothing in the program can observe the free,
+  and it keeps peak memory low.
+- **A type with a `Drop` implementation is dropped at the end of its block**, in reverse
+  declaration order, because its drop has effects whose timing is part of the program: a lock, a
+  `RefCell` guard, a file. Nothing borrows a `let _lock = m.lock()` after that line, so a last-use
+  rule would release it at once.
+- **An owner a raw pointer was taken from** (`as_ptr`, `from_ptr`) also waits for the end of its
+  block. No borrow checker sees raw pointers.
+
+So for memory, **a free that comes too early is a borrow checker bug**, not a rule for the
+programmer to remember. That is why views come first: phase 0 of the plan.
+
+### The rules
+
+A view is a borrow of its owner, recorded exactly as `let r = &q` records one, so the existing
+checks apply unchanged:
+
+| Rule | Error |
+| --- | --- |
+| A view declared `let mut` is a `&mut` borrow, and its owner must be `mut`; any other view is `&`. | E4010 |
+| The owner cannot be moved while the view is still used. | E4007 |
+| The owner cannot be assigned while the view is still used. | E4009 |
+| Under a `mut` view, the owner cannot be read or borrowed again. | E4002 to E4004 |
+| A view of a local, or of a parameter taken by value, cannot be returned. A view of a parameter taken by reference can. | E4005 |
+| A view cannot be stored where a tensor of its own is held: a variable that already exists, or a struct field. `p[i] = q[j]` copies and is fine. | E4011 |
+
+A borrow ends at the view's last use, as for `&`.
+
+### How it is built
+
+- **A view is told from an owner by where it came from, not by its type**: both are `Tensor`.
+  `view_of` in `src/hir/check/views.rs` recognises an index or field chain whose value is a tensor,
+  and a variable that is already a view. A separate view type (#400) can replace this later.
+- **A view of a view borrows the first owner.** `BorrowCx.views` remembers, for each view
+  variable, its owner, the path inside it, and whether the owner is local to the function. That
+  is reset for each function, like `ref_provenance`.
+- **The borrower is the view variable,** so the existing liveness sweep ends the borrow at its last
+  use.
+- **Indices are not part of a borrow's path** (`places::base_and_path`), so `q[0]` and `q[1]` count
+  as the same place. That is sound and sometimes too strict (#1060).
+
+### Not checked yet
+
+| Case | Issue |
+| --- | --- |
+| A row passed by value to a function. It also crashes both code generators. Under drop semantics it must be copied at the call, or refused. | #1055 |
+| A view chosen by an `if` or a `match` used as a value. | #1056 |
+| `t.reshape(..)`, which is a view of `t`. | #1057 |
+| A view taken through a reference variable, `rq[1]` with `rq = &q`: it stops borrowing when `rq` is last used. The same holds for any reborrow. | #1058 |
+| A closure that uses a view. | #1059 |
+| Two `mut` rows of different indices are refused. | #1060 |
+
+Only a handful of programs in the repository take a view, so a fuzzer generator for them (#1062)
+is the main test still missing.
+
 ## Summary
 
 If you are modifying the Borrow Checker, always remember this split:
 
-- **Fixing rules about borrowing a variable twice?** Look in `src/sema.rs` (`active_borrows`).
+- **Fixing rules about borrowing a variable twice?** Look in `src/hir/borrow_cx.rs` (`active_borrows`) and
+  `src/hir/check/access.rs` (`check_borrow_conflicts`).
+- **Fixing rules about rows and fields of a tensor?** Look in `src/hir/check/views.rs`, and read §4.
 - **Fixing rules about passing references to functions or structs?** Look in `src/borrow.rs` (`verify_subtyping_bounds`).
 - **Adding a Rust stdlib FFI shim?** Not the borrow checker's job — follow the ownership contract in [`docs/lang/abi.md` §2.1](../lang/abi.md).
