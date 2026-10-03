@@ -15,7 +15,7 @@ extern {
   /// The Rust core behind `File::seek`.
   fn vx_file_seek(ptr : *mut i8, offset : i64, whence : i32) -> i64;
   /// The Rust core behind `file_drop`.
-  fn vx_file_drop(ptr : *mut i8) -> i32;
+  fn vx_file_drop(ptr : *mut i8) -> void;
 
   // libc bindings for high-level I/O
   /// C's `fopen`, for code that wants a `FILE*` rather than the Rust-backed `File`.
@@ -93,5 +93,5 @@ impl File {
 
 /// Close the file and release it. Using it afterwards reads freed memory.
 unsafe fn file_drop(file : *mut File) -> void {
-  let _dropped = unsafe { vx_file_drop(file.ptr) };
+  unsafe { vx_file_drop(file.ptr) };
 }

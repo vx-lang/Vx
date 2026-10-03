@@ -23,18 +23,18 @@
 // CHECK: %[[V0:.*]] = call @vx_get_temp_file(%{{.*}}) : (!llvm.ptr) -> !llvm.ptr
 // CHECK: %[[V1:.*]] = call @vx_file_open(%[[V0]], %{{.*}}) : (!llvm.ptr, i32) -> !llvm.ptr
 // CHECK: call @vx_file_write(%[[V1]], %{{.*}}, %{{.*}}) : (!llvm.ptr, !llvm.ptr, i64) -> i64
-// CHECK: call @vx_file_drop(%[[V1]]) : (!llvm.ptr) -> i32
+// CHECK: call @vx_file_drop(%[[V1]]) : (!llvm.ptr) -> ()
 // CHECK: %[[V2:.*]] = call @vx_file_open(%[[V0]], %{{.*}}) : (!llvm.ptr, i32) -> !llvm.ptr
 // CHECK: %[[V3:.*]] = call @malloc(%{{.*}}) : (i64) -> !llvm.ptr
 // CHECK: call @vx_file_read(%[[V2]], %[[V3]], %{{.*}}) : (!llvm.ptr, !llvm.ptr, i64) -> i64
-// CHECK: call @vx_file_drop(%[[V2]]) : (!llvm.ptr) -> i32
+// CHECK: call @vx_file_drop(%[[V2]]) : (!llvm.ptr) -> ()
 import std::io;
 extern {
   fn vx_file_open(c_path : *const i8, mode : i32) -> *mut i8;
   fn vx_file_read(ptr : *mut i8, buffer : *mut u8, len : i64) -> i64;
   fn vx_file_write(ptr : *mut i8, buffer : *const i8, len : i64) -> i64;
   fn vx_file_seek(ptr : *mut i8, offset : i64, whence : i32) -> i64;
-  fn vx_file_drop(ptr : *mut i8) -> i32;
+  fn vx_file_drop(ptr : *mut i8) -> void;
   fn malloc(size : i64)->*mut u8;
   fn free(ptr : *mut u8) -> i32;
   fn remove(filename : *const i8) -> i32;
