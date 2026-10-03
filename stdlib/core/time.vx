@@ -9,8 +9,9 @@
 //
 // Not here yet: `+`, `-`, `*` and `/` on durations need operator dispatch to traits; `Debug`
 // and `Display` need `core::fmt`. The constants are the functions `zero` and `max_value`,
-// as the float constants are functions. `as_millis`, `as_micros` and `as_nanos` return `u64` rather than
-// `u128` (Vx#1005), and stop with an assertion when the answer does not fit.
+// as the float constants are functions. `as_millis`, `as_micros` and `as_nanos` return
+// `u64` rather than `u128` (Vx#1005), and stop with an assertion when the answer does not
+// fit.
 import core::cmp;
 import core::hash;
 import core::num;

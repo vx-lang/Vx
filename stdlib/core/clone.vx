@@ -7,8 +7,9 @@
 //===----------------------------------------------------------------------===//
 // `Clone`: an explicit duplicate of a value.
 //
-// One required method, `clone`, and `clone_from` as a default written over it. A type that can duplicate itself more cheaply into an existing value than
-// by building a fresh one overrides `clone_from`; nothing here needs to.
+// One required method, `clone`, and `clone_from` as a default written over it. A type that
+// can duplicate itself more cheaply into an existing value than by building a fresh one
+// overrides `clone_from`; nothing here needs to.
 //
 // The scalars, `bool` and `Ordering` are stamped because Vx has no `Copy` yet: each is
 // copied on every read, so its `clone` is a read, but a generic body written over
