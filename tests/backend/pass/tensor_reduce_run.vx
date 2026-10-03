@@ -1,0 +1,104 @@
+//===- tensor_reduce_run.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `t.reduce(init, |acc, x| ..)` run and compared with answers worked out by hand. Every
+// element is different, so a reduce that skipped one, or read one twice, prints another
+// number. The start value is not zero in `start`, so a reduce that ignored it shows too.
+//
+// EXPECT: sum1=10;
+// EXPECT: start=110;
+// EXPECT: sum2=21;
+// EXPECT: max2=6;
+// EXPECT: sum3=300;
+// EXPECT: f64=2.5;
+// EXPECT: product=24;
+// EXPECT: borrowed=10;
+// EXPECT: runtime=4950;
+// EXPECT: captured=20;
+
+fn sum_of(t : &Tensor<f32, [?]>) -> f32 {
+  return t.reduce(0.0, | acc, x | acc + x);
+}
+
+fn main() -> i32 {
+  // 1, 2, 3, 4.
+  let mut v = Tensor<f32, [4]>::uninit();
+  for i in 0..4 {
+    v[i] = (i + 1) as f32;
+  }
+  print!("sum1=");
+  print(v.reduce(0.0, | acc, x | acc + x));
+  print!("; start=");
+  print(v.reduce(100.0, | acc, x | acc + x));
+
+  // [[1, 2, 3], [4, 5, 6]].
+  let mut m = Tensor<f32, [2, 3]>::uninit();
+  for i in 0..2 {
+    for j in 0..3 {
+      m[i][j] = (i * 3 + j + 1) as f32;
+    }
+  }
+  print!("; sum2=");
+  print(m.reduce(0.0, | acc, x | acc + x));
+  print!("; max2=");
+  print(m.reduce(0.0, | acc, x | if x > acc {
+    x
+  } else {
+    acc
+  }));
+
+  // 2 x 3 x 4 elements, 1 to 24: 24 * 25 / 2 = 300.
+  let mut c = Tensor<f32, [2, 3, 4]>::uninit();
+  for i in 0..2 {
+    for j in 0..3 {
+      for k in 0..4 {
+        c[i][j][k] = (i * 12 + j * 4 + k + 1) as f32;
+      }
+    }
+  }
+  print!("; sum3=");
+  print(c.reduce(0.0, | acc, x | acc + x));
+
+  // 0.5 + 2.0.
+  let mut d = Tensor<f64, [2]>::uninit();
+  d[0] = 0.5;
+  d[1] = 2.0;
+  print!("; f64=");
+  print(d.reduce(0.0, | acc, x | acc + x));
+
+  // 1 * 2 * 3 * 4.
+  let mut n = Tensor<i32, [4]>::uninit();
+  for i in 0..4 {
+    n[i] = i + 1;
+  }
+  print!("; product=");
+  print(n.reduce(1, | acc, x | acc * x));
+
+  // Through a reference parameter, on a tensor whose length is known only at run time.
+  let mut r = Tensor<f32>([4]);
+  for i in 0..4 {
+    r[i] = (i + 1) as f32;
+  }
+  print!("; borrowed=");
+  print(sum_of(&r));
+
+  // 0 + 1 + ... + 99.
+  let len : i32 = 100;
+  let mut big = Tensor<f32>([len]);
+  for i in 0..len {
+    big[i] = i as f32;
+  }
+  print!("; runtime=");
+  print(big.reduce(0.0, | acc, x | acc + x));
+
+  // A closure that reads a variable from outside it: (1 + 2 + 3 + 4) * 2.
+  let scale : f32 = 2.0;
+  print!("; captured=");
+  print(v.reduce(0.0, | acc, x | acc + x * scale));
+  print!(";");
+  return 0;
+}

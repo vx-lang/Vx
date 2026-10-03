@@ -817,6 +817,154 @@ pub(crate) fn lower_map_call<'c>(
     panic!("map called on unsupported tensor type: {}", tensor_ty_str);
 }
 
+/// `t.reduce(init, |acc, x| ..)`: `args` is `[t, init, closure]`. A rank-0 accumulator holds
+/// `init`, and a `linalg.generic` with every dimension a reduction folds each element into it
+/// by calling the closure, as `lower_map_call` does. `vx.reassoc` marks it for
+/// `vx-reorderable-reductions`.
+pub(crate) fn lower_reduce_call<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+    args: &[Expr],
+) -> Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError> {
+    let (tensor_val, tensor_ty, block) = gen.generate_expr(&args[0], block)?;
+    let tensor_ty_str = tensor_ty.to_string();
+    let Some(inner) = tensor_ty_str.strip_prefix("memref<") else {
+        panic!(
+            "reduce called on unsupported tensor type: {}",
+            tensor_ty_str
+        );
+    };
+    let parts: Vec<&str> = inner
+        .trim_end_matches('>')
+        .split(',')
+        .next()
+        .unwrap_or("")
+        .split('x')
+        .collect();
+    let el_ty_str = parts.last().unwrap_or(&"f32").trim();
+    let rank = parts.len() - 1;
+    let parse = |s: &str| {
+        Type::parse(gen.context, s).ok_or_else(|| {
+            crate::codegen::lower::LowerError::ParseType(format!("Type::parse failed on {s}"))
+        })
+    };
+    let el_ty = parse(el_ty_str)?;
+    let acc_ty = parse(&format!("memref<{el_ty_str}>"))?;
+
+    let (init_val, _, block) = gen.generate_expr(&args[1], block)?;
+    let alloca_acc = OperationBuilder::new("memref.alloca", gen.loc())
+        .add_attributes(&[(
+            Identifier::new(gen.context, "operandSegmentSizes"),
+            DenseI32ArrayAttribute::new(gen.context, &[0, 0]).into(),
+        )])
+        .add_results(&[acc_ty])
+        .build()?;
+    let acc_val = block.append_operation(alloca_acc).result(0)?.into();
+    let store_init = OperationBuilder::new("memref.store", gen.loc())
+        .add_operands(&[init_val, acc_val])
+        .build()?;
+    block.append_operation(store_init);
+
+    // The closure's environment, spilled to the stack for its adapter, as in `lower_map_call`.
+    let (closure_val, closure_ty, block) = gen.generate_expr(&args[2], block)?;
+    let i32_ty = gen.i32_ty;
+    let c1_op = OperationBuilder::new("arith.constant", gen.loc())
+        .add_results(&[i32_ty])
+        .add_attributes(&[(
+            Identifier::new(gen.context, "value"),
+            IntegerAttribute::new(i32_ty, 1).into(),
+        )])
+        .build()?;
+    let c1 = block.append_operation(c1_op).result(0)?.into();
+    let alloca_op = OperationBuilder::new("llvm.alloca", gen.loc())
+        .add_operands(&[c1])
+        .add_results(&[gen.ptr_ty])
+        .add_attributes(&[(
+            Identifier::new(gen.context, "elem_type"),
+            TypeAttribute::new(closure_ty).into(),
+        )])
+        .build()?;
+    let env_ptr = block.append_operation(alloca_op).result(0)?.into();
+    let store_op = OperationBuilder::new("llvm.store", gen.loc())
+        .add_operands(&[closure_val, env_ptr])
+        .build()?;
+    block.append_operation(store_op);
+    let ty_str = closure_ty.to_string();
+    let struct_name = ty_str
+        .strip_prefix("!llvm.struct<\"")
+        .unwrap_or(&ty_str)
+        .split('"')
+        .next()
+        .unwrap();
+    let invoke_method = format!("{}_call", struct_name);
+
+    // The body: `acc = closure(env, acc, x)` for each element `x`.
+    let region = Region::new();
+    let body = melior::ir::Block::new(&[(el_ty, gen.loc()), (el_ty, gen.loc())]);
+    let element = body
+        .argument(0)
+        .map_err(|_| LowerError::from("missing reduce element".to_string()))?;
+    let running = body
+        .argument(1)
+        .map_err(|_| LowerError::from("missing reduce accumulator".to_string()))?;
+    let call_op = OperationBuilder::new("func.call", gen.loc())
+        .add_operands(&[env_ptr, running.into(), element.into()])
+        .add_attributes(&[(
+            Identifier::new(gen.context, "callee"),
+            FlatSymbolRefAttribute::new(gen.context, &invoke_method).into(),
+        )])
+        .add_results(&[el_ty])
+        .build()?;
+    let call_res = body.append_operation(call_op).result(0)?.into();
+    let yield_op = OperationBuilder::new("linalg.yield", gen.loc())
+        .add_operands(&[call_res])
+        .build()?;
+    body.append_operation(yield_op);
+    region.append_block(body);
+
+    let dims = (0..rank)
+        .map(|i| format!("d{i}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let in_map = Attribute::parse(gen.context, &format!("affine_map<({dims}) -> ({dims})>"))
+        .ok_or_else(|| LowerError::from("could not parse the reduce input map".to_string()))?;
+    let out_map = Attribute::parse(gen.context, &format!("affine_map<({dims}) -> ()>"))
+        .ok_or_else(|| LowerError::from("could not parse the reduce output map".to_string()))?;
+    let reduction =
+        Attribute::parse(gen.context, "#linalg.iterator_type<reduction>").ok_or_else(|| {
+            LowerError::from("could not parse the reduction iterator type".to_string())
+        })?;
+    let unit = Attribute::parse(gen.context, "unit")
+        .ok_or_else(|| LowerError::from("could not parse a unit attribute".to_string()))?;
+    let linalg_generic = OperationBuilder::new("linalg.generic", gen.loc())
+        .add_operands(&[tensor_val, acc_val])
+        .add_attributes(&[
+            (
+                Identifier::new(gen.context, "operandSegmentSizes"),
+                DenseI32ArrayAttribute::new(gen.context, &[1, 1]).into(),
+            ),
+            (
+                Identifier::new(gen.context, "indexing_maps"),
+                ArrayAttribute::new(gen.context, &[in_map, out_map]).into(),
+            ),
+            (
+                Identifier::new(gen.context, "iterator_types"),
+                ArrayAttribute::new(gen.context, &vec![reduction; rank]).into(),
+            ),
+            (Identifier::new(gen.context, "vx.reassoc"), unit),
+        ])
+        .add_regions([region])
+        .build()?;
+    block.append_operation(linalg_generic);
+
+    let load_op = OperationBuilder::new("memref.load", gen.loc())
+        .add_operands(&[acc_val])
+        .add_results(&[el_ty])
+        .build()?;
+    let result = block.append_operation(load_op).result(0)?.into();
+    Ok((result, el_ty, block))
+}
+
 #[derive(Debug)]
 pub enum LowerError {
     UnsupportedElementType(String),

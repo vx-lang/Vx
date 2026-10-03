@@ -1496,6 +1496,9 @@ impl<'r> Lowerer<'r> {
                 self.lower_tensor_reshape(mc)
             }
             Expr::MethodCall(mc) if mc.method_name.as_ref() == "map" => self.lower_tensor_map(mc),
+            Expr::MethodCall(mc) if mc.method_name.as_ref() == "reduce" && mc.args.len() == 2 => {
+                self.lower_tensor_reduce(mc)
+            }
             // The differentiated calls. All three go through one opcode; see `lower_autodiff`.
             Expr::Grad(g) => self.lower_autodiff(&g.target_fn, &g.args, false, None),
             Expr::Vjp(v) => self.lower_autodiff(&v.target_fn, &v.args, false, Some(&v.cotangent)),
@@ -3320,6 +3323,53 @@ impl<'r> Lowerer<'r> {
         self.types.push(gid);
         let ty = src.ty.clone();
         Ok(self.emit_typed(Opcode::TensorMap, src.reg, env_ptr, ty, imm))
+    }
+
+    /// `t.reduce(init, |acc, x| ..)`: every element combined with the closure into one value of
+    /// the element type, starting from `init`. The emitter's `linalg.generic` calls the closure's
+    /// adapter, as for `map`. The initial value is passed as an `Arg` just before the instruction.
+    fn lower_tensor_reduce(&mut self, mc: &crate::syntax::MethodCallExpr) -> Lowered<Val> {
+        let src = self.lower_expr(&mc.base)?;
+        let LoweredTy::Tensor { elem, .. } = src.ty.clone() else {
+            return Err(Decline::TypeNotModelled {
+                what: "a reduce over something that is not a tensor",
+            });
+        };
+        let [init_expr, closure] = mc.args.as_slice() else {
+            return Err(Decline::TypeNotModelled {
+                what: "a reduce without an initial value and a closure",
+            });
+        };
+        let init = self.lower_expr(init_expr)?;
+        if !matches!(&init.ty, LoweredTy::Scalar(e) if *e == elem) {
+            return Err(Decline::TypeNotModelled {
+                what: "a reduce whose initial value is not of the element type",
+            });
+        }
+        let cn_name = match self.infer_ast_type(closure) {
+            Some(Type::Struct(name, _)) if name.as_ref().starts_with("Closure_") => {
+                name.as_ref().to_string()
+            }
+            _ => {
+                return Err(Decline::TypeNotModelled {
+                    what: "a reduce whose argument is not a closure",
+                })
+            }
+        };
+        let (env_ptr, _) = self.lower_agg_base(closure)?;
+        let call_name = format!("{cn_name}_call");
+        let gid = self
+            .registry
+            .fn_sigs
+            .get(call_name.as_str())
+            .ok_or(Decline::TypeNotModelled {
+                what: "a closure adapter that is not a known function",
+            })?
+            .gid;
+        let imm = self.types.len() as u64;
+        self.types.push(gid);
+        self.emit_effect(Opcode::Arg, init.reg, Register(0), 0);
+        Ok(self.emit_value(Opcode::TensorReduce, src.reg, env_ptr, elem, imm))
     }
 
     fn lower_inline_mlir(&mut self, im: &crate::syntax::expr::InlineMlirExpr) -> Lowered<Val> {

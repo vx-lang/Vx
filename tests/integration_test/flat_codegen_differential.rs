@@ -1344,6 +1344,18 @@ fn flat_matches_ast_tensor_map() {
 }
 
 #[test]
+fn flat_matches_ast_tensor_reduce() {
+    // `reduce` with a closure capturing a local, from a non-zero start: five 1s and a 4, each
+    // doubled, added to 24. (5 + 4) * 2 + 24.
+    assert_parity(
+        "fn main() -> i32 { let mut x = Tensor<f32, [2, 3]>::fill(1.0); x[1][2] = 4.0; \
+           let k = 2.0; let s = x.reduce(24.0, |acc, v| acc + v * k); \
+           return s as i32; }",
+        42,
+    );
+}
+
+#[test]
 fn flat_runs_a_data_enum_without_generics() {
     // `Result { Ok(i32), Err(i32) }` is the enum instance with no arguments: constructed,
     // returned, passed, and matched with its payload bound. Flat-only: the AST path fails on a

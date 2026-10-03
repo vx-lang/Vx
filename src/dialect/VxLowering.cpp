@@ -3207,6 +3207,47 @@ struct FreeHeapBuffersPass
   }
 };
 
+// `t.reduce(init, f)` may combine elements in any order. The code generators
+// emit it as a `linalg.generic` marked `vx.reassoc` whose body calls the
+// closure `f`. This gives the floating-point arithmetic in that closure
+// `fastmath<reassoc>`, which is what lets LLVM vectorize the loop once the call
+// is inlined. Each closure literal has its own function, so no other code is
+// affected.
+struct ReorderableReductionsPass
+    : public PassWrapper<ReorderableReductionsPass, OperationPass<ModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ReorderableReductionsPass)
+
+  llvm::StringRef getArgument() const override {
+    return "vx-reorderable-reductions";
+  }
+
+  llvm::StringRef getDescription() const override {
+    return "Lets the arithmetic in a reduce's closure happen in any order";
+  }
+
+  void runOnOperation() override {
+    ModuleOp module = getOperation();
+    llvm::SmallPtrSet<Operation *, 8> callees;
+    module.walk([&](Operation *op) {
+      if (!op->hasAttr("vx.reassoc"))
+        return;
+      op->walk([&](func::CallOp call) {
+        if (auto callee = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
+                call, call.getCalleeAttr()))
+          callees.insert(callee);
+      });
+    });
+    for (Operation *callee : callees) {
+      callee->walk([&](arith::ArithFastMathInterface op) {
+        auto flags = op.getFastMathFlagsAttr().getValue() |
+                     arith::FastMathFlags::reassoc;
+        op->setAttr(op.getFastMathAttrName(),
+                    arith::FastMathFlagsAttr::get(op->getContext(), flags));
+      });
+    }
+  }
+};
+
 } // namespace
 
 extern "C" {
@@ -3243,6 +3284,9 @@ void registerVxPasses() {
   });
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return std::make_unique<FuseAndTileLoopsPass>();
+  });
+  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+    return std::make_unique<ReorderableReductionsPass>();
   });
 }
 } // namespace vx

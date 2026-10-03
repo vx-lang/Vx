@@ -1,0 +1,21 @@
+//===- tensor_reduce_without_a_closure.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// The second argument of `reduce` is the closure that combines two values. `5.0` is a number.
+
+fn main() -> i32 {
+  let mut a = Tensor<f32, [3]>::uninit();
+  a[0] = 1.0;
+  a[1] = 2.0;
+  a[2] = 3.0;
+  // CHECK: reduce expects a closure, got f32
+  let t = a.reduce(0.0, 5.0);
+  print(t);
+  return 0;
+}

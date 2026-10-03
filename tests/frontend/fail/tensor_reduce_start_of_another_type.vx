@@ -1,0 +1,21 @@
+//===- tensor_reduce_start_of_another_type.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// `reduce` starts from a value of the tensor's element type. `0i32` is an `i32`, and the elements are `f32`.
+
+fn main() -> i32 {
+  let mut a = Tensor<f32, [3]>::uninit();
+  a[0] = 1.0;
+  a[1] = 2.0;
+  a[2] = 3.0;
+  // CHECK: reduce starts from a value of the element type f32, got i32
+  let t = a.reduce(0i32, | acc, x | acc + x);
+  print(t);
+  return 0;
+}

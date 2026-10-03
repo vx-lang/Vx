@@ -1,0 +1,35 @@
+//===- tensor_reduce.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s --check-prefix=LLVM
+//
+// `t.reduce(init, |acc, x| ..)` becomes one `linalg.generic` with every dimension a reduction,
+// folding each element into a rank-0 accumulator that starts at `init`. Its body calls the
+// closure with the running value first and the element second. `vx.reassoc` on it lets the
+// closure's arithmetic happen in any order, so its addition is marked `reassoc` by the time it
+// reaches LLVM.
+//
+// CHECK: memref.store %{{.*}}, %[[ACC:.*]][] : memref<f32>
+// CHECK: linalg.generic {{.*}}iterator_types = ["reduction", "reduction"]{{.*}} outs(%[[ACC]] : memref<f32>) attrs = {vx.reassoc}
+// CHECK: ^bb0(%[[X:.*]]: f32, %[[RUNNING:.*]]: f32):
+// CHECK: func.call @Closure_1_call(%{{.*}}, %[[RUNNING]], %[[X]])
+// CHECK: memref.load %[[ACC]][] : memref<f32>
+//
+// LLVM-LABEL: llvm.func @Closure_1_call
+// LLVM: llvm.fadd {{.*}}fastmath<reassoc>
+
+fn main() -> i32 {
+  let mut a = Tensor<f32, [2, 3]>::uninit();
+  for i in 0..2 {
+    for j in 0..3 {
+      a[i][j] = (i * 3 + j + 1) as f32;
+    }
+  }
+  let total = a.reduce(0.0, | acc, x | acc + x);
+  return total as i32;
+}

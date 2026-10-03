@@ -299,7 +299,7 @@ impl FnEmit<'_> {
 }
 
 /// The rank a memref type spells: its `x`-separated extents before the element.
-fn memref_rank(memty: &str) -> Option<usize> {
+pub(super) fn memref_rank(memty: &str) -> Option<usize> {
     let inner = memty.strip_prefix("memref<")?;
     let inner = inner.split(',').next()?;
     Some(inner.matches('x').count())

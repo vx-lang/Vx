@@ -1727,6 +1727,8 @@ fn get_optimization_pipeline(
 
     if opt_level > 0 || llvm_lower {
         passes.push("convert-vx-to-standard".to_string());
+        // Before linalg is lowered, while each reduce is still one `linalg.generic`.
+        passes.push("vx-reorderable-reductions".to_string());
     }
 
     if opt_level > 0 && !disable_mlir_optimizations {

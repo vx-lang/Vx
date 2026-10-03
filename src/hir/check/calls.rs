@@ -2326,13 +2326,30 @@ impl<'a> TypeChecker<'a> {
                 let mut base_ty = self.check_expr_type_flag(obj, false);
 
                 // Pre-infer closure argument types for specific intrinsics before type-checking them
-                if let Type::Tensor(el_ty, _, _) = &base_ty {
+                let mut reduce_init_ty = None;
+                let tensor_ty = match &base_ty {
+                    Type::Borrow { inner, .. } => inner.as_ref(),
+                    ty => ty,
+                };
+                if let Type::Tensor(el_ty, _, _) = tensor_ty {
                     if _method.as_ref() == "map" && args.len() == 1 {
                         if let Expr::Closure(c) = &mut args[0] {
                             if c.params.len() == 1 && c.params[0].1 == Type::Unknown {
                                 c.params[0].1 = Type::Scalar(el_ty.clone());
                             }
                         }
+                    }
+                    // `t.reduce(init, |acc, x| ..)`: the running value and each element both
+                    // have the element type, and a bare literal `init` takes it too.
+                    if _method.as_ref() == "reduce" && args.len() == 2 {
+                        if let Expr::Closure(c) = &mut args[1] {
+                            for (_, ty) in c.params.iter_mut() {
+                                if *ty == Type::Unknown {
+                                    *ty = Type::Scalar(el_ty.clone());
+                                }
+                            }
+                        }
+                        reduce_init_ty = Some(Type::Scalar(el_ty.clone()));
                     }
                 }
 
@@ -2349,8 +2366,16 @@ impl<'a> TypeChecker<'a> {
                 }
                 let errors_before_args = self.errors.inner.len();
                 let mut checked_arg_types: Vec<Type> = Vec::with_capacity(args.len());
-                for arg in args.iter_mut() {
+                for (i, arg) in args.iter_mut().enumerate() {
+                    // Only `reduce`'s start value gets an expected type here; every other
+                    // argument keeps the one it inherits.
+                    let Some(init_ty) = reduce_init_ty.clone().filter(|_| i == 0) else {
+                        checked_arg_types.push(self.check_expr_type(arg));
+                        continue;
+                    };
+                    let prev = self.expected_type.replace(init_ty);
                     checked_arg_types.push(self.check_expr_type(arg));
+                    self.expected_type = prev;
                 }
 
                 if _method.as_ref() == "drop" && args.is_empty() {
@@ -2736,6 +2761,12 @@ impl<'a> TypeChecker<'a> {
         _method: &str,
         args: &mut [Expr],
     ) -> Option<(Type, bool)> {
+        // `a.reduce(..)` with `a : &Tensor<..>` reads the tensor it points to.
+        if let Type::Borrow { inner, .. } = base_ty {
+            if _method == "reduce" && args.len() == 2 && matches!(**inner, Type::Tensor(..)) {
+                return self.resolve_intrinsic_method(inner, _method, args);
+            }
+        }
         if let Type::Pinned(_inner, _top) = base_ty {
             if _method == "topology" {
                 if !args.is_empty() {
@@ -2866,6 +2897,38 @@ impl<'a> TypeChecker<'a> {
                         .push(format!("map expects a closure, got {}", arg_ty));
                 }
                 return Some((base_ty.clone(), false));
+            } else if _method == "reduce" && args.len() == 2 {
+                // The one-argument form is `Iterator::reduce`, which `t.iter()` (rewritten to `t`)
+                // also reaches; only this two-argument form is the tensor operation.
+                let el_ty = Type::Scalar(el_ty.clone());
+                let init_ty = self.check_expr_expecting(&mut args[0], Some(el_ty.clone()), false);
+                if init_ty != Type::Unknown && !self.is_assignable(&el_ty, &init_ty) {
+                    self.errors.push(format!(
+                        "reduce starts from a value of the element type {el_ty}, got {init_ty}"
+                    ));
+                }
+                let closure_ty = self.check_expr_type(&mut args[1]);
+                match &closure_ty {
+                    Type::Struct(name, _) if name.starts_with("Closure_") => {
+                        let returns = self
+                            .mono
+                            .closure_signatures
+                            .get(name)
+                            .map(|(params, ret)| (params.len(), ret.clone()));
+                        if let Some((count, ret)) = returns {
+                            if count != 2 || (ret != Type::Unknown && ret != el_ty) {
+                                self.errors.push(format!(
+                                    "reduce combines two values of type {el_ty} into one: its \
+                                     closure takes |acc, x| and returns {el_ty}"
+                                ));
+                            }
+                        }
+                    }
+                    _ => self
+                        .errors
+                        .push(format!("reduce expects a closure, got {closure_ty}")),
+                }
+                return Some((el_ty, false));
             } else if _method == "transpose" {
                 if args.len() != 1 {
                     self.errors.push(

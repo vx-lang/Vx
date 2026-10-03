@@ -386,6 +386,76 @@ impl FnEmit<'_> {
         Ok(())
     }
 
+    // `TensorReduce`: every element combined with the closure adapter into one scalar, starting
+    // from the preceding `Arg`. The accumulator is a rank-0 buffer the `linalg.generic` reduces
+    // into. `vx.reassoc` marks it for `vx-reorderable-reductions`, which lets the closure's
+    // arithmetic happen in any order, as `reduce` allows.
+    pub(crate) fn op_tensor_reduce(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let result_gid = *self
+            .types
+            .get(ins.type_idx.0 as usize)
+            .ok_or(crate::emitter_gap!())?;
+        let elem = elem_of_gid(result_gid).ok_or(crate::emitter_gap!())?;
+        let el = mlir_scalar(&elem).ok_or(crate::emitter_gap!())?;
+        let init_reg = self.pending_args.pop().ok_or(crate::emitter_gap!())?;
+        let init = self
+            .names
+            .get(init_reg as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        let s = ins.operand1.0 as usize;
+        let src = self.names.get(s).ok_or(crate::emitter_gap!())?.clone();
+        let src_mem = self
+            .mem_of
+            .get(s)
+            .cloned()
+            .flatten()
+            .ok_or(crate::emitter_gap!())?;
+        let rank = super::aggregate::memref_rank(&src_mem).ok_or(crate::emitter_gap!())?;
+        let env = self
+            .names
+            .get(ins.operand2.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        let callee_gid = *self
+            .types
+            .get(ins.imm as usize)
+            .ok_or(crate::emitter_gap!())?;
+        let callee = self
+            .ctx
+            .callees
+            .get(&callee_gid)
+            .ok_or(crate::emitter_gap!())?;
+        let (params, ret) = self
+            .ctx
+            .func_sigs
+            .get(&callee_gid)
+            .ok_or(crate::emitter_gap!())?;
+        let (name, params, ret) = (callee.name.clone(), params.join(", "), ret.clone());
+        let acc = format!("%tra{idx}");
+        self.body += &format!("  {acc} = memref.alloca() : memref<{el}>\n");
+        self.body += &format!("  memref.store {init}, {acc}[] : memref<{el}>\n");
+        let dims: Vec<String> = (0..rank).map(|i| format!("d{i}")).collect();
+        let in_map = format!("affine_map<({0}) -> ({0})>", dims.join(", "));
+        let out_map = format!("affine_map<({}) -> ()>", dims.join(", "));
+        let iters: Vec<&str> = (0..rank).map(|_| "\"reduction\"").collect();
+        self.body += &format!(
+            "  linalg.generic {{indexing_maps = [{in_map}, {out_map}], iterator_types = [{}]}} ins({src} : {src_mem}) outs({acc} : memref<{el}>) attrs = {{vx.reassoc}} {{\n",
+            iters.join(", ")
+        );
+        self.body += &format!("  ^bb0(%tri{idx}: {el}, %tro{idx}: {el}):\n");
+        self.body += &format!(
+            "    %trr{idx} = func.call {}({env}, %tro{idx}, %tri{idx}) : ({params}) -> {ret}\n",
+            sym_ref(&name)
+        );
+        self.body += &format!("    linalg.yield %trr{idx} : {el}\n  }}\n");
+        let n = format!("%v{idx}");
+        self.body += &format!("  {n} = memref.load {acc}[] : memref<{el}>\n");
+        self.names[idx] = n;
+        self.etypes[idx] = Some(elem);
+        Ok(())
+    }
+
     pub(crate) fn op_tensor_view(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
         let gid = *self
             .types

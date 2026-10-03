@@ -2726,6 +2726,10 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             return lower_map_call(gen, block, args);
         }
 
+        if name.as_ref() == "reduce" && args.len() == 3 {
+            return lower_reduce_call(gen, block, args);
+        }
+
         if name.as_ref() == "print" {
             return lower_print_call(gen, block, args);
         }

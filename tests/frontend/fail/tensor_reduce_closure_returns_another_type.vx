@@ -1,0 +1,21 @@
+//===- tensor_reduce_closure_returns_another_type.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// `reduce` keeps one running value of the element type, so its closure has to return one. `acc > x` is a `bool`.
+
+fn main() -> i32 {
+  let mut a = Tensor<f32, [3]>::uninit();
+  a[0] = 1.0;
+  a[1] = 2.0;
+  a[2] = 3.0;
+  // CHECK: reduce combines two values of type f32 into one
+  let t = a.reduce(0.0, | acc, x | acc > x);
+  print(t);
+  return 0;
+}

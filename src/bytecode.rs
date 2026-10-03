@@ -260,6 +260,11 @@ pub enum Opcode {
     /// `a >> b`, on integers: arithmetic for a signed operand, logical for an
     /// unsigned one.
     Shr = 57,
+    /// `t.reduce(init, |acc, x| ..)`: every element of `operand1` combined into one value of the
+    /// element type, in any order, starting from the scalar the preceding `Arg` carries.
+    /// `operand2` is the closure's environment slot; `imm` indexes the type table at the closure
+    /// adapter's GID.
+    TensorReduce = 58,
 }
 
 /// Reverse mode for `Opcode::AutoDiff`: the gradient, through `__enzyme_autodiff_grad_*`.
@@ -290,6 +295,7 @@ impl Opcode {
             55 => BitXor,
             56 => Shl,
             57 => Shr,
+            58 => TensorReduce,
             8 => Call,
             9 => Ret,
             10 => Matmul,
