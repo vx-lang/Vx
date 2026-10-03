@@ -1,0 +1,629 @@
+//===- libm.vx - Vx Standard Library ------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Math functions written in Vx, ported from LLVM libc (llvm-project, libc/src/__support/math/,
+// Apache-2.0 WITH LLVM-exception) at commit f475f085bf7b. `core::num`'s float methods call these
+// instead of the platform libm (Vx#1038).
+//
+// Each function follows its C++ source step for step, so that it gives the same bits; the
+// file it comes from is named above it. Three things differ:
+// - Constants are written as their exact bit patterns, `libm_f64_from_bits(..)`, with LLVM's hex
+//   float in a comment: Vx has no hex float literals yet (Vx#783).
+// - Tables are `scf.index_switch`es in `mlir!`, which LLVM turns into constant tables: Vx
+//   has no constant arrays yet (Vx#780).
+// - Only the FMA branch of each `#ifdef LIBC_TARGET_CPU_HAS_FMA_DOUBLE` is kept, because
+//   `mul_add` is always fused in Vx. Floating-point exceptions and `errno` are not set, and
+//   only round-to-nearest is supported, so LLVM's `round_result_slightly_up/down` cases
+//   return their constant directly.
+//
+// Every function's name starts with `libm_`: Vx has one namespace for all functions and no
+// private ones yet, so a program's own `asinhf` must not collide with these.
+//
+// This module imports nothing, so that `core::num` can import it: the few operations it needs
+// on floats are the helpers below, each one MLIR operation.
+
+fn libm_f64_to_bits(x : f64) -> u64 {
+  return mlir!( inputs : (%a = x : f64), returns : u64, dialects : ["arith"]) {
+    %r = "arith.bitcast"(%a) : (f64) -> i64
+    macro.yield %r : i64
+  };
+}
+
+fn libm_f64_from_bits(v : u64) -> f64 {
+  return mlir!( inputs : (%v = v : i64), returns : f64, dialects : ["arith"]) {
+    %r = "arith.bitcast"(%v) : (i64) -> f64
+    macro.yield %r : f64
+  };
+}
+
+fn libm_f32_to_bits(x : f32) -> u32 {
+  return mlir!( inputs : (%a = x : f32), returns : u32, dialects : ["arith"]) {
+    %r = "arith.bitcast"(%a) : (f32) -> i32
+    macro.yield %r : i32
+  };
+}
+
+fn libm_f32_from_bits(v : u32) -> f32 {
+  return mlir!( inputs : (%v = v : i32), returns : f32, dialects : ["arith"]) {
+    %r = "arith.bitcast"(%v) : (i32) -> f32
+    macro.yield %r : f32
+  };
+}
+
+/// `x * y + z` with one rounding: `fputil::multiply_add` with FMA.
+fn libm_multiply_add(x : f64, y : f64, z : f64) -> f64 {
+  return mlir!( inputs : (%x = x : f64, %y = y : f64, %z = z : f64), returns : f64, dialects : ["math"]) {
+    %r = math.fma %x, %y, %z : f64
+    macro.yield %r : f64
+  };
+}
+
+/// The correctly rounded square root: `fputil::sqrt<double>`.
+fn libm_sqrt_f64(x : f64) -> f64 {
+  return mlir!( inputs : (%x = x : f64), returns : f64, dialects : ["math"]) {
+    %r = math.sqrt %x : f64
+    macro.yield %r : f64
+  };
+}
+
+/// `log(x)` for a positive, normal `x`, accurate enough for the single-precision functions:
+/// `log_eval` from `acoshf_utils.h`, accurate version, with its tables `R_LOG` and `LOG_R`
+/// from `acosh_float_constants.h`. With `x = 2^e * m`, it is `e * log(2) + log(1 / r) +
+/// log(1 + dx)`, where `r` from the table makes `dx = r * m - 1` small enough for a degree-6
+/// polynomial (Sollya: `fpminimax(log(1 + x)/x, 6, [|1, D...|], [-2^-7, 2^-6])`).
+///
+/// One `mlir!` block, so that LLVM can inline nothing away: written as calls to helpers, the
+/// two table lookups were not inlined and cost a third of the time. The tables are
+/// `scf.index_switch`es, which LLVM turns into loads from constant tables.
+fn libm_log_eval(x : f64) -> f64 {
+  return mlir!( inputs : (%x = x : f64), returns : f64, dialects : ["arith", "math", "scf"]) {
+    %x_u = "arith.bitcast"(%x) : (f64) -> i64
+    // index = (x_u >> 46) & 63: the top 6 bits of the mantissa
+    %c46 = arith.constant 46 : i64
+    %c63 = arith.constant 63 : i64
+    %sh = arith.shrui %x_u, %c46 : i64
+    %idx64 = arith.andi %sh, %c63 : i64
+    %idx = arith.index_cast %idx64 : i64 to index
+    // r = R_LOG[index], log_r = LOG_R[index]
+    %r, %log_r = scf.index_switch %idx -> f64, f64
+    case 0 {
+      %ra0 = arith.constant 0x3FF0000000000000 : f64 // 0x1.0p+0
+      %lb0 = arith.constant 0x0000000000000000 : f64 // 0x0.0000000000000p+0
+      scf.yield %ra0, %lb0 : f64, f64
+    }
+    case 1 {
+      %ra1 = arith.constant 0x3FEF800000000000 : f64 // 0x1.f8p-1
+      %lb1 = arith.constant 0x3F90205658935847 : f64 // 0x1.0205658935847p-6
+      scf.yield %ra1, %lb1 : f64, f64
+    }
+    case 2 {
+      %ra2 = arith.constant 0x3FEF000000000000 : f64 // 0x1.fp-1
+      %lb2 = arith.constant 0x3FA0415D89E74444 : f64 // 0x1.0415d89e74444p-5
+      scf.yield %ra2, %lb2 : f64, f64
+    }
+    case 3 {
+      %ra3 = arith.constant 0x3FEE800000000000 : f64 // 0x1.e8p-1
+      %lb3 = arith.constant 0x3FA894AA149FB343 : f64 // 0x1.894aa149fb343p-5
+      scf.yield %ra3, %lb3 : f64, f64
+    }
+    case 4 {
+      %ra4 = arith.constant 0x3FEE000000000000 : f64 // 0x1.ep-1
+      %lb4 = arith.constant 0x3FB08598B59E3A07 : f64 // 0x1.08598b59e3a07p-4
+      scf.yield %ra4, %lb4 : f64, f64
+    }
+    case 5 {
+      %ra5 = arith.constant 0x3FED800000000000 : f64 // 0x1.d8p-1
+      %lb5 = arith.constant 0x3FB4D3115D207EAC : f64 // 0x1.4d3115d207eacp-4
+      scf.yield %ra5, %lb5 : f64, f64
+    }
+    case 6 {
+      %ra6 = arith.constant 0x3FED400000000000 : f64 // 0x1.d4p-1
+      %lb6 = arith.constant 0x3FB700D30AEAC0E1 : f64 // 0x1.700d30aeac0e1p-4
+      scf.yield %ra6, %lb6 : f64, f64
+    }
+    case 7 {
+      %ra7 = arith.constant 0x3FECC00000000000 : f64 // 0x1.ccp-1
+      %lb7 = arith.constant 0x3FBB6AC88DAD5B1C : f64 // 0x1.b6ac88dad5b1cp-4
+      scf.yield %ra7, %lb7 : f64, f64
+    }
+    case 8 {
+      %ra8 = arith.constant 0x3FEC400000000000 : f64 // 0x1.c4p-1
+      %lb8 = arith.constant 0x3FBFE89139DBD566 : f64 // 0x1.fe89139dbd566p-4
+      scf.yield %ra8, %lb8 : f64, f64
+    }
+    case 9 {
+      %ra9 = arith.constant 0x3FEC000000000000 : f64 // 0x1.cp-1
+      %lb9 = arith.constant 0x3FC1178E8227E47C : f64 // 0x1.1178e8227e47cp-3
+      scf.yield %ra9, %lb9 : f64, f64
+    }
+    case 10 {
+      %ra10 = arith.constant 0x3FEB800000000000 : f64 // 0x1.b8p-1
+      %lb10 = arith.constant 0x3FC365FCB0159016 : f64 // 0x1.365fcb0159016p-3
+      scf.yield %ra10, %lb10 : f64, f64
+    }
+    case 11 {
+      %ra11 = arith.constant 0x3FEB400000000000 : f64 // 0x1.b4p-1
+      %lb11 = arith.constant 0x3FC4913D8333B561 : f64 // 0x1.4913d8333b561p-3
+      scf.yield %ra11, %lb11 : f64, f64
+    }
+    case 12 {
+      %ra12 = arith.constant 0x3FEAC00000000000 : f64 // 0x1.acp-1
+      %lb12 = arith.constant 0x3FC6F0128B756ABC : f64 // 0x1.6f0128b756abcp-3
+      scf.yield %ra12, %lb12 : f64, f64
+    }
+    case 13 {
+      %ra13 = arith.constant 0x3FEA800000000000 : f64 // 0x1.a8p-1
+      %lb13 = arith.constant 0x3FC823C16551A3C2 : f64 // 0x1.823c16551a3c2p-3
+      scf.yield %ra13, %lb13 : f64, f64
+    }
+    case 14 {
+      %ra14 = arith.constant 0x3FEA400000000000 : f64 // 0x1.a4p-1
+      %lb14 = arith.constant 0x3FC95A5ADCF7017F : f64 // 0x1.95a5adcf7017fp-3
+      scf.yield %ra14, %lb14 : f64, f64
+    }
+    case 15 {
+      %ra15 = arith.constant 0x3FE9C00000000000 : f64 // 0x1.9cp-1
+      %lb15 = arith.constant 0x3FCBD087383BD8AD : f64 // 0x1.bd087383bd8adp-3
+      scf.yield %ra15, %lb15 : f64, f64
+    }
+    case 16 {
+      %ra16 = arith.constant 0x3FE9800000000000 : f64 // 0x1.98p-1
+      %lb16 = arith.constant 0x3FCD1037F2655E7B : f64 // 0x1.d1037f2655e7bp-3
+      scf.yield %ra16, %lb16 : f64, f64
+    }
+    case 17 {
+      %ra17 = arith.constant 0x3FE9400000000000 : f64 // 0x1.94p-1
+      %lb17 = arith.constant 0x3FCE530EFFE71012 : f64 // 0x1.e530effe71012p-3
+      scf.yield %ra17, %lb17 : f64, f64
+    }
+    case 18 {
+      %ra18 = arith.constant 0x3FE9000000000000 : f64 // 0x1.9p-1
+      %lb18 = arith.constant 0x3FCF991C6CB3B379 : f64 // 0x1.f991c6cb3b379p-3
+      scf.yield %ra18, %lb18 : f64, f64
+    }
+    case 19 {
+      %ra19 = arith.constant 0x3FE8800000000000 : f64 // 0x1.88p-1
+      %lb19 = arith.constant 0x3FD1178E8227E47C : f64 // 0x1.1178e8227e47cp-2
+      scf.yield %ra19, %lb19 : f64, f64
+    }
+    case 20 {
+      %ra20 = arith.constant 0x3FE8400000000000 : f64 // 0x1.84p-1
+      %lb20 = arith.constant 0x3FD1BF99635A6B95 : f64 // 0x1.1bf99635a6b95p-2
+      scf.yield %ra20, %lb20 : f64, f64
+    }
+    case 21 {
+      %ra21 = arith.constant 0x3FE8000000000000 : f64 // 0x1.8p-1
+      %lb21 = arith.constant 0x3FD269621134DB92 : f64 // 0x1.269621134db92p-2
+      scf.yield %ra21, %lb21 : f64, f64
+    }
+    case 22 {
+      %ra22 = arith.constant 0x3FE7C00000000000 : f64 // 0x1.7cp-1
+      %lb22 = arith.constant 0x3FD314F1E1D35CE4 : f64 // 0x1.314f1e1d35ce4p-2
+      scf.yield %ra22, %lb22 : f64, f64
+    }
+    case 23 {
+      %ra23 = arith.constant 0x3FE7800000000000 : f64 // 0x1.78p-1
+      %lb23 = arith.constant 0x3FD3C25277333184 : f64 // 0x1.3c25277333184p-2
+      scf.yield %ra23, %lb23 : f64, f64
+    }
+    case 24 {
+      %ra24 = arith.constant 0x3FE7400000000000 : f64 // 0x1.74p-1
+      %lb24 = arith.constant 0x3FD4718DC271C41B : f64 // 0x1.4718dc271c41bp-2
+      scf.yield %ra24, %lb24 : f64, f64
+    }
+    case 25 {
+      %ra25 = arith.constant 0x3FE7000000000000 : f64 // 0x1.7p-1
+      %lb25 = arith.constant 0x3FD522AE0738A3D8 : f64 // 0x1.522ae0738a3d8p-2
+      scf.yield %ra25, %lb25 : f64, f64
+    }
+    case 26 {
+      %ra26 = arith.constant 0x3FE6C00000000000 : f64 // 0x1.6cp-1
+      %lb26 = arith.constant 0x3FD5D5BDDF595F30 : f64 // 0x1.5d5bddf595f3p-2
+      scf.yield %ra26, %lb26 : f64, f64
+    }
+    case 27 {
+      %ra27 = arith.constant 0x3FE6800000000000 : f64 // 0x1.68p-1
+      %lb27 = arith.constant 0x3FD68AC83E9C6A14 : f64 // 0x1.68ac83e9c6a14p-2
+      scf.yield %ra27, %lb27 : f64, f64
+    }
+    case 28 {
+      %ra28 = arith.constant 0x3FE6400000000000 : f64 // 0x1.64p-1
+      %lb28 = arith.constant 0x3FD741D876C67BB1 : f64 // 0x1.741d876c67bb1p-2
+      scf.yield %ra28, %lb28 : f64, f64
+    }
+    case 29 {
+      %ra29 = arith.constant 0x3FE6000000000000 : f64 // 0x1.6p-1
+      %lb29 = arith.constant 0x3FD7FAFA3BD8151C : f64 // 0x1.7fafa3bd8151cp-2
+      scf.yield %ra29, %lb29 : f64, f64
+    }
+    case 30 {
+      %ra30 = arith.constant 0x3FE5C00000000000 : f64 // 0x1.5cp-1
+      %lb30 = arith.constant 0x3FD8B639A88B2DF5 : f64 // 0x1.8b639a88b2df5p-2
+      scf.yield %ra30, %lb30 : f64, f64
+    }
+    case 31 {
+      %ra31 = arith.constant 0x3FE5800000000000 : f64 // 0x1.58p-1
+      %lb31 = arith.constant 0x3FD973A3431356AE : f64 // 0x1.973a3431356aep-2
+      scf.yield %ra31, %lb31 : f64, f64
+    }
+    case 32 {
+      %ra32 = arith.constant 0x3FE5400000000000 : f64 // 0x1.54p-1
+      %lb32 = arith.constant 0x3FDA33440224FA79 : f64 // 0x1.a33440224fa79p-2
+      scf.yield %ra32, %lb32 : f64, f64
+    }
+    case 33 {
+      %ra33 = arith.constant 0x3FE5000000000000 : f64 // 0x1.5p-1
+      %lb33 = arith.constant 0x3FDAF5295248CDD0 : f64 // 0x1.af5295248cddp-2
+      scf.yield %ra33, %lb33 : f64, f64
+    }
+    case 34 {
+      %ra34 = arith.constant 0x3FE4C00000000000 : f64 // 0x1.4cp-1
+      %lb34 = arith.constant 0x3FDBB9611B80E2FB : f64 // 0x1.bb9611b80e2fbp-2
+      scf.yield %ra34, %lb34 : f64, f64
+    }
+    case 35 {
+      %ra35 = arith.constant 0x3FE4C00000000000 : f64 // 0x1.4cp-1
+      %lb35 = arith.constant 0x3FDBB9611B80E2FB : f64 // 0x1.bb9611b80e2fbp-2
+      scf.yield %ra35, %lb35 : f64, f64
+    }
+    case 36 {
+      %ra36 = arith.constant 0x3FE4800000000000 : f64 // 0x1.48p-1
+      %lb36 = arith.constant 0x3FDC7FF9C74554C9 : f64 // 0x1.c7ff9c74554c9p-2
+      scf.yield %ra36, %lb36 : f64, f64
+    }
+    case 37 {
+      %ra37 = arith.constant 0x3FE4400000000000 : f64 // 0x1.44p-1
+      %lb37 = arith.constant 0x3FDD490246DEFA6B : f64 // 0x1.d490246defa6bp-2
+      scf.yield %ra37, %lb37 : f64, f64
+    }
+    case 38 {
+      %ra38 = arith.constant 0x3FE4000000000000 : f64 // 0x1.4p-1
+      %lb38 = arith.constant 0x3FDE148A1A2726CE : f64 // 0x1.e148a1a2726cep-2
+      scf.yield %ra38, %lb38 : f64, f64
+    }
+    case 39 {
+      %ra39 = arith.constant 0x3FE3C00000000000 : f64 // 0x1.3cp-1
+      %lb39 = arith.constant 0x3FDEE2A156B413E5 : f64 // 0x1.ee2a156b413e5p-2
+      scf.yield %ra39, %lb39 : f64, f64
+    }
+    case 40 {
+      %ra40 = arith.constant 0x3FE3C00000000000 : f64 // 0x1.3cp-1
+      %lb40 = arith.constant 0x3FDEE2A156B413E5 : f64 // 0x1.ee2a156b413e5p-2
+      scf.yield %ra40, %lb40 : f64, f64
+    }
+    case 41 {
+      %ra41 = arith.constant 0x3FE3800000000000 : f64 // 0x1.38p-1
+      %lb41 = arith.constant 0x3FDFB358AF7A4884 : f64 // 0x1.fb358af7a4884p-2
+      scf.yield %ra41, %lb41 : f64, f64
+    }
+    case 42 {
+      %ra42 = arith.constant 0x3FE3400000000000 : f64 // 0x1.34p-1
+      %lb42 = arith.constant 0x3FE04360BE7603AD : f64 // 0x1.04360be7603adp-1
+      scf.yield %ra42, %lb42 : f64, f64
+    }
+    case 43 {
+      %ra43 = arith.constant 0x3FE3000000000000 : f64 // 0x1.3p-1
+      %lb43 = arith.constant 0x3FE0AE76E2D054FA : f64 // 0x1.0ae76e2d054fap-1
+      scf.yield %ra43, %lb43 : f64, f64
+    }
+    case 44 {
+      %ra44 = arith.constant 0x3FE3000000000000 : f64 // 0x1.3p-1
+      %lb44 = arith.constant 0x3FE0AE76E2D054FA : f64 // 0x1.0ae76e2d054fap-1
+      scf.yield %ra44, %lb44 : f64, f64
+    }
+    case 45 {
+      %ra45 = arith.constant 0x3FE2C00000000000 : f64 // 0x1.2cp-1
+      %lb45 = arith.constant 0x3FE11AF823C75AA8 : f64 // 0x1.11af823c75aa8p-1
+      scf.yield %ra45, %lb45 : f64, f64
+    }
+    case 46 {
+      %ra46 = arith.constant 0x3FE2800000000000 : f64 // 0x1.28p-1
+      %lb46 = arith.constant 0x3FE188EE40F23CA6 : f64 // 0x1.188ee40f23ca6p-1
+      scf.yield %ra46, %lb46 : f64, f64
+    }
+    case 47 {
+      %ra47 = arith.constant 0x3FE2800000000000 : f64 // 0x1.28p-1
+      %lb47 = arith.constant 0x3FE188EE40F23CA6 : f64 // 0x1.188ee40f23ca6p-1
+      scf.yield %ra47, %lb47 : f64, f64
+    }
+    case 48 {
+      %ra48 = arith.constant 0x3FE2400000000000 : f64 // 0x1.24p-1
+      %lb48 = arith.constant 0x3FE1F8635FC61659 : f64 // 0x1.1f8635fc61659p-1
+      scf.yield %ra48, %lb48 : f64, f64
+    }
+    case 49 {
+      %ra49 = arith.constant 0x3FE2000000000000 : f64 // 0x1.2p-1
+      %lb49 = arith.constant 0x3FE269621134DB92 : f64 // 0x1.269621134db92p-1
+      scf.yield %ra49, %lb49 : f64, f64
+    }
+    case 50 {
+      %ra50 = arith.constant 0x3FE2000000000000 : f64 // 0x1.2p-1
+      %lb50 = arith.constant 0x3FE269621134DB92 : f64 // 0x1.269621134db92p-1
+      scf.yield %ra50, %lb50 : f64, f64
+    }
+    case 51 {
+      %ra51 = arith.constant 0x3FE1C00000000000 : f64 // 0x1.1cp-1
+      %lb51 = arith.constant 0x3FE2DBF557B0DF43 : f64 // 0x1.2dbf557b0df43p-1
+      scf.yield %ra51, %lb51 : f64, f64
+    }
+    case 52 {
+      %ra52 = arith.constant 0x3FE1C00000000000 : f64 // 0x1.1cp-1
+      %lb52 = arith.constant 0x3FE2DBF557B0DF43 : f64 // 0x1.2dbf557b0df43p-1
+      scf.yield %ra52, %lb52 : f64, f64
+    }
+    case 53 {
+      %ra53 = arith.constant 0x3FE1800000000000 : f64 // 0x1.18p-1
+      %lb53 = arith.constant 0x3FE35028AD9D8C86 : f64 // 0x1.35028ad9d8c86p-1
+      scf.yield %ra53, %lb53 : f64, f64
+    }
+    case 54 {
+      %ra54 = arith.constant 0x3FE1400000000000 : f64 // 0x1.14p-1
+      %lb54 = arith.constant 0x3FE3C6080C36BFB5 : f64 // 0x1.3c6080c36bfb5p-1
+      scf.yield %ra54, %lb54 : f64, f64
+    }
+    case 55 {
+      %ra55 = arith.constant 0x3FE1400000000000 : f64 // 0x1.14p-1
+      %lb55 = arith.constant 0x3FE3C6080C36BFB5 : f64 // 0x1.3c6080c36bfb5p-1
+      scf.yield %ra55, %lb55 : f64, f64
+    }
+    case 56 {
+      %ra56 = arith.constant 0x3FE1000000000000 : f64 // 0x1.1p-1
+      %lb56 = arith.constant 0x3FE43D9FF2F923C5 : f64 // 0x1.43d9ff2f923c5p-1
+      scf.yield %ra56, %lb56 : f64, f64
+    }
+    case 57 {
+      %ra57 = arith.constant 0x3FE1000000000000 : f64 // 0x1.1p-1
+      %lb57 = arith.constant 0x3FE43D9FF2F923C5 : f64 // 0x1.43d9ff2f923c5p-1
+      scf.yield %ra57, %lb57 : f64, f64
+    }
+    case 58 {
+      %ra58 = arith.constant 0x3FE0C00000000000 : f64 // 0x1.0cp-1
+      %lb58 = arith.constant 0x3FE4B6FD6F970C1F : f64 // 0x1.4b6fd6f970c1fp-1
+      scf.yield %ra58, %lb58 : f64, f64
+    }
+    case 59 {
+      %ra59 = arith.constant 0x3FE0C00000000000 : f64 // 0x1.0cp-1
+      %lb59 = arith.constant 0x3FE4B6FD6F970C1F : f64 // 0x1.4b6fd6f970c1fp-1
+      scf.yield %ra59, %lb59 : f64, f64
+    }
+    case 60 {
+      %ra60 = arith.constant 0x3FE0800000000000 : f64 // 0x1.08p-1
+      %lb60 = arith.constant 0x3FE5322E26867857 : f64 // 0x1.5322e26867857p-1
+      scf.yield %ra60, %lb60 : f64, f64
+    }
+    case 61 {
+      %ra61 = arith.constant 0x3FE0800000000000 : f64 // 0x1.08p-1
+      %lb61 = arith.constant 0x3FE5322E26867857 : f64 // 0x1.5322e26867857p-1
+      scf.yield %ra61, %lb61 : f64, f64
+    }
+    case 62 {
+      %ra62 = arith.constant 0x3FE0400000000000 : f64 // 0x1.04p-1
+      %lb62 = arith.constant 0x3FE5AF405C3649E0 : f64 // 0x1.5af405c3649ep-1
+      scf.yield %ra62, %lb62 : f64, f64
+    }
+    case 63 {
+      %ra63 = arith.constant 0x3FE0000000000000 : f64 // 0x1.0p-1
+      %lb63 = arith.constant 0x0000000000000000 : f64 // 0.0
+      scf.yield %ra63, %lb63 : f64, f64
+    }
+    default {
+      %rz = arith.constant 0.0 : f64
+      scf.yield %rz, %rz : f64, f64
+    }
+    // x_e = ((x_u + 2^46) >> 52) - 1023: the exponent, plus one when the 8 leading bits of the
+    // mantissa are all ones
+    %c_round = arith.constant 70368744177664 : i64
+    %c52 = arith.constant 52 : i64
+    %c1023 = arith.constant 1023 : i64
+    %xr = arith.addi %x_u, %c_round : i64
+    %xe0 = arith.shrui %xr, %c52 : i64
+    %xe = arith.subi %xe0, %c1023 : i64
+    %e_x = arith.sitofp %xe : i64 to f64
+    %log_2 = arith.constant 0x3FE62E42FEFA39EF : f64 // 0x1.62e42fefa39efp-1
+    %r_hi = math.fma %e_x, %log_2, %log_r : f64
+    // m = 1.mantissa
+    %c_frac = arith.constant 4503599627370495 : i64
+    %c_one = arith.constant 4607182418800017408 : i64
+    %mf = arith.andi %x_u, %c_frac : i64
+    %mb = arith.ori %mf, %c_one : i64
+    %m = "arith.bitcast"(%mb) : (i64) -> f64
+    %neg_one = arith.constant -1.0 : f64
+    %dx = math.fma %r, %m, %neg_one : f64
+    %k0 = arith.constant 0xBFDFFFFFFFFFFE03 : f64 // -0x1.ffffffffffe03p-2
+    %k1 = arith.constant 0x3FD55555555395F9 : f64 // 0x1.55555555395f9p-2
+    %k2 = arith.constant 0xBFD0000001BE5329 : f64 // -0x1.0000001be5329p-2
+    %k3 = arith.constant 0x3FC9999C1BF8C3AF : f64 // 0x1.9999c1bf8c3afp-3
+    %k4 = arith.constant 0xBFC554F0BA9CEE4B : f64 // -0x1.554f0ba9cee4bp-3
+    %k5 = arith.constant 0x3FC1D94CD56B72D7 : f64 // 0x1.1d94cd56b72d7p-3
+    %dx2 = arith.mulf %dx, %dx : f64
+    %c1 = math.fma %dx, %k1, %k0 : f64
+    %c2 = math.fma %dx, %k3, %k2 : f64
+    %c3 = math.fma %dx, %k5, %k4 : f64
+    %dx4 = arith.mulf %dx2, %dx2 : f64
+    %rd = arith.addf %r_hi, %dx : f64
+    %d1 = math.fma %dx2, %c1, %rd : f64
+    %d2 = math.fma %dx2, %c3, %c2 : f64
+    %res = math.fma %dx4, %d2, %d1 : f64
+    macro.yield %res : f64
+  };
+}
+
+/// The inverse hyperbolic sine, correctly rounded: `asinhf` from `asinhf.h`.
+fn libm_asinhf(x : f32) -> f32 {
+  let x_u = libm_f32_to_bits(x);
+  let x_abs = x_u & 2147483647u32;
+  let x_sign : f64 = if (x_u >> 31u32) == 0u32 {
+    1.0
+  } else {
+    -1.0
+  };
+  let sign : f32 = x_sign as f32;
+  // |x| <= 2^-3
+  if x_abs <= 1040187392u32 {
+    // |x| <= 2^-26
+    if x_abs <= 847249408u32 {
+      if x_abs == 0u32 {
+        return x;
+      }
+      let xd = x as f64;
+      return (xd - libm_f64_from_bits(4595172819793696085u64) * xd * xd * xd) as f32; // 0x1.5555555555555p-3
+    }
+    // Sollya: P = fpminimax(asinh(x)/x, [|0, 2, 4, 6, 8, 10, 12|], [|1, D...|], [0, 2^-3])
+    let x_d = x as f64;
+    let x_sq = x_d * x_d;
+    let c0 = libm_multiply_add(x_sq, libm_f64_from_bits(4590068740215863170u64), libm_f64_from_bits(13818544856648471834u64)); // 0x1.333333330f782p-4, -0x1.555555555551ap-3
+    let c1 = libm_multiply_add(x_sq, libm_f64_from_bits(4584414174696340721u64), libm_f64_from_bits(13809966571523142661u64)); // 0x1.f1c67120a7cf1p-6, -0x1.6db6dafa7f405p-5
+    let c2 = libm_multiply_add(x_sq, libm_f64_from_bits(4580447041133744408u64), libm_f64_from_bits(13805473156160713939u64)); // 0x1.10450cf441118p-6, -0x1.6e4b0e52674d3p-6
+    let x_4 = x_sq * x_sq;
+    let x_3 = x_d * x_sq;
+    let p = libm_multiply_add(x_4, libm_multiply_add(x_4, c2, c1), c0);
+    return libm_multiply_add(x_3, p, x_d) as f32;
+  }
+  let x_a = libm_f32_from_bits(x_abs) as f64;
+  // |x| >= 2^24
+  if x_abs >= 1266679808u32 {
+    // Infinity or NaN: itself.
+    if x_abs >= 2139095040u32 {
+      return x;
+    }
+    // Inputs where the evaluation below would round the wrong way.
+    if x_abs == 1272800677u32 {
+      return sign * libm_f32_from_bits(1099891531u32); // 0x1.1e0696p4f
+    }
+    if x_abs == 1283473196u32 {
+      return sign * libm_f32_from_bits(1100332086u32); // 0x1.2b786cp4f
+    }
+    if x_abs == 1334835971u32 {
+      return sign * libm_f32_from_bits(1102573210u32); // 0x1.6fdd34p4f
+    }
+    if x_abs == 1549180552u32 {
+      return sign * libm_f32_from_bits(1109581987u32); // 0x1.45c146p5f
+    }
+    if x_abs == 1583913038u32 {
+      return sign * libm_f32_from_bits(1110329889u32); // 0x1.5c9442p5f
+    }
+    if x_abs == 1660395610u32 {
+      return sign * libm_f32_from_bits(1111981645u32); // 0x1.8efc9ap5f
+    }
+    if x_abs == 1700303059u32 {
+      return sign * libm_f32_from_bits(1112855033u32); // 0x1.a9a3f2p5f
+    }
+    if x_abs == 1709079718u32 {
+      return sign * libm_f32_from_bits(1113043808u32); // 0x1.af66cp5f
+    }
+    if x_abs == 1857136876u32 {
+      return sign * libm_f32_from_bits(1115970185u32); // 0x1.08b512p6f
+    }
+    if x_abs == 1992165854u32 {
+      return sign * libm_f32_from_bits(1117432648u32); // 0x1.35569p6f
+    }
+    if x_abs == 2040001290u32 {
+      return sign * libm_f32_from_bits(1117948443u32); // 0x1.451436p6f
+    }
+    // asinh(x) = log(2 |x|)
+    return (x_sign * libm_log_eval(2.0 * x_a)) as f32;
+  }
+  if x_abs == 1168879398u32 {
+    return sign * libm_f32_from_bits(1091886949u32); // 0x1.29becap3f
+  }
+  if x_abs == 1238536264u32 {
+    return sign * libm_f32_from_bits(1097915536u32); // 0x1.e1b92p3f
+  }
+  // asinh(x) = log(x + sqrt(x^2 + 1))
+  return (x_sign * libm_log_eval(x_a + libm_sqrt_f64(libm_multiply_add(x_a, x_a, 1.0)))) as f32;
+}
+
+/// The inverse hyperbolic cosine, correctly rounded; NaN below 1: `acoshf` from `acoshf.h`.
+fn libm_acoshf(x : f32) -> f32 {
+  if x <= 1.0 {
+    if x == 1.0 {
+      return 0.0;
+    }
+    let zero : f32 = 0.0;
+    return zero / zero;
+  }
+  let x_u = libm_f32_to_bits(x);
+  let x_d = x as f64;
+  // x >= 2^12
+  if x_u >= 1166016512u32 {
+    // Infinity or NaN: itself.
+    if x_u >= 2139095040u32 {
+      return x;
+    }
+    // acosh(x) ~ log(2x) - 1/(2x)^2, and for x > 2^26 just log(2x).
+    let y = 2.0 * x_d;
+    // x <= 2^26
+    if x_u <= 1283457024u32 {
+      if x_u == 1172071444u32 {
+        return libm_f32_from_bits(1092148827u32); // 0x1.31bcb6p3f
+      }
+      let y_inv = 0.5 / x_d;
+      return libm_multiply_add(y_inv, -y_inv, libm_log_eval(y)) as f32;
+    }
+    if x_u == 1283473196u32 {
+      return libm_f32_from_bits(1100332086u32); // 0x1.2b786cp4f
+    }
+    if x_u == 1334835971u32 {
+      return libm_f32_from_bits(1102573210u32); // 0x1.6fdd34p4f
+    }
+    if x_u == 1549180552u32 {
+      return libm_f32_from_bits(1109581987u32); // 0x1.45c146p5f
+    }
+    if x_u == 1583913038u32 {
+      return libm_f32_from_bits(1110329889u32); // 0x1.5c9442p5f
+    }
+    if x_u == 1700303059u32 {
+      return libm_f32_from_bits(1112855033u32); // 0x1.a9a3f2p5f
+    }
+    if x_u == 1857136876u32 {
+      return libm_f32_from_bits(1115970185u32); // 0x1.08b512p6f
+    }
+    if x_u == 2040001290u32 {
+      return libm_f32_from_bits(1117948443u32); // 0x1.451436p6f
+    }
+    return libm_log_eval(y) as f32;
+  }
+  // acosh(x) = log(x + sqrt(x^2 - 1)) for 1 < x < 2^12
+  return libm_log_eval(x_d + libm_sqrt_f64(libm_multiply_add(x_d, x_d, -1.0))) as f32;
+}
+
+/// The inverse hyperbolic tangent, correctly rounded; infinite at +-1 and NaN beyond:
+/// `atanhf` from `atanhf.h`.
+fn libm_atanhf(x : f32) -> f32 {
+  let x_u = libm_f32_to_bits(x);
+  let x_abs = x_u & 2147483647u32;
+  // |x| >= 1
+  if x_abs >= 1065353216u32 {
+    // NaN: itself.
+    if x_abs > 2139095040u32 {
+      return x;
+    }
+    if x_abs == 1065353216u32 {
+      return x / 0.0;
+    }
+    let zero : f32 = 0.0;
+    return zero / zero;
+  }
+  // |x| < ~0.10
+  if x_abs <= 1036779520u32 {
+    // |x| <= 2^-26
+    if x_abs <= 847249408u32 {
+      if x_abs == 0u32 {
+        return x;
+      }
+      let xd = x as f64;
+      return (xd + libm_f64_from_bits(4599676419421066581u64) * xd * xd * xd) as f32; // 0x1.5555555555555p-2
+    }
+    let xdbl = x as f64;
+    let x2 = xdbl * xdbl;
+    // Taylor series: polyeval(x2, 0, 0x1.5555555555555p-2, 0x1.999999999999ap-3, 0x1.2492492492492p-3, 0x1.c71c71c71c71cp-4, 0x1.745d1745d1746p-4)
+    let pe = libm_multiply_add(x2, libm_multiply_add(x2, libm_multiply_add(x2, libm_multiply_add(x2, libm_multiply_add(x2, libm_f64_from_bits(4591215111030249286u64), libm_f64_from_bits(4592670820000712476u64)), libm_f64_from_bits(4594314991293244562u64)), libm_f64_from_bits(4596373779694328218u64)), libm_f64_from_bits(4599676419421066581u64)), 0.0);
+    return libm_multiply_add(xdbl, pe, xdbl) as f32;
+  }
+  let xdbl = x as f64;
+  return (0.5 * libm_log_eval((1.0 + xdbl) / (1.0 - xdbl))) as f32;
+}
