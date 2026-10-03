@@ -592,6 +592,10 @@ impl<'a> TypeChecker<'a> {
                 }
 
                 self.check_overlapping_reference_args(&reborrow_plan, errors_before_args, span);
+                if let Some((params, _)) = &reborrow_plan.callee_sig {
+                    let params = params.clone();
+                    self.check_views_passed_by_value(resolved_name.as_ref(), &params, args);
+                }
                 self.commit_reference_arg_reborrows(&reborrow_plan, &arg_types, span);
                 if resolved_name == "print".into() && args.len() == 1 {
                     Self::prepare_print_operand(&mut args[0], &arg_types[0]);
@@ -2794,6 +2798,14 @@ impl<'a> TypeChecker<'a> {
                         .push("topology requires 0 arguments".to_string());
                 }
                 return Some((Type::Struct("Option".into(), None), false));
+            } else if _method == "clone" {
+                if !args.is_empty() {
+                    self.errors.push("clone takes no arguments".to_string());
+                }
+                return Some((
+                    Type::Tensor(el_ty.clone(), dims.clone(), top.clone()),
+                    false,
+                ));
             } else if _method == "reshape" {
                 if args.is_empty() || args.len() > 3 {
                     self.errors

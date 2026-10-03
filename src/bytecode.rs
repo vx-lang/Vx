@@ -265,6 +265,9 @@ pub enum Opcode {
     /// `operand2` is the closure's environment slot; `imm` indexes the type table at the closure
     /// adapter's GID.
     TensorReduce = 58,
+    /// `t.clone()`: a new tensor of `operand1`'s shape, holding a copy of its elements. The
+    /// source may be a row, so the copy follows its strides; `type_idx` is the result type.
+    TensorClone = 59,
 }
 
 /// Reverse mode for `Opcode::AutoDiff`: the gradient, through `__enzyme_autodiff_grad_*`.
@@ -296,6 +299,7 @@ impl Opcode {
             56 => Shl,
             57 => Shr,
             58 => TensorReduce,
+            59 => TensorClone,
             8 => Call,
             9 => Ret,
             10 => Matmul,

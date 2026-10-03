@@ -96,6 +96,52 @@ impl FnEmit<'_> {
         Ok(c)
     }
 
+    // `t.clone()`: a new buffer of the source's shape and a `memref.copy` into it. The copy reads
+    // the source through its own layout, so cloning a row copies that row.
+    pub(crate) fn op_tensor_clone(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let gid = *self
+            .types
+            .get(ins.type_idx.0 as usize)
+            .ok_or(crate::emitter_gap!())?;
+        let (elem, shape) = self
+            .ctx
+            .tensors
+            .get(&gid)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        let memty = tensor_memref_ty(&elem, &shape).ok_or(crate::emitter_gap!())?;
+        let s = ins.operand1.0 as usize;
+        let src = self.names.get(s).ok_or(crate::emitter_gap!())?.clone();
+        let src_mem = self
+            .mem_of
+            .get(s)
+            .cloned()
+            .flatten()
+            .ok_or(crate::emitter_gap!())?;
+        let n = match self.nrvo_slot(idx, &memty) {
+            Some(slot) => slot,
+            None => {
+                let mut sizes = Vec::new();
+                for (k, d) in shape.iter().enumerate() {
+                    if d == DYN_DIM {
+                        let c = format!("%tcl{idx}_c{k}");
+                        let v = format!("%tcl{idx}_d{k}");
+                        self.body += &format!("  {c} = arith.constant {k} : index\n");
+                        self.body += &format!("  {v} = memref.dim {src}, {c} : {src_mem}\n");
+                        sizes.push(v);
+                    }
+                }
+                let n = format!("%v{idx}");
+                self.body += &format!("  {n} = memref.alloc({}) : {memty}\n", sizes.join(", "));
+                n
+            }
+        };
+        self.body += &format!("  memref.copy {src}, {n} : {src_mem} to {memty}\n");
+        self.names[idx] = n;
+        self.mem_of[idx] = Some(memty);
+        Ok(())
+    }
+
     // Allocate a tensor buffer (`Tensor<T>([..])`): a static `memref` of the shape recovered
     // from the side table by GID. Its register is tracked in `mem_of` for later index/store.
     pub(crate) fn op_tensor_alloc(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {

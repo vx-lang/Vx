@@ -85,6 +85,22 @@ impl FnEmit<'_> {
             };
             arg_types.push(at);
         }
+        // A row is a strided view, and the callee takes a plain memref: pass the same memory
+        // under the callee's spelling.
+        let param_tensors = callee.param_tensors.clone();
+        for (k, declared) in param_tensors.iter().enumerate().take(n) {
+            if let Some(declared) = declared {
+                if arg_types[k].starts_with("memref<") && arg_types[k] != *declared {
+                    arg_names[k] = self.cast_memref_value(
+                        &format!("pc{idx}_{k}"),
+                        &arg_names[k],
+                        &arg_types[k],
+                        declared,
+                    )?;
+                    arg_types[k] = declared.clone();
+                }
+            }
+        }
         // A callee returning a statically shaped tensor writes into a buffer we hand it, so
         // allocate one and pass it as the first argument (#643). The slot goes in our entry block:
         // a call in a loop then reuses one buffer rather than taking a fresh one per iteration,

@@ -1,0 +1,63 @@
+//===- rows_passed_to_functions.vx - Vx Compiler -----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --run 2>&1 | FileCheck %s
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
+//
+// A row `q[1]` shares `q`'s memory. A function that takes a tensor by reference can be given
+// the row itself, and writes through `&mut` reach `q`. A function that takes a tensor by value
+// owns it, so it is given a copy made with `.clone()`.
+
+fn ends(v : &Tensor<f32, [4]>) -> f32 {
+  return v[0] + v[3];
+}
+
+fn bump(v : &mut Tensor<f32, [4]>) -> void {
+  v[2] = v[2] + 10.0;
+}
+
+fn ends_of_own(v : Tensor<f32, [4]>) -> f32 {
+  return v[0] + v[3];
+}
+
+fn first(v : Tensor<f32, [?]>) -> f32 {
+  return v[0];
+}
+
+// The function owns `q`, so it returns a copy of the row, not the row.
+fn second_row() -> Tensor<f32, [4]> {
+  let mut q = Tensor<f32, [2, 4]>::new();
+  q[1][3] = 8.0;
+  return q[1].clone();
+}
+
+fn main() -> i32 {
+  let mut q = Tensor<f32, [2, 4]>::new();
+  q[1][0] = 3.0;
+  q[1][3] = 4.0;
+  // 7: the row by reference.
+  print(ends(&q[1]));
+  // 1: `bump` writes 10 into q[1][2] through the row.
+  bump(&mut q[1]);
+  print(q[1][2] - 9.0);
+  // 7: a copy of the row, owned by the function.
+  print(ends_of_own(q[1].clone()));
+  // 3 then 5: a copy of the whole tensor is separate from it.
+  let mut c = q.clone();
+  c[1][0] = 5.0;
+  print(q[1][0]);
+  print(c[1][0]);
+  // 8: a copy of a row of a tensor that is gone.
+  print(second_row()[3]);
+  // 6: a copy of a tensor with a size known only at run time.
+  let mut d = Tensor<f32>([3]);
+  d[0] = 6.0;
+  print(first(d.clone()));
+  return 0;
+}
+
+// CHECK: 7173586

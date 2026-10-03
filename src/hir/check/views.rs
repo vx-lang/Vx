@@ -174,4 +174,32 @@ impl<'a> TypeChecker<'a> {
             Some(crate::diagnostic::SourceSpan::from_ast_span(&value.span())),
         );
     }
+
+    /// `f(q[1])` where `f` takes a tensor by value: E4011. The function would own memory
+    /// that is `q`'s. A row passed to a `&Tensor` parameter is fine.
+    pub(crate) fn check_views_passed_by_value(
+        &mut self,
+        callee: &str,
+        params: &[Type],
+        args: &[Expr],
+    ) {
+        if self.speculating {
+            return;
+        }
+        for (param, arg) in params.iter().zip(args) {
+            let Some(view) = self.view_of(arg, param) else {
+                continue;
+            };
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E4011,
+                format!(
+                    "this passes a view of `{owner}` to `{callee}`, which takes a tensor of its \
+                     own. A view shares `{owner}`'s memory and is not a copy; pass a copy with \
+                     `.clone()`, or make `{callee}` take the tensor by reference (`&`)",
+                    owner = view.owner
+                ),
+                Some(crate::diagnostic::SourceSpan::from_ast_span(&arg.span())),
+            );
+        }
+    }
 }

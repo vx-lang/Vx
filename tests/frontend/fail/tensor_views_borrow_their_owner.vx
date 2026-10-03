@@ -93,6 +93,16 @@ fn stored_in_a_field() -> f32 {
   return h.t[0];
 }
 
+fn first(t : Tensor<f32, [4]>) -> f32 {
+  return t[0];
+}
+
+// A row is passed to a function that takes a tensor by value, and would own it.
+fn passed_by_value() -> f32 {
+  let q = Tensor<f32, [2, 4]>::new();
+  return first(q[1]);
+}
+
 fn main() -> i32 {
   return 0;
 }
@@ -106,3 +116,4 @@ fn main() -> i32 {
 // CHECK-DAG: Error[E4005] at 76:3: this returns a view of `q`, a tensor this function owns
 // CHECK-DAG: Error[E4011] at 83:11: this stores a view of `q` in `keep`, which holds a tensor of its own
 // CHECK-DAG: Error[E4011] at 91:10: this stores a view of `q` in the field `t`
+// CHECK-DAG: Error[E4011] at 103:17: this passes a view of `q` to `first`, which takes a tensor of its own
