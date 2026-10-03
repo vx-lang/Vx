@@ -59,6 +59,7 @@ fn test_ak_module_add_function() -> Result<(), String> {
         impls: vec![],
         macros: vec![],
         functions: vec![],
+        consts: vec![],
         topologies: vec![],
         memories: vec![],
         transfer_impls: Vec::new(),

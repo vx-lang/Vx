@@ -1,0 +1,64 @@
+//===- const_items.vx - Vx Compiler -------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Top-level `const` items. Printed, in order: a const plus 2; a const made from another;
+// the largest `u64`; an `f64` const times 2; a `bool` const; an `i64` const times 2, past
+// what an `i32` holds, so the const keeps its declared type; a local that shadows a const;
+// a const folded inside `comptime`; one a macro declared; and one from an imported module,
+// read directly and through that module's own function.
+//
+// EXPECT: 42 80 18446744073709551615 0.5 on 6000000000 7 120 100 6 42
+import tests::modules::a_module_with_consts;
+
+const K : i32 = 40;
+const DOUBLE : i32 = K * 2;
+const BIG : u64 = 18446744073709551615u64;
+const RATE : f64 = 0.25;
+const ON : bool = true;
+const WIDE : i64 = 3000000000;
+
+macro_rules stamp_limit {
+  ($name : ident , $v : expr) => {
+    const $name : i32 = $v;
+  };
+}
+
+stamp_limit!(LIMIT, 100);
+
+fn shadow() -> i32 {
+  let K = 7;
+  return K;
+}
+
+fn main() -> i32 {
+  print(K + 2);
+  print!(" ");
+  print(DOUBLE);
+  print!(" ");
+  print(BIG);
+  print!(" ");
+  print(RATE * 2.0);
+  print!(" ");
+  if ON {
+    print!("on ");
+  }
+  print(WIDE * 2);
+  print!(" ");
+  print(shadow());
+  print!(" ");
+  let folded = comptime {
+    K * 3
+  };
+  print(folded);
+  print!(" ");
+  print(LIMIT);
+  print!(" ");
+  print(SIDES);
+  print!(" ");
+  print(sides_times(7));
+  return 0;
+}

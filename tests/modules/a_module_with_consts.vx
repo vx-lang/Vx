@@ -1,0 +1,14 @@
+//===- a_module_with_consts.vx - Vx Compiler ----------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A module with a `const`, used by its own function and by the programs that import it.
+
+const SIDES : i32 = 6;
+
+fn sides_times(n : i32) -> i32 {
+  return SIDES * n;
+}

@@ -408,6 +408,7 @@ fn test_local_name_resolution() -> Result<(), String> {
             body: vec![],
             doc_comment: None,
         }],
+        consts: vec![],
     };
 
     // Phase 1.25: Build the SymbolMap from parsed modules
@@ -471,6 +472,7 @@ fn test_unresolved_symbol_remains_none() -> Result<(), String> {
             body: vec![],
             doc_comment: None,
         }],
+        consts: vec![],
     };
 
     let symbol_map = build_symbol_map(&[module.clone()]);
@@ -533,6 +535,7 @@ fn test_nested_type_resolution() -> Result<(), String> {
             body: vec![],
             doc_comment: None,
         }],
+        consts: vec![],
     };
 
     let symbol_map = build_symbol_map(&[module.clone()]);
@@ -601,6 +604,7 @@ fn test_expr_and_stmt_resolution() -> Result<(), String> {
             })],
             doc_comment: None,
         }],
+        consts: vec![],
     };
 
     let symbol_map = build_symbol_map(&[module.clone()]);

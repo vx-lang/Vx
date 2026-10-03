@@ -330,6 +330,10 @@ pub enum DiagnosticCode {
     /// calls `iter()` for `for x in &c` and `iter_mut()` for `for x in &mut c`, as Rust's
     /// collections do, so the type needs the one the loop asks for.
     E3043,
+    /// A top-level `const` whose value is not known while compiling, or does not fit its
+    /// declared type. A `const` holds a number or a `bool`: a literal, or arithmetic on
+    /// literals and other `const`s.
+    E3044,
 
     // --- Borrow/Ownership Errors (E4xxx) ---
     /// Use of moved or consumed linear variable

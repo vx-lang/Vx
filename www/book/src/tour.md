@@ -23,6 +23,16 @@ wants one; you write the conversion. Integer literals infer to the type the cont
 This is deliberate — silent widening is a common source of both bugs and unintended performance
 cliffs.
 
+A `const` at the top level names a value known while compiling. Its type is required, and each use
+is replaced by the value:
+
+```rust
+const SIDES : i32 = 6;
+const EDGES : i32 = SIDES * 2;
+```
+
+The value is a number or a `bool`: a literal, or arithmetic on literals and other `const`s.
+
 ## Functions
 
 ```rust

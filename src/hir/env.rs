@@ -119,6 +119,9 @@ pub struct GlobalAstEnv<'a> {
     /// whole compiler by self time. Every use in the checker is a `&self` read, so there is nothing
     /// per-function about it.
     pub transfer_cost_graph: crate::arch::TransferCostGraph,
+    /// Top-level `const` items of every module, by name. A use of one is replaced by its value
+    /// where the checker resolves the name.
+    pub consts: HashMap<crate::symbol::Symbol, &'a crate::syntax::ConstDecl>,
 }
 
 impl<'a> GlobalAstEnv<'a> {
@@ -144,6 +147,7 @@ impl<'a> GlobalAstEnv<'a> {
             externs: Vec::new(),
             return_provenances: HashMap::new(),
             transfer_cost_graph: crate::arch::TransferCostGraph::default(),
+            consts: HashMap::new(),
         };
 
         for &module in modules {
@@ -180,6 +184,17 @@ impl<'a> GlobalAstEnv<'a> {
             }
             for e in &module.enums {
                 env.enums.insert(e.name.clone(), e);
+            }
+            for c in &module.consts {
+                if let Some(prev) = env.consts.insert(c.name.clone(), c) {
+                    if prev != c {
+                        env.duplicate_decls.push(DuplicateDecl {
+                            kind: "const",
+                            name: c.name.clone(),
+                            module: module.module_path.clone(),
+                        });
+                    }
+                }
             }
             for t in &module.traits {
                 env.traits.insert(t.name.clone(), t);
