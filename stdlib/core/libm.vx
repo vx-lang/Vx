@@ -1663,3 +1663,175 @@ fn libm_exp2_bf16(x : bf16) -> bf16 {
 fn libm_expm1_bf16(x : bf16) -> bf16 {
   return libm_bf16_from_f32(libm_expm1f(libm_f32_from_bf16(x)));
 }
+
+/// `sinh(x)` (`is_sinh`) or `cosh(x)` of an f32, before rounding: `exp_pm_eval` from
+/// `sinhfcoshf_utils.h`. With `x = (hi + mid) * log(2) + lo`, `mid` a multiple of 1/32, `e^x`
+/// and `e^-x` share one reduction: `2^(hi + mid)` and `2^-(hi + mid)` from `EXP_2_MID`, and the
+/// even and odd halves of a degree-5 polynomial for `e^lo` and `e^-lo`.
+fn libm_exp_pm_eval(x : f32, is_sinh : bool) -> f64 {
+  let xd = x as f64;
+  // k = round(x * log2(e) * 2^5)
+  let kd = libm_round_even_f64(libm_f64_from_bits(4631694138158056190u64) * xd); // 0x1.71547652b82fep+5
+  let k_p = kd as i32;
+  let k_m = -k_p;
+  let exp_hi_p = ((k_p >> 5) as i64) << 52;
+  let exp_hi_m = ((k_m >> 5) as i64) << 52;
+  let mh_p = libm_f64_from_bits((LIBM_EXP_2_MID[(k_p & 31) as i64] + exp_hi_p) as u64);
+  let mh_m = libm_f64_from_bits((LIBM_EXP_2_MID[(k_m & 31) as i64] + exp_hi_m) as u64);
+  let mh_sum = mh_p + mh_m;
+  let mh_diff = mh_p - mh_m;
+  // lo = x - (hi + mid) * log(2), with log(2) / 32 in two parts.
+  let dx = libm_multiply_add(kd, libm_f64_from_bits(13631542416105159482u64), libm_multiply_add(kd, libm_f64_from_bits(13805272573031350272u64), xd)); // -0x1.cf79abc9e3b3ap-45, -0x1.62e42fefa0000p-6
+  let dx2 = dx * dx;
+  let p_even = libm_multiply_add(dx2, libm_multiply_add(dx2, libm_f64_from_bits(4581662050259519668u64), libm_f64_from_bits(4598175219545168840u64)), 0.5); // 0x1.5555c2a9b48b4p-6, 0x1.ffffffffe5bc8p-3
+  let p_odd = libm_multiply_add(dx2, libm_multiply_add(dx2, libm_f64_from_bits(4571453868464098267u64), libm_f64_from_bits(4590669220166356327u64)), 0.5); // 0x1.11112a0e34bdbp-8, 0x1.555555555cd67p-4
+  if is_sinh {
+    return libm_multiply_add(dx * mh_sum, p_odd, p_even * mh_diff);
+  }
+  return libm_multiply_add(dx * mh_diff, p_odd, p_even * mh_sum);
+}
+
+/// `x` rounded to the nearest integer, ties to even, in double precision.
+fn libm_round_even_f64(x : f64) -> f64 {
+  return mlir!( inputs : (%x = x : f64), returns : f64, dialects : ["math"]) {
+    %r = math.roundeven %x : f64
+    macro.yield %r : f64
+  };
+}
+
+/// The hyperbolic sine, correctly rounded: `sinhf` from `sinhf.h`. Near zero a polynomial;
+/// otherwise `libm_exp_pm_eval`.
+fn libm_sinhf(x : f32) -> f32 {
+  let x_abs = libm_f32_to_bits(x) & 2147483647u32; // 0x7fffffff
+  // |x| >= 90, NaN, or |x| <= 0.078125
+  if x_abs >= 1119092736u32 || x_abs <= 1033895936u32 { // 0x42b40000, 0x3da00000
+    if x_abs <= 1033895936u32 { // 0x3da00000
+      // An input where the polynomial below would round the wrong way.
+      if x_abs == 974292479u32 { // 0x3a1285ff
+        return x;
+      }
+      let xdbl = x as f64;
+      // |x| <= 2^-26
+      if x_abs <= 847249408u32 { // 0x32800000
+        if x_abs == 0u32 {
+          return x;
+        }
+        return libm_multiply_add(0.25 * xdbl * xdbl, xdbl, xdbl) as f32;
+      }
+      let x2 = xdbl * xdbl;
+      let pe = libm_multiply_add(x2, libm_multiply_add(x2, libm_multiply_add(x2, libm_f64_from_bits(4551453352550203708u64), libm_f64_from_bits(4575957461317689119u64)), libm_f64_from_bits(4595172819793700227u64)), 0.0); // 0x1.a02b5a284013cp-13, 0x1.111110d239f1fp-7, 0x1.5555555556583p-3
+      return libm_multiply_add(xdbl, pe, xdbl) as f32;
+    }
+    // NaN: quiet.
+    if x_abs > 2139095040u32 { // 0x7f800000
+      return x + 1.0;
+    }
+    // Infinity, or overflow to it.
+    if x_abs == 2139095040u32 { // 0x7f800000
+      return x;
+    }
+    return x + libm_f32_from_bits((libm_f32_to_bits(x) & 2147483648u32) | 2139095040u32); // 0x80000000, 0x7f800000
+  }
+  return libm_exp_pm_eval(x, true) as f32;
+}
+
+/// The hyperbolic cosine, correctly rounded: `coshf` from `coshf.h`.
+fn libm_coshf(x0 : f32) -> f32 {
+  let x_u = libm_f32_to_bits(x0) & 2147483647u32; // 0x7fffffff
+  let x = libm_f32_from_bits(x_u);
+  // |x| >= 90, NaN, or |x| <= 2^-26
+  if x_u >= 1119092736u32 || x_u <= 847249408u32 { // 0x42b40000, 0x32800000
+    if x_u <= 847249408u32 { // 0x32800000
+      return 1.0 + x;
+    }
+    return x + libm_f32_from_bits(2139095040u32); // 0x7f800000
+  }
+  return libm_exp_pm_eval(x, false) as f32;
+}
+
+/// The hyperbolic tangent, correctly rounded: `tanhf` from `tanhf.h`. Near zero a Taylor
+/// polynomial; otherwise `(e^2x - 1) / (e^2x + 1)` written as `(r - mh) / (r + mh)` with
+/// `mh = 2^-(hi + mid)` and `r` a polynomial for `e^2lo`.
+fn libm_tanhf(x : f32) -> f32 {
+  let x_abs = libm_f32_to_bits(x) & 2147483647u32; // 0x7fffffff
+  // |x| >= 15, NaN, or |x| <= 0.078125
+  if x_abs >= 1097859072u32 || x_abs <= 1033895936u32 { // 0x41700000, 0x3da00000
+    if x_abs <= 1033895936u32 { // 0x3da00000
+      let xdbl = x as f64;
+      // |x| <= 2^-26
+      if x_abs <= 847249408u32 { // 0x32800000
+        if x_abs == 0u32 {
+          return x;
+        }
+        return libm_multiply_add(-(libm_f64_from_bits(4599676419421066581u64) * xdbl * xdbl), xdbl, xdbl) as f32; // 0x1.5555555555555p-2
+      }
+      let x2 = xdbl * xdbl;
+      let x4 = x2 * x2;
+      let c0 = x2 * libm_f64_from_bits(13823048456275842389u64); // -0x1.5555555555555p-2
+      let c1 = libm_multiply_add(x2, libm_f64_from_bits(13811310502961330716u64), libm_f64_from_bits(4593971859893063953u64)); // -0x1.ba1ba1ba1ba1cp-5, 0x1.1111111111111p-3
+      let c2 = libm_multiply_add(x2, libm_f64_from_bits(13799634966057239101u64), libm_f64_from_bits(4581960672315445498u64)); // -0x1.226e355e6c23dp-7, 0x1.664f4882c10fap-6
+      let pe = libm_multiply_add(x4, libm_multiply_add(x4, c2, c1), c0);
+      return libm_multiply_add(xdbl, pe, xdbl) as f32;
+    }
+    // NaN: quiet.
+    if x_abs > 2139095040u32 { // 0x7f800000
+      return x + 1.0;
+    }
+    if (libm_f32_to_bits(x) >> 31u32) == 1u32 {
+      return -1.0;
+    }
+    return 1.0;
+  }
+  let xd = x as f64;
+  let k = libm_round_even_f64(xd * libm_f64_from_bits(4636197737785426686u64)); // 0x1.71547652b82fep+6
+  let mk = -(k as i32);
+  let exp_mhi = ((mk >> 5) as i64) << 52;
+  let mh = libm_f64_from_bits((LIBM_EXP_2_MID[(mk & 31) as i64] + exp_mhi) as u64);
+  let dx = libm_multiply_add(k, libm_f64_from_bits(13627038816477788986u64), libm_multiply_add(k, libm_f64_from_bits(13800768973403979776u64), xd)); // -0x1.cf79abc9e3b3ap-46, -0x1.62e42fefa0000p-7
+  let dx2 = dx * dx;
+  let c0 = libm_multiply_add(dx, 2.0, 1.0);
+  let c1 = libm_multiply_add(dx, libm_f64_from_bits(4608683618675838311u64), libm_f64_from_bits(4611686018427280328u64)); // 0x1.555555555cd67p0, 0x1.ffffffffe5bc8p0
+  let c2 = libm_multiply_add(dx, libm_f64_from_bits(4598475466228321243u64), libm_f64_from_bits(4604180048396372148u64)); // 0x1.11112a0e34bdbp-2, 0x1.5555c2a9b48b4p-1
+  let r = libm_multiply_add(dx2, libm_multiply_add(dx2, c2, c1), c0);
+  return ((r - mh) / (r + mh)) as f32;
+}
+
+fn libm_sinhf16(x : f16) -> f16 {
+  // x = 0x1.3c8p+1
+  if libm_f16_to_bits(x) == 16626u16 {
+    return libm_f16_from_bits(17891u16); // 0x1.78cp+2
+  }
+  // x = -0x1.3c8p+1
+  if libm_f16_to_bits(x) == 49394u16 {
+    return libm_f16_from_bits(50659u16); // -0x1.78cp+2
+  }
+  return libm_sinhf(x as f32) as f16;
+}
+
+fn libm_coshf16(x : f16) -> f16 {
+  // x = 0x1.0p-5
+  if libm_f16_to_bits(x) == 10240u16 {
+    return libm_f16_from_bits(15361u16); // 0x1.004p+0
+  }
+  // x = -0x1.0p-5
+  if libm_f16_to_bits(x) == 43008u16 {
+    return libm_f16_from_bits(15361u16); // 0x1.004p+0
+  }
+  return libm_coshf(x as f32) as f16;
+}
+
+fn libm_tanhf16(x : f16) -> f16 {
+  return libm_tanhf(x as f32) as f16;
+}
+
+fn libm_sinh_bf16(x : bf16) -> bf16 {
+  return libm_bf16_from_f32(libm_sinhf(libm_f32_from_bf16(x)));
+}
+
+fn libm_cosh_bf16(x : bf16) -> bf16 {
+  return libm_bf16_from_f32(libm_coshf(libm_f32_from_bf16(x)));
+}
+
+fn libm_tanh_bf16(x : bf16) -> bf16 {
+  return libm_bf16_from_f32(libm_tanhf(libm_f32_from_bf16(x)));
+}
