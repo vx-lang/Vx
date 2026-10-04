@@ -1647,18 +1647,12 @@ impl<'a> TypeChecker<'a> {
             if !self.env.functions.contains_key(inst_name.as_ref())
                 && !self.mono.functions.iter().any(|(f, _)| f.name == inst_name)
             {
-                // Check the instantiated body in an *isolated* borrow context. It shares
-                // `active_borrows` with the caller otherwise, and a same-named parameter (`m` here,
-                // `m` in the caller) makes the callee's own `&m.field` run the NLL dead-borrow
-                // cleanup against the caller's records with the callee's liveness — wrongly
-                // releasing the caller's live reborrow before the next statement is checked (#268).
-                let saved_borrows = self.borrow.take();
+                // `check_function` checks the body in a borrow table of its own (#268).
                 // An instantiated generic is ordinary code even when the call site sits in
                 // a transfer lowering; the raw:: primitives must not resolve inside it.
                 let saved_edge = self.seam.lowering_edge.take();
                 self.check_function(&mut inst_func);
                 self.seam.lowering_edge = saved_edge;
-                self.borrow.restore(saved_borrows);
                 self.mono.functions.push((inst_func, origin_hash));
             }
             Some(inst_ret)

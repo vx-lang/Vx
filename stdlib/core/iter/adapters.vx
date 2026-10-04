@@ -434,12 +434,7 @@ impl<I : Iterator, St, B> Iterator for Scan<I, St, Closure2<&mut St, I::Item, Op
     }
     let g = self.f;
     let p = g.func;
-    // Through a local: handing `&mut self.state` straight to `p` leaves the checker reporting
-    // `self` as still borrowed in other adaptors' methods.
-    let mut state = self.state;
-    let out = p(g.env, &mut state, step.unwrap());
-    self.state = state;
-    return out;
+    return p(g.env, &mut self.state, step.unwrap());
   }
 }
 
