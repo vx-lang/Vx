@@ -512,6 +512,11 @@ pub enum DiagnosticCode {
     /// depth is not known at compile time, so the true peak is unbounded and the placement is
     /// refused conservatively. Downgraded to W1028 when the space is declared `overcommit`.
     E6028,
+    /// A pointer argument into one memory passed to a parameter that wants a pointer into another:
+    /// a host `*mut f32` where `*mut f32 in Memory::GPU_HBM` is declared, or the reverse. The two
+    /// are different types, and the C library or kernel behind the parameter reads the memory the
+    /// declaration names, so the spaces must match exactly.
+    E6029,
 
     // --- Tensor/Math Errors (E7xxx) ---
     /// Matmul dimension mismatch

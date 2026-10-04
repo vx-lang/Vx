@@ -58,13 +58,13 @@ what a library such as cuBLAS takes for a device buffer.
 Host code may hold such a pointer and pass it on, but cannot read or write what it points at,
 inside `unsafe` or not: the CPU has no way to load from GPU memory. `*p`, `p[i]` and `p.field` are
 refused with E6003 wherever the running topology cannot see the pointer's memory, and allowed in a
-block running where it can.
+block running where it can. Passing a pointer where a pointer into a different memory is expected
+is E6029, at a call to a C function and to a Vx function alike.
 
 > [!NOTE]
 > **Partly implemented.** The spelling type-checks and lowers, `t.as_ptr()` on a tensor gives a
 > pointer to its first element in the tensor's memory, and a read through a pointer is checked
-> against where the program runs. A diagnostic of its own for passing a pointer into the wrong
-> memory, and code generation for `as_ptr()`, are the later parts of issue #742.
+> against where the program runs. Code generation for `as_ptr()` is the later part of issue #742.
 
 ### The `Ref<T, Memory>` Type
 

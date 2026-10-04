@@ -954,6 +954,32 @@ impl<'a> TypeChecker<'a> {
                 && arg_ty != Type::Unknown
                 && !self.speculating
             {
+                // Two pointers to the same thing in different memories: say so, rather than
+                // printing two types that differ only after `in`.
+                if let (Type::Pointer(p_inner, p_place, _), Type::Pointer(a_inner, a_place, _)) =
+                    (param_ty, &arg_ty)
+                {
+                    if p_place != a_place && self.is_assignable(p_inner, a_inner) {
+                        let memory = |place: &Option<crate::syntax::Placement>| match place {
+                            Some(p) => p.as_written(),
+                            None => "host memory".to_string(),
+                        };
+                        self.errors.error_with_code(
+                            crate::diagnostic::DiagnosticCode::E6029,
+                            format!(
+                                "argument {} of '{}' is a pointer into {}, but the parameter \
+                                 wants a pointer into {}: a pointer is only passed where its \
+                                 memory is expected",
+                                i + 1,
+                                callee,
+                                memory(a_place),
+                                memory(p_place),
+                            ),
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                        );
+                        continue;
+                    }
+                }
                 self.errors.error_with_code(
                     crate::diagnostic::DiagnosticCode::E3003,
                     format!(

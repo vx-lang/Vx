@@ -1,0 +1,53 @@
+//===- pointer_passed_into_the_wrong_memory.vx - Vx Compiler -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A pointer into one memory is not a pointer into another. A host `*mut f32`
+// passed where `*mut f32 in Memory::GPU_HBM` is declared, or the reverse, gets
+// E6029, which names the argument and both memories, instead of a general type
+// mismatch that prints two types differing only after `in`.
+//
+// The rule is about the call, not about `extern`: a Vx function taking a device
+// pointer refuses a host pointer the same way. A tensor in an extern signature is
+// a different mistake and keeps its own code, E3022.
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// RUN: not vxc %s 2>&1 | FileCheck %s --check-prefix=COUNT
+// CHECK-DAG: E6029
+// CHECK-DAG: argument 1 of 'vendor_fill' is a pointer into host memory, but the parameter wants a pointer into Memory::GPU_HBM
+// CHECK-DAG: argument 1 of 'host_sum' is a pointer into Memory::GPU_HBM, but the parameter wants a pointer into host memory
+// CHECK-DAG: argument 1 of 'fill_on_device' is a pointer into host memory, but the parameter wants a pointer into Memory::GPU_HBM
+// CHECK-DAG: E3022
+//
+// Three wrong pointers, one per call below; the tensor in `takes_tensor` is E3022, not a fourth.
+// None of the three is also reported as a general type mismatch.
+// COUNT-COUNT-3: wants a pointer into
+// COUNT-NOT: wants a pointer into
+// COUNT-NOT: Type mismatch in argument
+
+extern "C" {
+  fn vendor_fill(data : *mut f32 in Memory::GPU_HBM, n : i32) -> i32;
+  fn host_sum(data : *const f32, n : i32) -> f32;
+  fn takes_tensor(t : Tensor<f32, [4, 4]>) -> i32;
+}
+
+fn fill_on_device(data : *mut f32 in Memory::GPU_HBM, n : i32) -> i32 {
+  let r = unsafe { vendor_fill(data, n) };
+  return r;
+}
+
+fn main() -> i32 {
+  let host_data : Tensor<f32, [4, 4]> = Tensor<f32, [4, 4]>::new();
+  let hp = host_data.as_mut_ptr();
+  let a = unsafe { vendor_fill(hp, 16) };
+  let b = fill_on_device(hp, 16);
+
+  let other : Tensor<f32, [4, 4]> = Tensor<f32, [4, 4]>::new();
+  let on_gpu = transfer(other, Memory::GPU_HBM);
+  let dp = on_gpu.as_ptr();
+  let c = unsafe { host_sum(dp, 16) };
+  return a + b;
+}
