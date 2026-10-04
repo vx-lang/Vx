@@ -144,8 +144,6 @@ const KNOWN_DECLINES: &[&str] = &[
     // `c = c @ b`: the flat path writes a product into its destination, which here is also an
     // operand ("a matmul assignment whose destination may be one of its operands").
     "frontend/pass/tensor_drop_points_reassigned.vx",
-    // A closure that uses a reference to a tensor; it is also on KNOWN_BROKEN.
-    "frontend/pass/tensor_drop_points_with_a_closure.vx",
     // The `vxc -j` fallback fixture: a program the flat path declines, chosen so the parallel
     // frontend has something to hand back to the sequential driver. Same shape as
     // generic_enum_returned_from_match.vx, and it declines for the same reason.
@@ -195,9 +193,6 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
 /// compiler defect; the list exists so the set can only shrink, never silently grow.
 const KNOWN_BROKEN: &[&str] = &[
     "frontend/pass/control_flow_rigorous.vx", // multi-payload variant binding (Vx#233)
-    // A closure that uses a reference to a tensor (Vx#1080). The file checks the checker's
-    // drop points, which do not need the program to compile.
-    "frontend/pass/tensor_drop_points_with_a_closure.vx",
 ];
 
 /// Which codegen path the compiler took for one program, and -- when it fell back -- the reasons

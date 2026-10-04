@@ -8,8 +8,7 @@
 // RUN: env VX_PRINT_DROPS=1 vxc %s --action print-ast 2>&1 >/dev/null | FileCheck %s
 //
 // A closure that uses a reference to a tensor keeps the tensor alive until the closure's
-// last use. (The checker accepts this program; neither code generator can compile a closure
-// that uses a tensor yet.)
+// last use.
 
 fn kept_by_a_closure() -> f32 {
   let a = Tensor<f32, [4]>::new();
@@ -24,4 +23,4 @@ fn main() -> i32 {
   return 0;
 }
 
-// CHECK: drop in kept_by_a_closure: a, after the statement on line 19
+// CHECK: drop in kept_by_a_closure: a, after the statement on line 18
