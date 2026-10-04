@@ -2227,7 +2227,10 @@ impl<'a> TypeChecker<'a> {
             // Type check the instantiated method
             let mut func_to_check = method_func.clone();
             let saved_edge = self.seam.lowering_edge.take();
+            // The body's own `let`s overwrite it, and the caller's `let` still needs it.
+            let saved_target = self.current_assignment_target.take();
             self.check_function(&mut func_to_check);
+            self.current_assignment_target = saved_target;
             self.seam.lowering_edge = saved_edge;
             self.mono.functions.push((func_to_check, 0)); // 0 will fall back to caller_module_idx
         }
@@ -2549,6 +2552,16 @@ impl<'a> TypeChecker<'a> {
                         errors_before_args,
                         &method_span,
                     );
+                    // `w.peek()` passes `&w`, which the rewrite adds and checks only
+                    // speculatively, so it is checked here, as a written `&w` argument would be.
+                    let receiver_borrow = match generic_method.params.first() {
+                        Some((_, Type::Borrow { is_mut, .. }))
+                            if !matches!(base_ty, Type::Borrow { .. } | Type::Pointer(..)) =>
+                        {
+                            Self::arg_reborrow_base(obj).map(|(base, path)| (base, path, *is_mut))
+                        }
+                        _ => None,
+                    };
                     let (ret_ty, func_call) = self.instantiate_method_call_rewrite(
                         generic_method,
                         mapping,
@@ -2569,6 +2582,24 @@ impl<'a> TypeChecker<'a> {
                             let prev: &[BorrowRecord] = snap.as_deref().unwrap_or(&[]);
                             self.borrow.retain_present(base.as_str(), prev);
                         }
+                    }
+                    // A returned reference keeps the receiver borrowed while it is used.
+                    if let Some((base, path, is_mut)) = receiver_borrow {
+                        let keeps_borrow = matches!(ret_ty, Type::Borrow { .. })
+                            && match &func_call {
+                                Expr::FunctionCall(fc) => {
+                                    self.env.return_provenance_of(fc.name.as_ref()).includes(0)
+                                }
+                                _ => true,
+                            };
+                        self.track_reference_arg_borrow(
+                            &base,
+                            path,
+                            is_mut,
+                            Self::is_mut_ref(&ret_ty),
+                            keeps_borrow,
+                            &method_span,
+                        );
                     }
                     *expr = func_call;
                     return ret_ty;

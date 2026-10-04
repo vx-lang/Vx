@@ -1,0 +1,85 @@
+//===- method_call_borrows_its_receiver.vx - Vx Compiler -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// `w.peek()` borrows `w`, as `W::peek(&w)` does. A reference the method returns keeps `w`
+// borrowed while it is used, and a `&mut self` method cannot run while `w` is borrowed.
+import std::vec;
+
+struct W {
+  x : i32,
+}
+
+impl W {
+  fn peek(self : &W) -> &i32 {
+    return &self.x;
+  }
+
+  fn bump(self : &mut W) -> i32 {
+    self.x = self.x + 1i32;
+    return 0i32;
+  }
+}
+
+fn assign_while_a_returned_reference_is_used() -> i32 {
+  let mut w = W {
+    x : 1i32
+  };
+  let r = w.peek();
+  // CHECK: Error[E4009]{{.*}}`w` is assigned while it is borrowed
+  w = W {
+    x : 2i32
+  };
+  return *r;
+}
+
+fn mut_method_while_a_returned_reference_is_used() -> i32 {
+  let mut w = W {
+    x : 1i32
+  };
+  let r = w.peek();
+  // CHECK: Error[E4003]{{.*}}Cannot borrow 'w' as mutable because it is also borrowed as immutable.
+  let _ = w.bump();
+  return *r;
+}
+
+fn mut_method_while_a_field_is_borrowed() -> i32 {
+  let mut w = W {
+    x : 1i32
+  };
+  let r = &w.x;
+  // CHECK: Error[E4003]{{.*}}Cannot borrow 'w' as mutable because it is also borrowed as immutable.
+  let _ = w.bump();
+  return *r;
+}
+
+// Growing the vector frees the buffer `first` points into.
+fn push_while_a_slice_is_used() -> i32 {
+  let mut v = Vec<i32>::new();
+  v.push(1i32);
+  let first = v.as_slice();
+  // CHECK: Error[E4003]{{.*}}Cannot borrow 'v' as mutable because it is also borrowed as immutable.
+  v.push(2i32);
+  return *first;
+}
+
+fn free_while_a_slice_is_used() -> i32 {
+  let mut v = Vec<i32>::new();
+  v.push(1i32);
+  let first = v.as_slice();
+  // CHECK: Error[E4003]{{.*}}Cannot borrow 'v' as mutable because it is also borrowed as immutable.
+  v.free();
+  return *first;
+}
+
+fn main() -> i32 {
+  return assign_while_a_returned_reference_is_used()
+  + mut_method_while_a_returned_reference_is_used() + mut_method_while_a_field_is_borrowed()
+  + push_while_a_slice_is_used() + free_while_a_slice_is_used();
+}
+// CHECK: 5 error(s) emitted
