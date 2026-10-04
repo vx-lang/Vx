@@ -318,6 +318,22 @@ mod tests {
                 )],
             ))
         );
+        // A pointer can say which memory it points into. Saying "host memory" is the same
+        // type as saying nothing, so the two spellings unify.
+        assert_eq!(
+            parse_type_text("*mut f32 in Memory::GPU_HBM"),
+            Some(Type::Pointer(
+                Box::new(Type::Scalar(ElementType::F32)),
+                Some(crate::syntax::Placement::at(
+                    crate::syntax::MemorySpace::GpuHbm
+                )),
+                true
+            ))
+        );
+        assert_eq!(
+            parse_type_text("*const f32 in Memory::CPU_DRAM"),
+            parse_type_text("*const f32")
+        );
         assert_eq!(
             parse_type_text("Option<i32>"),
             Some(Type::GenericInstance(

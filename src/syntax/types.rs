@@ -712,7 +712,10 @@ pub enum Type {
         is_mut: bool,
         region_id: usize,
     }, // (type, mem_space, is_mut, region_id)
-    Pointer(Box<Type>, Option<MemorySpace>, bool), // (type, mem_space, is_mut)
+    /// A raw pointer, and where the memory it points into lives. `None` is host memory, which is
+    /// what a bare `*mut T` means; `*mut T in Memory::GPU_HBM` fills the slot. The placement
+    /// belongs to the pointee: it says where a load through the pointer would read.
+    Pointer(Box<Type>, Option<Placement>, bool), // (type, placement, is_mut)
     Scalar(ElementType),
     Struct(Symbol, Option<crate::gid::TypeId>),
     Enum(Symbol, Option<crate::gid::TypeId>),
@@ -928,6 +931,35 @@ impl Type {
         }
     }
 
+    /// Whether anything inside this type can state a location: a tensor, which carries a
+    /// placement or is given one by a wrapper, or a pointer whose placement is written. This is
+    /// the gate in front of the placement checks, which walk only the types that pass it.
+    pub fn states_a_location(&self) -> bool {
+        match self {
+            Type::Tensor(..) => true,
+            Type::Pointer(inner, place, _) => place.is_some() || inner.states_a_location(),
+            Type::Ref(inner, _)
+            | Type::Borrow { inner, .. }
+            | Type::Verified(inner)
+            | Type::Pinned(inner, _) => inner.states_a_location(),
+            Type::GenericInstance(base, args) => {
+                base.states_a_location() || args.iter().any(Type::states_a_location)
+            }
+            Type::Function(params, ret, _) | Type::Closure(params, ret) => {
+                params.iter().any(Type::states_a_location) || ret.states_a_location()
+            }
+            Type::Module(_, exports) => exports.values().any(Type::states_a_location),
+            Type::Matrix
+            | Type::Scalar(_)
+            | Type::Struct(..)
+            | Type::Enum(..)
+            | Type::Generic(..)
+            | Type::Simd(..)
+            | Type::Const(_)
+            | Type::Unknown => false,
+        }
+    }
+
     /// Every placement written anywhere inside this type, outermost first.
     ///
     /// A placed tensor is reachable through the wrapper types as well as at the top -- a
@@ -938,9 +970,14 @@ impl Type {
             f(p);
         }
         match self {
+            Type::Pointer(inner, place, _) => {
+                if let Some(p) = place {
+                    f(p);
+                }
+                inner.for_each_placement(f);
+            }
             Type::Ref(inner, _)
             | Type::Borrow { inner, .. }
-            | Type::Pointer(inner, _, _)
             | Type::Verified(inner)
             | Type::Pinned(inner, _) => inner.for_each_placement(f),
             Type::GenericInstance(base, args) => {
@@ -1125,11 +1162,11 @@ impl std::fmt::Display for Type {
             Type::Scalar(el) => write!(f, "{}", el),
             Type::Struct(name, _) => write!(f, "{}", name),
             Type::Enum(name, _) => write!(f, "{}", name),
-            Type::Pointer(inner, _, is_mut) => {
-                if *is_mut {
-                    write!(f, "*mut {}", inner)
-                } else {
-                    write!(f, "*const {}", inner)
+            Type::Pointer(inner, place, is_mut) => {
+                write!(f, "{} {}", if *is_mut { "*mut" } else { "*const" }, inner)?;
+                match place {
+                    Some(p) => write!(f, " in {}", p.as_written()),
+                    None => Ok(()),
                 }
             }
             Type::Borrow { inner, is_mut, .. } => {
@@ -1233,8 +1270,14 @@ impl Mangle for Type {
                 el.mangle_to(w)?;
                 write!(w, "${}", n)
             }
-            Type::Pointer(inner, _, is_mut) => {
+            // A pointer into device memory is a different type from a host pointer, and the
+            // legacy code generator lowers the two differently, so they must not share a
+            // monomorph's symbol. A host pointer mangles as it always did.
+            Type::Pointer(inner, place, is_mut) => {
                 write!(w, "ptr${}$", if *is_mut { "mut" } else { "const" })?;
+                if let Some(p) = place {
+                    write!(w, "in${}$", p.space.name())?;
+                }
                 inner.mangle_to(w)
             }
             Type::Borrow { inner, is_mut, .. } => {
@@ -1604,6 +1647,49 @@ mod tests {
         // Topology is intentionally not included in mangling
         assert_eq!(ty_with.mangle(), ty_without.mangle());
         assert_eq!(ty_with.mangle(), "Tensor$f32");
+    }
+
+    /// A pointer into device memory prints its placement, and a host pointer prints none.
+    #[test]
+    fn pointer_display_shows_the_placement() {
+        let f32_ty = || Box::new(Type::Scalar(ElementType::F32));
+        let host = Type::Pointer(f32_ty(), None, true);
+        let device = Type::Pointer(f32_ty(), Some(Placement::at(MemorySpace::GpuHbm)), true);
+        let by_device = Type::Pointer(f32_ty(), Some(Placement::on(Topology::gpu(0))), false);
+        assert_eq!(host.to_string(), "*mut f32");
+        assert_eq!(device.to_string(), "*mut f32 in Memory::GPU_HBM");
+        assert_eq!(by_device.to_string(), "*const f32 in Topology::GPU");
+    }
+
+    /// A host pointer and a device pointer lower differently on the legacy path, so a generic
+    /// instantiated at both needs two symbols. The host pointer keeps its old mangled name.
+    #[test]
+    fn pointer_mangle_separates_host_from_device() {
+        let f32_ty = || Box::new(Type::Scalar(ElementType::F32));
+        let host = Type::Pointer(f32_ty(), None, true);
+        let device = Type::Pointer(f32_ty(), Some(Placement::at(MemorySpace::GpuHbm)), true);
+        assert_eq!(host.mangle(), "ptr$mut$f32");
+        assert_eq!(device.mangle(), "ptr$mut$in$GPU_HBM$f32");
+    }
+
+    /// The placement check only walks types that can state a location. A placed pointer can,
+    /// on its own and under a wrapper, and a bare pointer to a scalar cannot.
+    #[test]
+    fn a_placed_pointer_states_a_location() {
+        let f32_ty = || Box::new(Type::Scalar(ElementType::F32));
+        let placed = Type::Pointer(f32_ty(), Some(Placement::at(MemorySpace::GpuHbm)), true);
+        let bare = Type::Pointer(f32_ty(), None, true);
+        assert!(placed.states_a_location());
+        assert!(!bare.states_a_location());
+        assert!(Type::Verified(Box::new(placed.clone())).states_a_location());
+        assert!(
+            Type::Function(vec![placed.clone()], Box::new(bare.clone()), false).states_a_location()
+        );
+
+        let mut seen = Vec::new();
+        Type::Pointer(Box::new(placed), None, false)
+            .for_each_placement(&mut |p| seen.push(p.as_written()));
+        assert_eq!(seen, vec!["Memory::GPU_HBM".to_string()]);
     }
 
     #[test]

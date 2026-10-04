@@ -39,6 +39,27 @@ the half it did not state, which is why `Placement` records which half the sourc
 > falls back to the like-named device rather than being refused, which is what an undeclared
 > `Topology::X` already does.
 
+### A raw pointer can say which memory it points into
+
+A bare `*mut T` or `*const T` points into host memory. A pointer into another memory writes the
+place after `in`, as a space or as the device that holds it:
+
+```vx
+extern "C" {
+  fn vendor_scale(data : *mut f32 in Memory::GPU_HBM, alpha : *const f32, n : i32) -> i32;
+}
+```
+
+The placement belongs to the pointee: it says where a load through the pointer would read. The
+same rules as a tensor's placement apply to the name after `in`, and `*mut f32 in Memory::CPU_DRAM`
+is the same type as `*mut f32`. At a C call the pointer is passed as an ordinary pointer, which is
+what a library such as cuBLAS takes for a device buffer.
+
+> [!NOTE]
+> **Partly implemented.** The spelling type-checks and lowers. Taking such a pointer from a placed
+> tensor with `as_ptr()`, refusing a host read through it, and a diagnostic of its own for passing a
+> pointer into the wrong memory are the later parts of issue #742.
+
 ### The `Ref<T, Memory>` Type
 
 > [!NOTE]

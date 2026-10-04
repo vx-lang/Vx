@@ -190,7 +190,7 @@ The type system includes primitives, complex types like vectors and tensors, and
 ```ebnf
 type ::= 
     | "&" "mut"? type
-    | "*" ( "mut" | "const" ) type
+    | "*" ( "mut" | "const" ) type ( "in" placement )?
     | "Verified" "<" type ">"
     | "Pinned" "<" type "," topology ">"
     | "<" number "x" element_type ">"          // a SIMD vector, spelled as LLVM spells it

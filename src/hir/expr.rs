@@ -626,7 +626,7 @@ impl<'a> TypeChecker<'a> {
                 ..
             } = source
             {
-                if target_mem == source_mem
+                if target_mem.as_ref().map(|p| &p.space) == source_mem.as_ref()
                     && (!*target_mut || *source_mut)
                     && self.is_assignable(target_inner, source_inner)
                 {

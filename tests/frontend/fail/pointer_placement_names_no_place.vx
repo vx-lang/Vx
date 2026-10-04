@@ -1,0 +1,49 @@
+//===- pointer_placement_names_no_place.vx - Vx Compiler ---------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The placement after `in` on a raw pointer has to name a place the machine has,
+// the same rule a tensor's placement follows. Written as a space, some declared
+// topology must hold it; written as a device, that topology must be declared.
+//
+// Every position a pointer type can be written in is covered: a parameter and a
+// return type come from the function table, a field from the struct table, and a
+// `let` annotation from the statement walk.
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// RUN: not vxc %s 2>&1 | FileCheck %s --check-prefix=COUNT
+// CHECK-DAG: E6025
+// CHECK-DAG: `Memory::Nowhere` in field 'absent' of struct 'Holder'
+// CHECK-DAG: `Topology::Nowhere` in function 'as_a_device'
+// The parameter and the return type of `in_every_position` are reported separately.
+// CHECK-DAG: `Memory::Nowhere` in function 'in_every_position'
+// CHECK-DAG: `Memory::Nowhere` in function 'in_every_position'
+// CHECK-DAG: `Memory::Nowhere` in variable 'annotated'
+//
+// Five diagnostics, one per bad placement, and none for the good ones.
+// COUNT-COUNT-5: names no location
+// COUNT-NOT: names no location
+
+struct Holder {
+  absent : *mut f32 in Memory::Nowhere,
+  present : *mut f32 in Memory::GPU_HBM,
+}
+
+fn as_a_device(_p : *mut f32 in Topology::Nowhere) -> void {
+}
+
+fn in_every_position(p : *mut f32 in Memory::Nowhere) -> *mut f32 in Memory::Nowhere {
+  let annotated : *mut f32 in Memory::Nowhere = p;
+  return annotated;
+}
+
+// A built-in space needs no declaration.
+fn builtin_is_fine(_p : *const f32 in Memory::GPU_HBM) -> void {
+}
+
+fn main() -> i32 {
+  return 0;
+}

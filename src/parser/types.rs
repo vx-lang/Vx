@@ -182,7 +182,15 @@ impl<'a> Parser<'a> {
                 return Err(self.error("Expected 'mut' or 'const' after '*'"));
             };
             let inner = self.parse_type()?;
-            Ok(Type::Pointer(Box::new(inner), None, is_mut))
+            // `*mut f32 in Memory::GPU_HBM` points into device memory. A bare pointer points into
+            // host memory, and so does one that says so: the two spellings are one type.
+            let place = if self.match_token(&TokenType::In) {
+                let p = self.parse_placement()?;
+                (p.space != MemorySpace::CPUDRAM).then_some(p)
+            } else {
+                None
+            };
+            Ok(Type::Pointer(Box::new(inner), place, is_mut))
         } else if self.match_token(&TokenType::LeftParen) {
             // `(A, B)`, a tuple, or `(A)`, a type in brackets.
             let mut elems = vec![self.parse_type()?];

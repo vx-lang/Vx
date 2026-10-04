@@ -29,10 +29,11 @@ impl TypeChecker<'_> {
     /// this, but it has no diagnostic channel -- an unresolved struct name is carried forward
     /// unreported there too, for the checker to find.
     ///
-    /// Only a type that mentions a tensor can state a location, so that is asked first, before
-    /// a clone, a string or a sort. This runs on the serial spine once per compile, and on a
-    /// 16,000-function program with no placements at all it was 90 ms of it: building and
-    /// sorting 27,000 sites, then walking 90,000 types and finding nothing in any of them.
+    /// Only a type that mentions a tensor or a placed pointer can state a location, so that is
+    /// asked first, before a clone, a string or a sort. This runs on the serial spine once per
+    /// compile, and on a 16,000-function program with no placements at all it was 90 ms of it:
+    /// building and sorting 27,000 sites, then walking 90,000 types and finding nothing in any
+    /// of them.
     pub fn check_placements_name_a_place(&mut self) {
         // Sorted, because both tables are HashMaps and this reports per declaration: an unsorted
         // walk would emit the same diagnostics in a different order on every run.
@@ -43,7 +44,7 @@ impl TypeChecker<'_> {
                 .iter()
                 .map(|(_, t)| t)
                 .chain(std::iter::once(&f.return_type))
-                .filter(|t| t.mentions_tensor())
+                .filter(|t| t.states_a_location())
                 .cloned()
                 .collect();
             if !tys.is_empty() {
@@ -52,7 +53,7 @@ impl TypeChecker<'_> {
         }
         for (name, s) in &self.env.structs {
             for (field, ty) in &s.fields {
-                if ty.mentions_tensor() {
+                if ty.states_a_location() {
                     sites.push((
                         format!("field '{field}' of struct '{name}'"),
                         vec![ty.clone()],

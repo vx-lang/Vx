@@ -2636,7 +2636,10 @@ impl<'a> TypeChecker<'a> {
                                     "Cannot get mutable pointer from immutable borrow".to_string(),
                                 );
                             }
-                            base_ty = Type::Pointer(inner.clone(), mem.clone(), is_mut);
+                            let place = mem
+                                .as_ref()
+                                .map(|m| crate::syntax::Placement::at(m.clone()));
+                            base_ty = Type::Pointer(inner.clone(), place, is_mut);
                         }
                         Type::Pointer(_, _, _) => {
                             self.errors.push("Already a pointer".to_string());

@@ -166,9 +166,14 @@ impl Type {
                     p.resolve_names(scope);
                 }
             }
+            Type::Pointer(inner, place, _) => {
+                inner.resolve_names(scope);
+                if let Some(p) = place {
+                    p.resolve_names(scope);
+                }
+            }
             Type::Ref(inner, _)
             | Type::Borrow { inner, .. }
-            | Type::Pointer(inner, _, _)
             | Type::Verified(inner)
             | Type::Pinned(inner, _) => {
                 inner.resolve_names(scope);

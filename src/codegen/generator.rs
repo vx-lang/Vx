@@ -1670,12 +1670,12 @@ impl<'c> MeliorGenerator<'c> {
                 let inner_ty_str = self.lower_type(inner)?.to_string();
                 inner_ty_str
             }
-            syntax::Type::Borrow {
-                inner,
-                mem_space: mem,
-                ..
-            }
-            | syntax::Type::Pointer(inner, mem, _) => {
+            syntax::Type::Borrow { inner, .. } | syntax::Type::Pointer(inner, _, _) => {
+                let mem: Option<&syntax::MemorySpace> = match ty {
+                    syntax::Type::Borrow { mem_space, .. } => mem_space.as_ref(),
+                    syntax::Type::Pointer(_, place, _) => place.as_ref().map(|p| &p.space),
+                    _ => unreachable!(),
+                };
                 let inner_str = self.lower_type_str(inner)?;
                 if inner_str.starts_with("memref<") {
                     // A borrowed tensor is the slot holding its descriptor, and every tensor
@@ -1687,7 +1687,7 @@ impl<'c> MeliorGenerator<'c> {
                     // A space with no honest target mapping (an undeclared custom space, or one
                     // whose declaration gives no `scope:`) is an error, not a silent fallback --
                     // the old code answered "4", NVPTX read-only constant memory (#258).
-                    let addr_space = match mem.as_ref() {
+                    let addr_space = match mem {
                         None => crate::arch::AddressSpace::Host,
                         Some(m) => crate::arch::declared_address_space(m, self.memories.get(m))
                             .ok_or_else(|| LowerError::from(unmappable_space_message(m)))?,
