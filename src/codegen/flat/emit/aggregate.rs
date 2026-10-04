@@ -53,9 +53,20 @@ impl FnEmit<'_> {
         // `Tensor<f32>()` for a `[?, ?]` field, which the checker admits) has no descriptor the
         // field can hold, and no pass folds the cast, so the function declines.
         let val = match self.mem_of.get(ins.operand2.0 as usize).cloned().flatten() {
-            Some(memty) => {
+            Some(mut memty) => {
                 if memref_rank(&memty) != descriptor_rank(&fty) {
                     return Err(crate::emitter_gap!());
+                }
+                // A row is a strided view whose offset is in its descriptor, and the field is
+                // read back as a plain memref, which takes the offset to be 0. Fold the offset
+                // into the data pointer first, or the field reads the tensor's first row.
+                let mut val = val;
+                if memty.contains("strided<") {
+                    let (dims, et) =
+                        memref_lead_dims_and_elem(&memty).ok_or(crate::emitter_gap!())?;
+                    let plain = format!("memref<{dims}{et}>");
+                    val = self.cast_memref_value(&format!("fr{idx}"), &val, &memty, &plain)?;
+                    memty = plain;
                 }
                 let d = format!("%fd{idx}");
                 self.body += &format!(

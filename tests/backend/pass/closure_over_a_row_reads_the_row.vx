@@ -1,0 +1,32 @@
+//===- closure_over_a_row_reads_the_row.vx - Vx Compiler ---------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// REQUIRES: flat-codegen
+// RUN: vxc %s 2>&1 | FileCheck %s
+//
+// A closure that uses a row reads that row. The closure keeps the row in a struct field that
+// is read back as a plain tensor, so the row's offset has to be folded into its data pointer
+// first; it was not, and the closure read row 0. (`--legacy-codegen` cannot yet build a
+// closure that uses a tensor at all.)
+
+fn main() -> i32 {
+  let mut q = Tensor<f32, [2, 4]>::new();
+  q[0][2] = 3.0;
+  q[1][2] = 4.0;
+  let r0 = q[0];
+  let r1 = q[1];
+  let f = || r0[2] * 10.0 + r1[2];
+  print(f());
+  print!(" ");
+  let mut t = Tensor<f32, [4]>::new();
+  t[1] = 5.0;
+  let g = || t[1];
+  print(g());
+  return 0;
+}
+
+// CHECK: 34 5
