@@ -1635,7 +1635,7 @@ impl<'c> MeliorGenerator<'c> {
                     ElementType::F64 => self.f64_ty,
                     ElementType::BF16 => self.bf16_ty,
                     ElementType::I32 | ElementType::U32 => self.i32_ty,
-                    ElementType::I64 | ElementType::U64 => self.i64_ty,
+                    ElementType::I64 | ElementType::U64 | ElementType::USize => self.i64_ty,
                     ElementType::I4 | ElementType::U4 => self.i4_ty,
                     ElementType::I8 | ElementType::U8 => self.i8_ty,
                     ElementType::I16 | ElementType::U16 => self.i16_ty,
@@ -1876,7 +1876,7 @@ impl<'c> MeliorGenerator<'c> {
                     ElementType::I8 | ElementType::U8 => "i8",
                     ElementType::I16 | ElementType::U16 => "i16",
                     ElementType::I32 | ElementType::U32 => "i32",
-                    ElementType::I64 | ElementType::U64 => "i64",
+                    ElementType::I64 | ElementType::U64 | ElementType::USize => "i64",
                     ElementType::I128 | ElementType::U128 => "i128",
                     ElementType::Bool => "i1",
                     ElementType::F8E4M3 | ElementType::F8E5M2 | ElementType::F4E2M1 => {
@@ -1974,7 +1974,7 @@ impl<'c> MeliorGenerator<'c> {
             ElementType::I8 | ElementType::U8 => "i8",
             ElementType::I16 | ElementType::U16 => "i16",
             ElementType::I32 | ElementType::U32 => "i32",
-            ElementType::I64 | ElementType::U64 => "i64",
+            ElementType::I64 | ElementType::U64 | ElementType::USize => "i64",
             ElementType::I128 | ElementType::U128 => "i128",
             ElementType::Bool => "i1",
             ElementType::F8E4M3 | ElementType::F8E5M2 | ElementType::F4E2M1 => {

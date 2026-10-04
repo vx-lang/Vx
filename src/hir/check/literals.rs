@@ -186,7 +186,9 @@ impl<'a> TypeChecker<'a> {
     /// type. A suffixed literal already carries its type and is returned unchanged.
     pub(crate) fn check_number_literal(&mut self, n: &mut NumberExpr) -> Type {
         if let Some(el) = &n.ty {
-            return Type::Scalar(el.clone());
+            let el = el.clone();
+            self.check_usize_literal(n, &el);
+            return Type::Scalar(el);
         }
         let elem = self
             .expected_type
@@ -194,7 +196,30 @@ impl<'a> TypeChecker<'a> {
             .and_then(|t| expected_numeric_elem(t, &n.value))
             .unwrap_or_else(|| crate::parser::expr::default_number_elem(&n.value));
         n.ty = Some(elem.clone());
+        self.check_usize_literal(n, &elem);
         Type::Scalar(elem)
+    }
+
+    /// A `usize` never has its top bit set, which is what lets its arithmetic be marked as
+    /// never wrapping, so a literal past the largest `i64` is refused rather than stored.
+    pub(crate) fn check_usize_literal(&mut self, n: &NumberExpr, elem: &ElementType) {
+        if *elem != ElementType::USize
+            || self.speculating
+            || elem.accepts_integer_literal(n.value.as_ref()) != Some(false)
+        {
+            return;
+        }
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E3045,
+            format!(
+                "{} does not fit `usize`, which holds 0 up to {}",
+                n.value,
+                i64::MAX
+            ),
+            // A number literal has no span of its own: spans take part in comparing types,
+            // and a literal is also a tensor dimension.
+            None,
+        );
     }
 
     /// The tensor an operand denotes, seen through the wrappers that do not

@@ -335,6 +335,8 @@ pub enum DiagnosticCode {
     /// literals and other `const`s. A `const` table holds a list of number literals, and is
     /// read one number at a time, as `TABLE[i]`.
     E3044,
+    /// A number literal that does not fit `usize`, which holds 0 up to the largest `i64`.
+    E3045,
 
     // --- Borrow/Ownership Errors (E4xxx) ---
     /// Use of moved or consumed linear variable

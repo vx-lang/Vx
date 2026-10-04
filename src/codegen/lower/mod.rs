@@ -389,6 +389,21 @@ fn is_plain_scalar(text: &str) -> bool {
     parse_scalar_type(text).is_some()
 }
 
+/// One type argument of a monomorphized name, `usize` in `Vec<usize>`: a number is a
+/// const-generic argument, and anything else is read by the type parser.
+pub(crate) fn parse_type_arg(text: &str) -> syntax::Type {
+    let text = text.trim();
+    if !text.is_empty() && text.chars().all(|c| c.is_ascii_digit()) {
+        return syntax::Type::Const(Box::new(syntax::Expr::Number(
+            syntax::expr::NumberExpr::new(text.to_string(), None, syntax::Span::default()),
+        )));
+    }
+    let tokens = crate::lexer::Lexer::new(text).tokenize();
+    crate::parser::Parser::new(&tokens, text)
+        .parse_type()
+        .unwrap_or_else(|_| syntax::Type::Struct(text.to_string().into(), None))
+}
+
 /// The syntax type a plain scalar name stands for.
 fn parse_scalar_type(text: &str) -> Option<syntax::Type> {
     let mut lexer = crate::lexer::Lexer::new(text);
@@ -1251,7 +1266,7 @@ pub(crate) fn lower_raw_primitive<'c>(
                         ElementType::I8 | ElementType::U8 => "i8",
                         ElementType::I16 | ElementType::U16 => "i16",
                         ElementType::I32 | ElementType::U32 => "i32",
-                        ElementType::I64 | ElementType::U64 => "i64",
+                        ElementType::I64 | ElementType::U64 | ElementType::USize => "i64",
                         other => {
                             return Err(LowerError::from(format!(
                                 "raw:: has no lowering for {other:?} tiles"

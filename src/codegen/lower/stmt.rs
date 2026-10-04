@@ -281,20 +281,7 @@ fn generic_arg_mapping(
     let inner = &resolved_struct_name[lt + 1..resolved_struct_name.len() - 1];
     let inner_tys: Vec<Type> = crate::syntax::split_type_args(inner)
         .into_iter()
-        .map(|raw| {
-            let a = raw.trim();
-            match a {
-                "i32" => Type::Scalar(syntax::ElementType::I32),
-                "f32" => Type::Scalar(syntax::ElementType::F32),
-                "i64" => Type::Scalar(syntax::ElementType::I64),
-                _ if !a.is_empty() && a.chars().all(|c| c.is_ascii_digit()) => {
-                    Type::Const(Box::new(syntax::Expr::Number(
-                        syntax::expr::NumberExpr::new(a.to_string(), None, syntax::Span::default()),
-                    )))
-                }
-                _ => Type::Struct(a.to_string().into(), None),
-            }
-        })
+        .map(crate::codegen::lower::parse_type_arg)
         .collect();
     for (i, param) in generics.iter().enumerate() {
         if let Some(ty) = inner_tys.get(i) {
