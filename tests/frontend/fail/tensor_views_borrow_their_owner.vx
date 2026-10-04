@@ -192,6 +192,26 @@ fn reference_assigned() -> f32 {
   return r2[0][0] + s;
 }
 
+// The same row twice, both able to write.
+fn same_row_twice() -> f32 {
+  let mut q = Tensor<f32, [2, 4]>::new();
+  let mut a = q[0];
+  let mut b = q[0];
+  a[0] = 1.0;
+  b[0] = 2.0;
+  return a[0];
+}
+
+// A row at an index that is not a constant may be any row.
+fn row_at_an_unknown_index(i : i32) -> f32 {
+  let mut q = Tensor<f32, [2, 4]>::new();
+  let mut a = q[1];
+  let mut b = q[i];
+  a[0] = 1.0;
+  b[0] = 2.0;
+  return a[0];
+}
+
 fn main() -> i32 {
   return 0;
 }
@@ -215,3 +235,5 @@ fn main() -> i32 {
 // CHECK-DAG: Error[E4007] at 170:16: `q` is moved while it is borrowed
 // CHECK-DAG: Error[E4007] at 180:16: `q` is moved while it is borrowed
 // CHECK-DAG: Error[E4007] at 191:16: `q` is moved while it is borrowed
+// CHECK-DAG: Error[E4004] at 199:3: Cannot borrow 'q' because it is already borrowed as mutable.
+// CHECK-DAG: Error[E4004] at 209:3: Cannot borrow 'q' because it is already borrowed as mutable.

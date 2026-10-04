@@ -152,6 +152,9 @@ print(q[1][0]);     // fine: r is not used again
   borrowed for as long as the closure is used.
 - A view declared `mut` is a `&mut` borrow, and its owner must be `mut` (E4010). Any other view
   is a `&` borrow, so two of them can be used together.
+- Rows at different constant indices are different places: `q[0]` and `q[1]` can both be `mut`
+  views at once. A row at an index that is not a constant, `q[i]`, may be any row, so it
+  overlaps every other.
 - The owner cannot be moved (E4007), assigned (E4009) or, under a `mut` view, read (E4002) while
   the view is still going to be used. As with `&`, the borrow ends at the view's last use.
 - A view of a tensor the function owns, a local or a parameter taken by value, cannot be
@@ -173,13 +176,6 @@ at the end of its block. Freeing at the last use is only safe if the checker see
 a free that comes too early is a borrow checker bug, not a rule for the programmer to remember.
 The checker tells a view from an owner by where the value came from, since both have the type
 `Tensor`; a separate view type (#400) may replace this later.
-
-**Not checked yet.** These views are still invisible to the checker, or refused when they need
-not be:
-
-| Case | Issue |
-| --- | --- |
-| Two `mut` rows of different indices, refused because indices are not told apart | #1060 |
 
 ## Linear values
 

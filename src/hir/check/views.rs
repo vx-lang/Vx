@@ -75,7 +75,7 @@ impl<'a> TypeChecker<'a> {
         match expr {
             Expr::Identifier(id) => self.borrow.views.get(id.name.as_ref()).cloned(),
             Expr::IndexAccess(_) | Expr::MemberAccess(_) => {
-                let (root, path) = Self::extract_base_and_path(expr)?;
+                let (root, path) = Self::view_place(expr)?;
                 Some(self.view_into(root, path))
             }
             Expr::MethodCall(mc) if mc.method_name.as_ref() == "reshape" => match &*mc.base {
@@ -93,6 +93,53 @@ impl<'a> TypeChecker<'a> {
                     .flat_map(|a| self.tail_views(&a.body, ty))
                     .collect(),
             ),
+            _ => None,
+        }
+    }
+
+    /// The variable a field or index chain starts from, and the path inside it. A constant
+    /// index is a step of the path (`[1]`), so `q[0]` and `q[1]` are told apart. Any other index
+    /// ends the path there: the view may be any part below it.
+    pub(crate) fn view_place(expr: &Expr) -> Option<(String, Vec<String>)> {
+        match expr {
+            Expr::Identifier(id) => Some((id.name.to_string(), Vec::new())),
+            Expr::MemberAccess(m) => {
+                let (root, mut path, open) = Self::view_place_steps(&m.base)?;
+                if open {
+                    path.push(m.member.to_string());
+                }
+                Some((root, path))
+            }
+            Expr::IndexAccess(_) => {
+                let (root, path, _) = Self::view_place_steps(expr)?;
+                Some((root, path))
+            }
+            _ => None,
+        }
+    }
+
+    /// `view_place`, and whether the path can still grow: false once an index was not a
+    /// constant.
+    fn view_place_steps(expr: &Expr) -> Option<(String, Vec<String>, bool)> {
+        match expr {
+            Expr::Identifier(id) => Some((id.name.to_string(), Vec::new(), true)),
+            Expr::MemberAccess(m) => {
+                let (root, mut path, open) = Self::view_place_steps(&m.base)?;
+                if open {
+                    path.push(m.member.to_string());
+                }
+                Some((root, path, open))
+            }
+            Expr::IndexAccess(i) => {
+                let (root, mut path, open) = Self::view_place_steps(&i.base)?;
+                match (&*i.index, open) {
+                    (Expr::Number(n), true) => {
+                        path.push(format!("[{}]", n.value));
+                        Some((root, path, true))
+                    }
+                    _ => Some((root, path, false)),
+                }
+            }
             _ => None,
         }
     }

@@ -749,6 +749,9 @@ impl<'a> TypeChecker<'a> {
     }
 
     pub(crate) fn check_indexaccess_expr(&mut self, expr: &mut Expr) -> Type {
+        // The part of a variable this reaches, with constant indices told apart: `q[1]` is not
+        // `q[0]`, so it can be read while a `mut` view of `q[0]` is used.
+        let place = Self::view_place(expr);
         match expr {
             Expr::IndexAccess(IndexAccessExpr {
                 base: obj,
@@ -760,8 +763,34 @@ impl<'a> TypeChecker<'a> {
                     Expr::Identifier(id) => Some(id.name.clone()),
                     _ => None,
                 };
+                let old_skip = self.borrow.skip_borrow_check;
+                if place.is_some() {
+                    self.borrow.skip_borrow_check = true;
+                }
                 let obj_ty = self.check_expr_type_flag(obj, false);
+                self.borrow.skip_borrow_check = old_skip;
                 self.indexed_name = None;
+                if let Some((name, path)) = place.filter(|_| !old_skip && !self.speculating) {
+                    // Point at the variable, as a read of the whole variable does.
+                    let mut root = &**obj;
+                    while let Expr::IndexAccess(i) = root {
+                        root = &i.base;
+                    }
+                    let at = match root {
+                        Expr::Identifier(id) => id.span,
+                        _ => ix_span,
+                    };
+                    for b in self.borrow.live_borrows(&name) {
+                        if b.is_mut && crate::hir::places::paths_may_alias(&path, &b.path) {
+                            self.errors.error_with_code(
+                                crate::diagnostic::DiagnosticCode::E4002,
+                                format!("Cannot access '{}' because it is mutably borrowed.", name),
+                                Some(crate::diagnostic::SourceSpan::from_ast_span(&at)),
+                            );
+                            break;
+                        }
+                    }
+                }
 
                 // Enforce the topology boundary, reading where the value lives from
                 // either spelling: a placement carried on the tensor itself, or the

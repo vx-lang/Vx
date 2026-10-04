@@ -261,15 +261,18 @@ A borrow ends at the view's last use, as for `&`.
   either name is used. Before this, `let r2 = r; let s = q;` with `r = &q` was accepted.
 - **The borrower is the view variable,** so the existing liveness sweep ends the borrow at its last
   use.
-- **Indices are not part of a borrow's path** (`places::base_and_path`), so `q[0]` and `q[1]` count
-  as the same place. That is sound and sometimes too strict (#1060).
+- **A constant index is part of a view's path** (`view_place`), so `q[0]` and `q[1]` are
+  different places: two `mut` rows of one tensor can be used together, and `q[1][0]` can be
+  written while `q[0]` is borrowed. An index that is not a constant ends the path, so `q[i]`
+  may be any row and overlaps them all. Reading through an index checks that path, as reading
+  a field checks its own. `places::base_and_path`, which the flat lowerer also uses for its
+  alias scopes, still leaves indices out.
 
 ### Not checked yet
 
 | Case | Issue |
 | --- | --- |
 | A closure that uses a row reads the wrong value on the default code generator. This is a code generation bug, not a borrow rule. | #1080 |
-| Two `mut` rows of different indices are refused. | #1060 |
 
 Only a handful of programs in the repository take a view, so a fuzzer generator for them (#1062)
 is the main test still missing.
