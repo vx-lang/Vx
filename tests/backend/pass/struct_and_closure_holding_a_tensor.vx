@@ -1,0 +1,58 @@
+//===- struct_and_closure_holding_a_tensor.vx - Vx Compiler ------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s 2>&1 | FileCheck %s
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s
+//
+// A struct field can hold a tensor, of a static shape or one known at run time, and so can a
+// closure, which is a struct of what it uses. The field keeps the tensor's shape: it is stored
+// as the tensor's descriptor.
+
+struct H {
+  t : Tensor<f32, [4]>,
+}
+
+struct D {
+  m : Tensor<f32, [?, ?]>,
+}
+
+fn ends(h : H) -> f32 {
+  return h.t[0] + h.t[3];
+}
+
+fn main() -> i32 {
+  let mut t = Tensor<f32, [4]>::new();
+  t[0] = 1.0;
+  t[3] = 2.0;
+  let mut h = H {
+    t : t
+  };
+  print(ends(h));
+  print!(" ");
+  let mut t2 = Tensor<f32, [4]>::new();
+  t2[3] = 6.0;
+  let mut h2 = H {
+    t : Tensor<f32, [4]>::new()
+  };
+  h2.t = t2;
+  print(h2.t[3]);
+  print!(" ");
+  let mut m = Tensor<f32>([2, 3]);
+  m[1][2] = 7.0;
+  let d = D {
+    m : m
+  };
+  print(d.m[1][2]);
+  print!(" ");
+  let mut a = Tensor<f32, [4]>::new();
+  a[0] = 2.0;
+  let g = || a[0];
+  print(g());
+  return 0;
+}
+
+// CHECK: 3 6 7 2
