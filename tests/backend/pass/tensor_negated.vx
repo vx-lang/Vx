@@ -1,0 +1,36 @@
+//===- tensor_negated.vx - Vx Compiler ---------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// REQUIRES: flat-codegen
+// RUN: vxc %s 2>&1 | FileCheck %s --check-prefixes=CHECK,FLAT
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s
+//
+// `-t` negates each element of a tensor into a new one. A float zero becomes `-0`; an integer
+// is `0 - x`. The first run checks the default code generator compiled it itself, so the file
+// names its code generators instead of the test harness choosing them.
+
+fn main() -> i32 {
+  let mut a = Tensor<f32, [2, 2]>::new();
+  a[0][1] = 2.5;
+  let n = -a;
+  print(n[0][1]);
+  print!(" ");
+  print(n[1][1]);
+  print!(" ");
+  let mut b = Tensor<i32>([3]);
+  b[0] = 0;
+  b[1] = 4;
+  b[2] = -7;
+  let m = -b;
+  print(m[1]);
+  print!(" ");
+  print(m[2]);
+  return 0;
+}
+
+// FLAT: emitted module via the flat path
+// CHECK: -2.5 -0 -4 7

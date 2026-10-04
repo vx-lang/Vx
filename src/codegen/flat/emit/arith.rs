@@ -177,6 +177,62 @@ impl FnEmit<'_> {
         Ok(())
     }
 
+    // `-t` on a tensor: a new tensor of each element negated. A float uses `arith.negf`, which
+    // keeps the sign of zero right (`0 - x` would not); an integer is `0 - x`.
+    fn op_neg_tensor(&mut self, idx: usize, ins: &HirInstruction, ma: &str) -> Lowered<()> {
+        let gid = *self
+            .types
+            .get(ins.type_idx.0 as usize)
+            .ok_or(crate::emitter_gap!())?;
+        let (elem, shape) = self
+            .ctx
+            .tensors
+            .get(&gid)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        let memty = tensor_memref_ty(&elem, &shape).ok_or(crate::emitter_gap!())?;
+        let et = mlir_scalar(&elem).ok_or(crate::emitter_gap!())?;
+        let a = self
+            .names
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        let mut sizes = Vec::new();
+        for (k, d) in shape.iter().enumerate() {
+            if d == DYN_DIM {
+                let c = format!("%ngc{idx}_{k}");
+                let s = format!("%ngs{idx}_{k}");
+                self.body += &format!("  {c} = arith.constant {k} : index\n");
+                self.body += &format!("  {s} = memref.dim {a}, {c} : {ma}\n");
+                sizes.push(s);
+            }
+        }
+        let n = match self.nrvo_slot(idx, &memty) {
+            Some(slot) => slot,
+            None => {
+                let n = format!("%v{idx}");
+                self.body += &format!("  {n} = memref.alloc({}) : {memty}\n", sizes.join(", "));
+                n
+            }
+        };
+        let dims: Vec<String> = (0..shape.len()).map(|k| format!("d{k}")).collect();
+        let map = format!("affine_map<({0}) -> ({0})>", dims.join(", "));
+        let iters = vec!["\"parallel\""; shape.len()].join(", ");
+        let body = if elem.is_float() {
+            format!("    %r = arith.negf %x : {et}\n")
+        } else {
+            format!("    %z = arith.constant 0 : {et}\n    %r = arith.subi %z, %x : {et}\n")
+        };
+        self.body += &format!(
+            "  linalg.generic {{indexing_maps = [{map}, {map}], iterator_types = [{iters}]}} \
+             ins({a} : {ma}) outs({n} : {memty}) {{\n  ^bb0(%x: {et}, %o: {et}):\n{body}    \
+             linalg.yield %r : {et}\n  }}\n"
+        );
+        self.names[idx] = n;
+        self.mem_of[idx] = Some(memty);
+        Ok(())
+    }
+
     // Scalar comparison → `i1`; the relation is in `imm`, the operand type comes from the
     // first operand's tracked type (this instruction's own type is `bool`, the result).
     pub(crate) fn op_cmp(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
@@ -201,6 +257,9 @@ impl FnEmit<'_> {
     // Arithmetic negation `-x` (#214). `type_idx` is the result (= operand) scalar type. Float
     // → `arith.negf`; integers have no `negi`, so `0 - x` via `arith.subi`.
     pub(crate) fn op_neg(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        if let Some(Some(ma)) = self.mem_of.get(ins.operand1.0 as usize).cloned() {
+            return self.op_neg_tensor(idx, ins, &ma);
+        }
         let e = elem_of_gid(
             *self
                 .types
