@@ -1656,7 +1656,7 @@ stamp_float!(f16 , 1.0 , 0.0 , 180.0);
 stamp_float!(bf16 , 1.0 , 0.0 , 180.0);
 
 /// Stamps `ln`, `log2`, `log10` and `ln_1p` through the platform's `math` operations, for the
-/// widths without a `core::libm` version yet: `f64` and `bf16`. `f32` and `f16` use `core::libm`'s.
+/// widths without a `core::libm` version yet: `f64`. The other widths use `core::libm`'s.
 macro_rules stamp_float_logs {
   ($t : ident , $one : expr) => {
     impl $t {
@@ -1703,7 +1703,6 @@ macro_rules stamp_float_logs {
 }
 
 stamp_float_logs!(f64 , 1.0);
-stamp_float_logs!(bf16 , 1.0);
 
 /// Stamps `asinh`, `acosh` and `atanh` as formulas through `ln_1p` and `ln`, for the widths
 /// LLVM libc has no version of yet: `f64`, `f16` and `bf16`. `f32` uses `core::libm`'s, below.
@@ -1802,6 +1801,28 @@ impl f16 {
   /// `ln` of one plus this, correctly rounded (through LLVM libc's `log1pf`).
   fn ln_1p(self : f16) -> f16 {
     return libm_log1pf16(self);
+  }
+}
+
+impl bf16 {
+  /// The natural logarithm, correctly rounded (LLVM libc's `log_bf16`).
+  fn ln(self : bf16) -> bf16 {
+    return libm_log_bf16(self);
+  }
+
+  /// The logarithm to base two, correctly rounded (through LLVM libc's `log2f`).
+  fn log2(self : bf16) -> bf16 {
+    return libm_log2_bf16(self);
+  }
+
+  /// The logarithm to base ten, correctly rounded (through LLVM libc's `log10f`).
+  fn log10(self : bf16) -> bf16 {
+    return libm_log10_bf16(self);
+  }
+
+  /// `ln` of one plus this, correctly rounded (through LLVM libc's `log1pf`).
+  fn ln_1p(self : bf16) -> bf16 {
+    return libm_log1p_bf16(self);
   }
 }
 

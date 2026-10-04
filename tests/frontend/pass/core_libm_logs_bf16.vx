@@ -1,0 +1,55 @@
+//===- core_libm_logs_bf16.vx - Vx Compiler -----------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// bf16 `ln`, `log2`, `log10` and `ln_1p` on every one of the 65,536 bf16 inputs. For each
+// function this prints a hash of all its results, given by their bits (every NaN counted as
+// 32704). The expected hashes come from the correctly rounded results: each logarithm computed
+// to 60 digits with Python's decimal module and rounded to the nearest bf16, ties to even.
+//
+// It runs at -O2: at the default level, LLVM's x86 back end flushes a subnormal bf16 to zero
+// when it is passed between functions on a CPU with AVX512-BF16.
+//
+// RUN: vxc %s -O2 2>&1 | FileCheck %s
+// RUN: vxc %s -O2 --legacy-codegen 2>&1 | FileCheck %s
+// CHECK: 5615311678818320128 18196287991183694808 15095786649431240520 9796863884610049457
+import core::num;
+
+fn bits(r : bf16) -> u16 {
+  if r != r {
+    return 32704u16;
+  }
+  return libm_bf16_to_bits(r);
+}
+
+fn run(which : i32) -> i32 {
+  let mut h : u64 = 0u64;
+  for i in 0..65536 {
+    let x = libm_bf16_from_bits(i as u16);
+    let mut r : bf16 = x;
+    if which == 0 {
+      r = x.ln();
+    } else if which == 1 {
+      r = x.log2();
+    } else if which == 2 {
+      r = x.log10();
+    } else {
+      r = x.ln_1p();
+    }
+    h = (h ^ (bits(r) as u64)).wrapping_mul(1099511628211u64);
+  }
+  print(h);
+  print!(" ");
+  return 0;
+}
+
+fn main() -> i32 {
+  let _a = run(0);
+  let _b = run(1);
+  let _c = run(2);
+  let _d = run(3);
+  return 0;
+}
