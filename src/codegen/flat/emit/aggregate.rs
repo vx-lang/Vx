@@ -158,7 +158,11 @@ impl FnEmit<'_> {
             // tracked as an aggregate value so it can be re-stored / passed by value. (#242)
             self.agg_val_of[idx] = Some(nested_gid);
         } else {
-            self.etypes[idx] = elem_from_mlir_scalar(&fty);
+            // The instruction's own type keeps the field's signedness, which its MLIR spelling
+            // does not (`i64` is both `i64` and `u64`): a comparison reads it from here.
+            self.etypes[idx] = gid_res
+                .and_then(elem_of_gid)
+                .or_else(|| elem_from_mlir_scalar(&fty));
         }
         Ok(())
     }
