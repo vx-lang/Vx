@@ -1241,42 +1241,6 @@ macro_rules stamp_float {
         };
       }
 
-      /// e raised to this.
-      fn exp(self : $t) -> $t {
-        return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
-          %r = math.exp %a : $t
-          macro.yield %r : $t
-        };
-      }
-
-      /// Two raised to this.
-      fn exp2(self : $t) -> $t {
-        return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
-          %r = math.exp2 %a : $t
-          macro.yield %r : $t
-        };
-      }
-
-      /// `exp` minus one, kept accurate for a small argument where the subtraction would
-      /// lose every significant digit.
-      ///
-      /// Not `math.expm1`, which lowers to exactly that subtraction. This is Kahan's method:
-      /// with `u = exp(x)`, `(u - 1) * x / ln(u)`, whose two rounding errors cancel.
-      fn exp_m1(self : $t) -> $t {
-        let u = self.exp();
-        if u == $one {
-          return self;
-        }
-        let um1 = u - $one;
-        if um1 == -$one {
-          return um1;
-        }
-        if u.is_infinite() {
-          return u;
-        }
-        return um1 * self / u.ln();
-      }
-
       /// The sine of this many radians.
       fn sin(self : $t) -> $t {
         return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
@@ -1704,6 +1668,52 @@ macro_rules stamp_float_logs {
 
 stamp_float_logs!(f64 , 1.0);
 
+/// Stamps `exp`, `exp2` and `exp_m1` through the platform's `math` operations, for `f64`, which
+/// has no `core::libm` version yet. The other widths use `core::libm`'s.
+macro_rules stamp_float_exps {
+  ($t : ident , $one : expr) => {
+    impl $t {
+      /// e raised to this.
+      fn exp(self : $t) -> $t {
+        return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
+          %r = math.exp %a : $t
+          macro.yield %r : $t
+        };
+      }
+
+      /// Two raised to this.
+      fn exp2(self : $t) -> $t {
+        return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
+          %r = math.exp2 %a : $t
+          macro.yield %r : $t
+        };
+      }
+
+      /// `exp` minus one, kept accurate for a small argument where the subtraction would
+      /// lose every significant digit.
+      ///
+      /// Not `math.expm1`, which lowers to exactly that subtraction. This is Kahan's method:
+      /// with `u = exp(x)`, `(u - 1) * x / ln(u)`, whose two rounding errors cancel.
+      fn exp_m1(self : $t) -> $t {
+        let u = self.exp();
+        if u == $one {
+          return self;
+        }
+        let um1 = u - $one;
+        if um1 == -$one {
+          return um1;
+        }
+        if u.is_infinite() {
+          return u;
+        }
+        return um1 * self / u.ln();
+      }
+    }
+  };
+}
+
+stamp_float_exps!(f64 , 1.0);
+
 /// Stamps `asinh`, `acosh` and `atanh` as formulas through `ln_1p` and `ln`, for the widths
 /// LLVM libc has no version of yet: `f64`, `f16` and `bf16`. `f32` uses `core::libm`'s, below.
 macro_rules stamp_float_inverse_hyperbolic {
@@ -1780,6 +1790,21 @@ impl f32 {
   fn ln_1p(self : f32) -> f32 {
     return libm_log1pf(self);
   }
+
+  /// e raised to this, correctly rounded (LLVM libc's `expf`).
+  fn exp(self : f32) -> f32 {
+    return libm_expf(self);
+  }
+
+  /// Two raised to this, correctly rounded (LLVM libc's `exp2f`).
+  fn exp2(self : f32) -> f32 {
+    return libm_exp2f(self);
+  }
+
+  /// `exp` minus one, correctly rounded, so a small argument keeps its digits (LLVM libc's `expm1f`).
+  fn exp_m1(self : f32) -> f32 {
+    return libm_expm1f(self);
+  }
 }
 
 impl f16 {
@@ -1802,6 +1827,21 @@ impl f16 {
   fn ln_1p(self : f16) -> f16 {
     return libm_log1pf16(self);
   }
+
+  /// e raised to this, correctly rounded (through LLVM libc's `expf`).
+  fn exp(self : f16) -> f16 {
+    return libm_expf16(self);
+  }
+
+  /// Two raised to this, correctly rounded (through LLVM libc's `exp2f`).
+  fn exp2(self : f16) -> f16 {
+    return libm_exp2f16(self);
+  }
+
+  /// `exp` minus one, correctly rounded, so a small argument keeps its digits (through LLVM libc's `expm1f`).
+  fn exp_m1(self : f16) -> f16 {
+    return libm_expm1f16(self);
+  }
 }
 
 impl bf16 {
@@ -1823,6 +1863,21 @@ impl bf16 {
   /// `ln` of one plus this, correctly rounded (through LLVM libc's `log1pf`).
   fn ln_1p(self : bf16) -> bf16 {
     return libm_log1p_bf16(self);
+  }
+
+  /// e raised to this, correctly rounded (through LLVM libc's `expf`).
+  fn exp(self : bf16) -> bf16 {
+    return libm_exp_bf16(self);
+  }
+
+  /// Two raised to this, correctly rounded (through LLVM libc's `exp2f`).
+  fn exp2(self : bf16) -> bf16 {
+    return libm_exp2_bf16(self);
+  }
+
+  /// `exp` minus one, correctly rounded, so a small argument keeps its digits (through LLVM libc's `expm1f`).
+  fn exp_m1(self : bf16) -> bf16 {
+    return libm_expm1_bf16(self);
   }
 }
 

@@ -1,6 +1,6 @@
 //===- autodiff_math_exp.vx - Vx Compiler -------------------*- Vx -*-===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK-DAG: llvm.intr.exp(
+// CHECK-DAG: llvm.func @libm_expf(
 // CHECK-DAG: llvm.intr.fabs(
 // CHECK-DAG: llvm.func @__enzyme_autodiff_grad_test_func(
 // CHECK-LABEL: llvm.func @f32$exp(%arg0: f32) -> f32
