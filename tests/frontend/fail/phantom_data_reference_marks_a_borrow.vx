@@ -1,0 +1,54 @@
+//===- phantom_data_reference_marks_a_borrow.vx - Vx Compiler --*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// `Span` holds a raw pointer, which the borrow checker does not follow, and a
+// `PhantomData<&T>` field, which says a `Span` borrows what it was built from. So a `Span`
+// over a local cannot be returned. A `PhantomData<i32>` field borrows nothing, so `Tagged`
+// can be.
+import core::marker;
+
+struct Span<T> {
+  ptr : *const T,
+  len : i32,
+  borrows : PhantomData<&T>,
+}
+
+struct Tagged {
+  ptr : *const i32,
+  kind : PhantomData<i32>,
+}
+
+fn span_of(x : &i32) -> Span<i32> {
+  return Span<i32> {
+    ptr : x, len : 1i32, borrows : PhantomData<&i32> { }
+  };
+}
+
+fn tagged_of(x : &i32) -> Tagged {
+  return Tagged {
+    ptr : x, kind : PhantomData<i32> { }
+  };
+}
+
+// CHECK: Error[E4005] at 42:{{.*}}this returns a value that points into this function's stack frame
+fn span_over_a_local() -> Span<i32> {
+  let x = 5i32;
+  return span_of(&x);
+}
+
+// CHECK-NOT: Error
+fn tagged_over_a_local() -> Tagged {
+  let x = 5i32;
+  return tagged_of(&x);
+}
+
+fn main() -> i32 {
+  return span_over_a_local().len;
+}
+// CHECK: 1 error(s) emitted

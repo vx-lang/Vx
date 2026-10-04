@@ -1,0 +1,31 @@
+//===- usize_literal_that_does_not_fit.vx - Vx Compiler --------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A `usize` holds 0 up to the largest `i64`, so a literal past that is refused: written with
+// a `usize` type, with a `usize` suffix, or passed to a `usize` parameter. A `usize` and an
+// `i64` do not mix without an `as`.
+
+fn take(n : usize) -> usize {
+  return n;
+}
+
+fn main() -> i32 {
+  // CHECK: Error[E3045]: 9223372036854775808 does not fit `usize`, which holds 0 up to 9223372036854775807
+  let typed : usize = 9223372036854775808;
+  // CHECK: Error[E3045]: 9223372036854775809 does not fit `usize`
+  let suffixed = 9223372036854775809usize;
+  // CHECK: Error[E3045]: 18446744073709551615 does not fit `usize`
+  let passed = take(18446744073709551615);
+  let a : usize = 3;
+  let b : i64 = 4;
+  // CHECK: Error[E3004]{{.*}}Type mismatch in binary operation: usize vs i64
+  let mixed = a + b;
+  return 0;
+}
+// CHECK: 4 error(s) emitted

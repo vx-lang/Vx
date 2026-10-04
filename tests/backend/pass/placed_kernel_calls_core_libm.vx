@@ -1,0 +1,30 @@
+//===- placed_kernel_calls_core_libm.vx - Vx Compiler -------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A GPU region that calls `ln`, which is `core::libm`'s `logf`: two functions deep and reading
+// two constant tables. device_image_test.rs checks that the region still gets a device image,
+// with the functions and tables in it; this file checks the answer, ln(7).
+//
+// EXPECT: 1.9459101
+import core::num;
+
+fn kernel_prep() -> f32 {
+  let mut o = Tensor<f32, [4, 4]>::uninit();
+  spawn on(Topology::GPU) {
+    for i in 0..4 {
+      for j in 0..4 {
+        o[i][j] = ((i * 4 + j + 1) as f32).ln();
+      }
+    }
+  }
+  return o[1][2];
+}
+
+fn main() -> i32 {
+  print(kernel_prep());
+  return 0;
+}

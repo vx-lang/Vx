@@ -1,0 +1,27 @@
+//===- cast_a_borrow_to_a_raw_pointer.vx - Vx Compiler -----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A borrow becomes a raw pointer to the same place in two spellings: a cast,
+// `(&mut x) as *mut i32`, and `(&mut c[0][0]).as_mut_ptr()` on a borrow of a
+// tensor element. A write through either pointer lands in the borrowed place.
+// Making the pointer needs no `unsafe`; writing through it does.
+//
+// EXPECT: 42 7
+fn main() -> i32 {
+  let mut x : i32 = 40;
+  let p = (&mut x) as *mut i32;
+  unsafe { *p = *p + 2; }
+
+  let mut c = Tensor<f32, [2, 2]>::new();
+  let pc = (&mut c[0][1]).as_mut_ptr();
+  unsafe { *pc = 7.0; }
+
+  print(x);
+  print!(" ");
+  print(c[0][1] as i32);
+  return 0;
+}

@@ -18,10 +18,25 @@
 use crate::symbol::Symbol;
 use crate::syntax::Expr;
 
-/// The root local and projection path of an lvalue: `o.x.y` -> `(o, [x, y])`, a bare local -> `(o, [])`.
-/// An `IndexAccess` is *seen through* (`a[i].x` -> `(a, [x])`) — an index does not name a distinct field,
-/// so two accesses that differ only in index share a path and are treated as *possibly* aliasing (the
-/// conservative direction). `None` for a base with no nameable root (`&5`, a call result).
+/// The path element for an index: `[3]` for an integer literal, and [`ANY_INDEX`] for anything
+/// else, which may be any element. So `q[0]` and `q[1]` are different places, and `q[i]` may be
+/// either of them.
+pub fn index_element(index: &Expr) -> String {
+    match index {
+        Expr::Number(n) => match n.value.parse::<u64>() {
+            Ok(k) => format!("[{k}]"),
+            Err(_) => ANY_INDEX.to_string(),
+        },
+        _ => ANY_INDEX.to_string(),
+    }
+}
+
+/// The path element of an index whose value is not known: it may name any element.
+pub const ANY_INDEX: &str = "[?]";
+
+/// The root local and projection path of an lvalue: `o.x.y` -> `(o, [x, y])`, `q[0].x` ->
+/// `(q, [[0], x])`, a bare local -> `(o, [])`. An index is a path element, written by
+/// [`index_element`]. `None` for a base with no nameable root (`&5`, a call result).
 pub fn base_and_path(e: &Expr) -> Option<(Symbol, Vec<Symbol>)> {
     match e {
         Expr::Identifier(id) => Some((id.name.clone(), Vec::new())),
@@ -30,17 +45,38 @@ pub fn base_and_path(e: &Expr) -> Option<(Symbol, Vec<Symbol>)> {
             path.push(m.member.clone());
             Some((root, path))
         }
-        Expr::IndexAccess(ix) => base_and_path(&ix.base),
+        Expr::IndexAccess(ix) => {
+            let (root, mut path) = base_and_path(&ix.base)?;
+            path.push(Symbol::from(index_element(&ix.index)));
+            Some((root, path))
+        }
         _ => None,
     }
 }
 
-/// Whether two projection paths under the **same** root may name overlapping memory: true when one is a
-/// prefix of the other (`[inner]` vs `[inner, v]`) or they are equal; distinct fields at any shared level
-/// (`[x]` vs `[y]`) are disjoint. Generic over the path element so the checker's `[String]` and the
-/// lowerer's [`Symbol`] paths share it. Missing a real disjointness (returning `true` when the paths are
-/// actually disjoint) is always the safe direction — it withholds a `noalias` / reports a conflict.
-pub fn paths_may_alias<T: PartialEq>(a: &[T], b: &[T]) -> bool {
-    let n = a.len().min(b.len());
-    a[..n] == b[..n]
+/// Whether two projection paths under the **same** root may name overlapping memory: true when
+/// one is a prefix of the other (`[inner]` vs `[inner, v]`) or they match at every shared level.
+/// Distinct fields (`[x]` vs `[y]`) and distinct constant indices (`[[0]]` vs `[[1]]`) are
+/// disjoint; [`ANY_INDEX`] matches any element. Generic over the path element so the checker's
+/// `[String]` and the lowerer's [`Symbol`] paths share it. Returning `true` for paths that are in
+/// fact disjoint is always the safe direction: it withholds a `noalias` or reports a conflict.
+pub fn paths_may_alias<T: AsRef<str>>(a: &[T], b: &[T]) -> bool {
+    a.iter().zip(b).all(|(x, y)| {
+        let (x, y) = (x.as_ref(), y.as_ref());
+        x == y || x == ANY_INDEX || y == ANY_INDEX
+    })
+}
+
+/// How a place reads in a message: `q[0].x`, with a dot before each field and none before an
+/// index.
+pub fn display_place<T: AsRef<str>>(root: &str, path: &[T]) -> String {
+    let mut out = root.to_string();
+    for p in path {
+        let p = p.as_ref();
+        if !p.starts_with('[') {
+            out.push('.');
+        }
+        out.push_str(p);
+    }
+    out
 }

@@ -1,0 +1,40 @@
+//===- vec_iterator_borrow_ends_at_last_use.vx - Vx Compiler ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+//
+// A `for` loop's iterator borrows the vector until the loop ends, and no longer: the vector
+// can be changed after the loop, and read inside a loop over `v.iter()`.
+//
+// CHECK-NOT: Error
+// CHECK-LABEL: func.func @main
+import std::vec;
+
+fn push_after_the_loop() -> i32 {
+  let mut v = Vec<i32>::new();
+  v.push(1i32);
+  let mut total = 0i32;
+  for x in v.iter() {
+    total = total + *x + v.len();
+  }
+  v.push(total);
+  return v.len();
+}
+
+fn change_through_iter_mut_then_push() -> i32 {
+  let mut v = Vec<i32>::new();
+  v.push(1i32);
+  for x in v.iter_mut() {
+    *x = *x + 1i32;
+  }
+  v.push(3i32);
+  return v.get(0i32);
+}
+
+fn main() -> i32 {
+  return push_after_the_loop() + change_through_iter_mut_then_push();
+}

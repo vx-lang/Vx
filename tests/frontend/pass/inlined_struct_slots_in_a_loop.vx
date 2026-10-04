@@ -1,0 +1,57 @@
+//===- inlined_struct_slots_in_a_loop.vx - Vx Compiler ------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A loop that calls functions using a 24-byte struct, three million times, at -O2. Inlining
+// copies each callee's stack slots to the call, inside the loop; unless they move to the
+// entry block, every iteration takes more stack and the program crashes long before the end.
+//
+// RUN: vxc %s -O2 2>&1 | FileCheck %s
+// RUN: vxc %s -O2 --action emit-llvm 2>&1 | FileCheck %s --check-prefix=SLOTS
+// CHECK: 15000004000000
+// SLOTS-LABEL: llvm.func @main
+// SLOTS: llvm.alloca
+// SLOTS: llvm.br ^bb1
+// SLOTS-NOT: llvm.alloca
+// SLOTS: llvm.return
+import core::marker;
+
+struct P {
+  n : i32,
+  a : u64,
+  b : u64,
+}
+
+impl Copy for P {}
+
+fn inner(p : P, s : u64) -> P {
+  if s == 0u64 {
+    return p;
+  }
+  return P {
+    n: p.n, a: p.a << s, b: p.b
+  };
+}
+
+fn outer(x : u64) -> P {
+  let p = P {
+    n: (x % 7u64) as i32, a: x, b: x + 1u64
+  };
+  let q = inner(p, x % 3u64);
+  return P {
+    n: q.n, a: q.a + 1u64, b: q.b
+  };
+}
+
+fn main() -> i32 {
+  let mut h : u64 = 0u64;
+  for i in 0..3000000 {
+    let r = outer(i as u64);
+    h = h + r.a + r.b;
+  }
+  print(h);
+  return 0;
+}

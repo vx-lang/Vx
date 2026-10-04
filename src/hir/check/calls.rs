@@ -24,8 +24,12 @@ struct ReborrowPlan {
     /// Callee `(param types, return type)` if resolvable and not speculating; `None` disables all
     /// reborrow bookkeeping.
     callee_sig: Option<(Vec<Type>, Type)>,
-    /// The callee returns a reference (only then can an argument borrow outlive the call).
+    /// The callee returns a reference, or a value that can hold one (only then can an argument
+    /// borrow outlive the call).
     ret_is_ref: bool,
+    /// The result is a value holding a reference, `View { r : &x }`, rather than a reference: a
+    /// kept borrow then takes the mutability of the parameter it came through.
+    ret_holds_ref: bool,
     /// The returned reference is mutable (the reborrow's mutability is the result's, not the param's).
     result_is_mut: bool,
     /// Parameter slots the returned reference derives from (in-compilation summary).
@@ -221,7 +225,7 @@ impl<'a> TypeChecker<'a> {
     /// check to reject — the programmer writes an explicit `as`. Returns the argument's type after
     /// refinement.
     pub(crate) fn refine_literal_arg(
-        &self,
+        &mut self,
         arg: &mut Expr,
         param_ty: &Type,
         arg_ty: &Type,
@@ -229,6 +233,8 @@ impl<'a> TypeChecker<'a> {
         if let Some(n) = crate::hir::expr::numeric_literal_mut(arg) {
             if let Some(elem) = expected_numeric_elem(param_ty, &n.value) {
                 n.ty = Some(elem.clone());
+                let n = n.clone();
+                self.check_usize_literal(&n, &elem);
                 return Type::Scalar(elem);
             }
         }
@@ -314,10 +320,14 @@ impl<'a> TypeChecker<'a> {
         // impl method, which `build` does not summarize (it defaults to the conservative
         // `AnyParam`). Without this, `foo(&mut x)` on a void method would wrongly persist a
         // mutable borrow of `x` and fire a spurious `E4004` at the next use.
-        let ret_is_ref = callee_sig
+        let ret_holds_ref = callee_sig
             .as_ref()
-            .map(|(_, ret)| Self::is_ref_type(ret))
-            .unwrap_or(false);
+            .is_some_and(|(_, ret)| !Self::is_ref_type(ret) && self.result_can_hold_reference(ret));
+        let ret_is_ref = ret_holds_ref
+            || callee_sig
+                .as_ref()
+                .map(|(_, ret)| Self::is_ref_type(ret))
+                .unwrap_or(false);
         // A reborrow's mutability is the *result* reference's, not the parameter's: `found =
         // probe_mut(m)` where `probe_mut(m: &mut Map) -> &i32` yields a *shared* alias of
         // `*m`, so the reborrow is shared. Keying on the return type (rather than the param)
@@ -357,6 +367,7 @@ impl<'a> TypeChecker<'a> {
         ReborrowPlan {
             callee_sig,
             ret_is_ref,
+            ret_holds_ref,
             result_is_mut,
             return_prov,
             imported_prov,
@@ -507,7 +518,7 @@ impl<'a> TypeChecker<'a> {
                 base,
                 path.clone(),
                 *is_mut_param,
-                plan.result_is_mut,
+                plan.result_is_mut || (plan.ret_holds_ref && *is_mut_param),
                 persists(*i),
                 span,
             );
@@ -1638,18 +1649,12 @@ impl<'a> TypeChecker<'a> {
             if !self.env.functions.contains_key(inst_name.as_ref())
                 && !self.mono.functions.iter().any(|(f, _)| f.name == inst_name)
             {
-                // Check the instantiated body in an *isolated* borrow context. It shares
-                // `active_borrows` with the caller otherwise, and a same-named parameter (`m` here,
-                // `m` in the caller) makes the callee's own `&m.field` run the NLL dead-borrow
-                // cleanup against the caller's records with the callee's liveness — wrongly
-                // releasing the caller's live reborrow before the next statement is checked (#268).
-                let saved_borrows = self.borrow.take();
+                // `check_function` checks the body in a borrow table of its own (#268).
                 // An instantiated generic is ordinary code even when the call site sits in
                 // a transfer lowering; the raw:: primitives must not resolve inside it.
                 let saved_edge = self.seam.lowering_edge.take();
                 self.check_function(&mut inst_func);
                 self.seam.lowering_edge = saved_edge;
-                self.borrow.restore(saved_borrows);
                 self.mono.functions.push((inst_func, origin_hash));
             }
             Some(inst_ret)
@@ -2361,6 +2366,9 @@ impl<'a> TypeChecker<'a> {
                 // pointer it gives carries the tensor's placement, and reading through that
                 // is checked where the read happens.
                 let takes_an_address = matches!(_method.as_ref(), "as_ptr" | "as_mut_ptr");
+                if takes_an_address && !self.speculating {
+                    self.drops_note_raw_pointer(obj);
+                }
                 let prev_allow = self.allow_cross_topology;
                 if takes_an_address {
                     self.allow_cross_topology = true;
@@ -2621,7 +2629,9 @@ impl<'a> TypeChecker<'a> {
                     }
                     // A returned reference keeps the receiver borrowed while it is used.
                     if let Some((base, path, is_mut)) = receiver_borrow {
-                        let keeps_borrow = matches!(ret_ty, Type::Borrow { .. })
+                        let holds_ref =
+                            !Self::is_ref_type(&ret_ty) && self.result_can_hold_reference(&ret_ty);
+                        let keeps_borrow = (matches!(ret_ty, Type::Borrow { .. }) || holds_ref)
                             && match &func_call {
                                 Expr::FunctionCall(fc) => {
                                     self.env.return_provenance_of(fc.name.as_ref()).includes(0)
@@ -2632,7 +2642,7 @@ impl<'a> TypeChecker<'a> {
                             &base,
                             path,
                             is_mut,
-                            Self::is_mut_ref(&ret_ty),
+                            Self::is_mut_ref(&ret_ty) || (holds_ref && is_mut),
                             keeps_borrow,
                             &method_span,
                         );
@@ -2767,6 +2777,13 @@ impl<'a> TypeChecker<'a> {
     /// carry their signature in their type, so a reborrow through `f(m)` is tracked even though which
     /// function `f` holds is unknown — the aliasing depends only on the signature. Checked first so a
     /// shadowing local wins over a same-named global function.
+    /// Can a call's result, of type `ret`, hold a reference to one of the call's arguments? A
+    /// type parameter or an unknown type says yes to `type_can_hold_reference`, which would keep
+    /// every argument of `fn id<T>(x : &T) -> T` borrowed, so neither counts here.
+    fn result_can_hold_reference(&self, ret: &Type) -> bool {
+        !matches!(ret, Type::Generic(..) | Type::Unknown) && self.type_can_hold_reference(ret)
+    }
+
     pub(crate) fn resolve_callee_ref_signature(
         &self,
         resolved_name: &str,

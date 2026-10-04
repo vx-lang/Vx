@@ -1,0 +1,75 @@
+//===- rows_that_may_overlap_are_one_borrow.vx - Vx Compiler -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Two rows of one tensor are told apart only when both indices are integer
+// constants that differ. Everything else that could touch a row held by a
+// mutable view is refused while the view is still used:
+//
+// - the same row twice,
+// - a row whose index is not a constant, which may be the same row,
+// - reading or writing an element of the borrowed row through the tensor,
+// - writing a row while a shared view of it is used afterwards.
+//
+// `two_mutable_rows_of_different_indices.vx` in the backend tests shows the case
+// that is accepted.
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// RUN: not vxc %s 2>&1 | FileCheck %s --check-prefix=COUNT
+// CHECK-DAG: E4004] at 35:3: Cannot borrow 'q' because it is already borrowed as mutable.
+// CHECK-DAG: E4004] at 44:3: Cannot borrow 'q' because it is already borrowed as mutable.
+// CHECK-DAG: E4002] at 53:11: Cannot access 'q' because it is mutably borrowed.
+// CHECK-DAG: E4002] at 61:3: Cannot access 'q' because it is mutably borrowed.
+// CHECK-DAG: E4009] at 69:7: `q[0][1]` is assigned while it is borrowed
+//
+// Five refusals, one per function.
+// COUNT-COUNT-5: Error[E400
+// COUNT-NOT: Error[E400
+
+fn same_row() -> i32 {
+  let mut q = Tensor<f32, [2, 4]>::new();
+  let mut a = q[0];
+  let mut b = q[0];
+  a[0] = 1.0;
+  b[0] = 2.0;
+  return 0;
+}
+
+fn row_with_unknown_index(i : i32) -> i32 {
+  let mut q = Tensor<f32, [2, 4]>::new();
+  let mut a = q[0];
+  let mut b = q[i];
+  a[0] = 1.0;
+  b[0] = 2.0;
+  return 0;
+}
+
+fn reads_the_borrowed_row() -> f32 {
+  let mut q = Tensor<f32, [2, 4]>::new();
+  let mut a = q[0];
+  let x = q[0][1];
+  a[0] = 1.0;
+  return x;
+}
+
+fn writes_the_borrowed_row() -> i32 {
+  let mut q = Tensor<f32, [2, 4]>::new();
+  let mut a = q[0];
+  q[0][2] = 3.0;
+  a[0] = 1.0;
+  return 0;
+}
+
+fn writes_under_a_shared_view() -> f32 {
+  let mut q = Tensor<f32, [2, 4]>::new();
+  let a = q[0];
+  q[0][1] = 3.0;
+  return a[1];
+}
+
+fn main() -> i32 {
+  return 0;
+}

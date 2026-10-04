@@ -22,8 +22,9 @@
 // Every function's name starts with `libm_`: Vx has one namespace for all functions and no
 // private ones yet, so a program's own `asinhf` must not collide with these.
 //
-// This module imports nothing, so that `core::num` can import it: the few operations it needs
-// on floats are the helpers below, each one MLIR operation.
+// This module imports only `core::marker`, which imports nothing, so that `core::num` can import
+// it: the few operations it needs on floats are the helpers below, each one MLIR operation.
+import core::marker;
 
 fn libm_f64_to_bits(x : f64) -> u64 {
   return mlir!( inputs : (%a = x : f64), returns : u64, dialects : ["arith"]) {
@@ -1063,4 +1064,298 @@ fn libm_log10_bf16(x : bf16) -> bf16 {
 /// `log1pf` on the input widened to f32, rounded to bf16.
 fn libm_log1p_bf16(x : bf16) -> bf16 {
   return libm_bf16_from_f32(libm_log1pf(libm_f32_from_bf16(x)));
+}
+
+// ---------------------------------------------------------------------------------------------
+// 128-bit dyadic floats, for the accurate passes of the double-precision functions: LLVM libc's
+// `DyadicFloat<128>` (`src/__support/FPUtil/dyadic_float.h`), with the mantissa as two 64-bit
+// halves.
+
+/// `(-1)^negative * 2^exponent * mantissa`, where the mantissa is the 128-bit integer
+/// `hi * 2^64 + lo`. Normalized when the mantissa is zero or its top bit is set.
+struct LibmDyadic128 {
+  negative : bool,
+  exponent : i32,
+  hi : u64,
+  lo : u64,
+}
+
+impl Copy for LibmDyadic128 {}
+
+/// The high 64 bits of the 128-bit product `a * b`.
+fn libm_u64_mul_hi(a : u64, b : u64) -> u64 {
+  return mlir!( inputs : (%a = a : i64, %b = b : i64), returns : u64, dialects : ["arith"]) {
+    %lo, %hi = arith.mului_extended %a, %b : i64
+    macro.yield %hi : i64
+  };
+}
+
+/// The number of zero bits above the highest set bit; 64 for zero.
+fn libm_u64_leading_zeros(a : u64) -> u64 {
+  return mlir!( inputs : (%a = a : i64), returns : u64, dialects : ["math"]) {
+    %r = math.ctlz %a : i64
+    macro.yield %r : i64
+  };
+}
+
+/// `d` with its mantissa shifted left by `s` bits and the exponent unchanged; zero once `s`
+/// reaches 128.
+fn libm_dyadic_shl(d : LibmDyadic128, s : u64) -> LibmDyadic128 {
+  if s == 0u64 {
+    return d;
+  }
+  let mut hi = 0u64;
+  let mut lo = 0u64;
+  if s < 64u64 {
+    hi = (d.hi << s) | (d.lo >> (64u64 - s));
+    lo = d.lo << s;
+  } else if s < 128u64 {
+    hi = d.lo << (s - 64u64);
+  }
+  return LibmDyadic128 {
+    negative: d.negative, exponent: d.exponent, hi: hi, lo: lo
+  };
+}
+
+/// `d` with its mantissa shifted right by `s` bits and the exponent unchanged; zero once `s`
+/// reaches 128. The bits shifted out are lost.
+fn libm_dyadic_shr(d : LibmDyadic128, s : u64) -> LibmDyadic128 {
+  if s == 0u64 {
+    return d;
+  }
+  let mut hi = 0u64;
+  let mut lo = 0u64;
+  if s < 64u64 {
+    hi = d.hi >> s;
+    lo = (d.lo >> s) | (d.hi << (64u64 - s));
+  } else if s < 128u64 {
+    lo = d.hi >> (s - 64u64);
+  }
+  return LibmDyadic128 {
+    negative: d.negative, exponent: d.exponent, hi: hi, lo: lo
+  };
+}
+
+/// `d` with its mantissa's top bit moved to bit 127, and the exponent lowered to match.
+fn libm_dyadic_normalize(d : LibmDyadic128) -> LibmDyadic128 {
+  if d.hi == 0u64 && d.lo == 0u64 {
+    return d;
+  }
+  let mut shift = libm_u64_leading_zeros(d.hi);
+  if d.hi == 0u64 {
+    shift = 64u64 + libm_u64_leading_zeros(d.lo);
+  }
+  let m = libm_dyadic_shl(d, shift);
+  return LibmDyadic128 {
+    negative: d.negative, exponent: d.exponent - (shift as i32), hi: m.hi, lo: m.lo
+  };
+}
+
+/// `x` exactly, normalized: the `DyadicFloat(double)` constructor.
+fn libm_dyadic_from_f64(x : f64) -> LibmDyadic128 {
+  let b = libm_f64_to_bits(x);
+  let biased = ((b >> 52u64) & 2047u64) as i32;
+  let mut mantissa = b & 4503599627370495u64;
+  // A subnormal has the smallest exponent; a zero has exponent 0, so its dyadic has -52.
+  let mut exponent : i32 = -1074;
+  if biased != 0 {
+    mantissa = mantissa | 4503599627370496u64;
+    exponent = biased - 1075;
+  } else if mantissa == 0u64 {
+    exponent = -52;
+  }
+  return libm_dyadic_normalize(LibmDyadic128 {
+    negative: (b >> 63u64) == 1u64, exponent: exponent, hi: 0u64, lo: mantissa
+  });
+}
+
+/// `d` with its mantissa shifted right by `s` bits and the exponent raised to match; the bits
+/// shifted out are lost.
+fn libm_dyadic_shift_right(d : LibmDyadic128, s : i32) -> LibmDyadic128 {
+  let m = libm_dyadic_shr(d, s as u64);
+  return LibmDyadic128 {
+    negative: d.negative, exponent: d.exponent + s, hi: m.hi, lo: m.lo
+  };
+}
+
+/// `a + b`, within 2 units in the last place: `quick_add`. The inputs are normalized; the
+/// exponents are aligned by shifting the smaller one right, dropping its low bits.
+fn libm_dyadic_add(a0 : LibmDyadic128, b0 : LibmDyadic128) -> LibmDyadic128 {
+  if a0.hi == 0u64 && a0.lo == 0u64 {
+    return b0;
+  }
+  if b0.hi == 0u64 && b0.lo == 0u64 {
+    return a0;
+  }
+  let mut a = a0;
+  let mut b = b0;
+  if a.exponent > b.exponent {
+    b = libm_dyadic_shift_right(b, a.exponent - b.exponent);
+  } else if b.exponent > a.exponent {
+    a = libm_dyadic_shift_right(a, b.exponent - a.exponent);
+  }
+  if a.negative == b.negative {
+    let lo = a.lo + b.lo;
+    let carry = if lo < a.lo {
+      1u64
+    } else {
+      0u64
+    };
+    let t = a.hi + b.hi;
+    let hi = t + carry;
+    if t < a.hi || hi < t {
+      // The sum needs 129 bits: shift right by one and put the carry back on top.
+      let m = libm_dyadic_shr(LibmDyadic128 {
+        negative: a.negative, exponent: a.exponent, hi: hi, lo: lo
+      }, 1u64);
+      return LibmDyadic128 {
+        negative: a.negative, exponent: a.exponent + 1, hi: m.hi | 9223372036854775808u64, lo: m.lo
+      };
+    }
+    return LibmDyadic128 {
+      negative: a.negative, exponent: a.exponent, hi: hi, lo: lo
+    };
+  }
+  if a.hi > b.hi || (a.hi == b.hi && a.lo >= b.lo) {
+    let borrow = if a.lo < b.lo {
+      1u64
+    } else {
+      0u64
+    };
+    return libm_dyadic_normalize(LibmDyadic128 {
+      negative: a.negative, exponent: a.exponent, hi: a.hi - b.hi - borrow, lo: a.lo - b.lo
+    });
+  }
+  let borrow = if b.lo < a.lo {
+    1u64
+  } else {
+    0u64
+  };
+  return libm_dyadic_normalize(LibmDyadic128 {
+    negative: b.negative, exponent: b.exponent, hi: b.hi - a.hi - borrow, lo: b.lo - a.lo
+  });
+}
+
+/// `a * b`, rounded toward zero and within 2 units in the last place: `quick_mul`. The mantissa
+/// is `quick_mul_hi` of the two, the high 128 bits of their product without the low halves'
+/// product `a.lo * b.lo` and without the carry out of the bits below.
+fn libm_dyadic_mul(a : LibmDyadic128, b : LibmDyadic128) -> LibmDyadic128 {
+  let negative = a.negative != b.negative;
+  let exponent = a.exponent + b.exponent + 128;
+  if (a.hi == 0u64 && a.lo == 0u64) || (b.hi == 0u64 && b.lo == 0u64) {
+    return LibmDyadic128 {
+      negative: negative, exponent: exponent, hi: 0u64, lo: 0u64
+    };
+  }
+  // The cross products a.lo * b.hi + a.hi * b.lo, in 128 bits plus a carry.
+  let p1_lo = a.lo * b.hi;
+  let p1_hi = libm_u64_mul_hi(a.lo, b.hi);
+  let p2_lo = a.hi * b.lo;
+  let p2_hi = libm_u64_mul_hi(a.hi, b.lo);
+  let s_lo = p1_lo + p2_lo;
+  let k0 = if s_lo < p1_lo {
+    1u64
+  } else {
+    0u64
+  };
+  let s_mid = p1_hi + p2_hi;
+  let c1 = if s_mid < p1_hi {
+    1u64
+  } else {
+    0u64
+  };
+  let s_hi = s_mid + k0;
+  let c2 = if s_hi < s_mid {
+    1u64
+  } else {
+    0u64
+  };
+  // Drop the low word, then add a.hi * b.hi.
+  let p3_lo = a.hi * b.hi;
+  let p3_hi = libm_u64_mul_hi(a.hi, b.hi);
+  let lo = s_hi + p3_lo;
+  let k1 = if lo < s_hi {
+    1u64
+  } else {
+    0u64
+  };
+  let hi = (c1 + c2) + p3_hi + k1;
+  let product = LibmDyadic128 {
+    negative: negative, exponent: exponent, hi: hi, lo: lo
+  };
+  if (hi >> 63u64) == 0u64 {
+    let m = libm_dyadic_shl(product, 1u64);
+    return LibmDyadic128 {
+      negative: negative, exponent: exponent - 1, hi: m.hi, lo: m.lo
+    };
+  }
+  return product;
+
+}
+
+/// The nearest double to `d`, ties to even, for a normalized `d`: `fast_as<double>`. The top 53
+/// bits make `d_hi`; the round and sticky bits below them, scaled to `d_hi`'s last place, are
+/// added with one FMA, which rounds the sum correctly.
+fn libm_dyadic_to_f64(d : LibmDyadic128) -> f64 {
+  let sign = if d.negative {
+    9223372036854775808u64
+  } else {
+    0u64
+  };
+  if d.hi == 0u64 && d.lo == 0u64 {
+    return libm_f64_from_bits(sign);
+  }
+  let mut exp_hi = d.exponent + 127 + 1023;
+  if exp_hi > 2046 {
+    // Too large: twice the largest power of two rounds to infinity.
+    return 2.0 * libm_f64_from_bits(sign | 9214364837600034816u64);
+  }
+  let mut denorm = false;
+  let mut shift : u64 = 75u64;
+  if exp_hi <= 0 {
+    denorm = true;
+    shift = 75u64 + ((1 - exp_hi) as u64);
+    exp_hi = 1023;
+  }
+  let exp_lo = exp_hi - 54;
+  // The low 64 bits of the mantissa shifted right by `shift`, which is at least 75.
+  let m_hi : u64 = if shift < 128u64 {
+    d.hi >> (shift - 64u64)
+  } else {
+    0u64
+  };
+  let d_hi = libm_f64_from_bits(sign | ((exp_hi as u64) << 52u64) | (m_hi & 4503599627370495u64));
+  // The bit just below d_hi's last place, at `shift - 1` (in the high word, since `shift` is at
+  // least 75), and whether any bit below it is set.
+  let p = shift - 1u64;
+  let mut round_bit = false;
+  let mut sticky_bit = true;
+  if p < 128u64 {
+    round_bit = ((d.hi >> (p - 64u64)) & 1u64) != 0u64;
+    sticky_bit = (d.hi & ((1u64 << (p - 64u64)) - 1u64)) != 0u64 || d.lo != 0u64;
+  }
+  let round_and_sticky : f64 = (if round_bit {
+    2.0
+  } else {
+    0.0
+  }) + (if sticky_bit {
+    1.0
+  } else {
+    0.0
+  });
+  if exp_lo <= 0 {
+    // d_lo would be subnormal although the result is normal: scale both up, then back down.
+    let scale = 1 - exp_lo;
+    let up = libm_f64_from_bits(((1023 + scale) as u64) << 52u64);
+    let down = libm_f64_from_bits(((1023 - scale) as u64) << 52u64);
+    let d_lo = libm_f64_from_bits(sign | (((exp_lo + scale) as u64) << 52u64));
+    return libm_multiply_add(d_lo, round_and_sticky, d_hi * up) * down;
+  }
+  let d_lo = libm_f64_from_bits(sign | ((exp_lo as u64) << 52u64));
+  let r = libm_multiply_add(d_lo, round_and_sticky, d_hi);
+  if denorm {
+    // The exponent was in the subnormal range: clear the exponent field d_hi was given.
+    return libm_f64_from_bits(libm_f64_to_bits(r) - ((exp_hi as u64) << 52u64));
+  }
+  return r;
 }

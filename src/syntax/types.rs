@@ -576,6 +576,9 @@ pub enum ElementType {
     U64,
     I128,
     U128,
+    /// The size type: 64 bits, from 0 to `i64::MAX`, so its top bit is always clear. See
+    /// `docs/discussions/size_type.md`.
+    USize,
     Bool,
     Generic(Symbol),
 }
@@ -1008,7 +1011,7 @@ impl ElementType {
             I8 | U8 => 8,
             I16 | U16 => 16,
             I32 | U32 => 32,
-            I64 | U64 => 64,
+            I64 | U64 | USize => 64,
             I128 | U128 => 128,
             _ => return None,
         })
@@ -1048,7 +1051,7 @@ impl ElementType {
             ElementType::I8 | ElementType::U8 | ElementType::F8E4M3 | ElementType::F8E5M2 => 8,
             ElementType::F16 | ElementType::BF16 | ElementType::I16 | ElementType::U16 => 16,
             ElementType::F32 | ElementType::I32 | ElementType::U32 => 32,
-            ElementType::F64 | ElementType::I64 | ElementType::U64 => 64,
+            ElementType::F64 | ElementType::I64 | ElementType::U64 | ElementType::USize => 64,
             ElementType::I128 | ElementType::U128 => 128,
             ElementType::Generic(_) => return None,
         })
@@ -1062,6 +1065,9 @@ impl ElementType {
     pub fn accepts_integer_literal(&self, text: &str) -> Option<bool> {
         if text.contains('.') {
             return None;
+        }
+        if *self == ElementType::USize {
+            return Some(text.parse::<u64>().is_ok_and(|v| v <= i64::MAX as u64));
         }
         let bits = self.bits()?;
         let signed = match self {
@@ -1118,6 +1124,7 @@ impl std::fmt::Display for ElementType {
             ElementType::U64 => write!(f, "u64"),
             ElementType::I128 => write!(f, "i128"),
             ElementType::U128 => write!(f, "u128"),
+            ElementType::USize => write!(f, "usize"),
             // The surface spelling, which is what `from_str` reads and what a machine
             // file or a type annotation writes. Debug still renders the variant.
             ElementType::Bool => write!(f, "bool"),
@@ -1150,6 +1157,7 @@ impl std::str::FromStr for ElementType {
             "u64" => Ok(ElementType::U64),
             "i128" => Ok(ElementType::I128),
             "u128" => Ok(ElementType::U128),
+            "usize" => Ok(ElementType::USize),
             "bool" | "Bool" => Ok(ElementType::Bool),
             _ => Err(format!("Unknown element type '{}'", s)),
         }
@@ -1357,6 +1365,24 @@ impl Mangle for ElementType {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    /// `usize` is 64 bits and unsigned, reads and prints as `usize`, and holds a literal up to
+    /// the largest `i64` and no further.
+    #[test]
+    fn usize_holds_literals_up_to_the_largest_i64() {
+        let u: ElementType = "usize".parse().unwrap();
+        assert_eq!(u, ElementType::USize);
+        assert_eq!(u.to_string(), "usize");
+        assert_eq!(u.bits(), Some(64));
+        assert!(!u.is_signed_int());
+        assert_eq!(u.accepts_integer_literal("0"), Some(true));
+        assert_eq!(u.accepts_integer_literal("9223372036854775807"), Some(true));
+        assert_eq!(
+            u.accepts_integer_literal("9223372036854775808"),
+            Some(false)
+        );
+        assert_eq!(u.accepts_integer_literal("-1"), Some(false));
+    }
 
     /// `mentions_tensor` is the gate in front of the placement checks, so it has to be true
     /// wherever a placement or a location-stating wrapper could sit: a tensor at the top, under

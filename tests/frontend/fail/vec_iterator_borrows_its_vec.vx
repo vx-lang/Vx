@@ -1,0 +1,44 @@
+//===- vec_iterator_borrows_its_vec.vx - Vx Compiler -----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// `v.iter()` borrows `v`, and `v.iter_mut()` borrows it mutably, as in Rust. So an iterator
+// cannot outlive its vector, and the vector cannot be changed while the iterator is used.
+import std::vec;
+
+// CHECK: Error[E4005]{{.*}}this returns a value that points into this function's stack frame
+fn iterator_over_a_local() -> VecIter<i32> {
+  let mut v = Vec<i32>::new();
+  v.push(41i32);
+  return v.iter();
+}
+
+fn push_while_iterating() -> i32 {
+  let mut v = Vec<i32>::new();
+  v.push(1i32);
+  let mut it = v.iter();
+  // CHECK: Error[E4003]{{.*}}Cannot borrow 'v' as mutable because it is also borrowed as immutable.
+  v.push(2i32);
+  return *it.next().unwrap();
+}
+
+fn read_while_iterating_mutably() -> i32 {
+  let mut v = Vec<i32>::new();
+  v.push(1i32);
+  let mut it = v.iter_mut();
+  // CHECK: Error[E4004]{{.*}}Cannot borrow 'v' because it is already borrowed as mutable.
+  let n = v.len();
+  *it.next().unwrap() = n;
+  return 0i32;
+}
+
+fn main() -> i32 {
+  let mut it = iterator_over_a_local();
+  return *it.next().unwrap() + push_while_iterating() + read_while_iterating_mutably();
+}
+// CHECK: 3 error(s) emitted
