@@ -446,6 +446,9 @@ impl<'a> TypeChecker<'a> {
                 **iterable = Self::method_call_on((*b.expr).clone(), method, span);
             }
         }
+        // `for x in v.iter()` borrows `v` for the whole loop and no longer: the iterator has no
+        // name, so its borrow has no last use to end at.
+        let borrows_before_iterable = self.borrow.snapshot();
         let mut iterable_ty = self.check_expr_type_flag(iterable, consume && !defers_consume);
 
         // A value that is not an iterator but can be turned into one, as a `Vec` can: the
@@ -490,6 +493,7 @@ impl<'a> TypeChecker<'a> {
                 }
             }
         }
+        let iterable_borrows = self.borrow.added_since(&borrows_before_iterable);
         let outer_depth = self.scopes.len();
         self.push_releasing_scope();
 
@@ -649,6 +653,7 @@ impl<'a> TypeChecker<'a> {
 
         self.consteval.constraints.truncate(prev_constraints_len);
         self.pop_scope();
+        self.borrow.forget(&iterable_borrows);
     }
 
     /// Check an infinite `loop`: prove invariants on entry, check the body, then re-prove them

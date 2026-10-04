@@ -246,4 +246,31 @@ impl BorrowCx {
             }
         }
     }
+
+    /// The records added since `before`, a [`Self::snapshot`].
+    pub(crate) fn added_since(
+        &self,
+        before: &HashMap<Symbol, Vec<BorrowRecord>>,
+    ) -> Vec<(Symbol, BorrowRecord)> {
+        let mut added = Vec::new();
+        for (base, list) in &self.active_borrows {
+            let old = before.get(base).map(Vec::as_slice).unwrap_or(&[]);
+            for r in list.iter().filter(|r| !old.contains(r)) {
+                added.push((base.clone(), r.clone()));
+            }
+        }
+        added
+    }
+
+    /// Drop each of `records`, as [`Self::added_since`] returned them.
+    pub(crate) fn forget(&mut self, records: &[(Symbol, BorrowRecord)]) {
+        for (base, record) in records {
+            if let Some(list) = self.active_borrows.get_mut(base) {
+                list.retain(|r| r != record);
+                if list.is_empty() {
+                    self.active_borrows.remove(base);
+                }
+            }
+        }
+    }
 }

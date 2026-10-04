@@ -306,7 +306,14 @@ fn compute_return_provenance_with(
     callee: &dyn Fn(&str) -> Option<ReturnProvenance>,
 ) -> ReturnProvenance {
     if !type_is_ref(&func.return_type) {
-        return ReturnProvenance::NotAReference;
+        // A struct or enum may hold a reference, `View { r : p }`; the walk does not follow one
+        // into its fields. The checker asks only when the type can hold one.
+        return match func.return_type {
+            Type::Struct(..) | Type::Enum(..) | Type::GenericInstance(..) | Type::Generic(..) => {
+                ReturnProvenance::AnyParam
+            }
+            _ => ReturnProvenance::NotAReference,
+        };
     }
     // The exact bitset holds 32 parameters; wider signatures fall back to conservative.
     if func.params.len() > 32 {
