@@ -1029,3 +1029,227 @@ fn libm_log1pf(x : f32) -> f32 {
   }
   return libm_log_eval(xd + 1.0) as f32;
 }
+
+/// The bits of an f16.
+fn libm_f16_to_bits(x : f16) -> u16 {
+  return mlir!( inputs : (%a = x : f16), returns : u16, dialects : ["arith"]) {
+    %r = arith.bitcast %a : f16 to i16
+    macro.yield %r : i16
+  };
+}
+
+/// The f16 with these bits.
+fn libm_f16_from_bits(v : u16) -> f16 {
+  return mlir!( inputs : (%v = v : i16), returns : f16, dialects : ["arith"]) {
+    %r = arith.bitcast %v : i16 to f16
+    macro.yield %r : f16
+  };
+}
+
+/// What `ln`, `log2` and `log10` of an f16 answer for zero, one, a negative number, infinity
+/// and NaN, as bits; `65536`, which no f16 has, for any other input. The shared start of
+/// `logf16`, `log2f16` and `log10f16`.
+fn libm_f16_log_special(x_u : u16) -> u32 {
+  if x_u != 0u16 && x_u != 15360u16 && x_u < 31744u16 {
+    return 65536u32;
+  }
+  // NaN: a signaling one becomes quiet.
+  if (x_u & 32767u16) > 31744u16 {
+    if (x_u & 512u16) == 0u16 {
+      return 32256u32;
+    }
+    return x_u as u32;
+  }
+  // Zero: minus infinity.
+  if (x_u & 32767u16) == 0u16 {
+    return 64512u32;
+  }
+  // One: zero.
+  if x_u == 15360u16 {
+    return 0u32;
+  }
+  // Negative: NaN.
+  if x_u > 32768u16 {
+    return 32256u32;
+  }
+  // Infinity.
+  return 31744u32;
+}
+
+/// `ONE_OVER_F_F` from `expxf16_utils.h`: `1 / f` in single precision, for the 32 values
+/// `f = 1 + i / 32` that the top 5 bits of an f16 mantissa pick.
+const LIBM_F16_ONE_OVER_F : Tensor<f32, [32]> = [
+1.0, 0.9696969985961914, 0.9411764740943909, 0.9142857193946838, 0.8888888955116272, 0.8648648858070374, 0.8421052694320679, 0.8205128312110901,
+0.800000011920929, 0.7804877758026123, 0.761904776096344, 0.7441860437393188, 0.7272727489471436, 0.7111111283302307, 0.695652186870575, 0.6808510422706604,
+0.6666666865348816, 0.6530612111091614, 0.6399999856948853, 0.6274510025978088, 0.6153846383094788, 0.6037735939025879, 0.5925925970077515, 0.581818163394928,
+0.5714285969734192, 0.5614035129547119, 0.5517241358757019, 0.5423728823661804, 0.5333333611488342, 0.5245901346206665, 0.5161290168762207, 0.5079365372657776
+];
+
+/// `LOGF_F` from `expxf16_utils.h`: `log(f)` for each `f` of `LIBM_F16_ONE_OVER_F`.
+const LIBM_F16_LOG_F : Tensor<f32, [32]> = [
+0.0, 0.030771657824516296, 0.0606246218085289, 0.08961215615272522, 0.11778303235769272, 0.14518201351165771, 0.1718502640724182, 0.19782574474811554,
+0.2231435477733612, 0.2478361576795578, 0.2719337046146393, 0.2954642176628113, 0.31845372915267944, 0.3409265875816345, 0.36290550231933594, 0.38441169261932373,
+0.40546509623527527, 0.42608439922332764, 0.4462870955467224, 0.46608972549438477, 0.4855078160762787, 0.5045560002326965, 0.5232481360435486, 0.541597306728363,
+0.5596157908439636, 0.5773153901100159, 0.5947071313858032, 0.6118015646934509, 0.6286086440086365, 0.6451379656791687, 0.6613984704017639, 0.6773988008499146
+];
+
+/// `LOG2F_F` from `expxf16_utils.h`: `log2(f)`.
+const LIBM_F16_LOG2_F : Tensor<f32, [32]> = [
+0.0, 0.0443941205739975, 0.08746284246444702, 0.12928301095962524, 0.1699250042438507, 0.20945335924625397, 0.24792751669883728, 0.28540220856666565,
+0.32192808389663696, 0.3575519919395447, 0.39231741428375244, 0.42626476287841797, 0.45943161845207214, 0.49185308814048767, 0.523561954498291, 0.5545888543128967,
+0.5849624872207642, 0.6147098541259766, 0.6438561677932739, 0.6724253296852112, 0.7004396915435791, 0.7279204726219177, 0.7548875212669373, 0.7813597321510315,
+0.8073549270629883, 0.8328900337219238, 0.8579809665679932, 0.8826430439949036, 0.9068905711174011, 0.930737316608429, 0.9541963338851929, 0.9772799015045166
+];
+
+/// `LOG10F_F` from `expxf16_utils.h`: `log10(f)`.
+const LIBM_F16_LOG10_F : Tensor<f32, [32]> = [
+0.0, 0.01336396113038063, 0.026328938081860542, 0.03891806676983833, 0.05115252360701561, 0.0630517452955246, 0.07463362067937851, 0.08591462671756744,
+0.0969100147485733, 0.10763388127088547, 0.11809930950403214, 0.12831847369670868, 0.13830269873142242, 0.1480625420808792, 0.15760785341262817, 0.1669478863477707,
+0.1760912537574768, 0.18504610657691956, 0.1938200294971466, 0.2024202048778534, 0.21085336804389954, 0.219125896692276, 0.22724378108978271, 0.23521271347999573,
+0.24303804337978363, 0.2507248818874359, 0.2582780122756958, 0.2657020390033722, 0.2730012834072113, 0.28017985820770264, 0.28724169731140137, 0.29419058561325073
+];
+
+/// The natural logarithm of an f16, correctly rounded: `logf16` from `logf16.h`. With
+/// `x = 2^m * 1.mant` and `f` the top 6 bits of `1.mant`, it is `m * log(2) + log(f) +
+/// log(1 + d / f)`, the last a degree-3 polynomial in single precision (Sollya:
+/// `fpminimax(log(1 + x)/x, 2, [|SG...|], [-2^-5, 2^-5])`).
+fn libm_logf16(x : f16) -> f16 {
+  let mut x_u = libm_f16_to_bits(x);
+  let special = libm_f16_log_special(x_u);
+  if special != 65536u32 {
+    return libm_f16_from_bits(special as u16);
+  }
+  // Inputs where the evaluation below would round the wrong way.
+  if x_u == 6453u16 { // 0x1935
+    return libm_f16_from_bits(50681u16); // 0xc5f9
+  }
+  if x_u == 7544u16 { // 0x1d78
+    return libm_f16_from_bits(50491u16); // 0xc53b
+  }
+  if x_u == 15356u16 { // 0x3bfc
+    return libm_f16_from_bits(38913u16); // 0x9801
+  }
+  if x_u == 15358u16 { // 0x3bfe
+    return libm_f16_from_bits(37889u16); // 0x9401
+  }
+  if x_u == 16689u16 { // 0x4131
+    return libm_f16_from_bits(15266u16); // 0x3ba2
+  }
+  let mut m : i32 = -15;
+  // Subnormal: scale by 2^10 into the normal range.
+  if (x_u & 31744u16) == 0u16 {
+    x_u = libm_f16_to_bits(x * libm_f16_from_bits(25600u16));
+    m = m - 10;
+  }
+  let f = ((x_u & 1023u16) >> 5u16) as i64;
+  m = m + (x_u >> 10u16) as i32;
+  let mant_f = libm_f16_from_bits((x_u & 1023u16) | 15360u16) as f32;
+  let v = libm_multiply_add_f32(mant_f, LIBM_F16_ONE_OVER_F[f], -1.0);
+  let p = libm_multiply_add_f32(v, libm_multiply_add_f32(v, libm_f32_from_bits(1051377531u32), libm_f32_from_bits(3204451330u32)), 1.0); // 0x1.557ef6p-2f, -0x1.001804p-1f
+  let log_1_mant = LIBM_F16_LOG_F[f] + v * p;
+  return libm_multiply_add_f32(m as f32, libm_f32_from_bits(1060205080u32), log_1_mant) as f16; // 0x1.62e43p-1f
+}
+
+/// The logarithm to base two of an f16, correctly rounded: `log2f16` from `log2f16.h`, the
+/// same reduction as `libm_logf16` (Sollya: `fpminimax(log2(1 + x)/x, 2, [|SG...|], [-2^-5, 2^-5])`).
+fn libm_log2f16(x : f16) -> f16 {
+  let mut x_u = libm_f16_to_bits(x);
+  let special = libm_f16_log_special(x_u);
+  if special != 65536u32 {
+    return libm_f16_from_bits(special as u16);
+  }
+  // Inputs where the evaluation below would round the wrong way.
+  if x_u == 15267u16 { // 0x3ba3
+    return libm_f16_from_bits(44106u16); // 0xac4a
+  }
+  if x_u == 15341u16 { // 0x3bed
+    return libm_f16_from_bits(41699u16); // 0xa2e3
+  }
+  let mut m : i32 = -15;
+  // Subnormal: scale by 2^10 into the normal range.
+  if (x_u & 31744u16) == 0u16 {
+    x_u = libm_f16_to_bits(x * libm_f16_from_bits(25600u16));
+    m = m - 10;
+  }
+  let f = ((x_u & 1023u16) >> 5u16) as i64;
+  m = m + (x_u >> 10u16) as i32;
+  let mant_f = libm_f16_from_bits((x_u & 1023u16) | 15360u16) as f32;
+  let v = libm_multiply_add_f32(mant_f, LIBM_F16_ONE_OVER_F[f], -1.0);
+  let p = libm_multiply_add_f32(v, libm_multiply_add_f32(v, libm_f32_from_bits(1056332231u32), libm_f32_from_bits(3208166285u32)), libm_f32_from_bits(1069066811u32)); // 0x1.ecb38ep-2f, -0x1.71771ap-1f, 0x1.715476p+0f
+  let log2_1_mant = LIBM_F16_LOG2_F[f] + v * p;
+  return ((m as f32) + log2_1_mant) as f16;
+}
+
+/// The logarithm to base ten of an f16, correctly rounded: `log10f16` from `log10f16.h`, the
+/// same reduction as `libm_logf16`.
+fn libm_log10f16(x : f16) -> f16 {
+  let mut x_u = libm_f16_to_bits(x);
+  let special = libm_f16_log_special(x_u);
+  if special != 65536u32 {
+    return libm_f16_from_bits(special as u16);
+  }
+  // Inputs where the evaluation below would round the wrong way, and exact powers of ten.
+  if x_u == 13199u16 { // 0x338f
+    return libm_f16_from_bits(47363u16); // 0xb903
+  }
+  if x_u == 13304u16 { // 0x33f8
+    return libm_f16_from_bits(47317u16); // 0xb8d5
+  }
+  if x_u == 15274u16 { // 0x3baa
+    return libm_f16_from_bits(42181u16); // 0xa4c5
+  }
+  if x_u == 15276u16 { // 0x3bac
+    return libm_f16_from_bits(42152u16); // 0xa4a8
+  }
+  if x_u == 15308u16 { // 0x3bcc
+    return libm_f16_from_bits(41400u16); // 0xa1b8
+  }
+  if x_u == 18688u16 { // 0x4900
+    return libm_f16_from_bits(15360u16); // 0x3c00
+  }
+  if x_u == 22080u16 { // 0x5640
+    return libm_f16_from_bits(16384u16); // 0x4000
+  }
+  if x_u == 22497u16 { // 0x57e1
+    return libm_f16_from_bits(16435u16); // 0x4033
+  }
+  if x_u == 25552u16 { // 0x63d0
+    return libm_f16_from_bits(16896u16); // 0x4200
+  }
+  if x_u == 28898u16 { // 0x70e2
+    return libm_f16_from_bits(17408u16); // 0x4400
+  }
+  if x_u == 29085u16 { // 0x719d
+    return libm_f16_from_bits(17423u16); // 0x440f
+  }
+  let mut m : i32 = -15;
+  // Subnormal: scale by 2^10 into the normal range.
+  if (x_u & 31744u16) == 0u16 {
+    x_u = libm_f16_to_bits(x * libm_f16_from_bits(25600u16));
+    m = m - 10;
+  }
+  let f = ((x_u & 1023u16) >> 5u16) as i64;
+  m = m + (x_u >> 10u16) as i32;
+  let mant_f = libm_f16_from_bits((x_u & 1023u16) | 15360u16) as f32;
+  let v = libm_multiply_add_f32(mant_f, LIBM_F16_ONE_OVER_F[f], -1.0);
+  let p = libm_multiply_add_f32(v, libm_multiply_add_f32(v, libm_f32_from_bits(1041520220u32), libm_f32_from_bits(3193860276u32)), libm_f32_from_bits(1054759896u32)); // 0x1.28acb8p-3f, -0x1.bce168p-3f, 0x1.bcb7bp-2f
+  let log10_1_mant = LIBM_F16_LOG10_F[f] + v * p;
+  return libm_multiply_add_f32(m as f32, libm_f32_from_bits(1050288283u32), log10_1_mant) as f16; // 0x1.344136p-2f
+}
+
+/// `log(1 + x)` of an f16, correctly rounded. LLVM libc has no `log1pf16`: this is its
+/// `log1pf` on the input widened to f32, rounded to f16. Rounding twice lands one step off
+/// for two inputs, found by checking all 65,536 inputs against `ln(1 + x)` computed to 60
+/// digits; they are listed here.
+fn libm_log1pf16(x : f16) -> f16 {
+  let x_u = libm_f16_to_bits(x);
+  // x = 0x1.80cp-8
+  if x_u == 7683u16 {
+    return libm_f16_from_bits(7679u16); // 0x1.7fcp-8
+  }
+  // x = -0x1.7f4p-8
+  if x_u == 40445u16 {
+    return libm_f16_from_bits(40449u16); // -0x1.804p-8
+  }
+  return libm_log1pf(x as f32) as f16;
+}
