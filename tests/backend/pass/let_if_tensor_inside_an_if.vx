@@ -1,0 +1,33 @@
+//===- let_if_tensor_inside_an_if.vx - Vx Compiler ---------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --run 2>&1 | FileCheck %s
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
+//
+// A `let` whose value is an `if` choosing a row, inside a branch of a statement `if`. The
+// outer `if` produces no value; the inner one does.
+
+fn main() -> i32 {
+  let mut q = Tensor<f32, [3, 4]>::new();
+  q[1][0] = 7.0;
+  let mut s = 0.0;
+  let b = false;
+  if b {
+    s = s + 1.0;
+  } else {
+    let c = if b {
+      q[0]
+    } else {
+      q[1]
+    };
+    s = s + c[0];
+  }
+  print(s);
+  return 0;
+}
+
+// CHECK: 7

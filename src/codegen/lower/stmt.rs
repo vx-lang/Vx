@@ -123,10 +123,11 @@ impl<'c> LowerToMelior<'c> for LetDeclStmt {
             span: _,
         } = self;
         gen.note_shadow(name.as_ref());
+        // The initializer is expected to be the annotated type, or whatever it is. Not the
+        // type the enclosing code expected: inside a statement `if`, that is "no value", and an
+        // `if` initializer would then drop its value.
         let prev_expected = gen.expected_type;
-        if let Some(ann) = ty_ann {
-            gen.expected_type = gen.lower_type(ann).ok();
-        }
+        gen.expected_type = ty_ann.as_ref().and_then(|ann| gen.lower_type(ann).ok());
         let (val, ty, block) = gen.generate_expr(expr, block)?;
         if let Expr::Closure(c) = expr {
             let func_args = c.params.iter().map(|(_, t)| t.clone()).collect();
