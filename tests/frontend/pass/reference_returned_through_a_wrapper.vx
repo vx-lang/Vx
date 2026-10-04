@@ -1,0 +1,47 @@
+//===- reference_returned_through_a_wrapper.vx - Vx Compiler ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+//
+// `wrap` returns what `first` returns, which is its first argument. So `wrap(&x, &y)` borrows
+// only `x`, and `y` can be assigned while the result is used. The same holds through two
+// wrappers.
+//
+// CHECK-NOT: Error
+// CHECK-LABEL: func.func @main
+
+fn first(a : &i32, _b : &i32) -> &i32 {
+  return a;
+}
+
+fn wrap(a : &i32, b : &i32) -> &i32 {
+  return first(a, b);
+}
+
+fn wrap_twice(a : &i32, b : &i32) -> &i32 {
+  return wrap(a, b);
+}
+
+fn through_one_wrapper() -> i32 {
+  let x = 1i32;
+  let mut y = 2i32;
+  let r = wrap(&x, &y);
+  y = 3i32;
+  return *r + y;
+}
+
+fn through_two_wrappers() -> i32 {
+  let x = 1i32;
+  let mut y = 2i32;
+  let r = wrap_twice(&x, &y);
+  y = 3i32;
+  return *r + y;
+}
+
+fn main() -> i32 {
+  return through_one_wrapper() + through_two_wrappers();
+}

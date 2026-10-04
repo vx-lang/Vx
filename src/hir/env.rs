@@ -252,6 +252,8 @@ impl<'a> GlobalAstEnv<'a> {
                 }
             }
         }
+        let funcs: Vec<&Function> = env.syntax_functions.values().copied().collect();
+        crate::hir::provenance::refine_through_calls(&funcs, &mut env.return_provenances);
         // Build the transfer-cost graph once, now that `topologies` is populated. It used to be
         // built inside `TypeChecker::new` -- that is, once per *function* -- where it ran the
         // all-pairs shortest-path precompute twice (once in `default()`, once in
@@ -297,6 +299,8 @@ impl<'a> GlobalAstEnv<'a> {
                 }
             }
         }
+        let funcs: Vec<&Function> = modules.iter().flat_map(|m| m.functions.iter()).collect();
+        crate::hir::provenance::refine_through_calls(&funcs, &mut self.return_provenances);
     }
 
     /// Fill [`GlobalAstEnv::comptime_bodies`] from modules that still carry bodies.

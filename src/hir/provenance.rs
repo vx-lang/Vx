@@ -28,8 +28,8 @@ pub enum ReturnProvenance {
     /// derives from parameter `i`). Exact for functions with up to 32 parameters.
     FromParams(u32),
     /// Conservative top: the return may derive from any reference parameter. The default for every
-    /// unknown — a call in the return position (v1), recursion, `unsafe`, more than 32 parameters,
-    /// or a missing summary. Reproduces the pre-precision (#243) behaviour exactly.
+    /// unknown — a call to a method or to a function with no exact summary, recursion, `unsafe`,
+    /// more than 32 parameters, or a missing summary.
     AnyParam,
     /// The returned reference roots in a function-local — already an `E4005` in the callee; callers
     /// treat it conservatively.
@@ -132,6 +132,19 @@ struct ProvWalk<'a> {
     /// the body contains an `unsafe` block ⇒ a parameter-derived pointer may be stashed somewhere a
     /// structural walk cannot see, so the summary must be conservative.
     saw_unsafe: bool,
+    /// The summaries known so far for the functions this body calls.
+    callee: &'a dyn Fn(&str) -> Option<ReturnProvenance>,
+}
+
+/// Of two sources of one reference: an unknown one wins, then a local one.
+fn join(a: ExprProv, b: ExprProv) -> ExprProv {
+    match (a, b) {
+        (ExprProv::Params(x), ExprProv::Params(y)) => ExprProv::Params(x | y),
+        (ExprProv::Any | ExprProv::NotRef, _) | (_, ExprProv::Any | ExprProv::NotRef) => {
+            ExprProv::Any
+        }
+        _ => ExprProv::Local,
+    }
 }
 
 impl<'a> ProvWalk<'a> {
@@ -170,10 +183,28 @@ impl<'a> ProvWalk<'a> {
                     ExprProv::Any
                 }
             }
-            // A call in the return position: v1 is conservative (cross-function summaries are a
-            // deferred fixpoint). A correct callee derives its result from its reference inputs, so
-            // this is sound as `Any`.
-            Expr::FunctionCall(_) | Expr::MethodCall(_) => ExprProv::Any,
+            // `first(a, b)` returning from its first parameter roots where `a` does. A callee with
+            // no exact summary yet, and a method call, are unknown.
+            // A local of the same name, a closure, hides the function.
+            Expr::FunctionCall(fc)
+                if self.params.contains_key(fc.name.as_ref())
+                    || self.locals.contains_key(fc.name.as_ref()) =>
+            {
+                ExprProv::Any
+            }
+            Expr::FunctionCall(fc) => match (self.callee)(fc.name.as_ref()) {
+                Some(ReturnProvenance::FromParams(bits)) if bits != 0 => (0..32)
+                    .filter(|i| bits & (1u32 << i) != 0)
+                    .map(|i| {
+                        fc.args
+                            .get(i as usize)
+                            .map_or(ExprProv::Any, |a| self.expr_prov(a))
+                    })
+                    .reduce(join)
+                    .unwrap_or(ExprProv::Any),
+                _ => ExprProv::Any,
+            },
+            Expr::MethodCall(_) => ExprProv::Any,
             // Value expressions carry no reference provenance.
             Expr::Number(_) | Expr::StringLiteral(_) => ExprProv::NotRef,
             _ => ExprProv::Any,
@@ -263,8 +294,17 @@ impl<'a> ProvWalk<'a> {
 }
 
 /// Compute the return-provenance summary for `func` (#243). Pure and body-only — safe to call from
-/// any worker on any function, in any order.
+/// any worker on any function, in any order. A call in a return position is unknown here;
+/// [`refine_through_calls`] makes it exact.
 pub fn compute_return_provenance(func: &Function) -> ReturnProvenance {
+    compute_return_provenance_with(func, &|_| None)
+}
+
+/// As [`compute_return_provenance`], reading what a called function returns from `callee`.
+fn compute_return_provenance_with(
+    func: &Function,
+    callee: &dyn Fn(&str) -> Option<ReturnProvenance>,
+) -> ReturnProvenance {
     if !type_is_ref(&func.return_type) {
         return ReturnProvenance::NotAReference;
     }
@@ -286,6 +326,7 @@ pub fn compute_return_provenance(func: &Function) -> ReturnProvenance {
         saw_local: false,
         saw_param: false,
         saw_unsafe: false,
+        callee,
     };
     walk.walk_block(&func.body);
 
@@ -319,6 +360,37 @@ pub fn provenance_map<'a>(
         map.insert(f.name.clone(), compute_return_provenance(f));
     }
     map
+}
+
+/// Recompute the summaries in `map` with each call in a return position read through its callee's
+/// summary, until none changes. Every summary starts sound and each round only narrows it, so the
+/// result is sound after any number of rounds; recursion keeps `AnyParam`.
+pub fn refine_through_calls(
+    funcs: &[&Function],
+    map: &mut std::collections::HashMap<crate::symbol::Symbol, ReturnProvenance>,
+) {
+    let funcs: Vec<&Function> = funcs
+        .iter()
+        .copied()
+        .filter(|f| map.contains_key(&f.name) && type_is_ref(&f.return_type))
+        .collect();
+    // Each round settles at least one more level of the call graph; deeper chains stay
+    // conservative.
+    for _ in 0..16 {
+        let mut changed = false;
+        for f in &funcs {
+            let prov = compute_return_provenance_with(f, &|name| {
+                map.get(&crate::symbol::Symbol::from(name)).copied()
+            });
+            if map.get(&f.name) != Some(&prov) {
+                map.insert(f.name.clone(), prov);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -389,9 +461,72 @@ mod tests {
     }
 
     #[test]
-    fn call_in_return_position_is_conservative_in_v1() {
+    fn call_in_return_position_is_unknown_without_the_callee() {
         let src = "fn probe(m : &i32) -> &i32 { return m; } fn wrap(a : &i32, b : &i32) -> &i32 { return probe(b); }";
         assert_eq!(summarize(src, "wrap"), ReturnProvenance::AnyParam);
+    }
+
+    /// Every function in `src`, summarized with calls read through their callees.
+    fn summarize_all(
+        src: &str,
+    ) -> std::collections::HashMap<crate::symbol::Symbol, ReturnProvenance> {
+        let mut lexer = crate::lexer::Lexer::new(src);
+        let tokens = lexer.tokenize();
+        let mut parser = crate::parser::Parser::new(&tokens, src);
+        let program = parser.parse().expect("parses");
+        let funcs: Vec<&Function> = program.functions.iter().collect();
+        let mut map = provenance_map(funcs.iter().copied());
+        refine_through_calls(&funcs, &mut map);
+        map
+    }
+
+    #[test]
+    fn a_call_maps_the_callee_parameters_onto_its_arguments() {
+        // `wrap` passes its `b` as `probe`'s only parameter, and swaps them for `second`.
+        let map = summarize_all(
+            "fn probe(m : &i32) -> &i32 { return m; } \
+             fn second(a : &i32, b : &i32) -> &i32 { return b; } \
+             fn wrap(a : &i32, b : &i32) -> &i32 { return probe(b); } \
+             fn swap(a : &i32, b : &i32) -> &i32 { return second(b, a); }",
+        );
+        assert_eq!(
+            map[&crate::symbol::Symbol::from("wrap")],
+            ReturnProvenance::FromParams(0b10)
+        );
+        assert_eq!(
+            map[&crate::symbol::Symbol::from("swap")],
+            ReturnProvenance::FromParams(0b01)
+        );
+    }
+
+    #[test]
+    fn a_chain_of_calls_is_followed_to_the_end() {
+        let map = summarize_all(
+            "fn three(a : &i32, b : &i32) -> &i32 { return two(a, b); } \
+             fn two(a : &i32, b : &i32) -> &i32 { return one(b); } \
+             fn one(m : &i32) -> &i32 { return m; }",
+        );
+        assert_eq!(
+            map[&crate::symbol::Symbol::from("three")],
+            ReturnProvenance::FromParams(0b10)
+        );
+    }
+
+    #[test]
+    fn recursion_and_a_closure_named_like_a_function_stay_unknown() {
+        let map = summarize_all(
+            "fn probe(m : &i32) -> &i32 { return m; } \
+             fn again(a : &i32, b : &i32) -> &i32 { return again(a, b); } \
+             fn hidden(a : &i32, b : &i32, probe : i32) -> &i32 { return probe(b); }",
+        );
+        assert_eq!(
+            map[&crate::symbol::Symbol::from("again")],
+            ReturnProvenance::AnyParam
+        );
+        assert_eq!(
+            map[&crate::symbol::Symbol::from("hidden")],
+            ReturnProvenance::AnyParam
+        );
     }
 
     /// The inline slot-0 code (#265) names a single in-budget parameter as `slot + 1` and degrades

@@ -1,0 +1,29 @@
+//===- reference_returned_through_a_wrapper.vx - Vx Compiler ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// `swap` passes its arguments to `second` in the other order, so it returns its own first
+// argument: `swap(&x, &y)` borrows `x`, and assigning `x` while the result is used is refused.
+
+fn second(_a : &i32, b : &i32) -> &i32 {
+  return b;
+}
+
+fn swap(a : &i32, b : &i32) -> &i32 {
+  return second(b, a);
+}
+
+fn main() -> i32 {
+  let mut x = 1i32;
+  let y = 2i32;
+  let r = swap(&x, &y);
+  // CHECK: Error[E4009]{{.*}}`x` is assigned while it is borrowed
+  x = 3i32;
+  return *r;
+}
+// CHECK: 1 error(s) emitted
