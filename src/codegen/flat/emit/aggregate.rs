@@ -57,6 +57,19 @@ impl FnEmit<'_> {
                 if memref_rank(&memty) != descriptor_rank(&fty) {
                     return Err(crate::emitter_gap!());
                 }
+                // A row is a strided view whose descriptor carries an offset into its tensor. The
+                // field is read back as a plain memref, whose type says the offset is 0, so the
+                // offset would be lost and the read would land in row 0. Move the data pointer
+                // to the row first.
+                let (val, memty) = if memty.contains("strided<") {
+                    let (dims_x, et) =
+                        memref_lead_dims_and_elem(&memty).ok_or(crate::emitter_gap!())?;
+                    let plain = format!("memref<{dims_x}{et}>");
+                    let v = self.cast_memref_value(&format!("fv{idx}"), &val, &memty, &plain)?;
+                    (v, plain)
+                } else {
+                    (val, memty)
+                };
                 let d = format!("%fd{idx}");
                 self.body += &format!(
                     "  {d} = builtin.unrealized_conversion_cast {val} : {memty} to {fty}\n"

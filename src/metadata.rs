@@ -95,7 +95,7 @@ impl<'a> VxMetadata<'a> {
 const VXLIB_MAGIC: &[u8; 4] = b"VXLB";
 /// Format tag folded into an FNV-1a stamp (`src/hash.rs`) written after the magic. A codec change
 /// bumps this string, so a stale artifact is *detected* (version mismatch on load) rather than misread.
-const VXLIB_FORMAT_TAG: &str = "vxlib-interface-v13";
+const VXLIB_FORMAT_TAG: &str = "vxlib-interface-v14";
 
 /// Append-only little-endian byte writer for the interface codec.
 struct Writer {

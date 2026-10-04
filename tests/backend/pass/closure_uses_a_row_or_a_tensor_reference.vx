@@ -1,0 +1,65 @@
+//===- closure_uses_a_row_or_a_tensor_reference.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A closure keeps the variables it uses in a struct. Two kinds of tensor value
+// used to go wrong there:
+//
+// - A row `q[1]` is a view that starts four elements into `q`. The closure read
+//   it back as if it started at the beginning, so `r[2]` gave `q[0][2]`, which
+//   is 0, instead of `q[1][2]`, which is 4.
+// - A reference `&a` to a tensor had no field type the struct could hold, so
+//   the function did not compile on the default code generator.
+//
+// `sum_with` also passes `&q` to another function while the row closure is in
+// use, in one expression, which used to fail MLIR verification.
+//
+// Default code generator only: the legacy one cannot put a tensor in a struct
+// field at all, and a closure's variables are a struct.
+//
+// REQUIRES: flat-codegen
+// EXPECT: 4 3 9
+fn first(v : &Tensor<f32, [4]>) -> f32 {
+  return v[0];
+}
+
+fn total(t : &Tensor<f32, [2, 4]>) -> f32 {
+  return t[0][0] + t[1][2];
+}
+
+fn row_closure() -> f32 {
+  let mut q = Tensor<f32, [2, 4]>::new();
+  q[1][2] = 4.0;
+  let r = q[1];
+  let f = || r[2];
+  return f();
+}
+
+fn reference_closure() -> f32 {
+  let mut a = Tensor<f32, [4]>::new();
+  a[0] = 3.0;
+  let ra = &a;
+  let f = || first(ra);
+  return f();
+}
+
+fn sum_with() -> f32 {
+  let mut q = Tensor<f32, [2, 4]>::new();
+  q[0][0] = 1.0;
+  q[1][2] = 4.0;
+  let r = q[1];
+  let f = || r[2];
+  return f() + total(&q);
+}
+
+fn main() -> i32 {
+  print(row_closure() as i32);
+  print!(" ");
+  print(reference_closure() as i32);
+  print!(" ");
+  print(sum_with() as i32);
+  return 0;
+}
