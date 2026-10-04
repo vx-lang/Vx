@@ -1421,6 +1421,12 @@ impl<'a> TypeChecker<'a> {
                     .iter()
                     .any(|t| self.type_can_hold_reference_in(t, seen))
             }
+            // `PhantomData<&T>` stores nothing, and says the struct holding it borrows a `T`, as
+            // in Rust: how a struct over a raw pointer borrows what it points into.
+            Type::GenericInstance(base, args) if matches!(&**base, Type::Struct(name, _) if name.as_ref() == "PhantomData") => {
+                args.iter()
+                    .any(|a| self.type_can_hold_reference_in(a, seen))
+            }
             // `Option<Ordering>` is asked about `Ordering`, not about the declared `T`,
             // which as a bare parameter would count as "could hold one".
             Type::GenericInstance(base, args) => match &**base {

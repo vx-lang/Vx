@@ -1508,13 +1508,7 @@ impl<'c> LowerToMelior<'c> for StructInitExpr {
             let mut inner_tys = Vec::new();
             for ty_arg_raw in crate::syntax::split_type_args(inner_ty_str) {
                 let ty_arg = ty_arg_raw.trim();
-                let inner_ty = if ty_arg == "i32" {
-                    syntax::Type::Scalar(syntax::ElementType::I32)
-                } else if ty_arg == "f32" {
-                    syntax::Type::Scalar(syntax::ElementType::F32)
-                } else if ty_arg == "i64" {
-                    syntax::Type::Scalar(syntax::ElementType::I64)
-                } else if ty_arg.chars().all(|c| c.is_ascii_digit()) {
+                let inner_ty = if ty_arg.chars().all(|c| c.is_ascii_digit()) {
                     syntax::Type::Const(Box::new(syntax::Expr::Number(
                         syntax::expr::NumberExpr::new(
                             ty_arg.to_string(),
@@ -1523,7 +1517,11 @@ impl<'c> LowerToMelior<'c> for StructInitExpr {
                         ),
                     )))
                 } else {
-                    syntax::Type::Struct(ty_arg.to_string().into(), None)
+                    // Any type, `&i32` and `f64` included, not only a struct name.
+                    let tokens = crate::lexer::Lexer::new(ty_arg).tokenize();
+                    crate::parser::Parser::new(&tokens, ty_arg)
+                        .parse_type()
+                        .unwrap_or_else(|_| syntax::Type::Struct(ty_arg.to_string().into(), None))
                 };
                 inner_tys.push(inner_ty);
             }

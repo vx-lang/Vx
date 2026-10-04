@@ -752,6 +752,11 @@ fn agg_struct_ty_of(
         });
     }
     let def = registry.layouts.get(&gid).ok_or(crate::emitter_gap!())?;
+    // A field of an empty struct, `PhantomData<T>`, takes no space, as an empty struct does on
+    // its own.
+    if def.align_bytes != 0 && def.fields.is_empty() && registry.structs.contains_key(&gid) {
+        return Ok("!llvm.struct<()>".to_string());
+    }
     if def.align_bytes == 0 || def.fields.is_empty() {
         return Err(Decline::TypeNotModelled {
             what: "an aggregate with no fields or alignment",
