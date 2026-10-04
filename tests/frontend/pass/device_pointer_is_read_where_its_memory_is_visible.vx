@@ -1,0 +1,34 @@
+//===- device_pointer_is_read_where_its_memory_is_visible.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The rule that refuses `*p` on a GPU pointer in host code is about where the
+// program is running, not about the pointer. Inside a block running on the GPU
+// the same pointer can be read and written, and a host pointer is still read on
+// the host as before.
+//
+// Only the type checker runs here. Code generation for `as_ptr()` is a later
+// part of issue #742.
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --print-ast 2>&1 | FileCheck %s
+// CHECK-NOT: Error
+// CHECK: Let on_host
+// CHECK-NOT: Error
+
+fn main() -> i32 {
+  let host_data : Tensor<f32, [4, 4]> = Tensor<f32, [4, 4]>::new();
+  let on_gpu = transfer(host_data, Memory::GPU_HBM);
+  let p = on_gpu.as_mut_ptr();
+  spawn on(Topology::GPU) {
+    unsafe { let first = *p; *p = first + 1.0; p[1] = 2.0; }
+  }
+
+  let other : Tensor<f32, [4]> = Tensor<f32, [4]>::new();
+  let hp = other.as_mut_ptr();
+  let on_host = unsafe { *hp };
+  unsafe { *hp = on_host + 1.0; }
+  return 0;
+}

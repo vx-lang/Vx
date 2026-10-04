@@ -555,6 +555,7 @@ impl<'a> TypeChecker<'a> {
                         "Reading a field through a raw pointer"
                     };
                     self.require_unsafe_raw_access(verb, &ma_span);
+                    self.check_pointer_target_is_visible(&base_ty, verb, &ma_span);
                 }
                 if let Type::Borrow { inner: t, .. } | Type::Pointer(t, _, _) = base_ty {
                     base_ty = *t;
@@ -825,8 +826,11 @@ impl<'a> TypeChecker<'a> {
                     Type::Borrow { inner, .. } => *inner,
                     other => other,
                 };
-                if let Type::Pointer(inner, _, _) = base {
+                if let Type::Pointer(..) = &base {
                     self.require_unsafe_raw_access("Indexing a raw pointer", &ix_span);
+                    self.check_pointer_target_is_visible(&base, "Indexing a raw pointer", &ix_span);
+                }
+                if let Type::Pointer(inner, _, _) = base {
                     *inner
                 } else if let Type::Tensor(el_ty, dims, top) = base {
                     if dims.len() > 1 {
@@ -1610,6 +1614,58 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// A read or write through a pointer happens where the program is running, so a pointer into
+    /// memory the active topology cannot see is refused here: host code cannot load from
+    /// `*mut f32 in Memory::GPU_HBM`. `unsafe` does not lift this. It takes responsibility for
+    /// memory safety, not for a load the processor has no way to make. The pointer itself is a
+    /// host value and may still be passed on, to a C function or into a block running where the
+    /// memory is visible.
+    pub(crate) fn check_pointer_target_is_visible(
+        &mut self,
+        pointer_ty: &Type,
+        what: &str,
+        span: &crate::syntax::Span,
+    ) {
+        if self.speculating {
+            return;
+        }
+        let Type::Pointer(_, Some(place), _) = pointer_ty else {
+            return;
+        };
+        let owner = self.transfer_cost_graph.placement_topology(place);
+        let space = self.transfer_cost_graph.placement_space(place);
+        // The same question the identifier rule asks of a placed value, asked of the pointee.
+        let pointee = Type::Ref(Box::new(Type::Scalar(ElementType::F32)), space.clone());
+        if self
+            .transfer_cost_graph
+            .is_type_accessible(&self.active_topology, &owner, &pointee)
+        {
+            return;
+        }
+        let visible = self
+            .transfer_cost_graph
+            .descriptor(&self.active_topology.kind())
+            .map(|d| {
+                d.visibility
+                    .iter()
+                    .map(|s| s.name())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_default();
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E6003,
+            format!(
+                "{what} into {space} is not possible here: {active} sees only [{visible}]. The \
+                 pointer can be passed on, but what it points at can only be read or written \
+                 where {space} is visible",
+                space = space.name(),
+                active = self.active_topology.display_name(),
+            ),
+            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+        );
+    }
+
     pub(crate) fn check_dereference_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
         match expr {
             Expr::Dereference(e) => {
@@ -1641,6 +1697,7 @@ impl<'a> TypeChecker<'a> {
                             "Dereferencing a raw pointer"
                         };
                         self.require_unsafe_raw_access(verb, &e.span);
+                        self.check_pointer_target_is_visible(&inner_ty, verb, &e.span);
                         *t
                     }
                     Type::Borrow { inner: t, .. } => *t,

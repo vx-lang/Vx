@@ -55,11 +55,16 @@ same rules as a tensor's placement apply to the name after `in`, and `*mut f32 i
 is the same type as `*mut f32`. At a C call the pointer is passed as an ordinary pointer, which is
 what a library such as cuBLAS takes for a device buffer.
 
+Host code may hold such a pointer and pass it on, but cannot read or write what it points at,
+inside `unsafe` or not: the CPU has no way to load from GPU memory. `*p`, `p[i]` and `p.field` are
+refused with E6003 wherever the running topology cannot see the pointer's memory, and allowed in a
+block running where it can.
+
 > [!NOTE]
-> **Partly implemented.** The spelling type-checks and lowers, and `t.as_ptr()` on a tensor gives
-> a pointer to its first element in the tensor's memory. Refusing a host read through such a
-> pointer, a diagnostic of its own for passing a pointer into the wrong memory, and code generation
-> for `as_ptr()` are the later parts of issue #742.
+> **Partly implemented.** The spelling type-checks and lowers, `t.as_ptr()` on a tensor gives a
+> pointer to its first element in the tensor's memory, and a read through a pointer is checked
+> against where the program runs. A diagnostic of its own for passing a pointer into the wrong
+> memory, and code generation for `as_ptr()`, are the later parts of issue #742.
 
 ### The `Ref<T, Memory>` Type
 

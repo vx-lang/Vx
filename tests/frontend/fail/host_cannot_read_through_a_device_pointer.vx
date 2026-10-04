@@ -1,0 +1,53 @@
+//===- host_cannot_read_through_a_device_pointer.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A pointer into GPU memory may be passed around by host code, but the host
+// cannot read or write what it points at: the CPU has no way to load from GPU
+// memory. Every way of going through the pointer is refused, inside `unsafe`
+// too, because `unsafe` takes responsibility for memory safety and not for a
+// load the processor cannot make.
+//
+// The four ways through a pointer are each checked by different code, so each
+// is covered: `*p` as a read, `*p = v` as a write, `p[i]`, and `q.field`.
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// RUN: not vxc %s 2>&1 | FileCheck %s --check-prefix=COUNT
+// CHECK-DAG: E6003
+// CHECK-DAG: Dereferencing a raw pointer into GPU_HBM is not possible here: CPU sees only [CPU_DRAM, NPU_HBM]
+// CHECK-DAG: Writing through a raw pointer into GPU_HBM is not possible here
+// CHECK-DAG: Indexing a raw pointer into GPU_HBM is not possible here
+// CHECK-DAG: Reading a field through a raw pointer into GPU_HBM is not possible here
+//
+// Four refusals, one per way through the pointer. Passing the pointer to the extern
+// function is not one of them.
+// COUNT-COUNT-4: is not possible here
+// COUNT-NOT: is not possible here
+
+struct Pair {
+  a : f32,
+  b : f32,
+}
+
+extern "C" {
+  fn vendor_fill(data : *mut f32 in Memory::GPU_HBM, n : i32) -> i32;
+}
+
+fn reads_a_field(q : *mut Pair in Memory::GPU_HBM) -> f32 {
+  let v = unsafe { q.a };
+  return v;
+}
+
+fn main() -> i32 {
+  let host_data : Tensor<f32, [4, 4]> = Tensor<f32, [4, 4]>::new();
+  let on_gpu = transfer(host_data, Memory::GPU_HBM);
+  let p = on_gpu.as_mut_ptr();
+  let passed_on = unsafe { vendor_fill(p, 16) };
+  let x = unsafe { *p };
+  unsafe { *p = 1.0; }
+  let y = unsafe { p[1] };
+  return passed_on;
+}
