@@ -1835,3 +1835,310 @@ fn libm_cosh_bf16(x : bf16) -> bf16 {
 fn libm_tanh_bf16(x : bf16) -> bf16 {
   return libm_bf16_from_f32(libm_tanhf(libm_f32_from_bf16(x)));
 }
+
+/// `SIN_K_PI_OVER_32` from `sincosf_utils.h`: `sin(k * pi / 32)` for `k` from 0 to 63.
+const LIBM_SIN_K_PI_OVER_32 : Tensor<f64, [64]> = [
+0.0, 0.0980171403295606, 0.19509032201612828, 0.2902846772544624,
+0.3826834323650898, 0.47139673682599764, 0.5555702330196022, 0.6343932841636455,
+0.7071067811865476, 0.773010453362737, 0.8314696123025452, 0.881921264348355,
+0.9238795325112867, 0.9569403357322088, 0.9807852804032304, 0.9951847266721969,
+1.0, 0.9951847266721969, 0.9807852804032304, 0.9569403357322088,
+0.9238795325112867, 0.881921264348355, 0.8314696123025452, 0.773010453362737,
+0.7071067811865476, 0.6343932841636455, 0.5555702330196022, 0.47139673682599764,
+0.3826834323650898, 0.2902846772544624, 0.19509032201612828, 0.0980171403295606,
+0.0, -0.0980171403295606, -0.19509032201612828, -0.2902846772544624,
+-0.3826834323650898, -0.47139673682599764, -0.5555702330196022, -0.6343932841636455,
+-0.7071067811865476, -0.773010453362737, -0.8314696123025452, -0.881921264348355,
+-0.9238795325112867, -0.9569403357322088, -0.9807852804032304, -0.9951847266721969,
+-1.0, -0.9951847266721969, -0.9807852804032304, -0.9569403357322088,
+-0.9238795325112867, -0.881921264348355, -0.8314696123025452, -0.773010453362737,
+-0.7071067811865476, -0.6343932841636455, -0.5555702330196022, -0.47139673682599764,
+-0.3826834323650898, -0.2902846772544624, -0.19509032201612828, -0.0980171403295606
+];
+
+/// The reduced argument for `sinf`, `cosf` and `tanf`: `k = round(x * 32 / pi)` and
+/// `y = x * 32 / pi - k`, from `range_reduction_fma.h`. `32 / pi` is held in five doubles; up
+/// to 2^45 two of them are enough, and beyond that `small_range_reduction` would lose the
+/// integer bits, so `large_range_reduction` first drops the part of the product that only
+/// adds whole multiples of 64.
+struct LibmTrigReduced {
+  k : i64,
+  y : f64,
+}
+
+fn libm_trig_reduce(xd : f64, x_abs : u32) -> LibmTrigReduced {
+  // |x| < 2^45
+  if x_abs < 1442840576u32 { // 0x56000000
+    let kd = libm_round_even_f64(xd * libm_f64_from_bits(4621923779193981059u64)); // 0x1.45f306dc9c883p+3
+    let y0 = libm_multiply_add(xd, libm_f64_from_bits(4621923779193981059u64), -kd); // 0x1.45f306dc9c883p+3
+    return LibmTrigReduced {
+      k: kd as i64, y: libm_multiply_add(xd, libm_f64_from_bits(13602753370724069462u64), y0)
+    }; // -0x1.6b01ec5417056p-51
+  }
+  let x_exp = ((x_abs >> 23u32) as i32) - 127;
+  if x_exp < 99 {
+    // Below 2^55 the lowest 6 integer bits are in the last 12 bits of the product.
+    let mut prod_hi = libm_f64_to_bits(xd * libm_f64_from_bits(4621923779193981059u64)); // 0x1.45f306dc9c883p+3
+    if x_exp < 55 {
+      prod_hi = prod_hi & 18446744073709547520u64;
+    }
+    let k_hi = libm_round_even_f64(libm_f64_from_bits(prod_hi));
+    let truncated_prod = libm_multiply_add(xd, libm_f64_from_bits(4621923779193981059u64), -k_hi); // 0x1.45f306dc9c883p+3
+    let prod_lo = libm_multiply_add(xd, libm_f64_from_bits(13602753370724069462u64), truncated_prod); // -0x1.6b01ec5417056p-51
+    let k_lo = libm_round_even_f64(prod_lo);
+    let mut y = libm_multiply_add(xd, libm_f64_from_bits(13602753370724069462u64), truncated_prod - k_lo); // -0x1.6b01ec5417056p-51
+    y = libm_multiply_add(xd, libm_f64_from_bits(13359440653826315470u64), y); // -0x1.6447e493ad4cep-105
+    y = libm_multiply_add(xd, libm_f64_from_bits(3895087871152826546u64), y); // 0x1.e21c820ff28b2p-159
+    return LibmTrigReduced {
+      k: k_lo as i64, y: y
+    };
+  }
+  // From 2^99 the first part of 32 / pi contributes only multiples of 64; below 2^110 the
+  // lowest 6 integer bits are in the last 12 bits of the product with the second part.
+  let mut prod_hi = libm_f64_to_bits(xd * libm_f64_from_bits(13602753370724069462u64)); // -0x1.6b01ec5417056p-51
+  if x_exp < 110 {
+    prod_hi = prod_hi & 18446744073709547520u64;
+  }
+  let k_hi = libm_round_even_f64(libm_f64_from_bits(prod_hi));
+  let truncated_prod = libm_multiply_add(xd, libm_f64_from_bits(13602753370724069462u64), -k_hi); // -0x1.6b01ec5417056p-51
+  let prod_lo = libm_multiply_add(xd, libm_f64_from_bits(13359440653826315470u64), truncated_prod); // -0x1.6447e493ad4cep-105
+  let k_lo = libm_round_even_f64(prod_lo);
+  let mut y = libm_multiply_add(xd, libm_f64_from_bits(13359440653826315470u64), truncated_prod - k_lo); // -0x1.6447e493ad4cep-105
+  y = libm_multiply_add(xd, libm_f64_from_bits(3895087871152826546u64), y); // 0x1.e21c820ff28b2p-159
+  y = libm_multiply_add(xd, libm_f64_from_bits(12868200654512296503u64), y); // -0x1.508510ea79237p-214
+  return LibmTrigReduced {
+    k: k_lo as i64, y: y
+  };
+}
+
+/// `sin(k * pi / 32)`, `cos(k * pi / 32)`, `sin(y * pi / 32)` and `cos(y * pi / 32) - 1` for the
+/// reduced argument: `sincosf_eval` from `sincosf_utils.h`.
+struct LibmSinCosParts {
+  sin_k : f64,
+  cos_k : f64,
+  sin_y : f64,
+  cosm1_y : f64,
+}
+
+fn libm_sincosf_eval(xd : f64, x_abs : u32) -> LibmSinCosParts {
+  let r = libm_trig_reduce(xd, x_abs);
+  let y = r.y;
+  let ysq = y * y;
+  // Sollya: fpminimax(sin(y*pi/32)/y, [|0, 2, 4, 6|], [|D...|], [0, 0.5])
+  let sin_y = y * libm_multiply_add(ysq, libm_multiply_add(ysq, libm_multiply_add(ysq, libm_f64_from_bits(13669317923257010814u64), libm_f64_from_bits(4500334886939207542u64)), libm_f64_from_bits(13773322388209249201u64)), libm_f64_from_bits(4591738658415193368u64)); // -0x1.32c3a619d4a7ep-36, 0x1.466bc624f2776p-24, -0x1.4abbce625abb1p-13, 0x1.921fb54442d18p-4
+  // Sollya: fpminimax(cos(x*pi/32), [|0, 2, 4, 6|], [|1, D...|], [0, 0.5])
+  let cosm1_y = ysq * libm_multiply_add(ysq, libm_multiply_add(ysq, libm_f64_from_bits(13696955857052975616u64), libm_f64_from_bits(4526183729467239975u64)), libm_f64_from_bits(13795578152346338059u64)); // -0x1.55cc84bd942p-30, 0x1.03c1f070c2e27p-18, -0x1.3bd3cc9be430bp-8
+  return LibmSinCosParts {
+    sin_k: LIBM_SIN_K_PI_OVER_32[r.k & 63], cos_k: LIBM_SIN_K_PI_OVER_32[(r.k + 16) & 63], sin_y: sin_y, cosm1_y: cosm1_y
+  };
+}
+
+/// The sine, correctly rounded: `sinf` from `sinf_double_eval.h`. Near zero a polynomial;
+/// otherwise `sin(x) = sin(y*pi/32) cos(k*pi/32) + cos(y*pi/32) sin(k*pi/32)`.
+fn libm_sinf(x : f32) -> f32 {
+  let x_u = libm_f32_to_bits(x);
+  let x_abs = x_u & 2147483647u32; // 0x7fffffff
+  let xd = x as f64;
+  // |x| <= pi/16
+  if x_abs <= 1044975579u32 { // 0x3e490fdb
+    // |x| < 0x1.d12ed2p-12
+    if x_abs < 971544425u32 { // 0x39e89769
+      if x_abs == 0u32 {
+        return x;
+      }
+      return libm_multiply_add_f32(x, libm_f32_from_bits(3003121664u32), x); // -0x1.0p-25f
+    }
+    let xsq = xd * xd;
+    let result = libm_multiply_add(xsq, libm_multiply_add(xsq, libm_multiply_add(xsq, libm_multiply_add(xsq, libm_f64_from_bits(4523611638682705524u64), libm_f64_from_bits(13774824194573028687u64)), libm_f64_from_bits(4575957461383011941u64)), libm_f64_from_bits(13818544856648471750u64)), 1.0); // 0x1.718d179815e74p-19, -0x1.a019f70fb4d4fp-13, 0x1.1111111085e65p-7, -0x1.55555555554c6p-3
+    return (xd * result) as f32;
+  }
+  // An input where the evaluation below would round the wrong way.
+  if x_abs == 1176082840u32 { // 0x46199998
+    if (x_u >> 31u32) == 1u32 {
+      return -libm_f32_from_bits(3199335005u32); // -0x1.63f4bap-2f
+    }
+    return libm_f32_from_bits(3199335005u32); // -0x1.63f4bap-2f
+  }
+  // Infinity or NaN.
+  if x_abs >= 2139095040u32 { // 0x7f800000
+    if libm_f32_is_signaling_nan(x_u) {
+      return libm_f32_from_bits(2143289344u32); // 0x7fc00000
+    }
+    return x + libm_f32_from_bits(2143289344u32); // 0x7fc00000
+  }
+  let p = libm_sincosf_eval(xd, x_abs);
+  return libm_multiply_add(p.sin_y, p.cos_k, libm_multiply_add(p.cosm1_y, p.sin_k, p.sin_k)) as f32;
+}
+
+/// The cosine, correctly rounded: `cosf` from `cosf_double_eval.h`.
+fn libm_cosf(x : f32) -> f32 {
+  let x_abs = libm_f32_to_bits(x) & 2147483647u32; // 0x7fffffff
+  let xa = libm_f32_from_bits(x_abs);
+  // |x| < 2^-12
+  if x_abs < 964689920u32 { // 0x39800000
+    return libm_multiply_add_f32(xa, libm_f32_from_bits(3003121664u32), 1.0); // -0x1.0p-25f
+  }
+  // Inputs where the evaluation below would round the wrong way.
+  if x_abs == 1429360665u32 { // 0x1.64a032p+43
+    return libm_f32_from_bits(1062118866u32); // 0x1.9d4ba4p-1
+  }
+  if x_abs == 1495444096u32 { // 0x1.4555p+51
+    return libm_f32_from_bits(1057533631u32); // 0x1.115d7ep-1
+  }
+  if x_abs == 1520718892u32 { // 0x1.48a858p+54
+    return libm_f32_from_bits(1056587940u32); // 0x1.f48148p-2
+  }
+  if x_abs == 1595455608u32 { // 0x1.3170fp+63
+    return libm_f32_from_bits(1065292987u32); // 0x1.fe2976p-1
+  }
+  if x_abs == 1628818193u32 { // 0x1.2b9622p+67
+    return libm_f32_from_bits(1064834095u32); // 0x1.f0285ep-1
+  }
+  if x_abs == 2079258095u32 { // 0x1.ddebdep+120
+    return libm_f32_from_bits(1057530396u32); // 0x1.114438p-1
+  }
+  // Infinity or NaN.
+  if x_abs >= 2139095040u32 { // 0x7f800000
+    if libm_f32_is_signaling_nan(libm_f32_to_bits(x)) {
+      return libm_f32_from_bits(2143289344u32); // 0x7fc00000
+    }
+    return x + libm_f32_from_bits(2143289344u32); // 0x7fc00000
+  }
+  let p = libm_sincosf_eval(xa as f64, x_abs);
+  return libm_multiply_add(p.sin_y, -p.sin_k, libm_multiply_add(p.cosm1_y, p.cos_k, p.cos_k)) as f32;
+}
+
+/// The tangent, correctly rounded: `tanf` from `tanf.h`. Near zero a polynomial; otherwise the
+/// sine over the cosine, from one reduction.
+fn libm_tanf(x : f32) -> f32 {
+  let x_u = libm_f32_to_bits(x);
+  let x_abs = x_u & 2147483647u32; // 0x7fffffff
+  let xd = x as f64;
+  // |x| <= pi/32
+  if x_abs <= 1036586971u32 { // 0x3dc90fdb
+    // |x| < 2^-12
+    if x_abs < 964689920u32 { // 0x39800000
+      if x_abs == 0u32 {
+        return x;
+      }
+      return libm_multiply_add_f32(x, libm_f32_from_bits(855638016u32), x); // 0x1.0p-25f
+    }
+    let xsq = xd * xd;
+    let result = libm_multiply_add(xsq, libm_multiply_add(xsq, libm_multiply_add(xsq, libm_multiply_add(xsq, libm_f64_from_bits(4582021239951898399u64), libm_f64_from_bits(4587938219332198093u64)), libm_f64_from_bits(4593971860091454145u64)), libm_f64_from_bits(4599676419420966946u64)), 1.0); // 0x1.69c0a88a0b71fp-6, 0x1.ba180a6bbdecdp-5, 0x1.111111ce442c1p-3, 0x1.555555553d022p-2
+    return (xd * result) as f32;
+  }
+  let sign : f32 = if (x_u >> 31u32) == 1u32 {
+    -1.0
+  } else {
+    1.0
+  };
+  // An input where the evaluation below would round the wrong way.
+  if x_abs == 1066016610u32 { // 0x3f8a1f62
+    return libm_multiply_add_f32(sign, libm_f32_from_bits(1072626938u32), sign * libm_f32_from_bits(864550912u32)); // 0x1.ddf9f4p0f, 0x1.1p-24f
+  }
+  // |x| > 0x1.ada6a8p27
+  if x_abs > 1297535828u32 { // 0x4d56d354
+    // Infinity or NaN.
+    if x_abs >= 2139095040u32 { // 0x7f800000
+      if libm_f32_is_signaling_nan(x_u) {
+        return libm_f32_from_bits(2143289344u32); // 0x7fc00000
+      }
+      return x + libm_f32_from_bits(2143289344u32); // 0x7fc00000
+    }
+    // Inputs where the evaluation below would round the wrong way.
+    if x_abs == 1297535829u32 { // 0x1.ada6aap+27
+      return sign * libm_f32_from_bits(1047789954u32); // 0x1.e80304p-3
+    }
+    if x_abs == 1346572338u32 { // 0x1.862064p+33
+      return sign * libm_f32_from_bits(3192321836u32); // -0x1.8dee58p-3
+    }
+    if x_abs == 1473753325u32 { // 0x1.af61dap+48
+      return sign * libm_f32_from_bits(1051748580u32); // 0x1.60d1c8p-2
+    }
+    if x_abs == 1501578334u32 { // 0x1.0088bcp+52
+      return sign * libm_f32_from_bits(1071976296u32); // 0x1.ca1edp+0
+    }
+    if x_abs == 1677494014u32 { // 0x1.f90dfcp+72
+      return sign * libm_f32_from_bits(1059897294u32); // 0x1.597f9cp-1
+    }
+    if x_abs == 1792239369u32 { // 0x1.a6ce12p+86
+      return sign * libm_f32_from_bits(3210915991u32); // -0x1.c5612ep-1
+    }
+  }
+  let p = libm_sincosf_eval(xd, x_abs);
+  let s = libm_multiply_add(p.sin_y, p.cos_k, libm_multiply_add(p.cosm1_y, p.sin_k, p.sin_k));
+  let c = libm_multiply_add(p.sin_y, -p.sin_k, libm_multiply_add(p.cosm1_y, p.cos_k, p.cos_k));
+  return (s / c) as f32;
+}
+
+fn libm_sinf16(x : f16) -> f16 {
+  // x = 0x1.accp-3
+  if libm_f16_to_bits(x) == 12979u16 {
+    return libm_f16_from_bits(12967u16); // 0x1.a9cp-3
+  }
+  // x = 0x1.2cp+8
+  if libm_f16_to_bits(x) == 23728u16 {
+    return libm_f16_from_bits(48127u16); // -0x1.ffcp-1
+  }
+  // x = -0x1.accp-3
+  if libm_f16_to_bits(x) == 45747u16 {
+    return libm_f16_from_bits(45735u16); // -0x1.a9cp-3
+  }
+  // x = -0x1.2cp+8
+  if libm_f16_to_bits(x) == 56496u16 {
+    return libm_f16_from_bits(15359u16); // 0x1.ffcp-1
+  }
+  return libm_sinf(x as f32) as f16;
+}
+
+fn libm_cosf16(x : f16) -> f16 {
+  // x = 0x1.dfp-5
+  if libm_f16_to_bits(x) == 11132u16 {
+    return libm_f16_from_bits(15357u16); // 0x1.ff4p-1
+  }
+  // x = -0x1.dfp-5
+  if libm_f16_to_bits(x) == 43900u16 {
+    return libm_f16_from_bits(15357u16); // 0x1.ff4p-1
+  }
+  return libm_cosf(x as f32) as f16;
+}
+
+fn libm_tanf16(x : f16) -> f16 {
+  // x = 0x1.25p-5
+  if libm_f16_to_bits(x) == 10388u16 {
+    return libm_f16_from_bits(10389u16); // 0x1.254p-5
+  }
+  // x = 0x1.7b4p+6
+  if libm_f16_to_bits(x) == 21997u16 {
+    return libm_f16_from_bits(14609u16); // 0x1.444p-1
+  }
+  // x = 0x1.d28p+14
+  if libm_f16_to_bits(x) == 30538u16 {
+    return libm_f16_from_bits(18409u16); // 0x1.fa4p+2
+  }
+  // x = -0x1.25p-5
+  if libm_f16_to_bits(x) == 43156u16 {
+    return libm_f16_from_bits(43157u16); // -0x1.254p-5
+  }
+  // x = -0x1.7b4p+6
+  if libm_f16_to_bits(x) == 54765u16 {
+    return libm_f16_from_bits(47377u16); // -0x1.444p-1
+  }
+  // x = -0x1.d28p+14
+  if libm_f16_to_bits(x) == 63306u16 {
+    return libm_f16_from_bits(51177u16); // -0x1.fa4p+2
+  }
+  return libm_tanf(x as f32) as f16;
+}
+
+fn libm_sin_bf16(x : bf16) -> bf16 {
+  return libm_bf16_from_f32(libm_sinf(libm_f32_from_bf16(x)));
+}
+
+fn libm_cos_bf16(x : bf16) -> bf16 {
+  return libm_bf16_from_f32(libm_cosf(libm_f32_from_bf16(x)));
+}
+
+fn libm_tan_bf16(x : bf16) -> bf16 {
+  return libm_bf16_from_f32(libm_tanf(libm_f32_from_bf16(x)));
+}
