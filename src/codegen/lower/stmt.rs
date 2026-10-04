@@ -427,6 +427,44 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
             }
         }
 
+        // A row copied into a row: `p[0] = q[1]`. Both sides are views, and the elements are
+        // copied from one into the other.
+        let lhs_is_a_row = {
+            let mut base = lhs;
+            let mut indices = 0;
+            while let Expr::IndexAccess(ix) = base {
+                base = &ix.base;
+                indices += 1;
+            }
+            indices > 0
+                && matches!(
+                    gen.infer_ast_type(base),
+                    Some(syntax::Type::Tensor(_, dims, _)) if dims.len() > indices
+                )
+        };
+        // Only a tensor variable or a row on the right: an expression such as `a[i] + b[i]` is
+        // lowered further down, into a store of its result.
+        if lhs_is_a_row && matches!(rhs, Expr::Identifier(_) | Expr::IndexAccess(_)) {
+            let (dst, dst_ty, b) = gen.generate_expr(lhs, block)?;
+            let (src, mut src_ty, b) = gen.generate_expr(rhs, b)?;
+            let src = super::expr::load_tensor_slot(gen, &b, src, &mut src_ty)?;
+            let is_view = |t: &Type| {
+                let t = t.to_string();
+                t.starts_with("memref<") && !t.starts_with("memref<memref<")
+            };
+            if is_view(&dst_ty) && is_view(&src_ty) {
+                b.append_operation(
+                    OperationBuilder::new("memref.copy", gen.loc())
+                        .add_operands(&[src, dst])
+                        .build()?,
+                );
+                return Ok(Some(b));
+            }
+            return Err(LowerError::from(format!(
+                "a tensor assigned to an element of another: {src_ty} into {dst_ty}"
+            )));
+        }
+
         // `c = a @ b` where `c` already names a buffer: fill it, rather than allocating a second
         // one and rebinding `c` to it. The checker has compared `c`'s declared shape against the
         // product, so the destination is the right size (Vx#391).

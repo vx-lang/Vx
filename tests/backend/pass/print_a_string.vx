@@ -1,0 +1,21 @@
+//===- print_a_string.vx - Vx Compiler ---------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `print` takes a string, written directly or held in a variable, as `print!`
+// does. The backend tests run every program on both code generators, and the
+// legacy one used to refuse a string here.
+//
+// EXPECT: one two three
+fn main() -> i32 {
+  print("one");
+  let gap = " ";
+  print(gap);
+  print!("two");
+  print(gap);
+  print("three");
+  return 0;
+}
