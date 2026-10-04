@@ -17,12 +17,13 @@ fn process_tensor(val : Tensor<f32, [ 128, 128 ]>)
   let permuted = temp.transpose([ 0, 2, 1, 3 ]);
 
   let final_view = permuted.reshape([ 4, 64, 64 ]);
-  return final_view;
+  return final_view.clone();
 }
 
 // The tensor result travels through a buffer the caller allocated and passed as the first
 // parameter, so the function returns nothing. The transpose still needs a buffer of its own here:
-// what gets returned is a reshaped *view* of it, and a view's contents reach the caller by copy.
+// what gets returned is a reshaped *view* of it, so the function returns a `.clone()` of it, written
+// straight into the caller's buffer.
 // CHECK: func.func @process_tensor(%[[RET:.*]]: memref<4x64x64xf32>, %arg1: memref<128x128xf32>) {
 // CHECK: %reinterpret_cast = memref.reinterpret_cast %arg1 to offset: [0], sizes: [2, 64, 2, 64], strides: [8192, 128, 64, 1] : memref<128x128xf32> to memref<2x64x2x64xf32>
 // CHECK: %reinterpret_cast_0 = memref.reinterpret_cast %reinterpret_cast to offset: [0], sizes: [2, 2, 64, 64], strides: [8192, 64, 128, 1] : memref<2x64x2x64xf32> to memref<2x2x64x64xf32, strided<[8192, 64, 128, 1]>>

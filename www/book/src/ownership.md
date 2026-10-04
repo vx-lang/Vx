@@ -145,6 +145,11 @@ r[0] = 5.0;         // writes q[1][0]
 print(q[1][0]);     // fine: r is not used again
 ```
 
+- A view is made by indexing to a row (`q[1]`), reading a tensor field (`h.t`), reshaping
+  (`q.reshape([8])`), or taking a view of a view. A view chosen by an `if` or a `match` borrows
+  every tensor it may come from, and a view taken through a reference (`rq[1]` with `rq = &q`)
+  borrows the tensor behind the reference. A closure that uses a view keeps the view's tensor
+  borrowed for as long as the closure is used.
 - A view declared `mut` is a `&mut` borrow, and its owner must be `mut` (E4010). Any other view
   is a `&` borrow, so two of them can be used together.
 - The owner cannot be moved (E4007), assigned (E4009) or, under a `mut` view, read (E4002) while
@@ -174,10 +179,6 @@ not be:
 
 | Case | Issue |
 | --- | --- |
-| A view chosen by an `if` or a `match` used as a value | #1056 |
-| `t.reshape(..)`, which is a view of `t` | #1057 |
-| A view taken through a reference variable, `rq[1]` with `rq = &q` | #1058 |
-| A closure that uses a view | #1059 |
 | Two `mut` rows of different indices, refused because indices are not told apart | #1060 |
 
 ## Linear values

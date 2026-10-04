@@ -239,10 +239,26 @@ A borrow ends at the view's last use, as for `&`.
 
 - **A view is told from an owner by where it came from, not by its type**: both are `Tensor`.
   `view_of` in `src/hir/check/views.rs` recognises an index or field chain whose value is a tensor,
-  and a variable that is already a view. A separate view type (#400) can replace this later.
+  `t.reshape(..)`, a variable that is already a view, and an `if` or `match` whose value is one
+  of these. A separate view type (#400) can replace this later.
+- **A view may borrow several tensors.** One chosen by an `if` or a `match` borrows every tensor
+  a branch can give, and its provenance is the shortest-lived of theirs. A branch's value is its
+  last expression; a `return` in it leaves the function and is not its value. A tensor declared
+  inside the branch is gone after it, so a view of it is a block escape (E4005).
 - **A view of a view borrows the first owner.** `BorrowCx.views` remembers, for each view
-  variable, its owner, the path inside it, and whether the owner is local to the function. That
-  is reset for each function, like `ref_provenance`.
+  variable, the tensors it borrows, the path inside each, and whether they are local to the
+  function. That is reset for each function, like `ref_provenance`.
+- **Through a reference, conflicts are checked on the reference.** For `rq[1]` with `rq = &q`,
+  and for a reborrow `&*rq`, the borrow is recorded on `rq` and also on `q` (`BorrowCx::borrowed_by`
+  finds what `rq` borrows), so `q` stays borrowed after `rq`'s last use. Conflicts are checked
+  only against `rq`: `rq` already holds its own borrow of `q`, and checking `q` would refuse a
+  `&mut` reborrow of a `&mut` reference.
+- **A closure keeps its views' tensors borrowed.** A closure becomes a struct of the variables it
+  uses; when it is bound with `let f = ..`, `f` becomes a borrower of every tensor a captured
+  view borrows.
+- **A copy carries its borrows.** `let g = f` or `g = f` gives `g` every borrow `f` holds, so a
+  reference or a closure copied to another variable keeps what it points at borrowed while
+  either name is used. Before this, `let r2 = r; let s = q;` with `r = &q` was accepted.
 - **The borrower is the view variable,** so the existing liveness sweep ends the borrow at its last
   use.
 - **Indices are not part of a borrow's path** (`places::base_and_path`), so `q[0]` and `q[1]` count
@@ -252,10 +268,7 @@ A borrow ends at the view's last use, as for `&`.
 
 | Case | Issue |
 | --- | --- |
-| A view chosen by an `if` or a `match` used as a value. | #1056 |
-| `t.reshape(..)`, which is a view of `t`. | #1057 |
-| A view taken through a reference variable, `rq[1]` with `rq = &q`: it stops borrowing when `rq` is last used. The same holds for any reborrow. | #1058 |
-| A closure that uses a view. | #1059 |
+| A closure that uses a row reads the wrong value on the default code generator. This is a code generation bug, not a borrow rule. | #1080 |
 | Two `mut` rows of different indices are refused. | #1060 |
 
 Only a handful of programs in the repository take a view, so a fuzzer generator for them (#1062)

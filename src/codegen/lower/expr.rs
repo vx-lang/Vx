@@ -4241,6 +4241,9 @@ fn lower_clone_call<'c>(
     block: melior::ir::BlockRef<'c, 'c>,
     src_expr: &Expr,
 ) -> Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError> {
+    // A returned clone copies into the caller's buffer; taken before the source is lowered, so
+    // nothing inside it claims the buffer.
+    let nrvo_slot = gen.nrvo_slot.take();
     let (src, src_ty, block) = gen.generate_expr(src_expr, block)?;
     let src_str = src_ty.to_string();
     // "memref<2x?xf32, strided<..>>" -> sizes ["2", "?"] and element "f32".
@@ -4271,6 +4274,13 @@ fn lower_clone_call<'c>(
     }
     let dst_ty = Type::parse(gen.context, &format!("memref<{}x{elem}>", parts.join("x")))
         .ok_or_else(|| format!("clone of a tensor with no memref type: {src_str}"))?;
+    if let Some(slot) = nrvo_slot.filter(|s| s.r#type() == dst_ty) {
+        let copy = OperationBuilder::new("memref.copy", gen.loc())
+            .add_operands(&[src, slot])
+            .build()?;
+        block.append_operation(copy);
+        return Ok((slot, dst_ty, block));
+    }
     let alloc = OperationBuilder::new("memref.alloc", gen.loc())
         .add_operands(&sizes)
         .add_attributes(&[(

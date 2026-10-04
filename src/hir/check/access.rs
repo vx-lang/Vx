@@ -927,11 +927,28 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
 
-                let place = Self::extract_base_and_path(inner)
-                    .or_else(|| self.reborrow_base_and_path(inner));
+                let direct = Self::extract_base_and_path(inner);
+                let is_reborrow = direct.is_none();
+                let place = direct.or_else(|| self.reborrow_base_and_path(inner));
                 if let Some((name, path)) = place {
                     self.check_borrow_conflicts(&name, &path, *is_mut, span);
                     if !self.speculating {
+                        // `&*rq` points at what `rq` points at, and keeps it borrowed after
+                        // `rq`'s last use. Conflicts are checked on `rq`, which already holds
+                        // its own borrow of it.
+                        if is_reborrow {
+                            for (owner, owner_path) in self.borrow.borrowed_by(&name) {
+                                self.borrow.record(
+                                    &owner,
+                                    BorrowRecord {
+                                        is_mut: *is_mut,
+                                        scope_depth: self.scopes.len(),
+                                        borrower_name: self.current_assignment_target.clone(),
+                                        path: owner_path,
+                                    },
+                                );
+                            }
+                        }
                         self.borrow.record(
                             &name,
                             BorrowRecord {

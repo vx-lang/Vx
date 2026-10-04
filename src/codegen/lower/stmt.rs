@@ -25,8 +25,13 @@ impl<'c> LowerToMelior<'c> for ReturnStmt {
         // Offer the caller's buffer to the expression being returned, so a tensor operator builds
         // the answer there instead of in a buffer of its own that we then copy out of. Only an
         // operator is offered it: it takes the slot before lowering its own operands, which is
-        // what keeps a nested operator from claiming it.
-        if matches!(expr, Expr::BinaryOp(_)) {
+        // what keeps a nested operator from claiming it. A returned `.clone()` copies straight in.
+        let is_clone = |e: &Expr| match e {
+            Expr::MethodCall(mc) => mc.method_name.as_ref() == "clone" && mc.args.is_empty(),
+            Expr::FunctionCall(fc) => fc.name.as_ref() == "clone" && fc.args.len() == 1,
+            _ => false,
+        };
+        if matches!(expr, Expr::BinaryOp(_)) || is_clone(expr) {
             gen.nrvo_slot = gen.current_return_slot.filter(|_| !gen.in_spawn);
         }
         let (mut val, expr_ty, block) = gen.generate_expr(expr, block)?;

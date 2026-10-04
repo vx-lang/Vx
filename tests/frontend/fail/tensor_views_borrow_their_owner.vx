@@ -103,6 +103,95 @@ fn passed_by_value() -> f32 {
   return first(q[1]);
 }
 
+// A row chosen by an `if` borrows each tensor it may come from.
+fn chosen_by_if(c : bool) -> f32 {
+  let q = Tensor<f32, [2, 4]>::new();
+  let r = if c {
+    q[0]
+  } else {
+    q[1]
+  };
+  let s = take(q);
+  return r[0] + s;
+}
+
+// The tensor a row is chosen from was declared in the `if` arm, and is gone after it.
+fn chosen_from_an_arm(c : bool) -> f32 {
+  let q = Tensor<f32, [2, 4]>::new();
+  let r = if c {
+    let t = Tensor<f32, [2, 4]>::new();
+    t[0]
+  } else {
+    q[1]
+  };
+  return r[0];
+}
+
+// `reshape` is a view of the same memory.
+fn reshaped() -> f32 {
+  let q = Tensor<f32, [2, 4]>::new();
+  let r = q.reshape([8]);
+  let s = take(q);
+  return r[0] + s;
+}
+
+// A row taken through a reference points into the tensor, not into the reference.
+fn through_a_reference() -> f32 {
+  let q = Tensor<f32, [2, 4]>::new();
+  let rq = &q;
+  let r = rq[1];
+  let s = take(q);
+  return r[0] + s;
+}
+
+// A closure that uses a row keeps the row's tensor borrowed while the closure is used.
+fn used_by_a_closure() -> f32 {
+  let q = Tensor<f32, [2, 4]>::new();
+  let r = q[1];
+  let f = || r[0];
+  let s = take(q);
+  return f() + s;
+}
+
+// A reborrow `&*rq` points at what `rq` points at.
+fn reborrowed() -> f32 {
+  let q = Tensor<f32, [2, 4]>::new();
+  let rq = &q;
+  let n = &*rq;
+  let s = take(q);
+  return n[0][0] + s;
+}
+
+// A reference copied to another variable keeps the tensor borrowed.
+fn reference_copied() -> f32 {
+  let q = Tensor<f32, [2, 4]>::new();
+  let r = &q;
+  let r2 = r;
+  let s = take(q);
+  return r2[0][0] + s;
+}
+
+// So does a closure moved to another variable.
+fn closure_moved() -> f32 {
+  let q = Tensor<f32, [2, 4]>::new();
+  let r = q[1];
+  let f = || r[0];
+  let g = f;
+  let s = take(q);
+  return g() + s;
+}
+
+// The same when the reference is assigned to a variable that already exists.
+fn reference_assigned() -> f32 {
+  let q = Tensor<f32, [2, 4]>::new();
+  let p = Tensor<f32, [2, 4]>::new();
+  let r = &q;
+  let mut r2 = &p;
+  r2 = r;
+  let s = take(q);
+  return r2[0][0] + s;
+}
+
 fn main() -> i32 {
   return 0;
 }
@@ -117,3 +206,12 @@ fn main() -> i32 {
 // CHECK-DAG: Error[E4011] at 83:11: this stores a view of `q` in `keep`, which holds a tensor of its own
 // CHECK-DAG: Error[E4011] at 91:10: this stores a view of `q` in the field `t`
 // CHECK-DAG: Error[E4011] at 103:17: this passes a view of `q` to `first`, which takes a tensor of its own
+// CHECK-DAG: Error[E4007] at 114:16: `q` is moved while it is borrowed
+// CHECK-DAG: Error[E4005] at 121:3: `r` is given a value that points at a variable of an inner block
+// CHECK-DAG: Error[E4007] at 134:16: `q` is moved while it is borrowed
+// CHECK-DAG: Error[E4007] at 143:16: `q` is moved while it is borrowed
+// CHECK-DAG: Error[E4007] at 152:16: `q` is moved while it is borrowed
+// CHECK-DAG: Error[E4007] at 161:16: `q` is moved while it is borrowed
+// CHECK-DAG: Error[E4007] at 170:16: `q` is moved while it is borrowed
+// CHECK-DAG: Error[E4007] at 180:16: `q` is moved while it is borrowed
+// CHECK-DAG: Error[E4007] at 191:16: `q` is moved while it is borrowed

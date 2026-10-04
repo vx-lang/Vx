@@ -161,6 +161,39 @@ impl BorrowCx {
         }
     }
 
+    /// Each variable `borrower` holds a borrow of, with the path inside it: what `rq` points
+    /// at after `let rq = &q.f`.
+    pub(crate) fn borrowed_by(&self, borrower: &str) -> Vec<(String, Vec<String>)> {
+        let mut found = Vec::new();
+        for (base, records) in &self.active_borrows {
+            for r in records {
+                if r.borrower_name.as_deref() == Some(borrower) {
+                    found.push((base.to_string(), r.path.clone()));
+                }
+            }
+        }
+        found.sort();
+        found
+    }
+
+    /// `to = from`: `to` now holds every borrow `from` holds, so each stays alive while either
+    /// is used. A reference or a closure copied to another variable keeps what it points at
+    /// borrowed.
+    pub(crate) fn copy_borrows(&mut self, from: &str, to: &str, scope_depth: usize) {
+        for records in self.active_borrows.values_mut() {
+            let copies: Vec<BorrowRecord> = records
+                .iter()
+                .filter(|r| r.borrower_name.as_deref() == Some(from))
+                .map(|r| BorrowRecord {
+                    borrower_name: Some(to.to_string()),
+                    scope_depth,
+                    ..r.clone()
+                })
+                .collect();
+            records.extend(copies);
+        }
+    }
+
     /// Record a new borrow of `base`.
     pub(crate) fn record(&mut self, base: &str, record: BorrowRecord) {
         self.active_borrows

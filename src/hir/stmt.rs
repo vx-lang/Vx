@@ -330,6 +330,12 @@ impl<'a> TypeChecker<'a> {
         };
 
         self.bind_view(name.as_ref(), *_is_mut, expr, &binding_ty, span);
+        if let Expr::Identifier(from) = &*expr {
+            if !self.speculating {
+                self.borrow
+                    .copy_borrows(from.name.as_ref(), name.as_ref(), self.scopes.len());
+            }
+        }
 
         // Record where a binding points, so a later `return` of it can be checked for
         // escape (#243): a reference, or any value that can hold one -- a `View { r : &x }`
@@ -879,6 +885,13 @@ impl<'a> TypeChecker<'a> {
             if let Expr::Identifier(id) = lhs {
                 self.unconsume(id.name.as_ref());
                 self.borrow.views.remove(id.name.as_ref());
+                if let Expr::Identifier(from) = &*rhs {
+                    if !self.speculating {
+                        let depth = self.scope_depth_of(&id.name);
+                        self.borrow
+                            .copy_borrows(from.name.as_ref(), id.name.as_ref(), depth);
+                    }
+                }
             }
         }
         if let Some(op) = op {

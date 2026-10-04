@@ -20,6 +20,9 @@ use std::process::Command;
 const KNOWN_DECLINES: &[&str] = &[
     "backend/pass/custom_topology_user_lowering.vx",
     "backend/pass/matmul_assign_alias.vx",
+    // A row chosen by an `if` used as a value: the flat path has no slot for a tensor view
+    // ("an aggregate slot with no struct type").
+    "backend/pass/tensor_views_end_at_their_last_use.vx",
     // "A borrow of something that is not a tensor": the flat path borrows tensors only.
     "backend/pass/borrow_of_a_value.vx",
     "backend/pass/borrow_element_through_pointer.vx",
