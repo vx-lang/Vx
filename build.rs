@@ -477,6 +477,9 @@ fn main() {
         clang_shared_cmd.args(&cxxflags);
 
         if let Some((root, libdir)) = &cuda {
+            // A program's own `extern` may name a cuBLAS or CUDA runtime entry point, so the
+            // native link needs the toolkit's library directory too (src/jit.rs).
+            println!("cargo:rustc-env=VX_CUDA_LIBDIR={}", libdir.display());
             // The rpath matters because this library is loaded by the programs
             // vxc links, not by vxc itself: without it a program would have to
             // be run with the toolkit on LD_LIBRARY_PATH.

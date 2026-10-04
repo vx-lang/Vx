@@ -49,10 +49,20 @@ A Vx type maps to its natural C counterpart:
 | `i8..i64`, `u8..u64` | corresponding integer, GP register |
 | `f32`, `f64` | float/double, **FP register** |
 | `*const T`, `*mut T` | pointer, GP register |
+| `*mut T in Memory::X` | the same pointer; the placement is erased at the C boundary |
 | `Tensor`, memref-backed values | passed as an MLIR memref descriptor (see §3) |
 
 Because Vx follows the platform convention, calling a C library function or
 being called from C requires no shims as long as the declared signature matches.
+
+A tensor cannot appear in an `extern` signature (E3022): its descriptor expands to
+seven C arguments no C source writes. A C library that takes a device buffer takes
+it as a plain pointer, and that is what a pointer into device memory becomes at the
+call. `t.as_mut_ptr()` on a tensor placed in `Memory::GPU_HBM` has type
+`*mut f32 in Memory::GPU_HBM`; passed to a parameter of that type it is the raw
+device address, the same `float *` cuBLAS expects. The placement is checked by the
+compiler and never reaches C: a host pointer passed where a device pointer is
+declared is E6029, and a host read through the device pointer is E6003.
 
 ### 2.1 Opaque-pointer ownership lifecycle (the Rust core contract)
 

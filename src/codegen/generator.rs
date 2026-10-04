@@ -1671,9 +1671,12 @@ impl<'c> MeliorGenerator<'c> {
                 inner_ty_str
             }
             syntax::Type::Borrow { inner, .. } | syntax::Type::Pointer(inner, _, _) => {
+                // A raw pointer's placement is a fact for the type checker, not for the C ABI:
+                // a C function takes one pointer type whatever memory it addresses, so the
+                // placement is erased here and the pointer is a plain `!llvm.ptr`.
                 let mem: Option<&syntax::MemorySpace> = match ty {
                     syntax::Type::Borrow { mem_space, .. } => mem_space.as_ref(),
-                    syntax::Type::Pointer(_, place, _) => place.as_ref().map(|p| &p.space),
+                    syntax::Type::Pointer(..) => None,
                     _ => unreachable!(),
                 };
                 let inner_str = self.lower_type_str(inner)?;

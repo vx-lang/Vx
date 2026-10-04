@@ -155,6 +155,7 @@ The compiler enforces strict invariants before codegen:
 | Check | Diagnostic | Rules Out |
 | :--- | :--- | :--- |
 | **Address-space visibility** | `E6003` | Host code reading device memory, or an accelerator accessing inaccessible address spaces |
+| **Pointer memory mismatch** | `E6029` | A pointer into one memory passed where a pointer into another is declared |
 | **Capacity admission** | `E6009`, `E6010` | Single tensors or multi-tensor working sets that exceed available memory |
 | **Transfer reachability** | `E6002` | Copying between memory domains with no declared hardware edge |
 | **Optimal transfer routing** | Cost Model | Sub-optimal routes; automatically prices containment hops across memory hierarchies |

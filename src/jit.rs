@@ -545,6 +545,18 @@ pub fn execute_mlir_streams(
         if cfg!(target_os = "linux") {
             clang_cmd.arg("-rdynamic");
         }
+
+        // With the CUDA plugin, a program's own `extern` block may call cuBLAS or the CUDA
+        // runtime directly, passing device pointers it took with `as_ptr()`. The plugin links
+        // those libraries for itself, but the linker does not let an executable resolve its
+        // symbols through a library's dependencies, so they are named here as well.
+        if let Some(cuda_libdir) = option_env!("VX_CUDA_LIBDIR") {
+            if lib_npu.contains("vx_cuda_dispatch") && !cuda_libdir.is_empty() {
+                clang_cmd.arg(format!("-L{cuda_libdir}"));
+                clang_cmd.arg(format!("-Wl,-rpath,{cuda_libdir}"));
+                clang_cmd.args(["-lcublas", "-lcudart"]);
+            }
+        }
     }
 
     clang_cmd.arg("-lm");

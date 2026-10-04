@@ -1,0 +1,81 @@
+//===- cublas_sgemm_through_an_extern_block.vx - Vx Compiler -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A Vx program calls cuBLAS through its own `extern` block. The matrices are
+// moved to GPU memory with `transfer`, their device addresses are taken with
+// `as_ptr()`, and `alpha` and `beta` stay host pointers in the same call, as
+// the cuBLAS signature wants. The result comes back with a second `transfer`.
+//
+// The `_v2` suffixes are the real symbol names: `cublasSgemm` and `cublasCreate`
+// are macros in the C header. cuBLAS is column-major, so the call asks for
+// B x A with the extents swapped, which is A x B when read back row-major; the
+// runtime's own cuBLAS route does the same. A handle is `cublasHandle_t`, an
+// opaque pointer, spelled `*mut i8`; `cublasOperation_t` is an enum, `0` is `N`.
+//
+// CI has no GPU, so only the MLIR is checked here: every cuBLAS argument reaches
+// the call as a plain pointer or integer, and nothing in the signature names a
+// tensor. On a machine with CUDA, `vxc` runs the program and it prints the row-major
+// product of A (2x3) and B (3x2):
+//
+//   58 64 139 154
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK-DAG: func.func private @cublasCreate_v2(!llvm.ptr) -> i32
+// CHECK-DAG: func.func private @cublasSgemm_v2(!llvm.ptr, i32, i32, i32, i32, i32, !llvm.ptr, !llvm.ptr, i32, !llvm.ptr, i32, !llvm.ptr, !llvm.ptr, i32) -> i32
+// CHECK-DAG: func.func private @cublasDestroy_v2(!llvm.ptr) -> i32
+// CHECK: call @cublasSgemm_v2(
+
+extern "C" {
+  fn cublasCreate_v2(handle : *mut *mut i8) -> i32;
+  fn cublasDestroy_v2(handle : *mut i8) -> i32;
+  fn cublasSgemm_v2(handle : *mut i8, transa : i32, transb : i32, m : i32, n : i32, k : i32,
+  alpha : *const f32, a : *const f32 in Memory::GPU_HBM, lda : i32,
+  b : *const f32 in Memory::GPU_HBM, ldb : i32, beta : *const f32,
+  c : *mut f32 in Memory::GPU_HBM, ldc : i32) -> i32;
+}
+
+fn main() -> i32 {
+  let mut a : Tensor<f32, [2, 3]> = Tensor<f32, [2, 3]>::new();
+  let mut b : Tensor<f32, [3, 2]> = Tensor<f32, [3, 2]>::new();
+  for i in 0..2 {
+    for j in 0..3 {
+      a[i][j] = (i * 3 + j + 1) as f32;
+      b[j][i] = (j * 2 + i + 7) as f32;
+    }
+  }
+  let c : Tensor<f32, [2, 2]> = Tensor<f32, [2, 2]>::new();
+
+  let a_gpu = transfer(a, Memory::GPU_HBM);
+  let b_gpu = transfer(b, Memory::GPU_HBM);
+  let c_gpu = transfer(c, Memory::GPU_HBM);
+
+  let mut handle : *mut i8 = unsafe { 0 as *mut i8 };
+  let alpha : f32 = 1.0;
+  let beta : f32 = 0.0;
+  let status = unsafe {
+    cublasCreate_v2(&mut handle);
+    // C(2x2) = A(2x3) x B(3x2), asked of cuBLAS as B x A in column-major terms.
+    let st = cublasSgemm_v2(handle, 0, 0, 2, 2, 3, &alpha, b_gpu.as_ptr(), 2, a_gpu.as_ptr(), 3,
+    &beta, c_gpu.as_mut_ptr(), 2);
+    cublasDestroy_v2(handle);
+    st
+  };
+  if status != 0 {
+    return 1;
+  }
+
+  let c_host = transfer(c_gpu, Memory::CPU_DRAM);
+  print(c_host[0][0] as i32);
+  print!(" ");
+  print(c_host[0][1] as i32);
+  print!(" ");
+  print(c_host[1][0] as i32);
+  print!(" ");
+  print(c_host[1][1] as i32);
+  return 0;
+}

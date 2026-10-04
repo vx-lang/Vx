@@ -18,6 +18,9 @@ use std::process::Command;
 /// Programs the flat path declines today, relative to `tests/backend/pass/`.
 /// A worklist, not an exemption list: shrinking it is Vx#383.
 const KNOWN_DECLINES: &[&str] = &[
+    // `cublasCreate_v2(&mut handle)`: a borrow of a pointer local passed to C. The flat emitter
+    // has no type for that argument and declines the function; the AST path compiles it.
+    "frontend/pass/cublas_sgemm_through_an_extern_block.vx",
     "backend/pass/custom_topology_user_lowering.vx",
     "backend/pass/matmul_assign_alias.vx",
     // A row chosen by an `if` used as a value: the flat path has no slot for a tensor view

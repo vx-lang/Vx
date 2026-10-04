@@ -1270,9 +1270,9 @@ impl Mangle for Type {
                 el.mangle_to(w)?;
                 write!(w, "${}", n)
             }
-            // A pointer into device memory is a different type from a host pointer, and the
-            // legacy code generator lowers the two differently, so they must not share a
-            // monomorph's symbol. A host pointer mangles as it always did.
+            // A pointer into device memory is a different type from a host pointer, so a
+            // generic instantiated at each gets its own symbol. A host pointer mangles as it
+            // always did.
             Type::Pointer(inner, place, is_mut) => {
                 write!(w, "ptr${}$", if *is_mut { "mut" } else { "const" })?;
                 if let Some(p) = place {
