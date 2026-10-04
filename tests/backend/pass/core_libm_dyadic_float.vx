@@ -1,0 +1,146 @@
+//===- core_libm_dyadic_float.vx - Vx Compiler --------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `core::libm`'s 128-bit dyadic floats against LLVM libc's `DyadicFloat<128>` at f475f085bf7b.
+// Printed first, each as the bits of a double: sums and products converted to the nearest
+// double at the edges of rounding: two ties, which go to the even neighbour, and a value just
+// above a tie; overflow to plus and minus infinity; the smallest subnormal; a tie below it
+// and one between subnormals; a normal result whose rounding term is subnormal, and a
+// subnormal one; a sum that cancels to +0; a product with -0. Then a hash of 20,000 random
+// triples x, y, z (every magnitude, both signs): the dyadics of x, x * y, x * y + z, x - y,
+// (x * y + z) * z and (x * y + z) * (x - y), the last a product of two full 128-bit mantissas,
+// with each field, and the last five converted to doubles. The port also matched LLVM libc on
+// 1,000,000 such triples.
+//
+// EXPECT: 4607182418800017408 4607182418800017410 4607182418800017409 9218868437227405312 18442240474082181120 1 0 2 103582791429525504 16384 0 9223372036854775808 4997846064993954238
+import core::libm;
+
+fn bits(r : f64) -> i32 {
+  print(libm_f64_to_bits(r));
+  print!(" ");
+  return 0;
+}
+
+fn d(x : f64) -> LibmDyadic128 {
+  return libm_dyadic_from_f64(x);
+}
+
+fn pow2(e : i64) -> f64 {
+  // 2^e for -1074 <= e <= 1023, exactly.
+  if e < -1022 {
+    return libm_f64_from_bits(1u64 << ((e + 1074) as u64));
+  }
+  return libm_f64_from_bits(((e + 1023) as u64) << 52u64);
+}
+
+fn next(s : u64) -> u64 {
+  let mut x = s;
+  x = x ^ (x << 13u64);
+  x = x ^ (x >> 7u64);
+  x = x ^ (x << 17u64);
+  return x;
+}
+
+/// The generator's next state whose bits are a double that is neither NaN nor infinite.
+fn next_finite(s : u64) -> u64 {
+  let mut b = next(s);
+  while ((b >> 52u64) & 2047u64) == 2047u64 {
+    b = next(b);
+  }
+  return b;
+}
+
+fn mix(h : u64, v : u64) -> u64 {
+  return (h ^ v) * 1099511628211u64;
+}
+
+fn put(h : u64, d : LibmDyadic128, show : bool) -> u64 {
+  let neg : u64 = if d.negative {
+    1u64
+  } else {
+    0u64
+  };
+  if show {
+    print(neg as i32);
+    print!(" ");
+    print(d.exponent);
+    print!(" ");
+    print(d.hi);
+    print!(" ");
+    print(d.lo);
+    print!(" ");
+  }
+  return mix(mix(mix(mix(h, neg), (d.exponent as i64) as u64), d.hi), d.lo);
+}
+
+fn putd(h : u64, r : f64, show : bool) -> u64 {
+  if show {
+    print(libm_f64_to_bits(r));
+    print!(" ");
+  }
+  return mix(h, libm_f64_to_bits(r));
+}
+
+fn main() -> i32 {
+  let _1 = bits(libm_dyadic_to_f64(libm_dyadic_add(d(1.0), d(pow2(-53)))));
+  let _2 = bits(libm_dyadic_to_f64(libm_dyadic_add(d(1.0 + pow2(-52)), d(pow2(-53)))));
+  let _3 = bits(libm_dyadic_to_f64(libm_dyadic_add(libm_dyadic_add(d(1.0), d(pow2(-53))), d(pow2(-100)))));
+  let _4 = bits(libm_dyadic_to_f64(libm_dyadic_mul(d(pow2(1023)), d(2.0))));
+  let _5 = bits(libm_dyadic_to_f64(libm_dyadic_mul(d(-pow2(1023)), d(3.0))));
+  let _6 = bits(libm_dyadic_to_f64(d(pow2(-1074))));
+  let _7 = bits(libm_dyadic_to_f64(libm_dyadic_mul(d(pow2(-1074)), d(0.5))));
+  let _8 = bits(libm_dyadic_to_f64(libm_dyadic_mul(d(3.0 * pow2(-1074)), d(0.5))));
+  let _9 = bits(libm_dyadic_to_f64(libm_dyadic_mul(d(pow2(-1000)), d(1.0 + pow2(-40)))));
+  let _10 = bits(libm_dyadic_to_f64(libm_dyadic_mul(d(pow2(-1060)), d(1.0 + pow2(-30)))));
+  let _11 = bits(libm_dyadic_to_f64(libm_dyadic_add(d(0.1), d(-0.1))));
+  let _12 = bits(libm_dyadic_to_f64(libm_dyadic_mul(d(-0.0), d(5.0))));
+  let mut state : u64 = 88172645463325252u64;
+  let mut h : u64 = 0u64;
+  for i in 0..20000 {
+    let show = false;
+    state = next_finite(state);
+    let x = libm_f64_from_bits(state);
+    state = next_finite(state);
+    let y0 = libm_f64_from_bits(state);
+    state = next_finite(state);
+    let z0 = libm_f64_from_bits(state);
+    let mut y = y0;
+    let mut z = z0;
+    if i % 3 == 1 {
+      state = next(state);
+      let small = ((state >> 11u64) as f64) * libm_f64_from_bits(4336966441157787648u64);
+      y = x * (1.0 + small);
+      state = next(state);
+      let k = state % 64u64;
+      z = z * libm_f64_from_bits((1023u64 - k) << 52u64);
+    }
+    let a = libm_dyadic_from_f64(x);
+    let b = libm_dyadic_from_f64(y);
+    let c = libm_dyadic_from_f64(z);
+    let p = libm_dyadic_mul(a, b);
+    let s = libm_dyadic_add(p, c);
+    let nb = LibmDyadic128 {
+      negative: !b.negative, exponent: b.exponent, hi: b.hi, lo: b.lo
+    };
+    let q = libm_dyadic_add(a, nb);
+    let m = libm_dyadic_mul(s, c);
+    let w = libm_dyadic_mul(s, q);
+    h = put(h, a, show);
+    h = put(h, p, show);
+    h = put(h, s, show);
+    h = put(h, q, show);
+    h = put(h, m, show);
+    h = put(h, w, show);
+    h = putd(h, libm_dyadic_to_f64(p), show);
+    h = putd(h, libm_dyadic_to_f64(s), show);
+    h = putd(h, libm_dyadic_to_f64(q), show);
+    h = putd(h, libm_dyadic_to_f64(m), show);
+    h = putd(h, libm_dyadic_to_f64(w), show);
+  }
+  print(h);
+  return 0;
+}
