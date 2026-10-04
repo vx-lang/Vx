@@ -1,0 +1,21 @@
+//===- as_ptr_writes_land_in_the_tensor.vx - Vx Compiler ---------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `t.as_mut_ptr()` is the address of the tensor's first element. A value stored
+// through the pointer is the tensor's element: index 4 of a 2x3 tensor is row 1,
+// column 1. The pointer's type is inferred, so no annotation is needed.
+//
+// EXPECT: 7 9
+fn main() -> i32 {
+  let t : Tensor<f32, [2, 3]> = Tensor<f32, [2, 3]>::new();
+  let p = t.as_mut_ptr();
+  unsafe { p[0] = 7.0; p[4] = 9.0; }
+  print(t[0][0] as i32);
+  print!(" ");
+  print(t[1][1] as i32);
+  return 0;
+}

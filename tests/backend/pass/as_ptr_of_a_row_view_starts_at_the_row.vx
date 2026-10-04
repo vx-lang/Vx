@@ -1,0 +1,25 @@
+//===- as_ptr_of_a_row_view_starts_at_the_row.vx - Vx Compiler ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A row `t[1]` is a view into the tensor's buffer that starts three elements in.
+// `as_ptr()` on the view points at the row's first element, not the buffer's, so
+// reading index 1 through it gives `t[1][1]`.
+//
+// Flat path only: the legacy code generator refuses `as_ptr()` on a view rather
+// than answer with the buffer's start.
+//
+// REQUIRES: flat-codegen
+// EXPECT: 9
+fn main() -> i32 {
+  let mut t : Tensor<f32, [2, 3]> = Tensor<f32, [2, 3]>::new();
+  t[1][1] = 9.0;
+  let row = t[1];
+  let rp = row.as_ptr();
+  let v = unsafe { rp[1] };
+  print(v as i32);
+  return 0;
+}

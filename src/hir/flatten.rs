@@ -1512,6 +1512,12 @@ impl<'r> Lowerer<'r> {
             Expr::MethodCall(mc) if mc.method_name.as_ref() == "clone" && mc.args.is_empty() => {
                 self.lower_tensor_clone(mc)
             }
+            Expr::MethodCall(mc)
+                if matches!(mc.method_name.as_ref(), "as_ptr" | "as_mut_ptr")
+                    && mc.args.is_empty() =>
+            {
+                self.lower_tensor_as_ptr(mc)
+            }
             Expr::MethodCall(mc) if mc.method_name.as_ref() == "map" => self.lower_tensor_map(mc),
             Expr::MethodCall(mc) if mc.method_name.as_ref() == "reduce" && mc.args.len() == 2 => {
                 self.lower_tensor_reduce(mc)
@@ -1599,6 +1605,41 @@ impl<'r> Lowerer<'r> {
             // and a nested `**rr` can recover the pointee element. Without this the chain breaks at the
             // literal and only single-level refs (which take the place shortcut) worked. (#275 nested refs)
             Expr::Number(n) => Some(Type::Scalar(number_elem(n)?)),
+            // `t.as_ptr()` on a tensor: a pointer to its elements, in the tensor's memory, as the
+            // checker types it. Through a borrow of the tensor as well.
+            Expr::MethodCall(mc) if matches!(mc.method_name.as_ref(), "as_ptr" | "as_mut_ptr") => {
+                let base_ty = self.infer_ast_type(&mc.base)?;
+                let tensor = match &base_ty {
+                    Type::Borrow { inner, .. } => inner.as_ref(),
+                    other => other,
+                };
+                let Type::Tensor(el, _, place) = tensor else {
+                    return None;
+                };
+                Some(Type::Pointer(
+                    Box::new(Type::Scalar(el.clone())),
+                    place.clone(),
+                    mc.method_name.as_ref() == "as_mut_ptr",
+                ))
+            }
+            // `transfer(t, Memory::X)`: the same tensor, placed in `X`.
+            Expr::Transfer(t) => match self.infer_ast_type(&t.expr)? {
+                Type::Tensor(el, dims, _) => Some(Type::Tensor(
+                    el,
+                    dims,
+                    Some(crate::syntax::Placement::at(t.space.clone())),
+                )),
+                _ => None,
+            },
+            // `t[i]` on a tensor: the row, a tensor of the remaining extents, or the element
+            // when there is one extent.
+            Expr::IndexAccess(ix) => match self.infer_ast_type(&ix.base)? {
+                Type::Tensor(el, dims, place) if dims.len() > 1 => {
+                    Some(Type::Tensor(el, dims[1..].to_vec(), place))
+                }
+                Type::Tensor(el, dims, _) if dims.len() == 1 => Some(Type::Scalar(el)),
+                _ => None,
+            },
             Expr::MemberAccess(m) => {
                 let base_ty = self.infer_ast_type(&m.base)?;
                 let pointee = deref_to_pointee(&base_ty);
@@ -3301,6 +3342,25 @@ impl<'r> Lowerer<'r> {
     }
 
     /// `t.clone()`: a fresh tensor holding a copy of `t`'s elements. `t` may be a row.
+    /// `t.as_ptr()`: the address of the tensor's first element. The checker typed it as a pointer
+    /// into the tensor's memory; here it is one bare pointer value, host or device alike, which
+    /// is what a C function takes.
+    fn lower_tensor_as_ptr(&mut self, mc: &crate::syntax::MethodCallExpr) -> Lowered<Val> {
+        let src = self.lower_expr(&mc.base)?;
+        if !matches!(src.ty, LoweredTy::Tensor { .. }) {
+            return Err(Decline::TypeNotModelled {
+                what: "as_ptr() on something that is not a tensor",
+            });
+        }
+        Ok(self.emit_typed(
+            Opcode::TensorDataPtr,
+            src.reg,
+            Register(0),
+            LoweredTy::Ptr,
+            0,
+        ))
+    }
+
     fn lower_tensor_clone(&mut self, mc: &crate::syntax::MethodCallExpr) -> Lowered<Val> {
         let src = self.lower_expr(&mc.base)?;
         let ty @ LoweredTy::Tensor { .. } = src.ty.clone() else {
@@ -5714,6 +5774,7 @@ pub fn verify_hir_stream(worker: &LocalWorkerState) {
             | Opcode::SlotLoad
             | Opcode::FieldLoad
             | Opcode::TensorLoad
+            | Opcode::TensorDataPtr
             | Opcode::Transfer
             | Opcode::Print
             | Opcode::Arg => assert!(

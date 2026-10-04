@@ -9,9 +9,6 @@
 // program is running, not about the pointer. Inside a block running on the GPU
 // the same pointer can be read and written, and a host pointer is still read on
 // the host as before.
-//
-// Only the type checker runs here. Code generation for `as_ptr()` is a later
-// part of issue #742.
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --print-ast 2>&1 | FileCheck %s
 // CHECK-NOT: Error

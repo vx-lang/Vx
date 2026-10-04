@@ -271,6 +271,10 @@ pub enum Opcode {
     /// A top-level `const` table, read-only: `imm` is its position in the registry's
     /// `const_tables`, and the result is the tensor its global holds.
     ConstTable = 60,
+    /// The address of a tensor's first element as a bare pointer (`t.as_ptr()`): `operand1` is
+    /// the tensor register, and the result is a pointer value (`LoweredTy::Ptr`). A tensor in
+    /// device memory answers with its device address, which is what a C library takes.
+    TensorDataPtr = 61,
 }
 
 /// Reverse mode for `Opcode::AutoDiff`: the gradient, through `__enzyme_autodiff_grad_*`.
@@ -304,6 +308,7 @@ impl Opcode {
             58 => TensorReduce,
             59 => TensorClone,
             60 => ConstTable,
+            61 => TensorDataPtr,
             8 => Call,
             9 => Ret,
             10 => Matmul,

@@ -61,10 +61,10 @@ refused with E6003 wherever the running topology cannot see the pointer's memory
 block running where it can. Passing a pointer where a pointer into a different memory is expected
 is E6029, at a call to a C function and to a Vx function alike.
 
-> [!NOTE]
-> **Partly implemented.** The spelling type-checks and lowers, `t.as_ptr()` on a tensor gives a
-> pointer to its first element in the tensor's memory, and a read through a pointer is checked
-> against where the program runs. Code generation for `as_ptr()` is the later part of issue #742.
+`t.as_ptr()` and `t.as_mut_ptr()` on a tensor give a pointer to its first element in the tensor's
+memory: `*const f32` for a host tensor, `*mut f32 in Memory::GPU_HBM` for one moved there. It
+lowers to the data address in the tensor's descriptor plus the descriptor's offset, so the pointer
+taken from a row view starts at the row. The legacy code generator refuses `as_ptr()` on a view.
 
 ### The `Ref<T, Memory>` Type
 

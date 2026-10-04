@@ -173,7 +173,7 @@ pub(crate) fn returns_through_slot(ty_text: &str) -> bool {
 
 /// The width in bits of a scalar MLIR type, so `i8` gives 8. `None` for anything with no
 /// width of its own, such as a pointer or an aggregate.
-fn scalar_type_bits(ty_text: &str) -> Option<u32> {
+pub(crate) fn scalar_type_bits(ty_text: &str) -> Option<u32> {
     if let Some(bits) = ty_text.strip_prefix('i').and_then(|r| r.parse().ok()) {
         return Some(bits);
     }
@@ -2204,6 +2204,17 @@ impl<'c> MeliorGenerator<'c> {
                 let mut base_ty = self.infer_ast_type(&mc.base)?;
                 if let syntax::Type::Borrow { inner, .. } = base_ty {
                     base_ty = *inner;
+                }
+                // `t.as_ptr()` on a tensor: a pointer to its elements, in the tensor's memory,
+                // as the checker types it.
+                if let syntax::Type::Tensor(el, _, place) = &base_ty {
+                    if matches!(mc.method_name.as_ref(), "as_ptr" | "as_mut_ptr") {
+                        return Some(syntax::Type::Pointer(
+                            Box::new(syntax::Type::Scalar(el.clone())),
+                            place.clone(),
+                            mc.method_name.as_ref() == "as_mut_ptr",
+                        ));
+                    }
                 }
                 if let syntax::Type::GenericInstance(inner, _) = base_ty {
                     base_ty = *inner;

@@ -2739,6 +2739,29 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             return lower_clone_call(gen, block, &args[0]);
         }
 
+        // `t.as_ptr()` / `t.as_mut_ptr()` on a tensor: its data pointer as a bare `!llvm.ptr`.
+        // A method of that name on anything else was renamed by the checker before it got here,
+        // so a bare `as_ptr` with one argument is always the tensor intrinsic.
+        if matches!(name.as_ref(), "as_ptr" | "as_mut_ptr") && args.len() == 1 {
+            let (val, val_ty, block) = gen.generate_expr(&args[0], block)?;
+            let ty_text = val_ty.to_string();
+            if !ty_text.starts_with("memref<") || ty_text.starts_with("memref<memref<") {
+                return Err(LowerError::from(format!(
+                    "`{name}()` on something that is not a tensor: {ty_text}"
+                )));
+            }
+            // The helper answers with the buffer's start. A view (a row, `q[i]`) starts at an
+            // offset into it, which this path does not add, so it is refused rather than
+            // answered wrongly. The flat path handles it.
+            if ty_text.contains("strided<") {
+                return Err(LowerError::from(format!(
+                    "`{name}()` on a tensor view is not lowered by the legacy code generator"
+                )));
+            }
+            let ptr = memref_data_pointer(gen, block, val)?;
+            return Ok((ptr, gen.ptr_ty, block));
+        }
+
         if name.as_ref() == "map" {
             return lower_map_call(gen, block, args);
         }

@@ -98,6 +98,47 @@ impl FnEmit<'_> {
 
     // `t.clone()`: a new buffer of the source's shape and a `memref.copy` into it. The copy reads
     // the source through its own layout, so cloning a row copies that row.
+    /// `t.as_ptr()`: the address of the first element, as a bare `!llvm.ptr`. The descriptor's
+    /// aligned pointer plus its offset in bytes, so a row view answers with the row's start and
+    /// not the buffer's. A tensor in GPU memory is an ordinary descriptor whose pointer is the
+    /// device address, so the same code hands a C function what cuBLAS expects.
+    pub(crate) fn op_tensor_data_ptr(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let s = ins.operand1.0 as usize;
+        let src = self.names.get(s).ok_or(crate::emitter_gap!())?.clone();
+        let src_mem = self
+            .mem_of
+            .get(s)
+            .cloned()
+            .flatten()
+            .ok_or(crate::emitter_gap!())?;
+        let (dims_x, et) = memref_lead_dims_and_elem(&src_mem).ok_or(crate::emitter_gap!())?;
+        let rank = dims_x.split('x').filter(|d| !d.is_empty()).count();
+        let bytes = crate::codegen::generator::scalar_type_bits(et)
+            .ok_or(crate::emitter_gap!())?
+            .div_ceil(8);
+        let space_sfx = if src_mem.ends_with(", 3>") { ", 3" } else { "" };
+        let buf = format!("%dp{idx}_b");
+        let off = format!("%dp{idx}_o");
+        let rest: Vec<String> = (0..2 * rank).map(|k| format!("%dp{idx}_r{k}")).collect();
+        let results = [vec![buf, off.clone()], rest].concat().join(", ");
+        let index_tys = vec!["index"; 1 + 2 * rank].join(", ");
+        self.body += &format!(
+            "  {results} = memref.extract_strided_metadata {src} : {src_mem} -> memref<{et}{space_sfx}>, {index_tys}\n"
+        );
+        self.body += &format!(
+            "  %dp{idx}_a = memref.extract_aligned_pointer_as_index {src} : {src_mem} -> index\n"
+        );
+        self.body += &format!("  %dp{idx}_e = arith.constant {bytes} : index\n");
+        self.body += &format!("  %dp{idx}_m = arith.muli {off}, %dp{idx}_e : index\n");
+        self.body += &format!("  %dp{idx}_s = arith.addi %dp{idx}_a, %dp{idx}_m : index\n");
+        self.body += &format!("  %dp{idx}_i = arith.index_cast %dp{idx}_s : index to i64\n");
+        let n = format!("%v{idx}");
+        self.body += &format!("  {n} = llvm.inttoptr %dp{idx}_i : i64 to !llvm.ptr\n");
+        self.names[idx] = n;
+        self.ptr_of[idx] = true;
+        Ok(())
+    }
+
     pub(crate) fn op_tensor_clone(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
         let gid = *self
             .types

@@ -1925,6 +1925,7 @@ impl<'a> FnEmit<'a> {
             Opcode::TensorMap => self.op_tensor_map(idx, ins),
             Opcode::TensorReduce => self.op_tensor_reduce(idx, ins),
             Opcode::TensorClone => self.op_tensor_clone(idx, ins),
+            Opcode::TensorDataPtr => self.op_tensor_data_ptr(idx, ins),
             // Index a tensor along its outermost dimension. `operand1` is the base tensor (memref),
             // `operand2` the index (`arith.index_cast` to `index`). A scalar-element result
             // (`type_idx` is a scalar GID) is a value read (`imm = 0` → `memref.load`) or an element

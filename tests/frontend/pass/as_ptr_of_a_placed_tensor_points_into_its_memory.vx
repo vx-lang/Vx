@@ -15,8 +15,7 @@
 // to a parameter of exactly its type, and a wrong type would be a type error.
 // `device_pointer_is_not_a_host_pointer.vx` shows the mismatch being refused.
 //
-// Only the type checker runs here. Code generation for `as_ptr()` is a later
-// part of issue #742.
+// Only the type checker runs here: `vendor_scale` is not a real library function.
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --print-ast 2>&1 | FileCheck %s
 // CHECK-NOT: Error

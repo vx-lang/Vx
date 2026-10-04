@@ -1,0 +1,33 @@
+//===- device_pointer_reaches_c_as_a_plain_pointer.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A tensor moved to GPU memory is an ordinary memref whose data pointer is the
+// device address. `as_mut_ptr()` reads that address out of the descriptor, adds
+// the descriptor's offset, and hands a C function a plain `!llvm.ptr`, which is
+// what cuBLAS takes for a device buffer. No address-space cast is involved.
+//
+// Only the MLIR is checked: `vendor_scale` is not a real library function, so
+// the program cannot be linked or run here.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: func.func private @vendor_scale(!llvm.ptr, i32) -> i32
+// CHECK: memref.extract_strided_metadata
+// CHECK: memref.extract_aligned_pointer_as_index
+// CHECK: [[PTR:%.*]] = llvm.inttoptr %{{.*}} : i64 to !llvm.ptr
+// CHECK: call @vendor_scale([[PTR]], %{{.*}}) : (!llvm.ptr, i32) -> i32
+
+extern "C" {
+  fn vendor_scale(data : *mut f32 in Memory::GPU_HBM, n : i32) -> i32;
+}
+
+fn main() -> i32 {
+  let host_data : Tensor<f32, [4, 4]> = Tensor<f32, [4, 4]>::new();
+  let on_gpu = transfer(host_data, Memory::GPU_HBM);
+  let dp = on_gpu.as_mut_ptr();
+  let r = unsafe { vendor_scale(dp, 16) };
+  return r;
+}

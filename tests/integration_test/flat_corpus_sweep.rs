@@ -18,9 +18,6 @@ use std::process::Command;
 /// Programs the flat path declines today, relative to `tests/backend/pass/`.
 /// A worklist, not an exemption list: shrinking it is Vx#383.
 const KNOWN_DECLINES: &[&str] = &[
-    // `as_ptr()` on a tensor has no lowering on either path yet; the file checks its type only.
-    "frontend/pass/as_ptr_of_a_placed_tensor_points_into_its_memory.vx",
-    "frontend/pass/device_pointer_is_read_where_its_memory_is_visible.vx",
     "backend/pass/custom_topology_user_lowering.vx",
     "backend/pass/matmul_assign_alias.vx",
     // "A borrow of something that is not a tensor": the flat path borrows tensors only.
@@ -184,10 +181,6 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
 /// invalid MLIR or a panic on the default `--action emit-mlir` (Vx#398). Each is a real
 /// compiler defect; the list exists so the set can only shrink, never silently grow.
 const KNOWN_BROKEN: &[&str] = &[
-    // `as_ptr()` on a tensor: the flat path declines the method call and the AST path has no
-    // lowering for it either. The file checks only the type the checker gives the call.
-    "frontend/pass/as_ptr_of_a_placed_tensor_points_into_its_memory.vx",
-    "frontend/pass/device_pointer_is_read_where_its_memory_is_visible.vx",
     "frontend/pass/control_flow_rigorous.vx", // multi-payload variant binding (Vx#233)
 ];
 
