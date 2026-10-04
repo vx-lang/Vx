@@ -765,8 +765,7 @@ impl<'a> TypeChecker<'a> {
             };
             if is_shared(&self.check_expr_type_probe(base)) {
                 return Some(match Self::extract_base_and_path(base) {
-                    Some((root, path)) if path.is_empty() => root,
-                    Some((root, path)) => format!("{root}.{}", path.join(".")),
+                    Some((root, path)) => crate::hir::places::display_place(&root, &path),
                     None => "a reference".to_string(),
                 });
             }
@@ -795,10 +794,7 @@ impl<'a> TypeChecker<'a> {
                     && crate::hir::places::paths_may_alias(&path, &b.path)
             });
         if shared {
-            let place = std::iter::once(root)
-                .chain(path)
-                .collect::<Vec<_>>()
-                .join(".");
+            let place = crate::hir::places::display_place(&root, &path);
             self.errors.error_with_code(
                 crate::diagnostic::DiagnosticCode::E4009,
                 format!(

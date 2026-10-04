@@ -760,8 +760,44 @@ impl<'a> TypeChecker<'a> {
                     Expr::Identifier(id) => Some(id.name.clone()),
                     _ => None,
                 };
+                // `q[1]` reads only row 1, so a live mutable borrow of row 0 does not stop it.
+                // When the base is a place, the whole-variable borrow rule is suspended while
+                // it is checked, and the indexed place is tested against live borrows below,
+                // as a field access does.
+                let place = Self::extract_base_and_path(obj);
+                let old_skip = self.borrow.skip_borrow_check;
+                if place.is_some() {
+                    self.borrow.skip_borrow_check = true;
+                }
                 let obj_ty = self.check_expr_type_flag(obj, false);
+                self.borrow.skip_borrow_check = old_skip;
                 self.indexed_name = None;
+                if let Some((name, mut path)) = place {
+                    if !self.borrow.skip_borrow_check && !self.speculating {
+                        path.push(crate::hir::places::index_element(idx));
+                        let conflict = self.borrow.live_borrows(&name).iter().any(|b| {
+                            b.is_mut && crate::hir::places::paths_may_alias(&path, &b.path)
+                        });
+                        if conflict {
+                            // Point at the variable, as the whole-variable rule does.
+                            let mut root = &**obj;
+                            while let Expr::IndexAccess(IndexAccessExpr { base, .. })
+                            | Expr::MemberAccess(MemberAccessExpr { base, .. }) = root
+                            {
+                                root = base;
+                            }
+                            let at = match root {
+                                Expr::Identifier(id) => id.span,
+                                _ => ix_span,
+                            };
+                            self.errors.error_with_code(
+                                crate::diagnostic::DiagnosticCode::E4002,
+                                format!("Cannot access '{}' because it is mutably borrowed.", name),
+                                Some(crate::diagnostic::SourceSpan::from_ast_span(&at)),
+                            );
+                        }
+                    }
+                }
 
                 // Enforce the topology boundary, reading where the value lives from
                 // either spelling: a placement carried on the tensor itself, or the
@@ -1050,7 +1086,11 @@ impl<'a> TypeChecker<'a> {
                 path.push(m.member.to_string());
                 Some((root, path))
             }
-            Expr::IndexAccess(i) => self.reborrow_base_and_path(&i.base),
+            Expr::IndexAccess(i) => {
+                let (root, mut path) = self.reborrow_base_and_path(&i.base)?;
+                path.push(crate::hir::places::index_element(&i.index));
+                Some((root, path))
+            }
             _ => None,
         }
     }
