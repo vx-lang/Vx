@@ -17,7 +17,7 @@ the test suite has one, a program that triggers it.
 - [Warnings](#warnings) — `W1001`–`W1031` (23 codes)
 - [Parser Errors](#parser-errors) — `E1001`–`E1013` (13 codes)
 - [Name Resolution Errors](#name-resolution-errors) — `E2001`–`E2007` (7 codes)
-- [Type Errors](#type-errors) — `E3001`–`E3045` (45 codes)
+- [Type Errors](#type-errors) — `E3001`–`E3045` (44 codes)
 - [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4011` (11 codes)
 - [Safety Errors](#safety-errors) — `E5001`–`E5002` (2 codes)
 - [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6029` (29 codes)
@@ -121,7 +121,6 @@ Raised by the type checker. Vx performs no implicit numeric conversion, so many 
 | [`E3024`](/errors/E3024/) | `.shape[i]` on a tensor. It answered on any value, not only a tensor, and typed its answer as a rank-0 tensor. `extent(i)` is the read of a run-time extent. |
 | [`E3025`](/errors/E3025/) | `extent(i)` with an index that is not a literal below the tensor's rank. Rank is static, so the index is checked here rather than read past the descriptor at run time. |
 | [`E3026`](/errors/E3026/) | A placement query (`.topology()`) the checker cannot decide. Placement is a fact of the receiver's type, compared with `Some(Topology::..)` or `None`; it has no run-time value. |
-| [`E3027`](/errors/E3027/) | A function whose return type is a closure. A closure value points into the frame that made it, so it cannot outlive that frame yet. |
 | [`E3028`](/errors/E3028/) | A function with a non-void return type whose body can complete without returning. Reported here rather than left to codegen, where it surfaced as an MLIR verifier message naming an operation, with no source location. |
 | [`E3029`](/errors/E3029/) | A type name in a signature that names no declaration. An unknown name in type position parses as a user nominal, so without this a typo -- or a type constructor removed from the language -- compiled silently and did nothing. |
 | [`E3030`](/errors/E3030/) | An operator applied to operand types it is not defined on -- `%` on a shaped tensor or on a `bool`. Refused here because the alternative is worse in both directions: the flat emitter would decline and fall back to a path that cannot lower it either, and an `i1` operand would reach `arith.remsi` and verify. |
@@ -228,4 +227,4 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 
 ______________________________________________________________________
 
-139 diagnostics.
+138 diagnostics.

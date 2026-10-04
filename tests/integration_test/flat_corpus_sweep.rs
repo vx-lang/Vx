@@ -18,6 +18,9 @@ use std::process::Command;
 /// Programs the flat path declines today, relative to `tests/backend/pass/`.
 /// A worklist, not an exemption list: shrinking it is Vx#383.
 const KNOWN_DECLINES: &[&str] = &[
+    // `c as ||->i32`: the flat path declines a cast to the built-in closure type ("a cast to a
+    // non-scalar"); the AST path compiles it.
+    "backend/pass/returning_a_closure_that_uses_nothing.vx",
     "backend/pass/custom_topology_user_lowering.vx",
     "backend/pass/matmul_assign_alias.vx",
     // A row chosen by an `if` used as a value: the flat path has no slot for a tensor view

@@ -269,9 +269,6 @@ pub enum DiagnosticCode {
     /// A placement query (`.topology()`) the checker cannot decide. Placement is a fact of the
     /// receiver's type, compared with `Some(Topology::..)` or `None`; it has no run-time value.
     E3026,
-    /// A function whose return type is a closure. A closure value points into the frame that
-    /// made it, so it cannot outlive that frame yet.
-    E3027,
     /// A function with a non-void return type whose body can complete without returning. Reported
     /// here rather than left to codegen, where it surfaced as an MLIR verifier message naming an
     /// operation, with no source location.

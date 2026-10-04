@@ -1,15 +1,16 @@
 // RUN: not vxc %s 2>&1 | FileCheck %s
 //
-// A closure value points into the frame that made it. Passing one down is fine, the frame is
-// alive; returning one, so that it outlives its frame, is refused until a closure can own its
-// environment.
+// A closure that uses a variable of its function points into that function's frame. Returning
+// it would hand the caller a frame that is gone, so it is refused with the error every value
+// pointing into the frame gets. A closure that uses no variable can be returned;
+// `returning_a_closure_that_uses_nothing.vx` shows it.
 
 fn make() -> ||->i32 {
   let n = 42;
   let c = || n;
   return c as ||->i32;
 }
-// CHECK: E3027{{.*}}function 'make' returns a closure
+// CHECK: E4005] at 11:3: this returns a value that points into this function's stack frame
 
 fn main() -> i32 {
   return 0;

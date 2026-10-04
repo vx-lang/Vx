@@ -1,0 +1,33 @@
+//===- returning_a_closure_that_uses_nothing.vx - Vx Compiler ----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A closure that uses no variable of its function points into no frame, so a
+// function can return it, as a `||->i32` value. `use_stack` runs between making
+// the closure and calling it, so a closure that did point into `make`'s frame
+// would read memory another call had reused.
+//
+// A closure that uses a variable is refused (E4005);
+// `returning_a_closure.vx` in the frontend tests shows it.
+//
+// EXPECT: 42
+fn make() -> ||->i32 {
+  let c = || 40 + 2;
+  return c as ||->i32;
+}
+
+fn use_stack(k : i32) -> i32 {
+  let a = k * 3;
+  let b = a + 7;
+  return b;
+}
+
+fn main() -> i32 {
+  let f = make();
+  let noise = use_stack(5);
+  print(f());
+  return noise - 22;
+}
