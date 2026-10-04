@@ -2358,6 +2358,9 @@ impl<'a> TypeChecker<'a> {
                 // pointer it gives carries the tensor's placement, and reading through that
                 // is checked where the read happens.
                 let takes_an_address = matches!(_method.as_ref(), "as_ptr" | "as_mut_ptr");
+                if takes_an_address && !self.speculating {
+                    self.drops_note_raw_pointer(obj);
+                }
                 let prev_allow = self.allow_cross_topology;
                 if takes_an_address {
                     self.allow_cross_topology = true;

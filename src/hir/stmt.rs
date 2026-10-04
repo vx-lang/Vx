@@ -137,6 +137,7 @@ impl<'a> TypeChecker<'a> {
         let last_use = Self::compute_block_liveness(body);
 
         self.borrow.enter_block(last_use);
+        self.drops_enter_block(body);
 
         // A block is always checked for real, never speculatively. Force `speculating` off for the
         // loop so a block reached from *inside* a return-type probe (e.g. a generic function body
@@ -145,9 +146,11 @@ impl<'a> TypeChecker<'a> {
         let saved_speculating = self.speculating;
         self.speculating = false;
 
+        let mut terminated_at = None;
         #[allow(clippy::needless_range_loop)]
         for i in 0..body.len() {
             self.borrow.set_stmt(i);
+            self.drops_set_stmt(i);
             if terminated {
                 let stmt_span = body[i].span();
                 self.errors.warn(
@@ -162,10 +165,12 @@ impl<'a> TypeChecker<'a> {
             match &body[i] {
                 Statement::Return(_) | Statement::Break(_) | Statement::Continue(_) => {
                     terminated = true;
+                    terminated_at = Some(i);
                 }
                 _ => {}
             }
         }
+        self.drops_exit_block(terminated_at);
         self.speculating = saved_speculating;
         self.borrow.exit_block();
     }
@@ -202,8 +207,8 @@ impl<'a> TypeChecker<'a> {
             Statement::LetDecl(decl) => self.check_let_decl_stmt(decl, consume),
             Statement::ForLoop(floop) => self.check_for_loop_stmt(floop, consume, return_type),
             Statement::Loop(lp) => self.check_loop_stmt(lp, return_type),
-            Statement::Break(_) => {}
-            Statement::Continue(_) => {}
+            Statement::Break(b) => self.drops_exit("break", b.span.line, true),
+            Statement::Continue(c) => self.drops_exit("continue", c.span.line, true),
             Statement::Assign(AssignStmt { lhs, rhs, span: _ }) => {
                 self.check_assign_stmt(lhs, None, rhs, consume, None)
             }
@@ -330,6 +335,9 @@ impl<'a> TypeChecker<'a> {
         };
 
         self.bind_view(name.as_ref(), *_is_mut, expr, &binding_ty, span);
+        if !self.speculating {
+            self.drops_note_owner(name.as_ref(), &binding_ty);
+        }
         if let Expr::Identifier(from) = &*expr {
             if !self.speculating {
                 self.borrow
@@ -629,7 +637,9 @@ impl<'a> TypeChecker<'a> {
 
         let marks_before = self.moved_snapshot();
         self.borrow.loop_exits.push(Default::default());
+        self.drops_enter_loop();
         self.check_block(body, return_type);
+        self.drops_exit_loop();
         self.settle_loop_moves(marks_before, outer_depth, body, &loop_span);
 
         // Check invariants hold after the loop iteration (we don't strictly prove induction here, just checking at end of block)
@@ -725,7 +735,9 @@ impl<'a> TypeChecker<'a> {
 
         let marks_before = self.moved_snapshot();
         self.borrow.loop_exits.push(Default::default());
+        self.drops_enter_loop();
         self.check_block(body, return_type);
+        self.drops_exit_loop();
         self.settle_loop_moves(marks_before, outer_depth, body, &loop_span);
 
         for inv in invariants.iter() {
@@ -1159,6 +1171,7 @@ impl<'a> TypeChecker<'a> {
                     Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                 );
             }
+            self.drops_exit("return", span.line, false);
             return;
         };
 
@@ -1166,6 +1179,7 @@ impl<'a> TypeChecker<'a> {
         self.expected_type = Some(return_type.clone());
         let ty = self.check_expr_type_flag(expr, consume);
         self.expected_type = prev_expected;
+        self.drops_exit("return", span.line, false);
 
         let mut expected_ty = return_type.clone();
         if let Some(Type::Unknown) = self.current_return_type {

@@ -177,6 +177,9 @@ impl<'a> TypeChecker<'a> {
                     let Expr::Identifier(id) = field else {
                         continue;
                     };
+                    // A captured reference: the closure holds what it borrows.
+                    self.borrow
+                        .copy_borrows(id.name.as_ref(), name, self.scopes.len());
                     let Some(view) = self.borrow.views.get(id.name.as_ref()).cloned() else {
                         continue;
                     };

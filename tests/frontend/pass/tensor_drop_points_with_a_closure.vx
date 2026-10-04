@@ -1,0 +1,27 @@
+//===- tensor_drop_points_with_a_closure.vx - Vx Compiler --------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: env VX_PRINT_DROPS=1 vxc %s --action print-ast 2>&1 >/dev/null | FileCheck %s
+//
+// A closure that uses a reference to a tensor keeps the tensor alive until the closure's
+// last use. (The checker accepts this program; neither code generator can compile a closure
+// that uses a tensor yet.)
+
+fn kept_by_a_closure() -> f32 {
+  let a = Tensor<f32, [4]>::new();
+  let ra = &a;
+  let f = || ra[0];
+  let x = 1.0;
+  let y = f() + x;
+  return y;
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK: drop in kept_by_a_closure: a, after the statement on line 19
