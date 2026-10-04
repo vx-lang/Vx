@@ -1590,6 +1590,7 @@ impl<'c> LowerToMelior<'c> for syntax::UnaryOpExpr {
                 let not_ref = block.append_operation(not_op);
                 Ok((not_ref.result(0)?.into(), ty, block))
             }
+            syntax::UnaryOp::Neg if gen.is_memref(&ty) => lower_tensor_negate(gen, block, val, ty),
             syntax::UnaryOp::Neg => {
                 let is_float = ty.to_string().contains("f32")
                     || ty.to_string().contains("f64")
@@ -4483,4 +4484,114 @@ fn lower_clone_call<'c>(
         .build()?;
     block.append_operation(copy);
     Ok((dst, dst_ty, block))
+}
+
+/// `-t` on a tensor: a new tensor of each element negated, by a `linalg.generic`. A float uses
+/// `arith.negf`, which keeps the sign of zero right; an integer is `0 - x`.
+fn lower_tensor_negate<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+    src: Value<'c, 'c>,
+    src_ty: Type<'c>,
+) -> Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError> {
+    let src_str = src_ty.to_string();
+    let inner = src_str
+        .strip_prefix("memref<")
+        .and_then(|s| s.split([',', '>']).next())
+        .ok_or_else(|| format!("negation of something that is not a tensor: {src_str}"))?;
+    let mut parts: Vec<&str> = inner.split('x').collect();
+    let elem = parts
+        .pop()
+        .ok_or_else(|| format!("negation of a tensor with no element type: {src_str}"))?;
+    let rank = parts.len();
+    let index_ty = Type::index(gen.context);
+    let mut sizes = Vec::new();
+    for (k, d) in parts.iter().enumerate() {
+        if *d == "?" {
+            let attr = IntegerAttribute::new(index_ty, k as i64).into();
+            let c = OperationBuilder::new("arith.constant", gen.loc())
+                .add_results(&[index_ty])
+                .add_attributes(&[(Identifier::new(gen.context, "value"), attr)])
+                .build()?;
+            let c: Value = block.append_operation(c).result(0)?.into();
+            let dim = OperationBuilder::new("memref.dim", gen.loc())
+                .add_operands(&[src, c])
+                .add_results(&[index_ty])
+                .build()?;
+            sizes.push(block.append_operation(dim).result(0)?.into());
+        }
+    }
+    let out_ty = Type::parse(gen.context, &format!("memref<{}x{elem}>", parts.join("x")))
+        .ok_or_else(|| format!("negation of a tensor with no memref type: {src_str}"))?;
+    let alloc = OperationBuilder::new("memref.alloc", gen.loc())
+        .add_operands(&sizes)
+        .add_attributes(&[(
+            Identifier::new(gen.context, "operandSegmentSizes"),
+            DenseI32ArrayAttribute::new(gen.context, &[sizes.len() as i32, 0]).into(),
+        )])
+        .add_results(&[out_ty])
+        .build()?;
+    let out: Value = block.append_operation(alloc).result(0)?.into();
+
+    let el_ty =
+        Type::parse(gen.context, elem).ok_or_else(|| format!("negation of a tensor of {elem}"))?;
+    let body = melior::ir::Block::new(&[(el_ty, gen.loc()), (el_ty, gen.loc())]);
+    let x: Value = body.argument(0)?.into();
+    let negated: Value = if elem.starts_with('f') || elem == "bf16" {
+        let op = OperationBuilder::new("arith.negf", gen.loc())
+            .add_operands(&[x])
+            .add_results(&[el_ty])
+            .build()?;
+        body.append_operation(op).result(0)?.into()
+    } else {
+        let zero = OperationBuilder::new("arith.constant", gen.loc())
+            .add_results(&[el_ty])
+            .add_attributes(&[(
+                Identifier::new(gen.context, "value"),
+                IntegerAttribute::new(el_ty, 0).into(),
+            )])
+            .build()?;
+        let zero: Value = body.append_operation(zero).result(0)?.into();
+        let op = OperationBuilder::new("arith.subi", gen.loc())
+            .add_operands(&[zero, x])
+            .add_results(&[el_ty])
+            .build()?;
+        body.append_operation(op).result(0)?.into()
+    };
+    body.append_operation(
+        OperationBuilder::new("linalg.yield", gen.loc())
+            .add_operands(&[negated])
+            .build()?,
+    );
+    let region = Region::new();
+    region.append_block(body);
+
+    let dims: Vec<String> = (0..rank).map(|k| format!("d{k}")).collect();
+    let map = Attribute::parse(
+        gen.context,
+        &format!("affine_map<({0}) -> ({0})>", dims.join(", ")),
+    )
+    .ok_or_else(|| "negation: an affine map that does not parse".to_string())?;
+    let parallel = Attribute::parse(gen.context, "#linalg.iterator_type<parallel>")
+        .ok_or_else(|| "negation: an iterator type that does not parse".to_string())?;
+    let generic = OperationBuilder::new("linalg.generic", gen.loc())
+        .add_operands(&[src, out])
+        .add_attributes(&[
+            (
+                Identifier::new(gen.context, "operandSegmentSizes"),
+                DenseI32ArrayAttribute::new(gen.context, &[1, 1]).into(),
+            ),
+            (
+                Identifier::new(gen.context, "indexing_maps"),
+                ArrayAttribute::new(gen.context, &[map, map]).into(),
+            ),
+            (
+                Identifier::new(gen.context, "iterator_types"),
+                ArrayAttribute::new(gen.context, &vec![parallel; rank]).into(),
+            ),
+        ])
+        .add_regions([region])
+        .build()?;
+    block.append_operation(generic);
+    Ok((out, out_ty, block))
 }
