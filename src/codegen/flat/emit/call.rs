@@ -6,6 +6,15 @@
 use super::super::*;
 
 impl FnEmit<'_> {
+    /// Whether register `r` is passed as a bare `!llvm.ptr`: a pointer value, a pointer local's
+    /// slot handed out by `&mut p` (the slot's address is the pointer the callee wants), or an
+    /// aggregate slot passed by reference.
+    fn is_pointer_value(&self, r: usize) -> Lowered<bool> {
+        Ok(*self.ptr_of.get(r).ok_or(crate::emitter_gap!())?
+            || self.pslot_of.get(r).copied().unwrap_or(false)
+            || self.agg_of.get(r).copied().flatten().is_some())
+    }
+
     // One argument of the following `Call`: record its value register (no op emitted).
     pub(crate) fn op_arg(&mut self, _idx: usize, ins: &HirInstruction) -> Lowered<()> {
         self.pending_args.push(ins.operand1.0);
@@ -72,9 +81,7 @@ impl FnEmit<'_> {
                     .ok_or(crate::emitter_gap!())?
                     .struct_ty
                     .clone()
-            } else if *self.ptr_of.get(*a as usize).ok_or(crate::emitter_gap!())?
-                || self.agg_of.get(*a as usize).copied().flatten().is_some()
-            {
+            } else if self.is_pointer_value(*a as usize)? {
                 "!llvm.ptr".to_string()
             } else {
                 self.mem_of
@@ -375,9 +382,7 @@ impl FnEmit<'_> {
                     .ok_or(crate::emitter_gap!())?
                     .struct_ty
                     .clone()
-            } else if *self.ptr_of.get(*a as usize).ok_or(crate::emitter_gap!())?
-                || self.agg_of.get(*a as usize).copied().flatten().is_some()
-            {
+            } else if self.is_pointer_value(*a as usize)? {
                 "!llvm.ptr".to_string()
             } else {
                 self.mem_of
