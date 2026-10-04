@@ -28,6 +28,8 @@ const KNOWN_DECLINES: &[&str] = &[
     "backend/pass/tensor_views_end_at_their_last_use.vx",
     // "A borrow of something that is not a tensor": the flat path borrows tensors only.
     "backend/pass/borrow_of_a_value.vx",
+    "backend/pass/cast_a_borrow_to_a_raw_pointer.vx",
+    "backend/pass/write_through_a_borrow_of_a_tensor_element.vx",
     "backend/pass/borrow_element_through_pointer.vx",
     // "A store to a nested nominal field": `self.inner = x` puts a struct into a struct's
     // field, which the flat path does not model. The file is about the AST path anyway.

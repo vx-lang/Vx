@@ -1,0 +1,40 @@
+//===- cast_a_borrow_to_the_wrong_raw_pointer.vx - Vx Compiler ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A borrow casts to a raw pointer only where it could be assigned to one: the
+// pointer points at the same type, and a `*mut` pointer comes from a `&mut`
+// borrow. A shared borrow gives only `*const`.
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// RUN: not vxc %s 2>&1 | FileCheck %s --check-prefix=COUNT
+// CHECK-DAG: Unsupported cast: cannot cast from Borrow { inner: Scalar(I32), mem_space: None, is_mut: false, {{.*}} } to Pointer(Scalar(I32), None, true)
+// CHECK-DAG: Unsupported cast: cannot cast from Borrow { inner: Scalar(I32), mem_space: None, is_mut: true, {{.*}} } to Pointer(Scalar(I64), None, true)
+//
+// COUNT-COUNT-2: Unsupported cast
+// COUNT-NOT: Unsupported cast
+
+fn shared_to_mut() -> i32 {
+  let mut x : i32 = 1;
+  let p = (&x) as *mut i32;
+  return 0;
+}
+
+fn wrong_pointee() -> i32 {
+  let mut x : i32 = 1;
+  let p = (&mut x) as *mut i64;
+  return 0;
+}
+
+fn shared_to_const_is_fine() -> i32 {
+  let x : i32 = 1;
+  let p = (&x) as *const i32;
+  return 0;
+}
+
+fn main() -> i32 {
+  return 0;
+}

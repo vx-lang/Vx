@@ -177,6 +177,13 @@ impl<'a> TypeChecker<'a> {
             (Type::Scalar(_), Type::Scalar(_)) => {
                 return target_ty;
             }
+            // `&mut x as *mut T`: the same conversion `let p : *mut T = &mut x` makes, spelled as
+            // a cast. Making the pointer is safe; using it is what needs `unsafe`.
+            (Type::Borrow { .. }, Type::Pointer(..))
+                if self.is_assignable(&target_ty, &source_ty) =>
+            {
+                return target_ty;
+            }
             (Type::Scalar(_), Type::Pointer(_, _, _)) => {
                 // Allow casting integers to pointers (e.g. 0 as *mut T)
                 if !self.in_unsafe_block && !self.speculating {

@@ -1,0 +1,54 @@
+//===- write_through_a_borrow_of_a_tensor_element.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `&mut c[0][1]` points at that element of `c`, so a write through it changes
+// `c`. Each line below writes through such a borrow and then reads the tensor:
+//
+// - a borrow kept in a variable, `let r = &mut c[0][1]`,
+// - a borrow passed to a function,
+// - an element of a row view, `&mut row[0]`, which is element 0 of row 1,
+// - an element of a tensor reached through a `&mut Tensor` parameter,
+// - an element of a rank-1 tensor.
+//
+// Every one used to write to a copy of the element and print 0.
+//
+// EXPECT: 5 7 4 8 6
+fn set(r : &mut f32, v : f32) -> i32 {
+  *r = v;
+  return 0;
+}
+
+fn through_a_reference(t : &mut Tensor<f32, [2, 3]>) -> i32 {
+  set(&mut t[1][2], 8.0);
+  return 0;
+}
+
+fn main() -> i32 {
+  let mut c = Tensor<f32, [2, 2]>::new();
+  let r = &mut c[0][1];
+  *r = 5.0;
+  set(&mut c[1][0], 7.0);
+
+  let mut q = Tensor<f32, [2, 3]>::new();
+  let mut row = q[1];
+  set(&mut row[0], 4.0);
+  through_a_reference(&mut q);
+
+  let mut v = Tensor<f32, [3]>::new();
+  set(&mut v[2], 6.0);
+
+  print(c[0][1] as i32);
+  print!(" ");
+  print(c[1][0] as i32);
+  print!(" ");
+  print(q[1][0] as i32);
+  print!(" ");
+  print(q[1][2] as i32);
+  print!(" ");
+  print(v[2] as i32);
+  return 0;
+}

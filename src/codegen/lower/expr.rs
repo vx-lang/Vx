@@ -185,6 +185,106 @@ fn memref_data_pointer<'c>(
         .into())
 }
 
+/// The address of one element of a tensor, as a bare `!llvm.ptr`: the buffer's aligned pointer
+/// plus `(offset + Σ index·stride) · element size`, read from the descriptor. `base` is the
+/// tensor's memref and `indices` one `index` value per dimension.
+fn tensor_element_pointer<'c>(
+    gen: &MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+    base: Value<'c, 'c>,
+    base_ty: &str,
+    indices: &[Value<'c, 'c>],
+) -> Result<Value<'c, 'c>, LowerError> {
+    let inner = base_ty
+        .strip_prefix("memref<")
+        .and_then(|s| s.split([',', '>']).next())
+        .ok_or_else(|| {
+            format!("an element address of something that is not a tensor: {base_ty}")
+        })?;
+    let elem = inner.rsplit('x').next().unwrap_or(inner);
+    let bits = crate::codegen::generator::scalar_type_bits(elem)
+        .ok_or_else(|| format!("an element address of a tensor of {elem}"))?;
+    if base_ty
+        .split(['<', '>'])
+        .any(|p| p.trim_start_matches(", ").parse::<u32>().is_ok())
+    {
+        return Err(LowerError::from(format!(
+            "an element address of a tensor in another memory space: {base_ty}"
+        )));
+    }
+    let index_ty = Type::index(gen.context);
+    let buf_ty = Type::parse(gen.context, &format!("memref<{elem}>"))
+        .ok_or_else(|| LowerError::ParseType(format!("memref<{elem}>")))?;
+    let rank = indices.len();
+    let mut result_tys = vec![buf_ty];
+    result_tys.extend(std::iter::repeat_n(index_ty, 1 + 2 * rank));
+    let meta = block.append_operation(
+        OperationBuilder::new("memref.extract_strided_metadata", gen.loc())
+            .add_operands(&[base])
+            .add_results(&result_tys)
+            .build()?,
+    );
+    let arith =
+        |name: &str, a: Value<'c, 'c>, b: Value<'c, 'c>| -> Result<Value<'c, 'c>, LowerError> {
+            Ok(block
+                .append_operation(
+                    OperationBuilder::new(name, gen.loc())
+                        .add_operands(&[a, b])
+                        .add_results(&[index_ty])
+                        .build()?,
+                )
+                .result(0)?
+                .into())
+        };
+    let mut linear: Value = meta.result(1)?.into();
+    for (k, idx) in indices.iter().enumerate() {
+        let stride: Value = meta.result(2 + rank + k)?.into();
+        let step = arith("arith.muli", *idx, stride)?;
+        linear = arith("arith.addi", linear, step)?;
+    }
+    let aligned: Value = block
+        .append_operation(
+            OperationBuilder::new("memref.extract_aligned_pointer_as_index", gen.loc())
+                .add_operands(&[base])
+                .add_results(&[index_ty])
+                .build()?,
+        )
+        .result(0)?
+        .into();
+    let size: Value = block
+        .append_operation(
+            OperationBuilder::new("arith.constant", gen.loc())
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "value"),
+                    IntegerAttribute::new(index_ty, (bits as i64 + 7) / 8).into(),
+                )])
+                .add_results(&[index_ty])
+                .build()?,
+        )
+        .result(0)?
+        .into();
+    let bytes = arith("arith.muli", linear, size)?;
+    let addr = arith("arith.addi", aligned, bytes)?;
+    let addr_i64: Value = block
+        .append_operation(
+            OperationBuilder::new("arith.index_cast", gen.loc())
+                .add_operands(&[addr])
+                .add_results(&[gen.i64_ty])
+                .build()?,
+        )
+        .result(0)?
+        .into();
+    Ok(block
+        .append_operation(
+            OperationBuilder::new("llvm.inttoptr", gen.loc())
+                .add_operands(&[addr_i64])
+                .add_results(&[gen.ptr_ty])
+                .build()?,
+        )
+        .result(0)?
+        .into())
+}
+
 impl<'c> LowerToMelior<'c> for BorrowExpr {
     type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
     fn lower(
@@ -264,6 +364,54 @@ impl<'c> LowerToMelior<'c> for BorrowExpr {
                     );
                     return Ok((slot, ptr_ty, block));
                 }
+            }
+        }
+        // `&mut c[i][j]`, an element of a tensor variable: the element's address in the tensor.
+        // Lowered as a value, the element would be loaded and the borrow would point at a copy,
+        // so a write through it would be lost.
+        {
+            let mut root = &**expr;
+            let mut indices = 0;
+            while let Expr::IndexAccess(ix) = root {
+                root = &ix.base;
+                indices += 1;
+            }
+            let element_of_a_tensor = indices > 0
+                && matches!(root, Expr::Identifier(_))
+                && match gen.infer_ast_type(root) {
+                    Some(syntax::Type::Tensor(_, dims, _)) => dims.len() == indices,
+                    Some(syntax::Type::Borrow { inner, .. }) => {
+                        matches!(&*inner, syntax::Type::Tensor(_, dims, _) if dims.len() == indices)
+                    }
+                    // A `let` bound to a row has no inferred type here; its slot's memref type
+                    // says the rank.
+                    None => match root {
+                        Expr::Identifier(id) => gen
+                            .env
+                            .get(&*id.name)
+                            .map(|(_, t)| t.to_string())
+                            .and_then(|t| {
+                                let t = t.strip_prefix("memref<memref<")?;
+                                let dims = t.split([',', '>']).next()?;
+                                Some(dims.split('x').count() - 1 == indices)
+                            })
+                            .unwrap_or(false),
+                        _ => false,
+                    },
+                    _ => false,
+                };
+            if element_of_a_tensor {
+                let prev_lvalue = gen.is_lvalue_context;
+                gen.is_lvalue_context = false;
+                let flat = gen.flatten_indices(expr, block);
+                gen.is_lvalue_context = prev_lvalue;
+                let (base, mut base_ty, idx_vals, block) = flat.ok_or_else(|| {
+                    LowerError::from("the indices of a borrowed tensor element".to_string())
+                })?;
+                let base = load_tensor_slot(gen, &block, base, &mut base_ty)?;
+                let ptr =
+                    tensor_element_pointer(gen, block, base, &base_ty.to_string(), &idx_vals)?;
+                return Ok((ptr, gen.ptr_ty, block));
             }
         }
         // Only a place is lowered to its address. Anything else, `&(*p / 2)`, is a value that
@@ -2745,6 +2893,10 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
         if matches!(name.as_ref(), "as_ptr" | "as_mut_ptr") && args.len() == 1 {
             let (val, val_ty, block) = gen.generate_expr(&args[0], block)?;
             let ty_text = val_ty.to_string();
+            // `(&mut c[0][0]).as_mut_ptr()`: a borrow is already the element's address.
+            if val_ty == gen.ptr_ty {
+                return Ok((val, gen.ptr_ty, block));
+            }
             if !ty_text.starts_with("memref<") || ty_text.starts_with("memref<memref<") {
                 return Err(LowerError::from(format!(
                     "`{name}()` on something that is not a tensor: {ty_text}"
@@ -4242,6 +4394,21 @@ impl<'c> LowerToMelior<'c> for syntax::expr::AsCastExpr {
             let coerced_val = gen.coerce_type(&block, source_val, _source_ty, target_ty_mlir)?;
             return Ok((coerced_val, target_ty_mlir, block));
         } else if let syntax::Type::Pointer(..) = &self.target_ty {
+            // `&mut x as *mut T`: the borrow is a pointer already, or a scalar's slot whose data
+            // pointer is the address.
+            if let Some(syntax::Type::Borrow { .. }) = self.source_ty.as_ref() {
+                let ty_text = source_val.r#type().to_string();
+                if source_val.r#type() == gen.ptr_ty {
+                    return Ok((source_val, gen.ptr_ty, block));
+                }
+                if ty_text.starts_with("memref<") && !ty_text.starts_with("memref<memref<") {
+                    let ptr = memref_data_pointer(gen, block, source_val)?;
+                    return Ok((ptr, gen.ptr_ty, block));
+                }
+                return Err(LowerError::from(format!(
+                    "a borrow cast to a raw pointer, from {ty_text}"
+                )));
+            }
             if let Some(syntax::Type::Scalar(_)) = self.source_ty.as_ref() {
                 let ptr_ty = gen.ptr_ty;
                 let cast_op = OperationBuilder::new("llvm.inttoptr", gen.loc())

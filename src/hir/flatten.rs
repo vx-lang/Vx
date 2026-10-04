@@ -1018,6 +1018,10 @@ impl<'r> Lowerer<'r> {
                 // emits `llvm.inttoptr` -- the same op the AST path uses. Only integer sources:
                 // inttoptr of a float is not valid IR on either path.
                 if matches!(c.target_ty, Type::Pointer(..)) {
+                    // `&mut x as *mut T`: the borrow already is the address.
+                    if matches!(v.ty, LoweredTy::Ptr) {
+                        return Ok(v);
+                    }
                     if let LoweredTy::Scalar(src) = &v.ty {
                         if !src.is_float() {
                             return Ok(self.emit_typed(
