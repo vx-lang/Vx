@@ -57,6 +57,19 @@ impl FnEmit<'_> {
                 if memref_rank(&memty) != descriptor_rank(&fty) {
                     return Err(crate::emitter_gap!());
                 }
+                // A row is a strided view whose descriptor carries an offset into its tensor. The
+                // field is read back as a plain memref, whose type says the offset is 0, so the
+                // offset would be lost and the read would land in row 0. Move the data pointer
+                // to the row first.
+                let (val, memty) = if memty.contains("strided<") {
+                    let (dims_x, et) =
+                        memref_lead_dims_and_elem(&memty).ok_or(crate::emitter_gap!())?;
+                    let plain = format!("memref<{dims_x}{et}>");
+                    let v = self.cast_memref_value(&format!("fv{idx}"), &val, &memty, &plain)?;
+                    (v, plain)
+                } else {
+                    (val, memty)
+                };
                 let d = format!("%fd{idx}");
                 self.body += &format!(
                     "  {d} = builtin.unrealized_conversion_cast {val} : {memty} to {fty}\n"
@@ -158,7 +171,11 @@ impl FnEmit<'_> {
             // tracked as an aggregate value so it can be re-stored / passed by value. (#242)
             self.agg_val_of[idx] = Some(nested_gid);
         } else {
-            self.etypes[idx] = elem_from_mlir_scalar(&fty);
+            // The instruction's own type keeps the field's signedness, which its MLIR spelling
+            // does not (`i64` is both `i64` and `u64`): a comparison reads it from here.
+            self.etypes[idx] = gid_res
+                .and_then(elem_of_gid)
+                .or_else(|| elem_from_mlir_scalar(&fty));
         }
         Ok(())
     }

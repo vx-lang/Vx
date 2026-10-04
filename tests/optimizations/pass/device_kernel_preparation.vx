@@ -12,8 +12,9 @@
 //
 //   `.exp()`     lowered to `func.call @expf`, host libm. A dispatched kernel
 //                cannot call it, and in PTX it is an unresolved external.
-//                `math.exp` lowers to libm on the host and to a device
-//                intrinsic on a GPU, so it is the portable spelling.
+//                It is now `core::libm`'s `expf`, written in Vx: the kernel
+//                calls it, and the device module gets a copy of it and of
+//                the constant tables it reads.
 //
 //   a constant   used inside the region was passed *into* it. Vx loop bounds
 //                are literals, so every trip count became a runtime argument:
@@ -47,10 +48,17 @@
 // The bounds are inside the kernel, so the shape is visible to the backend.
 // CHECK: arith.constant 4 : index
 
-// The transcendental is an op, not a call to the host's libm.
-// CHECK: math.exp
-// CHECK-NOT: call @f32$exp
+// The transcendental is a call to Vx's own `expf`, not to the host's libm.
+// CHECK: func.call @f32$exp
+// CHECK-NOT: call @expf(
 // CHECK: vx.return
+
+// The device module holds the kernel's twin, what it calls and the tables that reads.
+// CHECK-LABEL: gpu.module @vx_kernels
+// CHECK-DAG: memref.global "private" constant @__vx_const_LIBM_EXP_M1
+// CHECK-DAG: memref.global "private" constant @__vx_const_LIBM_EXP_M2
+// CHECK-DAG: gpu.func @vx_npu_kernel_0
+// CHECK-DAG: func.func @libm_expf(
 
 import core::num;
 

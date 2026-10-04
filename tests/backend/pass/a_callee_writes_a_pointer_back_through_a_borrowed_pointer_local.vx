@@ -1,0 +1,26 @@
+//===- a_callee_writes_a_pointer_back_through_a_borrowed_pointer_local.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `&mut p`, where `p` is itself a pointer, is the address of `p`'s stack slot.
+// A callee that stores through it changes which address `p` holds, so the
+// write through `p` afterwards lands in `x`. This is the shape of a C function
+// that hands back an opaque handle, `cublasCreate_v2(cublasHandle_t *)`.
+//
+// EXPECT: 42
+fn hand_back(out : *mut *mut i32, target : *mut i32) -> i32 {
+  unsafe { *out = target; }
+  return 0;
+}
+
+fn main() -> i32 {
+  let mut x : i32 = 41;
+  let mut p : *mut i32 = unsafe { 0 as *mut i32 };
+  let r = hand_back(&mut p, &mut x);
+  unsafe { *p = *p + 1; }
+  print(x);
+  return r;
+}

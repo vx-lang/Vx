@@ -281,20 +281,7 @@ fn generic_arg_mapping(
     let inner = &resolved_struct_name[lt + 1..resolved_struct_name.len() - 1];
     let inner_tys: Vec<Type> = crate::syntax::split_type_args(inner)
         .into_iter()
-        .map(|raw| {
-            let a = raw.trim();
-            match a {
-                "i32" => Type::Scalar(syntax::ElementType::I32),
-                "f32" => Type::Scalar(syntax::ElementType::F32),
-                "i64" => Type::Scalar(syntax::ElementType::I64),
-                _ if !a.is_empty() && a.chars().all(|c| c.is_ascii_digit()) => {
-                    Type::Const(Box::new(syntax::Expr::Number(
-                        syntax::expr::NumberExpr::new(a.to_string(), None, syntax::Span::default()),
-                    )))
-                }
-                _ => Type::Struct(a.to_string().into(), None),
-            }
-        })
+        .map(crate::codegen::lower::parse_type_arg)
         .collect();
     for (i, param) in generics.iter().enumerate() {
         if let Some(ty) = inner_tys.get(i) {
@@ -425,6 +412,44 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                 }
                 return Ok(Some(b));
             }
+        }
+
+        // A row copied into a row: `p[0] = q[1]`. Both sides are views, and the elements are
+        // copied from one into the other.
+        let lhs_is_a_row = {
+            let mut base = lhs;
+            let mut indices = 0;
+            while let Expr::IndexAccess(ix) = base {
+                base = &ix.base;
+                indices += 1;
+            }
+            indices > 0
+                && matches!(
+                    gen.infer_ast_type(base),
+                    Some(syntax::Type::Tensor(_, dims, _)) if dims.len() > indices
+                )
+        };
+        // Only a tensor variable or a row on the right: an expression such as `a[i] + b[i]` is
+        // lowered further down, into a store of its result.
+        if lhs_is_a_row && matches!(rhs, Expr::Identifier(_) | Expr::IndexAccess(_)) {
+            let (dst, dst_ty, b) = gen.generate_expr(lhs, block)?;
+            let (src, mut src_ty, b) = gen.generate_expr(rhs, b)?;
+            let src = super::expr::load_tensor_slot(gen, &b, src, &mut src_ty)?;
+            let is_view = |t: &Type| {
+                let t = t.to_string();
+                t.starts_with("memref<") && !t.starts_with("memref<memref<")
+            };
+            if is_view(&dst_ty) && is_view(&src_ty) {
+                b.append_operation(
+                    OperationBuilder::new("memref.copy", gen.loc())
+                        .add_operands(&[src, dst])
+                        .build()?,
+                );
+                return Ok(Some(b));
+            }
+            return Err(LowerError::from(format!(
+                "a tensor assigned to an element of another: {src_ty} into {dst_ty}"
+            )));
         }
 
         // `c = a @ b` where `c` already names a buffer: fill it, rather than allocating a second

@@ -31,15 +31,11 @@ impl<'a> TypeChecker<'a> {
         }
         match stmt {
             Statement::LetDecl(decl) => self.check_escape_in_calls(&decl.expr),
-            Statement::Assign(AssignStmt { lhs, rhs, span }) => {
+            Statement::Assign(AssignStmt { lhs, rhs, .. }) => {
                 self.check_escape_in_calls(rhs);
+                // The error points at the place written to.
                 let lhs_span = lhs.span();
-                // An assignment may carry no position of its own; the place written to does.
-                let span = if *span == crate::syntax::Span::default() {
-                    &lhs_span
-                } else {
-                    span
-                };
+                let span = &lhs_span;
                 // The place's type is the value's, and is known more often: a variant built
                 // inside a generic instance can still read as `Unknown`.
                 let stored_ty = match self.check_expr_type_probe(lhs) {

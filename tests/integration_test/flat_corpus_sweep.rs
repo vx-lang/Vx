@@ -18,9 +18,9 @@ use std::process::Command;
 /// Programs the flat path declines today, relative to `tests/backend/pass/`.
 /// A worklist, not an exemption list: shrinking it is Vx#383.
 const KNOWN_DECLINES: &[&str] = &[
-    // `cublasCreate_v2(&mut handle)`: a borrow of a pointer local passed to C. The flat emitter
-    // has no type for that argument and declines the function; the AST path compiles it.
-    "frontend/pass/cublas_sgemm_through_an_extern_block.vx",
+    // `c as ||->i32`: the flat path declines a cast to the built-in closure type ("a cast to a
+    // non-scalar"); the AST path compiles it.
+    "backend/pass/returning_a_closure_that_uses_nothing.vx",
     "backend/pass/custom_topology_user_lowering.vx",
     "backend/pass/matmul_assign_alias.vx",
     // A row chosen by an `if` used as a value: the flat path has no slot for a tensor view
@@ -28,6 +28,8 @@ const KNOWN_DECLINES: &[&str] = &[
     "backend/pass/tensor_views_end_at_their_last_use.vx",
     // "A borrow of something that is not a tensor": the flat path borrows tensors only.
     "backend/pass/borrow_of_a_value.vx",
+    "backend/pass/cast_a_borrow_to_a_raw_pointer.vx",
+    "backend/pass/write_through_a_borrow_of_a_tensor_element.vx",
     "backend/pass/borrow_element_through_pointer.vx",
     // "A store to a nested nominal field": `self.inner = x` puts a struct into a struct's
     // field, which the flat path does not model. The file is about the AST path anyway.
@@ -144,6 +146,9 @@ const KNOWN_DECLINES: &[&str] = &[
     "backend/pass/std_tensor_map_inplace.vx",
     "frontend/pass/closure_fat_ptr.vx",
     "frontend/pass/control_flow_rigorous.vx",
+    // `c = c @ b`: the flat path writes a product into its destination, which here is also an
+    // operand ("a matmul assignment whose destination may be one of its operands").
+    "frontend/pass/tensor_drop_points_reassigned.vx",
     // The `vxc -j` fallback fixture: a program the flat path declines, chosen so the parallel
     // frontend has something to hand back to the sequential driver. Same shape as
     // generic_enum_returned_from_match.vx, and it declines for the same reason.
@@ -154,6 +159,8 @@ const KNOWN_DECLINES: &[&str] = &[
     // Same decline as `backend/pass/iterator_over_structs.vx`, through `vxc -j`.
     "frontend/pass/jobs_iterator_over_structs.vx",
     "frontend/pass/trait_topologies.vx",
+    // A `for` loop over `v.iter()`: the flat path declines `Vec` iteration by reference.
+    "frontend/pass/vec_iterator_borrow_ends_at_last_use.vx",
     // A parameter with run-time extents (Vx#409). It used to compile through the flat path
     // while the dims-less spelling let it read as rank-0: `topology.vx` got a `memref<f32>`
     // signature where the AST oracle gives `memref<?x?xf32>`, two ABIs for one function, plus

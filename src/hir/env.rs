@@ -750,6 +750,7 @@ impl<'a> TypeChecker<'a> {
         let Some(scope) = self.scope_of(name) else {
             return;
         };
+        self.drops_note_move(name, false);
         if let Some(moved) = self.borrow.moved_vars.get_mut(scope) {
             moved.insert(name.to_string());
         }
@@ -760,6 +761,7 @@ impl<'a> TypeChecker<'a> {
         let Some(scope) = self.scope_of(name) else {
             return;
         };
+        self.drops_note_move(name, true);
         if let Some(moved) = self.borrow.moved_vars.get_mut(scope) {
             moved.remove(name);
         }
@@ -1386,20 +1388,6 @@ impl<'a> TypeChecker<'a> {
                     .map(|st| crate::diagnostic::SourceSpan::from_ast_span(&st.span())),
             );
         }
-        // A closure value points into the frame that made it; returning one hands the caller
-        // a dead frame. Passing it down is fine. Refused until a closure can own its
-        // environment.
-        if let Type::Closure(..) = func.return_type {
-            self.errors.error_with_code(
-                crate::diagnostic::DiagnosticCode::E3027,
-                format!(
-                    "function '{}' returns a closure, which is not supported: a closure lives \
-                     in the frame that created it, so pass it down instead",
-                    func.name
-                ),
-                None,
-            );
-        }
 
         let prev_constraints = self.consteval.constraints.clone();
         let prev_ret_ty = self.current_return_type.clone();
@@ -1435,6 +1423,13 @@ impl<'a> TypeChecker<'a> {
         let prev_params = std::mem::take(&mut self.borrow.current_params);
         let prev_provenance = std::mem::take(&mut self.borrow.ref_provenance);
         let prev_views = std::mem::take(&mut self.borrow.views);
+        // The borrow table too. A function's body can be checked from inside another's: a
+        // generic method is checked when a call first instantiates it. The caller's borrows are
+        // not the callee's, and a parameter of the same name (`self` in both) would otherwise
+        // make the callee's uses conflict with the caller's live borrows, reported in the
+        // callee's source.
+        let prev_borrows = self.borrow.take();
+        let prev_borrowers = self.borrow.take_borrowers();
         for (name, ty) in &func.params {
             self.insert(name.to_string(), ty.clone());
             self.borrow.current_params.insert(name.clone(), ty.clone());
@@ -1459,7 +1454,15 @@ impl<'a> TypeChecker<'a> {
             Self::collect_assert_contracts(&func.body, &mut self.seam.contracts);
         }
 
+        let owned_params = func
+            .params
+            .iter()
+            .filter(|(_, t)| matches!(t, Type::Tensor(..)))
+            .map(|(n, _)| n.to_string())
+            .collect();
+        self.drops_enter_function(owned_params);
         self.check_block(&mut func.body, &func.return_type.clone());
+        self.drops_exit_function();
         Self::drop_spent_comptime_lambdas(&mut func.body);
 
         self.seam.contracts = prev_contracts;
@@ -1542,6 +1545,8 @@ impl<'a> TypeChecker<'a> {
         self.borrow.current_params = prev_params;
         self.borrow.ref_provenance = prev_provenance;
         self.borrow.views = prev_views;
+        self.borrow.restore(prev_borrows);
+        self.borrow.restore_borrowers(prev_borrowers);
         self.used_vars = prev_used_vars;
         self.declared_vars = prev_declared_vars;
     }

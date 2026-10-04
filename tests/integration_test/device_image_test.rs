@@ -137,6 +137,33 @@ fn a_placed_kernel_is_compiled_to_ptx_and_carried_in_the_payload() {
     );
 }
 
+/// A region that calls functions -- `ln` reaches `core::libm`'s `logf`, which reads two
+/// constant tables -- still gets a device image: the functions and the tables are copied into
+/// the device module beside the kernel. Before, any call kept the region on the host.
+#[test]
+fn a_placed_kernel_that_calls_functions_gets_a_device_image() {
+    let ir = emit_llvm("placed_kernel_calls_core_libm.vx");
+    assert!(
+        ir.contains("image="),
+        "the launch payload carries no device image"
+    );
+    let image = extract_image(&ir);
+    for table in ["__vx_const_LIBM_COMMON_R", "__vx_const_LIBM_COMMON_LOG_R"] {
+        assert!(
+            image.contains(table),
+            "the device image does not hold `{table}`, which `logf` reads"
+        );
+    }
+    // Every call left in the image is to libdevice, which the device pipeline links when the
+    // machine has it; none is to a host function the device could not reach.
+    for line in image.lines().filter(|l| l.contains(".extern .func")) {
+        assert!(
+            line.contains("__nv_"),
+            "the device image calls a function it does not contain: {line}"
+        );
+    }
+}
+
 /// A classified matmul carries no image, and still says it is a matmul.
 /// The PTX out of the payload global: `image=` up to the terminating NUL, unescaped.
 fn extract_image(ir: &str) -> String {

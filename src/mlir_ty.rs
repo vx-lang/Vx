@@ -28,7 +28,7 @@ pub fn mlir_scalar(elem: &ElementType) -> Option<&'static str> {
         I8 | U8 => "i8",
         I16 | U16 => "i16",
         I32 | U32 => "i32",
-        I64 | U64 => "i64",
+        I64 | U64 | USize => "i64",
         I128 | U128 => "i128",
         Bool => "i1",
         // fp8 is capacity/declaration-only for now: the JIT has no fp8 arithmetic,

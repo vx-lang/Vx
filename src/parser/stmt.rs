@@ -40,14 +40,15 @@ impl<'a> Parser<'a> {
         Some(op)
     }
 
-    fn parse_expr_or_assign_stmt(&mut self, expr: Expr) -> ParseResult<'a, Statement> {
+    /// `span` is the statement's first token.
+    fn parse_expr_or_assign_stmt(&mut self, expr: Expr, span: Span) -> ParseResult<'a, Statement> {
         if self.match_token(&TokenType::Equals) {
             let rhs = self.parse_expr()?;
             self.consume(&TokenType::Semicolon, "Expected ';'")?;
             Ok(Statement::Assign(AssignStmt {
                 lhs: expr,
                 rhs,
-                span: Span::default(),
+                span,
             }))
         } else if let Some(op) = self.compound_assign_op() {
             let rhs = self.parse_expr()?;
@@ -56,7 +57,7 @@ impl<'a> Parser<'a> {
                 lhs: expr,
                 op,
                 rhs,
-                span: Span::default(),
+                span,
                 operand_ty: None,
             }))
         } else {
@@ -80,7 +81,7 @@ impl<'a> Parser<'a> {
             Ok(Statement::ExprStmt(ExprStmtStmt {
                 expr,
                 has_semi: has_semicolon,
-                span: Span::default(),
+                span,
             }))
         }
     }
@@ -90,6 +91,11 @@ impl<'a> Parser<'a> {
         let token_line = token.line;
         let token_col = token.column;
         let token_len = token.length;
+        let token_span = Span {
+            line: token_line,
+            column: token_col,
+            length: token_len,
+        };
 
         match &token.kind {
             TokenType::Let => {
@@ -271,16 +277,12 @@ impl<'a> Parser<'a> {
             TokenType::Break => {
                 self.advance();
                 self.consume(&TokenType::Semicolon, "Expected ';'")?;
-                Ok(Statement::Break(BreakStmt {
-                    span: Span::default(),
-                }))
+                Ok(Statement::Break(BreakStmt { span: token_span }))
             }
             TokenType::Continue => {
                 self.advance();
                 self.consume(&TokenType::Semicolon, "Expected ';'")?;
-                Ok(Statement::Continue(ContinueStmt {
-                    span: Span::default(),
-                }))
+                Ok(Statement::Continue(ContinueStmt { span: token_span }))
             }
             TokenType::For => {
                 let for_span = Span {
@@ -348,11 +350,11 @@ impl<'a> Parser<'a> {
                 }
                 // fallback to expression parsing
                 let expr = self.parse_expr()?;
-                self.parse_expr_or_assign_stmt(expr)
+                self.parse_expr_or_assign_stmt(expr, token_span)
             }
             _ => {
                 let expr = self.parse_expr()?;
-                self.parse_expr_or_assign_stmt(expr)
+                self.parse_expr_or_assign_stmt(expr, token_span)
             }
         }
     }

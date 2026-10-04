@@ -14,6 +14,10 @@
 //                      leaves 7, which `next` then answers
 //   0,0,1,0,1,2,       `flat_map` over ranges of growing length
 //   10,10,11,10,11,12, `flatten` of a `map` that answers ranges
+//
+// `Scan::next` hands `&mut self.state` straight to the closure. That borrow used to stay in the
+// checker's table after `Scan::next` was checked, so `Option`'s methods, checked afterwards, were
+// refused for using their own `self`.
 import core::iter;
 
 // Answers 1, nothing, 3, nothing, 5, ...: an iterator that resumes after running out.

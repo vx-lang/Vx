@@ -281,7 +281,7 @@ impl<'c> LowerToMelior<'c> for syntax::TransferExpr {
                         ElementType::I8 | ElementType::U8 => Some("i8"),
                         ElementType::I16 | ElementType::U16 => Some("i16"),
                         ElementType::I32 | ElementType::U32 => Some("i32"),
-                        ElementType::I64 | ElementType::U64 => Some("i64"),
+                        ElementType::I64 | ElementType::U64 | ElementType::USize => Some("i64"),
                         _ => None,
                     };
                     if let Some(elem) = elem {

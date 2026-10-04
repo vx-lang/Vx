@@ -100,9 +100,13 @@ impl<'a> TypeChecker<'a> {
         let block_unused = std::mem::replace(&mut self.value_unused, false);
         let mut ret_ty = Type::Struct("void".into(), None);
         let mut terminated = false;
+        let mut terminated_at = None;
         let last = stmts.len().saturating_sub(1);
+        // An `if` or `match` arm is a block of its own: what it declares is dropped inside it.
+        self.drops_enter_block(stmts);
 
         for (i, s) in stmts.iter_mut().enumerate() {
+            self.drops_set_stmt(i);
             if terminated && !self.speculating {
                 let stmt_span = s.span();
                 self.errors.warn(
@@ -147,10 +151,12 @@ impl<'a> TypeChecker<'a> {
             match s {
                 Statement::Return(_) | Statement::Break(_) | Statement::Continue(_) => {
                     terminated = true;
+                    terminated_at = Some(i);
                 }
                 _ => {}
             }
         }
+        self.drops_exit_block(terminated_at);
         ret_ty
     }
 

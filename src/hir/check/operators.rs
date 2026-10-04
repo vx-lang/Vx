@@ -177,6 +177,13 @@ impl<'a> TypeChecker<'a> {
             (Type::Scalar(_), Type::Scalar(_)) => {
                 return target_ty;
             }
+            // `&mut x as *mut T`: the same conversion `let p : *mut T = &mut x` makes, spelled as
+            // a cast. Making the pointer is safe; using it is what needs `unsafe`.
+            (Type::Borrow { .. }, Type::Pointer(..))
+                if self.is_assignable(&target_ty, &source_ty) =>
+            {
+                return target_ty;
+            }
             (Type::Scalar(_), Type::Pointer(_, _, _)) => {
                 // Allow casting integers to pointers (e.g. 0 as *mut T)
                 if !self.in_unsafe_block && !self.speculating {
@@ -255,6 +262,7 @@ impl<'a> TypeChecker<'a> {
                 let lhs_untyped_lit = crate::hir::expr::is_untyped_numeric_literal(lhs);
                 let rhs_untyped_lit = crate::hir::expr::is_untyped_numeric_literal(rhs);
                 let (mut lhs_ty, mut rhs_ty) = self.check_operand_pair(lhs, rhs, consume);
+                self.drops_note_operands(&[(lhs, &lhs_ty), (rhs, &rhs_ty)]);
                 // `r + 1` with `r : &i64` adds the number `r` points at, as Rust's operator
                 // impls for references do. An untyped literal on the other side was typed
                 // against the reference, so it is typed again against the number.

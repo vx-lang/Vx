@@ -1,0 +1,28 @@
+//===- two_mutable_rows_of_different_indices.vx - Vx Compiler ----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `q[0]` and `q[1]` are different rows, so a program can hold a mutable view of
+// each at once, and read a third row while both are live. The borrow checker
+// tells them apart because both indices are integer constants.
+// `rows_that_may_overlap_are_one_borrow.vx` shows the cases it still refuses.
+//
+// EXPECT: 1 2 5
+fn main() -> i32 {
+  let mut q = Tensor<f32, [3, 4]>::new();
+  q[2][0] = 5.0;
+  let mut a = q[0];
+  let mut b = q[1];
+  let untouched = q[2][0];
+  a[0] = 1.0;
+  b[0] = 2.0;
+  print(q[0][0] as i32);
+  print!(" ");
+  print(q[1][0] as i32);
+  print!(" ");
+  print(untouched as i32);
+  return 0;
+}

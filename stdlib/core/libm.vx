@@ -22,8 +22,9 @@
 // Every function's name starts with `libm_`: Vx has one namespace for all functions and no
 // private ones yet, so a program's own `asinhf` must not collide with these.
 //
-// This module imports nothing, so that `core::num` can import it: the few operations it needs
-// on floats are the helpers below, each one MLIR operation.
+// This module imports only `core::marker`, which imports nothing, so that `core::num` can import
+// it: the few operations it needs on floats are the helpers below, each one MLIR operation.
+import core::marker;
 
 fn libm_f64_to_bits(x : f64) -> u64 {
   return mlir!( inputs : (%a = x : f64), returns : u64, dialects : ["arith"]) {
@@ -1063,4 +1064,774 @@ fn libm_log10_bf16(x : bf16) -> bf16 {
 /// `log1pf` on the input widened to f32, rounded to bf16.
 fn libm_log1p_bf16(x : bf16) -> bf16 {
   return libm_bf16_from_f32(libm_log1pf(libm_f32_from_bf16(x)));
+}
+
+// ---------------------------------------------------------------------------------------------
+// 128-bit dyadic floats, for the accurate passes of the double-precision functions: LLVM libc's
+// `DyadicFloat<128>` (`src/__support/FPUtil/dyadic_float.h`), with the mantissa as two 64-bit
+// halves.
+
+/// `(-1)^negative * 2^exponent * mantissa`, where the mantissa is the 128-bit integer
+/// `hi * 2^64 + lo`. Normalized when the mantissa is zero or its top bit is set.
+struct LibmDyadic128 {
+  negative : bool,
+  exponent : i32,
+  hi : u64,
+  lo : u64,
+}
+
+impl Copy for LibmDyadic128 {}
+
+/// The high 64 bits of the 128-bit product `a * b`.
+fn libm_u64_mul_hi(a : u64, b : u64) -> u64 {
+  return mlir!( inputs : (%a = a : i64, %b = b : i64), returns : u64, dialects : ["arith"]) {
+    %lo, %hi = arith.mului_extended %a, %b : i64
+    macro.yield %hi : i64
+  };
+}
+
+/// The number of zero bits above the highest set bit; 64 for zero.
+fn libm_u64_leading_zeros(a : u64) -> u64 {
+  return mlir!( inputs : (%a = a : i64), returns : u64, dialects : ["math"]) {
+    %r = math.ctlz %a : i64
+    macro.yield %r : i64
+  };
+}
+
+/// `d` with its mantissa shifted left by `s` bits and the exponent unchanged; zero once `s`
+/// reaches 128.
+fn libm_dyadic_shl(d : LibmDyadic128, s : u64) -> LibmDyadic128 {
+  if s == 0u64 {
+    return d;
+  }
+  let mut hi = 0u64;
+  let mut lo = 0u64;
+  if s < 64u64 {
+    hi = (d.hi << s) | (d.lo >> (64u64 - s));
+    lo = d.lo << s;
+  } else if s < 128u64 {
+    hi = d.lo << (s - 64u64);
+  }
+  return LibmDyadic128 {
+    negative: d.negative, exponent: d.exponent, hi: hi, lo: lo
+  };
+}
+
+/// `d` with its mantissa shifted right by `s` bits and the exponent unchanged; zero once `s`
+/// reaches 128. The bits shifted out are lost.
+fn libm_dyadic_shr(d : LibmDyadic128, s : u64) -> LibmDyadic128 {
+  if s == 0u64 {
+    return d;
+  }
+  let mut hi = 0u64;
+  let mut lo = 0u64;
+  if s < 64u64 {
+    hi = d.hi >> s;
+    lo = (d.lo >> s) | (d.hi << (64u64 - s));
+  } else if s < 128u64 {
+    lo = d.hi >> (s - 64u64);
+  }
+  return LibmDyadic128 {
+    negative: d.negative, exponent: d.exponent, hi: hi, lo: lo
+  };
+}
+
+/// `d` with its mantissa's top bit moved to bit 127, and the exponent lowered to match.
+fn libm_dyadic_normalize(d : LibmDyadic128) -> LibmDyadic128 {
+  if d.hi == 0u64 && d.lo == 0u64 {
+    return d;
+  }
+  let mut shift = libm_u64_leading_zeros(d.hi);
+  if d.hi == 0u64 {
+    shift = 64u64 + libm_u64_leading_zeros(d.lo);
+  }
+  let m = libm_dyadic_shl(d, shift);
+  return LibmDyadic128 {
+    negative: d.negative, exponent: d.exponent - (shift as i32), hi: m.hi, lo: m.lo
+  };
+}
+
+/// `x` exactly, normalized: the `DyadicFloat(double)` constructor.
+fn libm_dyadic_from_f64(x : f64) -> LibmDyadic128 {
+  let b = libm_f64_to_bits(x);
+  let biased = ((b >> 52u64) & 2047u64) as i32;
+  let mut mantissa = b & 4503599627370495u64;
+  // A subnormal has the smallest exponent; a zero has exponent 0, so its dyadic has -52.
+  let mut exponent : i32 = -1074;
+  if biased != 0 {
+    mantissa = mantissa | 4503599627370496u64;
+    exponent = biased - 1075;
+  } else if mantissa == 0u64 {
+    exponent = -52;
+  }
+  return libm_dyadic_normalize(LibmDyadic128 {
+    negative: (b >> 63u64) == 1u64, exponent: exponent, hi: 0u64, lo: mantissa
+  });
+}
+
+/// `d` with its mantissa shifted right by `s` bits and the exponent raised to match; the bits
+/// shifted out are lost.
+fn libm_dyadic_shift_right(d : LibmDyadic128, s : i32) -> LibmDyadic128 {
+  let m = libm_dyadic_shr(d, s as u64);
+  return LibmDyadic128 {
+    negative: d.negative, exponent: d.exponent + s, hi: m.hi, lo: m.lo
+  };
+}
+
+/// `a + b`, within 2 units in the last place: `quick_add`. The inputs are normalized; the
+/// exponents are aligned by shifting the smaller one right, dropping its low bits.
+fn libm_dyadic_add(a0 : LibmDyadic128, b0 : LibmDyadic128) -> LibmDyadic128 {
+  if a0.hi == 0u64 && a0.lo == 0u64 {
+    return b0;
+  }
+  if b0.hi == 0u64 && b0.lo == 0u64 {
+    return a0;
+  }
+  let mut a = a0;
+  let mut b = b0;
+  if a.exponent > b.exponent {
+    b = libm_dyadic_shift_right(b, a.exponent - b.exponent);
+  } else if b.exponent > a.exponent {
+    a = libm_dyadic_shift_right(a, b.exponent - a.exponent);
+  }
+  if a.negative == b.negative {
+    let lo = a.lo + b.lo;
+    let carry = if lo < a.lo {
+      1u64
+    } else {
+      0u64
+    };
+    let t = a.hi + b.hi;
+    let hi = t + carry;
+    if t < a.hi || hi < t {
+      // The sum needs 129 bits: shift right by one and put the carry back on top.
+      let m = libm_dyadic_shr(LibmDyadic128 {
+        negative: a.negative, exponent: a.exponent, hi: hi, lo: lo
+      }, 1u64);
+      return LibmDyadic128 {
+        negative: a.negative, exponent: a.exponent + 1, hi: m.hi | 9223372036854775808u64, lo: m.lo
+      };
+    }
+    return LibmDyadic128 {
+      negative: a.negative, exponent: a.exponent, hi: hi, lo: lo
+    };
+  }
+  if a.hi > b.hi || (a.hi == b.hi && a.lo >= b.lo) {
+    let borrow = if a.lo < b.lo {
+      1u64
+    } else {
+      0u64
+    };
+    return libm_dyadic_normalize(LibmDyadic128 {
+      negative: a.negative, exponent: a.exponent, hi: a.hi - b.hi - borrow, lo: a.lo - b.lo
+    });
+  }
+  let borrow = if b.lo < a.lo {
+    1u64
+  } else {
+    0u64
+  };
+  return libm_dyadic_normalize(LibmDyadic128 {
+    negative: b.negative, exponent: b.exponent, hi: b.hi - a.hi - borrow, lo: b.lo - a.lo
+  });
+}
+
+/// `a * b`, rounded toward zero and within 2 units in the last place: `quick_mul`. The mantissa
+/// is `quick_mul_hi` of the two, the high 128 bits of their product without the low halves'
+/// product `a.lo * b.lo` and without the carry out of the bits below.
+fn libm_dyadic_mul(a : LibmDyadic128, b : LibmDyadic128) -> LibmDyadic128 {
+  let negative = a.negative != b.negative;
+  let exponent = a.exponent + b.exponent + 128;
+  if (a.hi == 0u64 && a.lo == 0u64) || (b.hi == 0u64 && b.lo == 0u64) {
+    return LibmDyadic128 {
+      negative: negative, exponent: exponent, hi: 0u64, lo: 0u64
+    };
+  }
+  // The cross products a.lo * b.hi + a.hi * b.lo, in 128 bits plus a carry.
+  let p1_lo = a.lo * b.hi;
+  let p1_hi = libm_u64_mul_hi(a.lo, b.hi);
+  let p2_lo = a.hi * b.lo;
+  let p2_hi = libm_u64_mul_hi(a.hi, b.lo);
+  let s_lo = p1_lo + p2_lo;
+  let k0 = if s_lo < p1_lo {
+    1u64
+  } else {
+    0u64
+  };
+  let s_mid = p1_hi + p2_hi;
+  let c1 = if s_mid < p1_hi {
+    1u64
+  } else {
+    0u64
+  };
+  let s_hi = s_mid + k0;
+  let c2 = if s_hi < s_mid {
+    1u64
+  } else {
+    0u64
+  };
+  // Drop the low word, then add a.hi * b.hi.
+  let p3_lo = a.hi * b.hi;
+  let p3_hi = libm_u64_mul_hi(a.hi, b.hi);
+  let lo = s_hi + p3_lo;
+  let k1 = if lo < s_hi {
+    1u64
+  } else {
+    0u64
+  };
+  let hi = (c1 + c2) + p3_hi + k1;
+  let product = LibmDyadic128 {
+    negative: negative, exponent: exponent, hi: hi, lo: lo
+  };
+  if (hi >> 63u64) == 0u64 {
+    let m = libm_dyadic_shl(product, 1u64);
+    return LibmDyadic128 {
+      negative: negative, exponent: exponent - 1, hi: m.hi, lo: m.lo
+    };
+  }
+  return product;
+
+}
+
+/// The nearest double to `d`, ties to even, for a normalized `d`: `fast_as<double>`. The top 53
+/// bits make `d_hi`; the round and sticky bits below them, scaled to `d_hi`'s last place, are
+/// added with one FMA, which rounds the sum correctly.
+fn libm_dyadic_to_f64(d : LibmDyadic128) -> f64 {
+  let sign = if d.negative {
+    9223372036854775808u64
+  } else {
+    0u64
+  };
+  if d.hi == 0u64 && d.lo == 0u64 {
+    return libm_f64_from_bits(sign);
+  }
+  let mut exp_hi = d.exponent + 127 + 1023;
+  if exp_hi > 2046 {
+    // Too large: twice the largest power of two rounds to infinity.
+    return 2.0 * libm_f64_from_bits(sign | 9214364837600034816u64);
+  }
+  let mut denorm = false;
+  let mut shift : u64 = 75u64;
+  if exp_hi <= 0 {
+    denorm = true;
+    shift = 75u64 + ((1 - exp_hi) as u64);
+    exp_hi = 1023;
+  }
+  let exp_lo = exp_hi - 54;
+  // The low 64 bits of the mantissa shifted right by `shift`, which is at least 75.
+  let m_hi : u64 = if shift < 128u64 {
+    d.hi >> (shift - 64u64)
+  } else {
+    0u64
+  };
+  let d_hi = libm_f64_from_bits(sign | ((exp_hi as u64) << 52u64) | (m_hi & 4503599627370495u64));
+  // The bit just below d_hi's last place, at `shift - 1` (in the high word, since `shift` is at
+  // least 75), and whether any bit below it is set.
+  let p = shift - 1u64;
+  let mut round_bit = false;
+  let mut sticky_bit = true;
+  if p < 128u64 {
+    round_bit = ((d.hi >> (p - 64u64)) & 1u64) != 0u64;
+    sticky_bit = (d.hi & ((1u64 << (p - 64u64)) - 1u64)) != 0u64 || d.lo != 0u64;
+  }
+  let round_and_sticky : f64 = (if round_bit {
+    2.0
+  } else {
+    0.0
+  }) + (if sticky_bit {
+    1.0
+  } else {
+    0.0
+  });
+  if exp_lo <= 0 {
+    // d_lo would be subnormal although the result is normal: scale both up, then back down.
+    let scale = 1 - exp_lo;
+    let up = libm_f64_from_bits(((1023 + scale) as u64) << 52u64);
+    let down = libm_f64_from_bits(((1023 - scale) as u64) << 52u64);
+    let d_lo = libm_f64_from_bits(sign | (((exp_lo + scale) as u64) << 52u64));
+    return libm_multiply_add(d_lo, round_and_sticky, d_hi * up) * down;
+  }
+  let d_lo = libm_f64_from_bits(sign | ((exp_lo as u64) << 52u64));
+  let r = libm_multiply_add(d_lo, round_and_sticky, d_hi);
+  if denorm {
+    // The exponent was in the subnormal range: clear the exponent field d_hi was given.
+    return libm_f64_from_bits(libm_f64_to_bits(r) - ((exp_hi as u64) << 52u64));
+  }
+  return r;
+}
+
+/// `x` rounded to the nearest integer, ties to even: `fputil::nearest_integer`.
+fn libm_round_even_f32(x : f32) -> f32 {
+  return mlir!( inputs : (%x = x : f32), returns : f32, dialects : ["math"]) {
+    %r = math.roundeven %x : f32
+    macro.yield %r : f32
+  };
+}
+
+/// `EXP_M1` from `exp_float_constants.h`: `exp(i)` for `i` from -104 to 90.
+const LIBM_EXP_M1 : Tensor<f64, [195]> = [
+0.0000000000000000000000000000000000000000000006813556821545298, 0.0000000000000000000000000000000000000000000018521167695179754, 0.0000000000000000000000000000000000000000000050345753587649823, 0.00000000000000000000000000000000000000000001368539471173853,
+0.00000000000000000000000000000000000000000003720075976020836, 0.00000000000000000000000000000000000000000010112214926104486, 0.00000000000000000000000000000000000000000027487850079102147, 0.000000000000000000000000000000000000000000747197233734299,
+0.000000000000000000000000000000000000000002031092662734811, 0.0000000000000000000000000000000000000000055210822770285325, 0.000000000000000000000000000000000000000015007857627073948, 0.000000000000000000000000000000000000000040795586671775603,
+0.00000000000000000000000000000000000000011089390193121365, 0.00000000000000000000000000000000000000030144087850653746, 0.0000000000000000000000000000000000000008194012623990515, 0.0000000000000000000000000000000000000022273635617957438,
+0.000000000000000000000000000000000000006054601895401186, 0.000000000000000000000000000000000000016458114310822737, 0.000000000000000000000000000000000000044737793061811207, 0.00000000000000000000000000000000000012160992992528256,
+0.00000000000000000000000000000000000033057006267607343, 0.0000000000000000000000000000000000008985825944049381, 0.0000000000000000000000000000000000024426007377405277, 0.000000000000000000000000000000000006639677199580735,
+0.000000000000000000000000000000000018048513878454153, 0.00000000000000000000000000000000004906094730649281, 0.00000000000000000000000000000000013336148155022614, 0.00000000000000000000000000000000036251409191435593,
+0.0000000000000000000000000000000009854154686111257, 0.0000000000000000000000000000000026786369618080778, 0.000000000000000000000000000000007281290178321643, 0.000000000000000000000000000000019792598779469045,
+0.00000000000000000000000000000005380186160021138, 0.0000000000000000000000000000001462486227251231, 0.0000000000000000000000000000003975449735908647, 0.0000000000000000000000000000010806392777072785,
+0.0000000000000000000000000000029374821117108028, 0.000000000000000000000000000007984904245686979, 0.000000000000000000000000000021705220113036395, 0.00000000000000000000000000005900090541597061,
+0.0000000000000000000000000001603810890548638, 0.0000000000000000000000000004359610000063081, 0.000000000000000000000000001185064864233981, 0.000000000000000000000000003221340285992516,
+0.00000000000000000000000000875651076269652, 0.000000000000000000000000023802664086944007, 0.0000000000000000000000000647023492564546, 0.00000000000000000000000017587922024243116,
+0.0000000000000000000000004780892883885469, 0.0000000000000000000000012995814250075031, 0.000000000000000000000003532628572200807, 0.000000000000000000000009602680054508676,
+0.000000000000000000000026102790696677047, 0.00000000000000000000007095474162284704, 0.00000000000000000000019287498479639178, 0.0000000000000000000005242885663363464,
+0.0000000000000000000014251640827409352, 0.000000000000000000003873997628687187, 0.000000000000000000010530617357553812, 0.000000000000000000028625185805493937,
+0.00000000000000000007781132241133797, 0.00000000000000000021151310375910805, 0.000000000000000000574952226429356, 0.0000000000000000015628821893349888,
+0.000000000000000004248354255291589, 0.000000000000000011548224173015786, 0.000000000000000031391327920480296, 0.00000000000000008533047625744066,
+0.00000000000000023195228302435696, 0.0000000000000006305116760146989, 0.000000000000001713908431542013, 0.000000000000004658886145103398,
+0.000000000000012664165549094176, 0.00000000000003442477108469977, 0.00000000000009357622968840175, 0.0000000000002543665647376923,
+0.0000000000006914400106940203, 0.0000000000018795288165390832, 0.000000000005109089028063325, 0.000000000013887943864964021,
+0.00000000003775134544279098, 0.0000000001026187963170189, 0.00000000027894680928689246, 0.0000000007582560427911907,
+0.000000002061153622438558, 0.000000005602796437537268, 0.00000001522997974471263, 0.00000004139937718785167,
+0.00000011253517471925912, 0.0000003059023205018258, 0.0000008315287191035679, 0.0000022603294069810542,
+0.00000614421235332821, 0.00001670170079024566, 0.000045399929762484854, 0.00012340980408667956,
+0.00033546262790251185, 0.0009118819655545162, 0.0024787521766663585, 0.006737946999085467,
+0.01831563888873418, 0.049787068367863944, 0.1353352832366127, 0.36787944117144233,
+1.0, 2.718281828459045, 7.38905609893065, 20.085536923187668,
+54.598150033144236, 148.4131591025766, 403.4287934927351, 1096.6331584284585,
+2980.9579870417283, 8103.083927575384, 22026.465794806718, 59874.14171519782,
+162754.79141900392, 442413.3920089205, 1202604.2841647768, 3269017.3724721107,
+8886110.520507872, 24154952.7535753, 65659969.13733051, 178482300.96318725,
+485165195.4097903, 1318815734.4832146, 3584912846.131592, 9744803446.248903,
+26489122129.84347, 72004899337.38588, 195729609428.83878, 532048240601.79865,
+1446257064291.475, 3931334297144.042, 10686474581524.463, 29048849665247.426,
+78962960182680.69, 214643579785916.06, 583461742527454.9, 1586013452313430.8,
+4311231547115195.0, 11719142372802612.0, 31855931757113756.0, 86593400423993740.0,
+235385266837020000.0, 639843493530054900.0, 1739274941520501000.0, 4727839468229346000.0,
+12851600114359308000.0, 34934271057485095000.0, 94961194206024480000.0, 258131288619006750000.0,
+701673591209763100000.0, 1907346572495099800000.0, 5184705528587072000000.0, 14093490824269389000000.0,
+38310080007165770000000.0, 104137594330290890000000.0, 283075330327469400000000.0, 769478526514201800000000.0,
+2091659496012996000000000.0, 5685719999335932000000000.0, 15455389355901040000000000.0, 42012104037905144000000000.0,
+114200738981568420000000000.0, 310429793570192000000000000.0, 843835666874145400000000000.0, 2293783159469610000000000000.0,
+6235149080811617000000000000.0, 16948892444103338000000000000.0, 46071866343312920000000000000.0, 125236317084221370000000000000.0,
+340427604993174100000000000000.0, 925378172558778700000000000000.0, 2515438670919167000000000000000.0, 6837671229762744000000000000000.0,
+18586717452841279000000000000000.0, 50523936302761040000000000000000.0, 137338297954017610000000000000000.0, 373324199679900150000000000000000.0,
+1014800388113888700000000000000000.0, 2758513454523170300000000000000000.0, 7498416996990121000000000000000000.0, 20382810665126688000000000000000000.0,
+55406223843935100000000000000000000.0, 150609731458503060000000000000000000.0, 409399696212745450000000000000000000.0, 1112863754791759400000000000000000000.0,
+3025077322201142600000000000000000000.0, 8223012714622913000000000000000000000.0, 22352466037347150000000000000000000000.0, 60760302250568720000000000000000000000.0,
+165163625499400180000000000000000000000.0, 448961281917434550000000000000000000000.0, 1220403294317840800000000000000000000000.0
+];
+
+/// `EXP_M2` from `exp_float_constants.h`: `exp(i / 128)` for `i` from 0 to 127.
+const LIBM_EXP_M2 : Tensor<f64, [128]> = [
+1.0, 1.007843097206448, 1.0157477085866857, 1.023714316602358,
+1.0317434074991028, 1.03983547133623, 1.0479910020166328, 1.056210497316932,
+1.0644944589178593, 1.0728433924348775, 1.0812578074490395, 1.0897382175380932,
+1.0982851403078258, 1.1068990974236574, 1.1155806146424807, 1.1243302218447506,
+1.1331484530668263, 1.1420358465335656, 1.1509929446911764, 1.160020294240325,
+1.1691184461695043, 1.1782879557886632, 1.1875293827631006, 1.1968432911476248,
+1.2062302494209807, 1.2156908305205474, 1.2252256118773075, 1.234835175451091,
+1.2445201077660952, 1.2542809999466837, 1.2641184477534664, 1.274033051619661,
+1.2840254166877414, 1.2940961528463732, 1.3042458747676378, 1.3144752019445491,
+1.3247847587288655, 1.3351751743691969, 1.3456470830494105, 1.3562011239273402,
+1.3668379411737963, 1.3775581840118836, 1.3883625067566268, 1.3992515688549068,
+1.4102260349257107, 1.4212865748006966, 1.4324338635650782, 1.4436685815988268,
+1.4549914146182013, 1.4664030537175992, 1.4779041954117385, 1.4894955416781699,
+1.5011778000001228, 1.5129516834096854, 1.5248179105313266, 1.5367772056257567,
+1.5488302986341331, 1.5609779252226124, 1.573220826827253, 1.5855597506992676,
+1.5979954499506333, 1.6105286836000576, 1.6231602166193055, 1.63589081997989,
+1.6487212707001282, 1.6616523518925677, 1.674684852811784, 1.6878195689025528,
+1.7010573018484008, 1.7143988596205357, 1.7278450565271632, 1.7413967132631865,
+1.7550546569602985, 1.7688197212374674, 1.782692746251815, 1.7966745787498977,
+1.8107660721193872, 1.8249680864411575, 1.8392814885417808, 1.8537071520464343,
+1.8682459574322223, 1.882898792081917, 1.8976665503381187, 1.9125501335578454,
+1.9275504501675447, 1.9426684157185412, 1.957904952942918, 1.9732609918098354,
+1.988737469582292, 2.0043353308743312, 2.0200555277086965, 2.0358990195749382,
+2.0518667734879767, 2.067959764047124, 2.0841789734955687, 2.1005253917803293,
+2.117000016612675, 2.13360385352902, 2.1503379159523, 2.1672032252538247,
+2.184200810815618, 2.2013317100932475, 2.218596968679145, 2.2359976403664263,
+2.2535347872132085, 2.2712094796074336, 2.289022796332201, 2.3069758246316097,
+2.325069660277121, 2.3433054076344373, 2.3616841797309096, 2.3802070983234693,
+2.398875293967098, 2.417689906083828, 2.4366520830322917, 2.455762982177808,
+2.475023769963025, 2.4944356219791146, 2.5139997230375233, 2.53371726724229,
+2.553589458062927, 2.5736175084078754, 2.593802640698535, 2.6141460869438746,
+2.6346490888156313, 2.655312897724092, 2.676138774894477, 2.6971279914439186
+];
+
+/// `EXP_2_MID` from `exp10f_utils.h`: the bits of `2^(i / 32)` for `i` from 0 to 31.
+const LIBM_EXP_2_MID : Tensor<i64, [32]> = [
+4607182418800017408, 4607281034790536564, 4607381810190059791, 4607484792283487057,
+4607590029391122811, 4607697570891348394, 4607807467243790904, 4607919770012999393,
+4608034531892639509, 4608151806730217931, 4608271649552348194, 4608394116590569773,
+4608519265307732519, 4608647154424958850, 4608777843949196329, 4608911395201373573,
+4609047870845172685, 4609187334916431732, 4609329852853191047, 4609475491526397459,
+4609624319271280859, 4609776405919417829, 4609931822831497360, 4610090642930804061,
+4610252940737434541, 4610418792403263047, 4610588275747672732, 4610761470294069353,
+4610938457307194503, 4611119319831255903, 4611304142728892634, 4611493012720993600
+];
+
+/// `exp(x)`, correctly rounded: `expf` from `expf_double_eval.h`. With `x = hi + mid + lo`,
+/// `hi` an integer and `mid` a multiple of 1/128, it is `exp(hi) * exp(mid) * exp(lo)`: two
+/// tables and a degree-4 polynomial (Sollya: `fpminimax(expm1(x)/x, 3, [|D...|], [-2^-8, 2^-8])`).
+fn libm_expf(x : f32) -> f32 {
+  let x_u = libm_f32_to_bits(x);
+  let x_abs = x_u & 2147483647u32; // 0x7fffffff
+  // An input where the evaluation below would round the wrong way.
+  if x_u == 3258367372u32 { // 0xc236bd8c
+    return libm_f32_from_bits(512247084u32) - x * libm_f32_from_bits(268435456u32); // 0x1.108a58p-66f, 0x1.0p-95f
+  }
+  // |x| >= 89, |x| <= 2^-25, or NaN.
+  if x_abs >= 1118961664u32 || x_abs <= 847249408u32 { // 0x42b20000, 0x32800000
+    // |x| < 2^-25
+    if ((x_u >> 23u32) & 255u32) <= 101u32 {
+      return 1.0 + x;
+    }
+    // x < log(2^-150), or NaN.
+    if x_u >= 3268407733u32 { // 0xc2cff1b5
+      if x_abs == 2139095040u32 { // 0x7f800000
+        return 0.0;
+      }
+      if x_abs > 2139095040u32 { // 0x7f800000
+        return x;
+      }
+      return 0.0;
+    }
+    // x >= 89 or NaN: infinity, or the NaN.
+    if (x_u >> 31u32) == 0u32 && x_u >= 1118961664u32 { // 0x42b20000
+      return x + libm_f32_from_bits(2139095040u32); // 0x7f800000
+    }
+  }
+  let kf = libm_round_even_f32(x * 128.0);
+  // lo = x - (hi + mid), exactly.
+  let xd = libm_multiply_add_f32(kf, -0.0078125, x) as f64;
+  let x_hi = (kf as i32) + 13312;
+  let exp_hi = LIBM_EXP_M1[(x_hi >> 7) as i64];
+  let exp_mid = LIBM_EXP_M2[(x_hi & 127) as i64];
+  let exp_lo = libm_multiply_add(xd, libm_multiply_add(xd, libm_multiply_add(xd, libm_multiply_add(xd, libm_f64_from_bits(4586165620539585091u64), libm_f64_from_bits(4595172824375158247u64)), libm_f64_from_bits(4602678819172648732u64)), libm_f64_from_bits(4607182418800015223u64)), 1.0); // 0x1.55555555ef243p-5, 0x1.555566668e5e7p-3, 0x1.000000000071cp-1, 0x1.ffffffffff777p-1
+  return (exp_hi * exp_mid * exp_lo) as f32;
+}
+
+/// `2^x`, correctly rounded: `exp2f` from `exp2f_double_eval.h`. Near zero a degree-6
+/// polynomial; otherwise `2^x = 2^hi * 2^mid * 2^lo` with `mid` a multiple of 1/32, `2^hi`
+/// added straight into the exponent of `2^mid` from a table, and `2^lo` a degree-5 polynomial.
+fn libm_exp2f(x : f32) -> f32 {
+  let x_u = libm_f32_to_bits(x);
+  let x_abs = x_u & 2147483647u32; // 0x7fffffff
+  // |x| >= 128, NaN, or |x| <= 2^-5.
+  if x_abs >= 1124073472u32 || x_abs <= 1023410176u32 { // 0x43000000, 0x3d000000
+    if x_abs <= 1023410176u32 { // 0x3d000000
+      // |x| < 2^-25
+      if x_abs <= 847249408u32 { // 0x32800000
+        return 1.0 + x;
+      }
+      // Inputs where the evaluation below would round the wrong way.
+      if x_u == 994221367u32 { // 0x3b429d37
+        return libm_f32_from_bits(1065370501u32); // 0x1.00870ap+0f
+      }
+      if x_u == 3170085175u32 { // 0xbcf3a937
+        return libm_f32_from_bits(1065010865u32); // 0x1.f58d62p-1f
+      }
+      // Sollya: fpminimax((2^x - 1)/x, 5, [|D...|], [-2^-5, 2^-5])
+      let xd = x as f64;
+      let xsq = xd * xd;
+      let c0 = libm_multiply_add(xd, libm_f64_from_bits(4597823092348339579u64), libm_f64_from_bits(4604418534313441779u64)); // 0x1.ebfbdff82c57bp-3, 0x1.62e42fefa39f3p-1
+      let c1 = libm_multiply_add(xd, libm_f64_from_bits(4576698095723163485u64), libm_f64_from_bits(4588159806093842346u64)); // 0x1.3b2ab6fc92f5dp-7, 0x1.c6b08d6f2d7aap-5
+      let c2 = libm_multiply_add(xd, libm_f64_from_bits(4549814922445220593u64), libm_f64_from_bits(4563791943949250853u64)); // 0x1.43090e61e6af1p-13, 0x1.5d897cfe27125p-10
+      let p = libm_multiply_add(xsq, libm_multiply_add(xsq, c2, c1), c0);
+      return libm_multiply_add(p, xd, 1.0) as f32;
+    }
+    // x >= 128: infinity, or the NaN.
+    if (x_u >> 31u32) == 0u32 {
+      return x + libm_f32_from_bits(2139095040u32); // 0x7f800000
+    }
+    // x <= -150
+    if x_u >= 3272998912u32 { // 0xc3160000
+      if x_abs == 2139095040u32 { // 0x7f800000
+        return 0.0;
+      }
+      if x_abs > 2139095040u32 { // 0x7f800000
+        return x;
+      }
+      return 0.0;
+    }
+  }
+  let kf = libm_round_even_f32(x * 32.0);
+  let k = kf as i32;
+  // lo = x - (hi + mid), exactly.
+  let dx = libm_multiply_add_f32(-0.03125, kf, x) as f64;
+  // 2^hi * 2^mid, by adding hi to the exponent of 2^mid.
+  let exp_hi = ((k >> 5) as i64) << 52;
+  let mh = libm_f64_from_bits((LIBM_EXP_2_MID[(k & 31) as i64] + exp_hi) as u64);
+  // Sollya: fpminimax((2^x - 1)/x, 5, [|D...|], [-1/32, 1/32])
+  let dx_sq = dx * dx;
+  let c1 = libm_multiply_add(dx, libm_f64_from_bits(4604418534313441775u64), 1.0); // 0x1.62e42fefa39efp-1
+  let c2 = libm_multiply_add(dx, libm_f64_from_bits(4588159806095103637u64), libm_f64_from_bits(4597823092348236228u64)); // 0x1.c6b08d7061695p-5, 0x1.ebfbdff8131c4p-3
+  let c3 = libm_multiply_add(dx, libm_f64_from_bits(4563791844111648041u64), libm_f64_from_bits(4576698122820340522u64)); // 0x1.5d88091198529p-10, 0x1.3b2b1bee74b2ap-7
+  let p = libm_multiply_add(dx_sq, c3, c2);
+  return libm_multiply_add(p, dx_sq * mh, c1 * mh) as f32;
+}
+
+/// `exp(x) - 1`, correctly rounded: `expm1f` from `expm1f.h`. Near zero a polynomial; otherwise
+/// `expf`'s reduction with the final step `exp(hi + mid) * exp(lo) - 1` as one FMA.
+fn libm_expm1f(x : f32) -> f32 {
+  let x_u = libm_f32_to_bits(x);
+  let x_abs = x_u & 2147483647u32; // 0x7fffffff
+  // An input where the evaluation below would round the wrong way.
+  if x_u == 1043709637u32 { // 0x3e35bec5
+    return libm_f32_from_bits(1044832050u32); // 0x1.8dbe64p-3f
+  }
+  // |x| >= 0x1.1542p+4
+  if x_abs >= 1099604259u32 { // 0x418aa123
+    if (x_u >> 31u32) == 1u32 {
+      // NaN stays NaN; any other x this negative gives -1.
+      if x_abs > 2139095040u32 { // 0x7f800000
+        return x;
+      }
+      return -1.0;
+    }
+    // x >= 89: infinity, or the NaN.
+    if x_u >= 1118961664u32 { // 0x42b20000
+      return x + libm_f32_from_bits(2139095040u32); // 0x7f800000
+    }
+  }
+  // |x| < 2^-4
+  if x_abs < 1031798784u32 { // 0x3d800000
+    // |x| < 2^-25
+    if x_abs < 855638016u32 { // 0x33000000
+      if x_u == 2147483648u32 { // 0x80000000
+        return x;
+      }
+      return libm_multiply_add_f32(x, x, x);
+    }
+    let xd = x as f64;
+    let xsq = xd * xd;
+    let c0 = libm_multiply_add(xd, libm_f64_from_bits(4595172819793696733u64), 0.5); // 0x1.55555555557ddp-3
+    let c1 = libm_multiply_add(xd, libm_f64_from_bits(4575957461362366647u64), libm_f64_from_bits(4586165620538954490u64)); // 0x1.111110fcd58b7p-7, 0x1.55555555552fap-5
+    let c2 = libm_multiply_add(xd, libm_f64_from_bits(4551452855633997154u64), libm_f64_from_bits(4564047942374614539u64)); // 0x1.a0241f0006d62p-13, 0x1.6c16c1717660bp-10
+    let r = libm_multiply_add(xsq, libm_multiply_add(xsq, libm_multiply_add(xsq, libm_f64_from_bits(4537941653173026912u64), c2), c1), c0); // 0x1.a01e3f8d3c06p-16
+    return libm_multiply_add(r, xsq, xd) as f32;
+  }
+  let kf = libm_round_even_f32(x * 128.0);
+  let x_hi = (kf as i32) + 13312;
+  // lo = x - (hi + mid), exactly.
+  let xd = libm_multiply_add_f32(kf, -0.0078125, x) as f64;
+  let exp_hi_mid = LIBM_EXP_M1[(x_hi >> 7) as i64] * LIBM_EXP_M2[(x_hi & 127) as i64];
+  let exp_lo = libm_multiply_add(xd, libm_multiply_add(xd, libm_multiply_add(xd, libm_multiply_add(xd, libm_f64_from_bits(4586165620539585091u64), libm_f64_from_bits(4595172824375158247u64)), libm_f64_from_bits(4602678819172648732u64)), libm_f64_from_bits(4607182418800015223u64)), 1.0); // 0x1.55555555ef243p-5, 0x1.555566668e5e7p-3, 0x1.000000000071cp-1, 0x1.ffffffffff777p-1
+  return libm_multiply_add(exp_hi_mid, exp_lo, -1.0) as f32;
+}
+
+// f16 and bf16 versions of the f32 functions above: the f32 result, correctly rounded, rounded
+// once more to the narrower format. That second rounding is wrong only when the f32 result sits
+// exactly on a halfway point of the narrow format; checking every one of the 65,536 inputs
+// against the function computed to 120 digits finds those inputs, and each function lists them.
+
+fn libm_expf16(x : f16) -> f16 {
+  // x = 0x1.de4p-8
+  if libm_f16_to_bits(x) == 8057u16 {
+    return libm_f16_from_bits(15367u16); // 0x1.01cp+0
+  }
+  // x = 0x1.73cp-6
+  if libm_f16_to_bits(x) == 9679u16 {
+    return libm_f16_from_bits(15383u16); // 0x1.05cp+0
+  }
+  return libm_expf(x as f32) as f16;
+}
+
+fn libm_exp2f16(x : f16) -> f16 {
+  // x = 0x1.714p-11
+  if libm_f16_to_bits(x) == 4549u16 {
+    return libm_f16_from_bits(15361u16); // 0x1.004p+0
+  }
+  return libm_exp2f(x as f32) as f16;
+}
+
+fn libm_expm1f16(x : f16) -> f16 {
+  // x = 0x1.6ap-11
+  if libm_f16_to_bits(x) == 4520u16 {
+    return libm_f16_from_bits(4521u16); // 0x1.6a4p-11
+  }
+  return libm_expm1f(x as f32) as f16;
+}
+
+fn libm_exp_bf16(x : bf16) -> bf16 {
+  return libm_bf16_from_f32(libm_expf(libm_f32_from_bf16(x)));
+}
+
+fn libm_exp2_bf16(x : bf16) -> bf16 {
+  return libm_bf16_from_f32(libm_exp2f(libm_f32_from_bf16(x)));
+}
+
+fn libm_expm1_bf16(x : bf16) -> bf16 {
+  return libm_bf16_from_f32(libm_expm1f(libm_f32_from_bf16(x)));
+}
+
+/// `sinh(x)` (`is_sinh`) or `cosh(x)` of an f32, before rounding: `exp_pm_eval` from
+/// `sinhfcoshf_utils.h`. With `x = (hi + mid) * log(2) + lo`, `mid` a multiple of 1/32, `e^x`
+/// and `e^-x` share one reduction: `2^(hi + mid)` and `2^-(hi + mid)` from `EXP_2_MID`, and the
+/// even and odd halves of a degree-5 polynomial for `e^lo` and `e^-lo`.
+fn libm_exp_pm_eval(x : f32, is_sinh : bool) -> f64 {
+  let xd = x as f64;
+  // k = round(x * log2(e) * 2^5)
+  let kd = libm_round_even_f64(libm_f64_from_bits(4631694138158056190u64) * xd); // 0x1.71547652b82fep+5
+  let k_p = kd as i32;
+  let k_m = -k_p;
+  let exp_hi_p = ((k_p >> 5) as i64) << 52;
+  let exp_hi_m = ((k_m >> 5) as i64) << 52;
+  let mh_p = libm_f64_from_bits((LIBM_EXP_2_MID[(k_p & 31) as i64] + exp_hi_p) as u64);
+  let mh_m = libm_f64_from_bits((LIBM_EXP_2_MID[(k_m & 31) as i64] + exp_hi_m) as u64);
+  let mh_sum = mh_p + mh_m;
+  let mh_diff = mh_p - mh_m;
+  // lo = x - (hi + mid) * log(2), with log(2) / 32 in two parts.
+  let dx = libm_multiply_add(kd, libm_f64_from_bits(13631542416105159482u64), libm_multiply_add(kd, libm_f64_from_bits(13805272573031350272u64), xd)); // -0x1.cf79abc9e3b3ap-45, -0x1.62e42fefa0000p-6
+  let dx2 = dx * dx;
+  let p_even = libm_multiply_add(dx2, libm_multiply_add(dx2, libm_f64_from_bits(4581662050259519668u64), libm_f64_from_bits(4598175219545168840u64)), 0.5); // 0x1.5555c2a9b48b4p-6, 0x1.ffffffffe5bc8p-3
+  let p_odd = libm_multiply_add(dx2, libm_multiply_add(dx2, libm_f64_from_bits(4571453868464098267u64), libm_f64_from_bits(4590669220166356327u64)), 0.5); // 0x1.11112a0e34bdbp-8, 0x1.555555555cd67p-4
+  if is_sinh {
+    return libm_multiply_add(dx * mh_sum, p_odd, p_even * mh_diff);
+  }
+  return libm_multiply_add(dx * mh_diff, p_odd, p_even * mh_sum);
+}
+
+/// `x` rounded to the nearest integer, ties to even, in double precision.
+fn libm_round_even_f64(x : f64) -> f64 {
+  return mlir!( inputs : (%x = x : f64), returns : f64, dialects : ["math"]) {
+    %r = math.roundeven %x : f64
+    macro.yield %r : f64
+  };
+}
+
+/// The hyperbolic sine, correctly rounded: `sinhf` from `sinhf.h`. Near zero a polynomial;
+/// otherwise `libm_exp_pm_eval`.
+fn libm_sinhf(x : f32) -> f32 {
+  let x_abs = libm_f32_to_bits(x) & 2147483647u32; // 0x7fffffff
+  // |x| >= 90, NaN, or |x| <= 0.078125
+  if x_abs >= 1119092736u32 || x_abs <= 1033895936u32 { // 0x42b40000, 0x3da00000
+    if x_abs <= 1033895936u32 { // 0x3da00000
+      // An input where the polynomial below would round the wrong way.
+      if x_abs == 974292479u32 { // 0x3a1285ff
+        return x;
+      }
+      let xdbl = x as f64;
+      // |x| <= 2^-26
+      if x_abs <= 847249408u32 { // 0x32800000
+        if x_abs == 0u32 {
+          return x;
+        }
+        return libm_multiply_add(0.25 * xdbl * xdbl, xdbl, xdbl) as f32;
+      }
+      let x2 = xdbl * xdbl;
+      let pe = libm_multiply_add(x2, libm_multiply_add(x2, libm_multiply_add(x2, libm_f64_from_bits(4551453352550203708u64), libm_f64_from_bits(4575957461317689119u64)), libm_f64_from_bits(4595172819793700227u64)), 0.0); // 0x1.a02b5a284013cp-13, 0x1.111110d239f1fp-7, 0x1.5555555556583p-3
+      return libm_multiply_add(xdbl, pe, xdbl) as f32;
+    }
+    // NaN: quiet.
+    if x_abs > 2139095040u32 { // 0x7f800000
+      return x + 1.0;
+    }
+    // Infinity, or overflow to it.
+    if x_abs == 2139095040u32 { // 0x7f800000
+      return x;
+    }
+    return x + libm_f32_from_bits((libm_f32_to_bits(x) & 2147483648u32) | 2139095040u32); // 0x80000000, 0x7f800000
+  }
+  return libm_exp_pm_eval(x, true) as f32;
+}
+
+/// The hyperbolic cosine, correctly rounded: `coshf` from `coshf.h`.
+fn libm_coshf(x0 : f32) -> f32 {
+  let x_u = libm_f32_to_bits(x0) & 2147483647u32; // 0x7fffffff
+  let x = libm_f32_from_bits(x_u);
+  // |x| >= 90, NaN, or |x| <= 2^-26
+  if x_u >= 1119092736u32 || x_u <= 847249408u32 { // 0x42b40000, 0x32800000
+    if x_u <= 847249408u32 { // 0x32800000
+      return 1.0 + x;
+    }
+    return x + libm_f32_from_bits(2139095040u32); // 0x7f800000
+  }
+  return libm_exp_pm_eval(x, false) as f32;
+}
+
+/// The hyperbolic tangent, correctly rounded: `tanhf` from `tanhf.h`. Near zero a Taylor
+/// polynomial; otherwise `(e^2x - 1) / (e^2x + 1)` written as `(r - mh) / (r + mh)` with
+/// `mh = 2^-(hi + mid)` and `r` a polynomial for `e^2lo`.
+fn libm_tanhf(x : f32) -> f32 {
+  let x_abs = libm_f32_to_bits(x) & 2147483647u32; // 0x7fffffff
+  // |x| >= 15, NaN, or |x| <= 0.078125
+  if x_abs >= 1097859072u32 || x_abs <= 1033895936u32 { // 0x41700000, 0x3da00000
+    if x_abs <= 1033895936u32 { // 0x3da00000
+      let xdbl = x as f64;
+      // |x| <= 2^-26
+      if x_abs <= 847249408u32 { // 0x32800000
+        if x_abs == 0u32 {
+          return x;
+        }
+        return libm_multiply_add(-(libm_f64_from_bits(4599676419421066581u64) * xdbl * xdbl), xdbl, xdbl) as f32; // 0x1.5555555555555p-2
+      }
+      let x2 = xdbl * xdbl;
+      let x4 = x2 * x2;
+      let c0 = x2 * libm_f64_from_bits(13823048456275842389u64); // -0x1.5555555555555p-2
+      let c1 = libm_multiply_add(x2, libm_f64_from_bits(13811310502961330716u64), libm_f64_from_bits(4593971859893063953u64)); // -0x1.ba1ba1ba1ba1cp-5, 0x1.1111111111111p-3
+      let c2 = libm_multiply_add(x2, libm_f64_from_bits(13799634966057239101u64), libm_f64_from_bits(4581960672315445498u64)); // -0x1.226e355e6c23dp-7, 0x1.664f4882c10fap-6
+      let pe = libm_multiply_add(x4, libm_multiply_add(x4, c2, c1), c0);
+      return libm_multiply_add(xdbl, pe, xdbl) as f32;
+    }
+    // NaN: quiet.
+    if x_abs > 2139095040u32 { // 0x7f800000
+      return x + 1.0;
+    }
+    if (libm_f32_to_bits(x) >> 31u32) == 1u32 {
+      return -1.0;
+    }
+    return 1.0;
+  }
+  let xd = x as f64;
+  let k = libm_round_even_f64(xd * libm_f64_from_bits(4636197737785426686u64)); // 0x1.71547652b82fep+6
+  let mk = -(k as i32);
+  let exp_mhi = ((mk >> 5) as i64) << 52;
+  let mh = libm_f64_from_bits((LIBM_EXP_2_MID[(mk & 31) as i64] + exp_mhi) as u64);
+  let dx = libm_multiply_add(k, libm_f64_from_bits(13627038816477788986u64), libm_multiply_add(k, libm_f64_from_bits(13800768973403979776u64), xd)); // -0x1.cf79abc9e3b3ap-46, -0x1.62e42fefa0000p-7
+  let dx2 = dx * dx;
+  let c0 = libm_multiply_add(dx, 2.0, 1.0);
+  let c1 = libm_multiply_add(dx, libm_f64_from_bits(4608683618675838311u64), libm_f64_from_bits(4611686018427280328u64)); // 0x1.555555555cd67p0, 0x1.ffffffffe5bc8p0
+  let c2 = libm_multiply_add(dx, libm_f64_from_bits(4598475466228321243u64), libm_f64_from_bits(4604180048396372148u64)); // 0x1.11112a0e34bdbp-2, 0x1.5555c2a9b48b4p-1
+  let r = libm_multiply_add(dx2, libm_multiply_add(dx2, c2, c1), c0);
+  return ((r - mh) / (r + mh)) as f32;
+}
+
+fn libm_sinhf16(x : f16) -> f16 {
+  // x = 0x1.3c8p+1
+  if libm_f16_to_bits(x) == 16626u16 {
+    return libm_f16_from_bits(17891u16); // 0x1.78cp+2
+  }
+  // x = -0x1.3c8p+1
+  if libm_f16_to_bits(x) == 49394u16 {
+    return libm_f16_from_bits(50659u16); // -0x1.78cp+2
+  }
+  return libm_sinhf(x as f32) as f16;
+}
+
+fn libm_coshf16(x : f16) -> f16 {
+  // x = 0x1.0p-5
+  if libm_f16_to_bits(x) == 10240u16 {
+    return libm_f16_from_bits(15361u16); // 0x1.004p+0
+  }
+  // x = -0x1.0p-5
+  if libm_f16_to_bits(x) == 43008u16 {
+    return libm_f16_from_bits(15361u16); // 0x1.004p+0
+  }
+  return libm_coshf(x as f32) as f16;
+}
+
+fn libm_tanhf16(x : f16) -> f16 {
+  return libm_tanhf(x as f32) as f16;
+}
+
+fn libm_sinh_bf16(x : bf16) -> bf16 {
+  return libm_bf16_from_f32(libm_sinhf(libm_f32_from_bf16(x)));
+}
+
+fn libm_cosh_bf16(x : bf16) -> bf16 {
+  return libm_bf16_from_f32(libm_coshf(libm_f32_from_bf16(x)));
+}
+
+fn libm_tanh_bf16(x : bf16) -> bf16 {
+  return libm_bf16_from_f32(libm_tanhf(libm_f32_from_bf16(x)));
 }

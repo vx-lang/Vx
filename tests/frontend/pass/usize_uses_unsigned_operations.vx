@@ -1,0 +1,32 @@
+//===- usize_uses_unsigned_operations.vx - Vx Compiler ---------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir --legacy-codegen 2>&1 | FileCheck %s
+//
+// `usize` is an `i64` underneath, and divides, takes remainders, shifts and compares as an
+// unsigned number, on both code generators.
+
+// CHECK-LABEL: func.func @ops(
+// CHECK-SAME: i64
+// CHECK: arith.divui {{.*}} : i64
+// CHECK: arith.remui {{.*}} : i64
+// CHECK: arith.shrui {{.*}} : i64
+// CHECK: arith.cmpi ult, {{.*}} : i64
+fn ops(a : usize, b : usize) -> usize {
+  let q = a / b;
+  let r = a % b;
+  let s = a >> b;
+  if a < b {
+    return q;
+  }
+  return r + s;
+}
+
+fn main() -> i32 {
+  return ops(7, 2) as i32;
+}
