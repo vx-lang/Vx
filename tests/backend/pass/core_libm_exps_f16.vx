@@ -1,0 +1,47 @@
+//===- core_libm_exps_f16.vx - Vx Compiler -------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// f16 `exp`, `exp2` and `exp_m1` on every one of the 65,536 f16 inputs. For each function this prints a hash
+// of all its results, given by their bits (every NaN counted as 32256). The expected hashes come
+// from the correctly rounded results: each function computed to 120 digits with Python's
+// decimal module and rounded to the nearest f16, ties to even.
+//
+// EXPECT: 4301585072925749207 9746365414744007052 15488558515815589870
+import core::num;
+
+fn bits(r : f16) -> u16 {
+  if r != r {
+    return 32256u16;
+  }
+  return libm_f16_to_bits(r);
+}
+
+fn run(which : i32) -> i32 {
+  let mut h : u64 = 0u64;
+  for i in 0..65536 {
+    let x = libm_f16_from_bits(i as u16);
+    let mut r : f16 = x;
+    if which == 0 {
+      r = x.exp();
+    } else if which == 1 {
+      r = x.exp2();
+    } else {
+      r = x.exp_m1();
+    }
+    h = (h ^ (bits(r) as u64)).wrapping_mul(1099511628211u64);
+  }
+  print(h);
+  print!(" ");
+  return 0;
+}
+
+fn main() -> i32 {
+  let _a = run(0);
+  let _b = run(1);
+  let _c = run(2);
+  return 0;
+}
