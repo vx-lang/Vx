@@ -1289,29 +1289,8 @@ macro_rules stamp_float {
         };
       }
 
-      /// The hyperbolic sine.
-      fn sinh(self : $t) -> $t {
-        return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
-          %r = math.sinh %a : $t
-          macro.yield %r : $t
-        };
-      }
 
-      /// The hyperbolic cosine.
-      fn cosh(self : $t) -> $t {
-        return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
-          %r = math.cosh %a : $t
-          macro.yield %r : $t
-        };
-      }
 
-      /// The hyperbolic tangent.
-      fn tanh(self : $t) -> $t {
-        return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
-          %r = math.tanh %a : $t
-          macro.yield %r : $t
-        };
-      }
 
       /// The largest whole number no greater than this.
       fn floor(self : $t) -> $t {
@@ -1714,6 +1693,38 @@ macro_rules stamp_float_exps {
 
 stamp_float_exps!(f64 , 1.0);
 
+/// Stamps `sinh`, `cosh` and `tanh` through the platform's `math` operations, for `f64`, which has no `core::libm`
+/// version yet. The other widths use `core::libm`'s.
+macro_rules stamp_float_hyperbolics {
+  ($t : ident) => {
+    impl $t {
+      /// The hyperbolic sine.
+      fn sinh(self : $t) -> $t {
+        return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
+          %r = math.sinh %a : $t
+          macro.yield %r : $t
+        };
+      }
+      /// The hyperbolic cosine.
+      fn cosh(self : $t) -> $t {
+        return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
+          %r = math.cosh %a : $t
+          macro.yield %r : $t
+        };
+      }
+      /// The hyperbolic tangent.
+      fn tanh(self : $t) -> $t {
+        return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
+          %r = math.tanh %a : $t
+          macro.yield %r : $t
+        };
+      }
+    }
+  };
+}
+
+stamp_float_hyperbolics!(f64);
+
 /// Stamps `asinh`, `acosh` and `atanh` as formulas through `ln_1p` and `ln`, for the widths
 /// LLVM libc has no version of yet: `f64`, `f16` and `bf16`. `f32` uses `core::libm`'s, below.
 macro_rules stamp_float_inverse_hyperbolic {
@@ -1805,6 +1816,21 @@ impl f32 {
   fn exp_m1(self : f32) -> f32 {
     return libm_expm1f(self);
   }
+
+  /// The hyperbolic sine, correctly rounded (LLVM libc's `sinhf`).
+  fn sinh(self : f32) -> f32 {
+    return libm_sinhf(self);
+  }
+
+  /// The hyperbolic cosine, correctly rounded (LLVM libc's `coshf`).
+  fn cosh(self : f32) -> f32 {
+    return libm_coshf(self);
+  }
+
+  /// The hyperbolic tangent, correctly rounded (LLVM libc's `tanhf`).
+  fn tanh(self : f32) -> f32 {
+    return libm_tanhf(self);
+  }
 }
 
 impl f16 {
@@ -1842,6 +1868,21 @@ impl f16 {
   fn exp_m1(self : f16) -> f16 {
     return libm_expm1f16(self);
   }
+
+  /// The hyperbolic sine, correctly rounded (through LLVM libc's `sinhf`).
+  fn sinh(self : f16) -> f16 {
+    return libm_sinhf16(self);
+  }
+
+  /// The hyperbolic cosine, correctly rounded (through LLVM libc's `coshf`).
+  fn cosh(self : f16) -> f16 {
+    return libm_coshf16(self);
+  }
+
+  /// The hyperbolic tangent, correctly rounded (through LLVM libc's `tanhf`).
+  fn tanh(self : f16) -> f16 {
+    return libm_tanhf16(self);
+  }
 }
 
 impl bf16 {
@@ -1878,6 +1919,21 @@ impl bf16 {
   /// `exp` minus one, correctly rounded, so a small argument keeps its digits (through LLVM libc's `expm1f`).
   fn exp_m1(self : bf16) -> bf16 {
     return libm_expm1_bf16(self);
+  }
+
+  /// The hyperbolic sine, correctly rounded (through LLVM libc's `sinhf`).
+  fn sinh(self : bf16) -> bf16 {
+    return libm_sinh_bf16(self);
+  }
+
+  /// The hyperbolic cosine, correctly rounded (through LLVM libc's `coshf`).
+  fn cosh(self : bf16) -> bf16 {
+    return libm_cosh_bf16(self);
+  }
+
+  /// The hyperbolic tangent, correctly rounded (through LLVM libc's `tanhf`).
+  fn tanh(self : bf16) -> bf16 {
+    return libm_tanh_bf16(self);
   }
 }
 
