@@ -137,7 +137,7 @@ Raised by the type checker. Vx performs no implicit numeric conversion, so many 
 | [`E3041`](/errors/E3041/) | A struct field that names `I::Item`. Fields are laid out from the struct's parameters alone, so the projection is made a parameter instead, as `Map<I, F>` does with its closure. |
 | [`E3042`](/errors/E3042/) | A bound on a type parameter, `T : Name`, where no trait called `Name` is declared or imported. Usually a misspelling or a missing `import`. |
 | [`E3043`](/errors/E3043/) | A `for` loop over a reference to a type with no method to iterate it by. The loop calls `iter()` for `for x in &c` and `iter_mut()` for `for x in &mut c`, as Rust's collections do, so the type needs the one the loop asks for. |
-| [`E3044`](/errors/E3044/) | A top-level `const` whose value is not known while compiling, or does not fit its declared type. A `const` holds a number or a `bool`: a literal, or arithmetic on literals and other `const`s. |
+| [`E3044`](/errors/E3044/) | A top-level `const` whose value is not known while compiling, or does not fit its declared type. A `const` holds a number or a `bool`: a literal, or arithmetic on literals and other `const`s. A `const` table holds a list of number literals, and is read one number at a time, as `TABLE[i]`. |
 
 ## Borrow/Ownership Errors
 

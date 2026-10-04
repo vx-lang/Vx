@@ -895,6 +895,19 @@ pub fn build_frozen_registry_with(
         }
     }
 
+    // `const` tables, which both code generators turn into read-only globals. One the checker
+    // refused never reaches here.
+    for module in modules {
+        for c in &module.consts {
+            if let Ok(Some(table)) = crate::registry::ConstTable::from_decl(c) {
+                registry.const_tables.push(table);
+            }
+        }
+    }
+    registry
+        .const_tables
+        .sort_by(|a, b| a.name.as_ref().cmp(b.name.as_ref()));
+
     // Base struct field types, keyed by the struct's GID (#291), so the flat path can substitute a
     // monomorphized instance's type arguments into a generic field type and recover a pointer
     // field's pointee (`Vec<i32>`'s `data : *mut T` -> `*mut i32`) — the field AST types the frozen

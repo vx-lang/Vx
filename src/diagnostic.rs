@@ -332,7 +332,8 @@ pub enum DiagnosticCode {
     E3043,
     /// A top-level `const` whose value is not known while compiling, or does not fit its
     /// declared type. A `const` holds a number or a `bool`: a literal, or arithmetic on
-    /// literals and other `const`s.
+    /// literals and other `const`s. A `const` table holds a list of number literals, and is
+    /// read one number at a time, as `TABLE[i]`.
     E3044,
 
     // --- Borrow/Ownership Errors (E4xxx) ---

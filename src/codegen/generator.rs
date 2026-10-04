@@ -71,6 +71,8 @@ pub struct MeliorGenerator<'c> {
     pub(crate) syntax_functions: HashMap<crate::symbol::Symbol, syntax::Function>,
     pub(crate) enzyme_decls: std::collections::HashSet<String>,
     pub string_counter: usize,
+    /// The program's `const` tables by name; `generate_module` adds each one's global.
+    pub(crate) const_tables: HashMap<crate::symbol::Symbol, crate::registry::ConstTable>,
     pub current_return_type: Option<Type<'c>>,
     /// The buffer the caller allocated for this function's tensor result, when it returns through
     /// one. A `return` writes its value in here and returns nothing. `None` for every other return
@@ -738,6 +740,7 @@ impl<'c> MeliorGenerator<'c> {
             syntax_functions: HashMap::new(),
             enzyme_decls: std::collections::HashSet::new(),
             string_counter: 0,
+            const_tables: HashMap::new(),
             current_return_type: None,
             current_return_slot: None,
             nrvo_slot: None,
@@ -815,6 +818,57 @@ impl<'c> MeliorGenerator<'c> {
         Ok(s)
     }
 
+    /// A read-only global for each `const` table in `programs`, in name order.
+    fn add_const_tables<'p>(
+        &mut self,
+        programs: impl Iterator<Item = &'p Program>,
+    ) -> Result<(), LowerError> {
+        use melior::ir::attribute::{Attribute, StringAttribute, TypeAttribute};
+        use melior::ir::operation::OperationBuilder;
+        use melior::ir::Identifier;
+        for c in programs.flat_map(|p| &p.consts) {
+            if let Ok(Some(table)) = crate::registry::ConstTable::from_decl(c) {
+                self.const_tables.insert(c.name.clone(), table);
+            }
+        }
+        let mut tables: Vec<_> = self.const_tables.values().collect();
+        tables.sort_by(|a, b| a.name.cmp(&b.name));
+        for table in tables {
+            let memty = Type::parse(self.context, &table.memref_type())
+                .expect("a table's memref type parses");
+            let elem = crate::mlir_ty::mlir_scalar(&table.elem)
+                .expect("a table's element has an MLIR type");
+            let init = format!(
+                "dense<[{}]> : tensor<{}x{}>",
+                table.values.join(", "),
+                table.len,
+                elem
+            );
+            let attr =
+                |name: &str, value: Attribute<'c>| (Identifier::new(self.context, name), value);
+            let global = OperationBuilder::new("memref.global", self.loc())
+                .add_attributes(&[
+                    attr(
+                        "sym_name",
+                        StringAttribute::new(self.context, &table.symbol()).into(),
+                    ),
+                    attr(
+                        "sym_visibility",
+                        StringAttribute::new(self.context, "private").into(),
+                    ),
+                    attr("type", TypeAttribute::new(memty).into()),
+                    attr(
+                        "initial_value",
+                        Attribute::parse(self.context, &init).expect("a table's values parse"),
+                    ),
+                    attr("constant", Attribute::parse(self.context, "unit").unwrap()),
+                ])
+                .build()?;
+            self.module.body().append_operation(global);
+        }
+        Ok(())
+    }
+
     pub(crate) fn generate_module(
         &mut self,
         program: &Program,
@@ -829,6 +883,7 @@ impl<'c> MeliorGenerator<'c> {
             names.sort();
             names.into_iter().map(|n| &modules[n]).collect()
         };
+        self.add_const_tables(std::iter::once(program).chain(sorted_modules.iter().copied()))?;
         for s in &program.structs {
             self.structs.insert(s.name.clone(), s.clone());
         }

@@ -1146,6 +1146,8 @@ pub fn deserialize_registry_interface(bytes: &[u8]) -> Result<ImmutableGlobalReg
         // monomorphized imported enum then falls back to the AST path (#242).
         enum_data: FxHashMap::default(),
         merge_state: Default::default(),
+        // `const` tables are not serialized into a `.vxlib` yet.
+        const_tables: Default::default(),
         layout_by_base_name,
     })
 }

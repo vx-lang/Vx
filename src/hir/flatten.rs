@@ -900,11 +900,25 @@ impl<'r> Lowerer<'r> {
                     Some(Binding::Place { .. }) => Err(Decline::TypeNotModelled {
                         what: "a place-bound reference in value position",
                     }),
-                    None => self
-                        .lower_func_const(&id.name)
-                        .ok_or(Decline::TypeNotModelled {
-                            what: "a name that is neither a local nor a function",
-                        }),
+                    None => {
+                        if let Some((at, table)) = self.registry.const_table(&id.name) {
+                            let ty = LoweredTy::Tensor {
+                                elem: table.elem.clone(),
+                                shape: vec![table.len.to_string()],
+                            };
+                            return Ok(self.emit_typed(
+                                Opcode::ConstTable,
+                                Register(0),
+                                Register(0),
+                                ty,
+                                at as u64,
+                            ));
+                        }
+                        self.lower_func_const(&id.name)
+                            .ok_or(Decline::TypeNotModelled {
+                                what: "a name that is neither a local nor a function",
+                            })
+                    }
                 }
             }
             Expr::BinaryOp(b) => {

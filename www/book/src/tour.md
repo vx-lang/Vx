@@ -33,6 +33,17 @@ const EDGES : i32 = SIDES * 2;
 
 The value is a number or a `bool`: a literal, or arithmetic on literals and other `const`s.
 
+A `const` can also be a table of numbers. It is stored once, read-only, and read one number at
+a time:
+
+```rust
+const POWERS : Tensor<i64, [4]> = [1, 10, 100, 1000];
+
+fn power_of_ten(i : i64) -> i64 {
+    return POWERS[i];
+}
+```
+
 ## Functions
 
 ```rust

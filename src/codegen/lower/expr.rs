@@ -130,6 +130,19 @@ impl<'c> LowerToMelior<'c> for IdentifierExpr {
             let cast_ref = block.append_operation(cast_op);
 
             Ok((cast_ref.result(0)?.into(), ptr_ty, block))
+        } else if let Some(table) = gen.const_tables.get(name) {
+            // A `const` table: its read-only global, which `generate_module` added.
+            let memty = Type::parse(gen.context, &table.memref_type())
+                .expect("a table's memref type parses");
+            let get = OperationBuilder::new("memref.get_global", gen.loc())
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "name"),
+                    FlatSymbolRefAttribute::new(gen.context, &table.symbol()).into(),
+                )])
+                .add_results(&[memty])
+                .build()?;
+            let get_ref = block.append_operation(get);
+            Ok((get_ref.result(0)?.into(), memty, block))
         } else {
             panic!("Undefined variable: {}", name);
         }

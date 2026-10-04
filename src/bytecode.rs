@@ -268,6 +268,9 @@ pub enum Opcode {
     /// `t.clone()`: a new tensor of `operand1`'s shape, holding a copy of its elements. The
     /// source may be a row, so the copy follows its strides; `type_idx` is the result type.
     TensorClone = 59,
+    /// A top-level `const` table, read-only: `imm` is its position in the registry's
+    /// `const_tables`, and the result is the tensor its global holds.
+    ConstTable = 60,
 }
 
 /// Reverse mode for `Opcode::AutoDiff`: the gradient, through `__enzyme_autodiff_grad_*`.
@@ -300,6 +303,7 @@ impl Opcode {
             57 => Shr,
             58 => TensorReduce,
             59 => TensorClone,
+            60 => ConstTable,
             8 => Call,
             9 => Ret,
             10 => Matmul,
