@@ -546,6 +546,18 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
             span: _,
         }) = lhs
         {
+            // `p[0] = q[1]`: a row into a row. `p[0]` lowers to a view of `p`'s row, and the
+            // elements are copied into it.
+            if gen.is_memref(&rhs_ty) {
+                let (dst, dst_ty, new_b) = gen.generate_expr(lhs, block)?;
+                if gen.is_memref(&dst_ty) {
+                    let copy_op = OperationBuilder::new("memref.copy", gen.loc())
+                        .add_operands(&[rhs_val, dst])
+                        .build()?;
+                    new_b.append_operation(copy_op);
+                    return Ok(Some(new_b));
+                }
+            }
             if let Some((base_val, base_ty, indices, new_b)) = gen.flatten_indices(
                 &syntax::Expr::IndexAccess(syntax::IndexAccessExpr {
                     base: base.clone(),
