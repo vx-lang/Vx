@@ -56,9 +56,10 @@ is the same type as `*mut f32`. At a C call the pointer is passed as an ordinary
 what a library such as cuBLAS takes for a device buffer.
 
 > [!NOTE]
-> **Partly implemented.** The spelling type-checks and lowers. Taking such a pointer from a placed
-> tensor with `as_ptr()`, refusing a host read through it, and a diagnostic of its own for passing a
-> pointer into the wrong memory are the later parts of issue #742.
+> **Partly implemented.** The spelling type-checks and lowers, and `t.as_ptr()` on a tensor gives
+> a pointer to its first element in the tensor's memory. Refusing a host read through such a
+> pointer, a diagnostic of its own for passing a pointer into the wrong memory, and code generation
+> for `as_ptr()` are the later parts of issue #742.
 
 ### The `Ref<T, Memory>` Type
 

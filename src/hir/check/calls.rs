@@ -2327,7 +2327,17 @@ impl<'a> TypeChecker<'a> {
                 span: method_span,
             }) => {
                 let method_span = *method_span;
+                // Taking the address of a tensor does not read it, so `on_gpu.as_ptr()` is
+                // allowed from host code even though a host read of `on_gpu` is not. The
+                // pointer it gives carries the tensor's placement, and reading through that
+                // is checked where the read happens.
+                let takes_an_address = matches!(_method.as_ref(), "as_ptr" | "as_mut_ptr");
+                let prev_allow = self.allow_cross_topology;
+                if takes_an_address {
+                    self.allow_cross_topology = true;
+                }
                 let mut base_ty = self.check_expr_type_flag(obj, false);
+                self.allow_cross_topology = prev_allow;
 
                 // Pre-infer closure argument types for specific intrinsics before type-checking them
                 let mut reduce_init_ty = None;
@@ -2619,11 +2629,18 @@ impl<'a> TypeChecker<'a> {
                     });
                 } else if _method.as_ref() == "as_ptr" || **_method == *"as_mut_ptr" {
                     let is_mut = _method.as_ref() == "as_mut_ptr";
+                    // A tensor's `as_ptr()` is a pointer to its first element, placed where the
+                    // tensor is: `Tensor<f32, [4], Memory::GPU_HBM>` gives
+                    // `*const f32 in Memory::GPU_HBM`. Taking the address does not read the
+                    // shape, so both tensor spellings answer here (Vx#399), and a borrowed
+                    // tensor answers the same as the tensor.
+                    let element_pointer =
+                        |is_mut: bool, el: &ElementType, place: &Option<Placement>| {
+                            Type::Pointer(Box::new(Type::Scalar(el.clone())), place.clone(), is_mut)
+                        };
                     match &base_ty {
-                        // Taking the address of the storage does not read the shape, so both
-                        // tensor spellings answer here (Vx#399).
-                        Type::Tensor(..) => {
-                            base_ty = Type::Pointer(Box::new(base_ty.clone()), None, is_mut);
+                        Type::Tensor(el, _, place) => {
+                            base_ty = element_pointer(is_mut, el, place);
                         }
                         Type::Borrow {
                             inner,
@@ -2636,10 +2653,15 @@ impl<'a> TypeChecker<'a> {
                                     "Cannot get mutable pointer from immutable borrow".to_string(),
                                 );
                             }
-                            let place = mem
-                                .as_ref()
-                                .map(|m| crate::syntax::Placement::at(m.clone()));
-                            base_ty = Type::Pointer(inner.clone(), place, is_mut);
+                            base_ty = match inner.as_ref() {
+                                Type::Tensor(el, _, place) => element_pointer(is_mut, el, place),
+                                _ => {
+                                    let place = mem
+                                        .as_ref()
+                                        .map(|m| crate::syntax::Placement::at(m.clone()));
+                                    Type::Pointer(inner.clone(), place, is_mut)
+                                }
+                            };
                         }
                         Type::Pointer(_, _, _) => {
                             self.errors.push("Already a pointer".to_string());

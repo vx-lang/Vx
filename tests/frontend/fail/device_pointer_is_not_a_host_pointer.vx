@@ -1,0 +1,24 @@
+//===- device_pointer_is_not_a_host_pointer.vx - Vx Compiler -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `as_ptr()` on a tensor in GPU memory gives a pointer into GPU memory, and that
+// is not a host pointer. Passing it where a plain `*const f32` is expected is a
+// type error, and the message names both types.
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s --print-ast 2>&1 | FileCheck %s
+// CHECK: Type mismatch in argument 1 for function 'reads_host'. Expected *const f32, got *const f32 in Memory::GPU_HBM
+
+fn reads_host(p : *const f32) -> i32 {
+  return 0;
+}
+
+fn main() -> i32 {
+  let host_data : Tensor<f32, [4, 4]> = Tensor<f32, [4, 4]>::new();
+  let on_gpu = transfer(host_data, Memory::GPU_HBM);
+  let dp = on_gpu.as_ptr();
+  return reads_host(dp);
+}

@@ -1,0 +1,47 @@
+//===- as_ptr_of_a_placed_tensor_points_into_its_memory.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `t.as_ptr()` on a tensor is a pointer to its first element, placed where the
+// tensor is. A host tensor gives `*const f32`; a tensor moved to GPU memory gives
+// `*mut f32 in Memory::GPU_HBM`, which is what a C library such as cuBLAS takes
+// for a device buffer.
+//
+// Taking the address of the GPU tensor from host code is allowed: it does not
+// read the tensor. The types are pinned by the calls below: each pointer is passed
+// to a parameter of exactly its type, and a wrong type would be a type error.
+// `device_pointer_is_not_a_host_pointer.vx` shows the mismatch being refused.
+//
+// Only the type checker runs here. Code generation for `as_ptr()` is a later
+// part of issue #742.
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --print-ast 2>&1 | FileCheck %s
+// CHECK-NOT: Error
+// CHECK: Let hp
+// CHECK-NOT: Error
+// CHECK: Let dp
+// CHECK-NOT: Error
+
+extern "C" {
+  fn vendor_scale(data : *mut f32 in Memory::GPU_HBM, n : i32) -> i32;
+}
+
+fn reads_host(p : *const f32) -> i32 {
+  return 0;
+}
+
+fn main() -> i32 {
+  let host_data : Tensor<f32, [4, 4]> = Tensor<f32, [4, 4]>::new();
+  let hp = host_data.as_ptr();
+  let r0 = reads_host(hp);
+  let borrowed = &host_data;
+  let bp = borrowed.as_ptr();
+  let r1 = reads_host(bp);
+  let on_gpu = transfer(host_data, Memory::GPU_HBM);
+  let dp = on_gpu.as_mut_ptr();
+  let r2 = unsafe { vendor_scale(dp, 16) };
+  return r0 + r1 + r2;
+}

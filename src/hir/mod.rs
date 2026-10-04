@@ -320,12 +320,13 @@ fn bad_matmul() -> Tensor<f32, [?, ?]> {
 
     #[test]
     fn test_sema_as_ptr_and_len() {
+        // `as_ptr()` on a tensor is a pointer to its first element, in the tensor's memory.
         // `len()` answers the outermost extent as an i32, like `extent`, and the checker
         // rewrites it to the `$extent` read both backends lower.
         let input = r#"
         fn test_methods(t: Tensor<f32, [?, ?]>) -> i32 {
-            let ptr: *const Tensor<f32, [?, ?]> = t.as_ptr();
-            let mut_ptr: *mut Tensor<f32, [?, ?]> = t.as_mut_ptr();
+            let ptr: *const f32 = t.as_ptr();
+            let mut_ptr: *mut f32 = t.as_mut_ptr();
             let length: i32 = t.len();
             return length;
         }
