@@ -141,6 +141,9 @@ const KNOWN_DECLINES: &[&str] = &[
     "backend/pass/std_tensor_map_inplace.vx",
     "frontend/pass/closure_fat_ptr.vx",
     "frontend/pass/control_flow_rigorous.vx",
+    // `c = c @ b`: the flat path writes a product into its destination, which here is also an
+    // operand ("a matmul assignment whose destination may be one of its operands").
+    "frontend/pass/tensor_drop_points_reassigned.vx",
     // A closure that uses a reference to a tensor; it is also on KNOWN_BROKEN.
     "frontend/pass/tensor_drop_points_with_a_closure.vx",
     // The `vxc -j` fallback fixture: a program the flat path declines, chosen so the parallel

@@ -837,8 +837,10 @@ impl<'a> TypeChecker<'a> {
         //
         // Only a plain `x = v`. `x op= v` reads `x` first, and `a[i] = v` writes *through* a
         // value the name no longer owns; both stay refused.
+        let mut owner_before = None;
         if op.is_none() {
             if let Expr::Identifier(id) = lhs {
+                owner_before = self.drops_owner_state(id.name.as_ref());
                 self.unconsume(id.name.as_ref());
             }
         }
@@ -896,6 +898,7 @@ impl<'a> TypeChecker<'a> {
         if op.is_none() {
             self.check_view_assign(lhs, rhs, &rhs_ty);
             if let Expr::Identifier(id) = lhs {
+                self.drops_note_assign(id.name.as_ref(), owner_before, rhs, id.span.line);
                 self.unconsume(id.name.as_ref());
                 self.borrow.views.remove(id.name.as_ref());
                 if let Expr::Identifier(from) = &*rhs {

@@ -17,7 +17,10 @@
 // leaves that are still alive. An owner moved at its own level is not dropped; one moved
 // inside a nested block may or may not have been, so its drop is under a flag. An owner a
 // raw pointer was taken from (`t.as_ptr()`) waits for the end of its block: no borrow
-// checker sees what a raw pointer is used for.
+// checker sees what a raw pointer is used for. Assigning a new tensor to an owner drops the
+// old one first, unless it was moved, or `c = a @ b` writes the product into `c`'s buffer.
+// A binary tensor operator moves its operands, as in Rust, so it drops them once it has its
+// result.
 //
 //===----------------------------------------------------------------------===//
 
@@ -25,7 +28,7 @@ use super::super::*;
 use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Moved {
+pub(crate) enum Moved {
     No,
     Maybe,
     Yes,
@@ -197,6 +200,97 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
             }
+        }
+    }
+
+    /// Whether `name` is an owner, and whether its value was moved. Read before an assignment
+    /// to it clears the mark.
+    pub(crate) fn drops_owner_state(&self, name: &str) -> Option<Moved> {
+        for f in self.borrow.drops.frames.iter().rev() {
+            match f {
+                FrameKind::Function => return None,
+                FrameKind::Loop => {}
+                FrameKind::Block { owners, .. } => {
+                    if let Some(o) = owners.iter().rev().find(|o| o.name == name) {
+                        return Some(o.moved);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// `name = rhs` on `line`, where `before` is what `drops_owner_state` said first: the old
+    /// value is dropped before the assignment.
+    pub(crate) fn drops_note_assign(
+        &self,
+        name: &str,
+        before: Option<Moved>,
+        rhs: &Expr,
+        line: usize,
+    ) {
+        let Some(moved) = before else {
+            return;
+        };
+        // `t = f(t)` moved the old value into the call.
+        if moved == Moved::Yes || self.borrow.drops.moved_now.contains(name) {
+            return;
+        }
+        // `c = a @ b` with neither operand `c`: the product is written into `c`'s buffer, the
+        // same test the code generators make.
+        if let Expr::BinaryOp(b) = rhs {
+            if matches!(b.op, BinaryOp::MatMul) {
+                let plain_root = |e: &Expr| -> Option<String> {
+                    let r = crate::syntax::matmul_operand_root(e)?;
+                    let through = matches!(
+                        self.lookup(r).map(|(t, _)| t),
+                        Some(Type::Borrow { .. } | Type::Pointer(..))
+                    );
+                    (!through).then(|| r.to_string())
+                };
+                if let (Some(l), Some(r)) = (plain_root(&b.lhs), plain_root(&b.rhs)) {
+                    if l != name && r != name {
+                        return;
+                    }
+                }
+            }
+        }
+        if !printing() || self.speculating {
+            return;
+        }
+        let flag = if moved == Moved::Maybe {
+            " if it was not moved"
+        } else {
+            ""
+        };
+        eprintln!(
+            "drop in {}: the old value of {name}{flag}, before the assignment on line {line}",
+            self.current_function
+        );
+    }
+
+    /// The operands of a tensor operator, `a @ b` or `a + b`, that it moved: dropped right
+    /// after it.
+    pub(crate) fn drops_note_operands(&self, operands: &[(&Expr, &Type)]) {
+        if !printing() || self.speculating {
+            return;
+        }
+        let Some(FrameKind::Block { lines, stmt, .. }) = self.borrow.drops.frames.last() else {
+            return;
+        };
+        let line = lines.get(*stmt).copied().unwrap_or(0);
+        for &(e, ty) in operands {
+            let Expr::Identifier(id) = e else { continue };
+            if !matches!(ty, Type::Tensor(..))
+                || !self.borrow.drops.moved_now.contains(id.name.as_ref())
+                || self.drops_owner_state(id.name.as_ref()).is_none()
+            {
+                continue;
+            }
+            eprintln!(
+                "drop in {}: {}, after the operator it is moved into on line {line}",
+                self.current_function, id.name
+            );
         }
     }
 
