@@ -1,21 +1,25 @@
 //===- npu_deref_on_host.vx - Vx Compiler ------------------------*- Vx -*-===//
-// CHECK: E3001{{.*}}'t_device' is declared Tensor<f32, [?, ?]> but its initializer is Tensor<f32, [1, 1], NPU, NPU_HBM>
 //
 // Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
+// A tensor moved to the NPU carries its placement in its type, so it cannot be
+// bound as a plain `Tensor<f32, [?, ?]>`: the placement would be lost, and with
+// it every check that depends on where the data lives.
+//
+// The dereference inside `strip_pin_and_deref` is not the error here. The CPU
+// sees NPU_HBM (the host and the NPU share memory on the parts Vx models), so a
+// host read through a pointer into NPU memory is allowed. A pointer into GPU
+// memory is a different matter; `host_cannot_read_through_a_device_pointer.vx`
+// in the frontend tier covers that.
+//===----------------------------------------------------------------------===//
 // RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: E3001{{.*}}'t_device' is declared Tensor<f32, [?, ?]> but its initializer is Tensor<f32, [1, 1], NPU, NPU_HBM>
 
-// Expect execution trap/segfault when trying to run an NPU execution block on
-// host JIT The goal is to expose that our compiler JIT backend does not yet
-// sandbox NPU pointers, allowing undefined behavior.
 fn strip_pin_and_deref(t : Tensor<f32, [?, ?]>) -> Tensor<f32, [?, ?]> {
-  unsafe {
-    let ptr : *const Tensor<f32, [?, ?]> = t.as_ptr();
-    let val : Tensor<f32, [?, ?]> = *ptr; // Dereferencing an NPU pointer on CPU!
-  }
+  unsafe { let ptr : *const f32 = t.as_ptr(); let val : f32 = *ptr; }
   return t;
 }
 
@@ -23,7 +27,6 @@ fn main() -> Tensor<f32, [?, ?]> {
   let t_host = Tensor([ 1, 1 ]);
   let t_device : Tensor<f32, [?, ?]> = t_host.to_device();
 
-  // Pass the NPU tensor to a Host function to strip the Pinned wrapper
   let result = strip_pin_and_deref(t_device);
 
   return result;

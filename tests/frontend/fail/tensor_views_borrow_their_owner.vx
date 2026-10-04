@@ -198,7 +198,7 @@ fn main() -> i32 {
 
 // CHECK-DAG: Error[E4007] at 29:16: `q` is moved while it is borrowed
 // CHECK-DAG: Error[E4007] at 39:23: `h` is moved while it is borrowed
-// CHECK-DAG: Error[E4009] at 47:7: `q` is assigned while it is borrowed
+// CHECK-DAG: Error[E4009] at 47:7: `q[1][0]` is assigned while it is borrowed
 // CHECK-DAG: Error[E4002] at 55:11: Cannot access 'q' because it is mutably borrowed.
 // CHECK-DAG: Error[E4010] at 63:3: `q` is not declared `mut`, so a view of it cannot be declared `mut`
 // CHECK-DAG: Error[E4005] at 71:3: this returns a view of `q`, a tensor this function owns

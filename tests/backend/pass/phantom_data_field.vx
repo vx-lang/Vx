@@ -1,0 +1,48 @@
+//===- phantom_data_field.vx - Vx Compiler ---------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `PhantomData` field takes no space and holds nothing, whatever its type argument, a
+// reference included. `Span` is a struct over a raw pointer that marks what it borrows with
+// one, as Rust's slice iterators do.
+import core::marker;
+
+struct Counted {
+  n : i32,
+  kind : PhantomData<f64>,
+}
+
+struct Span<T> {
+  ptr : *const T,
+  len : i32,
+  borrows : PhantomData<&T>,
+}
+
+fn span_of(x : &i32) -> Span<i32> {
+  return Span<i32> {
+    ptr : x, len : 1i32, borrows : PhantomData<&i32> { }
+  };
+}
+
+fn first(s : &Span<i32>) -> i32 {
+  return unsafe { *s.ptr };
+}
+
+fn main() -> i32 {
+  let c = Counted {
+    n : 3i32, kind : PhantomData<f64> { }
+  };
+  let x = 42i32;
+  let s = span_of(&x);
+  print(c.n);
+  print!(" ");
+  print(s.len);
+  print!(" ");
+  print(first(&s));
+  return 0;
+}
+
+// EXPECT: 3 1 42

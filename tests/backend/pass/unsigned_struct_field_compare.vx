@@ -1,0 +1,67 @@
+//===- unsigned_struct_field_compare.vx - Vx Compiler -------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Unsigned struct fields compare as unsigned. Each field holds a value with its top bit set,
+// which a signed comparison reads as negative. Printed, in order: `>`, `<`, `>=` and `<=`
+// against 1 for the `u8`, `u16`, `u32` and `u64` fields, then the `u64` field compared after
+// being copied into a local, as 1 for true and 0 for false.
+//
+// EXPECT: 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1
+struct Wide {
+  a : u8,
+  b : u16,
+  c : u32,
+  d : u64,
+}
+
+fn bit(c : bool) -> i32 {
+  if c {
+    return 1;
+  }
+  return 0;
+}
+
+fn main() -> i32 {
+  let w = Wide {
+    a: 200u8, b: 40000u16, c: 3000000000u32, d: 14432822802894389248u64
+  };
+  print(bit(w.a > 1u8));
+  print!(" ");
+  print(bit(w.a < 1u8));
+  print!(" ");
+  print(bit(w.a >= 1u8));
+  print!(" ");
+  print(bit(w.a <= 1u8));
+  print!(" ");
+  print(bit(w.b > 1u16));
+  print!(" ");
+  print(bit(w.b < 1u16));
+  print!(" ");
+  print(bit(w.b >= 1u16));
+  print!(" ");
+  print(bit(w.b <= 1u16));
+  print!(" ");
+  print(bit(w.c > 1u32));
+  print!(" ");
+  print(bit(w.c < 1u32));
+  print!(" ");
+  print(bit(w.c >= 1u32));
+  print!(" ");
+  print(bit(w.c <= 1u32));
+  print!(" ");
+  print(bit(w.d > 1u64));
+  print!(" ");
+  print(bit(w.d < 1u64));
+  print!(" ");
+  print(bit(w.d >= 1u64));
+  print!(" ");
+  print(bit(w.d <= 1u64));
+  print!(" ");
+  let d : u64 = w.d;
+  print(bit(d > 1u64));
+  return 0;
+}

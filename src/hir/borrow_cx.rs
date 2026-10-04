@@ -45,6 +45,11 @@ pub(crate) struct BorrowCx {
     pub(crate) current_params: HashMap<Symbol, Type>,
     /// The moves at each `break` and `continue` of the loops being checked, innermost last.
     pub(crate) loop_exits: Vec<LoopExits>,
+    /// Every borrower each variable has had in the function, kept after the borrow ends: a
+    /// drop point is after the last use of all of them.
+    borrowers_ever: HashMap<String, HashSet<String>>,
+    /// Where each owned tensor is dropped. See `check/drops.rs`.
+    pub(crate) drops: crate::hir::check::drops::DropFrames,
     /// What each view variable (`let r = q[i]`) borrows. Reset per function.
     pub(crate) views: HashMap<Symbol, crate::hir::check::views::View>,
 }
@@ -71,6 +76,8 @@ impl Default for BorrowCx {
             current_params: HashMap::new(),
             loop_exits: Vec::new(),
             views: HashMap::new(),
+            borrowers_ever: HashMap::new(),
+            drops: Default::default(),
         }
     }
 }
@@ -192,10 +199,38 @@ impl BorrowCx {
                 .collect();
             records.extend(copies);
         }
+        for borrowers in self.borrowers_ever.values_mut() {
+            if borrowers.contains(from) {
+                borrowers.insert(to.to_string());
+            }
+        }
+    }
+
+    /// Every variable that has borrowed `base` in this function.
+    pub(crate) fn borrowers_of(&self, base: &str) -> Vec<String> {
+        self.borrowers_ever
+            .get(base)
+            .map(|s| s.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Start a function's list of borrowers, returning the enclosing function's.
+    pub(crate) fn take_borrowers(&mut self) -> HashMap<String, HashSet<String>> {
+        std::mem::take(&mut self.borrowers_ever)
+    }
+
+    pub(crate) fn restore_borrowers(&mut self, saved: HashMap<String, HashSet<String>>) {
+        self.borrowers_ever = saved;
     }
 
     /// Record a new borrow of `base`.
     pub(crate) fn record(&mut self, base: &str, record: BorrowRecord) {
+        if let Some(b) = &record.borrower_name {
+            self.borrowers_ever
+                .entry(base.to_string())
+                .or_default()
+                .insert(b.clone());
+        }
         self.active_borrows
             .entry(base.to_string().into())
             .or_default()
@@ -243,6 +278,33 @@ impl BorrowCx {
             list.retain(|r| prev.contains(r));
             if list.is_empty() {
                 self.active_borrows.remove(base);
+            }
+        }
+    }
+
+    /// The records added since `before`, a [`Self::snapshot`].
+    pub(crate) fn added_since(
+        &self,
+        before: &HashMap<Symbol, Vec<BorrowRecord>>,
+    ) -> Vec<(Symbol, BorrowRecord)> {
+        let mut added = Vec::new();
+        for (base, list) in &self.active_borrows {
+            let old = before.get(base).map(Vec::as_slice).unwrap_or(&[]);
+            for r in list.iter().filter(|r| !old.contains(r)) {
+                added.push((base.clone(), r.clone()));
+            }
+        }
+        added
+    }
+
+    /// Drop each of `records`, as [`Self::added_since`] returned them.
+    pub(crate) fn forget(&mut self, records: &[(Symbol, BorrowRecord)]) {
+        for (base, record) in records {
+            if let Some(list) = self.active_borrows.get_mut(base) {
+                list.retain(|r| r != record);
+                if list.is_empty() {
+                    self.active_borrows.remove(base);
+                }
             }
         }
     }

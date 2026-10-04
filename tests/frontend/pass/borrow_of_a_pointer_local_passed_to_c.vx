@@ -1,0 +1,29 @@
+//===- borrow_of_a_pointer_local_passed_to_c.vx - Vx Compiler ----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `&mut handle`, where `handle` is itself a pointer, is how a C library hands
+// back an opaque handle: `cublasCreate_v2(cublasHandle_t *)`. The borrow is the
+// address of the local's stack slot, passed as a plain pointer.
+//
+// The flat path used to give up on the whole function here and fall back to the
+// AST path, so the first check is that it did not. `makes_handle` is not a real
+// library function, so only the MLIR is checked.
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: emitted module via the flat path
+// CHECK: [[SLOT:%.*]] = llvm.alloca %{{.*}} x !llvm.ptr : (i32) -> !llvm.ptr
+// CHECK: call @makes_handle([[SLOT]]) : (!llvm.ptr) -> i32
+
+extern "C" {
+  fn makes_handle(out : *mut *mut i8) -> i32;
+}
+
+fn main() -> i32 {
+  let mut handle : *mut i8 = unsafe { 0 as *mut i8 };
+  let r = unsafe { makes_handle(&mut handle) };
+  return r;
+}

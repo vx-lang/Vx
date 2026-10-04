@@ -1,0 +1,158 @@
+//===- tensor_drop_points.vx - Vx Compiler -----------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: env VX_PRINT_DROPS=1 vxc %s --action print-ast 2>&1 >/dev/null | FileCheck %s
+// RUN: env VX_PRINT_DROPS=1 vxc %s --action print-ast 2>&1 >/dev/null | FileCheck %s --check-prefix=NONE
+//
+// Where each tensor a function owns is dropped. A tensor is dropped after the statement of
+// its block that last uses it or anything borrowing it; a use inside an `if` or a loop is a
+// use by the whole `if` or loop. Nothing is dropped yet: the compiler only prints the points.
+
+fn take(t : Tensor<f32, [4]>) -> f32 {
+  return t[0];
+}
+
+// Never used: dropped where it is made.
+fn unused() -> i32 {
+  let a = Tensor<f32, [4]>::new();
+  return 0;
+}
+
+// Dropped after its last use, not at the end of the function.
+fn after_last_use() -> f32 {
+  let a = Tensor<f32, [4]>::new();
+  let x = a[0];
+  let y = x + 1.0;
+  return y;
+}
+
+// Moved away: not dropped here, though statements follow the move.
+fn moved() -> f32 {
+  let a = Tensor<f32, [4]>::new();
+  let x = take(a);
+  let y = x + 1.0;
+  return y;
+}
+
+// Moved on one path only: dropped under a flag, after the `if`.
+fn maybe_moved(c : bool) -> f32 {
+  let a = Tensor<f32, [4]>::new();
+  let mut s = 0.0;
+  if c {
+    s = take(a);
+  }
+  return s;
+}
+
+// A row keeps its tensor alive until the row's last use.
+fn kept_by_a_row() -> f32 {
+  let q = Tensor<f32, [2, 4]>::new();
+  let r = q[1];
+  let x = 1.0;
+  let y = r[0] + x;
+  return y;
+}
+
+// An early return drops what is still alive; the path past it drops the rest later.
+fn early_return(c : bool) -> f32 {
+  let a = Tensor<f32, [4]>::new();
+  let b = Tensor<f32, [4]>::new();
+  if c {
+    return a[0];
+  }
+  let z = b[1];
+  return z;
+}
+
+// A tensor used inside a loop is dropped after the loop. One made in the loop body is
+// dropped in each pass, and before a `break`.
+fn in_a_loop(n : i32) -> f32 {
+  let a = Tensor<f32, [4]>::new();
+  let mut s = 0.0;
+  for i in 0..n {
+    let t = Tensor<f32, [4]>::new();
+    if i == 2 {
+      break;
+    }
+    s = s + t[0] + a[0];
+  }
+  return s;
+}
+
+// A parameter taken by value belongs to the function; one taken by reference does not.
+fn parameters(t : Tensor<f32, [4]>, u : &Tensor<f32, [4]>) -> f32 {
+  return u[0];
+}
+
+// Returning a tensor moves it. At the first `return`, `a` leaves and `b` is dropped. Past the
+// `if`, `a` is dropped under a flag, since the other path moved it, and then `b` leaves.
+fn returned_from_a_branch(c : bool) -> Tensor<f32, [4]> {
+  let a = Tensor<f32, [4]>::new();
+  let b = Tensor<f32, [4]>::new();
+  if c {
+    return a;
+  }
+  return b;
+}
+
+// A raw pointer was taken: the tensor waits for the end of its block, or the `return`
+// that leaves it, whatever its last use. The same for a pointer taken through a row.
+fn raw_pointer_taken() -> f32 {
+  let a = Tensor<f32, [4]>::new();
+  let p = a.as_ptr();
+  let x = 1.0;
+  return x;
+}
+
+fn raw_pointer_from_a_row() -> void {
+  let q = Tensor<f32, [2, 4]>::new();
+  let r = q[1];
+  let p = r.as_ptr();
+  let x = 1.0;
+}
+
+// A tensor made in an `if` arm is dropped inside the arm: on the other path it never existed.
+fn made_in_an_arm(c : bool) -> f32 {
+  let mut s = 0.0;
+  if c {
+    let a = Tensor<f32, [4]>::new();
+    s = a[0];
+    s = s + 1.0;
+  }
+  return s;
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK-DAG: drop in take: t, before the return on line 16
+// CHECK-DAG: drop in unused: a, where it is made
+// CHECK-DAG: drop in after_last_use: a, after the statement on line 28
+// CHECK-DAG: drop in maybe_moved: a if it was not moved, after the statement on line 45
+// CHECK-DAG: drop in kept_by_a_row: q, after the statement on line 56
+// CHECK-DAG: drop in early_return: b, before the return on line 65
+// CHECK-DAG: drop in early_return: a, before the return on line 65
+// CHECK-DAG: drop in early_return: b, after the statement on line 67
+// CHECK-DAG: drop in early_return: a, after the statement on line 64
+// CHECK-DAG: drop in in_a_loop: t, before the break on line 79
+// CHECK-DAG: drop in in_a_loop: t, after the statement on line 81
+// CHECK-DAG: drop in in_a_loop: a, after the statement on line 76
+// CHECK-DAG: drop in parameters: t, at the start of the function
+// CHECK-DAG: drop in returned_from_a_branch: b, before the return on line 97
+// CHECK-DAG: drop in returned_from_a_branch: a if it was not moved, after the statement on line 96
+
+// CHECK-DAG: drop in raw_pointer_taken: a, before the return on line 108
+// CHECK-DAG: drop in raw_pointer_from_a_row: q, at the end of its block
+// CHECK-DAG: drop in made_in_an_arm: a, after the statement on line 123
+
+// NONE-NOT: drop in moved:
+// NONE-NOT: drop in parameters: u
+// NONE-NOT: drop in raw_pointer_{{.*}}after the statement
+// NONE-NOT: drop in in_a_loop: a, before the break
+// NONE-NOT: drop in returned_from_a_branch: a{{.*}}before the return
+// NONE-NOT: drop in returned_from_a_branch: b, before the return on line 99

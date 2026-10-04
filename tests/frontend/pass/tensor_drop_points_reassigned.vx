@@ -1,0 +1,102 @@
+//===- tensor_drop_points_reassigned.vx - Vx Compiler ------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: env VX_PRINT_DROPS=1 vxc %s --action print-ast 2>&1 >/dev/null | FileCheck %s
+// RUN: env VX_PRINT_DROPS=1 vxc %s --action print-ast 2>&1 >/dev/null | FileCheck %s --check-prefix=NONE
+//
+// Where a tensor's old value is dropped when the variable is given a new one, and where a
+// tensor moved into an operator is dropped. The compiler only prints the points.
+
+fn take(t : Tensor<f32, [2, 2]>) -> f32 {
+  return t[0][0];
+}
+
+fn keep(t : Tensor<f32, [2, 2]>) -> Tensor<f32, [2, 2]> {
+  return t;
+}
+
+// The old value is dropped before the new one is stored.
+fn reassigned() -> f32 {
+  let mut t = Tensor<f32, [2, 2]>::new();
+  t[0][0] = 1.0;
+  t = Tensor<f32, [2, 2]>::new();
+  return t[0][0];
+}
+
+// Moved away first: there is no old value to drop.
+fn reassigned_after_a_move() -> f32 {
+  let mut t = Tensor<f32, [2, 2]>::new();
+  let x = take(t);
+  t = Tensor<f32, [2, 2]>::new();
+  return t[0][0] + x;
+}
+
+// Moved on one path: the old value is dropped under a flag.
+fn reassigned_after_a_move_on_one_path(c : bool) -> f32 {
+  let mut t = Tensor<f32, [2, 2]>::new();
+  if c {
+    let x = take(t);
+  }
+  t = Tensor<f32, [2, 2]>::new();
+  return t[0][0];
+}
+
+// The new value is made from the old one, which moves it.
+fn made_from_its_old_value() -> f32 {
+  let mut t = Tensor<f32, [2, 2]>::new();
+  t = keep(t);
+  return t[0][0];
+}
+
+// Each pass drops the value of the pass before.
+fn reassigned_in_a_loop(n : i32) -> f32 {
+  let mut t = Tensor<f32, [2, 2]>::new();
+  for i in 0..n {
+    t = Tensor<f32, [2, 2]>::new();
+  }
+  return t[0][0];
+}
+
+// An operator moves its operands and drops them after it. `c = a @ b` writes the product into
+// `c`'s own buffer, so `c` keeps it.
+fn product_written_in_place() -> f32 {
+  let a = Tensor<f32, [2, 2]>::new();
+  let b = Tensor<f32, [2, 2]>::new();
+  let mut c = Tensor<f32, [2, 2]>::new();
+  c = a @ b;
+  return c[0][0];
+}
+
+// `c = c @ b` cannot write into `c` while reading it, so the old `c` is moved into the
+// operator, which drops it.
+fn product_of_itself() -> f32 {
+  let b = Tensor<f32, [2, 2]>::new();
+  let mut c = Tensor<f32, [2, 2]>::new();
+  c = c @ b;
+  return c[0][0];
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK-DAG: drop in reassigned: the old value of t, before the assignment on line 26
+// CHECK-DAG: drop in reassigned: t, before the return on line 27
+// CHECK-DAG: drop in reassigned_after_a_move: t, before the return on line 35
+// CHECK-DAG: drop in reassigned_after_a_move_on_one_path: the old value of t if it was not moved, before the assignment on line 44
+// CHECK-DAG: drop in made_from_its_old_value: t, before the return on line 52
+// CHECK-DAG: drop in reassigned_in_a_loop: the old value of t, before the assignment on line 59
+// CHECK-DAG: drop in reassigned_in_a_loop: t, before the return on line 61
+// CHECK-DAG: drop in product_written_in_place: a, after the operator it is moved into on line 70
+// CHECK-DAG: drop in product_written_in_place: b, after the operator it is moved into on line 70
+// CHECK-DAG: drop in product_written_in_place: c, before the return on line 71
+// CHECK-DAG: drop in product_of_itself: c, after the operator it is moved into on line 79
+// CHECK-DAG: drop in product_of_itself: b, after the operator it is moved into on line 79
+
+// NONE-NOT: drop in reassigned_after_a_move: the old value
+// NONE-NOT: drop in made_from_its_old_value: the old value
+// NONE-NOT: the old value of c

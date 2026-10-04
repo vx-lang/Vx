@@ -3063,6 +3063,12 @@ struct FuseAndTileLoopsPass
 // a run-time extent is left where it is, because its size operand may not
 // dominate the entry block.
 //
+// The same holds for an `llvm.alloca` whose element count is a constant: the
+// flat code generator gives a struct its slot that way, in its function's entry
+// block, and inlining at -O1 and above then leaves the callee's slots wherever
+// the call was, inside the caller's loop. Such an alloca moves with a copy of
+// its constant count, when it sits in a block of the function's own body.
+//
 // This runs late, after device regions have been outlined into `gpu.module`, so
 // a kernel's own scratch is never lifted out into the host frame.
 struct NormalizeStackBuffersPass
@@ -3081,8 +3087,8 @@ struct NormalizeStackBuffersPass
 
   llvm::StringRef getDescription() const override {
     return "Gives every fixed-size memref.alloca malloc-compatible alignment "
-           "and moves it to "
-           "its function's entry block";
+           "and moves it, and every llvm.alloca of constant count, to its "
+           "function's entry block";
   }
 
   void runOnOperation() override {
@@ -3110,6 +3116,26 @@ struct NormalizeStackBuffersPass
 
     for (memref::AllocaOp alloca : toHoist)
       alloca->moveBefore(&entry, entry.begin());
+
+    llvm::SmallVector<LLVM::AllocaOp, 8> llvmToHoist;
+    func.walk([&](LLVM::AllocaOp alloca) {
+      if (alloca->getBlock() == &entry)
+        return;
+      // Only from a block of the function's own body: a slot inside a region
+      // op, such as a parallel loop, needs one copy per thread.
+      if (alloca->getParentRegion() != &func.getBody())
+        return;
+      Operation *count = alloca.getArraySize().getDefiningOp();
+      if (!count || !count->hasTrait<OpTrait::ConstantLike>())
+        return; // a run-time count: it may not reach the entry block
+      llvmToHoist.push_back(alloca);
+    });
+    for (LLVM::AllocaOp alloca : llvmToHoist) {
+      OpBuilder builder(&entry, entry.begin());
+      Operation *count = builder.clone(*alloca.getArraySize().getDefiningOp());
+      alloca->moveAfter(count);
+      alloca.getArraySizeMutable().assign(count->getResult(0));
+    }
   }
 };
 

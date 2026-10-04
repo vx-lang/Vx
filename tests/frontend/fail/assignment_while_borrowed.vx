@@ -54,5 +54,5 @@ fn main() -> i32 {
 
 // CHECK-DAG: Error[E4009] at 22:3: `x` is assigned while it is borrowed, and the borrow is used after the assignment
 // CHECK-DAG: Error[E4009] at 31:5: `p.a` is assigned while it is borrowed
-// CHECK-DAG: Error[E4009] at 38:4: `t` is assigned while it is borrowed
+// CHECK-DAG: Error[E4009] at 38:4: `t[0]` is assigned while it is borrowed
 // CHECK-DAG: Error[E4009] at 47:3: `r` is assigned while it is borrowed

@@ -198,6 +198,12 @@ impl<'a> LayoutComputer<'a> {
                 let (size, align) = scalar_size_align(et)?;
                 Some((size, align, FieldTy::Scalar(et.clone())))
             }
+            // A borrowed tensor is passed as the tensor's own descriptor, which shares its memory,
+            // so a `&Tensor` field holds the descriptor too. A closure that uses a tensor
+            // reference keeps it in such a field.
+            Type::Borrow { inner, .. } if matches!(**inner, Type::Tensor(..)) => {
+                self.field_info(inner)
+            }
             // Pointer-like fields, all a pointer-sized opaque word: raw pointers, borrows, and a
             // function/closure type (a function pointer, e.g. `Closure1`'s `func` field). (#242)
             Type::Pointer(..)

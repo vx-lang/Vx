@@ -233,13 +233,10 @@ impl<T> FromIterator<T> for Vec<T> {
   }
 }
 
-/// An iterator over references to a `Vec<T>`'s elements, holding a pointer to the vector it
-/// walks.
-///
-/// Growing or freeing that vector while this exists leaves the iterator pointing at the old
-/// buffer.
+/// An iterator over references to a `Vec<T>`'s elements. It borrows the vector it walks, so
+/// the vector cannot be changed while the iterator is used.
 struct VecIter<T> {
-  vec: *const Vec<T>,
+  vec: &Vec<T>,
   current: i32,
   // One past the last element not yet handed out from the back.
   back: i32,
@@ -248,9 +245,9 @@ struct VecIter<T> {
 /// An iterator that owns a `Vec<T>` and hands out its elements by value. Built by
 /// `into_iter`, which is what `for x in v` calls.
 ///
-/// It holds the vector itself rather than a pointer to it, as `VecIter` does: the vector was
-/// moved into `into_iter`, so a pointer to it would point at a variable of a function that has
-/// returned.
+/// It holds the vector itself rather than a reference to it, as `VecIter` does: the vector was
+/// moved into `into_iter`, so a reference to it would point at a variable of a function that
+/// has returned.
 struct VecIntoIter<T> {
   vec: Vec<T>,
   current: i32,
@@ -329,10 +326,10 @@ impl<T> ExactSizeIterator for VecIter<T> {
 
 /// An iterator over mutable references to a `Vec<T>`'s elements. Built by `iter_mut`.
 ///
-/// Growing or freeing that vector while this exists leaves the iterator pointing at the old
-/// buffer.
+/// It borrows the vector mutably, so the vector cannot be used another way while the iterator
+/// is used.
 struct VecIterMut<T> {
-  vec: *mut Vec<T>,
+  vec: &mut Vec<T>,
   current: i32,
   // One past the last element not yet handed out from the back.
   back: i32,

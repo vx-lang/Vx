@@ -1005,6 +1005,12 @@ pub(crate) fn lower_print_call<'c>(
         return Ok((result, gen.none_ty, block));
     }
 
+    // A string is a pointer to its bytes: the `print_str` helper, as `print!` uses.
+    if arg_ty.to_string() == "!llvm.ptr" {
+        let result = call_scalar_print(gen, block, "print_str", arg_val, "!llvm.ptr")?;
+        return Ok((result, gen.none_ty, block));
+    }
+
     let el_ty_str = extract_mlir_element_type(&arg_ty.to_string())?;
 
     let print_fn_name = match el_ty_str {

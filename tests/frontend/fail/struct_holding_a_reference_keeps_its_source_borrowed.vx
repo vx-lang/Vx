@@ -1,0 +1,56 @@
+//===- struct_holding_a_reference_keeps_its_source_borrowed.vx - Vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A call that returns a struct holding a reference keeps the argument it came from borrowed
+// while the struct is used, as a call returning the reference itself does.
+
+struct View {
+  r : &i32,
+}
+
+struct W {
+  x : i32,
+}
+
+impl W {
+  fn view(self : &W) -> View {
+    return View {
+      r : &self.x
+    };
+  }
+}
+
+fn view_of(p : &i32) -> View {
+  return View {
+    r : p
+  };
+}
+
+fn from_a_function() -> i32 {
+  let mut x = 1i32;
+  let v = view_of(&x);
+  // CHECK: Error[E4009]{{.*}}`x` is assigned while it is borrowed
+  x = 5i32;
+  return *v.r;
+}
+
+fn from_a_method() -> i32 {
+  let mut w = W {
+    x : 1i32
+  };
+  let v = w.view();
+  // CHECK: Error[E4009]{{.*}}`w.x` is assigned while it is borrowed
+  w.x = 5i32;
+  return *v.r;
+}
+
+fn main() -> i32 {
+  return from_a_function() + from_a_method();
+}
+// CHECK: 2 error(s) emitted
