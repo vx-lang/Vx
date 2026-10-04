@@ -6,9 +6,9 @@
 //
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK-DAG: math.log2 %{{.*}} : f32
 // CHECK-DAG: math.absf %{{.*}} : f32
 // CHECK-LABEL: func.func @f32$log2(%arg0: f32) -> f32
+// CHECK-NEXT: call @libm_log2f(%arg0) : (f32) -> f32
 // CHECK-LABEL: func.func @f32$abs(%arg0: f32) -> f32
 // CHECK-LABEL: func.func @main() -> i32
 // CHECK: call @f32$log2(%{{.*}}) : (f32) -> f32
