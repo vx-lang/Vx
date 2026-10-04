@@ -196,6 +196,7 @@ fn write_element_type(w: &mut Writer, e: &ElementType) {
         F8E4M3 => 18,
         F8E5M2 => 19,
         F4E2M1 => 20,
+        USize => 21,
     };
     w.u8(tag);
     if let Generic(s) = e {
@@ -227,6 +228,7 @@ fn read_element_type(r: &mut Reader) -> Result<ElementType, String> {
         18 => F8E4M3,
         19 => F8E5M2,
         20 => F4E2M1,
+        21 => USize,
         t => return Err(format!("vxlib: bad ElementType tag {t}")),
     })
 }
@@ -1156,6 +1158,17 @@ pub fn deserialize_registry_interface(bytes: &[u8]) -> Result<ImmutableGlobalReg
 mod tests {
     use super::*;
     use crate::registry::ModuleInterface;
+
+    /// `usize` has a tag of its own in a `.vxlib`, and reads back as `usize`, not `u64`.
+    #[test]
+    fn usize_round_trips_through_its_tag() {
+        let mut w = Writer::new();
+        write_element_type(&mut w, &ElementType::USize);
+        assert_eq!(
+            read_element_type(&mut Reader::new(&w.buf)),
+            Ok(ElementType::USize)
+        );
+    }
 
     fn parse_and_resolve(path: &str, src: &str) -> crate::syntax::VxModule {
         let mut lexer = crate::lexer::Lexer::new(src);

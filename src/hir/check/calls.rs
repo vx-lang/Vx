@@ -225,7 +225,7 @@ impl<'a> TypeChecker<'a> {
     /// check to reject — the programmer writes an explicit `as`. Returns the argument's type after
     /// refinement.
     pub(crate) fn refine_literal_arg(
-        &self,
+        &mut self,
         arg: &mut Expr,
         param_ty: &Type,
         arg_ty: &Type,
@@ -233,6 +233,8 @@ impl<'a> TypeChecker<'a> {
         if let Some(n) = crate::hir::expr::numeric_literal_mut(arg) {
             if let Some(elem) = expected_numeric_elem(param_ty, &n.value) {
                 n.ty = Some(elem.clone());
+                let n = n.clone();
+                self.check_usize_literal(&n, &elem);
                 return Type::Scalar(elem);
             }
         }

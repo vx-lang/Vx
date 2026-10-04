@@ -88,7 +88,7 @@ fn int_bits(e: &ElementType) -> Option<u32> {
         I8 | U8 => 8,
         I16 | U16 => 16,
         I32 | U32 => 32,
-        I64 | U64 => 64,
+        I64 | U64 | USize => 64,
         I128 | U128 => 128,
         _ => return None,
     })
@@ -149,7 +149,7 @@ fn cast_op(src: &ElementType, tgt: &ElementType) -> Option<&'static str> {
 fn elem_of_gid(gid: TypeId) -> Option<ElementType> {
     use ElementType::*;
     [
-        F16, F32, F64, BF16, I4, U4, I8, U8, I16, U16, I32, U32, I64, U64, I128, U128, Bool,
+        F16, F32, F64, BF16, I4, U4, I8, U8, I16, U16, I32, U32, I64, U64, I128, U128, USize, Bool,
     ]
     .into_iter()
     .find(|e| scalar_gid(e) == gid)

@@ -1,0 +1,50 @@
+//===- usize_basics.vx - Vx Compiler ---------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `usize` as a parameter, a return value, a struct field and a `Vec` element, with an untyped
+// literal taking it from its context and a `3usize` literal naming it. Its largest value is
+// the largest `i64`.
+import std::vec;
+
+struct Buf {
+  len : usize,
+}
+
+fn twice(n : usize) -> usize {
+  return n + n;
+}
+
+fn main() -> i32 {
+  let a : usize = 7;
+  let b = 3usize;
+  let largest : usize = 9223372036854775807;
+  let c = twice(a) - b;
+  let d = c * 2 / 3 % 5;
+  let e = largest >> 60;
+  let buf = Buf {
+    len : c
+  };
+  let mut v = Vec<usize>::new();
+  v.push(c);
+  print(c);
+  print!(" ");
+  print(d);
+  print!(" ");
+  print(e);
+  print!(" ");
+  if b < a {
+    print!("less ");
+  }
+  print(buf.len);
+  print!(" ");
+  print(v.get(0i32));
+  print!(" ");
+  print(largest);
+  return 0;
+}
+
+// EXPECT: 11 2 7 less 11 11 9223372036854775807

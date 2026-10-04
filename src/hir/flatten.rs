@@ -5492,6 +5492,7 @@ fn parse_scalar_type_arg(s: &str) -> Type {
         "u32" => U32,
         "i64" => I64,
         "u64" => U64,
+        "usize" => USize,
         "f16" => F16,
         "bf16" => BF16,
         "f32" => F32,
@@ -5643,7 +5644,7 @@ fn sizeof_bytes(ty: &Type) -> Option<u64> {
     use ElementType::*;
     Some(match ty {
         Type::Scalar(F32 | I32 | U32) => 4,
-        Type::Scalar(F64 | I64 | U64) => 8,
+        Type::Scalar(F64 | I64 | U64 | USize) => 8,
         Type::Scalar(I8 | U8 | Bool) => 1,
         Type::Scalar(I16 | U16 | BF16 | F16) => 2,
         Type::Pointer(..) | Type::Borrow { .. } | Type::Ref(..) => 8,
