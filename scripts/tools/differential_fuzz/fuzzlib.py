@@ -83,10 +83,11 @@ ADDRESS = re.compile(r"0x[0-9a-fA-F]+")
 
 
 def clean(output, ignore=()):
-    """What a program printed, without the compiler's own progress and warning lines, with
-    addresses and anything matching an `ignore` pattern replaced by `?`."""
+    """What a program printed, without the compiler's progress lines or its warnings (with
+    their `help:` lines), and with addresses and anything matching an `ignore` pattern
+    replaced by `?`."""
     keep = [line for line in output.splitlines()
-            if not line.startswith("[") and not line.startswith("Warning")]
+            if not line.startswith(("[", "Warning", "  help:"))]
     text = ADDRESS.sub("0x?", "\n".join(keep).strip())
     for pattern in ignore:
         text = re.sub(pattern, "?", text)

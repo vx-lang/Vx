@@ -7,7 +7,7 @@ and `--legacy-codegen` (`ast`). A generated program can also have a Rust twin, b
 or in the generator that wrote the program.
 
 This found #990 (a `let` in a block taking over an outer variable), #1001, #1012, #1014 (a
-double free), and #1017.
+double free), #1017, and #1096 (a row chosen by an `if`, inside another `if`).
 
 Run it with the LLVM tools and `rustc` on PATH: `source config.local` first.
 
@@ -17,6 +17,7 @@ Run it with the LLVM tools and `rustc` on PATH: `source config.local` first.
 fuzz.py list                                # the generators
 fuzz.py run shadowing --seeds 1-1000        # 1000 programs, every configuration and Rust
 fuzz.py run tensors --seeds 1-300 --keep /tmp/failures
+fuzz.py run views --seeds 1-1000            # rows and reshapes, used as the borrow rules allow
 fuzz.py show tensors 1133                   # the Vx program for a seed (--rust: its twin)
 ```
 
