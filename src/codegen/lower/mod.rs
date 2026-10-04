@@ -1098,6 +1098,8 @@ pub(crate) fn pick_scalar_print<'c>(
         ("f16" | "bf16", _) => ("print_f32", Some(("arith.extf", "f32"))),
         ("f32", _) => ("print_f32", None),
         ("f64", _) => ("print_f64", None),
+        // A string: the address of its bytes, as `print!` passes it.
+        ("!llvm.ptr", _) => ("print_str", None),
         _ => return Ok(None),
     };
     let Some((op_name, wide_ty_str)) = widen else {
