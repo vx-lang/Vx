@@ -18,6 +18,9 @@ use std::process::Command;
 /// Programs the flat path declines today, relative to `tests/backend/pass/`.
 /// A worklist, not an exemption list: shrinking it is Vx#383.
 const KNOWN_DECLINES: &[&str] = &[
+    // `c as ||->i32`: the flat path declines a cast to the built-in closure type ("a cast to a
+    // non-scalar"); the AST path compiles it.
+    "backend/pass/returning_a_closure_that_uses_nothing.vx",
     // `cublasCreate_v2(&mut handle)`: a borrow of a pointer local passed to C. The flat emitter
     // has no type for that argument and declines the function; the AST path compiles it.
     "frontend/pass/cublas_sgemm_through_an_extern_block.vx",
