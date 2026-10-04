@@ -36,7 +36,9 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Transforms/Mem2Reg.h"
 #include "mlir/Transforms/RegionUtils.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/StringMap.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/Support/FileSystem.h"
 
 #include <atomic>
@@ -1350,6 +1352,58 @@ static bool isDeviceLowerableDialect(StringRef ns) {
          ns == "memref" || ns == "scf" || ns == "vector";
 }
 
+/// What a device kernel needs copied into its `gpu.module` besides its own
+/// body: the functions it calls, transitively, and the constant tables
+/// (`memref.global constant`) they read. A `gpu.module` is its own symbol
+/// table, so a kernel that calls a host function verifies only once the
+/// callee is there too.
+struct DeviceCallees {
+  llvm::SetVector<func::FuncOp> funcs;
+  llvm::SetVector<memref::GlobalOp> globals;
+};
+
+/// Add what `op`, an operation in a kernel or in one of its callees, needs to
+/// `out`. False when it cannot run on the device: a callee without a body (an
+/// `extern` or the runtime), recursion, a heap allocation inside a callee
+/// (nothing frees it on the device), a global that is not a constant table, or
+/// an operation no device pipeline lowers.
+static bool collectDeviceCallees(Operation *op, ModuleOp module, bool inCallee,
+                                 DeviceCallees &out,
+                                 llvm::SmallPtrSetImpl<Operation *> &onStack) {
+  if (auto call = dyn_cast<func::CallOp>(op)) {
+    auto callee = module.lookupSymbol<func::FuncOp>(call.getCallee());
+    if (!callee || callee.isExternal() || onStack.contains(callee))
+      return false;
+    if (out.funcs.contains(callee))
+      return true;
+    onStack.insert(callee);
+    WalkResult r = callee.getBody().walk([&](Operation *inner) {
+      return collectDeviceCallees(inner, module, /*inCallee=*/true, out,
+                                  onStack)
+                 ? WalkResult::advance()
+                 : WalkResult::interrupt();
+    });
+    onStack.erase(callee);
+    if (r.wasInterrupted())
+      return false;
+    out.funcs.insert(callee);
+    return true;
+  }
+  if (auto get = dyn_cast<memref::GetGlobalOp>(op)) {
+    auto global = module.lookupSymbol<memref::GlobalOp>(get.getName());
+    if (!global || !global.getConstant() || !global.getInitialValue())
+      return false;
+    out.globals.insert(global);
+    return true;
+  }
+  if (inCallee && isa<func::ReturnOp>(op))
+    return true;
+  if (inCallee && isa<memref::AllocOp>(op))
+    return false;
+  Dialect *dialect = op->getDialect();
+  return dialect && isDeviceLowerableDialect(dialect->getNamespace());
+}
+
 // Turn each cell that holds a buffer into plain values. The AST code generator
 // keeps a tensor local in a cell (`memref<memref<..>>`), which the buffer
 // deallocation analysis cannot follow, and which stops being promotable once
@@ -1418,6 +1472,7 @@ struct ConvertVxToStandardPass
   /// growing a GPU twin.
   void materializeGpuKernels(ModuleOp module) {
     SmallVector<vx::KernelOp> kernels;
+    llvm::DenseMap<Operation *, DeviceCallees> callees;
     module.walk([&](vx::KernelOp k) {
       const int32_t topo = static_cast<int32_t>(k.getTopology());
       // Eligibility: the DECLARED arch when the kernel carries one, the
@@ -1452,11 +1507,11 @@ struct ConvertVxToStandardPass
       // reasons the region is not ready rather than reasons this transcription
       // is hard.
       //
-      // `func`, because a `gpu.module` is its own symbol table: a body that
-      // calls a host helper -- a kernel calling something like `exp_poly` --
-      // clones into a kernel whose callee is not visible from it, and the
-      // verifier rejects the module before anything downstream sees it. Making
-      // it a kernel means bringing the callee along or inlining it.
+      // A call the device cannot make. A `gpu.module` is its own symbol table,
+      // so a kernel's callees, and the constant tables they read, are copied
+      // into it (`collectDeviceCallees`); a callee that cannot come along -- an
+      // `extern`, the runtime, recursion, a heap allocation -- keeps the
+      // region on the host.
       //
       // `linalg`, because a `linalg.matmul` has not been lowered for anything
       // yet. It survives to here on purpose: it is the classified-matmul route
@@ -1494,6 +1549,15 @@ struct ConvertVxToStandardPass
             return WalkResult::interrupt();
           }
         }
+        // A call, or a constant table: brought along when it can be.
+        if (isa<func::CallOp, memref::GetGlobalOp>(op)) {
+          llvm::SmallPtrSet<Operation *, 8> onStack;
+          if (collectDeviceCallees(op, module, /*inCallee=*/false, callees[k],
+                                   onStack))
+            return WalkResult::advance();
+          deviceReady = false;
+          return WalkResult::interrupt();
+        }
         Dialect *dialect = op->getDialect();
         if (dialect && isDeviceLowerableDialect(dialect->getNamespace()))
           return WalkResult::advance();
@@ -1510,6 +1574,31 @@ struct ConvertVxToStandardPass
     builder.setInsertionPointToEnd(module.getBody());
     auto gpuModule =
         builder.create<gpu::GPUModuleOp>(module.getLoc(), "vx_kernels");
+
+    // The kernels' callees and constant tables, copied once each. The host
+    // keeps its own: only the device clone needs these.
+    {
+      llvm::StringSet<> copied;
+      OpBuilder atStart(gpuModule.getBody(), gpuModule.getBody()->begin());
+      OpBuilder atEnd(gpuModule.getBody(), gpuModule.getBody()->end());
+      for (vx::KernelOp kernel : kernels) {
+        DeviceCallees &c = callees[kernel];
+        for (memref::GlobalOp g : c.globals)
+          if (copied.insert(g.getSymName()).second)
+            atStart.clone(*g.getOperation());
+        for (func::FuncOp f : c.funcs)
+          if (copied.insert(f.getSymName()).second) {
+            // Without the host's debug locations. The legacy code
+            // generator fuses a `distinct` DISubprogram into each function's
+            // location, and a C wrapper built for the copy would take the
+            // same one, which LLVM's verifier rejects.
+            Operation *copy = atEnd.clone(*f.getOperation());
+            copy->removeAttr("llvm.emit_c_interface");
+            Location unknown = UnknownLoc::get(copy->getContext());
+            copy->walk([&](Operation *op) { op->setLoc(unknown); });
+          }
+      }
+    }
 
     for (vx::KernelOp kernel : kernels) {
       Region &body = kernel.getBody();
