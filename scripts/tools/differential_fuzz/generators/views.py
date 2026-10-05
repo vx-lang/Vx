@@ -6,14 +6,13 @@ reference. It writes and reads through each view, passes rows to functions by `&
 and clones rows, inside nested `if`s and `for` loops. At the end it prints `s`, every element,
 and the total of `q` passed by value.
 
+It also copies rows into rows (`p[i] = q[k]`) and reads a row through a closure.
+
 Each view is used only in the statements right after it is made. While a `mut` view is used,
 its tensor is not touched in any other way; while a shared view is used, its tensor is only
 read. So every program keeps to the borrow rules of both Vx and Rust: a program Vx refuses is
 a borrow checker bug, and a different output is a code generation bug. The Rust twin uses
 `[[i32; 4]; 3]` arrays, `&q[i]`, `&mut q[i]` and `q.as_flattened()`.
-
-Two things the code generators get wrong are left out, to be added back once fixed: copying a
-row into a row (`p[i] = q[k]`) on the legacy code generator, and a closure that uses a row.
 
 Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 See LICENSE for license information.
@@ -98,6 +97,8 @@ class Gen:
                 out.append(("byref", t, row))
             elif k < 0.7:
                 out.append(("bymut", t, row, self.val(loops)))
+            elif k < 0.74:
+                out.append(("rowcopy", t, row, self.rng.choice(TENSORS), self.index(loops, ROWS)))
             elif k < 0.77:
                 v = self.fresh("k")
                 uses = self.view_uses(v, "", loops, True)
@@ -105,6 +106,9 @@ class Gen:
                 uses.insert(self.rng.randint(0, len(uses)),
                             ("write", t, row, self.index(loops, COLS), self.val(loops)))
                 out.append(("clone", v, t, row, uses))
+            elif k < 0.82:
+                v = self.fresh("h")
+                out.append(("closure", v, self.fresh("g"), t, row, self.index(loops, COLS)))
             elif k < 0.87 and depth < 3:
                 out.append(("if", self.val(loops), self.body(loops, depth + 1),
                             self.body(loops, depth + 1) if self.rng.random() < 0.5 else None))
@@ -168,6 +172,14 @@ def render(stmts, lang, ind):
             L.append(f"{pad}let {rq} = &{t};")
             L.append(f"{pad}let {v} = {'' if vx else '&'}{rq}[{idx(i)}];")
             L += render(uses, lang, ind)
+        elif kind == "rowcopy":
+            _, dst, i, src, k = s
+            L.append(f"{pad}{dst}[{idx(i)}] = {src}[{idx(k)}];")
+        elif kind == "closure":
+            _, v, f, t, i, j = s
+            L.append(f"{pad}let {v} = {'' if vx else '&'}{t}[{idx(i)}];")
+            L.append(f"{pad}let {f} = || {v}[{idx(j)}];")
+            L.append(f"{pad}s = s + {f}();")
         elif kind == "byref":
             L.append(f"{pad}s = s + rsum(&{s[1]}[{idx(s[2])}]);")
         elif kind == "bymut":
