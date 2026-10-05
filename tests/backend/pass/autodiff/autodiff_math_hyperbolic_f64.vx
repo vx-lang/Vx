@@ -1,0 +1,38 @@
+//===- autodiff_math_hyperbolic_f64.vx - Vx Compiler --------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The derivatives of f64 `sinh`, `cosh` and `tanh` at x = 1: cosh 1, sinh 1 and 1 / cosh^2 1,
+// printed times 10^6. Enzyme cannot differentiate the core::libm functions themselves, which
+// read the float's bits, so each is marked to be differentiated as its C function.
+//
+// CHECK-DAG: llvm.func @libm_sinh({{.*}}passthrough = {{\[\[}}"enzyme_math", "sinh"{{\]\]}}
+// CHECK-DAG: llvm.func @libm_cosh({{.*}}passthrough = {{\[\[}}"enzyme_math", "cosh"{{\]\]}}
+// CHECK-DAG: llvm.func @libm_tanh({{.*}}passthrough = {{\[\[}}"enzyme_math", "tanh"{{\]\]}}
+// EXPECT: 1543080 1175201 419974
+import core::num;
+
+fn sinh_of(x : f64) -> f64 {
+  return x.sinh();
+}
+
+fn cosh_of(x : f64) -> f64 {
+  return x.cosh();
+}
+
+fn tanh_of(x : f64) -> f64 {
+  return x.tanh();
+}
+
+fn main() -> i32 {
+  let x : f64 = 1.0;
+  print((grad(sinh_of, x) * 1000000.0) as i64);
+  print!(" ");
+  print((grad(cosh_of, x) * 1000000.0) as i64);
+  print!(" ");
+  print((grad(tanh_of, x) * 1000000.0) as i64);
+  return 0;
+}
