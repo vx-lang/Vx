@@ -6,9 +6,9 @@
 //
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK-DAG: math.acos %{{.*}} : f64
 // CHECK-DAG: math.absf %{{.*}} : f64
 // CHECK-LABEL: func.func @f64$acos(%arg0: f64) -> f64
+// CHECK-NEXT: call @libm_acos(%arg0) : (f64) -> f64
 // CHECK-LABEL: func.func @f64$abs(%arg0: f64) -> f64
 // CHECK-LABEL: func.func @main() -> i32
 // CHECK: call @f64$acos(%{{.*}}) : (f64) -> f64

@@ -6,9 +6,9 @@
 //
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK-DAG: math.asin %{{.*}} : f64
 // CHECK-DAG: math.absf %{{.*}} : f64
 // CHECK-LABEL: func.func @f64$asin(%arg0: f64) -> f64
+// CHECK-NEXT: call @libm_asin(%arg0) : (f64) -> f64
 // CHECK-LABEL: func.func @f64$abs(%arg0: f64) -> f64
 // CHECK-LABEL: func.func @main() -> i32
 // CHECK: call @f64$asin(%{{.*}}) : (f64) -> f64
