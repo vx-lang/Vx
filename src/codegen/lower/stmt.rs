@@ -18,6 +18,7 @@ impl<'c> LowerToMelior<'c> for ReturnStmt {
         // A bare `return;` -- only a `void` function may write one, which the checker enforces.
         // Nothing to compute and nothing to convert, so emit the terminator and stop.
         let Some(expr) = expr else {
+            gen.run_value_drops(block)?;
             block.append_operation(OperationBuilder::new("func.return", gen.loc()).build()?);
             return Ok(None);
         };
@@ -99,11 +100,25 @@ impl<'c> LowerToMelior<'c> for ReturnStmt {
                     .add_operands(&[val, slot])
                     .build()?;
                 block.append_operation(copy_op);
+                // The copy moved the result into the caller's buffer. What it was copied from
+                // is freed when this function owned it, and left alone when it is a view.
+                if crate::hir::check::drops::drops_enabled() {
+                    let drop = OperationBuilder::new("vx.drop", gen.loc())
+                        .add_operands(&[val])
+                        .add_attributes(&[(
+                            Identifier::new(gen.context, "owned_only"),
+                            melior::ir::attribute::Attribute::unit(gen.context),
+                        )])
+                        .build()?;
+                    block.append_operation(drop);
+                }
             }
+            gen.run_value_drops(block)?;
             block.append_operation(OperationBuilder::new(op_name, gen.loc()).build()?);
             gen.has_returned = true;
             return Ok(None);
         }
+        gen.run_value_drops(block)?;
         let ret_op = OperationBuilder::new(op_name, gen.loc())
             .add_operands(&[val])
             .build()?;

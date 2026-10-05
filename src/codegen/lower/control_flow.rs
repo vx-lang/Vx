@@ -53,6 +53,7 @@ impl<'c> LowerToMelior<'c> for IfExpr {
                         {
                             let (val, ty, tail_block) = gen.generate_expr(expr, cur)?;
                             cur = tail_block;
+                            gen.run_queued_drops(cur)?;
                             if !has_semi {
                                 last_val = Some((val, ty));
                             }
@@ -252,6 +253,7 @@ fn lower_branch_statements<'c>(
             {
                 let (v, t, next) = gen.generate_expr(expr, b)?;
                 b = next;
+                gen.run_queued_drops(b)?;
                 val = Some((v, t));
                 continue;
             }
