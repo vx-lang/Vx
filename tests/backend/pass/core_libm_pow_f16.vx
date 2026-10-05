@@ -15,9 +15,11 @@
 // - a negative x to the odd power 3, both underflowing to -0 and overflowing to -infinity, and
 //   a positive one overflowing;
 // - 1 to a signaling NaN and a signaling NaN to 0, both NaN, and 1 to a quiet NaN, which is 1;
-// - a power of 2 that f32 `exp2f` followed by a second rounding to f16 gets wrong.
+// - a power of 2 that f32 `exp2f` followed by a second rounding to f16 gets wrong;
+// - (-1.5)^25, a negative x to an odd power large enough to skip the exact loop for small
+//   whole powers, so it gets its sign at the end.
 //
-// EXPECT: 122 5190 20554 27288 32768 64512 31744 32256 32256 15360 15361 2705558919424460681
+// EXPECT: 122 5190 20554 27288 32768 64512 31744 32256 32256 15360 15361 63018 2705558919424460681
 import core::num;
 
 fn bits(r : f16) -> u64 {
@@ -45,6 +47,7 @@ fn main() -> i32 {
   let _r8 = check(31745u16, 0u16);
   let _r9 = check(15360u16, 32256u16);
   let _r10 = check(16384u16, 4549u16);
+  let _r11 = check(48640u16, 20032u16);
   let mut h : u64 = 0u64;
   for i in 0..256 {
     let x = libm_f16_from_bits((i * 257) as u16);

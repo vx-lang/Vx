@@ -6,10 +6,10 @@
 //
 //===----------------------------------------------------------------------===//
 // f16 `hypot` on every b against 256 values of a (every 257th bit pattern): a hash of the results
-// of `a.hypot(b)`, given by their bits (every NaN counted as 32256). The expected hash is LLVM libc's
-// `hypotf16`. The port also matched it on all 2^32 pairs.
+// of `a.hypot(b)`, given by their bits, so a NaN's payload counts. The expected hash is LLVM
+// libc's `hypotf16`. The port also matched it on all 2^32 pairs.
 //
-// EXPECT: 15944522716796342976
+// EXPECT: 8613388353700143296
 import core::num;
 
 fn main() -> i32 {
@@ -18,10 +18,7 @@ fn main() -> i32 {
     let a = libm_f16_from_bits((i * 257) as u16);
     for xi in 0..65536 {
       let r = a.hypot(libm_f16_from_bits(xi as u16));
-      let mut rb = libm_f16_to_bits(r) as u64;
-      if r != r {
-        rb = 32256u64;
-      }
+      let rb = libm_f16_to_bits(r) as u64;
       h = (h ^ rb).wrapping_mul(1099511628211u64);
     }
   }

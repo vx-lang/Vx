@@ -6,15 +6,15 @@
 //
 //===----------------------------------------------------------------------===//
 // bf16 `hypot` on every b against 256 values of a (every 257th bit pattern): a hash of the results
-// of `a.hypot(b)`, given by their bits (every NaN counted as 32704). The expected hash is LLVM libc's
-// `hypotbf16`. The port also matched it on all 2^32 pairs.
+// of `a.hypot(b)`, given by their bits, so a NaN's payload counts. The expected hash is LLVM
+// libc's `hypotbf16`. The port also matched it on all 2^32 pairs.
 //
 // It runs at -O2: at the default level, LLVM's x86 back end flushes a subnormal bf16 to zero
 // when it is passed between functions on a CPU with AVX512-BF16.
 //
 // RUN: vxc %s -O2 2>&1 | FileCheck %s
 // RUN: vxc %s -O2 --legacy-codegen 2>&1 | FileCheck %s
-// CHECK: 17922887966065040200
+// CHECK: 637370007656932744
 import core::num;
 
 fn main() -> i32 {
@@ -23,10 +23,7 @@ fn main() -> i32 {
     let a = libm_bf16_from_bits((i * 257) as u16);
     for xi in 0..65536 {
       let r = a.hypot(libm_bf16_from_bits(xi as u16));
-      let mut rb = libm_bf16_to_bits(r) as u64;
-      if r != r {
-        rb = 32704u64;
-      }
+      let rb = libm_bf16_to_bits(r) as u64;
       h = (h ^ rb).wrapping_mul(1099511628211u64);
     }
   }

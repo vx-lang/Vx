@@ -2759,8 +2759,10 @@ fn libm_hypotf(x : f32, y : f32) -> f32 {
 /// The result of `hypot` on infinities and NaNs, as the bits of a 16-bit float whose exponent
 /// mask is `exp_mask` and quiet bit `quiet`, or 65536 (no 16-bit value) when neither input is
 /// one: a signaling NaN in either gives the quiet NaN, then an infinity in either gives
-/// infinity, then the NaN. The order of `hypotf16` and `hypotbf16`.
-fn libm_hypot16_special(x_bits : u16, y_bits : u16, exp_mask : u16, quiet : u16) -> u32 {
+/// infinity, then the NaN input itself. The order of `hypotf16` and `hypotbf16`. They differ in
+/// which NaN they answer: `hypotf16` the larger in size, without its sign, and `hypotbf16`
+/// (`keep_sign`) `x` if it is a NaN, else `y`, with its sign.
+fn libm_hypot16_special(x_bits : u16, y_bits : u16, exp_mask : u16, quiet : u16, keep_sign : bool) -> u32 {
   let x_a = x_bits & 32767u16;
   let y_a = y_bits & 32767u16;
   if x_a < exp_mask && y_a < exp_mask {
@@ -2774,12 +2776,21 @@ fn libm_hypot16_special(x_bits : u16, y_bits : u16, exp_mask : u16, quiet : u16)
   if x_a == exp_mask || y_a == exp_mask {
     return exp_mask as u32;
   }
-  return (exp_mask | quiet) as u32;
+  if keep_sign {
+    if x_a > exp_mask {
+      return x_bits as u32;
+    }
+    return y_bits as u32;
+  }
+  if x_a >= y_a {
+    return x_a as u32;
+  }
+  return y_a as u32;
 }
 
 /// `sqrt(x^2 + y^2)` for f16: the square root of the sum in double, rounded once to f16.
 fn libm_hypotf16(x : f16, y : f16) -> f16 {
-  let special = libm_hypot16_special(libm_f16_to_bits(x), libm_f16_to_bits(y), 31744u16, 512u16);
+  let special = libm_hypot16_special(libm_f16_to_bits(x), libm_f16_to_bits(y), 31744u16, 512u16, false);
   if special != 65536u32 {
     return libm_f16_from_bits(special as u16);
   }
@@ -2790,9 +2801,9 @@ fn libm_hypotf16(x : f16, y : f16) -> f16 {
 
 /// The bits of `hypot` of two bf16s, given by their bits: the square root of the sum in
 /// double, rounded to f32 with round-to-odd and then to bf16. In bits so that the bf16 result
-/// is made once, at the end (see `libm_f32_from_bf16`).
+/// is made once, at the end (see `libm_bf16_bits_from_f32`).
 fn libm_hypot_bf16_bits(x_bits : u16, y_bits : u16) -> u16 {
-  let special = libm_hypot16_special(x_bits, y_bits, 32640u16, 64u16);
+  let special = libm_hypot16_special(x_bits, y_bits, 32640u16, 64u16, true);
   if special != 65536u32 {
     return special as u16;
   }

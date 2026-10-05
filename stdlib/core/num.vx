@@ -1535,8 +1535,9 @@ macro_rules stamp_float_pow {
 
 stamp_float_pow!(f64);
 
-/// Stamps `asin`, `acos`, `atan`, `atan2` and `hypot` through the platform's `math` operations, for `f64`, which has no `core::libm`
-/// version yet. The other widths use `core::libm`'s.
+/// Stamps `asin`, `acos`, `atan` and `atan2` through the platform's `math` operations, and `hypot`
+/// as a formula, for `f64`, which has no `core::libm` version of them yet. The other widths use
+/// `core::libm`'s.
 macro_rules stamp_float_inverse_trig {
   ($t : ident , $one : expr , $zero : expr) => {
     impl $t {
