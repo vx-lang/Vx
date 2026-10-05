@@ -68,7 +68,7 @@ impl<T> Option<T> {
   fn is_some(self : &Option<T>) -> Bool {
     let mut ret = false;
     match *self {
-      Option<T>::Some(v) => {
+      Option<T>::Some(_) => {
         ret = true;
       }
       Option<T>::None() => {
@@ -82,7 +82,7 @@ impl<T> Option<T> {
   fn is_none(self : &Option<T>) -> Bool {
     let mut ret = true;
     match *self {
-      Option<T>::Some(v) => {
+      Option<T>::Some(_) => {
         ret = false;
       }
       Option<T>::None() => {

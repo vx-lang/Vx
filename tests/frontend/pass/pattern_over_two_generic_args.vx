@@ -21,19 +21,25 @@
 // A frontend test, not a backend one, for a second reason: the AST path cannot lower a
 // two-parameter generic impl at all, and that is the path the run-time harness uses. What
 // is being fixed is the parser, so parsing and type-checking is the whole assertion.
+import core::marker;
+
 enum Either<A, B> {
   Left(A),
   Right(B),
 }
 
+// `match *self` reads the value out from behind the reference, which only a copyable value
+// allows.
+impl<A : Copy, B : Copy> Copy for Either<A, B> {}
+
 impl<A, B> Either<A, B> {
   fn is_left(self : &Either<A, B>) -> bool {
     let mut r = false;
     match *self {
-      Either<A, B>::Left(v) => {
+      Either<A, B>::Left(_) => {
         r = true;
       }
-      Either<A, B>::Right(v) => {
+      Either<A, B>::Right(_) => {
         r = false;
       }
     }

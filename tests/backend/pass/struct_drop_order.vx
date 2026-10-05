@@ -15,9 +15,11 @@
 // - `moved_on_one_path`: 6 is given away only when `give` is true, so it is dropped at the
 //   end otherwise -- `t` then `6` for the first call, `6` alone for the second;
 // - `boxed`: 107, `Boxed`'s own `drop`, comes before its field, 7;
+// - `generic_given_away`: a generic struct moves as any other, so 10 is dropped once, by
+//   the function it is given to;
 // - `main`: `b` then `a`, in reverse order, before it returns.
 //
-// EXPECT: 1 2 | t 3 | 4 5 | t 6 6 | 107 7 | end 9 8
+// EXPECT: 1 2 | t 3 | 4 5 | t 6 6 | 107 7 | t 10 | end 9 8
 
 import core::ops;
 
@@ -48,6 +50,29 @@ impl Drop for Boxed {
     print(self.n);
     print!(" ");
   }
+}
+
+struct Tagged<T> {
+  x : T,
+  id : i32,
+}
+
+impl<T> Drop for Tagged<T> {
+  fn drop(self : &mut Tagged<T>) -> void {
+    print(self.id);
+    print!(" ");
+  }
+}
+
+fn take_tagged(t : Tagged<i32>) -> void {
+  print!("t ");
+}
+
+fn generic_given_away() -> void {
+  let t = Tagged<i32> {
+    x: 0, id: 10
+  };
+  take_tagged(t);
 }
 
 fn noisy(id : i32) -> Noisy {
@@ -103,6 +128,8 @@ fn main() -> i32 {
   moved_on_one_path(false);
   print!("| ");
   boxed();
+  print!("| ");
+  generic_given_away();
   print!("| end ");
   return 0;
 }

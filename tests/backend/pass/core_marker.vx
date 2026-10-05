@@ -11,12 +11,8 @@
 // whole of what `Copy` buys. Without the impl the second read is a compile failure rather
 // than a wrong answer, so that is what a broken `Copy` looks like here.
 //
-// Only the `Ordering` case actually tests anything. Removing `impl Copy for Ordering`
-// stops this file building; removing the `Option<T>` or `Result<T, E>` impl changes
-// nothing, because a generic enum is not treated as linear in the first place and can be
-// used after a move whether or not it declares `Copy` (Vx#715). Those two lines are here
-// so the day that is fixed, this file is already asking the question -- they are not
-// evidence today, and this comment is the record of that.
+// Removing any of the three impls, `Ordering`'s, `Option<T>`'s or `Result<T, E>`'s, stops
+// this file building.
 //
 // `Option<T>` and `Result<T, E>` are conditional -- they copy when what they hold does --
 // so each is instantiated at a scalar, which is the case the bound admits.

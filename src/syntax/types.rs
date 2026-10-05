@@ -803,16 +803,18 @@ pub fn mangle_method(
 
 impl Type {
     pub fn is_linear(&self) -> bool {
-        matches!(
-            self,
+        match self {
             Type::Ref(_, _)
-                | Type::Tensor(_, _, _)
-                | Type::Matrix
-                | Type::Verified(_)
-                | Type::Pinned(_, _)
-                | Type::Struct(_, _)
-                | Type::Enum(_, _)
-        )
+            | Type::Tensor(_, _, _)
+            | Type::Matrix
+            | Type::Verified(_)
+            | Type::Pinned(_, _)
+            | Type::Struct(_, _)
+            | Type::Enum(_, _) => true,
+            // `Option<Noisy>` or `W<i32>` moves as `Noisy` and `W` do.
+            Type::GenericInstance(base, _) => base.is_linear(),
+            _ => false,
+        }
     }
 
     pub fn substitute(&self, mapping: &std::collections::HashMap<Symbol, Type>) -> Type {

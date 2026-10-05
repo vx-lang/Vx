@@ -504,6 +504,52 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Whether `pattern`, just bound, takes a value that has to move: a name bound to
+    /// something linear that is not `Copy`.
+    fn pattern_moves(&mut self, pattern: &Pattern) -> bool {
+        fn names(p: &Pattern, out: &mut Vec<crate::symbol::Symbol>) {
+            match p {
+                Pattern::Identifier(n) => out.push(n.clone()),
+                Pattern::EnumVariant(_, _, Some(parts)) => {
+                    for part in parts {
+                        names(part, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut bound = Vec::new();
+        names(pattern, &mut bound);
+        bound.iter().any(|n| {
+            let ty = self.lookup(n).map(|(t, _)| t.clone());
+            ty.is_some_and(|t| t.is_linear() && !self.is_copy(&t))
+        })
+    }
+
+    /// An arm of `match scrutinee` took its value: the variable is moved, and what a
+    /// reference points at cannot be.
+    fn match_moves(&mut self, scrutinee: &Expr) {
+        match scrutinee {
+            Expr::Identifier(id) => self.consume(&id.name),
+            Expr::Dereference(d) => {
+                let inner = self.check_expr_type_flag(&mut (*d.expr).clone(), false);
+                if let Type::Borrow { inner, .. } = inner {
+                    if !self.is_copy(&inner) {
+                        self.errors.error_with_code(
+                            crate::diagnostic::DiagnosticCode::E4008,
+                            format!(
+                                "this moves a value of type `{inner}` out from behind a \
+                                 reference, which does not own it; copy or clone it instead"
+                            ),
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(&d.span)),
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     pub(crate) fn bind_pattern_variables(&mut self, pattern: &Pattern, expr_ty: &Type) {
         match pattern {
             Pattern::Identifier(name) => {
@@ -558,7 +604,15 @@ impl<'a> TypeChecker<'a> {
                 arms,
                 span: _,
             }) => {
-                let expr_ty = self.check_expr_type(match_expr);
+                // Matching a variable, or what a reference points at, reads it: only an arm
+                // that binds a value which has to move moves it (below). Any other scrutinee
+                // is a value the match takes.
+                let place = matches!(**match_expr, Expr::Identifier(_) | Expr::Dereference(_));
+                let expr_ty = if place {
+                    self.check_expr_type_flag(match_expr, false)
+                } else {
+                    self.check_expr_type(match_expr)
+                };
 
                 let mut match_ty: Option<Type> = None;
                 let mut covered: Vec<crate::symbol::Symbol> = Vec::new();
@@ -577,6 +631,13 @@ impl<'a> TypeChecker<'a> {
                     self.push_scope();
                     self.check_literal_pattern_range(&arm.pattern, &expr_ty);
                     self.bind_pattern_variables(&arm.pattern, &expr_ty);
+                    if place && !self.speculating && self.pattern_moves(&arm.pattern) {
+                        // Moved before the arm's own names exist, which may hide it.
+                        self.pop_scope();
+                        self.match_moves(match_expr);
+                        self.push_scope();
+                        self.bind_pattern_variables(&arm.pattern, &expr_ty);
+                    }
 
                     let arm_ty = if !self.speculating {
                         self.value_unused = unused;
