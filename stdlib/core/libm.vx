@@ -11268,3 +11268,185 @@ fn libm_pow(x0 : f64, y0 : f64) -> f64 {
   }
   return libm_pow64_accurate(x, y, is_neg, e_x as i32, idx_x, dx);
 }
+
+/// `e^a` as `2^hi * m`, with `m` a double-double between about 0.7 and 1.5, for `|a|` below about
+/// 745: the reduction and double-double pass of `libm_exp`, without scaling by `2^hi`, so that a
+/// value past the largest double can still be divided.
+struct LibmExpParts {
+  hi : i32,
+  m : LibmDoubleDouble,
+}
+
+impl Copy for LibmExpParts {}
+
+fn libm_exp_parts(a : f64) -> LibmExpParts {
+  let tmp = libm_multiply_add(a, libm_f64_from_bits(4609176140021203710u64), libm_f64_from_bits(4704009810788745216u64)); // 0x1.71547652b82fep+0, 0x1.800000004p21
+  let k = ((libm_f64_to_bits(tmp) >> 19u64) as u32) as i32;
+  let kd = k as f64;
+  let exp_mid = libm_exp_mid_dd(((k >> 6) & 63) as i64, (k & 63) as i64);
+  return LibmExpParts {
+    hi: k >> 12, m: libm_exp_dd(a, kd, exp_mid)
+  };
+}
+
+/// `v * 2^e` for a normal `v`, in two steps so that a result past the largest double overflows to
+/// infinity instead of wrapping the exponent field.
+fn libm_f64_ldexp(v : f64, e : i32) -> f64 {
+  let e1 = e / 2;
+  let e2 = e - e1;
+  let f1 = libm_f64_from_bits(((1023 + e1) as u64) << 52u64);
+  let f2 = libm_f64_from_bits(((1023 + e2) as u64) << 52u64);
+  return v * f1 * f2;
+}
+
+/// `(e^a + sign * e^-a) / 2` for `a` from 2^-6 to 711, from the double-double `e^a` of
+/// `libm_exp_parts`: `2^(hi - 1) * (m + sign * 2^(-2 hi) / m)`, rounded once. When `2^(-2 hi)` is
+/// below 2^-120 the second term cannot change the result and is left out.
+fn libm_exp_half_sum(a : f64, sign : f64) -> f64 {
+  let e = libm_exp_parts(a);
+  let mut t = e.m;
+  if e.hi < 60 {
+    let inv = libm_dd_div(LibmDoubleDouble {
+      hi: 1.0, lo: 0.0
+    }, e.m);
+    let scale = libm_f64_from_bits(((1023 - 2 * e.hi) as u64) << 52u64) * sign;
+    t = libm_dd_add(e.m, LibmDoubleDouble {
+      hi: inv.hi * scale, lo: inv.lo * scale
+    });
+  }
+  return libm_f64_ldexp(t.hi + t.lo, e.hi - 1);
+}
+
+/// `x + x^3 (c + x^2 rest)` for a small `x`, with `c = c_hi + c_lo` a double-double and `x^3`
+/// kept as a double-double, so that only `x^5 rest`, which is far below the last place, is rounded
+/// on its own: the series of `sinh` and `tanh` below 1/64.
+fn libm_odd_series_small(x : f64, c_hi : f64, c_lo : f64, rest : f64) -> f64 {
+  let x2 = libm_dd_exact_mult(x, x);
+  let x3 = libm_dd_quick_mult(LibmDoubleDouble {
+    hi: x, lo: 0.0
+  }, x2);
+  let c = libm_dd_exact_add(c_hi, libm_multiply_add(x2.hi, rest, c_lo));
+  let t = libm_dd_quick_mult(x3, c);
+  let mut r = libm_dd_exact_add(x, t.hi);
+  r.lo = r.lo + t.lo;
+  return r.hi + r.lo;
+}
+
+/// The hyperbolic sine of a double. Not a port: LLVM libc has no double-precision `sinh`. Below
+/// 1/64 in size, the Taylor series up to `x^11` from `libm_odd_series_small`. Above that,
+/// `(e^|x| - e^-|x|) / 2` from `libm_exp_half_sum`, whose double-double error is far below one
+/// unit in the last place. The result is almost always correctly rounded, but that is not proven.
+fn libm_sinh(x : f64) -> f64 {
+  let x_u = libm_f64_to_bits(x);
+  let x_abs_u = x_u & 9223372036854775807u64; // 0x7fffffffffffffff
+  // |x| < 2^-26: sinh(x) rounds to x.
+  if x_abs_u < 4490088828488384512u64 { // 0x3e50000000000000
+    return x;
+  }
+  if x_abs_u >= 9218868437227405312u64 { // 0x7ff0000000000000
+    // Infinity, or NaN, made quiet.
+    return x + x;
+  }
+  let a = libm_f64_from_bits(x_abs_u);
+  let sign : f64 = if (x_u >> 63u64) == 1u64 {
+    -1.0
+  } else {
+    1.0
+  };
+  if a < 0.015625 {
+    return libm_odd_series_small(x, libm_f64_from_bits(4595172819793696085u64), libm_f64_from_bits(4351978439915689301u64), libm_multiply_add(x * x, libm_multiply_add(x * x, libm_multiply_add(x * x, libm_f64_from_bits(4493156764026750180u64), libm_f64_from_bits(4523617214285662004u64)), libm_f64_from_bits(4551452160554016794u64)), libm_f64_from_bits(4575957461383581969u64))); // 0x1.5555555555555p-3, 0x1.5555555555555p-57, 0x1.ae64567f544e4p-26, 0x1.71de3a556c734p-19, 0x1.a01a01a01a01ap-13, 0x1.1111111111111p-7
+  }
+
+  // sinh overflows from 1025 log(2) = 710.48; above 711 that is certain, and the exp reduction
+  // stops near 745.
+  if a > 711.0 {
+    return sign * libm_f64_from_bits(9218868437227405312u64); // 0x7ff0000000000000
+  }
+  return sign * libm_exp_half_sum(a, -1.0);
+}
+
+/// The hyperbolic cosine of a double. Not a port: LLVM libc has no double-precision `cosh`.
+/// Below 1/64 in size, `1 + x^2 / 2 + x^4 Q(x^2)`; above that `(e^|x| + e^-|x|) / 2` from
+/// `libm_exp_half_sum`, which has no cancellation. The
+/// result is almost always correctly rounded, but that is not proven.
+fn libm_cosh(x : f64) -> f64 {
+  let x_abs_u = libm_f64_to_bits(x) & 9223372036854775807u64; // 0x7fffffffffffffff
+  // |x| < 2^-26: cosh(x) rounds to 1.
+  if x_abs_u < 4490088828488384512u64 { // 0x3e50000000000000
+    return 1.0;
+  }
+  if x_abs_u >= 9218868437227405312u64 { // 0x7ff0000000000000
+    // Infinity gives infinity; NaN stays NaN, made quiet.
+    return libm_f64_from_bits(x_abs_u) + libm_f64_from_bits(x_abs_u);
+  }
+  let a = libm_f64_from_bits(x_abs_u);
+  if a < 0.015625 {
+    // 1 + x^2 / 2 + x^4 Q(x^2), with x^2 exact, so that 1 + x^2 / 2 is rounded once.
+    let x2 = libm_dd_exact_mult(a, a);
+    let q = libm_multiply_add(x2.hi, libm_multiply_add(x2.hi, libm_f64_from_bits(4537941361671905306u64), libm_f64_from_bits(4564047942368979991u64)), libm_f64_from_bits(4586165620538955093u64)); // 0x1.a01a01a01a01ap-16, 0x1.6c16c16c16c17p-10, 0x1.5555555555555p-5
+    let r = libm_dd_exact_add(1.0, 0.5 * x2.hi);
+    // The low parts are added rounding to odd: when x^2 / 2 is exactly half a unit of 1, as at
+    // 2^-26, only the x^4 term below it decides the rounding, and it must not be rounded away.
+    let s = libm_dd_two_sum(r.lo, libm_multiply_add(x2.hi * x2.hi, q, 0.5 * x2.lo));
+    let mut lo_u = libm_f64_to_bits(s.hi);
+    if s.lo != 0.0 && (lo_u & 1u64) == 0u64 {
+      if (s.lo > 0.0) == (s.hi > 0.0) {
+        lo_u = lo_u + 1u64;
+      } else {
+        lo_u = lo_u - 1u64;
+      }
+    }
+    return r.hi + libm_f64_from_bits(lo_u);
+  }
+  // cosh overflows from 1025 log(2) = 710.48, as sinh does.
+  if a > 711.0 {
+    return libm_f64_from_bits(9218868437227405312u64); // 0x7ff0000000000000
+  }
+  return libm_exp_half_sum(a, 1.0);
+}
+
+/// The hyperbolic tangent of a double. Not a port: LLVM libc has no double-precision `tanh`. Below
+/// 1/64 in size, the Taylor series up to `x^13` from `libm_odd_series_small`.
+/// Above that, `(E - 1) / (E + 1)` with `E = e^(2 |x|)` as a double-double, divided as
+/// double-doubles; from 19.06 up it rounds to 1. The result is almost always correctly rounded, but
+/// that is not proven.
+fn libm_tanh(x : f64) -> f64 {
+  let x_u = libm_f64_to_bits(x);
+  let x_abs_u = x_u & 9223372036854775807u64; // 0x7fffffffffffffff
+  // |x| < 2^-27: tanh(x) rounds to x.
+  if x_abs_u < 4485585228861014016u64 { // 0x3e40000000000000
+    return x;
+  }
+  if x_abs_u > 9218868437227405312u64 { // 0x7ff0000000000000
+    // NaN, made quiet.
+    return x + x;
+  }
+  let a = libm_f64_from_bits(x_abs_u);
+  let sign : f64 = if (x_u >> 63u64) == 1u64 {
+    -1.0
+  } else {
+    1.0
+  };
+  if a < 0.015625 {
+    return libm_odd_series_small(x, libm_f64_from_bits(13823048456275842389u64), libm_f64_from_bits(13579854076397835605u64), libm_multiply_add(x * x, libm_multiply_add(x * x, libm_multiply_add(x * x, libm_multiply_add(x * x, libm_f64_from_bits(4570429305847643616u64), libm_f64_from_bits(13799634966057239101u64)), libm_f64_from_bits(4581960672315445498u64)), libm_f64_from_bits(13811310502961330716u64)), libm_f64_from_bits(4593971859893063953u64))); // -0x1.5555555555555p-2, -0x1.5555555555555p-56, 0x1.d6d3d0e157de0p-9, -0x1.226e355e6c23dp-7, 0x1.664f4882c10fap-6, -0x1.ba1ba1ba1ba1cp-5, 0x1.1111111111111p-3
+  }
+
+  // 1 - tanh(x) = 2 / (e^(2x) + 1) is below 2^-54 from 27.5 log(2) = 19.06, so tanh(x) rounds
+  // to 1; the formula covers the rest up to 19.5.
+  if a > 19.5 {
+    return sign;
+  }
+  let e = libm_exp_parts(2.0 * a);
+  let scale = libm_f64_from_bits(((1023 + e.hi) as u64) << 52u64);
+  let big = LibmDoubleDouble {
+    hi: e.m.hi * scale, lo: e.m.lo * scale
+  };
+  let num = libm_dd_add(big, LibmDoubleDouble {
+    hi: -1.0, lo: 0.0
+  });
+  let den = libm_dd_add(big, LibmDoubleDouble {
+    hi: 1.0, lo: 0.0
+  });
+  let t = libm_dd_div(num, den);
+  return sign * (t.hi + t.lo);
+}
