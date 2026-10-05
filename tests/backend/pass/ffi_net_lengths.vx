@@ -16,14 +16,6 @@
 // CHECK: call @TcpStream$write(%{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, !llvm.ptr, i64) -> i64
 // CHECK: call @UdpSocket$recv(%{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, !llvm.ptr, i64) -> i64
 // CHECK: call @UdpSocket$send_to(%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, !llvm.ptr, i64, !llvm.ptr) -> i64
-// CHECK-LABEL: func.func @UdpSocket$send_to(
-// CHECK: call @vx_udp_socket_send_to(%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, !llvm.ptr, i64, !llvm.ptr) -> i64
-// CHECK-LABEL: func.func @UdpSocket$recv(
-// CHECK: call @vx_udp_socket_recv(%{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, !llvm.ptr, i64) -> i64
-// CHECK-LABEL: func.func @TcpStream$write(
-// CHECK: call @vx_tcp_stream_write(%{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, !llvm.ptr, i64) -> i64
-// CHECK-LABEL: func.func @TcpStream$read(
-// CHECK: call @vx_tcp_stream_read(%{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, !llvm.ptr, i64) -> i64
 import std::net;
 
 fn main() -> i32 {

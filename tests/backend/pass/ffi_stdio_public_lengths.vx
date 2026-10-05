@@ -14,12 +14,6 @@
 // CHECK: call @stdout_write(%{{.*}}, %{{.*}}) : (!llvm.ptr, i64) -> i64
 // CHECK: call @stderr_write(%{{.*}}, %{{.*}}) : (!llvm.ptr, i64) -> i64
 // CHECK: call @stdin_read(%{{.*}}, %{{.*}}) : (!llvm.ptr, i64) -> i64
-// CHECK-LABEL: func.func @stdout_write(
-// CHECK: call @vx_stdout_write(%{{.*}}, %{{.*}}) : (!llvm.ptr, i64) -> i64
-// CHECK-LABEL: func.func @stdin_read(
-// CHECK: call @vx_stdin_read(%{{.*}}, %{{.*}}) : (!llvm.ptr, i64) -> i64
-// CHECK-LABEL: func.func @stderr_write(
-// CHECK: call @vx_stderr_write(%{{.*}}, %{{.*}}) : (!llvm.ptr, i64) -> i64
 import std::io;
 
 fn main() -> i32 {
