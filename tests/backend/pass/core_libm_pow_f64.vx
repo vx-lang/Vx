@@ -1,0 +1,165 @@
+//===- core_libm_pow_f64.vx - Vx Compiler --------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// f64 `powf`, ported from LLVM libc's `pow` into `core::libm`, against LLVM libc itself
+// (f475f085bf7b, built with FMA). It prints the bits of `x.powf(y)` (a NaN as 9221120237041090560)
+// for pairs (x, y): 4 that need the 128-bit pass; 4 that need the exact check after it, for a
+// result exactly halfway between two doubles (an odd 18-bit x cubed); 4 that need the 128-bit pass
+// from a subnormal result; 4 that need the 256-bit pass, after the 128-bit pass from a subnormal
+// result; 2 that need the exact check for a subnormal result exactly halfway between two, as (3 *
+// 2^-215)^5 = 121.5 * 2^-1074; 2 that need the exact check for an odd 18-bit square to the power
+// 1.5, exactly halfway between two doubles; 4 that need the subnormal path for a negative result,
+// from a negative x to an odd power, and its positive twin (all but the last found by searching);
+// then for special values: zeros, infinities and NaNs, x of 2 and 10, powers of two, negative x, a
+// subnormal x, results that overflow or round to zero, and huge and tiny y. Then hashes of 2^20
+// random pairs of bit patterns, of 2^20 with |x| from 2^-20 to 2^20 and |y| from 2^-63 to 2^7, and
+// of 2^20 hard pairs: x within 2^-20 of 1 with |y| up to 2^40, or a small whole x to a small whole
+// or half y; then of 2^16 pairs sent straight to the 128-bit pass and 2^12 to the 256-bit pass, x
+// from 1/2 to 2 and |y| from 2^-63 to 2^6, since the inputs found to need the latter all have x
+// within 2^-20 of 1. The port also matched LLVM libc on 2^30 pairs of the second kind and 2^28 of
+// each other kind, on 2^27 of the second and third with the fast pass turned off, and on 2^25 of
+// each with every result also sent through the exact check and the 256-bit pass.
+//
+// EXPECT: 4163858866236933779 6951802740797879068 4603099712096196773 5033349362334697756 4848071480472654204 4847114795922226388 4845883022490452388 4847692069473558858 66746026347871 2873545786786699 1390118987243599 2718017887082185 1035799701 600993673 29704166966 465578 122 1562 4850376695599202304 4850376489443917810 9221120237041090560 9223372036854898059 9223372049205991803 59151493904 9218868437227405312 0 9218868437227405312 18442240474082181120 9223372036854775808 0 0 18442240474082181120 9223372036854775808 4607182418800017408 4607182418800017408 9221120237041090560 4607182418800017408 0 9218868437227405312 4609047870845172685 4654083867118877645 4644270753883789145 4613551470472543181 9221120237041090560 13844065254536904704 2220274616293654528 9218868437227405312 0 9218868437227405312 0 4607182418800017408 9218868437227405312 4630316143448424448 6913025428013711359 0 5781553254861190004 16616829138714567368 8181908716362081436 9759611378998820354 11207974224489944302
+import core::num;
+import core::libm;
+
+fn bits(r : f64) -> u64 {
+  if r != r {
+    return 9221120237041090560u64;
+  }
+  return r.to_bits();
+}
+
+fn check(x : u64, y : u64) -> i32 {
+  print(bits(f64::from_bits(x).powf(f64::from_bits(y))));
+  print!(" ");
+  return 0;
+}
+
+fn next(s : u64) -> u64 {
+  let a = s ^ (s << 13u64);
+  let b = a ^ (a >> 7u64);
+  return b ^ (b << 17u64);
+}
+
+fn hash(kind : i32, count : i32) -> u64 {
+  let mut s : u64 = 88172645463325252u64;
+  let mut h : u64 = 0u64;
+  for i in 0..count {
+    s = next(s);
+    let xb = s;
+    s = next(s);
+    let yb = s;
+    let mut x = f64::from_bits(xb);
+    let mut y = f64::from_bits(yb);
+    if kind == 1 {
+      let ex = 1003u64 + (xb >> 52u64) % 41u64;
+      let ey = 960u64 + (yb >> 52u64) % 71u64;
+      x = f64::from_bits((xb & 9227875636482146303u64) | (ex << 52u64));
+      y = f64::from_bits((yb & 9227875636482146303u64) | (ey << 52u64));
+    }
+    if kind == 2 {
+      if (xb >> 63u64) == 0u64 {
+        let ey = 1023u64 + (yb >> 52u64) % 41u64;
+        x = f64::from_bits(4607182418800017408u64 + (xb & 4294967295u64) - 2147483648u64);
+        y = f64::from_bits((yb & 9227875636482146303u64) | (ey << 52u64));
+      } else {
+        x = (1u64 + (xb & 65535u64)) as f64;
+        let half : i64 = (((yb >> 8u64) & 127u64) as i64) - 63;
+        y = (half as f64) * 0.5;
+        if (yb & 1u64) == 0u64 {
+          y = ((y as i64) as f64);
+        }
+      }
+    }
+    let mut r = x.powf(y);
+    if kind >= 3 {
+      let ex = 1022u64 + (xb >> 63u64);
+      let mant = xb & 4503599627370495u64;
+      let idx = (mant >> 45u64) as i64;
+      let dx = libm_multiply_add(LIBM_COMMON_RD[idx], f64::from_bits(mant | 4607182418800017408u64), -1.0);
+      let yd = f64::from_bits((yb & 9227875636482146303u64) | ((960u64 + (yb >> 52u64) % 70u64) << 52u64));
+      let is_neg = (yb & 1u64) != 0u64;
+      if kind == 3 {
+        r = libm_pow64_accurate(f64::from_bits(mant | (ex << 52u64)), yd, is_neg, (ex as i32) - 1023, idx, dx);
+      } else {
+        r = libm_pow64_accurate_256(yd, is_neg, (ex as i32) - 1023, idx, dx);
+      }
+    }
+    h = (h ^ bits(r)).wrapping_mul(1099511628211u64);
+  }
+  return h;
+}
+
+fn main() -> i32 {
+  let _r0 = check(4607182417024379861u64, 4734581674917096770u64);
+  let _r1 = check(4607182417117076715u64, 13969260677868119698u64);
+  let _r2 = check(4607182418473120720u64, 4715193520635379767u64);
+  let _r3 = check(4607182419928736078u64, 4733064492949831436u64);
+  let _r4 = check(4687401928169095168u64, 4613937818241073152u64);
+  let _r5 = check(4686993459599376384u64, 4613937818241073152u64);
+  let _r6 = check(4686394225762238464u64, 4613937818241073152u64);
+  let _r7 = check(4687244904164753408u64, 4613937818241073152u64);
+  let _r8 = check(4603059305431911578u64, 4652835515730969270u64);
+  let _r9 = check(4603306792386753044u64, 4653255999711748859u64);
+  let _r10 = check(4605230418705792014u64, 4658606563810944743u64);
+  let _r11 = check(4603250741992065616u64, 4653150328086986911u64);
+  let _r12 = check(4607182418896991295u64, 13987983578869847191u64);
+  let _r13 = check(4607182418791212012u64, 4784388033908845483u64);
+  let _r14 = check(4607182418808474277u64, 14003472549677498864u64);
+  let _r15 = check(4607182418784093745u64, 4780593817483915389u64);
+  let _r16 = check(3645663898356416512u64, 4617315517961601024u64);
+  let _r17 = check(3649041598076944384u64, 4617315517961601024u64);
+  let _r18 = check(4769311936666009600u64, 4609434218613702656u64);
+  let _r19 = check(4769311799228104704u64, 4609434218613702656u64);
+  let _r20 = check(13828302655841107968u64, 4657719271747485696u64);
+  let _r21 = check(13828302655841107968u64, 4657819327305613312u64);
+  let _r22 = check(13829428555747950592u64, 4662660477002711040u64);
+  let _r23 = check(4604930618986332160u64, 4657719271747485696u64);
+  let _r24 = check(9223372036854775808u64, 13839561654909534208u64);
+  let _r25 = check(9223372036854775808u64, 4616189618054758400u64);
+  let _r26 = check(0u64, 13830554455654793216u64);
+  let _r27 = check(9223372036854775808u64, 13837309855095848960u64);
+  let _r28 = check(9223372036854775808u64, 4613937818241073152u64);
+  let _r29 = check(0u64, 4602678819172646912u64);
+  let _r30 = check(9218868437227405312u64, 13835058055282163712u64);
+  let _r31 = check(18442240474082181120u64, 4613937818241073152u64);
+  let _r32 = check(18442240474082181120u64, 13837309855095848960u64);
+  let _r33 = check(9221120237041090560u64, 0u64);
+  let _r34 = check(4607182418800017408u64, 9221120237041090560u64);
+  let _r35 = check(9218868437227405313u64, 0u64);
+  let _r36 = check(13830554455654793216u64, 9218868437227405312u64);
+  let _r37 = check(4602678819172646912u64, 9218868437227405312u64);
+  let _r38 = check(4602678819172646912u64, 18442240474082181120u64);
+  let _r39 = check(4611686018427387904u64, 4602678819172646912u64);
+  let _r40 = check(4611686018427387904u64, 4622100592565682176u64);
+  let _r41 = check(4621819117588971520u64, 4612811918334230528u64);
+  let _r42 = check(4616189618054758400u64, 4604930618986332160u64);
+  let _r43 = check(13835058055282163712u64, 4602678819172646912u64);
+  let _r44 = check(13835058055282163712u64, 4613937818241073152u64);
+  let _r45 = check(16384u64, 4602678819172646912u64);
+  let _r46 = check(4611686018427387904u64, 4652552666608566272u64);
+  let _r47 = check(4611686018427387904u64, 13875924703463342080u64);
+  let _r48 = check(4607182418816794624u64, 9092767647661031424u64);
+  let _r49 = check(4607182418766462976u64, 9092767647661031424u64);
+  let _r50 = check(4613937818241073152u64, 121597189939003392u64);
+  let _r51 = check(13837309855095848960u64, 4877398396442247168u64);
+  let _r52 = check(4630316143448424448u64, 4607182418800017408u64);
+  let _r53 = check(9218868437227405311u64, 4602678819172646912u64);
+  let _r54 = check(4607182418800017409u64, 14145806429570727936u64);
+  print(hash(0, 1048576));
+  print!(" ");
+  print(hash(1, 1048576));
+  print!(" ");
+  print(hash(2, 1048576));
+  print!(" ");
+  print(hash(3, 65536));
+  print!(" ");
+  print(hash(4, 4096));
+  return 0;
+}
