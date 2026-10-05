@@ -20,10 +20,15 @@
 //
 // shift_operators.vx holds the other meaning, and
 // tests/frontend/fail/spaced_angles_are_not_a_shift.vx holds the case that is neither.
+import core::marker;
+
 struct Pair<T> {
   a : T,
   b : T,
 }
+
+// `inner` is used twice below, which only a copyable value may be.
+impl<T : Copy> Copy for Pair<T> {}
 
 fn main() -> i32 {
   let inner = Pair<i32> {

@@ -1,0 +1,67 @@
+//===- match_moves_only_what_it_binds.vx - Vx Compiler -------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action print-ast 2>&1 | FileCheck %s
+// CHECK-NOT: Error
+//
+// A `match` on a variable, or on what a reference points at, moves it only in an arm that
+// binds a value which has to move. An arm that only looks at the variant moves nothing, so
+// the value can still be used, in that arm and after the `match`.
+
+enum Opt<T> {
+  Some(T),
+  None,
+}
+
+struct Pair {
+  a : i32,
+}
+
+fn is_some(o : &Opt<Pair>) -> bool {
+  let mut r = false;
+  match *o {
+    Opt<Pair>::Some(_) => {
+      r = true;
+    }
+    Opt<Pair>::None() => {
+      r = false;
+    }
+  }
+  return r;
+}
+
+fn used_after_a_match_that_binds_nothing() -> bool {
+  let g = Opt<Pair>::Some(Pair {
+    a: 1
+  });
+  match g {
+    Opt<Pair>::Some(_) => {
+      print(1);
+    }
+    Opt<Pair>::None() => {
+      print(0);
+    }
+  }
+  return is_some(&g);
+}
+
+fn used_in_the_arm_that_binds_nothing() -> i32 {
+  let g = Opt<Pair>::None();
+  match g {
+    Opt<Pair>::Some(p) => {
+      return p.a;
+    }
+    Opt<Pair>::None() => {
+      let still = is_some(&g);
+      return 0;
+    }
+  }
+}
+
+fn main() -> i32 {
+  return 0;
+}

@@ -12,6 +12,9 @@
 // since there is no call syntax for one yet.
 //
 // The operator traits the plan puts in this module will join them here.
+
+import core::marker;
+
 struct Closure0<Ret> {
   env : *mut i8, func : fn(*mut i8)->Ret,
 }
@@ -27,6 +30,12 @@ struct Closure2<Arg1, Arg2, Ret> {
 struct Closure3<Arg1, Arg2, Arg3, Ret> {
   env : *mut i8, func : fn(*mut i8, Arg1, Arg2, Arg3)->Ret,
 }
+
+// A closure value is a pair of pointers and owns neither, so copying one is a copy.
+impl<Ret> Copy for Closure0<Ret> {}
+impl<Arg, Ret> Copy for Closure1<Arg, Ret> {}
+impl<Arg1, Arg2, Ret> Copy for Closure2<Arg1, Arg2, Ret> {}
+impl<Arg1, Arg2, Arg3, Ret> Copy for Closure3<Arg1, Arg2, Arg3, Ret> {}
 
 /// A value that either carries on, holding an output, or stops early. It is what
 /// `Iterator::try_fold` reads from its closure's answers, and `Option` and `Result` implement

@@ -29,6 +29,7 @@ impl<'a> TypeChecker<'a> {
         let Some(impls) = self.env.impls.get("Copy") else {
             return false;
         };
+        let impls: Vec<&crate::syntax::decl::ImplBlock> = impls.clone();
         let targets: Vec<Type> = impls.iter().map(|ib| ib.target_type.clone()).collect();
         // Compared by nominal name rather than by unifying the two types. `impl Copy for
         // Ordering` records its target as a *struct*, because when the impl header is parsed
@@ -44,9 +45,22 @@ impl<'a> TypeChecker<'a> {
                 .iter()
                 .any(|target| nominal(target).is_some_and(|t| t == name));
         }
-        targets
-            .iter()
-            .any(|target| self.unify_types(target, ty, &mut HashMap::new()))
+        // `impl<T : Copy> Copy for Option<T>`: `Option<i32>` is copyable, `Option<Noisy>` is
+        // not, since the bound on `T` has to hold too.
+        impls.iter().any(|ib| {
+            let mut mapping = HashMap::new();
+            if !self.unify_types(&ib.target_type, ty, &mut mapping) {
+                return false;
+            }
+            ib.generics.iter().all(|g| match g {
+                crate::syntax::decl::GenericParam::Type { name, bounds }
+                    if bounds.iter().any(|b| b.trait_name.as_ref() == "Copy") =>
+                {
+                    mapping.get(name).cloned().is_none_or(|t| self.is_copy(&t))
+                }
+                _ => true,
+            })
+        })
     }
 
     /// The value of the `const` `decl` as a literal of its declared type, placed at `span`.

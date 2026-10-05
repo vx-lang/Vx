@@ -1,0 +1,71 @@
+//===- generic_values_move.vx - Vx Compiler ------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A value of a generic enum or a generic struct moves as a non-generic one does, unless its
+// type is `Copy`. So it cannot be used after it is moved, and a `match` on what a reference
+// points at cannot take a payload out of it.
+
+// CHECK-DAG: Error[E4001] at 40:9: Use of moved or consumed linear variable: g
+// CHECK-DAG: Error[E4001] at 55:14: Use of moved or consumed linear variable: w
+// CHECK-DAG: Error[E4008] at 59:9: this moves a value of type `Opt<Pair>` out from behind a reference
+
+enum Opt<T> {
+  Some(T),
+  None,
+}
+
+struct Pair {
+  a : i32,
+}
+
+struct Wrap<T> {
+  x : T,
+}
+
+fn take(w : Wrap<i32>) -> i32 {
+  return w.x;
+}
+
+fn enum_after_a_move() -> i32 {
+  let g = Opt<Pair>::Some(Pair {
+    a: 1
+  });
+  let g2 = g;
+  match g {
+    Opt<Pair>::Some(p) => {
+      return p.a;
+    }
+    Opt<Pair>::None() => {
+      return 0;
+    }
+  }
+}
+
+fn struct_after_a_move() -> i32 {
+  let w = Wrap<i32> {
+    x: 2
+  };
+  let n = take(w);
+  return n + w.x;
+}
+
+fn payload_out_of_a_reference(r : &Opt<Pair>) -> i32 {
+  match *r {
+    Opt<Pair>::Some(p) => {
+      return p.a;
+    }
+    Opt<Pair>::None() => {
+      return 0;
+    }
+  }
+}
+
+fn main() -> i32 {
+  return 0;
+}
