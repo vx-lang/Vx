@@ -19,6 +19,7 @@ use crate::bytecode::{
     HirInstruction, Opcode, Register, TypeIdx, IMM_BLOCK_BOUND, IMM_BLOCK_INIT, IMM_BLOCK_STEP,
     IMM_PARALLEL_BOUND, IMM_PARALLEL_INIT, IMM_PARALLEL_STEP, IMM_THREAD_INIT, IMM_THREAD_STEP,
 };
+use crate::bytecode::{TENSOR_DROP_FIELD, TENSOR_DROP_FLAG};
 use crate::decline::{Decline, Lowered};
 use crate::gid::TypeId;
 use crate::layout::FieldTy;
@@ -465,9 +466,16 @@ struct Lowerer<'r> {
 
 /// A tensor drop waiting for a value to be computed: the owner's register, and the name of its
 /// moved flag, read when the drop runs.
-struct PendingDrop {
-    reg: Register,
-    flag: Option<Symbol>,
+enum PendingDrop {
+    /// A tensor to free: the owner itself, or (`field`) a tensor field of a struct being
+    /// dropped. The struct owned what the field holds.
+    Tensor {
+        reg: Register,
+        flag: Option<Symbol>,
+        field: bool,
+    },
+    /// A `Drop` impl's `drop` to call, as the statement that calls it.
+    Call(Box<Statement>),
 }
 
 impl<'r> Lowerer<'r> {
@@ -775,17 +783,34 @@ impl<'r> Lowerer<'r> {
 
     /// `Statement::Drop`: free the owner now, or once the next statement has its value.
     fn lower_drop(&mut self, d: &crate::syntax::DropStmt) -> Lowered<()> {
-        let reg = match self.scope.get(&d.name) {
-            Some(Binding::Reg(v)) if matches!(v.ty, LoweredTy::Tensor { .. }) => v.reg,
-            _ => {
+        let drop = if let Some(stmt) = d.call_statement() {
+            PendingDrop::Call(Box::new(stmt))
+        } else if let Some(place) = d.expr.as_deref() {
+            let v = self.lower_expr(place)?;
+            if !matches!(v.ty, LoweredTy::Tensor { .. }) {
                 return Err(Decline::Unsupported {
-                    what: "a drop of a tensor not held in a register",
-                })
+                    what: "a drop of a field that is not a tensor",
+                });
             }
-        };
-        let drop = PendingDrop {
-            reg,
-            flag: d.flag.clone(),
+            PendingDrop::Tensor {
+                reg: v.reg,
+                flag: d.flag.clone(),
+                field: true,
+            }
+        } else {
+            let reg = match self.scope.get(&d.name) {
+                Some(Binding::Reg(v)) if matches!(v.ty, LoweredTy::Tensor { .. }) => v.reg,
+                _ => {
+                    return Err(Decline::Unsupported {
+                        what: "a drop of a tensor not held in a register",
+                    })
+                }
+            };
+            PendingDrop::Tensor {
+                reg,
+                flag: d.flag.clone(),
+                field: false,
+            }
         };
         if d.after_value {
             self.queued_drops.push(drop);
@@ -796,8 +821,13 @@ impl<'r> Lowerer<'r> {
     }
 
     fn emit_drop(&mut self, d: PendingDrop) -> Lowered<()> {
-        let Some(flag) = d.flag else {
-            self.emit_effect(Opcode::TensorDrop, d.reg, Register(0), 0);
+        let (reg, flag, field) = match d {
+            PendingDrop::Tensor { reg, flag, field } => (reg, flag, field),
+            PendingDrop::Call(stmt) => return self.lower_stmt_inner(&stmt),
+        };
+        let field_bit = if field { TENSOR_DROP_FIELD } else { 0 };
+        let Some(flag) = flag else {
+            self.emit_effect(Opcode::TensorDrop, reg, Register(0), field_bit);
             return Ok(());
         };
         let moved = match self.scope.get(&flag).cloned() {
@@ -812,7 +842,7 @@ impl<'r> Lowerer<'r> {
                 })
             }
         };
-        self.emit_effect(Opcode::TensorDrop, d.reg, moved, 1);
+        self.emit_effect(Opcode::TensorDrop, reg, moved, TENSOR_DROP_FLAG | field_bit);
         Ok(())
     }
 
@@ -4410,6 +4440,8 @@ impl<'r> Lowerer<'r> {
                 what: "a tensor given a new value inside a branch or loop",
             });
         }
+        // The old value's drops run now that the new value is computed, before it is stored.
+        self.run_value_drops()?;
         self.assign_local(&name, v).ok_or(Decline::Unsupported {
             what: "an assignment to a local the flat path does not track",
         })
@@ -6051,7 +6083,8 @@ pub fn verify_hir_stream(worker: &LocalWorkerState) {
                 "HIR operand not dominated at instruction {i}"
             ),
             Opcode::TensorDrop => assert!(
-                ins.operand1.0 < i && (ins.imm == 0 || ins.operand2.0 < i),
+                ins.operand1.0 < i
+                    && (ins.imm & crate::bytecode::TENSOR_DROP_FLAG == 0 || ins.operand2.0 < i),
                 "HIR operand not dominated at instruction {i}"
             ),
             Opcode::CondBr => {

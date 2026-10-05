@@ -1,0 +1,74 @@
+//===- struct_drops_written_into_the_program.vx - Vx Compiler -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action print-ast 2>/dev/null | FileCheck %s
+//
+// Dropping a struct is a list of drops: its `Drop` impl's `drop`, then each field's, in the
+// order they are declared. A struct whose drop calls a `Drop` impl is dropped at the end of
+// its block; one that only holds tensors is freed after its last use, as a tensor is.
+
+import core::ops;
+
+struct Noisy {
+  id : i32,
+  t : Tensor<f32, [4]>,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    print(self.id);
+  }
+}
+
+struct Pair {
+  a : Noisy,
+  b : Noisy,
+}
+
+struct Holder {
+  t : Tensor<f32, [4]>,
+  n : i32,
+}
+
+fn pair() -> i32 {
+  let p = Pair {
+    a: Noisy {
+      id: 1, t: Tensor<f32, [4]>::new()
+    }, b: Noisy {
+      id: 2, t: Tensor<f32, [4]>::new()
+    }
+  };
+  let x = p.a.id;
+  let y = x + 1;
+  return y;
+}
+
+fn holder() -> i32 {
+  let h = Holder {
+    t: Tensor<f32, [4]>::new(), n: 3
+  };
+  let x = h.n;
+  let y = x + 1;
+  return y;
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK-LABEL: Function: pair
+// CHECK:      Let y =
+// CHECK:      Drop p.a by calling Noisy$drop, after the value
+// CHECK-NEXT: Drop p.a.t, after the value
+// CHECK-NEXT: Drop p.b by calling Noisy$drop, after the value
+// CHECK-NEXT: Drop p.b.t, after the value
+// CHECK-NEXT: Return
+
+// CHECK-LABEL: Function: holder
+// CHECK:      Let x =
+// CHECK:      Drop h.t
+// CHECK-NEXT: Let y =

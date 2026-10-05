@@ -150,12 +150,21 @@ impl AstPrinter {
                 }
                 Statement::Drop(DropStmt {
                     name,
+                    path,
+                    call,
+                    expr: _,
                     flag,
                     after_value,
                     span: _,
                 }) => {
                     indent.print(w)?;
                     write!(w, "{}Drop {}", prefix, name)?;
+                    for field in path {
+                        write!(w, ".{}", field)?;
+                    }
+                    if let Some(f) = call {
+                        write!(w, " by calling {}", f)?;
+                    }
                     if let Some(f) = flag {
                         write!(w, " if {} is false", f)?;
                     }

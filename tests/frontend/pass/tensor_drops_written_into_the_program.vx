@@ -188,10 +188,10 @@ fn main() -> i32 {
 // CHECK-NEXT: Return
 
 // CHECK-LABEL: Function: leaving_a_loop
-// CHECK: ForLoop{{.*}}Drop(DropStmt { name: "a", flag: None, after_value: false{{.*}}Continue{{.*}}Drop(DropStmt { name: "a", flag: None, after_value: false{{.*}}Break
+// CHECK: ForLoop{{.*}}Drop(DropStmt { name: "a", path: [], call: None, expr: None, flag: None, after_value: false{{.*}}Continue{{.*}}Drop(DropStmt { name: "a", path: [], call: None, expr: None, flag: None, after_value: false{{.*}}Break
 
 // CHECK-LABEL: Function: arm_value
-// CHECK: then_block: [LetDecl{{.*}}Drop(DropStmt { name: "a", flag: None, after_value: true{{.*}}ExprStmt{{.*}}name: "a"{{.*}}else_block
+// CHECK: then_block: [LetDecl{{.*}}Drop(DropStmt { name: "a", path: [], call: None, expr: None, flag: None, after_value: true{{.*}}ExprStmt{{.*}}name: "a"{{.*}}else_block
 
 // CHECK-LABEL: Function: returned_verified
 // CHECK-NOT:  Drop

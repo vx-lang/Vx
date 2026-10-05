@@ -19,6 +19,7 @@ fuzz.py run shadowing --seeds 1-1000        # 1000 programs, every configuration
 fuzz.py run tensors --seeds 1-300 --keep /tmp/failures
 fuzz.py run views --seeds 1-1000            # rows and reshapes, used as the borrow rules allow
 fuzz.py run owners --seeds 1-1000           # tensors moved into calls, in branches and loops
+fuzz.py run drops --seeds 1-1000            # structs whose `drop` prints: the order must be Rust's
 fuzz.py show tensors 1133                   # the Vx program for a seed (--rust: its twin)
 ```
 

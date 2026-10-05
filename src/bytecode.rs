@@ -276,10 +276,15 @@ pub enum Opcode {
     /// device memory answers with its device address, which is what a C library takes.
     TensorDataPtr = 61,
     /// Free what the owner tensor `operand1` holds, once it is no longer used (`Statement::Drop`,
-    /// written by the checker). With `imm = 1`, `operand2` is a `bool` that
+    /// written by the checker). With `TENSOR_DROP_FLAG` in `imm`, `operand2` is a `bool` that
     /// is true once the tensor was moved, and then nothing is freed.
     TensorDrop = 62,
 }
+
+/// `Opcode::TensorDrop`'s `imm`: `operand2` is the moved flag.
+pub const TENSOR_DROP_FLAG: u64 = 1;
+/// `Opcode::TensorDrop`'s `imm`: the tensor is a field of a struct being dropped.
+pub const TENSOR_DROP_FIELD: u64 = 2;
 
 /// Reverse mode for `Opcode::AutoDiff`: the gradient, through `__enzyme_autodiff_grad_*`.
 pub const AUTODIFF_REVERSE: u64 = 0;

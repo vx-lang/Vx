@@ -153,7 +153,7 @@ impl FnEmit<'_> {
             .cloned()
             .flatten()
             .ok_or(crate::emitter_gap!())?;
-        let unless = if ins.imm == 1 {
+        let unless = if ins.imm & crate::bytecode::TENSOR_DROP_FLAG != 0 {
             let moved = self
                 .names
                 .get(ins.operand2.0 as usize)
@@ -162,7 +162,12 @@ impl FnEmit<'_> {
         } else {
             String::new()
         };
-        self.body += &format!("  vx.drop {name}{unless} : {ty}\n");
+        let field = if ins.imm & crate::bytecode::TENSOR_DROP_FIELD != 0 {
+            " {field}"
+        } else {
+            ""
+        };
+        self.body += &format!("  vx.drop {name}{unless}{field} : {ty}\n");
         Ok(())
     }
 

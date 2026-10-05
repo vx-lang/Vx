@@ -1,0 +1,108 @@
+//===- struct_drop_order.vx - Vx Compiler --------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A struct that implements `Drop` has its `drop` called where its owner gives it up, and then
+// its fields are dropped, in the order they are declared. Each `drop` prints its number, so
+// the line is the order of the drops, which is Rust's:
+//
+// - `nested`: `p`'s fields, 1 then 2, when its block ends;
+// - `given_away`: `take` drops 3, the value it was given, when it returns;
+// - `given_again`: 4 is dropped when `n` is given 5, and 5 when the function returns;
+// - `moved_on_one_path`: 6 is given away only when `give` is true, so it is dropped at the
+//   end otherwise -- `t` then `6` for the first call, `6` alone for the second;
+// - `boxed`: 107, `Boxed`'s own `drop`, comes before its field, 7;
+// - `main`: `b` then `a`, in reverse order, before it returns.
+//
+// EXPECT: 1 2 | t 3 | 4 5 | t 6 6 | 107 7 | end 9 8
+
+import core::ops;
+
+struct Noisy {
+  id : i32,
+  t : Tensor<f32, [?]>,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    print(self.id);
+    print!(" ");
+  }
+}
+
+struct Pair {
+  a : Noisy,
+  b : Noisy,
+}
+
+struct Boxed {
+  n : i32,
+  inner : Noisy,
+}
+
+impl Drop for Boxed {
+  fn drop(self : &mut Boxed) -> void {
+    print(self.n);
+    print!(" ");
+  }
+}
+
+fn noisy(id : i32) -> Noisy {
+  return Noisy {
+    id: id, t: Tensor<f32>([4])
+  };
+}
+
+fn take(x : Noisy) -> void {
+  print!("t ");
+}
+
+fn nested() -> void {
+  let p = Pair {
+    a: noisy(1), b: noisy(2)
+  };
+  print!("");
+}
+
+fn given_away() -> void {
+  let n = noisy(3);
+  take(n);
+}
+
+fn given_again() -> void {
+  let mut n = noisy(4);
+  n = noisy(5);
+}
+
+fn moved_on_one_path(give : bool) -> void {
+  let n = noisy(6);
+  if give {
+    take(n);
+  }
+}
+
+fn boxed() -> void {
+  let b = Boxed {
+    n: 107, inner: noisy(7)
+  };
+}
+
+fn main() -> i32 {
+  let a = noisy(8);
+  let b = noisy(9);
+  nested();
+  print!("| ");
+  given_away();
+  print!("| ");
+  given_again();
+  print!("| ");
+  moved_on_one_path(true);
+  moved_on_one_path(false);
+  print!("| ");
+  boxed();
+  print!("| end ");
+  return 0;
+}

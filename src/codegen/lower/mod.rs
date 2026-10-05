@@ -281,7 +281,7 @@ fn lower_match_arm_body<'c>(
             {
                 let (val, ty, nb) = gen.generate_expr(expr, b)?;
                 b = nb;
-                gen.run_queued_drops(b)?;
+                b = gen.run_queued_drops(b)?;
                 tail = Some((val, ty));
                 continue;
             }

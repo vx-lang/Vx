@@ -57,6 +57,17 @@ struct Owner {
     moved_at: Option<usize>,
     /// The `bool` local that says it was moved, once a move inside a nested block needed one.
     flag: Option<String>,
+    /// What dropping it does, in order.
+    glue: Vec<GluePart>,
+}
+
+/// One step of dropping a value: a `Drop` impl's `drop` to call, or a tensor to free, at a
+/// field path inside it.
+#[derive(Clone)]
+pub(crate) struct GluePart {
+    /// Each field followed, with the type of the struct it is a field of.
+    path: Vec<(crate::symbol::Symbol, String)>,
+    call: Option<crate::symbol::Symbol>,
 }
 
 /// What the checker writes into one block, by statement.
@@ -64,9 +75,9 @@ struct Owner {
 struct Edits {
     before: BTreeMap<usize, Vec<Statement>>,
     after: BTreeMap<usize, Vec<Statement>>,
-    /// `t = e`: the drop of the old value, if it was not moved, and the flag to clear once
+    /// `t = e`: the drops of the old value, if it was not moved, and the flag to clear once
     /// everything else at the statement has run.
-    assign: HashMap<usize, (Option<Statement>, Option<String>)>,
+    assign: HashMap<usize, (Vec<Statement>, Option<String>)>,
 }
 
 enum FrameKind {
@@ -95,8 +106,8 @@ enum FrameKind {
 #[derive(Default)]
 pub(crate) struct DropFrames {
     frames: Vec<FrameKind>,
-    /// Owners to add to the next block: a function's tensor parameters.
-    pending: Vec<(String, usize)>,
+    /// Owners to add to the next block: a function's parameters that need dropping.
+    pending: Vec<(String, usize, Vec<GluePart>)>,
     /// The names moved by the statement being checked. A `return t` moves `t` on its way out.
     moved_now: HashSet<String>,
     /// Makes the names of the locals the rewrite adds unique.
@@ -114,6 +125,9 @@ fn ident(name: &str) -> Expr {
 fn drop_stmt(name: &str, flag: Option<&str>) -> Statement {
     Statement::Drop(DropStmt {
         name: name.into(),
+        path: Vec::new(),
+        call: None,
+        expr: None,
         flag: flag.map(Into::into),
         after_value: false,
         span: Span::default(),
@@ -143,12 +157,50 @@ fn let_stmt(name: &str, is_mut: bool, ty: Type, value: Expr) -> Statement {
 }
 
 /// `drop owner`, naming its flag when it may have been moved.
-fn owner_drop(owner: &Owner) -> Statement {
+fn owner_drop(owner: &Owner) -> Vec<Statement> {
     let flag = match owner.moved {
         Moved::Maybe => owner.flag.as_deref(),
         _ => None,
     };
-    drop_stmt(&owner.name, flag)
+    glue_drops(&owner.name, &owner.glue, flag)
+}
+
+/// The drops that run `glue` on `name`.
+fn glue_drops(name: &str, glue: &[GluePart], flag: Option<&str>) -> Vec<Statement> {
+    glue.iter()
+        .map(|part| {
+            let mut place = ident(name);
+            for (field, struct_ty) in &part.path {
+                let mut access =
+                    MemberAccessExpr::new(Box::new(place), field.clone(), Span::default());
+                access.struct_name = Some(struct_ty.as_str().into());
+                place = Expr::MemberAccess(access);
+            }
+            let expr = match &part.call {
+                Some(call) => Some(Expr::FunctionCall(FunctionCallExpr::new(
+                    call.clone(),
+                    None,
+                    vec![Expr::Borrow(BorrowExpr::new(
+                        Box::new(place),
+                        true,
+                        Span::default(),
+                    ))],
+                    Span::default(),
+                ))),
+                None if part.path.is_empty() => None,
+                None => Some(place),
+            };
+            Statement::Drop(DropStmt {
+                name: name.into(),
+                path: part.path.iter().map(|(f, _)| f.clone()).collect(),
+                call: part.call.clone(),
+                expr: expr.map(Box::new),
+                flag: flag.map(Into::into),
+                after_value: false,
+                span: Span::default(),
+            })
+        })
+        .collect()
 }
 
 impl<'a> TypeChecker<'a> {
@@ -166,9 +218,127 @@ impl<'a> TypeChecker<'a> {
         format!("__vx_{what}_{}", self.borrow.drops.counter)
     }
 
-    /// A function or closure body begins. `params` are its tensor parameters taken by value.
-    pub(crate) fn drops_enter_function(&mut self, params: Vec<String>, body: &[Statement]) {
+    /// What dropping a value of type `ty` does, in order: its `Drop` impl's `drop`, then each
+    /// field's, in declaration order. Empty for a type with nothing to drop.
+    pub(crate) fn drops_glue(&mut self, ty: &Type) -> Vec<GluePart> {
+        self.drops_glue_at(ty, 0)
+    }
+
+    fn drops_glue_at(&mut self, ty: &Type, depth: usize) -> Vec<GluePart> {
+        assert!(depth < 64, "a struct that holds itself: {ty:?}");
+        match ty {
+            Type::Tensor(..) => vec![GluePart {
+                path: Vec::new(),
+                call: None,
+            }],
+            Type::Struct(..) | Type::GenericInstance(..) => {
+                if self.is_copy(ty) {
+                    return Vec::new();
+                }
+                // A closure's environment holds what it captured, views among them, and the
+                // function that made it still owns those: nothing to drop.
+                if ty.to_string().starts_with("Closure_") {
+                    return Vec::new();
+                }
+                let Some(fields) = self.drops_struct_fields(ty) else {
+                    return Vec::new();
+                };
+                let mut glue = Vec::new();
+                if let Some(call) = self.drops_impl_call(ty) {
+                    glue.push(GluePart {
+                        path: Vec::new(),
+                        call: Some(call),
+                    });
+                }
+                let struct_ty = ty.to_string();
+                for (field, field_ty) in fields {
+                    for mut part in self.drops_glue_at(&field_ty, depth + 1) {
+                        part.path.insert(0, (field.clone(), struct_ty.clone()));
+                        glue.push(part);
+                    }
+                }
+                glue
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// The fields of struct type `ty`, with its type arguments put in. `None` when `ty` is not
+    /// a struct.
+    fn drops_struct_fields(&self, ty: &Type) -> Option<Vec<(crate::symbol::Symbol, Type)>> {
+        let (name, args): (&crate::symbol::Symbol, &[Type]) = match ty {
+            Type::Struct(name, _) => (name, &[]),
+            Type::GenericInstance(base, args) => match base.as_ref() {
+                Type::Struct(name, _) => (name, args.as_slice()),
+                _ => return None,
+            },
+            _ => return None,
+        };
+        let base = name.split('<').next().unwrap_or(name);
+        let decl = match self.env.structs.get(base) {
+            Some(s) => (*s).clone(),
+            None => self
+                .mono
+                .generated_structs
+                .iter()
+                .find(|s| s.name.as_ref() == base)?
+                .clone(),
+        };
+        let mapping: HashMap<crate::symbol::Symbol, Type> = decl
+            .generics
+            .iter()
+            .map(|g| crate::symbol::Symbol::from(g.name()))
+            .zip(args.iter().cloned())
+            .collect();
+        Some(
+            decl.fields
+                .iter()
+                .map(|(n, t)| (n.clone(), t.substitute(&mapping)))
+                .collect(),
+        )
+    }
+
+    /// The mangled name of `ty`'s `Drop::drop`, instantiated for `ty` when the impl is
+    /// generic, or `None` when `ty` does not implement `Drop`.
+    fn drops_impl_call(&mut self, ty: &Type) -> Option<crate::symbol::Symbol> {
+        let impls: Vec<&decl::ImplBlock> = self.env.impls.get("Drop")?.clone();
+        let base_name = |t: &Type| -> Option<String> {
+            match t {
+                Type::Struct(n, _) | Type::Enum(n, _) => {
+                    Some(n.split('<').next().unwrap_or(n).to_string())
+                }
+                Type::GenericInstance(b, _) => match b.as_ref() {
+                    Type::Struct(n, _) | Type::Enum(n, _) => {
+                        Some(n.split('<').next().unwrap_or(n).to_string())
+                    }
+                    _ => None,
+                },
+                _ => None,
+            }
+        };
+        let want = base_name(ty)?;
+        let ib = impls
+            .into_iter()
+            .find(|ib| base_name(&ib.target_type).as_deref() == Some(want.as_str()))?;
+        let method = ib
+            .methods
+            .iter()
+            .find(|m| m.name.as_ref() == "drop")?
+            .clone();
+        let mut mapping = HashMap::new();
+        self.unify_types(&ib.target_type, ty, &mut mapping);
+        let (_, name) = self.instantiate_impl_method(&method, &mapping, ty, ib);
+        Some(name.into())
+    }
+
+    /// A function or closure body begins. `params` are its parameters taken by value.
+    pub(crate) fn drops_enter_function(&mut self, params: Vec<(String, Type)>, body: &[Statement]) {
         let scope = self.scopes.len() - 1;
+        let params: Vec<(String, Vec<GluePart>)> = params
+            .into_iter()
+            .map(|(name, ty)| (name, self.drops_glue(&ty)))
+            .filter(|(_, glue)| !glue.is_empty())
+            .collect();
         let already = body.iter().any(|s| {
             let mut uses = HashSet::new();
             Self::extract_uses_stmt(s, &mut uses);
@@ -177,7 +347,10 @@ impl<'a> TypeChecker<'a> {
         let rewrite = !already;
         let d = &mut self.borrow.drops;
         d.frames.push(FrameKind::Function { rewrite });
-        d.pending = params.into_iter().map(|p| (p, scope)).collect();
+        d.pending = params
+            .into_iter()
+            .map(|(p, glue)| (p, scope, glue))
+            .collect();
     }
 
     pub(crate) fn drops_exit_function(&mut self) {
@@ -218,15 +391,16 @@ impl<'a> TypeChecker<'a> {
         let d = &mut self.borrow.drops;
         let owners = std::mem::take(&mut d.pending)
             .into_iter()
-            .map(|(name, scope)| Owner {
+            .map(|(name, scope, glue)| Owner {
                 name,
                 is_param: true,
                 decl: None,
-                to_block_end: false,
+                to_block_end: glue.iter().any(|g| g.call.is_some()),
                 scope,
                 moved: Moved::No,
                 moved_at: None,
                 flag: None,
+                glue,
             })
             .collect();
         d.frames.push(FrameKind::Block {
@@ -255,9 +429,16 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    /// `let name = ..` bound an owned tensor.
+    /// `let name = ..` bound a value that owns something to drop: a tensor that is not a
+    /// view, or a struct that implements `Drop` or holds one. A value whose drop runs a `Drop`
+    /// impl waits for the end of its block, as in Rust, since what the impl does may be part
+    /// of what the program means; one that only frees memory is freed after its last use.
     pub(crate) fn drops_note_owner(&mut self, name: &str, ty: &Type) {
-        if !matches!(ty, Type::Tensor(..)) || self.borrow.views.contains_key(name) {
+        if self.borrow.views.contains_key(name) {
+            return;
+        }
+        let glue = self.drops_glue(ty);
+        if glue.is_empty() {
             return;
         }
         let scope = self.scopes.len() - 1;
@@ -266,11 +447,12 @@ impl<'a> TypeChecker<'a> {
                 name: name.to_string(),
                 is_param: false,
                 decl: Some(*stmt),
-                to_block_end: false,
+                to_block_end: glue.iter().any(|g| g.call.is_some()),
                 scope,
                 moved: Moved::No,
                 moved_at: None,
                 flag: None,
+                glue,
             });
         }
     }
@@ -444,7 +626,7 @@ impl<'a> TypeChecker<'a> {
             if let (Some(f), Some(FrameKind::Block { stmt, edits, .. })) =
                 (flag, self.borrow.drops.frames.last_mut())
             {
-                edits.assign.insert(*stmt, (None, Some(f)));
+                edits.assign.insert(*stmt, (Vec::new(), Some(f)));
             }
             return;
         }
@@ -492,7 +674,10 @@ impl<'a> TypeChecker<'a> {
         let old_flag = flag
             .as_deref()
             .filter(|_| moved == Moved::Maybe && !operand_drop);
-        let drop_old = Some(after_value(drop_stmt(name, old_flag)));
+        let drop_old: Vec<Statement> = glue_drops(name, &owner.glue, old_flag)
+            .into_iter()
+            .map(after_value)
+            .collect();
         if let Some(FrameKind::Block { stmt, edits, .. }) = self.borrow.drops.frames.last_mut() {
             edits.assign.insert(*stmt, (drop_old, flag));
         }
@@ -627,10 +812,10 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
             };
-            let stmt = owner_drop(owner);
+            let stmts = owner_drop(owner);
             match at {
-                Some(i) => edits.after.entry(i).or_default().push(stmt),
-                None => edits.before.entry(0).or_default().push(stmt),
+                Some(i) => edits.after.entry(i).or_default().extend(stmts),
+                None => edits.before.entry(0).or_default().extend(stmts),
             }
         }
         if rewriting {
@@ -683,8 +868,8 @@ impl<'a> TypeChecker<'a> {
                 }
                 _ => {
                     let assign = edits.assign.remove(&i);
-                    if let Some((Some(drop_old), _)) = &assign {
-                        out.push(drop_old.clone());
+                    if let Some((drop_old, _)) = &assign {
+                        out.extend(drop_old.iter().cloned());
                     }
                     out.push(body[i].clone());
                     out.extend(after);
@@ -731,7 +916,7 @@ impl<'a> TypeChecker<'a> {
                             continue;
                         }
                         self.drops_print(owner, format!("before the {what} on line {line}"));
-                        dropped.push(owner_drop(owner));
+                        dropped.extend(owner_drop(owner));
                     }
                 }
             }

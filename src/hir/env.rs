@@ -1462,8 +1462,7 @@ impl<'a> TypeChecker<'a> {
         let owned_params = func
             .params
             .iter()
-            .filter(|(_, t)| matches!(t, Type::Tensor(..)))
-            .map(|(n, _)| n.to_string())
+            .map(|(n, t)| (n.to_string(), t.clone()))
             .collect();
         self.drops_enter_function(owned_params, &func.body);
         self.check_block(&mut func.body, &func.return_type.clone());
