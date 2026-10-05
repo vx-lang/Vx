@@ -70,9 +70,37 @@ pub(crate) struct GluePart {
     call: Option<crate::symbol::Symbol>,
 }
 
+/// One walk over a statement's calls, in the order they are evaluated.
+struct TempScan {
+    /// The calls seen so far.
+    calls: usize,
+    /// A branch, a loop or a call of unknown type was seen: nothing after it moves out.
+    blocked: bool,
+    /// Probing: the last call that is a temporary which could move out.
+    last_temp: Option<usize>,
+    /// Moving out: every call up to this one.
+    upto: Option<usize>,
+    /// Each call moved out: its local, type, value and drops.
+    found: Vec<(String, Type, Expr, Vec<GluePart>)>,
+}
+
+impl TempScan {
+    fn new(upto: Option<usize>) -> Self {
+        Self {
+            calls: 0,
+            blocked: false,
+            last_temp: None,
+            upto,
+            found: Vec::new(),
+        }
+    }
+}
+
 /// What the checker writes into one block, by statement.
 #[derive(Default)]
 struct Edits {
+    /// The `let`s of the statement's temporaries, which go first.
+    lets: BTreeMap<usize, Vec<Statement>>,
     before: BTreeMap<usize, Vec<Statement>>,
     after: BTreeMap<usize, Vec<Statement>>,
     /// `t = e`: the drops of the old value, if it was not moved, and the flag to clear once
@@ -97,7 +125,7 @@ enum FrameKind {
         lines: Vec<usize>,
         /// The statement being checked.
         stmt: usize,
-        edits: Edits,
+        edits: Box<Edits>,
     },
 }
 
@@ -408,7 +436,7 @@ impl<'a> TypeChecker<'a> {
             last_use: Self::compute_block_liveness(body),
             lines: body.iter().map(|s| s.span().line).collect(),
             stmt: 0,
-            edits: Edits::default(),
+            edits: Box::default(),
         });
     }
 
@@ -782,6 +810,9 @@ impl<'a> TypeChecker<'a> {
         if self.speculating {
             return;
         }
+        if rewriting {
+            self.drops_hoist_temporaries(body, &mut edits);
+        }
         for owner in owners.iter().rev() {
             if owner.moved == Moved::Yes {
                 continue;
@@ -819,16 +850,146 @@ impl<'a> TypeChecker<'a> {
             }
         }
         if rewriting {
-            self.drops_apply(body, edits);
+            self.drops_apply(body, *edits);
         }
+    }
+
+    /// A struct that a statement makes and nothing names -- `make()` in `look(&make())`,
+    /// `make().id`, or `make();` -- is dropped at the end of the statement, as in Rust. It is
+    /// moved into a `let` of its own just before the statement, and dropped after it. So the
+    /// order things happen in does not change, every call the statement makes before it moves
+    /// out too, in order, into a `let` that is dropped after the statement only when its
+    /// value was just read. Nothing moves out of a branch, a loop or the right of `&&` or `||`,
+    /// and a temporary after one, or after a call whose type is not known, stays where it is
+    /// and is not dropped.
+    fn drops_hoist_temporaries(&mut self, body: &mut [Statement], edits: &mut Edits) {
+        for (i, stmt) in body.iter_mut().enumerate() {
+            // Where the last temporary that can move out is, counted in calls.
+            let mut probe = TempScan::new(None);
+            let mut copy = stmt.clone();
+            self.drops_scan_stmt(&mut copy, &mut probe);
+            let Some(last) = probe.last_temp else {
+                continue;
+            };
+            let mut scan = TempScan::new(Some(last));
+            self.drops_scan_stmt(stmt, &mut scan);
+            for (name, ty, expr, glue) in scan.found {
+                edits
+                    .lets
+                    .entry(i)
+                    .or_default()
+                    .push(let_stmt(&name, false, ty, expr));
+                let after = edits.after.entry(i).or_default();
+                for (k, drop) in glue_drops(&name, &glue, None).into_iter().enumerate() {
+                    after.insert(k, drop);
+                }
+            }
+        }
+    }
+
+    fn drops_scan_stmt(&mut self, stmt: &mut Statement, scan: &mut TempScan) {
+        match stmt {
+            Statement::LetDecl(l) => self.drops_scan_temps(&mut l.expr, false, scan),
+            Statement::Return(r) => {
+                if let Some(e) = &mut r.expr {
+                    self.drops_scan_temps(e, false, scan);
+                }
+            }
+            Statement::ExprStmt(e) => self.drops_scan_temps(&mut e.expr, true, scan),
+            Statement::Assign(a) => self.drops_scan_temps(&mut a.rhs, false, scan),
+            Statement::Assert(a) => self.drops_scan_temps(&mut a.expr, false, scan),
+            Statement::ForLoop(f) => self.drops_scan_temps(&mut f.iterable, false, scan),
+            _ => {}
+        }
+    }
+
+    /// Walk `e` in the order it is evaluated, counting its calls. Probing (`scan.upto` is
+    /// `None`), note the last temporary every call before which could move out; otherwise move
+    /// out each call up to that one. `borrowed`: `e`'s value is only read or discarded.
+    fn drops_scan_temps(&mut self, e: &mut Expr, borrowed: bool, scan: &mut TempScan) {
+        let ty = match e {
+            Expr::FunctionCall(fc) => {
+                for arg in fc.args.iter_mut() {
+                    self.drops_scan_temps(arg, false, scan);
+                }
+                self.drops_return_type(&fc.name)
+            }
+            Expr::StructInit(si) => {
+                for (_, field) in si.fields.iter_mut() {
+                    self.drops_scan_temps(field, false, scan);
+                }
+                Some(Type::Struct(si.name.clone(), None))
+            }
+            Expr::Borrow(b) => return self.drops_scan_temps(&mut b.expr, true, scan),
+            Expr::MemberAccess(m) => return self.drops_scan_temps(&mut m.base, true, scan),
+            Expr::IndexAccess(ix) => {
+                self.drops_scan_temps(&mut ix.base, true, scan);
+                return self.drops_scan_temps(&mut ix.index, false, scan);
+            }
+            Expr::BinaryOp(b) => {
+                self.drops_scan_temps(&mut b.lhs, false, scan);
+                return self.drops_scan_temps(&mut b.rhs, false, scan);
+            }
+            Expr::RelationalOp(r) => {
+                self.drops_scan_temps(&mut r.lhs, false, scan);
+                return self.drops_scan_temps(&mut r.rhs, false, scan);
+            }
+            Expr::UnaryOp(u) => return self.drops_scan_temps(&mut u.expr, false, scan),
+            Expr::Identifier(_) | Expr::Number(_) | Expr::StringLiteral(_) => return,
+            // A branch, a loop or a short-circuit runs its parts only sometimes, and a
+            // closure later: nothing at or after it moves out.
+            _ => {
+                scan.blocked = true;
+                return;
+            }
+        };
+        let index = scan.calls;
+        scan.calls += 1;
+        // A `void` call is not a value to keep.
+        let ty = ty.filter(|t| !crate::syntax::is_void_ty(t));
+        if ty.is_none() {
+            scan.blocked = true;
+        }
+        let glue = match &ty {
+            Some(t) if borrowed => self.drops_glue(t),
+            _ => Vec::new(),
+        };
+        let is_struct_temp = !glue.is_empty() && !matches!(ty, Some(Type::Tensor(..)));
+        match scan.upto {
+            None => {
+                if is_struct_temp && !scan.blocked {
+                    scan.last_temp = Some(index);
+                }
+            }
+            Some(last) if index <= last => {
+                let ty = ty.expect("every call up to the last temporary has a type");
+                let name = self.drops_fresh("temp");
+                let value = std::mem::replace(e, ident(&name));
+                scan.found.push((name, ty, value, glue));
+            }
+            Some(_) => {}
+        }
+    }
+
+    /// The declared return type of the function `name`, once the checker has resolved it.
+    fn drops_return_type(&self, name: &crate::symbol::Symbol) -> Option<Type> {
+        if let Some(f) = self.env.functions.get(name) {
+            return Some(f.0.clone());
+        }
+        self.mono
+            .functions
+            .iter()
+            .find(|(f, _)| &f.name == name)
+            .map(|(f, _)| f.return_type.clone())
     }
 
     /// Make a block's edits, from its last statement back so the indices hold.
     fn drops_apply(&mut self, body: &mut Vec<Statement>, mut edits: Edits) {
         let last = body.len().checked_sub(1);
         let mut at: Vec<usize> = edits
-            .before
+            .lets
             .keys()
+            .chain(edits.before.keys())
             .chain(edits.after.keys())
             .chain(edits.assign.keys())
             .copied()
@@ -839,6 +1000,7 @@ impl<'a> TypeChecker<'a> {
             if i >= body.len() {
                 continue;
             }
+            let lets = edits.lets.remove(&i).unwrap_or_default();
             let before = edits.before.remove(&i).unwrap_or_default();
             let after = edits.after.remove(&i).unwrap_or_default();
             let mut out = before;
@@ -878,7 +1040,7 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
             }
-            body.splice(i..=i, out);
+            body.splice(i..=i, lets.into_iter().chain(out));
         }
     }
 

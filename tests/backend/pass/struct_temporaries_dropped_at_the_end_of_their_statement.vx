@@ -1,0 +1,61 @@
+//===- struct_temporaries_dropped_at_the_end_of_their_statement.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A struct that a statement makes and nothing names is dropped at the end of that statement,
+// as in Rust: borrowed by a call (2), read through a field (3), thrown away (4), and borrowed
+// after another call, which still runs first (`s`, then 5). `a`, named, lives to the end.
+//
+// EXPECT: l 2 | 3 | 4 | s 5 | 10 end 1
+
+import core::ops;
+
+struct Noisy {
+  id : i32,
+  t : Tensor<i32, [?]>,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    print(self.id);
+    print!(" ");
+  }
+}
+
+fn noisy(id : i32) -> Noisy {
+  return Noisy {
+    id: id, t: Tensor<i32>([4])
+  };
+}
+
+fn look(n : &Noisy) -> i32 {
+  print!("l ");
+  return n.id;
+}
+
+fn side() -> i32 {
+  print!("s ");
+  return 0;
+}
+
+fn two(a : i32, b : &Noisy) -> i32 {
+  return a + b.id;
+}
+
+fn main() -> i32 {
+  let a = noisy(1);
+  let x = look(&noisy(2));
+  print!("| ");
+  let y = noisy(3).id;
+  print!("| ");
+  noisy(4);
+  print!("| ");
+  let z = two(side(), &noisy(5));
+  print!("| ");
+  print(x + y + z);
+  print!(" end ");
+  return 0;
+}
