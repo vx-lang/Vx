@@ -4,7 +4,8 @@
 has no `drop` of its own, so dropping it drops its fields in the order they are declared.
 `Boxed` holds one and prints its own number before its field is dropped. `main` makes these,
 passes them to functions by value (which drop them) and by `&`, moves them inside `if`s and
-loops, gives variables new values, and opens nested blocks. Every `drop` prints, so the output
+loops, gives variables new values, and opens nested blocks. It also makes ones nothing names,
+such as `look_n(&noisy(3))`, which are dropped at the end of their statement. Every `drop` prints, so the output
 is the order of the drops, which has to be Rust's: a block drops its variables in reverse
 order, a moved value is not dropped, and a variable given a new value drops the old one.
 
@@ -77,6 +78,8 @@ class Gen:
                     v = self.rng.choice(own)
                     v.alive = True
                     out.append(("refill", v.name, v.kind, self.new_id(), self.new_id()))
+            elif k < 0.72:
+                out.append(("temp", self.rng.randrange(4), self.new_id()))
             elif k < 0.8 and depth < 3:
                 then_b = self.body(scope, loops, depth + 1)
                 else_b = None
@@ -119,6 +122,14 @@ def render(stmts, lang, ind):
         elif kind == "refill":
             _, v, k, a, b = s
             L.append(f"{pad}{v} = {make_expr(k, a, b, lang)};")
+        elif kind == "temp":
+            _, how, a = s
+            L.append(pad + [
+                f"look_n(&noisy({a}));",
+                f"k = k + noisy({a}).id % 2;",
+                f"noisy({a});",
+                f"k = k + two(side(), &noisy({a}));",
+            ][how])
         elif kind == "if":
             L.append(f"{pad}if (k + {s[1]}) % 2 == 0 {{")
             L += render(s[2], lang, ind + 1)
@@ -193,6 +204,15 @@ fn look_b(x : &Boxed) -> void {
   print!("l ");
 }
 
+fn side() -> i32 {
+  print!("s ");
+  return 0;
+}
+
+fn two(a : i32, b : &Noisy) -> i32 {
+  return a + b.id % 2;
+}
+
 fn main() -> i32 {
   let mut k = 0;"""
 
@@ -209,6 +229,8 @@ fn take_b(x: Boxed) { print!("t "); }
 fn look_n(x: &Noisy) { print!("l "); }
 fn look_p(x: &Pair) { print!("l "); }
 fn look_b(x: &Boxed) { print!("l "); }
+fn side() -> i32 { print!("s "); 0 }
+fn two(a: i32, b: &Noisy) -> i32 { a + b.id % 2 }
 fn main() {
   let mut k = 0i32;"""
 
