@@ -29,10 +29,13 @@ permissions:
   pull-requests: write
   statuses: write
 
-# Two signatures arriving at once would otherwise both write signatures.json from the same
-# starting point and one would be lost. Queued rather than cancelled, so no signature is dropped.
+# One queue per pull request. GitHub keeps only one waiting run in a group, and cancels it when a
+# newer run joins, so a single queue for every pull request dropped signatures while runs waited
+# for a runner. Two signatures at once are still safe: the action saves signatures.json with the
+# version it read, and GitHub refuses a save over a newer version, so one run fails and a
+# "recheck" comment records it.
 concurrency:
-  group: cla-signatures
+  group: cla-${{ github.event.pull_request.number || github.event.issue.number }}
   cancel-in-progress: false
 
 jobs:
