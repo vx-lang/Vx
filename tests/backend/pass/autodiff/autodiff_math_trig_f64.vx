@@ -1,0 +1,38 @@
+//===- autodiff_math_trig_f64.vx - Vx Compiler --------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The derivatives of f64 `sin`, `cos` and `tan` at x = 1: cos 1, -sin 1 and 1 / cos^2 1,
+// printed times 10^6. Enzyme cannot differentiate the core::libm functions themselves, which
+// read the float's bits, so each is marked to be differentiated as its C function.
+//
+// CHECK-DAG: llvm.func @libm_sin({{.*}}passthrough = {{\[\[}}"enzyme_math", "sin"{{\]\]}}
+// CHECK-DAG: llvm.func @libm_cos({{.*}}passthrough = {{\[\[}}"enzyme_math", "cos"{{\]\]}}
+// CHECK-DAG: llvm.func @libm_tan({{.*}}passthrough = {{\[\[}}"enzyme_math", "tan"{{\]\]}}
+// EXPECT: 540302 -841470 3425518
+import core::num;
+
+fn sin_of(x : f64) -> f64 {
+  return x.sin();
+}
+
+fn cos_of(x : f64) -> f64 {
+  return x.cos();
+}
+
+fn tan_of(x : f64) -> f64 {
+  return x.tan();
+}
+
+fn main() -> i32 {
+  let x : f64 = 1.0;
+  print((grad(sin_of, x) * 1000000.0) as i64);
+  print!(" ");
+  print((grad(cos_of, x) * 1000000.0) as i64);
+  print!(" ");
+  print((grad(tan_of, x) * 1000000.0) as i64);
+  return 0;
+}
