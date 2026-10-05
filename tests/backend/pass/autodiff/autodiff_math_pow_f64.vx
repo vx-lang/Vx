@@ -1,0 +1,32 @@
+//===- autodiff_math_pow_f64.vx - Vx Compiler ---------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The derivatives of f64 `x.powf(3)` in x at x = 2 (3 x^2 = 12) and of `2.powf(y)` in y at y = 3
+// (2^3 ln 2), printed times 10^6. Enzyme cannot differentiate the core::libm function itself,
+// which reads the float's bits, so it is marked to be differentiated as the C `pow`.
+//
+// CHECK-DAG: llvm.func @libm_pow({{.*}}passthrough = {{\[\[}}"enzyme_math", "pow"{{\]\]}}
+// EXPECT: 12000000 5545177
+import core::num;
+
+fn cube(x : f64) -> f64 {
+  return x.powf(3.0);
+}
+
+fn two_to(y : f64) -> f64 {
+  let two : f64 = 2.0;
+  return two.powf(y);
+}
+
+fn main() -> i32 {
+  let x : f64 = 2.0;
+  let y : f64 = 3.0;
+  print((grad(cube, x) * 1000000.0) as i64);
+  print!(" ");
+  print((grad(two_to, y) * 1000000.0) as i64);
+  return 0;
+}
