@@ -167,6 +167,7 @@ GPU while you work out why the numbers are wrong.</p>
 <p>Residency across a function return is one case. The repository ships six, each about a different
 relation and a different place programs normally lose it:</p>
 
+<div class="table-scroll">
 <table>
 <tr><th>Boundary</th><th>The relation carried across it</th></tr>
 <tr><td>A function return</td><td>This tensor lives in the GPU's memory (<code>E6003</code>)</td></tr>
@@ -176,6 +177,7 @@ relation and a different place programs normally lose it:</p>
 <tr><td>A host→device launch</td><td>This block is above the diagonal, so its work is dead — and <code>-O3</code> can act on it</td></tr>
 <tr><td>Source ↔ machine model</td><td>These bytes fit that memory (<code>E6009</code>)</td></tr>
 </table>
+</div>
 
 <p>Five of them are refusals. The fifth, the launch that carries a proof, is the other kind: nothing is wrong with the program, but
 the host has proved something the device compiler cannot see, so the proof is re-materialized inside

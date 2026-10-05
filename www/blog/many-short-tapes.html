@@ -60,6 +60,7 @@ bytes, where every object has an address and every address is a number of the sa
 
 <p>That memory has no size the program can talk about. It can only be found by running out:</p>
 
+<div class="table-scroll">
 <table>
 <tr><th>Language</th><th>What running out looks like</th></tr>
 <tr><td>C</td><td><code>malloc</code> returns <code>NULL</code></td></tr>
@@ -67,6 +68,7 @@ bytes, where every object has an address and every address is a number of the sa
 <tr><td>Rust</td><td>the process aborts; <code>Vec::push</code> has no failure path</td></tr>
 <tr><td>Java, Python</td><td><code>OutOfMemoryError</code>, <code>MemoryError</code></td></tr>
 </table>
+</div>
 
 <p>In every row, capacity is an event at run time. None of these languages lets a type say
 &ldquo;this fits&rdquo;, because there is nothing for it to fit into.</p>

@@ -203,11 +203,13 @@ activations are placed inside the layer loop because each iteration reclaims the
 <p>Testing both allocation layouts against the same machine model produces these compile-time
 results:</p>
 
+<div class="table-scroll">
 <table>
 <tr><th>Layout</th><th>Tiles</th><th>Working set</th><th>Utilization</th><th>Verdict</th></tr>
 <tr><td>Every layer's activations at function scope</td><td>227</td><td>58.93 GiB</td><td>1.4731</td><td>E6010, refused</td></tr>
 <tr><td>Activations inside the layer loop</td><td>41</td><td>15.94 GiB</td><td>0.3984</td><td>admitted</td></tr>
 </table>
+</div>
 
 <p>Total allocations sum to 63,271,075,840 bytes (58.93 GiB), whereas peak residency requires only
 17,112,760,320 bytes (15.94 GiB). The peak breaks down into 12.06 GiB of layer weights, 0.49 GiB of
@@ -244,12 +246,14 @@ bus transfers.</p>
 capacity. Keeping the prefill length at 4096 tokens and raising the batch size on the same A100-40
 illustrates this boundary:</p>
 
+<div class="table-scroll">
 <table>
 <tr><th>Batch</th><th>Working set</th><th>Utilization</th><th>Verdict</th></tr>
 <tr><td>1</td><td>15.94 GiB</td><td>0.3984</td><td>admitted</td></tr>
 <tr><td>8</td><td>39.65 GiB</td><td>0.9911</td><td>admitted</td></tr>
 <tr><td>9</td><td>43.03 GiB</td><td>1.0758</td><td>E6010, refused</td></tr>
 </table>
+</div>
 
 <p>Batch 8 fits with 0.9% of GPU memory to spare (39.65 GiB used). Batch 9 requires 43.03 GiB and exceeds
 card capacity, so the compiler rejects it with error <code>E6010</code>. The compiler CLI

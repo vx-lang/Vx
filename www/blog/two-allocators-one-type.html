@@ -170,6 +170,7 @@ through.</p>
 
 <p>This is a mistake people make often enough to leave a trail. A few from public trackers:</p>
 
+<div class="table-scroll">
 <table>
 <tr><th>Where</th><th>What happened</th></tr>
 <tr><td><a href="https://github.com/pytorch/pytorch/issues/49814">PyTorch #49814</a> (2020)</td>
@@ -197,6 +198,7 @@ builds, and host code read them while writing a plot file.</td></tr>
 <td>PyTorch's own compiler generated a CUDA kernel call that received a CPU tensor pointer. Eager
 mode ran correctly.</td></tr>
 </table>
+</div>
 
 <p>The cuBLAS row is the clearest. The library's authors knew exactly which memory a result pointer
 names, and the only place they could record it was a mode flag on a handle, because the parameter's

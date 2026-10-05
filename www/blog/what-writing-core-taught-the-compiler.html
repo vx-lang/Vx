@@ -86,6 +86,7 @@
 
 <p>The new <code>stdlib/core/</code> library ships with eight fundamental modules, accompanied by a reproducible random-number library in <code>std::rand</code>:</p>
 
+<div class="table-scroll">
 <table>
 <tr><th>Module</th><th>What is inside</th></tr>
 <tr><td><code>core::num</code></td><td>Full integer arithmetic and bit manipulation across all widths (<code>i8</code>&ndash;<code>i64</code>, <code>u8</code>&ndash;<code>u64</code>): bit counts, rotates, <code>pow</code>, <code>ilog2</code>, <code>next_power_of_two</code>, plus the <code>checked_*</code> and <code>saturating_*</code> families.</td></tr>
@@ -98,6 +99,7 @@
 <tr><td><code>core::ops</code></td><td>Fundamental operator traits (arithmetic, bitwise, index, and dereference).</td></tr>
 <tr><td><code>std::rand</code></td><td>A pure xoshiro256** pseudorandom generator with struct-encapsulated state, uniform floats in <code>[0, 1)</code>, unbiased integer ranges via rejection sampling, Box-Muller normal distributions, and buffer fills.</td></tr>
 </table>
+</div>
 
 <p>A trait defines shared behavior that types can implement. When a trait provides default method bodies, types only need to define a small set of core methods. In <code>core::cmp</code>, defining just <code>eq</code> and <code>cmp</code> gives a type ten comparison methods for free:</p>
 

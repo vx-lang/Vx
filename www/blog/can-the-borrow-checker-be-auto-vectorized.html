@@ -290,6 +290,7 @@ produce every number in this post, are in
 
 <p>First, a loop over a batch, which lets the loop vectorizer work on many pairs at once:</p>
 
+<div class="table-scroll">
 <table>
 <thead><tr><th>Input</th><th>Old loop</th><th>Vectorized</th></tr></thead>
 <tbody>
@@ -299,6 +300,7 @@ produce every number in this post, are in
 <tr><td>Identical words</td><td>0.70&ndash;0.74 ns</td><td>1.07 ns</td></tr>
 </tbody>
 </table>
+</div>
 
 <p>The vectorized check costs the same for every input, because it never branches. The
 old loop depends on its input. Random words almost always fail at slot 0, the branch predictor
@@ -310,6 +312,7 @@ are identical, its first line returns straight away and it beats the new code.</
 assignment, so the second measurement keeps each check a separate call. Here the four slots are
 still in one register, but nothing is shared between pairs:</p>
 
+<div class="table-scroll">
 <table>
 <thead><tr><th>Input</th><th>Old loop</th><th>Branch-free</th><th>Equality test, then branch-free</th></tr></thead>
 <tbody>
@@ -319,6 +322,7 @@ still in one register, but nothing is shared between pairs:</p>
 <tr><td>Identical words</td><td>0.94&ndash;0.99 ns</td><td>2.4 ns</td><td>0.74 ns</td></tr>
 </tbody>
 </table>
+</div>
 
 <p>The last column keeps the old loop's first line, <code>if bits_a == bits_b { return
 true; }</code>, and runs the branch-free check after it. That one predictable branch gives back the

@@ -166,12 +166,14 @@ the compiler has already proved the access illegal, the library can only emit a 
 <code>T *</code>. So every later use can be checked, and mistakes the tape model compiles are
 refused on a laptop:</p>
 
+<div class="table-scroll">
 <table>
 <tr><th>Mistake</th><th>C++ / CUDA</th><th>Vx</th></tr>
 <tr><td>Host reads device memory</td><td>segfault or <code>cudaErrorIllegalAddress</code></td><td><a href="/errors/E6003/">E6003</a>, naming the missing transfer and its cost</td></tr>
 <tr><td>Working set larger than the memory</td><td>failed <code>cudaMalloc</code>, or OOM hours in</td><td><a href="/errors/E6009/">E6009</a> / E6010, against the declared capacity</td></tr>
 <tr><td>Copy between memories with no link</td><td>run-time error or a slow fallback</td><td>E6002, no path exists</td></tr>
 </table>
+</div>
 
 <p>The program prints 24. Replace <code>transfer(a, Memory::NPU_HBM)</code> with plain
 <code>a</code>, and the compiler refuses it:</p>

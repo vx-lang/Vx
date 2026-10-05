@@ -138,6 +138,7 @@ the error possible is what prices the fix.</p>
 
 <p>These are implemented, have diagnostic codes, and are held by tests:</p>
 
+<div class="table-scroll">
 <table>
 <tr><th>Check</th><th>Rules out</th></tr>
 <tr><td>Address-space visibility (<code>E6003</code>)</td><td>A device reading a space it cannot address; a host reading device memory</td></tr>
@@ -147,6 +148,7 @@ the error possible is what prices the fix.</p>
 <tr><td>Linear types</td><td>Use after move of a consumed buffer</td></tr>
 <tr><td>Seam contracts</td><td>Reading a buffer whose asynchronous transfer is not yet visible; discharged by z3</td></tr>
 </table>
+</div>
 
 <p>The machine itself is a source file. <code>fleet/</code> holds twelve of them — A100 in both
 memory sizes, H100, H200, B200, MI300X, an Apple M4, multi-GPU nodes — each eight to twenty-four

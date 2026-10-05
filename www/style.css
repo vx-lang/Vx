@@ -491,11 +491,7 @@ footer > p {
 
 .post p code,
 .post li code {
-  display: inline-block;
-  max-width: 100%;
-  overflow-x: auto;
-  white-space: nowrap;
-  vertical-align: bottom;
+  overflow-wrap: anywhere;
 }
 
 .post blockquote {
@@ -519,13 +515,16 @@ footer > p {
   letter-spacing: 0.04em;
 }
 
-.post table {
-  display: block;
+.post .table-scroll {
   overflow-x: auto;
+  margin: 1.5rem 0;
+}
+
+.post table {
   width: 100%;
   border-collapse: collapse;
   font-size: 0.925rem;
-  margin: 1.5rem 0;
+  margin: 0;
 }
 
 .post th,

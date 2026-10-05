@@ -156,11 +156,13 @@ within 10% the bind confined nothing and every number above it is measuring one 
 <p>On a <code>c5.metal</code> — bare metal, no hypervisor between the guest and the sockets — the
 same probe gives a clean signal:</p>
 
+<div class="table-scroll">
 <table>
 <tr><th>Measurement</th><th>Local</th><th>Remote</th></tr>
 <tr><td>Read, 48 threads</td><td>121.0 GB/s</td><td>51.55 GB/s</td></tr>
 <tr><td>Read, one thread</td><td>12.7&ndash;13.8 GB/s</td><td>8.7&ndash;9.0 GB/s</td></tr>
 </table>
+</div>
 
 <p>The 48-thread pair is a ratio of <strong>2.348&times;</strong>. The single-threaded pair is
 1.50&times;, and lower for a reason worth knowing: one core cannot saturate a socket's memory
@@ -189,12 +191,14 @@ backend binds the pages with <code>mbind</code>. The kernel agrees: <code>move_p
 
 <p>So what does that buy? Here is the honest table, and the middle row is the one that matters:</p>
 
+<div class="table-scroll">
 <table>
 <tr><th>Placement</th><th>Bandwidth</th><th>vs interleaved</th></tr>
 <tr><td>First-touch (the naive default)</td><td>96.8 GB/s</td><td>0.54&times;</td></tr>
 <tr><td><code>numactl --interleave=all</code></td><td>180.5 GB/s</td><td>1.00&times;</td></tr>
 <tr><td>Placed per node</td><td>242.1 GB/s</td><td>1.34&times;</td></tr>
 </table>
+</div>
 
 <p><strong>1.34&times; is the number, and 2.50&times; is not.</strong> Interleaving costs nothing,
 needs no source change, and is what anyone already does on a two-socket box. Quoting the speedup
