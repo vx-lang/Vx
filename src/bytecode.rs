@@ -275,6 +275,10 @@ pub enum Opcode {
     /// the tensor register, and the result is a pointer value (`LoweredTy::Ptr`). A tensor in
     /// device memory answers with its device address, which is what a C library takes.
     TensorDataPtr = 61,
+    /// A window of rows of a tensor (`q[a..b]`): `operand1` is the tensor, `operand2` is the
+    /// register holding `a`, and `imm` is the number of the register holding `b`. The result is
+    /// a tensor of rows `a` to `b - 1`. It shares the memory of the original and is not a copy.
+    TensorRange = 62,
 }
 
 /// Reverse mode for `Opcode::AutoDiff`: the gradient, through `__enzyme_autodiff_grad_*`.
@@ -309,6 +313,7 @@ impl Opcode {
             59 => TensorClone,
             60 => ConstTable,
             61 => TensorDataPtr,
+            62 => TensorRange,
             8 => Call,
             9 => Ret,
             10 => Matmul,
