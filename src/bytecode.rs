@@ -275,6 +275,10 @@ pub enum Opcode {
     /// the tensor register, and the result is a pointer value (`LoweredTy::Ptr`). A tensor in
     /// device memory answers with its device address, which is what a C library takes.
     TensorDataPtr = 61,
+    /// Free what the owner tensor `operand1` holds, once it is no longer used (`Statement::Drop`,
+    /// written by the checker under `VX_DROPS=scope`). With `imm = 1`, `operand2` is a `bool` that
+    /// is true once the tensor was moved, and then nothing is freed.
+    TensorDrop = 62,
 }
 
 /// Reverse mode for `Opcode::AutoDiff`: the gradient, through `__enzyme_autodiff_grad_*`.
@@ -309,6 +313,7 @@ impl Opcode {
             59 => TensorClone,
             60 => ConstTable,
             61 => TensorDataPtr,
+            62 => TensorDrop,
             8 => Call,
             9 => Ret,
             10 => Matmul,

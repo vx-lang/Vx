@@ -109,6 +109,18 @@ fn arm_value(c : bool) -> f32 {
   return x;
 }
 
+// `Verified(t)` is `t` itself, wrapped: returning it moves `t`, so `t` is not freed here.
+fn returned_verified() -> Verified<Tensor<f32, [4]>> {
+  let t = Tensor<f32, [4]>::new();
+  return Verified(t);
+}
+
+// A view of memory the program got from somewhere else owns nothing, so it is never freed.
+fn view_of_foreign_memory(p : *mut f32) -> f32 {
+  let v = unsafe { tensor_view_2d(p, 2, 2) };
+  return v[0][0];
+}
+
 fn main() -> i32 {
   return 0;
 }
@@ -180,3 +192,11 @@ fn main() -> i32 {
 
 // CHECK-LABEL: Function: arm_value
 // CHECK: then_block: [LetDecl{{.*}}Drop(DropStmt { name: "a", flag: None, after_value: true{{.*}}ExprStmt{{.*}}name: "a"{{.*}}else_block
+
+// CHECK-LABEL: Function: returned_verified
+// CHECK-NOT:  Drop
+// CHECK:      Return
+
+// CHECK-LABEL: Function: view_of_foreign_memory
+// CHECK-NOT:  Drop
+// CHECK:      Return
