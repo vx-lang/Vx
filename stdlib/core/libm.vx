@@ -9395,3 +9395,180 @@ fn libm_hypot(x : f64, y : f64) -> f64 {
   }
   return libm_hypot_exact(x, y);
 }
+
+/// The polynomial of `exp10` from `exp10.h`, as double-doubles, `lo` at `[2i]` and `hi` at
+/// `[2i + 1]`.
+const LIBM_EXP10_COEFFS_DD : Tensor<f64, [14]> = [
+0.0, 1.0, -0.00000000000000021707562233811494, 2.302585092994046,
+-0.00000000000000020935887830547685, 2.650949055239199, 0.0000000000000001669593387016762, 2.034678592293476,
+0.0000000000000000666917755934106, 1.171255148912267, 0.000000000000000025419896662003015, 0.5393829295760609,
+-0.000000000000000010602582695538038, 0.20699584869686802
+];
+
+/// The same polynomial with 128-bit coefficients, written by `DYADIC`.
+const LIBM_EXP10_COEFFS_128 : Tensor<u64, [32]> = [
+0, 18446744073709551489, 9223372036854775808, 0,
+0, 18446744073709551490, 10618799479599967254, 16885919335239060013,
+0, 18446744073709551490, 12225344693609907258, 9271113825469160411,
+0, 18446744073709551490, 9383298816073343748, 7660514654588540469,
+0, 18446744073709551489, 10802921988499579489, 11726309156384554360,
+0, 18446744073709551488, 9949858852598690067, 10989868292022164938,
+0, 18446744073709551486, 15273597790352925547, 9450447102328397853,
+0, 18446744073709551485, 10048216733471695771, 17651451638361236818
+];
+
+/// The degree-6 double-double polynomial of `exp10` at `dx`, by Horner's rule: `polyeval`.
+fn libm_exp10_poly_dd(dx : LibmDoubleDouble) -> LibmDoubleDouble {
+  let mut p = LibmDoubleDouble {
+    hi: LIBM_EXP10_COEFFS_DD[13], lo: LIBM_EXP10_COEFFS_DD[12]
+  };
+  let mut i : i64 = 5;
+  while i >= 0 {
+    p = libm_dd_multiply_add(dx, p, LibmDoubleDouble {
+      hi: LIBM_EXP10_COEFFS_DD[2 * i + 1], lo: LIBM_EXP10_COEFFS_DD[2 * i]
+    });
+    i = i - 1;
+  }
+  return p;
+}
+
+/// The degree-7 128-bit polynomial of `exp10` at `dx`, by Horner's rule: `polyeval`.
+fn libm_exp10_poly_128(dx : LibmDyadic128) -> LibmDyadic128 {
+  let mut p = libm_dyadic_from_parts(LIBM_EXP10_COEFFS_128[28], LIBM_EXP10_COEFFS_128[29], LIBM_EXP10_COEFFS_128[30], LIBM_EXP10_COEFFS_128[31]);
+  let mut i : i64 = 6;
+  while i >= 0 {
+    let c = libm_dyadic_from_parts(LIBM_EXP10_COEFFS_128[4 * i], LIBM_EXP10_COEFFS_128[4 * i + 1], LIBM_EXP10_COEFFS_128[4 * i + 2], LIBM_EXP10_COEFFS_128[4 * i + 3]);
+    p = libm_dyadic_add(c, libm_dyadic_mul(dx, p));
+    i = i - 1;
+  }
+  return p;
+}
+
+/// The 128-bit pass of `exp10`: `exp10_f128` from `exp10.h`.
+fn libm_exp10_128(x : f64, kd : f64, idx1 : i64, idx2 : i64) -> f64 {
+  let t1 = libm_multiply_add(kd, libm_f64_from_bits(13768423335549468672u64), x); // -0x1.3441350ap-14
+  let t2 = kd * libm_f64_from_bits(4377710088417181696u64); // 0x1.0c0219dcp-51
+  let t3 = kd * libm_f64_from_bits(4219214883283065762u64); // 0x1.da994fd20dba2p-87
+  let dx = libm_dyadic_add(libm_dyadic_from_f64(t1), libm_dyadic_add(libm_dyadic_from_f64(t2), libm_dyadic_from_f64(t3)));
+  let p = libm_exp10_poly_128(dx);
+  let mut r = libm_dyadic_mul(libm_exp_mid_128(idx1, idx2), p);
+  r.exponent = r.exponent + ((kd as i32) >> 12);
+  return libm_dyadic_to_f64(r);
+}
+
+/// The double-double pass of `exp10`: `exp10_double_double` from `exp10.h`.
+fn libm_exp10_dd(x : f64, kd : f64, exp_mid : LibmDoubleDouble) -> LibmDoubleDouble {
+  let t1 = libm_multiply_add(kd, libm_f64_from_bits(13768423335549468672u64), x); // -0x1.3441350ap-14
+  let t2 = kd * libm_f64_from_bits(4377710088417181696u64); // 0x1.0c0219dcp-51
+  let t3 = kd * libm_f64_from_bits(4219214883283065762u64); // 0x1.da994fd20dba2p-87
+  let mut dx = libm_dd_exact_add(t1, t2);
+  dx.lo = dx.lo + t3;
+  return libm_dd_quick_mult(exp_mid, libm_exp10_poly_dd(dx));
+}
+
+/// The reduction `exp10` and its subnormal path share: `k = round(x * log2(10) * 2^12)`, and
+/// the fast pass's `exp_mid` and `lo`.
+struct LibmExp10Reduced {
+  kd : f64,
+  hi : i32,
+  idx1 : i64,
+  idx2 : i64,
+  exp_mid : LibmDoubleDouble,
+  lo : f64,
+}
+
+impl Copy for LibmExp10Reduced {}
+
+fn libm_exp10_reduce(x : f64) -> LibmExp10Reduced {
+  let tmp = libm_multiply_add(x, libm_f64_from_bits(4614662735865160561u64), libm_f64_from_bits(4704009810788745216u64)); // 0x1.a934f0979a371p+1, 0x1.800000004p21
+  let k = ((libm_f64_to_bits(tmp) >> 19u64) as u32) as i32;
+  let kd = k as f64;
+  let idx1 = ((k >> 6) & 63) as i64;
+  let idx2 = (k & 63) as i64;
+  let exp_mid = libm_exp_mid_dd(idx1, idx2);
+  // dx = x - k * 2^-12 * log10(2).
+  let lo_h = libm_multiply_add(kd, libm_f64_from_bits(13768423335549468672u64), x); // -0x1.3441350ap-14
+  let dx = libm_multiply_add(kd, libm_f64_from_bits(4377710088417303193u64), lo_h); // 0x1.0c0219dc1da99p-51
+  let mid_lo = dx * exp_mid.hi;
+  // (10^dx - 1) / dx as a degree-3 polynomial.
+  let dx2 = dx * dx;
+  let c0 = libm_multiply_add(dx, libm_f64_from_bits(4613151825388694122u64), libm_f64_from_bits(4612367379483415830u64)); // 0x1.53524c73cea6ap+1, 0x1.26bb1bbb55516p+1
+  let c1 = libm_multiply_add(dx, libm_f64_from_bits(4607953682391825509u64), libm_f64_from_bits(4611764107503871564u64)); // 0x1.2bd75cc6afc65p+0, 0x1.0470587aa264cp+1
+  let p = libm_multiply_add(dx2, c1, c0);
+  return LibmExp10Reduced {
+    kd: kd, hi: k >> 12, idx1: idx1, idx2: idx2, exp_mid: exp_mid, lo: libm_multiply_add(p, mid_lo, exp_mid.lo)
+  };
+}
+
+/// `exp10(x)` when the result may be subnormal: `exp10_denorm` from `exp10.h`.
+fn libm_exp10_denorm(x : f64) -> f64 {
+  let s = libm_exp10_reduce(x);
+  let r = libm_exp_ziv_denorm(s.hi, s.exp_mid.hi, s.lo, libm_f64_from_bits(4325707442089361408u64)); // 0x1.8p-63
+  if r.ok {
+    return r.value;
+  }
+  let r_dd = libm_exp10_dd(x, s.kd, s.exp_mid);
+  let r2 = libm_exp_ziv_denorm(s.hi, r_dd.hi, r_dd.lo, libm_f64_from_bits(4163577855504023552u64)); // 0x1.8p-99
+  if r2.ok {
+    return r2.value;
+  }
+  return libm_exp10_128(x, s.kd, s.idx1, s.idx2);
+}
+
+/// Ten raised to a double, correctly rounded: `exp10` from `exp10.h`. The same scheme as
+/// `libm_exp`, with `log2(10)` in place of `log2(e)`; 10^1 to 10^22, which are exact, and 10^23
+/// are answered directly when the fast pass cannot decide them.
+fn libm_exp10(x : f64) -> f64 {
+  let x_u = libm_f64_to_bits(x);
+  // x < log10(2^-1075) or x >= log10 of the largest double, or |x| < 2^-56, or infinity or NaN.
+  if x_u >= 13867491935800207938u64 || (x_u <= 13581672830762149134u64 && x_u >= 4644130490496809471u64) || x_u < 4362804393534743822u64 { // 0xc0733a7146f72a42, 0xbc7bcb7b1526e50e, 0x40734413509f79ff, 0x3c8bcb7b1526e50e
+    let x_abs = x_u & 9223372036854775807u64; // 0x7fffffffffffffff
+    if x_abs <= 4362804393534743822u64 { // 0x3c8bcb7b1526e50e
+      // 10^x ~ 1 + x * ln(10), which rounds like 1 + x / 2.
+      return libm_multiply_add(x, 0.5, 1.0);
+    }
+    if x_u >= 13867491935800207938u64 { // 0xc0733a7146f72a42
+      if x_u > 13867772611911707474u64 { // 0xc07439b746e36b52
+        // x < log10(2^-1075), or -inf, or NaN with the sign bit set.
+        if x != x {
+          return x + libm_f64_from_bits(9218868437227405312u64); // 0x7ff0000000000000
+        }
+        return 0.0;
+      }
+      return libm_exp10_denorm(x);
+    }
+    if x != x {
+      return x + libm_f64_from_bits(9218868437227405312u64); // 0x7ff0000000000000
+    }
+    return libm_f64_from_bits(9218868437227405312u64); // 0x7ff0000000000000
+  }
+  let s = libm_exp10_reduce(x);
+  let err_d = libm_f64_from_bits(4325707442089361408u64); // 0x1.8p-63
+  let upper = s.exp_mid.hi + (s.lo + err_d);
+  let lower = s.exp_mid.hi + (s.lo - err_d);
+  if upper == lower {
+    return libm_f64_scale(upper, s.hi);
+  }
+  // A whole x from 1 to 22: 10^x is a double.
+  if (x_u & 9223653511831486463u64) == 0u64 && x >= 1.0 && x <= 22.0 && x == libm_round_even_f64(x) { // 0x8000ffffffffffff
+    let mut p : f64 = 10.0;
+    let mut n : f64 = 1.0;
+    while n < x {
+      p = p * 10.0;
+      n = n + 1.0;
+    }
+    return p;
+  }
+  if x_u == 4627167142146473984u64 { // 0x4037000000000000
+    // x = 23: 10^23 is not a double; this is it rounded, as LLVM answers it.
+    return libm_f64_from_bits(4950912855330343670u64) + x; // 0x1.52d02c7e14af6p76
+  }
+  let r_dd = libm_exp10_dd(x, s.kd, s.exp_mid);
+  let err_dd = libm_f64_from_bits(4163577855504023552u64); // 0x1.8p-99
+  let upper_dd = r_dd.hi + (r_dd.lo + err_dd);
+  let lower_dd = r_dd.hi + (r_dd.lo - err_dd);
+  if upper_dd == lower_dd {
+    return libm_f64_scale(upper_dd, s.hi);
+  }
+  return libm_exp10_128(x, s.kd, s.idx1, s.idx2);
+}

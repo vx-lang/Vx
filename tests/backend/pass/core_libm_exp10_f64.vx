@@ -1,0 +1,100 @@
+//===- core_libm_exp10_f64.vx - Vx Compiler ------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// f64 `exp10`, ported from LLVM libc's `exp10` into `core::libm`, against LLVM libc itself
+// (f475f085bf7b, built with FMA). It prints the bits of `libm_exp10(x)` (a NaN as
+// 9221120237041090560) for four inputs that need the double-double pass, and four for each pass
+// with a result that is subnormal (all found by searching random doubles). No input is known that
+// needs the 128-bit pass with a normal result, so that pass is also called on its own; then for
+// special values and the edges of the range; then hashes of 2^20 random bit patterns and of 2^20
+// random x from 2^-63 to 2^11 in size, and of 2^16 sent straight to the 128-bit pass. The port also
+// matched LLVM libc on 2^30 inputs of the second kind, and on 2^26 more with the faster passes
+// turned off.
+//
+// EXPECT: 4607182418799177470 4607182418800012654 4607182418800017457 4512883862935483467 1612782085284452 103530517805341 814478628320057 1760290479740494 2348774509317380 102510207724375 318877345511495 3964942505734777 4607182418800017408 4607182418800017408 4621819117588971520 4591870180066957722 4607182418800017408 4607182418800017408 4607182418800017408 9218868437227405312 9218868437227405312 0 9221120237041090560 9221120237041090560 9218868437227404193 9218868437227405312 1 0 4936209963552724370 4950912855330343670 4621819117588971520 4607182418800017408 18020146133661984354 3992498456055425952 1521920752946921199
+import core::num;
+import core::libm;
+
+fn bits(r : f64) -> u64 {
+  if r != r {
+    return 9221120237041090560u64;
+  }
+  return r.to_bits();
+}
+
+fn check(x : u64) -> i32 {
+  print(bits(libm_exp10(f64::from_bits(x))));
+  print!(" ");
+  return 0;
+}
+
+/// x from 2^-63 to 2^(count - 64) in size, either sign.
+fn ranged(s : u64, count : u64) -> u64 {
+  return (s & 9227875636482146303u64) | ((960u64 + ((s >> 52u64) & 2047u64) % count) << 52u64);
+}
+
+fn hash(kind : i32, count : i32) -> u64 {
+  let mut s : u64 = 88172645463325252u64;
+  let mut h : u64 = 0u64;
+  for i in 0..count {
+    s = s ^ (s << 13u64);
+    s = s ^ (s >> 7u64);
+    s = s ^ (s << 17u64);
+    let mut r : f64 = 0.0;
+    if kind == 0 {
+      r = libm_exp10(f64::from_bits(s));
+    } else if kind == 1 {
+      r = libm_exp10(f64::from_bits(ranged(s, 75u64)));
+    } else {
+      let t = libm_exp10_reduce(f64::from_bits(ranged(s, 70u64)));
+      r = libm_exp10_128(f64::from_bits(ranged(s, 70u64)), t.kd, t.idx1, t.idx2);
+    }
+    h = (h ^ bits(r)).wrapping_mul(1099511628211u64);
+  }
+  return h;
+}
+
+fn main() -> i32 {
+  let _r0 = check(13674691745561184965u64);
+  let _r1 = check(13641439376981918119u64);
+  let _r2 = check(4392434893819309346u64);
+  let _r3 = check(13842146387842311243u64);
+  let _r4 = check(13867499781635184045u64);
+  let _r5 = check(13867520760445544796u64);
+  let _r6 = check(13867505001166373038u64);
+  let _r7 = check(13867499112979950771u64);
+  let _r8 = check(13867496909435770762u64);
+  let _r9 = check(13867520836114332003u64);
+  let _r10 = check(13867512165690166663u64);
+  let _r11 = check(13867492909050612138u64);
+  let _r12 = check(0u64);
+  let _r13 = check(9223372036854775808u64);
+  let _r14 = check(4607182418800017408u64);
+  let _r15 = check(13830554455654793216u64);
+  let _r16 = check(4336966441157787648u64);
+  let _r17 = check(13560338478012563456u64);
+  let _r18 = check(1u64);
+  let _r19 = check(9218868437227405311u64);
+  let _r20 = check(9218868437227405312u64);
+  let _r21 = check(18442240474082181120u64);
+  let _r22 = check(9221120237041090560u64);
+  let _r23 = check(18444492273895866368u64);
+  let _r24 = check(4644130490496809470u64);
+  let _r25 = check(4644130490496809471u64);
+  let _r26 = check(13867772611911707474u64);
+  let _r27 = check(13867772611911707475u64);
+  let _r28 = check(4626885667169763328u64);
+  let _r29 = check(4627167142146473984u64);
+  let _r30 = check(4607182418800017408u64);
+  let _r31 = check(4336966441157787648u64);
+  print(hash(0, 1048576));
+  print!(" ");
+  print(hash(1, 1048576));
+  print!(" ");
+  print(hash(2, 65536));
+  return 0;
+}
