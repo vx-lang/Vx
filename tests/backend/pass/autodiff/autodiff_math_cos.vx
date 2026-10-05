@@ -1,6 +1,8 @@
 //===- autodiff_math_cos.vx - Vx Compiler -------------------*- Vx -*-===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK-DAG: llvm.intr.cos(
+// Enzyme cannot differentiate libm_cosf itself, which reads the float's bits, so the
+// function is marked to be differentiated as the C `cosf`.
+// CHECK-DAG: llvm.func @libm_cosf({{.*}}passthrough = {{\[\[}}"enzyme_math", "cosf"{{\]\]}}
 // CHECK-DAG: llvm.intr.fabs(
 // CHECK-DAG: llvm.func @__enzyme_autodiff_grad_test_func(
 // CHECK-LABEL: llvm.func @f32$cos(%arg0: f32) -> f32
