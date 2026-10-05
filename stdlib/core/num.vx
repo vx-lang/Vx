@@ -1517,38 +1517,6 @@ stamp_float!(f64 , 1.0 , 0.0 , 180.0);
 stamp_float!(f16 , 1.0 , 0.0 , 180.0);
 stamp_float!(bf16 , 1.0 , 0.0 , 180.0);
 
-/// Stamps `sinh`, `cosh` and `tanh` through the platform's `math` operations, for `f64`, which has no `core::libm`
-/// version yet. The other widths use `core::libm`'s.
-macro_rules stamp_float_hyperbolics {
-  ($t : ident) => {
-    impl $t {
-      /// The hyperbolic sine.
-      fn sinh(self : $t) -> $t {
-        return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
-          %r = math.sinh %a : $t
-          macro.yield %r : $t
-        };
-      }
-      /// The hyperbolic cosine.
-      fn cosh(self : $t) -> $t {
-        return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
-          %r = math.cosh %a : $t
-          macro.yield %r : $t
-        };
-      }
-      /// The hyperbolic tangent.
-      fn tanh(self : $t) -> $t {
-        return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
-          %r = math.tanh %a : $t
-          macro.yield %r : $t
-        };
-      }
-    }
-  };
-}
-
-stamp_float_hyperbolics!(f64);
-
 /// Stamps `asinh`, `acosh` and `atanh` as formulas through `ln_1p` and `ln`, for the widths
 /// LLVM libc has no version of yet: `f64`, `f16` and `bf16`. `f32` uses `core::libm`'s, below.
 macro_rules stamp_float_inverse_hyperbolic {
@@ -1675,6 +1643,24 @@ impl f64 {
   /// This raised to `n`, correctly rounded (LLVM libc's `pow`).
   fn powf(self : f64, n : f64) -> f64 {
     return libm_pow(self, n);
+  }
+
+  /// The hyperbolic sine, from `core::libm`'s `exp` (LLVM libc has no double-precision `sinh`):
+  /// almost always correctly rounded, and within one unit in the last place.
+  fn sinh(self : f64) -> f64 {
+    return libm_sinh(self);
+  }
+
+  /// The hyperbolic cosine, from `core::libm`'s `exp` (LLVM libc has no double-precision
+  /// `cosh`): almost always correctly rounded, and within one unit in the last place.
+  fn cosh(self : f64) -> f64 {
+    return libm_cosh(self);
+  }
+
+  /// The hyperbolic tangent, from `core::libm`'s `exp` (LLVM libc has no double-precision
+  /// `tanh`): almost always correctly rounded, and within one unit in the last place.
+  fn tanh(self : f64) -> f64 {
+    return libm_tanh(self);
   }
 }
 
