@@ -80,6 +80,13 @@ fn product_of_itself() -> f32 {
   return c[0][0];
 }
 
+// A unary operator moves its operand too.
+fn negated() -> f32 {
+  let a = Tensor<f32, [2, 2]>::new();
+  let n = -a;
+  return n[0][0];
+}
+
 fn main() -> i32 {
   return 0;
 }
@@ -96,6 +103,7 @@ fn main() -> i32 {
 // CHECK-DAG: drop in product_written_in_place: c, before the return on line 71
 // CHECK-DAG: drop in product_of_itself: c, after the operator it is moved into on line 79
 // CHECK-DAG: drop in product_of_itself: b, after the operator it is moved into on line 79
+// CHECK-DAG: drop in negated: a, after the operator it is moved into on line 86
 
 // NONE-NOT: drop in reassigned_after_a_move: the old value
 // NONE-NOT: drop in made_from_its_old_value: the old value

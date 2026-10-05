@@ -631,6 +631,7 @@ impl<'a> TypeChecker<'a> {
                 span,
             }) => {
                 let inner_ty = self.check_expr_type(inner);
+                self.drops_note_operands(&[(inner, &inner_ty)]);
                 match op {
                     // Rust's rule: logical on a `bool`, bitwise on an integer, so the result has
                     // the operand's type. It used to be `bool` whatever the operand was, and each

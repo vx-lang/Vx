@@ -471,8 +471,8 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    /// The operands of a tensor operator, `a @ b` or `a + b`, that it moved: dropped right
-    /// after it.
+    /// The operands of a tensor operator, `a @ b`, `a + b` or `-a`, that it moved: dropped
+    /// right after it.
     pub(crate) fn drops_note_operands(&mut self, operands: &[(&Expr, &Type)]) {
         if self.speculating {
             return;
