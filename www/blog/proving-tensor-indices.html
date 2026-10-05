@@ -70,10 +70,72 @@ fd44f29f on <code>main</code>, with z3 installed.</p>
 <h2>Example 1: an offset into a KV cache</h2>
 
 <p>During generation a transformer keeps the keys and values of every token it has seen, so it does
-not recompute them. This is the KV cache. A common layout stores the keys as one flat array ordered
-by layer, then token position, then head, then the numbers inside one head. Finding one number means
-computing its offset. For Llama 2 7B (32 layers, a 4,096-token context, 32 heads of 128 numbers
-each) that looks like this:</p>
+not recompute them. This is the KV cache. Take Llama 2 7B: 32 layers, a 4,096-token context, and 32
+heads of 128 numbers each. A common layout stores its keys as one flat array, ordered by layer, then
+token position, then head, then the numbers inside one head:</p>
+
+<figure>
+<svg class="diagram" viewBox="0 0 480 368" role="img" aria-label="The KV cache keys as one flat array: 32 layers; each layer is 4,096 positions; each position is 32 heads; each head is 128 numbers. Picking layer 1, position 1, head 1 and number 1 gives offset 16,777,216 + 4,096 + 128 + 1 = 16,781,441.">
+  <text class="d-title" x="240" y="32" text-anchor="middle">All keys: 32 layers, 536,870,912 numbers</text>
+  <rect class="d-box" x="20" y="40" width="80" height="28"/>
+  <text class="d-mono" x="60" y="58" text-anchor="middle">layer 0</text>
+  <rect class="d-box d-accent-stroke" x="100" y="40" width="80" height="28"/>
+  <text class="d-mono d-accent-text" x="140" y="58" text-anchor="middle">layer 1</text>
+  <rect class="d-box" x="180" y="40" width="80" height="28"/>
+  <text class="d-mono" x="220" y="58" text-anchor="middle">layer 2</text>
+  <rect class="d-box d-dashed" x="260" y="40" width="120" height="28"/>
+  <text class="d-small" x="320" y="58" text-anchor="middle">&#8230;</text>
+  <rect class="d-box" x="380" y="40" width="80" height="28"/>
+  <text class="d-mono" x="420" y="58" text-anchor="middle">layer 31</text>
+  <line class="d-line d-dashed" x1="100" y1="68" x2="20" y2="96"/>
+  <line class="d-line d-dashed" x1="180" y1="68" x2="460" y2="96"/>
+  <text class="d-title" x="240" y="112" text-anchor="middle">One layer: 4,096 positions of 4,096 numbers</text>
+  <rect class="d-box" x="20" y="120" width="80" height="28"/>
+  <text class="d-mono" x="60" y="138" text-anchor="middle">pos 0</text>
+  <rect class="d-box d-accent-stroke" x="100" y="120" width="80" height="28"/>
+  <text class="d-mono d-accent-text" x="140" y="138" text-anchor="middle">pos 1</text>
+  <rect class="d-box" x="180" y="120" width="80" height="28"/>
+  <text class="d-mono" x="220" y="138" text-anchor="middle">pos 2</text>
+  <rect class="d-box d-dashed" x="260" y="120" width="120" height="28"/>
+  <text class="d-small" x="320" y="138" text-anchor="middle">&#8230;</text>
+  <rect class="d-box" x="380" y="120" width="80" height="28"/>
+  <text class="d-mono" x="420" y="138" text-anchor="middle">pos 4095</text>
+  <line class="d-line d-dashed" x1="100" y1="148" x2="20" y2="176"/>
+  <line class="d-line d-dashed" x1="180" y1="148" x2="460" y2="176"/>
+  <text class="d-title" x="240" y="192" text-anchor="middle">One position: 32 heads of 128 numbers</text>
+  <rect class="d-box" x="20" y="200" width="80" height="28"/>
+  <text class="d-mono" x="60" y="218" text-anchor="middle">head 0</text>
+  <rect class="d-box d-accent-stroke" x="100" y="200" width="80" height="28"/>
+  <text class="d-mono d-accent-text" x="140" y="218" text-anchor="middle">head 1</text>
+  <rect class="d-box" x="180" y="200" width="80" height="28"/>
+  <text class="d-mono" x="220" y="218" text-anchor="middle">head 2</text>
+  <rect class="d-box d-dashed" x="260" y="200" width="120" height="28"/>
+  <text class="d-small" x="320" y="218" text-anchor="middle">&#8230;</text>
+  <rect class="d-box" x="380" y="200" width="80" height="28"/>
+  <text class="d-mono" x="420" y="218" text-anchor="middle">head 31</text>
+  <line class="d-line d-dashed" x1="100" y1="228" x2="20" y2="256"/>
+  <line class="d-line d-dashed" x1="180" y1="228" x2="460" y2="256"/>
+  <text class="d-title" x="240" y="272" text-anchor="middle">One head: 128 numbers</text>
+  <rect class="d-box" x="20" y="280" width="80" height="28"/>
+  <text class="d-mono" x="60" y="298" text-anchor="middle">d 0</text>
+  <rect class="d-box d-accent-stroke" x="100" y="280" width="80" height="28"/>
+  <text class="d-mono d-accent-text" x="140" y="298" text-anchor="middle">d 1</text>
+  <rect class="d-box" x="180" y="280" width="80" height="28"/>
+  <text class="d-mono" x="220" y="298" text-anchor="middle">d 2</text>
+  <rect class="d-box d-dashed" x="260" y="280" width="120" height="28"/>
+  <text class="d-small" x="320" y="298" text-anchor="middle">&#8230;</text>
+  <rect class="d-box" x="380" y="280" width="80" height="28"/>
+  <text class="d-mono" x="420" y="298" text-anchor="middle">d 127</text>
+  <text class="d-mono" x="240" y="338" text-anchor="middle">offset = layer&#215;16,777,216 + pos&#215;4,096 + head&#215;128 + d</text>
+  <text class="d-mono d-accent-text" x="240" y="360" text-anchor="middle">= 16,777,216 + 4,096 + 128 + 1 = 16,781,441</text>
+</svg>
+<figcaption>Each level is a run of blocks of the level below. To reach one number, step over
+whole layers, then whole positions, then whole heads. The highlighted number (layer 1, position 1,
+head 1, number 1) is at offset 16,781,441.</figcaption>
+</figure>
+
+<p>The offset of one number is the sum of those steps. In Vx, with the multiplications grouped
+the way a program usually writes them:</p>
 
 <pre><code><span class="c">// Llama 2 7B KV cache, laid out as [layer][position][head][dim].</span>
 <span class="k">fn</span> <span class="f">kv_offset</span>(layer: <span class="t">i32</span>, pos: <span class="t">i32</span>, head: <span class="t">i32</span>, d: <span class="t">i32</span>) -&gt; <span class="t">i32</span>
