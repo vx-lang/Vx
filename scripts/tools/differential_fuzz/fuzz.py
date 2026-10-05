@@ -13,9 +13,12 @@ Rust twin compiled with `rustc`. Any difference is a bug in one of them, or in t
     fuzz.py reduce tensors 1133 --message "double free" --repeat 5
     fuzz.py compare tests/backend/pass/*.vx        # existing programs across configurations
     fuzz.py compare bench.vx --ignore '[0-9.]+e?-?[0-9]* s'   # with a timing masked
+    fuzz.py run owners --seeds 1-1000 --heap --config drops=VX_DROPS=scope
 
 `--config NAME=FLAGS` adds a configuration and may be repeated; giving any replaces the
-defaults, so `--config flat= --config o0=-O0` compares the default build with `-O0`. `--vxc`
+defaults, so `--config flat= --config o0=-O0` compares the default build with `-O0`. Words like
+`VAR=value` before the flags set the environment. `--heap` counts the heap blocks each compiled
+program allocates and frees, and reports a program that leaves more than an empty one does. `--vxc`
 picks the compiler (default `$CARGO_TARGET_DIR/debug/vxc`, else `target/debug/vxc`). Run with
 the LLVM tools and `rustc` on PATH: `source config.local` first.
 
@@ -28,9 +31,11 @@ SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 """
 
 import argparse
+import atexit
 import collections
 import multiprocessing
 import os
+import shutil
 import sys
 import tempfile
 
@@ -51,11 +56,12 @@ def seed_range(text):
 
 def check(job):
     """Run one seed every way. Returns (seed, names that disagree, outputs)."""
-    generator, seed, vxc, configs, timeout, use_rust = job
+    generator, seed, vxc, configs, timeout, use_rust, heap = job
     program = fuzzlib.load_generator(generator).generate(seed)
     rust = program.source("rs") if use_rust else None
     with tempfile.TemporaryDirectory() as work:
-        outputs = fuzzlib.run_all(program.source("vx"), rust, vxc, configs, timeout, work)
+        outputs = fuzzlib.run_all(program.source("vx"), rust, vxc, configs, timeout, work,
+                                  heap=heap)
     return seed, fuzzlib.disagreement(outputs), outputs
 
 
@@ -87,7 +93,7 @@ def report(results, keep, generator):
 
 
 def cmd_run(args, configs):
-    jobs = [(args.generator, seed, args.vxc, configs, args.timeout, not args.no_rust)
+    jobs = [(args.generator, seed, args.vxc, configs, args.timeout, not args.no_rust, args.heap)
             for seed in seed_range(args.seeds)]
     with multiprocessing.Pool(args.jobs) as pool:
         results = sorted(pool.imap_unordered(check, jobs), key=lambda r: r[0])
@@ -106,7 +112,7 @@ def cmd_reduce(args, configs):
 
     def outputs_of(p):
         return fuzzlib.run_all(p.source("vx"), p.source("rs") if use_rust else None,
-                               args.vxc, configs, args.timeout)
+                               args.vxc, configs, args.timeout, heap=args.heap)
 
     if args.message:
         def fails_once(p):
@@ -135,19 +141,20 @@ def cmd_reduce(args, configs):
 
 
 def check_file(job):
-    path, vxc, configs, timeout, ignore = job
+    path, vxc, configs, timeout, ignore, heap = job
     with open(path) as f:
         source = f.read()
     with tempfile.TemporaryDirectory() as work:
-        outputs = fuzzlib.run_all(source, None, vxc, configs, timeout, work, ignore)
+        outputs = fuzzlib.run_all(source, None, vxc, configs, timeout, work, ignore, heap)
     return path, fuzzlib.disagreement(outputs), outputs
 
 
 def cmd_compare(args, configs):
-    if len(configs) < 2:
-        print("compare needs two configurations or more", file=sys.stderr)
+    if len(configs) < 2 and not args.heap:
+        print("compare needs two configurations or more, or --heap", file=sys.stderr)
         return 2
-    jobs = [(path, args.vxc, configs, args.timeout, args.ignore) for path in args.files]
+    jobs = [(path, args.vxc, configs, args.timeout, args.ignore, args.heap)
+            for path in args.files]
     with multiprocessing.Pool(args.jobs) as pool:
         results = sorted(pool.imap_unordered(check_file, jobs))
     differ = [(p, names, outputs) for p, names, outputs in results if names]
@@ -167,6 +174,8 @@ def main():
                         help="a configuration to run; repeat for more (default: flat and ast)")
     common.add_argument("--timeout", type=int, default=60, help="seconds per run")
     common.add_argument("--jobs", type=int, default=max(1, cpus - 2))
+    common.add_argument("--heap", action="store_true",
+                        help="also report a program that does not free what it allocates")
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -201,6 +210,14 @@ def main():
 
     args = parser.parse_args()
     configs = [fuzzlib.parse_config(c) for c in args.config] if args.config else fuzzlib.DEFAULT_CONFIGS
+    if args.heap:
+        work = tempfile.mkdtemp()
+        atexit.register(shutil.rmtree, work, True)
+        library = fuzzlib.build_heap_counter(work)
+        args.heap = (library, fuzzlib.empty_program_blocks(args.vxc, configs, library,
+                                                           args.timeout))
+    else:
+        args.heap = None
     if args.command == "list":
         for name in fuzzlib.generator_names():
             first = fuzzlib.load_generator(name).__doc__.strip().splitlines()[0]

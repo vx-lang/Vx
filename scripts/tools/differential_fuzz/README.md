@@ -18,6 +18,7 @@ fuzz.py list                                # the generators
 fuzz.py run shadowing --seeds 1-1000        # 1000 programs, every configuration and Rust
 fuzz.py run tensors --seeds 1-300 --keep /tmp/failures
 fuzz.py run views --seeds 1-1000            # rows and reshapes, used as the borrow rules allow
+fuzz.py run owners --seeds 1-1000           # tensors moved into calls, in branches and loops
 fuzz.py show tensors 1133                   # the Vx program for a seed (--rust: its twin)
 ```
 
@@ -59,6 +60,26 @@ fuzz.py compare tests/backend/pass/*.vx --config flat= --config ast=--legacy-cod
 Giving any `--config` replaces the defaults. `--vxc PATH` picks the compiler (by default
 `$CARGO_TARGET_DIR/debug/vxc`), `--jobs N` how many programs run at once, and `--timeout S` the
 seconds one run may take.
+
+Words like `VAR=value` before the flags set environment variables for that configuration:
+
+```
+fuzz.py run owners --config flat= --config drops=VX_DROPS=scope
+```
+
+## Freeing what a program allocates
+
+```
+fuzz.py run owners --seeds 1-1000 --heap
+fuzz.py compare tests/backend/pass/*.vx --heap --config drops=VX_DROPS=scope
+```
+
+`--heap` counts the heap blocks each compiled program allocates and frees, with a small
+library (`heap_count.c`) preloaded into it. An empty program leaves a block or so that the
+runtime keeps for itself, so a run that leaves a different number than an empty program does
+is reported as `flat:heap: leaks # blocks`, beside any difference in output. A block freed twice
+or a stack address freed usually stops the program in glibc's own checks. This needs Linux,
+glibc and `cc`.
 
 ## Writing a generator
 
