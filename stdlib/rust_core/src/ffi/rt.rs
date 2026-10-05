@@ -39,9 +39,24 @@ pub extern "C" fn vx_sigsegv_handler(sig: libc::c_int) {
     std::process::abort();
 }
 
+/// A failed check prints its message with `puts` and then calls `abort`. Standard output is
+/// buffered when it is a pipe, and `abort` does not flush it, so the message was lost. Flush,
+/// then let the abort go on.
+extern "C" fn vx_sigabrt_handler(_sig: libc::c_int) {
+    unsafe {
+        libc::fflush(ptr::null_mut());
+        libc::signal(libc::SIGABRT, libc::SIG_DFL);
+        libc::raise(libc::SIGABRT);
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn vx_init_signals() {
     unsafe {
+        libc::signal(
+            libc::SIGABRT,
+            vx_sigabrt_handler as *const () as libc::sighandler_t,
+        );
         libc::signal(
             libc::SIGSEGV,
             vx_sigsegv_handler as *const () as libc::sighandler_t,
