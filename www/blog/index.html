@@ -43,6 +43,14 @@
 
   <ul class="posts">
     <li>
+      <a href="/blog/proving-tensor-indices.html">Proving tensor indices at compile time</a>
+      <time datetime="2026-10-05">5 October 2026</time>
+      <p>The Vx compiler hands index arithmetic to the z3 theorem prover. It proves that a KV-cache
+      offset and a copy of attention heads into shared memory stay inside their tensors, for every
+      input, and refuses a wrong stride. Also a proof that held while the program printed a
+      negative offset, and why.</p>
+    </li>
+    <li>
       <a href="/blog/can-the-borrow-checker-be-auto-vectorized.html">Can the borrow checker algorithm be auto-vectorized? The answer is yes!</a>
       <time datetime="2026-10-01">1 October 2026</time>
       <p>Vx's borrow checker packs four lifetimes into one 64-bit word. Rewritten without early

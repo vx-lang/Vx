@@ -5,8 +5,17 @@
   <link href="https://vxlang.org/blog/feed.xml" rel="self"/>
   <link href="https://vxlang.org/blog/"/>
   <id>https://vxlang.org/blog/</id>
-  <updated>2026-10-01T20:00:00Z</updated>
+  <updated>2026-10-05T18:00:00Z</updated>
   <author><name>Aditya Kumar</name></author>
+
+  <entry>
+    <title>Proving tensor indices at compile time</title>
+    <link href="https://vxlang.org/blog/proving-tensor-indices.html"/>
+    <id>https://vxlang.org/blog/proving-tensor-indices.html</id>
+    <updated>2026-10-05T18:00:00Z</updated>
+    <author><name>Aditya Kumar</name></author>
+    <summary>ML code is full of index arithmetic, and a wrong index rarely crashes. Vx hands that arithmetic to the z3 theorem prover while it compiles. In two examples, an offset into a Llama 2 KV cache and a copy of attention heads into GPU shared memory, the compiler proves every index stays inside its tensor for every input, and refuses a wrong stride or an index shifted by one. A larger model shows the limit: the proof held, and the program printed a negative offset, because z3's integers do not wrap and an i32 does. The post also lists what the prover cannot do yet.</summary>
+  </entry>
 
   <entry>
     <title>Can the borrow checker algorithm be auto-vectorized? The answer is yes!</title>

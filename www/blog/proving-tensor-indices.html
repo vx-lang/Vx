@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Proving tensor indices at compile time</title>
+<meta name="author" content="Aditya Kumar">
+<meta name="description" content="Two pieces of ML code where the Vx compiler proves, with the z3 theorem prover, that every index lands inside its tensor: a KV-cache offset and a copy of attention heads into shared memory. Also the case where the proof held and the program still went wrong.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+
+<meta property="og:title" content="Proving tensor indices at compile time">
+<meta property="og:description" content="The Vx compiler proves that a KV-cache offset and a shared-memory copy stay inside their tensors, for every input. And one proof that held while the program printed a negative offset.">
+<meta property="og:type" content="article">
+<meta property="article:published_time" content="2026-10-05T18:00:00Z">
+<meta property="og:url" content="https://vxlang.org/blog/proving-tensor-indices.html">
+<meta property="og:image" content="https://vxlang.org/cards/blog-proving-tensor-indices.png">
+<meta property="og:image:alt" content="Proving tensor indices at compile time: z3 checks every index in a KV cache and an attention tile.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://vxlang.org/cards/blog-proving-tensor-indices.png">
+
+<link rel="alternate" type="application/atom+xml" title="Vx" href="/blog/feed.xml">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header class="nav">
+  <a class="brand" href="/">
+    <span class="mark">Vx</span>
+  </a>
+  <nav>
+    <a href="/docs/getting-started.html">Install</a>
+    <a href="/docs/tour.html">Language tour</a>
+    <a href="/docs/">Docs</a>
+    <a href="/blog/">Blog</a>
+    <a href="https://github.com/vx-lang/Vx">GitHub</a>
+  </nav>
+</header>
+
+<main>
+
+<article class="post">
+
+<h1>Proving tensor indices at compile time</h1>
+<p class="post-meta">Aditya Kumar &middot; 5 October 2026</p>
+
+<blockquote class="tldr"><strong>TL;DR</strong> — ML code is full of index arithmetic, and a wrong
+index rarely crashes. It reads another token's data and the model gets slightly worse. Vx can hand
+that arithmetic to the z3 theorem prover while it compiles. This post shows two examples: the offset
+of one entry in a KV cache, and a copy of attention heads into shared memory. In both, the compiler
+proves every index is inside the tensor, for every input, and refuses common mistakes. It also shows
+a case where the proof held and the program printed a negative offset, and why.</blockquote>
+
+<p class="lede">A test checks the inputs you write down. A proof checks all of them. For index
+arithmetic that difference matters, because the bad input is usually the last row, the last layer
+or the last head, and that is the one a test forgets.</p>
+
+<p>Vx gives you two ways to ask for a proof. A function can state what it needs
+(<code>requires</code>) and what it promises (<code>ensures</code>). And the low-level
+<code>raw::</code> loads and stores that move data between memories must be proved to stay inside
+their tensors before the program compiles. In both cases the compiler turns the code into equations
+and asks z3 whether any input breaks the promise. If z3 finds one, the build fails. If z3 shows
+that no such input exists, the promise holds for every allowed input, and z3 did not have to try
+them one by one. (Later we will see the catch: z3's numbers are not quite the program's.)</p>
+
+<p>An earlier post, <a href="/blog/what-comptime-can-do.html">What comptime can do</a>, showed
+a contract on a small tiled matrix. This post uses two pieces of code from a transformer, and spends
+more time on what the proof does not cover. Every example was compiled and run with <code>vxc</code> built from commit
+fd44f29f on <code>main</code>, with z3 installed.</p>
+
+<h2>Example 1: an offset into a KV cache</h2>
+
+<p>During generation a transformer keeps the keys and values of every token it has seen, so it does
+not recompute them. This is the KV cache. A common layout stores the keys as one flat array ordered
+by layer, then token position, then head, then the numbers inside one head. Finding one number means
+computing its offset. For Llama 2 7B (32 layers, a 4,096-token context, 32 heads of 128 numbers
+each) that looks like this:</p>
+
+<pre><code><span class="c">// Llama 2 7B KV cache, laid out as [layer][position][head][dim].</span>
+<span class="k">fn</span> <span class="f">kv_offset</span>(layer: <span class="t">i32</span>, pos: <span class="t">i32</span>, head: <span class="t">i32</span>, d: <span class="t">i32</span>) -&gt; <span class="t">i32</span>
+<span class="k">requires</span> <span class="n">0</span> &lt;= layer &amp;&amp; layer &lt; <span class="n">32</span> &amp;&amp; <span class="n">0</span> &lt;= pos &amp;&amp; pos &lt; <span class="n">4096</span>
+      &amp;&amp; <span class="n">0</span> &lt;= head &amp;&amp; head &lt; <span class="n">32</span> &amp;&amp; <span class="n">0</span> &lt;= d &amp;&amp; d &lt; <span class="n">128</span>
+<span class="k">ensures</span> <span class="n">0</span> &lt;= <span class="k">return</span> &amp;&amp; <span class="k">return</span> &lt; <span class="n">536870912</span> {
+  <span class="k">let</span> row = (layer * <span class="n">4096</span> + pos) * <span class="n">32</span> + head;
+  <span class="k">return</span> row * <span class="n">128</span> + d;
+}
+
+<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+  <span class="f">print</span>(<span class="f">kv_offset</span>(<span class="n">31</span>, <span class="n">4095</span>, <span class="n">31</span>, <span class="n">127</span>));
+  <span class="k">return</span> <span class="n">0</span>;
+}</code></pre>
+
+<p>The <code>requires</code> line says which inputs are allowed. The <code>ensures</code> line
+promises that the answer lands inside the cache, which holds 32 &times; 4096 &times; 32 &times; 128
+= 536,870,912 numbers. The compiler proves the promise, and the program prints the last valid
+offset:</p>
+
+<pre><code>536870911</code></pre>
+
+<p>That is one proof covering all 536,870,912 inputs. Now make one mistake: multiply by 33 heads
+instead of 32, the kind of slip you make when a model config changes under you.</p>
+
+<pre><code>  <span class="k">let</span> row = (layer * <span class="n">4096</span> + pos) * <span class="n">33</span> + head;</code></pre>
+
+<pre class="diag"><code>Error[E8001]: Function 'kv_offset' cannot prove postcondition (ensures) at compile time</code></pre>
+
+<p>The build stops. With a stride of 33 the last entry lands at offset 553,647,999, past the end of
+the cache, in memory that belongs to something else. In Python or C++ this compiles, runs, and
+reads whatever happens to live there.</p>
+
+<h2>Where the proof held and the program was wrong</h2>
+
+<p>Now a larger model: Llama 3.1 70B, with the context capped at 32,768 tokens. It has 80 layers
+and 8 key-value heads of 128 numbers each. Same layout, same contract, new numbers:</p>
+
+<pre><code><span class="k">fn</span> <span class="f">kv_offset</span>(layer: <span class="t">i32</span>, pos: <span class="t">i32</span>, head: <span class="t">i32</span>, d: <span class="t">i32</span>) -&gt; <span class="t">i32</span>
+<span class="k">requires</span> <span class="n">0</span> &lt;= layer &amp;&amp; layer &lt; <span class="n">80</span> &amp;&amp; <span class="n">0</span> &lt;= pos &amp;&amp; pos &lt; <span class="n">32768</span>
+      &amp;&amp; <span class="n">0</span> &lt;= head &amp;&amp; head &lt; <span class="n">8</span> &amp;&amp; <span class="n">0</span> &lt;= d &amp;&amp; d &lt; <span class="n">128</span>
+<span class="k">ensures</span> <span class="n">0</span> &lt;= <span class="k">return</span> &amp;&amp; <span class="k">return</span> &lt; <span class="n">2684354560</span> {
+  <span class="k">let</span> row = (layer * <span class="n">32768</span> + pos) * <span class="n">8</span> + head;
+  <span class="k">return</span> row * <span class="n">128</span> + d;
+}</code></pre>
+
+<p>The compiler proves this contract too. Then <code>kv_offset(79, 32767, 7, 127)</code>
+prints:</p>
+
+<pre><code>-1610612737</code></pre>
+
+<p>The promise said the offset is never negative. The compiler proved it, and the program printed
+a negative offset. z3 reasons about mathematical integers, which have no largest value. An
+<code>i32</code> holds numbers only up to 2,147,483,647, and the last offset here is 2,684,354,559.
+The last multiplication gives a number larger than an <code>i32</code> can hold, so it overflows
+and wraps around to a negative number. So the proof is correct
+for z3's integers and wrong for the program's.</p>
+
+<p>The earlier post advised bounding every input in <code>requires</code> so that no step can
+overflow. This example bounds every input, and a step still overflows, because the
+<em>result</em> is too big. The advice was incomplete: every intermediate value and the result must
+fit in the type as well, and today the prover does not check that for you.</p>
+
+<p>The fix for this program is to use 64-bit integers. With <code>i64</code> everywhere the same
+contract is proved, and the program prints 2684354559, the correct last offset.</p>
+
+<p>The fix for the language is underway. Vx is adding a <code>usize</code> type for sizes and
+offsets (<a href="https://github.com/vx-lang/Vx/issues/1139">#1139</a>), and its arithmetic
+already stops the program with an error when it overflows
+(<a href="https://github.com/vx-lang/Vx/pull/1149">#1149</a>). An offset like this one would stop
+the program at the multiplication that overflows. The prover itself still treats numbers as unbounded, so it cannot yet warn you, while it
+compiles, that a 32-bit or 64-bit value will overflow.</p>
+
+<h2>Example 2: copying attention heads into shared memory</h2>
+
+<p>An attention kernel on a GPU first copies a tile of keys from the GPU's main memory into the
+small, fast shared memory next to its cores. In Vx you can write the code that moves a tile between two memories
+yourself. You implement the <code>Transfer</code> trait (an interface, in other languages) for
+that pair of memories, using <code>raw::load</code> and <code>raw::store</code>. These are
+low-level operations, and they skip the bounds check while the program runs. So the compiler requires a proof, before it compiles the program, that every index
+they use is inside its tensor.</p>
+
+<p>Here is a copy of four heads of 64 numbers each, stored one head after another. The
+<code>Topology</code> block describes the GPU's memories (its L2 cache and its shared memory,
+<code>SMEM</code>), so the example compiles on its own:</p>
+
+<pre><code><span class="t">Topology</span> <span class="t">Dev</span> {
+  memory: <span class="t">Memory</span>::<span class="t">L2</span>,
+  visible: [<span class="t">Memory</span>::<span class="t">L2</span>, <span class="t">Memory</span>::<span class="t">SMEM</span>],
+  <span class="k">transfer</span> <span class="t">Memory</span>::<span class="t">CPU_DRAM</span> -&gt; <span class="t">Memory</span>::<span class="t">L2</span> : <span class="n">10</span> GB/s,
+  <span class="k">transfer</span> <span class="t">Memory</span>::<span class="t">L2</span> -&gt; <span class="t">Memory</span>::<span class="t">SMEM</span>
+}
+<span class="k">impl</span> <span class="t">Transfer</span>&lt;<span class="t">Memory</span>::<span class="t">L2</span>, <span class="t">Memory</span>::<span class="t">SMEM</span>&gt; <span class="k">for</span> <span class="t">Topology</span>::<span class="t">Dev</span> {
+  <span class="k">fn</span> <span class="f">move_tile</span>(src: &amp;<span class="t">Tensor</span>&lt;<span class="t">f32</span>, [<span class="n">256</span>]&gt;, dst: &amp;<span class="k">mut</span> <span class="t">Tensor</span>&lt;<span class="t">f32</span>, [<span class="n">256</span>]&gt;) -&gt; <span class="t">i32</span> {
+    <span class="k">for</span> h <span class="k">in</span> <span class="n">0</span>..<span class="n">4</span> {
+      <span class="k">for</span> d <span class="k">in</span> <span class="n">0</span>..<span class="n">64</span> {
+        raw::<span class="f">store</span>(dst, h * <span class="n">64</span> + d, raw::<span class="f">load</span>(src, h * <span class="n">64</span> + d));
+      }
+    }
+    raw::<span class="f">barrier</span>();
+    <span class="k">return</span> <span class="n">0</span>;
+  }
+}</code></pre>
+
+<p>There is no contract to write. Each <code>for</code> loop tells the prover the range of its
+counter, <code>0 &lt;= h &lt; 4</code> and <code>0 &lt;= d &lt; 64</code>, so it can show that
+<code>h * 64 + d</code> runs from 0 to 255 and the tensor has 256 numbers. This compiles.</p>
+
+<p>Now two small mistakes. A stride of 65 instead of 64,
+as if each head had one extra number:</p>
+
+<pre><code>        raw::<span class="f">store</span>(dst, h * <span class="n">65</span> + d, raw::<span class="f">load</span>(src, h * <span class="n">64</span> + d));</code></pre>
+
+<p>And an index shifted by one:</p>
+
+<pre><code>        raw::<span class="f">store</span>(dst, h * <span class="n">64</span> + d + <span class="n">1</span>, raw::<span class="f">load</span>(src, h * <span class="n">64</span> + d));</code></pre>
+
+<p>Both stop the build with the same error, which names the operation, the tensor and the range it
+needed:</p>
+
+<pre class="diag"><code>Error[E6018] at 11:9: cannot prove the index of `raw::store` stays inside `dst` (needs 0 &lt;= index &lt; 256).
+Prove it with a loop bound or invariant, or assert it in an `unsafe` block</code></pre>
+
+<p>On a GPU, neither mistake would crash. The extra writes would land in shared memory that another
+part of the kernel is using, and the attention scores would be slightly wrong.</p>
+
+<p>If you know something the prover cannot see, you can wrap the access in <code>unsafe</code>.
+The error then becomes a warning that says what you did:</p>
+
+<pre class="diag"><code>Warning: cannot prove the index of `raw::store` stays inside `dst` (needs 0 &lt;= index &lt; 256);
+asserted, not proven (unsafe)</code></pre>
+
+<h2>What a bounds proof does not tell you</h2>
+
+<p>Swap the layout by mistake, so the copy writes <code>d * 4 + h</code> instead of
+<code>h * 64 + d</code>. That index also runs from 0 to 255. The program compiles, because every
+access is in bounds, and the heads come out interleaved. The prover answers the question it was
+asked, &ldquo;is this index inside the tensor?&rdquo;, and nothing more. Whether the data ends up in
+the right order is still a job for tests.</p>
+
+<h2>Other limits today</h2>
+
+<ul>
+<li><strong>Callers are not checked against <code>requires</code>.</strong> The function proves its
+promise assuming its inputs are allowed, but a call such as <code>kv_offset(40, 0, 0, 0)</code>, for
+layer 40 of a 32-layer model, compiles and prints 671088640, past the end of the cache.</li>
+<li><strong>Only linear arithmetic.</strong> The prover handles <code>+</code>, <code>-</code>,
+comparisons, and multiplying by a constant. A product of two variables, such as tile bytes
+<code>bm * bk * 4 &lt;= 32768</code>, cannot be proved even when it is true; the build fails with
+<code>E8001</code>. So a limit of the prover shows up as an error, and the code does not
+compile.</li>
+<li><strong>Integers are unbounded</strong>, as the 70B example shows.</li>
+<li><strong>z3 must be installed</strong> to compile code that needs a proof.</li>
+</ul>
+
+<p class="post-foot">The contract syntax is described in the book's
+<a href="/docs/contracts.html">contracts chapter</a>, and the <code>raw::</code> bounds rule in
+<code>docs/custom_transfer_contract.md</code>. Vx is Apache 2.0 with the LLVM exception —
+<a href="/docs/getting-started.html">install it</a> and try changing a 64 to a 65.</p>
+
+</article>
+
+</main>
+
+<footer>
+  <p>Vx is Apache 2.0 with the LLVM exception. <a href="https://github.com/vx-lang/Vx">Source</a>. Questions and discussion: <a href="https://www.reddit.com/r/vxlang">r/vxlang</a>.</p>
+</footer>
+
+</body>
+</html>
