@@ -746,6 +746,13 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                                     .unwrap();
                                 field_val = new_b.append_operation(cast_op).result(0)?.into();
                             }
+                            if let Some(rank) = crate::codegen::generator::tensor_field_rank(
+                                &struct_decl.fields[field_idx].1,
+                            ) {
+                                field_val = super::expr::tensor_into_field(
+                                    gen, &new_b, field_val, rhs_ty, field_ty, rank,
+                                )?;
+                            }
 
                             if is_ptr {
                                 let ptr_ty = gen.ptr_ty;

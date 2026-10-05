@@ -1710,6 +1710,10 @@ impl<'c> LowerToMelior<'c> for StructInitExpr {
                 }
             }
 
+            if let Some(rank) = crate::codegen::generator::tensor_field_rank(&sub_ty) {
+                field_val = tensor_into_field(gen, &block, field_val, expr_ty, field_ty, rank)?;
+            }
+
             let pos_attr = melior::ir::attribute::DenseI64ArrayAttribute::new(
                 gen.context,
                 &[field_idx as i64],
@@ -1867,30 +1871,36 @@ impl<'c> LowerToMelior<'c> for MemberAccessExpr {
                             return Ok((field_ptr, ptr_ty, block));
                         }
 
+                        let stored_ty = field_storage_ty(gen, &sub_ty, field_ty)?;
                         let load_op = OperationBuilder::new("llvm.load", gen.loc())
                             .add_operands(&[field_ptr])
-                            .add_results(&[field_ty])
+                            .add_results(&[stored_ty])
                             .build()
                             .unwrap();
                         let load_ref = block.append_operation(load_op);
-                        return Ok((load_ref.result(0)?.into(), field_ty, block));
+                        let loaded = load_ref.result(0)?.into();
+                        let val = tensor_from_field(gen, &block, loaded, stored_ty, field_ty)?;
+                        return Ok((val, field_ty, block));
                     } else {
                         let pos_attr = melior::ir::attribute::DenseI64ArrayAttribute::new(
                             gen.context,
                             &[field_idx as i64],
                         );
 
+                        let stored_ty = field_storage_ty(gen, &sub_ty, field_ty)?;
                         let ext_op = OperationBuilder::new("llvm.extractvalue", gen.loc())
                             .add_operands(&[base_val])
                             .add_attributes(&[(
                                 Identifier::new(gen.context, "position"),
                                 pos_attr.into(),
                             )])
-                            .add_results(&[field_ty])
+                            .add_results(&[stored_ty])
                             .build()
                             .unwrap();
                         let ext_ref = block.append_operation(ext_op);
-                        return Ok((ext_ref.result(0)?.into(), field_ty, block));
+                        let extracted = ext_ref.result(0)?.into();
+                        let val = tensor_from_field(gen, &block, extracted, stored_ty, field_ty)?;
+                        return Ok((val, field_ty, block));
                     }
                 }
             }
@@ -4450,6 +4460,71 @@ fn lower_clone_call<'c>(
         .build()?;
     block.append_operation(copy);
     Ok((dst, dst_ty, block))
+}
+
+/// The type a struct field is stored as: a tensor's descriptor, or the field's own type.
+fn field_storage_ty<'c>(
+    gen: &MeliorGenerator<'c>,
+    ty: &syntax::Type,
+    field_ty: Type<'c>,
+) -> Result<Type<'c>, LowerError> {
+    match crate::codegen::generator::tensor_field_rank(ty) {
+        Some(rank) => {
+            let desc = crate::codegen::generator::tensor_descriptor_str(rank);
+            Ok(Type::parse(gen.context, &desc).ok_or(LowerError::ParseType(desc))?)
+        }
+        None => Ok(field_ty),
+    }
+}
+
+/// A tensor going into a struct field: a row is rebased to a plain memref first, so its
+/// offset is in the data pointer, and it is stored as its descriptor.
+pub(crate) fn tensor_into_field<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    block: &melior::ir::BlockRef<'c, 'c>,
+    val: Value<'c, 'c>,
+    val_ty: Type<'c>,
+    field_ty: Type<'c>,
+    rank: usize,
+) -> Result<Value<'c, 'c>, LowerError> {
+    let mut val = val;
+    let mut val_ty = val_ty;
+    let val_str = val_ty.to_string();
+    if val_str.contains("strided<") {
+        let plain = contiguous_view_as_plain(&val_str)
+            .ok_or_else(|| LowerError::from(format!("cannot store a {val_str} view in a field")))?;
+        let plain_ty = Type::parse(gen.context, &plain).ok_or(LowerError::ParseType(plain))?;
+        val = move_view_pointer(gen, block, val, val_ty, plain_ty)?;
+        val_ty = plain_ty;
+    }
+    if val_ty != field_ty {
+        val = gen.coerce_type(block, val, val_ty, field_ty)?;
+    }
+    let desc = crate::codegen::generator::tensor_descriptor_str(rank);
+    let desc_ty = Type::parse(gen.context, &desc).ok_or(LowerError::ParseType(desc))?;
+    let cast = OperationBuilder::new("builtin.unrealized_conversion_cast", gen.loc())
+        .add_operands(&[val])
+        .add_results(&[desc_ty])
+        .build()?;
+    Ok(block.append_operation(cast).result(0)?.into())
+}
+
+/// A struct field read back: a tensor's descriptor becomes the memref again.
+fn tensor_from_field<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    block: &melior::ir::BlockRef<'c, 'c>,
+    val: Value<'c, 'c>,
+    stored_ty: Type<'c>,
+    field_ty: Type<'c>,
+) -> Result<Value<'c, 'c>, LowerError> {
+    if stored_ty == field_ty {
+        return Ok(val);
+    }
+    let cast = OperationBuilder::new("builtin.unrealized_conversion_cast", gen.loc())
+        .add_operands(&[val])
+        .add_results(&[field_ty])
+        .build()?;
+    Ok(block.append_operation(cast).result(0)?.into())
 }
 
 /// `-t` on a tensor: a new tensor of each element negated, by a `linalg.generic`. A float uses

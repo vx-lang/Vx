@@ -1620,6 +1620,24 @@ impl<'c> MeliorGenerator<'c> {
         Ok(payload_ty_str)
     }
 
+    /// How a struct field of type `ty` is laid out. A tensor is its memref descriptor, the
+    /// layout the default code generator uses too, so its shape and offset travel with it.
+    /// Any other memref (a reference to a scalar) is a bare pointer.
+    pub(crate) fn field_type_str(
+        &self,
+        ty: &syntax::Type,
+    ) -> Result<String, crate::codegen::lower::LowerError> {
+        if let Some(rank) = tensor_field_rank(ty) {
+            return Ok(tensor_descriptor_str(rank));
+        }
+        let lowered = self.lower_type_str(ty)?;
+        Ok(if lowered.starts_with("memref<") {
+            "!llvm.ptr".to_string()
+        } else {
+            lowered
+        })
+    }
+
     pub(crate) fn lower_type(
         &self,
         ty: &syntax::Type,
@@ -1717,11 +1735,7 @@ impl<'c> MeliorGenerator<'c> {
                 if let Some(decl) = self.structs.get(name).cloned() {
                     let mut field_types = Vec::new();
                     for (_, ty) in &decl.fields {
-                        let mut lowered = self.lower_type_str(ty)?;
-                        if lowered.starts_with("memref<") {
-                            lowered = "!llvm.ptr".to_string();
-                        }
-                        field_types.push(lowered);
+                        field_types.push(self.field_type_str(ty)?);
                     }
                     format!("!llvm.struct<\"{}\", ({})>", name, field_types.join(","))
                 } else if name.as_ref() == "void" {
@@ -1766,12 +1780,7 @@ impl<'c> MeliorGenerator<'c> {
                             mapping.insert(param.name().into(), args[i].clone());
                         }
                         for (_, ty) in &decl.fields {
-                            let sub_ty = ty.substitute(&mapping);
-                            let mut lowered = self.lower_type_str(&sub_ty)?;
-                            if lowered.starts_with("memref<") {
-                                lowered = "!llvm.ptr".to_string();
-                            }
-                            field_types.push(lowered);
+                            field_types.push(self.field_type_str(&ty.substitute(&mapping))?);
                         }
                         let args_str: Vec<String> = args
                             .iter()
@@ -2302,4 +2311,24 @@ fn unmappable_space_message(mem: &syntax::MemorySpace) -> String {
          (device/sm/cta/thread) so it maps to global/shared/private memory",
         mem.name()
     )
+}
+
+/// The LLVM struct a memref of `rank` lowers to: allocated and aligned pointers, offset, sizes
+/// and strides.
+pub(crate) fn tensor_descriptor_str(rank: usize) -> String {
+    if rank == 0 {
+        "!llvm.struct<(ptr, ptr, i64)>".to_string()
+    } else {
+        format!("!llvm.struct<(ptr, ptr, i64, array<{rank} x i64>, array<{rank} x i64>)>")
+    }
+}
+
+/// The rank of a tensor a struct field holds as a descriptor. `None` for any other type,
+/// including a reference to a tensor, which this code generator keeps as a cell holding the
+/// descriptor rather than as the descriptor.
+pub(crate) fn tensor_field_rank(ty: &syntax::Type) -> Option<usize> {
+    match ty {
+        syntax::Type::Tensor(_, dims, _) => Some(dims.len()),
+        _ => None,
+    }
 }
