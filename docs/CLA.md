@@ -104,5 +104,10 @@ same account go straight through.
 Signatures are recorded in `signatures/version1/cla.json` on the `cla-signatures` branch of this
 repository, along with Your GitHub username and the time You signed.
 
+Every commit in a pull request must have a person as its author, using an email address linked to
+their GitHub account. An AI tool may be credited with a `Co-authored-by:` line in the commit
+message, but cannot be the author, because it cannot sign. The contributing guide explains how to
+change a commit's author.
+
 If You are contributing on behalf of an employer that has its own arrangement with the Project,
 say so on the pull request rather than signing, and a maintainer will pick it up.

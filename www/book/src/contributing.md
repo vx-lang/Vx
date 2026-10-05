@@ -46,6 +46,27 @@ You do not have to do anything in advance. Open the pull request, and a bot will
 one sentence to reply with. It asks once; later pull requests from the same account go straight
 through.
 
+## A person is the author of every commit
+
+Every commit in a pull request must have a person as its author, using an email address linked to
+that person's GitHub account. That person signs the CLA and is responsible for the whole change.
+
+You may use AI tools. Credit one with a `Co-authored-by:` line at the end of the commit message,
+not as the commit's author. Some tools, such as Cursor's agent, make commits under their own
+account; the CLA check then fails, because that account cannot sign. To make yourself the author
+of your last commit, run:
+
+```
+git commit --amend --reset-author --no-edit
+git push --force-with-lease
+```
+
+For every commit on your branch, run this instead of the first line:
+
+```
+git rebase --exec "git commit --amend --reset-author --no-edit" origin/main
+```
+
 ## Working on the compiler
 
 Start with [building from source](building.md). Once `cargo test` passes you have a working

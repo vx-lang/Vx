@@ -62,7 +62,10 @@ jobs:
             sign the [Vx Contributor License Agreement](https://github.com/vx-lang/Vx/blob/main/docs/CLA.md).
             It is short, and you only do this once -- later pull requests will not ask again.
 
-            Please read it, then post a new comment on this pull request containing exactly:
+            Every commit must have a person as its author. If a commit was made under an AI tool's
+            account, see [A person is the author of every commit](https://vxlang.org/docs/contributing.html#a-person-is-the-author-of-every-commit).
+
+            Please read the agreement, then post a new comment on this pull request containing exactly:
           # Locks on any close, not only a merge, and a locked pull request refuses the comment
           # the bot needs in order to record a signature.
           lock-pullrequest-aftermerge: 'false'

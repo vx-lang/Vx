@@ -34,6 +34,9 @@ These keep commands clean and avoid unnecessary permission prompts:
   could only reach another by hand. Branch protection on GitHub is what actually enforces
   this — the rule here is so you do not have to discover it by being refused.
 - **CRITICAL** You are not allowed to edit .git/config
+- The author of every commit must be a person. Commit with the person's own git identity, and
+  credit the AI only with a `Co-Authored-By:` line. The CLA check fails on a commit whose author
+  is an AI tool's account, because that account cannot sign.
 - Branch every pull request from `main`. When a change needs another one that is not merged
   yet, make them a GitHub stacked PR (`gh stack link <PR> <PR> ...`, bottom first), not
   plain PRs whose base happens to be another PR's branch. The repository merges by squashing,
