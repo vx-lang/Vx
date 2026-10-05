@@ -1,0 +1,115 @@
+//===- core_libm_hypot_f64.vx - Vx Compiler ------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// f64 `hypot`, ported from LLVM libc's `hypot` into `core::libm`, against LLVM libc itself
+// (f475f085bf7b, built with FMA). It prints the bits of `x.hypot(y)`, NaNs included, for pairs: a
+// 3-4-5 triangle, zeros, infinities and NaNs (which NaN comes back counts), the largest double,
+// pairs large or small enough to be scaled by 2^-600 or 2^600, subnormals, and sizes far enough
+// apart that the smaller one is just added. Then, sent straight to the integer `hypot` that answers
+// when the error bound does not decide the rounding, two pairs whose rounding only the bits of y^2
+// dropped by its shift decide. Then hashes of 2^20 random pairs of bit patterns and of 2^20 random
+// pairs whose exponents are at most 60 apart, and of 2^18 of the latter sent straight to the
+// integer `hypot`: no input is known that needs it on its own, as the bound is 2^-102. The port
+// also matched LLVM libc on 2^30 pairs of the second kind and 2^28 of the first, and on 2^28 with
+// every pair sent to the integer `hypot`.
+//
+// EXPECT: 4617315517961601024 0 0 4617315517961601024 9218868437227405312 9218868437227405312 9221120237041090561 18444492273895866370 9221120237041090561 9221120237041090560 9221120237041090560 9218868437227405312 9218868437227405312 9218868437227405311 7312957575285266931 9110782046170513408 2358997985177721331 16384 1 6369051672525773 4607182418800017408 103582791429521536 4956202859629618921 4955372384388568183 17410224272084640278 17618412033450900675 5212542206673076411
+import core::num;
+
+fn check(x : u64, y : u64) -> i32 {
+  print(f64::from_bits(x).hypot(f64::from_bits(y)).to_bits());
+  print!(" ");
+  return 0;
+}
+
+fn check_exact(x : u64, y : u64) -> i32 {
+  print(libm_hypot_exact(f64::from_bits(x), f64::from_bits(y)).to_bits());
+  print!(" ");
+  return 0;
+}
+
+fn next(s : u64) -> u64 {
+  let a = s ^ (s << 13u64);
+  let b = a ^ (a >> 7u64);
+  return b ^ (b << 17u64);
+}
+
+/// The exponent of x, kept below 2047, and of y, at most 60 below it.
+fn close_x(x : u64) -> u64 {
+  let mut ex = (x >> 52u64) & 2047u64;
+  if ex == 2047u64 {
+    ex = 2046u64;
+  }
+  return (x & 9227875636482146303u64) | (ex << 52u64);
+}
+
+fn close_y(x : u64, y : u64) -> u64 {
+  let ex = (close_x(x) >> 52u64) & 2047u64;
+  let d = (y >> 52u64) % 61u64;
+  let mut ey : u64 = 0u64;
+  if ex >= d {
+    ey = ex - d;
+  }
+  return (y & 9227875636482146303u64) | (ey << 52u64);
+}
+
+fn hash(kind : i32, count : i32) -> u64 {
+  let mut s : u64 = 88172645463325252u64;
+  let mut h : u64 = 0u64;
+  for i in 0..count {
+    s = next(s);
+    let mut x = s;
+    s = next(s);
+    let mut y = s;
+    if kind != 0 {
+      let x0 = x;
+      x = close_x(x0);
+      y = close_y(x0, y);
+    }
+    let mut r : f64 = 0.0;
+    if kind == 2 {
+      r = libm_hypot_exact(f64::from_bits(x), f64::from_bits(y));
+    } else {
+      r = f64::from_bits(x).hypot(f64::from_bits(y));
+    }
+    h = (h ^ r.to_bits()).wrapping_mul(1099511628211u64);
+  }
+  return h;
+}
+
+fn main() -> i32 {
+  let _r0 = check(4613937818241073152u64, 4616189618054758400u64);
+  let _r1 = check(0u64, 0u64);
+  let _r2 = check(9223372036854775808u64, 9223372036854775808u64);
+  let _r3 = check(0u64, 13840687554816376832u64);
+  let _r4 = check(9218868437227405312u64, 9221120237041090561u64);
+  let _r5 = check(9221120237041090561u64, 9218868437227405312u64);
+  let _r6 = check(9221120237041090561u64, 4607182418800017408u64);
+  let _r7 = check(4607182418800017408u64, 18444492273895866370u64);
+  let _r8 = check(9221120237041090561u64, 18444492273895866370u64);
+  let _r9 = check(9218868437227405315u64, 4607182418800017408u64);
+  let _r10 = check(4607182418800017408u64, 9218868437227405315u64);
+  let _r11 = check(18442240474082181120u64, 4607182418800017408u64);
+  let _r12 = check(9218868437227405311u64, 9218868437227405311u64);
+  let _r13 = check(9218868437227405311u64, 4607182418800017408u64);
+  let _r14 = check(7309342195222315008u64, 7311593995036000256u64);
+  let _r15 = check(9110782046170513408u64, 8840566068528283648u64);
+  let _r16 = check(2355382605114769408u64, 11581006441783230464u64);
+  let _r17 = check(16384u64, 16u64);
+  let _r18 = check(1u64, 1u64);
+  let _r19 = check(4503599627370496u64, 4503599627370496u64);
+  let _r20 = check(4607182418800017408u64, 4336966441157787648u64);
+  let _r21 = check(103582791429521408u64, 4503599627370496u64);
+  let _e0 = check_exact(4956202859629618920u64, 4837874677137939942u64);
+  let _e1 = check_exact(4955372384388568182u64, 4837524286393675046u64);
+  print(hash(0, 1048576));
+  print!(" ");
+  print(hash(1, 1048576));
+  print!(" ");
+  print(hash(2, 262144));
+  return 0;
+}

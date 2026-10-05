@@ -9162,3 +9162,225 @@ fn libm_atan2_except(y_except : i32, x_except : i32, x_sign : bool) -> LibmDoubl
     hi: libm_f64_from_bits(4605249457297304856u64), lo: libm_f64_from_bits(4359948597267291143u64) // 0x1.921fb54442d18p-1, 0x1.1a62633145c07p-55
   };
 }
+
+/// `sqrt(x^2 + y^2)` for doubles, exactly rounded with integers: the generic `hypot` from
+/// `FPUtil/Hypot.h` for `double`, in round-to-nearest. The squares of the two 54-bit mantissas
+/// are added as 128-bit integers, and the square root is taken one bit at a time.
+fn libm_hypot_exact(x : f64, y : f64) -> f64 {
+  let x_abs = libm_f64_to_bits(x) & 9223372036854775807u64; // 0x7fffffffffffffff
+  let y_abs = libm_f64_to_bits(y) & 9223372036854775807u64; // 0x7fffffffffffffff
+  let mut a_bits = x_abs;
+  let mut b_bits = y_abs;
+  if x_abs < y_abs {
+    a_bits = y_abs;
+    b_bits = x_abs;
+  }
+  if a_bits >= 9218868437227405312u64 { // 0x7ff0000000000000
+    return libm_hypot_special(x, y);
+  }
+  let mut a_exp = a_bits >> 52u64;
+  let mut b_exp = b_bits >> 52u64;
+  if a_exp - b_exp >= 54u64 || x == 0.0 || y == 0.0 {
+    return libm_f64_from_bits(x_abs) + libm_f64_from_bits(y_abs);
+  }
+  let mut out_exp = a_exp;
+  let one = 9007199254740992u64; // 0x0020000000000000
+  let mut a_mant = (a_bits & 4503599627370495u64) << 1u64; // 0x000fffffffffffff
+  let mut b_mant = (b_bits & 4503599627370495u64) << 1u64; // 0x000fffffffffffff
+  let mut leading_one = one;
+  let mut y_mant_width : u64 = 53u64;
+  if a_exp != 0u64 {
+    a_mant = a_mant | one;
+  } else {
+    // A subnormal a: its leading one is its highest set bit.
+    y_mant_width = 0u64;
+    if a_mant > 0u64 {
+      y_mant_width = 63u64 - libm_u64_leading_zeros(a_mant);
+    }
+    leading_one = 1u64 << y_mant_width;
+    a_exp = 1u64;
+  }
+  if b_exp != 0u64 {
+    b_mant = b_mant | one;
+  } else {
+    b_exp = 1u64;
+  }
+  let a_mant_sq = (a_mant as u128) * (a_mant as u128);
+  let mut b_mant_sq = (b_mant as u128) * (b_mant as u128);
+  let shift_length = 2u64 * (a_exp - b_exp);
+  let mut sticky_bits = (b_mant_sq & (((1 as u128) << (shift_length as u128)) - (1 as u128))) != (0 as u128);
+  b_mant_sq = b_mant_sq >> (shift_length as u128);
+  let mut sum = a_mant_sq + b_mant_sq;
+  if sum >= ((1 as u128) << ((2u64 * y_mant_width + 2u64) as u128)) {
+    if leading_one == one {
+      sticky_bits = sticky_bits || (sum & (3 as u128)) != (0 as u128);
+      sum = sum >> (2 as u128);
+      out_exp = out_exp + 1u64;
+      if out_exp >= 2047u64 {
+        return libm_f64_from_bits(9218868437227405312u64); // 0x7ff0000000000000
+      }
+    } else {
+      leading_one = leading_one << 1u64;
+      y_mant_width = y_mant_width + 1u64;
+    }
+  }
+  let mut y_new = leading_one;
+  let mut r = ((sum >> (y_mant_width as u128)) as u64) - leading_one;
+  let tail_bits = (sum as u64) & (leading_one - 1u64);
+  let mut current_bit = leading_one >> 1u64;
+  while current_bit != 0u64 {
+    r = (r << 1u64) + (if (tail_bits & current_bit) != 0u64 {
+      1u64
+    } else {
+      0u64
+    });
+    let tmp = (y_new << 1u64) + current_bit;
+    if r >= tmp {
+      r = r - tmp;
+      y_new = y_new + current_bit;
+    }
+    current_bit = current_bit >> 1u64;
+  }
+  let round_bit = (y_new & 1u64) != 0u64;
+  let lsb = (y_new & 2u64) != 0u64;
+  if y_new >= one {
+    y_new = y_new - one;
+    if out_exp == 0u64 {
+      out_exp = 1u64;
+    }
+  }
+  y_new = y_new >> 1u64;
+  if round_bit && (lsb || sticky_bits || r != 0u64) {
+    y_new = y_new + 1u64;
+  }
+  if y_new >= (one >> 1u64) {
+    y_new = y_new - (one >> 1u64);
+    out_exp = out_exp + 1u64;
+    if out_exp >= 2047u64 {
+      return libm_f64_from_bits(9218868437227405312u64); // 0x7ff0000000000000
+    }
+  }
+  return libm_f64_from_bits(y_new | (out_exp << 52u64));
+}
+
+/// `hypot` when an input is an infinity or a NaN: a signaling NaN gives the quiet NaN, then an
+/// infinity gives infinity, then the NaN input itself, `x` first.
+fn libm_hypot_special(x : f64, y : f64) -> f64 {
+  let x_abs = libm_f64_to_bits(x) & 9223372036854775807u64; // 0x7fffffffffffffff
+  let y_abs = libm_f64_to_bits(y) & 9223372036854775807u64; // 0x7fffffffffffffff
+  let x_snan = x_abs > 9218868437227405312u64 && (x_abs & 2251799813685248u64) == 0u64; // 0x7ff0000000000000, 0x0008000000000000
+  let y_snan = y_abs > 9218868437227405312u64 && (y_abs & 2251799813685248u64) == 0u64; // 0x7ff0000000000000, 0x0008000000000000
+  if x_snan || y_snan {
+    return libm_f64_from_bits(9221120237041090560u64); // 0x7ff8000000000000
+  }
+  if x_abs == 9218868437227405312u64 || y_abs == 9218868437227405312u64 { // 0x7ff0000000000000, 0x7ff0000000000000
+    return libm_f64_from_bits(9218868437227405312u64); // 0x7ff0000000000000
+  }
+  if x_abs > 9218868437227405312u64 { // 0x7ff0000000000000
+    return x;
+  }
+  return y;
+}
+
+/// `hypot` when both inputs are below 2^-1022 in size: `hypot_denorm` from `hypot.h`. Both are
+/// scaled up by 2^1022 and the double-double square root is checked with 1.0 added, so it
+/// rounds at the place a subnormal result would.
+fn libm_hypot_denorm(a0 : f64, b0 : f64) -> f64 {
+  let a = a0 * libm_f64_from_bits(9209861237972664320u64); // 0x1.0p1022
+  let b = b0 * libm_f64_from_bits(9209861237972664320u64); // 0x1.0p1022
+  let a_sq = libm_dd_exact_mult(a, a);
+  let b_sq = libm_dd_exact_mult(b, b);
+  let mut sum = libm_dd_exact_add(a_sq.hi, b_sq.hi);
+  sum.lo = sum.lo + (a_sq.lo + b_sq.lo);
+  let r_hi = libm_sqrt_f64(sum.hi);
+  let r_inv = 0.5 / r_hi;
+  let mut r_h = LibmDoubleDouble {
+    hi: r_hi, lo: 0.0
+  };
+  let mut correction : f64 = 0.0;
+  if r_hi < 1.0 {
+    r_h = libm_dd_exact_add(1.0, r_hi);
+    correction = 1.0;
+  }
+  let r_sq = libm_dd_exact_mult(r_hi, r_hi);
+  let num_lo = (sum.lo - r_sq.lo) - (r_sq.hi - sum.hi);
+  let r_lo = libm_multiply_add(num_lo, r_inv, r_h.lo);
+  let upper = r_h.hi + (r_lo + libm_f64_from_bits(4147815256808226816u64)); // 0x1.0p-102
+  let lower = r_h.hi + (r_lo - libm_f64_from_bits(4147815256808226816u64)); // 0x1.0p-102
+  if upper == lower {
+    let r = libm_dd_exact_add(r_h.hi, r_lo);
+    return (r.hi - correction) * libm_f64_from_bits(4503599627370496u64); // 0x1.0p-1022
+  }
+  return libm_hypot_exact(a * libm_f64_from_bits(4503599627370496u64), b * libm_f64_from_bits(4503599627370496u64)); // 0x1.0p-1022, 0x1.0p-1022
+}
+
+/// `sqrt(x^2 + y^2)` for doubles, correctly rounded: `hypot` from `hypot.h`. The squares are
+/// added as double-doubles and the square root is corrected once, after scaling by 2^-600 or
+/// 2^600 when the inputs are very large or very small. When the error bound does not decide the
+/// rounding, `libm_hypot_exact` does it with integers.
+fn libm_hypot(x : f64, y : f64) -> f64 {
+  let x_u = libm_f64_to_bits(x);
+  let y_u = libm_f64_to_bits(y);
+  // The exponent and the top 20 bits of the mantissa.
+  let x_e = (x_u >> 31u64) & 4294967295u64; // 0xffffffff
+  let y_e = (y_u >> 31u64) & 4294967295u64; // 0xffffffff
+  let mut a = x;
+  let mut b = y;
+  let mut a_e = x_e;
+  let mut b_e = y_e;
+  if x_e < y_e {
+    a = y;
+    b = x;
+    a_e = y_e;
+    b_e = x_e;
+  }
+  let x_abs = libm_f64_from_bits(x_u & 9223372036854775807u64); // 0x7fffffffffffffff
+  let y_abs = libm_f64_from_bits(y_u & 9223372036854775807u64); // 0x7fffffffffffffff
+  let mut scale_back : f64 = 1.0;
+  if a_e >= ((500u64 + 1023u64) << 21u64) {
+    if a_e >= (9218868437227405312u64 >> 31u64) { // 0x7ff0000000000000
+      return libm_hypot_special(x, y);
+    }
+    if a_e - b_e >= (54u64 << 21u64) {
+      return x_abs + y_abs;
+    }
+    scale_back = libm_f64_from_bits(7309342195222315008u64); // 0x1.0p600
+    a = a * libm_f64_from_bits(1905022642377719808u64); // 0x1.0p-600
+    b = b * libm_f64_from_bits(1905022642377719808u64); // 0x1.0p-600
+    // The squares and their sum, each rounded once, as in LLVM.
+    let asq = a * a;
+    let bsq = b * b;
+    let sumsq = asq + bsq;
+    if sumsq >= libm_f64_from_bits(8426234902810198016u64) { // 0x1.0p848
+      return sumsq * scale_back;
+    }
+  } else if b_e <= ((1023u64 - 400u64) << 21u64) {
+    if a_e < (1u64 << 21u64) {
+      if x == 0.0 || y == 0.0 {
+        return x_abs + y_abs;
+      }
+      return libm_hypot_denorm(a, b);
+    }
+    scale_back = libm_f64_from_bits(1905022642377719808u64); // 0x1.0p-600
+    a = a * libm_f64_from_bits(7309342195222315008u64); // 0x1.0p600
+    b = b * libm_f64_from_bits(7309342195222315008u64); // 0x1.0p600
+  }
+  if a_e - b_e >= (54u64 << 21u64) {
+    return x_abs + y_abs;
+  }
+  let a_sq = libm_dd_exact_mult(a, a);
+  let b_sq = libm_dd_exact_mult(b, b);
+  let mut sum = libm_dd_exact_add(a_sq.hi, b_sq.hi);
+  sum.lo = sum.lo + (a_sq.lo + b_sq.lo);
+  let r_hi = libm_sqrt_f64(sum.hi);
+  let r_inv = 0.5 / r_hi;
+  let r_sq = libm_dd_exact_mult(r_hi, r_hi);
+  let num_lo = (sum.lo - r_sq.lo) - (r_sq.hi - sum.hi);
+  let r_lo = num_lo * r_inv;
+  let upper = r_hi + libm_multiply_add(r_hi, libm_f64_from_bits(4147815256808226816u64), r_lo); // 0x1.0p-102
+  let lower = r_hi + libm_multiply_add(r_hi, libm_f64_from_bits(13371187293663002624u64), r_lo); // -0x1.0p-102
+  if upper == lower {
+    return upper * scale_back;
+  }
+  return libm_hypot_exact(x, y);
+}
