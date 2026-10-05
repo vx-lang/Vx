@@ -9,19 +9,19 @@ extern {
   /// The Rust core behind `TcpStream::connect`. Null when the connection fails.
   fn vx_tcp_stream_connect(c_addr : *const i8) -> *mut i8;
   /// The Rust core behind `TcpStream::read`.
-  fn vx_tcp_stream_read(ptr : *mut i8, buffer : *mut u8, len : i64) -> i64;
+  fn vx_tcp_stream_read(ptr : *mut i8, buffer : *mut u8, len : u64) -> u64;
   /// The Rust core behind `TcpStream::write`.
-  fn vx_tcp_stream_write(ptr : *mut i8, buffer : *const u8, len : i64) -> i64;
+  fn vx_tcp_stream_write(ptr : *mut i8, buffer : *const u8, len : u64) -> u64;
   /// The Rust core behind `tcp_stream_drop`.
   fn vx_tcp_stream_drop(ptr : *mut i8) -> i32;
 
   /// The Rust core behind `UdpSocket::bind`. Null when the bind fails.
   fn vx_udp_socket_bind(c_addr : *const i8) -> *mut i8;
   /// The Rust core behind `UdpSocket::recv`.
-  fn vx_udp_socket_recv(ptr : *mut i8, buffer : *mut u8, len : i64) -> i64;
+  fn vx_udp_socket_recv(ptr : *mut i8, buffer : *mut u8, len : u64) -> u64;
   /// The Rust core behind `UdpSocket::send_to`.
-  fn vx_udp_socket_send_to(ptr : *mut i8, buffer : *const u8, len : i64,
-  c_addr : *const i8) -> i64;
+  fn vx_udp_socket_send_to(ptr : *mut i8, buffer : *const u8, len : u64,
+  c_addr : *const i8) -> u64;
   /// The Rust core behind `udp_socket_drop`.
   fn vx_udp_socket_drop(ptr : *mut i8) -> i32;
 
@@ -61,16 +61,16 @@ impl TcpStream {
   /// is a stream and a message may arrive in pieces, so a caller wanting a whole one loops.
   ///
   /// Unsafe because `buffer` must have room for `len` bytes.
-  unsafe fn read(self : *mut TcpStream, buffer : *mut u8, len : i64)
-  -> i64 {
+  unsafe fn read(self : *mut TcpStream, buffer : *mut u8, len : u64)
+  -> u64 {
     unsafe { vx_tcp_stream_read(self.ptr, buffer, len) }
   }
 
   /// Write up to `len` bytes from `buffer` and answer how many were taken.
   ///
   /// A short write is normal and the remainder is not retried here.
-  unsafe fn write(self : *mut TcpStream, buffer : *const u8, len : i64)
-  ->i64 {
+  unsafe fn write(self : *mut TcpStream, buffer : *const u8, len : u64)
+  ->u64 {
     unsafe { vx_tcp_stream_write(self.ptr, buffer, len) }
   }
 }
@@ -102,17 +102,17 @@ impl UdpSocket {
   ///
   /// A datagram longer than `len` is truncated and the rest is lost, which is UDP's behaviour
   /// and not an error here. The sender's address is not reported.
-  unsafe fn recv(self : *mut UdpSocket, buffer : *mut u8, len : i64)
-  -> i64 {
+  unsafe fn recv(self : *mut UdpSocket, buffer : *mut u8, len : u64)
+  -> u64 {
     unsafe { vx_udp_socket_recv(self.ptr, buffer, len) }
   }
 
   /// Send one datagram of `len` bytes to `addr`, answering how many were sent.
   ///
   /// Nothing guarantees it arrives, or arrives once, or arrives in order.
-  unsafe fn send_to(self : *mut UdpSocket, buffer : *const u8, len : i64,
+  unsafe fn send_to(self : *mut UdpSocket, buffer : *const u8, len : u64,
   addr : *const i8)
-  ->i64 {
+  ->u64 {
     unsafe { vx_udp_socket_send_to(self.ptr, buffer, len, addr) }
   }
 }

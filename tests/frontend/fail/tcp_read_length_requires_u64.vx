@@ -1,0 +1,21 @@
+//===- tcp_read_length_requires_u64.vx - Vx Compiler --------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// A positive signed length must not reach a TCP read.
+// CHECK: Error[E3003]{{.*}}'TcpStream::read'. Expected u64, got i64
+import std::net;
+
+fn main() -> i32 {
+  unsafe {
+    let mut stream = TcpStream::connect("127.0.0.1:1");
+    let length : i64 = 1;
+    let _count = stream.read(0 as *mut u8, length);
+    tcp_stream_drop(&mut stream);
+  }
+  return 0;
+}

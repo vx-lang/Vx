@@ -19,8 +19,8 @@
 // CHECK: call @print_i32(%{{.*}}) : (i32) -> i32
 import std::io;
 extern {
-  fn vx_stdout_write(buffer : *const u8, len : i64) -> i64;
-  fn vx_stderr_write(buffer : *const u8, len : i64) -> i64;
+  fn vx_stdout_write(buffer : *const u8, len : u64) -> u64;
+  fn vx_stderr_write(buffer : *const u8, len : u64) -> u64;
 }
 
 fn main() -> i32 {

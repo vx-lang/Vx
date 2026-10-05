@@ -1,0 +1,21 @@
+//===- udp_recv_length_requires_u64.vx - Vx Compiler --------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// A positive signed length must not reach a UDP receive.
+// CHECK: Error[E3003]{{.*}}'UdpSocket::recv'. Expected u64, got i64
+import std::net;
+
+fn main() -> i32 {
+  unsafe {
+    let mut socket = UdpSocket::bind("127.0.0.1:0");
+    let length : i64 = 1;
+    let _count = socket.recv(0 as *mut u8, length);
+    udp_socket_drop(&mut socket);
+  }
+  return 0;
+}
