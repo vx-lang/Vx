@@ -1599,38 +1599,6 @@ macro_rules stamp_float_inverse_trig {
 
 stamp_float_inverse_trig!(f64 , 1.0 , 0.0);
 
-/// Stamps `sin`, `cos` and `tan` through the platform's `math` operations, for `f64`, which has no `core::libm`
-/// version yet. The other widths use `core::libm`'s.
-macro_rules stamp_float_trig {
-  ($t : ident) => {
-    impl $t {
-      /// The sine of this many radians.
-      fn sin(self : $t) -> $t {
-        return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
-          %r = math.sin %a : $t
-          macro.yield %r : $t
-        };
-      }
-      /// The cosine of this many radians.
-      fn cos(self : $t) -> $t {
-        return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
-          %r = math.cos %a : $t
-          macro.yield %r : $t
-        };
-      }
-      /// The tangent of this many radians.
-      fn tan(self : $t) -> $t {
-        return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
-          %r = math.tan %a : $t
-          macro.yield %r : $t
-        };
-      }
-    }
-  };
-}
-
-stamp_float_trig!(f64);
-
 /// Stamps `sinh`, `cosh` and `tanh` through the platform's `math` operations, for `f64`, which has no `core::libm`
 /// version yet. The other widths use `core::libm`'s.
 macro_rules stamp_float_hyperbolics {
@@ -1739,6 +1707,21 @@ impl f64 {
   /// `expm1`).
   fn exp_m1(self : f64) -> f64 {
     return libm_expm1(self);
+  }
+
+  /// The sine of this many radians, correctly rounded (LLVM libc's `sin`).
+  fn sin(self : f64) -> f64 {
+    return libm_sin(self);
+  }
+
+  /// The cosine of this many radians, correctly rounded (LLVM libc's `cos`).
+  fn cos(self : f64) -> f64 {
+    return libm_cos(self);
+  }
+
+  /// The tangent of this many radians, correctly rounded (LLVM libc's `tan`).
+  fn tan(self : f64) -> f64 {
+    return libm_tan(self);
   }
 }
 
