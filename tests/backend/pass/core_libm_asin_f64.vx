@@ -1,0 +1,91 @@
+//===- core_libm_asin_f64.vx - Vx Compiler -------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// f64 `asin`, ported from LLVM libc's `asin` into `core::libm`, against LLVM libc itself
+// (f475f085bf7b, built with FMA). It prints the bits of `x.asin()` (a NaN as 9221120237041090560)
+// for four inputs that need the 128-bit pass below 1/2 in size and four from 1/2 to 1, two of them
+// negative (found by searching random doubles), then for special values and the edges of its
+// ranges; then hashes of 2^20 random bit patterns and of 2^20 random x from 2^-63 to 2^6 in size.
+// The port also matched LLVM libc on 2^30 inputs of the second kind and 2^28 of the first, and on
+// 2^27 more with the fast pass turned off.
+//
+// EXPECT: 4600725766734111577 13822050447444843968 13816491969103273001 4592240323730585922 4606244064300382006 4604598468496807771 13827403433223494723 13826568433739667630 0 9223372036854775808 4609753056924675352 13833125093779451160 4336966441157787648 13560338478012563456 1 9221120237041090560 9221120237041090560 9221120237041090560 9221120237041090560 9221120237041090560 4602891378046628709 4602891378046628710 13826263414901404518 4609753056857566488 13833125093712342296 9221120237041090560 4485585228861014015 4490088828488384512 4568743049683088269 8867515796654369156
+import core::num;
+
+fn bits(r : f64) -> u64 {
+  if r != r {
+    return 9221120237041090560u64;
+  }
+  return r.to_bits();
+}
+
+fn check(x : u64) -> i32 {
+  print(bits(f64::from_bits(x).asin()));
+  print!(" ");
+  return 0;
+}
+
+/// x from 2^-63 to 2^6 in size, either sign.
+fn ranged(s : u64) -> u64 {
+  return (s & 9227875636482146303u64) | ((960u64 + ((s >> 52u64) & 2047u64) % 70u64) << 52u64);
+}
+
+fn next(s : u64) -> u64 {
+  let a = s ^ (s << 13u64);
+  let b = a ^ (a >> 7u64);
+  return b ^ (b << 17u64);
+}
+
+fn hash(kind : i32, count : i32) -> u64 {
+  let mut s : u64 = 88172645463325252u64;
+  let mut h : u64 = 0u64;
+  for i in 0..count {
+    s = next(s);
+    let mut a = s;
+    if kind == 1 {
+      a = ranged(s);
+    }
+    let r = f64::from_bits(a).asin();
+    h = (h ^ bits(r)).wrapping_mul(1099511628211u64);
+  }
+  return h;
+}
+
+fn main() -> i32 {
+  let _r0 = check(4600546865883596967u64);
+  let _r1 = check(13821986236364222108u64);
+  let _r2 = check(13816472577670685199u64);
+  let _r3 = check(4592226374430055135u64);
+  let _r4 = check(4605207345555430709u64);
+  let _r5 = check(4604067725912225520u64);
+  let _r6 = check(13826999482849984479u64);
+  let _r7 = check(13826312377571237924u64);
+  let _r8 = check(0u64);
+  let _r9 = check(9223372036854775808u64);
+  let _r10 = check(4607182418800017408u64);
+  let _r11 = check(13830554455654793216u64);
+  let _r12 = check(4336966441157787648u64);
+  let _r13 = check(13560338478012563456u64);
+  let _r14 = check(1u64);
+  let _r15 = check(9218868437227405311u64);
+  let _r16 = check(9218868437227405312u64);
+  let _r17 = check(18442240474082181120u64);
+  let _r18 = check(9221120237041090560u64);
+  let _r19 = check(18444492273895866368u64);
+  let _r20 = check(4602678819172646911u64);
+  let _r21 = check(4602678819172646912u64);
+  let _r22 = check(13826050856027422720u64);
+  let _r23 = check(4607182418800017407u64);
+  let _r24 = check(13830554455654793215u64);
+  let _r25 = check(4607182418800017409u64);
+  let _r26 = check(4485585228861014015u64);
+  let _r27 = check(4490088828488384512u64);
+  print(hash(0, 1048576));
+  print!(" ");
+  print(hash(1, 1048576));
+  return 0;
+}
