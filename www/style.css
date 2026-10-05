@@ -396,6 +396,10 @@ footer > p {
   .pane, .proves, .compiles, .honest, .final-cta { margin-bottom: 4rem; }
 }
 
+@media (max-width: 600px) {
+  .pane-code pre { max-width: calc(100vw - 3rem); }
+}
+
 /* ---------------------------------------------------------------- blog ---
  *
  * The post list and the posts themselves. Narrower than the landing page on
