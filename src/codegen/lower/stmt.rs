@@ -102,16 +102,14 @@ impl<'c> LowerToMelior<'c> for ReturnStmt {
                 block.append_operation(copy_op);
                 // The copy moved the result into the caller's buffer. What it was copied from
                 // is freed when this function owned it, and left alone when it is a view.
-                if crate::hir::check::drops::drops_enabled() {
-                    let drop = OperationBuilder::new("vx.drop", gen.loc())
-                        .add_operands(&[val])
-                        .add_attributes(&[(
-                            Identifier::new(gen.context, "owned_only"),
-                            melior::ir::attribute::Attribute::unit(gen.context),
-                        )])
-                        .build()?;
-                    block.append_operation(drop);
-                }
+                let drop = OperationBuilder::new("vx.drop", gen.loc())
+                    .add_operands(&[val])
+                    .add_attributes(&[(
+                        Identifier::new(gen.context, "owned_only"),
+                        melior::ir::attribute::Attribute::unit(gen.context),
+                    )])
+                    .build()?;
+                block.append_operation(drop);
             }
             gen.run_value_drops(block)?;
             block.append_operation(OperationBuilder::new(op_name, gen.loc()).build()?);

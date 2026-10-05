@@ -12,17 +12,17 @@
 //
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 
-// CHECK-LABEL: func.func @shaped(%arg0: memref<2x3xf32>) -> i32
+// CHECK-LABEL: func.func @shaped(%arg0: memref<2x3xf32> {vx.owned}) -> i32
 fn shaped(t : Tensor<f32, [2, 3]>) -> i32 {
   return 0;
 }
 
-// CHECK-LABEL: func.func @rank0(%arg0: memref<f32>) -> i32
+// CHECK-LABEL: func.func @rank0(%arg0: memref<f32> {vx.owned}) -> i32
 fn rank0(t : Tensor<f32, []>) -> i32 {
   return 0;
 }
 
-// CHECK-LABEL: func.func @dynamic(%arg0: memref<?x?xf32>) -> i32
+// CHECK-LABEL: func.func @dynamic(%arg0: memref<?x?xf32> {vx.owned}) -> i32
 fn dynamic(t : Tensor<f32, [?, ?]>) -> i32 {
   return 0;
 }

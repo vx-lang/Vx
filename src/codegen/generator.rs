@@ -818,12 +818,10 @@ impl<'c> MeliorGenerator<'c> {
                 .set_attribute("llvm.module_flags", flags);
         }
         // The program frees its tensors at their drops; see the flat code generator.
-        if crate::hir::check::drops::drops_enabled() {
-            use melior::ir::operation::OperationMutLike;
-            self.module
-                .as_operation_mut()
-                .set_attribute("vx.drops", melior::ir::Attribute::unit(self.context));
-        }
+        use melior::ir::operation::OperationMutLike;
+        self.module
+            .as_operation_mut()
+            .set_attribute("vx.drops", melior::ir::Attribute::unit(self.context));
 
         self.generate_module(program, modules)?;
 
@@ -1325,18 +1323,16 @@ impl<'c> MeliorGenerator<'c> {
         ];
         // A tensor taken by value belongs to the function, which frees it. One placed in
         // another memory is not freed by its drop yet.
-        if crate::hir::check::drops::drops_enabled() {
-            let mut per_arg = vec!["{}"; slot_args];
-            per_arg.extend(func.params.iter().map(|(_, ty)| match ty {
-                syntax::Type::Tensor(_, _, None) => "{vx.owned}",
-                syntax::Type::Tensor(_, _, Some(_)) => "{vx.placed}",
-                _ => "{}",
-            }));
-            let text = format!("[{}]", per_arg.join(", "));
-            let attr = melior::ir::Attribute::parse(self.context, &text)
-                .ok_or_else(|| LowerError::from(format!("bad argument attributes {text}")))?;
-            func_attributes.push((melior::ir::Identifier::new(self.context, "arg_attrs"), attr));
-        }
+        let mut per_arg = vec!["{}"; slot_args];
+        per_arg.extend(func.params.iter().map(|(_, ty)| match ty {
+            syntax::Type::Tensor(_, _, None) => "{vx.owned}",
+            syntax::Type::Tensor(_, _, Some(_)) => "{vx.placed}",
+            _ => "{}",
+        }));
+        let text = format!("[{}]", per_arg.join(", "));
+        let attr = melior::ir::Attribute::parse(self.context, &text)
+            .ok_or_else(|| LowerError::from(format!("bad argument attributes {text}")))?;
+        func_attributes.push((melior::ir::Identifier::new(self.context, "arg_attrs"), attr));
 
         // `main` deliberately carries no `llvm.emit_c_interface`.
         //
@@ -1437,11 +1433,10 @@ impl<'c> MeliorGenerator<'c> {
     ) -> Result<Option<melior::ir::BlockRef<'c, 'c>>, LowerError> {
         let name = Expr::Identifier(syntax::IdentifierExpr::new(d.name.clone(), d.span));
         let (buffer, ty, block) = self.generate_expr(&name, block)?;
-        assert!(
-            self.is_memref(&ty),
-            "a drop of `{}`, which does not hold a tensor",
-            d.name
-        );
+        // A rank-0 tensor is a plain number here: there is nothing to free.
+        if !self.is_memref(&ty) {
+            return Ok(Some(block));
+        }
         if d.after_value {
             self.queued_drops.push((buffer, d.flag.clone()));
         } else {

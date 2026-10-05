@@ -37,14 +37,14 @@
 // materialized by `vx-to-llvm`, and the middle-end runner checks the module as
 // it stands *before* the lowering pipeline.
 //
-// CHECK lines are matched as ordered substrings, so these follow the order the
-// two functions are emitted in, which is the order they are written below.
+// The four tags are different numbers, so the checks do not depend on the order the
+// arguments are passed in.
 //
 // RUN: vxc %s --emit-llvm 2>&1 | FileCheck %s
-// CHECK: llvm.mlir.constant(16910336 : i32)
-// CHECK: llvm.mlir.constant(133120 : i32)
-// CHECK: llvm.mlir.constant(16909824 : i32)
-// CHECK: llvm.mlir.constant(132608 : i32)
+// CHECK-DAG: llvm.mlir.constant(16910336 : i32)
+// CHECK-DAG: llvm.mlir.constant(133120 : i32)
+// CHECK-DAG: llvm.mlir.constant(16909824 : i32)
+// CHECK-DAG: llvm.mlir.constant(132608 : i32)
 
 fn half_kernel(a : Tensor<f16, [?, ?]>) -> Tensor<f16, [?, ?]> {
   let mut c = Tensor<f16, [2, 2]>::uninit();

@@ -5,14 +5,17 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// With `VX_DROPS=scope`, a tensor is freed where its owner drops it. A function owns the
+// A tensor is freed where its owner drops it. A function owns the
 // tensors it takes by value and frees them; its caller does not.
 //
 // EXPECT: 2 2 2 8 2 1
-// RUN: env VX_DROPS=scope vxc %s 2>&1 | FileCheck %s --check-prefix=OUT
+// The lines below without `--legacy-codegen` are about the default code generator; the
+// legacy code generator has RUN lines of its own further down.
+// REQUIRES: flat-codegen
+// RUN: vxc %s 2>&1 | FileCheck %s --check-prefix=OUT
 // OUT: 2 2 2 8 2 1
 //
-// RUN: env VX_DROPS=scope vxc %s --action emit-llvm 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s
 // `main` frees `a` and the tensor `ones(5)` makes, which nothing names. `b`, `f` and `g` are
 // freed by the functions they are given to. `f` and `g` come back in buffers `main` allocates,
 // on the heap because the functions they are given to free them.
@@ -51,8 +54,8 @@
 // The legacy code generator frees the same tensors. It writes the functions in source order,
 // and `four` builds `t` in a buffer of its own, copies it into the caller's and frees it. It
 // keeps `a`, which is `mut`, in a cell, and passes `&a` as the cell.
-// RUN: env VX_DROPS=scope vxc --legacy-codegen %s 2>&1 | FileCheck %s --check-prefix=OUT
-// RUN: env VX_DROPS=scope vxc --legacy-codegen %s --action emit-llvm 2>&1 | FileCheck %s --check-prefix=LEGACY
+// RUN: vxc --legacy-codegen %s 2>&1 | FileCheck %s --check-prefix=OUT
+// RUN: vxc --legacy-codegen %s --action emit-llvm 2>&1 | FileCheck %s --check-prefix=LEGACY
 // LEGACY-LABEL: llvm.func @total(
 // LEGACY: llvm.call @free(%arg0)
 // LEGACY-LABEL: llvm.func @first_two(

@@ -31,7 +31,7 @@ fn main() -> i32 {
 }
 
 // CHECK: module
-// CHECK:   func.func @my_matmul(%[[RET:.*]]: memref<128x256xf32>, %arg1: memref<128x64xf32>, %arg2: memref<64x256xf32>) {
+// CHECK:   func.func @my_matmul(%[[RET:.*]]: memref<128x256xf32>, %arg1: memref<128x64xf32> {vx.owned}, %arg2: memref<64x256xf32> {vx.owned}) {
 // CHECK:     %[[C:.*]] = memref.alloc() : memref<128x256xf32>
 // CHECK:     %cst = arith.constant 0.000000e+00 : f32
 // CHECK:     linalg.fill ins(%cst : f32) outs(%[[C]] : memref<128x256xf32>)

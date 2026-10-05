@@ -2,12 +2,15 @@
 // Each arithmetic operator is a named linalg op over the two operands. A function that returns
 // the result writes it into the buffer its caller allocated -- the first parameter -- and returns
 // nothing, so the operator needs no result buffer of its own. `gen_tensor_math_add` is the
-// contrast: it drops the result instead of returning it, and still allocates one.
+// contrast: it drops the result instead of returning it, and still allocates one. The operands
+// are dropped once the result is written.
 // CHECK-LABEL: func.func @gen_tensor_math_sub
 // CHECK-SAME: (%[[RET:.*]]: memref<16x16xf32>) {
 // CHECK: %[[A:.*]] = memref.alloc() : memref<16x16xf32>
 // CHECK: %[[B:.*]] = memref.alloc() : memref<16x16xf32>
 // CHECK: linalg.sub ins(%[[A]], %[[B]] : memref<16x16xf32>, memref<16x16xf32>) outs(%[[RET]] : memref<16x16xf32>)
+// CHECK-NEXT: vx.drop %[[A]]
+// CHECK-NEXT: vx.drop %[[B]]
 // CHECK-NEXT: return
 // CHECK-LABEL: func.func @gen_tensor_math_mul
 // CHECK-SAME: (%[[RETM:.*]]: memref<16x16xf32>) {

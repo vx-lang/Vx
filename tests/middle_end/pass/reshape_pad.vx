@@ -23,9 +23,10 @@ fn process_tensor(val: Tensor<f32, [128, 128]>) -> Tensor<f32, [256]> {
 // returns, so the function returns a copy made with `.clone()`. The copy is written straight into
 // the caller's buffer: one copy, as before.
 // CHECK-LABEL: func.func @process_tensor
-// CHECK-SAME: (%[[RET:.*]]: memref<256xf32>, %arg1: memref<128x128xf32>) {
+// CHECK-SAME: (%[[RET:.*]]: memref<256xf32>, %arg1: memref<128x128xf32> {vx.owned}) {
 // CHECK-NEXT: %[[V:.*]] = memref.reinterpret_cast %arg1 to offset: [0], sizes: [256], strides: [1] : memref<128x128xf32> to memref<256xf32>
 // CHECK-NEXT: memref.copy %[[V]], %[[RET]] : memref<256xf32> to memref<256xf32>
+// CHECK-NEXT: vx.drop %arg1 : memref<128x128xf32>
 // CHECK-NEXT: return
 
 fn main() -> i32 {

@@ -64,14 +64,14 @@ seconds one run may take.
 Words like `VAR=value` before the flags set environment variables for that configuration:
 
 ```
-fuzz.py run owners --config flat= --config drops=VX_DROPS=scope
+fuzz.py run tensors --config flat= --config o0="RUST_BACKTRACE=0 -O0"
 ```
 
 ## Freeing what a program allocates
 
 ```
 fuzz.py run owners --seeds 1-1000 --heap
-fuzz.py compare tests/backend/pass/*.vx --heap --config drops=VX_DROPS=scope
+fuzz.py compare tests/backend/pass/*.vx --heap
 ```
 
 `--heap` counts the heap blocks each compiled program allocates and frees, with a small

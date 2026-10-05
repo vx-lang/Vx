@@ -8,9 +8,9 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // The flat path compiles this now: the result buffer is sized from the operands'
 // extents, and the three loops bound themselves the same way.
-// CHECK-LABEL: func.func @distributed_matmul(%arg0: memref<?x?xf32>, %arg1: memref<?x?xf32>) -> memref<?x?xf32>
+// CHECK-LABEL: func.func @distributed_matmul(%arg0: memref<?x?xf32> {vx.owned}, %arg1: memref<?x?xf32> {vx.owned}) -> memref<?x?xf32>
 // CHECK: return %{{.*}} : memref<?x?xf32>
-// CHECK-LABEL: func.func @custom_matmul(%arg0: memref<?x?xf32>, %arg1: memref<?x?xf32>) -> memref<?x?xf32>
+// CHECK-LABEL: func.func @custom_matmul(%arg0: memref<?x?xf32> {vx.owned}, %arg1: memref<?x?xf32> {vx.owned}) -> memref<?x?xf32>
 // CHECK: memref.dim %arg0
 // CHECK: memref.dim %arg1
 // CHECK: memref.alloc(%{{.*}}, %{{.*}}) : memref<?x?xf32>

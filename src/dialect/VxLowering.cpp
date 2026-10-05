@@ -1429,7 +1429,8 @@ static void promoteBufferCells(ModuleOp module) {
 }
 
 // Where a buffer that a drop or a return names came from, under
-// VX_DROPS=scope (a module marked `vx.drops`).
+// drops (a module marked `vx.drops`, as every module the code generators
+// write is).
 enum class BufferOrigin {
   // A heap buffer this function owns: a `memref.alloc`, a tensor a call
   // returned, or a parameter taken by value (`vx.owned`).
@@ -1447,6 +1448,25 @@ static bool takesOwnership(func::CallOp call, unsigned i) {
   auto callee = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
       call, call.getCalleeAttr());
   return callee && callee.getArgAttr(i, "vx.owned");
+}
+
+// The buffer behind `v`: through a `memref.cast`, and through the
+// `unrealized_conversion_cast` the legacy code generator uses for the same
+// change of memref type.
+static Value castSource(Value v) {
+  while (true) {
+    if (auto cast = v.getDefiningOp<memref::CastOp>()) {
+      v = cast.getSource();
+      continue;
+    }
+    if (auto cast = v.getDefiningOp<UnrealizedConversionCastOp>();
+        cast && cast->getNumOperands() == 1 &&
+        isa<MemRefType>(cast->getOperand(0).getType())) {
+      v = cast->getOperand(0);
+      continue;
+    }
+    return v;
+  }
 }
 
 static BufferOrigin originOf(Value v, llvm::SmallPtrSetImpl<void *> &seen);
@@ -1468,8 +1488,7 @@ static BufferOrigin commonOrigin(ArrayRef<Value> values,
 }
 
 static BufferOrigin originOf(Value v, llvm::SmallPtrSetImpl<void *> &seen) {
-  while (auto cast = v.getDefiningOp<memref::CastOp>())
-    v = cast.getSource();
+  v = castSource(v);
   seen.insert(v.getAsOpaquePointer());
   // The legacy code generator keeps a `let mut` tensor in a cell, a memref of
   // memrefs: what is read back is one of the buffers stored into it.
@@ -1526,7 +1545,9 @@ static BufferOrigin originOf(Value v, llvm::SmallPtrSetImpl<void *> &seen) {
     return BufferOrigin::Heap;
   if (isa<memref::AllocaOp, memref::GetGlobalOp, vx::TransferOp>(def))
     return BufferOrigin::NotFreed;
-  if (isa<ViewLikeOpInterface>(def))
+  // A view, also one built over memory from elsewhere (`tensor_view_2d`) or
+  // read out of a struct field, both of which reach a memref through a cast.
+  if (isa<ViewLikeOpInterface, UnrealizedConversionCastOp>(def))
     return BufferOrigin::Borrowed;
   return BufferOrigin::Unknown;
 }
@@ -1541,20 +1562,34 @@ static BufferOrigin originOf(Value v) {
 // result that is passed by value gets a heap buffer instead, allocated where
 // the call that fills it is.
 static LogicalResult giveMovedResultsHeapSlots(ModuleOp module) {
-  SmallVector<std::pair<func::CallOp, unsigned>> moves;
-  module.walk([&](func::CallOp call) {
-    for (unsigned i = 0; i < call.getNumOperands(); ++i)
-      if (takesOwnership(call, i))
-        moves.push_back({call, i});
+  // The slots a result leaves through: passed by value, or kept somewhere it
+  // can meet buffers from the heap -- stored into a cell, or passed along a
+  // branch. Their drops then see heap buffers only.
+  llvm::SetVector<memref::AllocaOp> slots;
+  auto slotOf = [](Value v) {
+    return castSource(v).getDefiningOp<memref::AllocaOp>();
+  };
+  module.walk([&](Operation *op) {
+    if (auto call = dyn_cast<func::CallOp>(op)) {
+      for (unsigned i = 0; i < call.getNumOperands(); ++i)
+        if (takesOwnership(call, i))
+          if (auto slot = slotOf(call.getOperand(i)))
+            slots.insert(slot);
+    } else if (auto store = dyn_cast<memref::StoreOp>(op)) {
+      if (isa<MemRefType>(store.getValueToStore().getType()))
+        if (auto slot = slotOf(store.getValueToStore()))
+          slots.insert(slot);
+    } else if (isa<BranchOpInterface>(op)) {
+      for (Value v : op->getOperands())
+        if (isa<MemRefType>(v.getType()))
+          if (auto slot = slotOf(v))
+            slots.insert(slot);
+    }
   });
-  for (auto [call, i] : moves) {
-    Value arg = call.getOperand(i);
-    while (auto cast = arg.getDefiningOp<memref::CastOp>())
-      arg = cast.getSource();
-    auto slot = arg.getDefiningOp<memref::AllocaOp>();
-    if (!slot)
-      continue; // checked by checkMovedArguments
-    // The call that fills the slot is the one that takes it first.
+  for (memref::AllocaOp slot : slots) {
+    // The call that fills the slot is the one that takes it first. A stack
+    // buffer no call fills is not a result: checkMovedArguments reports one
+    // passed by value.
     func::CallOp fill;
     for (Operation *user : slot->getUsers())
       if (auto c = dyn_cast<func::CallOp>(user); c && c.getNumOperands() > 0 &&
@@ -1562,8 +1597,7 @@ static LogicalResult giveMovedResultsHeapSlots(ModuleOp module) {
                                                  c.getNumResults() == 0)
         fill = c;
     if (!fill)
-      return call.emitError("a stack buffer that no call returned into is "
-                            "passed by value");
+      continue;
     DominanceInfo dominance(fill->getParentOfType<func::FuncOp>());
     for (Operation *user : slot->getUsers())
       if (user != fill && !dominance.properlyDominates(fill, user))
@@ -3614,181 +3648,6 @@ struct NormalizeStackBuffersPass
   }
 };
 
-// Free every heap buffer after its last use, for a program that places nothing.
-//
-// MLIR's `buffer-deallocation-pipeline` does the work: it follows ownership
-// across function boundaries, so a function that returns a buffer leaves it for
-// the caller, and the caller frees it after its last read. Around it:
-//
-// - The ownership analysis refuses a loop written as branches, which is how
-//   every loop reaches this point, so they are lifted back into `scf` for it
-//   and lowered again afterwards.
-// - Where ownership is ambiguous it copies with `bufferization.clone`, which
-//   `convert-bufferization-to-memref` lowers.
-//
-// A program that places data on a device or in a memory sub-space is left
-// exactly as it was. Its transfers are already freed, by the `vx.free` that
-// convert-vx-to-standard places -- and the two schemes collide: the analysis
-// refuses input that already frees, cannot see through the casts that hand
-// memory to the plugin calls, and would put a host `free` on memory in another
-// address space. Running the analysis before the `vx` ops are lowered is the
-// way to bring those programs in; until then the whole module is skipped,
-// because the analysis works on the whole module.
-struct FreeHeapBuffersPass
-    : public PassWrapper<FreeHeapBuffersPass, OperationPass<ModuleOp>> {
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(FreeHeapBuffersPass)
-
-  llvm::StringRef getArgument() const override {
-    return "vx-free-heap-buffers";
-  }
-
-  llvm::StringRef getDescription() const override {
-    return "Frees each heap buffer after its last use, in a module that "
-           "places nothing on a device or in a memory sub-space";
-  }
-
-  // The passes run below create ops from these dialects, and a pipeline run
-  // from inside a pass can only use dialects its parent declared.
-  void getDependentDialects(DialectRegistry &registry) const override {
-    registry.insert<arith::ArithDialect, bufferization::BufferizationDialect,
-                    cf::ControlFlowDialect, memref::MemRefDialect,
-                    scf::SCFDialect, ub::UBDialect>();
-  }
-
-  // Why this module has to be left alone, or null if it does not.
-  static const char *reasonToSkip(ModuleOp module) {
-    if (module->hasAttr("vx.drops"))
-      return "the program frees its tensors at their drops";
-    const char *reason = nullptr;
-    auto holdsBuffer = [](Type type) {
-      auto cell = llvm::dyn_cast<MemRefType>(type);
-      return cell && isa<BaseMemRefType>(cell.getElementType());
-    };
-    auto placed = [](Type type) {
-      auto memref = llvm::dyn_cast<BaseMemRefType>(type);
-      return memref && memref.getMemorySpace();
-    };
-    module.walk([&](Operation *op) {
-      if (op->getDialect() && op->getDialect()->getNamespace() == "vx")
-        reason = "a vx operation is still present";
-      else if (isa<memref::DeallocOp>(op))
-        reason = "a buffer is already freed by hand";
-      // A cell holding a buffer (`memref<memref<..>>`, how the AST code
-      // generator keeps a tensor local) passed between blocks, which is what
-      // merging two `return`s produces. The analysis then frees the buffer in
-      // the block before the merged return, without knowing the value the
-      // return loads from the cell is that buffer, and returns freed memory.
-      else if (auto branch = dyn_cast<BranchOpInterface>(op);
-               branch && llvm::any_of(op->getOperandTypes(), holdsBuffer))
-        reason = "a cell holding a buffer is passed between blocks";
-      else if (llvm::any_of(op->getOperandTypes(), placed) ||
-               llvm::any_of(op->getResultTypes(), placed))
-        reason = "a buffer lives in another memory space";
-      else if (isa<UnrealizedConversionCastOp>(op) &&
-               llvm::any_of(op->getOperandTypes(),
-                            [](Type t) { return isa<BaseMemRefType>(t); }))
-        reason = "a buffer is handed to code outside the memref dialect";
-      // The analysis's own precondition: every op inside a function must say
-      // how it touches memory. `llvm.intr.assume`, which carries a proven
-      // `assert` to LLVM, touches none but does not say so.
-      else if (op->getParentOfType<func::FuncOp>() &&
-               !isa<MemoryEffectOpInterface, CallOpInterface,
-                    BranchOpInterface>(op) &&
-               !op->hasTrait<OpTrait::HasRecursiveMemoryEffects>())
-        reason = "an operation does not declare its memory effects";
-      return reason ? WalkResult::interrupt() : WalkResult::advance();
-    });
-    return reason;
-  }
-
-  void runOnOperation() override {
-    ModuleOp module = getOperation();
-    if (reasonToSkip(module))
-      return;
-    if (failed(run(module, "lift-cf-to-scf")))
-      return signalPassFailure();
-    // Lifting writes `ub.poison` for a value a path does not define, such as
-    // the result of a function that returns a buffer early from inside nested
-    // blocks, on the paths that have not returned yet. Those paths never use
-    // it, but a poison buffer reaching the analysis makes its run-time alias
-    // checks compare garbage, and a buffer is freed twice. So each one becomes
-    // a placeholder with a real address; a module where that cannot be done is
-    // lowered back, unfreed.
-    bool poisonBuffer = false;
-    module.walk([&](ub::PoisonOp poison) {
-      auto type = dyn_cast<MemRefType>(poison.getType());
-      if (!type && !isa<BaseMemRefType>(poison.getType()))
-        return;
-      OpBuilder builder(poison);
-      Value placeholder =
-          type ? placeholderFor(builder, poison.getLoc(), type) : Value();
-      if (!placeholder) {
-        poisonBuffer = true;
-        return;
-      }
-      poison.replaceAllUsesWith(placeholder);
-      poison.erase();
-    });
-    if (poisonBuffer) {
-      if (failed(run(module, "convert-scf-to-cf")))
-        signalPassFailure();
-      return;
-    }
-    if (failed(run(module,
-                   "buffer-deallocation-pipeline,"
-                   "convert-bufferization-to-memref,convert-scf-to-cf")))
-      signalPassFailure();
-  }
-
-  // A buffer of `type` that is never read: a view of one stack element with
-  // every run-time size and stride 0. It has a real address that no heap
-  // buffer shares, so an alias check against it answers correctly, and the
-  // analysis never frees memory on the stack. Null for a type whose layout is
-  // not strided.
-  static Value placeholderFor(OpBuilder &builder, Location loc,
-                              MemRefType type) {
-    SmallVector<int64_t> strides;
-    int64_t offset;
-    if (failed(type.getStridesAndOffset(strides, offset)))
-      return {};
-    auto cellType = MemRefType::get({1}, type.getElementType(), nullptr,
-                                    type.getMemorySpace());
-    Value cell = memref::AllocaOp::create(builder, loc, cellType);
-    auto fixed = [&](int64_t n) -> OpFoldResult {
-      if (ShapedType::isDynamic(n))
-        return builder.getIndexAttr(0);
-      return builder.getIndexAttr(n);
-    };
-    SmallVector<OpFoldResult> sizes, strideValues;
-    for (int64_t n : type.getShape())
-      sizes.push_back(
-          ShapedType::isDynamic(n)
-              ? OpFoldResult(
-                    arith::ConstantIndexOp::create(builder, loc, 0).getResult())
-              : fixed(n));
-    for (int64_t n : strides)
-      strideValues.push_back(
-          ShapedType::isDynamic(n)
-              ? OpFoldResult(
-                    arith::ConstantIndexOp::create(builder, loc, 0).getResult())
-              : fixed(n));
-    OpFoldResult offsetValue =
-        ShapedType::isDynamic(offset)
-            ? OpFoldResult(
-                  arith::ConstantIndexOp::create(builder, loc, 0).getResult())
-            : fixed(offset);
-    return memref::ReinterpretCastOp::create(builder, loc, type, cell,
-                                             offsetValue, sizes, strideValues);
-  }
-
-  LogicalResult run(ModuleOp module, StringRef pipeline) {
-    OpPassManager pm(ModuleOp::getOperationName());
-    if (failed(parsePassPipeline(pipeline, pm)))
-      return failure();
-    return runPipeline(pm, module);
-  }
-};
-
 // `t.reduce(init, f)` may combine elements in any order. The code generators
 // emit it as a `linalg.generic` marked `vx.reassoc` whose body calls the
 // closure `f`. This gives the floating-point arithmetic in that closure
@@ -3860,9 +3719,6 @@ void registerVxPasses() {
   });
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return std::make_unique<PromoteBuffersToStackPass>();
-  });
-  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
-    return std::make_unique<FreeHeapBuffersPass>();
   });
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return std::make_unique<FuseAndTileLoopsPass>();

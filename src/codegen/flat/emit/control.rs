@@ -141,9 +141,8 @@ impl FnEmit<'_> {
                         // The copy moved the result into the caller's buffer. What it was copied
                         // from is freed when this function owned it, and left alone when it is a
                         // view of something else.
-                        if crate::hir::check::drops::drops_enabled() {
-                            self.body += &format!("  vx.drop {a} {{owned_only}} : {memty}\n");
-                        }
+                        self.body += &format!("  vx.drop {a} {{owned_only}} : {memty}\n");
+
                         self.body += "  func.return\n";
                     }
                     None => {

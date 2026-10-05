@@ -20,7 +20,7 @@
 // CHECK: %[[A:.*]] = memref.alloc() : memref<2x3xf32>
 // CHECK: %[[DYN:.*]] = memref.cast %[[A]] : memref<2x3xf32> to memref<?x?xf32>
 // CHECK: call @takes_dyn(%[[DYN]]) : (memref<?x?xf32>) -> i32
-// CHECK-LABEL: func.func @takes_dyn(%arg0: memref<?x?xf32>) -> i32
+// CHECK-LABEL: func.func @takes_dyn(%arg0: memref<?x?xf32> {vx.owned}) -> i32
 
 fn takes_dyn(t : Tensor<f32, [?, ?]>) -> i32 {
   return 0;

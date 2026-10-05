@@ -271,7 +271,7 @@ fn param_alias_attrs(ty: &Type) -> &'static str {
         Type::Borrow { is_mut: false, .. } => " {llvm.readonly}",
         // A tensor taken by value belongs to the function, which frees it. One placed in
         // another memory is not freed by its drop yet.
-        Type::Tensor(_, _, placement) if crate::hir::check::drops::drops_enabled() => {
+        Type::Tensor(_, _, placement) => {
             if placement.is_some() {
                 " {vx.placed}"
             } else {
@@ -1367,13 +1367,8 @@ pub fn emit_module_mlir(
     //
     // Emitting the wrapper here rather than leaving it to callers is what removes the last of them:
     // a caller that has to wrap the return value cannot avoid copying it.
-    // `vx.drops`: the program frees its tensors at its drops, and the passes that free them by
-    // analysis stay out of it.
-    let open = if crate::hir::check::drops::drops_enabled() {
-        "module attributes {vx.drops} {\n"
-    } else {
-        "module {\n"
-    };
+    // `vx.drops`: the program frees its tensors at its drops (see convert-vx-to-standard).
+    let open = "module attributes {vx.drops} {\n";
     const CLOSE: &str = "}\n";
     let mut module =
         String::with_capacity(open.len() + globals.len() + decls.len() + out_len + CLOSE.len());

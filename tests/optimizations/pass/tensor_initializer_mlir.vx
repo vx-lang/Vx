@@ -18,7 +18,7 @@ fn init() -> i32 {
   return 0;
 }
 
-// CHECK: module attributes {llvm.module_flags = {"Debug Info Version" = 3 : i32, "Dwarf Version" = 4 : i32}} {
+// CHECK: module attributes {llvm.module_flags = {"Debug Info Version" = 3 : i32, "Dwarf Version" = 4 : i32}, vx.drops} {
 // CHECK:   func.func private @printMemrefF32(memref<*xf32>)
 // CHECK:   func.func private @printMemrefF64(memref<*xf64>)
 // CHECK:   func.func private @printMemrefI32(memref<*xi32>)
@@ -45,6 +45,7 @@ fn init() -> i32 {
 // CHECK:     %c1_8 = arith.constant 1 : index
 // CHECK:     %c1_9 = arith.constant 1 : index
 // CHECK:     memref.store %cst_7, %alloc[%c1_8, %c1_9] : memref<?x?xf32>
+// CHECK:     vx.drop %alloc : memref<?x?xf32>
 // CHECK:     %c0_i32 = arith.constant 0 : i32
 // CHECK:     return %c0_i32 : i32
 // CHECK:   }

@@ -276,7 +276,7 @@ pub enum Opcode {
     /// device memory answers with its device address, which is what a C library takes.
     TensorDataPtr = 61,
     /// Free what the owner tensor `operand1` holds, once it is no longer used (`Statement::Drop`,
-    /// written by the checker under `VX_DROPS=scope`). With `imm = 1`, `operand2` is a `bool` that
+    /// written by the checker). With `imm = 1`, `operand2` is a `bool` that
     /// is true once the tensor was moved, and then nothing is freed.
     TensorDrop = 62,
 }

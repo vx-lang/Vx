@@ -1768,9 +1768,6 @@ fn get_optimization_pipeline(
         // The wrapper keeps upstream's promotion out of a function where a buffer can leave
         // through a cast or a store, which its escape analysis cannot see.
         passes.push("func.func(vx-promote-buffers-to-stack)".to_string());
-        // Everything left on the heap gets a `free` after its last use (#642), in a program that
-        // places nothing; see the pass for why placement programs are left alone for now.
-        passes.push("vx-free-heap-buffers".to_string());
         passes.push("func.func(vx-normalize-stack-buffers)".to_string());
         // `expand-strided-metadata` writes some offsets as `affine.apply`, so `lower-affine`
         // runs again. After the buffer passes, so they see the module as they always have.

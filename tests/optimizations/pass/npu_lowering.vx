@@ -16,13 +16,13 @@ fn process(t : Tensor<f32, [?, ?]>) -> Tensor<f32, [?, ?]> {
 
 // @vx_plugin_dispatch_async(%0, %7, %2) : (!llvm.ptr, i64, !llvm.ptr) -> i64
 
-// CHECK-LABEL: func.func @process(%arg0: memref<?x?xf32>) -> memref<?x?xf32> {
+// CHECK-LABEL: func.func @process(%arg0: memref<?x?xf32> {vx.owned}) -> memref<?x?xf32> {
 // CHECK: vx.spawn topology(100)
 
 // A device spawn is outlined: the site becomes a vx.launch naming a vx.kernel that carries
 // the topology, and the body moves into it. The region's value comes back through a slot
 // the host allocates, never as a launch result.
-// NPU-LABEL: func.func @process(%arg0: memref<?x?xf32>) -> memref<?x?xf32> {
+// NPU-LABEL: func.func @process(%arg0: memref<?x?xf32> {vx.owned}) -> memref<?x?xf32> {
 // NPU: %[[SLOT:.*]] = memref.alloca() : memref<i32>
 // NPU: vx.launch @[[K:[a-z0-9_]+]](%[[SLOT]]) {topology = 100 : i32, vx.topology_name = "NPU[0]"} : (memref<i32>) -> ()
 // NPU: return %arg0 : memref<?x?xf32>

@@ -1,6 +1,8 @@
 # Drop semantics: freeing what a program owns when its owner goes away
 
-**Status:** proposal, 2026-10-03. Tracking issue: Vx#1041, one issue per phase (Vx#1049, then Vx#1042 to Vx#1046). Decides Vx#495.
+**Status:** phases 0 to 3 done, 2026-10-06: every program frees its tensors at their drops, on
+both code generators, and `vx-free-heap-buffers` is gone. Placed tensors and `spawn` regions
+(phase 5) and the `Drop` trait (phase 4) remain. Proposed 2026-10-03. Tracking issue: Vx#1041, one issue per phase (Vx#1049, then Vx#1042 to Vx#1046). Decides Vx#495.
 
 ______________________________________________________________________
 

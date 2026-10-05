@@ -1976,6 +1976,7 @@ impl<'a> TypeChecker<'a> {
                 // the region silently reports no traffic. Probed and reproduced.
                 let placed_outer = self.placed_names_snapshot();
 
+                self.drops_enter_spawn();
                 self.check_expr_block(stmts, consume);
 
                 let mut ret_ty = Type::Struct("void".into(), None); // default void-like type
@@ -1983,6 +1984,7 @@ impl<'a> TypeChecker<'a> {
                 if let Some(r) = ret {
                     ret_ty = self.check_expr_type_flag(r, consume);
                 }
+                self.drops_exit_spawn();
 
                 // What this region moves, counted from its own accesses (#353). Here,
                 // BEFORE the scope pops, because the body's free names -- the placed tensors

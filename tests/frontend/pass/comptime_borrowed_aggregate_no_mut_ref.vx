@@ -30,7 +30,7 @@ fn main(n : i32) -> i32 {
   return value;
 }
 
-// CHECK: module {
+// CHECK: module attributes {vx.drops} {
 // CHECK:   func.func private @vx_init_signals()
 // CHECK:   func.func @main(%arg0: i32) -> i32 {
 // CHECK:     call @vx_init_signals() : () -> ()

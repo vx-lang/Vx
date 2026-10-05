@@ -34,8 +34,8 @@ fn main() -> i32 {
 // through and codegen bitcast an f32 into a rank-2 memref. Rank is static now, and a rank
 // no impl covers is refused at the call.
 // The two paths emit the functions in different orders, so these are DAG-matched.
-// CHECK-DAG: func.func @Tensor$f32$2x2$dim(%arg0: memref<?x?xf32>) -> i32
-// CHECK-DAG: func.func @process$Tensor$f32$2x2(%arg0: memref<2x2xf32>) -> i32
+// CHECK-DAG: func.func @Tensor$f32$2x2$dim(%arg0: memref<?x?xf32> {vx.owned}) -> i32
+// CHECK-DAG: func.func @process$Tensor$f32$2x2(%arg0: memref<2x2xf32> {vx.owned}) -> i32
 // CHECK-DAG: memref.cast %arg0 : memref<2x2xf32> to memref<?x?xf32>
 // CHECK-DAG: call @Tensor$f32$2x2$dim(%{{.*}}) : (memref<?x?xf32>) -> i32
 // CHECK-DAG: call @process$Tensor$f32$2x2(%{{.*}}) : (memref<2x2xf32>) -> i32

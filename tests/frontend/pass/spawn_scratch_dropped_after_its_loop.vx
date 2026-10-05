@@ -1,0 +1,34 @@
+//===- spawn_scratch_dropped_after_its_loop.vx - Vx Compiler ------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `spawn` region makes a scratch tensor, uses it in a loop, and drops it after the loop.
+// The loop is still split across the device's threads, since each thread has its own
+// scratch: its start, end and step carry the marks that split it.
+//
+// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s
+// CHECK: {vx.parallel_init}
+// CHECK: {vx.parallel_bound}
+// CHECK: {vx.parallel_step}
+
+fn kernel_prep() -> f32 {
+  let mut o = Tensor<f32, [4, 4]>::uninit();
+  spawn on(Topology::GPU) {
+    let mut scratch = Tensor<f32, [1, 4]>::uninit();
+    for i in 0..4 {
+      scratch[0][i] = i as f32;
+      for j in 0..4 {
+        o[i][j] = scratch[0][i];
+      }
+    }
+  }
+  return o[0][0];
+}
+
+fn main() -> i32 {
+  print(kernel_prep());
+  return 0;
+}

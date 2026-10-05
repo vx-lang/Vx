@@ -26,7 +26,7 @@ fn process(t_host : Tensor<f32, [?, ?]>) -> Tensor<f32, [?, ?]> {
 // CHECK:     arith.constant 0 : i32
 // CHECK:     return
 // CHECK:   }
-// CHECK:   func.func @process(%arg0: memref<?x?xf32>) -> memref<?x?xf32> {
+// CHECK:   func.func @process(%arg0: memref<?x?xf32> {vx.owned}) -> memref<?x?xf32> {
 // CHECK:     "vx.transfer"
 // CHECK:     vx.spawn topology(100) {
 // CHECK:       vx.yield

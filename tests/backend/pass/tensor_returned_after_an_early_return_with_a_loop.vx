@@ -12,11 +12,15 @@
 //
 // EXPECT: 1 1 1 | 4 5 6 7
 //
-// The tensors `column_means` does not return are freed in it.
-// RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s
-// CHECK-LABEL: llvm.func @column_means(
-// CHECK-NOT: llvm.func @
-// CHECK: llvm.call @free
+// Each tensor `column_means` makes, it returns: it frees none of them, and `main` frees both.
+// The two code generators write the functions in different orders, so each is checked apart.
+// RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s --check-prefix=MAIN
+// RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s --check-prefix=MEANS
+// MAIN: llvm.func @main(
+// MAIN-COUNT-2: llvm.call @free
+// MEANS: llvm.func @column_means(
+// MEANS-NOT: llvm.call @free
+// MEANS: {{^  }$}}
 fn column_means(t : &Tensor<f64, [?, ?]>, axis : i32) -> Tensor<f64, [?]> {
   if axis == 1 {
     let mut rows = Tensor<f64>([ t.extent(0) ]);

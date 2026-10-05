@@ -5,7 +5,7 @@ A *generator* is a module in `generators/`, whose docstring describes it, with a
 and, when there is one, as a Rust twin that must print exactly the same thing.
 
 A *configuration* is a name and the `vxc` flags it adds, such as `ast=--legacy-codegen`, after
-any environment variables it sets, such as `drops=VX_DROPS=scope`. A program is run once per
+any environment variables it sets, such as `prints=VX_PRINT_DROPS=1`. A program is run once per
 configuration; its outputs must all agree with each other and with Rust.
 
 Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
@@ -80,7 +80,7 @@ def generator_names():
 def parse_config(text):
     """`name=flags` as given on the command line, e.g. `o0=-O0` or `ast=--legacy-codegen`.
     Words before the flags that look like `VAR=value` set the environment, as `env` does:
-    `drops=VX_DROPS=scope --legacy-codegen`."""
+    `prints=VX_PRINT_DROPS=1 --legacy-codegen`."""
     name, _, rest = text.partition("=")
     words = shlex.split(rest)
     env = {}

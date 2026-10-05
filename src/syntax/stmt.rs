@@ -227,7 +227,7 @@ pub enum Statement {
     Continue(ContinueStmt),
     MacroCall(MacroCallStmt),
     /// Free what the tensor `name` owns. Never written by a programmer: the checker puts it
-    /// where the tensor's drop point is, under `VX_DROPS=scope`.
+    /// where the tensor's drop point is.
     Drop(DropStmt),
     Error(Span),
 }

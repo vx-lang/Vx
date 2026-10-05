@@ -51,9 +51,9 @@ def Vx_FreeOp : Vx_Op<"free"> {
     let assemblyFormat = "$buffer attr-dict `:` type($buffer)";
 }
 
-// The point where a tensor's owner gives it up, written by the checker under
-// VX_DROPS=scope. convert-vx-to-standard frees the buffer when it is a heap
-// buffer this function owns, and erases the drop otherwise. With `unless`,
+// The point where a tensor's owner gives it up, written by the checker.
+// convert-vx-to-standard frees the buffer when it is a heap buffer this
+// function owns, and erases the drop otherwise. With `unless`,
 // nothing is freed when the flag is true: the tensor was moved. With
 // `owned_only`, a buffer this function does not own is left alone rather than
 // reported as an error.

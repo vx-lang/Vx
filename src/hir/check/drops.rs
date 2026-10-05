@@ -7,8 +7,8 @@
 //===----------------------------------------------------------------------===//
 //
 // Where each tensor a function owns is dropped: `docs/implementation_plans/drop_semantics.md`.
-// With `VX_PRINT_DROPS=1` the points are printed. With `VX_DROPS=scope` the checker also writes
-// them into the program as `Statement::Drop`, which the code generators lower (phase 2).
+// The checker writes them into the program as `Statement::Drop`, which the code generators
+// lower. With `VX_PRINT_DROPS=1` the points are also printed.
 //
 // An owner is a `let` bound to a tensor that is not a view, or a tensor parameter taken by
 // value. It is dropped after the statement of its block that last uses it, or anything that
@@ -75,6 +75,9 @@ enum FrameKind {
         rewrite: bool,
     },
     Loop,
+    /// A `spawn` region. A tensor it captures stays owned by the enclosing function, so a
+    /// move inside the region does not reach owners outside it.
+    Spawn,
     Block {
         owners: Vec<Owner>,
         /// The last statement of the block that uses each name, nested uses included.
@@ -98,11 +101,6 @@ pub(crate) struct DropFrames {
     moved_now: HashSet<String>,
     /// Makes the names of the locals the rewrite adds unique.
     counter: usize,
-}
-
-/// Whether drops are written into the program and lowered (`VX_DROPS=scope`).
-pub fn drops_enabled() -> bool {
-    std::env::var("VX_DROPS").is_ok_and(|v| v == "scope")
 }
 
 fn printing() -> bool {
@@ -176,7 +174,7 @@ impl<'a> TypeChecker<'a> {
             Self::extract_uses_stmt(s, &mut uses);
             uses.contains(DROP_MARK)
         });
-        let rewrite = !already && drops_enabled();
+        let rewrite = !already;
         let d = &mut self.borrow.drops;
         d.frames.push(FrameKind::Function { rewrite });
         d.pending = params.into_iter().map(|p| (p, scope)).collect();
@@ -194,6 +192,18 @@ impl<'a> TypeChecker<'a> {
 
     pub(crate) fn drops_enter_loop(&mut self) {
         self.borrow.drops.frames.push(FrameKind::Loop);
+    }
+
+    pub(crate) fn drops_enter_spawn(&mut self) {
+        self.borrow.drops.frames.push(FrameKind::Spawn);
+    }
+
+    pub(crate) fn drops_exit_spawn(&mut self) {
+        let popped = self.borrow.drops.frames.pop();
+        assert!(
+            matches!(popped, Some(FrameKind::Spawn)),
+            "a spawn frame closes a spawn region"
+        );
     }
 
     pub(crate) fn drops_exit_loop(&mut self) {
@@ -276,7 +286,7 @@ impl<'a> TypeChecker<'a> {
         let mut found = None;
         for (k, f) in self.borrow.drops.frames.iter_mut().enumerate().rev() {
             match f {
-                FrameKind::Function { .. } => return,
+                FrameKind::Function { .. } | FrameKind::Spawn => return,
                 FrameKind::Loop => {}
                 FrameKind::Block { owners, stmt, .. } => {
                     if let Some(o) = owners.iter_mut().rev().find(|o| o.name == name) {
@@ -367,7 +377,8 @@ impl<'a> TypeChecker<'a> {
         for f in self.borrow.drops.frames.iter_mut().rev() {
             match f {
                 FrameKind::Function { .. } => return,
-                FrameKind::Loop => {}
+                // A raw pointer taken inside a region still points into the owner outside it.
+                FrameKind::Loop | FrameKind::Spawn => {}
                 FrameKind::Block { owners, .. } => {
                     for o in owners.iter_mut().filter(|o| names.contains(&o.name)) {
                         o.to_block_end = true;
@@ -386,7 +397,7 @@ impl<'a> TypeChecker<'a> {
     fn drops_owner(&self, name: &str) -> Option<&Owner> {
         for f in self.borrow.drops.frames.iter().rev() {
             match f {
-                FrameKind::Function { .. } => return None,
+                FrameKind::Function { .. } | FrameKind::Spawn => return None,
                 FrameKind::Loop => {}
                 FrameKind::Block { owners, .. } => {
                     if let Some(o) = owners.iter().rev().find(|o| o.name == name) {
@@ -459,7 +470,8 @@ impl<'a> TypeChecker<'a> {
         if self.speculating {
             return;
         }
-        if printing() {
+        // The operator's drop was printed where the operator moved it.
+        if printing() && !operand_drop {
             let flag = if moved == Moved::Maybe {
                 " if it was not moved"
             } else {
@@ -696,7 +708,8 @@ impl<'a> TypeChecker<'a> {
         let d = &self.borrow.drops;
         'frames: for f in d.frames.iter().rev() {
             match f {
-                FrameKind::Function { .. } => break 'frames,
+                // A `return` inside a region leaves the region, not the function.
+                FrameKind::Function { .. } | FrameKind::Spawn => break 'frames,
                 FrameKind::Loop if out_of_loop => break 'frames,
                 FrameKind::Loop => {}
                 FrameKind::Block {

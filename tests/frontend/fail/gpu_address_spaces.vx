@@ -75,10 +75,10 @@ fn main() -> i32 {
   return 0;
 }
 
-// CHECK-DAG: func.func @f_smem(%arg0: memref<4x4xf32, 3>)
-// CHECK-DAG: func.func @f_l2(%arg0: memref<4x4xf32, 1>)
-// CHECK-DAG: func.func @f_gpu(%arg0: memref<4x4xf32, 1>)
-// CHECK-DAG: func.func @f_acc(%arg0: memref<4x4xf32, 3>)
-// CHECK-DAG: func.func @f_smem_by_space(%arg0: memref<4x4xf32, 3>)
-// CHECK-DAG: func.func @f_l2_by_space(%arg0: memref<4x4xf32, 1>)
-// CHECK-DAG: func.func @f_gpu_by_space(%arg0: memref<4x4xf32, 1>)
+// CHECK-DAG: func.func @f_smem(%arg0: memref<4x4xf32, 3> {vx.placed})
+// CHECK-DAG: func.func @f_l2(%arg0: memref<4x4xf32, 1> {vx.placed})
+// CHECK-DAG: func.func @f_gpu(%arg0: memref<4x4xf32, 1> {vx.placed})
+// CHECK-DAG: func.func @f_acc(%arg0: memref<4x4xf32, 3> {vx.placed})
+// CHECK-DAG: func.func @f_smem_by_space(%arg0: memref<4x4xf32, 3> {vx.placed})
+// CHECK-DAG: func.func @f_l2_by_space(%arg0: memref<4x4xf32, 1> {vx.placed})
+// CHECK-DAG: func.func @f_gpu_by_space(%arg0: memref<4x4xf32, 1> {vx.placed})

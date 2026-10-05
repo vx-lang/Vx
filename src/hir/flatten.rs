@@ -454,11 +454,13 @@ struct Lowerer<'r> {
     queued_drops: Vec<PendingDrop>,
     /// The `queued_drops` of the statement being lowered: they run once its value is computed.
     value_drops: Vec<PendingDrop>,
-    /// The fresh tensors the statement being lowered has made, under `VX_DROPS=scope`: each is
+    /// The fresh tensors the statement being lowered has made: each is
     /// dropped when the statement ends unless something took it.
     temps: Vec<Register>,
     /// Tensors passed by value to a call, which then owns them.
     moved_args: HashSet<u32>,
+    /// The block depth at which each tensor local's register was bound, by register.
+    tensor_depth: HashMap<u32, usize>,
 }
 
 /// A tensor drop waiting for a value to be computed: the owner's register, and the name of its
@@ -499,6 +501,7 @@ impl<'r> Lowerer<'r> {
             value_drops: Vec::new(),
             temps: Vec::new(),
             moved_args: HashSet::new(),
+            tensor_depth: HashMap::new(),
         }
     }
 
@@ -882,6 +885,9 @@ impl<'r> Lowerer<'r> {
     }
 
     fn bind_local(&mut self, name: Symbol, v: Val) {
+        if matches!(v.ty, LoweredTy::Tensor { .. }) {
+            self.tensor_depth.insert(v.reg.0, self.block_frames.len());
+        }
         let materialized_scalar =
             matches!(v.ty, LoweredTy::Scalar(_)) && self.materialized.contains(&name);
         // The per-local slot decision (§3.2 step 2 + §5 escape refinement):
@@ -937,6 +943,19 @@ impl<'r> Lowerer<'r> {
 
     /// Assign to an already-bound name: a `Store` to its slot (memory mode) or an SSA rebind
     /// (straight-line). `None` if the name is unbound.
+    /// Whether giving the tensor local `name` a new value here would happen inside a branch or
+    /// loop that its value was not bound in. A tensor local is one register, so the new value
+    /// could not leave that block: the other paths would read the wrong tensor.
+    fn tensor_reassigned_deeper(&self, name: &Symbol) -> bool {
+        match self.scope.get(name) {
+            Some(Binding::Reg(old)) if matches!(old.ty, LoweredTy::Tensor { .. }) => {
+                let bound = self.tensor_depth.get(&old.reg.0).copied().unwrap_or(0);
+                self.block_frames.len() > bound
+            }
+            _ => false,
+        }
+    }
+
     fn assign_local(&mut self, name: &Symbol, v: Val) -> Option<()> {
         match self.scope.get(name)?.clone() {
             Binding::Slot { reg, .. } => {
@@ -4386,6 +4405,11 @@ impl<'r> Lowerer<'r> {
         {
             v = self.emit_typed(Opcode::SlotLoad, v.reg, Register(0), v.ty.clone(), 0);
         }
+        if self.tensor_reassigned_deeper(&name) {
+            return Err(Decline::Unsupported {
+                what: "a tensor given a new value inside a branch or loop",
+            });
+        }
         self.assign_local(&name, v).ok_or(Decline::Unsupported {
             what: "an assignment to a local the flat path does not track",
         })
@@ -4422,9 +4446,7 @@ impl<'r> Lowerer<'r> {
     }
 
     fn note_temp(&mut self, r: Register) {
-        if crate::hir::check::drops::drops_enabled() {
-            self.temps.push(r);
-        }
+        self.temps.push(r);
     }
 
     /// Drop the statement's fresh tensors that nothing took, which were made in the block being
@@ -4783,6 +4805,11 @@ impl<'r> Lowerer<'r> {
                     let name = simple_ident(&a.lhs).ok_or(Decline::Unsupported {
                         what: "a compound assignment to something other than a simple name",
                     })?;
+                    if self.tensor_reassigned_deeper(&name) {
+                        return Err(Decline::Unsupported {
+                            what: "a tensor given a new value inside a branch or loop",
+                        });
+                    }
                     self.assign_local(&name, combined)
                         .ok_or(Decline::Unsupported {
                             what: "an assignment to a local the flat path does not track",

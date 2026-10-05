@@ -26,6 +26,10 @@ const KNOWN_DECLINES: &[&str] = &[
     // A row chosen by an `if` used as a value: the flat path has no slot for a tensor view
     // ("an aggregate slot with no struct type").
     "backend/pass/tensor_views_end_at_their_last_use.vx",
+    // `t = pass(t)` inside an `if`: on the flat path a tensor local is one register, so the
+    // new value cannot leave the branch. The flat path used to read the wrong tensor after it.
+    "frontend/pass/tensor_drops_written_into_the_program.vx",
+    "backend/pass/tensor_given_a_new_value_on_one_path.vx",
     // "A borrow of something that is not a tensor": the flat path borrows tensors only.
     "backend/pass/borrow_of_a_value.vx",
     "backend/pass/cast_a_borrow_to_a_raw_pointer.vx",

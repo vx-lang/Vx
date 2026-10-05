@@ -23,14 +23,14 @@ fn o_update(mut o : Tensor<f32, [2, 4]>, v : Tensor<f32, [2, 4]>, s : f32) -> i3
   return 0;
 }
 
-// CHECK: module attributes {llvm.module_flags = {"Debug Info Version" = 3 : i32, "Dwarf Version" = 4 : i32}} {
+// CHECK: module attributes {llvm.module_flags = {"Debug Info Version" = 3 : i32, "Dwarf Version" = 4 : i32}, vx.drops} {
 // CHECK:   func.func private @printMemrefF32(memref<*xf32>)
 // CHECK:   func.func private @printMemrefF64(memref<*xf64>)
 // CHECK:   func.func private @printMemrefI32(memref<*xi32>)
 // CHECK:   func.func private @printMemrefI64(memref<*xi64>)
 // CHECK:   func.func private @printMemrefBF16(memref<*xbf16>)
 // CHECK:   func.func private @vx_init_signals()
-// CHECK:   func.func @o_update(%arg0: memref<2x4xf32>, %arg1: memref<2x4xf32>, %arg2: f32) -> i32 {
+// CHECK:   func.func @o_update(%arg0: memref<2x4xf32> {vx.owned}, %arg1: memref<2x4xf32> {vx.owned}, %arg2: f32) -> i32 {
 // CHECK:     %c0_i32 = arith.constant 0 : i32
 // CHECK:     %0 = arith.index_cast %c0_i32 : i32 to index
 // CHECK:     %c4 = arith.constant 4 : index
@@ -55,6 +55,7 @@ fn o_update(mut o : Tensor<f32, [2, 4]>, v : Tensor<f32, [2, 4]>, s : f32) -> i3
 // CHECK:     %reinterpret_cast_6 = memref.reinterpret_cast %arg0 to offset: [%10], sizes: [4], strides: [1] : memref<2x4xf32> to memref<4xf32, strided<[1], offset: ?>>
 // CHECK:     %c0_7 = arith.constant 0 : index
 // CHECK:     vector.store %8, %reinterpret_cast_6[%c0_7] : memref<4xf32, strided<[1], offset: ?>>, vector<4xf32>
+// CHECK:     vx.drop %arg1 : memref<2x4xf32>
 // CHECK:     %c1_i32 = arith.constant 1 : i32
 // CHECK:     %11 = arith.index_cast %c1_i32 : i32 to index
 // CHECK:     %c4_8 = arith.constant 4 : index
@@ -71,6 +72,7 @@ fn o_update(mut o : Tensor<f32, [2, 4]>, v : Tensor<f32, [2, 4]>, s : f32) -> i3
 // CHECK:     %reinterpret_cast_13 = memref.reinterpret_cast %arg0 to offset: [%17], sizes: [4], strides: [1] : memref<2x4xf32> to memref<4xf32, strided<[1], offset: ?>>
 // CHECK:     %c0_14 = arith.constant 0 : index
 // CHECK:     vector.store %15, %reinterpret_cast_13[%c0_14] : memref<4xf32, strided<[1], offset: ?>>, vector<4xf32>
+// CHECK:     vx.drop %arg0 : memref<2x4xf32>
 // CHECK:     %c0_i32_15 = arith.constant 0 : i32
 // CHECK:     return %c0_i32_15 : i32
 // CHECK:   }

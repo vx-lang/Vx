@@ -48,7 +48,7 @@ fn shadowed_local(n : i32) -> i32 {
   return value;
 }
 
-// CHECK: module {
+// CHECK: module attributes {vx.drops} {
 // CHECK:   func.func @shadowed_local(%arg0: i32) -> i32 {
 // CHECK:     %c0_i32 = arith.constant 0 : i32
 // CHECK:     %c7_i32 = arith.constant 7 : i32

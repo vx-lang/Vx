@@ -13,7 +13,7 @@ Rust twin compiled with `rustc`. Any difference is a bug in one of them, or in t
     fuzz.py reduce tensors 1133 --message "double free" --repeat 5
     fuzz.py compare tests/backend/pass/*.vx        # existing programs across configurations
     fuzz.py compare bench.vx --ignore '[0-9.]+e?-?[0-9]* s'   # with a timing masked
-    fuzz.py run owners --seeds 1-1000 --heap --config drops=VX_DROPS=scope
+    fuzz.py run owners --seeds 1-1000 --heap
 
 `--config NAME=FLAGS` adds a configuration and may be repeated; giving any replaces the
 defaults, so `--config flat= --config o0=-O0` compares the default build with `-O0`. Words like

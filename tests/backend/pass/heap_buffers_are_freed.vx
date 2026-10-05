@@ -18,9 +18,9 @@
 // - `pick` makes a different tensor on each side of an `if`. Whichever side ran, its tensor is
 //   freed.
 //
-// So there are four `malloc` calls in the generated code, and there must be exactly four `free`
-// calls. The checks count them on `--action emit-llvm`: the frees are added on the way to machine
-// code, so `--action emit-mlir` would show neither.
+// So there are four `malloc` calls in the generated code, and each function frees what it made.
+// The checks read `--action emit-llvm`: the `free`s are added on the way to machine code. After
+// `pick`'s `if`, LLVM joins its two `free`s into one call on whichever tensor that side made.
 //
 // REQUIRES: flat-codegen
 // Only because the older code generator cannot build `make`'s tensor: a size known only at run
@@ -32,8 +32,14 @@
 // MALLOC-COUNT-4: llvm.call @malloc
 // MALLOC-NOT: llvm.call @malloc
 
-// FREE-COUNT-4: llvm.call @free
+// FREE-LABEL: llvm.func @main(
+// FREE: llvm.call @free
+// FREE-LABEL: llvm.func @pick(
+// FREE: llvm.call @free
+// FREE-LABEL: llvm.func @make(
 // FREE-NOT: llvm.call @free
+// FREE-LABEL: llvm.func @fill_and_read(
+// FREE: llvm.call @free
 
 // Every read happens before its tensor is freed, so every answer is the value that was written:
 // fill_and_read() = 1.0 each time, make(..)[0] = 3.0 each time, pick() = 5.0 or 6.0 alternately.

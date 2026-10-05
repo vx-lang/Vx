@@ -5,11 +5,11 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// RUN: env VX_DROPS=scope vxc %s --action print-ast 2>/dev/null | FileCheck %s
+// RUN: vxc %s --action print-ast 2>/dev/null | FileCheck %s
 //
-// With `VX_DROPS=scope`, the checker writes each tensor's drop into the program as a `Drop`
-// statement. A drop before a `return` or an assignment waits for that statement's value,
-// which may still read the tensor; a tensor moved on some paths only gets a `bool` flag.
+// The checker writes each tensor's drop into the program as a `Drop` statement. A drop before
+// a `return` or an assignment waits for that statement's value, which may still read the
+// tensor; a tensor moved on some paths only gets a `bool` flag.
 
 fn take(t : Tensor<f32, [4]>) -> f32 {
   return t[0];

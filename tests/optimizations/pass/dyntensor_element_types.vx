@@ -18,43 +18,43 @@
 //
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 
-// CHECK: func.func @f32_t(%arg0: memref<?x?xf32>)
+// CHECK: func.func @f32_t(%arg0: memref<?x?xf32> {vx.owned})
 fn f32_t(t : Tensor<f32, [?, ?]>) -> i32 {
   return 0;
 }
 
-// CHECK: func.func @f64_t(%arg0: memref<?x?xf64>)
+// CHECK: func.func @f64_t(%arg0: memref<?x?xf64> {vx.owned})
 fn f64_t(t : Tensor<f64, [?, ?]>) -> i32 {
   return 0;
 }
 
-// CHECK: func.func @f16_t(%arg0: memref<?x?xf16>)
+// CHECK: func.func @f16_t(%arg0: memref<?x?xf16> {vx.owned})
 fn f16_t(t : Tensor<f16, [?, ?]>) -> i32 {
   return 0;
 }
 
-// CHECK: func.func @bf16_t(%arg0: memref<?x?xbf16>)
+// CHECK: func.func @bf16_t(%arg0: memref<?x?xbf16> {vx.owned})
 fn bf16_t(t : Tensor<bf16, [?, ?]>) -> i32 {
   return 0;
 }
 
-// CHECK: func.func @i32_t(%arg0: memref<?x?xi32>)
+// CHECK: func.func @i32_t(%arg0: memref<?x?xi32> {vx.owned})
 fn i32_t(t : Tensor<i32, [?, ?]>) -> i32 {
   return 0;
 }
 
-// CHECK: func.func @i64_t(%arg0: memref<?x?xi64>)
+// CHECK: func.func @i64_t(%arg0: memref<?x?xi64> {vx.owned})
 fn i64_t(t : Tensor<i64, [?, ?]>) -> i32 {
   return 0;
 }
 
-// CHECK: func.func @i8_t(%arg0: memref<?x?xi8>)
+// CHECK: func.func @i8_t(%arg0: memref<?x?xi8> {vx.owned})
 fn i8_t(t : Tensor<i8, [?, ?]>) -> i32 {
   return 0;
 }
 
 // A bool tensor's element is `i1`, the MLIR spelling of a one-bit integer.
-// CHECK: func.func @bool_t(%arg0: memref<?x?xi1>)
+// CHECK: func.func @bool_t(%arg0: memref<?x?xi1> {vx.owned})
 fn bool_t(t : Tensor<bool, [?, ?]>) -> i32 {
   return 0;
 }

@@ -37,13 +37,7 @@
 // that prepares the kernel.
 //
 // RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s
-//
-// With `VX_DROPS=scope` the scratch tensor is dropped after the loop. The loop is still split
-// across the device's threads, since each thread has its own scratch.
-// RUN: env VX_DROPS=scope vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s --check-prefix=DROPS
-// DROPS: {vx.parallel_init}
-// DROPS: {vx.parallel_bound}
-// DROPS: {vx.parallel_step}
+
 
 // The launch carries the one buffer the region touches and nothing else. The
 // loop bounds, the exponent's operand and the scratch extents were all
