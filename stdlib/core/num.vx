@@ -1517,24 +1517,6 @@ stamp_float!(f64 , 1.0 , 0.0 , 180.0);
 stamp_float!(f16 , 1.0 , 0.0 , 180.0);
 stamp_float!(bf16 , 1.0 , 0.0 , 180.0);
 
-/// Stamps `powf` through the platform's `math` operation, for `f64`, which has no `core::libm`
-/// version yet.
-macro_rules stamp_float_pow {
-  ($t : ident) => {
-    impl $t {
-      /// This raised to `n`.
-      fn powf(self : $t, n : $t) -> $t {
-        return mlir!( inputs : (%a = self : $t, %b = n : $t), returns : $t, dialects : ["math"]) {
-          %r = math.powf %a, %b : $t
-          macro.yield %r : $t
-        };
-      }
-    }
-  };
-}
-
-stamp_float_pow!(f64);
-
 /// Stamps `sinh`, `cosh` and `tanh` through the platform's `math` operations, for `f64`, which has no `core::libm`
 /// version yet. The other widths use `core::libm`'s.
 macro_rules stamp_float_hyperbolics {
@@ -1688,6 +1670,11 @@ impl f64 {
   /// rounded and without overflow or underflow in the squares (LLVM libc's `hypot`).
   fn hypot(self : f64, other : f64) -> f64 {
     return libm_hypot(self, other);
+  }
+
+  /// This raised to `n`, correctly rounded (LLVM libc's `pow`).
+  fn powf(self : f64, n : f64) -> f64 {
+    return libm_pow(self, n);
   }
 }
 
