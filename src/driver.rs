@@ -1321,6 +1321,7 @@ impl CompilerDriver {
         if !verified {
             return Err(format!("MLIR verification failed for {}", filename));
         }
+        crate::codegen::mark_libm_for_enzyme(context, &mut module);
 
         let llvm_lower = matches!(
             self.options.action,

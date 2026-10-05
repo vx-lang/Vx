@@ -40,6 +40,65 @@ pub fn enzyme_wrapper_name(forward: bool, target: &str) -> String {
     }
 }
 
+/// `core::libm` functions whose derivative Enzyme already knows under their C name. They read
+/// a float's bits, which Enzyme cannot differentiate, so each is marked to be differentiated as
+/// the C function instead.
+const ENZYME_KNOWN_LIBM: &[(&str, &str)] = &[
+    ("libm_sinf", "sinf"),
+    ("libm_cosf", "cosf"),
+    ("libm_tanf", "tanf"),
+    ("libm_asinf", "asinf"),
+    ("libm_acosf", "acosf"),
+    ("libm_atanf", "atanf"),
+    ("libm_atan2f", "atan2f"),
+    ("libm_sinhf", "sinhf"),
+    ("libm_coshf", "coshf"),
+    ("libm_tanhf", "tanhf"),
+    ("libm_asinhf", "asinhf"),
+    ("libm_acoshf", "acoshf"),
+    ("libm_atanhf", "atanhf"),
+    ("libm_expf", "expf"),
+    ("libm_exp2f", "exp2f"),
+    ("libm_exp10f", "exp10f"),
+    ("libm_expm1f", "expm1f"),
+    ("libm_logf", "logf"),
+    ("libm_log2f", "log2f"),
+    ("libm_log10f", "log10f"),
+    ("libm_log1pf", "log1pf"),
+    ("libm_hypotf", "hypotf"),
+    ("libm_powf", "powf"),
+];
+
+/// Gives each function in `ENZYME_KNOWN_LIBM` the `enzyme_math` attribute naming its C function.
+pub fn mark_libm_for_enzyme<'c>(context: &'c Context, module: &mut Module<'c>) {
+    use melior::ir::attribute::{Attribute, StringAttribute};
+    use melior::ir::operation::{OperationLike, OperationMutLike};
+    let mut next = module.body().first_operation_mut();
+    while let Some(mut op) = next {
+        next = op.next_in_block_mut();
+        if op.name().as_string_ref().as_str() != Ok("func.func") {
+            continue;
+        }
+        let Some(name) = op
+            .attribute("sym_name")
+            .ok()
+            .and_then(|a| StringAttribute::try_from(a).ok())
+        else {
+            continue;
+        };
+        let Some((_, c_name)) = ENZYME_KNOWN_LIBM.iter().find(|(n, _)| *n == name.value()) else {
+            continue;
+        };
+        assert!(
+            op.attribute("passthrough").is_err(),
+            "{} already has LLVM attributes",
+            name.value()
+        );
+        let attr = format!("[[\"enzyme_math\", \"{c_name}\"]]");
+        op.set_attribute("passthrough", Attribute::parse(context, &attr).unwrap());
+    }
+}
+
 extern "C" {
     fn loadMlirPassPlugin(path: *const std::os::raw::c_char) -> bool;
     fn registerVxDialect(ctx: mlir_sys::MlirContext);
@@ -101,6 +160,7 @@ pub fn lower_to_llvm<'c>(context: &'c Context, module: &mut Module<'c>) -> Resul
 
     // Ensure all passes (built-in and custom) are registered exactly once globally
     init_codegen_globals();
+    mark_libm_for_enzyme(context, module);
 
     let pass_manager = melior::pass::PassManager::new(context);
     // Verify after each pass. NOTE: this only checks IR validity; it does not
