@@ -1,0 +1,24 @@
+//===- autodiff_math_hypot_f64.vx - Vx Compiler -------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The derivative of f64 `x.hypot(4)` at x = 3: 3/5, printed times 10^6. Enzyme cannot
+// differentiate the core::libm function itself, which reads the float's bits, so it is marked to
+// be differentiated as the C `hypot`.
+//
+// CHECK-DAG: llvm.func @libm_hypot({{.*}}passthrough = {{\[\[}}"enzyme_math", "hypot"{{\]\]}}
+// EXPECT: 600000
+import core::num;
+
+fn hypot_of(x : f64) -> f64 {
+  return x.hypot(4.0);
+}
+
+fn main() -> i32 {
+  let x : f64 = 3.0;
+  print((grad(hypot_of, x) * 1000000.0) as i64);
+  return 0;
+}
