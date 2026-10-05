@@ -100,6 +100,11 @@ pub(crate) struct DropFrames {
     counter: usize,
 }
 
+/// Whether drops are written into the program and lowered (`VX_DROPS=scope`).
+pub fn drops_enabled() -> bool {
+    std::env::var("VX_DROPS").is_ok_and(|v| v == "scope")
+}
+
 fn printing() -> bool {
     std::env::var_os("VX_PRINT_DROPS").is_some()
 }
@@ -171,7 +176,7 @@ impl<'a> TypeChecker<'a> {
             Self::extract_uses_stmt(s, &mut uses);
             uses.contains(DROP_MARK)
         });
-        let rewrite = !already && std::env::var("VX_DROPS").is_ok_and(|v| v == "scope");
+        let rewrite = !already && drops_enabled();
         let d = &mut self.borrow.drops;
         d.frames.push(FrameKind::Function { rewrite });
         d.pending = params.into_iter().map(|p| (p, scope)).collect();
@@ -228,6 +233,16 @@ impl<'a> TypeChecker<'a> {
             *stmt = i;
         }
         self.borrow.drops.moved_now.clear();
+    }
+
+    /// `tensor_view_2d(..)`, also as the value of an `unsafe` block: a view of memory the
+    /// program got from elsewhere, which no drop frees.
+    pub(crate) fn views_foreign_memory(expr: &Expr) -> bool {
+        match expr {
+            Expr::FunctionCall(c) => c.name.as_ref() == "tensor_view_2d",
+            Expr::UnsafeBlock(u) => u.ret.as_deref().is_some_and(Self::views_foreign_memory),
+            _ => false,
+        }
     }
 
     /// `let name = ..` bound an owned tensor.

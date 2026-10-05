@@ -449,6 +449,23 @@ struct Lowerer<'r> {
     /// codegen can attach `alias_scopes`/`noalias_scopes` — carrying the borrow checker's disjointness
     /// of simultaneously live `&mut o.field` borrows into the IR. (#275, §5.4)
     place_field_stores: Vec<(usize, Symbol, Vec<Symbol>)>,
+    /// Drops marked `after_value` in the block being lowered, waiting for the statement they
+    /// precede. Each holds the register the name had at the drop, which an assignment may rebind.
+    queued_drops: Vec<PendingDrop>,
+    /// The `queued_drops` of the statement being lowered: they run once its value is computed.
+    value_drops: Vec<PendingDrop>,
+    /// The fresh tensors the statement being lowered has made, under `VX_DROPS=scope`: each is
+    /// dropped when the statement ends unless something took it.
+    temps: Vec<Register>,
+    /// Tensors passed by value to a call, which then owns them.
+    moved_args: HashSet<u32>,
+}
+
+/// A tensor drop waiting for a value to be computed: the owner's register, and the name of its
+/// moved flag, read when the drop runs.
+struct PendingDrop {
+    reg: Register,
+    flag: Option<Symbol>,
 }
 
 impl<'r> Lowerer<'r> {
@@ -478,6 +495,10 @@ impl<'r> Lowerer<'r> {
             place_field_stores: Vec::new(),
             stride_next_for: false,
             stride_plan: None,
+            queued_drops: Vec::new(),
+            value_drops: Vec::new(),
+            temps: Vec::new(),
+            moved_args: HashSet::new(),
         }
     }
 
@@ -497,6 +518,9 @@ impl<'r> Lowerer<'r> {
         if let LoweredTy::Tensor { elem, shape } = &ty {
             self.tensor_types
                 .push((ty.gid(), elem.clone(), shape.clone()));
+            if makes_a_fresh_tensor(opcode) {
+                self.note_temp(Register(self.code.len() as u32));
+            }
         }
         let reg = Register(self.code.len() as u32);
         self.code
@@ -742,8 +766,76 @@ impl<'r> Lowerer<'r> {
             for s in stmts {
                 me.lower_stmt(s)?;
             }
-            Ok(())
+            me.run_queued_drops()
         })
+    }
+
+    /// `Statement::Drop`: free the owner now, or once the next statement has its value.
+    fn lower_drop(&mut self, d: &crate::syntax::DropStmt) -> Lowered<()> {
+        let reg = match self.scope.get(&d.name) {
+            Some(Binding::Reg(v)) if matches!(v.ty, LoweredTy::Tensor { .. }) => v.reg,
+            _ => {
+                return Err(Decline::Unsupported {
+                    what: "a drop of a tensor not held in a register",
+                })
+            }
+        };
+        let drop = PendingDrop {
+            reg,
+            flag: d.flag.clone(),
+        };
+        if d.after_value {
+            self.queued_drops.push(drop);
+            Ok(())
+        } else {
+            self.emit_drop(drop)
+        }
+    }
+
+    fn emit_drop(&mut self, d: PendingDrop) -> Lowered<()> {
+        let Some(flag) = d.flag else {
+            self.emit_effect(Opcode::TensorDrop, d.reg, Register(0), 0);
+            return Ok(());
+        };
+        let moved = match self.scope.get(&flag).cloned() {
+            Some(Binding::Reg(v)) => v.reg,
+            Some(Binding::Slot { reg, ty }) => {
+                self.emit_typed(Opcode::SlotLoad, reg, Register(0), ty, 0)
+                    .reg
+            }
+            _ => {
+                return Err(Decline::Unsupported {
+                    what: "a drop flag the flat path does not track",
+                })
+            }
+        };
+        self.emit_effect(Opcode::TensorDrop, d.reg, moved, 1);
+        Ok(())
+    }
+
+    /// Run the drops waiting for the value of the statement being lowered. Called once the value
+    /// is computed, and before a `return` leaves.
+    fn run_value_drops(&mut self) -> Lowered<()> {
+        for d in std::mem::take(&mut self.value_drops) {
+            self.emit_drop(d)?;
+        }
+        Ok(())
+    }
+
+    /// Run the drops waiting for a block's last expression, which is lowered without
+    /// `lower_stmt`.
+    fn run_queued_drops(&mut self) -> Lowered<()> {
+        if self.block_terminated() {
+            assert!(
+                self.queued_drops.is_empty(),
+                "a drop waits for a value after its block has ended"
+            );
+            return Ok(());
+        }
+        for d in std::mem::take(&mut self.queued_drops) {
+            self.emit_drop(d)?;
+        }
+        Ok(())
     }
 
     /// Start a block, returning the depth to close it back to.
@@ -1255,7 +1347,11 @@ impl<'r> Lowerer<'r> {
                     me.lower_stmt(s)?;
                 }
                 match u.ret.as_deref() {
-                    Some(e) => me.lower_expr(e),
+                    Some(e) => {
+                        let v = me.lower_expr(e)?;
+                        me.run_queued_drops()?;
+                        Ok(v)
+                    }
                     // No trailing value: the block is an effect, which is what a nested
                     // `unsafe { unsafe { .. } }` parses to. Hand back a constant for the value
                     // position nobody should be using it in, as `barrier()` does.
@@ -1281,7 +1377,11 @@ impl<'r> Lowerer<'r> {
                     me.lower_stmt(s)?;
                 }
                 match &cb.ret {
-                    Some(r) => me.lower_expr(r),
+                    Some(r) => {
+                        let v = me.lower_expr(r)?;
+                        me.run_queued_drops()?;
+                        Ok(v)
+                    }
                     // No trailing value. When the block's own statements already returned, do
                     // not materialize the placeholder either -- a constant after a terminator
                     // is invalid in the block, and nothing can read it.
@@ -2253,7 +2353,8 @@ impl<'r> Lowerer<'r> {
                     if !es.has_semi {
                         let v = self.lower_expr(&es.expr)?;
                         self.emit_effect(Opcode::Store, slot, v.reg, 0);
-                        return Ok(());
+                        self.drop_temps_here(None);
+                        return self.run_queued_drops();
                     }
                 }
                 return Err(Decline::Unsupported {
@@ -3978,6 +4079,9 @@ impl<'r> Lowerer<'r> {
                 v
             };
             let v = self.forget_extents_for_param(v, sig.params.get(n))?;
+            if matches!(sig.params.get(n), Some(Type::Tensor(..))) {
+                self.moved_args.insert(v.reg.0);
+            }
             arg_regs.push(v.reg);
         }
         for reg in arg_regs {
@@ -3993,6 +4097,9 @@ impl<'r> Lowerer<'r> {
             type_idx,
             fc.args.len() as u64,
         ));
+        if matches!(ret_ty, LoweredTy::Tensor { .. }) {
+            self.note_temp(reg);
+        }
         Ok(Val { reg, ty: ret_ty })
     }
 
@@ -4286,6 +4393,126 @@ impl<'r> Lowerer<'r> {
 
     /// Lower a statement. `None` aborts the whole function's lowering.
     fn lower_stmt(&mut self, s: &Statement) -> Lowered<()> {
+        if self.block_terminated() {
+            return Ok(());
+        }
+        if let Statement::Drop(d) = s {
+            return self.lower_drop(d);
+        }
+        let mine = std::mem::take(&mut self.queued_drops);
+        let outer = std::mem::replace(&mut self.value_drops, mine);
+        let outer_temps = std::mem::take(&mut self.temps);
+        let lowered = self.lower_stmt_inner(s);
+        let left = std::mem::replace(&mut self.value_drops, outer);
+        lowered?;
+        if !left.is_empty() {
+            assert!(
+                !self.block_terminated(),
+                "a statement ended its block before its drops ran"
+            );
+            for d in left {
+                self.emit_drop(d)?;
+            }
+        }
+        if !self.block_terminated() {
+            self.drop_temps_here(None);
+        }
+        self.temps = outer_temps;
+        Ok(())
+    }
+
+    fn note_temp(&mut self, r: Register) {
+        if crate::hir::check::drops::drops_enabled() {
+            self.temps.push(r);
+        }
+    }
+
+    /// Drop the statement's fresh tensors that nothing took, which were made in the block being
+    /// emitted: one made in another block may not be visible here, and is left unfreed. `keep`
+    /// is a value about to be returned.
+    fn drop_temps_here(&mut self, keep: Option<Register>) {
+        let temps = std::mem::take(&mut self.temps);
+        for r in temps {
+            if self.temp_is_dead(r, keep) && self.in_this_block(r) {
+                self.emit_effect(Opcode::TensorDrop, r, Register(0), 0);
+            } else {
+                self.temps.push(r);
+            }
+        }
+    }
+
+    /// Whether nothing after `r` crosses into another block or region.
+    fn in_this_block(&self, r: Register) -> bool {
+        !self.code[r.0 as usize + 1..].iter().any(|i| {
+            matches!(
+                i.opcode,
+                Opcode::BlockStart | Opcode::Spawn | Opcode::SpawnEnd
+            )
+        })
+    }
+
+    /// Whether every use of the fresh tensor `r` only reads it, through views of it too, and no
+    /// name holds it or a view of it.
+    fn temp_is_dead(&self, r: Register, keep: Option<Register>) -> bool {
+        // Register 0 also means "no operand", so its uses cannot be told apart.
+        if r.0 == 0 || Some(r) == keep || self.moved_args.contains(&r.0) {
+            return false;
+        }
+        let named = self.scope.values().any(|b| match b {
+            Binding::Reg(v) => v.reg == r,
+            Binding::Slot { reg, .. } => *reg == r,
+            Binding::Place { .. } => false,
+        });
+        if named {
+            return false;
+        }
+        for (i, ins) in self.code.iter().enumerate().skip(r.0 as usize + 1) {
+            let uses = ins.operand1 == r
+                || ins.operand2 == r
+                || (ins.opcode == Opcode::MatmulInto && ins.imm == r.0 as u64);
+            if !uses {
+                continue;
+            }
+            match ins.opcode {
+                // A view of `r` or `r` under another type: dead when that is.
+                Opcode::Cast | Opcode::TensorIndex | Opcode::TensorReshape => {
+                    if !self.temp_is_dead(Register(i as u32), keep) {
+                        return false;
+                    }
+                }
+                Opcode::Add
+                | Opcode::Sub
+                | Opcode::Mul
+                | Opcode::Div
+                | Opcode::Rem
+                | Opcode::BitAnd
+                | Opcode::BitOr
+                | Opcode::BitXor
+                | Opcode::Shl
+                | Opcode::Shr
+                | Opcode::Neg
+                | Opcode::Not
+                | Opcode::Cmp
+                | Opcode::Matmul
+                | Opcode::MatmulInto
+                | Opcode::TensorClone
+                | Opcode::TensorTranspose
+                | Opcode::TensorMap
+                | Opcode::TensorReduce
+                | Opcode::TensorDim
+                | Opcode::TensorLoad
+                | Opcode::TensorStore
+                | Opcode::TensorZero
+                | Opcode::TensorFill
+                | Opcode::Print => {}
+                Opcode::Arg if !self.moved_args.contains(&r.0) => {}
+                _ => return false,
+            }
+        }
+        true
+    }
+
+    fn lower_stmt_inner(&mut self, s: &Statement) -> Lowered<()> {
         // A statement after a terminator in the same block is unreachable -- `return x;` followed
         // by more code, common in a synthesized closure body whose value-position block carries
         // its own `return`. Lowering it appended a second `func.return` to a block that already
@@ -4477,6 +4704,11 @@ impl<'r> Lowerer<'r> {
                             what: "a match in value position",
                         });
                     }
+                    if !self.value_drops.is_empty() {
+                        return Err(Decline::Unsupported {
+                            what: "a drop waiting for the value of a returned match",
+                        });
+                    }
                     self.lower_match(m)?;
                     if !self.block_terminated() {
                         let rty = self.ret_ty.clone().ok_or(Decline::TypeNotModelled {
@@ -4504,6 +4736,8 @@ impl<'r> Lowerer<'r> {
                 // types a literal to it and rejects a genuine mismatch (#240).
                 // A bare `return;` in a `void` function: nothing to lower, just the terminator.
                 let Some(ret_expr) = &r.expr else {
+                    self.run_value_drops()?;
+                    self.drop_temps_here(None);
                     self.emit_effect(Opcode::Ret, Register(0), Register(0), 0);
                     return Ok(());
                 };
@@ -4517,6 +4751,8 @@ impl<'r> Lowerer<'r> {
                 }
                 let v = self.wrap_scalar_in_rank0_ret(v)?;
                 let v = self.forget_extents_for_return(v)?;
+                self.run_value_drops()?;
+                self.drop_temps_here(Some(v.reg));
                 self.emit_typed(Opcode::Ret, v.reg, Register(0), v.ty, 0);
                 Ok(())
             }
@@ -4668,8 +4904,7 @@ impl<'r> Lowerer<'r> {
                 self.emit_effect(Opcode::Br, Register(0), Register(0), cont as u64);
                 Ok(())
             }
-            // Not lowered yet (drop semantics phase 2): nothing is freed.
-            Statement::Drop(_) => Ok(()),
+            Statement::Drop(_) => unreachable!("lower_stmt lowers a drop"),
             other => {
                 if std::env::var("VX_FLAT_DBG").is_ok() {
                     eprintln!("[flat-dbg]   unsupported stmt: {}", stmt_kind(other));
@@ -5788,6 +6023,10 @@ pub fn verify_hir_stream(worker: &LocalWorkerState) {
                 ins.operand1.0 < i,
                 "HIR operand not dominated at instruction {i}"
             ),
+            Opcode::TensorDrop => assert!(
+                ins.operand1.0 < i && (ins.imm == 0 || ins.operand2.0 < i),
+                "HIR operand not dominated at instruction {i}"
+            ),
             Opcode::CondBr => {
                 assert!(
                     ins.operand1.0 < i,
@@ -5807,6 +6046,31 @@ pub fn verify_hir_stream(worker: &LocalWorkerState) {
             _ => {}
         }
     }
+}
+
+/// Whether `opcode` builds a new tensor, when its result is one, that its statement owns until
+/// something takes it.
+fn makes_a_fresh_tensor(opcode: Opcode) -> bool {
+    matches!(
+        opcode,
+        Opcode::TensorAlloc
+            | Opcode::Add
+            | Opcode::Sub
+            | Opcode::Mul
+            | Opcode::Div
+            | Opcode::Rem
+            | Opcode::BitAnd
+            | Opcode::BitOr
+            | Opcode::BitXor
+            | Opcode::Shl
+            | Opcode::Shr
+            | Opcode::Neg
+            | Opcode::Not
+            | Opcode::Matmul
+            | Opcode::TensorClone
+            | Opcode::TensorTranspose
+            | Opcode::TensorMap
+    )
 }
 
 /// Whether everything after a region's loop, at `idx`, may run per-thread after each thread's

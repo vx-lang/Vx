@@ -139,6 +139,33 @@ impl FnEmit<'_> {
         Ok(())
     }
 
+    // `vx.drop`: convert-vx-to-standard frees the buffer when it is on the heap.
+    pub(crate) fn op_tensor_drop(&mut self, _idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let r = ins.operand1.0 as usize;
+        // A small elementwise result held in a vector register has no buffer.
+        if self.vec_of.get(r).cloned().flatten().is_some() {
+            return Ok(());
+        }
+        let name = self.names.get(r).ok_or(crate::emitter_gap!())?.clone();
+        let ty = self
+            .mem_of
+            .get(r)
+            .cloned()
+            .flatten()
+            .ok_or(crate::emitter_gap!())?;
+        let unless = if ins.imm == 1 {
+            let moved = self
+                .names
+                .get(ins.operand2.0 as usize)
+                .ok_or(crate::emitter_gap!())?;
+            format!(" unless {moved}")
+        } else {
+            String::new()
+        };
+        self.body += &format!("  vx.drop {name}{unless} : {ty}\n");
+        Ok(())
+    }
+
     pub(crate) fn op_tensor_clone(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
         let gid = *self
             .types

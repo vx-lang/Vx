@@ -585,9 +585,9 @@ impl<'a> TypeChecker<'a> {
                 // Mocking built-ins
                 let mut arg_types = Vec::new();
                 // A view reads the pointer it is handed and aliases the
-                // storage behind it; it takes nothing (#336).
+                // storage behind it; it takes nothing (#336). `Verified(t)` is `t` itself,
+                // wrapped, so it moves `t`.
                 let is_builtin_ref = resolved_name == "print".into()
-                    || resolved_name == "Verified".into()
                     || resolved_name == "tensor_view_2d".into()
                     || resolved_name == "matmul_into".into();
                 // A call moves what it takes by value, whatever happens to its own result: inside
