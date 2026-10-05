@@ -546,7 +546,7 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    pub(crate) fn check_functioncall_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
+    pub(crate) fn check_functioncall_expr(&mut self, expr: &mut Expr, _consume: bool) -> Type {
         match expr {
             Expr::FunctionCall(FunctionCallExpr {
                 name,
@@ -590,7 +590,9 @@ impl<'a> TypeChecker<'a> {
                     || resolved_name == "Verified".into()
                     || resolved_name == "tensor_view_2d".into()
                     || resolved_name == "matmul_into".into();
-                let arg_consume = if is_builtin_ref { false } else { consume };
+                // A call moves what it takes by value, whatever happens to its own result: inside
+                // `print(take(t))`, `t` is moved into `take` though `print` takes nothing.
+                let arg_consume = !is_builtin_ref;
 
                 // Reference-argument reborrow bookkeeping (#243): snapshot each base before the
                 // args are checked so the post-call revert can tell a call-duration borrow from

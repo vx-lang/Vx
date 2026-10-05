@@ -95,7 +95,11 @@ fn main() -> i32 {
     print(9);
   }
   print!(" ");
-  print(b.pull(Count {
+  // `scale(b, ..)` above took `b` by value, so this pulls from a count of its own.
+  let b2 = Count {
+    at : 3i64, end : 9i64
+  };
+  print(b2.pull(Count {
     at : 4i64, end : 9i64
   }).unwrap());
   return 0;

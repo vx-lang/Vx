@@ -38,9 +38,13 @@ fn main() -> i32 {
   print!(" ");
   print(select_unpredictable(n > 5, 1.5, 0.5));
   print!(" ");
+  // `must_use(p)` above took `p` by value, so this uses a point of its own.
+  let p2 = Point {
+    x: 3, y: 4
+  };
   let q = Point {
     x: 0, y: 0
   };
-  print(select_unpredictable(n > 5, p, q).y);
+  print(select_unpredictable(n > 5, p2, q).y);
   return 0;
 }

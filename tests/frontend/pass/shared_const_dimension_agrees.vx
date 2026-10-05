@@ -26,10 +26,15 @@ fn forward<const M : i32>(p : Tensor<f32, [M]>, q : Tensor<f32, [M]>) -> i32 {
 }
 
 fn main() -> i32 {
+  // Each call takes its tensors by value, so each gets a pair of its own.
   let x = Tensor<f32, [4]>::uninit();
   let y = Tensor<f32, [4]>::uninit();
   print(same_len(x, y));
-  print(forward(x, y));
-  print(same_len<4>(x, y));
+  let x2 = Tensor<f32, [4]>::uninit();
+  let y2 = Tensor<f32, [4]>::uninit();
+  print(forward(x2, y2));
+  let x3 = Tensor<f32, [4]>::uninit();
+  let y3 = Tensor<f32, [4]>::uninit();
+  print(same_len<4>(x3, y3));
   return 0;
 }
