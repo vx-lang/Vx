@@ -224,7 +224,7 @@ impl<'a> TypeChecker<'a> {
             }
             Expr::SizeOf(..) => Type::Scalar(ElementType::I64),
             Expr::FunctionCall(..) => {
-                let ty = self.check_functioncall_expr(expr, consume);
+                let ty = self.check_functioncall_expr(expr);
                 // A comptime lambda runs while compiling, so its calls fold here. With every
                 // call folded the lambda is unused, and the `let` that bound it is dropped.
                 let span = expr.span();

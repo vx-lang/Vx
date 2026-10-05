@@ -75,9 +75,10 @@ impl<'a> TypeChecker<'a> {
             _ => panic!("Expected IndexAccess, got {:?}", expr),
         };
         let callee_ty = self.check_expr_type_flag(callee, consume);
+        // As for a call by name: the arguments are moved whatever is done with the result.
         let mut arg_types = Vec::new();
         for arg in args.iter_mut() {
-            arg_types.push(self.check_expr_type_flag(arg, consume));
+            arg_types.push(self.check_expr_type_flag(arg, true));
         }
 
         if let Type::Struct(struct_name, _) = callee_ty {
@@ -546,7 +547,7 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    pub(crate) fn check_functioncall_expr(&mut self, expr: &mut Expr, _consume: bool) -> Type {
+    pub(crate) fn check_functioncall_expr(&mut self, expr: &mut Expr) -> Type {
         match expr {
             Expr::FunctionCall(FunctionCallExpr {
                 name,

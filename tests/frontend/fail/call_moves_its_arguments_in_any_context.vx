@@ -9,7 +9,7 @@
 //
 // A call takes its by-value arguments whatever is done with its result. Inside `print(..)`,
 // which only reads its argument, or an `if` condition, `take(t)` still moves `t`, so using `t`
-// after it is an error.
+// after it is an error. So does a call through an expression, `(f)(t)`.
 
 fn take(t : Tensor<f32, [4]>) -> f32 {
   return t[0];
@@ -29,9 +29,17 @@ fn inside_a_condition() -> f32 {
   return t[0];
 }
 
+fn through_an_expression() -> f32 {
+  let f = |x : Tensor<f32, [4]>| x[0];
+  let t = Tensor<f32, [4]>::new();
+  print((f)(t));
+  return t[0];
+}
+
 fn main() -> i32 {
   return 0;
 }
 
 // CHECK-DAG: Error[E4001] at 21:10: Use of moved or consumed linear variable: t
 // CHECK-DAG: Error[E4001] at 29:10: Use of moved or consumed linear variable: t
+// CHECK-DAG: Error[E4001] at 36:10: Use of moved or consumed linear variable: t
