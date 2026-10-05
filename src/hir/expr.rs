@@ -96,7 +96,7 @@ impl<'a> TypeChecker<'a> {
         ty
     }
 
-    pub(crate) fn check_expr_block(&mut self, stmts: &mut [Statement], consume: bool) -> Type {
+    pub(crate) fn check_expr_block(&mut self, stmts: &mut Vec<Statement>, consume: bool) -> Type {
         let block_unused = std::mem::replace(&mut self.value_unused, false);
         let mut ret_ty = Type::Struct("void".into(), None);
         let mut terminated = false;
@@ -156,7 +156,7 @@ impl<'a> TypeChecker<'a> {
                 _ => {}
             }
         }
-        self.drops_exit_block(terminated_at);
+        self.drops_exit_block(stmts, terminated_at);
         ret_ty
     }
 

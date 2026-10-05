@@ -130,7 +130,7 @@ impl<'a> TypeChecker<'a> {
     ///
     /// This allows the Non-Lexical Lifetimes (NLL) borrow checker to query its `is_variable_used_after`
     /// in O(1) time instead of performing an O(N^2) AST tree-walk!
-    pub(crate) fn check_block(&mut self, body: &mut [Statement], return_type: &Type) {
+    pub(crate) fn check_block(&mut self, body: &mut Vec<Statement>, return_type: &Type) {
         let mut terminated = false;
 
         // 1. Liveness Analysis Pass
@@ -170,7 +170,7 @@ impl<'a> TypeChecker<'a> {
                 _ => {}
             }
         }
-        self.drops_exit_block(terminated_at);
+        self.drops_exit_block(body, terminated_at);
         self.speculating = saved_speculating;
         self.borrow.exit_block();
     }
@@ -243,7 +243,7 @@ impl<'a> TypeChecker<'a> {
             Statement::MacroCall(_) => {
                 self.errors.push("Macro failed to expand".to_string());
             }
-            Statement::Error(_) => {}
+            Statement::Drop(_) | Statement::Error(_) => {}
         }
         self.check_frame_escape(stmt);
     }

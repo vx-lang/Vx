@@ -1,0 +1,85 @@
+//===- tensor_drops_written_into_the_program.vx - Vx Compiler ----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: env VX_DROPS=scope vxc %s --action print-ast 2>/dev/null | FileCheck %s
+//
+// With `VX_DROPS=scope`, the checker writes each tensor's drop into the program as a `Drop`
+// statement. A drop before a `return` or an assignment waits for that statement's value,
+// which may still read the tensor; a tensor moved on some paths only gets a `bool` flag.
+
+fn take(t : Tensor<f32, [4]>) -> f32 {
+  return t[0];
+}
+
+// Dropped after its last use.
+fn after_last_use() -> f32 {
+  let a = Tensor<f32, [4]>::new();
+  let x = a[0];
+  let y = x + 1.0;
+  return y;
+}
+
+// The operands move into the operator; the sum is returned before they are freed.
+fn sum_returned(a : Tensor<f32, [4]>, b : Tensor<f32, [4]>) -> Tensor<f32, [4]> {
+  return a + b;
+}
+
+// Moved on one path: a flag, set where it moves, guards the drop after the `if`.
+fn moved_on_one_path(c : bool) -> f32 {
+  let a = Tensor<f32, [4]>::new();
+  let mut s = 0.0;
+  if c {
+    s = take(a);
+  }
+  return s;
+}
+
+// The old value is freed once the new one is computed, before it is stored.
+fn reassigned() -> f32 {
+  let mut t = Tensor<f32, [4]>::new();
+  t = Tensor<f32, [4]>::new();
+  return t[0];
+}
+
+// A parameter that is never used is freed at the start.
+fn unused_parameter(t : Tensor<f32, [4]>) -> i32 {
+  return 0;
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK-LABEL: Function: after_last_use
+// CHECK:      Let x =
+// CHECK:      Drop a
+// CHECK-NEXT: Let y =
+
+// CHECK-LABEL: Function: sum_returned
+// CHECK-NEXT: Drop a, after the value
+// CHECK-NEXT: Drop b, after the value
+// CHECK-NEXT: Return
+// CHECK-NEXT: BinaryOp(Add)
+
+// CHECK-LABEL: Function: moved_on_one_path
+// CHECK:      Let mut [[FLAG:__vx_moved_[0-9]+]] (typed) =
+// CHECK-NEXT: Identifier(false)
+// CHECK:      then_block: [Assign{{.*}}Assign(AssignStmt { lhs: Identifier(IdentifierExpr { name: "[[FLAG]]"{{.*}}name: "true"
+// CHECK:      Drop a if [[FLAG]] is false
+// CHECK-NEXT: Return
+
+// CHECK-LABEL: Function: reassigned
+// CHECK:      Drop t, after the value
+// CHECK-NEXT: Assign
+// CHECK-NEXT: Identifier(t)
+// CHECK-NEXT: Call(Tensor::new)
+// CHECK-NEXT: Drop t, after the value
+// CHECK-NEXT: Return
+
+// CHECK-LABEL: Function: unused_parameter
+// CHECK-NEXT: Drop t, after the value
+// CHECK-NEXT: Return

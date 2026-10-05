@@ -148,6 +148,22 @@ impl AstPrinter {
                     Self::print_expr(w, lhs, &indent.child(is_last), false)?;
                     Self::print_expr(w, rhs, &indent.child(is_last), true)?;
                 }
+                Statement::Drop(DropStmt {
+                    name,
+                    flag,
+                    after_value,
+                    span: _,
+                }) => {
+                    indent.print(w)?;
+                    write!(w, "{}Drop {}", prefix, name)?;
+                    if let Some(f) = flag {
+                        write!(w, " if {} is false", f)?;
+                    }
+                    if *after_value {
+                        write!(w, ", after the value")?;
+                    }
+                    writeln!(w)?;
+                }
                 Statement::Return(ReturnStmt { expr, span: _ }) => {
                     indent.print(w)?;
                     writeln!(w, "{}Return", prefix)?;

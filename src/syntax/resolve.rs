@@ -348,6 +348,7 @@ impl Statement {
             }
             Statement::Break(_) => {}
             Statement::Continue(_) => {}
+            Statement::Drop(_) => {}
             Statement::MacroCall(_) => panic!("Macros should be expanded before name resolution"),
             Statement::Error(_) => {}
         }

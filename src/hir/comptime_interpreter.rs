@@ -460,6 +460,8 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
                 flow: ComptimeEvalFlow::Continue,
                 ..ComptimeEvalOutcome::default()
             },
+            // Freeing memory changes no value the evaluator tracks.
+            Statement::Drop(_) => ComptimeEvalOutcome::default(),
             Statement::MacroCall(_) | Statement::Error(_) => {
                 // Both forms are supposed to have been eliminated before semantic checking. If
                 // either escapes that boundary, it cannot be silently skipped before a later

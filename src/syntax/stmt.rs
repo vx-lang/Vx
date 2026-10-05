@@ -201,6 +201,18 @@ impl MacroCallStmt {
     }
 }
 
+/// `Statement::Drop`: the tensor named here is freed at this point.
+#[derive(Debug, PartialEq, Clone)]
+pub struct DropStmt {
+    pub name: Symbol,
+    /// A `bool` local that is true once the tensor was moved: then nothing is freed.
+    pub flag: Option<Symbol>,
+    /// Freed only once the next statement has computed its value: a `return`'s, a block's last
+    /// expression, or an assignment's right-hand side, which may still read the tensor.
+    pub after_value: bool,
+    pub span: Span,
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub enum Statement {
     LetDecl(LetDeclStmt),
@@ -214,6 +226,9 @@ pub enum Statement {
     Break(BreakStmt),
     Continue(ContinueStmt),
     MacroCall(MacroCallStmt),
+    /// Free what the tensor `name` owns. Never written by a programmer: the checker puts it
+    /// where the tensor's drop point is, under `-X drop=scope`.
+    Drop(DropStmt),
     Error(Span),
 }
 
@@ -231,6 +246,7 @@ macro_rules! delegate_stmt {
             Statement::Break($inner) => $expr,
             Statement::Continue($inner) => $expr,
             Statement::MacroCall($inner) => $expr,
+            Statement::Drop($inner) => $expr,
             Statement::Error(_) => unreachable!(),
         }
     };
@@ -305,6 +321,7 @@ impl Statement {
                 has_semi: e.has_semi,
                 span: e.span,
             }),
+            Statement::Drop(d) => Statement::Drop(d.clone()),
             Statement::Error(s) => Statement::Error(*s),
         }
     }

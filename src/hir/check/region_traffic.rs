@@ -547,7 +547,7 @@ impl<'a> TypeChecker<'a> {
                             .to_string(),
                     )
                 }
-                Statement::Error(_) => {}
+                Statement::Drop(_) | Statement::Error(_) => {}
             }
         }
         Ok(())

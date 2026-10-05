@@ -785,7 +785,7 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
                 Statement::MacroCall(_) => {} // Expanded before checking; nothing survives here.
-                Statement::Error(_) => {}
+                Statement::Drop(_) | Statement::Error(_) => {}
             }
         }
     }
@@ -1157,7 +1157,7 @@ fn scan_stmts(stmts: &[Statement], in_closure: bool, out: &mut RawScan) {
                 }
                 scan_stmts(&lp.body, in_closure, out);
             }
-            Statement::Break(_) | Statement::Continue(_) => {}
+            Statement::Break(_) | Statement::Continue(_) | Statement::Drop(_) => {}
             Statement::MacroCall(_) => {}
             Statement::Error(_) => {}
         }
@@ -1421,6 +1421,7 @@ fn stmt_span(s: &Statement) -> crate::syntax::Span {
         Statement::Break(x) => x.span,
         Statement::Continue(x) => x.span,
         Statement::MacroCall(x) => x.span,
+        Statement::Drop(x) => x.span,
         Statement::Error(sp) => *sp,
     }
 }
@@ -1490,7 +1491,7 @@ pub(crate) fn body_reassigns(body: &[Statement], name: &str) -> bool {
                         return true;
                     }
                 }
-                Statement::Break(_) | Statement::Continue(_) => {}
+                Statement::Break(_) | Statement::Continue(_) | Statement::Drop(_) => {}
                 Statement::MacroCall(_) => return true, // Cannot see inside: conservative.
                 Statement::Error(_) => return true,
             }
@@ -1712,7 +1713,7 @@ impl<'a> TypeChecker<'a> {
                         "`break`/`continue` makes the loop's trip count a fiction".to_string()
                     )
                 }
-                Statement::MacroCall(_) | Statement::Error(_) => {}
+                Statement::MacroCall(_) | Statement::Error(_) | Statement::Drop(_) => {}
             }
         }
         Ok(())

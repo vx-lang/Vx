@@ -105,7 +105,10 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
                 // These statements have no evaluated child expression or statement block.
-                Statement::Break(_) | Statement::Continue(_) | Statement::Error(_) => {}
+                Statement::Break(_)
+                | Statement::Continue(_)
+                | Statement::Drop(_)
+                | Statement::Error(_) => {}
                 // Macro expansion happens before type checking, so no macro body remains here.
                 Statement::MacroCall(_) => {}
             }

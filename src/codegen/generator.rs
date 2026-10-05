@@ -1427,6 +1427,8 @@ impl<'c> MeliorGenerator<'c> {
             Statement::Break(s) => LowerToMelior::lower(s, self, block),
             Statement::Continue(s) => LowerToMelior::lower(s, self, block),
             Statement::MacroCall(_) => panic!("Macros should be expanded before codegen"),
+            // Not lowered yet (drop semantics phase 2): nothing is freed.
+            Statement::Drop(_) => Ok(Some(block)),
             Statement::Error(_) => Ok(None),
         }
     }

@@ -6,9 +6,9 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Where each tensor a function owns is dropped: phase 1 of
-// `docs/implementation_plans/drop_semantics.md`. The points are found and, with
-// `VX_PRINT_DROPS=1`, printed; nothing acts on them yet.
+// Where each tensor a function owns is dropped: `docs/implementation_plans/drop_semantics.md`.
+// With `VX_PRINT_DROPS=1` the points are printed. With `VX_DROPS=scope` the checker also writes
+// them into the program as `Statement::Drop`, which the code generators lower (phase 2).
 //
 // An owner is a `let` bound to a tensor that is not a view, or a tensor parameter taken by
 // value. It is dropped after the statement of its block that last uses it, or anything that
@@ -19,13 +19,22 @@
 // raw pointer was taken from (`t.as_ptr()`) waits for the end of its block: no borrow
 // checker sees what a raw pointer is used for. Assigning a new tensor to an owner drops the
 // old one first, unless it was moved, or `c = a @ b` writes the product into `c`'s buffer.
-// A binary tensor operator moves its operands, as in Rust, so it drops them once it has its
-// result.
+// A tensor operator moves its operands, as in Rust, so it drops them once it has its result.
+//
+// Written into the program, a drop never frees what is still to be read. A drop placed before
+// a `return`, a block's last expression or an assignment is marked `after_value`: it runs once
+// that statement has computed its value, which may read the tensor, and before it is returned
+// or stored. A flag is a `bool` local, set after the statement that moves the owner, in the
+// block where it moves, and named by the drop, which then frees nothing once it is set.
 //
 //===----------------------------------------------------------------------===//
 
 use super::super::*;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
+
+/// Left in a block's uses by a `Statement::Drop`, so a body already rewritten is known: a
+/// generic instantiation can be checked again from a copy of it.
+pub(crate) const DROP_MARK: &str = "\u{1}drop";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Moved {
@@ -37,15 +46,31 @@ pub(crate) enum Moved {
 struct Owner {
     name: String,
     is_param: bool,
+    /// The statement that declares it in its block; `None` for a parameter.
+    decl: Option<usize>,
     /// A raw pointer was taken from it: dropped at the end of its block, not its last use.
     to_block_end: bool,
     /// The scope it was declared in: a move from the same scope is certain.
     scope: usize,
     moved: Moved,
+    /// The `bool` local that says it was moved, once a move inside a nested block needed one.
+    flag: Option<String>,
+}
+
+/// What the checker writes into one block, by statement.
+#[derive(Default)]
+struct Edits {
+    before: BTreeMap<usize, Vec<Statement>>,
+    after: BTreeMap<usize, Vec<Statement>>,
+    /// `t = e` whose old value is dropped: the drop, and the flag to clear after the store.
+    assign: HashMap<usize, (Statement, Option<String>)>,
 }
 
 enum FrameKind {
-    Function,
+    Function {
+        /// Whether drops are written into this body.
+        rewrite: bool,
+    },
     Loop,
     Block {
         owners: Vec<Owner>,
@@ -55,6 +80,7 @@ enum FrameKind {
         lines: Vec<usize>,
         /// The statement being checked.
         stmt: usize,
+        edits: Edits,
     },
 }
 
@@ -67,25 +93,91 @@ pub(crate) struct DropFrames {
     pending: Vec<(String, usize)>,
     /// The names moved by the statement being checked. A `return t` moves `t` on its way out.
     moved_now: HashSet<String>,
+    /// Makes the names of the locals the rewrite adds unique.
+    counter: usize,
 }
 
 fn printing() -> bool {
     std::env::var_os("VX_PRINT_DROPS").is_some()
 }
 
+fn ident(name: &str) -> Expr {
+    Expr::Identifier(IdentifierExpr::new(name.into(), Span::default()))
+}
+
+fn drop_stmt(name: &str, flag: Option<&str>) -> Statement {
+    Statement::Drop(DropStmt {
+        name: name.into(),
+        flag: flag.map(Into::into),
+        after_value: false,
+        span: Span::default(),
+    })
+}
+
+/// A drop that runs once the statement it precedes has computed its value.
+fn after_value(mut s: Statement) -> Statement {
+    if let Statement::Drop(d) = &mut s {
+        d.after_value = true;
+    }
+    s
+}
+
+fn assign_stmt(name: &str, value: Expr) -> Statement {
+    Statement::Assign(AssignStmt::new(ident(name), value, Span::default()))
+}
+
+fn let_stmt(name: &str, is_mut: bool, ty: Type, value: Expr) -> Statement {
+    Statement::LetDecl(LetDeclStmt {
+        name: name.into(),
+        is_mut,
+        ty_ann: Some(ty),
+        expr: value,
+        span: Span::default(),
+    })
+}
+
+/// `drop owner`, naming its flag when it may have been moved.
+fn owner_drop(owner: &Owner) -> Statement {
+    let flag = match owner.moved {
+        Moved::Maybe => owner.flag.as_deref(),
+        _ => None,
+    };
+    drop_stmt(&owner.name, flag)
+}
+
 impl<'a> TypeChecker<'a> {
+    /// Whether drops are written into the function being checked.
+    fn drops_rewriting(&self) -> bool {
+        !self.speculating
+            && self.borrow.drops.frames.iter().rev().find_map(|f| match f {
+                FrameKind::Function { rewrite } => Some(*rewrite),
+                _ => None,
+            }) == Some(true)
+    }
+
+    fn drops_fresh(&mut self, what: &str) -> String {
+        self.borrow.drops.counter += 1;
+        format!("__vx_{what}_{}", self.borrow.drops.counter)
+    }
+
     /// A function or closure body begins. `params` are its tensor parameters taken by value.
-    pub(crate) fn drops_enter_function(&mut self, params: Vec<String>) {
+    pub(crate) fn drops_enter_function(&mut self, params: Vec<String>, body: &[Statement]) {
         let scope = self.scopes.len() - 1;
+        let already = body.iter().any(|s| {
+            let mut uses = HashSet::new();
+            Self::extract_uses_stmt(s, &mut uses);
+            uses.contains(DROP_MARK)
+        });
+        let rewrite = !already && std::env::var("VX_DROPS").is_ok_and(|v| v == "scope");
         let d = &mut self.borrow.drops;
-        d.frames.push(FrameKind::Function);
+        d.frames.push(FrameKind::Function { rewrite });
         d.pending = params.into_iter().map(|p| (p, scope)).collect();
     }
 
     pub(crate) fn drops_exit_function(&mut self) {
         let d = &mut self.borrow.drops;
         while let Some(f) = d.frames.pop() {
-            if matches!(f, FrameKind::Function) {
+            if matches!(f, FrameKind::Function { .. }) {
                 break;
             }
         }
@@ -111,9 +203,11 @@ impl<'a> TypeChecker<'a> {
             .map(|(name, scope)| Owner {
                 name,
                 is_param: true,
+                decl: None,
                 to_block_end: false,
                 scope,
                 moved: Moved::No,
+                flag: None,
             })
             .collect();
         d.frames.push(FrameKind::Block {
@@ -121,6 +215,7 @@ impl<'a> TypeChecker<'a> {
             last_use: Self::compute_block_liveness(body),
             lines: body.iter().map(|s| s.span().line).collect(),
             stmt: 0,
+            edits: Edits::default(),
         });
     }
 
@@ -137,13 +232,15 @@ impl<'a> TypeChecker<'a> {
             return;
         }
         let scope = self.scopes.len() - 1;
-        if let Some(FrameKind::Block { owners, .. }) = self.borrow.drops.frames.last_mut() {
+        if let Some(FrameKind::Block { owners, stmt, .. }) = self.borrow.drops.frames.last_mut() {
             owners.push(Owner {
                 name: name.to_string(),
                 is_param: false,
+                decl: Some(*stmt),
                 to_block_end: false,
                 scope,
                 moved: Moved::No,
+                flag: None,
             });
         }
     }
@@ -151,13 +248,15 @@ impl<'a> TypeChecker<'a> {
     /// `name` was moved, or (`again`) given a new value after a move.
     pub(crate) fn drops_note_move(&mut self, name: &str, again: bool) {
         let here = self.scopes.len() - 1;
-        let d = &mut self.borrow.drops;
+        let rewriting = self.drops_rewriting();
         if !again {
-            d.moved_now.insert(name.to_string());
+            self.borrow.drops.moved_now.insert(name.to_string());
         }
-        for f in d.frames.iter_mut().rev() {
+        let top = self.borrow.drops.frames.len();
+        let mut found = None;
+        for (k, f) in self.borrow.drops.frames.iter_mut().enumerate().rev() {
             match f {
-                FrameKind::Function => return,
+                FrameKind::Function { .. } => return,
                 FrameKind::Loop => {}
                 FrameKind::Block { owners, .. } => {
                     if let Some(o) = owners.iter_mut().rev().find(|o| o.name == name) {
@@ -168,10 +267,44 @@ impl<'a> TypeChecker<'a> {
                         } else {
                             Moved::Maybe
                         };
-                        return;
+                        found = Some((k, o.moved, o.flag.clone(), o.decl));
+                        break;
                     }
                 }
             }
+        }
+        let Some((k, Moved::Maybe, flag, decl)) = found else {
+            return;
+        };
+        if !rewriting {
+            return;
+        }
+        // The first move inside a nested block gives the owner a flag, declared beside it.
+        let flag = match flag {
+            Some(f) => f,
+            None => {
+                let f = self.drops_fresh("moved");
+                let declare = let_stmt(&f, true, Type::Scalar(ElementType::Bool), ident("false"));
+                if let FrameKind::Block { owners, edits, .. } = &mut self.borrow.drops.frames[k] {
+                    if let Some(o) = owners.iter_mut().rev().find(|o| o.name == name) {
+                        o.flag = Some(f.clone());
+                    }
+                    match decl {
+                        Some(i) => edits.after.entry(i).or_default().push(declare),
+                        None => edits.before.entry(0).or_default().insert(0, declare),
+                    }
+                }
+                f
+            }
+        };
+        if let Some(FrameKind::Block { stmt, edits, .. }) =
+            self.borrow.drops.frames.get_mut(top - 1)
+        {
+            edits
+                .after
+                .entry(*stmt)
+                .or_default()
+                .push(assign_stmt(&flag, ident("true")));
         }
     }
 
@@ -192,7 +325,7 @@ impl<'a> TypeChecker<'a> {
         names.extend(self.borrow.borrowed_by(&root).into_iter().map(|(o, _)| o));
         for f in self.borrow.drops.frames.iter_mut().rev() {
             match f {
-                FrameKind::Function => return,
+                FrameKind::Function { .. } => return,
                 FrameKind::Loop => {}
                 FrameKind::Block { owners, .. } => {
                     for o in owners.iter_mut().filter(|o| names.contains(&o.name)) {
@@ -206,13 +339,17 @@ impl<'a> TypeChecker<'a> {
     /// Whether `name` is an owner, and whether its value was moved. Read before an assignment
     /// to it clears the mark.
     pub(crate) fn drops_owner_state(&self, name: &str) -> Option<Moved> {
+        self.drops_owner(name).map(|o| o.moved)
+    }
+
+    fn drops_owner(&self, name: &str) -> Option<&Owner> {
         for f in self.borrow.drops.frames.iter().rev() {
             match f {
-                FrameKind::Function => return None,
+                FrameKind::Function { .. } => return None,
                 FrameKind::Loop => {}
                 FrameKind::Block { owners, .. } => {
                     if let Some(o) = owners.iter().rev().find(|o| o.name == name) {
-                        return Some(o.moved);
+                        return Some(o);
                     }
                 }
             }
@@ -221,9 +358,9 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// `name = rhs` on `line`, where `before` is what `drops_owner_state` said first: the old
-    /// value is dropped before the assignment.
+    /// value is dropped once `rhs` is computed, before it is stored.
     pub(crate) fn drops_note_assign(
-        &self,
+        &mut self,
         name: &str,
         before: Option<Moved>,
         rhs: &Expr,
@@ -255,30 +392,46 @@ impl<'a> TypeChecker<'a> {
                 }
             }
         }
-        if !printing() || self.speculating {
+        if self.speculating {
             return;
         }
-        let flag = if moved == Moved::Maybe {
-            " if it was not moved"
-        } else {
-            ""
+        if printing() {
+            let flag = if moved == Moved::Maybe {
+                " if it was not moved"
+            } else {
+                ""
+            };
+            eprintln!(
+                "drop in {}: the old value of {name}{flag}, before the assignment on line {line}",
+                self.current_function
+            );
+        }
+        if !self.drops_rewriting() {
+            return;
+        }
+        let Some(owner) = self.drops_owner(name) else {
+            return;
         };
-        eprintln!(
-            "drop in {}: the old value of {name}{flag}, before the assignment on line {line}",
-            self.current_function
-        );
+        let flag = owner.flag.clone();
+        let old_flag = flag.as_deref().filter(|_| moved == Moved::Maybe);
+        let drop_old = after_value(drop_stmt(name, old_flag));
+        if let Some(FrameKind::Block { stmt, edits, .. }) = self.borrow.drops.frames.last_mut() {
+            edits.assign.insert(*stmt, (drop_old, flag));
+        }
     }
 
     /// The operands of a tensor operator, `a @ b` or `a + b`, that it moved: dropped right
     /// after it.
-    pub(crate) fn drops_note_operands(&self, operands: &[(&Expr, &Type)]) {
-        if !printing() || self.speculating {
+    pub(crate) fn drops_note_operands(&mut self, operands: &[(&Expr, &Type)]) {
+        if self.speculating {
             return;
         }
+        let rewriting = self.drops_rewriting();
         let Some(FrameKind::Block { lines, stmt, .. }) = self.borrow.drops.frames.last() else {
             return;
         };
-        let line = lines.get(*stmt).copied().unwrap_or(0);
+        let (line, at) = (lines.get(*stmt).copied().unwrap_or(0), *stmt);
+        let mut dropped = Vec::new();
         for &(e, ty) in operands {
             let Expr::Identifier(id) = e else { continue };
             if !matches!(ty, Type::Tensor(..))
@@ -287,10 +440,18 @@ impl<'a> TypeChecker<'a> {
             {
                 continue;
             }
-            eprintln!(
-                "drop in {}: {}, after the operator it is moved into on line {line}",
-                self.current_function, id.name
-            );
+            if printing() {
+                eprintln!(
+                    "drop in {}: {}, after the operator it is moved into on line {line}",
+                    self.current_function, id.name
+                );
+            }
+            dropped.push(drop_stmt(id.name.as_ref(), None));
+        }
+        if rewriting {
+            if let Some(FrameKind::Block { edits, .. }) = self.borrow.drops.frames.last_mut() {
+                edits.after.entry(at).or_default().extend(dropped);
+            }
         }
     }
 
@@ -322,6 +483,9 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn drops_print(&self, owner: &Owner, at: String) {
+        if !printing() {
+            return;
+        }
         let flag = if owner.moved == Moved::Maybe {
             " if it was not moved"
         } else {
@@ -334,54 +498,141 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// The block ends. `terminated_at` is its `return`, `break` or `continue`, whose own drops
-    /// were reported when it was checked.
-    pub(crate) fn drops_exit_block(&mut self, terminated_at: Option<usize>) {
+    /// were found when it was checked. When drops are written into the program, the block's
+    /// edits are made now.
+    pub(crate) fn drops_exit_block(
+        &mut self,
+        body: &mut Vec<Statement>,
+        terminated_at: Option<usize>,
+    ) {
+        let rewriting = self.drops_rewriting();
         let Some(FrameKind::Block {
             owners,
             last_use,
             lines,
+            mut edits,
             ..
         }) = self.borrow.drops.frames.pop()
         else {
             panic!("a block frame closes a block");
         };
-        if !printing() || self.speculating {
+        if self.speculating {
             return;
         }
         for owner in owners.iter().rev() {
             if owner.moved == Moved::Yes {
                 continue;
             }
-            if owner.to_block_end {
-                if terminated_at.is_none() {
-                    self.drops_print(owner, "at the end of its block".to_string());
+            let at = if owner.to_block_end {
+                if terminated_at.is_some() || body.is_empty() {
+                    continue;
                 }
+                self.drops_print(owner, "at the end of its block".to_string());
+                Some(body.len() - 1)
+            } else {
+                match self.drops_last_use(&owner.name, &last_use) {
+                    Some(i) if terminated_at.is_some_and(|t| i >= t) => continue,
+                    Some(i) => {
+                        self.drops_print(
+                            owner,
+                            format!("after the statement on line {}", lines[i]),
+                        );
+                        Some(i)
+                    }
+                    None if owner.is_param => {
+                        self.drops_print(owner, "at the start of the function".to_string());
+                        None
+                    }
+                    None => {
+                        self.drops_print(owner, "where it is made".to_string());
+                        owner.decl
+                    }
+                }
+            };
+            let stmt = owner_drop(owner);
+            match at {
+                Some(i) => edits.after.entry(i).or_default().push(stmt),
+                None => edits.before.entry(0).or_default().push(stmt),
+            }
+        }
+        if rewriting {
+            self.drops_apply(body, edits);
+        }
+    }
+
+    /// Make a block's edits, from its last statement back so the indices hold.
+    fn drops_apply(&mut self, body: &mut Vec<Statement>, mut edits: Edits) {
+        let last = body.len().checked_sub(1);
+        let mut at: Vec<usize> = edits
+            .before
+            .keys()
+            .chain(edits.after.keys())
+            .chain(edits.assign.keys())
+            .copied()
+            .collect();
+        at.sort_unstable();
+        at.dedup();
+        for i in at.into_iter().rev() {
+            if i >= body.len() {
                 continue;
             }
-            match self.drops_last_use(&owner.name, &last_use) {
-                Some(i) if terminated_at.is_some_and(|t| i >= t) => {}
-                Some(i) => {
-                    self.drops_print(owner, format!("after the statement on line {}", lines[i]))
+            let before = edits.before.remove(&i).unwrap_or_default();
+            let after = edits.after.remove(&i).unwrap_or_default();
+            let mut out = before;
+            let drops_only =
+                |v: Vec<Statement>| v.into_iter().filter(|s| matches!(s, Statement::Drop(_)));
+            match &body[i] {
+                // Leaving with a value: the drops wait for it. A flag set after the statement
+                // could not be reached, and the drops it guards are leaving too.
+                Statement::Return(ReturnStmt { expr: Some(_), .. }) => {
+                    out = out.into_iter().map(after_value).collect();
+                    out.extend(drops_only(after).map(after_value));
+                    out.push(body[i].clone());
                 }
-                None if owner.is_param => {
-                    self.drops_print(owner, "at the start of the function".to_string())
+                Statement::Return(_) | Statement::Break(_) | Statement::Continue(_) => {
+                    out.extend(drops_only(after));
+                    out.push(body[i].clone());
                 }
-                None => self.drops_print(owner, "where it is made".to_string()),
+                // The block's value: its drops wait for it, and a flag is set before it, since
+                // the value is always computed in full.
+                Statement::ExprStmt(e) if Some(i) == last && !e.has_semi => {
+                    let (flags, drops): (Vec<_>, Vec<_>) = after
+                        .into_iter()
+                        .partition(|s| matches!(s, Statement::Assign(_)));
+                    out.extend(flags);
+                    out.extend(drops.into_iter().map(after_value));
+                    out.push(body[i].clone());
+                }
+                _ => {
+                    if let Some((drop_old, flag)) = edits.assign.remove(&i) {
+                        out.push(drop_old);
+                        out.push(body[i].clone());
+                        if let Some(f) = flag {
+                            out.push(assign_stmt(&f, ident("false")));
+                        }
+                    } else {
+                        out.push(body[i].clone());
+                    }
+                    out.extend(after);
+                }
             }
+            body.splice(i..=i, out);
         }
     }
 
     /// A `return` (`out_of_loop` false) or a `break` or `continue` (true) on `line`: the owners
     /// it leaves that are still alive are dropped first.
-    pub(crate) fn drops_exit(&self, what: &str, line: usize, out_of_loop: bool) {
-        if !printing() || self.speculating {
+    pub(crate) fn drops_exit(&mut self, what: &str, line: usize, out_of_loop: bool) {
+        if self.speculating {
             return;
         }
+        let rewriting = self.drops_rewriting();
+        let mut dropped = Vec::new();
         let d = &self.borrow.drops;
-        for f in d.frames.iter().rev() {
+        'frames: for f in d.frames.iter().rev() {
             match f {
-                FrameKind::Function => return,
-                FrameKind::Loop if out_of_loop => return,
+                FrameKind::Function { .. } => break 'frames,
+                FrameKind::Loop if out_of_loop => break 'frames,
                 FrameKind::Loop => {}
                 FrameKind::Block {
                     owners,
@@ -402,9 +653,16 @@ impl<'a> TypeChecker<'a> {
                             continue;
                         }
                         self.drops_print(owner, format!("before the {what} on line {line}"));
+                        dropped.push(owner_drop(owner));
                     }
                 }
             }
+        }
+        if !rewriting {
+            return;
+        }
+        if let Some(FrameKind::Block { stmt, edits, .. }) = self.borrow.drops.frames.last_mut() {
+            edits.before.entry(*stmt).or_default().extend(dropped);
         }
     }
 }

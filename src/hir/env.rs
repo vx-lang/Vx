@@ -581,6 +581,11 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             Statement::Assert(a) => Self::extract_uses_expr(&a.expr, uses),
+            // A drop uses what it frees, and leaves a mark a body already rewritten is known by.
+            Statement::Drop(d) => {
+                uses.insert(d.name.to_string());
+                uses.insert(crate::hir::check::drops::DROP_MARK.to_string());
+            }
             _ => {}
         }
     }
@@ -1460,7 +1465,7 @@ impl<'a> TypeChecker<'a> {
             .filter(|(_, t)| matches!(t, Type::Tensor(..)))
             .map(|(n, _)| n.to_string())
             .collect();
-        self.drops_enter_function(owned_params);
+        self.drops_enter_function(owned_params, &func.body);
         self.check_block(&mut func.body, &func.return_type.clone());
         self.drops_exit_function();
         Self::drop_spent_comptime_lambdas(&mut func.body);

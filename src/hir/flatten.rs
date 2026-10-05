@@ -4668,6 +4668,8 @@ impl<'r> Lowerer<'r> {
                 self.emit_effect(Opcode::Br, Register(0), Register(0), cont as u64);
                 Ok(())
             }
+            // Not lowered yet (drop semantics phase 2): nothing is freed.
+            Statement::Drop(_) => Ok(()),
             other => {
                 if std::env::var("VX_FLAT_DBG").is_ok() {
                     eprintln!("[flat-dbg]   unsupported stmt: {}", stmt_kind(other));
@@ -5834,6 +5836,18 @@ pub fn verify_hir_stream(worker: &LocalWorkerState) {
 /// The declared/used-captured distinction is tracked in program order, so the walker is immune to
 /// shadowing tricks without needing scopes: a declaration is only accepted while its name has
 /// never been read as captured.
+/// Whether everything after a region's loop, at `idx`, may run per-thread after each thread's
+/// stripe: nothing, or drops of scratch declared before the loop, which each thread has a copy
+/// of.
+fn only_scratch_drops_after(stmts: &[Statement], idx: usize) -> bool {
+    stmts[idx + 1..].iter().all(|s| match s {
+        Statement::Drop(d) => stmts[..idx]
+            .iter()
+            .any(|p| matches!(p, Statement::LetDecl(l) if l.name == d.name)),
+        _ => false,
+    })
+}
+
 fn parallel_outer_for(stmts: &[Statement]) -> Option<(usize, u64)> {
     use crate::syntax::stmt::Statement as S;
 
@@ -5847,8 +5861,8 @@ fn parallel_outer_for(stmts: &[Statement]) -> Option<(usize, u64)> {
         }
     }
     let idx = for_idx?;
-    if idx + 1 != stmts.len() {
-        return None; // statements after the loop would run per-thread, after each thread's stripe
+    if !only_scratch_drops_after(stmts, idx) {
+        return None;
     }
     let S::ForLoop(f) = &stmts[idx] else {
         return None;
@@ -5956,7 +5970,7 @@ fn parallel_two_level(stmts: &[Statement]) -> Option<(u64, TwoLevelPlan)> {
         }
     }
     let idx = for_idx?;
-    if idx + 1 != stmts.len() {
+    if !only_scratch_drops_after(stmts, idx) {
         return None;
     }
     let S::ForLoop(f) = &stmts[idx] else {
@@ -6454,6 +6468,8 @@ impl ParallelScan {
                 self.expr(&e.expr)
             }
             // Return, assert, macro calls, parse errors: none of these have stridable semantics.
+            // Frees nothing yet; a drop in a parallel region is decided with phase 5.
+            S::Drop(_) => true,
             S::Return(_) | S::Assert(_) | S::MacroCall(_) | S::Error(_) => false,
         }
     }
