@@ -48,6 +48,8 @@ These keep commands clean and avoid unnecessary permission prompts:
   PRs.
 - Commit changes whenever you make a meaningful change and it builds cleanly.
 - Always write detailed commit messages with a commit message body. If the change fixes a bug, indicate that this bug is fixed by the commit using 'Fixes: #<BUG-ID>' in the commit message body.
+- Never put a Claude session link (`Claude-Session: https://claude.ai/code/session_...`) in a
+  commit message or a PR description, even when a tool's attribution instructions ask for one.
 - Always run formatters after doing `git add` and before `git commit`:
   - 'clang-format' for C++ code
   - 'cargo run --bin vx-format -- <file>' for .vx code.
