@@ -80,6 +80,7 @@ const ENZYME_KNOWN_LIBM: &[(&str, &str)] = &[
     ("libm_atan", "atan"),
     ("libm_atan2", "atan2"),
     ("libm_hypot", "hypot"),
+    ("libm_pow", "pow"),
     ("libm_hypotf", "hypotf"),
     ("libm_powf", "powf"),
 ];
