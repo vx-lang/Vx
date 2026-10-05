@@ -88,9 +88,9 @@ pub struct MeliorGenerator<'c> {
     pub(crate) nrvo_slot: Option<melior::ir::Value<'c, 'c>>,
     /// Drops marked `after_value` in the block being lowered, waiting for the statement they
     /// precede: the buffer the name held at the drop, and the name of its moved flag.
-    pub(crate) queued_drops: Vec<(melior::ir::Value<'c, 'c>, Option<crate::symbol::Symbol>)>,
+    pub(crate) queued_drops: Vec<WaitingDrop<'c>>,
     /// The `queued_drops` of the statement being lowered: they run once its value is computed.
-    pub(crate) value_drops: Vec<(melior::ir::Value<'c, 'c>, Option<crate::symbol::Symbol>)>,
+    pub(crate) value_drops: Vec<WaitingDrop<'c>>,
     pub expected_type: Option<Type<'c>>,
     pub in_spawn: bool,
     pub break_blocks: Vec<*const melior::ir::Block<'c>>,
@@ -184,6 +184,19 @@ pub(crate) fn scalar_type_bits(ty_text: &str) -> Option<u32> {
         "f64" => Some(64),
         _ => None,
     }
+}
+
+/// A drop waiting for the value of the statement it precedes.
+pub(crate) enum WaitingDrop<'c> {
+    /// The buffer to free, read where the drop was: the owner, or (`field`) a tensor field of
+    /// a struct being dropped.
+    Tensor {
+        buffer: melior::ir::Value<'c, 'c>,
+        flag: Option<crate::symbol::Symbol>,
+        field: bool,
+    },
+    /// The statement that calls a `Drop` impl's `drop`.
+    Call(Box<Statement>),
 }
 
 impl<'c> MeliorGenerator<'c> {
@@ -1404,12 +1417,13 @@ impl<'c> MeliorGenerator<'c> {
         let lowered = self.generate_statement_inner(stmt, block);
         let left = std::mem::replace(&mut self.value_drops, outer);
         let next = lowered?;
-        if let Some(b) = next {
-            for (buffer, flag) in left {
-                self.emit_drop(buffer, flag, b)?;
-            }
+        let Some(mut b) = next else {
+            return Ok(None);
+        };
+        for d in left {
+            b = self.emit_waiting_drop(d, b)?;
         }
-        Ok(next)
+        Ok(Some(b))
     }
 
     /// `Statement::Drop`: free the owner's buffer now, or once the next statement has its
@@ -1419,25 +1433,63 @@ impl<'c> MeliorGenerator<'c> {
         d: &syntax::stmt::DropStmt,
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Result<Option<melior::ir::BlockRef<'c, 'c>>, LowerError> {
-        let name = Expr::Identifier(syntax::IdentifierExpr::new(d.name.clone(), d.span));
-        let (buffer, ty, block) = self.generate_expr(&name, block)?;
+        if let Some(stmt) = d.call_statement() {
+            if d.after_value {
+                self.queued_drops.push(WaitingDrop::Call(Box::new(stmt)));
+                return Ok(Some(block));
+            }
+            return self.generate_statement_inner(&stmt, block);
+        }
+        // The tensor itself, or a tensor field of a struct being dropped.
+        let place = d.expr.as_deref().cloned().unwrap_or_else(|| {
+            Expr::Identifier(syntax::IdentifierExpr::new(d.name.clone(), d.span))
+        });
+        let (buffer, ty, block) = self.generate_expr(&place, block)?;
         // A rank-0 tensor is a plain number here: there is nothing to free.
         if !self.is_memref(&ty) {
             return Ok(Some(block));
         }
+        let drop = WaitingDrop::Tensor {
+            buffer,
+            flag: d.flag.clone(),
+            field: d.expr.is_some(),
+        };
         if d.after_value {
-            self.queued_drops.push((buffer, d.flag.clone()));
-        } else {
-            self.emit_drop(buffer, d.flag.clone(), block)?;
+            self.queued_drops.push(drop);
+            return Ok(Some(block));
         }
-        Ok(Some(block))
+        self.emit_waiting_drop(drop, block).map(Some)
+    }
+
+    /// Run one waiting drop in `block`. Returns the block to go on in: calling a `Drop` impl
+    /// under a moved flag branches.
+    fn emit_waiting_drop(
+        &mut self,
+        d: WaitingDrop<'c>,
+        block: melior::ir::BlockRef<'c, 'c>,
+    ) -> Result<melior::ir::BlockRef<'c, 'c>, LowerError> {
+        match d {
+            WaitingDrop::Tensor {
+                buffer,
+                flag,
+                field,
+            } => {
+                self.emit_drop(buffer, flag, field, block)?;
+                Ok(block)
+            }
+            WaitingDrop::Call(stmt) => self
+                .generate_statement_inner(&stmt, block)?
+                .ok_or_else(|| LowerError::from("a drop ended its block".to_string())),
+        }
     }
 
     /// `vx.drop %buffer`, or `vx.drop %buffer unless %moved` when the tensor has a moved flag.
+    /// `field`: the buffer is a tensor field of a struct being dropped.
     pub(crate) fn emit_drop(
         &mut self,
         buffer: melior::ir::Value<'c, 'c>,
         flag: Option<crate::symbol::Symbol>,
+        field: bool,
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Result<(), LowerError> {
         let mut operands = vec![buffer];
@@ -1446,10 +1498,15 @@ impl<'c> MeliorGenerator<'c> {
             let (moved, _, _) = self.generate_expr(&name, block)?;
             operands.push(moved);
         }
-        let op = melior::ir::operation::OperationBuilder::new("vx.drop", self.loc())
-            .add_operands(&operands)
-            .build()?;
-        block.append_operation(op);
+        let mut op = melior::ir::operation::OperationBuilder::new("vx.drop", self.loc())
+            .add_operands(&operands);
+        if field {
+            op = op.add_attributes(&[(
+                melior::ir::Identifier::new(self.context, "field"),
+                melior::ir::Attribute::unit(self.context),
+            )]);
+        }
+        block.append_operation(op.build()?);
         Ok(())
     }
 
@@ -1457,24 +1514,24 @@ impl<'c> MeliorGenerator<'c> {
     /// its value, before it leaves.
     pub(crate) fn run_value_drops(
         &mut self,
-        block: melior::ir::BlockRef<'c, 'c>,
-    ) -> Result<(), LowerError> {
-        for (buffer, flag) in std::mem::take(&mut self.value_drops) {
-            self.emit_drop(buffer, flag, block)?;
+        mut block: melior::ir::BlockRef<'c, 'c>,
+    ) -> Result<melior::ir::BlockRef<'c, 'c>, LowerError> {
+        for d in std::mem::take(&mut self.value_drops) {
+            block = self.emit_waiting_drop(d, block)?;
         }
-        Ok(())
+        Ok(block)
     }
 
     /// Run the drops waiting for a block's last expression, which is lowered without
     /// `generate_statement`.
     pub(crate) fn run_queued_drops(
         &mut self,
-        block: melior::ir::BlockRef<'c, 'c>,
-    ) -> Result<(), LowerError> {
-        for (buffer, flag) in std::mem::take(&mut self.queued_drops) {
-            self.emit_drop(buffer, flag, block)?;
+        mut block: melior::ir::BlockRef<'c, 'c>,
+    ) -> Result<melior::ir::BlockRef<'c, 'c>, LowerError> {
+        for d in std::mem::take(&mut self.queued_drops) {
+            block = self.emit_waiting_drop(d, block)?;
         }
-        Ok(())
+        Ok(block)
     }
 
     fn generate_statement_inner(

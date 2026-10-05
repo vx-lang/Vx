@@ -2185,6 +2185,60 @@ impl<'a> TypeChecker<'a> {
         found_method
     }
 
+    /// `generic_method` of `ib`, instantiated at `mapping` for the receiver type `base_ty`,
+    /// type-checked and registered unless it already is. Returns it, renamed to its mangled
+    /// name, and that name.
+    pub(crate) fn instantiate_impl_method(
+        &mut self,
+        generic_method: &Function,
+        mapping: &std::collections::HashMap<crate::symbol::Symbol, Type>,
+        base_ty: &Type,
+        ib: &decl::ImplBlock,
+    ) -> (Function, String) {
+        // Provide generic mapping to the method itself by copying impl block generics
+        let mut modified_func = generic_method.clone();
+        modified_func.generics = mapping
+            .keys()
+            .map(|k| decl::GenericParam::Type {
+                name: k.clone(),
+                bounds: Vec::new(),
+            })
+            .collect();
+        let mut method_func =
+            self.instantiate_function(&modified_func, mapping, &std::collections::HashMap::new());
+
+        // The name the definition was minted under: receiver, then the trait and its arguments
+        // when the method came from a trait impl. Shared with the definition site, so a call and
+        // the body it resolves to cannot drift apart.
+        let mangled_name = crate::syntax::types::mangle_method(
+            base_ty,
+            ib.trait_name.as_ref(),
+            &ib.trait_args,
+            method_func.name.as_ref(),
+        );
+
+        method_func.name = mangled_name.clone().into();
+
+        if !self.env.functions.contains_key(&*mangled_name)
+            && !self
+                .mono
+                .functions
+                .iter()
+                .any(|(f, _)| f.name == crate::symbol::Symbol::from(mangled_name.as_str()))
+        {
+            // Type check the instantiated method
+            let mut func_to_check = method_func.clone();
+            let saved_edge = self.seam.lowering_edge.take();
+            // The body's own `let`s overwrite it, and the caller's `let` still needs it.
+            let saved_target = self.current_assignment_target.take();
+            self.check_function(&mut func_to_check);
+            self.current_assignment_target = saved_target;
+            self.seam.lowering_edge = saved_edge;
+            self.mono.functions.push((func_to_check, 0)); // 0 will fall back to caller_module_idx
+        }
+        (method_func, mangled_name)
+    }
+
     /// Instantiate the resolved generic method, register + type-check the monomorphized function,
     /// and build the `FunctionCall` node the method call rewrites to (prepending the receiver,
     /// borrowed to match a `&self`/`&mut self` first parameter). Probes the synthesized call
@@ -2227,47 +2281,8 @@ impl<'a> TypeChecker<'a> {
             None,
         );
 
-        // Provide generic mapping to the method itself by copying impl block generics
-        let mut modified_func = generic_method.clone();
-        modified_func.generics = mapping
-            .keys()
-            .map(|k| decl::GenericParam::Type {
-                name: k.clone(),
-                bounds: Vec::new(),
-            })
-            .collect();
-        let mut method_func =
-            self.instantiate_function(&modified_func, &mapping, &std::collections::HashMap::new());
-
-        // The name the definition was minted under: receiver, then the trait and its arguments
-        // when the method came from a trait impl. Shared with the definition site, so a call and
-        // the body it resolves to cannot drift apart.
-        let mangled_name = crate::syntax::types::mangle_method(
-            base_ty,
-            ib.trait_name.as_ref(),
-            &ib.trait_args,
-            method_func.name.as_ref(),
-        );
-
-        method_func.name = mangled_name.clone().into();
-
-        if !self.env.functions.contains_key(&*mangled_name)
-            && !self
-                .mono
-                .functions
-                .iter()
-                .any(|(f, _)| f.name == crate::symbol::Symbol::from(mangled_name.as_str()))
-        {
-            // Type check the instantiated method
-            let mut func_to_check = method_func.clone();
-            let saved_edge = self.seam.lowering_edge.take();
-            // The body's own `let`s overwrite it, and the caller's `let` still needs it.
-            let saved_target = self.current_assignment_target.take();
-            self.check_function(&mut func_to_check);
-            self.current_assignment_target = saved_target;
-            self.seam.lowering_edge = saved_edge;
-            self.mono.functions.push((func_to_check, 0)); // 0 will fall back to caller_module_idx
-        }
+        let (method_func, mangled_name) =
+            self.instantiate_impl_method(&generic_method, &mapping, base_ty, ib);
 
         // Rewrite AST from MethodCall to FunctionCall
         let mut call_args = vec![];

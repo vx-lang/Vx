@@ -205,12 +205,57 @@ impl MacroCallStmt {
 #[derive(Debug, PartialEq, Clone)]
 pub struct DropStmt {
     pub name: Symbol,
+    /// The fields to follow from `name` to the tensor freed: `["inner", "t"]` for
+    /// `name.inner.t`. Empty when `name` is the tensor.
+    pub path: Vec<Symbol>,
+    /// The `drop` of a type that implements `Drop`, by its mangled name: then this drop calls
+    /// it with `&mut name.path` instead of freeing a tensor.
+    pub call: Option<Symbol>,
+    /// What the code generators lower, built by the checker: the call `call(&mut name.path)`,
+    /// or the place `name.path` of the tensor to free. `None` when `name` is the tensor.
+    pub expr: Option<Box<super::Expr>>,
     /// A `bool` local that is true once the tensor was moved: then nothing is freed.
     pub flag: Option<Symbol>,
     /// Freed only once the next statement has computed its value: a `return`'s, a block's last
     /// expression, or an assignment's right-hand side, which may still read the tensor.
     pub after_value: bool,
     pub span: Span,
+}
+
+impl DropStmt {
+    /// For a drop that calls a `Drop` impl: the statement that calls it, inside
+    /// `if !moved { .. }` when the value may have been moved.
+    pub fn call_statement(&self) -> Option<Statement> {
+        self.call.as_ref()?;
+        let call = self
+            .expr
+            .as_deref()
+            .expect("a drop that calls has its call")
+            .clone();
+        let call = Statement::ExprStmt(ExprStmtStmt::new(call, true, Span::default()));
+        let Some(flag) = &self.flag else {
+            return Some(call);
+        };
+        let not_moved = Expr::UnaryOp(UnaryOpExpr::new(
+            UnaryOp::Not,
+            Box::new(Expr::Identifier(IdentifierExpr::new(
+                flag.clone(),
+                Span::default(),
+            ))),
+            Span::default(),
+        ));
+        Some(Statement::ExprStmt(ExprStmtStmt::new(
+            Expr::If(IfExpr::new(
+                false,
+                Box::new(not_moved),
+                vec![call],
+                None,
+                Span::default(),
+            )),
+            true,
+            Span::default(),
+        )))
+    }
 }
 
 #[derive(Debug, PartialEq, Clone)]

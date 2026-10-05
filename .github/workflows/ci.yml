@@ -137,7 +137,7 @@ jobs:
           LLC_PATH: llc-22
           CLANG_PATH: clang-22
         run: |
-          for generator in tensors shadowing views owners; do
+          for generator in tensors shadowing views owners drops; do
             python3 scripts/tools/differential_fuzz/fuzz.py run "$generator" --seeds 1-100 \
               --heap --vxc target/release/vxc --jobs "$(nproc)"
           done

@@ -1563,8 +1563,8 @@ static BufferOrigin originOf(Value v) {
 // the call that fills it is.
 static LogicalResult giveMovedResultsHeapSlots(ModuleOp module) {
   // The slots a result leaves through: passed by value, or kept somewhere it
-  // can meet buffers from the heap -- stored into a cell, or passed along a
-  // branch. Their drops then see heap buffers only.
+  // can meet buffers from the heap -- stored into a cell or a struct field, or
+  // passed along a branch. Their drops then see heap buffers only.
   llvm::SetVector<memref::AllocaOp> slots;
   auto slotOf = [](Value v) {
     return castSource(v).getDefiningOp<memref::AllocaOp>();
@@ -1584,6 +1584,14 @@ static LogicalResult giveMovedResultsHeapSlots(ModuleOp module) {
         if (isa<MemRefType>(v.getType()))
           if (auto slot = slotOf(v))
             slots.insert(slot);
+    } else if (auto cast = dyn_cast<UnrealizedConversionCastOp>(op)) {
+      // Into a struct field's descriptor: the struct frees it when it is
+      // dropped.
+      if (cast->getNumOperands() == 1 &&
+          isa<MemRefType>(cast->getOperand(0).getType()) &&
+          !isa<MemRefType>(cast->getResult(0).getType()))
+        if (auto slot = slotOf(cast->getOperand(0)))
+          slots.insert(slot);
     }
   });
   for (memref::AllocaOp slot : slots) {
@@ -1675,7 +1683,10 @@ static LogicalResult lowerDrops(ModuleOp module) {
   SmallVector<vx::DropOp> drops;
   module.walk([&](vx::DropOp d) { drops.push_back(d); });
   for (vx::DropOp d : drops) {
-    BufferOrigin origin = originOf(d.getBuffer());
+    // A struct owns its tensor fields, and every buffer stored into one is on
+    // the heap (see giveMovedResultsHeapSlots).
+    BufferOrigin origin =
+        d.getField() ? BufferOrigin::Heap : originOf(d.getBuffer());
     if (d.getOwnedOnly() && origin != BufferOrigin::Heap)
       origin = BufferOrigin::NotFreed;
     if (origin == BufferOrigin::Unknown)

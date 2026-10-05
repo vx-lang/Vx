@@ -45,3 +45,11 @@ trait Try {
   /// One that carries on, holding `output`.
   fn from_output(output : Self::Output) -> Self;
 }
+
+/// What happens when a value's owner gives it up. The compiler calls `drop` where the owner is
+/// dropped -- at the end of its block, before a `return`, `break` or `continue` leaves it, or
+/// when the variable is given a new value -- and then drops the value's fields, in the order
+/// they are declared. A program does not call it; `core::mem::drop` gives a value up early.
+trait Drop {
+  fn drop(self : &mut Self) -> void;
+}

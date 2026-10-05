@@ -593,7 +593,7 @@ fn lower_comptime_block<'c>(
     }
     if let Some(ret_expr) = &this.ret {
         let (val, ty, cur) = gen.generate_expr(ret_expr, cur)?;
-        gen.run_queued_drops(cur)?;
+        let cur = gen.run_queued_drops(cur)?;
         Ok((val, ty, cur))
     } else {
         let none_ty = gen.none_ty;
@@ -1773,7 +1773,7 @@ fn lower_unsafe_block<'c>(
     }
     if let Some(ret_expr) = &this.ret {
         let (val, ty, cur) = gen.generate_expr(ret_expr, current_block)?;
-        gen.run_queued_drops(cur)?;
+        let cur = gen.run_queued_drops(cur)?;
         Ok((val, ty, cur))
     } else {
         // Return an i32 0 or something empty if no return type is expected.

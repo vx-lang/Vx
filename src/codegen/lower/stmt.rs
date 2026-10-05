@@ -18,7 +18,7 @@ impl<'c> LowerToMelior<'c> for ReturnStmt {
         // A bare `return;` -- only a `void` function may write one, which the checker enforces.
         // Nothing to compute and nothing to convert, so emit the terminator and stop.
         let Some(expr) = expr else {
-            gen.run_value_drops(block)?;
+            let block = gen.run_value_drops(block)?;
             block.append_operation(OperationBuilder::new("func.return", gen.loc()).build()?);
             return Ok(None);
         };
@@ -111,12 +111,12 @@ impl<'c> LowerToMelior<'c> for ReturnStmt {
                     .build()?;
                 block.append_operation(drop);
             }
-            gen.run_value_drops(block)?;
+            let block = gen.run_value_drops(block)?;
             block.append_operation(OperationBuilder::new(op_name, gen.loc()).build()?);
             gen.has_returned = true;
             return Ok(None);
         }
-        gen.run_value_drops(block)?;
+        let block = gen.run_value_drops(block)?;
         let ret_op = OperationBuilder::new(op_name, gen.loc())
             .add_operands(&[val])
             .build()?;
@@ -546,6 +546,12 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
             return Ok(Some(block));
         }
 
+        // The old value's drops run now that the new value is computed, before it is stored.
+        let block = if matches!(lhs, Expr::Identifier(_)) {
+            gen.run_value_drops(block)?
+        } else {
+            block
+        };
         if let Expr::Identifier(IdentifierExpr { name, span: _ }) = lhs {
             if let Some((mem_val, mem_ty)) = gen.env.get(name).cloned() {
                 let mem_ty_str = mem_ty.to_string();
