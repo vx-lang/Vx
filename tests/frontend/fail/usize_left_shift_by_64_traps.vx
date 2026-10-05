@@ -1,0 +1,25 @@
+//===- usize_left_shift_by_64_traps.vx - Vx Compiler -----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// RUN: not vxc %s --legacy-codegen 2>&1 | FileCheck %s
+//
+// A `<<` on `usize` whose result leaves the range stops the program, on both code
+// generators.
+// Shifting by 64 or more is refused even for 0: LLVM gives no defined result for it.
+
+// CHECK: usize left shift overflowed
+// CHECK-NOT: wrong answer
+fn apply(a : usize, b : usize) -> usize {
+  return a << b;
+}
+
+fn main() -> i32 {
+  print(apply(0, 64));
+  print!(" wrong answer");
+  return 0;
+}

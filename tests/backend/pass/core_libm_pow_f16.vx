@@ -1,0 +1,57 @@
+//===- core_libm_pow_f16.vx - Vx Compiler --------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// f16 `powf` from `core::libm` against an exact reference: LLVM libc's correctly rounded double
+// `pow`, rounded once to f16 (every pair where that double lies exactly on a halfway point was
+// checked to be exact). It prints the bits of `x.powf(y)` for the pairs below (a NaN as 32256),
+// then a hash of x every 257th bit pattern against every y. The port matched the reference on
+// all 2^32 pairs. The pairs:
+// - four results that lie exactly halfway between two f16 values and so round to even, such
+//   as 225^1.5 = 3375; the double-double result carries rounding noise that must be ignored;
+// - a negative x to the odd power 3, both underflowing to -0 and overflowing to -infinity, and
+//   a positive one overflowing;
+// - 1 to a signaling NaN and a signaling NaN to 0, both NaN, and 1 to a quiet NaN, which is 1;
+// - a power of 2 that f32 `exp2f` followed by a second rounding to f16 gets wrong.
+//
+// EXPECT: 122 5190 20554 27288 32768 64512 31744 32256 32256 15360 15361 2705558919424460681
+import core::num;
+
+fn bits(r : f16) -> u64 {
+  if r != r {
+    return 32256u64;
+  }
+  return libm_f16_to_bits(r) as u64;
+}
+
+fn check(x : u16, y : u16) -> i32 {
+  print(bits(libm_f16_from_bits(x).powf(libm_f16_from_bits(y))));
+  print!(" ");
+  return 0;
+}
+
+fn main() -> i32 {
+  let _r0 = check(1296u16, 15616u16);
+  let _r1 = check(9488u16, 16128u16);
+  let _r2 = check(18760u16, 15872u16);
+  let _r3 = check(23304u16, 15872u16);
+  let _r4 = check(33792u16, 16896u16);
+  let _r5 = check(56496u16, 16896u16);
+  let _r6 = check(23728u16, 16896u16);
+  let _r7 = check(15360u16, 31745u16);
+  let _r8 = check(31745u16, 0u16);
+  let _r9 = check(15360u16, 32256u16);
+  let _r10 = check(16384u16, 4549u16);
+  let mut h : u64 = 0u64;
+  for i in 0..256 {
+    let x = libm_f16_from_bits((i * 257) as u16);
+    for yi in 0..65536 {
+      h = (h ^ bits(x.powf(libm_f16_from_bits(yi as u16)))).wrapping_mul(1099511628211u64);
+    }
+  }
+  print(h);
+  return 0;
+}

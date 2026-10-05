@@ -1,7 +1,7 @@
 # A size type that never wraps
 
-> **Status: proposal, not implemented.** Nothing in this note exists in the compiler yet. It
-> records a design and the reasons for it, for issue #794.
+> **Status: being implemented**, tracked in #1139. It records a design and the reasons for it,
+> for issue #794.
 
 ## The problem
 
@@ -129,8 +129,11 @@ the checks are:
 
 - `a + b` traps if `a > MAX - b`.
 - `a - b` traps if `a < b`.
-- `a * b` uses `arith.mulsi_extended` and traps if the high word is not zero or the low word has
-  its top bit set. The low word is then the result, so no flagged multiply is needed.
+- `a * b` uses `arith.mului_extended` and traps if the high word is not zero or the low word has
+  its top bit set. The multiply itself is then emitted again with the flags, so loop analysis
+  sees `i * stride` as never wrapping.
+- `a << b` traps unless `b < 63` and `a >> (63 - b)` is 0. The check clamps the shift it uses
+  to 63, so it never shifts by the width or more itself.
 
 `nsw` is the flag that carries the range: for two values with the top bit clear, an add that does
 not wrap as signed stays at or below the `size` maximum. `nuw` on that add holds anyway; it adds
@@ -182,16 +185,17 @@ Anything the rule does not prove gets the run-time check. Asking Z3 is a later i
 
 ## Open decisions
 
-- **The name.** `size` says what the type is, and it is also a common variable name. `usize` is
-  what every Rust programmer will type, and the stdlib port refers to Rust's `usize` throughout,
-  but its leading `u` says "bit pattern", which is the reading this type exists to break. This
-  note uses `size`; the choice is for review.
 - **Whether the fixed-width integers keep wrapping.** Treating `i8` through `i128` and `u8`
   through `u128` as bit patterns is consistent with this proposal, and the obligation machinery
   extends to them later if wanted. Issue #794 asks the general question; this note answers it for
   `size` and leaves the rest open.
 
 ## Decided
+
+- **The name is `usize`**, and this note's `size` means it. `size` says what the type is, but it
+  is also a common variable name. `usize` is what every Rust programmer will type, and the
+  stdlib port refers to Rust's `usize` throughout. Its leading `u` reads as "bit pattern", which
+  is the reading this type exists to break, and that cost was accepted.
 
 - **An unproved obligation traps, by default and in every build.** Undefined behaviour by default
   was considered, with a flag to turn the trap on. It was rejected: it would be the only undefined

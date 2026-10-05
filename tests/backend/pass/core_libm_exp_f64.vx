@@ -1,0 +1,93 @@
+//===- core_libm_exp_f64.vx - Vx Compiler --------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// f64 `exp`, ported from LLVM libc's `exp` into `core::libm`, against LLVM libc itself
+// (f475f085bf7b, built with FMA). It prints the bits of `x.exp()` (a NaN as 9221120237041090560)
+// for four inputs that need the double-double pass (two from LLVM libc's own tests, two found by
+// searching random doubles), four that need the 128-bit pass (from LLVM libc's tests), and the same
+// for a result that is subnormal (found by searching); then for special values and the edges of the
+// range; then hashes of 2^20 random bit patterns and of 2^20 random x from 2^-63 to 2^11 in size.
+// The port also matched LLVM libc on 2^30 inputs of the second kind, and on 2^26 more with the
+// faster passes turned off.
+//
+// EXPECT: 4876737661374454129 4607181537552895828 4607182418800017403 5957733803223722332 5293506108198288308 5392701694075548539 4440485769358912319 5805743760706999574 3851098129195240 37818387160434 164908414284179 2340760660679506 970990721915268 4119281002553149 82152513432669 1817661682906609 4607182418800017408 4607182418800017408 4613303445314885481 4600298746774613816 4607182418800017408 4607182418800017408 4607182418800017408 9218868437227405312 9218868437227405312 0 9221120237041090560 9221120237041090560 9218868437227405098 9218868437227405312 1 0 12222101476524381050 16429902130781092822
+import core::num;
+
+fn bits(r : f64) -> u64 {
+  if r != r {
+    return 9221120237041090560u64;
+  }
+  return r.to_bits();
+}
+
+fn check(x : u64) -> i32 {
+  print(bits(f64::from_bits(x).exp()));
+  print!(" ");
+  return 0;
+}
+
+/// x from 2^-63 to 2^(count - 64) in size, either sign.
+fn ranged(s : u64, count : u64) -> u64 {
+  return (s & 9227875636482146303u64) | ((960u64 + ((s >> 52u64) & 2047u64) % count) << 52u64);
+}
+
+fn hash(kind : i32, count : i32) -> u64 {
+  let mut s : u64 = 88172645463325252u64;
+  let mut h : u64 = 0u64;
+  for i in 0..count {
+    s = s ^ (s << 13u64);
+    s = s ^ (s >> 7u64);
+    s = s ^ (s << 17u64);
+    let mut r : f64 = 0.0;
+    if kind == 0 {
+      r = f64::from_bits(s).exp();
+    } else {
+      r = f64::from_bits(ranged(s, 75u64)).exp();
+    }
+    h = (h ^ bits(r)).wrapping_mul(1099511628211u64);
+  }
+  return h;
+}
+
+fn main() -> i32 {
+  let _r0 = check(4631039202653561719u64);
+  let _r1 = check(13770219990842447629u64);
+  let _r2 = check(13602558153710944888u64);
+  let _r3 = check(4641518273544589377u64);
+  let _r4 = check(4637137751970150436u64);
+  let _r5 = check(4638212113947777014u64);
+  let _r6 = check(13851286077483215912u64);
+  let _r7 = check(4640695637763688280u64);
+  let _r8 = check(13872815750220443334u64);
+  let _r9 = check(13872856417357382478u64);
+  let _r10 = check(13872843464276206226u64);
+  let _r11 = check(13872820129640266750u64);
+  let _r12 = check(13872827869448399059u64);
+  let _r13 = check(13872815158064838115u64);
+  let _r14 = check(13872849593506547661u64);
+  let _r15 = check(13872822354392620271u64);
+  let _r16 = check(0u64);
+  let _r17 = check(9223372036854775808u64);
+  let _r18 = check(4607182418800017408u64);
+  let _r19 = check(13830554455654793216u64);
+  let _r20 = check(4336966441157787648u64);
+  let _r21 = check(13560338478012563456u64);
+  let _r22 = check(1u64);
+  let _r23 = check(9218868437227405311u64);
+  let _r24 = check(9218868437227405312u64);
+  let _r25 = check(18442240474082181120u64);
+  let _r26 = check(9221120237041090560u64);
+  let _r27 = check(18444492273895866368u64);
+  let _r28 = check(4649454530587146735u64);
+  let _r29 = check(4649454530587146736u64);
+  let _r30 = check(13873137513782915153u64);
+  let _r31 = check(13873137513782915154u64);
+  print(hash(0, 1048576));
+  print!(" ");
+  print(hash(1, 1048576));
+  return 0;
+}

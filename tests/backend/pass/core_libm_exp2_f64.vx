@@ -1,0 +1,94 @@
+//===- core_libm_exp2_f64.vx - Vx Compiler -------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// f64 `exp2`, ported from LLVM libc's `exp2` into `core::libm`, against LLVM libc itself
+// (f475f085bf7b, built with FMA). It prints the bits of `x.exp2()` (a NaN as 9221120237041090560)
+// for four inputs that need the double-double pass, and four for each pass with a result that is
+// subnormal (all found by searching random doubles). No input is known that needs the 128-bit pass
+// with a normal result, so that pass is also called on its own; then for special values and the
+// edges of the range; then hashes of 2^20 random bit patterns and of 2^20 random x from 2^-63 to
+// 2^11 in size, and of 2^16 sent straight to the 128-bit pass. The port also matched LLVM libc on
+// 2^30 inputs of the second kind, and on 2^26 more with the faster passes turned off.
+//
+// EXPECT: 4607182580598450005 4607182418800017432 4607182418800017406 4612466230573519696 1443259478624917 1602337033532703 192406701629073 372310063114438 2780732929815893 3509220042440298 249055537117725 2839132962333248 4607182418800017408 4607182418800017408 4611686018427387904 4602678819172646912 4607182418800017408 4607182418800017408 4607182418800017408 9218868437227405312 9218868437227405312 0 9221120237041090560 9221120237041090560 9209861237972664320 9218868437227405312 1 0 17991056109289155514 9501446611489188827 4052129837833890633
+import core::num;
+
+fn bits(r : f64) -> u64 {
+  if r != r {
+    return 9221120237041090560u64;
+  }
+  return r.to_bits();
+}
+
+fn check(x : u64) -> i32 {
+  print(bits(f64::from_bits(x).exp2()));
+  print!(" ");
+  return 0;
+}
+
+/// x from 2^-63 to 2^(count - 64) in size, either sign.
+fn ranged(s : u64, count : u64) -> u64 {
+  return (s & 9227875636482146303u64) | ((960u64 + ((s >> 52u64) & 2047u64) % count) << 52u64);
+}
+
+fn hash(kind : i32, count : i32) -> u64 {
+  let mut s : u64 = 88172645463325252u64;
+  let mut h : u64 = 0u64;
+  for i in 0..count {
+    s = s ^ (s << 13u64);
+    s = s ^ (s >> 7u64);
+    s = s ^ (s << 17u64);
+    let mut r : f64 = 0.0;
+    if kind == 0 {
+      r = f64::from_bits(s).exp2();
+    } else if kind == 1 {
+      r = f64::from_bits(ranged(s, 75u64)).exp2();
+    } else {
+      let t = libm_exp2_reduce(f64::from_bits(ranged(s, 73u64)));
+      r = libm_exp2_128(t.dx, t.hi, t.idx1, t.idx2);
+    }
+    h = (h ^ bits(r)).wrapping_mul(1099511628211u64);
+  }
+  return h;
+}
+
+fn main() -> i32 {
+  let _r0 = check(4542773583860666294u64);
+  let _r1 = check(4395781205260201047u64);
+  let _r2 = check(13596738589954644043u64);
+  let _r3 = check(4608220500753938011u64);
+  let _r4 = check(13875587300709493541u64);
+  let _r5 = check(13875585973845829878u64);
+  let _r6 = check(13875601661878888342u64);
+  let _r7 = check(13875597473418815181u64);
+  let _r8 = check(13875578978422506635u64);
+  let _r9 = check(13875576025704058907u64);
+  let _r10 = check(13875600024449069454u64);
+  let _r11 = check(13875578714669682462u64);
+  let _r12 = check(0u64);
+  let _r13 = check(9223372036854775808u64);
+  let _r14 = check(4607182418800017408u64);
+  let _r15 = check(13830554455654793216u64);
+  let _r16 = check(4336966441157787648u64);
+  let _r17 = check(13560338478012563456u64);
+  let _r18 = check(1u64);
+  let _r19 = check(9218868437227405311u64);
+  let _r20 = check(9218868437227405312u64);
+  let _r21 = check(18442240474082181120u64);
+  let _r22 = check(9221120237041090560u64);
+  let _r23 = check(18444492273895866368u64);
+  let _r24 = check(4652200822887677952u64);
+  let _r25 = check(4652218415073722368u64);
+  let _r26 = check(13875810354254053376u64);
+  let _r27 = check(13875814752300564480u64);
+  print(hash(0, 1048576));
+  print!(" ");
+  print(hash(1, 1048576));
+  print!(" ");
+  print(hash(2, 65536));
+  return 0;
+}

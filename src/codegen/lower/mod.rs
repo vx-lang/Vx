@@ -389,6 +389,125 @@ fn is_plain_scalar(text: &str) -> bool {
     parse_scalar_type(text).is_some()
 }
 
+/// `a op b` on `usize`, for the operators that can leave its range: `+`, `-`, `*` and `<<`.
+/// The operands are checked first and a failed check traps through `cf.assert`; the operation
+/// itself then never wraps and carries `overflow<nsw, nuw>`. Checking the result instead would
+/// not work: an overflowing flagged operation gives poison, and LLVM may delete a branch on it.
+/// `None` for any other operator, which cannot leave the range.
+pub(crate) fn lower_usize_checked<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    block: &melior::ir::BlockRef<'c, 'c>,
+    op: &BinaryOp,
+    a: melior::ir::Value<'c, 'c>,
+    b: melior::ir::Value<'c, 'c>,
+) -> Result<Option<melior::ir::Value<'c, 'c>>, LowerError> {
+    let (name, failure) = match op {
+        BinaryOp::Add => ("arith.addi", "usize addition overflowed"),
+        BinaryOp::Sub => ("arith.subi", "usize subtraction went below zero"),
+        BinaryOp::Mul => ("arith.muli", "usize multiplication overflowed"),
+        BinaryOp::Shl => ("arith.shli", "usize left shift overflowed"),
+        _ => return Ok(None),
+    };
+    let i64_ty = gen.i64_ty;
+    let i1_ty = gen.i1_ty;
+    let ctx = gen.context;
+    let loc = gen.loc();
+    let append = |op: melior::ir::Operation<'c>| -> Result<melior::ir::Value<'c, 'c>, LowerError> {
+        Ok(block.append_operation(op).result(0)?.into())
+    };
+    let constant = |v: i64| -> Result<melior::ir::Value<'c, 'c>, LowerError> {
+        append(
+            OperationBuilder::new("arith.constant", loc)
+                .add_results(&[i64_ty])
+                .add_attributes(&[(
+                    Identifier::new(ctx, "value"),
+                    IntegerAttribute::new(i64_ty, v).into(),
+                )])
+                .build()?,
+        )
+    };
+    let binary = |name: &str,
+                  x: melior::ir::Value<'c, 'c>,
+                  y: melior::ir::Value<'c, 'c>,
+                  ty: melior::ir::Type<'c>|
+     -> Result<melior::ir::Value<'c, 'c>, LowerError> {
+        append(
+            OperationBuilder::new(name, loc)
+                .add_operands(&[x, y])
+                .add_results(&[ty])
+                .build()?,
+        )
+    };
+    // `arith.cmpi` predicates: eq = 0, sge = 5, ult = 6, ule = 7, uge = 9.
+    let compare = |pred: i64,
+                   x: melior::ir::Value<'c, 'c>,
+                   y: melior::ir::Value<'c, 'c>|
+     -> Result<melior::ir::Value<'c, 'c>, LowerError> {
+        append(
+            OperationBuilder::new("arith.cmpi", loc)
+                .add_operands(&[x, y])
+                .add_results(&[i1_ty])
+                .add_attributes(&[(
+                    Identifier::new(ctx, "predicate"),
+                    IntegerAttribute::new(i64_ty, pred).into(),
+                )])
+                .build()?,
+        )
+    };
+    let fits = match op {
+        // a + b fits when a <= MAX - b.
+        BinaryOp::Add => {
+            let room = binary("arith.subi", constant(i64::MAX)?, b, i64_ty)?;
+            compare(7, a, room)?
+        }
+        BinaryOp::Sub => compare(9, a, b)?,
+        // The full product has no high word, and its low word has the top bit clear.
+        BinaryOp::Mul => {
+            let product = block.append_operation(
+                OperationBuilder::new("arith.mului_extended", loc)
+                    .add_operands(&[a, b])
+                    .add_results(&[i64_ty, i64_ty])
+                    .build()?,
+            );
+            let (low, high) = (product.result(0)?.into(), product.result(1)?.into());
+            let zero = constant(0)?;
+            let no_high = compare(0, high, zero)?;
+            let low_fits = compare(5, low, zero)?;
+            binary("arith.andi", no_high, low_fits, i1_ty)?
+        }
+        // a << b fits when b < 63 and a >> (63 - b) is 0. The shift used for the check is
+        // clamped to 63, so the check itself never shifts by the width or more.
+        _ => {
+            let width = constant(63)?;
+            let shift_fits = compare(6, b, width)?;
+            let clamped = binary("arith.minui", b, width, i64_ty)?;
+            let back = binary("arith.subi", width, clamped, i64_ty)?;
+            let lost = binary("arith.shrui", a, back, i64_ty)?;
+            let nothing_lost = compare(0, lost, constant(0)?)?;
+            binary("arith.andi", shift_fits, nothing_lost, i1_ty)?
+        }
+    };
+    block.append_operation(
+        OperationBuilder::new("cf.assert", loc)
+            .add_operands(&[fits])
+            .add_attributes(&[(
+                Identifier::new(ctx, "msg"),
+                StringAttribute::new(ctx, failure).into(),
+            )])
+            .build()?,
+    );
+    let flags = Attribute::parse(ctx, "#arith.overflow<nsw, nuw>")
+        .ok_or_else(|| LowerError::from("the overflow flags did not parse".to_string()))?;
+    let result = append(
+        OperationBuilder::new(name, loc)
+            .add_operands(&[a, b])
+            .add_results(&[i64_ty])
+            .add_attributes(&[(Identifier::new(ctx, "overflowFlags"), flags)])
+            .build()?,
+    )?;
+    Ok(Some(result))
+}
+
 /// One type argument of a monomorphized name, `usize` in `Vec<usize>`: a number is a
 /// const-generic argument, and anything else is read by the type parser.
 pub(crate) fn parse_type_arg(text: &str) -> syntax::Type {

@@ -1,0 +1,82 @@
+//===- core_libm_log2_f64.vx - Vx Compiler -------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// f64 `log2`, ported from LLVM libc into `core::libm`, against LLVM libc itself (f475f085bf7b,
+// built with FMA). It prints the bits of `x.log2()` (a NaN as 9221120237041090560) for eight inputs
+// whose fast result is wrong, so that the accurate pass must fix it (found by searching random
+// doubles), for special values; then a hash of 2^20 random doubles; then a hash of the accurate
+// pass called directly on 2^16 random positive doubles, since few inputs reach it through `log2`.
+// The port also matched LLVM libc on 2^30 random doubles and the accurate pass on 2^26.
+//
+// EXPECT: 13870730662915885048 13865976461944607414 13865279884422533678 13857802624066188083 13857775484877860052 13856882313830385433 13856306333196225243 13851597053661631203 18442240474082181120 18442240474082181120 0 9221120237041090560 4607182418800017408 4614662735865160561 4609176140021203710 13830554455654793216 13875349249234471817 4651977212379696009 9218868437227405312 9221120237041090560 9221120237041090560 13875810354254053376 4652218415073722368 4374988959397937917 13593857396625343230 16923844500768639064 1803821536301175536
+import core::num;
+
+fn bits(r : f64) -> u64 {
+  if r != r {
+    return 9221120237041090560u64;
+  }
+  return r.to_bits();
+}
+
+fn check(x : u64) -> i32 {
+  print(bits(f64::from_bits(x).log2()));
+  print!(" ");
+  return 0;
+}
+
+fn main() -> i32 {
+  let _r0 = check(2392252472960274353u64);
+  let _r1 = check(3531659502609157489u64);
+  let _r2 = check(3621033420363575527u64);
+  let _r3 = check(4304168587378972475u64);
+  let _r4 = check(4305990107971844015u64);
+  let _r5 = check(4341039376088085470u64);
+  let _r6 = check(4359553340346265027u64);
+  let _r7 = check(4486406523210316619u64);
+  let _r8 = check(0u64);
+  let _r9 = check(9223372036854775808u64);
+  let _r10 = check(4607182418800017408u64);
+  let _r11 = check(13830554455654793216u64);
+  let _r12 = check(4611686018427387904u64);
+  let _r13 = check(4621819117588971520u64);
+  let _r14 = check(4613303445314885481u64);
+  let _r15 = check(4602678819172646912u64);
+  let _r16 = check(118622047889322841u64);
+  let _r17 = check(9094988921128908188u64);
+  let _r18 = check(9218868437227405312u64);
+  let _r19 = check(18442240474082181120u64);
+  let _r20 = check(9221120237041090560u64);
+  let _r21 = check(1u64);
+  let _r22 = check(9218868437227405311u64);
+  let _r23 = check(4607182418800017409u64);
+  let _r24 = check(4607182418800017407u64);
+  let mut s : u64 = 88172645463325252u64;
+  let mut h : u64 = 0u64;
+  for i in 0..1048576 {
+    s = s ^ (s << 13u64);
+    s = s ^ (s >> 7u64);
+    s = s ^ (s << 17u64);
+    h = (h ^ bits(f64::from_bits(s).log2())).wrapping_mul(1099511628211u64);
+  }
+  print(h);
+  print!(" ");
+  s = 88172645463325252u64;
+  h = 0u64;
+  for i in 0..65536 {
+    s = s ^ (s << 13u64);
+    s = s ^ (s >> 7u64);
+    s = s ^ (s << 17u64);
+    let xb = (s & 4503599627370495u64) | ((1u64 + (s >> 52u64) % 2046u64) << 52u64);
+    let index = ((xb >> 45u64) & 127u64) as i64;
+    let x_e = -1023 + ((xb + 35184372088832u64) >> 52u64) as i32;
+    let m = f64::from_bits((xb & 4503599627370495u64) | 4607182418800017408u64);
+    let r = libm_log2_accurate(x_e, index, libm_multiply_add(LIBM_COMMON_RD[index], m, -1.0));
+    h = (h ^ bits(r)).wrapping_mul(1099511628211u64);
+  }
+  print(h);
+  return 0;
+}

@@ -1,0 +1,38 @@
+//===- autodiff_math_exps_f64.vx - Vx Compiler --------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The derivatives of f64 `exp`, `exp2` and `exp_m1` at x = 1: e, 2 ln 2 and e, printed times
+// 10^6. Enzyme cannot differentiate the core::libm functions themselves, which read the float's
+// bits, so each is marked to be differentiated as its C function.
+//
+// CHECK-DAG: llvm.func @libm_exp({{.*}}passthrough = {{\[\[}}"enzyme_math", "exp"{{\]\]}}
+// CHECK-DAG: llvm.func @libm_exp2({{.*}}passthrough = {{\[\[}}"enzyme_math", "exp2"{{\]\]}}
+// CHECK-DAG: llvm.func @libm_expm1({{.*}}passthrough = {{\[\[}}"enzyme_math", "expm1"{{\]\]}}
+// EXPECT: 2718281 1386294 2718281
+import core::num;
+
+fn exp_of(x : f64) -> f64 {
+  return x.exp();
+}
+
+fn exp2_of(x : f64) -> f64 {
+  return x.exp2();
+}
+
+fn exp_m1_of(x : f64) -> f64 {
+  return x.exp_m1();
+}
+
+fn main() -> i32 {
+  let x : f64 = 1.0;
+  print((grad(exp_of, x) * 1000000.0) as i64);
+  print!(" ");
+  print((grad(exp2_of, x) * 1000000.0) as i64);
+  print!(" ");
+  print((grad(exp_m1_of, x) * 1000000.0) as i64);
+  return 0;
+}

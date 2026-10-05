@@ -1449,6 +1449,13 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
         // The checker recorded the operands' element type. An MLIR integer has no
         // sign, so this is the only thing that tells `/`, `%` and `>>` which form to use.
         let is_unsigned = matches!(operand_ty, Some(e) if !e.is_float() && !e.is_signed_int());
+        if *operand_ty == Some(syntax::ElementType::USize) {
+            if let Some(v) =
+                crate::codegen::lower::lower_usize_checked(gen, &block, op, lhs_val, rhs_val)?
+            {
+                return Ok((v, final_ty, block));
+            }
+        }
         let mut builder = OperationBuilder::new(op.get_op_name(is_float, is_unsigned), gen.loc());
         builder = builder.add_operands(&[lhs_val, rhs_val]);
 

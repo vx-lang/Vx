@@ -1,0 +1,50 @@
+//===- usize_arithmetic_at_its_limits.vx - Vx Compiler ---------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `usize` arithmetic whose results land exactly on the edge of the range does not trap: a
+// sum equal to the largest `usize`, a difference of 0, a product just under the largest, and
+// shifts into the highest allowed bit. `+=` and `-=` are checked as `+` and `-` are.
+
+fn add(a : usize, b : usize) -> usize {
+  return a + b;
+}
+
+fn sub(a : usize, b : usize) -> usize {
+  return a - b;
+}
+
+fn mul(a : usize, b : usize) -> usize {
+  return a * b;
+}
+
+fn shl(a : usize, b : usize) -> usize {
+  return a << b;
+}
+
+fn compound(a : usize, b : usize) -> usize {
+  let mut s = a;
+  s += b;
+  s -= a;
+  return s;
+}
+
+fn main() -> i32 {
+  print(add(9223372036854775806, 1));
+  print!(" ");
+  print(sub(2, 2));
+  print!(" ");
+  print(mul(3037000499, 3037000499));
+  print!(" ");
+  print(shl(1, 62));
+  print!(" ");
+  print(shl(0, 62));
+  print!(" ");
+  print(compound(5, 9223372036854775802));
+  return 0;
+}
+
+// EXPECT: 9223372036854775807 0 9223372030926249001 4611686018427387904 0 9223372036854775802

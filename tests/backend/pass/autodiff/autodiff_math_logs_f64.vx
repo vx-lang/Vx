@@ -1,0 +1,46 @@
+//===- autodiff_math_logs_f64.vx - Vx Compiler --------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The derivatives of f64 `ln`, `log2`, `log10` and `ln_1p` at x = 2: 1/2, 1/(2 ln 2),
+// 1/(2 ln 10) and 1/3, printed times 10^6. Enzyme cannot differentiate the core::libm
+// functions themselves, which read the float's bits, so each is marked to be differentiated
+// as its C function.
+//
+// CHECK-DAG: llvm.func @libm_log({{.*}}passthrough = {{\[\[}}"enzyme_math", "log"{{\]\]}}
+// CHECK-DAG: llvm.func @libm_log2({{.*}}passthrough = {{\[\[}}"enzyme_math", "log2"{{\]\]}}
+// CHECK-DAG: llvm.func @libm_log10({{.*}}passthrough = {{\[\[}}"enzyme_math", "log10"{{\]\]}}
+// CHECK-DAG: llvm.func @libm_log1p({{.*}}passthrough = {{\[\[}}"enzyme_math", "log1p"{{\]\]}}
+// EXPECT: 500000 721347 217147 333333
+import core::num;
+
+fn ln_of(x : f64) -> f64 {
+  return x.ln();
+}
+
+fn log2_of(x : f64) -> f64 {
+  return x.log2();
+}
+
+fn log10_of(x : f64) -> f64 {
+  return x.log10();
+}
+
+fn ln_1p_of(x : f64) -> f64 {
+  return x.ln_1p();
+}
+
+fn main() -> i32 {
+  let x : f64 = 2.0;
+  print((grad(ln_of, x) * 1000000.0) as i64);
+  print!(" ");
+  print((grad(log2_of, x) * 1000000.0) as i64);
+  print!(" ");
+  print((grad(log10_of, x) * 1000000.0) as i64);
+  print!(" ");
+  print((grad(ln_1p_of, x) * 1000000.0) as i64);
+  return 0;
+}

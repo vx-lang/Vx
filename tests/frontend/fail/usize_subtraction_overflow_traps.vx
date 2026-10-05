@@ -1,0 +1,25 @@
+//===- usize_subtraction_overflow_traps.vx - Vx Compiler -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// RUN: not vxc %s --legacy-codegen 2>&1 | FileCheck %s
+//
+// A `-` on `usize` whose result leaves the range stops the program, on both code
+// generators.
+// `1 - 2` is below zero.
+
+// CHECK: usize subtraction went below zero
+// CHECK-NOT: wrong answer
+fn apply(a : usize, b : usize) -> usize {
+  return a - b;
+}
+
+fn main() -> i32 {
+  print(apply(1, 2));
+  print!(" wrong answer");
+  return 0;
+}

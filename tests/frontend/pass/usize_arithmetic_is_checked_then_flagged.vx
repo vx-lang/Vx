@@ -1,0 +1,44 @@
+//===- usize_arithmetic_is_checked_then_flagged.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir --legacy-codegen 2>&1 | FileCheck %s
+//
+// Each `usize` `+`, `-`, `*` and `<<` is checked first and traps through `cf.assert`; the
+// operation after the check is marked as never wrapping. `/`, `%`, `&`, `|`, `^` and `>>`
+// cannot leave the range, and get neither a check nor the flags.
+
+// CHECK-LABEL: func.func @arithmetic(
+// CHECK-NOT: cf.assert
+// CHECK-NOT: overflow<
+// CHECK: arith.shrui
+// CHECK: arith.cmpi ule
+// CHECK-NEXT: cf.assert {{.*}}"usize addition overflowed"
+// CHECK-NEXT: arith.addi {{.*}} overflow<nsw, nuw> : i64
+// CHECK: arith.cmpi uge
+// CHECK-NEXT: cf.assert {{.*}}"usize subtraction went below zero"
+// CHECK-NEXT: arith.subi {{.*}} overflow<nsw, nuw> : i64
+// CHECK: arith.mului_extended
+// CHECK: cf.assert {{.*}}"usize multiplication overflowed"
+// CHECK-NEXT: arith.muli {{.*}} overflow<nsw, nuw> : i64
+// CHECK: arith.minui
+// CHECK: cf.assert {{.*}}"usize left shift overflowed"
+// CHECK-NEXT: arith.shli {{.*}} overflow<nsw, nuw> : i64
+fn arithmetic(a : usize, b : usize) -> usize {
+  let q = a / b;
+  let r = a % b;
+  let x = (q & r) | (q ^ r);
+  let y = x >> b;
+  let s = a + y;
+  let d = s - b;
+  let m = d * b;
+  return m << b;
+}
+
+fn main() -> i32 {
+  return arithmetic(7, 2) as i32;
+}

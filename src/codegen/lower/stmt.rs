@@ -903,12 +903,22 @@ impl<'c> LowerToMelior<'c> for CompoundAssignStmt {
             || ty.to_string().contains("f16")
             || ty.to_string().contains("bf16");
         let is_unsigned = matches!(operand_ty, Some(e) if !e.is_float() && !e.is_signed_int());
-        let bin_op = OperationBuilder::new(op.get_op_name(is_float, is_unsigned), gen.loc())
-            .add_operands(&[lhs_val, actual_rhs])
-            .add_results(&[ty])
-            .build()?;
-        let bin_ref = block.append_operation(bin_op);
-        let result_val = bin_ref.result(0)?.into();
+        let checked = if *operand_ty == Some(syntax::ElementType::USize) {
+            crate::codegen::lower::lower_usize_checked(gen, &block, op, lhs_val, actual_rhs)?
+        } else {
+            None
+        };
+        let result_val = match checked {
+            Some(v) => v,
+            None => {
+                let bin_op =
+                    OperationBuilder::new(op.get_op_name(is_float, is_unsigned), gen.loc())
+                        .add_operands(&[lhs_val, actual_rhs])
+                        .add_results(&[ty])
+                        .build()?;
+                block.append_operation(bin_op).result(0)?.into()
+            }
+        };
 
         if let Expr::Identifier(IdentifierExpr { name, span: _ }) = lhs {
             if let Some((mem_val, mem_ty)) = gen.env.get(name).cloned() {

@@ -55,7 +55,12 @@ impl FnEmit<'_> {
             } else {
                 ""
             };
-            self.body += &format!("  {n} = {op} {a}, {b}{attr} : {mt}\n");
+            let (a, b) = (a.clone(), b.clone());
+            if e == ElementType::USize && self.check_usize_operands(idx, ins.opcode, &a, &b) {
+                self.body += &format!("  {n} = {op} {a}, {b} overflow<nsw, nuw>{attr} : {mt}\n");
+            } else {
+                self.body += &format!("  {n} = {op} {a}, {b}{attr} : {mt}\n");
+            }
             self.names[idx] = n;
             self.etypes[idx] = Some(e);
         } else {
@@ -114,6 +119,60 @@ impl FnEmit<'_> {
             self.vec_of[idx] = Some(vecty);
         }
         Ok(())
+    }
+
+    /// Before a `usize` `+`, `-`, `*` or `<<`, trap through `cf.assert` unless the result fits,
+    /// so the operation that follows never wraps and can carry `overflow<nsw, nuw>`. The check
+    /// reads the operands: an overflowing flagged operation gives poison, and LLVM may delete
+    /// a branch on it. False for any other operator, which cannot leave the range.
+    fn check_usize_operands(&mut self, idx: usize, op: Opcode, a: &str, b: &str) -> bool {
+        let p = format!("%u{idx}");
+        let (check, failure) = match op {
+            // a + b fits when a <= MAX - b.
+            Opcode::Add => (
+                format!(
+                    "  {p}max = arith.constant {} : i64\n  \
+                     {p}room = arith.subi {p}max, {b} : i64\n  \
+                     {p}ok = arith.cmpi ule, {a}, {p}room : i64\n",
+                    i64::MAX
+                ),
+                "usize addition overflowed",
+            ),
+            Opcode::Sub => (
+                format!("  {p}ok = arith.cmpi uge, {a}, {b} : i64\n"),
+                "usize subtraction went below zero",
+            ),
+            // The full product has no high word, and its low word has the top bit clear.
+            Opcode::Mul => (
+                format!(
+                    "  {p}lo, {p}hi = arith.mului_extended {a}, {b} : i64\n  \
+                     {p}zero = arith.constant 0 : i64\n  \
+                     {p}nohi = arith.cmpi eq, {p}hi, {p}zero : i64\n  \
+                     {p}lofits = arith.cmpi sge, {p}lo, {p}zero : i64\n  \
+                     {p}ok = arith.andi {p}nohi, {p}lofits : i1\n"
+                ),
+                "usize multiplication overflowed",
+            ),
+            // a << b fits when b < 63 and a >> (63 - b) is 0. The shift used for the check is
+            // clamped to 63, so the check itself never shifts by the width or more.
+            Opcode::Shl => (
+                format!(
+                    "  {p}width = arith.constant 63 : i64\n  \
+                     {p}zero = arith.constant 0 : i64\n  \
+                     {p}shiftfits = arith.cmpi ult, {b}, {p}width : i64\n  \
+                     {p}clamped = arith.minui {b}, {p}width : i64\n  \
+                     {p}back = arith.subi {p}width, {p}clamped : i64\n  \
+                     {p}lost = arith.shrui {a}, {p}back : i64\n  \
+                     {p}nolost = arith.cmpi eq, {p}lost, {p}zero : i64\n  \
+                     {p}ok = arith.andi {p}shiftfits, {p}nolost : i1\n"
+                ),
+                "usize left shift overflowed",
+            ),
+            _ => return false,
+        };
+        self.body += &check;
+        self.body += &format!("  cf.assert {p}ok, \"{failure}\"\n");
+        true
     }
 
     /// Elementwise arithmetic over a tensor of rank 2 or deeper: `linalg.{add,sub,mul,div}`

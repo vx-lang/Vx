@@ -1,0 +1,28 @@
+//===- usize_negation_and_not.vx - Vx Compiler -----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// `-` and `!` would take a `usize` out of its range: `-x` is below zero, and `!x` sets the
+// top bit. Both are refused, on a single `usize` and on a tensor of them. A `usize` cast to
+// `i64` can be negated.
+
+fn main() -> i32 {
+  let a : usize = 3;
+  // CHECK: Error[E3030] at 17:11: `-` does not apply to a `usize`, which is never negative
+  let n = -a;
+  // CHECK: Error[E3030] at 19:19: `-` does not apply to a `usize`
+  let m : usize = -1;
+  // CHECK: Error[E3030] at 21:17: `!` does not apply to a `usize`: it would set the top bit
+  let flipped = !a;
+  let t = Tensor<usize>([4]);
+  // CHECK: Error[E3030] at 24:12: `-` does not apply to a `usize`
+  let nt = -t;
+  let ok : i64 = -(a as i64);
+  return 0;
+}
+// CHECK: 4 error(s) emitted

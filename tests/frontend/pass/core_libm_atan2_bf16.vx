@@ -1,0 +1,38 @@
+//===- core_libm_atan2_bf16.vx - Vx Compiler ---------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// bf16 `atan2` on every x against 256 values of y (every 257th bit pattern): a hash of the
+// results, given by their bits (every NaN counted as 32704).
+// The expected hash is LLVM libc's correctly rounded double `atan2`, rounded exactly to bf16;
+// where that double lands on a bf16 halfway point (a tiny quotient y/x that is itself the
+// halfway point), the true value lies just inside it. The port also matched this on all 2^32
+// pairs.
+//
+// It runs at -O2: at the default level, LLVM's x86 back end flushes a subnormal bf16 to zero
+// when it is passed between functions on a CPU with AVX512-BF16.
+//
+// RUN: vxc %s -O2 2>&1 | FileCheck %s
+// RUN: vxc %s -O2 --legacy-codegen 2>&1 | FileCheck %s
+// CHECK: 14264270788391788845
+import core::num;
+
+fn main() -> i32 {
+  let mut h : u64 = 0u64;
+  for i in 0..256 {
+    let y = libm_bf16_from_bits((i * 257) as u16);
+    for xi in 0..65536 {
+      let r = y.atan2(libm_bf16_from_bits(xi as u16));
+      let mut rb = libm_bf16_to_bits(r) as u64;
+      if r != r {
+        rb = 32704u64;
+      }
+      h = (h ^ rb).wrapping_mul(1099511628211u64);
+    }
+  }
+  print(h);
+  return 0;
+}

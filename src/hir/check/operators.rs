@@ -631,6 +631,27 @@ impl<'a> TypeChecker<'a> {
                 span,
             }) => {
                 let inner_ty = self.check_expr_type(inner);
+                // Both would leave `usize`'s range: `-x` is below zero for any `x` but 0, and
+                // `!x` sets the top bit. A tensor of `usize` too, elementwise.
+                let usize_operand = match &inner_ty {
+                    Type::Scalar(e) | Type::Tensor(e, ..) => *e == ElementType::USize,
+                    _ => false,
+                };
+                if usize_operand {
+                    let why = match op {
+                        UnaryOp::Neg => "`-` does not apply to a `usize`, which is never negative",
+                        UnaryOp::Not => {
+                            "`!` does not apply to a `usize`: it would set the top bit, which a \
+                             `usize` never has"
+                        }
+                    };
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E3030,
+                        why.to_string(),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                    );
+                    return Type::Unknown;
+                }
                 self.drops_note_operands(&[(inner, &inner_ty)]);
                 match op {
                     // Rust's rule: logical on a `bool`, bitwise on an integer, so the result has

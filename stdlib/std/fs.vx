@@ -9,9 +9,9 @@ extern {
   /// The Rust core behind `File::open`. Null when the open fails.
   fn vx_file_open(c_path : *const i8, mode : i32) -> *mut i8;
   /// The Rust core behind `File::read`.
-  fn vx_file_read(ptr : *mut i8, buffer : *mut u8, len : i64) -> i64;
+  fn vx_file_read(ptr : *mut i8, buffer : *mut u8, len : u64) -> u64;
   /// The Rust core behind `File::write`.
-  fn vx_file_write(ptr : *mut i8, buffer : *const u8, len : i64) -> i64;
+  fn vx_file_write(ptr : *mut i8, buffer : *const u8, len : u64) -> u64;
   /// The Rust core behind `File::seek`.
   fn vx_file_seek(ptr : *mut i8, offset : i64, whence : i32) -> i64;
   /// The Rust core behind `file_drop`.
@@ -69,7 +69,7 @@ impl File {
   /// apart. A short read is normal and is not an error.
   ///
   /// Unsafe because `buffer` must have room for `len` bytes; nothing here checks.
-  unsafe fn read(self : *mut File, buffer : *mut u8, len : i64) -> i64 {
+  unsafe fn read(self : *mut File, buffer : *mut u8, len : u64) -> u64 {
     unsafe { vx_file_read(self.ptr, buffer, len) }
   }
 
@@ -77,7 +77,7 @@ impl File {
   ///
   /// Zero means a null file or buffer, or a write error, with the same lack of distinction
   /// `read` has. A short write is not an error and the remainder is not retried here.
-  unsafe fn write(self : *mut File, buffer : *const u8, len : i64) -> i64 {
+  unsafe fn write(self : *mut File, buffer : *const u8, len : u64) -> u64 {
     unsafe { vx_file_write(self.ptr, buffer, len) }
   }
 
