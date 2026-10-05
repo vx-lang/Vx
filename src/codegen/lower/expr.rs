@@ -592,7 +592,9 @@ fn lower_comptime_block<'c>(
         }
     }
     if let Some(ret_expr) = &this.ret {
-        gen.generate_expr(ret_expr, cur)
+        let (val, ty, cur) = gen.generate_expr(ret_expr, cur)?;
+        gen.run_queued_drops(cur)?;
+        Ok((val, ty, cur))
     } else {
         let none_ty = gen.none_ty;
         let dummy_val = OperationBuilder::new("arith.constant", gen.loc())
@@ -1770,7 +1772,9 @@ fn lower_unsafe_block<'c>(
         }
     }
     if let Some(ret_expr) = &this.ret {
-        gen.generate_expr(ret_expr, current_block)
+        let (val, ty, cur) = gen.generate_expr(ret_expr, current_block)?;
+        gen.run_queued_drops(cur)?;
+        Ok((val, ty, cur))
     } else {
         // Return an i32 0 or something empty if no return type is expected.
         let i32_ty = gen.i32_ty;

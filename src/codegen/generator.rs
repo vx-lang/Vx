@@ -86,6 +86,11 @@ pub struct MeliorGenerator<'c> {
     /// use it. A consumer takes it before lowering its own operands, so a nested op never mistakes
     /// the slot for its own scratch.
     pub(crate) nrvo_slot: Option<melior::ir::Value<'c, 'c>>,
+    /// Drops marked `after_value` in the block being lowered, waiting for the statement they
+    /// precede: the buffer the name held at the drop, and the name of its moved flag.
+    pub(crate) queued_drops: Vec<(melior::ir::Value<'c, 'c>, Option<crate::symbol::Symbol>)>,
+    /// The `queued_drops` of the statement being lowered: they run once its value is computed.
+    pub(crate) value_drops: Vec<(melior::ir::Value<'c, 'c>, Option<crate::symbol::Symbol>)>,
     pub expected_type: Option<Type<'c>>,
     pub in_spawn: bool,
     pub break_blocks: Vec<*const melior::ir::Block<'c>>,
@@ -744,6 +749,8 @@ impl<'c> MeliorGenerator<'c> {
             current_return_type: None,
             current_return_slot: None,
             nrvo_slot: None,
+            queued_drops: Vec::new(),
+            value_drops: Vec::new(),
             expected_type: None,
             in_spawn: false,
             break_blocks: Vec::new(),
@@ -809,6 +816,13 @@ impl<'c> MeliorGenerator<'c> {
             self.module
                 .as_operation_mut()
                 .set_attribute("llvm.module_flags", flags);
+        }
+        // The program frees its tensors at their drops; see the flat code generator.
+        if crate::hir::check::drops::drops_enabled() {
+            use melior::ir::operation::OperationMutLike;
+            self.module
+                .as_operation_mut()
+                .set_attribute("vx.drops", melior::ir::Attribute::unit(self.context));
         }
 
         self.generate_module(program, modules)?;
@@ -1299,7 +1313,7 @@ impl<'c> MeliorGenerator<'c> {
         self.current_return_type = None;
         self.current_return_slot = None;
 
-        let func_attributes = vec![
+        let mut func_attributes = vec![
             (
                 melior::ir::Identifier::new(self.context, "sym_name"),
                 name_attr.into(),
@@ -1309,6 +1323,20 @@ impl<'c> MeliorGenerator<'c> {
                 type_attr.into(),
             ),
         ];
+        // A tensor taken by value belongs to the function, which frees it. One placed in
+        // another memory is not freed by its drop yet.
+        if crate::hir::check::drops::drops_enabled() {
+            let mut per_arg = vec!["{}"; slot_args];
+            per_arg.extend(func.params.iter().map(|(_, ty)| match ty {
+                syntax::Type::Tensor(_, _, None) => "{vx.owned}",
+                syntax::Type::Tensor(_, _, Some(_)) => "{vx.placed}",
+                _ => "{}",
+            }));
+            let text = format!("[{}]", per_arg.join(", "));
+            let attr = melior::ir::Attribute::parse(self.context, &text)
+                .ok_or_else(|| LowerError::from(format!("bad argument attributes {text}")))?;
+            func_attributes.push((melior::ir::Identifier::new(self.context, "arg_attrs"), attr));
+        }
 
         // `main` deliberately carries no `llvm.emit_c_interface`.
         //
@@ -1384,6 +1412,93 @@ impl<'c> MeliorGenerator<'c> {
         stmt: &Statement,
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Result<Option<melior::ir::BlockRef<'c, 'c>>, LowerError> {
+        if matches!(stmt, Statement::Drop(_)) {
+            return self.generate_statement_inner(stmt, block);
+        }
+        let mine = std::mem::take(&mut self.queued_drops);
+        let outer = std::mem::replace(&mut self.value_drops, mine);
+        let lowered = self.generate_statement_inner(stmt, block);
+        let left = std::mem::replace(&mut self.value_drops, outer);
+        let next = lowered?;
+        if let Some(b) = next {
+            for (buffer, flag) in left {
+                self.emit_drop(buffer, flag, b)?;
+            }
+        }
+        Ok(next)
+    }
+
+    /// `Statement::Drop`: free the owner's buffer now, or once the next statement has its
+    /// value. The buffer is read now, before an assignment can give the name a new one.
+    fn lower_drop(
+        &mut self,
+        d: &syntax::stmt::DropStmt,
+        block: melior::ir::BlockRef<'c, 'c>,
+    ) -> Result<Option<melior::ir::BlockRef<'c, 'c>>, LowerError> {
+        let name = Expr::Identifier(syntax::IdentifierExpr::new(d.name.clone(), d.span));
+        let (buffer, ty, block) = self.generate_expr(&name, block)?;
+        assert!(
+            self.is_memref(&ty),
+            "a drop of `{}`, which does not hold a tensor",
+            d.name
+        );
+        if d.after_value {
+            self.queued_drops.push((buffer, d.flag.clone()));
+        } else {
+            self.emit_drop(buffer, d.flag.clone(), block)?;
+        }
+        Ok(Some(block))
+    }
+
+    /// `vx.drop %buffer`, or `vx.drop %buffer unless %moved` when the tensor has a moved flag.
+    pub(crate) fn emit_drop(
+        &mut self,
+        buffer: melior::ir::Value<'c, 'c>,
+        flag: Option<crate::symbol::Symbol>,
+        block: melior::ir::BlockRef<'c, 'c>,
+    ) -> Result<(), LowerError> {
+        let mut operands = vec![buffer];
+        if let Some(flag) = flag {
+            let name = Expr::Identifier(syntax::IdentifierExpr::new(flag, self.current_span));
+            let (moved, _, _) = self.generate_expr(&name, block)?;
+            operands.push(moved);
+        }
+        let op = melior::ir::operation::OperationBuilder::new("vx.drop", self.loc())
+            .add_operands(&operands)
+            .build()?;
+        block.append_operation(op);
+        Ok(())
+    }
+
+    /// Run the drops waiting for the value of the statement being lowered: once a `return` has
+    /// its value, before it leaves.
+    pub(crate) fn run_value_drops(
+        &mut self,
+        block: melior::ir::BlockRef<'c, 'c>,
+    ) -> Result<(), LowerError> {
+        for (buffer, flag) in std::mem::take(&mut self.value_drops) {
+            self.emit_drop(buffer, flag, block)?;
+        }
+        Ok(())
+    }
+
+    /// Run the drops waiting for a block's last expression, which is lowered without
+    /// `generate_statement`.
+    pub(crate) fn run_queued_drops(
+        &mut self,
+        block: melior::ir::BlockRef<'c, 'c>,
+    ) -> Result<(), LowerError> {
+        for (buffer, flag) in std::mem::take(&mut self.queued_drops) {
+            self.emit_drop(buffer, flag, block)?;
+        }
+        Ok(())
+    }
+
+    fn generate_statement_inner(
+        &mut self,
+        stmt: &Statement,
+        block: melior::ir::BlockRef<'c, 'c>,
+    ) -> Result<Option<melior::ir::BlockRef<'c, 'c>>, LowerError> {
         self.current_span = stmt.span();
         match stmt {
             Statement::Return(s) => LowerToMelior::lower(s, self, block),
@@ -1427,8 +1542,7 @@ impl<'c> MeliorGenerator<'c> {
             Statement::Break(s) => LowerToMelior::lower(s, self, block),
             Statement::Continue(s) => LowerToMelior::lower(s, self, block),
             Statement::MacroCall(_) => panic!("Macros should be expanded before codegen"),
-            // Not lowered yet (drop semantics phase 2): nothing is freed.
-            Statement::Drop(_) => Ok(Some(block)),
+            Statement::Drop(d) => self.lower_drop(d, block),
             Statement::Error(_) => Ok(None),
         }
     }

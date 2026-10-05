@@ -13,9 +13,9 @@
 // OUT: 2 2 2 8 2 1
 //
 // RUN: env VX_DROPS=scope vxc %s --action emit-llvm 2>&1 | FileCheck %s
-// `main` frees `a` and the tensor `ones(5)` makes, which nothing names. `b` and `f` are freed
-// by the functions they are given to. `f` comes back from `four` in a buffer `main` allocates,
-// on the heap because `sum_of_four` frees it.
+// `main` frees `a` and the tensor `ones(5)` makes, which nothing names. `b`, `f` and `g` are
+// freed by the functions they are given to. `f` and `g` come back in buffers `main` allocates,
+// on the heap because the functions they are given to free them.
 // CHECK-LABEL: llvm.func @main(
 // CHECK: llvm.call @first_two
 // CHECK: llvm.call @first_two
@@ -23,13 +23,18 @@
 // CHECK: llvm.call @free
 // CHECK: %[[F:.*]] = llvm.call @malloc
 // CHECK: llvm.call @four(%[[F]],
-// CHECK: llvm.call @sum_of_four(%[[F]],
+// CHECK: %[[G:.*]] = llvm.call @malloc
+// CHECK: llvm.call @passed(%[[G]], %[[G]], {{.*}}, %[[F]],
+// CHECK: llvm.call @sum_of_four(%[[G]],
 // CHECK: llvm.call @free
 // CHECK-NOT: llvm.call @free
 // CHECK-LABEL: llvm.func @total(
 // CHECK: llvm.call @free(%arg0)
 // CHECK-LABEL: llvm.func @sum_of_four(
 // CHECK: llvm.call @free(%arg0)
+// `passed` copies its parameter into its caller's buffer, then frees it.
+// CHECK-LABEL: llvm.func @passed(
+// CHECK: llvm.call @free(%arg5)
 // `ones` returns its tensor, so it frees nothing.
 // CHECK-LABEL: llvm.func @ones(
 // CHECK-NOT: llvm.call @free
@@ -42,6 +47,40 @@
 // `first_two` only borrows.
 // CHECK-LABEL: llvm.func @first_two(
 // CHECK-NOT: llvm.call @free
+//
+// The legacy code generator frees the same tensors. It writes the functions in source order,
+// and `four` builds `t` in a buffer of its own, copies it into the caller's and frees it. It
+// keeps `a`, which is `mut`, in a cell, and passes `&a` as the cell.
+// RUN: env VX_DROPS=scope vxc --legacy-codegen %s 2>&1 | FileCheck %s --check-prefix=OUT
+// RUN: env VX_DROPS=scope vxc --legacy-codegen %s --action emit-llvm 2>&1 | FileCheck %s --check-prefix=LEGACY
+// LEGACY-LABEL: llvm.func @total(
+// LEGACY: llvm.call @free(%arg0)
+// LEGACY-LABEL: llvm.func @first_two(
+// LEGACY-NOT: llvm.call @free
+// LEGACY-LABEL: llvm.func @ones(
+// LEGACY-NOT: llvm.call @free
+// LEGACY-LABEL: llvm.func @four(
+// LEGACY: llvm.call @free
+// LEGACY-LABEL: llvm.func @passed(
+// LEGACY: llvm.call @free(%arg5)
+// LEGACY-LABEL: llvm.func @sum_of_four(
+// LEGACY: llvm.call @free(%arg0)
+// LEGACY-LABEL: llvm.func @maybe_moved(
+// LEGACY: llvm.cond_br %arg1
+// LEGACY: llvm.cond_br
+// LEGACY: llvm.call @free
+// LEGACY-LABEL: llvm.func @main(
+// LEGACY: llvm.call @first_two
+// LEGACY: llvm.call @first_two
+// LEGACY-NOT: llvm.call @malloc
+// LEGACY: llvm.call @free
+// LEGACY: %[[F:.*]] = llvm.call @malloc
+// LEGACY: llvm.call @four(%[[F]],
+// LEGACY: %[[G:.*]] = llvm.call @malloc
+// LEGACY: llvm.call @passed(%[[G]], %[[G]], {{.*}}, %[[F]],
+// LEGACY: llvm.call @sum_of_four(%[[G]],
+// LEGACY: llvm.call @free
+// LEGACY-NOT: llvm.call @free
 
 fn total(v : Tensor<f32, [?]>) -> f32 {
   return v[0] + v[1];
@@ -64,6 +103,10 @@ fn four() -> Tensor<f32, [2048]> {
   return t;
 }
 
+fn passed(t : Tensor<f32, [2048]>) -> Tensor<f32, [2048]> {
+  return t;
+}
+
 fn sum_of_four(t : Tensor<f32, [2048]>) -> f32 {
   return t[0] + t[2047];
 }
@@ -78,7 +121,8 @@ fn maybe_moved(n : i32, give : bool) -> f32 {
 }
 
 fn main() -> i32 {
-  let a = ones(3);
+  let mut a = ones(3);
+  a[2] = 1.0;
   let b = ones(3);
   print(first_two(&a));
   print!(" ");
@@ -87,7 +131,8 @@ fn main() -> i32 {
   print(first_two(&ones(5)));
   print!(" ");
   let f = four();
-  print(sum_of_four(f));
+  let g = passed(f);
+  print(sum_of_four(g));
   print!(" ");
   print(maybe_moved(4, true) + maybe_moved(4, false));
   print!(" ");

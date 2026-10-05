@@ -1442,12 +1442,78 @@ enum class BufferOrigin {
   Unknown,
 };
 
-static BufferOrigin originOf(Value v) {
+// Whether parameter `i` of the function `call` reaches is taken by value.
+static bool takesOwnership(func::CallOp call, unsigned i) {
+  auto callee = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
+      call, call.getCalleeAttr());
+  return callee && callee.getArgAttr(i, "vx.owned");
+}
+
+static BufferOrigin originOf(Value v, llvm::SmallPtrSetImpl<void *> &seen);
+
+// The origin of every value in `values`, when they all have the same one.
+static BufferOrigin commonOrigin(ArrayRef<Value> values,
+                                 llvm::SmallPtrSetImpl<void *> &seen) {
+  std::optional<BufferOrigin> common;
+  for (Value v : values) {
+    // A value already being looked at, round a loop: the other paths decide.
+    if (seen.contains(v.getAsOpaquePointer()))
+      continue;
+    BufferOrigin o = originOf(v, seen);
+    if (common && *common != o)
+      return BufferOrigin::Unknown;
+    common = o;
+  }
+  return common.value_or(BufferOrigin::Unknown);
+}
+
+static BufferOrigin originOf(Value v, llvm::SmallPtrSetImpl<void *> &seen) {
   while (auto cast = v.getDefiningOp<memref::CastOp>())
     v = cast.getSource();
+  seen.insert(v.getAsOpaquePointer());
+  // The legacy code generator keeps a `let mut` tensor in a cell, a memref of
+  // memrefs: what is read back is one of the buffers stored into it.
+  if (auto load = v.getDefiningOp<memref::LoadOp>()) {
+    Value cell = load.getMemRef();
+    if (!cell.getDefiningOp<memref::AllocaOp>())
+      return BufferOrigin::Unknown;
+    SmallVector<Value> stored;
+    for (Operation *user : cell.getUsers()) {
+      if (auto store = dyn_cast<memref::StoreOp>(user)) {
+        if (store.getMemRef() != cell)
+          return BufferOrigin::Unknown;
+        stored.push_back(store.getValueToStore());
+      } else if (auto call = dyn_cast<func::CallOp>(user)) {
+        // `&t`, passed as a pointer to the cell: the function borrows it.
+        for (OpOperand &operand : call->getOpOperands())
+          if (operand.get() == cell &&
+              takesOwnership(call, operand.getOperandNumber()))
+            return BufferOrigin::Unknown;
+      } else if (!isa<memref::LoadOp>(user)) {
+        return BufferOrigin::Unknown; // the cell itself escapes
+      }
+    }
+    return commonOrigin(stored, seen);
+  }
   if (auto arg = dyn_cast<BlockArgument>(v)) {
-    auto func = dyn_cast<func::FuncOp>(arg.getOwner()->getParentOp());
-    if (!func || !arg.getOwner()->isEntryBlock())
+    Block *block = arg.getOwner();
+    auto func = dyn_cast<func::FuncOp>(block->getParentOp());
+    if (func && !block->isEntryBlock()) {
+      // A value merged from the branches into this block.
+      SmallVector<Value> incoming;
+      for (auto it = block->pred_begin(); it != block->pred_end(); ++it) {
+        auto branch = dyn_cast<BranchOpInterface>((*it)->getTerminator());
+        if (!branch)
+          return BufferOrigin::Unknown;
+        SuccessorOperands forwarded =
+            branch.getSuccessorOperands(it.getSuccessorIndex());
+        if (forwarded.isOperandProduced(arg.getArgNumber()))
+          return BufferOrigin::Unknown;
+        incoming.push_back(forwarded[arg.getArgNumber()]);
+      }
+      return commonOrigin(incoming, seen);
+    }
+    if (!func)
       return BufferOrigin::Unknown;
     if (func.getArgAttr(arg.getArgNumber(), "vx.owned"))
       return BufferOrigin::Heap;
@@ -1465,11 +1531,9 @@ static BufferOrigin originOf(Value v) {
   return BufferOrigin::Unknown;
 }
 
-// Whether parameter `i` of the function `call` reaches is taken by value.
-static bool takesOwnership(func::CallOp call, unsigned i) {
-  auto callee = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
-      call, call.getCalleeAttr());
-  return callee && callee.getArgAttr(i, "vx.owned");
+static BufferOrigin originOf(Value v) {
+  llvm::SmallPtrSet<void *, 8> seen;
+  return originOf(v, seen);
 }
 
 // A statically shaped result comes back in a stack slot the caller allocates
@@ -1538,7 +1602,8 @@ static LogicalResult returnOwnedBuffers(ModuleOp module) {
   module.walk([&](func::ReturnOp ret) {
     for (OpOperand &operand : ret->getOpOperands()) {
       auto type = dyn_cast<MemRefType>(operand.get().getType());
-      if (!type)
+      // A tensor placed in another memory is left as it was.
+      if (!type || type.getMemorySpace())
         continue;
       BufferOrigin origin = originOf(operand.get());
       if (origin == BufferOrigin::Heap)
@@ -1577,11 +1642,16 @@ static LogicalResult lowerDrops(ModuleOp module) {
   module.walk([&](vx::DropOp d) { drops.push_back(d); });
   for (vx::DropOp d : drops) {
     BufferOrigin origin = originOf(d.getBuffer());
+    if (d.getOwnedOnly() && origin != BufferOrigin::Heap)
+      origin = BufferOrigin::NotFreed;
     if (origin == BufferOrigin::Unknown)
       return d.emitError("vx.drop of a buffer whose origin is not known");
-    if (origin == BufferOrigin::Borrowed && !d.getOwnedOnly())
+    if (origin == BufferOrigin::Borrowed)
       return d.emitError("vx.drop of a buffer this function does not own");
-    if (origin != BufferOrigin::Heap || d->getParentOfType<vx::SpawnOp>()) {
+    // Placed memory and device regions are not freed by drops yet.
+    auto type = dyn_cast<MemRefType>(d.getBuffer().getType());
+    if (origin != BufferOrigin::Heap || d->getParentOfType<vx::SpawnOp>() ||
+        !type || type.getMemorySpace()) {
       d.erase();
       continue;
     }
@@ -1599,12 +1669,89 @@ static LogicalResult lowerDrops(ModuleOp module) {
   return success();
 }
 
+// A fresh heap buffer that no drop names and that nothing takes is a
+// temporary: `g()` in `f(&g())`. It is freed after its last use, when every
+// use is in the block that made it; anywhere else it is left unfreed. An owner
+// always has a drop or is taken, so this frees no owner.
+static void freeTemporaries(ModuleOp module) {
+  SmallVector<Value> fresh;
+  module.walk([&](Operation *op) {
+    if (!op->getParentOfType<func::FuncOp>() ||
+        op->getParentOfType<vx::SpawnOp>())
+      return;
+    if (isa<memref::AllocOp>(op) || isa<func::CallOp>(op))
+      for (Value r : op->getResults())
+        if (auto type = dyn_cast<MemRefType>(r.getType());
+            type && !type.getMemorySpace())
+          fresh.push_back(r);
+  });
+  for (Value buffer : fresh) {
+    Block *home = buffer.getParentBlock();
+    SmallVector<Value> aliases{buffer};
+    Operation *last = buffer.getDefiningOp();
+    bool keep = false;
+    for (size_t i = 0; i < aliases.size() && !keep; ++i) {
+      for (OpOperand &use : aliases[i].getUses()) {
+        Operation *user = use.getOwner();
+        Operation *here = home->findAncestorOpInBlock(*user);
+        // A drop frees it, or code written by hand (an `mlir!` block) already
+        // does.
+        if (!here || isa<vx::DropOp, memref::DeallocOp>(user) ||
+            user->getParentOfType<vx::SpawnOp>()) {
+          keep = true;
+          break;
+        }
+        auto store = dyn_cast<memref::StoreOp>(user);
+        if (auto view = dyn_cast<ViewLikeOpInterface>(user);
+            view && view.getViewSource() == aliases[i]) {
+          aliases.push_back(user->getResult(0));
+        } else if (auto load = dyn_cast<memref::LoadOp>(user);
+                   load && load.getMemRef() == aliases[i] &&
+                   isa<MemRefType>(load.getType())) {
+          // A read of the cell below: the buffer again.
+          aliases.push_back(load.getResult());
+        } else if (store && store.getValueToStore() == aliases[i]) {
+          // The legacy code generator passes `&t` as a pointer to a cell
+          // holding the buffer. A local cell stored into once is another name
+          // for it; anything else keeps it.
+          Value cell = store.getMemRef();
+          keep = !cell.getDefiningOp<memref::AllocaOp>() ||
+                 llvm::count_if(cell.getUsers(), [](Operation *u) {
+                   return isa<memref::StoreOp>(u);
+                 }) != 1;
+          if (!keep)
+            aliases.push_back(cell);
+        } else if (auto call = dyn_cast<func::CallOp>(user)) {
+          keep = takesOwnership(call, use.getOperandNumber());
+        } else if (isa<func::ReturnOp, BranchOpInterface,
+                       RegionBranchTerminatorOpInterface,
+                       memref::ExtractAlignedPointerAsIndexOp,
+                       UnrealizedConversionCastOp>(user) ||
+                   user->getDialect()->getNamespace() == "vx" ||
+                   user->getDialect()->getNamespace() == "llvm") {
+          keep = true;
+        }
+        if (keep)
+          break;
+        if (last->isBeforeInBlock(here))
+          last = here;
+      }
+    }
+    if (keep || last->hasTrait<OpTrait::IsTerminator>())
+      continue;
+    OpBuilder builder(last->getContext());
+    builder.setInsertionPointAfter(last);
+    memref::DeallocOp::create(builder, last->getLoc(), buffer);
+  }
+}
+
 static LogicalResult placeDrops(ModuleOp module) {
   if (!module->hasAttr("vx.drops"))
     return success();
   if (failed(giveMovedResultsHeapSlots(module)) ||
       failed(checkMovedArguments(module)) || failed(returnOwnedBuffers(module)))
     return failure();
+  freeTemporaries(module);
   return lowerDrops(module);
 }
 
@@ -2058,12 +2205,14 @@ struct ConvertVxToStandardPass
       return;
     }
 
+    placeTransferFrees(getOperation());
+    promoteBufferCells(getOperation());
+    // After the cells are promoted, so that most buffers a drop names are
+    // plain values again.
     if (failed(placeDrops(getOperation()))) {
       signalPassFailure();
       return;
     }
-    placeTransferFrees(getOperation());
-    promoteBufferCells(getOperation());
 
     RewritePatternSet patterns(&getContext());
     patterns.add<SpawnOpLowering, TransferOpLowering>(&getContext());
