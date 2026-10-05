@@ -140,7 +140,34 @@ impl FnEmit<'_> {
                             &format!("  memref.copy {src}, {s} : {slot_ty} to {slot_ty}\n");
                         self.body += "  func.return\n";
                     }
-                    None => self.body += &format!("  func.return {a} : {memty}\n"),
+                    None => {
+                        let declared = tensor_memref_of_type(&self.func.return_type)
+                            .ok_or(crate::emitter_gap!())?;
+                        if declared == memty {
+                            self.body += &format!("  func.return {a} : {memty}\n");
+                        } else {
+                            // A row is a strided view, and a `?`-shaped result is a buffer of
+                            // its own: return a copy.
+                            let mut sizes = Vec::new();
+                            for (k, d) in shape.iter().enumerate() {
+                                if d == DYN_DIM {
+                                    let (c, v) = (format!("%rk{idx}_{k}"), format!("%rd{idx}_{k}"));
+                                    self.body += &format!("  {c} = arith.constant {k} : index\n");
+                                    self.body +=
+                                        &format!("  {v} = memref.dim {a}, {c} : {memty}\n");
+                                    sizes.push(v);
+                                }
+                            }
+                            let rt = format!("%rt{idx}");
+                            self.body += &format!(
+                                "  {rt} = memref.alloc({}) : {declared}\n",
+                                sizes.join(", ")
+                            );
+                            self.body +=
+                                &format!("  memref.copy {a}, {rt} : {memty} to {declared}\n");
+                            self.body += &format!("  func.return {rt} : {declared}\n");
+                        }
+                    }
                 }
             }
         } else if let Some(agg) = self.ctx.aggs.get(&gid) {

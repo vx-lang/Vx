@@ -1,0 +1,31 @@
+//===- row_returned_as_a_tensor_of_unknown_length.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A function returns a row of a tensor it borrows, as a tensor whose length is not known
+// when the program is compiled. The row is a view of the caller's tensor, so the function
+// returns a copy of it. 10 + 12 = 22.
+//
+// EXPECT: 22
+// The legacy code generator still fails on this program (#1186).
+// REQUIRES: flat-codegen
+
+fn second_row(q : &Tensor<f32, [2, ?]>) -> Tensor<f32, [?]> {
+  return q[1];
+}
+
+fn main() -> i32 {
+  let n = 3;
+  let mut p = Tensor<f32>([2, n]);
+  for i in 0..2 {
+    for j in 0..n {
+      p[i][j] = (i * 10 + j) as f32;
+    }
+  }
+  let r = second_row(&p);
+  print(r[0] + r[2]);
+  return 0;
+}
