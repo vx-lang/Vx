@@ -1,0 +1,102 @@
+//===- core_libm_sinh_f64.vx - Vx Compiler -------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// f64 `sinh`, which LLVM libc does not have in double precision, so `core::libm` builds it from its
+// own `exp`. The expected values are the correctly rounded ones, from 113-bit `sinhq` in
+// libquadmath. It prints the bits of `x.sinh()` (a NaN as 9221120237041090560) for zeros, a
+// subnormal, inputs around 2^-26 and 1/64 (where the method changes), a few in between, infinities,
+// a NaN, an input whose result lies within 2^-13 of a unit of halfway between two doubles, and
+// inputs where it overflows (1025 log(2) = 710.48) and past 711. Then hashes of 2^20 random x from
+// 2^-63 to 2^10 in size, from 1/4 to 4, and from 1/32 to 1/8. On 2^22 inputs of each of those kinds
+// and from 700 to 711.5 (18 to 20 for `tanh`), every result of all three functions was the
+// correctly rounded value; that is measured, not proven.
+//
+// EXPECT: 0 9223372036854775808 1 4336966441157787648 13560338478012563456 4485585228861014015 4485585228861014016 4490088828488384511 4490088828488384512 4580161004289969369 4580161004289969370 13803533041144745178 4586918694649817791 4602868828792568727 13835349166735059552 4667280203131034002 9218868437227405312 18442240474082181120 9221120237041090560 4579519785109523803 9218868437227403579 9218868437227405312 18442240474082181120 9218868437227405312 9218868437227405312 6577389864031231721 2942300231449946573 6730086818121791565
+import core::num;
+import core::libm;
+
+fn bits(r : f64) -> u64 {
+  if r != r {
+    return 9221120237041090560u64;
+  }
+  return r.to_bits();
+}
+
+fn check(x : u64) -> i32 {
+  print(bits(f64::from_bits(x).sinh()));
+  print!(" ");
+  return 0;
+}
+
+fn next(s : u64) -> u64 {
+  let a = s ^ (s << 13u64);
+  let b = a ^ (a >> 7u64);
+  return b ^ (b << 17u64);
+}
+
+/// Random x of a kind: 0, from 2^-63 to 2^10 in size; 3, from 1/4 to 4; 1, from 1/32 to 1/8.
+fn hash(kind : i32) -> u64 {
+  let mut s : u64 = 88172645463325252u64;
+  let mut h : u64 = 0u64;
+  for i in 0..1048576 {
+    s = next(s);
+    let mut bb = s;
+    s = next(s);
+    let u = ((s >> 11u64) as f64) * 0.00000000000000011102230246251565;
+    let sign : f64 = if (bb >> 63u64) == 1u64 {
+      -1.0
+    } else {
+      1.0
+    };
+    let mut x : f64 = 0.0;
+    if kind == 0 {
+      let e = 960u64 + (bb >> 52u64) % 74u64;
+      bb = (bb & 9227875636482146303u64) | (e << 52u64);
+      x = f64::from_bits(bb);
+    } else if kind == 1 {
+      x = sign * libm_multiply_add(0.09375, u, 0.03125);
+    } else {
+      x = sign * libm_multiply_add(3.75, u, 0.25);
+    }
+    h = (h ^ bits(x.sinh())).wrapping_mul(1099511628211u64);
+  }
+  return h;
+}
+
+fn main() -> i32 {
+  let _r0 = check(0u64);
+  let _r1 = check(9223372036854775808u64);
+  let _r2 = check(1u64);
+  let _r3 = check(4336966441157787648u64);
+  let _r4 = check(13560338478012563456u64);
+  let _r5 = check(4485585228861014015u64);
+  let _r6 = check(4485585228861014016u64);
+  let _r7 = check(4490088828488384511u64);
+  let _r8 = check(4490088828488384512u64);
+  let _r9 = check(4580160821035794431u64);
+  let _r10 = check(4580160821035794432u64);
+  let _r11 = check(13803532857890570240u64);
+  let _r12 = check(4586916220476850176u64);
+  let _r13 = check(4602678819172646912u64);
+  let _r14 = check(13832806255468478464u64);
+  let _r15 = check(4621819117588971520u64);
+  let _r16 = check(9218868437227405312u64);
+  let _r17 = check(18442240474082181120u64);
+  let _r18 = check(9221120237041090560u64);
+  let _r19 = check(4579519491447952857u64);
+  let _r20 = check(4649460627574225020u64);
+  let _r21 = check(4649460627574225022u64);
+  let _r22 = check(13872832664429000830u64);
+  let _r23 = check(4649465237957771264u64);
+  let _r24 = check(4649474034050793472u64);
+  print(hash(0));
+  print!(" ");
+  print(hash(3));
+  print!(" ");
+  print(hash(1));
+  return 0;
+}
