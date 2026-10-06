@@ -3164,6 +3164,17 @@ impl<'r> Lowerer<'r> {
         if let Some(field) = enum_payload_field(ty) {
             return Some(field);
         }
+        // An enum whose variants carry nothing, `Ordering`, is its `i32` tag.
+        if let Type::Struct(name, _) | Type::Enum(name, _) = ty {
+            if self
+                .registry
+                .enum_data
+                .get(name.as_ref())
+                .is_some_and(|d| d.variants.iter().all(|(_, p)| p.is_empty()))
+            {
+                return Some((4, 4, "i32".to_string()));
+            }
+        }
         match ty {
             Type::Struct(name, _) => {
                 let gid = self.nominal_struct_gid(name)?;
