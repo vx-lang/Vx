@@ -1,0 +1,465 @@
+//===- fmt.vx - Vx Standard Library -------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Formatting: the `Write` trait, the options of a Rust format spec, and integers in any
+// radix. The output matches Rust's `format!` byte for byte.
+//
+// Rust's `fmt` passes a `dyn Write` and an `Arguments` built by `format_args!`. Vx has
+// neither, so a formatting function is generic over its writer and takes the options as a
+// `FormatSpec` value: `x.fmt_hex(&mut out, &spec)` does what `write!(out, "{:#010x}", x)`
+// does in Rust.
+//
+// Still missing, each waiting on something outside this file:
+//
+//   `Result<(), Error>`     a `Result<void, E>` cannot be built, so a write answers
+//                           `Result<i32, Error>` with `Ok(0)` instead.
+//   `write_str`             wants a `str` type; `write_c_str` takes a NUL-terminated
+//                           string literal meanwhile.
+//   `Formatter`, `Display`, these traits each name their method `fmt`, and a type with
+//   `Debug`, `LowerHex` ..  two of them cannot be called: there is no `Display::fmt(&x)`.
+//   `Arguments`, `write!`,  need a macro that can read a format string.
+//   `format_args!`
+//   `i128`, `u128`          no program using either compiles yet.
+//   precision, floats       not written yet.
+import core::marker;
+import core::result;
+
+/// The writer refused a byte, for example because it is full. It carries no detail, as in Rust.
+enum Error {
+  Error,
+}
+
+impl Copy for Error {}
+
+/// Where the value goes when the width leaves room to spare.
+enum Alignment {
+  Left,
+  Right,
+  Center,
+}
+
+impl Copy for Alignment {}
+
+/// A byte sink. Only `write_u8` is required; the rest are written in terms of it.
+trait Write {
+  /// Write one byte.
+  fn write_u8(self : &mut Self, b : u8) -> Result<i32, Error>;
+
+  /// Write the bytes of a string literal, without its closing NUL. Any other pointer must
+  /// also end in a NUL; a trait method cannot be marked `unsafe` yet to say so.
+  fn write_c_str(self : &mut Self, s : *const i8) -> Result<i32, Error> {
+    let mut i : i64 = 0i64;
+    loop {
+      let b : u8 = unsafe { s[i] as u8 };
+      if b == 0u8 {
+        break;
+      }
+      let r = self.write_u8(b);
+      if r.is_err() {
+        return r;
+      }
+      i = i + 1i64;
+    }
+    return Result<i32, Error>::Ok(0);
+  }
+}
+
+/// The options of a Rust format spec `{:[fill]align][+][#][0][width]}` that apply to an
+/// integer. Build one with `FormatSpec::new()` and the setters below.
+struct FormatSpec {
+  // The smallest number of bytes to write; 0 means no minimum.
+  width : i64,
+  // The byte that pads up to `width`; a space unless set.
+  fill : u8,
+  // 0 when no alignment was asked for, and an integer goes to the right; otherwise 1, 2 or
+  // 3 for left, right and center. A number because the flat code generator cannot yet return
+  // a struct with an enum field.
+  align : u8,
+  // `+`: write a `+` before a value that is not negative.
+  sign_plus : bool,
+  // `#`: write `0b`, `0o` or `0x` before a binary, octal or hexadecimal value.
+  alternate : bool,
+  // `0`: pad with zeros after the sign and the prefix, ignoring `fill` and `align`.
+  zero_pad : bool,
+  // Hexadecimal digits `A` to `F` instead of `a` to `f`, as `{:X}` does in Rust.
+  upper : bool,
+}
+
+impl FormatSpec {
+  /// No width, a space for fill, no alignment and every flag off: Rust's `{}`.
+  fn new() -> FormatSpec {
+    return FormatSpec {
+      width : 0i64,
+      fill : 32u8,
+      align : 0u8,
+      sign_plus : false,
+      alternate : false,
+      zero_pad : false,
+      upper : false
+    };
+  }
+
+  /// Rust's `{:8}`: pad to at least `n` bytes.
+  fn width(self : FormatSpec, n : i64) -> FormatSpec {
+    let mut s = self;
+    s.width = n;
+    return s;
+  }
+
+  /// The `*` of Rust's `{:*>8}`: pad with the byte `b` instead of a space.
+  fn fill(self : FormatSpec, b : u8) -> FormatSpec {
+    let mut s = self;
+    s.fill = b;
+    return s;
+  }
+
+  /// Rust's `<`, `>` and `^`.
+  fn align(self : FormatSpec, a : Alignment) -> FormatSpec {
+    let mut s = self;
+    s.align = alignment_code(a);
+    return s;
+  }
+
+  /// Rust's `+`.
+  fn sign_plus(self : FormatSpec) -> FormatSpec {
+    let mut s = self;
+    s.sign_plus = true;
+    return s;
+  }
+
+  /// Rust's `#`.
+  fn alternate(self : FormatSpec) -> FormatSpec {
+    let mut s = self;
+    s.alternate = true;
+    return s;
+  }
+
+  /// Rust's `0`.
+  fn zero_pad(self : FormatSpec) -> FormatSpec {
+    let mut s = self;
+    s.zero_pad = true;
+    return s;
+  }
+
+  /// Rust's `X` in place of `x`.
+  fn upper(self : FormatSpec) -> FormatSpec {
+    let mut s = self;
+    s.upper = true;
+    return s;
+  }
+}
+
+/// Write `b` to `w` `n` times.
+fn write_repeated<W : Write>(w : &mut W, b : u8, n : i64) -> Result<i32, Error> {
+  let mut i : i64 = 0i64;
+  loop {
+    if i >= n {
+      break;
+    }
+    let r = w.write_u8(b);
+    if r.is_err() {
+      return r;
+    }
+    i = i + 1i64;
+  }
+  return Result<i32, Error>::Ok(0);
+}
+
+/// How many digits `x` has in base `radix`.
+fn digit_count(x : u64, radix : u64) -> i64 {
+  let mut n : i64 = 1i64;
+  let mut rest : u64 = x / radix;
+  loop {
+    if rest == 0u64 {
+      break;
+    }
+    rest = rest / radix;
+    n = n + 1i64;
+  }
+  return n;
+}
+
+/// Write the digits of `x` in base `radix`, most significant first.
+///
+/// `p` starts at the largest power of `radix` that is at most `x`, found by multiplying up
+/// while the next power still fits under `x`, so it never overflows.
+fn write_digits<W : Write>(w : &mut W, x : u64, radix : u64, upper : bool) -> Result<i32, Error> {
+  let mut p : u64 = 1u64;
+  loop {
+    if x / p < radix {
+      break;
+    }
+    p = p * radix;
+  }
+  let mut rest : u64 = x;
+  loop {
+    let d : u64 = rest / p;
+    rest = rest % p;
+    let mut b : u8 = (d as u8) + 48u8;
+    if d >= 10u64 {
+      if upper {
+        b = (d as u8) - 10u8 + 65u8;
+      } else {
+        b = (d as u8) - 10u8 + 97u8;
+      }
+    }
+    let r = w.write_u8(b);
+    if r.is_err() {
+      return r;
+    }
+    if p == 1u64 {
+      break;
+    }
+    p = p / radix;
+  }
+  return Result<i32, Error>::Ok(0);
+}
+
+/// Write the sign, if any, and the `0b`/`0o`/`0x` prefix, if asked for.
+fn write_sign_and_prefix<W : Write>(
+w : &mut W,
+spec : &FormatSpec,
+negative : bool,
+radix : u64
+) -> Result<i32, Error> {
+  if negative {
+    let r = w.write_u8(45u8);
+    if r.is_err() {
+      return r;
+    }
+  } else {
+    if spec.sign_plus {
+      let r = w.write_u8(43u8);
+      if r.is_err() {
+        return r;
+      }
+    }
+  }
+  if spec.alternate {
+    let mut letter : u8 = 0u8;
+    if radix == 2u64 {
+      letter = 98u8;
+    }
+    if radix == 8u64 {
+      letter = 111u8;
+    }
+    if radix == 16u64 {
+      letter = 120u8;
+    }
+    if letter != 0u8 {
+      let r = w.write_u8(48u8);
+      if r.is_err() {
+        return r;
+      }
+      return w.write_u8(letter);
+    }
+  }
+  return Result<i32, Error>::Ok(0);
+}
+
+/// The number `FormatSpec::align` stores for `a`.
+fn alignment_code(a : Alignment) -> u8 {
+  match a {
+    Alignment::Left() => {
+      return 1u8;
+    }
+    Alignment::Right() => {
+      return 2u8;
+    }
+    Alignment::Center() => {
+      return 3u8;
+    }
+  }
+  return 0u8;
+}
+
+/// Write an integer given as its sign and magnitude in base `radix` (2 to 36), padded as
+/// `spec` asks. This is Rust's `Formatter::pad_integral`, with the digits made here.
+fn write_integer<W : Write>(
+w : &mut W,
+spec : &FormatSpec,
+negative : bool,
+magnitude : u64,
+radix : u64
+) -> Result<i32, Error> {
+  assert(radix >= 2u64 && radix <= 36u64, "write_integer needs a radix from 2 to 36");
+  let mut len : i64 = digit_count(magnitude, radix);
+  if negative || spec.sign_plus {
+    len = len + 1i64;
+  }
+  if spec.alternate && (radix == 2u64 || radix == 8u64 || radix == 16u64) {
+    len = len + 2i64;
+  }
+  let pad : i64 = spec.width - len;
+  if pad <= 0i64 {
+    let r = write_sign_and_prefix(w, spec, negative, radix);
+    if r.is_err() {
+      return r;
+    }
+    return write_digits(w, magnitude, radix, spec.upper);
+  }
+  if spec.zero_pad {
+    let r = write_sign_and_prefix(w, spec, negative, radix);
+    if r.is_err() {
+      return r;
+    }
+    let z = write_repeated(w, 48u8, pad);
+    if z.is_err() {
+      return z;
+    }
+    return write_digits(w, magnitude, radix, spec.upper);
+  }
+  // Right unless asked otherwise; center puts the odd byte after, as Rust does.
+  let mut before : i64 = pad;
+  if spec.align == 1u8 {
+    before = 0i64;
+  }
+  if spec.align == 3u8 {
+    before = pad / 2i64;
+  }
+  let a = write_repeated(w, spec.fill, before);
+  if a.is_err() {
+    return a;
+  }
+  let r = write_sign_and_prefix(w, spec, negative, radix);
+  if r.is_err() {
+    return r;
+  }
+  let d = write_digits(w, magnitude, radix, spec.upper);
+  if d.is_err() {
+    return d;
+  }
+  return write_repeated(w, spec.fill, pad - before);
+}
+
+/// Stamps the formatting methods for a signed width; `$u` is the unsigned type of the same
+/// width. Binary, octal and hexadecimal write the two's complement bits, with no `-`, as
+/// Rust does.
+macro_rules stamp_fmt_signed {
+  ($t : ident , $u : ident) => {
+    impl $t {
+      /// Rust's `{}`: decimal, with a `-` when negative.
+      fn fmt_decimal<W : Write>(self : $t, w : &mut W, spec : &FormatSpec) -> Result<i32, Error> {
+        if self < (0 as $t) {
+          // -(x + 1) + 1 does not overflow for the smallest value.
+          let magnitude : u64 = ((-(self + (1 as $t))) as u64) + 1u64;
+          return write_integer(w, spec, true, magnitude, 10u64);
+        }
+        return write_integer(w, spec, false, self as u64, 10u64);
+      }
+
+      /// Rust's `{:b}`.
+      fn fmt_binary<W : Write>(self : $t, w : &mut W, spec : &FormatSpec) -> Result<i32, Error> {
+        return write_integer(w, spec, false, (self as $u) as u64, 2u64);
+      }
+
+      /// Rust's `{:o}`.
+      fn fmt_octal<W : Write>(self : $t, w : &mut W, spec : &FormatSpec) -> Result<i32, Error> {
+        return write_integer(w, spec, false, (self as $u) as u64, 8u64);
+      }
+
+      /// Rust's `{:x}`, or `{:X}` when `spec` asks for upper case.
+      fn fmt_hex<W : Write>(self : $t, w : &mut W, spec : &FormatSpec) -> Result<i32, Error> {
+        return write_integer(w, spec, false, (self as $u) as u64, 16u64);
+      }
+    }
+  };
+}
+
+stamp_fmt_signed!(i8 , u8);
+stamp_fmt_signed!(i16 , u16);
+stamp_fmt_signed!(i32 , u32);
+stamp_fmt_signed!(i64 , u64);
+
+/// Stamps the formatting methods for an unsigned width.
+macro_rules stamp_fmt_unsigned {
+  ($t : ident) => {
+    impl $t {
+      /// Rust's `{}`.
+      fn fmt_decimal<W : Write>(self : $t, w : &mut W, spec : &FormatSpec) -> Result<i32, Error> {
+        return write_integer(w, spec, false, self as u64, 10u64);
+      }
+
+      /// Rust's `{:b}`.
+      fn fmt_binary<W : Write>(self : $t, w : &mut W, spec : &FormatSpec) -> Result<i32, Error> {
+        return write_integer(w, spec, false, self as u64, 2u64);
+      }
+
+      /// Rust's `{:o}`.
+      fn fmt_octal<W : Write>(self : $t, w : &mut W, spec : &FormatSpec) -> Result<i32, Error> {
+        return write_integer(w, spec, false, self as u64, 8u64);
+      }
+
+      /// Rust's `{:x}`, or `{:X}` when `spec` asks for upper case.
+      fn fmt_hex<W : Write>(self : $t, w : &mut W, spec : &FormatSpec) -> Result<i32, Error> {
+        return write_integer(w, spec, false, self as u64, 16u64);
+      }
+    }
+  };
+}
+
+stamp_fmt_unsigned!(u8);
+stamp_fmt_unsigned!(u16);
+stamp_fmt_unsigned!(u32);
+stamp_fmt_unsigned!(u64);
+stamp_fmt_unsigned!(usize);
+
+/// A writer over caller-owned memory: `ptr` holds `cap` bytes. The bytes written so far are
+/// always followed by a NUL, so `as_c_str` can be printed; that leaves room for `cap - 1`.
+/// A byte that does not fit is refused with `Error`, and the bytes before it stay.
+struct ByteBuf {
+  ptr : *mut i8,
+  cap : i64,
+  len : i64,
+}
+
+impl ByteBuf {
+  /// Unsafe because nothing checks that `ptr` holds `cap` bytes.
+  unsafe fn new(ptr : *mut i8, cap : i64) -> ByteBuf {
+    assert(cap >= 1i64, "ByteBuf needs room for the NUL");
+    unsafe { ptr[0i64] = 0i8; }
+    return ByteBuf {
+      ptr : ptr,
+      cap : cap,
+      len : 0i64
+    };
+  }
+
+  /// How many bytes have been written.
+  fn len(self : &ByteBuf) -> i64 {
+    return self.len;
+  }
+
+  /// The byte at `i`, which must be below `len`.
+  fn byte(self : &ByteBuf, i : i64) -> u8 {
+    assert(i >= 0i64 && i < self.len, "ByteBuf::byte index out of range");
+    return unsafe { self.ptr[i] as u8 };
+  }
+
+  /// The bytes written so far, followed by a NUL.
+  fn as_c_str(self : &ByteBuf) -> *const i8 {
+    return self.ptr;
+  }
+
+  /// Forget what was written, keeping the memory.
+  fn clear(self : &mut ByteBuf) -> i32 {
+    self.len = 0i64;
+    unsafe { self.ptr[0i64] = 0i8; }
+    return 0;
+  }
+}
+
+impl Write for ByteBuf {
+  fn write_u8(self : &mut ByteBuf, b : u8) -> Result<i32, Error> {
+    if self.len + 1i64 >= self.cap {
+      return Result<i32, Error>::Err(Error::Error());
+    }
+    unsafe { self.ptr[self.len] = b as i8; self.ptr[self.len + 1i64] = 0i8; }
+    self.len = self.len + 1i64;
+    return Result<i32, Error>::Ok(0);
+  }
+}

@@ -1,0 +1,554 @@
+//===- core_fmt_integers.vx - Vx Compiler -------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `core::fmt`: integers written into a byte buffer, compared with Rust's `format!`.
+//
+// Each case prints `case N :SPEC VALUE [OUTPUT]`, all on one line, where SPEC is the Rust format spec the
+// `FormatSpec` stands for (`:#010x` is Rust's `{:#010x}`). The expected lines were printed
+// by a Rust program running `format!` on the same values and specs. Cases 0 to 68 are the
+// smallest and largest value of every width in decimal, hex, binary and octal; the rest
+// try every option on 42, -42, 255u8 and the smallest i8. Vx's `usize` stops at the
+// largest i64, so that is its largest value here.
+//
+// The last two lines check the writer itself: a string literal through `write_c_str`, and
+// a buffer with room for three bytes refusing the fourth of "1234" while keeping the first
+// three (51 is the byte `3`).
+//
+// EXPECT: case 0 : 0i8 [0]
+// EXPECT: case 1 : -128i8 [-128]
+// EXPECT: case 2 :#x -128i8 [0x80]
+// EXPECT: case 3 :#b -128i8 [0b10000000]
+// EXPECT: case 4 :o -128i8 [200]
+// EXPECT: case 5 : 127i8 [127]
+// EXPECT: case 6 :#x 127i8 [0x7f]
+// EXPECT: case 7 :#b 127i8 [0b1111111]
+// EXPECT: case 8 :o 127i8 [177]
+// EXPECT: case 9 :x -1i8 [ff]
+// EXPECT: case 10 :+ -1i8 [-1]
+// EXPECT: case 11 : 0i16 [0]
+// EXPECT: case 12 : -32768i16 [-32768]
+// EXPECT: case 13 :#x -32768i16 [0x8000]
+// EXPECT: case 14 :#b -32768i16 [0b1000000000000000]
+// EXPECT: case 15 :o -32768i16 [100000]
+// EXPECT: case 16 : 32767i16 [32767]
+// EXPECT: case 17 :#x 32767i16 [0x7fff]
+// EXPECT: case 18 :#b 32767i16 [0b111111111111111]
+// EXPECT: case 19 :o 32767i16 [77777]
+// EXPECT: case 20 :x -1i16 [ffff]
+// EXPECT: case 21 :+ -1i16 [-1]
+// EXPECT: case 22 : 0i32 [0]
+// EXPECT: case 23 : -2147483648i32 [-2147483648]
+// EXPECT: case 24 :#x -2147483648i32 [0x80000000]
+// EXPECT: case 25 :#b -2147483648i32 [0b10000000000000000000000000000000]
+// EXPECT: case 26 :o -2147483648i32 [20000000000]
+// EXPECT: case 27 : 2147483647i32 [2147483647]
+// EXPECT: case 28 :#x 2147483647i32 [0x7fffffff]
+// EXPECT: case 29 :#b 2147483647i32 [0b1111111111111111111111111111111]
+// EXPECT: case 30 :o 2147483647i32 [17777777777]
+// EXPECT: case 31 :x -1i32 [ffffffff]
+// EXPECT: case 32 :+ -1i32 [-1]
+// EXPECT: case 33 : 0i64 [0]
+// EXPECT: case 34 : -9223372036854775808i64 [-9223372036854775808]
+// EXPECT: case 35 :#x -9223372036854775808i64 [0x8000000000000000]
+// EXPECT: case 36 :#b -9223372036854775808i64 [0b1000000000000000000000000000000000000000000000000000000000000000]
+// EXPECT: case 37 :o -9223372036854775808i64 [1000000000000000000000]
+// EXPECT: case 38 : 9223372036854775807i64 [9223372036854775807]
+// EXPECT: case 39 :#x 9223372036854775807i64 [0x7fffffffffffffff]
+// EXPECT: case 40 :#b 9223372036854775807i64 [0b111111111111111111111111111111111111111111111111111111111111111]
+// EXPECT: case 41 :o 9223372036854775807i64 [777777777777777777777]
+// EXPECT: case 42 :x -1i64 [ffffffffffffffff]
+// EXPECT: case 43 :+ -1i64 [-1]
+// EXPECT: case 44 : 0u8 [0]
+// EXPECT: case 45 : 255u8 [255]
+// EXPECT: case 46 :#x 255u8 [0xff]
+// EXPECT: case 47 :#b 255u8 [0b11111111]
+// EXPECT: case 48 :o 255u8 [377]
+// EXPECT: case 49 : 0u16 [0]
+// EXPECT: case 50 : 65535u16 [65535]
+// EXPECT: case 51 :#x 65535u16 [0xffff]
+// EXPECT: case 52 :#b 65535u16 [0b1111111111111111]
+// EXPECT: case 53 :o 65535u16 [177777]
+// EXPECT: case 54 : 0u32 [0]
+// EXPECT: case 55 : 4294967295u32 [4294967295]
+// EXPECT: case 56 :#x 4294967295u32 [0xffffffff]
+// EXPECT: case 57 :#b 4294967295u32 [0b11111111111111111111111111111111]
+// EXPECT: case 58 :o 4294967295u32 [37777777777]
+// EXPECT: case 59 : 0u64 [0]
+// EXPECT: case 60 : 18446744073709551615u64 [18446744073709551615]
+// EXPECT: case 61 :#x 18446744073709551615u64 [0xffffffffffffffff]
+// EXPECT: case 62 :#b 18446744073709551615u64 [0b1111111111111111111111111111111111111111111111111111111111111111]
+// EXPECT: case 63 :o 18446744073709551615u64 [1777777777777777777777]
+// EXPECT: case 64 : 0usize [0]
+// EXPECT: case 65 : 9223372036854775807usize [9223372036854775807]
+// EXPECT: case 66 :#x 9223372036854775807usize [0x7fffffffffffffff]
+// EXPECT: case 67 :#b 9223372036854775807usize [0b111111111111111111111111111111111111111111111111111111111111111]
+// EXPECT: case 68 :o 9223372036854775807usize [777777777777777777777]
+// EXPECT: case 69 :8 42i32 [      42]
+// EXPECT: case 70 :<8 42i32 [42      ]
+// EXPECT: case 71 :^8 42i32 [   42   ]
+// EXPECT: case 72 :^9 42i32 [   42    ]
+// EXPECT: case 73 :*^9 42i32 [***42****]
+// EXPECT: case 74 :-<7 42i32 [42-----]
+// EXPECT: case 75 :_>7 42i32 [_____42]
+// EXPECT: case 76 :+ 42i32 [+42]
+// EXPECT: case 77 :<+6 42i32 [+42   ]
+// EXPECT: case 78 :+08 42i32 [+0000042]
+// EXPECT: case 79 :08 42i32 [00000042]
+// EXPECT: case 80 :02 42i32 [42]
+// EXPECT: case 81 :#010x 42i32 [0x0000002a]
+// EXPECT: case 82 :#X 42i32 [0x2A]
+// EXPECT: case 83 :08b 42i32 [00101010]
+// EXPECT: case 84 :#10b 42i32 [  0b101010]
+// EXPECT: case 85 :^#12o 42i32 [    0o52    ]
+// EXPECT: case 86 :^+#012X 42i32 [+0x00000002A]
+// EXPECT: case 87 :+#x 42i32 [+0x2a]
+// EXPECT: case 88 :*<3 42i32 [42*]
+// EXPECT: case 89 :#06b 42i32 [0b101010]
+// EXPECT: case 90 :#<10x 42i32 [2a########]
+// EXPECT: case 91 :+^9 42i32 [+++42++++]
+// EXPECT: case 92 :#08o 42i32 [0o000052]
+// EXPECT: case 93 :8 -42i32 [     -42]
+// EXPECT: case 94 :<8 -42i32 [-42     ]
+// EXPECT: case 95 :^8 -42i32 [  -42   ]
+// EXPECT: case 96 :^9 -42i32 [   -42   ]
+// EXPECT: case 97 :*^9 -42i32 [***-42***]
+// EXPECT: case 98 :-<7 -42i32 [-42----]
+// EXPECT: case 99 :_>7 -42i32 [____-42]
+// EXPECT: case 100 :+ -42i32 [-42]
+// EXPECT: case 101 :<+6 -42i32 [-42   ]
+// EXPECT: case 102 :+08 -42i32 [-0000042]
+// EXPECT: case 103 :08 -42i32 [-0000042]
+// EXPECT: case 104 :02 -42i32 [-42]
+// EXPECT: case 105 :#010x -42i32 [0xffffffd6]
+// EXPECT: case 106 :#X -42i32 [0xFFFFFFD6]
+// EXPECT: case 107 :08b -42i32 [11111111111111111111111111010110]
+// EXPECT: case 108 :#10b -42i32 [0b11111111111111111111111111010110]
+// EXPECT: case 109 :^#12o -42i32 [0o37777777726]
+// EXPECT: case 110 :^+#012X -42i32 [+0x0FFFFFFD6]
+// EXPECT: case 111 :+#x -42i32 [+0xffffffd6]
+// EXPECT: case 112 :*<3 -42i32 [-42]
+// EXPECT: case 113 :#06b -42i32 [0b11111111111111111111111111010110]
+// EXPECT: case 114 :#<10x -42i32 [ffffffd6##]
+// EXPECT: case 115 :+^9 -42i32 [+++-42+++]
+// EXPECT: case 116 :#08o -42i32 [0o37777777726]
+// EXPECT: case 117 :8 255u8 [     255]
+// EXPECT: case 118 :<8 255u8 [255     ]
+// EXPECT: case 119 :^8 255u8 [  255   ]
+// EXPECT: case 120 :^9 255u8 [   255   ]
+// EXPECT: case 121 :*^9 255u8 [***255***]
+// EXPECT: case 122 :-<7 255u8 [255----]
+// EXPECT: case 123 :_>7 255u8 [____255]
+// EXPECT: case 124 :+ 255u8 [+255]
+// EXPECT: case 125 :<+6 255u8 [+255  ]
+// EXPECT: case 126 :+08 255u8 [+0000255]
+// EXPECT: case 127 :08 255u8 [00000255]
+// EXPECT: case 128 :02 255u8 [255]
+// EXPECT: case 129 :#010x 255u8 [0x000000ff]
+// EXPECT: case 130 :#X 255u8 [0xFF]
+// EXPECT: case 131 :08b 255u8 [11111111]
+// EXPECT: case 132 :#10b 255u8 [0b11111111]
+// EXPECT: case 133 :^#12o 255u8 [   0o377    ]
+// EXPECT: case 134 :^+#012X 255u8 [+0x0000000FF]
+// EXPECT: case 135 :+#x 255u8 [+0xff]
+// EXPECT: case 136 :*<3 255u8 [255]
+// EXPECT: case 137 :#06b 255u8 [0b11111111]
+// EXPECT: case 138 :#<10x 255u8 [ff########]
+// EXPECT: case 139 :+^9 255u8 [+++255+++]
+// EXPECT: case 140 :#08o 255u8 [0o000377]
+// EXPECT: case 141 :8 -128i8 [    -128]
+// EXPECT: case 142 :<8 -128i8 [-128    ]
+// EXPECT: case 143 :^8 -128i8 [  -128  ]
+// EXPECT: case 144 :^9 -128i8 [  -128   ]
+// EXPECT: case 145 :*^9 -128i8 [**-128***]
+// EXPECT: case 146 :-<7 -128i8 [-128---]
+// EXPECT: case 147 :_>7 -128i8 [___-128]
+// EXPECT: case 148 :+ -128i8 [-128]
+// EXPECT: case 149 :<+6 -128i8 [-128  ]
+// EXPECT: case 150 :+08 -128i8 [-0000128]
+// EXPECT: case 151 :08 -128i8 [-0000128]
+// EXPECT: case 152 :02 -128i8 [-128]
+// EXPECT: case 153 :#010x -128i8 [0x00000080]
+// EXPECT: case 154 :#X -128i8 [0x80]
+// EXPECT: case 155 :08b -128i8 [10000000]
+// EXPECT: case 156 :#10b -128i8 [0b10000000]
+// EXPECT: case 157 :^#12o -128i8 [   0o200    ]
+// EXPECT: case 158 :^+#012X -128i8 [+0x000000080]
+// EXPECT: case 159 :+#x -128i8 [+0x80]
+// EXPECT: case 160 :*<3 -128i8 [-128]
+// EXPECT: case 161 :#06b -128i8 [0b10000000]
+// EXPECT: case 162 :#<10x -128i8 [80########]
+// EXPECT: case 163 :+^9 -128i8 [++-128+++]
+// EXPECT: case 164 :#08o -128i8 [0o000200]
+// EXPECT: write_c_str [hello, 42]
+// EXPECT: refused len 3 last 51 full buffer [123]
+import core::fmt;
+import std::alloc;
+
+/// Print the case's label and what the buffer holds, then empty the buffer.
+fn show(b : &mut ByteBuf, label : *const i8) -> i32 {
+  print!(label);
+  print!(" [");
+  print!(b.as_c_str());
+  print!("] ");
+  b.clear();
+  return 0;
+}
+
+fn main() -> i32 {
+  let mem = unsafe { malloc(128i64) };
+  let mut b = unsafe { ByteBuf::new(mem, 128i64) };
+  (0i8).fmt_decimal(&mut b, &FormatSpec::new());
+  show(&mut b, "case 0 : 0i8");
+  (-127i8 - 1i8).fmt_decimal(&mut b, &FormatSpec::new());
+  show(&mut b, "case 1 : -128i8");
+  (-127i8 - 1i8).fmt_hex(&mut b, &FormatSpec::new().alternate());
+  show(&mut b, "case 2 :#x -128i8");
+  (-127i8 - 1i8).fmt_binary(&mut b, &FormatSpec::new().alternate());
+  show(&mut b, "case 3 :#b -128i8");
+  (-127i8 - 1i8).fmt_octal(&mut b, &FormatSpec::new());
+  show(&mut b, "case 4 :o -128i8");
+  (127i8).fmt_decimal(&mut b, &FormatSpec::new());
+  show(&mut b, "case 5 : 127i8");
+  (127i8).fmt_hex(&mut b, &FormatSpec::new().alternate());
+  show(&mut b, "case 6 :#x 127i8");
+  (127i8).fmt_binary(&mut b, &FormatSpec::new().alternate());
+  show(&mut b, "case 7 :#b 127i8");
+  (127i8).fmt_octal(&mut b, &FormatSpec::new());
+  show(&mut b, "case 8 :o 127i8");
+  (-1i8).fmt_hex(&mut b, &FormatSpec::new());
+  show(&mut b, "case 9 :x -1i8");
+  (-1i8).fmt_decimal(&mut b, &FormatSpec::new().sign_plus());
+  show(&mut b, "case 10 :+ -1i8");
+  (0i16).fmt_decimal(&mut b, &FormatSpec::new());
+  show(&mut b, "case 11 : 0i16");
+  (-32767i16 - 1i16).fmt_decimal(&mut b, &FormatSpec::new());
+  show(&mut b, "case 12 : -32768i16");
+  (-32767i16 - 1i16).fmt_hex(&mut b, &FormatSpec::new().alternate());
+  show(&mut b, "case 13 :#x -32768i16");
+  (-32767i16 - 1i16).fmt_binary(&mut b, &FormatSpec::new().alternate());
+  show(&mut b, "case 14 :#b -32768i16");
+  (-32767i16 - 1i16).fmt_octal(&mut b, &FormatSpec::new());
+  show(&mut b, "case 15 :o -32768i16");
+  (32767i16).fmt_decimal(&mut b, &FormatSpec::new());
+  show(&mut b, "case 16 : 32767i16");
+  (32767i16).fmt_hex(&mut b, &FormatSpec::new().alternate());
+  show(&mut b, "case 17 :#x 32767i16");
+  (32767i16).fmt_binary(&mut b, &FormatSpec::new().alternate());
+  show(&mut b, "case 18 :#b 32767i16");
+  (32767i16).fmt_octal(&mut b, &FormatSpec::new());
+  show(&mut b, "case 19 :o 32767i16");
+  (-1i16).fmt_hex(&mut b, &FormatSpec::new());
+  show(&mut b, "case 20 :x -1i16");
+  (-1i16).fmt_decimal(&mut b, &FormatSpec::new().sign_plus());
+  show(&mut b, "case 21 :+ -1i16");
+  (0i32).fmt_decimal(&mut b, &FormatSpec::new());
+  show(&mut b, "case 22 : 0i32");
+  (-2147483647i32 - 1i32).fmt_decimal(&mut b, &FormatSpec::new());
+  show(&mut b, "case 23 : -2147483648i32");
+  (-2147483647i32 - 1i32).fmt_hex(&mut b, &FormatSpec::new().alternate());
+  show(&mut b, "case 24 :#x -2147483648i32");
+  (-2147483647i32 - 1i32).fmt_binary(&mut b, &FormatSpec::new().alternate());
+  show(&mut b, "case 25 :#b -2147483648i32");
+  (-2147483647i32 - 1i32).fmt_octal(&mut b, &FormatSpec::new());
+  show(&mut b, "case 26 :o -2147483648i32");
+  (2147483647i32).fmt_decimal(&mut b, &FormatSpec::new());
+  show(&mut b, "case 27 : 2147483647i32");
+  (2147483647i32).fmt_hex(&mut b, &FormatSpec::new().alternate());
+  show(&mut b, "case 28 :#x 2147483647i32");
+  (2147483647i32).fmt_binary(&mut b, &FormatSpec::new().alternate());
+  show(&mut b, "case 29 :#b 2147483647i32");
+  (2147483647i32).fmt_octal(&mut b, &FormatSpec::new());
+  show(&mut b, "case 30 :o 2147483647i32");
+  (-1i32).fmt_hex(&mut b, &FormatSpec::new());
+  show(&mut b, "case 31 :x -1i32");
+  (-1i32).fmt_decimal(&mut b, &FormatSpec::new().sign_plus());
+  show(&mut b, "case 32 :+ -1i32");
+  (0i64).fmt_decimal(&mut b, &FormatSpec::new());
+  show(&mut b, "case 33 : 0i64");
+  (-9223372036854775807i64 - 1i64).fmt_decimal(&mut b, &FormatSpec::new());
+  show(&mut b, "case 34 : -9223372036854775808i64");
+  (-9223372036854775807i64 - 1i64).fmt_hex(&mut b, &FormatSpec::new().alternate());
+  show(&mut b, "case 35 :#x -9223372036854775808i64");
+  (-9223372036854775807i64 - 1i64).fmt_binary(&mut b, &FormatSpec::new().alternate());
+  show(&mut b, "case 36 :#b -9223372036854775808i64");
+  (-9223372036854775807i64 - 1i64).fmt_octal(&mut b, &FormatSpec::new());
+  show(&mut b, "case 37 :o -9223372036854775808i64");
+  (9223372036854775807i64).fmt_decimal(&mut b, &FormatSpec::new());
+  show(&mut b, "case 38 : 9223372036854775807i64");
+  (9223372036854775807i64).fmt_hex(&mut b, &FormatSpec::new().alternate());
+  show(&mut b, "case 39 :#x 9223372036854775807i64");
+  (9223372036854775807i64).fmt_binary(&mut b, &FormatSpec::new().alternate());
+  show(&mut b, "case 40 :#b 9223372036854775807i64");
+  (9223372036854775807i64).fmt_octal(&mut b, &FormatSpec::new());
+  show(&mut b, "case 41 :o 9223372036854775807i64");
+  (-1i64).fmt_hex(&mut b, &FormatSpec::new());
+  show(&mut b, "case 42 :x -1i64");
+  (-1i64).fmt_decimal(&mut b, &FormatSpec::new().sign_plus());
+  show(&mut b, "case 43 :+ -1i64");
+  (0u8).fmt_decimal(&mut b, &FormatSpec::new());
+  show(&mut b, "case 44 : 0u8");
+  (255u8).fmt_decimal(&mut b, &FormatSpec::new());
+  show(&mut b, "case 45 : 255u8");
+  (255u8).fmt_hex(&mut b, &FormatSpec::new().alternate());
+  show(&mut b, "case 46 :#x 255u8");
+  (255u8).fmt_binary(&mut b, &FormatSpec::new().alternate());
+  show(&mut b, "case 47 :#b 255u8");
+  (255u8).fmt_octal(&mut b, &FormatSpec::new());
+  show(&mut b, "case 48 :o 255u8");
+  (0u16).fmt_decimal(&mut b, &FormatSpec::new());
+  show(&mut b, "case 49 : 0u16");
+  (65535u16).fmt_decimal(&mut b, &FormatSpec::new());
+  show(&mut b, "case 50 : 65535u16");
+  (65535u16).fmt_hex(&mut b, &FormatSpec::new().alternate());
+  show(&mut b, "case 51 :#x 65535u16");
+  (65535u16).fmt_binary(&mut b, &FormatSpec::new().alternate());
+  show(&mut b, "case 52 :#b 65535u16");
+  (65535u16).fmt_octal(&mut b, &FormatSpec::new());
+  show(&mut b, "case 53 :o 65535u16");
+  (0u32).fmt_decimal(&mut b, &FormatSpec::new());
+  show(&mut b, "case 54 : 0u32");
+  (4294967295u32).fmt_decimal(&mut b, &FormatSpec::new());
+  show(&mut b, "case 55 : 4294967295u32");
+  (4294967295u32).fmt_hex(&mut b, &FormatSpec::new().alternate());
+  show(&mut b, "case 56 :#x 4294967295u32");
+  (4294967295u32).fmt_binary(&mut b, &FormatSpec::new().alternate());
+  show(&mut b, "case 57 :#b 4294967295u32");
+  (4294967295u32).fmt_octal(&mut b, &FormatSpec::new());
+  show(&mut b, "case 58 :o 4294967295u32");
+  (0u64).fmt_decimal(&mut b, &FormatSpec::new());
+  show(&mut b, "case 59 : 0u64");
+  (18446744073709551615u64).fmt_decimal(&mut b, &FormatSpec::new());
+  show(&mut b, "case 60 : 18446744073709551615u64");
+  (18446744073709551615u64).fmt_hex(&mut b, &FormatSpec::new().alternate());
+  show(&mut b, "case 61 :#x 18446744073709551615u64");
+  (18446744073709551615u64).fmt_binary(&mut b, &FormatSpec::new().alternate());
+  show(&mut b, "case 62 :#b 18446744073709551615u64");
+  (18446744073709551615u64).fmt_octal(&mut b, &FormatSpec::new());
+  show(&mut b, "case 63 :o 18446744073709551615u64");
+  (0usize).fmt_decimal(&mut b, &FormatSpec::new());
+  show(&mut b, "case 64 : 0usize");
+  (9223372036854775807usize).fmt_decimal(&mut b, &FormatSpec::new());
+  show(&mut b, "case 65 : 9223372036854775807usize");
+  (9223372036854775807usize).fmt_hex(&mut b, &FormatSpec::new().alternate());
+  show(&mut b, "case 66 :#x 9223372036854775807usize");
+  (9223372036854775807usize).fmt_binary(&mut b, &FormatSpec::new().alternate());
+  show(&mut b, "case 67 :#b 9223372036854775807usize");
+  (9223372036854775807usize).fmt_octal(&mut b, &FormatSpec::new());
+  show(&mut b, "case 68 :o 9223372036854775807usize");
+  (42i32).fmt_decimal(&mut b, &FormatSpec::new().width(8i64));
+  show(&mut b, "case 69 :8 42i32");
+  (42i32).fmt_decimal(&mut b, &FormatSpec::new().align(Alignment::Left()).width(8i64));
+  show(&mut b, "case 70 :<8 42i32");
+  (42i32).fmt_decimal(&mut b, &FormatSpec::new().align(Alignment::Center()).width(8i64));
+  show(&mut b, "case 71 :^8 42i32");
+  (42i32).fmt_decimal(&mut b, &FormatSpec::new().align(Alignment::Center()).width(9i64));
+  show(&mut b, "case 72 :^9 42i32");
+  (42i32).fmt_decimal(&mut b, &FormatSpec::new().fill(42u8).align(Alignment::Center()).width(9i64));
+  show(&mut b, "case 73 :*^9 42i32");
+  (42i32).fmt_decimal(&mut b, &FormatSpec::new().fill(45u8).align(Alignment::Left()).width(7i64));
+  show(&mut b, "case 74 :-<7 42i32");
+  (42i32).fmt_decimal(&mut b, &FormatSpec::new().fill(95u8).align(Alignment::Right()).width(7i64));
+  show(&mut b, "case 75 :_>7 42i32");
+  (42i32).fmt_decimal(&mut b, &FormatSpec::new().sign_plus());
+  show(&mut b, "case 76 :+ 42i32");
+  (42i32).fmt_decimal(&mut b, &FormatSpec::new().align(Alignment::Left()).sign_plus().width(6i64));
+  show(&mut b, "case 77 :<+6 42i32");
+  (42i32).fmt_decimal(&mut b, &FormatSpec::new().sign_plus().zero_pad().width(8i64));
+  show(&mut b, "case 78 :+08 42i32");
+  (42i32).fmt_decimal(&mut b, &FormatSpec::new().zero_pad().width(8i64));
+  show(&mut b, "case 79 :08 42i32");
+  (42i32).fmt_decimal(&mut b, &FormatSpec::new().zero_pad().width(2i64));
+  show(&mut b, "case 80 :02 42i32");
+  (42i32).fmt_hex(&mut b, &FormatSpec::new().alternate().zero_pad().width(10i64));
+  show(&mut b, "case 81 :#010x 42i32");
+  (42i32).fmt_hex(&mut b, &FormatSpec::new().alternate().upper());
+  show(&mut b, "case 82 :#X 42i32");
+  (42i32).fmt_binary(&mut b, &FormatSpec::new().zero_pad().width(8i64));
+  show(&mut b, "case 83 :08b 42i32");
+  (42i32).fmt_binary(&mut b, &FormatSpec::new().alternate().width(10i64));
+  show(&mut b, "case 84 :#10b 42i32");
+  (42i32).fmt_octal(&mut b, &FormatSpec::new().align(Alignment::Center()).alternate().width(12i64));
+  show(&mut b, "case 85 :^#12o 42i32");
+  (42i32).fmt_hex(&mut b, &FormatSpec::new().align(Alignment::Center()).sign_plus().alternate().zero_pad().width(12i64).upper());
+  show(&mut b, "case 86 :^+#012X 42i32");
+  (42i32).fmt_hex(&mut b, &FormatSpec::new().sign_plus().alternate());
+  show(&mut b, "case 87 :+#x 42i32");
+  (42i32).fmt_decimal(&mut b, &FormatSpec::new().fill(42u8).align(Alignment::Left()).width(3i64));
+  show(&mut b, "case 88 :*<3 42i32");
+  (42i32).fmt_binary(&mut b, &FormatSpec::new().alternate().zero_pad().width(6i64));
+  show(&mut b, "case 89 :#06b 42i32");
+  (42i32).fmt_hex(&mut b, &FormatSpec::new().fill(35u8).align(Alignment::Left()).width(10i64));
+  show(&mut b, "case 90 :#<10x 42i32");
+  (42i32).fmt_decimal(&mut b, &FormatSpec::new().fill(43u8).align(Alignment::Center()).width(9i64));
+  show(&mut b, "case 91 :+^9 42i32");
+  (42i32).fmt_octal(&mut b, &FormatSpec::new().alternate().zero_pad().width(8i64));
+  show(&mut b, "case 92 :#08o 42i32");
+  (-42i32).fmt_decimal(&mut b, &FormatSpec::new().width(8i64));
+  show(&mut b, "case 93 :8 -42i32");
+  (-42i32).fmt_decimal(&mut b, &FormatSpec::new().align(Alignment::Left()).width(8i64));
+  show(&mut b, "case 94 :<8 -42i32");
+  (-42i32).fmt_decimal(&mut b, &FormatSpec::new().align(Alignment::Center()).width(8i64));
+  show(&mut b, "case 95 :^8 -42i32");
+  (-42i32).fmt_decimal(&mut b, &FormatSpec::new().align(Alignment::Center()).width(9i64));
+  show(&mut b, "case 96 :^9 -42i32");
+  (-42i32).fmt_decimal(&mut b, &FormatSpec::new().fill(42u8).align(Alignment::Center()).width(9i64));
+  show(&mut b, "case 97 :*^9 -42i32");
+  (-42i32).fmt_decimal(&mut b, &FormatSpec::new().fill(45u8).align(Alignment::Left()).width(7i64));
+  show(&mut b, "case 98 :-<7 -42i32");
+  (-42i32).fmt_decimal(&mut b, &FormatSpec::new().fill(95u8).align(Alignment::Right()).width(7i64));
+  show(&mut b, "case 99 :_>7 -42i32");
+  (-42i32).fmt_decimal(&mut b, &FormatSpec::new().sign_plus());
+  show(&mut b, "case 100 :+ -42i32");
+  (-42i32).fmt_decimal(&mut b, &FormatSpec::new().align(Alignment::Left()).sign_plus().width(6i64));
+  show(&mut b, "case 101 :<+6 -42i32");
+  (-42i32).fmt_decimal(&mut b, &FormatSpec::new().sign_plus().zero_pad().width(8i64));
+  show(&mut b, "case 102 :+08 -42i32");
+  (-42i32).fmt_decimal(&mut b, &FormatSpec::new().zero_pad().width(8i64));
+  show(&mut b, "case 103 :08 -42i32");
+  (-42i32).fmt_decimal(&mut b, &FormatSpec::new().zero_pad().width(2i64));
+  show(&mut b, "case 104 :02 -42i32");
+  (-42i32).fmt_hex(&mut b, &FormatSpec::new().alternate().zero_pad().width(10i64));
+  show(&mut b, "case 105 :#010x -42i32");
+  (-42i32).fmt_hex(&mut b, &FormatSpec::new().alternate().upper());
+  show(&mut b, "case 106 :#X -42i32");
+  (-42i32).fmt_binary(&mut b, &FormatSpec::new().zero_pad().width(8i64));
+  show(&mut b, "case 107 :08b -42i32");
+  (-42i32).fmt_binary(&mut b, &FormatSpec::new().alternate().width(10i64));
+  show(&mut b, "case 108 :#10b -42i32");
+  (-42i32).fmt_octal(&mut b, &FormatSpec::new().align(Alignment::Center()).alternate().width(12i64));
+  show(&mut b, "case 109 :^#12o -42i32");
+  (-42i32).fmt_hex(&mut b, &FormatSpec::new().align(Alignment::Center()).sign_plus().alternate().zero_pad().width(12i64).upper());
+  show(&mut b, "case 110 :^+#012X -42i32");
+  (-42i32).fmt_hex(&mut b, &FormatSpec::new().sign_plus().alternate());
+  show(&mut b, "case 111 :+#x -42i32");
+  (-42i32).fmt_decimal(&mut b, &FormatSpec::new().fill(42u8).align(Alignment::Left()).width(3i64));
+  show(&mut b, "case 112 :*<3 -42i32");
+  (-42i32).fmt_binary(&mut b, &FormatSpec::new().alternate().zero_pad().width(6i64));
+  show(&mut b, "case 113 :#06b -42i32");
+  (-42i32).fmt_hex(&mut b, &FormatSpec::new().fill(35u8).align(Alignment::Left()).width(10i64));
+  show(&mut b, "case 114 :#<10x -42i32");
+  (-42i32).fmt_decimal(&mut b, &FormatSpec::new().fill(43u8).align(Alignment::Center()).width(9i64));
+  show(&mut b, "case 115 :+^9 -42i32");
+  (-42i32).fmt_octal(&mut b, &FormatSpec::new().alternate().zero_pad().width(8i64));
+  show(&mut b, "case 116 :#08o -42i32");
+  (255u8).fmt_decimal(&mut b, &FormatSpec::new().width(8i64));
+  show(&mut b, "case 117 :8 255u8");
+  (255u8).fmt_decimal(&mut b, &FormatSpec::new().align(Alignment::Left()).width(8i64));
+  show(&mut b, "case 118 :<8 255u8");
+  (255u8).fmt_decimal(&mut b, &FormatSpec::new().align(Alignment::Center()).width(8i64));
+  show(&mut b, "case 119 :^8 255u8");
+  (255u8).fmt_decimal(&mut b, &FormatSpec::new().align(Alignment::Center()).width(9i64));
+  show(&mut b, "case 120 :^9 255u8");
+  (255u8).fmt_decimal(&mut b, &FormatSpec::new().fill(42u8).align(Alignment::Center()).width(9i64));
+  show(&mut b, "case 121 :*^9 255u8");
+  (255u8).fmt_decimal(&mut b, &FormatSpec::new().fill(45u8).align(Alignment::Left()).width(7i64));
+  show(&mut b, "case 122 :-<7 255u8");
+  (255u8).fmt_decimal(&mut b, &FormatSpec::new().fill(95u8).align(Alignment::Right()).width(7i64));
+  show(&mut b, "case 123 :_>7 255u8");
+  (255u8).fmt_decimal(&mut b, &FormatSpec::new().sign_plus());
+  show(&mut b, "case 124 :+ 255u8");
+  (255u8).fmt_decimal(&mut b, &FormatSpec::new().align(Alignment::Left()).sign_plus().width(6i64));
+  show(&mut b, "case 125 :<+6 255u8");
+  (255u8).fmt_decimal(&mut b, &FormatSpec::new().sign_plus().zero_pad().width(8i64));
+  show(&mut b, "case 126 :+08 255u8");
+  (255u8).fmt_decimal(&mut b, &FormatSpec::new().zero_pad().width(8i64));
+  show(&mut b, "case 127 :08 255u8");
+  (255u8).fmt_decimal(&mut b, &FormatSpec::new().zero_pad().width(2i64));
+  show(&mut b, "case 128 :02 255u8");
+  (255u8).fmt_hex(&mut b, &FormatSpec::new().alternate().zero_pad().width(10i64));
+  show(&mut b, "case 129 :#010x 255u8");
+  (255u8).fmt_hex(&mut b, &FormatSpec::new().alternate().upper());
+  show(&mut b, "case 130 :#X 255u8");
+  (255u8).fmt_binary(&mut b, &FormatSpec::new().zero_pad().width(8i64));
+  show(&mut b, "case 131 :08b 255u8");
+  (255u8).fmt_binary(&mut b, &FormatSpec::new().alternate().width(10i64));
+  show(&mut b, "case 132 :#10b 255u8");
+  (255u8).fmt_octal(&mut b, &FormatSpec::new().align(Alignment::Center()).alternate().width(12i64));
+  show(&mut b, "case 133 :^#12o 255u8");
+  (255u8).fmt_hex(&mut b, &FormatSpec::new().align(Alignment::Center()).sign_plus().alternate().zero_pad().width(12i64).upper());
+  show(&mut b, "case 134 :^+#012X 255u8");
+  (255u8).fmt_hex(&mut b, &FormatSpec::new().sign_plus().alternate());
+  show(&mut b, "case 135 :+#x 255u8");
+  (255u8).fmt_decimal(&mut b, &FormatSpec::new().fill(42u8).align(Alignment::Left()).width(3i64));
+  show(&mut b, "case 136 :*<3 255u8");
+  (255u8).fmt_binary(&mut b, &FormatSpec::new().alternate().zero_pad().width(6i64));
+  show(&mut b, "case 137 :#06b 255u8");
+  (255u8).fmt_hex(&mut b, &FormatSpec::new().fill(35u8).align(Alignment::Left()).width(10i64));
+  show(&mut b, "case 138 :#<10x 255u8");
+  (255u8).fmt_decimal(&mut b, &FormatSpec::new().fill(43u8).align(Alignment::Center()).width(9i64));
+  show(&mut b, "case 139 :+^9 255u8");
+  (255u8).fmt_octal(&mut b, &FormatSpec::new().alternate().zero_pad().width(8i64));
+  show(&mut b, "case 140 :#08o 255u8");
+  (-127i8 - 1i8).fmt_decimal(&mut b, &FormatSpec::new().width(8i64));
+  show(&mut b, "case 141 :8 -128i8");
+  (-127i8 - 1i8).fmt_decimal(&mut b, &FormatSpec::new().align(Alignment::Left()).width(8i64));
+  show(&mut b, "case 142 :<8 -128i8");
+  (-127i8 - 1i8).fmt_decimal(&mut b, &FormatSpec::new().align(Alignment::Center()).width(8i64));
+  show(&mut b, "case 143 :^8 -128i8");
+  (-127i8 - 1i8).fmt_decimal(&mut b, &FormatSpec::new().align(Alignment::Center()).width(9i64));
+  show(&mut b, "case 144 :^9 -128i8");
+  (-127i8 - 1i8).fmt_decimal(&mut b, &FormatSpec::new().fill(42u8).align(Alignment::Center()).width(9i64));
+  show(&mut b, "case 145 :*^9 -128i8");
+  (-127i8 - 1i8).fmt_decimal(&mut b, &FormatSpec::new().fill(45u8).align(Alignment::Left()).width(7i64));
+  show(&mut b, "case 146 :-<7 -128i8");
+  (-127i8 - 1i8).fmt_decimal(&mut b, &FormatSpec::new().fill(95u8).align(Alignment::Right()).width(7i64));
+  show(&mut b, "case 147 :_>7 -128i8");
+  (-127i8 - 1i8).fmt_decimal(&mut b, &FormatSpec::new().sign_plus());
+  show(&mut b, "case 148 :+ -128i8");
+  (-127i8 - 1i8).fmt_decimal(&mut b, &FormatSpec::new().align(Alignment::Left()).sign_plus().width(6i64));
+  show(&mut b, "case 149 :<+6 -128i8");
+  (-127i8 - 1i8).fmt_decimal(&mut b, &FormatSpec::new().sign_plus().zero_pad().width(8i64));
+  show(&mut b, "case 150 :+08 -128i8");
+  (-127i8 - 1i8).fmt_decimal(&mut b, &FormatSpec::new().zero_pad().width(8i64));
+  show(&mut b, "case 151 :08 -128i8");
+  (-127i8 - 1i8).fmt_decimal(&mut b, &FormatSpec::new().zero_pad().width(2i64));
+  show(&mut b, "case 152 :02 -128i8");
+  (-127i8 - 1i8).fmt_hex(&mut b, &FormatSpec::new().alternate().zero_pad().width(10i64));
+  show(&mut b, "case 153 :#010x -128i8");
+  (-127i8 - 1i8).fmt_hex(&mut b, &FormatSpec::new().alternate().upper());
+  show(&mut b, "case 154 :#X -128i8");
+  (-127i8 - 1i8).fmt_binary(&mut b, &FormatSpec::new().zero_pad().width(8i64));
+  show(&mut b, "case 155 :08b -128i8");
+  (-127i8 - 1i8).fmt_binary(&mut b, &FormatSpec::new().alternate().width(10i64));
+  show(&mut b, "case 156 :#10b -128i8");
+  (-127i8 - 1i8).fmt_octal(&mut b, &FormatSpec::new().align(Alignment::Center()).alternate().width(12i64));
+  show(&mut b, "case 157 :^#12o -128i8");
+  (-127i8 - 1i8).fmt_hex(&mut b, &FormatSpec::new().align(Alignment::Center()).sign_plus().alternate().zero_pad().width(12i64).upper());
+  show(&mut b, "case 158 :^+#012X -128i8");
+  (-127i8 - 1i8).fmt_hex(&mut b, &FormatSpec::new().sign_plus().alternate());
+  show(&mut b, "case 159 :+#x -128i8");
+  (-127i8 - 1i8).fmt_decimal(&mut b, &FormatSpec::new().fill(42u8).align(Alignment::Left()).width(3i64));
+  show(&mut b, "case 160 :*<3 -128i8");
+  (-127i8 - 1i8).fmt_binary(&mut b, &FormatSpec::new().alternate().zero_pad().width(6i64));
+  show(&mut b, "case 161 :#06b -128i8");
+  (-127i8 - 1i8).fmt_hex(&mut b, &FormatSpec::new().fill(35u8).align(Alignment::Left()).width(10i64));
+  show(&mut b, "case 162 :#<10x -128i8");
+  (-127i8 - 1i8).fmt_decimal(&mut b, &FormatSpec::new().fill(43u8).align(Alignment::Center()).width(9i64));
+  show(&mut b, "case 163 :+^9 -128i8");
+  (-127i8 - 1i8).fmt_octal(&mut b, &FormatSpec::new().alternate().zero_pad().width(8i64));
+  show(&mut b, "case 164 :#08o -128i8");
+
+  b.write_c_str("hello, ");
+  (42i32).fmt_decimal(&mut b, &FormatSpec::new());
+  show(&mut b, "write_c_str");
+
+  // Four bytes of memory hold three bytes and the NUL.
+  let small_mem = unsafe { malloc(4i64) };
+  let mut small = unsafe { ByteBuf::new(small_mem, 4i64) };
+  let refused : bool = (1234i32).fmt_decimal(&mut small, &FormatSpec::new()).is_err();
+  if refused {
+    print!("refused ");
+  }
+  print!("len ");
+  print(small.len());
+  print!(" last ");
+  print(small.byte(2i64));
+  print!(" ");
+  show(&mut small, "full buffer");
+  unsafe { free(small_mem); free(mem); }
+  return 0;
+}
