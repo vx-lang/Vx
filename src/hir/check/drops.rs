@@ -646,6 +646,10 @@ impl<'a> TypeChecker<'a> {
 
     /// `name` was moved, or (`again`) given a new value after a move.
     pub(crate) fn drops_note_move(&mut self, name: &str, again: bool) {
+        // A speculative check only asks what a type is; it moves nothing.
+        if self.speculating {
+            return;
+        }
         let here = self.scopes.len() - 1;
         let rewriting = self.drops_rewriting();
         if !again {

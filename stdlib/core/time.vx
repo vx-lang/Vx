@@ -15,6 +15,7 @@
 import core::cmp;
 import core::hash;
 import core::num;
+import core::ops;
 import core::option;
 
 /// A span of time: whole seconds and the nanoseconds past them, always below one second.
@@ -287,6 +288,22 @@ impl Duration {
         return other.saturating_sub(self);
       }
     }
+  }
+}
+
+/// `a + b`. Aborts when the sum overflows; `checked_add` answers `None` instead.
+impl Add for Duration {
+  type Output = Duration;
+  fn add(self : Duration, rhs : Duration) -> Duration {
+    return self.checked_add(&rhs).unwrap();
+  }
+}
+
+/// `a - b`. Aborts when `rhs` is longer; `checked_sub` answers `None` instead.
+impl Sub for Duration {
+  type Output = Duration;
+  fn sub(self : Duration, rhs : Duration) -> Duration {
+    return self.checked_sub(&rhs).unwrap();
   }
 }
 
