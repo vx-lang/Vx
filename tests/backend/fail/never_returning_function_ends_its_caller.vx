@@ -1,0 +1,40 @@
+//===- never_returning_function_ends_its_caller.vx - Vx Compiler *- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `fail` is declared `-> !`: it never returns. `sign` returns `i32` and ends with a call to
+// `fail`, with no `return` after it, which is allowed because nothing after the call runs.
+//
+// The first run also checks that the flat code generator, the default, compiled the program
+// rather than handing it to the AST code generator.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s --check-prefixes=FLAT,CHECK
+// RUN: not vxc %s --legacy-codegen 2>&1 | FileCheck %s
+// FLAT: [flat-codegen] emitted module via the flat path
+// CHECK: 1
+// CHECK-NEXT: panic: zero has no sign
+// CHECK-NOT: after the panic
+fn fail(msg : *const i8) -> ! {
+  panic(msg);
+}
+
+fn sign(x : i32) -> i32 {
+  if x > 0 {
+    return 1;
+  }
+  if x < 0 {
+    return -1;
+  }
+  fail("zero has no sign");
+}
+
+fn main() -> i32 {
+  print(sign(5));
+  println!("");
+  print(sign(0));
+  println!("after the panic");
+  return 0;
+}

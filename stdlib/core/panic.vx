@@ -1,0 +1,25 @@
+//===- panic.vx - Vx Standard Library -----------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Stopping a program on purpose. `panic(msg)` and `abort()` are built into the language; these
+// are its common reasons, as functions that never return. A function can end with a call to one
+// and needs no `return` after it.
+
+/// Stops the program: code that should never run did.
+fn unreachable() -> ! {
+  panic("internal error: entered unreachable code");
+}
+
+/// Stops the program: this code is not written yet.
+fn todo() -> ! {
+  panic("not yet implemented");
+}
+
+/// Stops the program: this case is not supported.
+fn unimplemented() -> ! {
+  panic("not implemented");
+}

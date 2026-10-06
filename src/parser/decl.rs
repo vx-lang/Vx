@@ -157,7 +157,7 @@ impl<'a> Parser<'a> {
             // In Vx, '->' is currently required for functions in parse_function
             return Err(self.error("Expected '->'"));
         }
-        let return_type = self.parse_type()?;
+        let return_type = self.parse_return_type()?;
 
         let mut requires = Vec::new();
         while self.match_token(&TokenType::Requires) {
@@ -922,7 +922,7 @@ impl<'a> Parser<'a> {
             self.consume(&TokenType::RightParen, "Expected ')'")?;
 
             self.consume(&TokenType::Arrow, "Expected '->'")?;
-            let return_type = self.parse_type()?;
+            let return_type = self.parse_return_type()?;
             self.consume(&TokenType::Semicolon, "Expected ';'")?;
 
             externs.push(ExternDecl {
@@ -996,7 +996,7 @@ impl<'a> Parser<'a> {
             let mut_params = std::mem::take(&mut self.mut_params);
             self.consume(&TokenType::RightParen, "Expected ')'")?;
             self.consume(&TokenType::Arrow, "Expected '->'")?;
-            let return_type = self.parse_type()?;
+            let return_type = self.parse_return_type()?;
             // A trait method is either a requirement, ending in `;`, or a default, whose body
             // an impl inherits unless it writes its own.
             let default_body = if self.match_token(&TokenType::LeftBrace) {

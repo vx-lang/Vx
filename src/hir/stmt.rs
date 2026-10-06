@@ -1165,6 +1165,14 @@ impl<'a> TypeChecker<'a> {
     fn check_return_stmt(&mut self, ret: &mut ReturnStmt, consume: bool, return_type: &Type) {
         let ReturnStmt { expr, span } = ret;
 
+        if crate::syntax::is_never_ty(return_type) {
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E3002,
+                "this function is declared `-> !`, so it cannot return".to_string(),
+                Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+            );
+        }
+
         // `return;` -- valid only where there is no value to return. Everything below types a
         // returned expression, so there is nothing left to do once the function type is checked.
         let Some(expr) = expr else {

@@ -1300,7 +1300,7 @@ impl<'c> MeliorGenerator<'c> {
                         .build()?,
                 );
             } else if let syntax::Type::Struct(name, _) = &func.return_type {
-                if name.as_ref() == "void" {
+                if syntax::is_void_ty(&func.return_type) && name.as_ref() != "none" {
                     current_block.append_operation(
                         melior::ir::operation::OperationBuilder::new("func.return", self.loc())
                             .build()?,
@@ -1550,9 +1550,14 @@ impl<'c> MeliorGenerator<'c> {
             // to a merge block nothing reaches, which the MLIR verifier rejects as a block with
             // no terminator. The same predicate stops the parser rewriting it to `return <expr>`.
             Statement::ExprStmt(s) => {
-                // `abort()` and `panic(msg)` end the block they are in: nothing after them runs.
+                // `abort()`, `panic(msg)` and a call to a `-> !` function end the block they are
+                // in: nothing after them runs.
                 if let Expr::FunctionCall(c) = &s.expr {
-                    if crate::syntax::is_abort_or_panic(c) {
+                    let never = self
+                        .syntax_functions
+                        .get(&c.name)
+                        .is_some_and(|f| syntax::is_never_ty(&f.return_type));
+                    if crate::syntax::is_abort_or_panic(c) || never {
                         let out = LowerToMelior::lower(s, self, block)?;
                         if let Some(b) = out {
                             b.append_operation(
@@ -1936,7 +1941,7 @@ impl<'c> MeliorGenerator<'c> {
                         field_types.push(self.field_type_str(ty)?);
                     }
                     format!("!llvm.struct<\"{}\", ({})>", name, field_types.join(","))
-                } else if name.as_ref() == "void" {
+                } else if name.as_ref() == "void" || name.as_ref() == "!" {
                     "none".to_string()
                 } else if name.contains('<') {
                     // A generic instance that was flattened to a bracketed nominal

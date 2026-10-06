@@ -1356,9 +1356,9 @@ impl<'a> TypeChecker<'a> {
             }
             walk(&func.return_type, &mut names);
             for n in names {
-                // `void`/`none` are spelled as nominals but are builtins, and a `Closure_N` is
+                // `void`/`none`/`!` are spelled as nominals but are builtins, and a `Closure_N` is
                 // synthesized by the compiler rather than written by anyone.
-                if n == "void" || n == "none" || n.starts_with("Closure_") {
+                if n == "void" || n == "none" || n == "!" || n.starts_with("Closure_") {
                     continue;
                 }
                 let sym = crate::symbol::Symbol::from(n.as_str());
@@ -1377,9 +1377,25 @@ impl<'a> TypeChecker<'a> {
         // A non-void function whose body can complete without returning. Left to codegen this
         // surfaced as `block with no terminator` naming an arith op, with no source location and
         // no statement of what was wrong -- unreadable for the most ordinary mistake there is.
-        if !crate::syntax::is_void_ty(&func.return_type)
-            && !crate::syntax::expr::block_always_exits(&func.body)
-        {
+        let functions = &self.env.functions;
+        let never = |name: &str| {
+            functions
+                .get(name)
+                .is_some_and(|f| crate::syntax::is_never_ty(&f.0))
+        };
+        let exits = crate::syntax::expr::block_always_exits(&func.body, &never);
+        if crate::syntax::is_never_ty(&func.return_type) && !exits {
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E3028,
+                format!(
+                    "'{}' is declared `-> !`, so it must never return, but its body can finish",
+                    func.name
+                ),
+                func.body
+                    .last()
+                    .map(|st| crate::diagnostic::SourceSpan::from_ast_span(&st.span())),
+            );
+        } else if !crate::syntax::is_void_ty(&func.return_type) && !exits {
             self.errors.error_with_code(
                 crate::diagnostic::DiagnosticCode::E3028,
                 format!(

@@ -1,0 +1,26 @@
+//===- never_returning_function_that_returns.vx - Vx Compiler *- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A function declared `-> !` must not return: not by reaching the end of its body, and not with
+// `return`.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK-DAG: E3028{{.*}}'finishes' is declared `-> !`, so it must never return, but its body can finish
+// CHECK-DAG: E3002{{.*}}this function is declared `-> !`, so it cannot return
+fn finishes(x : i32) -> ! {
+  if x > 0 {
+    panic("positive");
+  }
+}
+
+fn returns() -> ! {
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}

@@ -1,0 +1,31 @@
+//===- core_panic_todo.vx - Vx Compiler ----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `todo()` from `core::panic` stops the program with its message. `pick` ends with the call and
+// needs no `return` after it.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// RUN: not vxc %s --legacy-codegen 2>&1 | FileCheck %s
+// CHECK: 1
+// CHECK-NEXT: panic: not yet implemented
+// CHECK-NOT: after the panic
+import core::panic;
+
+fn pick(x : i32) -> i32 {
+  if x > 0 {
+    return 1;
+  }
+  todo();
+}
+
+fn main() -> i32 {
+  print(pick(5));
+  println!("");
+  print(pick(0));
+  println!("after the panic");
+  return 0;
+}

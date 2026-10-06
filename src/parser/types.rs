@@ -147,6 +147,14 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// A function's return type: any type, or `!` for a function that never returns.
+    pub(crate) fn parse_return_type(&mut self) -> ParseResult<'a, Type> {
+        if self.match_token(&TokenType::Bang) {
+            return Ok(crate::syntax::never_ty());
+        }
+        self.parse_type()
+    }
+
     pub(crate) fn parse_type(&mut self) -> ParseResult<'a, Type> {
         // `&&T` is a reference to a reference; the lexer made the two `&`s one token.
         if self.match_token(&TokenType::AndAnd) {

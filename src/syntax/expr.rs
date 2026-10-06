@@ -613,12 +613,14 @@ pub fn match_yields_a_value(m: &MatchExpr) -> bool {
 /// `abort()` and `panic(msg)` count as exits: they are primitives that end the process, so no path
 /// continues past them. `assert` deliberately does *not* -- it only aborts when its condition is false, so control
 /// reaches the next statement in general.
-pub fn block_always_exits(stmts: &[Statement]) -> bool {
-    stmts.iter().any(statement_always_exits)
+///
+/// `never(name)` says whether the function `name` is declared `-> !`; a call to one is an exit too.
+pub fn block_always_exits(stmts: &[Statement], never: &dyn Fn(&str) -> bool) -> bool {
+    stmts.iter().any(|s| statement_always_exits(s, never))
 }
 
 /// Whether this single statement ends control flow on every path through it.
-pub fn statement_always_exits(stmt: &Statement) -> bool {
+pub fn statement_always_exits(stmt: &Statement, never: &dyn Fn(&str) -> bool) -> bool {
     match stmt {
         Statement::Return(_) => true,
         Statement::ExprStmt(ExprStmtStmt { expr, .. }) => match expr {
@@ -626,11 +628,11 @@ pub fn statement_always_exits(stmt: &Statement) -> bool {
                 then_block,
                 else_block: Some(else_block),
                 ..
-            }) => block_always_exits(then_block) && block_always_exits(else_block),
+            }) => block_always_exits(then_block, never) && block_always_exits(else_block, never),
             Expr::Match(MatchExpr { arms, .. }) => {
-                !arms.is_empty() && arms.iter().all(|a| block_always_exits(&a.body))
+                !arms.is_empty() && arms.iter().all(|a| block_always_exits(&a.body, never))
             }
-            Expr::FunctionCall(c) => is_abort_or_panic(c),
+            Expr::FunctionCall(c) => is_abort_or_panic(c) || never(c.name.as_ref()),
             _ => false,
         },
         _ => false,

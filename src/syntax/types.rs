@@ -69,9 +69,21 @@ pub fn scalar_of(ty: &Type) -> Option<ElementType> {
 }
 
 /// Whether a return type is `void` — spelled `Type::Struct("void", _)`. A void-returning call
-/// produces no result value; the flat emitter prints `-> ()`.
+/// produces no result value; the flat emitter prints `-> ()`. `!` counts too: a function that
+/// never returns has no result value either.
 pub fn is_void_ty(ty: &Type) -> bool {
     matches!(ty, Type::Struct(n, _) if n.as_ref() == "void" || n.as_ref() == "none")
+        || is_never_ty(ty)
+}
+
+/// The return type `!`: the function never returns. Spelled `Type::Struct("!", _)`, like `void`.
+pub fn never_ty() -> Type {
+    Type::Struct("!".into(), None)
+}
+
+/// Whether a return type is `!`.
+pub fn is_never_ty(ty: &Type) -> bool {
+    matches!(ty, Type::Struct(n, _) if n.as_ref() == "!")
 }
 
 /// A module's top-level names mapped to their GIDs, and every module's table by module path.
