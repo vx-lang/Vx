@@ -332,6 +332,76 @@ macro_rules! instantiate_file_ffi {
     () => {
         use std::io::{Read, Seek, SeekFrom, Write};
 
+        // Private to the bridge, but part of its i32 ABI. Keep these values in sync with
+        // the table in docs/implementation_plans/io_error_contract.md.
+        const VX_FILE_STATUS_OK: i32 = 0;
+        const VX_FILE_STATUS_INVALID_ARGUMENT: i32 = -1;
+        const VX_FILE_ERROR_NOT_FOUND: i32 = 1;
+        const VX_FILE_ERROR_PERMISSION_DENIED: i32 = 2;
+        const VX_FILE_ERROR_ALREADY_EXISTS: i32 = 3;
+        const VX_FILE_ERROR_INVALID_INPUT: i32 = 4;
+        const VX_FILE_ERROR_INTERRUPTED: i32 = 5;
+        const VX_FILE_ERROR_WOULD_BLOCK: i32 = 6;
+        const VX_FILE_ERROR_UNEXPECTED_EOF: i32 = 7;
+        const VX_FILE_ERROR_WRITE_ZERO: i32 = 8;
+        const VX_FILE_ERROR_OUT_OF_MEMORY: i32 = 9;
+        const VX_FILE_ERROR_LIMIT_EXCEEDED: i32 = 10;
+        const VX_FILE_ERROR_UNSUPPORTED: i32 = 11;
+        const VX_FILE_ERROR_OTHER: i32 = 12;
+
+        fn vx_file_error_kind(kind: std::io::ErrorKind) -> i32 {
+            match kind {
+                std::io::ErrorKind::NotFound => VX_FILE_ERROR_NOT_FOUND,
+                std::io::ErrorKind::PermissionDenied => VX_FILE_ERROR_PERMISSION_DENIED,
+                std::io::ErrorKind::AlreadyExists => VX_FILE_ERROR_ALREADY_EXISTS,
+                std::io::ErrorKind::InvalidInput => VX_FILE_ERROR_INVALID_INPUT,
+                std::io::ErrorKind::Interrupted => VX_FILE_ERROR_INTERRUPTED,
+                std::io::ErrorKind::WouldBlock => VX_FILE_ERROR_WOULD_BLOCK,
+                std::io::ErrorKind::UnexpectedEof => VX_FILE_ERROR_UNEXPECTED_EOF,
+                std::io::ErrorKind::WriteZero => VX_FILE_ERROR_WRITE_ZERO,
+                std::io::ErrorKind::OutOfMemory => VX_FILE_ERROR_OUT_OF_MEMORY,
+                std::io::ErrorKind::FileTooLarge => VX_FILE_ERROR_LIMIT_EXCEEDED,
+                std::io::ErrorKind::Unsupported => VX_FILE_ERROR_UNSUPPORTED,
+                _ => VX_FILE_ERROR_OTHER,
+            }
+        }
+
+        /// # Safety
+        /// Every non-null output must be aligned, writable, and disjoint from the others.
+        unsafe fn vx_file_clear_transfer_outputs(
+            count: *mut u64,
+            native_code: *mut i32,
+            has_native_code: *mut bool,
+        ) {
+            // Clear every provided output even when another output pointer is null.
+            unsafe {
+                if !count.is_null() {
+                    *count = 0;
+                }
+                if !native_code.is_null() {
+                    *native_code = 0;
+                }
+                if !has_native_code.is_null() {
+                    *has_native_code = false;
+                }
+            }
+        }
+
+        /// # Safety
+        /// Both output pointers must be non-null, aligned, writable, and disjoint.
+        unsafe fn vx_file_store_error(
+            error: &std::io::Error,
+            native_code: *mut i32,
+            has_native_code: *mut bool,
+        ) -> i32 {
+            let captured_code = error.raw_os_error();
+            unsafe {
+                *has_native_code = captured_code.is_some();
+                *native_code = captured_code.unwrap_or(0);
+            }
+            vx_file_error_kind(error.kind())
+        }
+
         #[no_mangle]
         pub extern "C" fn vx_file_open(
             c_path: *const std::ffi::c_char,
@@ -352,14 +422,20 @@ macro_rules! instantiate_file_ffi {
                 Err(_) => return std::ptr::null_mut(),
             };
 
-            // Mode flags: 0 = read, 1 = write, 2 = read/write (create)
+            // The Vx OpenMode variants map to these three values. Reject any
+            // other integer passed by a direct FFI caller.
             let mut opts = std::fs::OpenOptions::new();
-            if mode == 0 {
-                opts.read(true);
-            } else if mode == 1 {
-                opts.write(true).create(true).truncate(true);
-            } else {
-                opts.read(true).write(true).create(true);
+            match mode {
+                0 => {
+                    opts.read(true);
+                }
+                1 => {
+                    opts.write(true).create(true).truncate(true);
+                }
+                2 => {
+                    opts.read(true).write(true).create(true);
+                }
+                _ => return std::ptr::null_mut(),
             }
 
             if let Ok(file) = opts.open(path) {
@@ -396,6 +472,90 @@ macro_rules! instantiate_file_ffi {
             let file = unsafe { &mut *(ptr as *mut std::fs::File) };
             let buf_slice = unsafe { std::slice::from_raw_parts(buffer, len as usize) };
             file.write(buf_slice).unwrap_or(0) as u64
+        }
+
+        /// Zero is success, -1 is invalid arguments, and 1..=12 is a portable
+        /// OS error category. Every non-null output is initialized on every path:
+        /// count is zero except on success; native_code is meaningful only when
+        /// has_native_code is true. See io_error_contract.md for the ABI table.
+        /// The native code is copied before classification or other work.
+        ///
+        /// # Safety
+        /// A null `ptr` or `buffer` is accepted and reports invalid arguments. A
+        /// non-null `ptr` must point to a live bridge-owned `std::fs::File`, with no
+        /// concurrent access or drop. When `ptr` and `buffer` are non-null and
+        /// `0 < len <= isize::MAX`, `buffer` must point to `len` initialized,
+        /// writable bytes. Every non-null output pointer must be aligned and
+        /// writable, even if another argument is invalid. The file, buffer,
+        /// and outputs must not overlap for the duration of the call.
+        #[no_mangle]
+        pub unsafe extern "C" fn vx_file_try_read(
+            ptr: *mut std::ffi::c_void,
+            buffer: *mut u8,
+            len: u64,
+            count: *mut u64,
+            native_code: *mut i32,
+            has_native_code: *mut bool,
+        ) -> i32 {
+            unsafe { vx_file_clear_transfer_outputs(count, native_code, has_native_code) };
+            if count.is_null() || native_code.is_null() || has_native_code.is_null() {
+                return VX_FILE_STATUS_INVALID_ARGUMENT;
+            }
+            if ptr.is_null() || len > isize::MAX as u64 || (len != 0 && buffer.is_null()) {
+                return VX_FILE_STATUS_INVALID_ARGUMENT;
+            }
+            if len == 0 {
+                return VX_FILE_STATUS_OK;
+            }
+            let file = unsafe { &mut *(ptr as *mut std::fs::File) };
+            let buf_slice = unsafe { std::slice::from_raw_parts_mut(buffer, len as usize) };
+            match file.read(buf_slice) {
+                Ok(read_count) => {
+                    unsafe { *count = read_count as u64 };
+                    VX_FILE_STATUS_OK
+                }
+                Err(error) => unsafe { vx_file_store_error(&error, native_code, has_native_code) },
+            }
+        }
+
+        /// Uses the same status and output contract as `vx_file_try_read`.
+        ///
+        /// # Safety
+        /// A null `ptr` or `buffer` is accepted and reports invalid arguments. A
+        /// non-null `ptr` must point to a live bridge-owned `std::fs::File`, with no
+        /// concurrent access or drop. When `ptr` and `buffer` are non-null and
+        /// `0 < len <= isize::MAX`, `buffer` must point to `len` initialized,
+        /// readable bytes. Every non-null output pointer must be aligned and
+        /// writable, even if another argument is invalid. The file, buffer,
+        /// and outputs must not overlap for the duration of the call.
+        #[no_mangle]
+        pub unsafe extern "C" fn vx_file_try_write(
+            ptr: *mut std::ffi::c_void,
+            buffer: *const u8,
+            len: u64,
+            count: *mut u64,
+            native_code: *mut i32,
+            has_native_code: *mut bool,
+        ) -> i32 {
+            unsafe { vx_file_clear_transfer_outputs(count, native_code, has_native_code) };
+            if count.is_null() || native_code.is_null() || has_native_code.is_null() {
+                return VX_FILE_STATUS_INVALID_ARGUMENT;
+            }
+            if ptr.is_null() || len > isize::MAX as u64 || (len != 0 && buffer.is_null()) {
+                return VX_FILE_STATUS_INVALID_ARGUMENT;
+            }
+            if len == 0 {
+                return VX_FILE_STATUS_OK;
+            }
+            let file = unsafe { &mut *(ptr as *mut std::fs::File) };
+            let buf_slice = unsafe { std::slice::from_raw_parts(buffer, len as usize) };
+            match file.write(buf_slice) {
+                Ok(written_count) => {
+                    unsafe { *count = written_count as u64 };
+                    VX_FILE_STATUS_OK
+                }
+                Err(error) => unsafe { vx_file_store_error(&error, native_code, has_native_code) },
+            }
         }
 
         #[no_mangle]

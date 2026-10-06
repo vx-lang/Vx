@@ -12,7 +12,7 @@ import std::fs;
 
 fn main() -> i32 {
   unsafe {
-    let mut file = File::open("unused", 1);
+    let mut file = File::open("unused", OpenMode::Write());
     let length : i64 = 5;
     let _count = file.write(0 as *const u8, length);
   }

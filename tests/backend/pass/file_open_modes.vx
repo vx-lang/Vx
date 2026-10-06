@@ -1,0 +1,94 @@
+//===- file_open_modes.vx - Vx Compiler -------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+import core::mem;
+import std::fs;
+
+extern {
+  fn vx_get_temp_file(filename : *const i8) -> *mut i8;
+  fn vx_free_temp_file(ptr : *mut i8) -> i32;
+  fn remove(filename : *const i8) -> i32;
+}
+
+fn main() -> i32 {
+  unsafe {
+    let existing_path = vx_get_temp_file("file_open_modes_existing.txt");
+    let missing_path = vx_get_temp_file("file_open_modes_missing.txt");
+    remove(missing_path);
+
+    // Seed content that a read-only or read-write open must preserve.
+    let original : u8 = 65;
+    let replacement : u8 = 66;
+    let mut seed = File::open(existing_path, OpenMode::Write());
+    let seeded = seed.write((&original) as *const u8, 1);
+    drop(seed);
+
+    let mut reader = File::open(existing_path, OpenMode::Read());
+    let mut first_read : u8 = 0;
+    let read_count = reader.read((&mut first_read) as *mut u8, 1);
+    let denied_write = reader.write((&replacement) as *const u8, 1);
+    drop(reader);
+
+    // A failed write through Read must leave the original byte intact.
+    let mut preserved_reader = File::open(existing_path, OpenMode::Read());
+    let mut after_denied_write : u8 = 0;
+    let preserved_count = preserved_reader.read((&mut after_denied_write) as *mut u8, 1);
+    drop(preserved_reader);
+
+    // ReadWriteCreate must neither truncate the existing file nor be read-only.
+    let mut reader_writer = File::open(existing_path, OpenMode::ReadWriteCreate());
+    let mut existing_byte : u8 = 0;
+    let existing_count = reader_writer.read((&mut existing_byte) as *mut u8, 1);
+    let updated = reader_writer.write((&replacement) as *const u8, 1);
+    drop(reader_writer);
+
+    // Opening an existing file for Write must truncate it.
+    let truncating_writer = File::open(existing_path, OpenMode::Write());
+    drop(truncating_writer);
+    let mut empty_reader = File::open(existing_path, OpenMode::Read());
+    let mut after_truncate : u8 = 0;
+    let after_truncate_count = empty_reader.read((&mut after_truncate) as *mut u8, 1);
+    drop(empty_reader);
+
+    // ReadWriteCreate must create a missing path and permit both operations.
+    let mut created = File::open(missing_path, OpenMode::ReadWriteCreate());
+    let created_write = created.write((&original) as *const u8, 1);
+    let created_seek = created.seek(0, 0);
+    let mut created_byte : u8 = 0;
+    let created_read = created.read((&mut created_byte) as *mut u8, 1);
+    drop(created);
+
+    remove(existing_path);
+    remove(missing_path);
+    vx_free_temp_file(existing_path);
+    vx_free_temp_file(missing_path);
+
+    if seeded != 1 || read_count != 1 || first_read != original {
+      print!("Read did not preserve existing content");
+      return 1;
+    }
+    if denied_write != 0 || preserved_count != 1 || after_denied_write != original {
+      print!("Read allowed writing");
+      return 1;
+    }
+    if existing_count != 1 || existing_byte != original || updated != 1 {
+      print!("ReadWriteCreate did not preserve existing content");
+      return 1;
+    }
+    if after_truncate_count != 0 {
+      print!("Write did not truncate existing content");
+      return 1;
+    }
+    if created_write != 1 || created_seek != 0 || created_read != 1 || created_byte != original {
+      print!("ReadWriteCreate did not create a readable and writable file");
+      return 1;
+    }
+  }
+  print!("named modes enforce their opening behavior");
+  return 0;
+}
+// EXPECT: named modes enforce their opening behavior

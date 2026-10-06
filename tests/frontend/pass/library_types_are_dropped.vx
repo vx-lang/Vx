@@ -28,7 +28,7 @@ import std::string;
 import std::vec;
 
 unsafe fn resources() -> void {
-  let file = File::open("unused", 0);
+  let file = File::open("unused", OpenMode::Read());
   let stream = TcpStream::connect("127.0.0.1:1");
   let socket = UdpSocket::bind("127.0.0.1:0");
   let listener = TcpListener::bind("127.0.0.1:0");

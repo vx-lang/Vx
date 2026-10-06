@@ -17,7 +17,7 @@ fn file_close_has_no_return_value_on_both_sides_of_the_ffi() -> Result<(), Strin
         "import std::fs;\n\
          fn main() -> i32 {\n\
            unsafe {\n\
-             let file = File::open(\"/tmp/vx-close-abi\", 0);\n\
+             let file = File::open(\"/tmp/vx-close-abi\", OpenMode::Read());\n\
            }\n\
            return 0;\n\
          }\n",

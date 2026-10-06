@@ -38,6 +38,15 @@ extern {
   fn munmap(addr: *mut i8, len: i64) -> i32;
 }
 
+/// The three file-opening behaviors supported by the current host bridge.
+enum OpenMode {
+  Read,
+  Write,
+  ReadWriteCreate,
+}
+
+impl Copy for OpenMode {}
+
 /// An open file, held by the Rust core behind an opaque pointer.
 ///
 /// Closed when it is dropped.
@@ -46,8 +55,7 @@ struct File {
 }
 
 impl File {
-  // Mode flags: 0 = read, 1 = write, 2 = read/write (create)
-  /// Open `path`. `mode` is 0 to read, 1 to write, and anything else to read and write.
+  /// Open `path` with a named mode.
   ///
   /// Writing creates the file and truncates it; read-and-write creates it and does not
   /// truncate. Reading does not create it.
@@ -58,8 +66,20 @@ impl File {
   /// on it answers 0 or -1 rather than doing anything.
   ///
   /// Unsafe because nothing checks that `path` points at a NUL-terminated string.
-  unsafe fn open(path : *const i8, mode : i32) -> File {
-    let ptr = unsafe { vx_file_open(path, mode) };
+  unsafe fn open(path : *const i8, mode : OpenMode) -> File {
+    let mut mode_code : i32 = 0;
+    match mode {
+      OpenMode::Read() => {
+        mode_code = 0;
+      }
+      OpenMode::Write() => {
+        mode_code = 1;
+      }
+      OpenMode::ReadWriteCreate() => {
+        mode_code = 2;
+      }
+    }
+    let ptr = unsafe { vx_file_open(path, mode_code) };
     File {
       ptr: ptr
     }
