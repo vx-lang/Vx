@@ -18,6 +18,9 @@ use std::process::Command;
 /// Programs the flat path declines today, relative to `tests/backend/pass/`.
 /// A worklist, not an exemption list: shrinking it is Vx#383.
 const KNOWN_DECLINES: &[&str] = &[
+    // `partial_cmp` answers an `Option<Ordering>`, and the flat path declines its `unwrap`
+    // ("a parameter type").
+    "backend/pass/comparisons_through_partial_ord.vx",
     // `c as ||->i32`: the flat path declines a cast to the built-in closure type ("a cast to a
     // non-scalar"); the AST path compiles it.
     "backend/pass/returning_a_closure_that_uses_nothing.vx",

@@ -12,7 +12,7 @@
 
 // CHECK-DAG: Error[E3004] at 34:11: `+` is not defined for Point: it needs an impl of `core::ops::Add`
 // CHECK-DAG: Error[E3004] at 35:11: `==` is not defined for Point: it needs an impl of `core::cmp::PartialEq`
-// CHECK-DAG: Error[E3004] at 36:11: `<` is not defined for Point: it needs an impl of `core::cmp::Ord`
+// CHECK-DAG: Error[E3004] at 36:11: `<` is not defined for Point: it needs an impl of `core::cmp::PartialOrd`
 // CHECK: 3 error(s) emitted
 
 import core::marker;
