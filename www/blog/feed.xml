@@ -18,6 +18,15 @@
   </entry>
 
   <entry>
+    <title>Vx fully embraces {ML, IR, MLIR}</title>
+    <link href="https://vxlang.org/blog/vx-fully-embraces-ml-ir-mlir.html"/>
+    <id>https://vxlang.org/blog/vx-fully-embraces-ml-ir-mlir.html</id>
+    <updated>2026-10-03T18:00:00Z</updated>
+    <author><name>Aditya Kumar</name></author>
+    <summary>Vx compiles tensor programs through its own flat intermediate representation, which a library can ship as instead of source, and its own MLIR dialect, defined in TableGen, which keeps where data lives and where code runs. Vx's passes lower that into the upstream gpu, linalg and llvm dialects, and MLIR's NVVM path turns a GPU region into PTX. Autodiff runs through Enzyme on scalars, the Neural Engine uses prebuilt CoreML models, and general GPU kernels on declared machines are not finished.</summary>
+  </entry>
+
+  <entry>
     <title>Can the borrow checker algorithm be auto-vectorized? The answer is yes!</title>
     <link href="https://vxlang.org/blog/can-the-borrow-checker-be-auto-vectorized.html"/>
     <id>https://vxlang.org/blog/can-the-borrow-checker-be-auto-vectorized.html</id>

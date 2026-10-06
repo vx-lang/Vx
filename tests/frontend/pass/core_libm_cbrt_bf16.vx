@@ -1,0 +1,32 @@
+//===- core_libm_cbrt_bf16.vx - Vx Compiler ------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// bf16 `cbrt`, LLVM libc's `cbrtbf16` (the f32 `cbrtf` rounded to bf16) in `core::libm`, on every
+// bf16 bit pattern: a hash of the result bits (every NaN counted as 32704). The expected hash is
+// LLVM libc's (f475f085bf7b, built with FMA).
+//
+// It runs at -O2: at the default level, LLVM's x86 back end flushes a subnormal bf16 to zero
+// when it is passed between functions on a CPU with AVX512-BF16.
+//
+// RUN: vxc %s -O2 2>&1 | FileCheck %s
+// RUN: vxc %s -O2 --legacy-codegen 2>&1 | FileCheck %s
+// CHECK: 16694014800073664260
+import core::num;
+
+fn main() -> i32 {
+  let mut h : u64 = 0u64;
+  for i in 0..65536 {
+    let r = libm_bf16_from_bits(i as u16).cbrt();
+    let mut rb = libm_bf16_to_bits(r) as u64;
+    if r != r {
+      rb = 32704u64;
+    }
+    h = (h ^ rb).wrapping_mul(1099511628211u64);
+  }
+  print(h);
+  return 0;
+}

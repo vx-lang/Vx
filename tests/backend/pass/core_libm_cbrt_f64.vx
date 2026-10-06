@@ -1,0 +1,105 @@
+//===- core_libm_cbrt_f64.vx - Vx Compiler -------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// f64 `cbrt`, ported from LLVM libc's `cbrt` into `core::libm`, against LLVM libc itself
+// (f475f085bf7b, built with FMA). It prints the bits of `x.cbrt()` (a NaN as 9221120237041090560)
+// for four inputs that need the second Newton step (found by searching), exact cubes (27, -1/8), 3,
+// subnormals, the largest double, zeros, infinities and a NaN; then hashes of 2^20 random bit
+// patterns, of 2^20 x of any exponent, and of 2^20 exact cubes n^3 2^(3k) (n below 2^17) and their
+// neighbours one unit away; then of 2^16 of the last kind through `libm_cbrt_value` with
+// `always_accurate`, which runs the 128-bit step that no known input needs, against LLVM libc with
+// its two checks turned off. The port also matched LLVM libc on 2^30 x of any exponent, 2^28 of
+// each other kind, 2^27 with the first check off and 2^26 with both off.
+//
+// EXPECT: 5611864107744236046 13108816948121482473 5123154099966182364 15188418451920058319 4613937818241073152 13826050856027422720 4609174133800058614 2994893752201379840 2999005228735928478 3072625526210130571 4607182418800017408 6144080472076808843 0 9223372036854775808 9218868437227405312 18442240474082181120 9221120237041090560 10441388108775520854 1778801582924368633 18055383073628660944 16215193561169633315
+import core::num;
+import core::libm;
+
+fn bits(r : f64) -> u64 {
+  if r != r {
+    return 9221120237041090560u64;
+  }
+  return r.to_bits();
+}
+
+fn check(x : u64) -> i32 {
+  print(bits(f64::from_bits(x).cbrt()));
+  print!(" ");
+  return 0;
+}
+
+fn next(s : u64) -> u64 {
+  let a = s ^ (s << 13u64);
+  let b = a ^ (a >> 7u64);
+  return b ^ (b << 17u64);
+}
+
+/// Kind 1: the bits of `s`; 0: `s` with an exponent below 2047; 2: an exact cube n^3 2^(3k), or
+/// one unit either side of it, from `t`.
+fn shape(s : u64, t : u64, kind : i32) -> f64 {
+  if kind == 1 {
+    return f64::from_bits(s);
+  }
+  if kind == 0 {
+    let e = (s >> 52u64) % 2047u64;
+    return f64::from_bits((s & 9227875636482146303u64) | (e << 52u64));
+  }
+  let n = ((t & 131071u64) + 1u64) as f64;
+  let k : i64 = (((t >> 17u64) % 600u64) as i64) - 300;
+  let e3 = 3 * k;
+  let half = e3 / 2;
+  let f1 = f64::from_bits(((1023 + half) as u64) << 52u64);
+  let f2 = f64::from_bits(((1023 + e3 - half) as u64) << 52u64);
+  let mut b = (n * n * n * f1 * f2).to_bits();
+  let d : i64 = (((t >> 40u64) % 3u64) as i64) - 1;
+  b = ((b as i64) + d) as u64;
+  if ((s >> 63u64) & 1u64) == 1u64 {
+    b = b ^ 9223372036854775808u64;
+  }
+  return f64::from_bits(b);
+}
+
+fn hash(kind : i32, count : i32, always_accurate : bool) -> u64 {
+  let mut s : u64 = 88172645463325252u64;
+  let mut h : u64 = 0u64;
+  for i in 0..count {
+    s = next(s);
+    let x = s;
+    s = next(s);
+    let r = libm_cbrt_value(shape(x, s, kind), always_accurate);
+    h = (h ^ bits(r)).wrapping_mul(1099511628211u64);
+  }
+  return h;
+}
+
+fn main() -> i32 {
+  let _r0 = check(7621325839145194037u64);
+  let _r1 = check(11665772002055700179u64);
+  let _r2 = check(6156106553905544701u64);
+  let _r3 = check(17905002047456767385u64);
+  let _r4 = check(4628293042053316608u64);
+  let _r5 = check(13817043656772681728u64);
+  let _r6 = check(4613937818241073152u64);
+  let _r7 = check(1u64);
+  let _r8 = check(7u64);
+  let _r9 = check(4503599627370496u64);
+  let _r10 = check(4607182418800017408u64);
+  let _r11 = check(9218868437227405311u64);
+  let _r12 = check(0u64);
+  let _r13 = check(9223372036854775808u64);
+  let _r14 = check(9218868437227405312u64);
+  let _r15 = check(18442240474082181120u64);
+  let _r16 = check(9221120237041090560u64);
+  print(hash(1, 1048576, false));
+  print!(" ");
+  print(hash(0, 1048576, false));
+  print!(" ");
+  print(hash(2, 1048576, false));
+  print!(" ");
+  print(hash(2, 65536, true));
+  return 0;
+}

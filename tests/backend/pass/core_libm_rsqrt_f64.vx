@@ -1,0 +1,82 @@
+//===- core_libm_rsqrt_f64.vx - Vx Compiler ------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// f64 `rsqrt`, which LLVM libc does not have in double precision, so `core::libm` divides 1 by a
+// double-double square root. The expected values are the correctly rounded ones, from 113-bit
+// libquadmath. It prints the bits of `x.rsqrt()` (a NaN as 9221120237041090560) for powers of four,
+// 3, subnormals, the edge at 2^-900 below which x is scaled first, the largest double, zeros, a
+// negative number, infinities and a NaN; then hashes of 2^20 random positive x of any exponent and
+// of 2^20 squares n^2 4^k (n below 2^26) and their neighbours one unit away. On 2^22 of each kind
+// every result was the correctly rounded value.
+//
+// EXPECT: 4602678819172646912 4611686018427387904 4603375528459645724 7025615418697973760 6908521828386340864 6633802251116740608 6633802251116740608 2301339409586323456 9218868437227405312 18442240474082181120 9221120237041090560 0 9221120237041090560 9221120237041090560 4272506388530121460 12991985690309642196
+import core::num;
+
+fn bits(r : f64) -> u64 {
+  if r != r {
+    return 9221120237041090560u64;
+  }
+  return r.to_bits();
+}
+
+fn next(s : u64) -> u64 {
+  let a = s ^ (s << 13u64);
+  let b = a ^ (a >> 7u64);
+  return b ^ (b << 17u64);
+}
+
+fn check(x : u64) -> i32 {
+  print(bits(f64::from_bits(x).rsqrt()));
+  print!(" ");
+  return 0;
+}
+
+/// Kind 0: positive x of any exponent; 1: n^2 4^k, or one unit either side of it.
+fn hash(kind : i32) -> u64 {
+  let mut s : u64 = 88172645463325252u64;
+  let mut h : u64 = 0u64;
+  for i in 0..1048576 {
+    s = next(s);
+    let a = s;
+    s = next(s);
+    let t = s;
+    let mut x : f64 = 0.0;
+    if kind == 0 {
+      x = f64::from_bits((a & 4503599627370495u64) | (((a >> 52u64) % 2047u64) << 52u64));
+    } else {
+      let n = ((t & 67108863u64) + 1u64) as f64;
+      let k : i64 = (((t >> 26u64) % 400u64) as i64) - 200;
+      let f = f64::from_bits(((1023 + 2 * k) as u64) << 52u64);
+      let mut b = (n * n * f).to_bits();
+      b = ((b as i64) + (((a >> 40u64) % 3u64) as i64) - 1) as u64;
+      x = f64::from_bits(b);
+    }
+    h = (h ^ bits(x.rsqrt())).wrapping_mul(1099511628211u64);
+  }
+  return h;
+}
+
+fn main() -> i32 {
+  let _r0 = check(4616189618054758400u64);
+  let _r1 = check(4598175219545276416u64);
+  let _r2 = check(4613937818241073152u64);
+  let _r3 = check(1u64);
+  let _r4 = check(4503599627370496u64);
+  let _r5 = check(553942754166571008u64);
+  let _r6 = check(553942754166571007u64);
+  let _r7 = check(9218868437227405311u64);
+  let _r8 = check(0u64);
+  let _r9 = check(9223372036854775808u64);
+  let _r10 = check(13830554455654793216u64);
+  let _r11 = check(9218868437227405312u64);
+  let _r12 = check(18442240474082181120u64);
+  let _r13 = check(9221120237041090560u64);
+  print(hash(0));
+  print!(" ");
+  print(hash(1));
+  return 0;
+}

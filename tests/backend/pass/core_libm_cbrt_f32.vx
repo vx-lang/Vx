@@ -1,0 +1,70 @@
+//===- core_libm_cbrt_f32.vx - Vx Compiler -------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// f32 `cbrt`, ported from LLVM libc's `cbrtf` into `core::libm`, against LLVM libc itself
+// (f475f085bf7b, built with FMA). It prints the bits of `x.cbrt()` (a NaN as 2143289344) for exact
+// cubes, 3, 10, the smallest subnormal and normal, the largest f32, zeros, infinities and a NaN;
+// then hashes of 2^20 random bit patterns and of 2^20 x from 1 to 8. The port matched LLVM libc on
+// all 2^32 inputs.
+//
+// EXPECT: 1077936128 3204448256 1069063074 648103192 1422602229 713031680 0 2147483648 2139095040 4286578688 2143289344 1074389570 17023013006582135920 10182518799395882341
+import core::num;
+
+fn bits(r : f32) -> u64 {
+  if r != r {
+    return 2143289344u64;
+  }
+  return libm_f32_to_bits(r) as u64;
+}
+
+fn check(x : u32) -> i32 {
+  print(bits(libm_f32_from_bits(x).cbrt()));
+  print!(" ");
+  return 0;
+}
+
+fn next(s : u64) -> u64 {
+  let a = s ^ (s << 13u64);
+  let b = a ^ (a >> 7u64);
+  return b ^ (b << 17u64);
+}
+
+/// Kind 0: the low 32 bits of `s`; 1: x from 1 to 8, from the bits of `t`.
+fn hash(kind : i32) -> u64 {
+  let mut s : u64 = 88172645463325252u64;
+  let mut h : u64 = 0u64;
+  for i in 0..1048576 {
+    s = next(s);
+    let x = s;
+    s = next(s);
+    let mut xb = x as u32;
+    if kind == 1 {
+      xb = ((s & 8388607u64) | ((127u64 + (s >> 23u64) % 3u64) << 23u64)) as u32;
+    }
+    h = (h ^ bits(libm_f32_from_bits(xb).cbrt())).wrapping_mul(1099511628211u64);
+  }
+  return h;
+}
+
+fn main() -> i32 {
+  let _r0 = check(1104674816u32);
+  let _r1 = check(3187671040u32);
+  let _r2 = check(1077936128u32);
+  let _r3 = check(1u32);
+  let _r4 = check(2139095039u32);
+  let _r5 = check(8388608u32);
+  let _r6 = check(0u32);
+  let _r7 = check(2147483648u32);
+  let _r8 = check(2139095040u32);
+  let _r9 = check(4286578688u32);
+  let _r10 = check(2143289344u32);
+  let _r11 = check(1092616192u32);
+  print(hash(0));
+  print!(" ");
+  print(hash(1));
+  return 0;
+}

@@ -472,28 +472,28 @@ macro_rules! instantiate_tcp_stream_ffi {
         pub extern "C" fn vx_tcp_stream_read(
             ptr: *mut std::ffi::c_void,
             buffer: *mut u8,
-            len: usize,
-        ) -> usize {
-            if ptr.is_null() || buffer.is_null() || len == 0 {
+            len: u64,
+        ) -> u64 {
+            if ptr.is_null() || buffer.is_null() || len == 0 || len > isize::MAX as u64 {
                 return 0;
             }
             let stream = unsafe { &mut *(ptr as *mut std::net::TcpStream) };
-            let buf_slice = unsafe { std::slice::from_raw_parts_mut(buffer, len) };
-            stream.read(buf_slice).unwrap_or(0)
+            let buf_slice = unsafe { std::slice::from_raw_parts_mut(buffer, len as usize) };
+            stream.read(buf_slice).unwrap_or(0) as u64
         }
 
         #[no_mangle]
         pub extern "C" fn vx_tcp_stream_write(
             ptr: *mut std::ffi::c_void,
             buffer: *const u8,
-            len: usize,
-        ) -> usize {
-            if ptr.is_null() || buffer.is_null() || len == 0 {
+            len: u64,
+        ) -> u64 {
+            if ptr.is_null() || buffer.is_null() || len == 0 || len > isize::MAX as u64 {
                 return 0;
             }
             let stream = unsafe { &mut *(ptr as *mut std::net::TcpStream) };
-            let buf_slice = unsafe { std::slice::from_raw_parts(buffer, len) };
-            stream.write(buf_slice).unwrap_or(0)
+            let buf_slice = unsafe { std::slice::from_raw_parts(buffer, len as usize) };
+            stream.write(buf_slice).unwrap_or(0) as u64
         }
 
         #[no_mangle]
@@ -529,31 +529,36 @@ macro_rules! instantiate_udp_socket_ffi {
         pub extern "C" fn vx_udp_socket_recv(
             ptr: *mut std::ffi::c_void,
             buffer: *mut u8,
-            len: usize,
-        ) -> usize {
-            if ptr.is_null() || buffer.is_null() || len == 0 {
+            len: u64,
+        ) -> u64 {
+            if ptr.is_null() || buffer.is_null() || len == 0 || len > isize::MAX as u64 {
                 return 0;
             }
             let socket = unsafe { &mut *(ptr as *mut std::net::UdpSocket) };
-            let buf_slice = unsafe { std::slice::from_raw_parts_mut(buffer, len) };
+            let buf_slice = unsafe { std::slice::from_raw_parts_mut(buffer, len as usize) };
             // Note: We ignore the peer address for simplicity in the FFI.
-            socket.recv(buf_slice).unwrap_or(0)
+            socket.recv(buf_slice).unwrap_or(0) as u64
         }
 
         #[no_mangle]
         pub extern "C" fn vx_udp_socket_send_to(
             ptr: *mut std::ffi::c_void,
             buffer: *const u8,
-            len: usize,
+            len: u64,
             c_addr: *const std::ffi::c_char,
-        ) -> usize {
-            if ptr.is_null() || buffer.is_null() || len == 0 || c_addr.is_null() {
+        ) -> u64 {
+            if ptr.is_null()
+                || buffer.is_null()
+                || len == 0
+                || len > isize::MAX as u64
+                || c_addr.is_null()
+            {
                 return 0;
             }
             let socket = unsafe { &mut *(ptr as *mut std::net::UdpSocket) };
-            let buf_slice = unsafe { std::slice::from_raw_parts(buffer, len) };
+            let buf_slice = unsafe { std::slice::from_raw_parts(buffer, len as usize) };
             let addr_str = unsafe { std::ffi::CStr::from_ptr(c_addr) }.to_string_lossy();
-            socket.send_to(buf_slice, addr_str.as_ref()).unwrap_or(0)
+            socket.send_to(buf_slice, addr_str.as_ref()).unwrap_or(0) as u64
         }
 
         #[no_mangle]
@@ -615,30 +620,30 @@ macro_rules! instantiate_tcp_listener_ffi {
 macro_rules! instantiate_stdio_ffi {
     () => {
         #[no_mangle]
-        pub extern "C" fn vx_stdout_write(buffer: *const u8, len: usize) -> usize {
-            if buffer.is_null() || len == 0 {
+        pub extern "C" fn vx_stdout_write(buffer: *const u8, len: u64) -> u64 {
+            if buffer.is_null() || len == 0 || len > isize::MAX as u64 {
                 return 0;
             }
-            let buf_slice = unsafe { std::slice::from_raw_parts(buffer, len) };
-            std::io::Write::write(&mut std::io::stdout(), buf_slice).unwrap_or(0)
+            let buf_slice = unsafe { std::slice::from_raw_parts(buffer, len as usize) };
+            std::io::Write::write(&mut std::io::stdout(), buf_slice).unwrap_or(0) as u64
         }
 
         #[no_mangle]
-        pub extern "C" fn vx_stderr_write(buffer: *const u8, len: usize) -> usize {
-            if buffer.is_null() || len == 0 {
+        pub extern "C" fn vx_stderr_write(buffer: *const u8, len: u64) -> u64 {
+            if buffer.is_null() || len == 0 || len > isize::MAX as u64 {
                 return 0;
             }
-            let buf_slice = unsafe { std::slice::from_raw_parts(buffer, len) };
-            std::io::Write::write(&mut std::io::stderr(), buf_slice).unwrap_or(0)
+            let buf_slice = unsafe { std::slice::from_raw_parts(buffer, len as usize) };
+            std::io::Write::write(&mut std::io::stderr(), buf_slice).unwrap_or(0) as u64
         }
 
         #[no_mangle]
-        pub extern "C" fn vx_stdin_read(buffer: *mut u8, len: usize) -> usize {
-            if buffer.is_null() || len == 0 {
+        pub extern "C" fn vx_stdin_read(buffer: *mut u8, len: u64) -> u64 {
+            if buffer.is_null() || len == 0 || len > isize::MAX as u64 {
                 return 0;
             }
-            let buf_slice = unsafe { std::slice::from_raw_parts_mut(buffer, len) };
-            std::io::Read::read(&mut std::io::stdin(), buf_slice).unwrap_or(0)
+            let buf_slice = unsafe { std::slice::from_raw_parts_mut(buffer, len as usize) };
+            std::io::Read::read(&mut std::io::stdin(), buf_slice).unwrap_or(0) as u64
         }
     };
 }

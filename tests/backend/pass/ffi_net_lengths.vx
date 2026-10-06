@@ -1,0 +1,45 @@
+//===- ffi_net_lengths.vx - Vx Compiler --------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// Calls through each public std::net byte-count method retain u64 at the FFI boundary.
+// CHECK-DAG: func.func private @vx_tcp_stream_read(!llvm.ptr, !llvm.ptr, i64) -> i64
+// CHECK-DAG: func.func private @vx_tcp_stream_write(!llvm.ptr, !llvm.ptr, i64) -> i64
+// CHECK-DAG: func.func private @vx_udp_socket_recv(!llvm.ptr, !llvm.ptr, i64) -> i64
+// CHECK-DAG: func.func private @vx_udp_socket_send_to(!llvm.ptr, !llvm.ptr, i64, !llvm.ptr) -> i64
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: call @TcpStream$read(%{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, !llvm.ptr, i64) -> i64
+// CHECK: call @TcpStream$write(%{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, !llvm.ptr, i64) -> i64
+// CHECK: call @UdpSocket$recv(%{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, !llvm.ptr, i64) -> i64
+// CHECK: call @UdpSocket$send_to(%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, !llvm.ptr, i64, !llvm.ptr) -> i64
+import std::net;
+
+fn main() -> i32 {
+  unsafe {
+    // The null handles test the public wrappers and their zero-result guard without
+    // requiring a fixed port. The Rust FFI tests exercise actual transfers.
+    let mut stream = TcpStream {
+      ptr: 0 as *mut i8
+    };
+    let mut socket = UdpSocket {
+      ptr: 0 as *mut i8
+    };
+    let mut byte : u8 = 0;
+    let length : u64 = 1;
+    let read_count = stream.read((&mut byte) as *mut u8, length);
+    let write_count = stream.write((&byte) as *const u8, length);
+    let recv_count = socket.recv((&mut byte) as *mut u8, length);
+    let send_count = socket.send_to((&byte) as *const u8, length, "127.0.0.1:0");
+    if read_count != 0 || write_count != 0 || recv_count != 0 || send_count != 0 {
+      return 1;
+    }
+    print!("Net lengths: ");
+    print!(0);
+  }
+  return 0;
+}
+// EXPECT: Net lengths: 0

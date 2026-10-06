@@ -1,0 +1,32 @@
+//===- autodiff_math_cbrt.vx - Vx Compiler ------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The derivative of `cbrt` at x = 8, 1/12, for f64 and for f32, printed times 10^6. Enzyme cannot
+// differentiate the core::libm functions themselves, which read the float's bits, so each is marked
+// to be differentiated as its C function.
+//
+// CHECK-DAG: llvm.func @libm_cbrt({{.*}}passthrough = {{\[\[}}"enzyme_math", "cbrt"{{\]\]}}
+// CHECK-DAG: llvm.func @libm_cbrtf({{.*}}passthrough = {{\[\[}}"enzyme_math", "cbrtf"{{\]\]}}
+// EXPECT: 83333 83333
+import core::num;
+
+fn cbrt64(x : f64) -> f64 {
+  return x.cbrt();
+}
+
+fn cbrt32(x : f32) -> f32 {
+  return x.cbrt();
+}
+
+fn main() -> i32 {
+  let x : f64 = 8.0;
+  let y : f32 = 8.0;
+  print((grad(cbrt64, x) * 1000000.0) as i64);
+  print!(" ");
+  print((grad(cbrt32, y) * 1000000.0) as i64);
+  return 0;
+}

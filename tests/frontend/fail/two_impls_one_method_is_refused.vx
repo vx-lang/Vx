@@ -7,7 +7,9 @@
 //===----------------------------------------------------------------------===//
 // RUN: not vxc %s 2>&1 | FileCheck %s
 //
-// Two traits define `describe` for `i64`, and a call has no way to say which one it means.
+// Two traits define `describe` for `i64`, and `x.describe()` does not say which one it means.
+// Naming the trait, `Loud::describe(&x)`, does: see
+// tests/backend/pass/trait_qualified_call_picks_the_trait.vx.
 //
 // This has to be refused rather than resolved: the impl blocks live in a hash map, and the
 // body a call reached used to be whichever came first in that order. Three runs of this
@@ -24,7 +26,8 @@
 // would be refused either way, and it is not evidence about the static path.
 //
 // CHECK: E3035
-// CHECK: Method 'describe' on 'i64' is defined by more than one impl (Loud, Quiet)
+// CHECK: Method 'describe' on 'i64' is defined by more than one impl (Loud, Quiet); name the
+// CHECK-SAME: trait to choose one, as in 'Loud::describe(..)'
 trait Loud {
   fn describe(self : &i64) -> i32;
 }

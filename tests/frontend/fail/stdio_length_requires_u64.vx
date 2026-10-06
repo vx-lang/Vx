@@ -1,0 +1,19 @@
+//===- stdio_length_requires_u64.vx - Vx Compiler ------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// A positive signed length must not reach standard output.
+// CHECK: Error[E3003]{{.*}}'stdout_write'. Expected u64, got i64
+import std::io;
+
+fn main() -> i32 {
+  unsafe {
+    let length : i64 = 1;
+    let _count = stdout_write(0 as *const u8, length);
+  }
+  return 0;
+}

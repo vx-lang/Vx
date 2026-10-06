@@ -1,0 +1,37 @@
+//===- ffi_stdio_public_lengths.vx - Vx Compiler ---------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// The public wrappers pass u64 counts through to the Rust FFI.
+// CHECK-DAG: func.func private @vx_stdout_write(!llvm.ptr, i64) -> i64
+// CHECK-DAG: func.func private @vx_stderr_write(!llvm.ptr, i64) -> i64
+// CHECK-DAG: func.func private @vx_stdin_read(!llvm.ptr, i64) -> i64
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: call @stdout_write(%{{.*}}, %{{.*}}) : (!llvm.ptr, i64) -> i64
+// CHECK: call @stderr_write(%{{.*}}, %{{.*}}) : (!llvm.ptr, i64) -> i64
+// CHECK: call @stdin_read(%{{.*}}, %{{.*}}) : (!llvm.ptr, i64) -> i64
+import std::io;
+
+fn main() -> i32 {
+  unsafe {
+    let stdout_count = stdout_write("out
+", 4);
+    let stderr_count = stderr_write("err
+", 4);
+    // A zero-length read must return immediately; no input is needed.
+    let stdin_count = stdin_read(0 as *mut u8, 0);
+    if stdout_count != 4 || stderr_count != 4 || stdin_count != 0 {
+      return 1;
+    }
+    print!("Stdio lengths: ");
+    print!(0);
+  }
+  return 0;
+}
+// EXPECT: out
+// EXPECT: err
+// EXPECT: Stdio lengths: 0

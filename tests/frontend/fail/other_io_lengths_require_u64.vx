@@ -1,0 +1,32 @@
+//===- other_io_lengths_require_u64.vx - Vx Compiler -----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// Every remaining public byte-count method rejects a signed length.
+// CHECK: Error[E3003]{{.*}}'stderr_write'. Expected u64, got i64
+// CHECK: Error[E3003]{{.*}}'stdin_read'. Expected u64, got i64
+// CHECK: Error[E3003]{{.*}}'TcpStream::write'. Expected u64, got i64
+// CHECK: Error[E3003]{{.*}}'UdpSocket::send_to'. Expected u64, got i64
+import std::io;
+import std::net;
+
+fn main() -> i32 {
+  unsafe {
+    let length : i64 = 1;
+    let mut stream = TcpStream {
+      ptr: 0 as *mut i8
+    };
+    let mut socket = UdpSocket {
+      ptr: 0 as *mut i8
+    };
+    let _stderr_count = stderr_write(0 as *const u8, length);
+    let _stdin_count = stdin_read(0 as *mut u8, length);
+    let _write_count = stream.write(0 as *const u8, length);
+    let _send_count = socket.send_to(0 as *const u8, length, "127.0.0.1:0");
+  }
+  return 0;
+}

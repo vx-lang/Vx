@@ -1,0 +1,30 @@
+//===- trait_qualified_call_errors.vx - Vx Compiler --------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `Trait::method(&x)` calls the impl of `Trait` for the type of `x`. Two mistakes:
+// the type has no impl of that trait, and there is no first argument at all.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: 'f32' has no impl of 'Speak' with a method 'speak'.
+// CHECK: 'Speak::speak' needs the value whose 'Speak' impl it calls as its first argument.
+
+trait Speak {
+  fn speak(self : &Self) -> i32;
+}
+
+impl Speak for i32 {
+  fn speak(self : &i32) -> i32 {
+    return 1;
+  }
+}
+
+fn main() -> i32 {
+  let y : f32 = 1.0;
+  print(Speak::speak(&y));
+  print(Speak::speak());
+  return 0;
+}

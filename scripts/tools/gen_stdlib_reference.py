@@ -42,6 +42,7 @@ MODULE_BLURB = {
     "cmp": "Ordering and equality: `PartialEq`, `Ord`, `PartialOrd` and `Ordering`.",
     "convert": "`From`, the conversions that cannot fail and lose nothing.",
     "default": "`Default`, the value a type starts from.",
+    "fmt": "Writing integers as text, with the width, fill and flags of a Rust format spec.",
     "fs": "Files and directories.",
     "googletest": "Assertions for tests written in Vx.",
     "hash_map": "`HashMap<K, V>`.",

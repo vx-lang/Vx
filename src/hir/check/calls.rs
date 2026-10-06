@@ -1193,6 +1193,35 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
+        // `Trait::method(&x)`: the trait chooses the impl, and the first argument's type is the
+        // type that impl is for. This is how a call picks between two traits' same-named methods.
+        let mut only_trait: Option<String> = None;
+        if self.env.traits.contains_key(struct_name.as_str()) {
+            let self_ty = arg_types.first().map(|t| match t {
+                Type::Borrow { inner, .. } | Type::Ref(inner, _) => inner.as_ref(),
+                other => other,
+            });
+            let self_name = match self_ty {
+                Some(Type::Struct(n, _) | Type::Enum(n, _)) => Some(n.to_string()),
+                Some(Type::GenericInstance(inner, _)) => match inner.as_ref() {
+                    Type::Struct(n, _) | Type::Enum(n, _) => Some(n.to_string()),
+                    _ => None,
+                },
+                Some(Type::Scalar(el)) => Some(el.to_string()),
+                _ => None,
+            };
+            let Some(self_name) = self_name else {
+                if !self.speculating {
+                    self.errors.push(format!(
+                        "'{}' needs the value whose '{}' impl it calls as its first argument.",
+                        resolved_name, struct_name
+                    ));
+                }
+                return Type::Unknown;
+            };
+            only_trait = Some(std::mem::replace(&mut struct_name, self_name));
+        }
+
         let mut found_generic_func = None;
         // The impl block's parameters and the method's own: every one has to end up bound.
         let mut found_generics: Vec<decl::GenericParam> = Vec::new();
@@ -1215,6 +1244,9 @@ impl<'a> TypeChecker<'a> {
         let mut inherent: Vec<&decl::ImplBlock> = Vec::new();
         let mut from_traits: Vec<(&crate::symbol::Symbol, &decl::ImplBlock)> = Vec::new();
         for (trait_key, impl_blocks) in self.env.impls.iter() {
+            if only_trait.as_ref().is_some_and(|t| t != trait_key.as_ref()) {
+                continue;
+            }
             for ib in impl_blocks {
                 if !target_matches(ib)
                     || !ib
@@ -1264,14 +1296,18 @@ impl<'a> TypeChecker<'a> {
                     .map(|(t, ib)| impl_display(t, ib))
                     .collect();
                 names.sort();
+                let mut traits: Vec<&str> = from_traits.iter().map(|(t, _)| t.as_ref()).collect();
+                traits.sort();
                 self.errors.error_with_code(
                     crate::diagnostic::DiagnosticCode::E3035,
                     format!(
-                        "Method '{}' on '{}' is defined by more than one impl ({}); a call \
-                         cannot choose between them",
+                        "Method '{}' on '{}' is defined by more than one impl ({}); name the \
+                         trait to choose one, as in '{}::{}(..)'",
                         method_name,
                         struct_name,
-                        names.join(", ")
+                        names.join(", "),
+                        traits[0],
+                        method_name
                     ),
                     Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                 );
@@ -1310,7 +1346,16 @@ impl<'a> TypeChecker<'a> {
         let chosen_seg = if inherent.is_empty() {
             from_traits
                 .first()
-                .map(|(tr, ib)| crate::syntax::types::trait_segment(Some(*tr), &ib.trait_args))
+                .map(|(tr, ib)| {
+                    let seg = crate::syntax::types::trait_segment(Some(*tr), &ib.trait_args);
+                    // A trait with no arguments adds nothing to the name, so `A::f` and `B::f`
+                    // on one type would both be `i32::f`. A trait-qualified call names the trait.
+                    if seg.is_empty() && only_trait.is_some() {
+                        format!("{}$", tr)
+                    } else {
+                        seg
+                    }
+                })
                 .unwrap_or_default()
         } else {
             String::new()
@@ -1417,8 +1462,15 @@ impl<'a> TypeChecker<'a> {
             inst_ret
         } else {
             if !self.speculating {
-                self.errors
-                    .push(format!("Undefined static method '{}'.", resolved_name));
+                match &only_trait {
+                    Some(t) => self.errors.push(format!(
+                        "'{}' has no impl of '{}' with a method '{}'.",
+                        struct_name, t, method_name
+                    )),
+                    None => self
+                        .errors
+                        .push(format!("Undefined static method '{}'.", resolved_name)),
+                }
             }
             Type::Unknown
         }
@@ -2120,14 +2172,19 @@ impl<'a> TypeChecker<'a> {
                     .map(|(t, _, ib, _)| impl_display(t, ib))
                     .collect();
                 names.sort();
+                let mut traits: Vec<&str> =
+                    from_traits.iter().map(|(t, _, _, _)| t.as_ref()).collect();
+                traits.sort();
                 self.errors.error_with_code(
                     crate::diagnostic::DiagnosticCode::E3035,
                     format!(
-                        "Method '{}' on '{}' is defined by more than one impl ({}); a call \
-                         cannot choose between them",
+                        "Method '{}' on '{}' is defined by more than one impl ({}); name the \
+                         trait to choose one, as in '{}::{}(..)'",
                         method,
                         check_ty,
-                        names.join(", ")
+                        names.join(", "),
+                        traits[0],
+                        method
                     ),
                     None,
                 );
