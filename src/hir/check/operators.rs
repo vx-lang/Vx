@@ -250,7 +250,158 @@ impl<'a> TypeChecker<'a> {
         Some((**inner).clone())
     }
 
+    /// `a + b` on a struct or an enum whose type has the operator's trait method: the call
+    /// `a.add(b)`, which `expr` becomes. `None` leaves the operator as it is.
+    fn operator_method_call(
+        &mut self,
+        lhs: &Expr,
+        method: &str,
+        rhs: Option<&Expr>,
+        span: crate::syntax::Span,
+    ) -> Option<Expr> {
+        let ty = self.operand_type(lhs);
+        if !Self::is_user_type(&ty)
+            || self
+                .resolve_method_in_impls(&ty, &method.into(), &mut std::collections::HashMap::new())
+                .is_none()
+        {
+            return None;
+        }
+        Some(Expr::MethodCall(crate::syntax::MethodCallExpr {
+            base: Box::new(lhs.clone()),
+            method_name: method.into(),
+            type_args: None,
+            args: rhs.into_iter().cloned().collect(),
+            span,
+        }))
+    }
+
+    /// A struct, or an instance of a generic struct. An enum without a payload compares with
+    /// `==` without an impl, so it is not one of these. A type is often written as a struct
+    /// before anything knows it names an enum, so the declarations decide.
+    fn is_struct_type(&self, ty: &Type) -> bool {
+        let name = match ty {
+            Type::Struct(name, _) => name,
+            Type::GenericInstance(base, _) => match &**base {
+                Type::Struct(name, _) => name,
+                _ => return false,
+            },
+            _ => return false,
+        };
+        let base = name.split('<').next().unwrap_or(name);
+        name.as_ref() != "void"
+            && !name.starts_with("Closure_")
+            && !self.env.enums.contains_key(base)
+    }
+
+    /// E3004 for an operator on a struct whose type has no impl of the operator's trait.
+    fn report_missing_operator(&mut self, op: &str, ty: &Type, span: &crate::syntax::Span) {
+        let (sign, trait_name) = match op {
+            "Add" => ("+", "Add"),
+            "Sub" => ("-", "Sub"),
+            "Mul" => ("*", "Mul"),
+            "Div" => ("/", "Div"),
+            "Rem" => ("%", "Rem"),
+            "BitAnd" => ("&", "BitAnd"),
+            "BitOr" => ("|", "BitOr"),
+            "BitXor" => ("^", "BitXor"),
+            "Shl" => ("<<", "Shl"),
+            "Shr" => (">>", "Shr"),
+            "Eq" => ("==", "core::cmp::PartialEq"),
+            "NotEq" => ("!=", "core::cmp::PartialEq"),
+            "Lt" => ("<", "core::cmp::Ord"),
+            "Le" => ("<=", "core::cmp::Ord"),
+            "Gt" => (">", "core::cmp::Ord"),
+            _ => (">=", "core::cmp::Ord"),
+        };
+        let trait_path = if trait_name.contains("::") {
+            trait_name.to_string()
+        } else {
+            format!("core::ops::{trait_name}")
+        };
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E3004,
+            format!("`{sign}` is not defined for {ty}: it needs an impl of `{trait_path}`"),
+            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+        );
+    }
+
+    fn is_user_type(ty: &Type) -> bool {
+        match ty {
+            Type::Struct(name, _) => name.as_ref() != "void" && !name.starts_with("Closure_"),
+            Type::Enum(..) => true,
+            Type::GenericInstance(base, _) => matches!(**base, Type::Struct(..) | Type::Enum(..)),
+            _ => false,
+        }
+    }
+
+    /// The type of an operator's left operand, worked out without checking it: the quick
+    /// probe, then the left side of a nested operator, then a call's declared return type.
+    /// Only what is left is checked, as a copy, so a long chain of operators on numbers is
+    /// not checked again at every level.
+    fn operand_type(&mut self, e: &Expr) -> Type {
+        let ty = self.check_expr_type_probe(e);
+        if ty != Type::Unknown {
+            return ty;
+        }
+        match e {
+            Expr::Number(_)
+            | Expr::StringLiteral(_)
+            | Expr::RelationalOp(_)
+            | Expr::LogicalOp(_)
+            | Expr::AsCast(_) => return Type::Unknown,
+            Expr::BinaryOp(b) if !Self::is_user_type(&self.operand_type(&b.lhs)) => {
+                return Type::Unknown;
+            }
+            Expr::UnaryOp(u) if !Self::is_user_type(&self.operand_type(&u.expr)) => {
+                return Type::Unknown;
+            }
+            Expr::FunctionCall(fc) => {
+                if let Some(f) = self.env.functions.get(&fc.name) {
+                    return f.0.clone();
+                }
+            }
+            _ => {}
+        }
+        let saved = self.speculating;
+        let moved = self.moved_snapshot();
+        let borrows = self.borrow.snapshot();
+        self.speculating = true;
+        let mut copy = e.clone();
+        let ty = self.check_expr_type_flag(&mut copy, false);
+        self.speculating = saved;
+        self.restore_moved(moved);
+        self.borrow.restore(borrows);
+        ty
+    }
+
     pub(crate) fn check_binaryop_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
+        if let Expr::BinaryOp(BinaryOpExpr {
+            lhs, op, rhs, span, ..
+        }) = expr
+        {
+            let method = match op {
+                BinaryOp::Add => Some("add"),
+                BinaryOp::Sub => Some("sub"),
+                BinaryOp::Mul => Some("mul"),
+                BinaryOp::Div => Some("div"),
+                BinaryOp::Rem => Some("rem"),
+                BinaryOp::BitAnd => Some("bitand"),
+                BinaryOp::BitOr => Some("bitor"),
+                BinaryOp::BitXor => Some("bitxor"),
+                BinaryOp::Shl => Some("shl"),
+                BinaryOp::Shr => Some("shr"),
+                BinaryOp::MatMul => None,
+            };
+            let span = *span;
+            if let Some(mut call) =
+                method.and_then(|m| self.operator_method_call(lhs, m, Some(rhs), span))
+            {
+                let ty = self.check_expr_type_flag(&mut call, consume);
+                *expr = call;
+                return ty;
+            }
+        }
         match expr {
             Expr::BinaryOp(BinaryOpExpr {
                 lhs,
@@ -422,6 +573,17 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
 
+                // A struct with no impl for the operator's trait has no `+` to fall back on.
+                if self.is_struct_type(&lhs_ty) {
+                    let at = if *span == crate::syntax::Span::default() {
+                        lhs.span()
+                    } else {
+                        *span
+                    };
+                    self.report_missing_operator(&format!("{op:?}"), &lhs_ty, &at);
+                    return Type::Unknown;
+                }
+
                 // `%` and the bitwise operators take one value at a time, and not every
                 // element type. A shaped tensor is refused for all of them: there is no
                 // named `linalg` form to lower to, so the flat emitter would decline and
@@ -559,15 +721,50 @@ impl<'a> TypeChecker<'a> {
                 return Type::Scalar(ElementType::Bool);
             }
         }
+        // `a == b` on a struct or an enum is `a.eq(&b)`, through `PartialEq`, and `a < b` is
+        // `a.lt(&b)`, through `Ord`.
+        if let Expr::RelationalOp(RelationalOpExpr {
+            lhs, op, rhs, span, ..
+        }) = expr
+        {
+            let method = match op {
+                RelationalOp::Eq => "eq",
+                RelationalOp::NotEq => "ne",
+                RelationalOp::Lt => "lt",
+                RelationalOp::Le => "le",
+                RelationalOp::Gt => "gt",
+                RelationalOp::Ge => "ge",
+            };
+            let span = *span;
+            let rhs_ref = Expr::Borrow(crate::syntax::expr::BorrowExpr {
+                expr: rhs.clone(),
+                is_mut: false,
+                span,
+            });
+            if let Some(mut call) = self.operator_method_call(lhs, method, Some(&rhs_ref), span) {
+                let ty = self.check_expr_type_flag(&mut call, false);
+                *expr = call;
+                return ty;
+            }
+        }
         match expr {
             Expr::RelationalOp(RelationalOpExpr {
                 lhs,
-                op: _,
+                op,
                 rhs,
                 span,
                 operand_ty,
             }) => {
                 let (lhs_ty, rhs_ty) = self.check_operand_pair(lhs, rhs, false);
+                if self.is_struct_type(&lhs_ty) {
+                    let at = if *span == crate::syntax::Span::default() {
+                        lhs.span()
+                    } else {
+                        *span
+                    };
+                    self.report_missing_operator(&format!("{op:?}"), &lhs_ty, &at);
+                    return Type::Scalar(ElementType::Bool);
+                }
                 // Recorded for code generation: `<` needs the sign, which an MLIR integer
                 // does not carry.
                 if let Type::Scalar(e) = &lhs_ty {
@@ -624,6 +821,24 @@ impl<'a> TypeChecker<'a> {
     }
 
     pub(crate) fn check_unaryop_expr(&mut self, expr: &mut Expr) -> Type {
+        // `-a` on a struct or an enum is `a.neg()`, and `!a` is `a.not()`.
+        if let Expr::UnaryOp(UnaryOpExpr {
+            op,
+            expr: inner,
+            span,
+        }) = expr
+        {
+            let method = match op {
+                UnaryOp::Neg => "neg",
+                UnaryOp::Not => "not",
+            };
+            let span = *span;
+            if let Some(mut call) = self.operator_method_call(inner, method, None, span) {
+                let ty = self.check_expr_type_flag(&mut call, true);
+                *expr = call;
+                return ty;
+            }
+        }
         match expr {
             Expr::UnaryOp(UnaryOpExpr {
                 op,

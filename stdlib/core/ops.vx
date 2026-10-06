@@ -62,3 +62,220 @@ trait Try {
 trait Drop {
   fn drop(self : &mut Self) -> void;
 }
+
+// The operators. `a + b` on a struct or an enum is `a.add(b)`, and the same for each
+// operator below; on numbers and tensors the operators are built in. The right operand has
+// the same type as the left one: there is no `Rhs` parameter yet.
+
+/// `a + b`.
+trait Add {
+  type Output;
+  fn add(self : Self, rhs : Self) -> Self::Output;
+}
+
+/// `a - b`.
+trait Sub {
+  type Output;
+  fn sub(self : Self, rhs : Self) -> Self::Output;
+}
+
+/// `a * b`.
+trait Mul {
+  type Output;
+  fn mul(self : Self, rhs : Self) -> Self::Output;
+}
+
+/// `a / b`.
+trait Div {
+  type Output;
+  fn div(self : Self, rhs : Self) -> Self::Output;
+}
+
+/// `a % b`.
+trait Rem {
+  type Output;
+  fn rem(self : Self, rhs : Self) -> Self::Output;
+}
+
+/// `-a`.
+trait Neg {
+  type Output;
+  fn neg(self : Self) -> Self::Output;
+}
+
+/// `!a`.
+trait Not {
+  type Output;
+  fn not(self : Self) -> Self::Output;
+}
+
+/// `a & b`.
+trait BitAnd {
+  type Output;
+  fn bitand(self : Self, rhs : Self) -> Self::Output;
+}
+
+/// `a | b`.
+trait BitOr {
+  type Output;
+  fn bitor(self : Self, rhs : Self) -> Self::Output;
+}
+
+/// `a ^ b`.
+trait BitXor {
+  type Output;
+  fn bitxor(self : Self, rhs : Self) -> Self::Output;
+}
+
+/// `a << b`.
+trait Shl {
+  type Output;
+  fn shl(self : Self, rhs : Self) -> Self::Output;
+}
+
+/// `a >> b`.
+trait Shr {
+  type Output;
+  fn shr(self : Self, rhs : Self) -> Self::Output;
+}
+
+// The number types implement the traits their operators already have, so a generic function
+// bounded by `Add` and the rest takes numbers too. Each body is the built-in operator.
+
+macro_rules stamp_arith {
+  ($t : ident) => {
+    impl Add for $t {
+      type Output = $t;
+      fn add(self : $t, rhs : $t) -> $t {
+        return self + rhs;
+      }
+    }
+
+    impl Sub for $t {
+      type Output = $t;
+      fn sub(self : $t, rhs : $t) -> $t {
+        return self - rhs;
+      }
+    }
+
+    impl Mul for $t {
+      type Output = $t;
+      fn mul(self : $t, rhs : $t) -> $t {
+        return self * rhs;
+      }
+    }
+
+    impl Div for $t {
+      type Output = $t;
+      fn div(self : $t, rhs : $t) -> $t {
+        return self / rhs;
+      }
+    }
+
+    impl Rem for $t {
+      type Output = $t;
+      fn rem(self : $t, rhs : $t) -> $t {
+        return self % rhs;
+      }
+    }
+  };
+}
+
+macro_rules stamp_neg {
+  ($t : ident) => {
+    impl Neg for $t {
+      type Output = $t;
+      fn neg(self : $t) -> $t {
+        return -self;
+      }
+    }
+  };
+}
+
+macro_rules stamp_bits {
+  ($t : ident) => {
+    impl Not for $t {
+      type Output = $t;
+      fn not(self : $t) -> $t {
+        return !self;
+      }
+    }
+
+    impl BitAnd for $t {
+      type Output = $t;
+      fn bitand(self : $t, rhs : $t) -> $t {
+        return self & rhs;
+      }
+    }
+
+    impl BitOr for $t {
+      type Output = $t;
+      fn bitor(self : $t, rhs : $t) -> $t {
+        return self | rhs;
+      }
+    }
+
+    impl BitXor for $t {
+      type Output = $t;
+      fn bitxor(self : $t, rhs : $t) -> $t {
+        return self ^ rhs;
+      }
+    }
+  };
+}
+
+macro_rules stamp_shift {
+  ($t : ident) => {
+    impl Shl for $t {
+      type Output = $t;
+      fn shl(self : $t, rhs : $t) -> $t {
+        return self << rhs;
+      }
+    }
+
+    impl Shr for $t {
+      type Output = $t;
+      fn shr(self : $t, rhs : $t) -> $t {
+        return self >> rhs;
+      }
+    }
+  };
+}
+
+stamp_arith!(i8);
+stamp_arith!(i16);
+stamp_arith!(i32);
+stamp_arith!(i64);
+stamp_arith!(u8);
+stamp_arith!(u16);
+stamp_arith!(u32);
+stamp_arith!(u64);
+stamp_arith!(usize);
+stamp_arith!(f32);
+stamp_arith!(f64);
+
+stamp_neg!(i8);
+stamp_neg!(i16);
+stamp_neg!(i32);
+stamp_neg!(i64);
+stamp_neg!(f32);
+stamp_neg!(f64);
+
+stamp_bits!(i8);
+stamp_bits!(i16);
+stamp_bits!(i32);
+stamp_bits!(i64);
+stamp_bits!(u8);
+stamp_bits!(u16);
+stamp_bits!(u32);
+stamp_bits!(u64);
+stamp_bits!(bool);
+
+stamp_shift!(i8);
+stamp_shift!(i16);
+stamp_shift!(i32);
+stamp_shift!(i64);
+stamp_shift!(u8);
+stamp_shift!(u16);
+stamp_shift!(u32);
+stamp_shift!(u64);

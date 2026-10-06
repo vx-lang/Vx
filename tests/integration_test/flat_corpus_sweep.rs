@@ -29,6 +29,8 @@ const KNOWN_DECLINES: &[&str] = &[
     // A generic enum holding a struct, `Opt<Pair>`: the flat path has no layout for it ("an
     // enum with no modelled instance layout"). The file checks the checker only.
     "frontend/pass/match_moves_only_what_it_binds.vx",
+    // The same for `Option<Duration>`, which `Duration`'s `+` and `-` go through.
+    "backend/pass/operators_on_user_types.vx",
     // `t = pass(t)` inside an `if`: on the flat path a tensor local is one register, so the
     // new value cannot leave the branch. The flat path used to read the wrong tensor after it.
     "frontend/pass/tensor_drops_written_into_the_program.vx",

@@ -1,0 +1,115 @@
+//===- operators_on_user_types.vx - Vx Compiler --------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// An operator on a struct calls the method of its trait: `a + b` is `a.add(b)`, `-a` is
+// `a.neg()`, `a == b` is `a.eq(&b)` and `a < b` is `a.lt(&b)`.
+//
+// - `Point` implements `Add`, `Sub`, `Neg`, `PartialEq` and `Ord`: `a + b` is (11, 22),
+//   `b - a` is (9, 18), `-a` is (-1, -2), and `a + b + a` chains to (12, 24). The four
+//   comparisons answer 1 1 1 0.
+// - `Duration` implements `Add` and `Sub` in `core::time`: 1500 ms plus 700 ms is 2200 ms,
+//   and the difference is 800 ms.
+// - `sum3` is bounded by `Add`, which the number types implement too: 6 for `i32`, and 4
+//   for `f64`.
+//
+// EXPECT: 11 22 9 18 -1 -2 12 24 | 1 1 1 0 | 2200 800 | 6 4
+
+import core::cmp;
+import core::marker;
+import core::ops;
+import core::time;
+
+struct Point {
+  x : i32,
+  y : i32,
+}
+
+impl Copy for Point {}
+
+impl Add for Point {
+  type Output = Point;
+  fn add(self : Point, rhs : Point) -> Point {
+    return Point {
+      x: self.x + rhs.x, y: self.y + rhs.y
+    };
+  }
+}
+
+impl Sub for Point {
+  type Output = Point;
+  fn sub(self : Point, rhs : Point) -> Point {
+    return Point {
+      x: self.x - rhs.x, y: self.y - rhs.y
+    };
+  }
+}
+
+impl Neg for Point {
+  type Output = Point;
+  fn neg(self : Point) -> Point {
+    return Point {
+      x: 0 - self.x, y: 0 - self.y
+    };
+  }
+}
+
+impl PartialEq for Point {
+  fn eq(self : &Point, other : &Point) -> bool {
+    return self.x == other.x && self.y == other.y;
+  }
+}
+
+impl Ord for Point {
+  fn cmp(self : &Point, other : &Point) -> Ordering {
+    return self.x.cmp(&other.x);
+  }
+}
+
+fn sum3<T : Add>(a : T, b : T, c : T) -> T {
+  return a.add(b).add(c);
+}
+
+fn show(p : Point) -> void {
+  print(p.x);
+  print!(" ");
+  print(p.y);
+  print!(" ");
+}
+
+fn main() -> i32 {
+  let a = Point {
+    x: 1, y: 2
+  };
+  let b = Point {
+    x: 10, y: 20
+  };
+  show(a + b);
+  show(b - a);
+  show(-a);
+  show(a + b + a);
+  print!("| ");
+  print((a + b == Point {
+    x: 11, y: 22
+  }) as i32);
+  print!(" ");
+  print((a != b) as i32);
+  print!(" ");
+  print((a < b) as i32);
+  print!(" ");
+  print((b <= a) as i32);
+  print!(" | ");
+  let long = Duration::from_millis(1500u64);
+  let short = Duration::from_millis(700u64);
+  print((long + short).as_millis());
+  print!(" ");
+  print((long - short).as_millis());
+  print!(" | ");
+  print(sum3(1, 2, 3));
+  print!(" ");
+  print(sum3(1.5, 2.0, 0.5));
+  return 0;
+}
