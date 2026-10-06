@@ -152,7 +152,7 @@ impl AstPrinter {
                     name,
                     path,
                     call,
-                    expr: _,
+                    expr,
                     flag,
                     after_value,
                     span: _,
@@ -164,6 +164,9 @@ impl AstPrinter {
                     }
                     if let Some(f) = call {
                         write!(w, " by calling {}", f)?;
+                    }
+                    if matches!(expr.as_deref(), Some(Expr::Match(_))) {
+                        write!(w, " by dropping its payload")?;
                     }
                     if let Some(f) = flag {
                         write!(w, " if {} is false", f)?;

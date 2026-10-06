@@ -1,0 +1,83 @@
+//===- enum_drops_its_payload.vx - Vx Compiler ---------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Dropping an enum drops the payload of the variant it holds. Each `drop` prints its number,
+// so the line is the order of the drops, which is Rust's:
+//
+// - `given_away`: `take` drops `Some(1)`'s payload when it returns;
+// - `held`: at the end of the function, `w` (`Some(3)`) and not `n` (`None`);
+// - `own_drop`: `Wrapped`'s own `drop` (100) comes before its payload's (4);
+// - `main`: `kept`, holding 2, is dropped last.
+//
+// EXPECT: t 1 | 3 | 100 4 | end 2
+
+import core::ops;
+
+struct Noisy {
+  id : i32,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    print(self.id);
+    print!(" ");
+  }
+}
+
+enum Opt<T> {
+  Some(T),
+  None,
+}
+
+enum Wrapped<T> {
+  It(T),
+  Nothing,
+}
+
+impl<T> Drop for Wrapped<T> {
+  fn drop(self : &mut Wrapped<T>) -> void {
+    print(100);
+    print!(" ");
+  }
+}
+
+fn take(o : Opt<Noisy>) -> void {
+  print!("t ");
+}
+
+fn given_away() -> void {
+  let o = Opt<Noisy>::Some(Noisy {
+    id: 1
+  });
+  take(o);
+}
+
+fn held() -> void {
+  let n = Opt<Noisy>::None();
+  let w = Opt<Noisy>::Some(Noisy {
+    id: 3
+  });
+}
+
+fn own_drop() -> void {
+  let x = Wrapped<Noisy>::It(Noisy {
+    id: 4
+  });
+}
+
+fn main() -> i32 {
+  let kept = Opt<Noisy>::Some(Noisy {
+    id: 2
+  });
+  given_away();
+  print!("| ");
+  held();
+  print!("| ");
+  own_drop();
+  print!("| end ");
+  return 0;
+}
