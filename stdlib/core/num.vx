@@ -1517,45 +1517,56 @@ stamp_float!(f64 , 1.0 , 0.0 , 180.0);
 stamp_float!(f16 , 1.0 , 0.0 , 180.0);
 stamp_float!(bf16 , 1.0 , 0.0 , 180.0);
 
-/// Stamps `asinh`, `acosh` and `atanh` as formulas through `ln_1p` and `ln`, for the widths
-/// LLVM libc has no version of yet: `f64`, `f16` and `bf16`. `f32` uses `core::libm`'s, below.
-macro_rules stamp_float_inverse_hyperbolic {
-  ($t : ident , $one : expr , $zero : expr) => {
-    impl $t {
-      /// The inverse hyperbolic sine, `ln(|x| + sqrt(x^2 + 1))` with the sign of `x`, written
-      /// as `ln_1p` of `|x| + |x| / (hypot(1, 1/|x|) + 1/|x|)` so it stays accurate near zero.
-      fn asinh(self : $t) -> $t {
-        let ax = self.abs();
-        let one : $t = $one;
-        let ix = one / ax;
-        return (ax + (ax / (one.hypot(ix) + ix))).ln_1p().copysign(self);
-      }
+impl f64 {
+  /// The inverse hyperbolic sine, almost always correctly rounded, from `core::libm`'s own double-double code (LLVM libc has no double-precision version).
+  fn asinh(self : f64) -> f64 {
+    return libm_asinh(self);
+  }
 
-      /// The inverse hyperbolic cosine, NaN below one: `ln(x + sqrt(x - 1) * sqrt(x + 1))`.
-      /// Below two, `ln` of a number just above one loses digits, so with `t = x - 1` this
-      /// takes `ln_1p(t + sqrt(2t + t * t))` instead, which keeps them.
-      fn acosh(self : $t) -> $t {
-        if self < $one {
-          return $zero / $zero;
-        }
-        let t = self - $one;
-        if t < $one {
-          return (t + (2.0 * t + t * t).sqrt()).ln_1p();
-        }
-        return (self + (t.sqrt() * (self + $one).sqrt())).ln();
-      }
+  /// The inverse hyperbolic cosine; NaN below 1, almost always correctly rounded, from `core::libm`'s own double-double code (LLVM libc has no double-precision version).
+  fn acosh(self : f64) -> f64 {
+    return libm_acosh(self);
+  }
 
-      /// The inverse hyperbolic tangent, `ln_1p(2x / (1 - x)) / 2`.
-      fn atanh(self : $t) -> $t {
-        return 0.5 * ((2.0 * self) / ($one - self)).ln_1p();
-      }
-    }
-  };
+  /// The inverse hyperbolic tangent; infinite at 1 and NaN past it, almost always correctly rounded, from `core::libm`'s own double-double code (LLVM libc has no double-precision version).
+  fn atanh(self : f64) -> f64 {
+    return libm_atanh(self);
+  }
 }
 
-stamp_float_inverse_hyperbolic!(f64 , 1.0 , 0.0);
-stamp_float_inverse_hyperbolic!(f16 , 1.0 , 0.0);
-stamp_float_inverse_hyperbolic!(bf16 , 1.0 , 0.0);
+impl f16 {
+  /// The inverse hyperbolic sine, correctly rounded (LLVM libc's `asinhf16`).
+  fn asinh(self : f16) -> f16 {
+    return libm_asinhf16(self);
+  }
+
+  /// The inverse hyperbolic cosine; NaN below 1, correctly rounded (LLVM libc's `acoshf16`).
+  fn acosh(self : f16) -> f16 {
+    return libm_acoshf16(self);
+  }
+
+  /// The inverse hyperbolic tangent; infinite at 1 and NaN past it, correctly rounded (LLVM libc's `atanhf16`).
+  fn atanh(self : f16) -> f16 {
+    return libm_atanhf16(self);
+  }
+}
+
+impl bf16 {
+  /// The inverse hyperbolic sine, the double result rounded once to bf16.
+  fn asinh(self : bf16) -> bf16 {
+    return libm_asinh_bf16(self);
+  }
+
+  /// The inverse hyperbolic cosine; NaN below 1, the double result rounded once to bf16.
+  fn acosh(self : bf16) -> bf16 {
+    return libm_acosh_bf16(self);
+  }
+
+  /// The inverse hyperbolic tangent; infinite at 1 and NaN past it, the double result rounded once to bf16.
+  fn atanh(self : bf16) -> bf16 {
+    return libm_atanh_bf16(self);
+  }
+}
 
 impl f64 {
   /// The natural logarithm, correctly rounded (LLVM libc's `log`).

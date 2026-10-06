@@ -1,0 +1,41 @@
+//===- core_libm_inverse_hyperbolic_f16.vx - Vx Compiler ---------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// f16 `asinh`, `acosh` and `atanh`, ported from LLVM libc's `asinhf16`, `acoshf16` and `atanhf16`
+// into `core::libm`, on every f16 bit pattern: a hash of the result bits of each (every NaN counted
+// as 32256). The expected hashes are LLVM libc's (f475f085bf7b, built with FMA).
+//
+// EXPECT: 2865473891864448448 17185661680785354462 8030941580936433596
+import core::num;
+
+fn hash(f : i32) -> u64 {
+  let mut h : u64 = 0u64;
+  for i in 0..65536 {
+    let x = libm_f16_from_bits(i as u16);
+    let mut r = x.asinh();
+    if f == 1 {
+      r = x.acosh();
+    } else if f == 2 {
+      r = x.atanh();
+    }
+    let mut rb = libm_f16_to_bits(r) as u64;
+    if r != r {
+      rb = 32256u64;
+    }
+    h = (h ^ rb).wrapping_mul(1099511628211u64);
+  }
+  return h;
+}
+
+fn main() -> i32 {
+  print(hash(0));
+  print!(" ");
+  print(hash(1));
+  print!(" ");
+  print(hash(2));
+  return 0;
+}

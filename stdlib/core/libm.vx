@@ -11450,3 +11450,413 @@ fn libm_tanh(x : f64) -> f64 {
   let t = libm_dd_div(num, den);
   return sign * (t.hi + t.lo);
 }
+
+/// The inverse hyperbolic sine of an f16, correctly rounded: `asinhf16` from `asinhf16.h`. Below
+/// 2^-2 in size a polynomial in f32; above, `log(|x| + sqrt(x^2 + 1))` with the double `log_eval`.
+fn libm_asinhf16(x : f16) -> f16 {
+  let x_u = libm_f16_to_bits(x);
+  let x_abs = x_u & 32767u16;
+  if x_abs >= 31744u16 {
+    // Infinity or NaN; a signaling NaN becomes the quiet NaN.
+    if x_abs > 31744u16 && (x_abs & 512u16) == 0u16 {
+      return libm_f16_from_bits(32256u16);
+    }
+    return x;
+  }
+  if x_u == 14185u16 { // 0x3769
+    return libm_f16_from_bits(14123u16); // 0x372b
+  }
+  if x_u == 15195u16 { // 0x3b5b
+    return libm_f16_from_bits(14998u16); // 0x3a96
+  }
+  if x_u == 19231u16 { // 0x4b1f
+    return libm_f16_from_bits(17075u16); // 0x42b3
+  }
+  if x_u == 19611u16 { // 0x4c9b
+    return libm_f16_from_bits(17207u16); // 0x4337
+  }
+  if x_u == 46953u16 { // 0xb769
+    return libm_f16_from_bits(46891u16); // 0xb72b
+  }
+  if x_u == 47963u16 { // 0xbb5b
+    return libm_f16_from_bits(47766u16); // 0xba96
+  }
+  if x_u == 51999u16 { // 0xcb1f
+    return libm_f16_from_bits(49843u16); // 0xc2b3
+  }
+  if x_u == 52379u16 { // 0xcc9b
+    return libm_f16_from_bits(49975u16); // 0xc337
+  }
+  let xf = x as f32;
+  let x_sign : f32 = if (x_u >> 15u16) == 1u16 {
+    -1.0
+  } else {
+    1.0
+  };
+  if x_abs <= 13312u16 { // 0x3400
+    if x_abs < 10694u16 { // 0x29c6
+      return x;
+    }
+    let x_sq = xf * xf;
+    let p = libm_multiply_add_f32(x_sq, libm_multiply_add_f32(x_sq, libm_multiply_add_f32(x_sq, libm_multiply_add_f32(x_sq, libm_f32_from_bits(1029605543u32), libm_f32_from_bits(3174443503u32)), libm_f32_from_bits(1033476021u32)), libm_f32_from_bits(3190467241u32)), 1.0); // 0x1.bd114ep-5f, -0x1.6c53dep-5f, 0x1.332f6ap-4f, -0x1.555552p-3f
+    return (xf * p) as f16;
+  }
+  let sqrt_term = libm_sqrt_f32(libm_multiply_add_f32(xf, xf, 1.0));
+  return ((x_sign as f64) * libm_log_eval(libm_multiply_add_f32(xf, x_sign, sqrt_term) as f64)) as f16;
+}
+
+/// The inverse hyperbolic cosine of an f16, correctly rounded; NaN below 1: `acoshf16` from
+/// `acoshf16.h`. Just above 1, `sqrt(2 d)` times a polynomial in `d = x - 1`; above that,
+/// `log(x + sqrt(x^2 - 1))` with the double `log_eval`, rounded to f32 and then to f16 as LLVM does.
+fn libm_acoshf16(x : f16) -> f16 {
+  let x_u = libm_f16_to_bits(x);
+  if (x_u & 32767u16) >= 31744u16 {
+    // A signaling NaN, or anything negative, gives the quiet NaN; a positive quiet NaN and plus
+    // infinity stay.
+    if ((x_u & 32767u16) > 31744u16 && (x_u & 512u16) == 0u16) || (x_u >> 15u16) == 1u16 {
+      return libm_f16_from_bits(32256u16);
+    }
+    return x;
+  }
+  let xf = x as f32;
+  if xf <= 1.0 {
+    if xf == 1.0 {
+      return libm_f16_from_bits(0u16);
+    }
+    return libm_f16_from_bits(32256u16);
+  }
+  if x_u == 16823u16 { // 0x41b7
+    return libm_f16_from_bits(16088u16); // 0x3ed8
+  }
+  if x_u == 15588u16 { // 0x3ce4
+    return libm_f16_from_bits(14655u16); // 0x393f
+  }
+  if x_u < 15616u16 { // 0x3d00
+    let delta = xf - 1.0;
+    let sqrt_2_delta = libm_sqrt_f32(2.0 * delta);
+    let pe = libm_multiply_add_f32(delta, libm_multiply_add_f32(delta, libm_multiply_add_f32(delta, libm_multiply_add_f32(delta, libm_f32_from_bits(989389710u32), libm_f32_from_bits(3149323118u32)), libm_f32_from_bits(1016699290u32)), libm_f32_from_bits(3182078635u32)), 1.0); // 0x1.f1c71cp-10f, -0x1.6db6dcp-8f, 0x1.333334p-6f, -0x1.555556p-4f
+    return (sqrt_2_delta * pe) as f16;
+  }
+  let sqrt_term = libm_sqrt_f32(libm_multiply_add_f32(xf, xf, -1.0));
+  let result = libm_log_eval((xf + sqrt_term) as f64) as f32;
+  return result as f16;
+}
+
+/// `ONE_OVER_F_FLOAT` and `LOG_F_FLOAT` from `atanhf16.h`: `1 / f` and `log(f)` for
+/// `f = 1 + i/128`, in f32.
+const LIBM_ATANHF16_ONE_OVER_F : Tensor<f32, [128]> = [
+1.0, 0.99224806, 0.9846154, 0.97709924,
+0.969697, 0.96240604, 0.95522386, 0.94814813,
+0.9411765, 0.93430656, 0.92753625, 0.92086333,
+0.9142857, 0.9078014, 0.90140843, 0.8951049,
+0.8888889, 0.8827586, 0.8767123, 0.8707483,
+0.8648649, 0.8590604, 0.85333335, 0.8476821,
+0.84210527, 0.8366013, 0.83116883, 0.82580644,
+0.82051283, 0.81528664, 0.8101266, 0.8050314,
+0.8, 0.7950311, 0.79012346, 0.78527606,
+0.7804878, 0.77575755, 0.7710843, 0.7664671,
+0.7619048, 0.75739646, 0.7529412, 0.748538,
+0.74418604, 0.7398844, 0.7356322, 0.73142856,
+0.72727275, 0.72316384, 0.71910113, 0.7150838,
+0.7111111, 0.70718235, 0.7032967, 0.69945353,
+0.6956522, 0.6918919, 0.68817204, 0.684492,
+0.68085104, 0.67724866, 0.67368424, 0.6701571,
+0.6666667, 0.6632124, 0.6597938, 0.6564103,
+0.6530612, 0.6497462, 0.64646465, 0.6432161,
+0.64, 0.6368159, 0.63366336, 0.63054186,
+0.627451, 0.62439024, 0.6213592, 0.6183575,
+0.61538464, 0.61244017, 0.60952383, 0.6066351,
+0.6037736, 0.600939, 0.5981308, 0.59534883,
+0.5925926, 0.58986175, 0.58715594, 0.58447486,
+0.58181816, 0.57918555, 0.5765766, 0.57399106,
+0.5714286, 0.5688889, 0.5663717, 0.5638766,
+0.5614035, 0.558952, 0.5565217, 0.55411255,
+0.55172414, 0.5493562, 0.5470086, 0.54468083,
+0.5423729, 0.54008436, 0.53781515, 0.53556484,
+0.53333336, 0.53112036, 0.5289256, 0.52674896,
+0.52459013, 0.52244896, 0.5203252, 0.51821864,
+0.516129, 0.5140562, 0.512, 0.5099602,
+0.50793654, 0.5059289, 0.503937, 0.5019608
+];
+const LIBM_ATANHF16_LOG_F : Tensor<f32, [128]> = [
+0.0, 0.0077821403, 0.015504187, 0.023167059,
+0.030771658, 0.038318865, 0.045809537, 0.053244516,
+0.06062462, 0.06795066, 0.07522342, 0.08244367,
+0.089612156, 0.09672963, 0.103796795, 0.11081436,
+0.11778303, 0.12470348, 0.13157636, 0.13840233,
+0.14518201, 0.15191604, 0.15860502, 0.16524957,
+0.17185026, 0.17840765, 0.18492234, 0.19139485,
+0.19782574, 0.20421554, 0.21056476, 0.21687394,
+0.22314355, 0.2293741, 0.23556606, 0.24171993,
+0.24783616, 0.25391522, 0.25995752, 0.26596355,
+0.2719337, 0.27786845, 0.28376818, 0.2896333,
+0.29546422, 0.30126134, 0.30702505, 0.3127557,
+0.31845373, 0.32411948, 0.32975328, 0.33535555,
+0.3409266, 0.34646678, 0.35197642, 0.35745588,
+0.3629055, 0.36832556, 0.3737164, 0.37907836,
+0.3844117, 0.38971674, 0.3949938, 0.40024316,
+0.4054651, 0.41065994, 0.4158279, 0.4209693,
+0.4260844, 0.43117347, 0.43623677, 0.44127455,
+0.4462871, 0.45127463, 0.45623744, 0.4611757,
+0.46608973, 0.47097972, 0.4758459, 0.48068854,
+0.48550782, 0.490304, 0.49507725, 0.49982786,
+0.504556, 0.5092619, 0.51394576, 0.51860774,
+0.52324814, 0.5278671, 0.5324648, 0.5370415,
+0.5415973, 0.54613245, 0.55064714, 0.5551415,
+0.5596158, 0.56407017, 0.56850475, 0.5729197,
+0.5773154, 0.58169174, 0.586049, 0.59038746,
+0.59470713, 0.5990082, 0.60329086, 0.60755527,
+0.61180156, 0.61602986, 0.6202404, 0.6244333,
+0.62860864, 0.63276666, 0.63690746, 0.6410312,
+0.64513797, 0.6492279, 0.6533013, 0.65735805,
+0.6613985, 0.6654226, 0.6694307, 0.6734227,
+0.6773988, 0.68135923, 0.685304, 0.6892333
+];
+
+/// `log(|x|)` in f32 from a table and a degree-7 polynomial: `log_eval_f` from `atanhf16.h`. The
+/// sign of `x` is not read.
+fn libm_atanhf16_log_eval(x : f32) -> f32 {
+  let x_u = libm_f32_to_bits(x);
+  let ex = (((x_u >> 23u32) & 255u32) as i32 - 127) as f32;
+  let p1 = ((x_u >> 16u32) & 127u32) as i64;
+  // The low 16 bits of the mantissa, as 1.m.
+  let m = libm_f32_from_bits((x_u & 65535u32) | 1065353216u32);
+  let dx = (m - 1.0) * LIBM_ATANHF16_ONE_OVER_F[p1];
+  let dx2 = dx * dx;
+  let c1 = libm_multiply_add_f32(dx, libm_f32_from_bits(1051372203u32), -0.5); // 0x1.555556p-2f
+  let c2 = libm_multiply_add_f32(dx, libm_f32_from_bits(1045385259u32), libm_f32_from_bits(3196059927u32)); // 0x1.9ea056p-3f, -0x1.00022ep-2f
+  let c3 = libm_multiply_add_f32(dx, libm_f32_from_bits(1096813688u32), libm_f32_from_bits(3203563922u32)); // 0x1.c018fp3f, -0x1.e50324p-2f
+  let p = libm_multiply_add_f32(dx2, libm_multiply_add_f32(dx2, libm_multiply_add_f32(dx2, c3, c2), c1), dx);
+  return libm_multiply_add_f32(ex, libm_f32_from_bits(1060205080u32), LIBM_ATANHF16_LOG_F[p1] + p); // 0x1.62e43p-1f
+}
+
+/// The inverse hyperbolic tangent of an f16, correctly rounded; infinite at 1 and NaN past it:
+/// `atanhf16` from `atanhf16.h`. Below 0.25 in size a polynomial in f32; above,
+/// `log((1 + x) / (1 - x)) / 2`.
+fn libm_atanhf16(x : f16) -> f16 {
+  let x_u = libm_f16_to_bits(x);
+  let x_abs = x_u & 32767u16;
+  if x_abs >= 15360u16 { // 0x3c00
+    if x_abs > 31744u16 {
+      if (x_abs & 512u16) == 0u16 {
+        return libm_f16_from_bits(32256u16);
+      }
+      return x;
+    }
+    if x_abs == 15360u16 {
+      return libm_f16_from_bits((x_u & 32768u16) | 31744u16);
+    }
+    return libm_f16_from_bits(32256u16);
+  }
+  if x_u == 11927u16 { // 0x2e97
+    return libm_f16_from_bits(11933u16); // 0x2e9d
+  }
+  if x_abs <= 13299u16 { // 0x33f3
+    if x_abs == 0u16 {
+      return x;
+    }
+    let xf = x as f32;
+    if x_abs < 2048u16 { // 0x0800
+      return (xf + libm_f32_from_bits(1051372203u32) * xf * xf * xf) as f16; // 0x1.555556p-2f
+    }
+    let x2 = xf * xf;
+    let pe = libm_multiply_add_f32(x2, libm_multiply_add_f32(x2, libm_multiply_add_f32(x2, libm_multiply_add_f32(x2, libm_multiply_add_f32(x2, libm_f32_from_bits(1035611788u32), libm_f32_from_bits(1038323257u32)), libm_f32_from_bits(1041385765u32)), libm_f32_from_bits(1045220557u32)), libm_f32_from_bits(1051372203u32)), 0.0); // 0x1.745d18p-4f, 0x1.c71c72p-4f, 0x1.24924ap-3f, 0x1.99999ap-3f, 0x1.555556p-2f
+    return libm_multiply_add_f32(xf, pe, xf) as f16;
+  }
+  let xf = x as f32;
+  return (0.5 * (libm_atanhf16_log_eval((xf + 1.0) / (xf - 1.0)) as f64)) as f16;
+}
+
+/// `a + b` for double-doubles of either order of size: TwoSum on the high parts.
+fn libm_dd_add_any(a : LibmDoubleDouble, b : LibmDoubleDouble) -> LibmDoubleDouble {
+  let s = libm_dd_two_sum(a.hi, b.hi);
+  return libm_dd_exact_add(s.hi, s.lo + (a.lo + b.lo));
+}
+
+/// The square root of a double-double, as a double-double: the double root corrected once.
+fn libm_dd_sqrt(a : LibmDoubleDouble) -> LibmDoubleDouble {
+  let r = libm_sqrt_f64(a.hi);
+  let r_sq = libm_dd_exact_mult(r, r);
+  let lo = (((a.hi - r_sq.hi) - r_sq.lo) + a.lo) / (2.0 * r);
+  return libm_dd_exact_add(r, lo);
+}
+
+/// The natural logarithm of a positive normal double-double, as a double-double, with a relative
+/// error far below a unit in the last place of a double. It uses the reduction of `libm_log`:
+/// `x = 2^e * m`, `log(m) = -log(r) + log(1 + u)` with `r` from `RD` and `u = r * m - 1` exact.
+/// `log(1 + u)` is `u - u^2 / 2` with `u^2` exact, plus `u^3 (1/3 + u R(u))` with `u^3` and 1/3
+/// as double-doubles; the low part of `a` adds `a.lo / a.hi`.
+fn libm_log_dd(a : LibmDoubleDouble) -> LibmDoubleDouble {
+  let x_u = libm_f64_to_bits(a.hi);
+  let index = ((x_u >> 45u64) & 127u64) as i64;
+  // The unbiased exponent, plus 1 when the 8 leading fraction bits are all 1.
+  let x_e = (-1023 + ((x_u + 35184372088832u64) >> 52u64) as i32) as f64; // 0x0000200000000000
+  let m = libm_f64_from_bits((x_u & 4503599627370495u64) | 4607182418800017408u64); // 0x000fffffffffffff, 0x3ff0000000000000
+  // Exact.
+  let u = libm_multiply_add(LIBM_COMMON_RD[index], m, -1.0);
+  // e log(2) - log(r): hi is exact.
+  let hi = libm_multiply_add(x_e, libm_f64_from_bits(4604418534313441280u64), LIBM_COMMON_LOG_R_DD[2 * index + 1]); // 0x1.62e42fefa38p-1
+  let lo = libm_multiply_add(x_e, libm_f64_from_bits(4408728642709317424u64), LIBM_COMMON_LOG_R_DD[2 * index]); // 0x1.ef35793c7673p-45
+  let u2 = libm_dd_exact_mult(u, u);
+  let u3 = libm_dd_quick_mult(LibmDoubleDouble {
+    hi: u, lo: 0.0
+  }, u2);
+  // -1/4 + u/5 - u^2/6 + ... - u^8/12, past which |u| < 2^-7 makes the terms vanish.
+  let rr = libm_multiply_add(u, libm_multiply_add(u, libm_multiply_add(u, libm_multiply_add(u, libm_multiply_add(u, libm_multiply_add(u, libm_multiply_add(u, libm_multiply_add(u, libm_f64_from_bits(13814041257021101397u64), libm_f64_from_bits(4591215111030249286u64)), libm_f64_from_bits(13815242216921733530u64)), libm_f64_from_bits(4592670820000712476u64)), -0.125), libm_f64_from_bits(4594314991293244562u64)), libm_f64_from_bits(13818544856648471893u64)), 0.2), -0.25); // -0x1.5555555555555p-4, 0x1.745d1745d1746p-4, -0x1.999999999999ap-4, 0x1.c71c71c71c71cp-4, 0x1.2492492492492p-3, -0x1.5555555555555p-3
+  let c = libm_dd_exact_add(libm_f64_from_bits(4599676419421066581u64), libm_multiply_add(u, rr, libm_f64_from_bits(4356482039543059797u64))); // 0x1.5555555555555p-2, 0x1.5555555555555p-56
+  let q = libm_dd_quick_mult(u3, c);
+  // log(1 + u) = u - u^2 / 2 + q.
+  let mut s = libm_dd_add_any(LibmDoubleDouble {
+    hi: u, lo: 0.0
+  }, LibmDoubleDouble {
+    hi: -0.5 * u2.hi, lo: -0.5 * u2.lo
+  });
+  s = libm_dd_add_any(s, q);
+  let mut r = libm_dd_add_any(LibmDoubleDouble {
+    hi: hi, lo: lo
+  }, s);
+  r.lo = r.lo + a.lo / a.hi;
+  return libm_dd_exact_add(r.hi, r.lo);
+}
+
+/// log(2) as a double-double.
+fn libm_log2_dd() -> LibmDoubleDouble {
+  return LibmDoubleDouble {
+    hi: libm_f64_from_bits(4604418534313441775u64), lo: libm_f64_from_bits(4358002977218854975u64) // 0x1.62e42fefa39efp-1, 0x1.abc9e3b39803fp-56
+  };
+}
+
+/// The inverse hyperbolic sine of a double. Not a port: LLVM libc has no double-precision
+/// `asinh`. Below 1/64 in size, its Taylor series up to `x^11` from `libm_odd_series_small`;
+/// above, `log(|x| + sqrt(x^2 + 1))` with every step a double-double, and from 2^40 up
+/// `log(|x|) + log(2)`. The result is almost always correctly rounded, but that is not proven.
+fn libm_asinh(x : f64) -> f64 {
+  let x_u = libm_f64_to_bits(x);
+  let x_abs_u = x_u & 9223372036854775807u64; // 0x7fffffffffffffff
+  // |x| < 2^-26: asinh(x) rounds to x.
+  if x_abs_u < 4490088828488384512u64 { // 0x3e50000000000000
+    return x;
+  }
+  if x_abs_u >= 9218868437227405312u64 { // 0x7ff0000000000000
+    // Infinity, or NaN, made quiet.
+    return x + x;
+  }
+  let a = libm_f64_from_bits(x_abs_u);
+  let sign : f64 = if (x_u >> 63u64) == 1u64 {
+    -1.0
+  } else {
+    1.0
+  };
+  if a < 0.015625 {
+    // x - x^3/6 + 3x^5/40 - 5x^7/112 + 35x^9/1152 - 63x^11/2816.
+    return libm_odd_series_small(x, libm_f64_from_bits(13818544856648471893u64), libm_f64_from_bits(13575350476770465109u64), libm_multiply_add(x * x, libm_multiply_add(x * x, libm_multiply_add(x * x, libm_f64_from_bits(13805477594093298409u64), libm_f64_from_bits(4584414220683866567u64)), libm_f64_from_bits(13809966571643956663u64)), libm_f64_from_bits(4590068740216009523u64))); // -0x1.5555555555555p-3, -0x1.5555555555555p-57, -0x1.6e8ba2e8ba2e9p-6, 0x1.f1c71c71c71c7p-6, -0x1.6db6db6db6db7p-5, 0x1.3333333333333p-4
+  }
+  let mut l = LibmDoubleDouble {
+    hi: 0.0, lo: 0.0
+  };
+  if a >= libm_f64_from_bits(4787326403894837248u64) { // 0x1p40
+    l = libm_dd_add_any(libm_log_dd(LibmDoubleDouble {
+      hi: a, lo: 0.0
+    }), libm_log2_dd());
+  } else {
+    let a2 = libm_dd_exact_mult(a, a);
+    let s = libm_dd_add_any(a2, LibmDoubleDouble {
+      hi: 1.0, lo: 0.0
+    });
+    let w = libm_dd_add_any(LibmDoubleDouble {
+      hi: a, lo: 0.0
+    }, libm_dd_sqrt(s));
+    l = libm_log_dd(w);
+  }
+  return sign * (l.hi + l.lo);
+}
+
+/// The inverse hyperbolic cosine of a double; NaN below 1. Not a port: LLVM libc has no
+/// double-precision `acosh`. `log(x + sqrt(x^2 - 1))` with every step a double-double (`x^2 - 1`
+/// is exact before the square root), and from 2^40 up `log(x) + log(2)`. The result is almost
+/// always correctly rounded, but that is not proven.
+fn libm_acosh(x : f64) -> f64 {
+  let x_u = libm_f64_to_bits(x);
+  if x_u >= 9218868437227405312u64 { // 0x7ff0000000000000
+    // +infinity stays; a NaN stays NaN, made quiet; anything negative is not in the domain.
+    if x_u == 9218868437227405312u64 || (x_u & 9223372036854775807u64) > 9218868437227405312u64 { // 0x7ff0000000000000, 0x7fffffffffffffff, 0x7ff0000000000000
+      return x + x;
+    }
+    return libm_f64_from_bits(9221120237041090560u64); // 0x7ff8000000000000
+  }
+  if x < 1.0 {
+    return libm_f64_from_bits(9221120237041090560u64); // 0x7ff8000000000000
+  }
+  if x == 1.0 {
+    return 0.0;
+  }
+  let mut l = LibmDoubleDouble {
+    hi: 0.0, lo: 0.0
+  };
+  if x >= libm_f64_from_bits(4787326403894837248u64) { // 0x1p40
+    l = libm_dd_add_any(libm_log_dd(LibmDoubleDouble {
+      hi: x, lo: 0.0
+    }), libm_log2_dd());
+  } else {
+    let x2 = libm_dd_exact_mult(x, x);
+    let s = libm_dd_add_any(x2, LibmDoubleDouble {
+      hi: -1.0, lo: 0.0
+    });
+    let w = libm_dd_add_any(LibmDoubleDouble {
+      hi: x, lo: 0.0
+    }, libm_dd_sqrt(s));
+    l = libm_log_dd(w);
+  }
+  return l.hi + l.lo;
+}
+
+/// The inverse hyperbolic tangent of a double; infinite at 1 and NaN past it. Not a port: LLVM
+/// libc has no double-precision `atanh`. Below 1/64 in size, its Taylor series up to `x^13` from
+/// `libm_odd_series_small`; above, `log((1 + |x|) / (1 - |x|)) / 2` with the ratio and the log as
+/// double-doubles. The result is almost always correctly rounded, but that is not proven.
+fn libm_atanh(x : f64) -> f64 {
+  let x_u = libm_f64_to_bits(x);
+  let x_abs_u = x_u & 9223372036854775807u64; // 0x7fffffffffffffff
+  // |x| < 2^-27: atanh(x) = x + x^3/3 rounds to x.
+  if x_abs_u < 4485585228861014016u64 { // 0x3e40000000000000
+    return x;
+  }
+  if x_abs_u >= 4607182418800017408u64 { // 0x3ff0000000000000
+    if x_abs_u > 9218868437227405312u64 { // 0x7ff0000000000000
+      // NaN, made quiet.
+      return x + x;
+    }
+    if x_abs_u == 4607182418800017408u64 { // 0x3ff0000000000000
+      return libm_f64_from_bits((x_u & 9223372036854775808u64) | 9218868437227405312u64); // 0x8000000000000000, 0x7ff0000000000000
+    }
+    return libm_f64_from_bits(9221120237041090560u64); // 0x7ff8000000000000
+  }
+  let a = libm_f64_from_bits(x_abs_u);
+  let sign : f64 = if (x_u >> 63u64) == 1u64 {
+    -1.0
+  } else {
+    1.0
+  };
+  if a < 0.015625 {
+    // x + x^3/3 + x^5/5 + ... + x^13/13.
+    return libm_odd_series_small(x, libm_f64_from_bits(4599676419421066581u64), libm_f64_from_bits(4356482039543059797u64), libm_multiply_add(x * x, libm_multiply_add(x * x, libm_multiply_add(x * x, libm_multiply_add(x * x, libm_f64_from_bits(4590207312512236308u64), libm_f64_from_bits(4591215111030249286u64)), libm_f64_from_bits(4592670820000712476u64)), libm_f64_from_bits(4594314991293244562u64)), 0.2)); // 0x1.5555555555555p-2, 0x1.5555555555555p-56, 0x1.3b13b13b13b14p-4, 0x1.745d1745d1746p-4, 0x1.c71c71c71c71cp-4, 0x1.2492492492492p-3
+  }
+  let num = libm_dd_two_sum(1.0, a);
+  let den = libm_dd_two_sum(1.0, -a);
+  let l = libm_log_dd(libm_dd_div(num, den));
+  return sign * (0.5 * l.hi + 0.5 * l.lo);
+}
+
+/// The inverse hyperbolic functions of a bf16: the double result rounded once, to odd in f32 and
+/// then to bf16, which gives the same bf16 as rounding the double directly.
+fn libm_asinh_bf16(x : bf16) -> bf16 {
+  return libm_bf16_from_f32(libm_f32_round_odd(libm_asinh(libm_f32_from_bf16(x) as f64)));
+}
+
+fn libm_acosh_bf16(x : bf16) -> bf16 {
+  return libm_bf16_from_f32(libm_f32_round_odd(libm_acosh(libm_f32_from_bf16(x) as f64)));
+}
+
+fn libm_atanh_bf16(x : bf16) -> bf16 {
+  return libm_bf16_from_f32(libm_f32_round_odd(libm_atanh(libm_f32_from_bf16(x) as f64)));
+}

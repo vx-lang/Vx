@@ -1,0 +1,93 @@
+//===- core_libm_atanh_f64.vx - Vx Compiler ------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// f64 `atanh`, which LLVM libc does not have in double precision, so `core::libm` builds it from a
+// double-double `log`. The expected values are the correctly rounded ones, from 113-bit `atanhq` in
+// libquadmath. It prints the bits of `x.atanh()` (a NaN as 9221120237041090560) for special values
+// and inputs on both sides of each place the method changes; then hashes of 2^20 random x of any
+// size below 1, within 2^-1 to 2^-52 of 1, from 1/32 to 1/8 and from 1/4 to 1. On 2^22 inputs of
+// each of those kinds, every result was the correctly rounded value; that is measured, not proven.
+//
+// EXPECT: 0 9223372036854775808 1 4485585228861014015 4485585228861014016 4490088828488384512 4580161187593366812 4580161187593366813 13810293211667187744 4603122929439146763 13849333051372544226 9218868437227405312 18442240474082181120 9221120237041090560 9221120237041090560 9221120237041090560 10271153496973311279 7069594552138097974 8346789825292984791 10151137074341042707
+import core::num;
+import core::libm;
+
+fn bits(r : f64) -> u64 {
+  if r != r {
+    return 9221120237041090560u64;
+  }
+  return r.to_bits();
+}
+
+fn check(x : u64) -> i32 {
+  print(bits(f64::from_bits(x).atanh()));
+  print!(" ");
+  return 0;
+}
+
+fn next(s : u64) -> u64 {
+  let a = s ^ (s << 13u64);
+  let b = a ^ (a >> 7u64);
+  return b ^ (b << 17u64);
+}
+
+/// Random x of a kind: 0, of any size below 1; 1, within 2^-1 to 2^-52 of 1; 2, from 1/32 to 1/8; 3, from 1/4 to 1.
+fn hash(kind : i32) -> u64 {
+  let mut s : u64 = 88172645463325252u64;
+  let mut h : u64 = 0u64;
+  for i in 0..1048576 {
+    s = next(s);
+    let bb = s;
+    s = next(s);
+    let u = ((s >> 11u64) as f64) * 0.00000000000000011102230246251565;
+    let sign : f64 = if (bb >> 63u64) == 1u64 {
+      -1.0
+    } else {
+      1.0
+    };
+    let mant = bb & 4503599627370495u64;
+    let mut x : f64 = 0.0;
+    if kind == 0 {
+      x = sign * f64::from_bits(mant | ((960u64 + (bb >> 52u64) % 63u64) << 52u64));
+    } else if kind == 1 {
+      x = sign * (1.0 - f64::from_bits(mant | ((971u64 + (bb >> 52u64) % 52u64) << 52u64)));
+    } else if kind == 2 {
+      x = sign * libm_multiply_add(0.09375, u, 0.03125);
+    } else {
+      x = sign * libm_multiply_add(0.75, u, 0.25);
+    }
+    h = (h ^ bits(x.atanh())).wrapping_mul(1099511628211u64);
+  }
+  return h;
+}
+
+fn main() -> i32 {
+  let _r0 = check(0u64);
+  let _r1 = check(9223372036854775808u64);
+  let _r2 = check(1u64);
+  let _r3 = check(4485585228861014015u64);
+  let _r4 = check(4485585228861014016u64);
+  let _r5 = check(4490088828488384511u64);
+  let _r6 = check(4580160821035794431u64);
+  let _r7 = check(4580160821035794432u64);
+  let _r8 = check(13810288257331625984u64);
+  let _r9 = check(4602678819172646912u64);
+  let _r10 = check(13830554455654793215u64);
+  let _r11 = check(4607182418800017408u64);
+  let _r12 = check(13830554455654793216u64);
+  let _r13 = check(4607182418800017409u64);
+  let _r14 = check(9218868437227405312u64);
+  let _r15 = check(9221120237041090560u64);
+  print(hash(0));
+  print!(" ");
+  print(hash(1));
+  print!(" ");
+  print(hash(2));
+  print!(" ");
+  print(hash(3));
+  return 0;
+}
