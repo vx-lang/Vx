@@ -16,11 +16,13 @@
 //!                                }
 //! ```
 //!
-//! A literal in a pattern becomes a test, a name becomes a `let` at the top of the arm. The last
-//! arm must match every value, so it is the final `else` and the chain is a value wherever the
-//! `match` was. An enum variant inside a tuple pattern is not supported yet.
+//! A literal in a pattern becomes a test, a name becomes a `let` at the top of the arm, and an
+//! enum variant becomes a `match` on that element, which binds its payload. A failed test falls
+//! back to the arms below it. The last arm must match every value, so it is the final `else` and
+//! the result is a value wherever the `match` was.
 
 use super::*;
+use crate::symbol::Symbol;
 
 /// A `match` arm's pattern: a tuple of patterns, or any other pattern.
 pub(crate) enum ArmPattern {
@@ -46,7 +48,7 @@ impl<'a> Parser<'a> {
         Ok(ArmPattern::Tuple(elems))
     }
 
-    /// Rewrite `match scrutinee { arms }`, where some arm is a tuple pattern, into an `if` chain.
+    /// Rewrite `match scrutinee { arms }`, where some arm is a tuple pattern, into `if`s and `match`es.
     pub(crate) fn lower_tuple_match(
         &mut self,
         scrutinee: Expr,
@@ -115,16 +117,16 @@ impl<'a> Parser<'a> {
                     ));
                 }
             }
-            let mut tests = Vec::new();
+            let mut steps = Vec::new();
             let mut binds = Vec::new();
-            self.arm_tests(&pattern, &value, &token, &mut tests, &mut binds)?;
-            if i < last && tests.is_empty() {
+            self.arm_steps(&pattern, &value, &mut steps, &mut binds);
+            if i < last && steps.is_empty() {
                 return Err(self.error_at(
                     &token,
                     "this arm matches every value, so the arms after it can never run",
                 ));
             }
-            if i == last && !tests.is_empty() {
+            if i == last && !steps.is_empty() {
                 return Err(self.error_at(
                     &token,
                     "a `match` on a tuple must end with an arm that matches every value, \
@@ -132,60 +134,48 @@ impl<'a> Parser<'a> {
                 ));
             }
             binds.extend(body);
-            lowered.push((tests, binds));
+            lowered.push((steps, binds));
         }
 
-        if let Some(check) = size_check {
-            lowered[0].0.insert(0, check);
-        }
-
-        // Build the chain from the last arm, which is the final `else`, back to the first.
         if lowered.len() == 1 {
             // One arm that matches everything: run it unconditionally, after the size check.
-            let (tests, body) = lowered.pop().expect("one arm");
-            let cond = if tests.is_empty() {
-                identifier("true")
-            } else {
-                all_of(tests)
-            };
+            let (_, body) = lowered.pop().expect("one arm");
+            let cond = size_check.unwrap_or_else(|| identifier("true"));
             return Ok(Expr::If(IfExpr::new_value(cond, body.clone(), body)));
         }
-        let (_, mut else_block) = lowered.pop().expect("a match has at least one arm");
-        let (tests, then_block) = lowered.pop().expect("at least two arms");
-        let mut chain = IfExpr::new_value(all_of(tests), then_block, else_block);
-        while let Some((tests, then_block)) = lowered.pop() {
-            else_block = vec![Statement::ExprStmt(ExprStmtStmt {
-                expr: Expr::If(chain),
-                has_semi: false,
-                span: Span::default(),
-            })];
-            chain = IfExpr::new_value(all_of(tests), then_block, else_block);
+        if let Some(check) = size_check {
+            lowered[0].0.insert(0, Step::Test(check));
         }
-        Ok(Expr::If(chain))
+        let mut tree = build(&lowered, 0);
+        assert!(
+            tree.len() == 1,
+            "a match of two or more arms starts with a test"
+        );
+        let Some(Statement::ExprStmt(top)) = tree.pop() else {
+            unreachable!("a test is an `if` or a `match`")
+        };
+        Ok(top.expr)
     }
 
-    /// The tests `pattern` puts on `value`, and the `let`s that bind its names.
-    fn arm_tests(
-        &self,
+    /// The steps `pattern` takes on `value`, in order, and the `let`s that bind its names.
+    fn arm_steps(
+        &mut self,
         pattern: &ArmPattern,
         value: &Expr,
-        token: &Token<'a>,
-        tests: &mut Vec<Expr>,
+        steps: &mut Vec<Step>,
         binds: &mut Vec<Statement>,
-    ) -> ParseResult<'a, ()> {
+    ) {
         match pattern {
             ArmPattern::Tuple(elems) => {
                 for (i, elem) in elems.iter().enumerate() {
-                    self.arm_tests(elem, &element(value, i), token, tests, binds)?;
+                    self.arm_steps(elem, &element(value, i), steps, binds);
                 }
             }
             ArmPattern::Plain(plain) => match plain.as_ref() {
                 Pattern::Wildcard => {}
-                Pattern::Literal(lit) => tests.push(equals(value, lit)),
-                Pattern::Identifier(name)
-                    if name.as_ref() == "true" || name.as_ref() == "false" =>
-                {
-                    tests.push(equals(value, &identifier(name.as_ref())))
+                Pattern::Literal(lit) => steps.push(Step::Test(equals(value, lit))),
+                Pattern::Identifier(name) if is_bool(name) => {
+                    steps.push(Step::Test(equals(value, &identifier(name.as_ref()))))
                 }
                 Pattern::Identifier(name) => binds.push(Statement::LetDecl(LetDeclStmt {
                     name: name.clone(),
@@ -194,16 +184,145 @@ impl<'a> Parser<'a> {
                     expr: value.clone(),
                     span: Span::default(),
                 })),
-                Pattern::EnumVariant(..) => {
-                    return Err(self.error_at(
-                        token,
-                        "an enum variant inside a tuple pattern is not supported yet",
-                    ))
+                // The variant's `match` binds a name or `_` itself. Anything else in its payload,
+                // a literal or another variant, is bound to a temporary and tested inside.
+                Pattern::EnumVariant(enum_name, variant, payload) => {
+                    let mut then = Vec::new();
+                    let payload = payload.as_ref().map(|elems| {
+                        elems
+                            .iter()
+                            .map(|p| match p {
+                                Pattern::Wildcard => Pattern::Wildcard,
+                                Pattern::Identifier(n) if !is_bool(n) => p.clone(),
+                                _ => {
+                                    let temp = format!("$payload{}", self.tuple_lets);
+                                    self.tuple_lets += 1;
+                                    self.arm_steps(
+                                        &ArmPattern::Plain(Box::new(p.clone())),
+                                        &identifier(&temp),
+                                        &mut then,
+                                        binds,
+                                    );
+                                    Pattern::Identifier(temp.into())
+                                }
+                            })
+                            .collect()
+                    });
+                    steps.push(Step::Variant {
+                        value: value.clone(),
+                        enum_name: enum_name.clone(),
+                        variant: variant.clone(),
+                        payload,
+                        then,
+                    });
                 }
             },
         }
-        Ok(())
     }
+}
+
+/// One step of an arm's pattern. Every step must pass for the arm to run.
+#[derive(Clone)]
+enum Step {
+    /// This `bool` is true.
+    Test(Expr),
+    /// `value` is this enum variant. Its `match` binds `payload`, and `then` are the steps on
+    /// what it binds.
+    Variant {
+        value: Expr,
+        enum_name: Symbol,
+        variant: Symbol,
+        payload: Option<Vec<Pattern>>,
+        then: Vec<Step>,
+    },
+}
+
+/// The statements for arms `i..`: arm `i`'s steps, each falling back to arms `i + 1..` when it
+/// fails. The fallback is written out at every step that can fail, so it is copied once per step.
+fn build(arms: &[(Vec<Step>, Vec<Statement>)], i: usize) -> Vec<Statement> {
+    let (steps, body) = &arms[i];
+    if i == arms.len() - 1 {
+        return body.clone();
+    }
+    build_steps(arms, i, steps, body)
+}
+
+fn build_steps(
+    arms: &[(Vec<Step>, Vec<Statement>)],
+    i: usize,
+    steps: &[Step],
+    body: &[Statement],
+) -> Vec<Statement> {
+    let Some(first) = steps.first() else {
+        return body.to_vec();
+    };
+    let expr = match first {
+        Step::Test(_) => {
+            // Consecutive tests are one `if`, so a run of them costs one copy of the fallback.
+            let n = steps
+                .iter()
+                .take_while(|s| matches!(s, Step::Test(_)))
+                .count();
+            let tests = steps[..n]
+                .iter()
+                .map(|s| match s {
+                    Step::Test(t) => t.clone(),
+                    Step::Variant { .. } => unreachable!("counted above"),
+                })
+                .collect();
+            Expr::If(IfExpr::new_value(
+                all_of(tests),
+                build_steps(arms, i, &steps[n..], body),
+                build(arms, i + 1),
+            ))
+        }
+        Step::Variant {
+            value,
+            enum_name,
+            variant,
+            payload,
+            then,
+        } => {
+            let inner: Vec<Step> = then.iter().chain(&steps[1..]).cloned().collect();
+            Expr::Match(MatchExpr::new(
+                Box::new(value.clone()),
+                vec![
+                    MatchArm {
+                        pattern: Pattern::EnumVariant(
+                            enum_name.clone(),
+                            variant.clone(),
+                            payload.clone(),
+                        ),
+                        body: build_steps(arms, i, &inner, body),
+                    },
+                    MatchArm {
+                        pattern: Pattern::Wildcard,
+                        body: build(arms, i + 1),
+                    },
+                ],
+                Span::default(),
+            ))
+        }
+    };
+    // An `if` or `match` that returns on every path is a statement, not a value. The checker types
+    // a `match` from the arms that end in a value, and in a `match` the parser has turned into
+    // `return <match>` this one would otherwise count as a `void` value.
+    let mut stmt = Statement::ExprStmt(ExprStmtStmt {
+        expr,
+        has_semi: false,
+        span: Span::default(),
+    });
+    if crate::syntax::expr::statement_always_exits(&stmt, &|_| false) {
+        let Statement::ExprStmt(e) = &mut stmt else {
+            unreachable!("built above")
+        };
+        e.has_semi = true;
+    }
+    vec![stmt]
+}
+
+fn is_bool(name: &Symbol) -> bool {
+    name.as_ref() == "true" || name.as_ref() == "false"
 }
 
 impl IfExpr {
@@ -291,5 +410,5 @@ fn all_of(tests: Vec<Expr>) -> Expr {
                 Span::default(),
             ))
         })
-        .expect("an arm with no tests is the last one")
+        .expect("a group of tests is never empty")
 }

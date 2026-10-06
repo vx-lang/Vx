@@ -156,7 +156,17 @@ fn sign_pair(a: i64, b: i64) -> i64 {
 }
 ```
 
-An enum variant inside a tuple pattern, such as `(Some(x), None)`, is not supported yet.
+An element of a pattern can also be an enum variant, which binds its payload:
+
+```rust
+fn add(a: Option<i64>, b: Option<i64>) -> i64 {
+    match (a, b) {
+        (Option<i64>::Some(x), Option<i64>::Some(y)) => { return x + y; },
+        (Option<i64>::Some(x), _) => { return x; },
+        _ => { return 0; }
+    }
+}
+```
 
 ## Enums and pattern matching
 

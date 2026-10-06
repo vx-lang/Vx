@@ -1,0 +1,42 @@
+//===- tuple_match_with_enum_variants.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Enum variants inside the patterns of a `match` on a tuple: a variant that binds its payload, a
+// variant whose payload must be a literal, `Some(0)`, and `_`. A failed test falls through to the
+// arms below it.
+//
+// EXPECT: 5 2 100 -1
+import core::option;
+
+fn both(a : Option<i32>, b : Option<i32>) -> i32 {
+  match (a, b) {
+    (Option<i32>::Some(x), Option<i32>::Some(y)) => {
+      return x + y;
+    }, (Option<i32>::Some(x), _) => {
+      return x;
+    }, (_, Option<i32>::Some(0)) => {
+      return 100;
+    }, _ => {
+      return -1;
+    }
+  }
+}
+
+fn main() -> i32 {
+  let s2 = Option<i32>::Some(2);
+  let s3 = Option<i32>::Some(3);
+  let s0 = Option<i32>::Some(0);
+  let no = Option<i32>::None();
+  print(both(s2, s3));
+  print!(" ");
+  print(both(s2, no));
+  print!(" ");
+  print(both(no, s0));
+  print!(" ");
+  print(both(no, s3));
+  return 0;
+}

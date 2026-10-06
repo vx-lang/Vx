@@ -1,0 +1,31 @@
+//===- if_ending_in_a_match_that_returns.vx - Vx Compiler *- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// An `if` at the end of a function whose `then` branch ends in a `match` that returns from every
+// arm. The `if` returns on every path, so it is a statement, not the function's value.
+//
+// EXPECT: 123
+fn f(c : bool, x : i32) -> i32 {
+  if c {
+    match x {
+      0 => {
+        return 1;
+      }, _ => {
+        return 2;
+      }
+    }
+  } else {
+    return 3;
+  }
+}
+
+fn main() -> i32 {
+  print(f(true, 0));
+  print(f(true, 5));
+  print(f(false, 0));
+  return 0;
+}
