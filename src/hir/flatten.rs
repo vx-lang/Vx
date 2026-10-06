@@ -2920,7 +2920,12 @@ impl<'r> Lowerer<'r> {
         );
         if let Some(payload) = &ev.payload {
             for (i, pexpr) in payload.iter().enumerate() {
-                let v = self.lower_expr(pexpr)?;
+                let mut v = self.lower_expr(pexpr)?;
+                // A struct built in place is its slot's address; the payload takes its value,
+                // as a struct literal's field does.
+                if construction_tail(pexpr) && matches!(v.ty, LoweredTy::Aggregate(_)) {
+                    v = self.emit_typed(Opcode::SlotLoad, v.reg, Register(0), v.ty.clone(), 0);
+                }
                 self.emit_effect(
                     Opcode::FieldStore,
                     slot.reg,
@@ -3079,6 +3084,12 @@ impl<'r> Lowerer<'r> {
                         FieldTy::Nominal(inner),
                     )
                 }
+                // A plain struct held by value, `Holder<Noisy> { value : Noisy }`.
+                Type::Struct(n, _) if self.nominal_struct_gid(n).is_some() => {
+                    let gid = self.nominal_struct_gid(n)?;
+                    let (sz, al, mlir) = self.payload_field(&fty)?;
+                    (sz, al, mlir, FieldTy::Nominal(gid))
+                }
                 _ => {
                     let (sz, al, mlir) = enum_payload_field(&fty)?;
                     let kind = match &fty {
@@ -3135,6 +3146,50 @@ impl<'r> Lowerer<'r> {
     /// so this function can split it back apart loses the arguments' identity on the way through the
     /// text and gains nothing: `parse_scalar_type_arg` can only recover a scalar spelling or a bare
     /// nominal, so anything else comes back as a `Struct` named by whatever it printed as.
+    /// The registry GID of a declared, non-generic struct named `name`; `None` for an enum, a
+    /// generic struct's stub, or a name nothing declares.
+    fn nominal_struct_gid(&self, name: &Symbol) -> Option<TypeId> {
+        if self.registry.enum_data.contains_key(name.as_ref()) {
+            return None;
+        }
+        let gid = self.struct_gid_by_name(name)?;
+        let def = self.registry.layouts.get(&gid)?;
+        (def.align_bytes != 0 && self.registry.structs.contains_key(&gid)).then_some(gid)
+    }
+
+    /// The size, alignment and MLIR type of a value held inside an enum's payload or a generic
+    /// struct's field: a number or a pointer, a declared struct, or an instance of a generic
+    /// struct.
+    fn payload_field(&mut self, ty: &Type) -> Option<(u64, u64, String)> {
+        if let Some(field) = enum_payload_field(ty) {
+            return Some(field);
+        }
+        match ty {
+            Type::Struct(name, _) => {
+                let gid = self.nominal_struct_gid(name)?;
+                let def = self.registry.layouts.get(&gid)?;
+                let mlir =
+                    crate::codegen::flat::agg_struct_ty_of(gid, self.registry, &mut Vec::new())
+                        .ok()?;
+                Some((def.size_bytes as u64, def.align_bytes as u64, mlir))
+            }
+            Type::GenericInstance(base, args) => {
+                let Type::Struct(name, _) = base.as_ref() else {
+                    return None;
+                };
+                let gid = self.struct_instance_layout_of(name.as_ref(), args)?;
+                let def = self.instance_layouts.get(&gid)?;
+                let tys = &self.agg_layouts.iter().find(|(g, _, _)| *g == gid)?.2;
+                Some((
+                    def.size_bytes as u64,
+                    def.align_bytes as u64,
+                    format!("!llvm.struct<({})>", tys.join(", ")),
+                ))
+            }
+            _ => None,
+        }
+    }
+
     fn enum_instance_layout_of(
         &mut self,
         base: &str,
@@ -3160,7 +3215,7 @@ impl<'r> Lowerer<'r> {
             for (_, p) in &data.variants {
                 let Some(t) = p.get(i) else { continue };
                 let t = t.substitute(&mapping);
-                let Some((sz, al, _)) = enum_payload_field(&t) else {
+                let Some((sz, al, _)) = self.payload_field(&t) else {
                     continue;
                 };
                 let better = match &widest {
@@ -3177,7 +3232,7 @@ impl<'r> Lowerer<'r> {
         let mut field_tys = vec!["i32".to_string()]; // the discriminant tag
         let mut off = 4u64;
         for pt in &payload {
-            let (sz, al, mlir) = enum_payload_field(pt)?;
+            let (sz, al, mlir) = self.payload_field(pt)?;
             off = crate::layout::align_up(off as usize, al as usize) as u64;
             offsets.push(off);
             // A payload slot holds bits, so it is declared as an integer of the right

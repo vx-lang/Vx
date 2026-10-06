@@ -26,13 +26,6 @@ const KNOWN_DECLINES: &[&str] = &[
     // A row chosen by an `if` used as a value: the flat path has no slot for a tensor view
     // ("an aggregate slot with no struct type").
     "backend/pass/tensor_views_end_at_their_last_use.vx",
-    // A generic enum holding a struct, `Opt<Pair>`: the flat path has no layout for it ("an
-    // enum with no modelled instance layout"). The file checks the checker only.
-    "frontend/pass/match_moves_only_what_it_binds.vx",
-    // The same: `Opt<Noisy>`, whose payload drops are checked on the AST path.
-    "backend/pass/enum_drops_its_payload.vx",
-    // The same for a struct: `forget` moves its value into a `ManuallyDrop<Noisy>`.
-    "backend/pass/drop_and_forget_end_a_value_early.vx",
     // `t = pass(t)` inside an `if`: on the flat path a tensor local is one register, so the
     // new value cannot leave the branch. The flat path used to read the wrong tensor after it.
     "frontend/pass/tensor_drops_written_into_the_program.vx",

@@ -749,7 +749,7 @@ pub fn build_agg_map(registry: &ImmutableGlobalRegistry, sched: crate::config::S
 /// by-value nested-aggregate field expands to its nested struct type. `None` if the layout is a stub,
 /// field-less, or has any unmodelled field (a non-lowerable scalar, or a nested aggregate that itself
 /// fails). `visiting` guards against a cyclic layout (which would be infinite-size anyway). (#242)
-fn agg_struct_ty_of(
+pub(crate) fn agg_struct_ty_of(
     gid: TypeId,
     registry: &ImmutableGlobalRegistry,
     visiting: &mut Vec<TypeId>,

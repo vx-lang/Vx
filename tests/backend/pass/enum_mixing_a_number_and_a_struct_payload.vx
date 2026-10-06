@@ -1,0 +1,51 @@
+//===- enum_mixing_a_number_and_a_struct_payload.vx - Vx Compiler --*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// One enum whose variants carry a number, a struct wider than the number, or nothing. The
+// payload slot is shaped like the widest one, the struct, and each variant is stored and read
+// back at its own type: 4 from the struct, 7 from the number, 0 for `Nothing`.
+//
+// The legacy code generator gives an enum's payloads one typed slot, so it refuses this enum.
+// REQUIRES: flat-codegen
+// EXPECT: 4 7 0
+
+struct Point {
+  id : i32,
+  other : i64,
+}
+
+enum Shape {
+  Radius(i32),
+  At(Point),
+  Nothing,
+}
+
+fn describe(s : Shape) -> i32 {
+  match s {
+    Shape::Radius(r) => {
+      return r;
+    }
+    Shape::At(p) => {
+      return p.id;
+    }
+    Shape::Nothing() => {
+      return 0;
+    }
+  }
+  return -1;
+}
+
+fn main() -> i32 {
+  print(describe(Shape::At(Point {
+    id: 4, other: 8i64
+  })));
+  print!(" ");
+  print(describe(Shape::Radius(7)));
+  print!(" ");
+  print(describe(Shape::Nothing()));
+  return 0;
+}
