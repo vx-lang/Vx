@@ -309,10 +309,10 @@ impl<'a> TypeChecker<'a> {
             "Shr" => (">>", "Shr"),
             "Eq" => ("==", "core::cmp::PartialEq"),
             "NotEq" => ("!=", "core::cmp::PartialEq"),
-            "Lt" => ("<", "core::cmp::Ord"),
-            "Le" => ("<=", "core::cmp::Ord"),
-            "Gt" => (">", "core::cmp::Ord"),
-            _ => (">=", "core::cmp::Ord"),
+            "Lt" => ("<", "core::cmp::PartialOrd"),
+            "Le" => ("<=", "core::cmp::PartialOrd"),
+            "Gt" => (">", "core::cmp::PartialOrd"),
+            _ => (">=", "core::cmp::PartialOrd"),
         };
         let trait_path = if trait_name.contains("::") {
             trait_name.to_string()
@@ -742,6 +742,32 @@ impl<'a> TypeChecker<'a> {
                 span,
             });
             if let Some(mut call) = self.operator_method_call(lhs, method, Some(&rhs_ref), span) {
+                let ty = self.check_expr_type_flag(&mut call, false);
+                *expr = call;
+                return ty;
+            }
+            // A type with only `PartialOrd`: `a < b` is `partial_lt(&a, &b)`, which is false when
+            // the two do not compare.
+            let helper = format!("partial_{method}");
+            if matches!(
+                op,
+                RelationalOp::Lt | RelationalOp::Le | RelationalOp::Gt | RelationalOp::Ge
+            ) && self.env.generic_functions.contains_key(helper.as_str())
+                && self
+                    .operator_method_call(lhs, "partial_cmp", Some(&rhs_ref), span)
+                    .is_some()
+            {
+                let lhs_ref = Expr::Borrow(crate::syntax::expr::BorrowExpr {
+                    expr: lhs.clone(),
+                    is_mut: false,
+                    span,
+                });
+                let mut call = Expr::FunctionCall(crate::syntax::expr::FunctionCallExpr {
+                    name: helper.into(),
+                    type_args: None,
+                    args: vec![lhs_ref, rhs_ref],
+                    span,
+                });
                 let ty = self.check_expr_type_flag(&mut call, false);
                 *expr = call;
                 return ty;

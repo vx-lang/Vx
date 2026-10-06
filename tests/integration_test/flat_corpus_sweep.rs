@@ -21,6 +21,9 @@ const KNOWN_DECLINES: &[&str] = &[
     // An enum holding a struct, `Place::At(Point)`: the flat path has no layout for a
     // struct payload yet (#1251).
     "backend/pass/non_generic_enum_with_payload.vx",
+    // `partial_cmp` answers an `Option<Ordering>`, and the flat path declines its `unwrap`
+    // ("a parameter type").
+    "backend/pass/comparisons_through_partial_ord.vx",
     // `c as ||->i32`: the flat path declines a cast to the built-in closure type ("a cast to a
     // non-scalar"); the AST path compiles it.
     "backend/pass/returning_a_closure_that_uses_nothing.vx",

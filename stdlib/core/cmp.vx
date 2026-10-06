@@ -296,6 +296,46 @@ trait PartialOrd {
   fn partial_cmp(self : &Self, other : &Self) -> Option<Ordering>;
 }
 
+// `a < b` on a type with `partial_cmp` and no `lt` is `partial_lt(&a, &b)`, and the same for
+// the others. Each is false when the two do not compare, as Rust's are. They are generic so
+// that only a program comparing such a type compiles them.
+
+/// `a < b` for a `PartialOrd` type: false when the two do not compare.
+fn partial_lt<T : PartialOrd>(a : &T, b : &T) -> bool {
+  let order = a.partial_cmp(b);
+  if order.is_none() {
+    return false;
+  }
+  return order.unwrap().is_lt();
+}
+
+/// `a <= b` for a `PartialOrd` type: false when the two do not compare.
+fn partial_le<T : PartialOrd>(a : &T, b : &T) -> bool {
+  let order = a.partial_cmp(b);
+  if order.is_none() {
+    return false;
+  }
+  return order.unwrap().is_le();
+}
+
+/// `a > b` for a `PartialOrd` type: false when the two do not compare.
+fn partial_gt<T : PartialOrd>(a : &T, b : &T) -> bool {
+  let order = a.partial_cmp(b);
+  if order.is_none() {
+    return false;
+  }
+  return order.unwrap().is_gt();
+}
+
+/// `a >= b` for a `PartialOrd` type: false when the two do not compare.
+fn partial_ge<T : PartialOrd>(a : &T, b : &T) -> bool {
+  let order = a.partial_cmp(b);
+  if order.is_none() {
+    return false;
+  }
+  return order.unwrap().is_ge();
+}
+
 /// For a type that is already `Ord`, every comparison has an answer.
 macro_rules stamp_total_partial_ord {
   ($t : ident) => {

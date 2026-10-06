@@ -1,0 +1,50 @@
+//===- comparisons_through_partial_ord.vx - Vx Compiler ------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `<`, `<=`, `>` and `>=` on a struct that implements only `PartialOrd` go through
+// `partial_cmp`. Two readings compare by value, 1 against 5: `1100`. A broken reading does
+// not compare with anything, the way a NaN does not, so every comparison with it is false:
+// `00`.
+//
+// EXPECT: 1100 00
+
+import core::cmp;
+import core::option;
+
+struct Reading {
+  value : i32,
+  valid : bool,
+}
+
+impl PartialOrd for Reading {
+  fn partial_cmp(self : &Reading, other : &Reading) -> Option<Ordering> {
+    if !self.valid || !other.valid {
+      return Option<Ordering>::None();
+    }
+    return Option<Ordering>::Some(self.value.cmp(&other.value));
+  }
+}
+
+fn main() -> i32 {
+  let low = Reading {
+    value: 1, valid: true
+  };
+  let high = Reading {
+    value: 5, valid: true
+  };
+  let broken = Reading {
+    value: 3, valid: false
+  };
+  print((low < high) as i32);
+  print((low <= high) as i32);
+  print((low > high) as i32);
+  print((low >= high) as i32);
+  print!(" ");
+  print((low < broken) as i32);
+  print((low >= broken) as i32);
+  return 0;
+}
