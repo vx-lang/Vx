@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 import core::default;
 import core::iter::traits;
+import core::marker;
 import core::mem;
 import core::ops;
 
@@ -110,25 +111,28 @@ Vec<T> {
     return 0;
   }
 
-  /// The element at `index`, by value.
+  /// A reference to the element at `index`. `v[i]` reads through this when the element type
+  /// is not `Copy`.
   ///
   /// # Panics
   ///
   /// When `index` is negative or not below `len`. The check is in the Rust core, which prints
   /// the index and the length and aborts the process -- it does not unwind.
-  fn get(self : &Vec<T>, index: i32) -> T {
+  fn get_ref(self : &Vec<T>, index: i32) -> &T {
     unsafe { vx_vec_bounds_check(index as i64, self.len as i64); }
-    return unsafe { self.data[index] };
+    return unsafe { &self.data[index] };
   }
 
-  /// Overwrite the element at `index`.
+  /// Overwrite the element at `index`, dropping the one that was there.
   ///
   /// # Panics
   ///
-  /// As `get` does, and for the same reason. Setting past the end does not extend the vector;
-  /// `push` is what grows it.
+  /// As `get_ref` does, and for the same reason. Setting past the end does not extend the
+  /// vector; `push` is what grows it.
   fn set(self : &mut Vec<T>, index: i32, val: T) -> i32 {
     unsafe { vx_vec_bounds_check(index as i64, self.len as i64); }
+    let old : T = unsafe { self.data[index] };
+    drop(old);
     unsafe { self.data[index] = val; }
     return 0;
   }
@@ -171,9 +175,28 @@ Vec<T> {
   }
 }
 
+impl<T : Copy> Vec<T> {
+  /// A copy of the element at `index`. For an element type that is not `Copy`, `get_ref`
+  /// gives a reference instead.
+  ///
+  /// # Panics
+  ///
+  /// As `get_ref` does.
+  fn get(self : &Vec<T>, index: i32) -> T {
+    unsafe { vx_vec_bounds_check(index as i64, self.len as i64); }
+    return unsafe { self.data[index] };
+  }
+}
+
 impl<T> Drop for Vec<T> {
-  /// Release the buffer when the vector is dropped.
+  /// Drop each element, then release the buffer.
   fn drop(self : &mut Vec<T>) -> void {
+    if needs_drop<T>() {
+      for i in 0..self.len {
+        let element : T = unsafe { self.data[i] };
+        drop(element);
+      }
+    }
     unsafe {
       let ptr_i8 : *mut i8 = self.data;
       vx_vec_free(ptr_i8, self.capacity as i64, sizeof<T>());
@@ -257,6 +280,21 @@ struct VecIntoIter<T> {
   current: i32,
   // One past the last element not yet handed out from the back.
   back: i32,
+}
+
+impl<T> Drop for VecIntoIter<T> {
+  /// Drop the elements not handed out yet. The vector it holds is dropped next, and its
+  /// length is set to 0 so that it frees the buffer without dropping any element again.
+  fn drop(self : &mut VecIntoIter<T>) -> void {
+    if needs_drop<T>() {
+      for i in self.current..self.back {
+        let element : T = unsafe { self.vec.data[i] };
+        drop(element);
+      }
+    }
+    let vec : &mut Vec<T> = &mut self.vec;
+    vec.len = 0;
+  }
 }
 
 impl<T> Iterator for VecIntoIter<T> {

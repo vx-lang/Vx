@@ -11,7 +11,7 @@
 // CHECK: call @ref$mut$Vec$i32$push$i32(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> i32
 // CHECK: call @ref$mut$Vec$i32$push$i32(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> i32
 // CHECK: call @ref$mut$Vec$Vec$i32$push$Vec$i32(%{{.*}}, %{{.*}}) : (!llvm.ptr, !llvm.struct<(ptr, i32, i32)>) -> i32
-// CHECK: call @Vec$Vec$i32$get$Vec$i32(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> !llvm.struct<(ptr, i32, i32)>
+// CHECK: call @Vec$Vec$i32$get_ref$Vec$i32(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> !llvm.ptr
 // CHECK: call @Vec$i32$get$i32(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> i32
 // CHECK-LABEL: func.func @ref$mut$Vec$i32$push$i32(%arg0: !llvm.ptr {llvm.noalias}, %arg1: i32) -> i32
 // CHECK: call @vx_vec_grow(%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, i64, i64, i64) -> !llvm.ptr
@@ -19,7 +19,7 @@
 // CHECK: call @vx_vec_grow(%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, i64, i64, i64) -> !llvm.ptr
 // CHECK-LABEL: func.func @Vec$i32$get$i32(%arg0: !llvm.ptr {llvm.readonly}, %arg1: i32) -> i32
 // CHECK: call @vx_vec_bounds_check(%{{.*}}, %{{.*}}) : (i64, i64) -> i32
-// CHECK-LABEL: func.func @Vec$Vec$i32$get$Vec$i32(%arg0: !llvm.ptr {llvm.readonly}, %arg1: i32) -> !llvm.struct<(ptr, i32, i32)>
+// CHECK-LABEL: func.func @Vec$Vec$i32$get_ref$Vec$i32(%arg0: !llvm.ptr {llvm.readonly}, %arg1: i32) -> !llvm.ptr
 // CHECK: call @vx_vec_bounds_check(%{{.*}}, %{{.*}}) : (i64, i64) -> i32
 import std::vec;
 

@@ -1529,6 +1529,18 @@ impl<'r> Lowerer<'r> {
                         });
                     }
                 }
+                // `&self.data[i]`: the address of an element behind a raw pointer, as `Vec::get_ref`
+                // takes it. Lowering the element as a value would hand back a copy in this
+                // function's frame, which dangles once it returns.
+                if let Expr::IndexAccess(ix) = &*b.expr {
+                    if matches!(self.infer_ast_type(&ix.base), Some(Type::Pointer(..))) {
+                        let place = self.lower_place(&b.expr)?;
+                        return Ok(Val {
+                            reg: place.reg,
+                            ty: LoweredTy::Ptr,
+                        });
+                    }
+                }
                 if let Expr::MemberAccess(m) = &*b.expr {
                     // `&outer.inner`: the address of a by-value nested-aggregate field — a method
                     // receiver (`self.iter.next()` -> `&self.iter`) or a nested `&o.inner`.
@@ -2665,14 +2677,32 @@ impl<'r> Lowerer<'r> {
                 what: "an option-like enum with no payload variant",
             })? as u64;
 
-        let iter_val = self.lower_expr(&f.iterable)?;
-        if !matches!(iter_val.ty, LoweredTy::Aggregate(_)) {
-            return Err(Decline::TypeNotModelled {
-                what: "a for-loop iterator that is not an aggregate",
-            });
-        }
-        let it_slot = self.emit_alloca(iter_val.ty.clone());
-        self.emit_effect(Opcode::Store, it_slot.reg, iter_val.reg, 0);
+        // A loop over a variable advances that variable, so what it has not handed out is
+        // still there for its drop after the loop. Any other iterator gets a slot of its own.
+        let in_place = match &*f.iterable {
+            Expr::Identifier(id) => match self.scope.get(&id.name) {
+                Some(Binding::Slot { reg, .. }) => Some(*reg),
+                _ => None,
+            },
+            _ => None,
+        };
+        let it_slot = match in_place {
+            Some(reg) => Val {
+                reg,
+                ty: LoweredTy::Ptr,
+            },
+            None => {
+                let iter_val = self.lower_expr(&f.iterable)?;
+                if !matches!(iter_val.ty, LoweredTy::Aggregate(_)) {
+                    return Err(Decline::TypeNotModelled {
+                        what: "a for-loop iterator that is not an aggregate",
+                    });
+                }
+                let it_slot = self.emit_alloca(iter_val.ty.clone());
+                self.emit_effect(Opcode::Store, it_slot.reg, iter_val.reg, 0);
+                it_slot
+            }
+        };
 
         let header = self.new_block();
         let body_b = self.new_block();

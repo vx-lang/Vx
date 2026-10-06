@@ -8,7 +8,7 @@
 // Regression for #207: a generic struct used as a generic element type
 // (`Vec<Vec<i32>>`) must lower to the concrete monomorphized struct, not an
 // opaque `!llvm.struct<"Vec<i32>">`. Also exercises #208: a value returned from
-// a generic method (`outer.get(0)` : `Vec<i32>`) supports further method calls.
+// a generic method (`outer.get_ref(0)` : `&Vec<i32>`) supports further method calls.
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=MLIR
 // RUN: vxc %s --action run-jit
 import std::vec;
@@ -28,8 +28,8 @@ fn main() -> i32 {
   b.push(55);
   outer.push(b);
 
-  let row0 = outer.get(0);
-  let row1 = outer.get(1);
+  let row0 = outer.get_ref(0);
+  let row1 = outer.get_ref(1);
   print!(row0.get(1));   // 22
   print!("
 ");
@@ -52,5 +52,5 @@ fn main() -> i32 {
 // MLIR: call @"Vec::new$i32"
 // MLIR: call @Vec$i32$push$i32
 // MLIR: call @Vec$Vec$i32$push$Vec$i32
-// MLIR: call @Vec$Vec$i32$get$Vec$i32
-// MLIR: call @Vec$i32$get$i32
+// MLIR: call @Vec$Vec$i32$get_ref$Vec$i32
+// MLIR: call @ref$const$Vec$i32$get$i32

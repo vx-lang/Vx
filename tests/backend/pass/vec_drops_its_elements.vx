@@ -1,0 +1,92 @@
+//===- vec_drops_its_elements.vx - Vx Compiler ---------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `Vec` drops its elements when it is dropped, first to last. Each `drop` prints its
+// number, so the line is the order of the drops, which is Rust's:
+//
+// - `whole`: 1, 2 and 3 when the vector goes away;
+// - `set`: the element it replaces, 4, then 5 at the end;
+// - `iterated`: `next` hands out 6, which the loop body owns and drops at the `break`;
+//   the iterator is dropped as the loop ends and drops 7 and 8, which it never handed out;
+// - `read`: `v[0].id` reads through a reference and copies nothing, so 9 is dropped once.
+//
+// EXPECT: 1 2 3 | 4 s 5 | 6 7 8 b | 9 r 9
+
+import core::ops;
+import std::vec;
+
+struct Noisy {
+  id : i32,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    print(self.id);
+    print!(" ");
+  }
+}
+
+fn whole() -> void {
+  let mut v = Vec<Noisy>::new();
+  v.push(Noisy {
+    id: 1
+  });
+  v.push(Noisy {
+    id: 2
+  });
+  v.push(Noisy {
+    id: 3
+  });
+}
+
+fn set() -> void {
+  let mut v = Vec<Noisy>::new();
+  v.push(Noisy {
+    id: 4
+  });
+  v.set(0, Noisy {
+    id: 5
+  });
+  print!("s ");
+}
+
+fn iterated() -> void {
+  let mut v = Vec<Noisy>::new();
+  v.push(Noisy {
+    id: 6
+  });
+  v.push(Noisy {
+    id: 7
+  });
+  v.push(Noisy {
+    id: 8
+  });
+  for n in v {
+    break;
+  }
+  print!("b ");
+}
+
+fn read() -> void {
+  let mut v = Vec<Noisy>::new();
+  v.push(Noisy {
+    id: 9
+  });
+  print(v[0].id);
+  print!(" r ");
+}
+
+fn main() -> i32 {
+  whole();
+  print!("| ");
+  set();
+  print!("| ");
+  iterated();
+  print!("| ");
+  read();
+  return 0;
+}

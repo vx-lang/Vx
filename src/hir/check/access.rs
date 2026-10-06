@@ -26,6 +26,15 @@ impl<'a> TypeChecker<'a> {
     /// the discipline, and none of them can declare itself `Copy`, so they stay linear with
     /// no special case. Duplicating placed data is still an explicit `transfer`.
     pub(crate) fn is_copy(&mut self, ty: &Type) -> bool {
+        // The built-in kinds that are `Copy` whatever impls exist, as in Rust: numbers and
+        // `bool`, shared references, raw pointers and functions.
+        match ty {
+            Type::Scalar(e) if !matches!(e, ElementType::Generic(_)) => return true,
+            Type::Borrow { is_mut: false, .. } | Type::Pointer(..) | Type::Function(..) => {
+                return true
+            }
+            _ => {}
+        }
         let Some(impls) = self.env.impls.get("Copy") else {
             return false;
         };
@@ -762,7 +771,7 @@ impl<'a> TypeChecker<'a> {
         None
     }
 
-    pub(crate) fn check_indexaccess_expr(&mut self, expr: &mut Expr) -> Type {
+    pub(crate) fn check_indexaccess_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
         match expr {
             Expr::IndexAccess(IndexAccessExpr {
                 base: obj,
@@ -900,16 +909,30 @@ impl<'a> TypeChecker<'a> {
                     // `memref.load` on the struct value here (Vx#398). A store place
                     // (`v[i] = x`) and a speculative probe keep the typed-only answer: the
                     // first is not a read, the second must not mutate the AST.
+                    //
+                    // `get` hands out a copy, so it exists only for a `Copy` element. Any other
+                    // element is read through a reference, `*v.get_ref(i)`, which moving out of
+                    // is E4008, as in Rust.
                     if !self.speculating && !self.checking_assign_lhs {
-                        let mut call = Expr::MethodCall(crate::syntax::MethodCallExpr {
+                        let by_copy = elem.has_generic_params() || self.is_copy(&elem);
+                        let call = Expr::MethodCall(crate::syntax::MethodCallExpr {
                             base: obj.clone(),
-                            method_name: "get".into(),
+                            method_name: if by_copy { "get" } else { "get_ref" }.into(),
                             type_args: None,
                             args: vec![(**idx).clone()],
                             span: ix_span,
                         });
-                        let t = self.check_methodcall_expr(&mut call, false);
-                        *expr = call;
+                        let mut read = if by_copy {
+                            call
+                        } else {
+                            Expr::Dereference(crate::syntax::expr::DereferenceExpr {
+                                expr: Box::new(call),
+                                ty: None,
+                                span: ix_span,
+                            })
+                        };
+                        let t = self.check_expr_type_flag(&mut read, consume);
+                        *expr = read;
                         return t;
                     }
                     elem

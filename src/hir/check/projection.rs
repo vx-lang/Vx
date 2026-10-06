@@ -151,6 +151,12 @@ impl<'a> TypeChecker<'a> {
                 if !self.env.traits.contains_key(&bound.trait_name) {
                     continue;
                 }
+                if bound.trait_name.as_ref() == "Copy" {
+                    if !self.is_copy(bound_to) {
+                        return false;
+                    }
+                    continue;
+                }
                 let bound = self.substitute_bound(bound, mapping);
                 if !self.bound_holds(&bound, bound_to) {
                     return false;

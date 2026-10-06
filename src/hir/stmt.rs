@@ -574,6 +574,9 @@ impl<'a> TypeChecker<'a> {
             };
         }
 
+        if next_fn.is_some() {
+            self.drops_bind_loop_item(iter, body, &iter_ty);
+        }
         self.insert(iter.clone(), iter_ty); // Still assuming i64 for most things, but it works for our current test cases.
 
         // Prove invariants hold on entry, then assume them inside the loop

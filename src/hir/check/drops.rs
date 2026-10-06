@@ -309,6 +309,24 @@ impl<'a> TypeChecker<'a> {
             }) == Some(true)
     }
 
+    /// `for n in it { .. }` over an iterator whose items need dropping: the loop binds a hidden
+    /// name, and the body starts with `let n = <hidden>;`. `n` is then a variable of the body,
+    /// dropped at the end of each pass and on `break`, `continue` and `return`, as in Rust.
+    pub(crate) fn drops_bind_loop_item(
+        &mut self,
+        iter: &mut String,
+        body: &mut Vec<Statement>,
+        item_ty: &Type,
+    ) {
+        if !self.drops_rewriting() || self.drops_glue(item_ty).is_empty() {
+            return;
+        }
+        let item = self.drops_fresh("item");
+        let user = std::mem::replace(iter, item.clone());
+        let is_mut = crate::hir::check::raw::body_reassigns(body, &user);
+        body.insert(0, let_stmt(&user, is_mut, item_ty.clone(), ident(&item)));
+    }
+
     fn drops_fresh(&mut self, what: &str) -> String {
         self.borrow.drops.counter += 1;
         format!("__vx_{what}_{}", self.borrow.drops.counter)
@@ -1024,6 +1042,28 @@ impl<'a> TypeChecker<'a> {
     /// and is not dropped.
     fn drops_hoist_temporaries(&mut self, body: &mut [Statement], edits: &mut Edits) {
         for (i, stmt) in body.iter_mut().enumerate() {
+            // `for n in it` moves `it` into the loop, which drops what it has not handed out
+            // when it ends. The loop advances a variable of its own, made here, in memory.
+            if let Statement::ForLoop(f) = stmt {
+                if let (Some(_), Expr::Identifier(id)) = (&f.next_fn, &*f.iterable) {
+                    let ty = self.lookup(id.name.as_ref()).map(|(t, _)| t.clone());
+                    let glue = ty.as_ref().map(|t| self.drops_glue(t)).unwrap_or_default();
+                    if let (Some(ty), false) = (ty, glue.is_empty()) {
+                        let name = self.drops_fresh("temp");
+                        let value = std::mem::replace(&mut *f.iterable, ident(&name));
+                        edits
+                            .lets
+                            .entry(i)
+                            .or_default()
+                            .push(let_stmt(&name, true, ty, value));
+                        let after = edits.after.entry(i).or_default();
+                        for (k, drop) in glue_drops(&name, &glue, None).into_iter().enumerate() {
+                            after.insert(k, drop);
+                        }
+                        continue;
+                    }
+                }
+            }
             // Where the last temporary that can move out is, counted in calls.
             let mut probe = TempScan::new(None);
             let mut copy = stmt.clone();
@@ -1034,11 +1074,13 @@ impl<'a> TypeChecker<'a> {
             let mut scan = TempScan::new(Some(last));
             self.drops_scan_stmt(stmt, &mut scan);
             for (name, ty, expr, glue) in scan.found {
+                // Mutable, so it has a place in memory: the loop advances it there, and its
+                // `drop` changes it before its fields are dropped.
                 edits
                     .lets
                     .entry(i)
                     .or_default()
-                    .push(let_stmt(&name, false, ty, expr));
+                    .push(let_stmt(&name, true, ty, expr));
                 let after = edits.after.entry(i).or_default();
                 for (k, drop) in glue_drops(&name, &glue, None).into_iter().enumerate() {
                     after.insert(k, drop);
@@ -1058,7 +1100,11 @@ impl<'a> TypeChecker<'a> {
             Statement::ExprStmt(e) => self.drops_scan_temps(&mut e.expr, true, scan),
             Statement::Assign(a) => self.drops_scan_temps(&mut a.rhs, false, scan),
             Statement::Assert(a) => self.drops_scan_temps(&mut a.expr, false, scan),
-            Statement::ForLoop(f) => self.drops_scan_temps(&mut f.iterable, false, scan),
+            // An iterator the loop makes, `for n in v.into_iter()`, lives until the loop ends.
+            Statement::ForLoop(f) => {
+                let iterator = f.next_fn.is_some();
+                self.drops_scan_temps(&mut f.iterable, iterator, scan)
+            }
             _ => {}
         }
     }

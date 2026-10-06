@@ -649,34 +649,46 @@ fn lower_for_loop<'c>(
         }
 
         let i32_ty = gen.i32_ty;
-        let c1_op_alloc = block.append_operation(
-            OperationBuilder::new("llvm.mlir.constant", gen.loc())
-                .add_results(&[i32_ty])
-                .add_attributes(&[(
-                    Identifier::new(gen.context, "value"),
-                    IntegerAttribute::new(i32_ty, 1).into(),
-                )])
-                .build()?,
-        );
-        let c1_val_alloc = c1_op_alloc.result(0)?.into();
-
-        let alloca_op = block.append_operation(
-            OperationBuilder::new("llvm.alloca", gen.loc())
-                .add_operands(&[c1_val_alloc])
-                .add_results(&[ptr_ty])
-                .add_attributes(&[(
-                    Identifier::new(gen.context, "elem_type"),
-                    melior::ir::attribute::TypeAttribute::new(iter_ty).into(),
-                )])
-                .build()?,
-        );
-        let ptr_val = alloca_op.result(0)?.into();
-
-        block.append_operation(
-            OperationBuilder::new("llvm.store", gen.loc())
-                .add_operands(&[iter_val, ptr_val])
-                .build()?,
-        );
+        // A loop over a variable advances that variable, so what it has not handed out is
+        // still there for its drop after the loop. Any other iterator gets a slot of its own.
+        let in_place = match &**iterable {
+            Expr::Identifier(id) if gen.allocs.contains(id.name.as_ref()) => {
+                gen.env.get(&id.name).map(|(slot, _)| *slot)
+            }
+            _ => None,
+        };
+        let ptr_val = match in_place {
+            Some(slot) => slot,
+            None => {
+                let c1_op_alloc = block.append_operation(
+                    OperationBuilder::new("llvm.mlir.constant", gen.loc())
+                        .add_results(&[i32_ty])
+                        .add_attributes(&[(
+                            Identifier::new(gen.context, "value"),
+                            IntegerAttribute::new(i32_ty, 1).into(),
+                        )])
+                        .build()?,
+                );
+                let c1_val_alloc = c1_op_alloc.result(0)?.into();
+                let alloca_op = block.append_operation(
+                    OperationBuilder::new("llvm.alloca", gen.loc())
+                        .add_operands(&[c1_val_alloc])
+                        .add_results(&[ptr_ty])
+                        .add_attributes(&[(
+                            Identifier::new(gen.context, "elem_type"),
+                            melior::ir::attribute::TypeAttribute::new(iter_ty).into(),
+                        )])
+                        .build()?,
+                );
+                let ptr_val = alloca_op.result(0)?.into();
+                block.append_operation(
+                    OperationBuilder::new("llvm.store", gen.loc())
+                        .add_operands(&[iter_val, ptr_val])
+                        .build()?,
+                );
+                ptr_val
+            }
+        };
 
         let tmp_iter_name = format!("__iter_ptr_{}", gen.string_counter);
         gen.string_counter += 1;
