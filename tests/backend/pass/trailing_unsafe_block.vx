@@ -48,6 +48,5 @@ fn main() -> i32 {
     return 1;
   }
 
-  v.free();
   return 0;
 }

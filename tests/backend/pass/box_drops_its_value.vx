@@ -1,0 +1,55 @@
+//===- box_drops_its_value.vx - Vx Compiler ------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Dropping a `Box` drops the value in it. Each `drop` prints its number, so the line is the
+// order of the drops, which is Rust's:
+//
+// - `in_a_function` drops `c`, 3, when it returns;
+// - `given_away` drops 4, the box it was given, when it returns;
+// - `b`, a box in a box, drops 2, and then `a` drops 1, when `main` returns.
+//
+// EXPECT: 3 | t 4 | end 2 1
+
+import core::ops;
+import std::box;
+
+struct Noisy {
+  id : i32,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    print(self.id);
+    print!(" ");
+  }
+}
+
+fn in_a_function() -> void {
+  let c = Box<Noisy>::new(Noisy {
+    id: 3
+  });
+}
+
+fn given_away(b : Box<Noisy>) -> void {
+  print!("t ");
+}
+
+fn main() -> i32 {
+  let a = Box<Noisy>::new(Noisy {
+    id: 1
+  });
+  let b = Box<Box<Noisy>>::new(Box<Noisy>::new(Noisy {
+    id: 2
+  }));
+  in_a_function();
+  print!("| ");
+  given_away(Box<Noisy>::new(Noisy {
+    id: 4
+  }));
+  print!("| end ");
+  return 0;
+}

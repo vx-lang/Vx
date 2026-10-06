@@ -5,6 +5,8 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
+import core::ops;
+
 extern {
   /// The Rust core behind `File::open`. Null when the open fails.
   fn vx_file_open(c_path : *const i8, mode : i32) -> *mut i8;
@@ -14,7 +16,7 @@ extern {
   fn vx_file_write(ptr : *mut i8, buffer : *const u8, len : u64) -> u64;
   /// The Rust core behind `File::seek`.
   fn vx_file_seek(ptr : *mut i8, offset : i64, whence : i32) -> i64;
-  /// The Rust core behind `file_drop`.
+  /// The Rust core behind dropping a `File`.
   fn vx_file_drop(ptr : *mut i8) -> void;
 
   // libc bindings for high-level I/O
@@ -38,7 +40,7 @@ extern {
 
 /// An open file, held by the Rust core behind an opaque pointer.
 ///
-/// Closed by calling `file_drop`, since the language has no `Drop` (Vx#495).
+/// Closed when it is dropped.
 struct File {
   ptr : *mut i8,
 }
@@ -91,7 +93,9 @@ impl File {
   }
 }
 
-/// Close the file and release it. Using it afterwards reads freed memory.
-unsafe fn file_drop(file : *mut File) -> void {
-  unsafe { vx_file_drop(file.ptr) };
+impl Drop for File {
+  /// Close the file and release it.
+  fn drop(self : &mut File) -> void {
+    unsafe { vx_file_drop(self.ptr) };
+  }
 }

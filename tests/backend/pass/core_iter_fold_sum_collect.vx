@@ -44,13 +44,11 @@ fn main() -> i32 {
   print(v.len());
   print(v.get(0));
   print(v.get(2));
-  v.free();
   print!(" ");
   let mut g = range(0i64, 10i64).filter(| x : &i64 | *x % 3i64 == 0i64).map(| x : i64 | 7i32);
   let mut w : Vec<i32> = g.collect();
   print(w.len());
   print(w.get(3));
-  w.free();
   print!(" ");
   print(zero_of(5i64));
   return 0;

@@ -2466,12 +2466,6 @@ impl<'a> TypeChecker<'a> {
                     self.expected_type = prev;
                 }
 
-                if _method.as_ref() == "drop" && args.is_empty() {
-                    if let Expr::Identifier(id) = &**obj {
-                        self.consume(&id.name);
-                    }
-                }
-
                 if let Type::Module(ref path, ref exports) = base_ty {
                     if let Some(exported_ty) = exports.get(_method) {
                         let prefix = TypeChecker::mangle_path(path);
@@ -2643,6 +2637,17 @@ impl<'a> TypeChecker<'a> {
                         }
                         _ => None,
                     };
+                    // `x.drop()` would run `drop`, and `x` would be dropped again when its owner
+                    // gives it up, as in Rust.
+                    if ib.trait_name.as_deref() == Some("Drop") && !self.speculating {
+                        self.errors.error_with_code(
+                            crate::diagnostic::DiagnosticCode::E4012,
+                            "`drop` is called for you when a value is dropped, and cannot be \
+                             called by hand. To drop a value early, write `drop(x)` (from \
+                             `core::mem`)",
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(&method_span)),
+                        );
+                    }
                     // A method that takes `self` by value moves its receiver: `w.into_iter()`.
                     let self_by_value = generic_method.params.first().is_some_and(|(_, t)| {
                         !matches!(t, Type::Borrow { .. } | Type::Pointer(..))

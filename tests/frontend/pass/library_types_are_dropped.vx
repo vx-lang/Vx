@@ -1,0 +1,42 @@
+//===- library_types_are_dropped.vx - Vx Compiler ------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action print-ast 2>/dev/null | FileCheck %s
+//
+// The library types that own memory or an operating system resource implement `Drop`, so
+// each of these is released when its function returns, without being freed by hand. They
+// are dropped in reverse order of declaration.
+
+// CHECK-LABEL: Function: resources
+// CHECK: Drop listener by calling TcpListener$drop
+// CHECK: Drop socket by calling UdpSocket$drop
+// CHECK: Drop stream by calling TcpStream$drop
+// CHECK: Drop file by calling File$drop
+// CHECK-LABEL: Function: main
+// CHECK: Drop s by calling String$drop
+// CHECK: Drop b by calling Box$i32$drop$i32
+// CHECK: Drop v by calling Vec$i32$drop$i32
+
+import std::box;
+import std::fs;
+import std::net;
+import std::string;
+import std::vec;
+
+unsafe fn resources() -> void {
+  let file = File::open("unused", 0);
+  let stream = TcpStream::connect("127.0.0.1:1");
+  let socket = UdpSocket::bind("127.0.0.1:0");
+  let listener = TcpListener::bind("127.0.0.1:0");
+}
+
+fn main() -> i32 {
+  let v = Vec<i32>::new();
+  let b = Box<i32>::new(1);
+  let s = String::new();
+  return 0;
+}

@@ -55,21 +55,6 @@ Vec<T> {
     };
   }
 
-  /// Release the buffer and leave the vector empty with no capacity.
-  ///
-  /// Called by hand, because the language has no `Drop` yet (Vx#495). Reading an element after
-  /// this is reading freed memory; `len` answers 0, so a loop over it is safe.
-  fn free(self : &mut Vec<T>) -> i32 {
-    unsafe {
-      let ptr_i8 : *mut i8 = self.data;
-      vx_vec_free(ptr_i8, self.capacity as i64, sizeof<T>());
-      self.data = 0 as *mut T;
-    }
-    self.len = 0;
-    self.capacity = 0;
-    return 0;
-  }
-
   /// A raw pointer to the first element. Invalidated by anything that grows the vector.
   fn as_mut_ptr(self : &Vec<T>) -> *mut T {
     return self.data;
@@ -189,7 +174,10 @@ Vec<T> {
 impl<T> Drop for Vec<T> {
   /// Release the buffer when the vector is dropped.
   fn drop(self : &mut Vec<T>) -> void {
-    self.free();
+    unsafe {
+      let ptr_i8 : *mut i8 = self.data;
+      vx_vec_free(ptr_i8, self.capacity as i64, sizeof<T>());
+    }
   }
 }
 
@@ -234,7 +222,7 @@ impl<T> Default for Vec<T> {
 }
 
 impl<T> FromIterator<T> for Vec<T> {
-  /// A new `Vec` holding every item `iter` has left, which the caller owns and must `free`.
+  /// A new `Vec` holding every item `iter` has left, which the caller owns.
   fn from_iter<I : Iterator>(iter : I) -> Vec<T> {
     let mut out = Vec<T>::new ();
     let mut it = iter;
@@ -433,7 +421,7 @@ impl<T, NewItem> ExactSizeIterator for VecMap<T, NewItem> {
 
 impl<T, NewItem>
 VecMap<T, NewItem> {
-  /// Drain the iterator into a fresh `Vec`, which the caller owns and must `free`.
+  /// Drain the iterator into a fresh `Vec`, which the caller owns.
   fn collect(self : &mut VecMap<T, NewItem>) -> Vec<NewItem> {
     let mut result = Vec<NewItem>::new ();
     loop {
