@@ -1,0 +1,29 @@
+//===- option_holding_an_ordering.vx - Vx Compiler -----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// An `Option` can hold an enum whose variants carry nothing, `Ordering`: the payload is the
+// enum's tag. `order(1, 5)` is `Some(Less)`, so `is_lt` answers 1, and `order(-1, 5)` is
+// `None`, so `is_none` answers 1.
+//
+// EXPECT: 11
+
+import core::cmp;
+import core::option;
+
+fn order(a : i32, b : i32) -> Option<Ordering> {
+  if a < 0 {
+    return Option<Ordering>::None();
+  }
+  return Option<Ordering>::Some(a.cmp(&b));
+}
+
+fn main() -> i32 {
+  let o = order(1, 5);
+  print(o.unwrap().is_lt() as i32);
+  print(order(-1, 5).is_none() as i32);
+  return 0;
+}
