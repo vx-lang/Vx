@@ -1519,6 +1519,54 @@ stamp_float!(f16 , 1.0 , 0.0 , 180.0);
 stamp_float!(bf16 , 1.0 , 0.0 , 180.0);
 
 impl f64 {
+  /// One over the square root, correctly rounded, from a double-double square root (LLVM libc
+  /// has no double-precision `rsqrt`). Infinite at zero and NaN below it.
+  fn rsqrt(self : f64) -> f64 {
+    return libm_rsqrt(self);
+  }
+}
+
+impl f32 {
+  /// The error function, correctly rounded (LLVM libc's `erff`).
+  fn erf(self : f32) -> f32 {
+    return libm_erff(self);
+  }
+
+  /// One over the square root (LLVM libc's `rsqrtf`, the double result rounded to f32).
+  /// Infinite at zero and NaN below it.
+  fn rsqrt(self : f32) -> f32 {
+    return libm_rsqrtf(self);
+  }
+}
+
+impl f16 {
+  /// The error function, correctly rounded (LLVM libc's `erff16`).
+  fn erf(self : f16) -> f16 {
+    return libm_erff16(self);
+  }
+
+  /// One over the square root, correctly rounded (LLVM libc's `rsqrtf16`). Infinite at zero and
+  /// NaN below it.
+  fn rsqrt(self : f16) -> f16 {
+    return libm_rsqrtf16(self);
+  }
+}
+
+impl bf16 {
+  /// The error function: `erff`'s double result rounded once to bf16 (LLVM libc has no bf16
+  /// `erf`).
+  fn erf(self : bf16) -> bf16 {
+    return libm_erf_bf16(self);
+  }
+
+  /// One over the square root: the double result rounded once to bf16. Infinite at zero and NaN
+  /// below it.
+  fn rsqrt(self : bf16) -> bf16 {
+    return libm_rsqrt_bf16(self);
+  }
+}
+
+impl f64 {
   /// The cube root, correctly rounded (LLVM libc's `cbrt`). Defined for negative numbers too.
   fn cbrt(self : f64) -> f64 {
     return libm_cbrt(self);

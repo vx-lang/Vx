@@ -1,0 +1,84 @@
+//===- core_libm_erf_rsqrt_f32.vx - Vx Compiler --------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// f32 `erf` and `rsqrt`, ported from LLVM libc's `erff` and `rsqrtf` into `core::libm`, against
+// LLVM libc itself (f475f085bf7b, built with FMA). It prints the bits of `x.erf()` (a NaN as
+// 2143289344) for zeros, a subnormal, the two inputs `erff` answers from a list, the edge at 4,
+// infinities and a NaN, and a hash of 2^20 random bit patterns; then the same for `x.rsqrt()` with
+// powers of four, 3, the smallest subnormal, the largest f32, zeros, a negative number, infinities
+// and a NaN. Both matched LLVM libc on all 2^32 inputs.
+//
+// EXPECT: 0 2147483648 1 1061918548 3209402196 1065294385 3212778033 1057308539 1065353216 1065353216 3212836864 1065353216 3212836864 2143289344 17639047570614024749 1056964608 1073741824 1058262330 1689584883 528482304 2139095040 4286578688 2143289344 0 2143289344 2143289344 14179189549731788720
+import core::num;
+
+fn bits(r : f32) -> u64 {
+  if r != r {
+    return 2143289344u64;
+  }
+  return libm_f32_to_bits(r) as u64;
+}
+
+fn next(s : u64) -> u64 {
+  let a = s ^ (s << 13u64);
+  let b = a ^ (a >> 7u64);
+  return b ^ (b << 17u64);
+}
+
+fn value(f : i32, x : f32) -> f32 {
+  if f == 0 {
+    return x.erf();
+  }
+  return x.rsqrt();
+}
+
+fn check(f : i32, x : u32) -> i32 {
+  print(bits(value(f, libm_f32_from_bits(x))));
+  print!(" ");
+  return 0;
+}
+
+fn hash(f : i32) -> u64 {
+  let mut s : u64 = 88172645463325252u64;
+  let mut h : u64 = 0u64;
+  for i in 0..1048576 {
+    s = next(s);
+    h = (h ^ bits(value(f, libm_f32_from_bits(s as u32)))).wrapping_mul(1099511628211u64);
+  }
+  return h;
+}
+
+fn main() -> i32 {
+  let _e0 = check(0, 0u32);
+  let _e1 = check(0, 2147483648u32);
+  let _e2 = check(0, 1u32);
+  let _e3 = check(0, 1063621161u32);
+  let _e4 = check(0, 3211104809u32);
+  let _e5 = check(0, 1074011754u32);
+  let _e6 = check(0, 3221495402u32);
+  let _e7 = check(0, 1056964608u32);
+  let _e8 = check(0, 1082130431u32);
+  let _e9 = check(0, 1082130432u32);
+  let _e10 = check(0, 3238002688u32);
+  let _e11 = check(0, 2139095040u32);
+  let _e12 = check(0, 4286578688u32);
+  let _e13 = check(0, 2143289344u32);
+  print(hash(0));
+  print!(" ");
+  let _r0 = check(1, 1082130432u32);
+  let _r1 = check(1, 1048576000u32);
+  let _r2 = check(1, 1077936128u32);
+  let _r3 = check(1, 1u32);
+  let _r4 = check(1, 2139095039u32);
+  let _r5 = check(1, 0u32);
+  let _r6 = check(1, 2147483648u32);
+  let _r7 = check(1, 3212836864u32);
+  let _r8 = check(1, 2139095040u32);
+  let _r9 = check(1, 4286578688u32);
+  let _r10 = check(1, 2143289344u32);
+  print(hash(1));
+  return 0;
+}
