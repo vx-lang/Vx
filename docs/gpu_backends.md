@@ -24,8 +24,7 @@ A backend is three pieces. The NVIDIA backend is the worked example for each.
    `gpu.module`, which no vendor owns. From there, `deviceImageOf()` in
    `src/dialect/VxLowering.cpp` runs the NVVM passes and produces PTX. A new
    backend adds a sibling of that function producing its own image format
-   (for example SPIR-V, through MLIR's `convert-gpu-to-spirv` or the XeVM
-   target).
+   (for example SPIR-V; see "SYCL first" below for the route).
 1. **A runtime dispatch library.** Compiled programs call a small C interface
    (`include/vx_hardware_runtime.h`): allocate and copy in, launch a kernel,
    wait, copy out, free. `runtime/cuda_dispatch.cpp` is the CUDA
@@ -55,38 +54,54 @@ record:
 | CPU (x86-64, arm64) | native, through LLVM | working, tested in CI |
 | NVIDIA | `gpu` dialect → NVVM → PTX; cuBLAS for matmul | working for placed kernels; completion tracked in #251 |
 | Apple GPU / ANE | library routing (MPS, CoreML) | working for the routed patterns |
-| Intel XPU | kernel SPIR-V, Level Zero runtime | offered by a contributor; planning in #1137 |
-| Vulkan | shader SPIR-V | not planned as a first target: the shader model fights a language with raw pointers, and there is no vendor BLAS — see below |
+| Intel XPU | kernel SPIR-V, SYCL runtime, oneMKL for matmul | the first community backend, offered by a contributor; planning in #1137 |
+| Vulkan | shader SPIR-V | later: the shader model fights a language with raw pointers, and there is no vendor BLAS — see below |
 | AMD | ROCDL | machine file exists (`fleet/mi300x.vx`); no backend yet. Likely the cheapest backend after the shared work — ROCDL sits close to the NVVM path, hipBLASLt parallels cuBLAS — and a maintainer priority when hardware access appears |
 | TPU | — | not planned: there is no native route, since the vendor compiler stack is closed. Emitting StableHLO for a PJRT plugin is a public route, but a different kind of backend than the three pieces above |
 
-SYCL as a compile target is declined: Vx's checker already does the job
-SYCL's C++ layer does. What the SYCL stack offers Vx is its runtime (Level
-Zero) and its libraries (oneMKL), and those are used directly.
+A "working" row is true of a build made for that target: `build.rs` builds
+one dispatch library (shared-work item 5), so a compiler built with CUDA
+cannot run programs on an Apple GPU, and one built on a Mac cannot run them
+on an NVIDIA GPU.
 
-**Vulkan or Level Zero?** Both take SPIR-V, but different dialects of it, and
-the difference is bigger than it sounds:
+**SYCL first.** The first community backend targets Intel GPUs through the
+SYCL runtime. Vx still compiles each kernel itself, to SPIR-V; the dispatch
+library loads that SPIR-V into a SYCL kernel bundle and launches it on a
+`sycl::queue`. SYCL is the runtime and not a compile target: Vx's checker
+already does the job SYCL's C++ layer does, so Vx does not generate SYCL C++.
+The runtime is chosen over calling Level Zero directly because oneMKL, the
+vendor library that matmul goes to (see above), takes a `sycl::queue`: a backend that calls oneMKL
+uses SYCL either way. Level Zero is what SYCL runs on underneath.
 
-- **Level Zero** takes kernel-flavor SPIR-V (the OpenCL flavor). Pointers are
-  real 64-bit addresses, so kernel arguments and the memref marshalling in
-  `runtime/vx_kernel_launch.h` carry over as they are, and oneMKL answers the
-  matmul rule.
+Kernel SPIR-V and shader SPIR-V are different dialects, and the difference
+decides which runtimes a kernel can go to:
+
+- **SYCL (and Level Zero under it)** takes kernel-flavor SPIR-V (the OpenCL
+  flavor): `Physical64` addressing and kernel parameters that are plain
+  scalars or plain pointers into device memory. The parameters the NVIDIA
+  path passes are already only those: per tensor, two pointers, an offset,
+  sizes and strides, each its own parameter. So `runtime/vx_kernel_launch.h` carries over.
 - **Vulkan** takes shader-flavor SPIR-V. It has no raw pointers unless the
   device supports `VK_KHR_buffer_device_address`, so a Vulkan backend here
   should require that extension outright — the alternative is descriptor
   sets, which means a rework of the whole argument convention. Vulkan also
   has no vendor BLAS, so the matmul rule has no answer there yet. What Vulkan
-  buys is reach (cards from every vendor) and one thing Level Zero cannot
-  offer: Mesa's lavapipe is a software Vulkan device that installs on a plain
-  CI runner, so Vulkan kernels could actually *execute* in CI.
+  buys is reach (cards from every vendor) and Mesa's lavapipe, a software
+  Vulkan device that installs on a plain CI runner, so Vulkan kernels could
+  actually *execute* in CI.
 
-For a first community backend, Level Zero is the smaller step. A Vulkan
-runtime can come later under the same device-image machinery.
+A Vulkan runtime can come later under the same device-image machinery.
 
-One more choice to make before code: MLIR 22 has two routes to kernel
-SPIR-V — `convert-gpu-to-spirv` and the XeVM target — and they differ in
-flavor and maturity. Agree on one in the planning issue first, or the first
-PR becomes that argument.
+**The route to kernel SPIR-V.** `convert-gpu-to-llvm-spv{use-64bit-index=true}`
+lowers a Vx kernel to the LLVM dialect with SPIR-V calling conventions; with
+`llvm.target_triple = "spirv64-unknown-unknown"`, `llc -mtriple=spirv64`
+turns it into SPIR-V, as text by default, so a test can FileCheck it. This
+reaches a module for a real Vx kernel today. The other two routes,
+`convert-gpu-to-spirv` and the XeVM target, have not been run against a Vx
+kernel end to end; the planning issue (#1137) records what blocks the first (it
+expects structured control flow where Vx has a CFG, and replaces a memref
+with a runtime array that drops its shape and strides), and keeps the full
+recipe for the route above.
 
 ## Support tiers
 
@@ -113,6 +128,10 @@ without the hardware can check. The tiers, modeled on Rust's target tiers:
   To compile without the SDK, vendor the open headers (Khronos publishes
   both the Vulkan and the Level Zero headers) or load the driver with
   `dlopen`, so the file builds everywhere and only running needs the device.
+  SYCL is the exception: its headers are C++ and belong to one
+  implementation, so the SYCL dispatch library is built with oneAPI's
+  compiler, which CI installs for that job. How that job is set up is
+  settled in the planning issue before the runtime PR.
 
 ## Shared work before a second backend
 
@@ -124,8 +143,8 @@ their value whichever backend lands first.
    in `src/dialect/VxLowering.cpp` only clones kernels whose `arch:` is
    `nvptx64`, and clones them all into the single `gpu.module @vx_kernels`.
    Kernels need to be grouped into one `gpu.module` per target arch, each
-   module carrying its target attribute (`#nvvm.target`,
-   `#spirv.target_env`), and `deviceImageOf()` becomes a choice keyed on that
+   module carrying an attribute that names its target (`#nvvm.target`, or
+   the SPIR-V route's `llvm.target_triple`), and `deviceImageOf()` becomes a choice keyed on that
    attribute rather than a function that always runs the NVVM passes.
 1. **The dispatch payload cannot carry a binary image.** The payload is a
    sequence of NUL-terminated `key=value` entries, which works because PTX is
@@ -139,14 +158,21 @@ their value whichever backend lands first.
    payload also crosses the remote-worker wire verbatim
    (`runtime/vx_wire.h` already frames it by length), so the version key
    inside the payload is what lets an older worker refuse rather than
-   misread.
+   misread. The image is checked today by searching the `--emit-llvm` text
+   (`tests/integration_test/device_image_test.rs`); once it is a binary
+   section, that test has to decode the section, or it stops covering the
+   image.
 1. **Address spaces are mapped for NVVM only.** `AddressSpace` in
    `src/arch.rs` knows the NVPTX numbering, and several places in
    `VxLowering.cpp` compare the shared-memory address space to the integer 3
    directly. The lowering should carry the symbolic
    `#gpu.address_space<workgroup>` instead, and each target's type converter
    maps it to its own number (3 for NVVM, the `Workgroup` storage class for
-   SPIR-V).
+   SPIR-V). The same goes for memory a kernel keeps for itself, such as the
+   loop bounds it stores in stack slots: it has to be marked
+   `#gpu.address_space<private>`. The SPIR-V route puts memory with no address
+   space in device memory (`CrossWorkgroup`), and a stack slot there is
+   invalid SPIR-V ("Storage class must match result type storage class").
 1. **Scalar element types escape the `dtypes:` check.** E6026 covers tensors
    that are placed or transferred. An f64 *scalar* inside a `spawn` body
    passes the checker today and would only fail on the device, and the same
@@ -191,7 +217,8 @@ bar — a backend that only works alone keeps Vx from being what it is for.
 1. **Device image compiler.** The sibling of `deviceImageOf()`. This half is
    testable in CI with FileCheck, so it can merge before any runtime exists.
 1. **Runtime dispatch library.** Implement the `vx_plugin_*` entry points,
-   reuse `runtime/vx_kernel_launch.h`, add the `build.rs` arm.
+   reuse `runtime/vx_kernel_launch.h`, add the `build.rs` arm. For SYCL, the
+   entry points are a C wrapper around the C++ runtime.
 
 Keep PRs small and in that order; dependent PRs go in a GitHub stacked PR.
 Signing the CLA (`docs/CLA.md`) is checked by CI on the first PR.
