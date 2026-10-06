@@ -181,6 +181,42 @@ not be:
 | --- | --- |
 | Two `mut` rows of different indices, refused because indices are not told apart | #1060 |
 
+## Dropping values
+
+When its owner goes away, a value is *dropped*: what it owns is released. A value that was moved
+is not dropped, because its new owner drops it. Giving a variable a new value drops the old one.
+
+- **Memory only:** a tensor, or a `Vec` of numbers, is freed after its last use.
+- **A `Drop` implementation:** a value whose type implements `Drop` waits for the end of its block,
+  and values in one block are dropped in reverse order of declaration. Its `drop` runs first, then
+  its fields are dropped in the order they are declared. Dropping an enum drops the payload of the
+  variant it holds.
+
+```rust
+import core::ops;
+
+struct Noisy {
+    id : i32,
+}
+
+impl Drop for Noisy {
+    fn drop(self : &mut Noisy) -> void {
+        print(self.id);
+    }
+}
+
+fn main() -> i32 {
+    let a = Noisy { id : 1 };
+    let b = Noisy { id : 2 };
+    return 0;   // prints 2, then 1
+}
+```
+
+`Vec`, `Box`, `String`, `File` and the socket types implement `Drop`, so none of them is freed by
+hand. `drop` cannot be called directly (E4012). To end a value's life early, `core::mem` has
+`drop(x)`; `forget(x)` ends it without dropping anything, and `needs_drop<T>()` says whether
+dropping a `T` does anything.
+
 ## Linear values
 
 Some values are *linear*: they must be consumed exactly once, and the checker enforces it. Device
