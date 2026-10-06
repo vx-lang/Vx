@@ -9,6 +9,8 @@
 // A call through a function *value* is here too. It resolves through none of the paths above:
 // the contract rides on the type, so binding the function to a name keeps it.
 
+import core::marker;
+
 unsafe fn free_fn() -> i32 {
   return 1;
 }
@@ -20,6 +22,9 @@ unsafe fn generic_fn<T>(x : T) -> T {
 struct Holder {
   n : i32,
 }
+
+// Its methods take it by value, and `h` is given to two of them.
+impl Copy for Holder {}
 
 impl Holder {
   unsafe fn method(self : Holder) -> i32 {

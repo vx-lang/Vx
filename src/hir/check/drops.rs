@@ -340,6 +340,12 @@ impl<'a> TypeChecker<'a> {
                 if ty.to_string().starts_with("Closure_") {
                     return Vec::new();
                 }
+                // `core::mem::ManuallyDrop` is the one struct whose value is never dropped:
+                // `forget` is built on it, as in Rust.
+                let name = ty.to_string();
+                if name == "ManuallyDrop" || name.starts_with("ManuallyDrop<") {
+                    return Vec::new();
+                }
                 let Some(fields) = self.drops_struct_fields(ty) else {
                     return Vec::new();
                 };
@@ -609,7 +615,13 @@ impl<'a> TypeChecker<'a> {
     /// impl waits for the end of its block, as in Rust, since what the impl does may be part
     /// of what the program means; one that only frees memory is freed after its last use.
     pub(crate) fn drops_note_owner(&mut self, name: &str, ty: &Type) {
-        if self.borrow.views.contains_key(name) {
+        // `let (a, b) = e` holds `e` in a `$tuple` local and moves each part out of it, so the
+        // parts are dropped as `a` and `b`, and the local owns nothing.
+        // The same for the `$value` an `unsafe` block's value is moved into.
+        if self.borrow.views.contains_key(name)
+            || name.starts_with("$tuple")
+            || name.starts_with("$value")
+        {
             return;
         }
         let glue = self.drops_glue(ty);
@@ -965,11 +977,12 @@ impl<'a> TypeChecker<'a> {
                 continue;
             }
             let at = if owner.to_block_end {
-                if terminated_at.is_some() || body.is_empty() {
+                if terminated_at.is_some() {
                     continue;
                 }
                 self.drops_print(owner, "at the end of its block".to_string());
-                Some(body.len() - 1)
+                // An empty block, as `fn drop<T>(_x : T) {}` has, drops it where it starts.
+                body.len().checked_sub(1)
             } else {
                 match self.drops_last_use(&owner.name, &last_use) {
                     Some(i) if terminated_at.is_some_and(|t| i >= t) => continue,
@@ -1132,6 +1145,10 @@ impl<'a> TypeChecker<'a> {
 
     /// Make a block's edits, from its last statement back so the indices hold.
     fn drops_apply(&mut self, body: &mut Vec<Statement>, mut edits: Edits) {
+        if body.is_empty() {
+            body.extend(edits.before.remove(&0).unwrap_or_default());
+            return;
+        }
         let last = body.len().checked_sub(1);
         let mut at: Vec<usize> = edits
             .lets

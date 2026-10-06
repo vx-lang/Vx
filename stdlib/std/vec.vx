@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 import core::default;
 import core::iter::traits;
+import core::mem;
 import core::ops;
 
 // Memory management is delegated to the type-erased byte allocator in
@@ -31,8 +32,8 @@ extern "C" {
 /// A growable array of `T`, held in a buffer the Rust core owns.
 ///
 /// Vx keeps a typed view into that buffer and does its own element loads and stores; growth,
-/// alignment and the `capacity * elem_size` overflow check belong to Rust. There is no `Drop`
-/// in the language, so the buffer is released by calling `free` and not before.
+/// alignment and the `capacity * elem_size` overflow check belong to Rust. The buffer is
+/// released when the vector is dropped.
 struct Vec<T> {
   data : *mut T,
   len : i32,
@@ -81,6 +82,14 @@ Vec<T> {
   /// separately by whoever reads it.
   fn as_mut_slice(self : &mut Vec<T>) -> &mut T {
     let ptr : *mut T = self.data;
+    return unsafe { &mut *ptr };
+  }
+
+  /// Gives up the vector without freeing its buffer, and returns its first element as
+  /// `as_mut_slice` does. Nothing frees the buffer, so the reference stays valid.
+  fn leak(self : Vec<T>) -> &mut T {
+    let ptr : *mut T = self.data;
+    forget(self);
     return unsafe { &mut *ptr };
   }
 
@@ -174,6 +183,13 @@ Vec<T> {
     return VecIterMut<T> {
       vec : self, current : 0, back : n
     };
+  }
+}
+
+impl<T> Drop for Vec<T> {
+  /// Release the buffer when the vector is dropped.
+  fn drop(self : &mut Vec<T>) -> void {
+    self.free();
   }
 }
 

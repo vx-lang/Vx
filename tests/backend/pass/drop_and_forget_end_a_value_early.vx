@@ -1,0 +1,75 @@
+//===- drop_and_forget_end_a_value_early.vx - Vx Compiler ----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `core::mem`'s `drop` and `forget` both end a value's life before its block ends. Each
+// `drop` prints its number, so the line is the order of the drops, which is Rust's:
+//
+// - `drop(a)` drops 1 there, before the first `|`;
+// - `forget(b)` never drops 2;
+// - `c`, 3, is dropped when `main` returns.
+//
+// `needs_drop` says whether dropping a type does anything: yes for `Noisy` and for a `Vec`,
+// which frees its buffer; no for `i32` and for `Plain`, a struct of numbers. `says<T>` asks
+// from inside a generic function, `1 1 0 0`, and `main` asks directly, `1 0`.
+//
+// EXPECT: 1 1 0 0 | 1 0 | 1 | end 3
+
+import core::mem;
+import core::ops;
+import std::vec;
+
+struct Noisy {
+  id : i32,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    print(self.id);
+    print!(" ");
+  }
+}
+
+struct Plain {
+  x : i32,
+  y : f32,
+}
+
+fn says<T>() -> i32 {
+  if needs_drop<T>() {
+    return 1;
+  }
+  return 0;
+}
+
+fn main() -> i32 {
+  print(says<Noisy>());
+  print!(" ");
+  print(says<Vec<i32>>());
+  print!(" ");
+  print(says<i32>());
+  print!(" ");
+  print(says<Plain>());
+  print!(" | ");
+  print(needs_drop<Noisy>() as i32);
+  print!(" ");
+  print(needs_drop<Plain>() as i32);
+  print!(" | ");
+  let a = Noisy {
+    id: 1
+  };
+  let b = Noisy {
+    id: 2
+  };
+  let c = Noisy {
+    id: 3
+  };
+  drop(a);
+  print!("| ");
+  forget(b);
+  print!("end ");
+  return 0;
+}

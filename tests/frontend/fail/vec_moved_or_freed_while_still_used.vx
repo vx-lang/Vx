@@ -1,0 +1,49 @@
+//===- vec_moved_or_freed_while_still_used.vx - Vx Compiler --------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A `Vec` frees its buffer when it is dropped, so two things are refused, as in Rust:
+//
+// - `used_after_into_iter`: `into_iter` takes the vector by value, so `w` cannot be used
+//   after it;
+// - `slice_returned` and `slice_returned_in_a_struct`: a slice of a local `Vec` points at
+//   its buffer, which is freed when the function returns.
+
+// CHECK-DAG: Error[E4001] at 31:10: Use of moved or consumed linear variable: w
+// CHECK-DAG: Error[E4005] at 37:3: this returns a value that points into this function's stack frame
+// CHECK-DAG: Error[E4005] at 42:3: this returns a value that points into this function's stack frame
+
+import core::iter;
+import std::vec;
+
+struct Slice {
+  s : &mut f32,
+}
+
+fn used_after_into_iter() -> i32 {
+  let mut w = Vec<i32>::new();
+  let it = w.into_iter();
+  return w.len();
+}
+
+fn slice_returned(n : i32) -> &mut f32 {
+  let mut v : Vec<f32> = Vec<f32>::with_capacity(n);
+  v.push(2.5);
+  return v.as_mut_slice();
+}
+
+fn slice_returned_in_a_struct(n : i32) -> Slice {
+  let mut v : Vec<f32> = Vec<f32>::with_capacity(n);
+  return Slice {
+    s : v.as_mut_slice()
+  };
+}
+
+fn main() -> i32 {
+  return 0;
+}
