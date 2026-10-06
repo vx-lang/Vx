@@ -1,0 +1,38 @@
+//===- operator_on_a_struct_without_its_trait.vx - Vx Compiler -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// An operator on a struct needs an impl of its trait. `Point` has none, so `+`, `==` and
+// `<` are each refused, and the error names the trait to implement.
+
+// CHECK-DAG: Error[E3004] at 34:11: `+` is not defined for Point: it needs an impl of `core::ops::Add`
+// CHECK-DAG: Error[E3004] at 35:11: `==` is not defined for Point: it needs an impl of `core::cmp::PartialEq`
+// CHECK-DAG: Error[E3004] at 36:11: `<` is not defined for Point: it needs an impl of `core::cmp::Ord`
+// CHECK: 3 error(s) emitted
+
+import core::marker;
+
+struct Point {
+  x : i32,
+}
+
+// Copied, so that each line below is checked on its own.
+impl Copy for Point {}
+
+fn main() -> i32 {
+  let a = Point {
+    x: 1
+  };
+  let b = Point {
+    x: 2
+  };
+  let c = a + b;
+  let d = a == b;
+  let e = a < b;
+  return 0;
+}

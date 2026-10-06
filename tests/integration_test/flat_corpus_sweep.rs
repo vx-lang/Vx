@@ -38,6 +38,8 @@ const KNOWN_DECLINES: &[&str] = &[
     "backend/pass/drop_and_forget_end_a_value_early.vx",
     // The same for `Option<Noisy>`, which a loop over a `Vec<Noisy>` gets from `next`.
     "backend/pass/vec_drops_its_elements.vx",
+    // The same for `Option<Duration>`, which `Duration`'s `+` and `-` go through.
+    "backend/pass/operators_on_user_types.vx",
     // `t = pass(t)` inside an `if`: on the flat path a tensor local is one register, so the
     // new value cannot leave the branch. The flat path used to read the wrong tensor after it.
     "frontend/pass/tensor_drops_written_into_the_program.vx",
