@@ -1,0 +1,40 @@
+//===- autodiff_math_inverse_hyperbolic_f64.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The derivatives of f64 `asinh` and `atanh` at x = 0.5 (1/sqrt(1.25) and 1/0.75) and of `acosh`
+// at x = 2 (1/sqrt(3)), printed times 10^6. Enzyme cannot differentiate the core::libm functions
+// themselves, which read the float's bits, so each is marked to be differentiated as its C
+// function.
+//
+// CHECK-DAG: llvm.func @libm_asinh({{.*}}passthrough = {{\[\[}}"enzyme_math", "asinh"{{\]\]}}
+// CHECK-DAG: llvm.func @libm_acosh({{.*}}passthrough = {{\[\[}}"enzyme_math", "acosh"{{\]\]}}
+// CHECK-DAG: llvm.func @libm_atanh({{.*}}passthrough = {{\[\[}}"enzyme_math", "atanh"{{\]\]}}
+// EXPECT: 894427 577350 1333333
+import core::num;
+
+fn asinh_of(x : f64) -> f64 {
+  return x.asinh();
+}
+
+fn acosh_of(x : f64) -> f64 {
+  return x.acosh();
+}
+
+fn atanh_of(x : f64) -> f64 {
+  return x.atanh();
+}
+
+fn main() -> i32 {
+  let half : f64 = 0.5;
+  let two : f64 = 2.0;
+  print((grad(asinh_of, half) * 1000000.0) as i64);
+  print!(" ");
+  print((grad(acosh_of, two) * 1000000.0) as i64);
+  print!(" ");
+  print((grad(atanh_of, half) * 1000000.0) as i64);
+  return 0;
+}
