@@ -1,0 +1,65 @@
+//===- tuple_match.vx - Vx Compiler --------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `match` on a tuple: literals, names and `_` in a pattern, a `bool` element, a nested tuple, a
+// call as the matched value, and a `match` used as a value.
+//
+// EXPECT: 100 7 30 1 5 5
+fn pair(a : i32, b : i32) -> (i32, i32) {
+  return (a, b);
+}
+
+fn describe(t : (i32, i32)) -> i32 {
+  match t {
+    (0, 0) => {
+      return 100;
+    }, (0, y) => {
+      return y;
+    }, (x, _) => {
+      return x * 10;
+    }
+  }
+}
+
+fn main() -> i32 {
+  print(describe((0, 0)));
+  print!(" ");
+  print(describe((0, 7)));
+  print!(" ");
+  print(describe((3, 9)));
+  print!(" ");
+  let a : i32 = 2;
+  let b : bool = true;
+  let r : i32 = match (a, b) {
+    (2, true) => {
+      1
+    }, (_, false) => {
+      2
+    }, _ => {
+      3
+    }
+  };
+  print(r);
+  print!(" ");
+  match pair(4, 5) {
+    (4, z) => {
+      print(z);
+    }, _ => {
+      print(0);
+    }
+  }
+  print!(" ");
+  let n = ((1, 2), 3);
+  match n {
+    ((1, q), w) => {
+      print(q + w);
+    }, ((_, _), _) => {
+      print(0);
+    }
+  }
+  return 0;
+}

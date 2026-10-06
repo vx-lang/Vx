@@ -1,0 +1,22 @@
+//===- tuple_match_without_an_arm_for_every_value.vx - Vx Compiler *- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The last arm of a `match` on a tuple must match every value.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: a `match` on a tuple must end with an arm that matches every value, such as `_` or `(a, b)`
+fn main() -> i32 {
+  let t = (1, 2);
+  match t {
+    (1, y) => {
+      print(y);
+    }, (2, z) => {
+      print(z);
+    }
+  }
+  return 0;
+}

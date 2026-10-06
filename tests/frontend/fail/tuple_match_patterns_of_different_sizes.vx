@@ -1,0 +1,22 @@
+//===- tuple_match_patterns_of_different_sizes.vx - Vx Compiler *- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Every tuple pattern in one `match` has the same number of elements.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: every tuple pattern in this `match` has 2 elements; this one has 3
+fn main() -> i32 {
+  let t = (1, 2);
+  match t {
+    (1, y) => {
+      print(y);
+    }, (a, b, c) => {
+      print(a + b + c);
+    }
+  }
+  return 0;
+}

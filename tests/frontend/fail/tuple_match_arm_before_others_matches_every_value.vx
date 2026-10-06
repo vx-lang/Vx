@@ -1,0 +1,22 @@
+//===- tuple_match_arm_before_others_matches_every_value.vx - Vx Compiler *- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// An arm that matches every value must be the last one: the arms after it could never run.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: this arm matches every value, so the arms after it can never run
+fn main() -> i32 {
+  let t = (1, 2);
+  match t {
+    (a, b) => {
+      print(a + b);
+    }, (2, z) => {
+      print(z);
+    }
+  }
+  return 0;
+}

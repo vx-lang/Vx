@@ -1,0 +1,26 @@
+//===- tuple_match_on_a_call_used_as_a_value.vx - Vx Compiler *- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `match` on a tuple reads the matched value once per arm. Used as a value, it must match a
+// variable, since there is no statement before it to keep a call's result in.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: a `match` on a tuple used as a value must match a variable; put the value in a `let` first
+fn pair() -> (i32, i32) {
+  return (1, 2);
+}
+
+fn main() -> i32 {
+  let r : i32 = match pair() {
+    (1, y) => {
+      y
+    }, _ => {
+      0
+    }
+  };
+  return r;
+}

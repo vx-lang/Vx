@@ -863,11 +863,14 @@ impl<'a> Parser<'a> {
                 span: Span::default(),
             }));
         } else if self.match_token(&TokenType::Match) {
+            let at_statement = std::mem::take(&mut self.match_is_statement);
             let expr = self.parse_expr()?;
             self.consume(&TokenType::LeftBrace, "Expected '{' after match expr")?;
             let mut arms = Vec::new();
+            let mut tuple_arms = Vec::new();
             while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
-                let pattern = self.parse_pattern()?;
+                let arm_token = self.peek().clone();
+                let pattern = self.parse_arm_pattern()?;
                 self.consume(&TokenType::FatArrow, "Expected '=>' after pattern")?;
                 let mut body = Vec::new();
                 if self.match_token(&TokenType::LeftBrace) {
@@ -880,9 +883,24 @@ impl<'a> Parser<'a> {
                     self.parse_statement_into(&mut body)?;
                     self.match_token(&TokenType::Comma); // optional comma
                 }
-                arms.push(MatchArm { pattern, body });
+                tuple_arms.push((pattern, body, arm_token));
             }
             self.consume(&TokenType::RightBrace, "Expected '}'")?;
+            if tuple_arms
+                .iter()
+                .any(|(p, _, _)| matches!(p, tuple_match::ArmPattern::Tuple(_)))
+            {
+                return self.lower_tuple_match(expr, tuple_arms, at_statement);
+            }
+            for (pattern, body, _) in tuple_arms {
+                let tuple_match::ArmPattern::Plain(pattern) = pattern else {
+                    unreachable!("a tuple pattern is lowered above")
+                };
+                arms.push(MatchArm {
+                    pattern: *pattern,
+                    body,
+                });
+            }
             return Ok(Expr::Match(MatchExpr {
                 expr: Box::new(expr),
                 arms,
