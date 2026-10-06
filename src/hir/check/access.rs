@@ -149,6 +149,48 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// E6003: `what`, of type `ty` on `top`, lives where the active topology cannot see it, and
+    /// a transfer of `cost` would bring it here. The message names the memory, what the active
+    /// topology sees, and the transfer to write.
+    fn report_needs_transfer(
+        &mut self,
+        what: &str,
+        ty: &Type,
+        top: &Topology,
+        cost: u32,
+        span: &crate::syntax::Span,
+    ) {
+        let src = self.value_memory_space(ty, top);
+        let dst = self
+            .transfer_cost_graph
+            .default_memory_for(&self.active_topology);
+        let visible = self
+            .transfer_cost_graph
+            .descriptor(&self.active_topology.kind())
+            .map(|d| {
+                d.visibility
+                    .iter()
+                    .map(|s| s.name())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_default();
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E6003,
+            format!(
+                "'{}' lives in {} but {} sees only [{}]; insert an explicit transfer to {} \
+                 (cost {} on the declared path)",
+                what,
+                src.name(),
+                self.active_topology.display_name(),
+                visible,
+                dst.name(),
+                cost
+            ),
+            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+        );
+    }
+
     pub(crate) fn check_identifier_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
         match expr {
             Expr::Identifier(id) => {
@@ -418,37 +460,12 @@ impl<'a> TypeChecker<'a> {
                                             // handoff (e.g. an un-transferred KV cache in a
                                             // disaggregated prefill/decode split) is a compile
                                             // error carrying its own remedy (#253).
-                                            let src = self.value_memory_space(&ty, &top);
-                                            let dst = self
-                                                .transfer_cost_graph
-                                                .default_memory_for(&self.active_topology);
-                                            let visible = self
-                                                .transfer_cost_graph
-                                                .descriptor(&self.active_topology.kind())
-                                                .map(|d| {
-                                                    d.visibility
-                                                        .iter()
-                                                        .map(|s| s.name())
-                                                        .collect::<Vec<_>>()
-                                                        .join(", ")
-                                                })
-                                                .unwrap_or_default();
-                                            self.errors.error_with_code(
-                                                crate::diagnostic::DiagnosticCode::E6003,
-                                                format!(
-                                                    "'{}' lives in {} but {} sees only [{}]; \
-                                                     insert an explicit transfer to {} (cost {} \
-                                                     on the declared path)",
-                                                    name,
-                                                    src.name(),
-                                                    self.active_topology.display_name(),
-                                                    visible,
-                                                    dst.name(),
-                                                    cost
-                                                ),
-                                                Some(crate::diagnostic::SourceSpan::from_ast_span(
-                                                    &span,
-                                                )),
+                                            self.report_needs_transfer(
+                                                name.as_ref(),
+                                                &ty,
+                                                &top,
+                                                cost,
+                                                &span,
                                             );
                                         }
                                         Reachability::Unreachable => self.errors.push(format!(
@@ -816,11 +833,37 @@ impl<'a> TypeChecker<'a> {
                         &obj_ty,
                     ) && !self.speculating
                     {
-                        self.errors.push(format!(
-                            "Cross-topology access error: a value on {} cannot be read from {}",
-                            value_top.display_name(),
-                            self.active_topology.display_name()
-                        ));
+                        // A place whose root variable is not placed itself, such as the field
+                        // `h.t` of a struct, was not named by the check on the variable, so name
+                        // it here with the transfer that fixes it.
+                        let unnamed_place =
+                            crate::hir::places::base_and_path(obj).filter(|(root, path)| {
+                                !path.is_empty()
+                                    && self.lookup_with_depth(root.as_ref()).is_some_and(
+                                        |(t, _, _)| {
+                                            t.placement().is_none()
+                                                && !matches!(t, Type::Pinned(..))
+                                        },
+                                    )
+                            });
+                        let reach = self.transfer_cost_graph.reachable(
+                            &self.active_topology,
+                            &value_top,
+                            &obj_ty,
+                        );
+                        match (unnamed_place, reach) {
+                            (Some((root, path)), crate::arch::Reachability::NeedsSeam { cost }) => {
+                                let what = crate::hir::places::display_place(root.as_ref(), &path);
+                                self.report_needs_transfer(
+                                    &what, &obj_ty, &value_top, cost, &ix_span,
+                                );
+                            }
+                            _ => self.errors.push(format!(
+                                "Cross-topology access error: a value on {} cannot be read from {}",
+                                value_top.display_name(),
+                                self.active_topology.display_name()
+                            )),
+                        }
                     }
                 }
 
