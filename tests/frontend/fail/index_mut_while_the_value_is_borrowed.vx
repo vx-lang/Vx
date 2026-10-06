@@ -1,0 +1,80 @@
+//===- index_mut_while_the_value_is_borrowed.vx - Vx Compiler ------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// Two things indexing a struct cannot do, as in Rust:
+//
+// - `p[0] = bump(&mut p)`: the place `p[0]` is reserved while the right side runs, so the
+//   right side may read `p` but not borrow it mutably;
+// - `let n = names[0]`: `index` returns a reference to a `Name`, which is not `Copy`, so it
+//   cannot be moved out.
+
+// CHECK-DAG: Error[E4003] at 72:15: Cannot borrow 'p' as mutable because it is also borrowed as immutable.
+// CHECK-DAG: Error[E4008] at 78:16: this moves a value of type `Name` out from behind a reference
+// CHECK: 2 error(s) emitted
+
+import core::ops;
+
+struct Pair {
+  a : i32,
+  b : i32,
+}
+
+impl Index for Pair {
+  type Output = i32;
+  fn index(self : &Pair, i : i32) -> &i32 {
+    if i == 0 {
+      return &self.a;
+    }
+    return &self.b;
+  }
+}
+
+impl IndexMut for Pair {
+  type Output = i32;
+  fn index_mut(self : &mut Pair, i : i32) -> &mut i32 {
+    if i == 0 {
+      return &mut self.a;
+    }
+    return &mut self.b;
+  }
+}
+
+struct Name {
+  id : i32,
+}
+
+struct Names {
+  first : Name,
+}
+
+impl Index for Names {
+  type Output = Name;
+  fn index(self : &Names, i : i32) -> &Name {
+    return &self.first;
+  }
+}
+
+fn bump(p : &mut Pair) -> i32 {
+  p.a = 9;
+  return 1;
+}
+
+fn main() -> i32 {
+  let mut p = Pair {
+    a: 1, b: 2
+  };
+  p[0] = bump(&mut p);
+  let names = Names {
+    first: Name {
+      id: 3
+    }
+  };
+  let n = names[0];
+  return 0;
+}

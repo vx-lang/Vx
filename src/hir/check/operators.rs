@@ -326,7 +326,7 @@ impl<'a> TypeChecker<'a> {
         );
     }
 
-    fn is_user_type(ty: &Type) -> bool {
+    pub(crate) fn is_user_type(ty: &Type) -> bool {
         match ty {
             Type::Struct(name, _) => name.as_ref() != "void" && !name.starts_with("Closure_"),
             Type::Enum(..) => true,
@@ -339,7 +339,7 @@ impl<'a> TypeChecker<'a> {
     /// probe, then the left side of a nested operator, then a call's declared return type.
     /// Only what is left is checked, as a copy, so a long chain of operators on numbers is
     /// not checked again at every level.
-    fn operand_type(&mut self, e: &Expr) -> Type {
+    pub(crate) fn operand_type(&mut self, e: &Expr) -> Type {
         let ty = self.check_expr_type_probe(e);
         if ty != Type::Unknown {
             return ty;

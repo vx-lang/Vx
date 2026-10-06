@@ -234,7 +234,7 @@ impl<'a> TypeChecker<'a> {
             Expr::IndirectCall(..) => self.check_indirectcall_expr(expr, consume),
             Expr::Array(..) => self.check_array_expr(expr),
             Expr::MemberAccess(..) => self.check_memberaccess_expr(expr),
-            Expr::IndexAccess(..) => self.check_indexaccess_expr(expr),
+            Expr::IndexAccess(..) => self.check_indexaccess_expr(expr, consume),
             Expr::MethodCall(..) => self.check_methodcall_expr(expr, consume),
             Expr::BinaryOp(..) => self.check_binaryop_expr(expr, consume),
             Expr::RelationalOp(..) => self.check_relationalop_expr(expr),
