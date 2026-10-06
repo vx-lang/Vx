@@ -155,6 +155,9 @@ impl FnEmit<'_> {
                 self.etypes[idx] = Some(e.clone());
             } else if callee.ret_ptr {
                 self.ptr_of[idx] = true; // the call result is a pointer value (#235)
+                if let Some(pointee) = callee.ret_pointee {
+                    self.agg_of[idx] = Some(pointee);
+                }
             } else if let Some(agg_gid) = callee.ret_agg {
                 // A struct-returning call result is a struct *value*; tracked so it can be
                 // spilled to a slot (`Store`), returned (`Ret`), or passed by value to another
