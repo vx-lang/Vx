@@ -1,0 +1,25 @@
+//===- core_libm_cbrt_f16.vx - Vx Compiler -------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// f16 `cbrt`, ported from LLVM libc's `cbrtf16` into `core::libm`, on every f16 bit pattern: a hash
+// of the result bits, NaNs included. The expected hash is LLVM libc's (f475f085bf7b, built with
+// FMA), except for a signaling NaN, where LLVM answers the number 32256 (it converts the bits of
+// the quiet NaN as an integer) and this port answers the quiet NaN, 32256 as bits.
+//
+// EXPECT: 18339811076973017756
+import core::num;
+
+fn main() -> i32 {
+  let mut h : u64 = 0u64;
+  for i in 0..65536 {
+    let r = libm_f16_from_bits(i as u16).cbrt();
+    let rb = libm_f16_to_bits(r) as u64;
+    h = (h ^ rb).wrapping_mul(1099511628211u64);
+  }
+  print(h);
+  return 0;
+}

@@ -11860,3 +11860,266 @@ fn libm_acosh_bf16(x : bf16) -> bf16 {
 fn libm_atanh_bf16(x : bf16) -> bf16 {
   return libm_bf16_from_f32(libm_f32_round_odd(libm_atanh(libm_f32_from_bf16(x) as f64)));
 }
+
+/// `COEFFS` from `cbrtf.h`: for each of 16 slices of [1, 2), a degree-7 polynomial for
+/// `((1 + dx)^(1/3) - 1) / dx`, 7 coefficients per row at `[7 idx]`.
+const LIBM_CBRTF_COEFFS : Tensor<f64, [112]> = [
+0.33333333333332743, -0.11111111110180633, 0.061728392665313166, -0.041152031470752796, 0.030167600464551143, -0.023215441053526898, 0.015899529566694673,
+0.33333333285220024, -0.11111107258758213, 0.061727081409273264, -0.04112747277999788, 0.02989734630976427, -0.02153799114741434, 0.01127419346708957,
+0.3333333192549229, -0.11111045545593548, 0.06171526900235289, -0.041005246190812326, 0.029175410607531576, -0.019228232217575983, 0.00814588520838889,
+0.33333322118400993, -0.11110739114119272, 0.06167512191527053, -0.04072285954651347, 0.028050481630665987, -0.016821481616236658, 0.005985321117601386,
+0.3333328439114462, -0.11109844704483143, 0.061586441300283144, -0.04025211864010436, 0.02663941454402286, -0.014556751523170123, 0.004464847292284045,
+0.333331824932397, -0.11107902069657861, 0.06143174976802822, -0.03959352639524023, 0.02505825712076138, -0.012527094689041198, 0.0033765491760100663,
+0.3333296241102541, -0.11104396217161557, 0.06119865349685749, -0.03876553322357515, 0.02340097720733003, -0.0107548637980802, 0.0025855267287813633,
+0.33332554295025096, -0.11098815281870428, 0.06088025654574078, -0.037795508771109425, 0.021736514609599786, -0.009229688988917809, 0.0020024731854467546,
+0.33331876130007143, -0.11090693159095093, 0.06047454747254198, -0.036713619891480906, 0.020112095457727387, -0.0079276099775775, 0.0015671722277329377,
+0.3333083807403939, -0.11079635564459517, 0.059983386823503855, -0.03554917093135616, 0.018558007380360092, -0.00682056509242118, 0.0012383367214761304,
+0.33329346715947966, -0.11065332249560347, 0.05941144576706022, -0.034328675293879195, 0.017092069285967366, -0.005880916261710258, 0.0009872199863386318,
+0.33327308820738366, -0.11047559170684064, 0.058765261445268425, -0.033075033566629344, 0.01572327661549348, -0.005083426328543893, 0.0007935217165549238,
+0.3332463436927196, -0.11026174089987853, 0.05805246704856978, -0.03180736686848918, 0.01445458176797127, -0.0044059460412976805, 0.0006427175627387846,
+0.33321238861369823, -0.11001108417713691, 0.05728120253303031, -0.030541211931495733, 0.013284937772356398, -0.003829471687080277, 0.0005242892455637034,
+0.33317044926474165, -0.10972357212874569, 0.0564596833754264, -0.02928888794612186, 0.01221075824789998, -0.0033379141814110316, 0.0004305332726031143,
+0.3331198335582261, -0.10939968809503033, 0.05559590322798834, -0.028059931816311626, 0.011226944640882692, -0.002917760004129841, 0.000355748383247888
+];
+
+/// `COEFFS` from `cbrtf16.h`: the same in f32, degree 5, 5 coefficients per row at `[5 idx]`.
+const LIBM_CBRTF16_COEFFS : Tensor<f32, [80]> = [
+0.33333334, -0.111113206, 0.061846707, -0.0435785, 0.045315873,
+0.33333322, -0.11110493, 0.061589535, -0.03959222, 0.021201836,
+0.33333218, -0.111072555, 0.061208475, -0.037574753, 0.017147368,
+0.3333282, -0.110988304, 0.0605381, -0.035190117, 0.013947661,
+0.33331847, -0.11083373, 0.059612844, -0.032720592, 0.011467862,
+0.33329996, -0.11059744, 0.058479197, -0.03029822, 0.009522762,
+0.3332693, -0.11027061, 0.057171088, -0.027967818, 0.007963602,
+0.33322397, -0.10985615, 0.055748492, -0.025795322, 0.0067181443,
+0.33315864, -0.1093342, 0.054183185, -0.023707043, 0.00567244,
+0.33307576, -0.10874608, 0.05261718, -0.02185257, 0.004848373,
+0.33297792, -0.10811838, 0.05110648, -0.020236054, 0.0041994816,
+0.33284405, -0.10733911, 0.049404677, -0.018583577, 0.003597505,
+0.33267534, -0.10644329, 0.047620263, -0.017003182, 0.0030724045,
+0.3325239, -0.10570207, 0.04625962, -0.015893055, 0.0027327451,
+0.3323195, -0.10476793, 0.044658333, -0.014672747, 0.0023839048,
+0.3321639, -0.10409707, 0.043573726, -0.013893449, 0.002173941
+];
+
+/// The cube root of an f32, correctly rounded: `cbrtf` from `cbrtf.h`. `x = 2^(3e + s) * m`, and
+/// the cube root of `m` comes from a polynomial for one of 16 slices of [1, 2), times `2^(s/3)`,
+/// computed in double. A double result too near a rounding boundary of f32 is an exact cube
+/// root, and is moved onto it.
+fn libm_cbrtf(x : f32) -> f32 {
+  let x_u = libm_f32_to_bits(x);
+  let x_abs = x_u & 2147483647u32;
+  let sign_bit = ((x_u >> 31u32) as u64) << 11u64;
+  if x == 0.0 || x_abs >= 2139095040u32 { // 0x7f800000
+    return x + x;
+  }
+  let xd_bits = libm_f64_to_bits(x as f64);
+  let x_e = (xd_bits >> 52u64) & 2047u64;
+  let out_e = (x_e / 3u64 + 682u64) | sign_bit;
+  let shift_e = x_e % 3u64;
+  let mut x_m = xd_bits & 4503599627370495u64; // 0x000fffffffffffff
+  let idx = (x_m >> 48u64) as i64;
+  x_m = x_m | 4607182418800017408u64; // 0x3ff0000000000000
+  let dx = libm_f64_from_bits(x_m) - 1.0;
+  let dx_sq = dx * dx;
+  let k = 7 * idx;
+  let c0 = libm_multiply_add(dx, LIBM_CBRTF_COEFFS[k], 1.0);
+  let c1 = libm_multiply_add(dx, LIBM_CBRTF_COEFFS[k + 2], LIBM_CBRTF_COEFFS[k + 1]);
+  let c2 = libm_multiply_add(dx, LIBM_CBRTF_COEFFS[k + 4], LIBM_CBRTF_COEFFS[k + 3]);
+  let c3 = libm_multiply_add(dx, LIBM_CBRTF_COEFFS[k + 6], LIBM_CBRTF_COEFFS[k + 5]);
+  let dx_4 = dx_sq * dx_sq;
+  let p0 = libm_multiply_add(dx_sq, c1, c0);
+  let p1 = libm_multiply_add(dx_sq, c3, c2);
+  let mut cbrt2 : f64 = 1.0;
+  if shift_e == 1u64 {
+    cbrt2 = libm_f64_from_bits(4608352999143469707u64); // 0x1.428a2f98d728bp0
+  } else if shift_e == 2u64 {
+    cbrt2 = libm_f64_from_bits(4609827837958778429u64); // 0x1.965fea53d6e3dp0
+  }
+  let r = libm_multiply_add(dx_4, p1, p0) * cbrt2;
+  let mut r_m = libm_f64_to_bits(r) & 4503599627370495u64; // 0x000fffffffffffff
+  // Within 8 units of the 29th bit of an f32 boundary: an exact result, so round onto it.
+  if ((r_m + 8u64) & 17592186044415u64) <= 16u64 { // 0xfffffffffff
+    if (r_m & 17592186044415u64) <= 8u64 { // 0xfffffffffff
+      r_m = r_m & 18446744073709551584u64; // 0xffffffffffffffe0
+    } else {
+      r_m = (r_m & 18446744073709551584u64) + 32u64; // 0xffffffffffffffe0
+    }
+  }
+  return libm_f64_from_bits(r_m | (out_e << 52u64)) as f32;
+}
+
+/// The cube root of an f16, correctly rounded: `cbrtf16` from `cbrtf16.h`, the scheme of
+/// `libm_cbrtf` in f32. LLVM answers a signaling NaN with the number 32256 (it converts the bits
+/// of the quiet NaN as an integer); this answers the quiet NaN.
+fn libm_cbrtf16(x : f16) -> f16 {
+  let x_u = libm_f16_to_bits(x);
+  let x_abs = x_u & 32767u16;
+  let sign_bit = ((x_u >> 15u16) as u32) << 8u32;
+  if x_abs == 0u16 || x_abs >= 31744u16 {
+    if x_abs > 31744u16 && (x_abs & 512u16) == 0u16 {
+      return libm_f16_from_bits(32256u16);
+    }
+    return x;
+  }
+  let xf_bits = libm_f32_to_bits(x as f32);
+  let x_e_biased = (xf_bits >> 23u32) & 255u32;
+  let out_e = (x_e_biased - 1u32) / 3u32 + (127u32 - 42u32);
+  let shift_e = (x_e_biased - 1u32) % 3u32;
+  let mut x_m = xf_bits & 8388607u32;
+  let idx = (x_m >> 19u32) as i64;
+  x_m = x_m | 1065353216u32;
+  let dx = libm_f32_from_bits(x_m) - 1.0;
+  let dx_sq = dx * dx;
+  let k = 5 * idx;
+  let c0 = libm_multiply_add_f32(dx, LIBM_CBRTF16_COEFFS[k], 1.0);
+  let c1 = libm_multiply_add_f32(dx, LIBM_CBRTF16_COEFFS[k + 2], LIBM_CBRTF16_COEFFS[k + 1]);
+  let c2 = libm_multiply_add_f32(dx, LIBM_CBRTF16_COEFFS[k + 4], LIBM_CBRTF16_COEFFS[k + 3]);
+  let dx_4 = dx_sq * dx_sq;
+  let p0 = libm_multiply_add_f32(dx_sq, c1, c0);
+  let mut cbrt2 : f32 = 1.0;
+  if shift_e == 1u32 {
+    cbrt2 = libm_f32_from_bits(1067533592u32); // 0x1.428a3p0f
+  } else if shift_e == 2u32 {
+    cbrt2 = libm_f32_from_bits(1070280693u32); // 0x1.965feap0f
+  }
+  let r = libm_multiply_add_f32(dx_4, c2, p0) * cbrt2;
+  let mut r_m = libm_f32_to_bits(r) & 8388607u32;
+  if ((r_m + 4u32) & 32767u32) <= 8u32 {
+    if (r_m & 32767u32) <= 4u32 {
+      r_m = r_m & 4294967264u32;
+    } else {
+      r_m = (r_m & 4294967264u32) + 32u32;
+    }
+  }
+  return libm_f32_from_bits(r_m | ((out_e | sign_bit) << 23u32)) as f16;
+}
+
+/// The cube root of a bf16: LLVM libc's `cbrtbf16`, `cbrtf` of it rounded to bf16.
+fn libm_cbrt_bf16(x : bf16) -> bf16 {
+  return libm_bf16_from_f32(libm_cbrtf(libm_f32_from_bf16(x)));
+}
+
+/// `x0^3 * a^2 - 1` from the double-doubles `x0^3` and `a^2`: `get_error` from `cbrt.h` with FMA.
+fn libm_cbrt_error(x_3 : LibmDoubleDouble, a_sq : LibmDoubleDouble) -> f64 {
+  return libm_multiply_add(x_3.hi, a_sq.hi, -1.0) + libm_multiply_add(x_3.lo, a_sq.hi, x_3.hi * a_sq.lo);
+}
+
+/// The cube root of a double, correctly rounded: `cbrt` from `cbrt.h`. `x = 2^(3e + s) * a'`;
+/// a polynomial gives `x0 ~ a^(-1/3)`, and Newton steps on `x^3 a^2 = 1` refine it, so that
+/// `a * x ~ a^(1/3)`. One step in double-doubles usually decides the rounding; otherwise a
+/// second, and then a third in 128 bits, where a result on or next to a rounding boundary is
+/// an exact cube root and is moved onto it.
+fn libm_cbrt(x : f64) -> f64 {
+  return libm_cbrt_value(x, false);
+}
+
+/// `libm_cbrt`, or with `always_accurate` its third step on every input, skipping the two checks
+/// that would stop earlier: the fixtures use it to reach that step, which no known input needs.
+fn libm_cbrt_value(x0_in : f64, always_accurate : bool) -> f64 {
+  let mut x = x0_in;
+  let x_abs = libm_f64_to_bits(x) & 9223372036854775807u64; // 0x7fffffffffffffff
+  // 1023 * 2/3.
+  let mut exp_bias_correction : u64 = 682u64;
+  if x_abs < 4503599627370496u64 || x_abs >= 9218868437227405312u64 { // 0x0010000000000000, 0x7ff0000000000000
+    if x == 0.0 || x_abs >= 9218868437227405312u64 { // 0x7ff0000000000000
+      return x + x;
+    }
+    // A subnormal, scaled up.
+    x = x * libm_f64_from_bits(4877398396442247168u64); // 0x1.0p60
+    exp_bias_correction = exp_bias_correction - 20u64;
+  }
+  let x_bits = libm_f64_to_bits(x);
+  let x_e = (x_bits >> 52u64) & 2047u64;
+  let out_e = x_e / 3u64 + exp_bias_correction;
+  let shift_e = x_e % 3u64;
+  let x_r = libm_f64_from_bits((x_bits & 4503599627370495u64) | 4607182418800017408u64); // 0x000fffffffffffff, 0x3ff0000000000000
+  let a = libm_f64_from_bits((x_bits & 9227875636482146303u64) | ((shift_e + 1023u64) << 52u64)); // 0x800fffffffffffff
+  // x_r^(-1/3), within 2^-9 or so.
+  let x_sq = x_r * x_r;
+  let c0 = libm_multiply_add(x_r, libm_f64_from_bits(13842748863904026803u64), libm_f64_from_bits(4614999031342093766u64)); // -0x1.b52bfebf110b3p2, 0x1.bc52aedead5c6p1
+  let c1 = libm_multiply_add(x_r, libm_f64_from_bits(13843470262491795335u64), libm_f64_from_bits(4621213111080440102u64)); // -0x1.de2db9e81cf87p2, 0x1.1d8d71d53d126p3
+  let c2 = libm_multiply_add(x_r, libm_f64_from_bits(13832128116219080103u64), libm_f64_from_bits(4616213036907189181u64)); // -0x1.5973c66ee6da7p0, 0x1.0154ca06153bdp2
+  let c3 = libm_multiply_add(x_r, libm_f64_from_bits(13805192285562084536u64), libm_f64_from_bits(4598311518931723602u64)); // -0x1.5e53d9ce41cb8p-6, 0x1.07bf6ac832552p-2
+  let x_4 = x_sq * x_sq;
+  let d0 = libm_multiply_add(x_sq, c1, c0);
+  let d1 = libm_multiply_add(x_sq, c3, c2);
+  let p = libm_multiply_add(x_4, d1, d0);
+  let mut m23 : f64 = 1.0;
+  if shift_e == 1u64 {
+    m23 = libm_f64_from_bits(4603849399516099211u64); // 0x1.428a2f98d728bp-1
+  } else if shift_e == 2u64 {
+    m23 = libm_f64_from_bits(4600820638704037437u64); // 0x1.965fea53d6e3dp-2
+  }
+  let x0 = m23 * p;
+  let a_sq = libm_dd_exact_mult(a, a);
+  let x0_sq = libm_dd_exact_mult(x0, x0);
+  let x0_3 = libm_dd_quick_mult(LibmDoubleDouble {
+    hi: x0, lo: 0.0
+  }, x0_sq);
+  let h0 = libm_cbrt_error(x0_3, a_sq);
+  let rel_error = libm_f64_from_bits(4377498837804122112u64); // 0x1.0p-51
+  // (1 + h)^(-1/3) - 1 ~ h (-1/3 + 2h/9 - 14h^2/81), with the error bound folded into -1/3.
+  let e0 = libm_multiply_add(h0, libm_multiply_add(h0, libm_f64_from_bits(13818767256630070436u64), libm_f64_from_bits(4597174419628082972u64)), libm_f64_from_bits(13823048456275842389u64) - rel_error); // -0x1.61f9add3c0ca4p-3, 0x1.c71c71c71c71cp-3, -0x1.5555555555555p-2
+  let x0_h0 = x0 * h0;
+  let x1_dd = LibmDoubleDouble {
+    hi: x0, lo: x0_h0 * e0
+  };
+  let r1 = libm_dd_quick_mult(LibmDoubleDouble {
+    hi: a, lo: 0.0
+  }, x1_dd);
+  let r1_lower = r1.hi + r1.lo;
+  let r1_upper = r1.hi + libm_multiply_add(x0_h0, 2.0 * rel_error * a, r1.lo);
+  if r1_upper == r1_lower && !always_accurate {
+    return libm_cbrt_update_exponent(r1_lower, out_e);
+  }
+  // A second Newton step, in double-doubles.
+  let x1 = x1_dd.hi + (e0 + rel_error) * x0_h0;
+  let x1_sq = libm_dd_exact_mult(x1, x1);
+  let x1_3 = libm_dd_quick_mult(LibmDoubleDouble {
+    hi: x1, lo: 0.0
+  }, x1_sq);
+  let h1 = libm_cbrt_error(x1_3, a_sq);
+  let e1 = h1 * (x1 * libm_f64_from_bits(13823048456275842389u64)); // -0x1.5555555555555p-2
+  let x2 = libm_dd_exact_add(x1, e1);
+  let r2 = libm_dd_quick_mult(LibmDoubleDouble {
+    hi: a, lo: 0.0
+  }, x2);
+  let r2_upper = r2.hi + libm_multiply_add(a, libm_f64_from_bits(4147815256808226816u64), r2.lo); // 0x1.0p-102
+  let r2_lower = r2.hi + libm_multiply_add(a, libm_f64_from_bits(13371187293663002624u64), r2.lo); // -0x1.0p-102
+  if r2_upper == r2_lower && !always_accurate {
+    return libm_cbrt_update_exponent(r2_upper, out_e);
+  }
+  // A third step in 128 bits.
+  let x2_f128 = libm_dyadic_add(libm_dyadic_from_f64(x2.hi), libm_dyadic_from_f64(x2.lo));
+  let x2_3 = libm_dyadic_mul(libm_dyadic_mul(x2_f128, x2_f128), x2_f128);
+  let a_sq_f128 = libm_dyadic_mul(libm_dyadic_from_f64(a), libm_dyadic_from_f64(a));
+  let x2_3_a_sq = libm_dyadic_mul(x2_3, a_sq_f128);
+  let h2 = libm_dyadic_to_f64(libm_dyadic_add(x2_3_a_sq, libm_dyadic_from_f64(-1.0)));
+  let t2 = libm_dyadic_add(libm_dyadic_from_f64(1.0), libm_dyadic_from_f64(h2 * libm_f64_from_bits(13823048456275842389u64))); // -0x1.5555555555555p-2
+  let x3 = libm_dyadic_mul(x2_f128, t2);
+  let mut r3 = libm_dyadic_mul(libm_dyadic_from_f64(a), x3);
+  // The 74 bits below the double's last place: on or next to a boundary means an exact cube root.
+  let low_mask : u128 = (((1 as u128) << 74u128) - (1 as u128));
+  let rounding_bits = libm_dyadic_mantissa(r3) & low_mask;
+  let mut result = libm_dyadic_to_f64(r3);
+  if rounding_bits < (15 as u128) || rounding_bits >= low_mask - (15 as u128) {
+    r3.lo = r3.lo & 18446744073709551600u64; // 0xfffffffffffffff0
+    if rounding_bits >= low_mask - (15 as u128) {
+      let tmp = LibmDyadic128 {
+        negative: r3.negative, exponent: r3.exponent - 123, hi: 9223372036854775808u64, lo: 0u64 // 0x8000000000000000
+      };
+      result = libm_dyadic_to_f64(libm_dyadic_add(r3, tmp));
+    } else {
+      result = libm_dyadic_to_f64(r3);
+    }
+  }
+  return libm_cbrt_update_exponent(result, out_e);
+}
+
+/// `r`, which lies in [1, 2) in size, with its exponent replaced by `out_e`: `update_exponent`
+/// from `cbrt.h`.
+fn libm_cbrt_update_exponent(r : f64, out_e : u64) -> f64 {
+  let r_m = libm_f64_to_bits(r) - 4607182418800017408u64; // 0x3ff0000000000000
+  return libm_f64_from_bits(r_m + (out_e << 52u64));
+}

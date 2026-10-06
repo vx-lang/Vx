@@ -1519,6 +1519,35 @@ stamp_float!(f16 , 1.0 , 0.0 , 180.0);
 stamp_float!(bf16 , 1.0 , 0.0 , 180.0);
 
 impl f64 {
+  /// The cube root, correctly rounded (LLVM libc's `cbrt`). Defined for negative numbers too.
+  fn cbrt(self : f64) -> f64 {
+    return libm_cbrt(self);
+  }
+}
+
+impl f32 {
+  /// The cube root, correctly rounded (LLVM libc's `cbrtf`). Defined for negative numbers too.
+  fn cbrt(self : f32) -> f32 {
+    return libm_cbrtf(self);
+  }
+}
+
+impl f16 {
+  /// The cube root, correctly rounded (LLVM libc's `cbrtf16`). Defined for negative numbers too.
+  fn cbrt(self : f16) -> f16 {
+    return libm_cbrtf16(self);
+  }
+}
+
+impl bf16 {
+  /// The cube root: LLVM libc's `cbrtbf16`, the f32 cube root rounded to bf16. Defined for
+  /// negative numbers too.
+  fn cbrt(self : bf16) -> bf16 {
+    return libm_cbrt_bf16(self);
+  }
+}
+
+impl f64 {
   /// The inverse hyperbolic sine, almost always correctly rounded, from `core::libm`'s own double-double code (LLVM libc has no double-precision version).
   fn asinh(self : f64) -> f64 {
     return libm_asinh(self);
