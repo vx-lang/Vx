@@ -365,6 +365,7 @@ impl<'a> Parser<'a> {
     /// The first `let` is returned and the rest wait in `pending_stmts` for
     /// `parse_statement_into`, since a statement parses to one statement.
     fn parse_tuple_let(&mut self, span: Span) -> ParseResult<'a, Statement> {
+        let start = self.peek().clone();
         let pattern = self.parse_tuple_pattern()?;
         let mut type_annotation = None;
         if self.match_token(&TokenType::Colon) {
@@ -374,7 +375,7 @@ impl<'a> Parser<'a> {
         let expr = self.parse_expr()?;
         self.consume(&TokenType::Semicolon, "Expected ';'")?;
         let mut out = Vec::new();
-        self.lower_tuple_pattern(pattern, type_annotation, expr, span, &mut out);
+        self.lower_tuple_pattern(pattern, type_annotation, expr, span, &start, &mut out)?;
         let first = out.remove(0);
         self.pending_stmts.extend(out);
         Ok(first)
@@ -410,8 +411,9 @@ impl<'a> Parser<'a> {
         ty_ann: Option<crate::syntax::Type>,
         expr: Expr,
         span: Span,
+        start: &Token<'a>,
         out: &mut Vec<Statement>,
-    ) {
+    ) -> ParseResult<'a, ()> {
         match pattern {
             TuplePattern::Ignore => {}
             TuplePattern::Bind(name, is_mut) => out.push(Statement::LetDecl(LetDeclStmt {
@@ -422,6 +424,24 @@ impl<'a> Parser<'a> {
                 span,
             })),
             TuplePattern::Tuple(elems) => {
+                // The number of elements must match: counted here for a tuple literal, and
+                // otherwise checked by `core::tuple`'s `has_N_elements`.
+                let literal_size = match &expr {
+                    Expr::StructInit(lit) if lit.name.as_ref().starts_with("Tuple") => {
+                        Some(lit.fields.len())
+                    }
+                    _ => None,
+                };
+                if literal_size.is_some_and(|n| n != elems.len()) {
+                    return Err(self.error_at(
+                        start,
+                        &format!(
+                            "the pattern has {} elements, but the tuple has {}",
+                            elems.len(),
+                            literal_size.unwrap_or_default()
+                        ),
+                    ));
+                }
                 let temp = format!("$tuple{}", self.tuple_lets);
                 self.tuple_lets += 1;
                 out.push(Statement::LetDecl(LetDeclStmt {
@@ -431,6 +451,19 @@ impl<'a> Parser<'a> {
                     expr,
                     span,
                 }));
+                let temp_expr = Expr::Identifier(IdentifierExpr {
+                    name: temp.clone().into(),
+                    span,
+                });
+                if literal_size.is_none() {
+                    out.push(Statement::LetDecl(LetDeclStmt {
+                        name: format!("_{temp}_size").into(),
+                        is_mut: false,
+                        ty_ann: None,
+                        expr: super::tuple_match::has_elements(elems.len(), &temp_expr),
+                        span,
+                    }));
+                }
                 for (i, elem) in elems.into_iter().enumerate() {
                     let element = Expr::MemberAccess(MemberAccessExpr {
                         base: Box::new(Expr::Identifier(IdentifierExpr {
@@ -441,10 +474,11 @@ impl<'a> Parser<'a> {
                         struct_name: None,
                         span,
                     });
-                    self.lower_tuple_pattern(elem, None, element, span, out);
+                    self.lower_tuple_pattern(elem, None, element, span, start, out)?;
                 }
             }
         }
+        Ok(())
     }
 }
 

@@ -142,7 +142,21 @@ fn main() -> i32 {
 ```
 
 A tuple has two to six elements. Patterns nest, `let ((a, _), c) = t;`, and `_` skips an element.
-Tuple patterns in `match` are not supported yet.
+
+`match` takes a tuple apart too. A literal in a pattern must equal that element, and a name binds
+it. The last arm must match every value, such as `_` or `(x, y)`:
+
+```rust
+fn sign_pair(a: i64, b: i64) -> i64 {
+    match (a, b) {
+        (0, 0) => { return 0; },
+        (0, y) => { return y; },
+        (x, _) => { return x; }
+    }
+}
+```
+
+An enum variant inside a tuple pattern, such as `(Some(x), None)`, is not supported yet.
 
 ## Enums and pattern matching
 

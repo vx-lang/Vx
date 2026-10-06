@@ -2,6 +2,7 @@ pub mod decl;
 pub mod expr;
 pub mod macro_expand;
 pub mod stmt;
+mod tuple_match;
 pub mod types;
 pub use macro_expand::MacroExpander;
 
@@ -82,6 +83,12 @@ pub struct Parser<'a> {
     pending_stmts: Vec<crate::syntax::Statement>,
     /// Numbers the temporaries a tuple `let` introduces, so two in one scope do not collide.
     tuple_lets: usize,
+    /// Statements a desugaring needs before the one it returned: a `match` on a tuple keeps the
+    /// value it matches in a temporary. `parse_statement_into` inserts them.
+    prefix_stmts: Vec<crate::syntax::Statement>,
+    /// Set by `parse_statement_into` when the statement starts with `match`, and taken by that
+    /// `match`: only a `match` that is a whole statement may put a temporary before it.
+    match_is_statement: bool,
 }
 
 impl<'a> Parser<'a> {
@@ -105,6 +112,8 @@ impl<'a> Parser<'a> {
             uses_tuples: false,
             pending_stmts: Vec::new(),
             tuple_lets: 0,
+            prefix_stmts: Vec::new(),
+            match_is_statement: false,
         }
     }
 
@@ -123,12 +132,14 @@ impl<'a> Parser<'a> {
         Ok(format!("Tuple{arity}"))
     }
 
-    /// Parse one statement onto `out`, with whatever a desugaring added after it.
+    /// Parse one statement onto `out`, with whatever a desugaring added before and after it.
     pub(crate) fn parse_statement_into(
         &mut self,
         out: &mut Vec<crate::syntax::Statement>,
     ) -> ParseResult<'a, ()> {
+        self.match_is_statement = self.check(&TokenType::Match);
         let stmt = self.parse_statement()?;
+        out.append(&mut self.prefix_stmts);
         out.push(stmt);
         out.append(&mut self.pending_stmts);
         Ok(())

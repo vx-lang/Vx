@@ -7,7 +7,8 @@
 //===----------------------------------------------------------------------===//
 // The structs tuple syntax stands for. `(A, B)` is `Tuple2<A, B>`, `(a, b)` builds one, `t.0`
 // is its field `_0`, and `let (x, y) = t;` binds each field. A module that writes tuple
-// syntax imports this one without saying so.
+// syntax imports this one without saying so, and a tuple `match` is a chain of `if`s over the
+// fields.
 //
 // Two to six elements. Nothing here is meant to be named directly.
 
@@ -49,4 +50,26 @@ struct Tuple6<A, B, C, D, E, F> {
   _3 : D,
   _4 : E,
   _5 : F,
+}
+
+/// `true`, for a tuple of exactly two elements; any other tuple is a type error. A tuple `let` or
+/// `match` calls one of these, so a pattern with the wrong number of elements is rejected.
+fn has_2_elements<A, B>(_t : &Tuple2<A, B>) -> bool {
+  return true;
+}
+
+fn has_3_elements<A, B, C>(_t : &Tuple3<A, B, C>) -> bool {
+  return true;
+}
+
+fn has_4_elements<A, B, C, D>(_t : &Tuple4<A, B, C, D>) -> bool {
+  return true;
+}
+
+fn has_5_elements<A, B, C, D, E>(_t : &Tuple5<A, B, C, D, E>) -> bool {
+  return true;
+}
+
+fn has_6_elements<A, B, C, D, E, F>(_t : &Tuple6<A, B, C, D, E, F>) -> bool {
+  return true;
 }

@@ -1,0 +1,26 @@
+//===- tuple_pattern_shorter_than_a_tuple_variable.vx - Vx Compiler *- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A tuple pattern, in a `let` or a `match`, needs as many elements as the tuple in the variable it
+// takes apart. Two elements in a pattern do not fit a tuple of three.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK-COUNT-2: Failed to deduce types for generic function 'has_2_elements': Expected &Tuple2<A, B>, got &Tuple3<i32, i32, i32>
+fn main() -> i32 {
+  let t = (1, 2, 3);
+  let (p, q) = t;
+  print(p + q);
+  let u = (4, 5, 6);
+  match u {
+    (4, y) => {
+      print(y);
+    }, _ => {
+      print(0);
+    }
+  }
+  return 0;
+}

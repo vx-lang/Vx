@@ -1,0 +1,16 @@
+//===- tuple_pattern_shorter_than_a_tuple_literal.vx - Vx Compiler *- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A tuple pattern needs as many elements as the tuple literal it takes apart.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: the pattern has 2 elements, but the tuple has 3
+fn main() -> i32 {
+  let (p, q) = (1, 2, 3);
+  print(p + q);
+  return 0;
+}

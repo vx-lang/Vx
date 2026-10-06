@@ -1,0 +1,22 @@
+//===- tuple_match_shorter_than_a_tuple_literal.vx - Vx Compiler *- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The patterns of a `match` need as many elements as the tuple literal it matches.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: the patterns have 2 elements, but the tuple has 3
+fn main() -> i32 {
+  let a : i32 = 1;
+  match (a, a, a) {
+    (1, y) => {
+      print(y);
+    }, _ => {
+      print(0);
+    }
+  }
+  return 0;
+}
