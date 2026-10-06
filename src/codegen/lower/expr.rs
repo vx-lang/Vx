@@ -3731,11 +3731,33 @@ pub(crate) fn is_narrower_int(slot: &str, want: &str) -> bool {
     matches!((bits(slot), bits(want)), (Some(s), Some(w)) if w < s)
 }
 
-/// The text of an enum's payload slot: field 1 of `struct<"Name", (i32, T)>`.
-pub(crate) fn enum_payload_slot_text(struct_ty_text: &str) -> Option<String> {
-    let start = struct_ty_text.find("(i32, ")? + 6;
-    let end = struct_ty_text.rfind(')')?;
-    Some(struct_ty_text[start..end].to_string())
+/// The payload slots of an enum's `{tag, slot, slot, ..}` struct type, one per payload
+/// position, split at the commas that are not inside a nested type.
+pub(crate) fn enum_payload_slot_texts(struct_ty_text: &str) -> Vec<String> {
+    let Some(start) = struct_ty_text.find("(i32, ").map(|i| i + 6) else {
+        return Vec::new();
+    };
+    let Some(end) = struct_ty_text.rfind(')') else {
+        return Vec::new();
+    };
+    if end <= start {
+        return Vec::new();
+    }
+    let mut slots = Vec::new();
+    let (mut depth, mut from) = (0i32, start);
+    for (i, c) in struct_ty_text[start..end].char_indices() {
+        match c {
+            '<' | '(' => depth += 1,
+            '>' | ')' => depth -= 1,
+            ',' if depth == 0 => {
+                slots.push(struct_ty_text[from..start + i].trim().to_string());
+                from = start + i + 1;
+            }
+            _ => {}
+        }
+    }
+    slots.push(struct_ty_text[from..end].trim().to_string());
+    slots
 }
 
 /// Resizes an enum payload to the width of the slot that holds it.
@@ -3745,16 +3767,14 @@ pub(crate) fn enum_payload_slot_text(struct_ty_text: &str) -> Option<String> {
 /// variant's type, so the value coming back is too wide and is truncated here. Either
 /// direction round-trips the bits, so the signedness this path no longer knows does not
 /// matter. A genuinely too-wide value cannot reach this point: E3008 rejects it.
-pub(crate) fn fit_payload_to_slot<'c>(
+pub(crate) fn fit_payload_to_slot_text<'c>(
     gen: &mut MeliorGenerator<'c>,
     block: melior::ir::BlockRef<'c, 'c>,
     payload_val: Value<'c, 'c>,
     payload_ty: &Type<'c>,
-    struct_ty_text: &str,
+    slot_text: &str,
 ) -> Result<Value<'c, 'c>, LowerError> {
-    let Some(slot_text) = enum_payload_slot_text(struct_ty_text) else {
-        return Ok(payload_val);
-    };
+    let slot_text = slot_text.to_string();
     // Integers only. Reinterpreting an integer into a float slot would make a denormal
     // that a copy may flush to zero, which is the hazard
     // `tests/optimizations/pass/enum_payload_per_variant.vx` records.
@@ -3875,24 +3895,31 @@ impl<'c> LowerToMelior<'c> for EnumVariantExpr {
             .build()?;
         let mut struct_val = block.append_operation(insert_tag_op).result(0)?.into();
 
+        let mut block = block;
         if let Some(payload_exprs) = payload {
-            if !payload_exprs.is_empty() {
-                let (payload_val, payload_val_ty, block) =
-                    gen.generate_expr(&payload_exprs[0], block)?;
-                let payload_val = fit_payload_to_slot(
-                    gen,
-                    block,
-                    payload_val,
-                    &payload_val_ty,
-                    &struct_ty.to_string(),
-                )?;
+            // Each element of the payload goes in the slot for its position.
+            let slots = enum_payload_slot_texts(&struct_ty.to_string());
+            for (i, payload_expr) in payload_exprs.iter().enumerate() {
+                let (payload_val, payload_val_ty, next) = gen.generate_expr(payload_expr, block)?;
+                block = next;
+                let slot = slots.get(i).ok_or_else(|| {
+                    crate::codegen::lower::LowerError::from(format!(
+                        "enum variant {enum_name}::{variant_name} has more payload values than \
+                         its type has slots"
+                    ))
+                })?;
+                let payload_val =
+                    fit_payload_to_slot_text(gen, block, payload_val, &payload_val_ty, slot)?;
                 let insert_payload_op = OperationBuilder::new("llvm.insertvalue", gen.loc())
                     .add_operands(&[struct_val, payload_val])
                     .add_results(&[struct_ty])
                     .add_attributes(&[(
                         Identifier::new(gen.context, "position"),
-                        melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &[1])
-                            .into(),
+                        melior::ir::attribute::DenseI64ArrayAttribute::new(
+                            gen.context,
+                            &[i as i64 + 1],
+                        )
+                        .into(),
                     )])
                     .build()?;
                 struct_val = block.append_operation(insert_payload_op).result(0)?.into();

@@ -341,6 +341,7 @@ fn declared_payload_ty(
     gen: &MeliorGenerator<'_>,
     pattern_enum: &str,
     variant: &str,
+    position: usize,
     match_ty_text: &str,
 ) -> Option<String> {
     let (base, params) = match pattern_enum.split_once('<') {
@@ -361,7 +362,7 @@ fn declared_payload_ty(
         .find(|(v, _)| v.as_ref() == variant)?
         .1
         .as_ref()?
-        .first()?
+        .get(position)?
         .clone();
 
     let mut mapping = std::collections::HashMap::new();
@@ -688,69 +689,71 @@ pub fn generate_match_chain<'c>(
             .build()?,
     );
 
+    // Each name in the pattern is bound to the payload value at its position, read from that
+    // position's slot. `_` binds nothing.
     if let Pattern::EnumVariant(en, vn, Some(payloads)) = &arm.pattern {
-        if payloads.len() == 1 {
-            if let Pattern::Identifier(name) = &payloads[0] {
-                let opt_ty_str = _match_ty.to_string();
-                let mut payload_ty_str = if opt_ty_str.contains("(i32, ") {
-                    let start = opt_ty_str.find("(i32, ").unwrap() + 6;
-                    let end = opt_ty_str.rfind(')').unwrap();
-                    opt_ty_str[start..end].to_string()
-                } else {
-                    "i32".to_string()
-                };
-                if payload_ty_str.starts_with("struct<")
-                    || payload_ty_str.starts_with("ptr")
-                    || payload_ty_str.starts_with("func")
-                    || payload_ty_str.starts_with("array")
-                {
-                    payload_ty_str = format!("!llvm.{}", payload_ty_str);
-                }
-                let payload_ty =
-                    melior::ir::Type::parse(gen.context, &payload_ty_str).ok_or_else(|| {
+        let opt_ty_str = _match_ty.to_string();
+        let slots = crate::codegen::lower::expr::enum_payload_slot_texts(&opt_ty_str);
+        for (position, pattern) in payloads.iter().enumerate() {
+            let Pattern::Identifier(name) = pattern else {
+                continue;
+            };
+            let Some(slot_text) = slots.get(position) else {
+                continue;
+            };
+            let mut payload_ty_str = slot_text.clone();
+            if payload_ty_str.starts_with("struct<")
+                || payload_ty_str.starts_with("ptr")
+                || payload_ty_str.starts_with("func")
+                || payload_ty_str.starts_with("array")
+            {
+                payload_ty_str = format!("!llvm.{}", payload_ty_str);
+            }
+            let payload_ty =
+                melior::ir::Type::parse(gen.context, &payload_ty_str).ok_or_else(|| {
+                    crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string())
+                })?;
+            let extract_payload_op = OperationBuilder::new("llvm.extractvalue", gen.loc())
+                .add_operands(&[match_val])
+                .add_results(&[payload_ty])
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "position"),
+                    melior::ir::attribute::DenseI64ArrayAttribute::new(
+                        gen.context,
+                        &[position as i64 + 1],
+                    )
+                    .into(),
+                )])
+                .build()?;
+            let payload_val: melior::ir::Value = then_block
+                .append_operation(extract_payload_op)
+                .result(0)?
+                .into();
+
+            // The slot may be wider than this variant declares, so cut the value back
+            // to its own type before the arm body sees it.
+            let narrower =
+                declared_payload_ty(gen, en.as_ref(), vn.as_ref(), position, &opt_ty_str).filter(
+                    |text| crate::codegen::lower::expr::is_narrower_int(&payload_ty_str, text),
+                );
+            let (payload_val, payload_ty) = match narrower {
+                Some(text) => {
+                    let ty = melior::ir::Type::parse(gen.context, &text).ok_or_else(|| {
                         crate::codegen::lower::LowerError::ParseType(
                             "Type::parse failed".to_string(),
                         )
                     })?;
-                let extract_payload_op = OperationBuilder::new("llvm.extractvalue", gen.loc())
-                    .add_operands(&[match_val])
-                    .add_results(&[payload_ty])
-                    .add_attributes(&[(
-                        Identifier::new(gen.context, "position"),
-                        melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &[1])
-                            .into(),
-                    )])
-                    .build()?;
-                let payload_val: melior::ir::Value = then_block
-                    .append_operation(extract_payload_op)
-                    .result(0)?
-                    .into();
-
-                // The slot may be wider than this variant declares, so cut the value back
-                // to its own type before the arm body sees it.
-                let narrower = declared_payload_ty(gen, en.as_ref(), vn.as_ref(), &opt_ty_str)
-                    .filter(|text| {
-                        crate::codegen::lower::expr::is_narrower_int(&payload_ty_str, text)
-                    });
-                let (payload_val, payload_ty) = match narrower {
-                    Some(text) => {
-                        let ty = melior::ir::Type::parse(gen.context, &text).ok_or_else(|| {
-                            crate::codegen::lower::LowerError::ParseType(
-                                "Type::parse failed".to_string(),
-                            )
-                        })?;
-                        let trunc = OperationBuilder::new("arith.trunci", gen.loc())
-                            .add_operands(&[payload_val])
-                            .add_results(&[ty])
-                            .build()?;
-                        (then_block.append_operation(trunc).result(0)?.into(), ty)
-                    }
-                    None => (payload_val, payload_ty),
-                };
-                gen.note_shadow(name.as_ref());
-                gen.env
-                    .insert(name.to_string().into(), (payload_val, payload_ty));
-            }
+                    let trunc = OperationBuilder::new("arith.trunci", gen.loc())
+                        .add_operands(&[payload_val])
+                        .add_results(&[ty])
+                        .build()?;
+                    (then_block.append_operation(trunc).result(0)?.into(), ty)
+                }
+                None => (payload_val, payload_ty),
+            };
+            gen.note_shadow(name.as_ref());
+            gen.env
+                .insert(name.to_string().into(), (payload_val, payload_ty));
         }
     }
 

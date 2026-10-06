@@ -1751,40 +1751,56 @@ impl<'c> MeliorGenerator<'c> {
         enum_def: &[(crate::symbol::Symbol, Option<Vec<syntax::Type>>)],
         mapping: Option<&std::collections::HashMap<crate::symbol::Symbol, syntax::Type>>,
     ) -> Result<String, LowerError> {
-        let mut payload_ty_str = "none".to_string();
-        let mut widest = 0u32;
-        for (_v_name, payload) in enum_def {
-            let Some(types) = payload else { continue };
-            let Some(first) = types.first() else { continue };
-            let first = match mapping {
-                Some(m) => first.substitute(m),
-                None => first.clone(),
-            };
-            let mut lowered = self.lower_type_str(&first)?;
-            if lowered.starts_with("memref<") {
-                lowered = "!llvm.ptr".to_string();
-            }
-            // One slot holds every variant's payload: numbers of any width fit the widest,
-            // but a struct needs the slot to itself.
-            let is_struct = lowered.starts_with("!llvm.struct");
-            if payload_ty_str != "none" && is_struct != payload_ty_str.starts_with("!llvm.struct")
-                || is_struct && payload_ty_str != "none" && payload_ty_str != lowered
-            {
-                return Err(LowerError::from(format!(
-                    "an enum whose variants carry different kinds of payload ({payload_ty_str} \
-                     and {lowered}) cannot be lowered by the legacy code generator"
-                )));
-            }
-            match scalar_type_bits(&lowered) {
-                Some(b) if b > widest => {
-                    widest = b;
-                    payload_ty_str = lowered;
-                }
-                None if payload_ty_str == "none" => payload_ty_str = lowered,
-                _ => {}
-            }
+        // One slot per payload position, each holding what any variant puts there: numbers of
+        // any width fit the widest, but a struct needs its slot to itself.
+        let arity = enum_def
+            .iter()
+            .filter_map(|(_, p)| p.as_ref().map(Vec::len))
+            .max()
+            .unwrap_or(0);
+        if arity == 0 {
+            return Ok("none".to_string());
         }
-        Ok(payload_ty_str)
+        let mut slots = Vec::with_capacity(arity);
+        for position in 0..arity {
+            let mut payload_ty_str = "none".to_string();
+            let mut widest = 0u32;
+            for (_v_name, payload) in enum_def {
+                let Some(types) = payload else { continue };
+                let Some(ty) = types.get(position) else {
+                    continue;
+                };
+                let ty = match mapping {
+                    Some(m) => ty.substitute(m),
+                    None => ty.clone(),
+                };
+                let mut lowered = self.lower_type_str(&ty)?;
+                if lowered.starts_with("memref<") {
+                    lowered = "!llvm.ptr".to_string();
+                }
+                let is_struct = lowered.starts_with("!llvm.struct");
+                if payload_ty_str != "none"
+                    && is_struct != payload_ty_str.starts_with("!llvm.struct")
+                    || is_struct && payload_ty_str != "none" && payload_ty_str != lowered
+                {
+                    return Err(LowerError::from(format!(
+                        "an enum whose variants carry different kinds of payload \
+                         ({payload_ty_str} and {lowered}) cannot be lowered by the legacy code \
+                         generator"
+                    )));
+                }
+                match scalar_type_bits(&lowered) {
+                    Some(b) if b > widest => {
+                        widest = b;
+                        payload_ty_str = lowered;
+                    }
+                    None if payload_ty_str == "none" => payload_ty_str = lowered,
+                    _ => {}
+                }
+            }
+            slots.push(payload_ty_str);
+        }
+        Ok(slots.join(", "))
     }
 
     /// How a struct field of type `ty` is laid out. A tensor is its memref descriptor, the

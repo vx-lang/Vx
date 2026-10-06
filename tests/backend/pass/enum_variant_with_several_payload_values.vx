@@ -1,0 +1,68 @@
+//===- enum_variant_with_several_payload_values.vx - Vx Compiler ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A variant can carry several values, of different widths, and a `match` binds each one by
+// its position; `_` skips one. `sum` adds what each variant of `Two` holds: 2 + 40, then
+// -3 + 1000 with the middle value skipped, then 9, then nothing. `second` takes the second
+// value of a generic enum's variant: 2.5.
+//
+// EXPECT: 42 997 9 0 2.5
+
+enum Two {
+  Both(i32, i64),
+  Three(i8, i32, i64),
+  One(i32),
+  Zero,
+}
+
+enum Pair<A, B> {
+  Of(A, B),
+  Neither,
+}
+
+fn sum(t : Two) -> i64 {
+  match t {
+    Two::Both(a, b) => {
+      return a as i64 + b;
+    }
+    Two::Three(a, _, c) => {
+      return a as i64 + c;
+    }
+    Two::One(a) => {
+      return a as i64;
+    }
+    Two::Zero() => {
+      return 0i64;
+    }
+  }
+  return -1i64;
+}
+
+fn second(p : Pair<i32, f64>) -> f64 {
+  match p {
+    Pair<i32, f64>::Of(_, b) => {
+      return b;
+    }
+    Pair<i32, f64>::Neither() => {
+      return 0.0;
+    }
+  }
+  return -1.0;
+}
+
+fn main() -> i32 {
+  print(sum(Two::Both(2, 40i64)));
+  print!(" ");
+  print(sum(Two::Three(-3i8, 99, 1000i64)));
+  print!(" ");
+  print(sum(Two::One(9)));
+  print!(" ");
+  print(sum(Two::Zero()));
+  print!(" ");
+  print(second(Pair<i32, f64>::Of(1, 2.5f64)));
+  return 0;
+}
