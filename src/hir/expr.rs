@@ -133,6 +133,11 @@ impl<'a> TypeChecker<'a> {
                 self.value_unused = *has_semi || i != last || block_unused;
                 let ty = self.check_expr_type_flag(expr, consume);
                 if !*has_semi {
+                    // A last expression that never finishes, `todo()`, gives the block the type
+                    // `!` but no value: it is a statement, after which nothing runs.
+                    if crate::syntax::is_never_ty(&ty) {
+                        *has_semi = true;
+                    }
                     ret_ty = ty;
                 }
                 self.borrow.restore(saved_borrows);
@@ -366,7 +371,9 @@ impl<'a> TypeChecker<'a> {
     }
 
     pub(crate) fn is_assignable(&self, target: &Type, source: &Type) -> bool {
-        if target == source {
+        // A value of type `!` never exists, since the expression never finishes, so it fits
+        // wherever a value is expected.
+        if target == source || crate::syntax::is_never_ty(source) {
             return true;
         }
 

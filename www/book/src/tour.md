@@ -206,6 +206,24 @@ fn pick(x : i32) -> i32 {
 }
 ```
 
+## Stopping a program
+
+`panic(msg)` prints `panic: ` and the message, then stops the program; `abort()` stops it with no
+message. A function declared `-> !` never returns, like `core::panic`'s `unreachable()`, `todo()`
+and `unimplemented()`. A function can end with a call to one, and the call can stand where any
+value is expected:
+
+```rust
+import core::panic;
+
+fn get(ok: bool, v: i64) -> i64 {
+    let x: i64 = if ok { v } else { todo() };
+    return x;
+}
+```
+
+`Option::expect(msg)` and `Result::expect(msg)` stop the program with the caller's message.
+
 ## Arrays and tensors
 
 An array literal is a tensor:

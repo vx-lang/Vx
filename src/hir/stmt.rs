@@ -222,7 +222,19 @@ impl<'a> TypeChecker<'a> {
                 let op = op.clone();
                 self.check_assign_stmt(lhs, Some(&op), rhs, consume, Some(operand_ty))
             }
-            Statement::Return(ret) => self.check_return_stmt(ret, consume, return_type),
+            Statement::Return(ret) => {
+                if self.check_return_stmt(ret, consume, return_type) {
+                    // `return todo()`: the call never finishes, so nothing is returned. Keep the
+                    // call as a statement, which the code generators end the block after.
+                    let expr = ret.expr.take().expect("a returned value was checked");
+                    let span = ret.span;
+                    *stmt = Statement::ExprStmt(ExprStmtStmt {
+                        expr,
+                        has_semi: true,
+                        span,
+                    });
+                }
+            }
             Statement::ExprStmt(ExprStmtStmt {
                 expr,
                 has_semi: _,
@@ -1180,7 +1192,13 @@ impl<'a> TypeChecker<'a> {
 
     /// Check a `return`: type the returned expression against the declared return type, run the
     /// return-escape analysis (#243), and bind `return` for `ensures` constraints.
-    fn check_return_stmt(&mut self, ret: &mut ReturnStmt, consume: bool, return_type: &Type) {
+    /// Returns whether the returned expression has the type `!`, so never finishes.
+    fn check_return_stmt(
+        &mut self,
+        ret: &mut ReturnStmt,
+        consume: bool,
+        return_type: &Type,
+    ) -> bool {
         let ReturnStmt { expr, span } = ret;
 
         if crate::syntax::is_never_ty(return_type) {
@@ -1202,7 +1220,7 @@ impl<'a> TypeChecker<'a> {
                 );
             }
             self.drops_exit("return", span.line, false);
-            return;
+            return false;
         };
 
         let prev_expected = self.expected_type.take();
@@ -1265,6 +1283,7 @@ impl<'a> TypeChecker<'a> {
             operand_ty: None,
         });
         self.consteval.return_constraints.push(return_eq);
+        crate::syntax::is_never_ty(&ty)
     }
 
     /// Check an `assert`: require a boolean condition, evaluate it at comptime when possible, and

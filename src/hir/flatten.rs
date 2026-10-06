@@ -2421,6 +2421,11 @@ impl<'r> Lowerer<'r> {
                         self.drop_temps_here(None);
                         return self.run_queued_drops();
                     }
+                    // A call that never returns, `todo()`, ends the branch: no value is stored,
+                    // and control never reaches the merge.
+                    if self.is_never_call(&es.expr) {
+                        return self.lower_stmt(s);
+                    }
                 }
                 return Err(Decline::Unsupported {
                     what: "a branch whose last statement is not a value",
@@ -2431,6 +2436,20 @@ impl<'r> Lowerer<'r> {
         Err(Decline::Unsupported {
             what: "an empty branch in value position",
         }) // empty branch has no value
+    }
+
+    /// Whether `e` is a call that never returns: `abort()`, `panic(msg)`, or a function declared
+    /// `-> !`.
+    fn is_never_call(&self, e: &Expr) -> bool {
+        let Expr::FunctionCall(fc) = e else {
+            return false;
+        };
+        crate::syntax::is_abort_or_panic(fc)
+            || self
+                .registry
+                .fn_sigs
+                .get(fc.name.as_ref())
+                .is_some_and(|sig| crate::syntax::is_never_ty(&sig.ret_ty))
     }
 
     /// Lower a short-circuit logical op (`a && b`, `a || b`) to the same branch skeleton the AST
@@ -4614,6 +4633,13 @@ impl<'r> Lowerer<'r> {
         }
         match s {
             Statement::LetDecl(l) => {
+                // `let z = todo();` has no value to bind, and the flat path has no register for
+                // one: the AST code generator lowers it.
+                if self.is_never_call(&l.expr) {
+                    return Err(Decline::Unsupported {
+                        what: "a let whose value never finishes",
+                    });
+                }
                 self.note_shadow(&l.name);
                 // Record the local's concrete AST type for `infer_ast_type` (a pointer local like
                 // `let ptr : *mut T = ...` -> its pointee element for a later index, #242). The

@@ -373,6 +373,12 @@ impl<'a> TypeChecker<'a> {
                 self.pop_scope();
                 marks_after_else = self.branch_end(else_b);
 
+                // A branch that never finishes, `todo()`, has no value: the other branch decides.
+                if crate::syntax::is_never_ty(&then_ty) {
+                    then_ty = else_ty.clone();
+                } else if crate::syntax::is_never_ty(&else_ty) {
+                    else_ty = then_ty.clone();
+                }
                 if !if_expr.is_comptime && then_ty != else_ty {
                     self.errors.error_with_code(
                         crate::diagnostic::DiagnosticCode::E3007,

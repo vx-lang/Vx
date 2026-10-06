@@ -1,0 +1,19 @@
+//===- never_returning_function_is_noreturn.vx - Vx Compiler *- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A function declared `-> !` is marked `noreturn` for LLVM, on both code generators.
+//
+// RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-llvm --legacy-codegen 2>&1 | FileCheck %s
+// CHECK: llvm.func @fail(%arg0: !llvm.ptr) attributes {passthrough = ["noreturn"]}
+fn fail(msg : *const i8) -> ! {
+  panic(msg);
+}
+
+fn main() -> i32 {
+  fail("stop");
+}

@@ -2202,10 +2202,14 @@ pub fn emit_function_mlir(
         }
     }
 
-    let ret_sig = match &ret_mlir {
+    let mut ret_sig = match &ret_mlir {
         Some(t) => format!(" -> {t}"),
         None => String::new(),
     };
+    // A function declared `-> !` is `noreturn` to LLVM.
+    if crate::syntax::is_never_ty(&func.return_type) {
+        ret_sig += " attributes {passthrough = [\"noreturn\"]}";
+    }
     let mut out = format!(
         "func.func {}({}){} {{\n",
         sym_ref(&func.name),

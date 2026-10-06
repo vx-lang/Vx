@@ -1,0 +1,22 @@
+//===- let_of_a_never_returning_call.vx - Vx Compiler --*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `let z : i32 = todo();` compiles, and stops the program where the `let` is.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// RUN: not vxc %s --legacy-codegen 2>&1 | FileCheck %s
+// CHECK: before
+// CHECK-NEXT: panic: not yet implemented
+// CHECK-NOT: after the panic
+import core::panic;
+
+fn main() -> i32 {
+  println!("before");
+  let z : i32 = todo();
+  println!("after the panic");
+  return z;
+}

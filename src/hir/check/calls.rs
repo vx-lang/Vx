@@ -2002,7 +2002,7 @@ impl<'a> TypeChecker<'a> {
                 self.errors
                     .push("Function 'abort' expects no arguments".to_string());
             }
-            Some(Type::Scalar(ElementType::I32))
+            Some(crate::syntax::never_ty())
         } else if resolved_name == "panic" {
             // `abort()` with a message. The message is a C string, so it can be a parameter that
             // a caller filled in, as `expect(msg)` needs, not only a literal.
@@ -2016,7 +2016,7 @@ impl<'a> TypeChecker<'a> {
                     arg_types[0]
                 ));
             }
-            Some(Type::Scalar(ElementType::I32))
+            Some(crate::syntax::never_ty())
         } else if resolved_name == "print" {
             if args.len() != 1 {
                 self.errors

@@ -1,0 +1,35 @@
+//===- never_returning_call_in_a_match_arm.vx - Vx Compiler *- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `match` arm whose value never finishes, `unimplemented()`, does not decide the type of the
+// `match`: the other arm does, so `y` is an `i32`.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// RUN: not vxc %s --legacy-codegen 2>&1 | FileCheck %s
+// CHECK: {{^}}6{{$}}
+// CHECK-NEXT: panic: not implemented
+// CHECK-NOT: after the panic
+import core::panic;
+
+fn arm(x : i32) -> i32 {
+  let y = match x {
+    1 => {
+      unimplemented()
+    }, _ => {
+      5
+    }
+  };
+  return y + 1;
+}
+
+fn main() -> i32 {
+  print(arm(0));
+  println!("");
+  print(arm(1));
+  println!("after the panic");
+  return 0;
+}

@@ -1,0 +1,67 @@
+//===- never_returning_call_as_a_value.vx - Vx Compiler *- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A call that never returns can stand where a value is expected: `todo()` in an `i32` branch,
+// `panic(..)` in an `f64` one, `return panic(..)`, and the last expression of a function. It has
+// the type `!`, which fits any type, and the other branch gives an `if` its value. The first run
+// also checks that the flat code generator compiled it.
+//
+// RUN: VX_FLAT_DBG=1 not vxc %s 2>&1 | FileCheck %s --check-prefixes=FLAT,CHECK
+// RUN: not vxc %s --legacy-codegen 2>&1 | FileCheck %s
+// FLAT: [flat-codegen] emitted module via the flat path
+// CHECK: 7
+// CHECK-NEXT: 1.5
+// CHECK-NEXT: 3 2.5
+// CHECK-NEXT: panic: not yet implemented
+// CHECK-NOT: after the panic
+import core::panic;
+
+fn pick(ok : bool, v : i32) -> i32 {
+  let x : i32 = if ok {
+    v
+  } else {
+    todo()
+  };
+  return x;
+}
+
+fn half(v : f64) -> f64 {
+  let h : f64 = if v > 0.0 {
+    v / 2.0
+  } else {
+    panic("not positive")
+  };
+  return h;
+}
+
+fn tail(x : i32) -> i32 {
+  if x > 0 {
+    return x;
+  }
+  todo()
+}
+
+fn explicit(x : f64) -> f64 {
+  if x > 0.0 {
+    return x;
+  }
+  return panic("explicit");
+}
+
+fn main() -> i32 {
+  print(pick(true, 7));
+  println!("");
+  print(half(3.0));
+  println!("");
+  print(tail(3));
+  print!(" ");
+  print(explicit(2.5));
+  println!("");
+  print(pick(false, 7));
+  println!("after the panic");
+  return 0;
+}

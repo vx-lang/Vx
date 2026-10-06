@@ -1350,6 +1350,16 @@ impl<'c> MeliorGenerator<'c> {
         // ordinary symbol.
         let _ = is_main;
 
+        // A function declared `-> !` is `noreturn` to LLVM.
+        if syntax::is_never_ty(&func.return_type) {
+            let attr = melior::ir::Attribute::parse(self.context, "[\"noreturn\"]")
+                .ok_or_else(|| LowerError::from("bad noreturn attribute".to_string()))?;
+            func_attributes.push((
+                melior::ir::Identifier::new(self.context, "passthrough"),
+                attr,
+            ));
+        }
+
         let func_op = melior::ir::operation::OperationBuilder::new("func.func", func_loc)
             .add_attributes(&func_attributes)
             .add_regions([region])
