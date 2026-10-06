@@ -137,9 +137,9 @@ elaboration", done once, ahead of both code generators.
 - **A struct**: its `Drop` implementation if it has one, then each owning field, in declaration
   order.
 - **An enum**: the payload of the active variant.
-- **A type with nothing to drop** (scalars, pointers, `Copy` types): nothing. `TYPE_NEEDS_DROP`
-  (src/gid.rs) is set on exactly the types for which dropping does something, so the rest cost
-  nothing.
+- **A type with nothing to drop** (scalars, pointers, `Copy` types): nothing. The checker's
+  drop glue for such a type is empty, so no drop is written for it; `core::mem::needs_drop<T>()`
+  answers from the same glue.
 
 ### 2.4 Moves the checker must start tracking
 
@@ -188,9 +188,11 @@ allocates) and runs under glibc's checking allocator. The corpus is compared bot
 may leak more, crash, or print differently. Then the flag becomes the default and
 `vx-free-heap-buffers` is deleted; `placeTransferFrees` becomes the drop of a placed tensor.
 
-**Phase 4: the `Drop` trait.** `impl Drop for T`, drop glue for structs and enums, `TYPE_NEEDS_DROP`
-set on the types that need it. `Vec`, `Box`, `String`, `File` and the sockets implement `Drop`;
-their `free()` and `*_drop` functions are removed and their callers updated. `core::mem::drop`,
+**Phase 4: the `Drop` trait.** `impl Drop for T`, drop glue for structs and enums.
+(A `TYPE_NEEDS_DROP` flag on the type's ID was planned here and is not needed: the checker's
+glue already says which types need dropping, and nothing read the flag.) `Vec`, `Box`,
+`String`, `File` and the sockets implement `Drop`; their `free()` and `*_drop` functions are
+removed and their callers updated. `core::mem::drop`,
 `forget`, `needs_drop` and `ManuallyDrop` get their real meaning, and `RefCell` guards (A19) become
 possible.
 
