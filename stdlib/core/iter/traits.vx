@@ -877,5 +877,6 @@ stamp_accumulate!(u8 , 0 , 1);
 stamp_accumulate!(u16 , 0 , 1);
 stamp_accumulate!(u32 , 0 , 1);
 stamp_accumulate!(u64 , 0 , 1);
+stamp_accumulate!(usize , 0 , 1);
 stamp_accumulate!(f32 , 0.0 , 1.0);
 stamp_accumulate!(f64 , 0.0 , 1.0);

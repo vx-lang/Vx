@@ -48,6 +48,7 @@ stamp_copy!(u8);
 stamp_copy!(u16);
 stamp_copy!(u32);
 stamp_copy!(u64);
+stamp_copy!(usize);
 stamp_copy!(f32);
 stamp_copy!(f64);
 stamp_copy!(bool);

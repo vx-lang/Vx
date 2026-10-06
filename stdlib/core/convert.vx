@@ -65,6 +65,7 @@ stamp_from!(u8 , u8);
 stamp_from!(u16 , u16);
 stamp_from!(u32 , u32);
 stamp_from!(u64 , u64);
+stamp_from!(usize , usize);
 stamp_from!(f32 , f32);
 stamp_from!(f64 , f64);
 stamp_from!(bool , bool);
@@ -91,6 +92,14 @@ stamp_from!(u16 , i32);
 stamp_from!(u16 , i64);
 stamp_from!(u32 , i64);
 
+// A `usize` holds 0 to the largest `i64`, so every `u32` fits in it, and it fits in both
+// `u64` and `i64`.
+stamp_from!(u8 , usize);
+stamp_from!(u16 , usize);
+stamp_from!(u32 , usize);
+stamp_from!(usize , u64);
+stamp_from!(usize , i64);
+
 // `f32` carries 24 bits of mantissa and `f64` carries 53, so the widest integer each
 // converts from exactly is 16 and 32 bits.
 stamp_from!(i8 , f32);
@@ -114,6 +123,7 @@ stamp_from!(bool , u8);
 stamp_from!(bool , u16);
 stamp_from!(bool , u32);
 stamp_from!(bool , u64);
+stamp_from!(bool , usize);
 
 /// A value becomes the `Some` that holds it.
 impl<T> From<T> for Option<T> {

@@ -62,6 +62,7 @@ stamp_clone!(u8);
 stamp_clone!(u16);
 stamp_clone!(u32);
 stamp_clone!(u64);
+stamp_clone!(usize);
 stamp_clone!(f32);
 stamp_clone!(f64);
 stamp_clone!(bool);

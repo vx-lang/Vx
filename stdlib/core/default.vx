@@ -42,6 +42,7 @@ stamp_default!(u8 , 0);
 stamp_default!(u16 , 0);
 stamp_default!(u32 , 0);
 stamp_default!(u64 , 0);
+stamp_default!(usize , 0);
 stamp_default!(f32 , 0.0);
 stamp_default!(f64 , 0.0);
 stamp_default!(bool , false);
