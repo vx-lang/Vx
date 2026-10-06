@@ -18,9 +18,6 @@ use std::process::Command;
 /// Programs the flat path declines today, relative to `tests/backend/pass/`.
 /// A worklist, not an exemption list: shrinking it is Vx#383.
 const KNOWN_DECLINES: &[&str] = &[
-    // An enum holding a struct, `Place::At(Point)`: the flat path has no layout for a
-    // struct payload yet (#1251).
-    "backend/pass/non_generic_enum_with_payload.vx",
     // `c as ||->i32`: the flat path declines a cast to the built-in closure type ("a cast to a
     // non-scalar"); the AST path compiles it.
     "backend/pass/returning_a_closure_that_uses_nothing.vx",
@@ -29,14 +26,8 @@ const KNOWN_DECLINES: &[&str] = &[
     // A row chosen by an `if` used as a value: the flat path has no slot for a tensor view
     // ("an aggregate slot with no struct type").
     "backend/pass/tensor_views_end_at_their_last_use.vx",
-    // A generic enum holding a struct, `Opt<Pair>`: the flat path has no layout for it ("an
-    // enum with no modelled instance layout"). The file checks the checker only.
-    "frontend/pass/match_moves_only_what_it_binds.vx",
-    // The same: `Opt<Noisy>`, whose payload drops are checked on the AST path.
-    "backend/pass/enum_drops_its_payload.vx",
-    // The same for a struct: `forget` moves its value into a `ManuallyDrop<Noisy>`.
-    "backend/pass/drop_and_forget_end_a_value_early.vx",
-    // The same for `Option<Noisy>`, which a loop over a `Vec<Noisy>` gets from `next`.
+    // A field of a `Vec` element, `v[0].id`: the flat emitter finds no layout for the element's
+    // struct ("an emitter gap" in the field load).
     "backend/pass/vec_drops_its_elements.vx",
     // `t = pass(t)` inside an `if`: on the flat path a tensor local is one register, so the
     // new value cannot leave the branch. The flat path used to read the wrong tensor after it.

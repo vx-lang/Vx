@@ -1,0 +1,66 @@
+//===- struct_inside_a_generic_type_or_enum.vx - Vx Compiler -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A struct held by value inside a generic struct or an enum:
+//
+// - `Holder<Point>` keeps a `Point` in a field: 5 and 2 come back out;
+// - `Opt<Point>` carries one as a payload, made in a function and matched in another: 9,
+//   then 0 for `None`.
+//
+// EXPECT: 5 2 | 9 0
+
+struct Point {
+  id : i32,
+  other : i64,
+}
+
+struct Holder<T> {
+  value : T,
+  n : i32,
+}
+
+enum Opt<T> {
+  Some(T),
+  None,
+}
+
+fn find(k : i32) -> Opt<Point> {
+  if k > 0 {
+    return Opt<Point>::Some(Point {
+      id: k, other: 1i64
+    });
+  }
+  return Opt<Point>::None();
+}
+
+fn id_or_zero(o : Opt<Point>) -> i32 {
+  match o {
+    Opt<Point>::Some(p) => {
+      return p.id;
+    }
+    Opt<Point>::None() => {
+      return 0;
+    }
+  }
+  return -1;
+}
+
+fn main() -> i32 {
+  let h = Holder<Point> {
+    value: Point {
+      id: 5, other: 3i64
+    }, n: 2
+  };
+  print(h.value.id);
+  print!(" ");
+  print(h.n);
+  print!(" | ");
+  print(id_or_zero(find(9)));
+  print!(" ");
+  print(id_or_zero(find(0)));
+  return 0;
+}

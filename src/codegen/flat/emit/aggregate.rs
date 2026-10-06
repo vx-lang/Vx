@@ -87,11 +87,27 @@ impl FnEmit<'_> {
         // The value's own scalar type, not the slot's. They differ only for an enum payload,
         // whose slot is sized for the widest variant and holds whichever one was built
         // (Vx#570); a pointer is left to the declared type, which is what carries it.
+        // A struct stored into a payload slot sized for another variant is typed as itself too.
+        let value_agg = self
+            .agg_val_of
+            .get(ins.operand2.0 as usize)
+            .copied()
+            .flatten()
+            .and_then(|g| self.ctx.aggs.get(&g))
+            .map(|a| a.struct_ty.clone());
+        // A tensor goes in as its descriptor, which is a struct too, so only a value that is
+        // not a tensor takes its own scalar type in a struct-shaped slot.
+        let is_tensor = self
+            .mem_of
+            .get(ins.operand2.0 as usize)
+            .cloned()
+            .flatten()
+            .is_some();
         let store_ty = match self.etypes.get(ins.operand2.0 as usize).cloned().flatten() {
-            Some(e) if is_scalar_field(&fty) => {
+            Some(e) if is_scalar_field(&fty) || (fty.starts_with("!llvm.struct") && !is_tensor) => {
                 crate::mlir_ty::mlir_scalar(&e).unwrap_or(&fty).to_string()
             }
-            _ => fty.clone(),
+            _ => value_agg.unwrap_or_else(|| fty.clone()),
         };
         self.body += &format!("  llvm.store {val}, {p}{attrs} : {store_ty}, !llvm.ptr\n");
         Ok(())
@@ -138,16 +154,28 @@ impl FnEmit<'_> {
         // Read back at the type this instruction says it produces, for the same reason the
         // store writes at the value's: an enum payload slot holds whichever variant was
         // built, not the one the layout is named after.
+        let result_agg = self
+            .types
+            .get(ins.type_idx.0 as usize)
+            .and_then(|g| self.ctx.aggs.get(g))
+            .map(|a| a.struct_ty.clone());
+        let result_is_tensor = self
+            .types
+            .get(ins.type_idx.0 as usize)
+            .is_some_and(|g| self.ctx.tensors.contains_key(g));
         let load_ty = match self
             .types
             .get(ins.type_idx.0 as usize)
             .copied()
             .and_then(elem_of_gid)
         {
-            Some(e) if is_scalar_field(&fty) => {
+            Some(e)
+                if is_scalar_field(&fty)
+                    || (fty.starts_with("!llvm.struct") && !result_is_tensor) =>
+            {
                 crate::mlir_ty::mlir_scalar(&e).unwrap_or(&fty).to_string()
             }
-            _ => fty.clone(),
+            _ => result_agg.unwrap_or_else(|| fty.clone()),
         };
         self.body += &format!("  {n} = llvm.load {p} : !llvm.ptr -> {load_ty}\n");
         self.names[idx] = n;
