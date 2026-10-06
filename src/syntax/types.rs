@@ -910,6 +910,26 @@ impl Type {
     /// `Pinned<Tensor<..>, Topology::X>`), so a type with no tensor in it has nothing for a
     /// placement check to look at. Exhaustive over the variants, so a new one that holds a
     /// type is walked rather than skipped.
+    /// Whether a type parameter, `T`, is still in the type: `Vec<T>` or `&T`.
+    pub fn has_generic_params(&self) -> bool {
+        match self {
+            Type::Generic(..) | Type::Scalar(ElementType::Generic(_)) => true,
+            Type::Tensor(el, ..) | Type::Simd(el, _) => matches!(el, ElementType::Generic(_)),
+            Type::GenericInstance(base, args) => {
+                base.has_generic_params() || args.iter().any(Type::has_generic_params)
+            }
+            Type::Borrow { inner, .. }
+            | Type::Ref(inner, _)
+            | Type::Pointer(inner, ..)
+            | Type::Verified(inner)
+            | Type::Pinned(inner, _) => inner.has_generic_params(),
+            Type::Function(params, ret, _) | Type::Closure(params, ret) => {
+                params.iter().any(Type::has_generic_params) || ret.has_generic_params()
+            }
+            _ => false,
+        }
+    }
+
     pub fn mentions_tensor(&self) -> bool {
         match self {
             Type::Tensor(..) => true,

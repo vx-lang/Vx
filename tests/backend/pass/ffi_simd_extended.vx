@@ -25,10 +25,10 @@ import std::vec;
 fn main() -> i32 {
   let mut ret : i32 = 1;
   unsafe {
-    let a = Vec<f32>::with_capacity(4).data;
-    let b = Vec<f32>::with_capacity(4).data;
-    let c = Vec<f32>::with_capacity(4).data;
-    let out = Vec<f32>::with_capacity(4).data;
+    let a = Vec<f32>::with_capacity(4).leak();
+    let b = Vec<f32>::with_capacity(4).leak();
+    let c = Vec<f32>::with_capacity(4).leak();
+    let out = Vec<f32>::with_capacity(4).leak();
 
     // Ideally we would initialize these, but in Vx doing pointer offset is
     // tricky without pointer arithmetic enabled in stdlib, which it might be

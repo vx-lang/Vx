@@ -14,9 +14,9 @@ extern "C" {
 fn main() -> i32 {
   unsafe {
     let N : i32 = 1000000;
-    let p1 : *mut f32 = Vec<f32>::with_capacity(N).data;
-    let p2 : *mut f32 = Vec<f32>::with_capacity(N).data;
-    let p3 : *mut f32 = Vec<f32>::with_capacity(N).data;
+    let p1 : *mut f32 = Vec<f32>::with_capacity(N).leak();
+    let p2 : *mut f32 = Vec<f32>::with_capacity(N).leak();
+    let p3 : *mut f32 = Vec<f32>::with_capacity(N).leak();
 
     let start : f32 = now();
 
