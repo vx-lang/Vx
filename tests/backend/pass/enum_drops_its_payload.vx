@@ -11,9 +11,12 @@
 // - `given_away`: `take` drops `Some(1)`'s payload when it returns;
 // - `held`: at the end of the function, `w` (`Some(3)`) and not `n` (`None`);
 // - `own_drop`: `Wrapped`'s own `drop` (100) comes before its payload's (4);
+// - `not_generic`: `Slot` is not generic. Giving `a` a new value drops `Full`'s 5. At the end
+//   `c`, a `Tagged::One` holding a number and a `Noisy`, drops 8, and then `a`'s `Two` drops
+//   its two values in order, 6 and 7;
 // - `main`: `kept`, holding 2, is dropped last.
 //
-// EXPECT: t 1 | 3 | 100 4 | end 2
+// EXPECT: t 1 | 3 | 100 4 | 5 8 6 7 | end 2
 
 import core::ops;
 
@@ -43,6 +46,32 @@ impl<T> Drop for Wrapped<T> {
     print(100);
     print!(" ");
   }
+}
+
+enum Slot {
+  Full(Noisy),
+  Two(Noisy, Noisy),
+  Empty,
+}
+
+enum Tagged {
+  One(i32, Noisy),
+  Untagged,
+}
+
+fn not_generic() -> void {
+  let mut a = Slot::Full(Noisy {
+    id: 5
+  });
+  let b = Slot::Empty();
+  a = Slot::Two(Noisy {
+    id: 6
+  }, Noisy {
+    id: 7
+  });
+  let c = Tagged::One(1, Noisy {
+    id: 8
+  });
 }
 
 fn take(o : Opt<Noisy>) -> void {
@@ -78,6 +107,8 @@ fn main() -> i32 {
   held();
   print!("| ");
   own_drop();
+  print!("| ");
+  not_generic();
   print!("| end ");
   return 0;
 }

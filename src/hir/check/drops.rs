@@ -417,15 +417,27 @@ impl<'a> TypeChecker<'a> {
             .map(|g| crate::symbol::Symbol::from(g.name()))
             .zip(args.iter().cloned())
             .collect();
-        // The code generators match on a payload only when it is one element, and only in a
-        // generic enum: an enum they cannot match on is not dropped yet.
-        if decl.generics.is_empty()
-            || decl
+        // The legacy code generator gives each payload position one slot of one type, so a
+        // `match` on an enum whose variants put a number and a struct at the same position does
+        // not compile there. Such an enum is not dropped yet; it leaks, as before.
+        let arity = decl
+            .variants
+            .iter()
+            .filter_map(|(_, p)| p.as_ref().map(Vec::len))
+            .max()
+            .unwrap_or(0);
+        for position in 0..arity {
+            let mut kinds = decl
                 .variants
                 .iter()
-                .any(|(_, p)| p.as_ref().is_some_and(|p| p.len() > 1))
-        {
-            return Vec::new();
+                .filter_map(|(_, p)| p.as_ref()?.get(position))
+                .map(|t| t.substitute(&mapping))
+                .map(|t| matches!(t, Type::Scalar(_) | Type::Pointer(..) | Type::Borrow { .. }));
+            if let Some(first) = kinds.next() {
+                if kinds.any(|k| k != first) {
+                    return Vec::new();
+                }
+            }
         }
         let mut arms = Vec::new();
         for (variant, payload) in &decl.variants {
