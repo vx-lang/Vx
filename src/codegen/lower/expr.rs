@@ -3835,6 +3835,10 @@ impl<'c> LowerToMelior<'c> for EnumVariantExpr {
                     enum_ty_str = gen.lower_type_str(&t)?;
                 }
                 has_payload = true;
+            } else if let Some(ty) = gen.enum_payload_type_str(actual_enum_name) {
+                // A non-generic enum with a payload has the same `{tag, payload}` shape.
+                enum_ty_str = ty;
+                has_payload = true;
             }
         }
 

@@ -1764,6 +1764,17 @@ impl<'c> MeliorGenerator<'c> {
             if lowered.starts_with("memref<") {
                 lowered = "!llvm.ptr".to_string();
             }
+            // One slot holds every variant's payload: numbers of any width fit the widest,
+            // but a struct needs the slot to itself.
+            let is_struct = lowered.starts_with("!llvm.struct");
+            if payload_ty_str != "none" && is_struct != payload_ty_str.starts_with("!llvm.struct")
+                || is_struct && payload_ty_str != "none" && payload_ty_str != lowered
+            {
+                return Err(LowerError::from(format!(
+                    "an enum whose variants carry different kinds of payload ({payload_ty_str} \
+                     and {lowered}) cannot be lowered by the legacy code generator"
+                )));
+            }
             match scalar_type_bits(&lowered) {
                 Some(b) if b > widest => {
                     widest = b;
@@ -1795,6 +1806,16 @@ impl<'c> MeliorGenerator<'c> {
     }
 
     /// An instantiated generic enum (its name holds `<...>`): a tag and the payload slot.
+    pub(crate) fn enum_payload_type_str(&self, name: &str) -> Option<String> {
+        let enum_def = self.enums.get(name)?;
+        if !enum_has_payload(enum_def) {
+            return None;
+        }
+        self.generic_enum_type(name, enum_def)
+            .ok()
+            .map(|t| t.to_string())
+    }
+
     fn generic_enum_type(
         &self,
         name: &str,
@@ -1889,7 +1910,8 @@ impl<'c> MeliorGenerator<'c> {
                 if let Some(enum_def) = self.enums.get(name) {
                     // Any instantiated generic enum, and whichever of its variants carries
                     // the payload -- not a type called `Option` with a variant called `Some`.
-                    if name.contains('<') {
+                    // A non-generic enum with a payload has the same `{tag, payload}` shape.
+                    if name.contains('<') || enum_has_payload(enum_def) {
                         return self.generic_enum_type(name, enum_def);
                     }
                     return Ok(self.i32_ty);
@@ -2010,9 +2032,8 @@ impl<'c> MeliorGenerator<'c> {
             }
             syntax::Type::Enum(name, _) => {
                 if let Some(enum_def) = self.enums.get(name) {
-                    // Any instantiated generic enum, and whichever of its variants carries
-                    // the payload -- not a type called `Option` with a variant called `Some`.
-                    if name.contains('<') {
+                    // As for a struct-spelled enum above.
+                    if name.contains('<') || enum_has_payload(enum_def) {
                         return self.generic_enum_type(name, enum_def);
                     }
                 }
@@ -2416,4 +2437,13 @@ fn element_mlir(el_ty: &ElementType) -> Result<&'static str, LowerError> {
               their codegen is not implemented"
             .to_string(),
     }))
+}
+
+/// Whether some variant of the enum carries a payload, so its values need room for it.
+pub(crate) fn enum_has_payload(
+    enum_def: &[(crate::symbol::Symbol, Option<Vec<syntax::Type>>)],
+) -> bool {
+    enum_def
+        .iter()
+        .any(|(_, p)| p.as_ref().is_some_and(|p| !p.is_empty()))
 }

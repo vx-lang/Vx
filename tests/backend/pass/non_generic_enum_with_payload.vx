@@ -1,0 +1,77 @@
+//===- non_generic_enum_with_payload.vx - Vx Compiler --------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// An enum that is not generic can carry a payload, a number or a struct, and a `match`
+// takes it back out. `radius` and `id` are given values made by `make` and return what
+// they held: 7 from `Radius`, 4 from the `Point` in `At`, and 0 for the variants with none.
+//
+// EXPECT: 7 0 4 0
+
+struct Point {
+  id : i32,
+}
+
+enum Size {
+  Radius(i32),
+  Empty,
+}
+
+enum Place {
+  At(Point),
+  Nowhere,
+}
+
+fn make_size(k : i32) -> Size {
+  if k == 0 {
+    return Size::Radius(7);
+  }
+  return Size::Empty();
+}
+
+fn make_place(k : i32) -> Place {
+  if k == 0 {
+    return Place::At(Point {
+      id: 4
+    });
+  }
+  return Place::Nowhere();
+}
+
+fn radius(s : Size) -> i32 {
+  match s {
+    Size::Radius(r) => {
+      return r;
+    }
+    Size::Empty() => {
+      return 0;
+    }
+  }
+  return -1;
+}
+
+fn id(p : Place) -> i32 {
+  match p {
+    Place::At(point) => {
+      return point.id;
+    }
+    Place::Nowhere() => {
+      return 0;
+    }
+  }
+  return -1;
+}
+
+fn main() -> i32 {
+  print(radius(make_size(0)));
+  print!(" ");
+  print(radius(make_size(1)));
+  print!(" ");
+  print(id(make_place(0)));
+  print!(" ");
+  print(id(make_place(1)));
+  return 0;
+}
