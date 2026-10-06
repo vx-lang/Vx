@@ -63,7 +63,7 @@ kernels or plain LLVM instructions. A compiler <em>lowers</em> a program by rewr
 higher dialects into lower ones until only machine code is left.</p>
 
 <p>This post follows small Vx programs down that path and shows the output of each stage.
-Every program here was compiled and run with <code>vxc</code> built from commit 411f13c7.</p>
+Every program here was compiled and run with <code>vxc</code> built from commit 4dbc0f35.</p>
 
 <h2>ML: tensors the compiler understands</h2>
 
@@ -109,8 +109,8 @@ enough that a careless <code>exp</code> would overflow:</p>
 <pre><code><span class="k">import</span> std::tensor;
 
 <span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
-  <span class="c">// Scores for three classes, large enough that exp(1002) overflows an f64.</span>
-  <span class="k">let</span> <span class="k">mut</span> logits = <span class="t">Tensor</span>&lt;<span class="t">f64</span>&gt;([<span class="n">3</span>]);
+  <span class="c">// Scores for three classes, large enough that exp(1002) overflows an f32.</span>
+  <span class="k">let</span> <span class="k">mut</span> logits = <span class="t">Tensor</span>&lt;<span class="t">f32</span>&gt;([<span class="n">3</span>]);
   logits[<span class="n">0</span>] = <span class="n">1000.0</span>;
   logits[<span class="n">1</span>] = <span class="n">1001.0</span>;
   logits[<span class="n">2</span>] = <span class="n">1002.0</span>;
@@ -134,8 +134,8 @@ enough that a careless <code>exp</code> would overflow:</p>
 
 <p>It prints <code>0.09 0.245 0.665 best class: 2</code>, the same as a numerically stable
 softmax in Python. Parts of <code>std::tensor</code> are written in MLIR directly, inside Vx, and
-<code>softmax_inplace</code> is one of them: its body includes a block written with the upstream
-<code>scf</code> and <code>vector</code> dialects, and those operations appear in this program's
+the <code>f32</code> <code>softmax_inplace</code> is one of them: its body is built from blocks
+written with the upstream <code>scf</code> and <code>vector</code> dialects, and those operations appear in this program's
 MLIR as they were written. More on that
 below.</p>
 
@@ -167,8 +167,8 @@ written on does not have Enzyme, so the call above is as far as it was checked h
 <h2>IR: Vx's own, and a library can ship as it</h2>
 
 <p>Between the source and MLIR, Vx keeps the program in its own IR: the <em>flat HIR</em>,
-a list of simple instructions in which each value is named by its position. It is produced
-after type checking and borrow checking, so everything in it is already known to be well typed,
+a list of simple instructions in which each value is named by its position. In a normal
+compile it is produced after type checking and borrow checking, so everything in it is already known to be well typed,
 and it is what the default code generator reads.</p>
 
 <p>That IR is also a file format. <code>--action emit-interface</code> writes a module's
@@ -223,9 +223,9 @@ def Vx_TransferOp : Vx_Op&lt;"transfer", [MemoryEffects&lt;[MemWrite]&gt;]&gt; {
                             [MemAlloc]&gt;:$dst);
 }</code></pre>
 
-<p>The dialect also has <code>vx.free</code>, <code>vx.launch</code>,
-<code>vx.kernel</code>, <code>vx.barrier</code> and a few more. Here is a program that uses the
-first two. It copies two vectors to the GPU, computes <code>y = 2x + y</code> there, and copies
+<p>The dialect has ten more operations, among them <code>vx.free</code>,
+<code>vx.drop</code>, <code>vx.launch</code>, <code>vx.kernel</code> and <code>vx.barrier</code>.
+Here is a program that uses <code>vx.spawn</code> and <code>vx.transfer</code>. It copies two vectors to the GPU, computes <code>y = 2x + y</code> there, and copies
 the result back:</p>
 
 <pre><code><span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
@@ -250,8 +250,8 @@ the result back:</p>
   <span class="k">return</span> <span class="n">0</span>;
 }</code></pre>
 
-<p>It prints <code>[1, 3, 5, 7, 9, 11, 13, 15]</code>. Leave out the copy back, and the
-type checker stops the build, because the CPU cannot read GPU memory:</p>
+<p>After a line that describes the buffer, it prints <code>[1,  3,  5,  7,  9,  11,  13,  15]</code>.
+Leave out the copy back and print <code>y</code> directly, and the type checker stops the build, because the CPU cannot read GPU memory:</p>
 
 <pre class="diag"><code>Error[E6003] at 18:9: 'y' lives in GPU_HBM but CPU sees only [CPU_DRAM, NPU_HBM]; insert an explicit transfer to CPU_DRAM (cost 50 on the declared path)
 Error[E6003] at 18:3: `print` reads its argument on CPU, which sees only [CPU_DRAM, NPU_HBM], but the value lives in GPU_HBM; bring it home first with `transfer(.., Memory::CPU_DRAM)`</code></pre>
@@ -259,26 +259,34 @@ Error[E6003] at 18:3: `print` reads its argument on CPU, which sees only [CPU_DR
 <h3>Stage 1: the <code>vx</code> dialect</h3>
 
 <p>In the MLIR that <code>vxc --action emit-mlir</code> prints, the placement is still
-there, as operations rather than as a guess. Topology 500 is the GPU and 0 is the CPU; the loop
-body is left out here:</p>
+there, as operations rather than as a guess. Topology 500 is the GPU and 0 is the CPU.
+<code>vx.drop</code> marks the point where a buffer is no longer needed. The loop body is left
+out here:</p>
 
 <pre><code>%11 = "vx.transfer"(%alloc) &lt;{target_topology = 500 : i32}&gt; : (memref&lt;8xf32&gt;) -&gt; memref&lt;8xf32&gt;
+vx.drop %alloc : memref&lt;8xf32&gt;
 %12 = "vx.transfer"(%alloc_1) &lt;{target_topology = 500 : i32}&gt; : (memref&lt;8xf32&gt;) -&gt; memref&lt;8xf32&gt;
+vx.drop %alloc_1 : memref&lt;8xf32&gt;
 vx.spawn topology(500) {
   // the loop, with its start, bound and step marked as parallel
   vx.yield
 } {vx_parallel_trip = 8 : i64}
-%13 = "vx.transfer"(%12) &lt;{target_topology = 0 : i32}&gt; : (memref&lt;8xf32&gt;) -&gt; memref&lt;8xf32&gt;</code></pre>
+vx.drop %11 : memref&lt;8xf32&gt;
+%13 = "vx.transfer"(%12) &lt;{target_topology = 0 : i32}&gt; : (memref&lt;8xf32&gt;) -&gt; memref&lt;8xf32&gt;
+vx.drop %12 : memref&lt;8xf32&gt;</code></pre>
 
 <h3>Stage 2: Vx's passes, into upstream dialects</h3>
 
-<p>Vx's own pass, <code>convert-vx-to-standard</code>, takes the region out into a kernel,
-launches it, and frees each copied buffer after its last use. The kernel body is now written in
-MLIR's standard <code>gpu</code> dialect, with each thread computing its index from
+<p>Vx's own pass, <code>convert-vx-to-standard</code>, takes the region out into a kernel and
+launches it. Each <code>vx.drop</code> becomes a free: <code>memref.dealloc</code> for a buffer on
+the CPU, <code>vx.free</code> for a copy on the GPU. The kernel is also written out in MLIR's
+standard <code>gpu</code> dialect, for the GPU compiler, with each thread computing its index from
 <code>gpu.block_id</code> and <code>gpu.thread_id</code>:</p>
 
 <pre><code>%11 = "vx.transfer"(%alloc) &lt;{target_topology = 500 : i32}&gt; : (memref&lt;8xf32&gt;) -&gt; memref&lt;8xf32&gt;
+memref.dealloc %alloc : memref&lt;8xf32&gt;
 %12 = "vx.transfer"(%alloc_1) &lt;{target_topology = 500 : i32}&gt; : (memref&lt;8xf32&gt;) -&gt; memref&lt;8xf32&gt;
+memref.dealloc %alloc_1 : memref&lt;8xf32&gt;
 vx.launch @vx_npu_kernel_0(%11, %12) {topology = 500 : i32, vx_parallel_trip = 8 : i64} : (memref&lt;8xf32&gt;, memref&lt;8xf32&gt;) -&gt; ()
 vx.free %11 {topology = 500 : i32} : memref&lt;8xf32&gt;
 %13 = "vx.transfer"(%12) &lt;{target_topology = 0 : i32}&gt; : (memref&lt;8xf32&gt;) -&gt; memref&lt;8xf32&gt;
@@ -299,14 +307,14 @@ vx.free %12 {topology = 500 : i32} : memref&lt;8xf32&gt;</code></pre>
     %2 = arith.index_cast %1 : index to i32
     ...</code></pre>
 
-<p>From here on, the work is done by upstream MLIR. The GPU module goes through
-<code>convert-gpu-to-nvvm</code> and <code>gpu-module-to-binary</code>; the host code goes
+<p>From here on, the work is done by upstream MLIR passes. Vx's <code>vx-to-llvm</code> pass
+runs <code>convert-gpu-to-nvvm</code> and <code>gpu-module-to-binary</code> on the GPU module; the host code goes
 through the usual conversions to the <code>llvm</code> dialect, and then to LLVM IR.</p>
 
 <h3>Stage 3: PTX</h3>
 
-<p>PTX is NVIDIA's assembly language for GPUs. In the LLVM IR that
-<code>vxc --action emit-llvm</code> prints, the dispatch call carries the kernel as PTX text.
+<p>PTX is NVIDIA's assembly language for GPUs. In the <code>llvm</code> dialect that
+<code>vxc --action emit-llvm</code> prints, one step before LLVM IR, the dispatch call carries the kernel as PTX text.
 Decoded, its loop is a grid-stride loop, and <code>2.0 * x</code> has become
 <code>x + x</code>:</p>
 
@@ -358,8 +366,8 @@ the same region on the CPU, which is how the program printed its result above.</
 }</code></pre>
 
 <p>The block names its inputs, the dialects it uses, and the arguments it writes. Because of
-<code>clobbers</code>, the borrow checker and the compile-time interpreter both know that
-<code>fill</code> changes <code>self</code>, even though they cannot read the MLIR inside.</p>
+<code>clobbers</code>, the compile-time interpreter knows that <code>fill</code> changes
+<code>self</code>, even though it cannot read the MLIR inside.</p>
 
 <h2>What &ldquo;fully&rdquo; does not cover yet</h2>
 
@@ -377,9 +385,13 @@ a message that only a matmul is routed there. No test runs generated PTX on a re
 <li><strong>There is no attention kernel.</strong> The Llama 2 port compiles to MLIR, but the
 test only compiles it. Its matrix products are placed on the GPU, while RMSNorm, RoPE, the
 attention loops and SwiGLU run on the host.</li>
-<li><strong>Not every program takes the default path.</strong> 57 of the 296 programs in the
-backend test suite are declined by the flat-HIR code generator and fall back to an older one that
+<li><strong>Not every program takes the default path.</strong> 56 of the 345 programs in the
+backend test suite that run without special hardware or flags are declined by the flat-HIR code generator and fall back to an older one that
 works from the syntax tree.</li>
+<li><strong>A <code>.vxlib</code> is not checked when it is written.</strong>
+<code>--action emit-interface</code> does not type-check or borrow-check the library, so a
+function with a type error can be written to a <code>.vxlib</code>. Compile the library normally
+first.</li>
 <li><strong>Running a program goes through the LLVM tools.</strong> <code>vxc</code> runs
 <code>mlir-translate</code>, <code>opt</code>, <code>llc</code> and <code>clang</code> as separate
 programs, rather than calling MLIR's execution engine in-process.</li>
@@ -392,6 +404,11 @@ not run. SPIR-V and AMD GPU targets are not wired up.</li>
 direction is concrete. Placement lives in the types, survives into Vx's own IR, is spelled out as
 operations in Vx's own MLIR dialect, and is handed to upstream MLIR only at the point where it
 turns into kernels and copies. Nothing along the way has to guess where a value lives.</p>
+
+<p><em>Corrected 5 October 2026:</em> the softmax example now uses <code>f32</code>, whose
+<code>softmax_inplace</code> is the one built from MLIR blocks; the borrow checker does not read
+<code>clobbers</code>; the compiler output and the test counts are from a newer commit; and
+<code>.vxlib</code> files are not checked when they are written.</p>
 
 <p class="post-foot">For why keeping structure until code generation matters, see
 <a href="/blog/premature-de-optimization.html">Premature de-optimization is the root of all
