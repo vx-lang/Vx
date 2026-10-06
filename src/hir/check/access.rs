@@ -1203,18 +1203,6 @@ impl<'a> TypeChecker<'a> {
                 // `|| &x`) or a body local is an escape — keep the env so its `Local` provenance is
                 // seen. The closure's own return summary tells them apart.
                 let name = fc.name.as_ref();
-                // A callee whose every `return` is `&*p` or `&mut *p` of a raw pointer hands
-                // back raw memory -- a `Vec`'s heap, through `as_mut_slice` -- which no
-                // argument's lifetime constrains, since a raw pointer has none. Without this
-                // the `&mut tmp` the checker passes as a method's receiver made the result
-                // look like a borrow of the temporary.
-                //
-                // Safe today only because nothing frees that memory early. Once a `Vec` is
-                // dropped at the end of its scope (#495), a slice that outlives it is a
-                // use-after-free, and this rule has to go.
-                if self.callee_returns_through_raw_pointer(name) {
-                    return Some(RefProvenance::External);
-                }
                 let is_closure_call =
                     name.starts_with("Closure_") && name.ends_with("_call") && !fc.args.is_empty();
                 let skip_env = is_closure_call
@@ -1290,91 +1278,6 @@ impl<'a> TypeChecker<'a> {
                 Self::join_provenances(parts)
             }
             _ => None,
-        }
-    }
-
-    /// Does every `return` in `name`'s body reborrow through a raw pointer (`&*p`,
-    /// `&mut *p`, with `p` a raw-pointer parameter or local)? Then its result points at raw
-    /// memory and not at any argument. Unknown callees answer no.
-    fn callee_returns_through_raw_pointer(&self, name: &str) -> bool {
-        let Some((func, _)) = self
-            .mono
-            .functions
-            .iter()
-            .find(|f| f.0.name.as_ref() == name)
-        else {
-            return false;
-        };
-        let mut raw: std::collections::HashSet<String> = func
-            .params
-            .iter()
-            .filter(|(_, t)| matches!(t, Type::Pointer(..)))
-            .map(|(n, _)| n.to_string())
-            .collect();
-        let mut returns: Vec<&Expr> = Vec::new();
-        Self::collect_returns_and_raw_locals(&func.body, &mut raw, &mut returns);
-        !returns.is_empty()
-            && returns
-                .iter()
-                .all(|e| Self::is_reborrow_of_raw_pointer(e, &raw))
-    }
-
-    fn collect_returns_and_raw_locals<'e>(
-        stmts: &'e [Statement],
-        raw: &mut std::collections::HashSet<String>,
-        returns: &mut Vec<&'e Expr>,
-    ) {
-        for s in stmts {
-            match s {
-                Statement::LetDecl(l) => {
-                    if matches!(l.ty_ann, Some(Type::Pointer(..))) {
-                        raw.insert(l.name.to_string());
-                    }
-                }
-                Statement::Return(r) => {
-                    if let Some(e) = &r.expr {
-                        returns.push(e);
-                    }
-                }
-                Statement::Loop(l) => Self::collect_returns_and_raw_locals(&l.body, raw, returns),
-                Statement::ForLoop(f) => {
-                    Self::collect_returns_and_raw_locals(&f.body, raw, returns)
-                }
-                Statement::ExprStmt(e) => match &e.expr {
-                    Expr::If(i) => {
-                        Self::collect_returns_and_raw_locals(&i.then_block, raw, returns);
-                        if let Some(eb) = &i.else_block {
-                            Self::collect_returns_and_raw_locals(eb, raw, returns);
-                        }
-                    }
-                    Expr::Match(m) => {
-                        for arm in &m.arms {
-                            Self::collect_returns_and_raw_locals(&arm.body, raw, returns);
-                        }
-                    }
-                    _ => {}
-                },
-                _ => {}
-            }
-        }
-    }
-
-    fn is_reborrow_of_raw_pointer(expr: &Expr, raw: &std::collections::HashSet<String>) -> bool {
-        match expr {
-            Expr::UnsafeBlock(u) => match (&u.ret, u.stmts.last()) {
-                (Some(r), _) => Self::is_reborrow_of_raw_pointer(r, raw),
-                (None, Some(Statement::ExprStmt(e))) if !e.has_semi => {
-                    Self::is_reborrow_of_raw_pointer(&e.expr, raw)
-                }
-                _ => false,
-            },
-            Expr::Borrow(b) => match &*b.expr {
-                Expr::Dereference(d) => {
-                    matches!(&*d.expr, Expr::Identifier(id) if raw.contains(id.name.as_ref()))
-                }
-                _ => false,
-            },
-            _ => false,
         }
     }
 

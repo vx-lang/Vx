@@ -125,17 +125,17 @@ n_kv_heads : i32, seq_len : i32, vocab_size : i32)
   let kv_dim : i32 = (dim * n_kv_heads) / n_heads;
 
   return unsafe {RunState {
-      x : Vec<f32>::with_capacity(dim).data,
-      xb : Vec<f32>::with_capacity(dim).data,
-      xb2 : Vec<f32>::with_capacity(dim).data,
-      hb : Vec<f32>::with_capacity(hidden_dim).data,
-      hb2 : Vec<f32>::with_capacity(hidden_dim).data,
-      q : Vec<f32>::with_capacity(dim).data,
-      k : Vec<f32>::with_capacity(kv_dim).data,
-      v : Vec<f32>::with_capacity(kv_dim).data,
-      logits : Vec<f32>::with_capacity(vocab_size).data,
-      key_cache : Vec<f32>::with_capacity(n_layers * seq_len * kv_dim).data,
-      value_cache : Vec<f32>::with_capacity(n_layers * seq_len * kv_dim).data
+      x : Vec<f32>::with_capacity(dim).leak(),
+      xb : Vec<f32>::with_capacity(dim).leak(),
+      xb2 : Vec<f32>::with_capacity(dim).leak(),
+      hb : Vec<f32>::with_capacity(hidden_dim).leak(),
+      hb2 : Vec<f32>::with_capacity(hidden_dim).leak(),
+      q : Vec<f32>::with_capacity(dim).leak(),
+      k : Vec<f32>::with_capacity(kv_dim).leak(),
+      v : Vec<f32>::with_capacity(kv_dim).leak(),
+      logits : Vec<f32>::with_capacity(vocab_size).leak(),
+      key_cache : Vec<f32>::with_capacity(n_layers * seq_len * kv_dim).leak(),
+      value_cache : Vec<f32>::with_capacity(n_layers * seq_len * kv_dim).leak()
     }};
 }
 fn safe_get_rope_freq(pos : i32, i : i32, head_size : i32) -> f32 {

@@ -26,6 +26,8 @@
 //
 // This file states nothing about emitted IR. What changed is which bodies get checked
 // and when, not how any of them lower.
+import core::marker;
+
 trait Eq2 {
   fn eq2(self : Self, other : Self) -> bool;
 }
@@ -39,6 +41,9 @@ impl Eq2 for i32 {
 struct Wrap<T> {
   v : T,
 }
+
+// Each method takes the receiver by value, and `main` calls four on `a`.
+impl<T : Copy> Copy for Wrap<T> {}
 
 impl<T> Wrap<T> {
   fn same(self : Wrap<T>, other : Wrap<T>) -> bool {

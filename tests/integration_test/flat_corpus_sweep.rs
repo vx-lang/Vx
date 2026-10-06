@@ -31,6 +31,8 @@ const KNOWN_DECLINES: &[&str] = &[
     "frontend/pass/match_moves_only_what_it_binds.vx",
     // The same: `Opt<Noisy>`, whose payload drops are checked on the AST path.
     "backend/pass/enum_drops_its_payload.vx",
+    // The same for a struct: `forget` moves its value into a `ManuallyDrop<Noisy>`.
+    "backend/pass/drop_and_forget_end_a_value_early.vx",
     // `t = pass(t)` inside an `if`: on the flat path a tensor local is one register, so the
     // new value cannot leave the branch. The flat path used to read the wrong tensor after it.
     "frontend/pass/tensor_drops_written_into_the_program.vx",

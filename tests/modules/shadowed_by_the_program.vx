@@ -19,7 +19,7 @@ enum Kind {
 }
 
 impl Count {
-  fn count(self : Count) -> i64 {
+  fn count(self : &Count) -> i64 {
     return self.count;
   }
 }

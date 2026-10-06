@@ -417,6 +417,25 @@ impl<'a> TypeChecker<'a> {
             }) => {
                 let prev_unsafe = self.in_unsafe_block;
                 self.in_unsafe_block = true;
+                // `unsafe { let v = ..; v }`, as `vec![..]` writes: the block's drops are placed
+                // when its statements are checked, so the value is moved out of `v` by one of
+                // them, into a `$value` that owns nothing.
+                if let Some(Expr::Identifier(id)) = ret_expr.as_deref() {
+                    if !id.name.starts_with("$value") && !stmts.is_empty() {
+                        let value = Statement::LetDecl(crate::syntax::stmt::LetDeclStmt {
+                            name: "$value".into(),
+                            is_mut: false,
+                            ty_ann: None,
+                            expr: Expr::Identifier(id.clone()),
+                            span: id.span,
+                        });
+                        stmts.push(value);
+                        *ret_expr = Some(Box::new(Expr::Identifier(IdentifierExpr {
+                            name: "$value".into(),
+                            span: id.span,
+                        })));
+                    }
+                }
                 self.push_scope();
                 self.value_unused = unused;
                 let mut ret_ty = self.check_expr_block(stmts, consume);

@@ -548,6 +548,25 @@ impl<'a> TypeChecker<'a> {
     }
 
     pub(crate) fn check_functioncall_expr(&mut self, expr: &mut Expr) -> Type {
+        // `core::mem::needs_drop<T>()` answers whether dropping a `T` runs anything, which only
+        // the checker knows, so the call becomes `true` or `false` here.
+        if let Expr::FunctionCall(fc) = expr {
+            if fc.name.as_ref() == "needs_drop"
+                && fc.args.is_empty()
+                && self.env.generic_functions.contains_key("needs_drop")
+            {
+                if let Some([ty]) = fc.type_args.as_deref() {
+                    if !ty.has_generic_params() {
+                        let answer = !self.drops_glue(ty).is_empty();
+                        *expr = Expr::Identifier(IdentifierExpr {
+                            name: if answer { "true" } else { "false" }.into(),
+                            span: fc.span,
+                        });
+                        return Type::Scalar(ElementType::Bool);
+                    }
+                }
+            }
+        }
         match expr {
             Expr::FunctionCall(FunctionCallExpr {
                 name,
@@ -2681,6 +2700,20 @@ impl<'a> TypeChecker<'a> {
                         }
                         _ => None,
                     };
+                    // A method that takes `self` by value moves its receiver: `w.into_iter()`.
+                    let self_by_value = generic_method.params.first().is_some_and(|(_, t)| {
+                        !matches!(t, Type::Borrow { .. } | Type::Pointer(..))
+                    });
+                    if consume
+                        && self_by_value
+                        && !matches!(base_ty, Type::Borrow { .. } | Type::Pointer(..))
+                        && base_ty.is_linear()
+                        && !self.is_copy(&base_ty)
+                    {
+                        if let Expr::Identifier(id) = &**obj {
+                            self.consume(&id.name);
+                        }
+                    }
                     let (ret_ty, func_call) = self.instantiate_method_call_rewrite(
                         generic_method,
                         mapping,
