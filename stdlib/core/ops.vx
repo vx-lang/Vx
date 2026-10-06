@@ -279,3 +279,15 @@ stamp_shift!(u8);
 stamp_shift!(u16);
 stamp_shift!(u32);
 stamp_shift!(u64);
+
+/// `a[i]`, read: a reference to the element at `index`.
+trait Index {
+  type Output;
+  fn index(self : &Self, index : i32) -> &Self::Output;
+}
+
+/// `a[i] = x`: a mutable reference to the element at `index`.
+trait IndexMut {
+  type Output;
+  fn index_mut(self : &mut Self, index : i32) -> &mut Self::Output;
+}

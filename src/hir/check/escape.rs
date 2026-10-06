@@ -304,6 +304,18 @@ impl<'a> TypeChecker<'a> {
                     s.name.split('<').next().unwrap_or(&s.name).into();
                 Type::Struct(base, None)
             }
+            // A call to a function the checker has resolved: its declared return type.
+            Expr::FunctionCall(fc) => {
+                if let Some(f) = self.env.functions.get(&fc.name) {
+                    return f.0.clone();
+                }
+                self.mono
+                    .functions
+                    .iter()
+                    .find(|(f, _)| f.name == fc.name)
+                    .map(|(f, _)| f.return_type.clone())
+                    .unwrap_or(Type::Unknown)
+            }
             // Anything else: unknown, which the escape gate treats as "could hold one".
             _ => Type::Unknown,
         }
