@@ -297,6 +297,25 @@ impl BorrowCx {
         added
     }
 
+    /// Turn each of `records` into a shared borrow, and answer the shared ones: a mutable borrow
+    /// that is only reserved for now, so the place can still be read but not borrowed mutably
+    /// again (Rust's two-phase borrow).
+    pub(crate) fn reserve(
+        &mut self,
+        records: &[(Symbol, BorrowRecord)],
+    ) -> Vec<(Symbol, BorrowRecord)> {
+        let mut shared = Vec::new();
+        for (base, record) in records {
+            if let Some(list) = self.active_borrows.get_mut(base) {
+                for r in list.iter_mut().filter(|r| *r == record) {
+                    r.is_mut = false;
+                    shared.push((base.clone(), r.clone()));
+                }
+            }
+        }
+        shared
+    }
+
     /// Drop each of `records`, as [`Self::added_since`] returned them.
     pub(crate) fn forget(&mut self, records: &[(Symbol, BorrowRecord)]) {
         for (base, record) in records {

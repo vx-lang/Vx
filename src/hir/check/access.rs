@@ -789,6 +789,40 @@ impl<'a> TypeChecker<'a> {
     }
 
     pub(crate) fn check_indexaccess_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
+        // `a[i]` on a struct or an enum whose type implements `Index` reads `*a.index(i)`, and
+        // a write, `a[i] = x`, goes through `*a.index_mut(i)`, as in Rust.
+        if let Expr::IndexAccess(IndexAccessExpr {
+            base, index, span, ..
+        }) = expr
+        {
+            let method = if self.checking_assign_lhs {
+                "index_mut"
+            } else {
+                "index"
+            };
+            let ty = self.operand_type(base);
+            if Self::is_user_type(&ty)
+                && self
+                    .resolve_method_in_impls(&ty, &method.into(), &mut HashMap::new())
+                    .is_some()
+            {
+                let span = *span;
+                let mut read = Expr::Dereference(crate::syntax::expr::DereferenceExpr {
+                    expr: Box::new(Expr::MethodCall(crate::syntax::MethodCallExpr {
+                        base: base.clone(),
+                        method_name: method.into(),
+                        type_args: None,
+                        args: vec![(**index).clone()],
+                        span,
+                    })),
+                    ty: None,
+                    span,
+                });
+                let t = self.check_expr_type_flag(&mut read, consume);
+                *expr = read;
+                return t;
+            }
+        }
         match expr {
             Expr::IndexAccess(IndexAccessExpr {
                 base: obj,

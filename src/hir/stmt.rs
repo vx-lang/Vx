@@ -852,9 +852,21 @@ impl<'a> TypeChecker<'a> {
         if let Some(root) = self.read_only_root(lhs) {
             self.report_read_only(&root, "it cannot be assigned", &lhs.span());
         }
+        // `*v.at_mut(i) = x`, or `v[i] = x` through `IndexMut`, writes through a reference
+        // the call returns and nothing keeps, so the borrow it makes ends with the statement.
+        // The check is what turns `v[i]` into that call, so the place is looked at after it.
+        let before_lhs = self.borrow.snapshot();
         self.checking_assign_lhs = true;
         let lhs_ty = self.check_expr_type_flag(lhs, false);
         self.checking_assign_lhs = false;
+        let temporary_place = matches!(lhs, Expr::Dereference(d)
+            if matches!(*d.expr, Expr::FunctionCall(_) | Expr::MethodCall(_)));
+        // Rust evaluates the value before the place it goes into, so the place's mutable borrow is
+        // only reserved while the right-hand side is checked: `v[i] = v[i] + 1` reads `v` there.
+        let lhs_borrows = temporary_place.then(|| {
+            let added = self.borrow.added_since(&before_lhs);
+            self.borrow.reserve(&added)
+        });
         if let Some(shared) = self.shared_reference_in_place(lhs) {
             if !self.speculating {
                 self.errors.error_with_code(
@@ -888,6 +900,9 @@ impl<'a> TypeChecker<'a> {
         // defaulting and mismatching (#240).
         let mut rhs_ty = self.check_expr_expecting(rhs, Some(lhs_ty.clone()), consume);
         self.current_assignment_target = None;
+        if let Some(borrows) = lhs_borrows {
+            self.borrow.forget(&borrows);
+        }
         // `s += r` with `r : &i64` adds the number `r` points at, as `s + r` does.
         if op.is_some() && matches!(lhs_ty, Type::Scalar(_)) {
             if let Some(t) = Self::deref_number_operand(rhs, &rhs_ty) {
