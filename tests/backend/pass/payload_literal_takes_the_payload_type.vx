@@ -1,0 +1,48 @@
+//===- payload_literal_takes_the_payload_type.vx - Vx Compiler -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A number written with no type, given as an enum's payload, takes the payload's type, as it
+// does in a `let` with a type: `2.5` is an `f64` in an `Opt<f64>`, and `5000000000`, too big
+// for an `i32`, is an `i64` in an `Opt<i64>`.
+//
+// EXPECT: 2.5 5000000000
+
+enum Opt<T> {
+  Some(T),
+  None,
+}
+
+fn float(o : Opt<f64>) -> f64 {
+  match o {
+    Opt<f64>::Some(v) => {
+      return v;
+    }
+    Opt<f64>::None() => {
+      return 0.0;
+    }
+  }
+  return -1.0;
+}
+
+fn wide(o : Opt<i64>) -> i64 {
+  match o {
+    Opt<i64>::Some(v) => {
+      return v;
+    }
+    Opt<i64>::None() => {
+      return 0i64;
+    }
+  }
+  return -1i64;
+}
+
+fn main() -> i32 {
+  print(float(Opt<f64>::Some(2.5)));
+  print!(" ");
+  print(wide(Opt<i64>::Some(5000000000)));
+  return 0;
+}

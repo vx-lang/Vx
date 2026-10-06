@@ -92,8 +92,22 @@ impl<'a> TypeChecker<'a> {
                                     }
 
                                     for (i, expr) in expr_payload.iter_mut().enumerate() {
-                                        let expr_ty = self.check_expr_type_flag(expr, consume);
+                                        // An untyped literal takes the payload's type:
+                                        // `Pair<i32, f64>::Of(1, 2.5)` holds an `f64`.
                                         let expected_ty = exp_types[i].substitute(&mapping);
+                                        let expr_ty = if matches!(
+                                            expected_ty,
+                                            Type::Generic(..)
+                                                | Type::Scalar(ElementType::Generic(_))
+                                        ) {
+                                            self.check_expr_type_flag(expr, consume)
+                                        } else {
+                                            self.check_expr_expecting(
+                                                expr,
+                                                Some(expected_ty.clone()),
+                                                consume,
+                                            )
+                                        };
                                         // A tensor payload has no lowering: the variant's slot is
                                         // built with `llvm.insertvalue`, which takes primitives,
                                         // and the AST path emitted the tag and dropped the tensor
