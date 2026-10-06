@@ -53,6 +53,5 @@ fn main() -> i32 {
   expect_eq(seen, 3);
   expect_eq(sum, 65);
 
-  v.free();
   return 0;
 }

@@ -42,14 +42,6 @@ fn main() -> i32 {
   let mut d : Vec<i32> = Vec<i32>::default();
   d.extend_one(3);
   print(d.get(0));
-  v.free();
-  evens.free();
-  odds.free();
-  yes.free();
-  no.free();
-  a.free();
-  b.free();
-  d.free();
   return 0;
 }
 

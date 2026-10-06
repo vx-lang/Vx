@@ -1,7 +1,8 @@
 // This test expands the same raw-pointer FFI macro as the production library.
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
-// The Vx declaration of file close must agree with the Rust function's C ABI.
+// The Vx declaration of file close, which dropping a `File` calls, must agree with the Rust
+// function's C ABI.
 include!("../stdlib/rust_core/src/ffi/macros.rs");
 instantiate_file_ffi!();
 
@@ -16,8 +17,7 @@ fn file_close_has_no_return_value_on_both_sides_of_the_ffi() -> Result<(), Strin
         "import std::fs;\n\
          fn main() -> i32 {\n\
            unsafe {\n\
-             let mut file = File::open(\"/tmp/vx-close-abi\", 0);\n\
-             file_drop(&mut file);\n\
+             let file = File::open(\"/tmp/vx-close-abi\", 0);\n\
            }\n\
            return 0;\n\
          }\n",

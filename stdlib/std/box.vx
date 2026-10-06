@@ -6,11 +6,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+import core::mem;
+import core::ops;
 import std::alloc;
 
 /// A single-owner heap allocation, which is what makes a recursive type possible.
 ///
-/// Released by calling `free`, since the language has no `Drop` (Vx#495).
+/// Dropping it drops the value, then frees the allocation.
 struct Box<T> {
   ptr : *mut T,
 }
@@ -29,11 +31,12 @@ Box<T> {
       ptr : p
     };
   }
+}
 
-  /// Release the allocation. The pointer is left as it was, so using the box afterwards
-  /// reads freed memory.
-  fn free(self : &mut Box<T>) -> i32 {
+impl<T> Drop for Box<T> {
+  fn drop(self : &mut Box<T>) -> void {
+    let value : T = unsafe { *self.ptr };
+    drop(value);
     unsafe { let ptr_i8 : *mut i8 = self.ptr; free(ptr_i8); }
-    return 0;
   }
 }

@@ -93,7 +93,6 @@ fn main() -> i32 {
   print(ins.len());
   let mut fu = range(0i64, 8i64).fuse();
   print(fu.len());
-  v.free();
   return 0;
 }
 

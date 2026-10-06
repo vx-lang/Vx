@@ -15,7 +15,6 @@ fn main() -> i32 {
     let mut file = File::open("unused", 1);
     let length : i64 = 5;
     let _count = file.write(0 as *const u8, length);
-    file_drop(&mut file);
   }
   return 0;
 }

@@ -5,6 +5,8 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
+import core::ops;
+
 extern {
   /// The Rust core behind `String::new`.
   fn vx_string_new() -> *mut i8;
@@ -27,7 +29,7 @@ extern {
 
 /// A growable, owned string, held by the Rust core behind an opaque pointer.
 ///
-/// Released by calling `drop`, since the language has no `Drop` (Vx#495).
+/// Released when it is dropped.
 struct String {
   ptr : *mut i8,
 }
@@ -73,15 +75,16 @@ impl String {
   fn as_c_str(self : *mut String) -> *const i8 {
     return unsafe { vx_string_as_c_str(self.ptr) };
   }
+}
 
-  /// Release the string. Reading it afterwards reads freed memory.
-  fn drop(self : *mut String) -> i32 {
-    return unsafe { vx_string_drop(self.ptr) };
+impl Drop for String {
+  fn drop(self : &mut String) -> void {
+    let _released = unsafe { vx_string_drop(self.ptr) };
   }
 }
 
 impl i32 {
-  /// This number in decimal, as an owned `String` the caller must `drop`.
+  /// This number in decimal, as an owned `String`.
   fn to_string(self : i32) -> String {
     let ptr = unsafe { vx_i32_to_string(self) };
     return String {

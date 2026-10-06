@@ -57,7 +57,6 @@ fn main() -> i32 {
   v.push(2i64);
   v.push(3i64);
   show(v.iter().rev());
-  v.free();
   print!("end");
   return 0;
 }

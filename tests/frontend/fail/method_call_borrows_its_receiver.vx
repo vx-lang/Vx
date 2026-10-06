@@ -9,6 +9,7 @@
 //
 // `w.peek()` borrows `w`, as `W::peek(&w)` does. A reference the method returns keeps `w`
 // borrowed while it is used, and a `&mut self` method cannot run while `w` is borrowed.
+import core::mem;
 import std::vec;
 
 struct W {
@@ -68,18 +69,19 @@ fn push_while_a_slice_is_used() -> i32 {
   return *first;
 }
 
-fn free_while_a_slice_is_used() -> i32 {
+// Dropping the vector frees the buffer `first` points into.
+fn drop_while_a_slice_is_used() -> i32 {
   let mut v = Vec<i32>::new();
   v.push(1i32);
   let first = v.as_slice();
-  // CHECK: Error[E4003]{{.*}}Cannot borrow 'v' as mutable because it is also borrowed as immutable.
-  v.free();
+  // CHECK: Error[E4007]{{.*}}`v` is moved while it is borrowed, and the borrow is used after the move
+  drop(v);
   return *first;
 }
 
 fn main() -> i32 {
   return assign_while_a_returned_reference_is_used()
   + mut_method_while_a_returned_reference_is_used() + mut_method_while_a_field_is_borrowed()
-  + push_while_a_slice_is_used() + free_while_a_slice_is_used();
+  + push_while_a_slice_is_used() + drop_while_a_slice_is_used();
 }
 // CHECK: 5 error(s) emitted

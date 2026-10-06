@@ -376,6 +376,10 @@ pub enum DiagnosticCode {
     /// value (`f(q[i])`). A view shares its owner's memory and is not a copy. Bind it to a new
     /// variable with `let`, pass `q[i].clone()`, or take the parameter by reference.
     E4011,
+    /// A call to the `drop` method of a `Drop` impl by hand: `x.drop()`. `drop` runs when the
+    /// value is dropped, so calling it as well would run it twice. Write `drop(x)`, from
+    /// `core::mem`, to drop a value early.
+    E4012,
 
     // --- Safety Errors (E5xxx) ---
     /// Unsafe function call outside unsafe block

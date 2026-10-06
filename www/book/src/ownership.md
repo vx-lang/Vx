@@ -31,7 +31,7 @@ Each rule below is a compile error, with the code the error index lists it under
 
 **A moved value cannot be used (E4001).** Assigning a value, or passing it by value, moves it
 unless its type is `Copy`; numbers are. Giving the variable a new value makes it usable again. A
-`Vec` is not tracked this way yet (#495).
+method that takes `self` by value moves the value it is called on: `v.into_iter()` moves `v`.
 
 ```rust
 let a = S { v : 1 };
