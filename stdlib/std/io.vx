@@ -5,6 +5,127 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
+import core::option;
+
+/// Portable categories for failures reported by host I/O.
+///
+/// Backends use `Other` when a native error has no portable category. These
+/// variants stay fixed until Vx can require a fallback in every caller's match.
+enum ErrorKind {
+  NotFound,
+  PermissionDenied,
+  AlreadyExists,
+  InvalidInput,
+  Interrupted,
+  WouldBlock,
+  UnexpectedEof,
+  WriteZero,
+  OutOfMemory,
+  LimitExceeded,
+  Unsupported,
+  Other,
+}
+
+impl Copy for ErrorKind {}
+
+/// The I/O operation that failed. `Unspecified` covers operations not named here.
+enum Operation {
+  Open,
+  Read,
+  Write,
+  Seek,
+  Sync,
+  Close,
+  Unspecified,
+}
+
+impl Copy for Operation {}
+
+/// A cheap I/O error value. Native codes are meaningful only on their own host.
+struct Error {
+  error_kind : ErrorKind,
+  error_operation : Operation,
+  native_error_code : Option<i32>,
+}
+
+impl Copy for Error {}
+
+impl Error {
+  /// Make an error raised by Vx, without inventing an OS error code.
+  fn new(kind : ErrorKind, operation : Operation) -> Error {
+    return Error {
+      error_kind: kind,
+      error_operation: operation,
+      native_error_code: Option<i32>::None(),
+    };
+  }
+
+  /// Make an error from a native failure. Capture the code immediately after
+  /// the failing OS call and classify it for the current host before calling this.
+  fn from_native_error(kind : ErrorKind, operation : Operation, code : i32) -> Error {
+    return Error {
+      error_kind: kind,
+      error_operation: operation,
+      native_error_code: Option<i32>::Some(code),
+    };
+  }
+
+  fn kind(self : &Error) -> ErrorKind {
+    return self.error_kind;
+  }
+
+  fn operation(self : &Error) -> Operation {
+    return self.error_operation;
+  }
+
+  fn raw_os_error(self : &Error) -> Option<i32> {
+    return self.native_error_code;
+  }
+
+  /// A static, human-readable category message. No string is made when the
+  /// error is constructed. Use `operation()` and `raw_os_error()` for detail.
+  fn message(self : &Error) -> *const i8 {
+    match self.error_kind {
+      ErrorKind::NotFound() => {
+        return "file or resource not found";
+      }
+      ErrorKind::PermissionDenied() => {
+        return "permission denied";
+      }
+      ErrorKind::AlreadyExists() => {
+        return "file or resource already exists";
+      }
+      ErrorKind::InvalidInput() => {
+        return "invalid input";
+      }
+      ErrorKind::Interrupted() => {
+        return "operation interrupted";
+      }
+      ErrorKind::WouldBlock() => {
+        return "operation would block";
+      }
+      ErrorKind::UnexpectedEof() => {
+        return "unexpected end of file";
+      }
+      ErrorKind::WriteZero() => {
+        return "write made no progress";
+      }
+      ErrorKind::OutOfMemory() => {
+        return "out of memory";
+      }
+      ErrorKind::LimitExceeded() => {
+        return "limit exceeded";
+      }
+      ErrorKind::Unsupported() => {
+        return "operation is unsupported";
+      }
+      ErrorKind::Other() => {
+        return "other I/O error";
+      }
+    }
+  }
+}
+
 extern {
   /// The Rust core behind `stdout_write`.
   fn vx_stdout_write(buffer : *const u8, len : u64) -> u64;
