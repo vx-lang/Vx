@@ -29,10 +29,8 @@ const KNOWN_DECLINES: &[&str] = &[
     // A row chosen by an `if` used as a value: the flat path has no slot for a tensor view
     // ("an aggregate slot with no struct type").
     "backend/pass/tensor_views_end_at_their_last_use.vx",
-    // A field of a `Vec` element, `v[0].id`: the flat emitter finds no layout for the element's
-    // struct ("an emitter gap" in the field load).
-    "backend/pass/vec_drops_its_elements.vx",
-    // The same for `Option<Duration>`, which `Duration`'s `+` and `-` go through.
+    // `Duration`'s `+` and `-` go through `Option<Duration>`, and the flat path declines its
+    // `unwrap` ("a non-scalar default return").
     "backend/pass/operators_on_user_types.vx",
     // `t = pass(t)` inside an `if`: on the flat path a tensor local is one register, so the
     // new value cannot leave the branch. The flat path used to read the wrong tensor after it.

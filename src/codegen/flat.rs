@@ -442,6 +442,9 @@ pub struct Callee {
     /// Whether the callee returns an opaque `!llvm.ptr` (a `*const`/`*mut`/`&` return, e.g. an FFI
     /// allocator). The call's result is then a pointer value tracked in `ptr_of`. (#235)
     pub ret_ptr: bool,
+    /// For a returned reference to a struct (`&Noisy` from `Vec::get_ref`), the struct's GID, so
+    /// a field read through the result, `v.get_ref(0).id`, knows its layout.
+    pub ret_pointee: Option<TypeId>,
     /// Whether the callee returns `void`. The call emits `func.call @name(..) : (..) -> ()` and binds
     /// no result register — the statement-position form (`bump(&mut x);`) used by `&mut` mutators. (#230)
     pub ret_void: bool,
@@ -563,6 +566,12 @@ pub fn build_callee_map(
                 }),
                 ret_agg: resolve_agg_gid(&sig.ret_ty, aggs, agg_names),
                 ret_ptr: is_ptr_ty(&sig.ret_ty),
+                ret_pointee: match peel_wrappers(&sig.ret_ty) {
+                    Type::Borrow { inner, .. } | Type::Pointer(inner, ..) => {
+                        resolve_agg_gid(inner, aggs, agg_names)
+                    }
+                    _ => None,
+                },
                 ret_void: is_void_ty(&sig.ret_ty),
                 ret_tensor: tensor_memref_of_type(&sig.ret_ty),
                 param_tensors: sig
