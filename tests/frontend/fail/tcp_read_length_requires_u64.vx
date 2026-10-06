@@ -15,7 +15,6 @@ fn main() -> i32 {
     let mut stream = TcpStream::connect("127.0.0.1:1");
     let length : i64 = 1;
     let _count = stream.read(0 as *mut u8, length);
-    tcp_stream_drop(&mut stream);
   }
   return 0;
 }

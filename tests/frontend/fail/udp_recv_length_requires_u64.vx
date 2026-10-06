@@ -15,7 +15,6 @@ fn main() -> i32 {
     let mut socket = UdpSocket::bind("127.0.0.1:0");
     let length : i64 = 1;
     let _count = socket.recv(0 as *mut u8, length);
-    udp_socket_drop(&mut socket);
   }
   return 0;
 }
