@@ -18,7 +18,7 @@ the test suite has one, a program that triggers it.
 - [Parser Errors](#parser-errors) — `E1001`–`E1013` (13 codes)
 - [Name Resolution Errors](#name-resolution-errors) — `E2001`–`E2007` (7 codes)
 - [Type Errors](#type-errors) — `E3001`–`E3045` (44 codes)
-- [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4011` (11 codes)
+- [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4012` (12 codes)
 - [Safety Errors](#safety-errors) — `E5001`–`E5002` (2 codes)
 - [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6029` (29 codes)
 - [Tensor/Math Errors](#tensormath-errors) — `E7001`–`E7004` (4 codes)
@@ -156,6 +156,7 @@ Raised by the borrow checker and the linear-type rules. These rule out use-after
 | [`E4009`](/errors/E4009/) | An assignment to a variable, or a field or element of it, while a `&` borrow of it is still used afterwards: `let r = &x; x = 2;` and then a use of `r`. The borrow would see the value change under it. |
 | [`E4010`](/errors/E4010/) | A change to a variable declared without `mut`: assigning it, or a field or element of it, borrowing it `&mut`, or calling a method that takes `&mut self` on it. Declare it `let mut x`, or for a parameter `mut x : T`. |
 | [`E4011`](/errors/E4011/) | A view of a tensor (a row `q[i]` or a field `h.t`) used where a tensor of its own is held: stored in a variable that already exists (`t = q[i]`) or a struct field (`h.t = q[i]`, `Holder { t : q[i] }`), or passed to a function that takes the tensor by value (`f(q[i])`). A view shares its owner's memory and is not a copy. Bind it to a new variable with `let`, pass `q[i].clone()`, or take the parameter by reference. |
+| [`E4012`](/errors/E4012/) | A call to the `drop` method of a `Drop` impl by hand: `x.drop()`. `drop` runs when the value is dropped, so calling it as well would run it twice. Write `drop(x)`, from `core::mem`, to drop a value early. |
 
 ## Safety Errors
 
@@ -227,4 +228,4 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 
 ______________________________________________________________________
 
-138 diagnostics.
+139 diagnostics.

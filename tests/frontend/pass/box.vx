@@ -14,8 +14,9 @@
 // CHECK: call @print_i32(%{{.*}}) : (i32) -> i32
 // CHECK: call @print_str(%{{.*}}) : (!llvm.ptr) -> i32
 // CHECK: call @print_i32(%{{.*}}) : (i32) -> i32
-// CHECK: call @Box$i32$free$i32(%{{.*}}) : (!llvm.ptr) -> i32
-// CHECK-LABEL: func.func @Box$i32$free$i32(%arg0: !llvm.ptr {llvm.noalias}) -> i32
+// `b` is dropped when `main` returns, and dropping a `Box` frees its allocation.
+// CHECK: call @Box$i32$drop$i32(%{{.*}}) : (!llvm.ptr) -> ()
+// CHECK-LABEL: func.func @Box$i32$drop$i32(%arg0: !llvm.ptr {llvm.noalias})
 // CHECK: call @free(%{{.*}}) : (!llvm.ptr) -> i32
 
 import std::box;
@@ -30,7 +31,6 @@ fn main() -> i32 {
 
   unsafe { print!("Updated: "); print!(*b.ptr); }
 
-  b.free();
   return 0;
 }
 

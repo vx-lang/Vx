@@ -1,0 +1,41 @@
+//===- drop_called_by_hand.vx - Vx Compiler ------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A `drop` method runs when its value is dropped, so calling it by hand would run it a second
+// time. As in Rust, the call is refused, for a type of the program and for a `Vec`.
+
+// CHECK-DAG: Error[E4012] at 31:5: `drop` is called for you when a value is dropped
+// CHECK-DAG: Error[E4012] at 36:5: `drop` is called for you when a value is dropped
+// CHECK: 2 error(s) emitted
+
+import core::ops;
+import std::vec;
+
+struct Noisy {
+  id : i32,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    print(self.id);
+  }
+}
+
+fn own_type(mut n : Noisy) -> void {
+  n.drop();
+}
+
+fn library_type() -> void {
+  let mut v = Vec<i32>::new();
+  v.drop();
+}
+
+fn main() -> i32 {
+  return 0;
+}

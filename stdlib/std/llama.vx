@@ -194,7 +194,7 @@ impl Tokenizer {
     };
   }
 
-  /// The text for one token, as an owned `String` the caller must `drop`.
+  /// The text for one token, as an owned `String`.
   ///
   /// `prev_token` decides whether a leading space is stripped, which is why decoding a token
   /// in isolation can differ from decoding it in sequence.
