@@ -669,10 +669,14 @@ pub fn yields_no_value(expr: &Expr) -> bool {
 /// Only the case where *every* path returns counts. A construct where one arm returns and another
 /// yields a value is still a value.
 pub fn diverges_on_every_path(expr: &Expr) -> bool {
+    // A branch may also end in a `match` whose every arm exits; that `match` is a statement too.
     fn block_returns(stmts: &[Statement]) -> bool {
         match stmts.last() {
             Some(Statement::Return(_)) => true,
-            Some(Statement::ExprStmt(ExprStmtStmt { expr, .. })) => diverges_on_every_path(expr),
+            Some(last @ Statement::ExprStmt(ExprStmtStmt { expr, .. })) => {
+                diverges_on_every_path(expr)
+                    || (matches!(expr, Expr::Match(_)) && statement_always_exits(last))
+            }
             _ => false,
         }
     }

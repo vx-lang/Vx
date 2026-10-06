@@ -23,6 +23,9 @@ const KNOWN_DECLINES: &[&str] = &[
     "backend/pass/returning_a_closure_that_uses_nothing.vx",
     "backend/pass/custom_topology_user_lowering.vx",
     "backend/pass/matmul_assign_alias.vx",
+    // A tuple holding an `Option<i32>`: the flat path has no layout for a generic struct holding
+    // an enum ("a struct with no GID"), and it also declines a `match` used as a value.
+    "backend/pass/tuple_match_with_enum_variants_as_a_value.vx",
     // A row chosen by an `if` used as a value: the flat path has no slot for a tensor view
     // ("an aggregate slot with no struct type").
     "backend/pass/tensor_views_end_at_their_last_use.vx",
