@@ -1,0 +1,104 @@
+//===- core_sync_atomic_orderings.vx - Vx Compiler -----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --emit-llvm -O2 2>&1 | FileCheck %s
+// RUN: vxc %s --emit-llvm -O2 --legacy-codegen 2>&1 | FileCheck %s
+// Each function below makes one `core::sync::atomic` call with a fixed ordering, and `main`
+// calls them in order. After optimization they are inlined into `main`, and the checks see
+// exactly one atomic operation per call, of the right kind, with the ordering asked for.
+// `cas_release_acquire` shows `compare_exchange` using one ordering that covers both of its
+// orderings: Release on success and Acquire on failure become AcqRel and Acquire.
+//
+// CHECK-LABEL: llvm.func @main()
+// CHECK-NOT: {{atomic|cmpxchg|fence}}
+// CHECK: llvm.atomicrmw add {{.*}} monotonic : !llvm.ptr, i32
+// CHECK-NOT: {{atomic|cmpxchg|fence}}
+// CHECK: llvm.atomicrmw sub {{.*}} release : !llvm.ptr, i64
+// CHECK-NOT: {{atomic|cmpxchg|fence}}
+// CHECK: llvm.atomicrmw umax {{.*}} acquire : !llvm.ptr, i32
+// CHECK-NOT: {{atomic|cmpxchg|fence}}
+// CHECK: llvm.atomicrmw min {{.*}} acq_rel : !llvm.ptr, i32
+// CHECK-NOT: {{atomic|cmpxchg|fence}}
+// CHECK: llvm.atomicrmw xchg {{.*}} seq_cst : !llvm.ptr, i64
+// CHECK-NOT: {{atomic|cmpxchg|fence}}
+// CHECK: llvm.load {{.*}} atomic acquire {alignment = 4 : i64} : !llvm.ptr -> i32
+// CHECK-NOT: {{atomic|cmpxchg|fence}}
+// CHECK: llvm.store {{.*}} atomic release {alignment = 4 : i64} : i32, !llvm.ptr
+// CHECK-NOT: {{atomic|cmpxchg|fence}}
+// CHECK: llvm.cmpxchg {{.*}} acq_rel acquire : !llvm.ptr, i32
+// CHECK-NOT: {{atomic|cmpxchg|fence}}
+// CHECK: llvm.cmpxchg {{.*}} acq_rel acquire : !llvm.ptr, i32
+// CHECK-NOT: {{atomic|cmpxchg|fence}}
+// CHECK: llvm.fence acquire
+// CHECK-NOT: {{atomic|cmpxchg|fence}}
+// CHECK: llvm.fence syncscope("singlethread") seq_cst
+// CHECK-NOT: {{atomic|cmpxchg|fence}}
+// CHECK: llvm.return
+import core::sync::atomic;
+
+fn add_relaxed(a : &mut AtomicI32) -> i32 {
+  return a.fetch_add(1, AtomicOrdering::Relaxed);
+}
+
+fn sub_release(a : &mut AtomicI64) -> i64 {
+  return a.fetch_sub(2, AtomicOrdering::Release);
+}
+
+fn max_unsigned_acquire(a : &mut AtomicU32) -> u32 {
+  return a.fetch_max(3, AtomicOrdering::Acquire);
+}
+
+fn min_signed_acq_rel(a : &mut AtomicI32) -> i32 {
+  return a.fetch_min(4, AtomicOrdering::AcqRel);
+}
+
+fn swap_seq_cst(a : &mut AtomicU64) -> u64 {
+  return a.swap(5, AtomicOrdering::SeqCst);
+}
+
+fn load_acquire(a : &AtomicI32) -> i32 {
+  return a.load(AtomicOrdering::Acquire);
+}
+
+fn store_release(a : &mut AtomicI32) -> void {
+  a.store(6, AtomicOrdering::Release);
+}
+
+fn cas_acq_rel_acquire(a : &mut AtomicI32) -> bool {
+  return a.compare_exchange(7, 8, AtomicOrdering::AcqRel, AtomicOrdering::Acquire).is_ok();
+}
+
+fn cas_release_acquire(a : &mut AtomicI32) -> bool {
+  return a.compare_exchange(8, 9, AtomicOrdering::Release, AtomicOrdering::Acquire).is_ok();
+}
+
+fn fence_acquire() -> void {
+  fence(AtomicOrdering::Acquire);
+}
+
+fn compiler_fence_seq_cst() -> void {
+  compiler_fence(AtomicOrdering::SeqCst);
+}
+
+fn main() -> i32 {
+  let mut a = AtomicI32::new(0);
+  let mut b = AtomicI64::new(0);
+  let mut c = AtomicU32::new(0);
+  let mut d = AtomicU64::new(0);
+  let _ = add_relaxed(&mut a);
+  let _ = sub_release(&mut b);
+  let _ = max_unsigned_acquire(&mut c);
+  let _ = min_signed_acq_rel(&mut a);
+  let _ = swap_seq_cst(&mut d);
+  let _ = load_acquire(&a);
+  store_release(&mut a);
+  let _ = cas_acq_rel_acquire(&mut a);
+  let _ = cas_release_acquire(&mut a);
+  fence_acquire();
+  compiler_fence_seq_cst();
+  return 0;
+}

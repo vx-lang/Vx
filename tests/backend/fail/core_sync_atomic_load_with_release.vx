@@ -1,0 +1,10 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// A load cannot use the Release ordering, so `load` stops the program, as Rust panics.
+// CHECK: load: the ordering cannot be Release or AcqRel
+import core::sync::atomic;
+
+fn main() -> i32 {
+  let a = AtomicI32::new(1);
+  print(a.load(AtomicOrdering::Release));
+  return 0;
+}

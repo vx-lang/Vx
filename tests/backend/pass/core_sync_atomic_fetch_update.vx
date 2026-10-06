@@ -1,0 +1,37 @@
+//===- core_sync_atomic_fetch_update.vx - Vx Compiler --------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `fetch_update` on one thread: a closure answering `Some` stores its result and the call
+// answers `Ok` with the old value; a closure answering `None` stores nothing and the call
+// answers `Err` with the value it saw. The last number is the value left in the atomic.
+//
+// EXPECT: ok 5 | err 15 | 15 |
+import core::sync::atomic;
+
+fn show(r : Result<i64, i64>) -> i32 {
+  match r {
+    Result<i64, i64>::Ok(v) => {
+      print!("ok ");
+      print(v);
+    }
+    Result<i64, i64>::Err(v) => {
+      print!("err ");
+      print(v);
+    }
+  }
+  print!(" | ");
+  return 0;
+}
+
+fn main() -> i32 {
+  let mut a = AtomicI64::new(5);
+  let _ = show(a.fetch_update(AtomicOrdering::SeqCst, AtomicOrdering::Acquire, | x : i64 | Option<i64>::Some(x * 3)));
+  let _ = show(a.fetch_update(AtomicOrdering::SeqCst, AtomicOrdering::Acquire, | x : i64 | Option<i64>::None()));
+  print(a.into_inner());
+  print!(" |");
+  return 0;
+}

@@ -190,6 +190,8 @@ impl FnEmit<'_> {
                 mlir_scalar(&e).ok_or(crate::emitter_gap!())?.to_string()
             } else if let Some(Some(m)) = self.mem_of.get(r) {
                 m.clone()
+            } else if self.is_pointer_value(r)? {
+                "!llvm.ptr".to_string()
             } else {
                 return Err(crate::emitter_gap!());
             };

@@ -1,0 +1,597 @@
+//===- atomic.vx - Vx Standard Library ----------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Atomic integers and booleans: each read, write or read-modify-write is one indivisible
+// memory operation, with the memory ordering the caller asks for.
+//
+// Every operation is one `llvm.atomicrmw`, `llvm.cmpxchg`, `llvm.fence` or atomic
+// `llvm.load`/`llvm.store` written in an `mlir!` block, so the module needs no libc.
+// An `mlir!` block names its ordering in the text, so each method matches on the ordering
+// and has one block per case. A constant ordering lets the optimizer drop the other cases.
+//
+// Differences from Rust's `core::sync::atomic`:
+//
+// - The ordering enum is `AtomicOrdering`, since `core::cmp` already has an `Ordering` and
+//   two imported names cannot be the same.
+// - Methods that write take `self : &mut Self`. Vx marks a `&T` parameter read-only and has
+//   no `UnsafeCell` that would let a shared reference write. `load` takes `&Self`.
+// - `compare_exchange` can use stronger orderings than asked for: `Release` on success with
+//   `Acquire` on failure runs as `AcqRel` and `Acquire`. A stronger ordering is always
+//   correct. `compare_exchange_weak` is `compare_exchange`, which never fails spuriously.
+// - A program that calls `fetch_update` is compiled by the legacy code generator: the flat
+//   one cannot yet call a closure that answers an `Option`.
+// - An ordering Rust panics on (`Release` for a load, `Acquire` for a store, `Release` or
+//   `AcqRel` as a failure ordering, `Relaxed` for a fence) fails an `assert` here.
+// - Vx has no threads yet, so nothing here has been run by more than one thread.
+//
+// Not here: `AtomicPtr<T>` (an `mlir!` block in a generic impl cannot answer `*mut T`),
+// `AtomicIsize` (Vx has no `isize`), `AtomicI128`/`AtomicU128` (unstable in Rust),
+// `as_ptr` and `get_mut` on `AtomicBool` (it is held as a byte), `from_ptr` and the
+// `from_mut`/`get_mut_slice` family (want turning a pointer into a reference, and slices),
+// and `Debug` (no `core::fmt`).
+import core::marker;
+import core::option;
+import core::result;
+import core::default;
+import core::convert;
+
+/// How an atomic operation is ordered with the memory operations around it.
+enum AtomicOrdering {
+  // Only the operation itself is atomic; no order with other memory operations.
+  Relaxed,
+  // Writes before this store are visible to a thread whose `Acquire` load reads it.
+  Release,
+  // Reads after this load see the writes made before the `Release` store it read.
+  Acquire,
+  // `Acquire` for the read and `Release` for the write of a read-modify-write.
+  AcqRel,
+  // `AcqRel`, and every `SeqCst` operation is seen in one order by all threads.
+  SeqCst,
+}
+
+impl Copy for AtomicOrdering {}
+
+/// Whether a load may use `o`. Rust panics on `Release` and `AcqRel`.
+fn core_atomic_load_order_ok(o : AtomicOrdering) -> bool {
+  match o {
+    AtomicOrdering::Release => {
+      return false;
+    }
+    AtomicOrdering::AcqRel => {
+      return false;
+    }
+    _ => {
+      return true;
+    }
+  }
+}
+
+/// Whether a store may use `o`. Rust panics on `Acquire` and `AcqRel`.
+fn core_atomic_store_order_ok(o : AtomicOrdering) -> bool {
+  match o {
+    AtomicOrdering::Acquire => {
+      return false;
+    }
+    AtomicOrdering::AcqRel => {
+      return false;
+    }
+    _ => {
+      return true;
+    }
+  }
+}
+
+/// Whether a fence may use `o`. Rust panics on `Relaxed`.
+fn core_atomic_fence_order_ok(o : AtomicOrdering) -> bool {
+  match o {
+    AtomicOrdering::Relaxed => {
+      return false;
+    }
+    _ => {
+      return true;
+    }
+  }
+}
+
+/// `o`, made strong enough to include `Acquire`.
+fn core_atomic_with_acquire(o : AtomicOrdering) -> AtomicOrdering {
+  match o {
+    AtomicOrdering::Relaxed => {
+      return AtomicOrdering::Acquire;
+    }
+    AtomicOrdering::Release => {
+      return AtomicOrdering::AcqRel;
+    }
+    _ => {
+      return o;
+    }
+  }
+}
+
+/// The one ordering `compare_exchange` uses: `success` made strong enough to also cover
+/// `failure`. A `failure` of `Release` or `AcqRel` fails the assert, as Rust panics.
+fn core_atomic_cas_order(success : AtomicOrdering, failure : AtomicOrdering) -> AtomicOrdering {
+  assert(core_atomic_load_order_ok(failure), "compare_exchange: the failure ordering cannot be Release or AcqRel");
+  match failure {
+    AtomicOrdering::SeqCst => {
+      return AtomicOrdering::SeqCst;
+    }
+    AtomicOrdering::Acquire => {
+      return core_atomic_with_acquire(success);
+    }
+    _ => {
+      return success;
+    }
+  }
+}
+
+/// Stamps one read-modify-write method: `$method` is the Rust name, `$op` the
+/// `llvm.atomicrmw` operation. It answers the value from before the change.
+macro_rules stamp_atomic_rmw {
+  ($name : ident , $t : ident , $mlir : ident , $method : ident , $op : ident) => {
+    impl $name {
+      fn $method(self : &mut $name, val : $t, order : AtomicOrdering) -> $t {
+        match order {
+          AtomicOrdering::Relaxed => {
+            return mlir!( inputs : (%p = &mut self.v : !llvm.ptr, %x = val : $mlir), returns : $t, dialects : ["llvm"]) {
+              %r = llvm.atomicrmw $op %p, %x monotonic : !llvm.ptr, $mlir
+              macro.yield %r : $mlir
+            };
+          }
+          AtomicOrdering::Release => {
+            return mlir!( inputs : (%p = &mut self.v : !llvm.ptr, %x = val : $mlir), returns : $t, dialects : ["llvm"]) {
+              %r = llvm.atomicrmw $op %p, %x release : !llvm.ptr, $mlir
+              macro.yield %r : $mlir
+            };
+          }
+          AtomicOrdering::Acquire => {
+            return mlir!( inputs : (%p = &mut self.v : !llvm.ptr, %x = val : $mlir), returns : $t, dialects : ["llvm"]) {
+              %r = llvm.atomicrmw $op %p, %x acquire : !llvm.ptr, $mlir
+              macro.yield %r : $mlir
+            };
+          }
+          AtomicOrdering::AcqRel => {
+            return mlir!( inputs : (%p = &mut self.v : !llvm.ptr, %x = val : $mlir), returns : $t, dialects : ["llvm"]) {
+              %r = llvm.atomicrmw $op %p, %x acq_rel : !llvm.ptr, $mlir
+              macro.yield %r : $mlir
+            };
+          }
+          AtomicOrdering::SeqCst => {
+            return mlir!( inputs : (%p = &mut self.v : !llvm.ptr, %x = val : $mlir), returns : $t, dialects : ["llvm"]) {
+              %r = llvm.atomicrmw $op %p, %x seq_cst : !llvm.ptr, $mlir
+              macro.yield %r : $mlir
+            };
+          }
+        }
+      }
+    }
+  };
+}
+
+/// Stamps one atomic integer type `$name` holding a `$t`. `$mlir` is the MLIR type of `$t`
+/// (a Vx `u32` is an MLIR `i32`), and `$align` its size in bytes.
+macro_rules stamp_atomic_int {
+  ($name : ident , $t : ident , $mlir : ident , $align : expr) => {
+    /// A `$t` that can be read and changed atomically.
+    struct $name {
+      v : $t,
+    }
+
+    impl $name {
+      /// A new atomic holding `v`.
+      fn new(v : $t) -> $name {
+        return $name {
+          v : v
+        };
+      }
+
+      /// The value, which is no longer atomic.
+      fn into_inner(self : $name) -> $t {
+        return self.v;
+      }
+
+      /// The value, through a `&mut`, which rules out any other access at the same time.
+      fn get_mut(self : &mut $name) -> &mut $t {
+        return &mut self.v;
+      }
+
+      /// A pointer to the value.
+      fn as_ptr(self : &mut $name) -> *mut $t {
+        return unsafe { (&mut self.v) as *mut $t };
+      }
+
+      /// Reads the value. `order` cannot be `Release` or `AcqRel`.
+      fn load(self : &$name, order : AtomicOrdering) -> $t {
+        assert(core_atomic_load_order_ok(order), "load: the ordering cannot be Release or AcqRel");
+        match order {
+          AtomicOrdering::Relaxed => {
+            return mlir!( inputs : (%p = &self.v : !llvm.ptr), returns : $t, dialects : ["llvm"]) {
+              %r = llvm.load %p atomic monotonic {
+                alignment = $align : i64
+              } : !llvm.ptr -> $mlir
+              macro.yield %r : $mlir
+            };
+          }
+          AtomicOrdering::Acquire => {
+            return mlir!( inputs : (%p = &self.v : !llvm.ptr), returns : $t, dialects : ["llvm"]) {
+              %r = llvm.load %p atomic acquire {
+                alignment = $align : i64
+              } : !llvm.ptr -> $mlir
+              macro.yield %r : $mlir
+            };
+          }
+          _ => {
+            return mlir!( inputs : (%p = &self.v : !llvm.ptr), returns : $t, dialects : ["llvm"]) {
+              %r = llvm.load %p atomic seq_cst {
+                alignment = $align : i64
+              } : !llvm.ptr -> $mlir
+              macro.yield %r : $mlir
+            };
+          }
+        }
+      }
+
+      /// Writes `val`. `order` cannot be `Acquire` or `AcqRel`.
+      fn store(self : &mut $name, val : $t, order : AtomicOrdering) -> void {
+        assert(core_atomic_store_order_ok(order), "store: the ordering cannot be Acquire or AcqRel");
+        match order {
+          AtomicOrdering::Relaxed => {
+            mlir!( inputs : (%p = &mut self.v : !llvm.ptr, %x = val : $mlir), dialects : ["llvm"]) {
+              llvm.store %x, %p atomic monotonic {
+                alignment = $align : i64
+              } : $mlir, !llvm.ptr
+              macro.yield
+            };
+          }
+          AtomicOrdering::Release => {
+            mlir!( inputs : (%p = &mut self.v : !llvm.ptr, %x = val : $mlir), dialects : ["llvm"]) {
+              llvm.store %x, %p atomic release {
+                alignment = $align : i64
+              } : $mlir, !llvm.ptr
+              macro.yield
+            };
+          }
+          _ => {
+            mlir!( inputs : (%p = &mut self.v : !llvm.ptr, %x = val : $mlir), dialects : ["llvm"]) {
+              llvm.store %x, %p atomic seq_cst {
+                alignment = $align : i64
+              } : $mlir, !llvm.ptr
+              macro.yield
+            };
+          }
+        }
+        // A `match` ending a function counts as its result; this keeps it a statement.
+        return;
+      }
+
+      /// Stores `new` if the value is `current`. Answers `Ok` with the old value when it
+      /// stored, `Err` with the value it found when it did not.
+      fn compare_exchange(self : &mut $name, current : $t, new : $t, success : AtomicOrdering, failure : AtomicOrdering) -> Result<$t, $t> {
+        let old = self.core_atomic_cmpxchg(current, new, core_atomic_cas_order(success, failure));
+        if old == current {
+          return Result<$t, $t>::Ok(old);
+        }
+        return Result<$t, $t>::Err(old);
+      }
+
+      /// `compare_exchange`. Rust allows this one to fail even when the value matches; this
+      /// one never does.
+      fn compare_exchange_weak(self : &mut $name, current : $t, new : $t, success : AtomicOrdering, failure : AtomicOrdering) -> Result<$t, $t> {
+        return self.compare_exchange(current, new, success, failure);
+      }
+
+      /// Replaces the value with `f(value)` until no other write gets in between, and answers
+      /// `Ok` with the old value. If `f` answers `None`, stops and answers `Err` with the value.
+      fn fetch_update(self : &mut $name, set_order : AtomicOrdering, fetch_order : AtomicOrdering, f : Closure1<$t, Option<$t>>) -> Result<$t, $t> {
+        let call = f.func;
+        let mut prev = self.load(fetch_order);
+        loop {
+          match call(f.env, prev) {
+            Option<$t>::Some(next) => {
+              match self.compare_exchange_weak(prev, next, set_order, fetch_order) {
+                Result<$t, $t>::Ok(old) => {
+                  return Result<$t, $t>::Ok(old);
+                }
+                Result<$t, $t>::Err(seen) => {
+                  prev = seen;
+                }
+              }
+            }
+            Option<$t>::None => {
+              return Result<$t, $t>::Err(prev);
+            }
+          }
+        }
+        // The loop only ends by returning; the checker does not know that.
+        return Result<$t, $t>::Err(prev);
+      }
+
+      /// One `llvm.cmpxchg` at `order`, answering the value it found. The failure ordering
+      /// is the strongest one `order` allows.
+      fn core_atomic_cmpxchg(self : &mut $name, current : $t, new : $t, order : AtomicOrdering) -> $t {
+        match order {
+          AtomicOrdering::Relaxed => {
+            return mlir!( inputs : (%p = &mut self.v : !llvm.ptr, %c = current : $mlir, %n = new : $mlir), returns : $t, dialects : ["llvm"]) {
+              %s = llvm.cmpxchg %p, %c, %n monotonic monotonic : !llvm.ptr, $mlir
+              %r = llvm.extractvalue %s[0] : !llvm.struct<($mlir, i1)>
+              macro.yield %r : $mlir
+            };
+          }
+          AtomicOrdering::Release => {
+            return mlir!( inputs : (%p = &mut self.v : !llvm.ptr, %c = current : $mlir, %n = new : $mlir), returns : $t, dialects : ["llvm"]) {
+              %s = llvm.cmpxchg %p, %c, %n release monotonic : !llvm.ptr, $mlir
+              %r = llvm.extractvalue %s[0] : !llvm.struct<($mlir, i1)>
+              macro.yield %r : $mlir
+            };
+          }
+          AtomicOrdering::Acquire => {
+            return mlir!( inputs : (%p = &mut self.v : !llvm.ptr, %c = current : $mlir, %n = new : $mlir), returns : $t, dialects : ["llvm"]) {
+              %s = llvm.cmpxchg %p, %c, %n acquire acquire : !llvm.ptr, $mlir
+              %r = llvm.extractvalue %s[0] : !llvm.struct<($mlir, i1)>
+              macro.yield %r : $mlir
+            };
+          }
+          AtomicOrdering::AcqRel => {
+            return mlir!( inputs : (%p = &mut self.v : !llvm.ptr, %c = current : $mlir, %n = new : $mlir), returns : $t, dialects : ["llvm"]) {
+              %s = llvm.cmpxchg %p, %c, %n acq_rel acquire : !llvm.ptr, $mlir
+              %r = llvm.extractvalue %s[0] : !llvm.struct<($mlir, i1)>
+              macro.yield %r : $mlir
+            };
+          }
+          AtomicOrdering::SeqCst => {
+            return mlir!( inputs : (%p = &mut self.v : !llvm.ptr, %c = current : $mlir, %n = new : $mlir), returns : $t, dialects : ["llvm"]) {
+              %s = llvm.cmpxchg %p, %c, %n seq_cst seq_cst : !llvm.ptr, $mlir
+              %r = llvm.extractvalue %s[0] : !llvm.struct<($mlir, i1)>
+              macro.yield %r : $mlir
+            };
+          }
+        }
+      }
+    }
+
+    impl Default for $name {
+      /// An atomic holding zero.
+      fn default() -> $name {
+        return $name {
+          v : 0
+        };
+      }
+    }
+
+    impl From<$t> for $name {
+      /// `new`.
+      fn from(value : $t) -> $name {
+        return $name {
+          v : value
+        };
+      }
+    }
+  };
+}
+
+/// Stamps the methods every atomic integer has, signed or not.
+macro_rules stamp_atomic_int_rmw {
+  ($name : ident , $t : ident , $mlir : ident) => {
+    stamp_atomic_rmw!($name , $t , $mlir , swap , xchg);
+    stamp_atomic_rmw!($name , $t , $mlir , fetch_add , add);
+    stamp_atomic_rmw!($name , $t , $mlir , fetch_sub , sub);
+    stamp_atomic_rmw!($name , $t , $mlir , fetch_and , _and);
+    stamp_atomic_rmw!($name , $t , $mlir , fetch_nand , nand);
+    stamp_atomic_rmw!($name , $t , $mlir , fetch_or , _or);
+    stamp_atomic_rmw!($name , $t , $mlir , fetch_xor , _xor);
+  };
+}
+
+stamp_atomic_int!(AtomicI8 , i8 , i8 , 1);
+stamp_atomic_int!(AtomicI16 , i16 , i16 , 2);
+stamp_atomic_int!(AtomicI32 , i32 , i32 , 4);
+stamp_atomic_int!(AtomicI64 , i64 , i64 , 8);
+stamp_atomic_int!(AtomicU8 , u8 , i8 , 1);
+stamp_atomic_int!(AtomicU16 , u16 , i16 , 2);
+stamp_atomic_int!(AtomicU32 , u32 , i32 , 4);
+stamp_atomic_int!(AtomicU64 , u64 , i64 , 8);
+stamp_atomic_int!(AtomicUsize , usize , i64 , 8);
+
+stamp_atomic_int_rmw!(AtomicI8 , i8 , i8);
+stamp_atomic_int_rmw!(AtomicI16 , i16 , i16);
+stamp_atomic_int_rmw!(AtomicI32 , i32 , i32);
+stamp_atomic_int_rmw!(AtomicI64 , i64 , i64);
+stamp_atomic_int_rmw!(AtomicU8 , u8 , i8);
+stamp_atomic_int_rmw!(AtomicU16 , u16 , i16);
+stamp_atomic_int_rmw!(AtomicU32 , u32 , i32);
+stamp_atomic_int_rmw!(AtomicU64 , u64 , i64);
+stamp_atomic_int_rmw!(AtomicUsize , usize , i64);
+
+// `fetch_max` and `fetch_min` compare with the sign on the signed widths and without it on
+// the unsigned ones.
+stamp_atomic_rmw!(AtomicI8 , i8 , i8 , fetch_max , max);
+stamp_atomic_rmw!(AtomicI8 , i8 , i8 , fetch_min , min);
+stamp_atomic_rmw!(AtomicI16 , i16 , i16 , fetch_max , max);
+stamp_atomic_rmw!(AtomicI16 , i16 , i16 , fetch_min , min);
+stamp_atomic_rmw!(AtomicI32 , i32 , i32 , fetch_max , max);
+stamp_atomic_rmw!(AtomicI32 , i32 , i32 , fetch_min , min);
+stamp_atomic_rmw!(AtomicI64 , i64 , i64 , fetch_max , max);
+stamp_atomic_rmw!(AtomicI64 , i64 , i64 , fetch_min , min);
+stamp_atomic_rmw!(AtomicU8 , u8 , i8 , fetch_max , umax);
+stamp_atomic_rmw!(AtomicU8 , u8 , i8 , fetch_min , umin);
+stamp_atomic_rmw!(AtomicU16 , u16 , i16 , fetch_max , umax);
+stamp_atomic_rmw!(AtomicU16 , u16 , i16 , fetch_min , umin);
+stamp_atomic_rmw!(AtomicU32 , u32 , i32 , fetch_max , umax);
+stamp_atomic_rmw!(AtomicU32 , u32 , i32 , fetch_min , umin);
+stamp_atomic_rmw!(AtomicU64 , u64 , i64 , fetch_max , umax);
+stamp_atomic_rmw!(AtomicU64 , u64 , i64 , fetch_min , umin);
+stamp_atomic_rmw!(AtomicUsize , usize , i64 , fetch_max , umax);
+stamp_atomic_rmw!(AtomicUsize , usize , i64 , fetch_min , umin);
+
+/// A `bool` that can be read and changed atomically. It is held as an `AtomicU8` that is
+/// always 0 or 1, since LLVM has no atomic operation on a single bit.
+struct AtomicBool {
+  v : AtomicU8,
+}
+
+/// 1 for `true`, 0 for `false`.
+fn core_atomic_bool_byte(b : bool) -> u8 {
+  if b {
+    return 1;
+  }
+  return 0;
+}
+
+impl AtomicBool {
+  /// A new atomic holding `v`.
+  fn new(v : bool) -> AtomicBool {
+    return AtomicBool {
+      v : AtomicU8::new(core_atomic_bool_byte(v))
+    };
+  }
+
+  /// The value, which is no longer atomic.
+  fn into_inner(self : AtomicBool) -> bool {
+    return self.v.into_inner() != 0;
+  }
+
+  /// Reads the value. `order` cannot be `Release` or `AcqRel`.
+  fn load(self : &AtomicBool, order : AtomicOrdering) -> bool {
+    return self.v.load(order) != 0;
+  }
+
+  /// Writes `val`. `order` cannot be `Acquire` or `AcqRel`.
+  fn store(self : &mut AtomicBool, val : bool, order : AtomicOrdering) -> void {
+    self.v.store(core_atomic_bool_byte(val), order);
+  }
+
+  /// Writes `val` and answers the old value.
+  fn swap(self : &mut AtomicBool, val : bool, order : AtomicOrdering) -> bool {
+    return self.v.swap(core_atomic_bool_byte(val), order) != 0;
+  }
+
+  /// Stores `new` if the value is `current`. Answers `Ok` with the old value when it
+  /// stored, `Err` with the value it found when it did not.
+  fn compare_exchange(self : &mut AtomicBool, current : bool, new : bool, success : AtomicOrdering, failure : AtomicOrdering) -> Result<bool, bool> {
+    let old = self.v.core_atomic_cmpxchg(core_atomic_bool_byte(current), core_atomic_bool_byte(new), core_atomic_cas_order(success, failure)) != 0;
+    if old == current {
+      return Result<bool, bool>::Ok(old);
+    }
+    return Result<bool, bool>::Err(old);
+  }
+
+  /// `compare_exchange`, which never fails spuriously.
+  fn compare_exchange_weak(self : &mut AtomicBool, current : bool, new : bool, success : AtomicOrdering, failure : AtomicOrdering) -> Result<bool, bool> {
+    return self.compare_exchange(current, new, success, failure);
+  }
+
+  /// Logical and with `val`; answers the old value.
+  fn fetch_and(self : &mut AtomicBool, val : bool, order : AtomicOrdering) -> bool {
+    return self.v.fetch_and(core_atomic_bool_byte(val), order) != 0;
+  }
+
+  /// Logical or with `val`; answers the old value.
+  fn fetch_or(self : &mut AtomicBool, val : bool, order : AtomicOrdering) -> bool {
+    return self.v.fetch_or(core_atomic_bool_byte(val), order) != 0;
+  }
+
+  /// Logical exclusive or with `val`; answers the old value.
+  fn fetch_xor(self : &mut AtomicBool, val : bool, order : AtomicOrdering) -> bool {
+    return self.v.fetch_xor(core_atomic_bool_byte(val), order) != 0;
+  }
+
+  /// Sets the value to `!(old && val)`; answers the old value. A byte `nand` would leave 254,
+  /// so this is an exclusive or with `true` when `val` is true, and a store of `true` when not.
+  fn fetch_nand(self : &mut AtomicBool, val : bool, order : AtomicOrdering) -> bool {
+    if val {
+      return self.v.fetch_xor(1, order) != 0;
+    }
+    return self.v.swap(1, order) != 0;
+  }
+
+  /// Flips the value; answers the old one.
+  fn fetch_not(self : &mut AtomicBool, order : AtomicOrdering) -> bool {
+    return self.v.fetch_xor(1, order) != 0;
+  }
+}
+
+impl Default for AtomicBool {
+  /// An atomic holding `false`.
+  fn default() -> AtomicBool {
+    return AtomicBool::new(false);
+  }
+}
+
+impl From<bool> for AtomicBool {
+  /// `new`.
+  fn from(value : bool) -> AtomicBool {
+    return AtomicBool::new(value);
+  }
+}
+
+/// Orders the memory operations before it with those after it, for every thread.
+/// `order` cannot be `Relaxed`.
+fn fence(order : AtomicOrdering) -> void {
+  assert(core_atomic_fence_order_ok(order), "fence: the ordering cannot be Relaxed");
+  match order {
+    AtomicOrdering::Release => {
+      mlir!( inputs : (), dialects : ["llvm"]) {
+        llvm.fence release
+        macro.yield
+      };
+    }
+    AtomicOrdering::Acquire => {
+      mlir!( inputs : (), dialects : ["llvm"]) {
+        llvm.fence acquire
+        macro.yield
+      };
+    }
+    AtomicOrdering::AcqRel => {
+      mlir!( inputs : (), dialects : ["llvm"]) {
+        llvm.fence acq_rel
+        macro.yield
+      };
+    }
+    AtomicOrdering::SeqCst => {
+      mlir!( inputs : (), dialects : ["llvm"]) {
+        llvm.fence seq_cst
+        macro.yield
+      };
+    }
+    AtomicOrdering::Relaxed => {}
+  }
+  return;
+}
+
+/// `fence`, for the current thread only: it stops the compiler from moving memory operations
+/// across it and emits no instruction. `order` cannot be `Relaxed`.
+fn compiler_fence(order : AtomicOrdering) -> void {
+  assert(core_atomic_fence_order_ok(order), "compiler_fence: the ordering cannot be Relaxed");
+  match order {
+    AtomicOrdering::Release => {
+      mlir!( inputs : (), dialects : ["llvm"]) {
+        llvm.fence syncscope("singlethread") release
+        macro.yield
+      };
+    }
+    AtomicOrdering::Acquire => {
+      mlir!( inputs : (), dialects : ["llvm"]) {
+        llvm.fence syncscope("singlethread") acquire
+        macro.yield
+      };
+    }
+    AtomicOrdering::AcqRel => {
+      mlir!( inputs : (), dialects : ["llvm"]) {
+        llvm.fence syncscope("singlethread") acq_rel
+        macro.yield
+      };
+    }
+    AtomicOrdering::SeqCst => {
+      mlir!( inputs : (), dialects : ["llvm"]) {
+        llvm.fence syncscope("singlethread") seq_cst
+        macro.yield
+      };
+    }
+    AtomicOrdering::Relaxed => {}
+  }
+  return;
+}

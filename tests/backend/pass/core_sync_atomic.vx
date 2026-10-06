@@ -1,0 +1,194 @@
+//===- core_sync_atomic.vx - Vx Compiler ---------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `core::sync::atomic` on one thread. Each operation prints the value it answered and then
+// the value left in the atomic, so a wrong old value and a wrong new value both show.
+//
+// In order: `AtomicI32` through every operation, each ordering used at least once;
+// `compare_exchange` and `compare_exchange_weak` succeeding and failing; `fetch_max` and
+// `fetch_min` on `AtomicU32` comparing without a sign; wrapping at the ends of `AtomicI8`,
+// `AtomicU8` and `AtomicU64`; `AtomicUsize`, `default` and `from`; writes through `get_mut`
+// and `as_ptr`; and `AtomicBool`.
+//
+// EXPECT: 10 | 20 | 20 30 | 30 35 | 35 20 | 20 20 | 20 -3 | -3 4 | 4 13 | 13 14 | 14 -13 | ok -13 7 | err 7 7 | ok 7 8 | err 8 8 | 8 |
+// EXPECT: max 4000000000 4000000000 | min 4000000000 5 |
+// EXPECT: wrap -128 127 | 0 255 | 18446744073709551615 1 |
+// EXPECT: usize 7 8 | default 0 | from 6 |
+// EXPECT: get_mut 41 | as_ptr 42 |
+// EXPECT: bool false true | true false | false true | true false | false true | true false | false true | ok true false | err false false | load false |
+import core::sync::atomic;
+
+// `print` does not take a bool yet.
+fn show_bool(b : bool) -> i32 {
+  if b {
+    print!("true");
+  } else {
+    print!("false");
+  }
+  return 0;
+}
+
+fn show_i32(r : Result<i32, i32>) -> i32 {
+  match r {
+    Result<i32, i32>::Ok(v) => {
+      print!("ok ");
+      print(v);
+    }
+    Result<i32, i32>::Err(v) => {
+      print!("err ");
+      print(v);
+    }
+  }
+  return 0;
+}
+
+fn show_bool_result(r : Result<bool, bool>) -> i32 {
+  match r {
+    Result<bool, bool>::Ok(v) => {
+      print!("ok ");
+      let _ = show_bool(v);
+    }
+    Result<bool, bool>::Err(v) => {
+      print!("err ");
+      let _ = show_bool(v);
+    }
+  }
+  return 0;
+}
+
+// The value an operation answered, then the value it left in `a`.
+fn show_old_new(old : i32, a : &AtomicI32) -> i32 {
+  print(old);
+  print!(" ");
+  print(a.load(AtomicOrdering::SeqCst));
+  print!(" | ");
+  return 0;
+}
+
+fn show_bool_old_new(old : bool, a : &AtomicBool) -> i32 {
+  let _ = show_bool(old);
+  print!(" ");
+  let _ = show_bool(a.load(AtomicOrdering::Acquire));
+  print!(" | ");
+  return 0;
+}
+
+fn main() -> i32 {
+  let mut a = AtomicI32::new(10);
+  print(a.load(AtomicOrdering::Relaxed));
+  print!(" | ");
+  a.store(20, AtomicOrdering::Release);
+  print(a.load(AtomicOrdering::Acquire));
+  print!(" | ");
+  let _ = show_old_new(a.swap(30, AtomicOrdering::AcqRel), &a);
+  let _ = show_old_new(a.fetch_add(5, AtomicOrdering::Relaxed), &a);
+  let _ = show_old_new(a.fetch_sub(15, AtomicOrdering::Release), &a);
+  // 20 is larger than -3, so `fetch_max` leaves 20 and `fetch_min` stores -3.
+  let _ = show_old_new(a.fetch_max(-3, AtomicOrdering::Acquire), &a);
+  let _ = show_old_new(a.fetch_min(-3, AtomicOrdering::AcqRel), &a);
+  let _ = show_old_new(a.fetch_and(6, AtomicOrdering::SeqCst), &a);
+  let _ = show_old_new(a.fetch_or(9, AtomicOrdering::SeqCst), &a);
+  let _ = show_old_new(a.fetch_xor(3, AtomicOrdering::SeqCst), &a);
+  // nand stores !(14 & 12), which is -13.
+  let _ = show_old_new(a.fetch_nand(12, AtomicOrdering::SeqCst), &a);
+  let _ = show_i32(a.compare_exchange(-13, 7, AtomicOrdering::SeqCst, AtomicOrdering::Relaxed));
+  print!(" ");
+  print(a.load(AtomicOrdering::SeqCst));
+  print!(" | ");
+  let _ = show_i32(a.compare_exchange(-13, 9, AtomicOrdering::Acquire, AtomicOrdering::Acquire));
+  print!(" ");
+  print(a.load(AtomicOrdering::SeqCst));
+  print!(" | ");
+  let _ = show_i32(a.compare_exchange_weak(7, 8, AtomicOrdering::Release, AtomicOrdering::Relaxed));
+  print!(" ");
+  print(a.load(AtomicOrdering::SeqCst));
+  print!(" | ");
+  let _ = show_i32(a.compare_exchange_weak(7, 9, AtomicOrdering::AcqRel, AtomicOrdering::SeqCst));
+  print!(" ");
+  print(a.load(AtomicOrdering::SeqCst));
+  print!(" | ");
+  fence(AtomicOrdering::SeqCst);
+  compiler_fence(AtomicOrdering::AcqRel);
+  print(a.into_inner());
+  println!(" |");
+
+  // As a signed number 4000000000 would be negative, and `fetch_max` would store 5.
+  let mut u = AtomicU32::new(4000000000);
+  print!("max ");
+  print(u.fetch_max(5, AtomicOrdering::SeqCst));
+  print!(" ");
+  print(u.load(AtomicOrdering::SeqCst));
+  print!(" | min ");
+  print(u.fetch_min(5, AtomicOrdering::SeqCst));
+  print!(" ");
+  print(u.into_inner());
+  println!(" |");
+
+  let mut small = AtomicI8::new(-128);
+  print!("wrap ");
+  print(small.fetch_sub(1, AtomicOrdering::Relaxed));
+  print!(" ");
+  print(small.into_inner());
+  print!(" | ");
+  let mut byte = AtomicU8::new(0);
+  print(byte.fetch_sub(1, AtomicOrdering::Relaxed));
+  print!(" ");
+  print(byte.into_inner());
+  print!(" | ");
+  let mut big = AtomicU64::new(18446744073709551615);
+  print(big.fetch_add(2, AtomicOrdering::Relaxed));
+  print!(" ");
+  print(big.into_inner());
+  println!(" |");
+
+  let mut n = AtomicUsize::new(7);
+  print!("usize ");
+  print(n.fetch_add(1, AtomicOrdering::Relaxed));
+  print!(" ");
+  print(n.into_inner());
+  print!(" | default ");
+  let d = AtomicI64::default();
+  print(d.into_inner());
+  print!(" | from ");
+  let f = AtomicI16::from(6);
+  print(f.into_inner());
+  println!(" |");
+
+  let mut g = AtomicI32::new(1);
+  let r = g.get_mut();
+  *r = 41;
+  print!("get_mut ");
+  print(g.load(AtomicOrdering::SeqCst));
+  let p = g.as_ptr();
+  unsafe { *p = 42; }
+  print!(" | as_ptr ");
+  print(g.into_inner());
+  println!(" |");
+
+  let mut b = AtomicBool::new(false);
+  print!("bool ");
+  let _ = show_bool_old_new(b.swap(true, AtomicOrdering::SeqCst), &b);
+  let _ = show_bool_old_new(b.fetch_and(false, AtomicOrdering::SeqCst), &b);
+  let _ = show_bool_old_new(b.fetch_or(true, AtomicOrdering::SeqCst), &b);
+  // nand with true flips the value; nand with false always stores true.
+  let _ = show_bool_old_new(b.fetch_nand(true, AtomicOrdering::SeqCst), &b);
+  let _ = show_bool_old_new(b.fetch_nand(false, AtomicOrdering::SeqCst), &b);
+  let _ = show_bool_old_new(b.fetch_xor(true, AtomicOrdering::SeqCst), &b);
+  let _ = show_bool_old_new(b.fetch_not(AtomicOrdering::SeqCst), &b);
+  let _ = show_bool_result(b.compare_exchange(true, false, AtomicOrdering::SeqCst, AtomicOrdering::SeqCst));
+  print!(" ");
+  let _ = show_bool(b.load(AtomicOrdering::SeqCst));
+  print!(" | ");
+  let _ = show_bool_result(b.compare_exchange_weak(true, false, AtomicOrdering::SeqCst, AtomicOrdering::SeqCst));
+  print!(" ");
+  let _ = show_bool(b.load(AtomicOrdering::SeqCst));
+  b.store(false, AtomicOrdering::Relaxed);
+  print!(" | load ");
+  let _ = show_bool(b.into_inner());
+  println!(" |");
+  return 0;
+}
