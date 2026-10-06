@@ -11,7 +11,7 @@
 // The first run also checks that the flat code generator, the default, compiled the program
 // rather than handing it to the AST code generator.
 //
-// RUN: not vxc %s 2>&1 | FileCheck %s --check-prefixes=FLAT,CHECK
+// RUN: VX_FLAT_DBG=1 not vxc %s 2>&1 | FileCheck %s --check-prefixes=FLAT,CHECK
 // RUN: not vxc %s --legacy-codegen 2>&1 | FileCheck %s
 // FLAT: [flat-codegen] emitted module via the flat path
 // CHECK: 1
