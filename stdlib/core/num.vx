@@ -35,6 +35,7 @@
 import core::cmp;
 import core::option;
 import core::libm;
+import core::num::float_to_decimal;
 
 /// The five kinds of float value `classify` tells apart.
 enum FpCategory {
@@ -2356,3 +2357,49 @@ macro_rules stamp_float_bits {
 
 stamp_float_bits!(f32 , u32 , i32 , 2147483649 , 2147483647 , 24 , 6 , -125 , 128 , -37 , 38);
 stamp_float_bits!(f64 , u64 , i64 , 9223372036854775809 , 9223372036854775807 , 53 , 15 , -1021 , 1024 , -307 , 308);
+
+/// Stamps the text forms of a float width, from `core::num::float_to_decimal`. `$from_bits`
+/// reads the value's bits into a `FloatDecimal` with the shortest digits for this width.
+macro_rules stamp_float_text {
+  ($t : ident , $from_bits : ident) => {
+    impl $t {
+      /// The fewest decimal digits that read back as this same value, as
+      /// `digits * 10^exponent` (Ryu's algorithm). NaN and the infinities are flagged.
+      fn shortest_decimal(self : $t) -> FloatDecimal {
+        return $from_bits(self.to_bits());
+      }
+
+      /// How many bytes `write_decimal` writes: the length of Rust's `format!("{}", x)`.
+      fn decimal_len(self : $t) -> i64 {
+        return float_decimal_display_len($from_bits(self.to_bits()));
+      }
+
+      /// Write what Rust's `{}` prints to `buf[at..]` and return how many bytes that took:
+      /// the shortest digits in plain notation, as in `0.1`, `-2`, `1e21` as 22 digits,
+      /// `inf` and `NaN`. Unsafe because nothing checks that the buffer has `decimal_len()`
+      /// bytes. No NUL is written.
+      unsafe fn write_decimal(self : $t, buf : *mut i8, at : i64) -> i64 {
+        return unsafe {
+          float_decimal_write_display($from_bits(self.to_bits()), buf, at)
+        };
+      }
+
+      /// How many bytes `write_scientific` writes: the length of Rust's `format!("{:e}", x)`.
+      fn scientific_len(self : $t) -> i64 {
+        return float_decimal_scientific_len($from_bits(self.to_bits()));
+      }
+
+      /// Write what Rust's `{:e}` prints to `buf[at..]` and return how many bytes that took:
+      /// the shortest digits as `1.5e-7`, `1e0` or `-0e0`. Unsafe for the reason
+      /// `write_decimal` is.
+      unsafe fn write_scientific(self : $t, buf : *mut i8, at : i64) -> i64 {
+        return unsafe {
+          float_decimal_write_scientific($from_bits(self.to_bits()), buf, at)
+        };
+      }
+    }
+  };
+}
+
+stamp_float_text!(f64 , float_decimal_from_f64_bits);
+stamp_float_text!(f32 , float_decimal_from_f32_bits);

@@ -1,0 +1,226 @@
+//===- core_num_float_to_text.vx - Vx Compiler --------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `f64` and `f32` as text: `write_decimal` must print what Rust's `format!("{}", x)` prints and
+// `write_scientific` what `format!("{:e}", x)` prints. Each line shows both texts, each followed
+// by what `decimal_len` and `scientific_len` say their length is. The expected lines come from
+// Rust itself. The cases: zeros, NaN and the infinities, whole numbers, the largest and smallest
+// values and subnormals, powers of ten whose `{}` form is all zeros, two floats where the two
+// shortest candidates are equally close (Rust takes the larger), and inputs from the Ryu
+// algorithm's own tests. The `f32` lines must use `f32`'s shortest digits: 0.1 as an `f32` is
+// `0.1`, but `0.10000000149011612` once widened to `f64`. Then a hash of every power of 5
+// the algorithm multiplies by, the digits and exponent `shortest_decimal` gives, and both
+// writers at an offset into a buffer.
+import core::num;
+import std::alloc;
+
+unsafe fn show_text(n : i64, buf : *mut i8) -> i32 {
+  unsafe { buf[n] = 0i8; }
+  print!("[");
+  print!(buf);
+  print!("] ");
+  return 0;
+}
+
+fn show_f64(name : *const i8, x : f64, buf : *mut i8) -> i32 {
+  print!("|");
+  print!(name);
+  print!(" ");
+  unsafe { show_text(x.write_decimal(buf, 0i64), buf); }
+  print(x.decimal_len());
+  print!(" ");
+  unsafe { show_text(x.write_scientific(buf, 0i64), buf); }
+  print(x.scientific_len());
+  print!("
+");
+  return 0;
+}
+
+fn show_f32(name : *const i8, x : f32, buf : *mut i8) -> i32 {
+  print!("|");
+  print!(name);
+  print!(" ");
+  unsafe { show_text(x.write_decimal(buf, 0i64), buf); }
+  print(x.decimal_len());
+  print!(" ");
+  unsafe { show_text(x.write_scientific(buf, 0i64), buf); }
+  print(x.scientific_len());
+  print!("
+");
+  return 0;
+}
+
+/// The digits, the power of ten and the sign of the shortest form.
+fn show_parts(name : *const i8, d : FloatDecimal) -> i32 {
+  print!("|parts ");
+  print!(name);
+  print!(" ");
+  print(d.digits);
+  print!(" ");
+  print(d.exponent);
+  if d.negative {
+    print!(" negative");
+  }
+  print!("
+");
+  return 0;
+}
+
+/// A hash of 5^i (or 2^k / 5^i) for i in 0..count, in the form Ryu multiplies by.
+fn table_hash(inverse : bool, count : i64) -> u64 {
+  let mut h = 0u64;
+  let mut i = 0i64;
+  loop {
+    if i >= count {
+      break;
+    }
+    let mut v = ryu_pow5(i);
+    if inverse {
+      v = ryu_inv_pow5(i);
+    }
+    h = (h * 31u64) ^ (v as u64);
+    h = (h * 31u64) ^ ((v >> 64u128) as u64);
+    i = i + 1i64;
+  }
+  return h;
+}
+
+fn main() -> i32 {
+  let buf : *mut i8 = unsafe { malloc(400i64) };
+  show_f64("zero", f64::from_bits(0u64), buf);
+  show_f64("negative_zero", f64::from_bits(9223372036854775808u64), buf);
+  show_f64("one", f64::from_bits(4607182418800017408u64), buf);
+  show_f64("minus_one_and_a_half", f64::from_bits(13832806255468478464u64), buf);
+  show_f64("one_hundred", f64::from_bits(4636737291354636288u64), buf);
+  show_f64("tenth", f64::from_bits(4591870180066957722u64), buf);
+  show_f64("one_thousandth", f64::from_bits(4562254508917369340u64), buf);
+  show_f64("third", f64::from_bits(4599676419421066581u64), buf);
+  show_f64("tenth_plus_fifth", f64::from_bits(4599075939470750516u64), buf);
+  show_f64("decimal_123_456", f64::from_bits(4638387860618067575u64), buf);
+  show_f64("decimal_1234_5", f64::from_bits(4653144203864309760u64), buf);
+  show_f64("seventeen_digits", f64::from_bits(4608238818662570491u64), buf);
+  show_f64("ten_to_minus_7", f64::from_bits(4502148214488346440u64), buf);
+  show_f64("ten_to_21", f64::from_bits(4921056587992461136u64), buf);
+  show_f64("ten_to_23", f64::from_bits(4950912855330343670u64), buf);
+  show_f64("two_to_53_minus_1", f64::from_bits(4845873199050653695u64), buf);
+  show_f64("two_to_53", f64::from_bits(4845873199050653696u64), buf);
+  show_f64("largest", f64::from_bits(9218868437227405311u64), buf);
+  show_f64("smallest_normal", f64::from_bits(4503599627370496u64), buf);
+  show_f64("largest_subnormal", f64::from_bits(4503599627370495u64), buf);
+  show_f64("smallest_subnormal", f64::from_bits(1u64), buf);
+  show_f64("subnormal_from_ryu_tests", f64::from_bits(605001000000u64), buf);
+  show_f64("infinity", f64::from_bits(9218868437227405312u64), buf);
+  show_f64("negative_infinity", f64::from_bits(18442240474082181120u64), buf);
+  show_f64("nan", f64::from_bits(9221120237041090560u64), buf);
+  show_f64("nan_with_sign_bit", f64::from_bits(18444492273895866368u64), buf);
+  show_f64("tie_two_to_minus_25", f64::from_bits(4494592428115755008u64), buf);
+  show_f64("tie_above_two_to_50", f64::from_bits(4832362400168542209u64), buf);
+  show_f64("looks_like_power_of_5", f64::from_bits(5201922341567583634u64), buf);
+  show_f64("bound_below_power_of_two", f64::from_bits(18014398509481984u64), buf);
+  show_f64("ryu_regression", f64::from_bits(4886500000000000000u64), buf);
+  show_f32("f32_tenth", f32::from_bits(1036831949u32), buf);
+  show_f32("f32_negative_zero", f32::from_bits(2147483648u32), buf);
+  show_f32("f32_largest", f32::from_bits(2139095039u32), buf);
+  show_f32("f32_smallest_normal", f32::from_bits(8388608u32), buf);
+  show_f32("f32_smallest_subnormal", f32::from_bits(1u32), buf);
+  show_f32("f32_two_to_24", f32::from_bits(1266679808u32), buf);
+  show_f32("f32_eight_digits", f32::from_bits(1067320913u32), buf);
+  show_f32("f32_tie_two_to_minus_12", f32::from_bits(964689920u32), buf);
+  show_f32("f32_ryu_regression", f32::from_bits(363742205u32), buf);
+  show_f32("f32_looks_like_power_of_5", f32::from_bits(1561658105u32), buf);
+  show_f32("f32_rounds_up_below_two_to_minus_120", f32::from_bits(58720255u32), buf);
+  show_f32("f32_two_to_32", f32::from_bits(1333788672u32), buf);
+  show_f32("f32_negative_infinity", f32::from_bits(4286578688u32), buf);
+  show_f32("f32_nan", f32::from_bits(2143289344u32), buf);
+  show_f64("f32_tenth_widened_to_f64", (f32::from_bits(1036831949u32)) as f64, buf);
+
+  // Ryu builds each power of 5 it multiplies by from a small table. These hash every power
+  // the f64 path can ask for and must equal the hash of Ryu's full tables, which list them all.
+  print!("|pow5_table_hash ");
+  print(table_hash(false, 326i64));
+  print!("
+|inv_pow5_table_hash ");
+  print(table_hash(true, 342i64));
+  print!("
+");
+
+  show_parts("decimal_123_456", f64::from_bits(4638387860618067575u64).shortest_decimal());
+  show_parts("ten_to_21", f64::from_bits(4921056587992461136u64).shortest_decimal());
+  show_parts("largest", f64::from_bits(9218868437227405311u64).shortest_decimal());
+  show_parts("negative_zero", f64::from_bits(9223372036854775808u64).shortest_decimal());
+  show_parts("f32_tenth", f32::from_bits(1036831949u32).shortest_decimal());
+
+
+  let y = f64::from_bits(13728134904377344886u64);
+  unsafe {
+    buf[0i64] = 120i8;
+    buf[1i64] = 61i8;
+    let n = 2i64 + y.write_decimal(buf, 2i64);
+    buf[n] = 44i8;
+    let m = n + 1i64 + y.write_scientific(buf, n + 1i64);
+    show_text(m, buf);
+  }
+  print!("
+");
+  unsafe { free(buf); }
+  return 0;
+}
+
+// EXPECT: |zero [0] 1 [0e0] 3
+// EXPECT: |negative_zero [-0] 2 [-0e0] 4
+// EXPECT: |one [1] 1 [1e0] 3
+// EXPECT: |minus_one_and_a_half [-1.5] 4 [-1.5e0] 6
+// EXPECT: |one_hundred [100] 3 [1e2] 3
+// EXPECT: |tenth [0.1] 3 [1e-1] 4
+// EXPECT: |one_thousandth [0.001] 5 [1e-3] 4
+// EXPECT: |third [0.3333333333333333] 18 [3.333333333333333e-1] 20
+// EXPECT: |tenth_plus_fifth [0.30000000000000004] 19 [3.0000000000000004e-1] 21
+// EXPECT: |decimal_123_456 [123.456] 7 [1.23456e2] 9
+// EXPECT: |decimal_1234_5 [1234.5] 6 [1.2345e3] 8
+// EXPECT: |seventeen_digits [1.2345678901234567] 18 [1.2345678901234567e0] 20
+// EXPECT: |ten_to_minus_7 [0.0000001] 9 [1e-7] 4
+// EXPECT: |ten_to_21 [1000000000000000000000] 22 [1e21] 4
+// EXPECT: |ten_to_23 [100000000000000000000000] 24 [1e23] 4
+// EXPECT: |two_to_53_minus_1 [9007199254740991] 16 [9.007199254740991e15] 20
+// EXPECT: |two_to_53 [9007199254740992] 16 [9.007199254740992e15] 20
+// EXPECT: |largest [179769313486231570000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000] 309 [1.7976931348623157e308] 22
+// EXPECT: |smallest_normal [0.000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000022250738585072014] 326 [2.2250738585072014e-308] 23
+// EXPECT: |largest_subnormal [0.00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002225073858507201] 325 [2.225073858507201e-308] 22
+// EXPECT: |smallest_subnormal [0.000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000005] 326 [5e-324] 6
+// EXPECT: |subnormal_from_ryu_tests [0.000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002989102097996] 326 [2.989102097996e-312] 19
+// EXPECT: |infinity [inf] 3 [inf] 3
+// EXPECT: |negative_infinity [-inf] 4 [-inf] 4
+// EXPECT: |nan [NaN] 3 [NaN] 3
+// EXPECT: |nan_with_sign_bit [NaN] 3 [NaN] 3
+// EXPECT: |tie_two_to_minus_25 [0.000000029802322387695313] 26 [2.9802322387695313e-8] 21
+// EXPECT: |tie_above_two_to_50 [1125899906842624.3] 18 [1.1258999068426243e15] 21
+// EXPECT: |looks_like_power_of_5 [5764607523034235000000000000000000000000] 40 [5.764607523034235e39] 20
+// EXPECT: |bound_below_power_of_two [0.00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000017800590868057611] 325 [1.7800590868057611e-307] 23
+// EXPECT: |ryu_regression [4708356024711512000] 19 [4.708356024711512e18] 20
+// EXPECT: |f32_tenth [0.1] 3 [1e-1] 4
+// EXPECT: |f32_negative_zero [-0] 2 [-0e0] 4
+// EXPECT: |f32_largest [340282350000000000000000000000000000000] 39 [3.4028235e38] 12
+// EXPECT: |f32_smallest_normal [0.000000000000000000000000000000000000011754944] 47 [1.1754944e-38] 13
+// EXPECT: |f32_smallest_subnormal [0.000000000000000000000000000000000000000000001] 47 [1e-45] 5
+// EXPECT: |f32_two_to_24 [16777216] 8 [1.6777216e7] 11
+// EXPECT: |f32_eight_digits [1.2345678] 9 [1.2345678e0] 11
+// EXPECT: |f32_tie_two_to_minus_12 [0.00024414063] 13 [2.4414063e-4] 12
+// EXPECT: |f32_ryu_regression [0.00000000000000000000000007038531] 34 [7.038531e-26] 12
+// EXPECT: |f32_looks_like_power_of_5 [671088640000000000] 18 [6.7108864e17] 12
+// EXPECT: |f32_rounds_up_below_two_to_minus_120 [0.00000000000000000000000000000000000075231634] 46 [7.5231634e-37] 13
+// EXPECT: |f32_two_to_32 [4294967300] 10 [4.2949673e9] 11
+// EXPECT: |f32_negative_infinity [-inf] 4 [-inf] 4
+// EXPECT: |f32_nan [NaN] 3 [NaN] 3
+// EXPECT: |f32_tenth_widened_to_f64 [0.10000000149011612] 19 [1.0000000149011612e-1] 21
+// EXPECT: |pow5_table_hash 12310923045452830424
+// EXPECT: |inv_pow5_table_hash 2405825392809931452
+// EXPECT: |parts decimal_123_456 123456 -3
+// EXPECT: |parts ten_to_21 1 21
+// EXPECT: |parts largest 17976931348623157 292
+// EXPECT: |parts negative_zero 0 0 negative
+// EXPECT: |parts f32_tenth 1 -1
+// EXPECT: [x=-0.00000015,-1.5e-7]

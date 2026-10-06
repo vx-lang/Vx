@@ -1,0 +1,719 @@
+//===- float_to_decimal.vx - Vx Standard Library -----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A float as text: the fewest decimal digits that read back as the same float, and the bytes
+// Rust prints for it with `{}` and `{:e}`. `core::num` puts these on `f64` and `f32`.
+//
+// The digits come from Ryu (Ulf Adams, "Ryu: fast float-to-string conversion", PLDI 2018),
+// ported from its C reference implementation (github.com/ulfjack/ryu, Apache-2.0, commit
+// 4c0618b0e44f): `d2d` and `d2d_small_int` from `ryu/d2s.c` for `f64`, `f2d` from `ryu/f2s.c`
+// for `f32`, both with the small tables of `ryu/d2s_small_table.h` (`RYU_OPTIMIZE_SIZE`).
+// Among the shortest digit strings that read back as the same float, Ryu picks the one
+// closest to it. When two are equally close, Ryu takes the even one and Rust the larger one;
+// this port takes the larger one, so its digits are Rust's (`1125899906842624.3`, not `.2`).
+//
+// Every function's name starts with `ryu_` or `float_decimal_`, since Vx has one namespace for
+// all functions. The 64x64-bit products are `u128` multiplications.
+import core::marker;
+
+/// A finite float as `digits * 10^exponent`, or a NaN or an infinity. Zero has `digits == 0`.
+/// `negative` is the sign bit, so it is set for -0.0 and for a NaN with its sign bit set.
+struct FloatDecimal {
+  negative : bool,
+  is_nan : bool,
+  is_infinite : bool,
+  digits : u64,
+  exponent : i64,
+}
+
+impl Copy for FloatDecimal {}
+
+// `DOUBLE_POW5_INV_SPLIT2` from `d2s_small_table.h`: pairs (low 64 bits, high 64 bits) of
+// 2^k / 5^(26 n) for n = 0..14, each rounded up.
+const RYU_POW5_INV_SPLIT2 : Tensor<u64, [30]> = [
+1, 2305843009213693952,
+5955668970331000884, 1784059615882449851,
+8982663654677661702, 1380349269358112757,
+7286864317269821294, 2135987035920910082,
+7005857020398200553, 1652639921975621497,
+17965325103354776697, 1278668206209430417,
+8928596168509315048, 1978643211784836272,
+10075671573058298858, 1530901034580419511,
+597001226353042382, 1184477304306571148,
+1527430471115325346, 1832889850782397517,
+12533209867169019542, 1418129833677084982,
+5577825024675947042, 2194449627517475473,
+11006974540203867551, 1697873161311732311,
+10313493231639821582, 1313665730009899186,
+12701016819766672773, 2032799256770390445
+];
+
+// `POW5_INV_OFFSETS`: two bits per power of 5, the correction added after the multiply.
+const RYU_POW5_INV_OFFSETS : Tensor<u64, [22]> = [
+1414808916, 67458373, 268701696, 4195348, 1073807360, 1091917141, 1108, 65604, 1073741824,
+1140850753, 1346716752, 1431634004, 1365595476, 1073758208, 16777217, 66816, 1364284433,
+89478484, 1346442496, 1074003968, 84148496, 0
+];
+
+// `DOUBLE_POW5_SPLIT2`: pairs (low, high) of 5^(26 n) for n = 0..12, scaled to 125 bits.
+const RYU_POW5_SPLIT2 : Tensor<u64, [26]> = [
+0, 1152921504606846976,
+0, 1490116119384765625,
+1032610780636961552, 1925929944387235853,
+7910200175544436838, 1244603055572228341,
+16941905809032713930, 1608611746708759036,
+13024893955298202172, 2079081953128979843,
+6607496772837067824, 1343575221513417750,
+17332926989895652603, 1736530273035216783,
+13037379183483547984, 2244412773384604712,
+1605989338741628675, 1450417759929778918,
+9630225068416591280, 1874621017369538693,
+665883850346957067, 1211445438634777304,
+14931890668723713708, 1565756531257009982
+];
+
+// `POW5_OFFSETS`: the same corrections for the powers of 5.
+const RYU_POW5_OFFSETS : Tensor<u64, [21]> = [
+0, 0, 0, 0, 1073741824, 1500076437, 1431590229, 1448432917, 1091896580, 1079333904,
+1146442053, 1146111296, 1163220304, 1073758208, 2521039936, 1431721317, 1413824581,
+1075134801, 1431671125, 1363170645, 261
+];
+
+// `DOUBLE_POW5_TABLE`: 5^0 to 5^25.
+const RYU_POW5_TABLE : Tensor<u64, [26]> = [
+1, 5, 25, 125, 625, 3125, 15625, 78125, 390625, 1953125, 9765625, 48828125, 244140625,
+1220703125, 6103515625, 30517578125, 152587890625, 762939453125, 3814697265625,
+19073486328125, 95367431640625, 476837158203125, 2384185791015625, 11920928955078125,
+59604644775390625, 298023223876953125
+];
+
+/// ceil(log2(5^e)), and 1 for e = 0, for 0 <= e <= 3528: `pow5bits`.
+fn ryu_pow5_bits(e : i64) -> i64 {
+  return ((e * 1217359i64) >> 19i64) + 1i64;
+}
+
+/// floor(log10(2^e)) for 0 <= e <= 1650: `log10Pow2`.
+fn ryu_log10_pow2(e : i64) -> i64 {
+  return (e * 78913i64) >> 18i64;
+}
+
+/// floor(log10(5^e)) for 0 <= e <= 2620: `log10Pow5`.
+fn ryu_log10_pow5(e : i64) -> i64 {
+  return (e * 732923i64) >> 20i64;
+}
+
+/// The two-bit correction for power `i` from an offsets table entry.
+fn ryu_offset_bits(word : u64, i : i64) -> u128 {
+  return ((word >> (((i % 16i64) * 2i64) as u64)) & 3u64) as u128;
+}
+
+/// 5^i in the 125-bit form Ryu multiplies by: `double_computePow5`.
+fn ryu_pow5(i : i64) -> u128 {
+  let base = i / 26i64;
+  let base2 = base * 26i64;
+  let offset = i - base2;
+  let mul_lo = RYU_POW5_SPLIT2[2i64 * base] as u128;
+  let mul_hi = RYU_POW5_SPLIT2[2i64 * base + 1i64] as u128;
+  if offset == 0i64 {
+    return (mul_hi << 64u128) | mul_lo;
+  }
+  let m = RYU_POW5_TABLE[offset] as u128;
+  let b0 = m * mul_lo;
+  let b2 = m * mul_hi;
+  let delta = (ryu_pow5_bits(i) - ryu_pow5_bits(base2)) as u128;
+  return (b0 >> delta) + (b2 << (64u128 - delta)) + ryu_offset_bits(RYU_POW5_OFFSETS[i / 16i64], i);
+}
+
+/// 2^k / 5^i, rounded up, in the form Ryu multiplies by: `double_computeInvPow5`.
+fn ryu_inv_pow5(i : i64) -> u128 {
+  let base = (i + 25i64) / 26i64;
+  let base2 = base * 26i64;
+  let offset = base2 - i;
+  let mul_lo = RYU_POW5_INV_SPLIT2[2i64 * base];
+  let mul_hi = RYU_POW5_INV_SPLIT2[2i64 * base + 1i64] as u128;
+  if offset == 0i64 {
+    return (mul_hi << 64u128) | (mul_lo as u128);
+  }
+  let m = RYU_POW5_TABLE[offset] as u128;
+  let b0 = m * ((mul_lo - 1u64) as u128);
+  let b2 = m * mul_hi;
+  let delta = (ryu_pow5_bits(base2) - ryu_pow5_bits(i)) as u128;
+  let sum = (b0 >> delta) + (b2 << (64u128 - delta));
+  return sum + 1u128 + ryu_offset_bits(RYU_POW5_INV_OFFSETS[i / 16i64], i);
+}
+
+/// (m * mul) >> j, for j of at least 64: `mulShift64`.
+fn ryu_mul_shift64(m : u64, mul : u128, j : i64) -> u64 {
+  let b0 = (m as u128) * ((mul as u64) as u128);
+  let b2 = (m as u128) * (mul >> 64u128);
+  return (((b0 >> 64u128) + b2) >> ((j - 64i64) as u128)) as u64;
+}
+
+/// (m * factor) >> shift for a 32-bit m and 32 < shift < 96: `mulShift32`.
+fn ryu_mul_shift32(m : u64, factor : u64, shift : i64) -> u64 {
+  let bits0 = m * (factor & 4294967295u64);
+  let bits1 = m * (factor >> 32u64);
+  return ((bits0 >> 32u64) + bits1) >> ((shift - 32i64) as u64);
+}
+
+/// How many times 5 divides `value`, which must not be zero: `pow5Factor`.
+fn ryu_pow5_factor(value : u64) -> i64 {
+  // Multiplying by the inverse of 5 modulo 2^64 divides exactly when 5 divides the value,
+  // and gives a result above 2^64 / 5 when it does not.
+  let mut v = value;
+  let mut count = 0i64;
+  loop {
+    v = v * 14757395258967641293u64;
+    if v > 3689348814741910323u64 {
+      break;
+    }
+    count = count + 1i64;
+  }
+  return count;
+}
+
+/// The number of decimal digits in `v`; 1 for zero.
+fn ryu_digit_count(v : u64) -> i64 {
+  let mut n = 1i64;
+  let mut x = v;
+  loop {
+    if x < 10u64 {
+      return n;
+    }
+    x = x / 10u64;
+    n = n + 1i64;
+  }
+  return n;
+}
+
+/// `digits * 10^exponent` with any trailing zeros of `digits` moved into the exponent.
+fn ryu_trimmed(negative : bool, digits : u64, exponent : i64) -> FloatDecimal {
+  let mut d = digits;
+  let mut e = exponent;
+  loop {
+    if d % 10u64 != 0u64 {
+      break;
+    }
+    d = d / 10u64;
+    e = e + 1i64;
+  }
+  return FloatDecimal {
+    negative: negative, is_nan: false, is_infinite: false, digits: d, exponent: e
+  };
+}
+
+/// The shortest digits of a finite, nonzero f64 given its mantissa and exponent fields: `d2d`.
+fn ryu_f64_digits(negative : bool, ieee_mantissa : u64, ieee_exponent : u64) -> FloatDecimal {
+  // The value is m2 * 2^(e2 + 2); the 2 extra bits make room for the interval's bounds.
+  let mut e2 = -1076i64;
+  let mut m2 = ieee_mantissa;
+  if ieee_exponent != 0u64 {
+    e2 = (ieee_exponent as i64) - 1077i64;
+    m2 = 4503599627370496u64 | ieee_mantissa;
+  }
+  // With an even mantissa, a decimal exactly on a bound still reads back as this float.
+  let accept_bounds = (m2 & 1u64) == 0u64;
+
+  // Step 2: the interval of decimals that read back as this float is (mm, mp) around mv,
+  // in units of a quarter of the float's last place. It is narrower below a power of two.
+  let mv = 4u64 * m2;
+  let mut mm_shift = 0u64;
+  if ieee_mantissa != 0u64 || ieee_exponent <= 1u64 {
+    mm_shift = 1u64;
+  }
+
+  // Step 3: scale the interval to vm, vr, vp times 10^e10.
+  let mut vr = 0u64;
+  let mut vp = 0u64;
+  let mut vm = 0u64;
+  let mut e10 = 0i64;
+  let mut vm_is_trailing_zeros = false;
+  let mut vr_is_trailing_zeros = false;
+  if e2 >= 0i64 {
+    let mut q = ryu_log10_pow2(e2);
+    if e2 > 3i64 {
+      q = q - 1i64;
+    }
+    e10 = q;
+    let k = 125i64 + ryu_pow5_bits(q) - 1i64;
+    let i = -e2 + q + k;
+    let pow5 = ryu_inv_pow5(q);
+    vr = ryu_mul_shift64(4u64 * m2, pow5, i);
+    vp = ryu_mul_shift64(4u64 * m2 + 2u64, pow5, i);
+    vm = ryu_mul_shift64(4u64 * m2 - 1u64 - mm_shift, pow5, i);
+    if q <= 21i64 {
+      // At most one of mp, mv and mm is a multiple of 5.
+      if mv % 5u64 == 0u64 {
+        vr_is_trailing_zeros = ryu_pow5_factor(mv) >= q;
+      } else if accept_bounds {
+        vm_is_trailing_zeros = ryu_pow5_factor(mv - 1u64 - mm_shift) >= q;
+      } else if ryu_pow5_factor(mv + 2u64) >= q {
+        vp = vp - 1u64;
+      }
+    }
+  } else {
+    let mut q = ryu_log10_pow5(-e2);
+    if -e2 > 1i64 {
+      q = q - 1i64;
+    }
+    e10 = q + e2;
+    let i = -e2 - q;
+    let k = ryu_pow5_bits(i) - 125i64;
+    let j = q - k;
+    let pow5 = ryu_pow5(i);
+    vr = ryu_mul_shift64(4u64 * m2, pow5, j);
+    vp = ryu_mul_shift64(4u64 * m2 + 2u64, pow5, j);
+    vm = ryu_mul_shift64(4u64 * m2 - 1u64 - mm_shift, pow5, j);
+    if q <= 1i64 {
+      // mv = 4 * m2 has at least two trailing zero bits, mm has one when mm_shift is 1.
+      vr_is_trailing_zeros = true;
+      if accept_bounds {
+        vm_is_trailing_zeros = mm_shift == 1u64;
+      } else {
+        vp = vp - 1u64;
+      }
+    } else if q < 63i64 {
+      vr_is_trailing_zeros = (mv & ((1u64 << (q as u64)) - 1u64)) == 0u64;
+    }
+  }
+
+  // Step 4: drop digits while the interval still holds a number with fewer of them.
+  let mut removed = 0i64;
+  let mut last_removed_digit = 0u64;
+  let mut output = 0u64;
+  if vm_is_trailing_zeros || vr_is_trailing_zeros {
+    // The rare case where the bounds or the value are exact decimals.
+    loop {
+      let vp_div10 = vp / 10u64;
+      let vm_div10 = vm / 10u64;
+      if vp_div10 <= vm_div10 {
+        break;
+      }
+      vm_is_trailing_zeros = vm_is_trailing_zeros && vm % 10u64 == 0u64;
+      vr_is_trailing_zeros = vr_is_trailing_zeros && last_removed_digit == 0u64;
+      last_removed_digit = vr % 10u64;
+      vr = vr / 10u64;
+      vp = vp_div10;
+      vm = vm_div10;
+      removed = removed + 1i64;
+    }
+    if vm_is_trailing_zeros {
+      loop {
+        if vm % 10u64 != 0u64 {
+          break;
+        }
+        vr_is_trailing_zeros = vr_is_trailing_zeros && last_removed_digit == 0u64;
+        last_removed_digit = vr % 10u64;
+        vr = vr / 10u64;
+        vp = vp / 10u64;
+        vm = vm / 10u64;
+        removed = removed + 1i64;
+      }
+    }
+    // Ryu rounds an exact tie (the removed digits are 5 then zeros) to even here. Rust
+    // rounds it up, and so does this, so the line that did that is left out.
+    output = vr;
+    if (vr == vm && (!accept_bounds || !vm_is_trailing_zeros)) || last_removed_digit >= 5u64 {
+      output = vr + 1u64;
+    }
+  } else {
+    // The common case: remove two digits at a time first.
+    let mut round_up = false;
+    let vp_div100 = vp / 100u64;
+    let vm_div100 = vm / 100u64;
+    if vp_div100 > vm_div100 {
+      round_up = vr % 100u64 >= 50u64;
+      vr = vr / 100u64;
+      vp = vp_div100;
+      vm = vm_div100;
+      removed = removed + 2i64;
+    }
+    loop {
+      let vp_div10 = vp / 10u64;
+      let vm_div10 = vm / 10u64;
+      if vp_div10 <= vm_div10 {
+        break;
+      }
+      round_up = vr % 10u64 >= 5u64;
+      vr = vr / 10u64;
+      vp = vp_div10;
+      vm = vm_div10;
+      removed = removed + 1i64;
+    }
+    output = vr;
+    if vr == vm || round_up {
+      output = vr + 1u64;
+    }
+  }
+  return ryu_trimmed(negative, output, e10 + removed);
+}
+
+/// The value `bits` holds as an f64, with its shortest digits when it is finite.
+fn float_decimal_from_f64_bits(bits : u64) -> FloatDecimal {
+  let negative = (bits >> 63u64) != 0u64;
+  let ieee_mantissa = bits & 4503599627370495u64;
+  let ieee_exponent = (bits >> 52u64) & 2047u64;
+  if ieee_exponent == 2047u64 {
+    return FloatDecimal {
+      negative: negative, is_nan: ieee_mantissa != 0u64, is_infinite: ieee_mantissa == 0u64, digits: 0u64, exponent: 0i64
+    };
+  }
+  if ieee_exponent == 0u64 && ieee_mantissa == 0u64 {
+    return FloatDecimal {
+      negative: negative, is_nan: false, is_infinite: false, digits: 0u64, exponent: 0i64
+    };
+  }
+  // `d2d_small_int`: an integer below 2^53 is its own shortest form.
+  let e2 = (ieee_exponent as i64) - 1075i64;
+  if e2 <= 0i64 && e2 >= -52i64 {
+    let m2 = 4503599627370496u64 | ieee_mantissa;
+    let mask = (1u64 << ((-e2) as u64)) - 1u64;
+    if (m2 & mask) == 0u64 {
+      return ryu_trimmed(negative, m2 >> ((-e2) as u64), 0i64);
+    }
+  }
+  return ryu_f64_digits(negative, ieee_mantissa, ieee_exponent);
+}
+
+/// (m * 2^k / 5^q) >> j for f32: `mulPow5InvDivPow2` over the double tables.
+fn ryu_mul_pow5_inv_div_pow2(m : u64, q : i64, j : i64) -> u64 {
+  // The table holds the rounded-down high half; the f32 multiplier is that plus one.
+  return ryu_mul_shift32(m, ((ryu_inv_pow5(q) >> 64u128) as u64) + 1u64, j);
+}
+
+/// (m * 5^i) >> j for f32: `mulPow5divPow2` over the double tables.
+fn ryu_mul_pow5_div_pow2(m : u64, i : i64, j : i64) -> u64 {
+  return ryu_mul_shift32(m, (ryu_pow5(i) >> 64u128) as u64, j);
+}
+
+/// The shortest digits of a finite, nonzero f32 given its mantissa and exponent fields: `f2d`.
+fn ryu_f32_digits(negative : bool, ieee_mantissa : u64, ieee_exponent : u64) -> FloatDecimal {
+  let mut e2 = -151i64;
+  let mut m2 = ieee_mantissa;
+  if ieee_exponent != 0u64 {
+    e2 = (ieee_exponent as i64) - 152i64;
+    m2 = 8388608u64 | ieee_mantissa;
+  }
+  let accept_bounds = (m2 & 1u64) == 0u64;
+
+  // Step 2: the interval (mm, mp) around mv, in quarters of the last place.
+  let mv = 4u64 * m2;
+  let mp = 4u64 * m2 + 2u64;
+  let mut mm_shift = 0u64;
+  if ieee_mantissa != 0u64 || ieee_exponent <= 1u64 {
+    mm_shift = 1u64;
+  }
+  let mm = 4u64 * m2 - 1u64 - mm_shift;
+
+  // Step 3: scale to vm, vr, vp times 10^e10. The f32 tables are the high halves of the
+  // f64 ones, so their bit count is 125 - 64 = 61.
+  let mut vr = 0u64;
+  let mut vp = 0u64;
+  let mut vm = 0u64;
+  let mut e10 = 0i64;
+  let mut vm_is_trailing_zeros = false;
+  let mut vr_is_trailing_zeros = false;
+  let mut last_removed_digit = 0u64;
+  if e2 >= 0i64 {
+    let q = ryu_log10_pow2(e2);
+    e10 = q;
+    let k = 61i64 + ryu_pow5_bits(q) - 1i64;
+    let i = -e2 + q + k;
+    vr = ryu_mul_pow5_inv_div_pow2(mv, q, i);
+    vp = ryu_mul_pow5_inv_div_pow2(mp, q, i);
+    vm = ryu_mul_pow5_inv_div_pow2(mm, q, i);
+    if q != 0i64 && (vp - 1u64) / 10u64 <= vm / 10u64 {
+      // The loop below may remove no digit, but the rounding needs the digit after vr.
+      let l = 61i64 + ryu_pow5_bits(q - 1i64) - 1i64;
+      last_removed_digit = ryu_mul_pow5_inv_div_pow2(mv, q - 1i64, -e2 + q - 1i64 + l) % 10u64;
+    }
+    if q <= 9i64 {
+      if mv % 5u64 == 0u64 {
+        vr_is_trailing_zeros = ryu_pow5_factor(mv) >= q;
+      } else if accept_bounds {
+        vm_is_trailing_zeros = ryu_pow5_factor(mm) >= q;
+      } else if ryu_pow5_factor(mp) >= q {
+        vp = vp - 1u64;
+      }
+    }
+  } else {
+    let q = ryu_log10_pow5(-e2);
+    e10 = q + e2;
+    let i = -e2 - q;
+    let k = ryu_pow5_bits(i) - 61i64;
+    let j = q - k;
+    vr = ryu_mul_pow5_div_pow2(mv, i, j);
+    vp = ryu_mul_pow5_div_pow2(mp, i, j);
+    vm = ryu_mul_pow5_div_pow2(mm, i, j);
+    if q != 0i64 && (vp - 1u64) / 10u64 <= vm / 10u64 {
+      let j1 = q - 1i64 - (ryu_pow5_bits(i + 1i64) - 61i64);
+      last_removed_digit = ryu_mul_pow5_div_pow2(mv, i + 1i64, j1) % 10u64;
+    }
+    if q <= 1i64 {
+      vr_is_trailing_zeros = true;
+      if accept_bounds {
+        vm_is_trailing_zeros = mm_shift == 1u64;
+      } else {
+        vp = vp - 1u64;
+      }
+    } else if q < 31i64 {
+      vr_is_trailing_zeros = (mv & ((1u64 << ((q - 1i64) as u64)) - 1u64)) == 0u64;
+    }
+  }
+
+  // Step 4: drop digits while the interval still holds a number with fewer of them.
+  let mut removed = 0i64;
+  let mut output = 0u64;
+  if vm_is_trailing_zeros || vr_is_trailing_zeros {
+    loop {
+      if vp / 10u64 <= vm / 10u64 {
+        break;
+      }
+      vm_is_trailing_zeros = vm_is_trailing_zeros && vm % 10u64 == 0u64;
+      vr_is_trailing_zeros = vr_is_trailing_zeros && last_removed_digit == 0u64;
+      last_removed_digit = vr % 10u64;
+      vr = vr / 10u64;
+      vp = vp / 10u64;
+      vm = vm / 10u64;
+      removed = removed + 1i64;
+    }
+    if vm_is_trailing_zeros {
+      loop {
+        if vm % 10u64 != 0u64 {
+          break;
+        }
+        vr_is_trailing_zeros = vr_is_trailing_zeros && last_removed_digit == 0u64;
+        last_removed_digit = vr % 10u64;
+        vr = vr / 10u64;
+        vp = vp / 10u64;
+        vm = vm / 10u64;
+        removed = removed + 1i64;
+      }
+    }
+    // An exact tie rounds up, as in Rust, where Ryu would round it to even.
+    output = vr;
+    if (vr == vm && (!accept_bounds || !vm_is_trailing_zeros)) || last_removed_digit >= 5u64 {
+      output = vr + 1u64;
+    }
+  } else {
+    loop {
+      if vp / 10u64 <= vm / 10u64 {
+        break;
+      }
+      last_removed_digit = vr % 10u64;
+      vr = vr / 10u64;
+      vp = vp / 10u64;
+      vm = vm / 10u64;
+      removed = removed + 1i64;
+    }
+    output = vr;
+    if vr == vm || last_removed_digit >= 5u64 {
+      output = vr + 1u64;
+    }
+  }
+  return ryu_trimmed(negative, output, e10 + removed);
+}
+
+/// The value `bits` holds as an f32, with its shortest digits when it is finite.
+fn float_decimal_from_f32_bits(bits : u32) -> FloatDecimal {
+  let b = bits as u64;
+  let negative = (b >> 31u64) != 0u64;
+  let ieee_mantissa = b & 8388607u64;
+  let ieee_exponent = (b >> 23u64) & 255u64;
+  if ieee_exponent == 255u64 {
+    return FloatDecimal {
+      negative: negative, is_nan: ieee_mantissa != 0u64, is_infinite: ieee_mantissa == 0u64, digits: 0u64, exponent: 0i64
+    };
+  }
+  if ieee_exponent == 0u64 && ieee_mantissa == 0u64 {
+    return FloatDecimal {
+      negative: negative, is_nan: false, is_infinite: false, digits: 0u64, exponent: 0i64
+    };
+  }
+  return ryu_f32_digits(negative, ieee_mantissa, ieee_exponent);
+}
+
+/// Write the `n` digits of `digits` to `buf[at..]`, with a `.` after the first `point` of
+/// them when 0 < point < n. Returns how many bytes that took.
+unsafe fn ryu_write_digits(digits : u64, n : i64, point : i64, buf : *mut i8, at : i64) -> i64 {
+  let has_point = point > 0i64 && point < n;
+  let mut x = digits;
+  let mut k = n - 1i64;
+  unsafe {
+    loop {
+      if k < 0i64 {
+        break;
+      }
+      let mut pos = at + k;
+      if has_point && k >= point {
+        pos = pos + 1i64;
+      }
+      buf[pos] = (48u64 + x % 10u64) as i8;
+      x = x / 10u64;
+      k = k - 1i64;
+    }
+    if has_point {
+      buf[at + point] = 46i8;
+      return n + 1i64;
+    }
+  }
+  return n;
+}
+
+/// Write `count` zeros to `buf[at..]`.
+unsafe fn ryu_write_zeros(count : i64, buf : *mut i8, at : i64) -> i64 {
+  let mut k = 0i64;
+  unsafe {
+    loop {
+      if k >= count {
+        break;
+      }
+      buf[at + k] = 48i8;
+      k = k + 1i64;
+    }
+  }
+  return count;
+}
+
+/// Write `NaN`, `inf` or `-inf` to `buf[at..]` and return how many bytes that took.
+unsafe fn ryu_write_special(d : FloatDecimal, buf : *mut i8, at : i64) -> i64 {
+  let mut pos = at;
+  unsafe {
+    if d.is_nan {
+      buf[at] = 78i8;
+      buf[at + 1i64] = 97i8;
+      buf[at + 2i64] = 78i8;
+      return 3i64;
+    }
+    if d.negative {
+      buf[pos] = 45i8;
+      pos = pos + 1i64;
+    }
+    buf[pos] = 105i8;
+    buf[pos + 1i64] = 110i8;
+    buf[pos + 2i64] = 102i8;
+  }
+  return pos + 3i64 - at;
+}
+
+/// How many bytes Rust's `{}` takes for `d`.
+fn float_decimal_display_len(d : FloatDecimal) -> i64 {
+  if d.is_nan {
+    return 3i64;
+  }
+  let mut sign = 0i64;
+  if d.negative {
+    sign = 1i64;
+  }
+  if d.is_infinite {
+    return sign + 3i64;
+  }
+  if d.digits == 0u64 {
+    return sign + 1i64;
+  }
+  let n = ryu_digit_count(d.digits);
+  // How many of the digits come before the decimal point; zero or less means none do.
+  let point = n + d.exponent;
+  if point <= 0i64 {
+    return sign + 2i64 - point + n;
+  }
+  if point < n {
+    return sign + n + 1i64;
+  }
+  return sign + point;
+}
+
+/// Write what Rust's `{}` prints for `d` to `buf[at..]` and return how many bytes that took:
+/// plain decimal notation, never an exponent, and no `.0` on a whole number.
+/// Unsafe because nothing checks that the buffer has `float_decimal_display_len(d)` bytes.
+unsafe fn float_decimal_write_display(d : FloatDecimal, buf : *mut i8, at : i64) -> i64 {
+  if d.is_nan || d.is_infinite {
+    return unsafe { ryu_write_special(d, buf, at) };
+  }
+  let mut pos = at;
+  unsafe {
+    if d.negative {
+      buf[pos] = 45i8;
+      pos = pos + 1i64;
+    }
+    if d.digits == 0u64 {
+      buf[pos] = 48i8;
+      return pos + 1i64 - at;
+    }
+    let n = ryu_digit_count(d.digits);
+    let point = n + d.exponent;
+    if point <= 0i64 {
+      buf[pos] = 48i8;
+      buf[pos + 1i64] = 46i8;
+      pos = pos + 2i64;
+      pos = pos + ryu_write_zeros(-point, buf, pos);
+      pos = pos + ryu_write_digits(d.digits, n, n, buf, pos);
+    } else if point < n {
+      pos = pos + ryu_write_digits(d.digits, n, point, buf, pos);
+    } else {
+      pos = pos + ryu_write_digits(d.digits, n, n, buf, pos);
+      pos = pos + ryu_write_zeros(point - n, buf, pos);
+    }
+  }
+  return pos - at;
+}
+
+/// How many bytes Rust's `{:e}` takes for `d`.
+fn float_decimal_scientific_len(d : FloatDecimal) -> i64 {
+  if d.is_nan {
+    return 3i64;
+  }
+  let mut sign = 0i64;
+  if d.negative {
+    sign = 1i64;
+  }
+  if d.is_infinite {
+    return sign + 3i64;
+  }
+  if d.digits == 0u64 {
+    return sign + 3i64;
+  }
+  let n = ryu_digit_count(d.digits);
+  let mut len = sign + n + 1i64;
+  if n > 1i64 {
+    len = len + 1i64;
+  }
+  let e = n + d.exponent - 1i64;
+  if e < 0i64 {
+    return len + 1i64 + ryu_digit_count((-e) as u64);
+  }
+  return len + ryu_digit_count(e as u64);
+}
+
+/// Write what Rust's `{:e}` prints for `d` to `buf[at..]` and return how many bytes that took:
+/// one digit, the rest after a `.` if there are any, then `e` and the exponent, as in `1.5e-7`.
+/// Unsafe because nothing checks that the buffer has `float_decimal_scientific_len(d)` bytes.
+unsafe fn float_decimal_write_scientific(d : FloatDecimal, buf : *mut i8, at : i64) -> i64 {
+  if d.is_nan || d.is_infinite {
+    return unsafe { ryu_write_special(d, buf, at) };
+  }
+  let mut pos = at;
+  unsafe {
+    if d.negative {
+      buf[pos] = 45i8;
+      pos = pos + 1i64;
+    }
+    let n = ryu_digit_count(d.digits);
+    pos = pos + ryu_write_digits(d.digits, n, 1i64, buf, pos);
+    buf[pos] = 101i8;
+    pos = pos + 1i64;
+    let mut e = n + d.exponent - 1i64;
+    if e < 0i64 {
+      buf[pos] = 45i8;
+      pos = pos + 1i64;
+      e = -e;
+    }
+    let en = ryu_digit_count(e as u64);
+    pos = pos + ryu_write_digits(e as u64, en, en, buf, pos);
+  }
+  return pos - at;
+}
