@@ -1,0 +1,110 @@
+//===- trait_qualified_call_picks_the_trait.vx - Vx Compiler ----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Two traits both have a method `speak`, and each type here implements both.
+// `x.speak()` cannot say which one it means, so it is refused (E3035).
+// `Loud::speak(&x)` names the trait, and the call runs that trait's method.
+//
+// Each body returns its own digit, so the printed line shows which body ran.
+// `print` writes no separator, so the calls read as one line.
+//
+// RUN: vxc %s | FileCheck %s
+// EXPECT: 1234865634
+// CHECK: 1234865634
+
+trait Loud {
+  fn speak(self : &Self) -> i32;
+  fn twice(self : &Self) -> i32 {
+    return Loud::speak(self) * 2;
+  }
+}
+
+trait Quiet {
+  fn speak(self : &Self) -> i32;
+  fn bump(self : &mut Self, by : i32) -> i32;
+}
+
+impl Loud for i64 {
+  fn speak(self : &i64) -> i32 {
+    return 1;
+  }
+}
+
+impl Quiet for i64 {
+  fn speak(self : &i64) -> i32 {
+    return 2;
+  }
+  fn bump(self : &mut i64, by : i32) -> i32 {
+    return 0;
+  }
+}
+
+struct Dog {
+  n : i32,
+}
+
+impl Loud for Dog {
+  fn speak(self : &Dog) -> i32 {
+    return 3;
+  }
+}
+
+impl Quiet for Dog {
+  fn speak(self : &Dog) -> i32 {
+    return 4;
+  }
+  fn bump(self : &mut Dog, by : i32) -> i32 {
+    self.n = self.n + by;
+    return self.n;
+  }
+}
+
+struct Pair<T> {
+  a : T,
+}
+
+impl<T> Loud for Pair<T> {
+  fn speak(self : &Pair<T>) -> i32 {
+    return 5;
+  }
+}
+
+impl<T> Quiet for Pair<T> {
+  fn speak(self : &Pair<T>) -> i32 {
+    return 6;
+  }
+  fn bump(self : &mut Pair<T>, by : i32) -> i32 {
+    return 0;
+  }
+}
+
+// Inside a generic function the trait still picks the method.
+fn both<T : Loud + Quiet>(x : &T) -> i32 {
+  return Loud::speak(x) * 10 + Quiet::speak(x);
+}
+
+fn main() -> i32 {
+  let x : i64 = 0;
+  print(Loud::speak(&x));
+  print(Quiet::speak(&x));
+  let mut d = Dog {
+    n : 1
+  };
+  print(Loud::speak(&d));
+  print(Quiet::speak(&d));
+  // A method that takes `&mut self` and another argument: 1 + 7.
+  print(Quiet::bump(&mut d, 7));
+  // A trait's default method, through its trait: Loud's speak (3), doubled.
+  print(Loud::twice(&d));
+  let p : Pair<i32> = Pair {
+    a : 0
+  };
+  print(Loud::speak(&p));
+  print(Quiet::speak(&p));
+  print(both(&d));
+  return 0;
+}

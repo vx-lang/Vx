@@ -302,6 +302,7 @@ pub enum DiagnosticCode {
     /// A method name that more than one `impl` block defines for the same type. The impls
     /// are kept in a hash map, so which body a call reached used to change from one run of
     /// the compiler to the next; refusing the call is the only answer that is the same twice.
+    /// Naming the trait, as in `Display::fmt(&x, f)`, chooses one impl.
     E3035,
     /// An impl of a trait that declares an associated type does not bind it. The trait's
     /// signatures are written against `Self::Item`, so with no binding there is nothing to put
