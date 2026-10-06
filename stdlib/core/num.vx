@@ -1118,6 +1118,426 @@ stamp_unsigned_int!(u16 , i16 , 16 , 65535);
 stamp_unsigned_int!(u32 , i32 , 32 , 4294967295);
 stamp_unsigned_int!(u64 , i64 , 64 , 18446744073709551615);
 
+/// The integer methods for `usize`, written out rather than stamped.
+///
+/// A `usize` holds 0 to the largest `i64`, and its `+`, `-` and `*` trap when the answer
+/// would leave that range. So no method here computes an out-of-range value and checks it
+/// afterwards: each one checks its operands first. The `wrapping_*` and `overflowing_*`
+/// methods wrap at the top of the range, which is arithmetic modulo 2^63, and do it in
+/// `mlir!` blocks that skip the trap.
+///
+/// Absent because their answer could set the top bit: `rotate_left`, `rotate_right`,
+/// `swap_bytes`, `reverse_bits`. `leading_ones` is absent too, since it is always zero.
+impl usize {
+  /// Zero.
+  fn min_value(self : usize) -> usize {
+    return 0;
+  }
+
+  /// The largest `usize`, which is the largest `i64`.
+  fn max_value(self : usize) -> usize {
+    return 9223372036854775807;
+  }
+
+  /// 64, the width in memory. The top bit is always clear.
+  fn bits(self : usize) -> usize {
+    return 64;
+  }
+
+  /// How many bits are set.
+  fn count_ones(self : usize) -> usize {
+    return mlir!( inputs : (%a = self : i64), returns : usize, dialects : ["math"]) {
+      %r = math.ctpop %a : i64
+      macro.yield %r : i64
+    };
+  }
+
+  /// How many of the 64 bits are clear. At least one, the top bit.
+  fn count_zeros(self : usize) -> usize {
+    return self.bits() - self.count_ones();
+  }
+
+  /// Zero bits above the highest set bit. At least one, and all 64 for zero.
+  fn leading_zeros(self : usize) -> usize {
+    return mlir!( inputs : (%a = self : i64), returns : usize, dialects : ["math"]) {
+      %r = math.ctlz %a : i64
+      macro.yield %r : i64
+    };
+  }
+
+  /// Zero bits below the lowest set bit. All 64, for zero.
+  fn trailing_zeros(self : usize) -> usize {
+    return mlir!( inputs : (%a = self : i64), returns : usize, dialects : ["math"]) {
+      %r = math.cttz %a : i64
+      macro.yield %r : i64
+    };
+  }
+
+  /// Set bits below the lowest clear bit. `!` is refused on a `usize`, so the bits are
+  /// flipped in MLIR.
+  fn trailing_ones(self : usize) -> usize {
+    return mlir!( inputs : (%a = self : i64), returns : usize, dialects : ["arith", "math"]) {
+      %m = arith.constant -1 : i64
+      %n = arith.xori %a, %m : i64
+      %r = math.cttz %n : i64
+      macro.yield %r : i64
+    };
+  }
+
+  /// Zero is not a power of two.
+  fn is_power_of_two(self : usize) -> bool {
+    if self == 0 {
+      return false;
+    }
+    return (self & (self - 1)) == 0;
+  }
+
+  /// The distance between two values, which always fits.
+  fn abs_diff(self : usize, other : usize) -> usize {
+    if self < other {
+      return other - self;
+    }
+    return self - other;
+  }
+
+  /// This raised to `exp`. Traps if the answer does not fit, as `*` does.
+  fn pow(self : usize, exp : usize) -> usize {
+    let r = self.checked_pow(exp);
+    assert(r.is_some(), "usize pow overflowed");
+    return r.unwrap();
+  }
+
+  /// Plain division: an unsigned quotient is already the Euclidean one.
+  fn div_euclid(self : usize, rhs : usize) -> usize {
+    return self / rhs;
+  }
+
+  /// Plain remainder, which is never negative.
+  fn rem_euclid(self : usize, rhs : usize) -> usize {
+    return self % rhs;
+  }
+
+  /// This raised to `exp`, or nothing if the answer does not fit.
+  fn checked_pow(self : usize, exp : usize) -> Option<usize> {
+    // By squaring. The last square is never taken, so a base whose square would not fit
+    // still gives an answer when that square is not needed.
+    if exp == 0 {
+      return Option<usize>::Some(1usize);
+    }
+    let mut result : usize = 1;
+    let mut base : usize = self;
+    let mut e : usize = exp;
+    loop {
+      if (e & 1) == 1 {
+        let product = result.checked_mul(base);
+        if product.is_none() {
+          return Option<usize>::None();
+        }
+        result = product.unwrap();
+        if e == 1 {
+          return Option<usize>::Some(result);
+        }
+      }
+      e = e >> 1;
+      let square = base.checked_mul(base);
+      if square.is_none() {
+        return Option<usize>::None();
+      }
+      base = square.unwrap();
+    }
+    return Option<usize>::Some(result);
+  }
+
+  /// This raised to `exp`, held at the largest value if it does not fit.
+  fn saturating_pow(self : usize, exp : usize) -> usize {
+    return self.checked_pow(exp).unwrap_or(self.max_value());
+  }
+
+  /// This raised to `exp`, wrapping at the top of the range.
+  fn wrapping_pow(self : usize, exp : usize) -> usize {
+    let mut result : usize = 1;
+    let mut base : usize = self;
+    let mut e : usize = exp;
+    loop {
+      if e == 0 {
+        break;
+      }
+      if (e & 1) == 1 {
+        result = result.wrapping_mul(base);
+      }
+      base = base.wrapping_mul(base);
+      e = e >> 1;
+    }
+    return result;
+  }
+
+  /// The logarithm to `base`, rounded down. Refused at zero, and for a base below two.
+  fn ilog(self : usize, base : usize) -> usize {
+    assert(self > 0, "ilog needs a positive value");
+    assert(base >= 2, "ilog needs a base of at least two");
+    let mut n : usize = 0;
+    let mut rest : usize = self;
+    loop {
+      if rest < base {
+        break;
+      }
+      rest = rest / base;
+      n = n + 1;
+    }
+    return n;
+  }
+
+  /// The logarithm to base two, rounded down. Refused at zero.
+  fn ilog2(self : usize) -> usize {
+    assert(self > 0, "ilog2 needs a positive value");
+    return self.bits() - 1 - self.leading_zeros();
+  }
+
+  /// The logarithm to base ten, rounded down. Refused at zero.
+  fn ilog10(self : usize) -> usize {
+    return self.ilog(10);
+  }
+
+  /// The logarithm to `base`, or nothing at zero or for a base below two.
+  fn checked_ilog(self : usize, base : usize) -> Option<usize> {
+    if self == 0 || base < 2 {
+      return Option<usize>::None();
+    }
+    return Option<usize>::Some(self.ilog(base));
+  }
+
+  /// The logarithm to base two, or nothing at zero.
+  fn checked_ilog2(self : usize) -> Option<usize> {
+    if self == 0 {
+      return Option<usize>::None();
+    }
+    return Option<usize>::Some(self.ilog2());
+  }
+
+  /// The logarithm to base ten, or nothing at zero.
+  fn checked_ilog10(self : usize) -> Option<usize> {
+    return self.checked_ilog(10);
+  }
+
+  /// Does `rhs` divide this exactly? Zero is a multiple only of zero.
+  fn is_multiple_of(self : usize, rhs : usize) -> bool {
+    if rhs == 0 {
+      return self == 0;
+    }
+    return self % rhs == 0;
+  }
+
+  /// The smallest multiple of `rhs` at or above this. Refused on a zero `rhs`, and when the
+  /// answer does not fit.
+  fn next_multiple_of(self : usize, rhs : usize) -> usize {
+    let r = self.checked_next_multiple_of(rhs);
+    assert(r.is_some(), "next_multiple_of has no answer here");
+    return r.unwrap();
+  }
+
+  /// The smallest multiple of `rhs` at or above this, or nothing on a zero `rhs` or when the
+  /// answer does not fit.
+  fn checked_next_multiple_of(self : usize, rhs : usize) -> Option<usize> {
+    if rhs == 0 {
+      return Option<usize>::None();
+    }
+    let r = self % rhs;
+    if r == 0 {
+      return Option<usize>::Some(self);
+    }
+    return self.checked_add(rhs - r);
+  }
+
+  /// The smallest power of two at or above this, or nothing above 2^62, the largest power
+  /// of two a `usize` holds.
+  fn checked_next_power_of_two(self : usize) -> Option<usize> {
+    if self <= 1 {
+      return Option<usize>::Some(1usize);
+    }
+    let one : usize = 1;
+    let shift = self.bits() - (self - one).leading_zeros();
+    if shift >= self.bits() - one {
+      return Option<usize>::None();
+    }
+    return Option<usize>::Some(one << shift);
+  }
+
+  /// One for zero and one. Refused above 2^62, the largest power of two a `usize` holds.
+  fn next_power_of_two(self : usize) -> usize {
+    let r = self.checked_next_power_of_two();
+    assert(r.is_some(), "next power of two does not fit in a usize");
+    return r.unwrap();
+  }
+
+  /// The square root, rounded down, digit by digit in base four.
+  fn isqrt(self : usize) -> usize {
+    let mut rest : usize = self;
+    let mut root : usize = 0;
+    let mut bit : usize = 1usize << 62;
+    loop {
+      if bit <= rest {
+        break;
+      }
+      bit = bit >> 2;
+    }
+    loop {
+      if bit == 0 {
+        break;
+      }
+      if rest >= root + bit {
+        rest = rest - (root + bit);
+        root = (root >> 1) + bit;
+      } else {
+        root = root >> 1;
+      }
+      bit = bit >> 2;
+    }
+    return root;
+  }
+
+  /// Halfway between two values, rounded down, without overflowing.
+  fn midpoint(self : usize, rhs : usize) -> usize {
+    return (self & rhs) + ((self ^ rhs) >> 1);
+  }
+
+  /// The quotient rounded up. Refused on a zero divisor.
+  fn div_ceil(self : usize, rhs : usize) -> usize {
+    assert(rhs != 0, "div_ceil by zero");
+    let q = self / rhs;
+    if self % rhs != 0 {
+      return q + 1;
+    }
+    return q;
+  }
+
+  /// The sum, or nothing if it would pass the largest `usize`.
+  fn checked_add(self : usize, rhs : usize) -> Option<usize> {
+    if self > self.max_value() - rhs {
+      return Option<usize>::None();
+    }
+    return Option<usize>::Some(self + rhs);
+  }
+
+  /// The difference, or nothing if it would go below zero.
+  fn checked_sub(self : usize, rhs : usize) -> Option<usize> {
+    if self < rhs {
+      return Option<usize>::None();
+    }
+    return Option<usize>::Some(self - rhs);
+  }
+
+  /// The product, or nothing if it would pass the largest `usize`. Checked by dividing
+  /// first, since multiplying first would trap.
+  fn checked_mul(self : usize, rhs : usize) -> Option<usize> {
+    if rhs == 0 {
+      return Option<usize>::Some(0usize);
+    }
+    if self > self.max_value() / rhs {
+      return Option<usize>::None();
+    }
+    return Option<usize>::Some(self * rhs);
+  }
+
+  /// Nothing on division by zero, the only division that fails here.
+  fn checked_div(self : usize, rhs : usize) -> Option<usize> {
+    if rhs == 0 {
+      return Option<usize>::None();
+    }
+    return Option<usize>::Some(self / rhs);
+  }
+
+  /// Nothing on a zero divisor, as `checked_div`.
+  fn checked_rem(self : usize, rhs : usize) -> Option<usize> {
+    if rhs == 0 {
+      return Option<usize>::None();
+    }
+    return Option<usize>::Some(self % rhs);
+  }
+
+  /// Held at the largest `usize` instead of trapping.
+  fn saturating_add(self : usize, rhs : usize) -> usize {
+    return self.checked_add(rhs).unwrap_or(self.max_value());
+  }
+
+  /// Held at zero instead of trapping.
+  fn saturating_sub(self : usize, rhs : usize) -> usize {
+    if self < rhs {
+      return 0;
+    }
+    return self - rhs;
+  }
+
+  /// Held at the largest `usize` instead of trapping.
+  fn saturating_mul(self : usize, rhs : usize) -> usize {
+    return self.checked_mul(rhs).unwrap_or(self.max_value());
+  }
+
+  /// The sum modulo 2^63: past the largest `usize` it starts again from zero.
+  fn wrapping_add(self : usize, rhs : usize) -> usize {
+    return mlir!( inputs : (%a = self : i64, %b = rhs : i64), returns : usize, dialects : ["arith"]) {
+      %s = arith.addi %a, %b : i64
+      %m = arith.constant 9223372036854775807 : i64
+      %r = arith.andi %s, %m : i64
+      macro.yield %r : i64
+    };
+  }
+
+  /// The difference modulo 2^63: below zero it starts again from the largest `usize`.
+  fn wrapping_sub(self : usize, rhs : usize) -> usize {
+    return mlir!( inputs : (%a = self : i64, %b = rhs : i64), returns : usize, dialects : ["arith"]) {
+      %s = arith.subi %a, %b : i64
+      %m = arith.constant 9223372036854775807 : i64
+      %r = arith.andi %s, %m : i64
+      macro.yield %r : i64
+    };
+  }
+
+  /// The product modulo 2^63.
+  fn wrapping_mul(self : usize, rhs : usize) -> usize {
+    return mlir!( inputs : (%a = self : i64, %b = rhs : i64), returns : usize, dialects : ["arith"]) {
+      %s = arith.muli %a, %b : i64
+      %m = arith.constant 9223372036854775807 : i64
+      %r = arith.andi %s, %m : i64
+      macro.yield %r : i64
+    };
+  }
+
+  /// Zero minus this, modulo 2^63.
+  fn wrapping_neg(self : usize) -> usize {
+    return self.min_value().wrapping_sub(self);
+  }
+
+  /// The sum modulo 2^63, and whether it passed the largest `usize`.
+  fn overflowing_add(self : usize, rhs : usize) -> (usize, bool) {
+    return (self.wrapping_add(rhs), self.checked_add(rhs).is_none());
+  }
+
+  /// The difference modulo 2^63, and whether it went below zero.
+  fn overflowing_sub(self : usize, rhs : usize) -> (usize, bool) {
+    return (self.wrapping_sub(rhs), self < rhs);
+  }
+
+  /// The product modulo 2^63, and whether it passed the largest `usize`.
+  fn overflowing_mul(self : usize, rhs : usize) -> (usize, bool) {
+    return (self.wrapping_mul(rhs), self.checked_mul(rhs).is_none());
+  }
+
+  /// Zero minus this, modulo 2^63, and whether it wrapped: every value but zero does.
+  fn overflowing_neg(self : usize) -> (usize, bool) {
+    return (self.wrapping_neg(), self != 0);
+  }
+
+  /// The quotient, which never overflows.
+  fn overflowing_div(self : usize, rhs : usize) -> (usize, bool) {
+    return (self / rhs, false);
+  }
+
+  /// The remainder, which never overflows.
+  fn overflowing_rem(self : usize, rhs : usize) -> (usize, bool) {
+    return (self % rhs, false);
+  }
+}
+
 /// Stamps the float methods for one width.
 ///
 /// Every body is one `math` dialect op, so nothing here needs libm at the source level and

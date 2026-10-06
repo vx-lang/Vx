@@ -76,7 +76,18 @@ fn main() -> i32 {
   print(min_by<i32>(3, 9, | m : i32 , n : i32 | m.cmp(&n)));
   print!(" ");
   print(min_by<i32>(9, 3, | m : i32 , n : i32 | m.cmp(&n)));
+
+  // `usize` at 0 and at its largest value.
+  let small : usize = 0;
+  let big : usize = 9223372036854775807;
+  print!(" | usize ");
+  show(small.partial_cmp(&big).unwrap().is_lt());
+  print!(" ");
+  show(big.partial_cmp(&big).unwrap().is_eq());
+  print!(" ");
+  show(big.partial_cmp(&small).unwrap().is_gt());
   return 0;
 }
 
 // EXPECT: 1 1 | 1 1 1 | 1 0 1 1 1 1 0 | 9 9 3 3
+// EXPECT: | usize 1 1 1

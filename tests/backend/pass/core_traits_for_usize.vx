@@ -1,0 +1,158 @@
+//===- core_traits_for_usize.vx - Vx Compiler --------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The core traits on `usize`, at 0, 1 and the largest `usize` (the largest `i64`).
+// `Copy`, `Clone`, `Default`, `Ord` and `Hash` are each used through a generic function
+// bounded by the trait, so the call only compiles if `usize` implements it.
+//
+// `From` goes into `usize` from `u8`, `u16`, `u32` and `bool`, and out of `usize` into
+// `u64` and `i64`, each at the largest value of the source. `Hash` writes a `usize` the way
+// it writes a `u64`, so the two hashes of the same number match.
+import core::clone;
+import core::cmp;
+import core::convert;
+import core::default;
+import core::hash;
+import core::iter;
+import core::marker;
+import core::option;
+
+/// `x` is read after it was moved into `a`, which only a `Copy` type allows.
+fn copy_twice<T : Copy>(x : T) -> T {
+  let a = x;
+  return second(a, x);
+}
+
+fn second<T : Copy>(_first : T, then : T) -> T {
+  return then;
+}
+
+fn clone_of<T : Clone>(x : &T) -> T {
+  return x.clone();
+}
+
+fn default_of<T : Default>(_x : T) -> T {
+  return T::default();
+}
+
+fn larger<T : Ord>(a : T, b : T) -> T {
+  return a.max(b);
+}
+
+fn hash_of<T : Hash>(x : &T) -> u64 {
+  let mut h = FxHasher::new();
+  x.hash(&mut h);
+  return h.finish();
+}
+
+/// Hands out `a`, `b` and `c`, in that order.
+struct Three {
+  a : usize,
+  b : usize,
+  c : usize,
+  given : i64,
+}
+
+impl Iterator for Three {
+  type Item = usize;
+
+  fn next(self : &mut Three) -> Option<usize> {
+    self.given = self.given + 1i64;
+    if self.given == 1i64 {
+      return Option<usize>::Some(self.a);
+    }
+    if self.given == 2i64 {
+      return Option<usize>::Some(self.b);
+    }
+    if self.given == 3i64 {
+      return Option<usize>::Some(self.c);
+    }
+    return Option<usize>::None();
+  }
+}
+
+fn show(b : bool) -> i32 {
+  if b {
+    print!("yes; ");
+  } else {
+    print!("no; ");
+  }
+  return 0;
+}
+
+fn main() -> i32 {
+  let zero : usize = 0;
+  let one : usize = 1;
+  let max : usize = 9223372036854775807;
+
+  print!("copy=");
+  print(copy_twice(max));
+  print!("; clone=");
+  print(clone_of(&max));
+  print!("; default=");
+  print(default_of(max));
+  print!("; larger=");
+  print(larger(zero, max));
+  print!("; ");
+
+  // Equality and order. `partial_cmp` is asked in `core_cmp_partial.vx`, since an
+  // `Option<Ordering>` result moves a program off the flat code generator.
+  print!("eq_zero=");
+  show(zero.eq(&zero));
+  print!("cmp_less=");
+  show(zero.cmp(&one) == Ordering::Less());
+  print!("cmp_greater=");
+  show(max.cmp(&one) == Ordering::Greater());
+
+  // A `usize` hashes like a `u64` of the same value, and two values hash apart.
+  let max_u64 : u64 = 9223372036854775807;
+  print!("hash_like_u64=");
+  show(hash_of(&max) == hash_of(&max_u64));
+  print!("hash_differs=");
+  show(hash_of(&zero) != hash_of(&one));
+
+  // `From`, at the largest value of each source.
+  let a : u8 = 255;
+  let b : u16 = 65535;
+  let c : u32 = 4294967295;
+  print!("from_u8=");
+  print(usize::from(a));
+  print!("; from_u16=");
+  print(usize::from(b));
+  print!("; from_u32=");
+  print(usize::from(c));
+  print!("; from_bool=");
+  print(usize::from(true));
+  print!("; to_u64=");
+  print(u64::from(max));
+  print!("; to_i64=");
+  print(i64::from(max));
+  print!("; self=");
+  print(usize::from(max));
+  print!("; ");
+
+  // `Sum` and `Product`, over items whose answer is exactly the largest `usize`:
+  // 0 + (2^62 - 1) + 2^62, and 49 * 9271 * 20303320287433.
+  let mut s = Three {
+    a : 0, b : 4611686018427387903, c : 4611686018427387904, given : 0i64
+  };
+  print!("sum=");
+  print(s.sum());
+  let mut p = Three {
+    a : 49, b : 9271, c : 20303320287433, given : 0i64
+  };
+  print!("; product=");
+  print(p.product());
+  print!(";");
+  return 0;
+}
+
+// EXPECT: copy=9223372036854775807; clone=9223372036854775807; default=0; larger=9223372036854775807;
+// EXPECT: eq_zero=yes; cmp_less=yes; cmp_greater=yes; hash_like_u64=yes; hash_differs=yes;
+// EXPECT: from_u8=255; from_u16=65535; from_u32=4294967295; from_bool=1;
+// EXPECT: to_u64=9223372036854775807; to_i64=9223372036854775807; self=9223372036854775807;
+// EXPECT: sum=9223372036854775807; product=9223372036854775807;

@@ -1,0 +1,172 @@
+//===- core_num_usize.vx - Vx Compiler ---------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `core::num` on `usize`, at 0, 1 and the largest `usize` (the largest `i64`, written MAX).
+//
+// A `usize` `+`, `-` or `*` that leaves the range stops the program, so each checked,
+// saturating, wrapping and overflowing method is called right at an edge: a wrong bound in
+// one of them either traps or prints a different number. Wrapping goes modulo 2^63, so
+// MAX + 1 wraps to 0 and 0 - 1 wraps to MAX.
+import core::num;
+import core::option;
+
+fn show(b : bool) -> i32 {
+  if b {
+    print!("yes; ");
+  } else {
+    print!("no; ");
+  }
+  return 0;
+}
+
+fn main() -> i32 {
+  let zero : usize = 0;
+  let one : usize = 1;
+  let max : usize = 9223372036854775807;
+  let two : usize = 2;
+
+  // The limits.
+  print!("min=");
+  print(max.min_value());
+  print!("; max=");
+  print(zero.max_value());
+  print!("; bits=");
+  print(zero.bits());
+  print!("; ");
+
+  // Addition at the top: MAX + 0 fits, MAX + 1 does not.
+  print!("add_max_0_fits=");
+  show(max.checked_add(zero).is_some());
+  print!("add_max_1_none=");
+  show(max.checked_add(one).is_none());
+  print!("sat_add=");
+  print(max.saturating_add(one));
+  print!("; wrap_add=");
+  print(max.wrapping_add(one));
+  print!("; ");
+  let (sum, carried) = max.overflowing_add(one);
+  print!("over_add=");
+  print(sum);
+  print!("; ");
+  print!("over_add_flag=");
+  show(carried);
+
+  // Subtraction at the bottom: 0 - 0 fits, 0 - 1 does not.
+  print!("sub_0_0_fits=");
+  show(zero.checked_sub(zero).is_some());
+  print!("sub_0_1_none=");
+  show(zero.checked_sub(one).is_none());
+  print!("sat_sub=");
+  print(zero.saturating_sub(one));
+  print!("; wrap_sub=");
+  print(zero.wrapping_sub(one));
+  print!("; ");
+  let (diff, borrowed) = zero.overflowing_sub(one);
+  print!("over_sub=");
+  print(diff);
+  print!("; ");
+  print!("over_sub_flag=");
+  show(borrowed);
+  print!("wrap_neg_one=");
+  print(one.wrapping_neg());
+  print!("; wrap_neg_zero=");
+  print(zero.wrapping_neg());
+  print!("; ");
+
+  // Multiplication: MAX * 1 fits, MAX * 2 does not, and anything times 0 is 0.
+  print!("mul_max_1_fits=");
+  show(max.checked_mul(one).is_some());
+  print!("mul_max_2_none=");
+  show(max.checked_mul(two).is_none());
+  print!("mul_zero=");
+  print(max.checked_mul(zero).unwrap());
+  print!("; sat_mul=");
+  print(max.saturating_mul(two));
+  print!("; wrap_mul=");
+  print(max.wrapping_mul(two));
+  print!("; ");
+
+  // Division by zero is the only division that fails.
+  print!("div_by_0_none=");
+  show(one.checked_div(zero).is_none());
+  print!("rem_by_0_none=");
+  show(max.checked_rem(zero).is_none());
+
+  // Powers: 2^62 fits and 2^63 does not.
+  let p62 : usize = 62;
+  let p63 : usize = 63;
+  print!("pow62=");
+  print(two.pow(p62));
+  print!("; ");
+  print!("pow_2_63_none=");
+  show(two.checked_pow(p63).is_none());
+  print!("sat_pow=");
+  print(two.saturating_pow(p63));
+  print!("; wrap_pow=");
+  print(two.wrapping_pow(p63));
+  print!("; ");
+
+  // Powers of two: 2^62 is the largest one a `usize` holds.
+  let below_top : usize = 4611686018427387903;
+  print!("next_pow2=");
+  print(below_top.next_power_of_two());
+  print!("; next_pow2_zero=");
+  print(zero.next_power_of_two());
+  print!("; ");
+  print!("next_pow2_max_none=");
+  show(max.checked_next_power_of_two().is_none());
+  print!("next_mult_max_none=");
+  show(max.checked_next_multiple_of(two).is_none());
+  print!("zero_is_pow2=");
+  show(zero.is_power_of_two());
+  print!("one_is_pow2=");
+  show(one.is_power_of_two());
+
+  // Bits and logarithms at MAX, whose top bit is clear and every other bit set.
+  print!("count_ones=");
+  print(max.count_ones());
+  print!("; count_zeros=");
+  print(max.count_zeros());
+  print!("; lead=");
+  print(max.leading_zeros());
+  print!("; trail_ones=");
+  print(max.trailing_ones());
+  print!("; trail_zero=");
+  print(zero.trailing_zeros());
+  let eight : usize = 8;
+  print!("; trail_eight=");
+  print(eight.trailing_zeros());
+  print!("; ilog2=");
+  print(max.ilog2());
+  print!("; ilog10=");
+  print(max.ilog10());
+  print!("; isqrt=");
+  print(max.isqrt());
+  print!("; ");
+  print!("ilog2_0_none=");
+  show(zero.checked_ilog2().is_none());
+
+  // Helpers that must not overflow on the way to an answer that fits.
+  print!("mid=");
+  print(max.midpoint(max));
+  print!("; diff=");
+  print(zero.abs_diff(max));
+  print!("; ceil=");
+  print(max.div_ceil(two));
+  print!(";");
+  return 0;
+}
+
+// EXPECT: min=0; max=9223372036854775807; bits=64;
+// EXPECT: add_max_0_fits=yes; add_max_1_none=yes; sat_add=9223372036854775807; wrap_add=0; over_add=0; over_add_flag=yes;
+// EXPECT: sub_0_0_fits=yes; sub_0_1_none=yes; sat_sub=0; wrap_sub=9223372036854775807; over_sub=9223372036854775807; over_sub_flag=yes;
+// EXPECT: wrap_neg_one=9223372036854775807; wrap_neg_zero=0;
+// EXPECT: mul_max_1_fits=yes; mul_max_2_none=yes; mul_zero=0; sat_mul=9223372036854775807; wrap_mul=9223372036854775806;
+// EXPECT: div_by_0_none=yes; rem_by_0_none=yes; pow62=4611686018427387904; pow_2_63_none=yes; sat_pow=9223372036854775807; wrap_pow=0;
+// EXPECT: next_pow2=4611686018427387904; next_pow2_zero=1; next_pow2_max_none=yes; next_mult_max_none=yes; zero_is_pow2=no; one_is_pow2=yes;
+// EXPECT: count_ones=63; count_zeros=1; lead=1; trail_ones=63; trail_zero=64; trail_eight=3; ilog2=62; ilog10=18; isqrt=3037000499; ilog2_0_none=yes;
+// EXPECT: mid=9223372036854775807; diff=9223372036854775807; ceil=4611686018427387904;

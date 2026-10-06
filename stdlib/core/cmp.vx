@@ -281,6 +281,7 @@ stamp_cmp!(u8);
 stamp_cmp!(u16);
 stamp_cmp!(u32);
 stamp_cmp!(u64);
+stamp_cmp!(usize);
 stamp_cmp!(bool);
 
 /// A comparison that may answer with nothing, which is what a float needs: NaN is neither
@@ -315,6 +316,7 @@ stamp_total_partial_ord!(u8);
 stamp_total_partial_ord!(u16);
 stamp_total_partial_ord!(u32);
 stamp_total_partial_ord!(u64);
+stamp_total_partial_ord!(usize);
 stamp_total_partial_ord!(bool);
 
 /// The floats get equality and the partial comparison, and no `Ord`. The three tests are

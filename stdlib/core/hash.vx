@@ -76,6 +76,11 @@ trait Hasher {
     return self.write_u64(v as u64);
   }
 
+  /// Written as a `u64`, so a `usize` hashes the same as a `u64` holding the same number.
+  fn write_usize(self : &mut Self, v : usize) -> i32 {
+    return self.write_u64(v as u64);
+  }
+
   fn write_bool(self : &mut Self, v : bool) -> i32 {
     if v {
       return self.write_u8(1u8);
@@ -103,6 +108,7 @@ stamp_hash!(u8, write_u8);
 stamp_hash!(u16, write_u16);
 stamp_hash!(u32, write_u32);
 stamp_hash!(u64, write_u64);
+stamp_hash!(usize, write_usize);
 stamp_hash!(i8, write_i8);
 stamp_hash!(i16, write_i16);
 stamp_hash!(i32, write_i32);
