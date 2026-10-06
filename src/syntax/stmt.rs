@@ -223,14 +223,17 @@ pub struct DropStmt {
 }
 
 impl DropStmt {
-    /// For a drop that calls a `Drop` impl: the statement that calls it, inside
-    /// `if !moved { .. }` when the value may have been moved.
+    /// For a drop that calls a `Drop` impl, or drops an enum's payload: the statement that
+    /// does it, inside `if !moved { .. }` when the value may have been moved.
     pub fn call_statement(&self) -> Option<Statement> {
-        self.call.as_ref()?;
+        let payload = matches!(self.expr.as_deref(), Some(Expr::Match(_)));
+        if self.call.is_none() && !payload {
+            return None;
+        }
         let call = self
             .expr
             .as_deref()
-            .expect("a drop that calls has its call")
+            .expect("a drop that runs code has it")
             .clone();
         let call = Statement::ExprStmt(ExprStmtStmt::new(call, true, Span::default()));
         let Some(flag) = &self.flag else {

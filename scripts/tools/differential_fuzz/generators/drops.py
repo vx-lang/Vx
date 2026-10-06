@@ -2,7 +2,8 @@
 
 `Noisy` holds an id and a tensor, and its `drop` prints the id. `Pair` holds two of them and
 has no `drop` of its own, so dropping it drops its fields in the order they are declared.
-`Boxed` holds one and prints its own number before its field is dropped. `main` makes these,
+`Boxed` holds one and prints its own number before its field is dropped. `Opt<Noisy>` holds
+one or none, and dropping it drops what it holds. `main` makes these,
 passes them to functions by value (which drop them) and by `&`, moves them inside `if`s and
 loops, gives variables new values, and opens nested blocks. It also makes ones nothing names,
 such as `look_n(&noisy(3))`, which are dropped at the end of their statement. Every `drop` prints, so the output
@@ -24,7 +25,7 @@ from fuzzlib import Program
 class Var:
     def __init__(self, name, kind, loops):
         self.name = name
-        self.kind = kind  # "n": Noisy, "p": Pair, "b": Boxed
+        self.kind = kind  # "n": Noisy, "p": Pair, "b": Boxed, "o": Opt<Noisy>
         self.loops = loops
         self.alive = True
 
@@ -52,7 +53,7 @@ class Gen:
             movable = [v for v in alive if v.loops == loops]
             k = self.rng.random()
             if k < 0.25 or not alive:
-                v = Var(self.fresh(), self.rng.choice("nnpb"), loops)
+                v = Var(self.fresh(), self.rng.choice("nnpbo"), loops)
                 out.append(("make", v.name, v.kind, self.new_id(), self.new_id()))
                 scope.append(v)
                 own.append(v)
@@ -98,6 +99,10 @@ def make_expr(kind, a, b, lang):
         return f"noisy({a})"
     if kind == "p":
         return f"Pair {{ a: noisy({a}), b: noisy({b}) }}"
+    if kind == "o":
+        if b % 3 == 0:
+            return "Opt<Noisy>::None()" if vx else "Opt::<Noisy>::None"
+        return f"Opt<Noisy>::Some(noisy({a}))" if vx else f"Opt::Some(noisy({a}))"
     return f"Boxed {{ n: {b + 1000}, inner: noisy({a}) }}"
 
 
@@ -176,6 +181,11 @@ impl Drop for Boxed {
   }
 }
 
+enum Opt<T> {
+  Some(T),
+  None,
+}
+
 fn noisy(id : i32) -> Noisy {
   return Noisy { id: id, t: Tensor<i32>([4]) };
 }
@@ -192,6 +202,10 @@ fn take_b(x : Boxed) -> void {
   print!("t ");
 }
 
+fn take_o(x : Opt<Noisy>) -> void {
+  print!("t ");
+}
+
 fn look_n(x : &Noisy) -> void {
   print!("l ");
 }
@@ -201,6 +215,10 @@ fn look_p(x : &Pair) -> void {
 }
 
 fn look_b(x : &Boxed) -> void {
+  print!("l ");
+}
+
+fn look_o(x : &Opt<Noisy>) -> void {
   print!("l ");
 }
 
@@ -222,7 +240,10 @@ impl Drop for Noisy { fn drop(&mut self) { print!("{} ", self.id); } }
 struct Pair { a: Noisy, b: Noisy }
 struct Boxed { n: i32, inner: Noisy }
 impl Drop for Boxed { fn drop(&mut self) { print!("{} ", self.n); } }
+enum Opt<T> { Some(T), None }
 fn noisy(id: i32) -> Noisy { Noisy { id, t: vec![0; 4] } }
+fn take_o(x: Opt<Noisy>) { print!("t "); }
+fn look_o(x: &Opt<Noisy>) { print!("l "); }
 fn take_n(x: Noisy) { print!("t "); }
 fn take_p(x: Pair) { print!("t "); }
 fn take_b(x: Boxed) { print!("t "); }

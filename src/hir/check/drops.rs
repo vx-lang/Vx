@@ -68,6 +68,30 @@ pub(crate) struct GluePart {
     /// Each field followed, with the type of the struct it is a field of.
     path: Vec<(crate::symbol::Symbol, String)>,
     call: Option<crate::symbol::Symbol>,
+    /// For an enum: what dropping each variant's payload does, by element. Dropping it
+    /// matches on the value.
+    payload: Option<EnumGlue>,
+}
+
+#[derive(Clone)]
+pub(crate) struct EnumGlue {
+    /// The enum's type as a pattern names it: `Opt<Noisy>`.
+    name: String,
+    /// The variants with something to drop: each payload element's glue, or `None`.
+    arms: Vec<(crate::symbol::Symbol, Vec<Option<Vec<GluePart>>>)>,
+}
+
+impl GluePart {
+    /// Whether dropping this runs a `Drop` impl anywhere.
+    fn calls(&self) -> bool {
+        self.call.is_some()
+            || self.payload.as_ref().is_some_and(|p| {
+                p.arms
+                    .iter()
+                    .flat_map(|(_, elems)| elems.iter().flatten().flatten())
+                    .any(GluePart::calls)
+            })
+    }
 }
 
 /// One walk over a statement's calls, in the order they are evaluated.
@@ -193,6 +217,39 @@ fn owner_drop(owner: &Owner) -> Vec<Statement> {
     glue_drops(&owner.name, &owner.glue, flag)
 }
 
+/// `match place { E::V(p0, _) => { drops of p0 } .. _ => {} }`: the active variant's payload
+/// dropped, element by element. `name` keeps the names it binds apart from others.
+fn payload_match(name: &str, place: Expr, payload: &EnumGlue) -> Expr {
+    let mut arms = Vec::new();
+    for (variant, elems) in &payload.arms {
+        let mut patterns = Vec::new();
+        let mut body = Vec::new();
+        for (k, glue) in elems.iter().enumerate() {
+            match glue {
+                Some(glue) => {
+                    let bound = format!("{name}__payload{k}");
+                    patterns.push(Pattern::Identifier(bound.as_str().into()));
+                    body.extend(glue_drops(&bound, glue, None));
+                }
+                None => patterns.push(Pattern::Wildcard),
+            }
+        }
+        arms.push(MatchArm {
+            pattern: Pattern::EnumVariant(
+                payload.name.as_str().into(),
+                variant.clone(),
+                Some(patterns),
+            ),
+            body,
+        });
+    }
+    arms.push(MatchArm {
+        pattern: Pattern::Wildcard,
+        body: Vec::new(),
+    });
+    Expr::Match(MatchExpr::new(Box::new(place), arms, Span::default()))
+}
+
 /// The drops that run `glue` on `name`.
 fn glue_drops(name: &str, glue: &[GluePart], flag: Option<&str>) -> Vec<Statement> {
     glue.iter()
@@ -203,6 +260,17 @@ fn glue_drops(name: &str, glue: &[GluePart], flag: Option<&str>) -> Vec<Statemen
                     MemberAccessExpr::new(Box::new(place), field.clone(), Span::default());
                 access.struct_name = Some(struct_ty.as_str().into());
                 place = Expr::MemberAccess(access);
+            }
+            if let Some(payload) = &part.payload {
+                return Statement::Drop(DropStmt {
+                    name: name.into(),
+                    path: part.path.iter().map(|(f, _)| f.clone()).collect(),
+                    call: None,
+                    expr: Some(Box::new(payload_match(name, place, payload))),
+                    flag: flag.map(Into::into),
+                    after_value: false,
+                    span: Span::default(),
+                });
             }
             let expr = match &part.call {
                 Some(call) => Some(Expr::FunctionCall(FunctionCallExpr::new(
@@ -258,7 +326,11 @@ impl<'a> TypeChecker<'a> {
             Type::Tensor(..) => vec![GluePart {
                 path: Vec::new(),
                 call: None,
+                payload: None,
             }],
+            // A type is often written as a struct before anything knows it names an enum, so
+            // the declarations decide.
+            _ if self.drops_enum_decl(ty).is_some() => self.drops_enum_glue(ty, depth),
             Type::Struct(..) | Type::GenericInstance(..) => {
                 if self.is_copy(ty) {
                     return Vec::new();
@@ -276,6 +348,7 @@ impl<'a> TypeChecker<'a> {
                     glue.push(GluePart {
                         path: Vec::new(),
                         call: Some(call),
+                        payload: None,
                     });
                 }
                 let struct_ty = ty.to_string();
@@ -289,6 +362,80 @@ impl<'a> TypeChecker<'a> {
             }
             _ => Vec::new(),
         }
+    }
+
+    /// The declaration of the enum `ty` names, and its type arguments.
+    fn drops_enum_decl(&self, ty: &Type) -> Option<(decl::EnumDecl, Vec<Type>)> {
+        let (name, args): (&crate::symbol::Symbol, Vec<Type>) = match ty {
+            Type::Enum(name, _) | Type::Struct(name, _) => (name, Vec::new()),
+            Type::GenericInstance(base, args) => match base.as_ref() {
+                Type::Enum(name, _) | Type::Struct(name, _) => (name, args.clone()),
+                _ => return None,
+            },
+            _ => return None,
+        };
+        let base = name.split('<').next().unwrap_or(name);
+        let decl = (*self.env.enums.get(base)?).clone();
+        Some((decl, args))
+    }
+
+    /// An enum's glue: its `Drop` impl's `drop`, then the active variant's payload.
+    fn drops_enum_glue(&mut self, ty: &Type, depth: usize) -> Vec<GluePart> {
+        if self.is_copy(ty) {
+            return Vec::new();
+        }
+        let Some((decl, args)) = self.drops_enum_decl(ty) else {
+            return Vec::new();
+        };
+        let mapping: HashMap<crate::symbol::Symbol, Type> = decl
+            .generics
+            .iter()
+            .map(|g| crate::symbol::Symbol::from(g.name()))
+            .zip(args.iter().cloned())
+            .collect();
+        // The code generators match on a payload only when it is one element, and only in a
+        // generic enum: an enum they cannot match on is not dropped yet.
+        if decl.generics.is_empty()
+            || decl
+                .variants
+                .iter()
+                .any(|(_, p)| p.as_ref().is_some_and(|p| p.len() > 1))
+        {
+            return Vec::new();
+        }
+        let mut arms = Vec::new();
+        for (variant, payload) in &decl.variants {
+            let elems: Vec<Option<Vec<GluePart>>> = payload
+                .iter()
+                .flatten()
+                .map(|t| {
+                    let glue = self.drops_glue_at(&t.substitute(&mapping), depth + 1);
+                    (!glue.is_empty()).then_some(glue)
+                })
+                .collect();
+            if elems.iter().any(Option::is_some) {
+                arms.push((variant.clone(), elems));
+            }
+        }
+        let mut glue = Vec::new();
+        if let Some(call) = self.drops_impl_call(ty) {
+            glue.push(GluePart {
+                path: Vec::new(),
+                call: Some(call),
+                payload: None,
+            });
+        }
+        if !arms.is_empty() {
+            glue.push(GluePart {
+                path: Vec::new(),
+                call: None,
+                payload: Some(EnumGlue {
+                    name: ty.to_string(),
+                    arms,
+                }),
+            });
+        }
+        glue
     }
 
     /// The fields of struct type `ty`, with its type arguments put in. `None` when `ty` is not
@@ -423,7 +570,7 @@ impl<'a> TypeChecker<'a> {
                 name,
                 is_param: true,
                 decl: None,
-                to_block_end: glue.iter().any(|g| g.call.is_some()),
+                to_block_end: glue.iter().any(GluePart::calls),
                 scope,
                 moved: Moved::No,
                 moved_at: None,
@@ -475,7 +622,7 @@ impl<'a> TypeChecker<'a> {
                 name: name.to_string(),
                 is_param: false,
                 decl: Some(*stmt),
-                to_block_end: glue.iter().any(|g| g.call.is_some()),
+                to_block_end: glue.iter().any(GluePart::calls),
                 scope,
                 moved: Moved::No,
                 moved_at: None,
