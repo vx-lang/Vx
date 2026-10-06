@@ -18,11 +18,8 @@
 //
 // Still missing, each waiting on something outside this file:
 //
-//   `expect`               `assert` wants a string literal, so a message parameter cannot
-//                          be handed to it (Vx#526).
 //   `unwrap_or_default`    `T::default()` on a bounded type parameter is not resolved.
 //   `inspect`              no closure literal can return void (Vx#711).
-//   `flatten`              wants `Option<Option<T>>` to lower.
 //   `as_ref`, `as_mut`,    each answers with a reference into the option, and `iter` needs
 //   `iter`, `insert`,      `core::iter` besides.
 //   `get_or_insert`
@@ -100,8 +97,19 @@ impl<T> Option<T> {
         return v;
       }
       Option<T>::None() => {
-        let is_some = self.is_some();
-        assert(is_some, "unwrap called on None");
+        panic("unwrap called on None");
+      }
+    }
+  }
+
+  /// The value, or a stop with the message `msg`. `unwrap` with a message of the caller's.
+  fn expect(self : Option<T>, msg : *const i8) -> T {
+    match self {
+      Option<T>::Some(v) => {
+        return v;
+      }
+      Option<T>::None() => {
+        panic(msg);
       }
     }
   }

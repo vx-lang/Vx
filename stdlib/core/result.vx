@@ -20,8 +20,6 @@
 //
 // Still missing, each waiting on something outside this file:
 //
-//   `expect`, `expect_err`  `assert` wants a string literal, so a message parameter cannot
-//                           be handed to it (Vx#526).
 //   `unwrap_or_default`     `T::default()` on a bounded type parameter is not resolved.
 //   `inspect`,              no closure literal can return void (Vx#711).
 //   `inspect_err`
@@ -92,8 +90,19 @@ impl<T, E> Result<T, E> {
         return v;
       }
       Result<T, E>::Err(e) => {
-        let ok = self.is_ok();
-        assert(ok, "unwrap called on Err");
+        panic("unwrap called on Err");
+      }
+    }
+  }
+
+  /// The value, or a stop with the message `msg`. `unwrap` with a message of the caller's.
+  fn expect(self : Result<T, E>, msg : *const i8) -> T {
+    match self {
+      Result<T, E>::Ok(v) => {
+        return v;
+      }
+      Result<T, E>::Err(e) => {
+        panic(msg);
       }
     }
   }
@@ -193,8 +202,19 @@ impl<T, E> Result<T, E> {
   fn unwrap_err(self : Result<T, E>) -> E {
     match self {
       Result<T, E>::Ok(v) => {
-        let err = self.is_err();
-        assert(err, "unwrap_err called on Ok");
+        panic("unwrap_err called on Ok");
+      }
+      Result<T, E>::Err(e) => {
+        return e;
+      }
+    }
+  }
+
+  /// The failure, or a stop with the message `msg`. The mirror of `expect`.
+  fn expect_err(self : Result<T, E>, msg : *const i8) -> E {
+    match self {
+      Result<T, E>::Ok(v) => {
+        panic(msg);
       }
       Result<T, E>::Err(e) => {
         return e;

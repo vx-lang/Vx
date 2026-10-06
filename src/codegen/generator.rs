@@ -1550,6 +1550,22 @@ impl<'c> MeliorGenerator<'c> {
             // to a merge block nothing reaches, which the MLIR verifier rejects as a block with
             // no terminator. The same predicate stops the parser rewriting it to `return <expr>`.
             Statement::ExprStmt(s) => {
+                // `abort()` and `panic(msg)` end the block they are in: nothing after them runs.
+                if let Expr::FunctionCall(c) = &s.expr {
+                    if crate::syntax::is_abort_or_panic(c) {
+                        let out = LowerToMelior::lower(s, self, block)?;
+                        if let Some(b) = out {
+                            b.append_operation(
+                                melior::ir::operation::OperationBuilder::new(
+                                    "llvm.unreachable",
+                                    self.loc(),
+                                )
+                                .build()?,
+                            );
+                        }
+                        return Ok(None);
+                    }
+                }
                 let diverges = crate::syntax::expr::diverges_on_every_path(&s.expr);
                 let out = LowerToMelior::lower(s, self, block)?;
                 if !diverges {
@@ -1608,7 +1624,30 @@ impl<'c> MeliorGenerator<'c> {
             // inside a kernel. Handled here rather than in the general call lowering because it
             // has no Vx-level definition to resolve -- it is a primitive, like `print`. Safe to
             // call; ending a process breaks no memory-safety property.
-            Expr::FunctionCall(e) if e.name.as_ref() == "abort" && e.args.is_empty() => {
+            //
+            // `panic(msg)` prints `panic: <msg>` first, through `print!`, and then aborts with an
+            // empty message: `cf.assert` prints it with `puts`, which ends the line. A kernel cannot
+            // print, so there it only aborts.
+            Expr::FunctionCall(e) if syntax::is_abort_or_panic(e) => {
+                let mut block = block;
+                let mut abort_msg = "abort() called";
+                if e.name.as_ref() == "panic" {
+                    abort_msg = "panic";
+                    if !self.in_spawn {
+                        let print = Expr::Print(syntax::PrintExpr::new(
+                            vec![
+                                Expr::StringLiteral(syntax::StringLiteralExpr::new(
+                                    "panic: ".to_string(),
+                                    e.span,
+                                )),
+                                e.args[0].clone(),
+                            ],
+                            e.span,
+                        ));
+                        block = self.generate_expr(&print, block)?.2;
+                        abort_msg = "";
+                    }
+                }
                 let never =
                     melior::ir::operation::OperationBuilder::new("arith.constant", self.loc())
                         .add_attributes(&[(
@@ -1629,11 +1668,8 @@ impl<'c> MeliorGenerator<'c> {
                         .add_operands(&[never_v])
                         .add_attributes(&[(
                             melior::ir::Identifier::new(self.context, "msg"),
-                            melior::ir::attribute::StringAttribute::new(
-                                self.context,
-                                "abort() called",
-                            )
-                            .into(),
+                            melior::ir::attribute::StringAttribute::new(self.context, abort_msg)
+                                .into(),
                         )])
                         .build()?;
                 block.append_operation(assert_op);

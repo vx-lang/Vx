@@ -39,13 +39,7 @@
 // CHECK: cf.cond_br %[[C0]], ^{{.*}}, ^{{.*}}
 // CHECK: %[[C1:.*]] = arith.cmpi eq, %{{.*}}, %{{.*}} : i32
 // CHECK: cf.cond_br %[[C1]], ^{{.*}}, ^{{.*}}
-// CHECK-LABEL: func.func @Option$i32$is_some$i32(%arg0: !llvm.ptr) -> i1
-// CHECK: %[[C0:.*]] = arith.cmpi eq, %{{.*}}, %{{.*}} : i32
-// CHECK: cf.cond_br %[[C0]], ^{{.*}}, ^{{.*}}
-// CHECK: %[[C1:.*]] = arith.cmpi eq, %{{.*}}, %{{.*}} : i32
-// CHECK: cf.cond_br %[[C1]], ^{{.*}}, ^{{.*}}
 // CHECK-LABEL: func.func @Option$i32$unwrap$i32(%arg0: !llvm.struct<"Option_i32", (i32, i32)>) -> i32
-// CHECK: call @Option$i32$is_some$i32(%{{.*}}) : (!llvm.ptr) -> i1
 // CHECK-LABEL: func.func @VecMap$i32$i32$collect$i32$i32(%arg0: !llvm.ptr) -> !llvm.struct<"Vec_i32", (ptr, i32, i32)>
 // CHECK: call @"Vec::new$i32"() : () -> !llvm.struct<"Vec_i32", (ptr, i32, i32)>
 // CHECK: call @ref$mut$VecMap$i32$i32$next$i32$i32(%{{.*}}) : (!llvm.ptr) -> !llvm.struct<"Option_i32", (i32, i32)>

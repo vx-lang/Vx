@@ -610,8 +610,8 @@ pub fn match_yields_a_value(m: &MatchExpr) -> bool {
 /// the MLIR verifier reports it as `block with no terminator` naming an arith op -- with no source
 /// location and no statement of what is wrong.
 ///
-/// `abort()` counts as an exit: it is a primitive that ends the process, so no path continues past
-/// it. `assert` deliberately does *not* -- it only aborts when its condition is false, so control
+/// `abort()` and `panic(msg)` count as exits: they are primitives that end the process, so no path
+/// continues past them. `assert` deliberately does *not* -- it only aborts when its condition is false, so control
 /// reaches the next statement in general.
 pub fn block_always_exits(stmts: &[Statement]) -> bool {
     stmts.iter().any(statement_always_exits)
@@ -630,9 +630,18 @@ pub fn statement_always_exits(stmt: &Statement) -> bool {
             Expr::Match(MatchExpr { arms, .. }) => {
                 !arms.is_empty() && arms.iter().all(|a| block_always_exits(&a.body))
             }
-            Expr::FunctionCall(c) => c.name.as_ref() == "abort" && c.args.is_empty(),
+            Expr::FunctionCall(c) => is_abort_or_panic(c),
             _ => false,
         },
+        _ => false,
+    }
+}
+
+/// Whether this call is `abort()` or `panic(msg)`, the two built-ins that end the program.
+pub fn is_abort_or_panic(c: &FunctionCallExpr) -> bool {
+    match c.name.as_ref() {
+        "abort" => c.args.is_empty(),
+        "panic" => c.args.len() == 1,
         _ => false,
     }
 }

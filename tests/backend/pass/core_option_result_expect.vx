@@ -1,0 +1,24 @@
+//===- core_option_result_expect.vx - Vx Compiler ------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `expect` on a `Some` and an `Ok`, and `expect_err` on an `Err`, give back the value inside.
+//
+// EXPECT: 3 5 7
+import core::option;
+import core::result;
+
+fn main() -> i32 {
+  let a = Option<i32>::Some(3);
+  print(a.expect("a has a value"));
+  print!(" ");
+  let b = Result<i32, i32>::Ok(5);
+  print(b.expect("b worked"));
+  print!(" ");
+  let c = Result<i32, i32>::Err(7);
+  print(c.expect_err("c failed"));
+  return 0;
+}

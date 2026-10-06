@@ -1984,6 +1984,20 @@ impl<'a> TypeChecker<'a> {
                     .push("Function 'abort' expects no arguments".to_string());
             }
             Some(Type::Scalar(ElementType::I32))
+        } else if resolved_name == "panic" {
+            // `abort()` with a message. The message is a C string, so it can be a parameter that
+            // a caller filled in, as `expect(msg)` needs, not only a literal.
+            let c_string = Type::Pointer(Box::new(Type::Scalar(ElementType::I8)), None, false);
+            if args.len() != 1 {
+                self.errors
+                    .push("Function 'panic' expects 1 argument, the message".to_string());
+            } else if arg_types[0] != c_string {
+                self.errors.push(format!(
+                    "Function 'panic' expects a string message, got {}",
+                    arg_types[0]
+                ));
+            }
+            Some(Type::Scalar(ElementType::I32))
         } else if resolved_name == "print" {
             if args.len() != 1 {
                 self.errors

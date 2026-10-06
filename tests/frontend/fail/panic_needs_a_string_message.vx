@@ -1,0 +1,23 @@
+//===- panic_needs_a_string_message.vx - Vx Compiler ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `panic` takes exactly one argument, a string message.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK-DAG: Function 'panic' expects a string message, got i32
+// CHECK-DAG: Function 'panic' expects 1 argument, the message
+fn number_message() -> i32 {
+  panic(3);
+}
+
+fn no_message() -> i32 {
+  panic();
+}
+
+fn main() -> i32 {
+  return 0;
+}

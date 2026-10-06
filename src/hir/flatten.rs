@@ -440,6 +440,9 @@ struct Lowerer<'r> {
     /// `lower_for` takes it and tags its induction-variable init and latch increment
     /// (`IMM_PARALLEL_INIT`/`IMM_PARALLEL_STEP`) so the device clone can grid-stride the loop (#251).
     stride_next_for: bool,
+    /// How many `spawn` regions enclose the code being lowered. Inside one, `panic` does not print:
+    /// the region may run on a device.
+    spawn_depth: u32,
     /// The two-level plan `parallel_two_level` proved for the region being lowered, when it proved
     /// one (Vx#379): which `ForLoopStmt` is the block loop and which are thread loops, addressed by
     /// AST node identity (the AST does not move during lowering). `lower_for` consults it to pick
@@ -504,6 +507,7 @@ impl<'r> Lowerer<'r> {
             pending_place_write: None,
             place_field_stores: Vec::new(),
             stride_next_for: false,
+            spawn_depth: 0,
             stride_plan: None,
             queued_drops: Vec::new(),
             value_drops: Vec::new(),
@@ -2813,6 +2817,7 @@ impl<'r> Lowerer<'r> {
         // ownership. Failing both, the region lowers serially -- rejection is always free.
         // The region is a block: its `let`s end with it.
         let depth = self.open_block();
+        self.spawn_depth += 1;
         let par = parallel_outer_for(&s.stmts);
         let end_imm = if par.is_some() {
             for (i, stmt) in s.stmts.iter().enumerate() {
@@ -2840,6 +2845,7 @@ impl<'r> Lowerer<'r> {
             })?;
             let v = self.lower_expr(tail)?;
             self.close_blocks_to(depth);
+            self.spawn_depth -= 1;
             let ty = v.ty.clone();
             return Ok(Some(self.emit_typed(
                 Opcode::SpawnEnd,
@@ -2861,6 +2867,7 @@ impl<'r> Lowerer<'r> {
             None => {}
         }
         self.close_blocks_to(depth);
+        self.spawn_depth -= 1;
         self.emit_effect(Opcode::SpawnEnd, Register(0), Register(0), end_imm);
         Ok(None)
     }
@@ -4902,7 +4909,19 @@ impl<'r> Lowerer<'r> {
                 // target portability: on the host it becomes `abort()`, inside a kernel
                 // `__assertfail`. Safe to call; ending a process violates no memory-safety
                 // property.
-                Expr::FunctionCall(fc) if fc.name.as_ref() == "abort" && fc.args.is_empty() => {
+                //
+                // `panic(msg)` prints `panic: <msg>` first and then aborts with an empty message, as
+                // the AST code generator does.
+                Expr::FunctionCall(fc) if crate::syntax::is_abort_or_panic(fc) => {
+                    let mut abort_msg = "abort() called";
+                    if fc.name.as_ref() == "panic" {
+                        abort_msg = "panic";
+                        if self.spawn_depth == 0 {
+                            self.emit_print_str("panic: ");
+                            self.lower_print_arg(&fc.args[0])?;
+                            abort_msg = "";
+                        }
+                    }
                     let never = self
                         .emit_value(
                             Opcode::Const,
@@ -4913,7 +4932,7 @@ impl<'r> Lowerer<'r> {
                         )
                         .reg;
                     let imm = self.strings.len() as u64;
-                    self.strings.push("abort() called".to_string());
+                    self.strings.push(abort_msg.to_string());
                     self.emit_effect(Opcode::Abort, never, Register(0), imm);
                     Ok(())
                 }

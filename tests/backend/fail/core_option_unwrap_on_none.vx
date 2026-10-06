@@ -1,0 +1,21 @@
+//===- core_option_unwrap_on_none.vx - Vx Compiler -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `unwrap` on a `None` stops the program with a fixed message.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// RUN: not vxc %s --legacy-codegen 2>&1 | FileCheck %s
+// CHECK: panic: unwrap called on None
+// CHECK-NOT: after the panic
+import core::option;
+
+fn main() -> i32 {
+  let o = Option<i32>::None();
+  print(o.unwrap());
+  println!("after the panic");
+  return 0;
+}
