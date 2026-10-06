@@ -1,0 +1,24 @@
+//===- autodiff_math_erf.vx - Vx Compiler -------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The derivative of f32 `erf` at x = 0.5, 2 / sqrt(pi) e^-0.25, printed times 10^6. Enzyme cannot
+// differentiate the core::libm function itself, which reads the float's bits, so it is marked to be
+// differentiated as the C `erff`.
+//
+// CHECK-DAG: llvm.func @libm_erff({{.*}}passthrough = {{\[\[}}"enzyme_math", "erff"{{\]\]}}
+// EXPECT: 878782
+import core::num;
+
+fn erf_of(x : f32) -> f32 {
+  return x.erf();
+}
+
+fn main() -> i32 {
+  let x : f32 = 0.5;
+  print((grad(erf_of, x) * 1000000.0) as i64);
+  return 0;
+}
